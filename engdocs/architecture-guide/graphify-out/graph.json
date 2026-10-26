@@ -1,0 +1,389 @@
+{
+  "directed": true,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {
+      "label": "Backend",
+      "file_type": "code",
+      "source_file": "",
+      "source_location": "",
+      "_origin": "ast",
+      "id": "backend",
+      "community": 0,
+      "norm_label": "backend"
+    },
+    {
+      "label": "Register()",
+      "file_type": "code",
+      "source_file": "backend.go",
+      "source_location": "L178",
+      "_origin": "ast",
+      "id": "backend_register",
+      "community": 0,
+      "norm_label": "register()"
+    },
+    {
+      "label": "Deregister()",
+      "file_type": "code",
+      "source_file": "backend.go",
+      "source_location": "L184",
+      "_origin": "ast",
+      "id": "backend_deregister",
+      "community": 0,
+      "norm_label": "deregister()"
+    },
+    {
+      "label": "Lookup()",
+      "file_type": "code",
+      "source_file": "backend.go",
+      "source_location": "L189",
+      "_origin": "ast",
+      "id": "backend_lookup",
+      "community": 0,
+      "norm_label": "lookup()"
+    },
+    {
+      "label": "Registered()",
+      "file_type": "code",
+      "source_file": "backend.go",
+      "source_location": "L194",
+      "_origin": "ast",
+      "id": "backend_registered",
+      "community": 0,
+      "norm_label": "registered()"
+    },
+    {
+      "label": "WorkspaceIsBeadsDir()",
+      "file_type": "code",
+      "source_file": "backend.go",
+      "source_location": "L201",
+      "_origin": "ast",
+      "id": "backend_workspaceisbeadsdir",
+      "community": 0,
+      "norm_label": "workspaceisbeadsdir()"
+    },
+    {
+      "label": "IsRemote()",
+      "file_type": "code",
+      "source_file": "backend.go",
+      "source_location": "L207",
+      "_origin": "ast",
+      "id": "backend_isremote",
+      "community": 0,
+      "norm_label": "isremote()"
+    },
+    {
+      "label": "NewSliceIter()",
+      "file_type": "code",
+      "source_file": "backend.go",
+      "source_location": "L219",
+      "_origin": "ast",
+      "id": "backend_newsliceiter",
+      "community": 2,
+      "norm_label": "newsliceiter()"
+    },
+    {
+      "label": "T",
+      "file_type": "code",
+      "source_file": "",
+      "source_location": "",
+      "_origin": "ast",
+      "id": "t",
+      "community": 2,
+      "norm_label": "t"
+    },
+    {
+      "label": "SliceIter",
+      "file_type": "code",
+      "source_file": "",
+      "source_location": "",
+      "_origin": "ast",
+      "id": "sliceiter",
+      "community": 2,
+      "norm_label": "sliceiter"
+    },
+    {
+      "label": "ForEach()",
+      "file_type": "code",
+      "source_file": "backend.go",
+      "source_location": "L224",
+      "_origin": "ast",
+      "id": "backend_foreach",
+      "community": 1,
+      "norm_label": "foreach()"
+    },
+    {
+      "label": "Context",
+      "file_type": "code",
+      "source_file": "",
+      "source_location": "",
+      "_origin": "ast",
+      "id": "context",
+      "community": 1,
+      "norm_label": "context"
+    },
+    {
+      "label": "Iter",
+      "file_type": "code",
+      "source_file": "",
+      "source_location": "",
+      "_origin": "ast",
+      "id": "iter",
+      "community": 1,
+      "norm_label": "iter"
+    },
+    {
+      "label": "Collect()",
+      "file_type": "code",
+      "source_file": "backend.go",
+      "source_location": "L229",
+      "_origin": "ast",
+      "id": "backend_collect",
+      "community": 1,
+      "norm_label": "collect()"
+    },
+    {
+      "label": "errors.go",
+      "file_type": "code",
+      "source_file": "errors.go",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "errors",
+      "community": 3,
+      "norm_label": "errors.go"
+    },
+    {
+      "label": "types.go",
+      "file_type": "code",
+      "source_file": "types.go",
+      "source_location": "L1",
+      "_origin": "ast",
+      "id": "types",
+      "community": 4,
+      "norm_label": "types.go"
+    }
+  ],
+  "links": [
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L229",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "backend",
+      "target": "backend_collect",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L184",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "backend",
+      "target": "backend_deregister",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L224",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "backend",
+      "target": "backend_foreach",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L207",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "backend",
+      "target": "backend_isremote",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L189",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "backend",
+      "target": "backend_lookup",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L219",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "backend",
+      "target": "backend_newsliceiter",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L178",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "backend",
+      "target": "backend_register",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L194",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "backend",
+      "target": "backend_registered",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L201",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "backend",
+      "target": "backend_workspaceisbeadsdir",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L178",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "_origin": "ast",
+      "source": "backend_register",
+      "target": "backend",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L189",
+      "weight": 1.0,
+      "context": "return_type",
+      "_origin": "ast",
+      "source": "backend_lookup",
+      "target": "backend",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L219",
+      "weight": 1.0,
+      "context": "return_type",
+      "_origin": "ast",
+      "source": "backend_newsliceiter",
+      "target": "sliceiter",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L219",
+      "weight": 1.0,
+      "context": "generic_arg",
+      "_origin": "ast",
+      "source": "backend_newsliceiter",
+      "target": "t",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L224",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "_origin": "ast",
+      "source": "backend_foreach",
+      "target": "context",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L224",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "_origin": "ast",
+      "source": "backend_foreach",
+      "target": "iter",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L224",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "_origin": "ast",
+      "source": "backend_foreach",
+      "target": "t",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L229",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "_origin": "ast",
+      "source": "backend_collect",
+      "target": "context",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L229",
+      "weight": 1.0,
+      "context": "parameter_type",
+      "_origin": "ast",
+      "source": "backend_collect",
+      "target": "iter",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "source_file": "backend.go",
+      "source_location": "L229",
+      "weight": 1.0,
+      "context": "return_type",
+      "_origin": "ast",
+      "source": "backend_collect",
+      "target": "t",
+      "confidence_score": 1.0
+    }
+  ],
+  "hyperedges": []
+}

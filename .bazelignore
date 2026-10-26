@@ -8,3 +8,5 @@ node_modules
 dist
 .runtime
 tmp
+engdocs/architecture-guide/site
+engdocs/architecture-guide/verification

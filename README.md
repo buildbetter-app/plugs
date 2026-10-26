@@ -1,5 +1,7 @@
 # bd - Beads
 
+This is Nikhil's Beads fork for plugin development. Start with the [architecture field guide](engdocs/architecture-guide/README.md); its render script generates an offline HTML edition. [Fork provenance](FORK.md) pins the upstream source. The plugin runtime is currently a documented proposal.
+
 **Distributed graph issue tracker for AI agents, powered by [Dolt](https://github.com/dolthub/dolt).**
 
 **Platforms:** macOS, Linux, Windows, FreeBSD

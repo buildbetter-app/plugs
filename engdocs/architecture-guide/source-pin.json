@@ -1,0 +1,9 @@
+{
+  "upstream_repository": "https://github.com/gastownhall/beads",
+  "upstream_sha": "9d6fff760b7a314b476539198504d77ce0959656",
+  "upstream_ref": "main",
+  "import_date": "2026-10-22",
+  "destination_repository": "https://github.com/buildbetter-app/plugs",
+  "go_module_path": "github.com/steveyegge/beads",
+  "runtime_changes": false
+}
