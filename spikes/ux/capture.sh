@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="${1:-$ROOT/spec/ux-screens}"
 PORT="${UX_SPIKE_PORT:-4175}"
 SERVER_LOG="$(mktemp -t plug-ux-server.XXXXXX.log)"
+TMP="$(mktemp -d -t plug-ux-capture.XXXXXX)"
+BROWSER_CHECK="$ROOT/spikes/ux/browser-check.mjs"
 SERVER_PID=""
 
 cleanup() {
@@ -13,6 +15,7 @@ cleanup() {
     wait "$SERVER_PID" 2>/dev/null || true
   fi
   rm -f "$SERVER_LOG"
+  rm -rf "$TMP"
 }
 trap cleanup EXIT
 
@@ -29,6 +32,14 @@ CHROME="${CHROME_PATH:-/usr/bin/google-chrome}"
 for budget in 25 50 100; do
   for view in home next blocked changes people epic; do
     target="$OUT/${view}-${budget}.png"
+    dom="$TMP/${view}-${budget}.html"
+    console_log="$TMP/${view}-${budget}.console.log"
+    if ! node "$BROWSER_CHECK" --chrome "$CHROME" \
+      --url "http://127.0.0.1:${PORT}/?budget=${budget}&view=${view}" \
+      --dom "$dom" >"$TMP/${view}-${budget}.browser.log" 2>"$console_log"; then
+      cat "$console_log" >&2
+      exit 1
+    fi
     "$CHROME" --headless --disable-gpu --no-sandbox --hide-scrollbars \
       --window-size=1440,1200 --screenshot="$target" \
       "http://127.0.0.1:${PORT}/?budget=${budget}&view=${view}" \
@@ -37,6 +48,12 @@ for budget in 25 50 100; do
   done
 done
 
+if ! node "$BROWSER_CHECK" --chrome "$CHROME" \
+  --url "http://127.0.0.1:${PORT}/?budget=25&view=catalog" \
+  --dom "$TMP/catalog.html" >"$TMP/catalog.browser.log" 2>"$TMP/catalog.console.log"; then
+  cat "$TMP/catalog.console.log" >&2
+  exit 1
+fi
 "$CHROME" --headless --disable-gpu --no-sandbox --hide-scrollbars \
   --window-size=1440,1200 --screenshot="$OUT/catalog.png" \
   "http://127.0.0.1:${PORT}/?budget=25&view=catalog" >/dev/null 2>&1

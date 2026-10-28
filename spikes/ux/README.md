@@ -34,8 +34,9 @@ Epic health at all three budgets into `spec/ux-screens/` (or the output
 directory supplied as its first argument).
 
 The browser smoke check runs the same matrix through headless Chrome, checks
-that each view stays within its node budget, and rejects empty JavaScript
-values:
+that each view stays within its node budget, binds every rendered bead row to
+the independent `fixture-oracle.py`, and fails on browser `console.error` or an
+uncaught exception through `browser-check.mjs`:
 
 ```sh
 ./spikes/ux/check.sh

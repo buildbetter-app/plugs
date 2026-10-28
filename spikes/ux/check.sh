@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PORT="${UX_SPIKE_PORT:-4176}"
 TMP="$(mktemp -d -t plug-ux-check.XXXXXX)"
+BROWSER_CHECK="$ROOT/spikes/ux/browser-check.mjs"
+ORACLE="$ROOT/spikes/ux/fixture-oracle.py"
 SERVER_PID=""
 cleanup() {
   if [[ -n "$SERVER_PID" ]]; then
@@ -13,6 +15,9 @@ cleanup() {
   rm -rf "$TMP"
 }
 trap cleanup EXIT
+
+test -f "$BROWSER_CHECK"
+test -f "$ORACLE"
 
 python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$ROOT/spikes/ux" >"$TMP/server.log" 2>&1 &
 SERVER_PID=$!
@@ -33,13 +38,19 @@ assert_rendered_view() {
   local dom="$1"
   local view="$2"
   local budget="$3"
-  python3 - "$dom" "$view" "$budget" <<'PY'
+  python3 - "$dom" "$view" "$budget" "$ORACLE" <<'PY'
 import re
+import runpy
 import sys
 from html.parser import HTMLParser
 
-path, view, budget_text = sys.argv[1:]
+path, view, budget_text, oracle_path = sys.argv[1:]
 budget = int(budget_text)
+oracle = runpy.run_path(oracle_path)
+fixture = oracle["make_fixture"]()
+oracle["validate_fixture"](fixture)
+expected = oracle["expected_view"](fixture, view, budget)
+fixture_by_id = {item["id"]: item for item in fixture}
 
 
 class Node:
@@ -154,12 +165,13 @@ require(main_node.attrs.get("data-view") == view, "main view data-view marker is
 require(main_node.attrs.get("data-budget") == str(budget), "main view data-budget marker is wrong")
 budget_buttons = [node for node in descendants(parser.root) if node.tag == "button" and node.attrs.get("data-budget") == str(budget)]
 require(any("is-active" in node.attrs.get("class", "").split() for node in budget_buttons), "selected budget button is not active")
-expected_visible = budget if view in {"home", "next", "blocked", "changes"} else {"people": 5, "epic": 8, "catalog": 3}[view]
+expected_visible = expected["visible_count"]
 require(main_node.attrs.get("data-visible-count") == str(expected_visible), f"visible-node marker is not {expected_visible}")
 candidate_count = int(main_node.attrs.get("data-candidate-count", "-1"))
-require(candidate_count >= expected_visible, "candidate count is below visible count")
+require(candidate_count == expected["candidate_count"], f"candidate count is {candidate_count}, expected oracle count {expected['candidate_count']}")
 blocked_count = by_id("blocked-count")[0].text().replace(",", "")
-require(blocked_count.isdigit() and int(blocked_count) > 0, "blocked navigation count is not a positive fixture metric")
+expected_blocked_count = sum(item["status"] == "blocked" for item in fixture)
+require(blocked_count.isdigit() and int(blocked_count) == expected_blocked_count, "blocked navigation count does not match the fixture oracle")
 main_text = main_node.text()
 require(headings[view] in main_text, f"main view heading does not identify {view}")
 
@@ -172,32 +184,78 @@ def require_rows(class_name, minimum=1):
     return rows
 
 
+def status_for(node):
+    classes = set(node.attrs.get("class", "").split())
+    for child in descendants(node):
+        classes.update(child.attrs.get("class", "").split())
+    if "status-progress" in classes:
+        return "in_progress"
+    for status in ("open", "blocked", "closed"):
+        if f"status-{status}" in classes:
+            return status
+    return ""
+
+
+def assert_fixture_rows(rows, expected_rows, label):
+    expected_ids = [item["id"] for item in expected_rows]
+    require(len(expected_ids) == len(set(expected_ids)), f"{label} oracle contains duplicate IDs")
+    actual_ids = [row.attrs.get("data-bead-id", "") for row in rows]
+    require(actual_ids == expected_ids, f"{label} row IDs do not match the independent fixture oracle")
+    require(len(actual_ids) == len(set(actual_ids)), f"{label} rendered duplicate bead IDs")
+    for index, (row, item) in enumerate(zip(rows, expected_rows), 1):
+        require(row.attrs.get("data-status") == item["status"], f"{label} row {index} status marker disagrees with oracle")
+        require(status_for(row) == item["status"], f"{label} row {index} status signal disagrees with oracle")
+        require(row.attrs.get("data-dependency-ids", "") == ",".join(item["dependency_ids"]), f"{label} row {index} dependencies disagree with oracle")
+        require(row.attrs.get("data-unresolved-dependency-ids", "") == ",".join(item["unresolved_dependency_ids"]), f"{label} row {index} unresolved dependencies disagree with oracle")
+        require(item["id"] in fixture_by_id, f"{label} row {index} is not in the oracle fixture")
+        require((item["status"] == "blocked") == bool(item["unresolved_dependency_ids"]), f"{label} row {index} violates blocked relation invariant")
+
+
 if view == "home":
-    rows = require_rows("bead-title")
+    rows = require_rows("bead-row")
     require(len(rows) == budget, f"home rendered {len(rows)} rows, expected selected budget {budget}")
+    assert_fixture_rows(rows, expected["rows"], "home")
     ids = by_class("bead-id")
-    require(len(ids) >= len(rows), "home rows are missing fixture ids")
-    require(all(re.search(r"\bpl-\d{5}\b", node.text()) for node in ids[:len(rows)]), "home row is missing a bead id")
+    titles = by_class("bead-title")
+    require(len(ids) >= len(rows) and len(titles) >= len(rows), "home rows are missing fixture content")
+    for index, item in enumerate(expected["rows"]):
+        require(ids[index].text() == f"{item['id']} · P{item['priority']}", f"home row {index + 1} ID or priority disagrees with oracle")
+        require(titles[index].text() == item["title"], f"home row {index + 1} title disagrees with oracle")
 elif view == "next":
     rows = require_rows("queue-row")
     require(len(rows) == budget, f"next rendered {len(rows)} rows, expected selected budget {budget}")
+    assert_fixture_rows(rows, expected["rows"], "next")
     titles = by_class("queue-title")
     reasons = by_class("queue-reason")
     require(len(titles) >= len(rows) and all(node.text() for node in titles[:len(rows)]), "next row is missing a title")
     require(len(reasons) >= len(rows) and all(node.text() for node in reasons[:len(rows)]), "next row is missing its explanation")
-    require(all(re.search(r"\bP[0-4]\b", row.text()) for row in rows), "next row is missing priority context")
+    for index, item in enumerate(expected["rows"]):
+        require(item["status"] == "open" and not item["unresolved_dependency_ids"], f"next oracle row {index + 1} is not ready")
+        require(titles[index].text() == item["title"], f"next row {index + 1} title disagrees with oracle")
+        require(reasons[index].text() == f"{item['reason']} · P{item['priority']}", f"next row {index + 1} reason disagrees with oracle")
 elif view == "blocked":
     rows = require_rows("blocked-row")
     require(len(rows) == budget, f"blocked rendered {len(rows)} rows, expected selected budget {budget}")
-    require(all(re.search(r"\bpl-\d{5}\b", row.text()) for row in rows), "blocked row is missing its blocker id")
-    require(all(node.text() for node in by_class("blocked-owner")[:len(rows)]), "blocked row is missing its reason")
+    assert_fixture_rows(rows, expected["rows"], "blocked")
+    ids = by_class("bead-id")
+    reasons = by_class("blocked-owner")
+    require(len(ids) >= len(rows) and len(reasons) >= len(rows), "blocked row is missing its relation content")
+    for index, item in enumerate(expected["rows"]):
+        require(item["status"] == "blocked" and item["unresolved_dependency_ids"], f"blocked oracle row {index + 1} lacks an unresolved relation")
+        require(ids[index].text() == f"{item['id']} · blocked by {item['blocked_by']}", f"blocked row {index + 1} blocker IDs disagree with oracle")
+        require(reasons[index].text() == item["reason"], f"blocked row {index + 1} reason disagrees with oracle")
 elif view == "changes":
     rows = require_rows("timeline-row")
     # A selected changes budget is an accounting promise.  Do not allow a
     # hidden presentation cap to claim that the full budget was shown.
     require(len(rows) == budget, f"changes rendered {len(rows)} rows, expected selected budget {budget}")
-    require(all(re.search(r"\bpl-\d{5}\b", row.text()) for row in rows), "change row is missing its fixture id")
-    require(all(node.text() for node in by_class("timeline-copy")[:len(rows)]), "change row is missing its description")
+    assert_fixture_rows(rows, expected["rows"], "changes")
+    ids = by_class("timeline-actor")
+    descriptions = by_class("timeline-copy")
+    require(len(ids) >= len(rows) and len(descriptions) >= len(rows), "change row is missing its fixture content")
+    for index, item in enumerate(expected["rows"]):
+        require(ids[index].text() == item["id"], f"change row {index + 1} ID disagrees with oracle")
+        require(item["change_kind"] in descriptions[index].text() and item["title"] in descriptions[index].text(), f"change row {index + 1} description disagrees with oracle")
 elif view == "people":
     rows = require_rows("person-detail-row", minimum=5)
     require(len(rows) == 5, f"people rendered {len(rows)} rows, expected five fixture collaborators")
@@ -220,8 +278,13 @@ PY
 for budget in 25 50 100; do
   for view in home next blocked changes people epic catalog; do
     dom="$TMP/${view}-${budget}.html"
-    "$CHROME" --headless --disable-gpu --no-sandbox --dump-dom \
-      "http://127.0.0.1:${PORT}/?budget=${budget}&view=${view}" >"$dom" 2>/dev/null
+    console_log="$TMP/${view}-${budget}.console.log"
+    if ! node "$BROWSER_CHECK" --chrome "$CHROME" \
+      --url "http://127.0.0.1:${PORT}/?budget=${budget}&view=${view}" \
+      --dom "$dom" >"$TMP/${view}-${budget}.browser.log" 2>"$console_log"; then
+      cat "$console_log" >&2
+      exit 1
+    fi
     assert_rendered_view "$dom" "$view" "$budget"
   done
 done
