@@ -11,55 +11,152 @@ permissions:
   contents: read
 
 jobs:
-  bb-x64-16:
-    name: RunsOn bb-x64-16
-    runs-on: runs-on=${{ github.run_id }}/runner=bb-x64-16
+  smoke:
+    name: RunsOn ${{ matrix.runner }}
+    # Fork and Dependabot pull requests execute PR code only on GitHub-hosted
+    # infrastructure. Same-repository non-Dependabot PRs and workflow_dispatch
+    # runs may use RunsOn, which is the trusted-repository smoke path.
+    runs-on: >-
+      ${{
+        (
+          github.event_name != 'pull_request' ||
+          (
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]'
+          )
+        ) &&
+        format('runs-on={0}/runner={1}', github.run_id, matrix.runner) ||
+        'ubuntu-latest'
+      }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: bb-x64-16
+            cpu: 16
+            ram_gib: 64
+            disk_gb: 200
+            require_on_demand: false
+            require_local_nvme: false
+          - runner: bb-x64-16-nvme
+            cpu: 16
+            ram_gib: 64
+            disk_gb: 40
+            require_on_demand: false
+            require_local_nvme: true
+          - runner: bb-x64-16-ondemand
+            cpu: 16
+            ram_gib: 64
+            disk_gb: 200
+            require_on_demand: true
+            require_local_nvme: true
+          - runner: bb-x64-4
+            cpu: 4
+            ram_gib: 16
+            disk_gb: 100
+            require_on_demand: false
+            require_local_nvme: false
+    env:
+      RUNSON_TRUSTED: >-
+        ${{ github.event_name != 'pull_request' ||
+            (github.event.pull_request.head.repo.full_name == github.repository &&
+             github.actor != 'dependabot[bot]') }}
     steps:
       - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+        if: env.RUNSON_TRUSTED == 'true'
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Print runner capacity
+      - name: Report runner target and capacity
+        env:
+          TARGET_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name || github.repository }}
         run: |
           set -euo pipefail
-          echo "runner_class=bb-x64-16"
+          test "$TARGET_REPOSITORY" = "buildbetter-app/plugs"
+          echo "target_repository=$TARGET_REPOSITORY"
+          echo "runson_trusted=$RUNSON_TRUSTED"
+          echo "runner_class=${{ matrix.runner }}"
+          echo "runner_name=${RUNNER_NAME:-unknown}"
           echo "cpus=$(nproc)"
           free -h
           df -h /
 
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache: false
-
-      - name: Install Bazelisk
-        uses: ./.github/actions/setup-bazel
-
-      - name: Check Bazel version
-        run: bazel version
-
-  bb-x64-4:
-    name: RunsOn bb-x64-4
-    runs-on: runs-on=${{ github.run_id }}/runner=bb-x64-4
-    timeout-minutes: 30
-    steps:
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
-        with:
-          persist-credentials: false
-
-      - name: Print runner capacity
+      - name: Check RunsOn instance and capacity
+        if: env.RUNSON_TRUSTED == 'true'
+        env:
+          MIN_CPU: ${{ matrix.cpu }}
+          RAM_GIB: ${{ matrix.ram_gib }}
+          DISK_GB: ${{ matrix.disk_gb }}
+          REQUIRE_ON_DEMAND: ${{ matrix.require_on_demand }}
         run: |
           set -euo pipefail
-          echo "runner_class=bb-x64-4"
-          echo "cpus=$(nproc)"
-          free -h
-          df -h /
+          token=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+            --request PUT --header 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
+            http://169.254.169.254/latest/api/token)
+          instance_type=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+            --header "X-aws-ec2-metadata-token: $token" \
+            http://169.254.169.254/latest/meta-data/instance-type)
+          instance_lifecycle=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+            --header "X-aws-ec2-metadata-token: $token" \
+            http://169.254.169.254/latest/meta-data/instance-life-cycle)
+          echo "instance_type=$instance_type"
+          echo "instance_lifecycle=$instance_lifecycle"
+          if [[ "$REQUIRE_ON_DEMAND" == "true" && "$instance_lifecycle" != "on-demand" ]]; then
+            echo "::error::instance_lifecycle=$instance_lifecycle, expected on-demand"
+            exit 1
+          fi
+          cpus=$(nproc)
+          mem_kib=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+          disk_kib=$(df --output=size -k / | tail -1 | tr -d ' ')
+          echo "cpus=$cpus mem_kib=$mem_kib disk_kib=$disk_kib"
+          failed=0
+          if (( cpus < MIN_CPU )); then
+            echo "::error::$cpus vCPUs, expected at least $MIN_CPU"
+            failed=1
+          fi
+          if (( mem_kib < RAM_GIB * 1024 * 1024 * 9 / 10 )); then
+            echo "::error::$((mem_kib / 1048576)) GiB RAM, expected about $RAM_GIB"
+            failed=1
+          fi
+          if (( disk_kib < DISK_GB * 1000000000 / 1024 * 9 / 10 )); then
+            echo "::error::$((disk_kib * 1024 / 1000000000)) GB disk, expected about $DISK_GB"
+            failed=1
+          fi
+          exit "$failed"
+
+      - name: Check local NVMe placement
+        if: env.RUNSON_TRUSTED == 'true' && matrix.require_local_nvme
+        run: |
+          set -euo pipefail
+          root=$(stat -c %d /)
+          failed=0
+          for path in /home/runner /var/lib/docker /tmp; do
+            backing=$path
+            fstype=$(findmnt -n -o FSTYPE --target "$path")
+            if [[ "$fstype" == overlay ]]; then
+              backing=$(findmnt -n -o OPTIONS --target "$path" | tr ',' '\n' | sed -n 's/^upperdir=//p')
+              if [[ -z "$backing" ]]; then
+                echo "::error::$path is an overlay without an upper directory"
+                failed=1
+                continue
+              fi
+            fi
+            mount_source=$(findmnt -n -o SOURCE --target "$backing")
+            device=${mount_source%%\[*}
+            models=$( (lsblk -s -n -l -o TYPE,MODEL "$device" 2>/dev/null || true) | awk '$1 == "disk" { $1 = ""; sub(/^ /, ""); print }' | sort -u)
+            echo "$path fstype=$fstype backing=$backing source=$mount_source disks=${models//$'\n'/; }"
+            if [[ "$(stat -c %d "$backing")" == "$root" ]]; then
+              echo "::error::$path is backed by the root volume, expected local NVMe"
+              failed=1
+            elif [[ -z "$models" ]] || grep -qv 'Instance Storage' <<<"$models"; then
+              echo "::error::$path is backed by '${models:-no disk}', expected EC2 NVMe Instance Storage"
+              failed=1
+            fi
+          done
+          exit "$failed"
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

@@ -10,6 +10,26 @@ runners:
     image: ubuntu24-full-x64
     volume: 200gb:gp3:750mbs:6000iops
     extras: ["s3-cache"]
+  bb-x64-16-nvme:
+    # Warm-Nx and other non-deploying Spot jobs use local NVMe. RunsOn puts
+    # /home/runner, Docker and /tmp on instance storage; data dies with the VM.
+    cpu: [16]
+    ram: [64]
+    family: ["m8id.*", "m6id.*"]
+    image: ubuntu24-full-x64
+    volume: 40gb:gp3:125mbs:3000iops
+    extras: ["s3-cache"]
+  bb-x64-16-ondemand:
+    # Testing hardware trial: m8id has local NVMe for the workspace, Docker
+    # and /tmp. This class is on-demand so Testing deploys avoid interruption.
+    cpu: [16]
+    ram: [64]
+    family: ["m8id.*"]
+    image: ubuntu24-full-x64
+    volume: 200gb:gp3:750mbs:6000iops
+    spot: false
+    sticky: buildkit:200gb:gp3:750mbs:6000iops
+    extras: ["s3-cache"]
   bb-x64-4:
     cpu: [4]
     ram: [16]
