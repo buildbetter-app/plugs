@@ -43,6 +43,10 @@ func (s *Store) RewriteClosureMigration(ctx context.Context, epic, newParent int
 	if toggleRestricted {
 		result.Operation = ClosureRestricted
 	}
+	// Measure the complete migration-class transaction, including BEGIN,
+	// target selection/setup, closure rebuild, and COMMIT. Starting the clock
+	// after target preparation would report only the final rewrite suffix.
+	start := time.Now()
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err
@@ -67,7 +71,6 @@ func (s *Store) RewriteClosureMigration(ctx context.Context, epic, newParent int
 	if inTarget != 0 {
 		return result, fmt.Errorf("closure_reparent_cycle: new parent %d is a descendant of %d", newParent, epic)
 	}
-	start := time.Now()
 	if toggleRestricted {
 		if _, err = tx.ExecContext(ctx, s.bind(`UPDATE bead SET restricted=? WHERE id=?`), 1, epic); err != nil {
 			return result, err

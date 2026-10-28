@@ -8,6 +8,8 @@
 package authz
 
 import (
+	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -16,6 +18,14 @@ import (
 	cedar "github.com/cedar-policy/cedar-go"
 	cedarast "github.com/cedar-policy/cedar-go/x/exp/ast"
 )
+
+// cp7DifferentialFixture is a checked-in relationship/grant corpus.  The
+// differential check loads it independently for the compiled and Cedar paths;
+// callers cannot accidentally make both paths agree by supplying the same
+// Principal.InvolvedProjects slice.
+//
+//go:embed testdata/cp7-differential.json
+var cp7DifferentialFixture []byte
 
 // CP7RelationshipSchema is the relationship-schema spelling of the three
 // policies used by the spike.  It is intentionally concrete enough to compare
@@ -362,7 +372,20 @@ func (s *CP7PolicySet) Authorize(req EvaluationRequest) (cedar.Decision, cedar.D
 	if s == nil || s.Cedar == nil {
 		return cedar.Deny, cedar.Diagnostic{}, errors.New("nil policy set")
 	}
-	entities := entitiesFor(req)
+	return s.authorizeWithEntities(req, entitiesFor(req))
+}
+
+// authorizeWithGrants evaluates Cedar from relationship rows loaded by the
+// caller's storage adapter.  It intentionally does not consult
+// req.Principal.InvolvedProjects, which is the compiled-list projection.
+func (s *CP7PolicySet) authorizeWithGrants(req EvaluationRequest, grants []relationshipGrant) (cedar.Decision, cedar.Diagnostic, error) {
+	if s == nil || s.Cedar == nil {
+		return cedar.Deny, cedar.Diagnostic{}, errors.New("nil policy set")
+	}
+	return s.authorizeWithEntities(req, entitiesForWithGrants(req, grants))
+}
+
+func (s *CP7PolicySet) authorizeWithEntities(req EvaluationRequest, entities cedar.EntityMap) (cedar.Decision, cedar.Diagnostic, error) {
 	decision, diagnostic := cedar.Authorize(s.Cedar, entities, cedar.Request{
 		Principal: entityUID(req.Principal.Kind, req.Principal.ID),
 		Action:    entityUID("Action", req.Action),
@@ -397,22 +420,174 @@ func (m DifferentialMismatch) Error() string {
 	return fmt.Sprintf("compiled decision %v differs from Cedar %v for %s/%s %s/%s action %q", m.Compiled, m.Cedar, m.Principal.Kind, m.Principal.ID, m.Resource.Kind, m.Resource.ID, m.Action)
 }
 
+// relationshipGrant is the storage-shaped input to the policy differential.
+// In production this corresponds to a plugin-declared grant row, rather than
+// an attribute copied into a caller-owned Principal value.
+type relationshipGrant struct {
+	Subject string `json:"subject"`
+	Scope   string `json:"scope"`
+	Role    string `json:"role"`
+}
+
+type differentialFixturePrincipal struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	Admin     bool   `json:"admin"`
+	SponsorID string `json:"sponsor_id"`
+}
+
+type differentialFixture struct {
+	Principals []differentialFixturePrincipal `json:"principals"`
+	Grants     []relationshipGrant            `json:"grants"`
+	Actions    []string                       `json:"actions"`
+	Resources  []Resource                     `json:"resources"`
+}
+
+type differentialCorpus struct {
+	Principals []Principal
+	Actions    []string
+	Resources  []Resource
+	Grants     []relationshipGrant
+}
+
+// decodeDifferentialFixture deliberately unmarshals into a fresh value on
+// every call.  The compiled and Cedar loaders below call it separately so no
+// relationship rows, principals, or slices are shared between evaluators.
+func decodeDifferentialFixture() (differentialFixture, error) {
+	var fixture differentialFixture
+	if err := json.Unmarshal(cp7DifferentialFixture, &fixture); err != nil {
+		return differentialFixture{}, fmt.Errorf("decode authz differential fixture: %w", err)
+	}
+	if len(fixture.Principals) == 0 || len(fixture.Actions) == 0 || len(fixture.Resources) == 0 {
+		return differentialFixture{}, errors.New("authz differential fixture is empty")
+	}
+	for _, principal := range fixture.Principals {
+		if principal.ID == "" || principal.Kind == "" {
+			return differentialFixture{}, errors.New("authz differential fixture has an incomplete principal")
+		}
+	}
+	for _, grant := range fixture.Grants {
+		if grant.Subject == "" || grant.Scope == "" || grant.Role == "" {
+			return differentialFixture{}, errors.New("authz differential fixture has an incomplete grant")
+		}
+	}
+	return fixture, nil
+}
+
+func fixturePrincipal(p differentialFixturePrincipal) Principal {
+	return Principal{ID: p.ID, Kind: p.Kind, Admin: p.Admin, SponsorID: p.SponsorID}
+}
+
+func relationshipSubject(p Principal) string {
+	if p.Kind == "Agent" {
+		return p.SponsorID
+	}
+	return p.ID
+}
+
+// loadCompiledDifferentialCorpus models the storage/list-filter path.  It
+// loads grant rows from the JSON fixture and derives the membership slice used
+// by the compiled predicate.  This is the only path that performs that
+// row-to-predicate projection.
+func loadCompiledDifferentialCorpus() (differentialCorpus, error) {
+	fixture, err := decodeDifferentialFixture()
+	if err != nil {
+		return differentialCorpus{}, err
+	}
+	bySubject := make(map[string][]string)
+	for _, grant := range fixture.Grants {
+		if grant.Role == "involved" {
+			bySubject[grant.Subject] = append(bySubject[grant.Subject], grant.Scope)
+		}
+	}
+	principals := make([]Principal, 0, len(fixture.Principals))
+	for _, raw := range fixture.Principals {
+		principal := fixturePrincipal(raw)
+		projects := bySubject[relationshipSubject(principal)]
+		principal.InvolvedProjects = append([]string(nil), projects...)
+		principals = append(principals, principal)
+	}
+	return differentialCorpus{
+		Principals: principals,
+		Actions:    append([]string(nil), fixture.Actions...),
+		Resources:  append([]Resource(nil), fixture.Resources...),
+		Grants:     append([]relationshipGrant(nil), fixture.Grants...),
+	}, nil
+}
+
+// loadCedarDifferentialCorpus is intentionally a separate loader and leaves
+// InvolvedProjects empty.  Cedar receives the independently loaded grant rows
+// through entitiesForWithGrants, so it does not consume the compiled path's
+// projection or any caller-provided principal attributes.
+func loadCedarDifferentialCorpus() (differentialCorpus, error) {
+	fixture, err := decodeDifferentialFixture()
+	if err != nil {
+		return differentialCorpus{}, err
+	}
+	principals := make([]Principal, 0, len(fixture.Principals))
+	for _, raw := range fixture.Principals {
+		principals = append(principals, fixturePrincipal(raw))
+	}
+	return differentialCorpus{
+		Principals: principals,
+		Actions:    append([]string(nil), fixture.Actions...),
+		Resources:  append([]Resource(nil), fixture.Resources...),
+		Grants:     append([]relationshipGrant(nil), fixture.Grants...),
+	}, nil
+}
+
+func equalDifferentialInputs(a, b differentialCorpus) error {
+	if len(a.Principals) != len(b.Principals) || len(a.Actions) != len(b.Actions) || len(a.Resources) != len(b.Resources) {
+		return errors.New("compiled and Cedar differential fixtures have different request shapes")
+	}
+	for i := range a.Principals {
+		if a.Principals[i].ID != b.Principals[i].ID || a.Principals[i].Kind != b.Principals[i].Kind || a.Principals[i].Admin != b.Principals[i].Admin || a.Principals[i].SponsorID != b.Principals[i].SponsorID {
+			return errors.New("compiled and Cedar differential fixtures have different principals")
+		}
+	}
+	for i := range a.Actions {
+		if a.Actions[i] != b.Actions[i] {
+			return errors.New("compiled and Cedar differential fixtures have different actions")
+		}
+	}
+	for i := range a.Resources {
+		if a.Resources[i] != b.Resources[i] {
+			return errors.New("compiled and Cedar differential fixtures have different resources")
+		}
+	}
+	return nil
+}
+
 // DifferentialCheck compares the compiled list result to cedar-go's per-item
-// decision for every supplied principal, action, and resource. It is intended
-// for a small deterministic sample in tests and for each storage driver.
-func DifferentialCheck(s *CP7PolicySet, principals []Principal, actions []string, resources []Resource) error {
+// decision using independently loaded relationship/grant data.  The fixed
+// corpus is intentionally loaded from JSON rather than accepted as caller
+// supplied slices: a test cannot make both evaluators agree by sharing a
+// Principal.InvolvedProjects value.
+func DifferentialCheck(s *CP7PolicySet) error {
 	if s == nil {
 		return errors.New("nil policy set")
 	}
-	for _, principal := range principals {
-		for _, action := range actions {
-			for _, resource := range resources {
+	compiledCorpus, err := loadCompiledDifferentialCorpus()
+	if err != nil {
+		return err
+	}
+	cedarCorpus, err := loadCedarDifferentialCorpus()
+	if err != nil {
+		return err
+	}
+	if err := equalDifferentialInputs(compiledCorpus, cedarCorpus); err != nil {
+		return err
+	}
+	for i, principal := range compiledCorpus.Principals {
+		cedarPrincipal := cedarCorpus.Principals[i]
+		for _, action := range compiledCorpus.Actions {
+			for _, resource := range compiledCorpus.Resources {
 				list, err := s.CompileList(action, resource.Kind)
 				if err != nil {
 					return err
 				}
 				compiled := list.Match(principal, resource)
-				decision, diag, err := s.Authorize(EvaluationRequest{Principal: principal, Action: action, Resource: resource})
+				decision, diag, err := s.authorizeWithGrants(EvaluationRequest{Principal: cedarPrincipal, Action: action, Resource: resource}, cedarCorpus.Grants)
 				if err != nil {
 					return err
 				}
@@ -433,6 +608,10 @@ func entityUID(kind, id string) cedar.EntityUID {
 }
 
 func entitiesFor(req EvaluationRequest) cedar.EntityMap {
+	return entitiesForWithGrants(req, nil)
+}
+
+func entitiesForWithGrants(req EvaluationRequest, grants []relationshipGrant) cedar.EntityMap {
 	entities := cedar.EntityMap{}
 	principalUID := entityUID(req.Principal.Kind, req.Principal.ID)
 	resourceUID := entityUID(req.Resource.Kind, req.Resource.ID)
@@ -445,8 +624,17 @@ func entitiesFor(req EvaluationRequest) cedar.EntityMap {
 		entities[resourceUID] = cedar.Entity{UID: resourceUID, Parents: cedar.NewEntityUIDSet(parentUID)}
 	}
 
-	involved := make([]cedar.Value, 0, len(req.Principal.InvolvedProjects))
-	for _, id := range req.Principal.InvolvedProjects {
+	projectIDs := req.Principal.InvolvedProjects
+	if grants != nil {
+		projectIDs = nil
+		for _, grant := range grants {
+			if grant.Role == "involved" && grant.Subject == relationshipSubject(req.Principal) {
+				projectIDs = append(projectIDs, grant.Scope)
+			}
+		}
+	}
+	involved := make([]cedar.Value, 0, len(projectIDs))
+	for _, id := range projectIDs {
 		uid := entityUID("Project", id)
 		involved = append(involved, uid)
 		if _, ok := entities[uid]; !ok {

@@ -26,7 +26,7 @@ type Output struct {
 func main() {
 	engine := flag.String("engine", "all", "sqlite, postgres, or all")
 	dsn := flag.String("postgres-dsn", os.Getenv("AUTHZ_POSTGRES_DSN"), "Postgres DSN")
-	iterations := flag.Int("iterations", 10, "measured iterations after three warmups")
+	iterations := flag.Int("iterations", 20, "measured iterations after three warmups")
 	output := flag.String("output", "", "optional JSON output path")
 	flag.Parse()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -48,7 +48,11 @@ func main() {
 			out.Cases = append(out.Cases, cases...)
 			fmt.Printf("%s fraction=%.3f\n", name, f)
 			for _, c := range cases {
-				fmt.Printf("  %s %s %-25s p50=%8.3fms p95=%8.3fms rows=%d\n", c.Plan, c.Engine, c.Query, c.Stats.P50, c.Stats.P95, c.RowsTouched)
+				fmt.Printf("  %s %s %-25s p50=%8.3fms p95=%8.3fms visible=%d qualified=%d returned=%d candidates=%d (%s)\n", c.Plan, c.Engine, c.Query, c.Stats.P50, c.Stats.P95, c.VisibleRows, c.QualifiedRows, c.ReturnedRows, c.CandidateRows, c.CandidateRowsMethod)
+				if c.Claim != nil {
+					fmt.Printf("    claim candidate=%d lock=%s acquired=%t recheck=%t affected=%d committed=%t\n", c.Claim.CandidateID, c.Claim.LockMode, c.Claim.LockAcquired, c.Claim.RecheckPassed, c.Claim.RowsAffected, c.Claim.Committed)
+					fmt.Printf("    claim-samples measured=%d resets=%d fresh=%d committed=%d rechecked=%d\n", c.Claim.MeasuredSamples, c.Claim.ResetSamples, c.Claim.FreshCandidateCount, c.Claim.CommittedSampleCount, c.Claim.RecheckSampleCount)
+				}
 			}
 		}
 		if err := s.Reset(ctx); err != nil {

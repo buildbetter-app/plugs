@@ -134,22 +134,50 @@ func TestDifferentialCP7(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	principals := []Principal{
-		{ID: "alice", Kind: "User", Admin: true},
-		{ID: "bob", Kind: "User"},
-		{ID: "agent-1", Kind: "Agent", SponsorID: "alice", InvolvedProjects: []string{"p-1", "p-3"}},
-		{ID: "agent-2", Kind: "Agent", SponsorID: "bob", InvolvedProjects: nil},
-	}
-	resources := []Resource{
-		{ID: "b-1", Kind: "Bead"},
-		{ID: "bulk", Kind: "History"},
-		{ID: "p-1", Kind: "Project"},
-		{ID: "p-2", Kind: "Project"},
-		{ID: "p-3", Kind: "Project"},
-	}
-	actions := []string{"read", "importBulkHistory", "modify"}
-	if err := DifferentialCheck(set, principals, actions, resources); err != nil {
+	if err := DifferentialCheck(set); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDifferentialCP7LoadsCedarRelationshipsIndependently(t *testing.T) {
+	compiled, err := loadCompiledDifferentialCorpus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cedarCorpus, err := loadCedarDifferentialCorpus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := compiled.Principals[2].InvolvedProjects; len(got) != 2 || got[0] != "p-1" || got[1] != "p-3" {
+		t.Fatalf("compiled grant projection = %v, want [p-1 p-3]", got)
+	}
+	if cedarCorpus.Principals[2].InvolvedProjects != nil {
+		t.Fatalf("Cedar fixture unexpectedly reused compiled relationship projection: %v", cedarCorpus.Principals[2].InvolvedProjects)
+	}
+	if &compiled.Grants[0] == &cedarCorpus.Grants[0] {
+		t.Fatal("compiled and Cedar grant rows share storage")
+	}
+
+	// Supplying a conflicting caller attribute must not affect the Cedar path:
+	// its sponsor membership comes only from the independently loaded rows.
+	set, err := ParseCP7()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := EvaluationRequest{
+		Principal: Principal{ID: "agent-1", Kind: "Agent", SponsorID: "alice", InvolvedProjects: []string{"p-2"}},
+		Action:    "modify",
+		Resource:  Resource{ID: "p-1", Kind: "Project"},
+	}
+	decision, diag, err := set.authorizeWithGrants(request, cedarCorpus.Grants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diag.Errors) != 0 {
+		t.Fatalf("Cedar diagnostic = %v", diag.Errors)
+	}
+	if decision != cedar.Allow {
+		t.Fatalf("Cedar decision = %v, want allow from grant row", decision)
 	}
 }
 
