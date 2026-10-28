@@ -16,8 +16,12 @@ const (
 )
 
 const (
-	BeadCount        = 100_000
-	ReparentSize     = 50_000
+	BeadCount    = 100_000
+	ReparentSize = 50_000
+	// SparseGrantStart is the first of the shallow, leaf-only rows. Grants in
+	// this range do not overlap one another or the large epic subtree, so a
+	// sparse grant set exposes exactly one bead per grant.
+	SparseGrantStart = ReparentSize + 3
 	ClosureLimit     = 5_000
 	CountP95TargetMS = 250.0
 )
@@ -128,9 +132,11 @@ func parentAndDepth(id int) (int, int) {
 	}
 	if id <= 50_002 {
 		// Spread the large epic's descendants across levels 2..9, anchored on
-		// IDs 3..10. Every such row is under epic 2.
+		// IDs 3..10. Every such row is under epic 2. The stored depth is the
+		// edge distance from root 1, so it is one greater than the level used
+		// to select the parent (the old fixture stored this one level too low).
 		level := 2 + ((id - 11) % 8)
-		return level + 1, level
+		return level + 1, level + 1
 	}
 	return 1, 1
 }
@@ -173,15 +179,22 @@ func insertGrants(ctx context.Context, tx *sql.Tx, d Dialect, fraction float64) 
 		return err
 	}
 	defer stmt.Close()
-	// A root grant is the 100% case. Sparse grants use self scopes and are
-	// deliberately stored as rows, so plan A can begin with grants by subject.
+	if fraction < 0 || fraction > 1 {
+		return fmt.Errorf("visible fraction %.6f is outside [0,1]", fraction)
+	}
+	// A root grant is the 100% case. Sparse grants use disjoint shallow leaf
+	// scopes, rather than IDs starting at 1: granting root 1 (or any ancestor
+	// of the large epic) would make every sparse run visible at 100%.
 	subject := "principal:sample"
-	if fraction >= 0.999 {
+	if fraction == 1 {
 		_, err = stmt.ExecContext(ctx, subject, 1, "reader")
 	} else {
 		want := int(float64(BeadCount)*fraction + 0.5)
-		for i := 1; i <= want; i++ {
-			if _, err = stmt.ExecContext(ctx, subject, i, "reader"); err != nil {
+		if want > BeadCount-SparseGrantStart+1 {
+			return fmt.Errorf("visible fraction %.6f needs %d disjoint leaf grants, only %d available", fraction, want, BeadCount-SparseGrantStart+1)
+		}
+		for i := 0; i < want; i++ {
+			if _, err = stmt.ExecContext(ctx, subject, SparseGrantStart+i, "reader"); err != nil {
 				break
 			}
 		}
