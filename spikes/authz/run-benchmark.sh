@@ -10,6 +10,23 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 repo_root="$(CDPATH= cd -- "$script_dir/../.." && pwd -P)"
 manifest="$script_dir/benchmark-manifest.json"
 
+if ! command -v jq >/dev/null 2>&1; then
+  echo "jq is required to validate benchmark-manifest.json" >&2
+  exit 2
+fi
+manifest_iterations="$(jq -er '.matrix.measured_iterations | select(type == "number" and . >= 1 and floor == .)' "$manifest")" || {
+  echo "benchmark manifest has no positive integer matrix.measured_iterations" >&2
+  exit 2
+}
+manifest_warmups="$(jq -er '.matrix.warmups | select(type == "number" and . >= 0 and floor == .)' "$manifest")" || {
+  echo "benchmark manifest has no non-negative integer matrix.warmups" >&2
+  exit 2
+}
+if [[ "$manifest_warmups" != 3 ]]; then
+  echo "authz benchmark supports exactly 3 warmups (manifest says $manifest_warmups)" >&2
+  exit 2
+fi
+
 engine="${AUTHZ_ENGINE:-all}"
 iterations="${AUTHZ_ITERATIONS:-20}"
 artifact_dir="${AUTHZ_ARTIFACT_DIR:-$script_dir/artifacts/run}"
@@ -27,6 +44,10 @@ case "$engine" in
 esac
 if [[ ! "$iterations" =~ ^[1-9][0-9]*$ ]]; then
   echo "AUTHZ_ITERATIONS must be a positive integer (got $iterations)" >&2
+  exit 2
+fi
+if [[ "$iterations" != "$manifest_iterations" ]]; then
+  echo "AUTHZ_ITERATIONS must match benchmark-manifest.json matrix.measured_iterations ($manifest_iterations; got $iterations)" >&2
   exit 2
 fi
 if [[ "$engine" != sqlite && -z "${AUTHZ_POSTGRES_DSN:-}" ]]; then
@@ -59,7 +80,7 @@ printf '%s\n' "cd spikes/authz && $display_command" > "$command_file"
   printf 'manifest_sha256=%s\n' "$(sha256sum "$manifest" | awk '{print $1}')"
   printf 'engine=%s\n' "$engine"
   printf 'iterations=%s\n' "$iterations"
-  printf 'warmups=3\n'
+  printf 'warmups=%s\n' "$manifest_warmups"
   printf 'git_head=%s\n' "$(git -C "$repo_root" rev-parse HEAD)"
   printf 'git_worktree_status=%s\n' "$(git -C "$repo_root" status --porcelain=v1 | tr '\n' ' ')"
   printf 'go_version=%s\n' "$(go version)"
