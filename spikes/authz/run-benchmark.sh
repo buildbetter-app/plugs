@@ -111,7 +111,13 @@ fi
 # directory and records the exact source inputs without embedding any secret.
 (
   cd "$repo_root"
-  git ls-files -z spikes/authz | sort -z | xargs -0 sha256sum
+  # Hash one path per invocation.  The pinned Bazelisk sha256sum available on
+  # agent hosts accepts one file argument; a single xargs call would silently
+  # produce an empty digest when it rejects a multi-file invocation.
+  git ls-files -z spikes/authz | sort -z |
+    while IFS= read -r -d '' path; do
+      sha256sum "$path"
+    done
 ) > "$artifact_dir/source-files.sha256"
 sha256sum "$result" > "$artifact_dir/result.sha256"
 sha256sum "$stdout" > "$artifact_dir/stdout.sha256"
