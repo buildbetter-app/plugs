@@ -1,0 +1,55 @@
+name: Plug Bazel
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - '.bazelversion'
+      - 'MODULE.bazel'
+      - 'MODULE.bazel.lock'
+      - 'BUILD.bazel'
+      - '**/BUILD.bazel'
+      - '**/*.bzl'
+      - '**/*.go'
+      - 'scripts/ci/plug-bazel-preflight.sh'
+      - '.github/workflows/plug-bazel.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# This bounded bootstrap intentionally uses a GitHub-hosted runner until the
+# separate RunsOn smoke workflow is merged and proves repository service. It
+# never reads the RunsOn config and has no remote-execution or remote-cache
+# credentials.
+jobs:
+  preflight:
+    name: Plug Bazel preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PLUG_BAZEL_EVIDENCE_DIR: ${{ runner.temp }}/plug-bazel-evidence
+      PLUG_RUNNER_CLASS: github-hosted-ubuntu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+
+      - name: Run fresh Plug Bazel build and test
+        run: |
+          set -euo pipefail
+          chmod 755 scripts/ci/plug-bazel-preflight.sh
+          scripts/ci/plug-bazel-preflight.sh
+
+      - name: Upload Plug Bazel evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: plug-bazel-evidence-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/plug-bazel-evidence
+            bazel-testlogs/**/test.xml
