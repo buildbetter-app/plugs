@@ -56,6 +56,7 @@ printf '%s\n' "cd spikes/authz && $display_command" > "$command_file"
 
 {
   printf 'manifest=%s\n' "$(basename -- "$manifest")"
+  printf 'manifest_sha256=%s\n' "$(sha256sum "$manifest" | awk '{print $1}')"
   printf 'engine=%s\n' "$engine"
   printf 'iterations=%s\n' "$iterations"
   printf 'warmups=3\n'
