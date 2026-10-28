@@ -1,6 +1,6 @@
 # UX spike: low-noise views
 
-This is a throwaway, dependency-free browser prototype for A7. It uses a deterministic in-browser adapter to model a 20,000-bead corpus and 50 agents while rendering only the selected 25, 50, or 100 node budget. The adapter stands in for the pinned `bd serve` wire while the view shape is explored.
+This is a throwaway, dependency-free browser prototype for A7. It uses a deterministic in-browser fixture adapter to model a 20,000-bead corpus and 50 fixture agents while rendering only the selected 25, 50, or 100 node budget. The pinned `bd serve` probe is separate: this page has no live server or watch connection.
 
 The prototype covers five questions:
 
@@ -41,4 +41,4 @@ values:
 ./spikes/ux/check.sh
 ```
 
-The fixture is in `app.js` (`makeCorpus`); replacing that adapter with `bd serve` requests is the intended next step after the view decisions are made.
+The fixture and its relations are in `app.js` (`makeCorpus`); replacing that adapter with `bd serve` `view.run`/`view.watch` requests is the intended next step after the view decisions are made. Labels in the page call out fixture, server, and watch boundaries explicitly.

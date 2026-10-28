@@ -14,10 +14,10 @@
           <div class="brand-mark" aria-hidden="true">P</div>
           <div>
             <div class="brand-name">Plug</div>
-            <div class="brand-context">UX spike · shared server</div>
+            <div class="brand-context">UX spike · fixture adapter</div>
           </div>
         </div>
-        <div class="server-state"><span class="state-dot"></span> bd serve connected <span class="server-revision">rev 812</span></div>
+        <div class="server-state"><span class="state-dot"></span> fixture-only <span class="server-revision">pinned bd serve probe is separate</span></div>
         <div class="top-actions">
           <button class="quiet-button" id="reset-look" type="button">Reset since I looked</button>
           <button class="avatar avatar-nk" type="button" aria-label="Nikhil Shinday">NS</button>
@@ -25,7 +25,7 @@
       </header>
 
       <div class="context-strip">
-        <div><span class="context-kicker">DEMO CORPUS</span><strong>20,000 beads</strong><span class="context-separator">·</span><strong>50 agents</strong><span class="context-separator">·</span><span>five people in this view</span></div>
+        <div><span class="context-kicker">DEMO FIXTURE</span><strong>20,000 beads</strong><span class="context-separator">·</span><strong>50 fixture agents</strong><span class="context-separator">·</span><span>five owners shown</span></div>
         <div class="budget-control" aria-label="Visible node budget">
           <span class="budget-label">Visible nodes</span>
           <div class="segmented" role="group" aria-label="Choose visible node budget">
@@ -39,7 +39,7 @@
       <nav class="view-nav" aria-label="Views">
         <button type="button" class="view-tab is-active" data-view="home"><span class="tab-glyph">⌂</span>Home<span class="tab-note">changes since I looked</span></button>
         <button type="button" class="view-tab" data-view="next"><span class="status-symbol status-open">○</span>What next</button>
-        <button type="button" class="view-tab" data-view="blocked"><span class="status-symbol status-blocked">●</span>Blocked <span class="tab-count">12</span></button>
+        <button type="button" class="view-tab" data-view="blocked"><span class="status-symbol status-blocked">●</span>Blocked <span class="tab-count" id="blocked-count">0</span></button>
         <button type="button" class="view-tab" data-view="changes"><span class="tab-glyph">↗</span>What changed</button>
         <button type="button" class="view-tab" data-view="people"><span class="tab-glyph">◎</span>People</button>
         <button type="button" class="view-tab" data-view="epic"><span class="tab-glyph">▤</span>Epic health</button>
@@ -51,7 +51,7 @@
           <section class="side-card people-card">
             <div class="side-card-heading"><span>People here</span><button type="button" class="text-button" data-view="people">See all</button></div>
             <div id="people-list" class="people-list"></div>
-            <div class="presence-note"><span class="presence-pulse"></span> 45 more agents are quiet</div>
+            <div class="presence-note"><span class="presence-pulse"></span> 45 other fixture agents are not shown</div>
           </section>
           <section class="side-card catalog-card">
             <div class="side-card-heading"><span>Declarative catalog</span><span><span class="catalog-badge">D31</span> <button type="button" class="text-button" data-view="catalog">Open</button></span></div>
@@ -73,7 +73,7 @@
         </aside>
       </main>
 
-      <footer class="footer-note"><span>Low-noise prototype</span><span>·</span><span>snapshot <strong id="snapshot-count">50</strong> of 20,000 candidate nodes</span><span>·</span><span>updates coalesced over 250 ms</span></footer>
+      <footer class="footer-note"><span>Low-noise prototype</span><span>·</span><span>fixture snapshot <strong id="snapshot-count">50</strong> of 20,000 generated nodes</span><span>·</span><span>watch transport not connected</span></footer>
     </div>
     <script src="./app.js"></script>
   </body>
