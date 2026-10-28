@@ -1,0 +1,48 @@
+{
+  "schema": "plug-authz-benchmark/v1",
+  "module": "spikes/authz",
+  "matrix": {
+    "engines": ["sqlite", "postgres"],
+    "visibility_fractions": [1, 0.01, 0.001],
+    "plans": ["A scope-first", "B index-walk"],
+    "queries": [
+      "Q4 bead.ready",
+      "Q5 bead.claimNext",
+      "Q6 view.run grouped counts"
+    ],
+    "warmups": 3,
+    "measured_iterations": 20
+  },
+  "dataset": {
+    "beads": 100000,
+    "maximum_graph_depth": 10,
+    "closure_rewrite_descendants": 50000,
+    "normal_write_closure_limit": 5000
+  },
+  "targets_ms": {
+    "page_p95": 50,
+    "grouped_count_p95": 250
+  },
+  "commands": {
+    "sqlite": "cd spikes/authz && AUTHZ_ENGINE=sqlite AUTHZ_ITERATIONS=20 AUTHZ_ARTIFACT_DIR=artifacts/sqlite ./run-benchmark.sh",
+    "postgres": "cd spikes/authz && AUTHZ_POSTGRES_DSN=<environment-only> AUTHZ_ENGINE=postgres AUTHZ_ITERATIONS=20 AUTHZ_ARTIFACT_DIR=artifacts/postgres ./run-benchmark.sh",
+    "all": "cd spikes/authz && AUTHZ_POSTGRES_DSN=<environment-only> AUTHZ_ENGINE=all AUTHZ_ITERATIONS=20 AUTHZ_ARTIFACT_DIR=artifacts/all ./run-benchmark.sh"
+  },
+  "postgres_provisioning": {
+    "image": "postgres:16",
+    "container_name": "plug-swarm-authz",
+    "start_command": "docker run --rm --name plug-swarm-authz -e POSTGRES_PASSWORD=\"$AUTHZ_POSTGRES_PASSWORD\" -e POSTGRES_DB=authz -p 127.0.0.1:55432:5432 postgres:16",
+    "dsn_setup": "export AUTHZ_POSTGRES_DSN=\"postgres://postgres:${AUTHZ_POSTGRES_PASSWORD}@127.0.0.1:55432/authz?sslmode=disable\"",
+    "secret_capture": "AUTHZ_POSTGRES_PASSWORD and AUTHZ_POSTGRES_DSN are environment-only and are never written to artifacts"
+  },
+  "artifacts": {
+    "result": "result.json",
+    "stdout": "stdout.log",
+    "command": "command.txt",
+    "environment": "environment.txt",
+    "source_digest": "source-files.sha256",
+    "result_digest": "result.sha256",
+    "stdout_digest": "stdout.sha256",
+    "exit_status": "exit-status.txt"
+  }
+}
