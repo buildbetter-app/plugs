@@ -35,3 +35,10 @@ and set `AUTHZ_POSTGRES_DSN`; the runner records only that the DSN came from
 the environment. The runner never writes credentials to an artifact. The
 manifest includes the engine start command template and every output filename
 needed to attach the run to a result table.
+
+The JSON `CandidateRows` field is measured SQL cardinality evidence for the
+rows a plan must qualify or walk: scope-first counts its qualified ready rows,
+while index-walk counts ready rows through the returned key (or all ready rows
+for grouped counts). It is named and reported as candidate cardinality, not as
+an engine-level executor counter; `database/sql` does not expose one portable
+row-loop counter across the pure-Go SQLite and Postgres drivers used here.
