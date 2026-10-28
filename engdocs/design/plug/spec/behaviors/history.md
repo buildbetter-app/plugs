@@ -136,8 +136,9 @@ metadata-reference exceptions), enforces expected version/status/assignee
 preconditions against in-request state, and rolls back every item if any item
 refuses. The separate `BatchCloser` reports indexed per-item refusals while
 surviving closes commit; both preserve caller request values, and a landed
-`ApplyBatch` is bounded at 1,000 items with one durable history entry only when
-durable work landed.
+`ApplyBatch` is bounded at 1,000 items with one durable history entry when the
+transaction changes a durable row, even if an item reports `Changed=false`;
+history cardinality follows the durable row delta, not item landing flags.
 
 **Beads implementation.** `internal/storage/issueops/batch_apply.go:ApplyBatchInTx`
 and `applyRun.applyItem`, `spliceMetadataRefs`, `runEndGate`; public
@@ -147,7 +148,9 @@ and `applyRun.applyItem`, `spliceMetadataRefs`, `runEndGate`; public
 `RunBatchApplyBindsEachNamedKeyToItsMintedID`,
 `RunBatchApplyResolvesABackwardKeyRef`, `RunBatchApplyRefusesAKeyDeclaredLater`,
 `RunBatchApplyRollsBackEverythingWhenTheLastItemRefuses`,
-`RunBatchApplyRecordsExactlyOneHistoryEntry`, `RunBatchApplyBoundsTheItemCount`,
+`RunBatchApplyRecordsExactlyOneHistoryEntry`,
+`RunBatchApplyRecordsOneEntryForAWriteThatLandedNothing`,
+`RunBatchApplyBoundsTheItemCount`,
 `RunBatchCloserPerItemRefusalIsAResultAndSurvivorsCommit`,
 `RunBatchCloserAllIdempotentBatchLandsNothing`; `internal/storage/batch_apply_test.go:
 TestPlanApplyBatchRefusesAnUnusableRequest`, `TestPlanApplyBatchAcceptsTheBoundary`,
@@ -168,9 +171,13 @@ TestPlanApplyBatchRefusesAnUnusableRequest`, `TestPlanApplyBatchAcceptsTheBounda
 created earlier may be updated/closed in the same batch; self-dependencies and
 cross-plane new edges are refused; external targets and metadata forward/self
 references follow their documented exceptions. An all-idempotent or no-op
-`ApplyBatch` has no history; a batch containing only wisps has no durable
-history. `BatchCloser` preserves item indexes, commits survivors, and records
-no history when every item is refused or already idempotent.
+`ApplyBatch` has no history when it produces no durable row delta; a batch
+containing only wisps has no durable history. A same-type dependency re-add
+that rewrites durable waits-for metadata is the counterexample: its item may
+report `Changed=false`, but the stored row changes and exactly one history entry
+named `bd: apply batch` is required. `BatchCloser` preserves item indexes,
+commits survivors, and records no history when every item is refused or already
+idempotent.
 
 **Plug disposition.** **Deviate** retain `ApplyBatch` item semantics and the
 1,000 cap, but `tx.apply` is one A4 typed ChangeSet and one atomic revision

@@ -8,7 +8,8 @@ No Plug implementation is implied by this document.
 This catalog is split because the cards are intentionally detailed. The
 [work and graph cards](behaviors/work.md), [identity and content cards](behaviors/content.md),
 [history and transaction cards](behaviors/history.md), and [surface and
-infrastructure cards](behaviors/surfaces.md) are the acceptance-test source.
+infrastructure cards](behaviors/surfaces.md) are research input for the future
+acceptance-test source.
 Every card has the same fields: a short behavior statement, Beads source
 function(s), exact tests that pin it, edge cases, and a Plug disposition.
 `keep` means the semantic projection is retained; `deviate` names the design
@@ -17,22 +18,51 @@ contract (usually P46/P47/P48).
 
 ## Evidence and card method
 
-The source census is the 46 role contracts in `backend/conformance/`, the 29
-protocol test files and corpus, Oracle A's 523 scenarios, the 72-item
-regression discovery log, the 306 command paths, all 13,139 Go tests, and the
-72 main plus 28 ignored schema migrations. The census ratchet requires every
-test to name a card, `drop:<decision>`, or `n/a:<reason>`; the store census
-requires every table and column and each configuration source to have a
-mapping or an explicit disposition.
+The planned source census draws from the 46 role contracts in
+`backend/conformance/`, the 29 protocol test files and corpus, Oracle A's 523
+scenarios, the 72-item regression discovery log, the 307 command-tree paths
+(306 descendants plus the root), all 13,139 Go tests, and the 72 main plus 28
+ignored schema migrations. The ratchet count is 307 paths including the root.
+These counts are inputs to the future census, not evidence that this research
+catalog has dispositioned every item. That ratchet will require every test to
+name a card, `drop:<decision>`, or `n/a:<reason>`; the store census will
+require every table and column and each configuration source to have a mapping
+or an explicit disposition.
 
 Cards are expressed as Plug JSON-RPC calls, never CLI text or exit envelopes
 (P46). A projection compares stable meaning: ordered ready IDs and membership,
 blocked set and reasons, status category/outcome, claim holder and lease state,
 labels/comments/memory values, typed errors, version/history deltas, changeset
-and journal rows. A `keep` card cannot exist without a recorded Beads golden;
-a `deviate` card stores both projections and its decision ID (P82).
+and journal rows. A future binding `keep` card requires a recorded Beads
+golden; a future binding `deviate` card stores both projections and its
+decision ID (P82). The cards in this research catalog record proposed
+dispositions only and do not carry those acceptance certificates.
 
-## Golden-recording harness (design only)
+## Deferred census and golden artifacts
+
+This PR deliberately packages the research cards without the artifacts needed
+to make them a binding parity set. The following are explicitly deferred to
+the E1/E2 recorder and census work:
+
+- the per-item ledger for the role contracts, protocol corpus, Oracle
+  scenarios, regression entries, all 307 command-tree paths, and all 13,139 Go
+  test functions, with each item mapped to a card, `drop:<decision>`, or
+  `n/a:<reason>`;
+- `spec/provenance/` twin sequences, controlled-clock inputs, recorder
+  manifests, canonical Plug projections, table digests, and decision-ID map;
+- byte-identical Beads golden/projection pairs for `keep` and `deviate` cards,
+  including the pinned source commit and any separately reviewed P82 fix; and
+- the paired main/ignored store census ledger covering every table, column,
+  ignored row class, and configuration source.
+
+Until those artifacts are recorded and reviewed, this catalog is non-binding
+research input. No card here is a parity certificate, and the future
+`bazel test //spec:acceptance` target is not claimed to exist in this PR.
+
+## Deferred golden-recording harness (design only)
+
+The following is the deferred harness contract, not an artifact produced by
+this PR. It remains the required shape for the later recorder and replay work.
 
 1. Build `bd` from the frozen `beads-base` commit in a clean disposable
    workspace and database. Reviewed fixes on `beads` are separate recorder
@@ -63,5 +93,5 @@ a `deviate` card stores both projections and its decision ID (P82).
    gate.
 
 Time-dependent cards are `keep` only when both Go and SQL clocks are controlled.
-The acceptance target is `bazel test //spec:acceptance` on memory/SQLite and the
-Postgres integration lane.
+The future acceptance target is `bazel test //spec:acceptance` on memory/SQLite
+and the Postgres integration lane.

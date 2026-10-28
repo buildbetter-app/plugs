@@ -5,7 +5,8 @@ proposal, not an implementation plan. It reads the command tree frozen in
 [`cmd/bd/testdata/command_tree/tree.golden`](../../../../cmd/bd/testdata/command_tree/tree.golden)
 and the Plug design sections A1, A7, and A8. The tree contains **307 paths**
 (the root plus 306 descendants); A1's “306 command paths” sentence predates the
-current golden.
+current golden. The inventory and census ratchet count all **307 paths**; “306”
+is the descendants-only denominator used by the older design sentence.
 
 Plug is a clean-room rewrite. A `bd` name is not a compatibility promise:
 P46 says there is no `bd` translator, and P1 says that behavior is rebuilt
@@ -426,4 +427,3 @@ The one-by-one review set currently visible in repository guidance is:
 `bd setup`/hooks, `bd merge-slot`, `bd swarm`, `bd branch`, and `bd worktree`
 where repository docs show them. “Visible” means documented
 or wired in this checkout, not measured production frequency; a runtime argv census should replace this heuristic before cutover.
-
