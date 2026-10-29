@@ -292,6 +292,8 @@ internal/integration/historysql/BUILD.bazel
 internal/integration/historysql/README.md
 internal/integration/historysql/fixture_test.go
 internal/integration/historysql/history_test.go
+internal/integration/httpcancel/BUILD.bazel
+internal/integration/httpcancel/httpcancel_test.go
 internal/integration/localclisession/BUILD.bazel
 internal/integration/localclisession/session_test.go
 internal/integration/oidc/BUILD.bazel
