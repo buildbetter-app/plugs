@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "inprocess",
+    srcs = ["inprocess.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/server/transport/inprocess",
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "inprocess_test",
+    srcs = ["inprocess_test.go"],
+    deps = [":inprocess", "//internal/server/rpc"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
