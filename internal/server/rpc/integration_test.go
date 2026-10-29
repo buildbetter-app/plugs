@@ -204,6 +204,113 @@ func TestRealServiceLifecycleThroughInprocess(t *testing.T) {
 	}
 }
 
+func TestRealServiceNamedLifecycleRPCsUseCatalogAndSharedWriter(t *testing.T) {
+	s, _, _, _ := realServiceServer(t)
+	ctx := context.Background()
+	created := writeResult(t, s, "bead.create", writeParams(t, map[string]any{
+		"type": "issue", "fields": map[string]any{"title": "named lifecycle"},
+	}), false)
+	ref := createdRef(t, created)
+
+	methods := result(t, call(t, s, ctx, "rpc.methods", `{}`))["methods"].([]any)
+	for _, want := range []string{"bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail"} {
+		found := false
+		for _, method := range methods {
+			if method == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("cataloged lifecycle method %s was not bound/discovered: %v", want, methods)
+		}
+	}
+	openrpc, err := s.OpenRPC(ctx, model.PrincipalRef{Kind: "anonymous", ID: "anonymous"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Methods []struct {
+			Name string `json:"name"`
+		} `json:"methods"`
+	}
+	if err := json.Unmarshal(openrpc, &document); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"bead.reopen", "bead.defer", "bead.cancel", "bead.fail"} {
+		found := false
+		for _, method := range document.Methods {
+			if method.Name == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("generated OpenRPC omitted %s", want)
+		}
+	}
+
+	callSlot := func(method, reason string) map[string]any {
+		t.Helper()
+		params := map[string]any{"id": ref}
+		if reason != "" {
+			params["reason"] = reason
+		}
+		return writeResult(t, s, method, writeParams(t, params), false)
+	}
+	checkStatus := func(want string) {
+		t.Helper()
+		got := result(t, call(t, s, ctx, "bead.get", paramsJSON(t, map[string]any{"id": ref})))
+		if bead := got["bead"].(map[string]any); bead["status"] != want {
+			t.Fatalf("lifecycle status=%v want=%s", bead["status"], want)
+		}
+	}
+	for _, step := range []struct {
+		method string
+		reason string
+		status string
+	}{
+		{"bead.defer", "waiting", "backlog"},
+		{"bead.reopen", "retrying", "todo"},
+		{"bead.claim", "", "in_progress"},
+		{"bead.fail", "failed", "failed"},
+		{"bead.reopen", "retry after failure", "todo"},
+		{"bead.cancel", "canceled", "canceled"},
+		{"bead.reopen", "reconsidered", "todo"},
+		{"bead.claim", "", "in_progress"},
+		{"bead.close", "done", "done"},
+		{"bead.reopen", "follow-up", "todo"},
+	} {
+		commit := callSlot(step.method, step.reason)
+		if commit["revision"] == nil {
+			t.Fatalf("lifecycle %s returned no commit: %v", step.method, commit)
+		}
+		checkStatus(step.status)
+	}
+
+	// Repeating the exact keyed failure returns the stored result and replay
+	// metadata without invoking a second Writer commit.
+	failParams := writeParams(t, map[string]any{"id": ref, "reason": "terminal"})
+	first := writeResult(t, s, "bead.fail", failParams, false)
+	replayed := writeResult(t, s, "bead.fail", failParams, true)
+	if !reflect.DeepEqual(first, replayed) {
+		t.Fatalf("lifecycle replay changed result: first=%v replay=%v", first, replayed)
+	}
+	checkStatus("failed")
+
+	// A slot cannot transition to its current target. The refusal is typed and
+	// does not publish a new revision or receipt.
+	bad := writeParams(t, map[string]any{"id": ref})
+	requireCode(t, call(t, s, ctx, "bead.fail", paramsJSON(t, bad)), "invalid_params")
+	history := result(t, call(t, s, ctx, "history.query", paramsJSON(t, map[string]any{
+		"asOf":   map[string]any{"revision": first["revision"]},
+		"filter": map[string]any{"resources": []string{ref["id"].(string)}},
+	})))
+	if len(history["items"].([]any)) != 1 || history["items"].([]any)[0].(map[string]any)["status"] != "failed" {
+		t.Fatalf("history did not expose final lifecycle image: %v", history)
+	}
+}
+
 func TestRealServiceLiveReadyAndPinnedHistoryAcrossWrites(t *testing.T) {
 	s, _, _, _ := realServiceServer(t)
 	ctx := context.Background()

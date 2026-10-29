@@ -4,9 +4,9 @@ The source pin for this page is **`9d03323f423cf28d202b328ed7c116e45db8406f`**.
 The command wiring is in [`internal/cli/run.go`](../../internal/cli/run.go),
 the byte client in [`internal/client/http.go`](../../internal/client/http.go),
 and the executable fixture in
-[`cmd/plug/remote_test.go`](../../cmd/plug/remote_test.go). The older
-[disposable CLI page](../plug-runtime/cli.md) remains a valid memory-only
-example at `471d0199`; this page covers the admitted remote path added later.
+[`cmd/plug/remote_test.go`](../../cmd/plug/remote_test.go). The companion
+[local CLI page](../plug-runtime/cli.md) covers in-process SQLite and explicit
+memory storage; this page covers the admitted remote path.
 
 ## Select a server explicitly
 
@@ -63,6 +63,6 @@ bazel --ignore_all_rc_files test //cmd/plug:plug_test \
 ```
 
 The fixture uses the actual RPC registry, `httpjson` admission, service, Writer,
-memory storage, and a child CLI process. It does not install persistent local
-storage, config-file loading, generic RPC commands, watches, or a network
-server command; unsupported commands fail explicitly.
+memory storage, and a child CLI process. This remote fixture does not exercise
+the separate persistent local SQLite/config path, generic RPC commands, watches,
+or a network server command; unsupported commands fail explicitly.

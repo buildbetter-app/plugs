@@ -32,10 +32,17 @@ func plugBinary(t *testing.T) string {
 }
 
 func runPlug(t *testing.T, input string, args ...string) (string, string, error) {
+	return runPlugInDir(t, "", input, args...)
+}
+
+func runPlugInDir(t *testing.T, dir, input string, args ...string) (string, string, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, plugBinary(t), args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	cmd.Env = append(os.Environ(), "PLUG_SERVER=", "PLUG_TOKEN=")
 	cmd.Stdin = strings.NewReader(input)
 	var out, errOut bytes.Buffer
@@ -173,13 +180,75 @@ func TestExecutableMemoryLifecycle(t *testing.T) {
 	}
 }
 
-func TestExecutableRefusesUnsupportedAndStopsSession(t *testing.T) {
-	out, errOut, err := runPlug(t, "", "ready")
-	if err == nil || out != "" || !strings.Contains(errOut, "persistent storage is not installed") {
-		t.Fatalf("implicit storage fallback: %q %q %v", out, errOut, err)
+func TestExecutablePersistentDefaultAndStopsSession(t *testing.T) {
+	dir := t.TempDir()
+	out, errOut, err := runPlugInDir(t, dir, "", "--json", "ready")
+	if err != nil || errOut != "" || !strings.Contains(out, `"items":[]`) {
+		t.Fatalf("implicit persistent storage failed: %q %q %v", out, errOut, err)
 	}
+	if _, err := os.Stat(filepath.Join(dir, ".plug", "plug.db")); err != nil {
+		t.Fatalf("implicit persistent storage did not create SQLite file: %v", err)
+	}
+}
+
+func TestExecutableMemoryNamedLifecycleCommands(t *testing.T) {
+	commands := `
+["create","--title","Lifecycle","--idempotency-key","00000000000000000000000000000001"]
+["defer","@last","--reason","waiting","--idempotency-key","00000000000000000000000000000002"]
+["reopen","@last","--reason","retry","--idempotency-key","00000000000000000000000000000003"]
+["claim","@last","--idempotency-key","00000000000000000000000000000004"]
+["fail","@last","--reason","failed","--idempotency-key","00000000000000000000000000000005"]
+["reopen","@last","--idempotency-key","00000000000000000000000000000006"]
+["cancel","@last","--reason","canceled","--idempotency-key","00000000000000000000000000000007"]
+["reopen","@last","--idempotency-key","00000000000000000000000000000008"]
+["claim","@last","--idempotency-key","00000000000000000000000000000009"]
+["close","@last","--reason","done","--idempotency-key","0000000000000000000000000000000a"]
+["reopen","@last","--idempotency-key","0000000000000000000000000000000b"]
+["fail","@last","--reason","terminal","--idempotency-key","0000000000000000000000000000000c"]
+["fail","@last","--reason","terminal","--idempotency-key","0000000000000000000000000000000c"]
+["get","@last"]
+["history","--as-of","@revision","--id","@last"]
+["ready"]
+`
+	out, errOut, err := runPlug(t, commands, "--memory", "--json", "session")
+	if err != nil || !strings.Contains(errOut, "memory storage is disposable") {
+		t.Fatalf("named lifecycle session failed: %v\nstdout: %s\nstderr: %s", err, out, errOut)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 16 {
+		t.Fatalf("wanted one result per lifecycle command, got %d: %s", len(lines), out)
+	}
+	if lines[11] != lines[12] {
+		t.Fatalf("same keyed fail did not replay identical CLI result:\nfirst=%s\nreplay=%s", lines[11], lines[12])
+	}
+	get, err := wire.DecodeJSON([]byte(lines[13]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bead := get.(map[string]any)["bead"].(map[string]any)
+	if bead["status"] != "failed" {
+		t.Fatalf("final CLI lifecycle status=%v", bead["status"])
+	}
+	history, err := wire.DecodeJSON([]byte(lines[14]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := history.(map[string]any)["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["status"] != "failed" {
+		t.Fatalf("CLI history lost final lifecycle image: %s", lines[14])
+	}
+	ready, err := wire.DecodeJSON([]byte(lines[15]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ready.(map[string]any)["items"].([]any)) != 0 {
+		t.Fatalf("failed bead remained ready: %s", lines[15])
+	}
+}
+
+func TestExecutableSessionRefusalStopsSession(t *testing.T) {
 	input := "[\"create\",\"--title\",\"First\"]\n[\"get\",\"pl-missing\"]\n[\"create\",\"--title\",\"Must not run\"]\n"
-	out, errOut, err = runPlug(t, input, "--memory", "--json", "session")
+	out, errOut, err := runPlugInDir(t, t.TempDir(), input, "--memory", "--json", "session")
 	if err == nil || len(strings.Split(strings.TrimSpace(out), "\n")) != 1 || !strings.Contains(errOut, "not_found") || !strings.Contains(errOut, "session line 2") {
 		t.Fatalf("session refusal: %q %q %v", out, errOut, err)
 	}
