@@ -102,6 +102,11 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 	if err != nil {
 		return err
 	}
+	if p.release != nil {
+		// Recovery enters the canonical reopen slot. The public operation remains
+		// bead.release, so this translation is trusted pipeline context only.
+		proposal.Meta.Method = "bead.reopen"
+	}
 	patches, err := w.cfg.ontology.Normalize(ctx, proposal, p.snapshot)
 	if err != nil {
 		return err
@@ -112,6 +117,9 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 	proposal, err = clone(p.proposal)
 	if err != nil {
 		return err
+	}
+	if p.release != nil {
+		proposal.Meta.Method = "bead.reopen"
 	}
 	if err := w.cfg.ontology.Validate(ctx, proposal, p.snapshot); err != nil {
 		return err
@@ -159,6 +167,11 @@ func skipped(id string) model.Warning {
 }
 
 func (w *Writer) authorize(ctx context.Context, stage port.AuthorizationStage, proposal port.ProposedChange, reader *snapshotReader) error {
+	if proposal.Meta.Method == "bead.release" && proposal.Principal.Kind == "system" && proposal.Principal.ID == "core" {
+		// Only ApplyClaimRelease can admit this method. Core recovery is
+		// invariant work, including receipt replay, and never enters the chain.
+		return nil
+	}
 	if w.cfg.authorizer == nil {
 		return nil
 	}

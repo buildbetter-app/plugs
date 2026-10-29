@@ -49,6 +49,13 @@ func (w *Writer) Apply(ctx context.Context, by model.PrincipalRef, cs model.Chan
 // response. A first write or admitted no-op is not a replay, even when its
 // response must be reloaded after receipt finalization.
 func (w *Writer) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if meta.Method == "bead.release" {
+		return port.WriteOutcome{}, failure("invalid_params", "bead.release requires the protected claim release entry point")
+	}
+	return w.applyWithOutcome(ctx, by, cs, meta, nil)
+}
+
+func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, release *claimReleaseMode) (port.WriteOutcome, error) {
 	if ctx.Value(callbackKey{}) != nil {
 		return port.WriteOutcome{}, failure("plugin_reentrant_write", "graph writes are forbidden in synchronous callbacks")
 	}
@@ -112,7 +119,7 @@ func (w *Writer) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 		if commit, found, err := w.replay(preCtx, reader, principal, by, cs, meta, hash); found || err != nil {
 			return port.WriteOutcome{Commit: commit, Replayed: found && err == nil}, err
 		}
-		p, err := w.prepare(preCtx, reader, by, cs, meta)
+		p, err := w.prepare(preCtx, reader, by, cs, meta, release)
 		if err == nil {
 			err = w.pre(preCtx, p)
 		}
