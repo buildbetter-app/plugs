@@ -230,6 +230,11 @@ internal/server/pluginhost/reader.go
 internal/server/pluginhost/state.go
 internal/storage/conformance/BUILD.bazel
 internal/storage/conformance/atomic.go
+internal/storage/conformance/audit.go
+internal/storage/conformance/audit_atomic.go
+internal/storage/conformance/audit_fixtures.go
+internal/storage/conformance/audit_isolation.go
+internal/storage/conformance/audit_validation.go
 internal/storage/conformance/checkpoints.go
 internal/storage/conformance/conformance.go
 internal/storage/conformance/fixtures.go
@@ -250,6 +255,7 @@ internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/memory/BUILD.bazel
+internal/storage/memory/audit_test.go
 internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_test.go
 internal/storage/memory/lease.go
