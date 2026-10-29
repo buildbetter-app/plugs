@@ -173,13 +173,13 @@ func authority(raw string) (string, string, error) {
 	if host == "" || (port != "" && !validPort(port, false)) || strings.HasSuffix(raw, ":") {
 		return "", "", ErrForbidden
 	}
-	if strings.Contains(host, ":") {
+	if strings.HasPrefix(raw, "[") {
 		ip, err := netip.ParseAddr(host)
-		if err != nil || !strings.HasPrefix(raw, "[") || !ip.Is6() {
+		if err != nil || !ip.Is6() {
 			return "", "", ErrForbidden
 		}
 		host = ip.String()
-	} else if strings.ContainsAny(host, "[]") {
+	} else if strings.ContainsAny(raw, "[]") || strings.Contains(host, ":") {
 		return "", "", ErrForbidden
 	}
 	return host, port, nil

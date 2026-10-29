@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"time"
 
@@ -62,6 +63,15 @@ type Authenticator struct {
 }
 
 func New(config Config) (*Authenticator, error) {
+	if config.Provider != nil {
+		value := reflect.ValueOf(config.Provider)
+		switch value.Kind() {
+		case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+			if value.IsNil() {
+				return nil, ErrUnavailable
+			}
+		}
+	}
 	a := &Authenticator{provider: config.Provider, authz: config.AuthorizationInstalled}
 	if a.provider == nil && a.hasAuthorization() {
 		return nil, ErrAuthzRequiresAuthn
@@ -116,6 +126,13 @@ func (a *Authenticator) Admit(ctx context.Context, token string) (Identity, erro
 		for _, code := range []Failure{ErrUnauthenticated, ErrTokenExpired, ErrAuthzNotInstalled} {
 			if errors.Is(err, code) {
 				return Identity{}, code
+			}
+		}
+		var failure *model.Error
+		if errors.As(err, &failure) && failure != nil {
+			switch Failure(failure.Data.Code) {
+			case ErrUnauthenticated, ErrTokenExpired, ErrAuthzNotInstalled:
+				return Identity{}, Failure(failure.Data.Code)
 			}
 		}
 		return Identity{}, ErrUnavailable

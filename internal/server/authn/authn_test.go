@@ -65,6 +65,8 @@ func TestProviderFailuresNeverBecomeAnonymous(t *testing.T) {
 		{"bad credential", ErrUnauthenticated, ErrUnauthenticated},
 		{"expired", ErrTokenExpired, ErrTokenExpired},
 		{"wrapped expired", fmt.Errorf("private detail: %w", ErrTokenExpired), ErrTokenExpired},
+		{"catalog expired", &model.Error{Message: "sensitive-provider-detail", Data: model.ErrorData{Code: "token_expired"}}, ErrTokenExpired},
+		{"nil catalog error", (*model.Error)(nil), ErrUnavailable},
 		{"scoped refusal", ErrAuthzNotInstalled, ErrAuthzNotInstalled},
 		{"provider failure", errors.New("sensitive-provider-detail"), ErrUnavailable},
 		{"canceled provider", context.Canceled, ErrUnavailable},
@@ -79,6 +81,14 @@ func TestProviderFailuresNeverBecomeAnonymous(t *testing.T) {
 				t.Fatal("provider details escaped the admission boundary")
 			}
 		})
+	}
+}
+
+func TestConfiguredNilProviderIsNotAnonymous(t *testing.T) {
+	var provider providerFunc
+	a, err := New(Config{Provider: provider})
+	if a != nil || !errors.Is(err, ErrUnavailable) {
+		t.Fatal("configured nil provider was accepted as an anonymous configuration")
 	}
 }
 

@@ -42,6 +42,8 @@ func TestAnonymousHTTPAdmission(t *testing.T) {
 		{"host suffix", func(r *http.Request) { r.Host = "localhost.example.invalid:8888" }, ErrForbidden},
 		{"trailing dot", func(r *http.Request) { r.Host = "localhost.:8888" }, ErrForbidden},
 		{"shorthand IPv4", func(r *http.Request) { r.Host = "127.1:8888" }, ErrForbidden},
+		{"bracketed hostname", func(r *http.Request) { r.Host = "[localhost]:8888" }, ErrForbidden},
+		{"bracketed IPv4", func(r *http.Request) { r.Host = "[127.0.0.1]:8888" }, ErrForbidden},
 		{"missing host", func(r *http.Request) { r.Host = "" }, ErrForbidden},
 		{"bad port", func(r *http.Request) { r.Host = "localhost:65536" }, ErrForbidden},
 		{"userinfo", func(r *http.Request) { r.Host = "bad@localhost:8888" }, ErrForbidden},
