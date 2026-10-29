@@ -48,6 +48,10 @@ cd "$repo_root"
 
 evidence_dir="${PLUG_BAZEL_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/plug-bazel-evidence.XXXXXX")}"
 mkdir -p "$evidence_dir"
+if [[ -n "$(find "$evidence_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+  echo 'plug-bazel-preflight: evidence directory must be empty; refusing to change a prior snapshot' >&2
+  exit 1
+fi
 
 manifest_path="$evidence_dir/manifest.sha256"
 phase=initializing
@@ -55,7 +59,86 @@ work_dir=
 testlogs_root=
 active_bazel_pid=
 stream_pid=
+deadline_pid=
 termination_signal=none
+termination_reason='exit'
+deadline_reached=false
+timeout_seconds="${PLUG_BAZEL_TIMEOUT_SECONDS:-2400}"
+started_epoch="$(date +%s)"
+shutdown_pids=()
+
+# Record the current owned trees before stopping anything. Including the owned
+# session IDs also finds group members whose immediate parent already exited.
+record_owned_processes() {
+  local pid
+  mapfile -t shutdown_pids < <(ps -eo pid=,ppid=,pgid= | awk \
+    -v roots="$active_bazel_pid $stream_pid $deadline_pid" \
+    -v groups="$active_bazel_pid $deadline_pid" '
+    { parent[$1] = $2; group[$1] = $3 }
+    END {
+      count = split(roots, root, " ")
+      for (i = 1; i <= count; i++) if (root[i] != "") owned[root[i]] = 1
+      count = split(groups, session, " ")
+      for (i = 1; i <= count; i++)
+        if (session[i] != "")
+          for (pid in group) if (group[pid] == session[i]) owned[pid] = 1
+      do {
+        changed = 0
+        for (pid in parent)
+          if ((parent[pid] in owned) && !(pid in owned)) {
+            owned[pid] = 1; changed = 1
+          }
+      } while (changed)
+      for (pid in owned) print pid
+    }')
+  printf 'pid ppid pgid state command\n' >"$evidence_dir/processes-before-shutdown.txt"
+  for pid in "${shutdown_pids[@]}"; do
+    if ! [[ "$pid" =~ ^[0-9]+$ ]] || ((pid <= 1 || pid == $$ || pid == PPID)); then
+      shutdown_pids=()
+      return 1
+    fi
+    ps -o pid=,ppid=,pgid=,stat=,comm= -p "$pid" \
+      >>"$evidence_dir/processes-before-shutdown.txt" || :
+  done
+}
+
+stop_deadline() {
+  if [[ -n "$deadline_pid" ]]; then
+    kill -TERM -- "-$deadline_pid" 2>/dev/null || :
+    wait "$deadline_pid" 2>/dev/null || :
+    deadline_pid=
+  fi
+}
+
+verify_owned_stopped() {
+  local pid state attempt signal running=false
+  # Reap any recorded descendants left behind when an ancestor exited during
+  # cancellation. Never freeze files while one of these processes can write.
+  for signal in TERM KILL; do
+    for pid in "${shutdown_pids[@]}"; do
+      state="$(ps -o stat= -p "$pid")" || continue
+      [[ "$state" == *Z* ]] || kill -s "$signal" "$pid" 2>/dev/null || :
+    done
+    for ((attempt = 0; attempt < 10; attempt++)); do
+      running=false
+      for pid in "${shutdown_pids[@]}"; do
+        state="$(ps -o stat= -p "$pid")" || continue
+        [[ "$state" == *Z* ]] || running=true
+      done
+      [[ "$running" == true ]] || break
+      sleep 0.5
+    done
+    [[ "$running" == true ]] || break
+  done
+  printf 'pid state\n' >"$evidence_dir/processes-after-shutdown.txt"
+  for pid in "${shutdown_pids[@]}"; do
+    state="$(ps -o stat= -p "$pid")" || state=absent
+    printf '%s %s\n' "$pid" "$state" >>"$evidence_dir/processes-after-shutdown.txt"
+  done
+  printf 'owned_processes_observed=%s\nowned_writers_running=%s\n' \
+    "${#shutdown_pids[@]}" "$running" >"$evidence_dir/process-shutdown.txt"
+  [[ "$running" == false ]]
+}
 
 # Each invocation uses batch mode in its own session: no Bazel daemon can keep
 # writing after its client exits. Only signal processes descended from our PID.
@@ -147,30 +230,53 @@ write_manifest() {
   mv -f "$tmp_manifest" "$manifest_path"
 }
 
+write_result() {
+  printf 'exit_status=%s\nphase=%s\ntermination_signal=%s\ntermination_reason=%s\ndeadline_reached=%s\ntimeout_seconds=%s\nevidence_frozen=%s\nbazel_mode=batch\n' \
+    "$1" "$phase" "$termination_signal" "$termination_reason" \
+    "$deadline_reached" "$timeout_seconds" "$2" \
+    >"$evidence_dir/preflight-result.txt"
+}
+
 finish() {
   local status=$?
   local evidence_frozen=true
+  local shutdown_started_epoch freeze_epoch
+  shutdown_started_epoch="$(date +%s)"
   trap - EXIT
-  trap '' INT TERM
-  if ! stop_owned_bazel || ! snapshot_evidence; then
+  trap '' INT TERM USR1
+  if ! record_owned_processes; then
     evidence_frozen=false
-    ((status != 0)) || status=1
   fi
-  printf 'exit_status=%s\nphase=%s\ntermination_signal=%s\nevidence_frozen=%s\nbazel_mode=batch\n' \
-    "$status" "$phase" "$termination_signal" "$evidence_frozen" \
-    >"$evidence_dir/preflight-result.txt"
+  stop_deadline
+  if ! stop_owned_bazel || ! verify_owned_stopped; then
+    evidence_frozen=false
+  fi
+  if [[ "$evidence_frozen" == true ]] && ! snapshot_evidence; then
+    evidence_frozen=false
+  fi
+  [[ "$evidence_frozen" == true ]] || { ((status != 0)) || status=1; }
+  freeze_epoch="$(date +%s)"
+  printf 'started_epoch=%s\nshutdown_started_epoch=%s\nsnapshot_completed_epoch=%s\nelapsed_seconds=%s\nshutdown_seconds=%s\n' \
+    "$started_epoch" "$shutdown_started_epoch" "$freeze_epoch" \
+    "$((freeze_epoch - started_epoch))" "$((freeze_epoch - shutdown_started_epoch))" \
+    >"$evidence_dir/finalization.txt"
+  write_result "$status" "$evidence_frozen"
   if [[ "$evidence_frozen" == true ]] && ! write_manifest; then
     echo "plug-bazel-preflight: could not write $manifest_path" >&2
     ((status == 0)) && status=1
+    evidence_frozen=false
+    write_result "$status" "$evidence_frozen"
   fi
+  echo "plug-bazel-preflight: finalization complete status=$status frozen=$evidence_frozen elapsed=$(( $(date +%s) - started_epoch ))s"
   exit "$status"
 }
 trap finish EXIT
 # Preserve a signal status in the evidence when the runner or an outer timeout
 # stops the preflight while Bazel is running.  The EXIT trap still writes the
 # result and manifest before returning the conventional shell signal status.
-trap 'termination_signal=TERM; exit 143' TERM
-trap 'termination_signal=INT; exit 130' INT
+trap 'termination_signal=TERM; termination_reason=signal; exit 143' TERM
+trap 'termination_signal=INT; termination_reason=signal; exit 130' INT
+trap 'termination_signal=USR1; termination_reason=internal-deadline; deadline_reached=true; exit 124' USR1
 
 fail() {
   echo "plug-bazel-preflight: $*" >&2
@@ -194,6 +300,17 @@ for name in \
     fail "$name must be unset for the Plug preflight"
   fi
 done
+
+[[ "$timeout_seconds" =~ ^[1-9][0-9]{0,3}$ ]] || fail "PLUG_BAZEL_TIMEOUT_SECONDS must be an integer from 1 to 2400"
+((timeout_seconds <= 2400)) || fail "PLUG_BAZEL_TIMEOUT_SECONDS must not exceed the 2400-second work budget"
+printf 'timeout_seconds=%s\nouter_job_seconds=2700\nreserved_seconds=%s\n' \
+  "$timeout_seconds" "$((2700 - timeout_seconds))" >"$evidence_dir/deadline.txt"
+# The timer owns a separate session; finalization stops and waits for it too.
+# USR1 interrupts the main shell's wait, unlike the outer job's hard deadline.
+deadline_script="sleep \"\$1\"; kill -USR1 \"\$2\""
+setsid --wait bash -c "$deadline_script" \
+  plug-bazel-deadline "$timeout_seconds" "$$" &
+deadline_pid=$!
 
 df -B1 -- "$evidence_dir" >"$evidence_dir/disk-before-preflight.txt"
 case "${PLUG_BAZEL_CLEAN_HOSTED_RUNNER:-}" in
