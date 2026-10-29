@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
 func localRequest() *http.Request {
@@ -89,6 +91,39 @@ func TestAnonymousHTTPAdmission(t *testing.T) {
 				t.Fatalf("local request was refused: %v", err)
 			}
 		})
+	}
+}
+
+func TestCrossOriginAdmissionUsesOnlyTrustedCoreSessions(t *testing.T) {
+	crossCalls := 0
+	a := newAuthenticator(t, Config{
+		Provider: providerFunc(func(context.Context, string) (model.PrincipalRef, error) {
+			return model.PrincipalRef{Kind: "user", ID: "user:api"}, nil
+		}),
+		CoreSessions: sessionSourceFunc(func(context.Context, string) (CoreSession, error) {
+			return &testSession{user: model.PrincipalRef{Kind: "user", ID: "user:session"}}, nil
+		}),
+		CrossOriginAuthorizer: func(_ context.Context, origin, token string) bool {
+			crossCalls++
+			return origin == "https://app.invalid" && token == "plg_s_test"
+		},
+	})
+
+	request := localRequest()
+	request.Header.Set("Origin", "https://app.invalid")
+	request.Header.Set("Authorization", "Bearer plg_s_test")
+	identity, err := a.AdmitHTTP(request)
+	if err != nil || identity.Principal().ID != "user:session" || crossCalls != 1 {
+		t.Fatalf("trusted cross-origin session was not admitted: identity=%s err=%v calls=%d", identity.Principal().ID, err, crossCalls)
+	}
+
+	request = localRequest()
+	request.Header.Set("Origin", "https://app.invalid")
+	request.Header.Set("Authorization", "Bearer ordinary")
+	identity, err = a.AdmitHTTP(request)
+	assertDenied(t, identity, err, ErrForbidden)
+	if crossCalls != 1 {
+		t.Fatal("ordinary provider credential reached the cross-origin authorizer")
 	}
 }
 

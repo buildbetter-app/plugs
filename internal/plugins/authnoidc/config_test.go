@@ -50,6 +50,36 @@ func TestConfigurationRefusesUnsupportedTrustAndBounds(t *testing.T) {
 	}
 }
 
+func TestOriginAllowlistCanonicalizesAndRejectsUnsafeValues(t *testing.T) {
+	config := validConfig()
+	config.AllowedOrigins = []string{"HTTPS://APP.INVALID:443", "http://localhost:8080", "https://[::1]:443"}
+	p, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, origin := range []string{"https://app.invalid", "https://app.invalid:443", "http://localhost:8080", "https://[::1]"} {
+		if !p.OriginAllowed(origin) {
+			t.Fatalf("allowlisted origin was not canonicalized: %q", origin)
+		}
+	}
+	for _, origin := range []string{"https://app.invalid:0", "http://example.invalid", "https://app.invalid/path", "https://app.invalid?query", "null"} {
+		if p.OriginAllowed(origin) {
+			t.Fatalf("unsafe origin was admitted: %q", origin)
+		}
+	}
+	for _, origins := range [][]string{
+		{"https://app.invalid", "HTTPS://APP.INVALID:443"},
+		{"http://example.invalid"},
+		{"https://app.invalid:0"},
+	} {
+		bad := validConfig()
+		bad.AllowedOrigins = origins
+		if _, err := New(bad); err == nil {
+			t.Fatalf("unsafe origin configuration was accepted: %v", origins)
+		}
+	}
+}
+
 func TestCanceledFlowAndInvalidCredentialsNeverUseIdP(t *testing.T) {
 	p, err := New(validConfig())
 	if err != nil {

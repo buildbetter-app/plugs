@@ -120,14 +120,19 @@ func (a *Authenticator) admitRequest(r *http.Request) (Identity, error) {
 		scheme = "https"
 	}
 	origins := r.Header.Values("Origin")
-	if len(origins) > 1 || (len(origins) == 1 && !sameOrigin(origins[0], scheme, host, port)) {
-		return Identity{}, ErrForbidden
-	}
 	token, err := bearerToken(r.Header)
 	if err != nil {
 		return Identity{}, err
 	}
+	if len(origins) > 1 || (len(origins) == 1 && !sameOrigin(origins[0], scheme, host, port) &&
+		!a.allowCrossOrigin(r.Context(), origins[0], token)) {
+		return Identity{}, ErrForbidden
+	}
 	return a.Admit(r.Context(), token)
+}
+
+func (a *Authenticator) allowCrossOrigin(ctx context.Context, origin, token string) bool {
+	return strings.HasPrefix(token, CoreSessionPrefix) && a.cross != nil && a.cross(ctx, origin, token)
 }
 
 func bearerToken(h http.Header) (string, error) {
