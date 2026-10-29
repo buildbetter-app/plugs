@@ -15671,15 +15671,15 @@
     "inputs": [
       {
         "path": "design.md",
-        "sha256": "f32f7ae9a224dc20401c143ff36ad5386099a9364a2a8806481ab58fb826a63b"
+        "sha256": "f55548712042e72b54e7e1b8cf448e8a968e2b7726b5974aabd65f84d94b2b15"
       },
       {
         "path": "clean-room-plan.md",
-        "sha256": "50e22dcc9143e78745668ec157886fdb8bed1d70180a54fbe3cc27e0a490a7eb"
+        "sha256": "0ef12097a35aa8973c6d293f2463ab3dbc4497cac0111b916e72b04ce535c770"
       },
       {
         "path": "review-2026-10-27.md",
-        "sha256": "729a3d63ab77cbfa375000671d19248117b962584162d0bada6f5139f1bf1e6e"
+        "sha256": "9fe7b68341a09284d6db64c8694134eafad9f94908ac66774c057ef99a9e5a51"
       }
     ],
     "methodInventory": {
