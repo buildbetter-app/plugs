@@ -1,0 +1,504 @@
+package audit_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/service"
+	serverevents "github.com/buildbetter-app/plugs/internal/server/events"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/memory"
+)
+
+var (
+	auditWriterPrincipal = model.PrincipalRef{Kind: "user", ID: "audit-writer"}
+	auditReaderPrincipal = model.PrincipalRef{Kind: "user", ID: "audit-reader"}
+)
+
+type fixture struct {
+	t         *testing.T
+	ctx       context.Context
+	store     *memory.Store
+	lease     driver.ActiveLease
+	inc       string
+	sourceRef model.Ref
+	source    service.OntologySource
+	compiled  ontology.Snapshot
+	normalize *service.Ontology
+	writer    *pipeline.Writer
+	svc       *service.Service
+	ids       []string
+	idIndex   int
+}
+
+func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(cancel)
+	store, err := memory.NewWithOptions(memory.Options{
+		StoreID:     "audit-integration",
+		Incarnation: "audit-integration",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	lease, err := store.Lease(ctx, "audit-integration", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lease.Release(context.Background()) })
+
+	sourceRef := model.Ref{ID: "ontology/audit"}
+	source := service.OntologySource{Base: ontology.DefaultDocument()}
+	body, err := service.MarshalOntologySource(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conformance.Seed(ctx, store, lease, driver.ChangesetHeader{
+		Principal: auditWriterPrincipal,
+	}, []conformance.FixtureChange{{
+		Ref: sourceRef, Kind: "ontology", Op: model.OpCreate, Body: body,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, problems := ontology.Compile(source.Base, source.Overlays, source.Plugins)
+	if len(problems) != 0 {
+		t.Fatalf("fixture ontology compile: %+v", problems)
+	}
+	normalize := service.NewOntology(compiled.Effective)
+	f := &fixture{
+		t:         t,
+		ctx:       ctx,
+		store:     store,
+		lease:     lease,
+		inc:       meta.Incarnation,
+		sourceRef: sourceRef,
+		source:    source,
+		compiled:  compiled,
+		normalize: normalize,
+		ids:       []string{"pl-audit-blocker", "pl-audit-dependent-b", "pl-audit-dependent-a"},
+	}
+	f.writer = pipeline.New(store, lease,
+		pipeline.WithOntology(normalize),
+		pipeline.WithOntologyAudit(service.NewOntologyAudit(service.StaticOntologySource(sourceRef))),
+		pipeline.WithIDGenerator(f.nextID),
+	)
+	f.svc = service.New(store, lease, f.writer, service.WithOntology(normalize))
+	return f
+}
+
+func (f *fixture) nextID() (string, error) {
+	if f.idIndex >= len(f.ids) {
+		return fmt.Sprintf("pl-audit-extra-%d", f.idIndex), nil
+	}
+	id := f.ids[f.idIndex]
+	f.idIndex++
+	return id, nil
+}
+
+func (f *fixture) meta(n int) model.WriteMeta {
+	return model.WriteMeta{
+		IdempotencyKey: fmt.Sprintf("%032x", n),
+		Project:        "blocker-project",
+	}
+}
+
+func (f *fixture) create(t *testing.T, project, title string, key int) model.Ref {
+	t.Helper()
+	commit, err := f.svc.Create(f.ctx, auditWriterPrincipal, service.CreateRequest{
+		Type:   "issue",
+		Fields: map[string]any{"title": title},
+	}, model.WriteMeta{Project: project, IdempotencyKey: fmt.Sprintf("%032x", key)})
+	if err != nil || len(commit.Results) != 1 {
+		t.Fatalf("service create=%+v err=%v", commit, err)
+	}
+	return commit.Results[0].Ref
+}
+
+func (f *fixture) graph(t *testing.T) (blocker, dependentA, dependentB model.Ref, link model.Commit) {
+	t.Helper()
+	blocker = f.create(t, "blocker-project", "blocker", 2)
+	dependentB = f.create(t, "dependent-project", "dependent b", 3)
+	dependentA = f.create(t, "dependent-project", "dependent a", 4)
+	link, err := f.writer.Apply(f.ctx, auditWriterPrincipal, model.ChangeSet{Ops: []model.Op{
+		{Kind: model.OpLink, Link: &model.LinkOp{From: dependentB, To: blocker, LinkKind: "conditional-blocks"}},
+		{Kind: model.OpLink, Link: &model.LinkOp{From: dependentA, To: blocker, LinkKind: "conditional-blocks"}},
+	}}, model.WriteMeta{Method: "bead.update", Project: "dependent-project", IdempotencyKey: fmt.Sprintf("%032x", 5)})
+	if err != nil || len(link.Results) != 2 {
+		t.Fatalf("writer conditional edges=%+v err=%v", link, err)
+	}
+	return blocker, dependentA, dependentB, link
+}
+
+func (f *fixture) close(t *testing.T, blocker model.Ref, key int, dryRun bool) port.WriteOutcome {
+	t.Helper()
+	meta := f.meta(key)
+	meta.DryRun = dryRun
+	outcome, err := f.svc.CloseWithOutcome(f.ctx, auditWriterPrincipal, service.CloseRequest{
+		ID: blocker, Reason: "terminal reason",
+	}, meta)
+	if err != nil {
+		t.Fatalf("service close err=%v", err)
+	}
+	return outcome
+}
+
+func (f *fixture) sourcePosition(t *testing.T, revision model.Revision) coreevents.Position {
+	t.Helper()
+	reader, err := f.store.Read(f.ctx, driver.View{Incarnation: f.inc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	sets, err := reader.Changesets(f.ctx, nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, set := range sets {
+		if set.Revision.String() == revision.String() {
+			count := len(set.Changes)
+			if set.Events != nil {
+				count = len(set.Events)
+			}
+			if count == 0 {
+				return coreevents.Position{Incarnation: f.inc, Revision: revision}
+			}
+			return coreevents.Position{Incarnation: f.inc, Revision: revision, Index: model.Natural64(uint64(count - 1))}
+		}
+	}
+	t.Fatalf("missing changeset %s", revision)
+	return coreevents.Position{}
+}
+
+func (f *fixture) reader(auth coreevents.Authorization) *coreevents.Reader {
+	return &coreevents.Reader{
+		Log:           serverevents.Log{Store: f.store},
+		Materializer:  serverevents.HistoryMaterializer{Store: f.store},
+		Authorization: auth,
+	}
+}
+
+func (f *fixture) closeEvents(t *testing.T, after coreevents.Position, auth coreevents.Authorization) []model.Event {
+	t.Helper()
+	page, err := f.reader(auth).Read(f.ctx, coreevents.ReadRequest{
+		After: after, Principal: auditReaderPrincipal, Limit: 1000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return page.Events()
+}
+
+func eventSet(t *testing.T, f *fixture, revision model.Revision) model.Changeset {
+	t.Helper()
+	reader, err := f.store.Read(f.ctx, driver.View{Incarnation: f.inc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	sets, err := reader.Changesets(f.ctx, nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, set := range sets {
+		if set.Revision.String() == revision.String() {
+			if err := set.ValidateEvents(); err != nil {
+				t.Fatalf("persisted event plan invalid: %v", err)
+			}
+			return set
+		}
+	}
+	t.Fatalf("missing event set %s", revision)
+	return model.Changeset{}
+}
+
+func TestConnectedServiceWriterAuditPlanAndSuppression(t *testing.T) {
+	f := newFixture(t)
+	blocker, dependentA, dependentB, link := f.graph(t)
+	start := f.sourcePosition(t, link.Revision)
+
+	dry := f.close(t, blocker, 6, true)
+	if !dry.Commit.WouldCommit || dry.Replayed {
+		t.Fatalf("dry-run outcome=%+v", dry)
+	}
+	meta, err := f.store.Meta(f.ctx)
+	if err != nil || meta.Head.String() != link.Revision.String() {
+		t.Fatalf("dry-run published graph revision: %+v err=%v", meta, err)
+	}
+
+	first := f.close(t, blocker, 7, false)
+	if first.Replayed || first.Commit.Revision.String() != "6" {
+		t.Fatalf("first close outcome=%+v", first)
+	}
+	entry := eventSet(t, f, first.Commit.Revision)
+	if len(entry.Changes) != 1 || len(entry.Events) != 3 || entry.Events[0].Type != model.EventBeadClosed {
+		t.Fatalf("close plan=%+v", entry)
+	}
+	for i, descriptor := range entry.Events {
+		if descriptor.Index.String() != fmt.Sprint(i) || descriptor.ChangeIndex.String() != "0" || descriptor.Provenance.Method != "bead.close" || descriptor.Provenance.Slot != "close" || descriptor.Provenance.Cause.Root != fmt.Sprintf("%032x", 7) || len(descriptor.Provenance.Chain) != 0 {
+			t.Fatalf("provenance[%d]=%+v", i, descriptor.Provenance)
+		}
+	}
+	for _, descriptor := range entry.Events[1:] {
+		if descriptor.Resource.Ref.ID != dependentA.ID && descriptor.Resource.Ref.ID != dependentB.ID {
+			t.Fatalf("notice resource=%+v", descriptor)
+		}
+		if descriptor.Details == nil || descriptor.Details.Ontology.Ref != f.sourceRef || descriptor.Details.Ontology.Revision.String() != "1" || descriptor.Details.Ontology.Project == nil || descriptor.Details.Ontology.Project.ID != "blocker-project" {
+			t.Fatalf("notice source pin=%+v", descriptor.Details)
+		}
+		if descriptor.Details.BlockerBefore.Revision.String() != "4" || descriptor.Details.BlockerAfter.Revision.String() != "6" || descriptor.Details.Edge.Revision.String() != "5" || !descriptor.Details.After.Terminal || descriptor.Details.After.Satisfied {
+			t.Fatalf("notice revisions/decision=%+v", descriptor.Details)
+		}
+	}
+	if entry.Events[1].Resource.Ref.ID != dependentA.ID || entry.Events[2].Resource.Ref.ID != dependentB.ID {
+		t.Fatalf("notice order=%+v", entry.Events)
+	}
+
+	events := f.closeEvents(t, start, coreevents.AllowAll{})
+	if len(events) != 3 || events[0].Durable.Type != model.EventBeadClosed {
+		t.Fatalf("materialized close events=%+v", events)
+	}
+	ordinary := events[0].Durable
+	if ordinary.Before["fields"].(map[string]any)["status"] != "todo" || ordinary.After["fields"].(map[string]any)["status"] != "done" || ordinary.Changed[0] != "/fields/status" || ordinary.Derived || ordinary.Cause.Root != fmt.Sprintf("%032x", 7) {
+		t.Fatalf("ordinary envelope=%+v", ordinary)
+	}
+	for i, event := range events[1:] {
+		notice := event.Durable
+		if notice.Type != model.EventDependencyConditionUnmet || len(notice.Changed) != 0 || notice.Before != nil || notice.After != nil || notice.Derived || notice.Details == nil || notice.Index.String() != fmt.Sprint(i+1) {
+			t.Fatalf("notice envelope=%+v", notice)
+		}
+	}
+
+	replayed := f.close(t, blocker, 7, false)
+	if !replayed.Replayed || !reflect.DeepEqual(replayed.Commit, first.Commit) {
+		t.Fatalf("replay outcome=%+v want=%+v", replayed, first)
+	}
+	noOp := f.close(t, blocker, 8, false)
+	if noOp.Replayed || noOp.Commit.Revision.String() != first.Commit.Revision.String() {
+		t.Fatalf("close no-op=%+v", noOp)
+	}
+	meta, err = f.store.Meta(f.ctx)
+	if err != nil || meta.Head.String() != first.Commit.Revision.String() {
+		t.Fatalf("replay/no-op changed head=%+v err=%v", meta, err)
+	}
+
+	reader, err := f.store.Read(f.ctx, driver.View{Incarnation: f.inc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	for _, ref := range []model.Ref{dependentA, dependentB} {
+		versions, err := reader.Versions(f.ctx, ref, driver.PageReq{})
+		if err != nil || len(versions.Items) != 2 {
+			t.Fatalf("dependent %s versions=%+v err=%v", ref.ID, versions, err)
+		}
+	}
+}
+
+func TestConnectedAuditOutcomesSuppressUnmetNotices(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		method   string
+		ordinary model.DurableEventType
+		notices  int
+	}{
+		{name: "cancel-direct-writer", method: "bead.cancel", ordinary: model.EventBeadCanceled, notices: 2},
+		{name: "failure-direct-writer", method: "bead.fail", ordinary: model.EventBeadFailed, notices: 0},
+		{name: "open-direct-writer", method: "bead.defer", ordinary: model.EventBeadDeferred, notices: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			blocker, _, _, link := f.graph(t)
+			var outcome port.WriteOutcome
+			var err error
+			outcome, err = f.writer.ApplyWithOutcome(f.ctx, auditWriterPrincipal, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: blocker, Fields: map[string]any{}}}}}, model.WriteMeta{
+				Method: tc.method, Project: "blocker-project", IdempotencyKey: fmt.Sprintf("%032x", 6),
+			})
+			if err != nil || outcome.Replayed {
+				t.Fatalf("direct %s outcome=%+v err=%v", tc.method, outcome, err)
+			}
+			entry := eventSet(t, f, outcome.Commit.Revision)
+			if len(entry.Events) != 1+tc.notices || entry.Events[0].Type != tc.ordinary {
+				t.Fatalf("%s event plan=%+v", tc.method, entry)
+			}
+			page := f.closeEvents(t, f.sourcePosition(t, link.Revision), coreevents.AllowAll{})
+			if len(page) != 1+tc.notices || page[0].Durable.Type != tc.ordinary {
+				t.Fatalf("%s materialized=%+v", tc.method, page)
+			}
+		})
+	}
+}
+
+func TestConnectedAuditSourceInvalidationRefusesCommit(t *testing.T) {
+	f := newFixture(t)
+	blocker, _, _, link := f.graph(t)
+	variant := 0
+	audit := service.NewOntologyAudit(func(string) (model.Ref, error) {
+		variant++
+		source := service.OntologySource{Base: ontology.DefaultDocument()}
+		source.Base.Statuses["todo"] = ontology.Status{Name: fmt.Sprintf("Todo %d", variant), Category: ontology.Unstarted}
+		body, err := service.MarshalOntologySource(source)
+		if err != nil {
+			return model.Ref{}, err
+		}
+		_, err = conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{Principal: auditWriterPrincipal}, []conformance.FixtureChange{{
+			Ref: f.sourceRef, Kind: "ontology", Op: model.OpPatch, Body: body,
+		}})
+		return f.sourceRef, err
+	})
+	writer := pipeline.New(f.store, f.lease, pipeline.WithOntology(f.normalize), pipeline.WithOntologyAudit(audit), pipeline.WithIDGenerator(f.nextID))
+	_, err := writer.Apply(f.ctx, auditWriterPrincipal, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: blocker, Fields: map[string]any{}}}}}, model.WriteMeta{
+		Method: "bead.close", Project: "blocker-project", IdempotencyKey: fmt.Sprintf("%032x", 6),
+	})
+	if err == nil || !strings.Contains(err.Error(), "write_conflict") {
+		t.Fatalf("source invalidation accepted/unmapped error=%v", err)
+	}
+	if variant != 4 {
+		t.Fatalf("guard retry count=%d want 4", variant)
+	}
+	reader, err := f.store.Read(f.ctx, driver.View{Incarnation: f.inc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	rows, err := reader.Get(f.ctx, []driver.Ref{blocker})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("blocker read=%+v err=%v", rows, err)
+	}
+	var doc pipeline.Document
+	if err := jsonDecode(rows[0].Body, &doc); err != nil || doc.Fields["status"] != "todo" {
+		t.Fatalf("stale source race changed blocker=%+v err=%v", doc, err)
+	}
+	meta, err := f.store.Meta(f.ctx)
+	if err != nil || meta.Head.String() != fmt.Sprint(5+variant) || link.Revision.String() != "5" {
+		t.Fatalf("source race head=%+v variant=%d err=%v", meta, variant, err)
+	}
+}
+
+func TestConnectedAuditResourceAuthorizationAndLostAckRecovery(t *testing.T) {
+	f := newFixture(t)
+	blocker, _, _, link := f.graph(t)
+	close := f.close(t, blocker, 6, false)
+	if close.Commit.Revision.String() != "6" {
+		t.Fatalf("close=%+v", close)
+	}
+	start := f.sourcePosition(t, link.Revision)
+
+	if _, err := f.reader(ordinaryOnlyAuthorization{}).Read(f.ctx, coreevents.ReadRequest{After: start, Principal: auditReaderPrincipal, Limit: 100}); !errors.Is(err, coreevents.ErrResourceAuthorization) {
+		t.Fatalf("missing ResourceAuthorization error=%v", err)
+	}
+	masked, err := f.reader(denyOntologyAuthorization{}).Read(f.ctx, coreevents.ReadRequest{After: start, Principal: auditReaderPrincipal, Limit: 100})
+	if err != nil || len(masked.Events()) != 1 || masked.Events()[0].Durable.Type != model.EventBeadClosed {
+		t.Fatalf("masked notice page=%+v err=%v", masked, err)
+	}
+
+	reader := f.reader(coreevents.AllowAll{})
+	checkpoints, err := serverevents.NewCheckpoints(f.store, f.lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := coreevents.Binding{ID: "connected-audit-listener", Class: coreevents.Listener, Principal: auditReaderPrincipal, Handler: deliveryHandler(func(_ context.Context, item coreevents.Delivery) error {
+		return nil
+	})}
+	if _, err := checkpoints.Save(f.ctx, binding.ID, 0, coreevents.State{Position: start, Class: binding.Class}); err != nil {
+		t.Fatal(err)
+	}
+	var deliveries []coreevents.Delivery
+	binding.Handler = deliveryHandler(func(_ context.Context, item coreevents.Delivery) error {
+		deliveries = append(deliveries, item)
+		return nil
+	})
+	fault := &lostAckCheckpoints{Checkpoints: checkpoints, revision: close.Commit.Revision, index: model.Natural64(1)}
+	dispatcher := &coreevents.Dispatcher{Reader: reader, Checkpoints: fault, Active: f.lease}
+	if _, err := dispatcher.Step(f.ctx, binding); err == nil {
+		t.Fatal("lost acknowledgement became a successful step")
+	}
+	state, _, err := checkpoints.Load(f.ctx, binding.ID)
+	if err != nil || state.Position.Revision.String() != close.Commit.Revision.String() || !state.Position.Index.IsZero() {
+		t.Fatalf("checkpoint after lost ack=%+v err=%v", state, err)
+	}
+
+	restarted := &coreevents.Dispatcher{Reader: f.reader(coreevents.AllowAll{}), Checkpoints: checkpoints, Active: f.lease}
+	for i := 0; i < 2; i++ {
+		progress, err := restarted.Step(f.ctx, binding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !progress.Advanced {
+			break
+		}
+	}
+	if len(deliveries) != 4 || deliveries[1].Key.String() != deliveries[2].Key.String() || !reflect.DeepEqual(deliveries[1].Event, deliveries[2].Event) || deliveries[0].Event.Durable.Type != model.EventBeadClosed || deliveries[3].Event.Durable.Type != model.EventDependencyConditionUnmet {
+		t.Fatalf("recovery deliveries=%+v", deliveries)
+	}
+	state, _, err = checkpoints.Load(f.ctx, binding.ID)
+	if err != nil || state.Position.Revision.String() != close.Commit.Revision.String() || state.Position.Index.String() != "2" {
+		t.Fatalf("final checkpoint=%+v err=%v", state, err)
+	}
+}
+
+// jsonDecode keeps this test's source-image assertion on the existing strict
+// pipeline decoder without importing an unexported helper.
+func jsonDecode(body []byte, out *pipeline.Document) error {
+	decoded, err := pipeline.DecodeDocument(body)
+	if err != nil {
+		return err
+	}
+	*out = decoded
+	return nil
+}
+
+type ordinaryOnlyAuthorization struct{}
+
+func (ordinaryOnlyAuthorization) Read(_ context.Context, _ model.PrincipalRef, event model.DurableEvent) (coreevents.Visibility, error) {
+	return coreevents.Visibility{Readable: true, Before: event.Before, After: event.After}, nil
+}
+
+type denyOntologyAuthorization struct{}
+
+func (denyOntologyAuthorization) Read(_ context.Context, _ model.PrincipalRef, event model.DurableEvent) (coreevents.Visibility, error) {
+	return coreevents.Visibility{Readable: true, Before: event.Before, After: event.After}, nil
+}
+func (denyOntologyAuthorization) ReadResource(_ context.Context, _ model.PrincipalRef, resource model.AuditResource) (coreevents.ResourceVisibility, error) {
+	if resource.Kind == "ontology" {
+		return coreevents.ResourceVisibility{Readable: false}, nil
+	}
+	return coreevents.ResourceVisibility{Readable: true}, nil
+}
+
+type deliveryHandler func(context.Context, coreevents.Delivery) error
+
+func (h deliveryHandler) Deliver(ctx context.Context, delivery coreevents.Delivery) error {
+	return h(ctx, delivery)
+}
+
+type lostAckCheckpoints struct {
+	coreevents.Checkpoints
+	revision model.Revision
+	index    model.Natural
+	failed   bool
+}
+
+func (c *lostAckCheckpoints) Save(ctx context.Context, binding string, generation uint64, state coreevents.State) (uint64, error) {
+	if !c.failed && state.Position.Revision.String() == c.revision.String() && state.Position.Index.String() == c.index.String() {
+		c.failed = true
+		return generation, errors.New("connected audit lost acknowledgement")
+	}
+	return c.Checkpoints.Save(ctx, binding, generation, state)
+}
