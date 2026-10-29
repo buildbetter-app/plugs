@@ -10,7 +10,6 @@ import (
 	"go/token"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -244,135 +243,10 @@ func CheckTree(root string) ([]Finding, error) {
 		}
 		files[raw] = b
 	}
-	return CheckFilesWithPolicy(files, cfg, DefaultTreePolicy())
-}
-
-// CheckRunfiles checks a hermetic tree assembled by a Bazel data target. It
-// deliberately walks the supplied root instead of invoking git, which is not
-// available in a Bazel sandbox.
-func CheckRunfiles(root string) ([]Finding, error) {
-	if root == "" {
-		return nil, errors.New("empty runfiles root")
-	}
-	if info, err := os.Stat(root); err != nil || !info.IsDir() {
-		return nil, fmt.Errorf("runfiles root is not a directory: %s", root)
-	}
-	cfg, err := LoadConfig(filepath.Join(root, "engdocs/style/lexicon.toml"))
-	if err != nil {
+	if err := CheckSourceManifest(files); err != nil {
 		return nil, err
 	}
-	files := make(map[string][]byte)
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		// Bazel places the test executable beside source runfiles under a
-		// generated *_ directory. It is not part of the checked-in tree and
-		// may be a binary; source data symlinks resolve outside bazel-out.
-		if entry.Type()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(path)
-			if err != nil {
-				return err
-			}
-			if strings.Contains(filepath.ToSlash(target), "/bazel-out/") {
-				return nil
-			}
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		// Manifest-based and Windows runfiles may materialize generated test
-		// outputs as regular files. Bazel names those output directories with a
-		// trailing underscore; source package directories in this tree do not.
-		for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
-			if strings.HasSuffix(part, "_") {
-				return nil
-			}
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read runfiles file %s: %w", rel, err)
-		}
-		files[filepath.ToSlash(rel)] = content
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("walk runfiles: %w", err)
-	}
 	return CheckFilesWithPolicy(files, cfg, DefaultTreePolicy())
-}
-
-// CheckRootInventory verifies that the hermetic runfiles tree contains the
-// complete direct-file inventory for the repository root. The manifest is
-// checked in under the lexicon package and deliberately lists only basenames;
-// package subtrees are supplied separately by //:lexicon_tree. Keeping this
-// comparison in the gate makes a newly added root file fail closed until its
-// inventory is reviewed and updated.
-func CheckRootInventory(root, manifestPath string) error {
-	if root == "" || manifestPath == "" {
-		return errors.New("empty root inventory path")
-	}
-	manifest, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(manifestPath)))
-	if err != nil {
-		return fmt.Errorf("read root inventory manifest: %w", err)
-	}
-	expected := make(map[string]struct{})
-	for lineNumber, line := range strings.Split(string(manifest), "\n") {
-		name := strings.TrimSpace(line)
-		if name == "" {
-			continue
-		}
-		clean := path.Clean(strings.ReplaceAll(name, "\\", "/"))
-		if clean != name || name == "." || strings.Contains(name, "/") || name == ".git" {
-			return fmt.Errorf("root inventory line %d is not a direct source basename: %q", lineNumber+1, name)
-		}
-		if _, duplicate := expected[name]; duplicate {
-			return fmt.Errorf("root inventory lists %q more than once", name)
-		}
-		expected[name] = struct{}{}
-	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return fmt.Errorf("read runfiles root: %w", err)
-	}
-	actual := make(map[string]struct{})
-	for _, entry := range entries {
-		// .git is checkout metadata and is intentionally excluded from the
-		// Bazel root glob. Directories are package boundaries represented by
-		// their own lexicon_files targets.
-		if entry.Name() == ".git" || entry.IsDir() {
-			continue
-		}
-		actual[entry.Name()] = struct{}{}
-	}
-	var missing, extra []string
-	for name := range expected {
-		if _, ok := actual[name]; !ok {
-			missing = append(missing, name)
-		}
-	}
-	for name := range actual {
-		if _, ok := expected[name]; !ok {
-			extra = append(extra, name)
-		}
-	}
-	sort.Strings(missing)
-	sort.Strings(extra)
-	if len(missing) != 0 || len(extra) != 0 {
-		return fmt.Errorf("root inventory mismatch (missing=%v extra=%v)", missing, extra)
-	}
-	return nil
 }
 
 func isProvenance(path string, zones []string) bool {

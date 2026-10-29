@@ -6,3 +6,10 @@ module(
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_go", version = "0.63.0")
 bazel_dep(name = "gazelle", version = "0.53.0")
+
+lexicon_sources = use_repo_rule("//tools/lexicon:inventory.bzl", "lexicon_sources")
+
+lexicon_sources(
+    name = "lexicon_sources",
+    root_file = "//:MODULE.bazel",
+)

@@ -1,41 +1,25 @@
 package lexicon
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-func bazelRunfilesRoot() (string, error) {
-	runfiles := os.Getenv("TEST_SRCDIR")
-	if runfiles == "" {
-		return "", os.ErrNotExist
-	}
-	candidates := []string{os.Getenv("TEST_WORKSPACE"), "_main", "plugs", ""}
-	for _, workspace := range candidates {
-		root := runfiles
-		if workspace != "" {
-			root = filepath.Join(root, workspace)
-		}
-		if _, err := os.Stat(filepath.Join(root, "engdocs/style/lexicon.toml")); err == nil {
-			return root, nil
-		}
-	}
-	return "", os.ErrNotExist
-}
+var sourceInventory = flag.String("lexicon-source-inventory", "", "Bazel runfile path of the complete source inventory")
 
 // TestLexiconTreeGate is the required hermetic B1 tree check. Its data is
-// assembled by //:lexicon_tree; CheckRunfiles never invokes git or reads an
-// ambient protected-path environment variable.
+// assembled by //:lexicon_tree across all source/package boundaries. It never
+// invokes git or reads an ambient protected-path environment variable.
 func TestLexiconTreeGate(t *testing.T) {
-	root, err := bazelRunfilesRoot()
-	if err != nil {
+	if *sourceInventory == "" && os.Getenv("TEST_SRCDIR") == "" {
 		t.Skip("the hermetic tree gate runs under Bazel")
 	}
-	if err := CheckRootInventory(root, "tools/lexicon/root_lexicon_manifest.txt"); err != nil {
-		t.Fatal(err)
+	if *sourceInventory == "" || os.Getenv("TEST_SRCDIR") == "" {
+		t.Fatal("Bazel did not supply the complete source inventory runfile")
 	}
-	findings, err := CheckRunfiles(root)
+	findings, err := CheckSourceInventory(filepath.Join(os.Getenv("TEST_SRCDIR"), filepath.FromSlash(*sourceInventory)))
 	if err != nil {
 		t.Fatal(err)
 	}

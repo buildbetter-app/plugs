@@ -9,21 +9,9 @@ go_library(
 
 filegroup(
     name = "lexicon_tree",
-    # Keep the root inventory complete as the skeleton grows. Bazel's * glob
-    # includes dotfiles; the .git pointer is checkout metadata, not source.
-    srcs = glob(["*"], exclude = ["BUILD.bazel", ".git", ".git/**"]) + [
-        "BUILD.bazel",
-        "//cmd/plug:lexicon_files",
-        "//engdocs/style:lexicon_files",
-        "//internal:lexicon_files",
-        "//pluginapi:lexicon_files",
-        "//sdk/go:lexicon_files",
-        "//tools/lexicon:lexicon_files",
-    ] + glob([
-        ".github/**",
-        "engdocs/adr/**",
-        "engdocs/design/plug/**",
-    ]),
+    # A checkout inventory crosses package and hidden-directory boundaries;
+    # native globs and a list of known package targets cannot do that.
+    srcs = ["@lexicon_sources//:tree"],
     visibility = ["//visibility:public"],
 )
 

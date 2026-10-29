@@ -110,30 +110,6 @@ func TestCheckTreeFailsClosedOutsideGit(t *testing.T) {
 	}
 }
 
-func TestCheckRootInventoryRequiresExactDirectFiles(t *testing.T) {
-	root := t.TempDir()
-	for _, name := range []string{"README.md", ".hidden", "manifest.txt"} {
-		if err := os.WriteFile(filepath.Join(root, name), []byte("ok\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.Mkdir(filepath.Join(root, "nested"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "manifest.txt"), []byte(".hidden\nREADME.md\nmanifest.txt\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := CheckRootInventory(root, "manifest.txt"); err != nil {
-		t.Fatalf("complete root inventory rejected: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "README.go"), []byte("package readme\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := CheckRootInventory(root, "manifest.txt"); err == nil || !strings.Contains(err.Error(), "extra") {
-		t.Fatalf("unlisted root file was not rejected: %v", err)
-	}
-}
-
 func TestPolicyProtectsDeclaredPathsAndRejectsUnknownProtectedBinary(t *testing.T) {
 	content := []byte("legacy vocabulary")
 	digest := sha256.Sum256(content)
