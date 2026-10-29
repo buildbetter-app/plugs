@@ -143,6 +143,16 @@ internal/core/authz/identity_test.go
 internal/core/authz/mutation.go
 internal/core/authz/mutation_test.go
 internal/core/authz/types.go
+internal/core/dumpformat/BUILD.bazel
+internal/core/dumpformat/README.md
+internal/core/dumpformat/catalog.go
+internal/core/dumpformat/json.go
+internal/core/dumpformat/migration_hashes.go
+internal/core/dumpformat/records.go
+internal/core/dumpformat/sources.go
+internal/core/dumpformat/types.go
+internal/core/dumpformat/validate.go
+internal/core/dumpformat/validate_test.go
 internal/core/events/BUILD.bazel
 internal/core/events/dispatcher.go
 internal/core/events/natural.go
@@ -226,6 +236,10 @@ internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
 internal/doc.go
+internal/integration/converterroundtrip/BUILD.bazel
+internal/integration/converterroundtrip/restore.go
+internal/integration/converterroundtrip/roundtrip_test.go
+internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
 internal/plugins/authnapikey/BUILD.bazel
 internal/plugins/authnapikey/apikey.go
 internal/plugins/authnapikey/apikey_test.go
