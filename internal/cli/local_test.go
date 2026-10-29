@@ -130,6 +130,50 @@ func TestRealWarningVisibleInJSONAndHumanModesAndReplay(t *testing.T) {
 	}
 }
 
+func TestRealClientKeepsReplayMetadataSeparateFromStoredResult(t *testing.T) {
+	post := &unavailablePost{}
+	l, err := OpenLocal(context.Background(), LocalConfig{
+		Project: "local", Agent: "cli-test", Storage: StorageConfig{Driver: "memory"},
+		PipelineOptions: []pipeline.Option{pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "test-warning", Subscriber: post})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	ctx := context.Background()
+	params := map[string]any{"type": "issue", "fields": map[string]any{"title": "Stored result"}}
+	first, err := l.Client.Call(ctx, "bead.create", params, "")
+	if err != nil || first.Replayed {
+		t.Fatalf("first committed response: %+v %v", first, err)
+	}
+	_, err = l.Client.Call(ctx, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "Later write"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := l.Client.Call(ctx, "bead.create", params, first.IdempotencyKey)
+	if err != nil || !replay.Replayed || !bytes.Equal(first.JSON, replay.JSON) || post.calls != 2 {
+		t.Fatalf("replay metadata/result/callbacks: first=%s replay=%+v posts=%d error=%v", first.JSON, replay, post.calls, err)
+	}
+	decoded, err := wire.DecodeJSON(first.JSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object := decoded.(map[string]any)
+	if object["_meta"] != nil || len(object["warnings"].([]any)) != 1 {
+		t.Fatalf("response metadata changed stored result: %s", first.JSON)
+	}
+	ref := object["results"].([]any)[0].(map[string]any)["ref"]
+	params = map[string]any{"id": ref, "fields": map[string]any{"title": "Stored result"}}
+	noop, err := l.Client.Call(ctx, "bead.update", params, "")
+	if err != nil || noop.Replayed || post.calls != 2 {
+		t.Fatalf("fresh no-op marked replayed or reran callback: %+v %v posts=%d", noop, err, post.calls)
+	}
+	replay, err = l.Client.Call(ctx, "bead.update", params, noop.IdempotencyKey)
+	if err != nil || !replay.Replayed || !bytes.Equal(noop.JSON, replay.JSON) || post.calls != 2 {
+		t.Fatalf("no-op receipt metadata/result: %+v %v posts=%d", replay, err, post.calls)
+	}
+}
+
 func TestStorageFactoryUsesOneStoreAndClosesOnce(t *testing.T) {
 	opened, closed := 0, 0
 	factory := func(ctx context.Context, cfg StorageConfig) (driver.Store, func() error, error) {
