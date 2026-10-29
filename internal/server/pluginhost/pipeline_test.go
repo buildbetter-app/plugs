@@ -262,6 +262,63 @@ func TestPipelineNativeAtomicBatchImages(t *testing.T) {
 	}
 }
 
+func TestPipelineNativeNoopReceiptAndPostSuppression(t *testing.T) {
+	var mutations, posts atomic.Int32
+	native := conformance.Native(conformance.Options{
+		Probe: func(context.Context, pluginapi.Host, pluginapi.ProposedChange, pluginapi.SnapshotReader) error {
+			mutations.Add(1)
+			return nil
+		},
+		After: func(context.Context, pluginapi.Host, pluginapi.CommittedChange, pluginapi.SnapshotReader) error {
+			posts.Add(1)
+			return nil
+		},
+	})
+	h, err := New(Config{Natives: []sdk.Native{native}, Bindings: fixtureBindings()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, store := nativeWriter(t, h)
+	created, err := w.Apply(context.Background(), nativePrincipal, nativeCreate("hello"), nativeMeta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Results) != 1 || mutations.Load() != 1 || posts.Load() != 1 {
+		t.Fatalf("initial native write: %+v; calls=%d/%d", created, mutations.Load(), posts.Load())
+	}
+	ref := created.Results[0].Ref
+	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{
+		Target: ref, Fields: map[string]any{"title": "hello"},
+	}}}}
+	meta := nativeMeta
+	meta.IdempotencyKey = "00000000000000000000000000000002"
+	noop, err := w.Apply(context.Background(), nativePrincipal, cs, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noop.Revision != created.Revision || len(noop.Results) != 1 || noop.Results[0].Revision != created.Results[0].Revision || string(noop.Results[0].Record) != string(created.Results[0].Record) {
+		t.Fatalf("no-op changed the committed revision/image: %+v", noop)
+	}
+	if mutations.Load() != 2 || posts.Load() != 1 {
+		t.Fatalf("no-op skipped admission or reran post delivery: calls=%d/%d", mutations.Load(), posts.Load())
+	}
+	again, err := w.Apply(context.Background(), nativePrincipal, cs, meta)
+	firstWire, firstErr := json.Marshal(noop)
+	replayWire, replayErr := json.Marshal(again)
+	if err != nil || firstErr != nil || replayErr != nil || string(firstWire) != string(replayWire) || mutations.Load() != 2 || posts.Load() != 1 {
+		t.Fatalf("no-op receipt did not replay: %+v, %v; calls=%d/%d", again, err, mutations.Load(), posts.Load())
+	}
+	r := nativeReader(t, store)
+	log, err := r.Changesets(context.Background(), nil, 10)
+	if err != nil || len(log) != 1 || r.Snapshot().At.String() != created.Revision.String() {
+		t.Fatalf("no-op advanced head/log: %+v, %v", log, err)
+	}
+	versions, err := r.Versions(context.Background(), ref, driver.PageReq{})
+	if err != nil || len(versions.Items) != 1 {
+		t.Fatalf("no-op created a version: %+v, %v", versions, err)
+	}
+}
+
 func TestPipelineNativeValidatorRefusalPublishesNothing(t *testing.T) {
 	h, err := New(Config{Natives: []sdk.Native{conformance.Native(conformance.Options{})}, Bindings: fixtureBindings()})
 	if err != nil {
