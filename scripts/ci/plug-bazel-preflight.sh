@@ -1,14 +1,362 @@
 #!/usr/bin/env bash
-# Run Plug's clean, local Bazel preflight.
-#
-# This script does not consume the repository .bazelrc. The current checkout
-# still contains the Beads-era rc, including optional remote settings; the clean
-# Plug lane must remain usable while that tree is being replaced. It reads only
-# the inherited gms_pure_go declaration when go-mysql-server is still present,
-# and refuses to infer that compatibility setting if its declaration is absent.
-# A temporary rc and output root make every invocation independent of a user's
-# Bazel server, disk cache, credentials, and workspace rc files.
+# Plug's pinned, fresh Bazel preflight. The supervisor owns every descendant,
+# enforces the work deadline independently of Bash, and freezes only stopped work.
 set -euo pipefail
+if [[ "${1:-}" == --plug-bazel-worker &&
+  "${PLUG_BAZEL_PRIVATE_PARENT:-}" == "$PPID" ]]; then
+  shift
+else
+  exec python3 - "$0" "$@" <<'PLUG_SUPERVISOR'
+import ctypes
+import hashlib
+import os
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+script, *arguments = sys.argv[1:]
+limit_text = os.environ.get('PLUG_BAZEL_TIMEOUT_SECONDS', '2400')
+evidence = Path(os.environ.get('PLUG_BAZEL_EVIDENCE_DIR') or tempfile.mkdtemp(prefix='plug-bazel-evidence.')).absolute()
+evidence.mkdir(parents=True, exist_ok=True)
+if any(evidence.iterdir()):
+    sys.exit('plug-bazel-preflight: evidence directory must be empty; refusing to change a prior snapshot')
+scratch = Path(tempfile.mkdtemp(prefix='plug-bazel-bootstrap.'))
+started = time.monotonic()
+started_epoch = int(time.time())
+received = []
+for number in (signal.SIGINT, signal.SIGTERM):
+    signal.signal(number, lambda sig, frame: received.append(sig))
+# Orphaned grandchildren remain ours even if their command/session leader exits
+# between polls. This owns only descendants of this supervisor, never siblings.
+history = {}
+worker = None
+status = 1
+reason = 'exit'
+termination_signal = 'none'
+deadline_reached = False
+snapshot_complete = False
+shutdown_complete = False
+
+
+def event(message):
+    line = f'{time.time():.3f} {message}\n'
+    print('plug-bazel-preflight: ' + message, flush=True)
+    with (evidence / 'lifecycle.txt').open('a') as out:
+        out.write(line)
+
+
+def processes():
+    table = {}
+    for item in Path('/proc').iterdir():
+        if not item.name.isdecimal():
+            continue
+        try:
+            raw = (item / 'stat').read_text()
+            fields = raw.rsplit(') ', 1)[1].split()
+            table[int(item.name)] = dict(pid=int(item.name), ppid=int(fields[1]),
+                pgid=int(fields[2]), sid=int(fields[3]), state=fields[0],
+                start_ticks=int(fields[19]), command=raw.split('(', 1)[1].rsplit(') ', 1)[0])
+        except (OSError, ValueError, IndexError):
+            continue
+    owned = {os.getpid()}
+    # Keep identities after parent exit, including separate process groups.
+    owned.update(pid for (pid, birth) in history
+                 if pid in table and table[pid]['start_ticks'] == birth)
+    while True:
+        expanded = owned | {pid for pid, row in table.items() if row['ppid'] in owned}
+        if expanded == owned:
+            break
+        owned = expanded
+    result = {pid: table[pid] for pid in owned if pid != os.getpid() and pid in table}
+    for row in result.values():
+        history[(row['pid'], row['start_ticks'])] = row
+    return result
+
+
+def reap(table):
+    if worker is not None:
+        worker.poll()
+    for pid, row in table.items():
+        if row['state'] == 'Z' and (worker is None or pid != worker.pid):
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
+
+
+def live():
+    table = processes()
+    reap(table)
+    return {pid: row for pid, row in processes().items() if row['state'] != 'Z'}
+
+
+def send(table, sig, end, escalated):
+    privileged = []
+    for pid, row in table.items():
+        if time.monotonic() >= end:
+            break
+        # Recheck start time before a signal; a recycled PID is not our process.
+        try:
+            fields = Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()
+            if int(fields[19]) != row['start_ticks']:
+                continue
+        except (OSError, ValueError, IndexError):
+            continue
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # Only an identified descendant of opted-in sudo cleanup can need
+            # this. Never signal by command name, user, or an unowned group.
+            if (pid, row['start_ticks'], sig) not in escalated:
+                privileged.append(str(pid))
+                escalated.add((pid, row['start_ticks'], sig))
+    if privileged and time.monotonic() < end:
+        # This helper is owned too. Never use subprocess.run/wait here: even a
+        # timed-out synchronous wait could block shutdown on an unkillable child.
+        try:
+            subprocess.Popen(['sudo', '--non-interactive', '/bin/kill',
+                              f'-{sig}', '--', *privileged], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except OSError:
+            pass
+
+
+def stop_owned():
+    stop_started = time.monotonic()
+    escalated = set()
+    for sig, seconds in ((signal.SIGINT, 3), (signal.SIGTERM, 3), (signal.SIGKILL, 4)):
+        table = live()
+        if not table:
+            break
+        event(f'shutdown signal={signal.Signals(sig).name} processes={len(table)}')
+        stage_end = min(stop_started + 12, time.monotonic() + seconds)
+        while table and time.monotonic() < stage_end:
+            send(table, sig, stage_end, escalated)
+            if time.monotonic() >= stage_end:
+                break
+            time.sleep(.05)
+            table = live()
+        if not table:
+            break
+    return not live()
+
+
+def inventory(name, rows):
+    with (evidence / name).open('w') as out:
+        out.write('pid ppid pgid sid state start_ticks command\n')
+        for row in sorted(rows, key=lambda x: (x['pid'], x['start_ticks'])):
+            out.write('{pid} {ppid} {pgid} {sid} {state} {start_ticks} {command}\n'.format(**row))
+
+
+def record_shutdown():
+    # Retain historical identities, including finalization helpers. An absent
+    # process with a recycled PID must never be reported as the owned process.
+    current = processes()
+    rows = []
+    for (pid, birth), old in history.items():
+        row = dict(old)
+        now = current.get(pid)
+        row['state'] = now['state'] if now and now['start_ticks'] == birth else 'absent'
+        rows.append(row)
+    inventory('processes-after-shutdown.txt', rows)
+    (evidence / 'process-shutdown.txt').write_text(
+        f'owned_processes_observed={len(history)}\n'
+        f'owned_writers_running={str(not shutdown_complete).lower()}\n')
+
+
+def bounded(action, end):
+    # Copy/hash work has its own finite budget too. A blocked filesystem call
+    # cannot leave the main supervisor waiting indefinitely in an EXIT trap.
+    child = os.fork()
+    if child == 0:
+        os.setsid()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, signal.SIG_DFL)
+        try:
+            action()
+        except BaseException as exc:
+            print(f'plug-bazel-preflight: finalization failed: {type(exc).__name__}: {exc}', flush=True)
+            os._exit(1)
+        os._exit(0)
+    while time.monotonic() < end:
+        done, result = os.waitpid(child, os.WNOHANG)
+        if done:
+            complete = os.waitstatus_to_exitcode(result) == 0 and not live()
+            if not complete:
+                stop_owned()
+            return complete
+        processes()  # Retain the helper's identity and any descendants as well.
+        time.sleep(.05)
+    event('finalization budget exhausted')
+    stop_owned()
+    return False
+
+
+def copy_evidence():
+    for name in ('bazel-version.txt', 'bazel-release.txt', 'go-sdk.txt',
+                 'bazel-testlogs.txt', 'build-command.txt', 'test-command.txt',
+                 'build-events.json', 'test-events.json', 'build.log', 'test.log',
+                 'owned-processes.txt', 'plug.bazelrc', 'phase.txt'):
+        source = scratch / name
+        if source.is_file():
+            shutil.copyfile(source, evidence / name)
+    testlogs_file = scratch / 'testlogs-root.txt'
+    if testlogs_file.is_file():
+        testlogs = Path(testlogs_file.read_text().strip())
+        output_root = (scratch / 'bazel-output').resolve()
+        if not testlogs.resolve().is_relative_to(output_root):
+            raise ValueError('test XML escaped the owned output root')
+        visited = set()
+        for directory, directories, files in os.walk(testlogs, followlinks=True):
+            directory = Path(directory)
+            identity = (directory.stat().st_dev, directory.stat().st_ino)
+            if identity in visited:
+                directories[:] = []
+                continue
+            visited.add(identity)
+            if 'test.xml' in files:
+                source = directory / 'test.xml'
+                if not source.resolve().is_relative_to(output_root):
+                    raise ValueError('test XML escaped the owned output root')
+                target = evidence / 'test-xml' / source.relative_to(testlogs)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+    disk = os.statvfs(scratch)
+    (evidence / 'disk-after-preflight.txt').write_text(
+        f'path={scratch}\nblock_size={disk.f_frsize}\n'
+        f'available_bytes={disk.f_bavail * disk.f_frsize}\n'
+        f'total_bytes={disk.f_blocks * disk.f_frsize}\n')
+
+
+def write_result(frozen):
+    phase_file = scratch / 'phase.txt'
+    phase = phase_file.read_text().strip() if phase_file.is_file() else 'initializing'
+    (evidence / 'preflight-result.txt').write_text(
+        f'exit_status={status}\nphase={phase or "unknown"}\n'
+        f'termination_signal={termination_signal}\ntermination_reason={reason}\n'
+        f'deadline_reached={str(deadline_reached).lower()}\ntimeout_seconds={limit_text}\n'
+        f'owned_shutdown_complete={str(shutdown_complete).lower()}\n'
+        f'snapshot_complete={str(snapshot_complete).lower()}\n'
+        f'evidence_frozen={str(frozen).lower()}\nbazel_mode=batch\n')
+
+
+def make_manifest():
+    # The temporary manifest shares the destination filesystem, including when
+    # evidence is a separate mount. Exclude only this unpublished temp file.
+    with (evidence / '.manifest.sha256.tmp').open('w') as out:
+        for path in sorted(evidence.rglob('*')):
+            if path == evidence / '.manifest.sha256.tmp':
+                continue
+            if path.is_symlink():
+                raise ValueError('live symlink in evidence')
+            if path.is_file():
+                with path.open('rb') as source:
+                    digest = hashlib.file_digest(source, 'sha256').hexdigest()
+                out.write(f'{digest}  ./{path.relative_to(evidence).as_posix()}\n')
+
+try:
+    if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+        raise OSError('cannot establish descendant ownership')
+    for name in ('BAZEL_REMOTE_EXECUTOR', 'BAZEL_FORK_CACHE', 'BAZEL_FORK_REMOTE',
+                 'BAZEL_RRC_READ', 'RBE_WEST_EXECUTOR', 'RBE_TLS_CERT',
+                 'RBE_TLS_KEY', 'RBE_TLS_CA', 'RBE_INSTANCE'):
+        if os.environ.get(name):
+            raise ValueError(name + ' must be unset for the Plug preflight')
+    if not limit_text.isascii() or not limit_text.isdecimal() or not 1 <= int(limit_text) <= 2400:
+        raise ValueError('PLUG_BAZEL_TIMEOUT_SECONDS must be an integer from 1 to 2400')
+    limit = int(limit_text)
+    (evidence / 'deadline.txt').write_text(
+        f'timeout_seconds={limit}\nouter_job_seconds=2700\nreserved_seconds={2700-limit}\n'
+        'shutdown_budget_seconds=12\nfinalization_budget_seconds=90\n')
+    event(f'supervisor started pid={os.getpid()} python={sys.version.split()[0]}')
+    environment = os.environ.copy()
+    environment.update(PLUG_BAZEL_PRIVATE_PARENT=str(os.getpid()),
+                       PLUG_BAZEL_PRIVATE_WORK_DIR=str(scratch),
+                       PLUG_BAZEL_PRIVATE_EVIDENCE_DIR=str(evidence))
+    worker = subprocess.Popen(['bash', script, '--plug-bazel-worker', *arguments],
+                              env=environment, start_new_session=True)
+    event(f'worker started pid={worker.pid}')
+    while True:
+        processes()
+        code = worker.poll()
+        if received:
+            sig = received[0]
+            status, reason, termination_signal = 128 + sig, 'signal', signal.Signals(sig).name.removeprefix('SIG')
+            break
+        if time.monotonic() - started >= limit:
+            status, reason, termination_signal, deadline_reached = 124, 'internal-deadline', 'deadline', True
+            break
+        if code is not None:
+            status = code if code >= 0 else 128 - code
+            if status == 0 and live():
+                status, reason = 1, 'surviving-descendants'
+            break
+        reap(processes())
+        time.sleep(.05)
+except (OSError, ValueError) as exc:
+    event(str(exc))
+    status = 1
+
+shutdown_started = time.monotonic()
+shutdown_epoch = int(time.time())
+event(f'work ended status={status} reason={reason}; stopping owned descendants')
+inventory('processes-before-shutdown.txt', processes().values())
+shutdown_complete = stop_owned()
+shutdown_seconds = time.monotonic() - shutdown_started
+record_shutdown()
+if not shutdown_complete:
+    status = status or 1
+    event('owned descendants did not stop; refusing raw snapshot and frozen certificate')
+else:
+    event('owned descendants stopped; copying available evidence')
+    final_end = shutdown_started + 90
+    snapshot_complete = bounded(copy_evidence, final_end)
+    if not snapshot_complete:
+        status = status or 1
+    shutdown_complete = shutdown_complete and not live()
+    record_shutdown()
+if received and reason != 'signal':
+    sig = received[0]
+    status, reason, termination_signal = 128 + sig, 'signal', signal.Signals(sig).name.removeprefix('SIG')
+(evidence / 'finalization.txt').write_text(
+    f'started_epoch={started_epoch}\nshutdown_started_epoch={shutdown_epoch}\n'
+    f'snapshot_completed_epoch={int(time.time())}\nelapsed_seconds={time.monotonic()-started:.3f}\n'
+    f'shutdown_seconds={shutdown_seconds:.3f}\n'
+    f'snapshot_seconds={time.monotonic()-shutdown_started-shutdown_seconds:.3f}\n')
+frozen = shutdown_complete and snapshot_complete and not live()
+write_result(frozen)
+if frozen:
+    event('snapshot complete; hashing immutable regular files')
+    signal_count = len(received)
+    if bounded(make_manifest, final_end) and len(received) == signal_count:
+        try:
+            os.replace(evidence / '.manifest.sha256.tmp', evidence / 'manifest.sha256')
+        except OSError as exc:
+            event(f'manifest publication failed: {exc}')
+            frozen = False
+    else:
+        frozen = False
+    if not frozen:
+        shutdown_complete = shutdown_complete and not live()
+        record_shutdown()
+        if received:
+            sig = received[0]
+            status, reason, termination_signal = 128 + sig, 'signal', signal.Signals(sig).name.removeprefix('SIG')
+        else:
+            status = status or 1
+        (evidence / '.manifest.sha256.tmp').unlink(missing_ok=True)
+        write_result(False)
+print(f'plug-bazel-preflight: finalization complete status={status} frozen={str(frozen).lower()} elapsed={time.monotonic()-started:.3f}s', flush=True)
+sys.exit(status)
+PLUG_SUPERVISOR
+fi
 
 usage() {
   cat <<'EOF'
@@ -46,238 +394,9 @@ read -r -a targets <<<"$targets_text"
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-evidence_dir="${PLUG_BAZEL_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/plug-bazel-evidence.XXXXXX")}"
-mkdir -p "$evidence_dir"
-if [[ -n "$(find "$evidence_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-  echo 'plug-bazel-preflight: evidence directory must be empty; refusing to change a prior snapshot' >&2
-  exit 1
-fi
-
-manifest_path="$evidence_dir/manifest.sha256"
-phase=initializing
-work_dir=
-testlogs_root=
-active_bazel_pid=
-stream_pid=
-deadline_pid=
-termination_signal=none
-termination_reason='exit'
-deadline_reached=false
-timeout_seconds="${PLUG_BAZEL_TIMEOUT_SECONDS:-2400}"
-started_epoch="$(date +%s)"
-shutdown_pids=()
-
-# Record the current owned trees before stopping anything. Including the owned
-# session IDs also finds group members whose immediate parent already exited.
-record_owned_processes() {
-  local pid
-  mapfile -t shutdown_pids < <(ps -eo pid=,ppid=,pgid= | awk \
-    -v roots="$active_bazel_pid $stream_pid $deadline_pid" \
-    -v groups="$active_bazel_pid $deadline_pid" '
-    { parent[$1] = $2; group[$1] = $3 }
-    END {
-      count = split(roots, root, " ")
-      for (i = 1; i <= count; i++) if (root[i] != "") owned[root[i]] = 1
-      count = split(groups, session, " ")
-      for (i = 1; i <= count; i++)
-        if (session[i] != "")
-          for (pid in group) if (group[pid] == session[i]) owned[pid] = 1
-      do {
-        changed = 0
-        for (pid in parent)
-          if ((parent[pid] in owned) && !(pid in owned)) {
-            owned[pid] = 1; changed = 1
-          }
-      } while (changed)
-      for (pid in owned) print pid
-    }')
-  printf 'pid ppid pgid state command\n' >"$evidence_dir/processes-before-shutdown.txt"
-  for pid in "${shutdown_pids[@]}"; do
-    if ! [[ "$pid" =~ ^[0-9]+$ ]] || ((pid <= 1 || pid == $$ || pid == PPID)); then
-      shutdown_pids=()
-      return 1
-    fi
-    ps -o pid=,ppid=,pgid=,stat=,comm= -p "$pid" \
-      >>"$evidence_dir/processes-before-shutdown.txt" || :
-  done
-}
-
-stop_deadline() {
-  if [[ -n "$deadline_pid" ]]; then
-    kill -TERM -- "-$deadline_pid" 2>/dev/null || :
-    wait "$deadline_pid" 2>/dev/null || :
-    deadline_pid=
-  fi
-}
-
-verify_owned_stopped() {
-  local pid state attempt signal running=false
-  # Reap any recorded descendants left behind when an ancestor exited during
-  # cancellation. Never freeze files while one of these processes can write.
-  for signal in TERM KILL; do
-    for pid in "${shutdown_pids[@]}"; do
-      state="$(ps -o stat= -p "$pid")" || continue
-      [[ "$state" == *Z* ]] || kill -s "$signal" "$pid" 2>/dev/null || :
-    done
-    for ((attempt = 0; attempt < 10; attempt++)); do
-      running=false
-      for pid in "${shutdown_pids[@]}"; do
-        state="$(ps -o stat= -p "$pid")" || continue
-        [[ "$state" == *Z* ]] || running=true
-      done
-      [[ "$running" == true ]] || break
-      sleep 0.5
-    done
-    [[ "$running" == true ]] || break
-  done
-  printf 'pid state\n' >"$evidence_dir/processes-after-shutdown.txt"
-  for pid in "${shutdown_pids[@]}"; do
-    state="$(ps -o stat= -p "$pid")" || state=absent
-    printf '%s %s\n' "$pid" "$state" >>"$evidence_dir/processes-after-shutdown.txt"
-  done
-  printf 'owned_processes_observed=%s\nowned_writers_running=%s\n' \
-    "${#shutdown_pids[@]}" "$running" >"$evidence_dir/process-shutdown.txt"
-  [[ "$running" == false ]]
-}
-
-# Each invocation uses batch mode in its own session: no Bazel daemon can keep
-# writing after its client exits. Only signal processes descended from our PID.
-stop_owned_bazel() {
-  local pid state attempt signal running=false
-  local -a owned_pids=()
-  if [[ -n "$active_bazel_pid" ]]; then
-    mapfile -t owned_pids < <(ps -eo pid=,ppid= | awk -v root="$active_bazel_pid" '
-      { parent[$1] = $2 }
-      END {
-        owned[root] = 1
-        do {
-          changed = 0
-          for (pid in parent)
-            if ((parent[pid] in owned) && !(pid in owned)) {
-              owned[pid] = 1
-              changed = 1
-            }
-        } while (changed)
-        for (pid in owned) print pid
-      }')
-    for pid in "${owned_pids[@]}"; do
-      [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 1 && pid != $$ && pid != PPID)) || return 1
-    done
-    for signal in INT TERM KILL; do
-      kill -s "$signal" -- "-$active_bazel_pid" 2>/dev/null || :
-      # Give Bazel time to cancel actions itself before terminating descendants.
-      if [[ "$signal" != INT ]]; then
-        kill -s "$signal" -- "${owned_pids[@]}" 2>/dev/null || :
-      fi
-      for ((attempt = 0; attempt < 10; attempt++)); do
-        running=false
-        for pid in "${owned_pids[@]}"; do
-          state="$(ps -o stat= -p "$pid")" || continue
-          [[ "$state" == *Z* ]] || running=true
-        done
-        [[ "$running" == true ]] || break
-        sleep 0.5
-      done
-      [[ "$running" == true ]] || break
-    done
-    wait "$active_bazel_pid" 2>/dev/null || :
-    active_bazel_pid=
-    if [[ "$running" == true ]]; then
-      echo 'plug-bazel-preflight: owned Bazel processes did not stop; evidence cannot freeze' >&2
-      return 1
-    fi
-  fi
-  if [[ -n "$stream_pid" ]]; then
-    kill "$stream_pid" 2>/dev/null || :
-    wait "$stream_pid" 2>/dev/null || :
-    stream_pid=
-  fi
-}
-
-snapshot_evidence() {
-  local name xml relative
-  [[ -n "$work_dir" ]] || return 0
-  for name in bazel-version.txt bazel-release.txt go-sdk.txt bazel-testlogs.txt \
-    build-command.txt test-command.txt build-events.json test-events.json \
-    build.log test.log owned-processes.txt plug.bazelrc; do
-    if [[ -f "$work_dir/$name" ]]; then
-      cp -- "$work_dir/$name" "$evidence_dir/$name" || return 1
-    fi
-  done
-  # Read only our output root, never the mutable workspace bazel-testlogs link.
-  if [[ -n "$testlogs_root" && -d "$testlogs_root" ]]; then
-    while IFS= read -r -d '' xml; do
-      relative="${xml#"$testlogs_root/"}"
-      mkdir -p -- "$evidence_dir/test-xml/$(dirname "$relative")" || return 1
-      cp -- "$xml" "$evidence_dir/test-xml/$relative" || return 1
-    done < <(find -L "$testlogs_root" -type f -name test.xml -print0)
-  fi
-  df -B1 -- "$work_dir" "$evidence_dir" >"$evidence_dir/disk-after-preflight.txt"
-}
-
-write_manifest() {
-  local tmp_manifest
-  tmp_manifest="$(mktemp "${TMPDIR:-/tmp}/plug-bazel-manifest.XXXXXX")" || return 1
-  if ! (
-    cd "$evidence_dir" || exit 1
-    find . -type f ! -path ./manifest.sha256 -print0 \
-      | LC_ALL=C sort -z \
-      | xargs -r -0 /usr/bin/sha256sum
-  ) >"$tmp_manifest"; then
-    rm -f "$tmp_manifest"
-    return 1
-  fi
-  mv -f "$tmp_manifest" "$manifest_path"
-}
-
-write_result() {
-  printf 'exit_status=%s\nphase=%s\ntermination_signal=%s\ntermination_reason=%s\ndeadline_reached=%s\ntimeout_seconds=%s\nevidence_frozen=%s\nbazel_mode=batch\n' \
-    "$1" "$phase" "$termination_signal" "$termination_reason" \
-    "$deadline_reached" "$timeout_seconds" "$2" \
-    >"$evidence_dir/preflight-result.txt"
-}
-
-finish() {
-  local status=$?
-  local evidence_frozen=true
-  local shutdown_started_epoch freeze_epoch
-  shutdown_started_epoch="$(date +%s)"
-  trap - EXIT
-  trap '' INT TERM USR1
-  if ! record_owned_processes; then
-    evidence_frozen=false
-  fi
-  stop_deadline
-  if ! stop_owned_bazel || ! verify_owned_stopped; then
-    evidence_frozen=false
-  fi
-  if [[ "$evidence_frozen" == true ]] && ! snapshot_evidence; then
-    evidence_frozen=false
-  fi
-  [[ "$evidence_frozen" == true ]] || { ((status != 0)) || status=1; }
-  freeze_epoch="$(date +%s)"
-  printf 'started_epoch=%s\nshutdown_started_epoch=%s\nsnapshot_completed_epoch=%s\nelapsed_seconds=%s\nshutdown_seconds=%s\n' \
-    "$started_epoch" "$shutdown_started_epoch" "$freeze_epoch" \
-    "$((freeze_epoch - started_epoch))" "$((freeze_epoch - shutdown_started_epoch))" \
-    >"$evidence_dir/finalization.txt"
-  write_result "$status" "$evidence_frozen"
-  if [[ "$evidence_frozen" == true ]] && ! write_manifest; then
-    echo "plug-bazel-preflight: could not write $manifest_path" >&2
-    ((status == 0)) && status=1
-    evidence_frozen=false
-    write_result "$status" "$evidence_frozen"
-  fi
-  echo "plug-bazel-preflight: finalization complete status=$status frozen=$evidence_frozen elapsed=$(( $(date +%s) - started_epoch ))s"
-  exit "$status"
-}
-trap finish EXIT
-# Preserve a signal status in the evidence when the runner or an outer timeout
-# stops the preflight while Bazel is running.  The EXIT trap still writes the
-# result and manifest before returning the conventional shell signal status.
-trap 'termination_signal=TERM; termination_reason=signal; exit 143' TERM
-trap 'termination_signal=INT; termination_reason=signal; exit 130' INT
-trap 'termination_signal=USR1; termination_reason=internal-deadline; deadline_reached=true; exit 124' USR1
-
+evidence_dir="${PLUG_BAZEL_PRIVATE_EVIDENCE_DIR:?missing supervisor evidence directory}"
+work_dir="${PLUG_BAZEL_PRIVATE_WORK_DIR:?missing supervisor work directory}"
+printf 'initializing\n' >"$work_dir/phase.txt"
 fail() {
   echo "plug-bazel-preflight: $*" >&2
   exit 1
@@ -301,17 +420,6 @@ for name in \
   fi
 done
 
-[[ "$timeout_seconds" =~ ^[1-9][0-9]{0,3}$ ]] || fail "PLUG_BAZEL_TIMEOUT_SECONDS must be an integer from 1 to 2400"
-((timeout_seconds <= 2400)) || fail "PLUG_BAZEL_TIMEOUT_SECONDS must not exceed the 2400-second work budget"
-printf 'timeout_seconds=%s\nouter_job_seconds=2700\nreserved_seconds=%s\n' \
-  "$timeout_seconds" "$((2700 - timeout_seconds))" >"$evidence_dir/deadline.txt"
-# The timer owns a separate session; finalization stops and waits for it too.
-# USR1 interrupts the main shell's wait, unlike the outer job's hard deadline.
-deadline_script="sleep \"\$1\"; kill -USR1 \"\$2\""
-setsid --wait bash -c "$deadline_script" \
-  plug-bazel-deadline "$timeout_seconds" "$$" &
-deadline_pid=$!
-
 df -B1 -- "$evidence_dir" >"$evidence_dir/disk-before-preflight.txt"
 case "${PLUG_BAZEL_CLEAN_HOSTED_RUNNER:-}" in
   '') ;;
@@ -320,6 +428,7 @@ case "${PLUG_BAZEL_CLEAN_HOSTED_RUNNER:-}" in
       "${RUNNER_ENVIRONMENT:-}" == github-hosted &&
       "${RUNNER_OS:-}" == Linux ]] || fail "toolchain cleanup requires an ephemeral GitHub-hosted Linux runner"
     phase=runner-cleanup
+    printf '%s\n' "$phase" >"$work_dir/phase.txt"
     cp -- "$evidence_dir/disk-before-preflight.txt" "$evidence_dir/disk-before-cleanup.txt"
     # Fixed allowlist of unused image toolchains. Keep the OS, Docker, Node and
     # Python; Bazel and Go come from the verified pins below, not these paths.
@@ -379,7 +488,6 @@ case "$(uname -s):$(uname -m)" in
     ;;
 esac
 
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/plug-bazel-bootstrap.XXXXXX")"
 # Bazel's sandbox can leave root-owned files in this directory on the local
 # testbox. Keep it for diagnostics; CI runner cleanup removes it after the job.
 
@@ -422,20 +530,18 @@ startup=(
 )
 
 run_bazel() {
-  local log="$1" status
+  local log="$1" status invocation_pid output_pid
   shift
-  # Reset the signals Bash normally ignores for asynchronous children. Keeping
-  # the wait in this shell lets TERM/INT interrupt it and enter the EXIT trap.
+  # The supervisor retains process identities and adopts surviving descendants
+  # across each command return. These PIDs are diagnostic, never sole ownership.
   setsid --wait env --default-signal=INT,TERM \
     "$bazelisk" "${startup[@]}" "$@" >"$log" 2>&1 &
-  active_bazel_pid=$!
-  printf 'pid=%s command=%s\n' "$active_bazel_pid" "$1" >>"$work_dir/owned-processes.txt"
-  tail --pid="$active_bazel_pid" --sleep-interval=0.1 -n +1 -f "$log" &
-  stream_pid=$!
-  if wait "$active_bazel_pid"; then status=0; else status=$?; fi
-  active_bazel_pid=
-  wait "$stream_pid" || :
-  stream_pid=
+  invocation_pid=$!
+  printf 'pid=%s command=%s\n' "$invocation_pid" "$1" >>"$work_dir/owned-processes.txt"
+  tail --pid="$invocation_pid" --sleep-interval=0.1 -n +1 -f "$log" &
+  output_pid=$!
+  if wait "$invocation_pid"; then status=0; else status=$?; fi
+  wait "$output_pid" || :
   return "$status"
 }
 
@@ -448,6 +554,7 @@ grep -Fxq "release $bazel_version" "$work_dir/bazel-release.txt" || fail "Bazel 
 run_bazel "$work_dir/bazel-testlogs.txt" info bazel-testlogs
 testlogs_root="$(tail -1 "$work_dir/bazel-testlogs.txt")"
 [[ "$testlogs_root" == "$output_root/"* ]] || fail "Bazel test logs escaped the owned output root"
+printf '%s\n' "$testlogs_root" >"$work_dir/testlogs-root.txt"
 
 run_bazel "$work_dir/go-sdk.txt" cquery @go_sdk//:go_sdk --output=build
 go_sdk_version="$(sed -n 's/^  version = "\([^"]*\)".*/\1/p' "$work_dir/go-sdk.txt" | head -1)"
@@ -494,13 +601,16 @@ printf '%q ' "$bazelisk" "${test_command[@]}" | sed 's/ $//' >"$work_dir/test-co
 printf '\n' >>"$work_dir/test-command.txt"
 
 phase=build
+printf '%s\n' "$phase" >"$work_dir/phase.txt"
 echo "plug-bazel-preflight: bazel build $targets_text"
 run_bazel "$work_dir/build.log" build "${targets[@]}" "--build_event_json_file=$build_bep" --show_result=0
 
 phase="test"
+printf '%s\n' "$phase" >"$work_dir/phase.txt"
 echo "plug-bazel-preflight: bazel test $targets_text (fresh results)"
 run_bazel "$work_dir/test.log" test "${targets[@]}" "--build_event_json_file=$test_bep" --nocache_test_results --test_output=errors
 
 phase=complete
+printf '%s\n' "$phase" >"$work_dir/phase.txt"
 echo "plug-bazel-preflight: evidence=$evidence_dir"
 echo "plug-bazel-preflight: bazel=$bazel_version go_sdk=$go_sdk_version runner=$runner_class"
