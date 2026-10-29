@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "acceptance",
+    srcs = [
+        "fixture_test.go",
+        "graph_test.go",
+        "lifecycle_test.go",
+        "paging_test.go",
+        "time_test.go",
+    ],
+    args = ["-test.v"],
+    deps = [
+        "//internal/acceptance",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
