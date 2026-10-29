@@ -5,8 +5,11 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
 const (
@@ -21,6 +24,13 @@ const (
 	DefaultProtocolVersion = "2025-03-26"
 )
 
+// NotificationSink receives server-to-client JSON-RPC notifications that are
+// discovered while serving a request. A streamable-HTTP composition root can
+// put the bytes on its SSE/session stream; the JSON POST adapter also includes
+// a pending notification in the next JSON response when no sink is installed.
+// The sink must not mutate the supplied bytes.
+type NotificationSink func(context.Context, model.PrincipalRef, []byte)
+
 // Config bounds one MCP handler. Zero values select defaults. The handler is
 // stateless: callers that need a long-lived MCP session may keep using the
 // same admitted HTTP connection, while every request still gets a fresh
@@ -29,12 +39,14 @@ type Config struct {
 	MaxBodyBytes          int64
 	MaxConcurrentRequests int
 	RequestTimeout        time.Duration
+	ReadTimeout           time.Duration
 	ProtocolVersion       string
 	ServerName            string
+	OnNotification        NotificationSink
 }
 
 func (c Config) defaults() (Config, error) {
-	if c.MaxBodyBytes < 0 || c.MaxConcurrentRequests < 0 || c.RequestTimeout < 0 {
+	if c.MaxBodyBytes < 0 || c.MaxConcurrentRequests < 0 || c.RequestTimeout < 0 || c.ReadTimeout < 0 {
 		return Config{}, fmt.Errorf("mcp: limits and timeout must not be negative")
 	}
 	if c.MaxBodyBytes == 0 {
@@ -45,6 +57,9 @@ func (c Config) defaults() (Config, error) {
 	}
 	if c.RequestTimeout == 0 {
 		c.RequestTimeout = DefaultRequestTimeout
+	}
+	if c.ReadTimeout == 0 {
+		c.ReadTimeout = DefaultRequestTimeout
 	}
 	if c.ProtocolVersion == "" {
 		c.ProtocolVersion = DefaultProtocolVersion

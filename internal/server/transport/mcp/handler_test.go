@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
@@ -85,11 +86,18 @@ func call(t *testing.T, f *fixture, body string) (int, []byte) {
 }
 
 func callHandler(t *testing.T, handler *mcp.Handler, body string) (int, []byte) {
+	return callHandlerWithHeaders(t, handler, body, nil)
+}
+
+func callHandlerWithHeaders(t *testing.T, handler *mcp.Handler, body string, headers map[string]string) (int, []byte) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "http://localhost/mcp", strings.NewReader(body))
 	req.RemoteAddr = "127.0.0.1:31000"
 	req.Header.Set("Plug-RPC", "1")
 	req.Header.Set("Content-Type", "application/json")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 	return recorder.Code, recorder.Body.Bytes()
@@ -212,7 +220,7 @@ func TestMCPRejectsMalformedAndUnsupportedInvocations(t *testing.T) {
 		t.Fatalf("unsupported argument was not rejected with canonical error: %s", body)
 	}
 	status, body = call(t, f, `{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`)
-	if status != http.StatusNoContent || len(body) != 0 {
+	if status != http.StatusAccepted || len(body) != 0 {
 		t.Fatalf("notification status=%d body=%q", status, body)
 	}
 	status, body = call(t, f, `{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{"cursor":"unsupported"}}`)
@@ -236,6 +244,129 @@ func TestMCPUsesCanonicalBytesForDirectComparison(t *testing.T) {
 	}
 	if string(canonicalEnvelope["result"]) != text {
 		t.Fatalf("MCP changed canonical result bytes\nMCP: %s\nRPC: %s", text, canonicalEnvelope["result"])
+	}
+}
+
+func TestMCPBatchesRequestsAndAcceptsNotificationsWith202(t *testing.T) {
+	f := newFixture(t)
+	status, body := call(t, f, `[`+
+		`{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"batch","version":"1"}}},`+
+		`{"jsonrpc":"2.0","id":"ping","method":"ping","params":{}},`+
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`+
+		`]`)
+	if status != http.StatusOK {
+		t.Fatalf("batch status=%d body=%s", status, body)
+	}
+	var responses []map[string]any
+	if err := json.Unmarshal(body, &responses); err != nil {
+		t.Fatal(err)
+	}
+	if len(responses) != 2 || responses[0]["id"] != "init" || responses[1]["id"] != "ping" {
+		t.Fatalf("batch responses=%s", body)
+	}
+	status, body = call(t, f, `{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`)
+	if status != http.StatusAccepted || len(body) != 0 {
+		t.Fatalf("notification status=%d body=%q", status, body)
+	}
+}
+
+func TestMCPPreservesCanonicalReplayMetadataAndCallerKey(t *testing.T) {
+	f := newFixture(t)
+	key := "550e8400-e29b-41d4-a716-446655440000"
+	body := `{"jsonrpc":"2.0","id":"replay","method":"tools/call","params":{"name":"bead_create","_meta":{"idempotencyKey":"` + key + `","agent":"caller"},"arguments":{"type":"issue","fields":{"title":"replayed"}}}}`
+	status, first := call(t, f, body)
+	if status != http.StatusOK {
+		t.Fatalf("first call status=%d body=%s", status, first)
+	}
+	status, second := call(t, f, body)
+	if status != http.StatusOK {
+		t.Fatalf("replay status=%d body=%s", status, second)
+	}
+	outer := decode(t, second)
+	meta, ok := outer["_meta"].(map[string]any)
+	if !ok || meta["replayed"] != true {
+		t.Fatalf("canonical replay metadata was not preserved: %s", second)
+	}
+	firstText := decode(t, first)["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"]
+	secondText := outer["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"]
+	if firstText != secondText {
+		t.Fatalf("replay changed canonical result\nfirst=%s\nsecond=%s", firstText, secondText)
+	}
+}
+
+func TestMCPInitializeValidatesRequiredParameters(t *testing.T) {
+	f := newFixture(t)
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"only"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"future","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}`,
+	} {
+		status, response := call(t, f, body)
+		if status != http.StatusOK || errorCode(t, response) != "invalid_params" {
+			t.Fatalf("invalid initialize status=%d body=%s", status, response)
+		}
+	}
+}
+
+func TestMCPEmitsToolsListChangedWhenVisibleHashChanges(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	lease, err := store.Lease(ctx, "mcp-list-change", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lease.Release(ctx) })
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ontology := service.NewOntology(nil)
+	domain := service.New(store, lease, pipeline.New(store, lease, pipeline.WithOntology(ontology)), service.WithOntology(ontology))
+	registry, err := rpc.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rpc.BindService(registry, domain); err != nil {
+		t.Fatal(err)
+	}
+	var allowReady atomic.Bool
+	allowReady.Store(true)
+	rpcServer, err := rpc.New(registry, rpc.Config{
+		Incarnation:    meta.Incarnation,
+		DefaultProject: "mcp-test",
+		Visible: func(_ context.Context, _ model.PrincipalRef, method wire.MethodDesc) (bool, error) {
+			return method.Name != "bead.ready" || allowReady.Load(), nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticator, err := authn.New(authn.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	notifications := make(chan []byte, 1)
+	handler, err := mcp.New(rpcServer, authenticator, mcp.Config{OnNotification: func(_ context.Context, _ model.PrincipalRef, data []byte) { notifications <- data }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body := callHandler(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	if status != http.StatusOK {
+		t.Fatalf("first tools/list status=%d body=%s", status, body)
+	}
+	allowReady.Store(false)
+	status, body = callHandler(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+	if status != http.StatusOK {
+		t.Fatalf("second tools/list status=%d body=%s", status, body)
+	}
+	select {
+	case notification := <-notifications:
+		if string(notification) != `{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}` {
+			t.Fatalf("unexpected list-change notification: %s", notification)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tools/list_changed notification was not emitted")
 	}
 }
 
@@ -284,7 +415,7 @@ func TestMCPCancelledNotificationCancelsActiveCall(t *testing.T) {
 	}
 
 	status, body := callHandler(t, handler, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"active","reason":"fixture"}}`)
-	if status != http.StatusNoContent || len(body) != 0 {
+	if status != http.StatusAccepted || len(body) != 0 {
 		t.Fatalf("cancellation notification status=%d body=%q", status, body)
 	}
 	select {
@@ -298,5 +429,85 @@ func TestMCPCancelledNotificationCancelsActiveCall(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("canceled canonical MCP call did not finish")
+	}
+}
+
+func TestMCPCancellationIsScopedToSession(t *testing.T) {
+	registry, err := rpc.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{}, 2)
+	if err := registry.Register("bead.ready", func(ctx context.Context, _ rpc.Call) (any, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		return nil, &model.Error{Data: model.ErrorData{Code: "busy", Hint: "request canceled"}}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server, err := rpc.New(registry, rpc.Config{Incarnation: "mcp-scoped-cancel", DefaultProject: "mcp-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticator, err := authn.New(authn.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := mcp.New(server, authenticator, mcp.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"jsonrpc":"2.0","id":"same","method":"tools/call","params":{"name":"bead_ready","arguments":{}}}`
+	results := make(chan struct {
+		session string
+		status  int
+		body    []byte
+	}, 2)
+	for _, session := range []string{"session-a", "session-b"} {
+		session := session
+		go func() {
+			status, response := callHandlerWithHeaders(t, handler, body, map[string]string{"MCP-Session-Id": session})
+			results <- struct {
+				session string
+				status  int
+				body    []byte
+			}{session: session, status: status, body: response}
+		}()
+	}
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("both session calls did not start")
+		}
+	}
+	status, response := callHandlerWithHeaders(t, handler, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"same"}}`, map[string]string{"MCP-Session-Id": "session-a"})
+	if status != http.StatusAccepted || len(response) != 0 {
+		t.Fatalf("session cancellation status=%d body=%q", status, response)
+	}
+	select {
+	case result := <-results:
+		if result.session != "session-a" || result.status != http.StatusOK {
+			t.Fatalf("wrong session canceled first: %+v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session-a call did not cancel")
+	}
+	select {
+	case result := <-results:
+		t.Fatalf("session-b was canceled by session-a: %+v", result)
+	case <-time.After(50 * time.Millisecond):
+	}
+	status, response = callHandlerWithHeaders(t, handler, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"same"}}`, map[string]string{"MCP-Session-Id": "session-b"})
+	if status != http.StatusAccepted || len(response) != 0 {
+		t.Fatalf("second session cancellation status=%d body=%q", status, response)
+	}
+	select {
+	case result := <-results:
+		if result.session != "session-b" || result.status != http.StatusOK {
+			t.Fatalf("session-b result=%+v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session-b call did not cancel")
 	}
 }
