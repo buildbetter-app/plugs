@@ -219,6 +219,12 @@ internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
 internal/doc.go
+internal/integration/sqliteacceptance/BUILD.bazel
+internal/integration/sqliteacceptance/README.md
+internal/integration/sqliteacceptance/durability_test.go
+internal/integration/sqliteacceptance/fixture_test.go
+internal/integration/sqliteacceptance/leases_refusals_test.go
+internal/integration/sqliteacceptance/transactions_test.go
 internal/plugins/authnapikey/BUILD.bazel
 internal/plugins/authnapikey/apikey.go
 internal/plugins/authnapikey/apikey_test.go
