@@ -442,16 +442,20 @@ type Record struct {
 
 type ConfigDoc = map[string]any
 type ConfigProblem struct {
-	Path, Code, Message string
-	Details             map[string]any
+	Path    string         `json:"path"`
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
 }
 type IntegrityParams struct {
-	Revision Revision
-	Project  string
+	Revision Revision `json:"revision"`
+	Project  string   `json:"project"`
 }
 type IntegrityProblem struct {
-	Path, Code, Message string
-	Details             map[string]any
+	Path    string         `json:"path"`
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
 }
 
 type Configurable interface {
@@ -476,8 +480,8 @@ type StateStore interface {
 	Revision(ctx context.Context, key string) (Revision, error)
 }
 type SecretValue struct {
-	Name     string
-	Redacted bool
+	Name     string `json:"name"`
+	Redacted bool   `json:"redacted"`
 }
 type RuntimeState string
 
@@ -507,12 +511,12 @@ type Change struct {
 	SetBy    map[string]string `json:"setBy,omitempty"`
 }
 type Patch struct {
-	Resource ResourceRef
-	Paths    map[string]json.RawMessage
+	Resource ResourceRef                `json:"resource"`
+	Paths    map[string]json.RawMessage `json:"paths"`
 }
 type Verdict struct {
-	Allow      bool
-	Violations []Violation
+	Allow      bool        `json:"allow"`
+	Violations []Violation `json:"violations,omitempty"`
 }
 
 type SnapshotReader interface {
@@ -537,9 +541,9 @@ type PostSubscriber interface {
 }
 
 type Query struct {
-	Filter map[string]any
-	Cursor *Cursor
-	Limit  int
+	Filter map[string]any `json:"filter,omitempty"`
+	Cursor *Cursor        `json:"cursor,omitempty"`
+	Limit  int            `json:"limit,omitempty"`
 }
 type Cursor struct {
 	// The JSON-RPC adapter encodes this bound value as the opaque cursor string;
@@ -553,30 +557,33 @@ type Cursor struct {
 	OntologyRevision Revision `json:"ontologyRevision"`
 }
 type Page[T any] struct {
-	Items      []T
-	NextCursor *Cursor
-	AsOf       Revision
+	Items      []T      `json:"items"`
+	NextCursor *Cursor  `json:"nextCursor,omitempty"`
+	AsOf       Revision `json:"asOf"`
 }
 type View struct {
-	ID     string
-	Type   string
-	Fields map[string]any
+	ID     string         `json:"id"`
+	Type   string         `json:"type"`
+	Fields map[string]any `json:"fields"`
 }
-type SubjectRef struct{ Kind, ID string }
+type SubjectRef struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
 type Grant struct {
-	Subject SubjectRef
-	Scope   Ref
-	Role    string
+	Subject SubjectRef `json:"subject"`
+	Scope   Ref        `json:"scope"`
+	Role    string     `json:"role"`
 }
 
 // A native or WASM plugin registers only methods under x.<alias>.*. Authz
 // links and synchronous subscribers are compiled in for v1; mode-2 authz is
 // not permitted.
 type Method struct {
-	Name       string
-	Params     any
-	Result     any
-	Permission string
-	Resource   func(params any) []Ref
+	Name       string                 `json:"name"`
+	Params     any                    `json:"params"`
+	Result     any                    `json:"result"`
+	Permission string                 `json:"permission"`
+	Resource   func(params any) []Ref `json:"-"`
 }
 type Registry interface{ Register(Method) error }

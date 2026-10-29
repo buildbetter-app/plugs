@@ -92,6 +92,9 @@ type cappedBody struct {
 }
 
 func (b *cappedBody) Read(p []byte) (int, error) {
+	if b.remaining < 0 {
+		return 0, fmt.Errorf("plugin egress byte limit exceeded")
+	}
 	if int64(len(p)) > b.remaining+1 {
 		p = p[:b.remaining+1]
 	}

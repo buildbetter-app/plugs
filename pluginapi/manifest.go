@@ -62,6 +62,7 @@ type Requirements struct {
 }
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
+var methodPart = regexp.MustCompile(`^[a-z][A-Za-z0-9_-]*$`)
 var fieldPart = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
 var versionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$`)
 
@@ -98,7 +99,7 @@ func ValidMethod(name string) bool {
 		return false
 	}
 	for _, part := range parts {
-		if !ValidName(part) {
+		if !methodPart.MatchString(part) {
 			return false
 		}
 	}

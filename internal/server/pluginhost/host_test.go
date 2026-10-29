@@ -312,3 +312,72 @@ func TestPostRestrictionsStateAndRetainedHTTP(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeDeadlineRevokesRetainedCapabilities(t *testing.T) {
+	started := make(chan pluginapi.SnapshotReader, 1)
+	release := make(chan struct{})
+	exited := make(chan struct{})
+	var retained pluginapi.Host
+	native := conformance.Native(conformance.Options{Probe: func(_ context.Context, _ pluginapi.Host, _ pluginapi.ProposedChange, r pluginapi.SnapshotReader) error {
+		started <- r
+		<-release
+		close(exited)
+		return nil
+	}})
+	constructor := native.New
+	native.New = func(h pluginapi.Host) (sdk.Registration, error) { retained = h; return constructor(h) }
+	bindings := fixtureBindings()
+	bindings[0].Timeout = 10 * time.Millisecond
+	h, err := New(Config{Natives: []sdk.Native{native}, Bindings: bindings})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &snapshot{}
+	for _, subscriber := range h.Subscribers() {
+		if subscriber.Mutator != nil {
+			patches, err := subscriber.Mutator.Mutate(context.Background(), proposal(), store)
+			if !errors.Is(err, context.DeadlineExceeded) || len(patches) != 0 {
+				close(release)
+				t.Fatalf("native callback ignored deadline: %v %v", patches, err)
+			}
+		}
+	}
+	r := <-started
+	if _, err := r.Get(context.Background(), []pluginapi.Ref{pluginapi.RefByID("pl-a", "")}); !errors.Is(err, context.DeadlineExceeded) {
+		close(release)
+		t.Fatalf("retained reader outlived call: %v", err)
+	}
+	if _, err := retained.HTTP().Get("https://example.com"); !errors.Is(err, context.DeadlineExceeded) {
+		close(release)
+		t.Fatalf("retained HTTP outlived call: %v", err)
+	}
+	if store.gets != 0 {
+		close(release)
+		t.Fatal("expired read reached core")
+	}
+	close(release)
+	<-exited
+}
+
+func TestExtensionAuthorizationUsesDeclaredResources(t *testing.T) {
+	denied := errors.New("denied")
+	var permission string
+	var resources []pluginapi.Ref
+	h, err := New(Config{Natives: []sdk.Native{conformance.Native(conformance.Options{})}, Authorize: func(_ context.Context, p string, r []pluginapi.Ref) error {
+		permission = p
+		resources = r
+		return denied
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Invoke(context.Background(), "x.fixture.echo", json.RawMessage(`{"id":"pl-a"}`)); !errors.Is(err, denied) {
+		t.Fatalf("authorization bypassed: %v", err)
+	}
+	if permission != "read" || len(resources) != 1 || resources[0].ID != "pl-a" {
+		t.Fatalf("wrong permission/resources: %s %#v", permission, resources)
+	}
+	if _, err := h.Invoke(context.Background(), "x.fixture.echo", json.RawMessage(`{"id":{"id":"pl-a"}}`)); code(err) != ErrMethod {
+		t.Fatalf("resource extractor panic escaped: %v", err)
+	}
+}

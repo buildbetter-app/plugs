@@ -158,7 +158,14 @@ func granted(grants []string, path string) bool {
 }
 
 func resourceKey(resource pluginapi.ResourceRef) (string, error) {
-	data, err := json.Marshal(resource)
+	if err := resource.Ref.Validate(); err != nil {
+		return "", err
+	}
+	arm, value := "key", resource.Ref.Key
+	if resource.Ref.IsID() {
+		arm, value = "id", resource.Ref.ID
+	}
+	data, err := json.Marshal([]string{resource.Kind, arm, value, resource.Ref.Branch.String()})
 	return string(data), err
 }
 

@@ -189,13 +189,17 @@ func (h *Host) Invoke(ctx context.Context, name string, params json.RawMessage) 
 	if err := ref.Validate(); err != nil {
 		return nil, err
 	}
+	refs, err := methodResources(m.Descriptor, value, ref)
+	if err != nil {
+		return nil, err
+	}
 	if h.authorize != nil {
-		if err := h.authorize(ctx, m.grant.Permission, []pluginapi.Ref{ref}); err != nil {
+		if err := h.authorize(ctx, m.grant.Permission, refs); err != nil {
 			return nil, err
 		}
 	}
 	var response json.RawMessage
-	err := m.instance.run(ctx, "method", time.Second, nil, func(ctx context.Context) error {
+	err = m.instance.run(ctx, "method", time.Second, nil, func(ctx context.Context) error {
 		data, err := m.Handle(ctx, append(json.RawMessage(nil), params...))
 		if err != nil {
 			return err
@@ -210,4 +214,28 @@ func (h *Host) Invoke(ctx context.Context, name string, params json.RawMessage) 
 		return nil, err
 	}
 	return response, nil
+}
+
+func methodResources(method pluginapi.Method, params any, required pluginapi.Ref) (refs []pluginapi.Ref, err error) {
+	defer func() {
+		if recover() != nil {
+			err = failure(ErrMethod, "method resource extractor rejected params")
+		}
+	}()
+	refs = method.Resource(params)
+	key, _ := resourceKey(pluginapi.ResourceRef{Kind: "bead", Ref: required})
+	present := false
+	for _, ref := range refs {
+		if err := ref.Validate(); err != nil {
+			return nil, err
+		}
+		actual, _ := resourceKey(pluginapi.ResourceRef{Kind: "bead", Ref: ref})
+		if key == actual {
+			present = true
+		}
+	}
+	if !present {
+		return nil, failure(ErrMethod, "resource extractor omitted the manifest resource")
+	}
+	return refs, nil
 }
