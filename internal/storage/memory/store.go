@@ -82,18 +82,59 @@ type Store struct {
 	now          func() time.Time
 }
 
+// Options supplies deterministic dependencies for acceptance fixtures. Empty
+// identities and a nil Clock use secure random identities and time.Now.
+// The clock must be concurrency-safe and nondecreasing, like time.Now.
+type Options struct {
+	Clock       func() time.Time
+	StoreID     driver.StoreID
+	Incarnation string
+}
+
 func New() *Store {
-	var id [16]byte
-	if _, err := rand.Read(id[:]); err != nil {
+	s, err := NewWithOptions(Options{})
+	if err != nil {
 		panic(err)
 	}
+	return s
+}
+
+func NewWithOptions(options Options) (*Store, error) {
+	identity := func() (string, error) {
+		var id [16]byte
+		if _, err := rand.Read(id[:]); err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(id[:]), nil
+	}
+	if options.Clock == nil {
+		options.Clock = time.Now
+	}
+	if options.StoreID == "" {
+		id, err := identity()
+		if err != nil {
+			return nil, err
+		}
+		options.StoreID = driver.StoreID(id)
+	}
+	if options.Incarnation == "" {
+		id, err := identity()
+		if err != nil {
+			return nil, err
+		}
+		options.Incarnation = id
+	}
+	if !canonicalKey(string(options.StoreID)) || !canonicalKey(options.Incarnation) {
+		return nil, fmt.Errorf("memory: invalid store identity")
+	}
 	s := &Store{locks: make(map[string]*heldLock), transactions: make(map[*transaction]bool), notify: make(chan struct{}), checkpoints: make(map[string]driver.Checkpoint), now: time.Now}
+	s.now = options.Clock
 	s.state = &state{
-		meta:    driver.Meta{StoreID: driver.StoreID(hex.EncodeToString(id[:])), Incarnation: hex.EncodeToString(id[:]), SchemaVersion: 1, State: "ready", Head: model.Natural64(0), HistoryFloor: model.Natural64(0)},
+		meta:    driver.Meta{StoreID: options.StoreID, Incarnation: options.Incarnation, SchemaVersion: 1, State: "ready", Head: model.Natural64(0), HistoryFloor: model.Natural64(0)},
 		records: make(map[string]driver.Record), kinds: make(map[string]string), versions: make(map[string][]driver.Version),
 		keys: make(map[string]driver.LockState), keyHistory: make(map[string][]driver.LockState), blobs: make(map[driver.Hash]blob), replays: make(map[scope]replay),
 	}
-	return s
+	return s, nil
 }
 
 func (s *Store) check(ctx context.Context) error {
