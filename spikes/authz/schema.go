@@ -79,6 +79,7 @@ func (s *Store) Reset(ctx context.Context) error {
 		`CREATE INDEX cut_ancestor_descendant ON authz_cut_closure(ancestor, descendant)`,
 		`CREATE INDEX cut_descendant_ancestor ON authz_cut_closure(descendant, ancestor)`,
 		`CREATE INDEX grant_subject_scope ON plugin_grant(subject, scope)`,
+		`CREATE INDEX grant_scope_role_subject ON plugin_grant(scope, role, subject)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.DB.ExecContext(ctx, stmt); err != nil {
@@ -164,29 +165,32 @@ func parentAndDepth(id int) (int, int) {
 }
 
 func insertClosure(ctx context.Context, tx *sql.Tx, d Dialect) error {
-	stmt, err := tx.PrepareContext(ctx, insertSQL(d, "authz_closure"))
-	if err != nil {
-		return err
+	// Build both closures with set-based recursive SQL. The prior Go loop made
+	// one driver call per ancestor row (about a million calls for this fixture),
+	// so three benchmark fractions were dominated by setup rather than query
+	// execution. This is the same recursive shape used by migration rebuilds.
+	full := `WITH RECURSIVE walk(descendant,ancestor,depth) AS (
+		SELECT id,id,0 FROM bead
+		UNION ALL
+		SELECT w.descendant,b.parent_id,w.depth+1
+		FROM walk w JOIN bead b ON b.id=w.ancestor
+		WHERE b.parent_id<>0
+	) INSERT INTO authz_closure(descendant,ancestor,depth)
+	SELECT descendant,ancestor,depth FROM walk`
+	if _, err := tx.ExecContext(ctx, full); err != nil {
+		return fmt.Errorf("closure: %w", err)
 	}
-	cut, err := tx.PrepareContext(ctx, insertSQL(d, "authz_cut_closure"))
-	if err != nil {
-		stmt.Close()
-		return err
-	}
-	defer stmt.Close()
-	defer cut.Close()
-	for id := 1; id <= BeadCount; id++ {
-		cur, depth := id, 0
-		for cur != 0 {
-			if _, err = stmt.ExecContext(ctx, id, cur, depth); err != nil {
-				return fmt.Errorf("closure %d/%d: %w", id, cur, err)
-			}
-			if _, err = cut.ExecContext(ctx, id, cur, depth); err != nil {
-				return fmt.Errorf("cut closure %d/%d: %w", id, cur, err)
-			}
-			p, _ := parentAndDepth(cur)
-			cur, depth = p, depth+1
-		}
+	cut := `WITH RECURSIVE walk(descendant,ancestor,depth,stopped) AS (
+		SELECT id,id,0,restricted FROM bead
+		UNION ALL
+		SELECT w.descendant,p.id,w.depth+1,p.restricted
+		FROM walk w JOIN bead b ON b.id=w.ancestor
+		JOIN bead p ON p.id=b.parent_id
+		WHERE b.parent_id<>0 AND w.stopped=0
+	) INSERT INTO authz_cut_closure(descendant,ancestor,depth)
+	SELECT descendant,ancestor,depth FROM walk`
+	if _, err := tx.ExecContext(ctx, cut); err != nil {
+		return fmt.Errorf("cut closure: %w", err)
 	}
 	return nil
 }
