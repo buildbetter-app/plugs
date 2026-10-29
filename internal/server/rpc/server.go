@@ -29,11 +29,15 @@ type Config struct {
 	Incarnation         string
 	Visible             func(context.Context, model.PrincipalRef, wire.MethodDesc) (bool, error)
 	DroppedNotification func(context.Context, string)
+	// CursorKey is an optional >=32-byte signing secret. Supplying a stable key
+	// preserves cursors across server restarts; nil generates a per-server key.
+	CursorKey []byte
 }
 
 type Server struct {
 	registry *Registry
 	config   Config
+	paging   *pageCodec
 }
 type principalKey struct{}
 
@@ -67,7 +71,11 @@ func New(registry *Registry, config Config) (*Server, error) {
 	if err := config.OntologyRevision.Validate(); err != nil {
 		return nil, err
 	}
-	s := &Server{registry: registry.snapshot(), config: config}
+	paging, err := newPageCodec(config)
+	if err != nil {
+		return nil, err
+	}
+	s := &Server{registry: registry.snapshot(), config: config, paging: paging}
 	for name, handler := range map[string]Handler{"server.hello": s.hello, "rpc.methods": s.methods, "rpc.describe": s.describe, "rpc.discover": s.discover} {
 		if err := s.registry.Register(name, handler); err != nil {
 			return nil, err
@@ -194,7 +202,7 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 	if err = ctx.Err(); err != nil {
 		return respond("busy", "request deadline or cancellation reached", nil)
 	}
-	result, callErr := invoke(ctx, bound.handler, Call{Method: method, Params: params, Meta: meta, Principal: by})
+	result, callErr := invoke(ctx, bound.handler, Call{Method: method, Params: params, Meta: meta, Principal: by, paging: s.paging})
 	if !idPresent {
 		return nil
 	}

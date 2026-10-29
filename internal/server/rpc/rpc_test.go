@@ -321,9 +321,9 @@ func TestServiceBindingsAtByteBoundary(t *testing.T) {
 	if ready.Limit != 1000 || ready.Project != "default" || ready.ViewID != "v" || len(ready.Filter.Types) != 1 || len(got["items"].([]any)) != 0 {
 		t.Fatal("ready mapping", ready, got)
 	}
-	result(t, call(t, s, ctx, "history.query", `{"asOf":{"revision":1e1000000000,"incarnation":"before"},"limit":5,"cursor":"next","_meta":{"project":"other"}}`))
+	result(t, call(t, s, ctx, "history.query", `{"asOf":{"revision":1e1000000000,"incarnation":"before"},"limit":5,"_meta":{"project":"other"}}`))
 	history := p.request.(service.HistoryRequest)
-	if history.AsOf.Revision != model.Natural("1e1000000000") || history.Project != "other" || history.Cursor != "next" {
+	if history.AsOf.Revision != model.Natural("1e1000000000") || history.Project != "other" || history.Cursor != "" {
 		t.Fatal("history mapping", history)
 	}
 	meta := `"_meta":{"idempotencyKey":"550e8400-e29b-41d4-a716-446655440000","agent":"worker","return":"minimal","traceparent":"trace","dryRun":true}`
