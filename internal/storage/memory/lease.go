@@ -118,11 +118,11 @@ func (l *activeLease) Release(ctx context.Context) error {
 	s := l.store
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if l.ended {
+		return nil
+	}
 	if err := ctx.Err(); err != nil {
 		return err
-	}
-	if l.ended && s.active == nil && s.epoch == l.epoch {
-		return nil
 	}
 	if err := s.checkLease(l); err != nil {
 		return err

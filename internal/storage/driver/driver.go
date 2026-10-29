@@ -483,6 +483,10 @@ type Store interface {
 	// Write binds the transaction to this store's active lease epoch. It
 	// checks fencing on every mutation and atomically with commit (G5).
 	Write(context.Context, ActiveLease) (WriteTx, error)
+	// Close releases the store's handles and active lease. Callers must close
+	// every reader and commit or roll back every transaction before closing
+	// the store. Close is idempotent and never commits staged writes.
+	Close() error
 }
 type ActiveLease interface {
 	Epoch() uint64
@@ -521,7 +525,15 @@ type Reader interface {
 	// the idempotency key itself remains in the log forever (G4).
 	ChangesetByKey(ctx context.Context, principal, anonymousAgentLabel, method, key string) (*model.Changeset, error)
 	IdempotencyByKey(ctx context.Context, principal, anonymousAgentLabel, method, key string) (*IdempotencyRecord, error)
+	// Close releases this reader's snapshot resources and is idempotent.
+	// For a WriteTx it rolls back an unfinished transaction and is a no-op
+	// after commit or rollback. Closing never commits staged writes.
+	Close() error
 }
+
+// WriteTx inherits Reader.Close: closing rolls back unfinished work, releases
+// its resources and locks, and is a no-op after commit or rollback. It never
+// commits staged writes.
 type WriteTx interface {
 	Reader
 	// keys must be globally sorted and duplicate-free. The returned state is
@@ -545,6 +557,12 @@ type WriteTx interface {
 	PutBlob(context.Context, []byte) (Hash, error)
 	// Every removed/added row requires its corresponding derived update
 	// lock. Row mutations, versions and predicate bumps publish atomically.
+	// Core selects every exact affected sentinel scope: Key/Value are opaque
+	// to drivers. Drivers enforce lock/bump/family coverage; family coverage
+	// alone does not prove that core declared every semantically affected
+	// scope. Ready rows require ready/<project>/<type>; ancestor/cut/attribute
+	// rows require closure/<id>; grant, ontology and plugin rows require their
+	// respective sentinel families. Sort/reference rows need no sentinel.
 	PutDerived(context.Context, DerivedTable, []DerivedRow, []DerivedRow) error
 	// BumpSentinels stages predicate revisions, including previously absent
 	// predicates. Each sentinel requires an acquired update/skipLocked lock.
@@ -562,6 +580,7 @@ type WriteTx interface {
 	// returns ErrIndeterminate with the original idempotency key.
 	Commit(context.Context, ChangesetHeader) (model.Changeset, error)
 	// Rollback is idempotent, releases all locks, and discards staged state.
-	// A completed transaction rejects further operations with ErrTxClosed.
+	// A completed transaction rejects further data operations with ErrTxClosed;
+	// Rollback and Close remain idempotent.
 	Rollback(context.Context) error
 }
