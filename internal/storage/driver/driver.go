@@ -545,6 +545,12 @@ type WriteTx interface {
 	PutBlob(context.Context, []byte) (Hash, error)
 	// Every removed/added row requires its corresponding derived update
 	// lock. Row mutations, versions and predicate bumps publish atomically.
+	// Core selects every exact affected sentinel scope: Key/Value are opaque
+	// to drivers. Drivers enforce lock/bump/family coverage; family coverage
+	// alone does not prove that core declared every semantically affected
+	// scope. Ready rows require ready/<project>/<type>; ancestor/cut/attribute
+	// rows require closure/<id>; grant, ontology and plugin rows require their
+	// respective sentinel families. Sort/reference rows need no sentinel.
 	PutDerived(context.Context, DerivedTable, []DerivedRow, []DerivedRow) error
 	// BumpSentinels stages predicate revisions, including previously absent
 	// predicates. Each sentinel requires an acquired update/skipLocked lock.
