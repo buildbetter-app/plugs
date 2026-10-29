@@ -495,8 +495,11 @@ internal/server/watchhttp/watchhttp.go
 internal/server/watchhttp/watchhttp_test.go
 internal/server/webui/BUILD.bazel
 internal/server/webui/README.md
+internal/server/webui/bridge.go
+internal/server/webui/bridge_test.go
 internal/server/webui/browser_check.mjs
 internal/server/webui/browser_test.go
+internal/server/webui/catalog.go
 internal/server/webui/static/app.js
 internal/server/webui/static/favicon.svg
 internal/server/webui/static/index.html

@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const state = { config: null, hello: null, methods: new Set(), activeView: "home", work: null, sequence: 0, home: null, next: null, blocked: null };
+  const state = { config: null, hello: null, methods: new Set(), activeView: "home", work: null, sequence: 0, home: null, next: null, blocked: null, bridges: [] };
   const $ = (id) => document.getElementById(id);
   const text = (node, value) => { node.textContent = value == null ? "" : String(value); };
   const clear = (node) => node.replaceChildren();
@@ -43,9 +43,10 @@
     }
     return { revision, incarnation: at.incarnation };
   }
-  async function rpc(method, params, signal) {
+  async function rpc(method, params, signal, requestedProject) {
     const input = Object.assign({}, params || {});
-    if (method !== "server.hello") input._meta = { project: state.config.project };
+    const project = typeof requestedProject === "string" && requestedProject ? requestedProject : state.config.project;
+    if (method !== "server.hello") input._meta = { project };
     const id = "web-ui-" + (++state.sequence);
     const response = await fetch(state.config.rpcPath, {
       method: "POST", mode: "same-origin", credentials: "omit", redirect: "error", cache: "no-store", signal,
@@ -81,6 +82,90 @@
     text($("footer-project"), "Project " + state.config.project); text($("footer-auth"), "Anonymous · loopback only");
     text($("capability-note"), "Only the rows in this page are compared with your previous read. Continue the snapshot to inspect the next page.");
     text($("home-boundary"), "Refresh reads a new snapshot. Live watches are unavailable in this UI; rows stay in server order.");
+    renderCatalog(state.config.catalog || {});
+    renderFrames(Array.isArray(state.config.frames) ? state.config.frames : []);
+  }
+  const bridgeDeniedMethods = new Set(["plugin.plan", "plugin.apply", "ontology.apply"]);
+  const bridgeDeniedPrefixes = ["auth.", "network.", "http.", "secret."];
+  const bridgeDeniedFields = new Set(["authorization", "cookie", "credentials", "token", "access_token", "secret", "url", "endpoint", "origin"]);
+  function bridgeMethodDenied(method) { return bridgeDeniedMethods.has(method) || bridgeDeniedPrefixes.some((prefix) => method.startsWith(prefix)); }
+  function bridgeFieldDenied(value) {
+    if (!value || typeof value !== "object") return false;
+    if (Array.isArray(value)) return value.some(bridgeFieldDenied);
+    return Object.entries(value).some(([key, child]) => bridgeDeniedFields.has(key.toLowerCase()) || bridgeFieldDenied(child));
+  }
+  function bridgeResponse(source, response) { source.postMessage(response, "*"); }
+  function bridgeFailure(source, id, code, detail) {
+    bridgeResponse(source, { jsonrpc: "2.0", id: id == null ? null : id, error: { code: -32000, message: detail, data: { code } } });
+  }
+  function installBridge(frame, descriptor) {
+    const methods = new Set(Array.isArray(descriptor.methods) ? descriptor.methods : []);
+    const project = typeof descriptor.project === "string" ? descriptor.project : state.config.project;
+    const callTimes = [];
+    const onMessage = async (event) => {
+      // Sandboxed frames have origin "null". The WindowProxy is the identity;
+      // origin alone cannot distinguish two opaque plugin frames.
+      if (event.source !== frame.contentWindow || event.origin !== "null") return;
+      let size;
+      try { size = JSON.stringify(event.data).length; } catch (_) { bridgeFailure(event.source, null, "invalid_message", "Bridge message is not serializable."); return; }
+      if (size > 256 * 1024) { bridgeFailure(event.source, event.data && event.data.id, "message_too_large", "Bridge message exceeds the framing limit."); return; }
+      const now = Date.now();
+      while (callTimes.length && now - callTimes[0] >= 1000) callTimes.shift();
+      if (callTimes.length >= 20) { bridgeFailure(event.source, event.data && event.data.id, "rate_limited", "Bridge call rate exceeds the per-frame limit."); return; }
+      callTimes.push(now);
+      const request = event.data;
+      if (!request || request.jsonrpc !== "2.0" || (typeof request.id !== "string" && !(typeof request.id === "number" && Number.isFinite(request.id))) || typeof request.method !== "string") {
+        bridgeFailure(event.source, request && request.id, "invalid_message", "Bridge request envelope is invalid."); return;
+      }
+      if (!methods.has(request.method) || bridgeMethodDenied(request.method)) {
+        bridgeFailure(event.source, request.id, "method_not_granted", "Bridge method is not granted."); return;
+      }
+      const params = request.params == null ? {} : request.params;
+      if (!params || typeof params !== "object" || Array.isArray(params) || bridgeFieldDenied(params)) {
+        bridgeFailure(event.source, request.id, "bridge_field_denied", "Bridge params contain a credential or egress field."); return;
+      }
+      const forwarded = Object.assign({}, params, { _meta: { project } });
+      try {
+        const result = await rpc(request.method, forwarded, new AbortController().signal, project);
+        bridgeResponse(event.source, { jsonrpc: "2.0", id: request.id, result });
+      } catch (error) {
+        bridgeFailure(event.source, request.id, error && error.code || "bridge_refused", failure(error));
+      }
+    };
+    window.addEventListener("message", onMessage);
+    state.bridges.push(() => window.removeEventListener("message", onMessage));
+  }
+  function renderCatalog(catalog) {
+    const node = $("catalog-entries");
+    if (!node) return;
+    clear(node);
+    const entries = [];
+    (Array.isArray(catalog.panels) ? catalog.panels : []).forEach((entry) => entries.push({ kind: "panel", title: entry.title, detail: entry.view + " view" }));
+    (Array.isArray(catalog.columns) ? catalog.columns : []).forEach((entry) => entries.push({ kind: "column", title: entry.title, detail: entry.field + " · " + entry.view + " view" }));
+    (Array.isArray(catalog.buttons) ? catalog.buttons : []).forEach((entry) => entries.push({ kind: "button", title: entry.label, detail: entry.method }));
+    if (!entries.length) { message(node, "empty", "No additions configured.", "This page uses only its built-in views."); return; }
+    entries.forEach((entry) => {
+      const card = document.createElement("article"); card.className = "catalog-entry"; card.dataset.catalogKind = entry.kind;
+      const kind = document.createElement("div"); kind.className = "catalog-entry-kind"; text(kind, entry.kind);
+      const title = document.createElement("div"); title.className = "catalog-entry-title"; text(title, entry.title);
+      const detail = document.createElement("div"); detail.className = "catalog-entry-detail"; text(detail, entry.detail);
+      card.append(kind, title, detail); node.appendChild(card);
+    });
+  }
+  function renderFrames(frames) {
+    const node = $("plugin-frames");
+    if (!node) return;
+    clear(node); node.hidden = true;
+    frames.forEach((descriptor) => {
+      if (!descriptor || typeof descriptor.id !== "string" || typeof descriptor.src !== "string" || bridgeFieldDenied(descriptor)) return;
+      let source;
+      try { source = new URL(descriptor.src, location.href); } catch (_) { return; }
+      if (source.origin !== location.origin || !source.pathname.includes("/frames/")) return;
+      const article = document.createElement("article"); article.className = "plugin-frame";
+      const heading = document.createElement("div"); heading.className = "plugin-frame-heading"; text(heading, descriptor.title || descriptor.id);
+      const frame = document.createElement("iframe"); frame.title = descriptor.title || descriptor.id; frame.setAttribute("sandbox", "allow-scripts"); frame.setAttribute("referrerpolicy", "no-referrer"); frame.src = source.href;
+      article.append(heading, frame); node.appendChild(article); node.hidden = false; installBridge(frame, descriptor);
+    });
   }
   function requireMethod(name) {
     if (!state.methods.has(name)) throw new RPCError("This server does not expose " + name + ".", "method_not_found");
