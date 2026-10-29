@@ -400,7 +400,14 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	if err != nil {
 		return model.Changeset{}, err
 	}
-	response, err := cloneJSON(header.Response)
+	responseInput := header.Response
+	if responseInput.Results == nil {
+		responseInput.Results = []model.OpResult{}
+	}
+	if responseInput.Warnings == nil {
+		responseInput.Warnings = []model.Warning{}
+	}
+	response, err := cloneJSON(responseInput)
 	if err != nil {
 		return model.Changeset{}, err
 	}
