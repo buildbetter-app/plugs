@@ -1,0 +1,20 @@
+# Neutral ownership for the initial clean tree. Product teams may refine this
+# map when the package contracts are established.
+version = 1
+default = ["plug-maintainers"]
+
+[[owner]]
+path = "cmd/plug"
+group = "plug-maintainers"
+
+[[owner]]
+path = "pluginapi"
+group = "plug-maintainers"
+
+[[owner]]
+path = "sdk/go"
+group = "plug-maintainers"
+
+[[owner]]
+path = "internal"
+group = "plug-maintainers"
