@@ -1,0 +1,11 @@
+.bazelversion
+.gitignore
+BUILD.bazel
+LICENSE
+MODULE.bazel
+MODULE.bazel.lock
+NOTICE.md
+OWNERS.toml
+SKELETON.md
+doc.go
+go.mod

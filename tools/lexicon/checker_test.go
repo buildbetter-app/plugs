@@ -42,6 +42,25 @@ func TestCheckFilesBlocksTermsAndImports(t *testing.T) {
 	}
 }
 
+func TestCheckFilesScansNewRootReadmeFiles(t *testing.T) {
+	identifier := string([]byte{98, 100})
+	productTerm := string([]byte{119, 105, 115, 112})
+	files := map[string][]byte{
+		"README.go": []byte("package readme\nconst inherited = " + strconv.Quote(identifier) + "\n"),
+		"README.md": []byte("retained " + productTerm + " vocabulary\n"),
+	}
+	findings, err := CheckFilesWithPolicy(files, testConfig(), TreePolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("got %d findings, want both root files checked: %#v", len(findings), findings)
+	}
+	if findings[0].Path != "README.go" || findings[1].Path != "README.md" {
+		t.Fatalf("root findings were not ordered by path: %#v", findings)
+	}
+}
+
 func TestCheckFilesAllowsProseAndSanctionedGlyph(t *testing.T) {
 	cfg := testConfig()
 	files := map[string][]byte{
@@ -88,6 +107,30 @@ func TestCheckTreeFailsClosedOutsideGit(t *testing.T) {
 	}
 	if _, err := CheckTree(root); err == nil {
 		t.Fatal("a non-repository root was accepted")
+	}
+}
+
+func TestCheckRootInventoryRequiresExactDirectFiles(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"README.md", ".hidden", "manifest.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("ok\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(root, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "manifest.txt"), []byte(".hidden\nREADME.md\nmanifest.txt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckRootInventory(root, "manifest.txt"); err != nil {
+		t.Fatalf("complete root inventory rejected: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.go"), []byte("package readme\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckRootInventory(root, "manifest.txt"); err == nil || !strings.Contains(err.Error(), "extra") {
+		t.Fatalf("unlisted root file was not rejected: %v", err)
 	}
 }
 

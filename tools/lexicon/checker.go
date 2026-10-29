@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -310,6 +311,68 @@ func CheckRunfiles(root string) ([]Finding, error) {
 		return nil, fmt.Errorf("walk runfiles: %w", err)
 	}
 	return CheckFilesWithPolicy(files, cfg, DefaultTreePolicy())
+}
+
+// CheckRootInventory verifies that the hermetic runfiles tree contains the
+// complete direct-file inventory for the repository root. The manifest is
+// checked in under the lexicon package and deliberately lists only basenames;
+// package subtrees are supplied separately by //:lexicon_tree. Keeping this
+// comparison in the gate makes a newly added root file fail closed until its
+// inventory is reviewed and updated.
+func CheckRootInventory(root, manifestPath string) error {
+	if root == "" || manifestPath == "" {
+		return errors.New("empty root inventory path")
+	}
+	manifest, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(manifestPath)))
+	if err != nil {
+		return fmt.Errorf("read root inventory manifest: %w", err)
+	}
+	expected := make(map[string]struct{})
+	for lineNumber, line := range strings.Split(string(manifest), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		clean := path.Clean(strings.ReplaceAll(name, "\\", "/"))
+		if clean != name || name == "." || strings.Contains(name, "/") || name == ".git" {
+			return fmt.Errorf("root inventory line %d is not a direct source basename: %q", lineNumber+1, name)
+		}
+		if _, duplicate := expected[name]; duplicate {
+			return fmt.Errorf("root inventory lists %q more than once", name)
+		}
+		expected[name] = struct{}{}
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return fmt.Errorf("read runfiles root: %w", err)
+	}
+	actual := make(map[string]struct{})
+	for _, entry := range entries {
+		// .git is checkout metadata and is intentionally excluded from the
+		// Bazel root glob. Directories are package boundaries represented by
+		// their own lexicon_files targets.
+		if entry.Name() == ".git" || entry.IsDir() {
+			continue
+		}
+		actual[entry.Name()] = struct{}{}
+	}
+	var missing, extra []string
+	for name := range expected {
+		if _, ok := actual[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	for name := range actual {
+		if _, ok := expected[name]; !ok {
+			extra = append(extra, name)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(extra)
+	if len(missing) != 0 || len(extra) != 0 {
+		return fmt.Errorf("root inventory mismatch (missing=%v extra=%v)", missing, extra)
+	}
+	return nil
 }
 
 func isProvenance(path string, zones []string) bool {

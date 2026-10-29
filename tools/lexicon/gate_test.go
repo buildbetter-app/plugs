@@ -32,6 +32,9 @@ func TestLexiconTreeGate(t *testing.T) {
 	if err != nil {
 		t.Skip("the hermetic tree gate runs under Bazel")
 	}
+	if err := CheckRootInventory(root, "tools/lexicon/root_lexicon_manifest.txt"); err != nil {
+		t.Fatal(err)
+	}
 	findings, err := CheckRunfiles(root)
 	if err != nil {
 		t.Fatal(err)

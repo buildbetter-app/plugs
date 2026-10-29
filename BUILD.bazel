@@ -9,18 +9,10 @@ go_library(
 
 filegroup(
     name = "lexicon_tree",
-    srcs = [
-        ".bazelversion",
+    # Keep the root inventory complete as the skeleton grows. Bazel's * glob
+    # includes dotfiles; the .git pointer is checkout metadata, not source.
+    srcs = glob(["*"], exclude = ["BUILD.bazel", ".git", ".git/**"]) + [
         "BUILD.bazel",
-        "LICENSE",
-        "MODULE.bazel",
-        "MODULE.bazel.lock",
-        "NOTICE.md",
-        "OWNERS.toml",
-        "SKELETON.md",
-        "doc.go",
-        ".gitignore",
-        "go.mod",
         "//cmd/plug:lexicon_files",
         "//engdocs/style:lexicon_files",
         "//internal:lexicon_files",
