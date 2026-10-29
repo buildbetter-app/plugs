@@ -15,6 +15,7 @@ go_library(
 go_test(
     name = "driver_test",
     srcs = [
+        "audit_contract_test.go",
         "errors_test.go",
         "keys_test.go",
         "receipt_contract_test.go",
