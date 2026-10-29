@@ -198,6 +198,7 @@ internal/storage/conformance/locks.go
 internal/storage/conformance/noops.go
 internal/storage/conformance/responses.go
 internal/storage/driver/BUILD.bazel
+internal/storage/driver/audit_contract_test.go
 internal/storage/driver/driver.go
 internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
