@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"reflect"
+	"strings"
 )
 
 // SlotForMethod recognizes only named lifecycle verbs. A caller-controlled
@@ -53,9 +54,6 @@ func methodForSlot(slot Slot) string {
 func (e Effective) SlotStatus(typ string, slot Slot) (string, bool) {
 	t, ok := e.document.Types[typ]
 	if !ok || t.Archived {
-		return "", false
-	}
-	if e.degraded[typ] {
 		return "", false
 	}
 	w, ok := e.document.Workflows[t.Workflow]
@@ -128,19 +126,29 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 	if after == nil {
 		return nil
 	} // deletion cannot introduce ontology drift
+	if before != nil && before.ID != after.ID {
+		return invalid("id", "bead identity is immutable")
+	}
+	slot, lifecycle := SlotForMethod(method)
+	if before != nil && !lifecycle && (before.Status != after.Status || hasPath(facts.Touched, "status") || hasPath(facts.Touched, "fields.status")) {
+		return []Violation{{Code: "ontology_use_slot_verb", Field: "status", Message: "status must be changed through a lifecycle verb"}}
+	}
+	var violations []Violation
+	if after.Priority != nil && (*after.Priority < 0 || *after.Priority > 4) {
+		violations = append(violations, invalid("priority", "priority must be P0 through P4")...)
+	}
 	t, ok := e.document.Types[after.Type]
 	if !ok || t.Archived {
-		return invalid("type", "unknown or archived type")
+		return append(violations, invalid("type", "unknown or archived type")...)
 	}
 	if e.degraded[after.Type] {
-		return invalid("type", "type is degraded: field owner unavailable")
+		return append(violations, Violation{Code: "subscriber_unavailable", Field: "type", Message: "type is degraded: field owner unavailable"})
 	}
 	w := e.document.Workflows[t.Workflow]
 	s, ok := e.document.Statuses[after.Status]
 	if !ok || s.Archived || w.Archived || !contains(w.Statuses, after.Status) {
-		return invalid("status", "status is outside the active type workflow")
+		violations = append(violations, invalid("status", "status is outside the active type workflow")...)
 	}
-	var violations []Violation
 	for _, name := range keys(after.Fields) {
 		field, ok := t.Fields[name]
 		if !ok {
@@ -166,15 +174,13 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 			violations = append(violations, Violation{Code: "field_owned", Field: "fields." + name, Message: "field may only be written by its owner"})
 		}
 	}
-	slot, lifecycle := SlotForMethod(method)
 	if before == nil {
 		if lifecycle {
 			violations = append(violations, invalid("status", "lifecycle operation requires an existing bead")...)
 		}
-		return violations
-	}
-	if before.Status != after.Status && !lifecycle {
-		violations = append(violations, Violation{Code: "ontology_use_slot_verb", Field: "status", Message: "status must be changed through a lifecycle verb"})
+		if after.Status != w.Initial {
+			violations = append(violations, Violation{Code: "ontology_use_slot_verb", Field: "status", Message: "new beads must start at the workflow initial status"})
+		}
 		return violations
 	}
 	if !lifecycle {
@@ -263,14 +269,14 @@ func validValue(field Field, value any) bool {
 	case "strings":
 		switch values := value.(type) {
 		case []string:
-			return true
+			return values != nil
 		case []any:
 			for _, v := range values {
 				if _, ok := v.(string); !ok {
 					return false
 				}
 			}
-			return true
+			return values != nil
 		default:
 			return false
 		}
@@ -279,11 +285,34 @@ func validValue(field Field, value any) bool {
 		if err != nil || len(data) == 0 || (data[0] != '-' && (data[0] < '0' || data[0] > '9')) {
 			return false
 		}
-		number, ok := new(big.Rat).SetString(string(data))
-		return ok && (field.Type == "number" || number.IsInt())
+		return field.Type == "number" || integralJSON(string(data))
 	default:
 		return false
 	}
+}
+
+// integralJSON never expands an exponent. A short value such as 1e1000000000
+// must not allocate a billion-digit integer during schema validation.
+func integralJSON(number string) bool {
+	exponent := new(big.Int)
+	if at := strings.IndexAny(number, "eE"); at >= 0 {
+		if _, ok := exponent.SetString(number[at+1:], 10); !ok {
+			return false
+		}
+		number = number[:at]
+	}
+	fraction := 0
+	if at := strings.IndexByte(number, '.'); at >= 0 {
+		fraction = len(number) - at - 1
+		number = number[:at] + number[at+1:]
+	}
+	number = strings.TrimLeft(number, "-0")
+	if number == "" {
+		return true
+	}
+	trailing := len(number) - len(strings.TrimRight(number, "0"))
+	exponent.Add(exponent, big.NewInt(int64(trailing-fraction)))
+	return exponent.Sign() >= 0
 }
 
 func copyState(state BeadState) (BeadState, error) {
@@ -295,5 +324,8 @@ func copyState(state BeadState) (BeadState, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	err = dec.Decode(&copy)
+	if err == nil && state.Fields != nil && copy.Fields == nil {
+		copy.Fields = map[string]any{}
+	}
 	return copy, err
 }

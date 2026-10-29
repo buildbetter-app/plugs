@@ -66,10 +66,10 @@ type Status struct {
 }
 
 type Workflow struct {
-	Statuses    []string        `json:"statuses"`
-	Initial     string          `json:"initial"`
-	Slots       map[Slot]string `json:"slots"`
-	Transitions []Rule          `json:"transitions"`
+	Statuses    []string        `json:"statuses,omitempty"`
+	Initial     string          `json:"initial,omitempty"`
+	Slots       map[Slot]string `json:"slots,omitempty"`
+	Transitions []Rule          `json:"transitions,omitempty"`
 	Archived    bool            `json:"archived,omitempty"`
 }
 
@@ -86,10 +86,11 @@ type Guard struct {
 }
 
 type Type struct {
-	Name     string           `json:"name"`
-	Workflow string           `json:"workflow"`
-	Fields   map[string]Field `json:"fields,omitempty"`
-	Archived bool             `json:"archived,omitempty"`
+	Name          string           `json:"name"`
+	Workflow      string           `json:"workflow"`
+	Fields        map[string]Field `json:"fields,omitempty"`
+	ReadyEligible *bool            `json:"ready_eligible,omitempty"` // nil infers eligibility from category
+	Archived      bool             `json:"archived,omitempty"`
 }
 
 // Field is a deliberately small typed schema, not an executable expression.
@@ -126,6 +127,7 @@ type BeadState struct {
 	Type     string         `json:"type"`
 	Status   string         `json:"status"`
 	Template bool           `json:"template,omitempty"`
+	Priority *int           `json:"priority,omitempty"` // fixed v1 domain P0 through P4
 	Fields   map[string]any `json:"fields,omitempty"`
 }
 
@@ -141,6 +143,7 @@ type GuardFacts struct {
 	AuthzInstalled bool
 	Permission     *bool
 	SetBy          map[string]string // fields.<key> -> mutator identity
+	Touched        model.FieldSet    // trusted operation paths, including same-value status patches
 }
 
 type Effective struct {
@@ -175,11 +178,30 @@ func (e Effective) Category(status string) (Category, bool) {
 	return s.Category, ok
 }
 
+// SatisfiesBlocks evaluates a blocker in its own project's effective ontology.
+// Archival does not rewrite a stored status's category or terminal outcome.
+func (e Effective) SatisfiesBlocks(status string) bool {
+	s, ok := e.Status(status)
+	return ok && s.Category.Terminal()
+}
+
+func (e Effective) SatisfiesConditionalBlocks(status string) bool {
+	s, ok := e.Status(status)
+	return ok && s.Category == Completed && s.Outcome == Failure
+}
+
+// Document returns a detached description. Mutating it cannot change checks or
+// the digest of an already compiled snapshot.
+func (e Effective) Document() Document {
+	doc, _ := cloneDocument(e.document)
+	return doc
+}
+
 // ReadyEligible supplies the status component of readiness. The service still
 // evaluates blockers, leases and its other readiness predicates.
 func (e Effective) ReadyEligible(typ, status string) bool {
 	t, ok := e.document.Types[typ]
-	if !ok || t.Archived || e.degraded[typ] {
+	if !ok || t.Archived || e.degraded[typ] || (t.ReadyEligible != nil && !*t.ReadyEligible) {
 		return false
 	}
 	w := e.document.Workflows[t.Workflow]
