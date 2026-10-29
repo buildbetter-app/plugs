@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "examples_test",
+    srcs = ["trace_test.go"],
+    embedsrcs = ["cli-rpc-trace.json"],
+    args = ["-test.v"],
+    data = ["//cmd/plug:plug"],
+    env = {"PLUG_BINARY": "$(rootpath //cmd/plug:plug)"},
+    deps = [
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/plugins/authnapikey",
+        "//internal/server/authn",
+        "//internal/server/rpc",
+        "//internal/server/transport/httpjson",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
+)
