@@ -41,23 +41,31 @@ func validKey(key string) bool {
 // records, versions, predicates, response and changeset under one sorted lock
 // set. A stale read restarts from a fresh snapshot at most three times.
 func (w *Writer) Apply(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (model.Commit, error) {
+	outcome, err := w.ApplyWithOutcome(ctx, by, cs, meta)
+	return outcome.Commit, err
+}
+
+// ApplyWithOutcome keeps transient execution metadata outside the durable
+// response. A first write or admitted no-op is not a replay, even when its
+// response must be reloaded after receipt finalization.
+func (w *Writer) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
 	if ctx.Value(callbackKey{}) != nil {
-		return model.Commit{}, failure("plugin_reentrant_write", "graph writes are forbidden in synchronous callbacks")
+		return port.WriteOutcome{}, failure("plugin_reentrant_write", "graph writes are forbidden in synchronous callbacks")
 	}
 	if w.err != nil {
-		return model.Commit{}, failure("invalid_params", w.err.Error())
+		return port.WriteOutcome{}, failure("invalid_params", w.err.Error())
 	}
 	if err := ctx.Err(); err != nil {
-		return model.Commit{}, err
+		return port.WriteOutcome{}, err
 	}
 	select {
 	case <-w.lease.Lost():
-		return model.Commit{}, failure("lease_not_held", "active storage lease has been lost")
+		return port.WriteOutcome{}, failure("lease_not_held", "active storage lease has been lost")
 	default:
 	}
 	principal, err := driver.PrincipalKey(by)
 	if err != nil {
-		return model.Commit{}, failure("invalid_params", err.Error())
+		return port.WriteOutcome{}, failure("invalid_params", err.Error())
 	}
 	if meta.Method == "" {
 		meta.Method = "tx.apply"
@@ -66,7 +74,7 @@ func (w *Writer) Apply(ctx context.Context, by model.PrincipalRef, cs model.Chan
 		meta.Return = "full"
 	}
 	if meta.Return != "full" && meta.Return != "minimal" {
-		return model.Commit{}, failure("invalid_params", "return must be full or minimal")
+		return port.WriteOutcome{}, failure("invalid_params", "return must be full or minimal")
 	}
 	if meta.AgentLabel == "" {
 		meta.AgentLabel = meta.Agent
@@ -75,34 +83,34 @@ func (w *Writer) Apply(ctx context.Context, by model.PrincipalRef, cs model.Chan
 		meta.AgentLabel = ""
 	}
 	if !validKey(meta.IdempotencyKey) {
-		return model.Commit{}, failure("invalid_params", "idempotency key must encode at least 128 bits as UUIDv4, ULID, hex or base64url")
+		return port.WriteOutcome{}, failure("invalid_params", "idempotency key must encode at least 128 bits as UUIDv4, ULID, hex or base64url")
 	}
 	if len(cs.Ops) == 0 || len(cs.Ops) > 1000 {
-		return model.Commit{}, failure("invalid_params", "change set requires 1 to 1000 operations")
+		return port.WriteOutcome{}, failure("invalid_params", "change set requires 1 to 1000 operations")
 	}
 	// Validate the closed tagged unions and detach all caller-owned maps.
 	cs, err = clone(cs)
 	if err != nil {
-		return model.Commit{}, failure("invalid_params", err.Error())
+		return port.WriteOutcome{}, failure("invalid_params", err.Error())
 	}
 	by, err = clone(by)
 	if err != nil {
-		return model.Commit{}, failure("invalid_params", err.Error())
+		return port.WriteOutcome{}, failure("invalid_params", err.Error())
 	}
 	hash, err := requestHash(cs, meta)
 	if err != nil {
-		return model.Commit{}, failure("invalid_params", err.Error())
+		return port.WriteOutcome{}, failure("invalid_params", err.Error())
 	}
 	preCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	for attempt := 0; attempt <= 3; attempt++ {
 		reader, err := w.reader(preCtx)
 		if err != nil {
-			return model.Commit{}, err
+			return port.WriteOutcome{}, err
 		}
 		defer reader.Close()
 		if commit, found, err := w.replay(preCtx, reader, principal, by, cs, meta, hash); found || err != nil {
-			return commit, err
+			return port.WriteOutcome{Commit: commit, Replayed: found && err == nil}, err
 		}
 		p, err := w.prepare(preCtx, reader, by, cs, meta)
 		if err == nil {
@@ -114,10 +122,13 @@ func (w *Writer) Apply(ctx context.Context, by model.PrincipalRef, cs model.Chan
 		if err == nil {
 			err = w.claims(p, by, meta)
 		}
+		if err == nil {
+			err = p.detectChanges()
+		}
 		if err == nil && meta.DryRun {
 			commit, err := p.response(*reader.Snapshot().At, meta)
-			commit.WouldCommit = err == nil
-			return commit, err
+			commit.WouldCommit = err == nil && len(p.changed) > 0
+			return port.WriteOutcome{Commit: commit}, err
 		}
 		var commit model.Commit
 		if err == nil {
@@ -134,28 +145,24 @@ func (w *Writer) Apply(ctx context.Context, by model.PrincipalRef, cs model.Chan
 				if fresh, e := w.reader(ctx); e == nil {
 					defer fresh.Close()
 					if result, found, e := w.replay(ctx, fresh, principal, by, cs, meta, hash); found || e != nil {
-						return result, e
+						return port.WriteOutcome{Commit: result, Replayed: found && e == nil}, e
 					}
 				}
 			}
 			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-				return model.Commit{}, failure("busy", "write pre phases exceeded their deadline")
+				return port.WriteOutcome{}, failure("busy", "write pre phases exceeded their deadline")
 			}
-			return model.Commit{}, err
+			return port.WriteOutcome{}, err
 		}
-		warnings := w.post(ctx, p, commit)
-		if len(w.cfg.posts) > 0 {
-			finalCtx, finalCancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-			err := w.store.(driver.ResponseFinalizer).FinalizeResponse(finalCtx, w.lease, principal, meta.AgentLabel, meta.Method, meta.IdempotencyKey, commit.Revision, warnings)
-			finalCancel()
-			if err != nil {
-				warnings = append(warnings, model.Warning{Code: "post_subscriber_failed", Message: "write committed; post response could not be finalized", Details: map[string]any{"phase": "response_finalization", "revision": commit.Revision}})
-			}
+		if len(p.changed) != 0 && len(w.cfg.posts) > 0 {
+			warnings := w.post(ctx, p, commit)
+			commit, err = w.finalizeResponse(ctx, principal, meta, hash, commit.Revision, warnings)
+		} else {
+			commit, err = w.durableResponse(ctx, principal, meta, hash, commit.Revision)
 		}
-		commit.Warnings = append(commit.Warnings, warnings...)
-		return clone(commit)
+		return port.WriteOutcome{Commit: commit}, err
 	}
-	return model.Commit{}, failure("write_conflict", "snapshot changed during all four write attempts")
+	return port.WriteOutcome{}, failure("write_conflict", "snapshot changed during all four write attempts")
 }
 
 func (w *Writer) reader(ctx context.Context) (driver.Reader, error) {
@@ -198,19 +205,32 @@ func (w *Writer) replay(ctx context.Context, reader driver.Reader, principal str
 	if entry.RequestHash != hash {
 		return model.Commit{}, true, failure("idempotency_key_reused", "idempotency key was used with different parameters")
 	}
+	if entry.ResponsePending {
+		// Reauthorize the known receipt before exposing pending metadata, then
+		// again against the fresh snapshot that holds its final response.
+		if _, err := w.replayReceipt(ctx, reader, entry, by, cs, meta); err != nil {
+			return model.Commit{}, true, err
+		}
+		result, err := w.waitResponse(ctx, principal, by, cs, meta, hash, entry.Commit.Revision)
+		return result, true, err
+	}
+	result, err := w.replayReceipt(ctx, reader, entry, by, cs, meta)
+	return result, true, err
+}
+
+func (w *Writer) replayReceipt(ctx context.Context, reader driver.Reader, entry *driver.IdempotencyRecord, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (model.Commit, error) {
 	p := port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, Meta: meta, BaseRevision: *reader.Snapshot().At, Changes: []port.Change{}}
 	for i, result := range entry.Commit.Results {
 		if i >= len(cs.Ops) {
-			return model.Commit{}, true, failure("internal_error", "stored response does not match original request")
+			return model.Commit{}, failure("internal_error", "stored response does not match original request")
 		}
 		p.Changes = append(p.Changes, port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: result.Ref}, Op: cs.Ops[i], After: result.Record, SetBy: result.SetBy})
 	}
 	snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}}
 	if err := w.authorize(ctx, port.AuthorizeReplay, p, snapshot); err != nil {
-		return model.Commit{}, true, err
+		return model.Commit{}, err
 	}
-	result, err := clone(entry.Commit)
-	return result, true, err
+	return clone(entry.Commit)
 }
 
 func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (model.Commit, error) {
@@ -218,6 +238,9 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 	for _, ref := range p.refs {
 		pending := p.writes[ref.ID]
 		result := model.OpResult{Ref: ref, Revision: revision, SetBy: cloneMap(pending.setBy)}
+		if !p.changed[ref.ID] {
+			result.Revision = pending.revision
+		}
 		if !pending.deleted && meta.Return != "minimal" {
 			body, err := json.Marshal(pending.doc)
 			if err != nil {
@@ -236,7 +259,13 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 
 func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRef, meta model.WriteMeta, principal, hash string) (model.Commit, error) {
 	sentinels := p.sentinels()
-	locks, err := p.snapshot.locks(p.writes, sentinels)
+	writes := map[string]*pending{}
+	for id, pending := range p.writes {
+		if p.changed[id] {
+			writes[id] = pending
+		}
+	}
+	locks, err := p.snapshot.locks(writes, sentinels)
 	if err != nil {
 		return model.Commit{}, err
 	}
@@ -267,6 +296,21 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	} else if prior != nil {
 		return model.Commit{}, errStale
 	}
+	keys := make([]driver.LockKey, len(locks))
+	for i, lock := range locks {
+		keys[i] = lock.Key
+	}
+	if len(writes) == 0 {
+		noop, ok := tx.(driver.NoopCommitter)
+		if !ok {
+			return model.Commit{}, driver.ErrUnsupported
+		}
+		response, err := p.response(head, meta)
+		if err != nil {
+			return model.Commit{}, err
+		}
+		return noop.CommitNoop(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
+	}
 	n, err := head.Uint64()
 	if err != nil || n == math.MaxUint64 {
 		return model.Commit{}, failure("write_conflict", "driver revision space is exhausted")
@@ -276,8 +320,8 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err != nil {
 		return model.Commit{}, err
 	}
-	ids := make([]string, 0, len(p.writes))
-	for id := range p.writes {
+	ids := make([]string, 0, len(writes))
+	for id := range writes {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -318,11 +362,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		return model.Commit{}, err
 	}
-	keys := make([]driver.LockKey, len(locks))
-	for i, lock := range locks {
-		keys[i] = lock.Key
-	}
-	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, Mutators: p.mutators, Changes: changes, LockKeys: keys})
+	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, LockKeys: keys})
 	if err != nil {
 		return model.Commit{}, err
 	}

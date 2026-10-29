@@ -71,15 +71,24 @@ func (s *Store) FinalizeResponse(ctx context.Context, lease driver.ActiveLease, 
 	if !ok || !s.now().Before(current.at.Add(driver.IdempotencyWindow)) {
 		return driver.ErrNotFound
 	}
-	if current.value.Changeset.Revision.String() != revision.String() {
+	if current.value.Commit.Revision.String() != revision.String() {
 		return driver.ErrConflict
+	}
+	// Nil and empty post lists describe the same outcome, including a receipt
+	// initially published final, whose private post outcome is empty.
+	if warnings == nil {
+		warnings = []model.Warning{}
 	}
 	encoded, err := json.Marshal(warnings)
 	if err != nil {
 		return err
 	}
-	if current.finalized {
-		previous, err := json.Marshal(current.post)
+	if !current.value.ResponsePending {
+		post := current.post
+		if post == nil {
+			post = []model.Warning{}
+		}
+		previous, err := json.Marshal(post)
 		if err != nil {
 			return err
 		}
@@ -97,9 +106,12 @@ func (s *Store) FinalizeResponse(ctx context.Context, lease driver.ActiveLease, 
 		return err
 	}
 	current.value.Commit.Warnings = append(current.value.Commit.Warnings, current.post...)
-	current.finalized = true
+	current.value.ResponsePending = false
 	next := s.state.fork()
 	next.replays[id] = current
+	if err := s.check(ctx); err != nil {
+		return err
+	}
 	if err := s.checkLease(lease); err != nil {
 		return err
 	}
@@ -108,10 +120,28 @@ func (s *Store) FinalizeResponse(ctx context.Context, lease driver.ActiveLease, 
 }
 
 func copyReplay(value replay) (replay, error) {
-	copy, err := cloneJSON(value.value)
+	copy, err := copyIdempotency(value.value)
 	if err != nil {
 		return replay{}, err
 	}
 	value.value = copy
+	return value, nil
+}
+
+func copyIdempotency(value driver.IdempotencyRecord) (driver.IdempotencyRecord, error) {
+	response, err := cloneJSON(value.Commit)
+	if err != nil {
+		return driver.IdempotencyRecord{}, err
+	}
+	value.Commit = response
+	// A no-op receipt has no changeset. The zero value is an absence marker,
+	// not a model changeset to serialize or expose through the log API.
+	if value.Changeset.Kind != "" {
+		entry, err := cloneJSON(value.Changeset)
+		if err != nil {
+			return driver.IdempotencyRecord{}, err
+		}
+		value.Changeset = entry
+	}
 	return value, nil
 }

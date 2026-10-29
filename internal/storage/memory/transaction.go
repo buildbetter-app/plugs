@@ -377,13 +377,21 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	default:
 		return model.Changeset{}, fmt.Errorf("memory: unknown changeset kind")
 	}
+	if header.ResponsePending && header.IdempotencyKey == "" {
+		return model.Changeset{}, fmt.Errorf("memory: pending response requires an idempotency key")
+	}
 	key := normalizedScope(principal, header.AgentLabel, header.Method, header.IdempotencyKey)
 	if header.IdempotencyKey != "" {
-		if !canonicalKey(header.Method) || header.RequestHash == "" {
-			return model.Changeset{}, fmt.Errorf("memory: idempotent write requires method and request hash")
+		if err := validateReplayScope(header, principal); err != nil {
+			return model.Changeset{}, err
 		}
 		if previous, exists := s.state.replays[key]; exists && s.now().Before(previous.at.Add(driver.IdempotencyWindow)) {
 			if previous.value.RequestHash != header.RequestHash {
+				return model.Changeset{}, driver.ErrConflict
+			}
+			if previous.value.Changeset.Kind == "" {
+				// This scope completed without a graph commit. Callers replay its
+				// Commit through IdempotencyByKey or CommitNoop, never invent a log.
 				return model.Changeset{}, driver.ErrConflict
 			}
 			copy, err := cloneJSON(previous.value.Changeset)
@@ -429,9 +437,6 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 		return model.Changeset{}, err
 	}
 	response.Revision = revision
-	for i := range response.Results {
-		response.Results[i].Revision = revision
-	}
 	response, err = cloneJSON(response)
 	if err != nil {
 		return model.Changeset{}, err
@@ -447,7 +452,10 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 			copy.Revision = revision
 			next.records[id] = copy
 			next.kinds[id] = copy.Kind
-			version.Base = len(next.versions[id])%driver.VersionBaseEvery == 0
+			previous := next.versions[id]
+			// A tombstone may occupy a scheduled base slot. Start a new
+			// lifetime with a full image so replay never crosses that gap.
+			version.Base = len(previous)%driver.VersionBaseEvery == 0 || len(previous) > 0 && previous[len(previous)-1].Deleted
 			if version.Base {
 				version.Body = bytes.Clone(copy.Body)
 			} else {
@@ -480,7 +488,7 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	next.meta.Head = revision
 	next.log = append(append([]model.Changeset(nil), next.log...), entry)
 	if header.IdempotencyKey != "" {
-		next.replays[key] = replay{value: driver.IdempotencyRecord{RequestHash: header.RequestHash, Commit: response, Changeset: entry}, at: s.now()}
+		next.replays[key] = replay{value: driver.IdempotencyRecord{RequestHash: header.RequestHash, Commit: response, Changeset: entry, ResponsePending: header.ResponsePending}, at: s.now()}
 	}
 	// Allocation and validation are complete. Epoch and publication share this
 	// mutex, so a takeover cannot interleave with the final fenced commit.
