@@ -2,7 +2,7 @@
 
 Status: draft for P80 sign-off, 2026-10-28. This is an inventory and fate
 proposal, not an implementation plan. It reads the command tree frozen in
-[`cmd/bd/testdata/command_tree/tree.golden`](../../../../cmd/bd/testdata/command_tree/tree.golden)
+[`cmd/bd/testdata/command_tree/tree.golden`](https://github.com/buildbetter-app/plugs/blob/9d6fff760b7a314b476539198504d77ce0959656/cmd/bd/testdata/command_tree/tree.golden)
 and the Plug design sections A1, A7, and A8. The tree contains **307 paths**
 (the root plus 306 descendants); A1's “306 command paths” sentence predates the
 current golden.
