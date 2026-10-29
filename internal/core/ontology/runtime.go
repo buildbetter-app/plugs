@@ -214,20 +214,47 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 	if category, found := e.Category(before.Status); !found || (slot == Claim && category != Unstarted) {
 		return append(violations, invalid("status", "claim requires an unstarted source")...)
 	}
-	matched := false
-	for _, rule := range w.Transitions {
-		if rule.To != target || (len(rule.From) != 0 && !contains(rule.From, before.Status)) {
-			continue
-		}
-		matched = true
-		for _, guard := range rule.Guards {
-			violations = append(violations, evaluateGuard(guard, *after, facts)...)
-		}
-	}
+	matched, guardViolations := transitionGuards(w, before.Status, target, *after, facts)
+	violations = append(violations, guardViolations...)
 	if !matched {
 		violations = append(violations, invalid("status", "transition is not allowed")...)
 	}
 	return violations
+}
+
+// ValidateCloseSettlement validates an already-closed row without inventing a
+// transition. The adapter must first recognize the original empty close patch.
+// Ordinary field/ownership/status-touch checks and every applicable close guard
+// still run. Source-specific transition rules apply only to their named source;
+// broad close guards also apply to settlement. Validate retains its strict
+// same-slot rejection for ordinary lifecycle proposals.
+func ValidateCloseSettlement(e Effective, before, after *BeadState, facts GuardFacts) []Violation {
+	if before == nil || after == nil {
+		return invalid("status", "close settlement requires an existing bead")
+	}
+	target, ok := e.SlotStatus(before.Type, Close)
+	if !ok || before.Status != target || after.Status != target || before.Type != after.Type || before.Project != after.Project {
+		return invalid("status", "close settlement must retain the selected close slot and workflow")
+	}
+	violations := Validate(e, before, after, "bead.update", facts)
+	w := e.document.Workflows[e.document.Types[before.Type].Workflow]
+	_, guards := transitionGuards(w, before.Status, target, *after, facts)
+	return append(violations, guards...)
+}
+
+func transitionGuards(w Workflow, from, to string, after BeadState, facts GuardFacts) (bool, []Violation) {
+	matched := false
+	var violations []Violation
+	for _, rule := range w.Transitions {
+		if rule.To != to || (len(rule.From) != 0 && !contains(rule.From, from)) {
+			continue
+		}
+		matched = true
+		for _, guard := range rule.Guards {
+			violations = append(violations, evaluateGuard(guard, after, facts)...)
+		}
+	}
+	return matched, violations
 }
 
 // DefaultPriority is the fixed v1 default in the P0 through P4 kernel domain.
