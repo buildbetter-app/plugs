@@ -7,6 +7,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 )
 
@@ -16,11 +17,11 @@ import (
 type Service interface {
 	Get(context.Context, model.PrincipalRef, service.GetRequest) (service.GetResult, error)
 	Ready(context.Context, model.PrincipalRef, service.ReadyRequest) (service.BeadPage, error)
-	Create(context.Context, model.PrincipalRef, service.CreateRequest, model.WriteMeta) (model.Commit, error)
-	Update(context.Context, model.PrincipalRef, service.UpdateRequest, model.WriteMeta) (model.Commit, error)
-	Claim(context.Context, model.PrincipalRef, service.ClaimRequest, model.WriteMeta) (service.ClaimResult, error)
-	Comment(context.Context, model.PrincipalRef, service.CommentRequest, model.WriteMeta) (model.Commit, error)
-	Close(context.Context, model.PrincipalRef, service.CloseRequest, model.WriteMeta) (model.Commit, error)
+	CreateWithOutcome(context.Context, model.PrincipalRef, service.CreateRequest, model.WriteMeta) (port.WriteOutcome, error)
+	UpdateWithOutcome(context.Context, model.PrincipalRef, service.UpdateRequest, model.WriteMeta) (port.WriteOutcome, error)
+	ClaimWithOutcome(context.Context, model.PrincipalRef, service.ClaimRequest, model.WriteMeta) (port.WriteOutcome, error)
+	CommentWithOutcome(context.Context, model.PrincipalRef, service.CommentRequest, model.WriteMeta) (port.WriteOutcome, error)
+	CloseWithOutcome(context.Context, model.PrincipalRef, service.CloseRequest, model.WriteMeta) (port.WriteOutcome, error)
 	History(context.Context, model.PrincipalRef, service.HistoryRequest) (service.BeadPage, error)
 }
 
@@ -137,29 +138,27 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		}
 		return c.paging.page(c, p, position, v)
 	case "bead.create":
-		v, err := svc.Create(ctx, c.Principal, service.CreateRequest{Type: p.Type, Fields: p.Fields, Parent: p.Parent}, meta)
-		return commitJSON(v), err
+		v, err := svc.CreateWithOutcome(ctx, c.Principal, service.CreateRequest{Type: p.Type, Fields: p.Fields, Parent: p.Parent}, meta)
+		return writeOutcome(v), err
 	case "bead.update":
-		v, err := svc.Update(ctx, c.Principal, service.UpdateRequest{ID: p.ID, Fields: p.Fields, Expect: p.Expect}, meta)
-		return commitJSON(v), err
+		v, err := svc.UpdateWithOutcome(ctx, c.Principal, service.UpdateRequest{ID: p.ID, Fields: p.Fields, Expect: p.Expect}, meta)
+		return writeOutcome(v), err
 	case "bead.comment":
-		v, err := svc.Comment(ctx, c.Principal, service.CommentRequest{ID: p.ID, Body: p.Body, Expect: p.Expect}, meta)
-		return commitJSON(v), err
+		v, err := svc.CommentWithOutcome(ctx, c.Principal, service.CommentRequest{ID: p.ID, Body: p.Body, Expect: p.Expect}, meta)
+		return writeOutcome(v), err
 	case "bead.close":
-		v, err := svc.Close(ctx, c.Principal, service.CloseRequest{ID: p.ID, Reason: p.Reason, Expect: p.Expect}, meta)
-		return commitJSON(v), err
+		v, err := svc.CloseWithOutcome(ctx, c.Principal, service.CloseRequest{ID: p.ID, Reason: p.Reason, Expect: p.Expect}, meta)
+		return writeOutcome(v), err
 	case "bead.claim":
-		v, err := svc.Claim(ctx, c.Principal, service.ClaimRequest{ID: p.ID, Expect: p.Expect}, meta)
-		if err != nil {
-			return nil, err
-		}
-		out := commitJSON(v.Commit)
-		out["leaseExpiresAt"] = timestamp(v.LeaseExpiresAt)
-		out["leaseTtlMs"] = v.LeaseTTL.Milliseconds()
-		return out, nil
+		v, err := svc.ClaimWithOutcome(ctx, c.Principal, service.ClaimRequest{ID: p.ID, Expect: p.Expect}, meta)
+		return writeOutcome(v), err
 	default:
 		return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
 	}
+}
+
+func writeOutcome(v port.WriteOutcome) Outcome {
+	return Outcome{Result: commitJSON(v.Commit), Replayed: v.Replayed}
 }
 
 func commitJSON(v model.Commit) map[string]any {
