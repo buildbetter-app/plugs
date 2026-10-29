@@ -13,13 +13,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/ontologymigration"
 	"github.com/buildbetter-app/plugs/internal/core/ontologyops"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/integration/migrationpre"
+	"github.com/buildbetter-app/plugs/internal/server/ontologyrpc"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
+	"github.com/buildbetter-app/plugs/internal/server/rpc"
+	"github.com/buildbetter-app/plugs/internal/server/transport/inprocess"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
@@ -40,6 +44,7 @@ type fixture struct {
 	store     *memory.Store
 	lease     driver.ActiveLease
 	core      *ontologyops.Service
+	transport *inprocess.Transport
 	pre       *migrationpre.NativePre
 	probe     *nativeProbe
 	base      ontology.Document
@@ -188,7 +193,22 @@ func newFixture(t *testing.T, options fixtureOptions) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{store: store, lease: lease, core: core, pre: pre, probe: probe, base: base, source: source, sourceRef: sourceRef, bindingID: hostBinding.ID}
+	registry, err := rpc.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ontologyrpc.Bind(registry, core); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := rpc.New(registry, rpc.Config{Incarnation: meta.Incarnation, OntologyRevision: model.Natural64(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fixture{store: store, lease: lease, core: core, transport: inprocess.New(server), pre: pre, probe: probe, base: base, source: source, sourceRef: sourceRef, bindingID: hostBinding.ID}
 	t.Cleanup(func() {
 		_ = pre.Close()
 		_ = lease.Release(context.Background())
@@ -245,6 +265,38 @@ func (f *fixture) plan(t *testing.T, project string, candidate ontology.Document
 	result, err := f.core.Plan(context.Background(), migrationCaller, ontologyops.PlanRequest{Project: project, Document: raw})
 	if err != nil {
 		t.Fatal(err)
+	}
+	return result
+}
+
+func (f *fixture) planRPC(t *testing.T, project string, candidate ontology.Document) ontologyops.PlanResult {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      "migration-plan",
+		"method":  "ontology.plan",
+		"params":  map[string]any{"project": project, "document": candidate},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := f.transport.RoundTrip(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+		Error  *wire.Error     `json:"error"`
+	}
+	if err := json.Unmarshal(response, &envelope); err != nil {
+		t.Fatalf("ontology.plan byte response=%s: %v", response, err)
+	}
+	if envelope.Error != nil || len(envelope.Result) == 0 {
+		t.Fatalf("ontology.plan byte response=%s", response)
+	}
+	var result ontologyops.PlanResult
+	if err := json.Unmarshal(envelope.Result, &result); err != nil {
+		t.Fatalf("ontology.plan result=%s: %v", envelope.Result, err)
 	}
 	return result
 }
@@ -313,7 +365,7 @@ func TestConnectedServicePlanRunsActualNativePreAgainstOverlayRows(t *testing.T)
 	f := newFixture(t, fixtureOptions{overlay: true})
 	f.seed(t, bead(t, "base-row", "base-project", "base"), beadWithFields(t, "overlay-row", "overlay-project", map[string]any{"status": "todo", "title": "overlay", "overlay_marker": "current"}))
 	candidate := overlayDocument(f.base, "overlay")
-	result := f.plan(t, "overlay-project", candidate)
+	result := f.planRPC(t, "overlay-project", candidate)
 	if !result.Changes.Ready || result.Changes.Migration.ObservedRowCount != 2 || result.Changes.Migration.Affected != 2 || f.probe.calls.Load() != 2 {
 		t.Fatalf("connected overlay plan=%+v calls=%d", result, f.probe.calls.Load())
 	}
