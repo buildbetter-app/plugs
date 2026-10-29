@@ -466,6 +466,7 @@ internal/server/pluginhost/pipeline_test.go
 internal/server/pluginhost/reader.go
 internal/server/pluginhost/state.go
 internal/server/pluginhost/wasm.go
+internal/server/pluginhost/wasm_test.go
 internal/server/pluginmanifest/BUILD.bazel
 internal/server/pluginmanifest/README.md
 internal/server/pluginmanifest/bundle.go
