@@ -99,6 +99,17 @@ func (s *Service) Plan(ctx context.Context, by model.PrincipalRef, req PlanReque
 		return PlanResult{}, err
 	}
 	if artifact.Ready {
+		var protectedBytes []byte
+		if s.cfg.ProtectedApplier != nil {
+			protected, protectedErr := s.protectedRequest(ctx, by, artifact)
+			if protectedErr != nil {
+				return PlanResult{}, protectedErr
+			}
+			protectedBytes, err = json.Marshal(protected)
+			if err != nil {
+				return PlanResult{}, err
+			}
+		}
 		s.mu.Lock()
 		if _, exists := s.plans[artifact.Digest]; !exists {
 			if len(s.order) == s.cfg.MaxPlans {
@@ -106,7 +117,7 @@ func (s *Service) Plan(ctx context.Context, by model.PrincipalRef, req PlanReque
 				s.order = s.order[1:]
 			}
 			s.order = append(s.order, artifact.Digest)
-			s.plans[artifact.Digest] = retainedPlan{bytes: encoded}
+			s.plans[artifact.Digest] = retainedPlan{bytes: encoded, protected: protectedBytes}
 		}
 		s.mu.Unlock()
 	}
@@ -132,6 +143,12 @@ func decodePlan(raw []byte) (PlannedRevision, error) {
 	return plan, err
 }
 
+func planDigest(plan PlannedRevision) (string, error) {
+	copy := plan
+	copy.Digest = ""
+	return digest(copy)
+}
+
 // Planned retrieves a detached admitted report for this exact caller and
 // rechecks its source bytes/revision/digest, complete rows, CAS, incarnation and
 // validating-pre manifest. It is a read seam, never an apply permit. Retention
@@ -147,6 +164,9 @@ func (s *Service) Planned(ctx context.Context, by model.PrincipalRef, digest str
 	if err != nil {
 		return PlannedRevision{}, err
 	}
+	if plan.Digest != digest {
+		return PlannedRevision{}, failure("ontology_plan_stale", "retained ontology plan digest does not match its key")
+	}
 	if err := s.revalidate(ctx, by, plan); err != nil {
 		return PlannedRevision{}, err
 	}
@@ -154,6 +174,10 @@ func (s *Service) Planned(ctx context.Context, by model.PrincipalRef, digest str
 }
 
 func (s *Service) revalidate(ctx context.Context, by model.PrincipalRef, plan PlannedRevision) error {
+	computed, err := planDigest(plan)
+	if err != nil || computed != plan.Digest {
+		return failure("ontology_plan_stale", "retained ontology plan failed its digest check")
+	}
 	want, err := digest(plan.Principal)
 	if err != nil {
 		return err
@@ -190,12 +214,15 @@ func (s *Service) revalidate(ctx context.Context, by model.PrincipalRef, plan Pl
 	if rows.RowsDigest != plan.Migration.Inventory.RowsDigest || rows.Count.String() != plan.Migration.Inventory.Count.String() {
 		return failure("ontology_plan_stale", "complete bead row inventory changed")
 	}
+	if s.cfg.ValidatingPre == nil {
+		return failure("ontology_plan_stale", "validating-pre binding inventory is unavailable")
+	}
 	manifest, err := s.cfg.ValidatingPre.Inventory(ctx, plan.Migration.Candidate)
 	if err != nil {
 		return mapped(err)
 	}
-	computed, err := ontologymigration.BindingsDigest(manifest.Candidate, manifest.Bindings)
-	if err != nil || computed != manifest.Digest || manifest.Digest != plan.Migration.PreInventory.Digest || manifest.Candidate != plan.Migration.Candidate {
+	manifestDigest, err := ontologymigration.BindingsDigest(manifest.Candidate, manifest.Bindings)
+	if err != nil || manifestDigest != manifest.Digest || manifest.Digest != plan.Migration.PreInventory.Digest || manifest.Candidate != plan.Migration.Candidate {
 		return failure("ontology_plan_stale", "validating-pre binding inventory changed")
 	}
 	return s.admit(ctx, by)

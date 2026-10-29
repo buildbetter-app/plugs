@@ -44,6 +44,11 @@ func (s *Session) Run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if cmd.Method == "ontology.schema" {
+		if _, exists := cmd.Params["project"]; !exists {
+			cmd.Params["project"] = s.Client.Project()
+		}
+	}
 	result, err := s.Client.Call(ctx, cmd.Method, cmd.Params, cmd.Key)
 	if err != nil {
 		if result.IdempotencyKey != "" {

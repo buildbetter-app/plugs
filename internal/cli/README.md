@@ -33,6 +33,12 @@ human and JSON modes. Ready/history cursors stay opaque and are passed back
 unchanged for the server to verify. A `session` is a stream of command arrays,
 not a presence session; it creates no `session.open` resource.
 
+Ontology commands use the same client and registry. `ontology plan` accepts a
+JSON document with `--document` and optional CAS JSON with `--expect`; `ontology
+apply PLAN_DIGEST` requires `--expect` and an explicit `--proof DIGEST` (or
+`--session-id ID` for an interactive session). `ontology schema` requires an
+explicit `--project` and `--type`; history and diff use integer revisions.
+
 Without a selected server, `--memory` still runs one disposable in-process
 core and emits its lifetime warning. Persistent local storage and config-file
 loading are not installed. If `.plug/config.yaml` exists, this slice refuses

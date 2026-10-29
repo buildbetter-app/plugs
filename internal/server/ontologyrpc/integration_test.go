@@ -31,7 +31,19 @@ type rpcFixture struct {
 	base      ontology.Document
 }
 
+var anonymousCaller = model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+
+func applyFixture(t *testing.T) *rpcFixture {
+	t.Helper()
+	return fixtureWithApply(t, true)
+}
+
 func fixture(t *testing.T) *rpcFixture {
+	t.Helper()
+	return fixtureWithApply(t, false)
+}
+
+func fixtureWithApply(t *testing.T, withApply bool) *rpcFixture {
 	t.Helper()
 	ctx := context.Background()
 	store := memory.New()
@@ -50,7 +62,17 @@ func fixture(t *testing.T) *rpcFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	core, err := ontologyops.New(store, lease, ontologyops.Config{Source: service.StaticOntologySource(ref), ValidatingPre: ontologyops.NoValidatingPre()})
+	compiled, problems := ontology.Compile(base, nil, nil)
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	workflow := service.NewOntology(compiled.Effective)
+	writer := pipeline.New(store, lease, pipeline.WithOntology(workflow))
+	protected := pipeline.ProtectedApplier(nil)
+	if withApply {
+		protected = writer
+	}
+	core, err := ontologyops.New(store, lease, ontologyops.Config{Source: service.StaticOntologySource(ref), ValidatingPre: ontologyops.NoValidatingPre(), ProtectedApplier: protected})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,12 +83,6 @@ func fixture(t *testing.T) *rpcFixture {
 	if err := Bind(reg, core); err != nil {
 		t.Fatal(err)
 	}
-	compiled, problems := ontology.Compile(base, nil, nil)
-	if len(problems) != 0 {
-		t.Fatal(problems)
-	}
-	workflow := service.NewOntology(compiled.Effective)
-	writer := pipeline.New(store, lease, pipeline.WithOntology(workflow))
 	if err := rpc.BindService(reg, service.New(store, lease, writer, service.WithOntology(workflow))); err != nil {
 		t.Fatal(err)
 	}
@@ -200,6 +216,136 @@ func TestRuntimeDiscoveryAndExplicitUnsupportedApply(t *testing.T) {
 	if err := Bind(f.registry, f.core); err == nil {
 		t.Fatal("duplicate binding accepted")
 	}
+}
+
+func TestProtectedApplyPersistsCompleteImagesAndReplays(t *testing.T) {
+	f := applyFixture(t)
+	created := f.call(t, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "preserve", "status": "todo"}, "_meta": map[string]any{"idempotencyKey": "e33d4848-10c7-40cb-a3d4-49e34b0d02a1"}})
+	var commit model.Commit
+	if err := json.Unmarshal(created, &commit); err != nil || len(commit.Results) != 1 {
+		t.Fatalf("create: %s %v", created, err)
+	}
+	ref := commit.Results[0].Ref
+	full := pipeline.Document{ID: ref.ID, Project: "p", Type: "issue", Fields: map[string]any{"status": "todo", "title": "preserve"}, Metadata: map[string]json.RawMessage{"source": json.RawMessage(`{"keep":true}`)}, Comments: []pipeline.Comment{{Body: "keep me", Principal: anonymousCaller, Time: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}}, Links: []pipeline.Link{{To: model.Ref{ID: "other"}, Kind: "relates-to"}}, Attachments: []model.Attachment{{Kind: "link", MediaType: "text/plain", Summary: "keep"}}}
+	body, _ := json.Marshal(full)
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{Principal: anonymousCaller, Time: time.Date(2026, 10, 29, 12, 1, 0, 0, time.UTC)}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: body}}); err != nil {
+		t.Fatal(err)
+	}
+	doc := ontology.DefaultDocument()
+	typ := doc.Types["issue"]
+	typ.Fields["reviewed"] = ontology.Field{Type: "boolean", Default: false}
+	doc.Types["issue"] = typ
+	planned := f.call(t, "ontology.plan", map[string]any{"document": doc, "expect": []model.Precondition{model.PreconditionByRevision(f.source, model.Natural64(1))}})
+	var plan ontologyops.PlanResult
+	if err := json.Unmarshal(planned, &plan); err != nil || !plan.Changes.Ready || plan.PlanDigest == "" {
+		t.Fatalf("plan: %s %v", planned, err)
+	}
+	request := map[string]any{"planDigest": plan.PlanDigest, "expect": []model.Precondition{model.PreconditionByRevision(f.source, model.Natural64(1))}, "humanPresence": map[string]any{"mode": "presence_check", "challenge": plan.PlanDigest, "proof": plan.PlanDigest}, "_meta": map[string]any{"idempotencyKey": "f33d4848-10c7-40cb-a3d4-49e34b0d02a1"}}
+	first := f.call(t, "ontology.apply", request)
+	var applied model.Commit
+	if err := json.Unmarshal(first, &applied); err != nil || applied.Revision.String() != "4" || len(applied.Results) != 2 {
+		t.Fatalf("apply: %s %v", first, err)
+	}
+	reader, err := f.store.Read(context.Background(), driver.View{Incarnation: mustMeta(t, f.store).Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := reader.Get(context.Background(), []model.Ref{f.source, ref})
+	_ = reader.Close()
+	if err != nil || len(records) != 2 {
+		t.Fatalf("read applied records: %v", err)
+	}
+	var got pipeline.Document
+	for _, record := range records {
+		if record.Ref.ID == ref.ID {
+			got, err = pipeline.DecodeDocument(record.Body)
+		}
+	}
+	if err != nil || got.Fields["reviewed"] != false || len(got.Comments) != 1 || len(got.Links) != 1 || len(got.Attachments) != 1 || len(got.Metadata) != 1 {
+		t.Fatalf("complete row image was not preserved: %+v %v", got, err)
+	}
+	secondRaw, err := f.transport.RoundTrip(context.Background(), mustJSON(t, map[string]any{"jsonrpc": "2.0", "id": "replay", "method": "ontology.apply", "params": request}))
+	if err != nil || !strings.Contains(string(secondRaw), `"replayed":true`) || !strings.Contains(string(secondRaw), `"revision":4`) {
+		t.Fatalf("replay: %s %v", secondRaw, err)
+	}
+	if head := mustMeta(t, f.store).Head.String(); head != "4" {
+		t.Fatalf("replay advanced head: %s", head)
+	}
+}
+
+func TestProtectedApplyProofAndStaleRefusals(t *testing.T) {
+	f := applyFixture(t)
+	doc := ontology.DefaultDocument()
+	typ := doc.Types["issue"]
+	typ.Fields["reviewed"] = ontology.Field{Type: "boolean", Default: false}
+	doc.Types["issue"] = typ
+	planned := f.call(t, "ontology.plan", map[string]any{"document": doc})
+	var plan ontologyops.PlanResult
+	if err := json.Unmarshal(planned, &plan); err != nil {
+		t.Fatal(err)
+	}
+	repeated := f.call(t, "ontology.plan", map[string]any{"document": doc})
+	var repeatedPlan ontologyops.PlanResult
+	if err := json.Unmarshal(repeated, &repeatedPlan); err != nil || repeatedPlan.PlanDigest != plan.PlanDigest {
+		t.Fatalf("plan digest was not deterministic: %s %s", planned, repeated)
+	}
+	base := map[string]any{"planDigest": plan.PlanDigest, "expect": []model.Precondition{}, "_meta": map[string]any{"idempotencyKey": "a33d4848-10c7-40cb-a3d4-49e34b0d02a1"}}
+	for _, tc := range []struct {
+		name  string
+		proof map[string]any
+		by    model.PrincipalRef
+		want  string
+	}{
+		{name: "missing", proof: map[string]any{"mode": "presence_check", "challenge": "wrong", "proof": "wrong"}, by: anonymousCaller, want: "human_presence_required"},
+		{name: "service", proof: map[string]any{"mode": "presence_check", "challenge": plan.PlanDigest, "proof": plan.PlanDigest}, by: model.PrincipalRef{Kind: "service", ID: "service:api"}, want: "human_presence_required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			params := map[string]any{}
+			for k, v := range base {
+				params[k] = v
+			}
+			params["humanPresence"] = tc.proof
+			raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": tc.name, "method": "ontology.apply", "params": params})
+			response, err := f.transport.RoundTrip(rpc.WithPrincipal(context.Background(), tc.by), raw)
+			if err != nil || !strings.Contains(string(response), `"code":"`+tc.want+`"`) {
+				t.Fatalf("response=%s err=%v", response, err)
+			}
+		})
+	}
+	staleParams := map[string]any{}
+	for k, v := range base {
+		staleParams[k] = v
+	}
+	staleParams["humanPresence"] = map[string]any{"mode": "presence_check", "challenge": plan.PlanDigest, "proof": plan.PlanDigest}
+	updated := ontology.DefaultDocument()
+	updated.Types["issue"] = doc.Types["issue"]
+	updatedBody, _ := service.MarshalOntologySource(service.OntologySource{Base: updated})
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{Principal: anonymousCaller, Time: time.Date(2026, 10, 29, 12, 2, 0, 0, time.UTC)}, []conformance.FixtureChange{{Ref: f.source, Kind: "ontology", Op: model.OpPatch, Body: updatedBody}}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "stale", "method": "ontology.apply", "params": staleParams})
+	response, err := f.transport.RoundTrip(context.Background(), raw)
+	if err != nil || !strings.Contains(string(response), `"code":"ontology_plan_stale"`) {
+		t.Fatalf("stale apply response=%s err=%v", response, err)
+	}
+}
+
+func mustMeta(t *testing.T, store *memory.Store) driver.Meta {
+	t.Helper()
+	meta, err := store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return meta
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func TestCanonicalRPCParameterAndSourceRefusals(t *testing.T) {
