@@ -135,6 +135,12 @@ internal/server/authn/authn.go
 internal/server/authn/authn_test.go
 internal/server/authn/http.go
 internal/server/authn/http_test.go
+internal/storage/driver/BUILD.bazel
+internal/storage/driver/driver.go
+internal/storage/driver/errors.go
+internal/storage/driver/errors_test.go
+internal/storage/driver/keys.go
+internal/storage/driver/keys_test.go
 pluginapi/BUILD.bazel
 pluginapi/doc.go
 sdk/go/BUILD.bazel
