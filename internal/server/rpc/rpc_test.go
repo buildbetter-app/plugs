@@ -77,6 +77,46 @@ func requireCode(t *testing.T, response map[string]any, code string) {
 	}
 }
 
+func TestTransportErrorsUseCanonicalEnvelope(t *testing.T) {
+	r := registry(t)
+	s := server(t, r, rpc.Config{})
+	for _, code := range []string{"unauthenticated", "token_expired", "authn_unavailable", "invalid_request", "not_found", "busy"} {
+		t.Run(code, func(t *testing.T) {
+			raw := s.TransportError(fmt.Errorf("transport admission: %w", &model.Error{Data: model.ErrorData{Code: model.ErrorCode(code)}}))
+			var got struct {
+				JSONRPC string          `json:"jsonrpc"`
+				ID      json.RawMessage `json:"id"`
+				Error   wire.Error      `json:"error"`
+			}
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatal(err)
+			}
+			want := r.Catalog().NewError(code, "", nil)
+			if got.JSONRPC != "2.0" || string(got.ID) != "null" || got.Error.Code != want.Code || got.Error.Message != want.Message || got.Error.Data.Code != code || got.Error.Data.Retryable != want.Data.Retryable || got.Error.Data.TraceID == "" {
+				t.Fatalf("noncanonical transport error: %s", raw)
+			}
+		})
+	}
+	raw := s.TransportError(&wire.Error{Code: 123, Message: "private text", Data: wire.ErrorData{Code: "busy", TraceID: "transport-trace"}})
+	v, err := wire.DecodeJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireCode(t, v.(map[string]any), "busy")
+	if v.(map[string]any)["error"].(map[string]any)["data"].(map[string]any)["traceId"] != "transport-trace" || bytes.Contains(raw, []byte("private text")) {
+		t.Fatalf("trace or sanitization changed: %s", raw)
+	}
+	raw = s.TransportError(errors.New("private transport failure"))
+	v, err = wire.DecodeJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireCode(t, v.(map[string]any), "internal_error")
+	if bytes.Contains(raw, []byte("private transport failure")) {
+		t.Fatalf("transport failure leaked: %s", raw)
+	}
+}
+
 func TestOrderedBatchesAndWriteAdmission(t *testing.T) {
 	r := registry(t)
 	order := []string{}
