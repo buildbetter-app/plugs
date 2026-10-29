@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
@@ -13,6 +15,78 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
+
+type observedLeaseStore struct {
+	driver.Store
+	lease driver.ActiveLease
+}
+
+func (s *observedLeaseStore) Lease(ctx context.Context, holder string, ttl time.Duration) (driver.ActiveLease, error) {
+	lease, err := s.Store.Lease(ctx, holder, ttl)
+	s.lease = lease
+	return lease, err
+}
+
+type resultSignal chan struct{}
+
+func (s resultSignal) Write(p []byte) (int, error) {
+	select {
+	case s <- struct{}{}:
+	default:
+	}
+	return len(p), nil
+}
+
+func TestIdleSessionCancellationReleasesLeaseAndClosesStore(t *testing.T) {
+	t.Setenv("PLUG_SERVER", "")
+	store := &observedLeaseStore{Store: memory.New()}
+	closed, released := 0, false
+	factory := func(context.Context, StorageConfig) (driver.Store, func() error, error) {
+		return store, func() error {
+			closed++
+			select {
+			case <-store.lease.Lost():
+				released = true
+			default:
+			}
+			return store.Close()
+		}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	in, producer := io.Pipe()
+	defer in.Close()
+	defer producer.Close()
+	result := make(resultSignal, 1)
+	done := make(chan int, 1)
+	var errOut bytes.Buffer
+	go func() { done <- execute(ctx, []string{"--memory", "--json", "session"}, in, result, &errOut, factory) }()
+	if _, err := io.WriteString(producer, "[\"ready\"]\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-result:
+	case <-time.After(2 * time.Second):
+		t.Fatal("session did not return its first result")
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != 1 || !strings.Contains(errOut.String(), "context canceled") {
+			t.Fatalf("cancellation was swallowed: exit %d, stderr %s", code, errOut.String())
+		}
+	case <-time.After(2 * time.Second):
+		_ = producer.Close()
+		<-done
+		t.Fatal("idle input prevented cleanup after cancellation")
+	}
+	if closed != 1 || !released {
+		t.Fatalf("cleanup: store closed %d times, lease released before store close %t", closed, released)
+	}
+	if _, err := store.Meta(context.Background()); err == nil {
+		t.Fatal("canceled session left storage open")
+	}
+}
 
 type unavailablePost struct{ calls int }
 
