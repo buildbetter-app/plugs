@@ -136,11 +136,23 @@ func (s *Session) bead(row map[string]any) error {
 
 // RunInput executes one command array per line against this same local core.
 // It stops on the first refusal; earlier committed writes stay committed.
+// A blocking input must implement io.ReadCloser so cancellation can interrupt
+// its pending read. Finite readers need no additional lifetime handling.
 func (s *Session) RunInput(ctx context.Context, in io.Reader) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if input, ok := in.(io.ReadCloser); ok {
+		stop := context.AfterFunc(ctx, func() { _ = input.Close() })
+		defer stop()
+	}
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
 	line := 0
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		line++
 		if strings.TrimSpace(scanner.Text()) == "" {
 			continue
@@ -152,6 +164,9 @@ func (s *Session) RunInput(ctx context.Context, in io.Reader) error {
 		if err := s.Run(ctx, args); err != nil {
 			return fmt.Errorf("session line %d: %w", line, err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	return scanner.Err()
 }
