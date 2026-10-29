@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "watchhttp",
+    srcs = ["watchhttp.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/server/watchhttp",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/events",
+        "//internal/core/model",
+        "//internal/server/rpc",
+        "//internal/server/watch",
+    ],
+)
+
+go_test(
+    name = "watchhttp_test",
+    srcs = glob(["*_test.go"], allow_empty = True),
+    embed = [":watchhttp"],
+    deps = [
+        "//internal/core/events",
+        "//internal/core/model",
+        "//internal/server/events",
+        "//internal/server/rpc",
+        "//internal/server/watch",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

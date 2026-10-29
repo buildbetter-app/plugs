@@ -290,6 +290,14 @@ internal/server/transport/httpjson/server.go
 internal/server/transport/inprocess/BUILD.bazel
 internal/server/transport/inprocess/inprocess.go
 internal/server/transport/inprocess/inprocess_test.go
+internal/server/watch/BUILD.bazel
+internal/server/watch/authorization.go
+internal/server/watch/manager.go
+internal/server/watch/manager_test.go
+internal/server/watch/types.go
+internal/server/watchhttp/BUILD.bazel
+internal/server/watchhttp/watchhttp.go
+internal/server/watchhttp/watchhttp_test.go
 internal/storage/conformance/BUILD.bazel
 internal/storage/conformance/atomic.go
 internal/storage/conformance/audit.go
