@@ -1,5 +1,7 @@
 # Work and graph behavior cards
 
+Source pin and evidence limits: [behavior catalog](../behaviors.md).
+
 ## B01 — readiness membership and ordering
 
 **Behavior.** `ready` admits unblocked, non-deferred, ready-category work and
@@ -99,8 +101,8 @@ Plug semantics (P22).
 
 **Behavior.** A direct claim succeeds only for an unassigned open/custom-active
 bead (or the same actor's already-owned in-progress bead), atomically sets
-assignee/status/started time, and grants a durable lease. `claimNext` walks the
-full ready set, skips races/ineligible rows, returns the winning hydrated row,
+assignee/status/started time, and grants a replica-local lease. `claimNext`
+walks the full ready set, skips races/ineligible rows, returns the winning hydrated row,
 and returns a nil success when the committed ready front is empty.
 
 **Beads implementation.** `internal/storage/issueops/claim.go:ClaimIssueInTx`,
@@ -131,8 +133,11 @@ lease scope (P60).
 
 ## B05 — leases, heartbeat, and reclaim
 
-**Behavior.** A claim's five-minute lease lives in an ephemeral,
-unversioned-but-logged lease table; it is outside data dumps. Heartbeat refreshes only that row, while a missing lease for a live claim can
+**Behavior.** A claim's five-minute lease lives in a replica-local, ignored
+`leases` table; granting or refreshing it mints no Dolt commit or version row.
+Beads JSONL export/import carries lease expiry and heartbeat timestamps, but
+import never overwrites an unexpired local lease. Heartbeat refreshes only
+that row, while a missing lease for a live claim can
 be re-armed as a recorded mutation. Reclaim atomically reopens stale claims,
 clears ownership/lease, records the recovery actor/event, and never reclaims a
 live or grace-window lease.
@@ -164,8 +169,10 @@ scope. Foreign granting replicas are skipped unless explicitly scoped. A
 heartbeat on a wisp, released/closed claim, missing holder, or foreign actor
 is a typed refusal; orphan cleanup may commit without a successful heartbeat.
 
-**Plug disposition.** **Keep** refresh/re-arm/reclaim semantics, but lease
-commit fencing follows the storage-plugin epoch (A6/P49/P71); lease loss stops
+**Plug disposition.** **Deviate** retain refresh/re-arm/reclaim semantics, but
+Plug leases are unversioned-but-logged and excluded from `plug-dump/1` (A6),
+unlike Beads JSONL lease snapshots. Lease commit fencing follows the
+storage-plugin epoch (A6/P49/P71); lease loss stops
 reads and writes. Restore preserves leaseless started/hooked beads and reports
 warnings rather than silently moving them (CP19). Heartbeat remains a quiet
 lease-only call with no revision or event; only reclaim is a durable
@@ -228,7 +235,7 @@ its type is refused.
 
 **Pinning tests.** `internal/types/types_test.go:TestDependencyTypeIsValid,
 TestDependencyTypeIsWellKnown, TestDependencyTypeAffectsReadyWork,
-TestParseWaitsForGateMetadata; `cmd/bd/protocol/dep_identity_test.go:
+TestParseWaitsForGateMetadata`; `cmd/bd/protocol/dep_identity_test.go:
 TestProtocol_DepReAddSameTypeIsIdempotent`, `TestProtocol_DepReAddDifferentTypeIsAnError`;
 `internal/storage/issueops/dependencies_test.go:TestDependencyMetadataEqualComparesValuesNotBytes,
 TestReAddedDependencyThreadKeepsTheStoredThreadUnlessANewOneIsNamed`; conformance `RunDependencyEditorMixedBatchWritesBothPlanes`,
