@@ -69,6 +69,92 @@ func TestAuditPlanRoundtripAndLegacyCompatibility(t *testing.T) {
 	}
 }
 
+func TestLegacyChangesetNilCollectionsRoundtrip(t *testing.T) {
+	// Memory copies committed history through JSON. Before event descriptors,
+	// encoding/json retained nil slices as null, including nil changed paths.
+	// Use the old encoder shape so the input is independent of the new codec.
+	type legacyChangeset Changeset
+	chains := map[string][]string{"nil": nil, "empty": {}, "populated": {"authz.team/default"}}
+	changes := map[string][]ChangeRecord{
+		"nil":   nil,
+		"empty": {},
+	}
+	for name, paths := range map[string][]string{"nil paths": nil, "empty paths": {}, "populated paths": {"/status"}} {
+		change := auditFixture().Changes[0]
+		change.ChangedPaths = paths
+		changes[name] = []ChangeRecord{change}
+	}
+	for chainName, chain := range chains {
+		for changeName, records := range changes {
+			t.Run(chainName+"/"+changeName, func(t *testing.T) {
+				original := auditFixture()
+				original.Events, original.Chain, original.Changes = nil, chain, records
+				raw, err := json.Marshal(legacyChangeset(original))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var decoded Changeset
+				if err := json.Unmarshal(raw, &decoded); err != nil {
+					t.Fatalf("legacy history copy failed: %s: %v", raw, err)
+				}
+				if !reflect.DeepEqual(decoded, original) {
+					t.Fatalf("legacy nil/empty distinction changed: got %#v, want %#v", decoded, original)
+				}
+				again, err := json.Marshal(decoded)
+				if err != nil || string(again) != string(raw) {
+					t.Fatalf("legacy bytes changed: %s, %v", again, err)
+				}
+			})
+		}
+	}
+}
+
+func TestLegacyChangesetCollectionsRemainTyped(t *testing.T) {
+	legacy := auditFixture()
+	legacy.Events = nil
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(map[string]any){
+		"null chain element":    func(v map[string]any) { v["chain"] = []any{nil} },
+		"null change element":   func(v map[string]any) { v["changes"] = []any{nil} },
+		"wrong chain type":      func(v map[string]any) { v["chain"] = "authz" },
+		"wrong changes type":    func(v map[string]any) { v["changes"] = map[string]any{} },
+		"unknown history field": func(v map[string]any) { v["replayed"] = true },
+		"missing chain":         func(v map[string]any) { delete(v, "chain") },
+		"missing changes":       func(v map[string]any) { delete(v, "changes") },
+		"null path element": func(v map[string]any) {
+			v["changes"].([]any)[0].(map[string]any)["changedPaths"] = []any{nil}
+		},
+		"wrong paths type": func(v map[string]any) {
+			v["changes"].([]any)[0].(map[string]any)["changedPaths"] = false
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			value := parseJSON(t, raw).(map[string]any)
+			mutate(value)
+			bad, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded := auditFixture()
+			if err := json.Unmarshal(bad, &decoded); err == nil {
+				t.Fatal("invalid history collection accepted")
+			}
+			if !reflect.DeepEqual(decoded, auditFixture()) {
+				t.Fatal("failed history decode changed receiver")
+			}
+		})
+	}
+	for _, raw := range []string{
+		`{"ops":null}`, `{"ops":[null]}`, `{"ops":[],"chain":null}`,
+		`{"ops":[],"changes":null}`, `{"ops":[],"events":null}`,
+	} {
+		rejectComponent(t, "ChangeSet", raw, &ChangeSet{})
+	}
+}
+
 func TestAuditPlanRetainsOrdinaryAndOrderedNotices(t *testing.T) {
 	c := auditFixture()
 	second := CloneEventDescriptors(c.Events[1:])[0]
