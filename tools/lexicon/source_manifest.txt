@@ -105,6 +105,7 @@ engdocs/design/plug/spike-ux-decision.md
 engdocs/style/BUILD.bazel
 engdocs/style/lexicon.toml
 go.mod
+go.sum
 internal/BUILD.bazel
 internal/api/wire/BUILD.bazel
 internal/api/wire/catalog.go
