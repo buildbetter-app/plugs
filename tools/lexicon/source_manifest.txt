@@ -225,6 +225,11 @@ internal/core/service/reads.go
 internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
+internal/core/viewops/BUILD.bazel
+internal/core/viewops/run.go
+internal/core/viewops/service.go
+internal/core/viewops/service_test.go
+internal/core/viewops/types.go
 internal/doc.go
 internal/plugins/authnapikey/BUILD.bazel
 internal/plugins/authnapikey/apikey.go
@@ -290,6 +295,10 @@ internal/server/transport/httpjson/server.go
 internal/server/transport/inprocess/BUILD.bazel
 internal/server/transport/inprocess/inprocess.go
 internal/server/transport/inprocess/inprocess_test.go
+internal/server/viewrpc/BUILD.bazel
+internal/server/viewrpc/bind.go
+internal/server/viewrpc/cursor.go
+internal/server/viewrpc/integration_test.go
 internal/storage/conformance/BUILD.bazel
 internal/storage/conformance/atomic.go
 internal/storage/conformance/audit.go
