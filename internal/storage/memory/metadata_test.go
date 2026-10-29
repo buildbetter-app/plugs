@@ -164,3 +164,29 @@ func TestResponseFinalizerFencedAndAtomic(t *testing.T) {
 		t.Fatal("finalizer changed graph head")
 	}
 }
+
+func TestOrdinaryResponsePreservesUnchangedRowRevision(t *testing.T) {
+	ctx := context.Background()
+	s := New()
+	defer s.Close()
+	lease, err := s.Lease(ctx, "test", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRef, newRef := model.RefByID("pl-old", model.Natural64(0)), model.RefByID("pl-new", model.Natural64(0))
+	if _, err := conformance.Seed(ctx, s, lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: oldRef, Kind: "test", Op: model.OpCreate, Body: []byte(`{}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	results := []model.OpResult{{Ref: oldRef, Revision: model.Natural64(1)}, {Ref: newRef, Revision: model.Natural64(2)}}
+	h := driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "system", ID: "test"}, Method: "bead.batch", IdempotencyKey: "mixed", RequestHash: "digest", Response: model.Commit{Results: results, Warnings: []model.Warning{}}}
+	if _, err := conformance.Seed(ctx, s, lease, h, []conformance.FixtureChange{{Ref: newRef, Kind: "test", Op: model.OpCreate, Body: []byte(`{}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := s.Meta(ctx)
+	r, _ := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	defer r.Close()
+	response, err := r.IdempotencyByKey(ctx, "system:test", "", h.Method, h.IdempotencyKey)
+	if err != nil || response == nil || response.Commit.Revision.String() != "2" || !reflect.DeepEqual(response.Commit.Results, results) {
+		t.Fatalf("cached response changed row revisions: %+v %v", response, err)
+	}
+}
