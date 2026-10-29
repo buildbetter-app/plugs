@@ -1,86 +1,87 @@
-# Baseline storage drivers
+# Storage drivers and lifecycle
 
-Source: **`471d0199c89acf9e242f44978f2824120726de32`**;
-[guide scope](README.md#snapshot-and-boundaries). These are internal embedding
-APIs. The executable selects only disposable memory at this snapshot.
+Source: **127ac22e1d003cce4babe6cbcbc8367ad264e649**;
+[guide scope](README.md#snapshot-and-package-boundaries). These are internal
+embedding APIs; the executable does not select a persistent local driver.
 
 | Driver | Open configuration | Lifetime and limits |
 | --- | --- | --- |
-| [Memory](../../internal/storage/memory/store.go) | `memory.Driver{}.Open(ctx, driver.Config{})`; empty DSN or `:memory:`, no options. | Each open is independent. Copy-on-write readers, history, receipts and checkpoint CAS live only in that store. Reopening creates a new identity and empty state. |
-| [SQLite](../../internal/storage/sqlite/README.md) | File path or local `file:` URI without parameters; no options or in-memory DSN. | Persistent WAL/FULL publication, pinned SQL readers and driver-owned file locks. Use a stable local path and retain its `.plug-locks` directory while open. Hard-linked files and non-Plug databases refuse. No standby/replication/automated backup. |
-| [PostgreSQL](../../internal/storage/postgres/README.md) | pgx DSN for a dedicated Plug database; host supplies credentials privately. | Persistent repeatable-read snapshots and transactional publication. Initial role needs schema-creation permission. Replication, backups, promotion and recovery orchestration belong to a separately qualified deployment integration. |
+| [Memory](../../internal/storage/memory/store.go) | memory.Driver{}.Open(ctx, driver.Config{}); empty DSN or :memory:, no options. | Independent copy-on-write store with history, receipts, checkpoints and ordered plans. State ends at Store.Close. |
+| [SQLite](../../internal/storage/sqlite/README.md) | A stable local path or file: URI without query parameters; no custom options, nonzero branches or in-memory DSN. | Persistent WAL/FULL publication, pinned SQL readers, driver-owned file locks, history, receipts, checkpoints and ordered plans. No standby, replication or automated backup. |
+| [PostgreSQL](../../internal/storage/postgres/README.md) | A pgx DSN for one dedicated Plug database; the host supplies credentials. | Persistent repeatable-read snapshots and transactional publication, including receipts, checkpoints and ordered plans. Replication, backup, promotion and recovery belong to managed deployment integration. |
 
-Baseline records, tombstones, versions, blobs, derived rows, predicate updates,
-changesets and keyed replay receipts publish atomically within each driver.
-SQLite/PostgreSQL support exact string equality on kind/id/key/type/project/status;
-unknown operators/options and nonzero branches explicitly refuse. The reserved
-branch field is not a graph-branch feature. Revision/epoch/checkpoint conversion
-is checked against each engine's supported integer range rather than narrowed.
-History uses JSON Patch replacement diffs with a full replay boundary at most
-every 32 versions; deletion/recreation retain bounded reconstruction.
+All three engines publish records, tombstones, versions, blobs, derived rows,
+predicate updates, changesets and keyed replay receipts atomically. SQLite and
+PostgreSQL support only equality queries on kind, id, key, type, project and
+status, and refuse unknown operators/options and nonzero branches. History
+replays JSON Patch replacement diffs from full boundaries at most every 32
+versions. Revision, epoch and checkpoint conversions are checked against the
+engine's uint64 domain; values are never silently narrowed.
 
-## Ownership and failure
+## Ownership, leases and failure
 
-The composition root opens the store, acquires/renews the active lease and owns
-shutdown. [Driver interfaces](../../internal/storage/driver/driver.go) expose
-transactions only to drivers and the single core write pipeline. Plugin code
-receives a read/capability surface, never an SQL connection or `WriteTx`.
+The composition root opens the store, acquires and renews the active lease and
+owns shutdown. [Driver interfaces](../../internal/storage/driver/driver.go)
+expose transactions only to drivers and the single core write pipeline. Plugin
+code receives a read/capability surface, never an SQL connection or WriteTx.
 
-- Close every `Reader`; it pins an immutable committed snapshot. A fresh reader
-  is needed to observe later writes or pending-response finalization.
+- Close every Reader; it pins an immutable committed snapshot. Use a fresh
+  reader to observe later writes or response finalization.
 - Finish each transaction with commit or rollback. Closing an unfinished
-  transaction rolls it back. Close readers/transactions before `Store.Close`;
+  transaction rolls it back. Close readers and transactions before Store.Close;
   store close is idempotent and never publishes staged work.
-- Use bounded contexts. The standard active-store lease is 10 s, renewed every
-  3 s; it is distinct from a bead's work-claim lease. On `Lost()`, stop admitting
-  reads/writes until a new active lease exists. Expired holders cannot renew
-  themselves back to life. Writes/checkpoint saves are epoch-fenced atomically.
+- The standard active-store lease is 10 seconds, renewed every 3 seconds. It is
+  distinct from a bead work-claim lease. On Lost, stop admitting reads and
+  writes until a new lease exists. Expired holders cannot renew themselves.
+- Writes, checkpoint saves, no-op receipts and response finalization are
+  lease-epoch fenced. A stale holder receives ErrFenced.
 - A keyed write with post work publishes a pending receipt with its graph
-  change. Only fenced response finalization clears pending, even for no
-  warnings. Await finalization before reporting successful replay. No-op
-  receipts are final immediately and preserve prior record revisions/head.
+  change. Only the fenced finalizer clears pending, including when warnings
+  are empty. No-op receipts are final immediately and preserve prior record
+  revisions and head.
 - An indeterminate commit or lost answer requires lookup/replay with the
-  **original** idempotency key. A pending receipt never licenses a second graph
-  write. Mismatched params under a used key conflict; post warnings survive
-  finalization/reopen according to the driver lifetime.
+  original idempotency key. A mismatched request conflicts; a pending receipt
+  never licenses a second graph write. Final responses are immutable.
 
-Stable database continuation preserves incarnation. After an uncertain restore
-or promotion, admission needs a qualified recovery path that rotates it; this
-package does not provide that operational path. PostgreSQL's design RPO of five
-minutes/RTO of one hour is a target, not a result of local transactional tests.
+SQLite retains state across close/reopen and keeps its lock directory beside the
+database while any handle is open. PostgreSQL retains identity across reopen;
+the caller must not admit traffic after an uncertain restore or promotion
+without a recovery path that rotates the store incarnation. The managed design
+target is a five-minute RPO and one-hour RTO, not a result of these local tests.
 Dump/restore, cutover and production data movement are not installed CLI/RPC
-operations in this snapshot.
+operations.
 
-## Audit-plan boundary
+## Audit-plan and SQL boundaries
 
-The merged [header contract](../../internal/storage/driver/driver.go) can carry
-ordered `Events`, and [memory publication](../../internal/storage/memory/transaction.go)
-validates, copies and atomically persists them with the changeset/receipt.
-The SQLite [commit path](../../internal/storage/sqlite/transaction.go) and
-PostgreSQL [commit path](../../internal/storage/postgres/commit.go) at this pin
-do not carry `header.Events` into their committed changesets. Do not enable
-ordered-plan production on those drivers or expect conditional notices to
-survive SQL publication. Baseline history/checkpoints/receipts do not imply
-this capability. The separately authored SQL audit follow-ons are not
-incorporated or tested by these guides.
+The current [changeset header](../../internal/storage/driver/driver.go) carries
+a complete ordered Events plan. Memory, SQLite and PostgreSQL validate, clone
+and persist a non-nil plan with the records, changeset and receipt in one
+publication transaction. A nil plan retains legacy one-change ordering; an
+invalid non-nil plan refuses. A no-op cannot contain a plan.
 
-## Exercise disposable baseline stores
+This persistence does not by itself prove the full connected audit flow. The
+[Writer producer](../../internal/core/pipeline/audit.go), tracked
+[ontology adapter](../../internal/core/service/audit.go), event materializer
+and delivery fixture are separately composed and qualified in memory; SQL
+drivers have engine-specific plan persistence tests. Do not infer network event
+delivery, policy management or production recovery from a durable plan.
 
-Run the existing tests through Bazel; they create synthetic stores and clean up
-their resources. PostgreSQL requires Docker's local socket and the pinned image
-documented in its guide, and fails rather than skipping if unavailable.
+## Exercise the merged engines
 
-```sh
+Run the focused driver suites with ambient settings disabled:
+
+~~~~sh
 bazel --ignore_all_rc_files test \
+  //internal/storage/driver:driver_test \
   //internal/storage/memory:memory_test \
   //internal/storage/sqlite:sqlite_test \
   //internal/storage/postgres:postgres_test \
-  --jobs=2 --lockfile_mode=error --test_output=all --test_arg=-test.v --test_timeout=900
-```
+  --jobs=2 --lockfile_mode=error --test_output=all --test_timeout=900
+~~~~
 
-The [shared conformance cases](../../internal/storage/conformance/conformance.go)
-exercise lifetime, locks, fenced publication, history, receipts and checkpoints.
-[SQLite process tests](../../internal/storage/sqlite/process_test.go) and
-[PostgreSQL reopen tests](../../internal/storage/postgres/persistence_test.go)
-cover persistent engine boundaries. Those cases do not certify the complete
-runtime's behavior cards, performance or managed recovery targets.
+The PostgreSQL target creates and removes its own loopback-only PostgreSQL
+container and fails if the pinned engine is unavailable; it never substitutes
+memory. Shared conformance covers lifetime cleanup, locks, revisions, atomic
+publication, replay, no-op/finalizer, fencing, checkpoints, history and
+pagination. These checks do not certify managed topology, backups, failover,
+performance, migration or a public release.
