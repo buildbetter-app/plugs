@@ -1,5 +1,7 @@
 package sqlite
 
+const schemaVersion = 2
+
 // All revisions sort as fixed-width unsigned decimal TEXT. SQLite INTEGER is
 // signed; binding a uint64 or casting a revision to INTEGER would lose data.
 const schema = `
@@ -26,7 +28,8 @@ CREATE TABLE IF NOT EXISTS changesets (rev TEXT PRIMARY KEY, data BLOB NOT NULL)
 CREATE TABLE IF NOT EXISTS replays (
  scope TEXT PRIMARY KEY, created INTEGER NOT NULL, rev TEXT NOT NULL,
  request_hash TEXT NOT NULL, response BLOB NOT NULL, changeset BLOB,
- finalized INTEGER NOT NULL DEFAULT 0, post BLOB
+ finalized INTEGER NOT NULL DEFAULT 0, post BLOB,
+ pending INTEGER NOT NULL DEFAULT 0 CHECK(pending IN (0,1))
 );
 CREATE TABLE IF NOT EXISTS checkpoints (key TEXT PRIMARY KEY, generation TEXT NOT NULL, payload BLOB);
 `

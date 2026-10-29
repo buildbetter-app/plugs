@@ -105,8 +105,24 @@ func (Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, error)
 			return e
 		}
 		if hasMeta {
-			if _, e := readMeta(ctx, c); e != nil {
+			var version int
+			if e := c.QueryRowContext(ctx, `SELECT schema_version FROM meta WHERE singleton=1`).Scan(&version); e != nil {
 				return e
+			}
+			if version == 1 {
+				// Additive upgrade from the published SQLite checkpoint. Existing
+				// receipts are final; never infer unfinished posts for old writes.
+				if _, e := c.ExecContext(ctx, `ALTER TABLE replays ADD COLUMN pending INTEGER NOT NULL DEFAULT 0 CHECK(pending IN (0,1))`); e != nil {
+					return e
+				}
+				if _, e := c.ExecContext(ctx, `UPDATE replays SET post=? WHERE finalized=1 AND (post IS NULL OR CAST(post AS TEXT)='null')`, []byte("[]")); e != nil {
+					return e
+				}
+				if _, e := c.ExecContext(ctx, `UPDATE meta SET schema_version=? WHERE singleton=1`, schemaVersion); e != nil {
+					return e
+				}
+			} else if version != schemaVersion {
+				return fmt.Errorf("%w: sqlite schema version %d", driver.ErrUnsupported, version)
 			}
 		} else {
 			var tables int
@@ -121,11 +137,15 @@ func (Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, error)
 		if e != nil {
 			return e
 		}
-		_, e = c.ExecContext(ctx, `INSERT OR IGNORE INTO meta VALUES(1,?,?,1,?,?)`, randomID(), randomID(), revKey(0), revKey(0))
+		_, e = c.ExecContext(ctx, `INSERT OR IGNORE INTO meta VALUES(1,?,?,?,?,?)`, randomID(), randomID(), schemaVersion, revKey(0), revKey(0))
 		if e != nil {
 			return e
 		}
 		_, e = c.ExecContext(ctx, `INSERT OR IGNORE INTO active_lease VALUES(1,?,'','',0)`, revKey(0))
+		if e != nil {
+			return e
+		}
+		_, e = readMeta(ctx, c)
 		return e
 	})
 	if err == nil {
@@ -240,10 +260,10 @@ func readMeta(ctx context.Context, q queryer) (driver.Meta, error) {
 	if err != nil {
 		return m, err
 	}
-	if version != 1 {
+	if version != schemaVersion {
 		return m, fmt.Errorf("%w: sqlite schema version %d", driver.ErrUnsupported, version)
 	}
-	m.SchemaVersion = 1
+	m.SchemaVersion = schemaVersion
 	m.State = "ready"
 	m.Head, err = parseRev(head)
 	if err == nil {

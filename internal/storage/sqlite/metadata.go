@@ -64,8 +64,8 @@ func saveReplay(ctx context.Context, c *sql.Conn, h driver.ChangesetHeader, revi
 	if err != nil {
 		return err
 	}
-	_, err = c.ExecContext(ctx, `INSERT INTO replays(scope,created,rev,request_hash,response,changeset,finalized,post) VALUES(?,?,?,?,?,?,0,NULL)
- ON CONFLICT(scope) DO UPDATE SET created=excluded.created,rev=excluded.rev,request_hash=excluded.request_hash,response=excluded.response,changeset=excluded.changeset,finalized=0,post=NULL`, scopeKey(principal, h.AgentLabel, h.Method, h.IdempotencyKey), time.Now().UnixNano(), revKey(mustUint(revision)), h.RequestHash, data, entry)
+	_, err = c.ExecContext(ctx, `INSERT INTO replays(scope,created,rev,request_hash,response,changeset,finalized,post,pending) VALUES(?,?,?,?,?,?,0,NULL,?)
+ ON CONFLICT(scope) DO UPDATE SET created=excluded.created,rev=excluded.rev,request_hash=excluded.request_hash,response=excluded.response,changeset=excluded.changeset,finalized=0,post=NULL,pending=excluded.pending`, scopeKey(principal, h.AgentLabel, h.Method, h.IdempotencyKey), time.Now().UnixNano(), revKey(mustUint(revision)), h.RequestHash, data, entry, h.ResponsePending)
 	return err
 }
 func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) (model.Commit, error) {
@@ -74,7 +74,7 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 	if err := t.validateHeader(ctx, h); err != nil {
 		return model.Commit{}, err
 	}
-	if len(h.Changes) != 0 || len(t.records) != 0 || len(t.derived) != 0 || len(t.bumps) != 0 || len(t.blobs) != 0 {
+	if h.ResponsePending || len(h.Changes) != 0 || len(t.records) != 0 || len(t.derived) != 0 || len(t.bumps) != 0 || len(t.blobs) != 0 {
 		return model.Commit{}, fmt.Errorf("sqlite: no-op cannot publish staged mutations")
 	}
 	var result model.Commit
@@ -84,6 +84,9 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 			return err
 		}
 		if previous != nil {
+			if previous.ResponsePending {
+				return driver.ErrConflict
+			}
 			result = previous.Commit
 			return nil
 		}
@@ -175,6 +178,9 @@ func (s *Store) FinalizeResponse(ctx context.Context, value driver.ActiveLease, 
 	if _, err = revision.Uint64(); err != nil {
 		return err
 	}
+	if warnings == nil {
+		warnings = []model.Warning{}
+	}
 	post, err := json.Marshal(warnings)
 	if err != nil {
 		return err
@@ -191,8 +197,12 @@ func (s *Store) FinalizeResponse(ctx context.Context, value driver.ActiveLease, 
 		if previous.Commit.Revision.String() != revision.String() {
 			return driver.ErrConflict
 		}
-		if previous.finalized {
-			if !bytes.Equal(previous.post, post) {
+		if !previous.ResponsePending {
+			want := []byte("[]")
+			if previous.finalized {
+				want = previous.post
+			}
+			if !bytes.Equal(want, post) {
 				return driver.ErrConflict
 			}
 			return nil
@@ -202,7 +212,7 @@ func (s *Store) FinalizeResponse(ctx context.Context, value driver.ActiveLease, 
 		if err != nil {
 			return err
 		}
-		_, err = c.ExecContext(ctx, `UPDATE replays SET response=?,finalized=1,post=? WHERE scope=?`, data, post, scope)
+		_, err = c.ExecContext(ctx, `UPDATE replays SET response=?,pending=0,finalized=1,post=? WHERE scope=?`, data, post, scope)
 		return err
 	})
 }

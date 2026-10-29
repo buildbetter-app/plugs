@@ -409,6 +409,13 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			}
 			// A tombstone is also a complete base when its cadence is due.
 			v.Base = count%driver.VersionBaseEvery == 0
+			if record != nil {
+				var wasLive bool
+				if err = c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM records WHERE key=?)`, id).Scan(&wasLive); err != nil {
+					return err
+				}
+				v.Base = v.Base || !wasLive
+			}
 			if record == nil {
 				if _, err = c.ExecContext(ctx, `DELETE FROM records WHERE key=?`, id); err != nil {
 					return err
@@ -426,8 +433,8 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 				if _, err = c.ExecContext(ctx, `INSERT OR IGNORE INTO objects(key,kind) VALUES(?,?)`, id, value.Kind); err != nil {
 					return err
 				}
-				// Regular bases remain exactly every 32 versions. A root replacement
-				// patch can replay recreation after a tombstone without a special base.
+				// Each recreated lifetime starts with a full base, in addition to
+				// the regular every-32-version cadence.
 				if v.Base {
 					v.Body = bytes.Clone(value.Body)
 				} else {

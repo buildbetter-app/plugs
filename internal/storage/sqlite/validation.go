@@ -17,6 +17,9 @@ func (t *transaction) validateHeader(ctx context.Context, h driver.ChangesetHead
 	if !t.hasHead {
 		return fmt.Errorf("sqlite: commit requires Head")
 	}
+	if h.ResponsePending && h.IdempotencyKey == "" {
+		return fmt.Errorf("sqlite: pending response requires an idempotency key")
+	}
 	if err := driver.ValidateHeaderLocks(h.LockKeys, t.acquired); err != nil {
 		return err
 	}

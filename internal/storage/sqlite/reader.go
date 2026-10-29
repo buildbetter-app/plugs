@@ -613,7 +613,8 @@ func readReplay(ctx context.Context, q queryer, scope string) (*storedReplay, er
 	var request string
 	var created int64
 	var finalized bool
-	err := q.QueryRowContext(ctx, `SELECT created,request_hash,response,changeset,finalized,post FROM replays WHERE scope=?`, scope).Scan(&created, &request, &data, &entry, &finalized, &post)
+	var pending bool
+	err := q.QueryRowContext(ctx, `SELECT created,request_hash,response,changeset,finalized,post,pending FROM replays WHERE scope=?`, scope).Scan(&created, &request, &data, &entry, &finalized, &post, &pending)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -623,7 +624,7 @@ func readReplay(ctx context.Context, q queryer, scope string) (*storedReplay, er
 	if !time.Now().Before(time.Unix(0, created).Add(driver.IdempotencyWindow)) {
 		return nil, nil
 	}
-	value := &storedReplay{IdempotencyRecord: driver.IdempotencyRecord{RequestHash: request}, finalized: finalized, post: post}
+	value := &storedReplay{IdempotencyRecord: driver.IdempotencyRecord{RequestHash: request, ResponsePending: pending}, finalized: finalized, post: post}
 	if err = json.Unmarshal(data, &value.Commit); err != nil {
 		return nil, err
 	}

@@ -168,6 +168,7 @@ func TestPersistenceAndIndependentHandles(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetWrite, Principal: model.PrincipalRef{Kind: "user", ID: "persist"}, Method: "test.persist", AgentLabel: "ignored", IdempotencyKey: "write", RequestHash: "digest", LockKeys: keys, Changes: []model.ChangeRecord{{Ref: ref, Op: model.OpCreate}}, Response: model.Commit{Results: []model.OpResult{{Ref: ref, Revision: model.Natural64(1)}}, Warnings: []model.Warning{}}}
+	h.ResponsePending = true
 	entry, err := tx.Commit(ctx, h)
 	if err != nil || entry.Revision.String() != "1" {
 		t.Fatalf("commit=%+v %v", entry, err)
@@ -452,7 +453,7 @@ func TestExpiryAndUnsupportedCapabilities(t *testing.T) {
 	if _, err = s.Read(ctx, driver.View{Incarnation: meta.Incarnation, Branch: model.Natural64(1)}); !errors.Is(err, driver.ErrUnsupported) {
 		t.Fatalf("unsupported branch=%v", err)
 	}
-	if _, err = s.Migrate(ctx, 2); !errors.Is(err, driver.ErrUnsupported) {
+	if _, err = s.Migrate(ctx, schemaVersion+1); !errors.Is(err, driver.ErrUnsupported) {
 		t.Fatalf("unsupported migration=%v", err)
 	}
 	health, err := s.Health(ctx)

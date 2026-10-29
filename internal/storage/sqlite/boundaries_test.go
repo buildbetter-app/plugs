@@ -84,6 +84,7 @@ func TestIndependentEpochRacesCheckpointFinalizerAndRenewal(t *testing.T) {
 			h.IdempotencyKey = "key"
 			h.Method = "test.write"
 			h.RequestHash = "digest"
+			h.ResponsePending = true
 			if err := tx.Put(ctx, driver.Record{Ref: testRef("pl-replay"), Kind: "test", Body: []byte(`{}`)}); err != nil {
 				t.Fatal(err)
 			}

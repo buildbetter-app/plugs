@@ -20,6 +20,13 @@ transaction. Epoch checks occur inside that transaction, including immediately
 before COMMIT. Staging holds no SQLite write transaction, so lease release and
 expiry takeover can fence unfinished writers.
 
+Keyed writes with post work atomically publish ResponsePending. Fresh readers
+observe finalization; existing snapshots retain their original pending state.
+Only the fenced finalizer clears pending, including for an empty post outcome.
+Final receipts are immutable; no-op receipts are immediately final. Schema 2
+adds this flag through a transactional additive upgrade from checkpoint schema
+1, treating older receipts as final and preserving identity and graph history.
+
 Revisions, epochs and checkpoint generations use lossless unsigned decimal
 TEXT. The current implementation checks the uint64 boundary and refuses larger
 revisions or exhausted counters before publication. JSON bodies retain exact
