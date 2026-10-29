@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "localclisession_test",
+    srcs = ["session_test.go"],
+    args = ["-test.v"],
+    data = ["//cmd/plug:plug"],
+    env = {"PLUG_BINARY": "$(rootpath //cmd/plug:plug)"},
+    deps = [
+        "//internal/api/wire",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
