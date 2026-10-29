@@ -83,6 +83,10 @@ func (n Namespace) Validate() error {
 	return CanonicalRef(n.Authority)
 }
 
+func sameNamespace(a, b Namespace) bool {
+	return a.Validate() == nil && b.Validate() == nil && a.StoreID == b.StoreID && a.Incarnation == b.Incarnation && a.InstallationID == b.InstallationID && a.Authority.ID == b.Authority.ID
+}
+
 func (s Scope) Validate() error {
 	if s.Kind != AuthorityScope && s.Kind != TeamScope && s.Kind != ProjectScope {
 		return fmt.Errorf("invalid scope kind %q", s.Kind)

@@ -406,3 +406,51 @@ func TestFiniteComponentClaimUpdateBoundary(t *testing.T) {
 		t.Fatal("compiled membership reused revoked involvement")
 	}
 }
+
+func TestProjectlessUnknownAndInactiveAssignment(t *testing.T) {
+	u := user()
+	r := rules(t)
+	for _, binding := range []authz.ProjectBinding{{}, {Name: "missing-registry", Found: false}, {Name: "web/api", Ref: ref("project"), Found: true}} {
+		for _, c := range []authz.Caller{caller("user", nil), caller("agent", &u)} {
+			s := newSlice(c)
+			s.beads["b"] = binding
+			s.data.Projects[0].Active = false
+			s.data.Grants = []authz.Grant{grant("user", "u", authz.ProjectScope, "project", "involved"), grant("user", "u", authz.AuthorityScope, "authority", "admin")}
+			for _, a := range []authz.Action{authz.Read, authz.Modify} {
+				method := ""
+				if a == authz.Modify {
+					method = "bead.update"
+				}
+				q := authz.CheckRequest{Caller: c, Action: a, Resource: authz.Resource{Kind: authz.Bead, Ref: ref("b")}, Method: method}
+				ds, err := r.Eval(context.Background(), s, []authz.CheckRequest{q})
+				want := a == authz.Read && c.Principal.Kind == "user"
+				if err != nil || (ds[0].Effect == authz.Allow) != want {
+					t.Fatalf("binding=%+v kind=%s action=%s decision=%+v err=%v", binding, c.Principal.Kind, a, ds, err)
+				}
+			}
+			if c.Principal.Kind == "agent" {
+				q := authz.CheckRequest{Caller: c, Action: authz.ImportBulkHistory, Resource: authz.Resource{Kind: authz.History, Ref: ref("authority")}}
+				ds, err := r.Eval(context.Background(), s, []authz.CheckRequest{q})
+				if err != nil || ds[0].Effect == authz.Allow {
+					t.Fatal("Agent inherited admin sponsor's User permission")
+				}
+			}
+		}
+	}
+}
+
+func TestSponsorCaveatsAlsoIntersect(t *testing.T) {
+	u := user()
+	u.Caveats = map[string]any{"actions": []string{"read"}}
+	c := caller("agent", &u)
+	c.Principal.Caveats = map[string]any{"actions": []string{"modify"}}
+	s := newSlice(c)
+	s.data.Grants = []authz.Grant{grant("user", "u", authz.ProjectScope, "project", "involved")}
+	f, err := rules(t).Compile(authz.ListRequest{Caller: c, Action: authz.Modify, ResourceKind: authz.Project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := f.Match(context.Background(), s, authz.Resource{Kind: authz.Project, Ref: ref("project")}); err != nil || ok {
+		t.Fatal("Agent caveat expanded sponsor restriction")
+	}
+}

@@ -14,6 +14,11 @@ func namespace() Namespace {
 }
 
 func TestCanonicalRefsAndInjectiveIdentities(t *testing.T) {
+	n := namespace()
+	n.Authority = model.Ref{ID: "authority"}
+	if !sameNamespace(n, namespace()) {
+		t.Fatal("equivalent ID-arm/zero-branch namespace representations differ")
+	}
 	for _, r := range []model.Ref{{}, model.RefByID("", model.Natural64(0)), model.RefByKey("key"), model.RefByID("p", model.Natural64(1)), ref(" p"), ref("p\x00q"), ref(string([]byte{0xff}))} {
 		if CanonicalRef(r) == nil {
 			t.Errorf("accepted invalid reference %+v", r)

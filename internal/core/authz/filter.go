@@ -185,7 +185,7 @@ func prepare(ctx context.Context, s Slice, n Namespace, r CheckRequest) (bool, e
 	if err := ctx.Err(); err != nil {
 		return false, unavailable(err)
 	}
-	if s == nil || !reflect.DeepEqual(s.Namespace(), n) {
+	if s == nil || !sameNamespace(s.Namespace(), n) {
 		return false, unavailable(errors.New("authorization namespace mismatch"))
 	}
 	if err := n.Validate(); err != nil {
@@ -441,5 +441,5 @@ func FreezeList(r ListRequest) (ListRequest, error) {
 }
 
 func sameTemplateBinding(a, b FilterTemplate) bool {
-	return reflect.DeepEqual(a.Namespace, b.Namespace) && reflect.DeepEqual(a.Request, b.Request)
+	return sameNamespace(a.Namespace, b.Namespace) && reflect.DeepEqual(a.Request, b.Request)
 }

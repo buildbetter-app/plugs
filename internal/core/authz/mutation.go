@@ -21,7 +21,7 @@ func ValidateBeadWrite(method string, before, after model.Record, setter model.P
 	if caller.Principal.Kind != "agent" || !reflect.DeepEqual(setter, caller.Principal) {
 		return errors.New("deputy or non-Agent write is unsupported")
 	}
-	if CanonicalRef(before.Ref) != nil || CanonicalRef(after.Ref) != nil || strings.Contains(before.Ref.ID, "/") || before.Ref.ID != after.Ref.ID || before.Kind != "bead" || after.Kind != before.Kind || before.Body == nil || after.Body == nil {
+	if CanonicalRef(before.Ref) != nil || CanonicalRef(after.Ref) != nil || before.Revision.Validate() != nil || before.Revision.IsZero() || strings.Contains(before.Ref.ID, "/") || before.Ref.ID != after.Ref.ID || before.Kind != "bead" || after.Kind != before.Kind || before.Body == nil || after.Body == nil {
 		return errors.New("existing canonical bead images required")
 	}
 	for _, key := range []string{"project", "parent", "owner", "assignee", "type", "labels", "restricted"} {
