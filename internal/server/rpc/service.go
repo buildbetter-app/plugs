@@ -48,6 +48,7 @@ type filter struct {
 	Resources []string `json:"resources,omitempty"`
 	Types     []string `json:"types,omitempty"`
 	Events    []string `json:"events,omitempty"`
+	ViewID    string   `json:"viewId,omitempty"`
 }
 
 func (p *asOf) domain() *service.AsOf {
@@ -60,7 +61,7 @@ func (p *filter) domain() *service.Filter {
 	if p == nil {
 		return nil
 	}
-	return &service.Filter{Query: p.Query, Resources: p.Resources, Types: p.Types, Events: p.Events}
+	return &service.Filter{Query: p.Query, Resources: p.Resources, Types: p.Types, Events: p.Events, ViewID: p.ViewID}
 }
 
 // BindService atomically binds the vertical slice. No descriptor is added for
@@ -113,20 +114,28 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		}
 		return out, nil
 	case "bead.ready":
-		v, err := svc.Ready(ctx, c.Principal, service.ReadyRequest{Project: c.Meta.Project, ViewID: p.ViewID, Filter: p.Filter.domain(), Limit: int(limit), Cursor: p.Cursor})
+		position, err := c.paging.decode(c, p)
 		if err != nil {
 			return nil, err
 		}
-		return pageJSON(v), nil
+		v, err := svc.Ready(ctx, c.Principal, service.ReadyRequest{Project: c.Meta.Project, ViewID: p.ViewID, Filter: p.Filter.domain(), Limit: int(limit), Position: position})
+		if err != nil {
+			return nil, err
+		}
+		return c.paging.page(c, p, position, v)
 	case "history.query":
 		if p.AsOf == nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "asOf is required"}}
 		}
-		v, err := svc.History(ctx, c.Principal, service.HistoryRequest{Project: c.Meta.Project, AsOf: *p.AsOf.domain(), Filter: p.Filter.domain(), Limit: int(limit), Cursor: p.Cursor})
+		position, err := c.paging.decode(c, p)
 		if err != nil {
 			return nil, err
 		}
-		return pageJSON(v), nil
+		v, err := svc.History(ctx, c.Principal, service.HistoryRequest{Project: c.Meta.Project, AsOf: *p.AsOf.domain(), Filter: p.Filter.domain(), Limit: int(limit), Position: position})
+		if err != nil {
+			return nil, err
+		}
+		return c.paging.page(c, p, position, v)
 	case "bead.create":
 		v, err := svc.Create(ctx, c.Principal, service.CreateRequest{Type: p.Type, Fields: p.Fields, Parent: p.Parent}, meta)
 		return commitJSON(v), err
@@ -169,6 +178,12 @@ func commitJSON(v model.Commit) map[string]any {
 	if v.Violations != nil {
 		out["violations"] = v.Violations
 	}
+	if v.LeaseExpiresAt != nil {
+		out["leaseExpiresAt"] = timestamp(*v.LeaseExpiresAt)
+	}
+	if v.LeaseTtlMs != nil {
+		out["leaseTtlMs"] = v.LeaseTtlMs
+	}
 	return out
 }
 func pageJSON(v service.BeadPage) map[string]any {
@@ -177,9 +192,6 @@ func pageJSON(v service.BeadPage) map[string]any {
 		items = append(items, beadJSON(b))
 	}
 	out := map[string]any{"items": items, "asOf": asOf{v.AsOf.Revision, v.AsOf.Incarnation}}
-	if v.NextCursor != "" {
-		out["nextCursor"] = v.NextCursor
-	}
 	return out
 }
 func timestamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }

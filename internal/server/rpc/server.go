@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
@@ -28,11 +29,15 @@ type Config struct {
 	Incarnation         string
 	Visible             func(context.Context, model.PrincipalRef, wire.MethodDesc) (bool, error)
 	DroppedNotification func(context.Context, string)
+	// CursorKey is an optional >=32-byte signing secret. Supplying a stable key
+	// preserves cursors across server restarts; nil generates a per-server key.
+	CursorKey []byte
 }
 
 type Server struct {
 	registry *Registry
 	config   Config
+	paging   *pageCodec
 }
 type principalKey struct{}
 
@@ -66,7 +71,11 @@ func New(registry *Registry, config Config) (*Server, error) {
 	if err := config.OntologyRevision.Validate(); err != nil {
 		return nil, err
 	}
-	s := &Server{registry: registry.snapshot(), config: config}
+	paging, err := newPageCodec(config)
+	if err != nil {
+		return nil, err
+	}
+	s := &Server{registry: registry.snapshot(), config: config, paging: paging}
 	for name, handler := range map[string]Handler{"server.hello": s.hello, "rpc.methods": s.methods, "rpc.describe": s.describe, "rpc.discover": s.discover} {
 		if err := s.registry.Register(name, handler); err != nil {
 			return nil, err
@@ -146,6 +155,8 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 	if !idPresent && bound.desc.Idempotency == "required" {
 		if s.config.DroppedNotification != nil {
 			s.config.DroppedNotification(ctx, method)
+		} else {
+			slog.WarnContext(ctx, "dropped write notification", "method", method)
 		}
 		return nil
 	}
@@ -191,7 +202,7 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 	if err = ctx.Err(); err != nil {
 		return respond("busy", "request deadline or cancellation reached", nil)
 	}
-	result, callErr := invoke(ctx, bound.handler, Call{Method: method, Params: params, Meta: meta, Principal: by})
+	result, callErr := invoke(ctx, bound.handler, Call{Method: method, Params: params, Meta: meta, Principal: by, paging: s.paging})
 	if !idPresent {
 		return nil
 	}
@@ -232,6 +243,9 @@ func (s *Server) failure(id []byte, code, hint string, details map[string]any) [
 	return s.errorResponse(id, s.registry.catalog.NewError(code, hint, details))
 }
 func (s *Server) errorResponse(id []byte, e *wire.Error) []byte {
+	if s.registry.catalog.ValidateError(e) != nil {
+		e = s.registry.catalog.NewError("internal_error", "", nil)
+	}
 	if e.Data.TraceID == "" {
 		var b [16]byte
 		if _, err := rand.Read(b[:]); err == nil {
@@ -286,22 +300,22 @@ func (s *Server) methods(ctx context.Context, c Call) (any, error) {
 }
 func (s *Server) describe(ctx context.Context, c Call) (any, error) {
 	var params struct {
-		Method string `json:"method"`
+		Method *string `json:"method"`
 	}
 	_ = json.Unmarshal(c.Params, &params)
 	descriptors, _, hash, err := s.visible(ctx, c.Principal)
 	if err != nil {
 		return nil, err
 	}
-	if params.Method != "" {
+	if params.Method != nil {
 		for _, d := range descriptors {
-			if d.Name == params.Method {
-				return map[string]any{"method": d, "errors": s.registry.catalog.ErrorCatalog()}, nil
+			if d.Name == *params.Method {
+				return map[string]any{"method": d, "errors": s.registry.catalog.ErrorCatalog(), "components": s.registry.catalog.ComponentsJSON()}, nil
 			}
 		}
 		return nil, s.registry.catalog.NewError("method_not_found", "", nil)
 	}
-	return map[string]any{"methods": descriptors, "methodsHash": hash, "errors": s.registry.catalog.ErrorCatalog()}, nil
+	return map[string]any{"methods": descriptors, "methodsHash": hash, "errors": s.registry.catalog.ErrorCatalog(), "components": s.registry.catalog.ComponentsJSON()}, nil
 }
 func (s *Server) discover(ctx context.Context, c Call) (any, error) {
 	descriptors, _, hash, err := s.visible(ctx, c.Principal)

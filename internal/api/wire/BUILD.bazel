@@ -9,6 +9,13 @@ go_library(
     deps = ["//internal/core/model"],
 )
 
+go_test(
+    name = "wire_test",
+    srcs = ["wire_test.go"],
+    embed = [":wire"],
+    deps = ["//internal/core/model"],
+)
+
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
