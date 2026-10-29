@@ -277,6 +277,8 @@ internal/integration/clisql/BUILD.bazel
 internal/integration/clisql/README.md
 internal/integration/clisql/fixture_test.go
 internal/integration/clisql/lifecycle_test.go
+internal/integration/localclisession/BUILD.bazel
+internal/integration/localclisession/session_test.go
 internal/integration/oidc/BUILD.bazel
 internal/integration/oidc/flow_test.go
 internal/integration/oidc/http_test.go
