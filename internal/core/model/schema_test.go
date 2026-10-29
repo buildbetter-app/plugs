@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -56,7 +57,7 @@ func schemaCheck(schemas map[string]any, schema map[string]any, value any) error
 			return fmt.Errorf("oneOf matched %d arms", matches)
 		}
 	}
-	if constant, ok := schema["const"]; ok && !reflect.DeepEqual(value, constant) {
+	if constant, ok := schema["const"]; ok && !equalSchemaValue(value, constant) {
 		return fmt.Errorf("const mismatch")
 	}
 	if enum, ok := schema["enum"].([]any); ok {
@@ -86,6 +87,19 @@ func schemaCheck(schemas map[string]any, schema map[string]any, value any) error
 		obj, ok := value.(map[string]any)
 		if !ok {
 			return fmt.Errorf("expected object")
+		}
+		if max, ok := schema["maxProperties"].(json.Number); ok {
+			bound, _ := max.Int64()
+			if int64(len(obj)) > bound {
+				return fmt.Errorf("object limit")
+			}
+		}
+		if propertyNames, ok := schema["propertyNames"].(map[string]any); ok {
+			for name := range obj {
+				if err := schemaCheck(schemas, propertyNames, name); err != nil {
+					return err
+				}
+			}
 		}
 		if required, ok := schema["required"].([]any); ok {
 			for _, name := range required {
@@ -118,6 +132,12 @@ func schemaCheck(schemas map[string]any, schema map[string]any, value any) error
 		if !ok {
 			return fmt.Errorf("expected array")
 		}
+		if min, ok := schema["minItems"].(json.Number); ok {
+			bound, _ := min.Int64()
+			if int64(len(values)) < bound {
+				return fmt.Errorf("array minimum")
+			}
+		}
 		if max, ok := schema["maxItems"].(json.Number); ok {
 			bound, _ := max.Int64()
 			if int64(len(values)) > bound {
@@ -135,6 +155,21 @@ func schemaCheck(schemas map[string]any, schema map[string]any, value any) error
 		text, ok := value.(string)
 		if !ok {
 			return fmt.Errorf("expected string")
+		}
+		if min, ok := schema["minLength"].(json.Number); ok {
+			bound, _ := min.Int64()
+			if int64(len([]rune(text))) < bound {
+				return fmt.Errorf("string minimum")
+			}
+		}
+		if max, ok := schema["maxLength"].(json.Number); ok {
+			bound, _ := max.Int64()
+			if int64(len([]rune(text))) > bound {
+				return fmt.Errorf("string limit")
+			}
+		}
+		if pattern, ok := schema["pattern"].(string); ok && !regexp.MustCompile(pattern).MatchString(text) {
+			return fmt.Errorf("string pattern")
 		}
 		if schema["format"] == "date-time" {
 			if _, err := time.Parse(time.RFC3339Nano, text); err != nil {
@@ -172,6 +207,17 @@ func schemaCheck(schemas map[string]any, schema map[string]any, value any) error
 		}
 	}
 	return nil
+}
+
+func equalSchemaValue(a, b any) bool {
+	left, lnum := a.(json.Number)
+	right, rnum := b.(json.Number)
+	if lnum && rnum {
+		l, le := canonicalInteger([]byte(left))
+		r, re := canonicalInteger([]byte(right))
+		return le == nil && re == nil && l == r
+	}
+	return reflect.DeepEqual(a, b)
 }
 
 func checkComponent(t *testing.T, name string, raw []byte) error {
