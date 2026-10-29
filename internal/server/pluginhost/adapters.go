@@ -234,6 +234,12 @@ func toPublicProposal(c port.ProposedChange, binding Binding) (pluginapi.Propose
 }
 
 func maskProposal(c pluginapi.ProposedChange, b *bound) (pluginapi.ProposedChange, error) {
+	// Keep callback edits separate from the original proposal used to
+	// validate returned patch targets, including nested mutable values.
+	c, err := pluginapi.CloneJSON(c)
+	if err != nil {
+		return c, err
+	}
 	grants := append(append([]string(nil), b.Reads...), b.Owns...)
 	for j := range c.Changes {
 		change, err := maskChange(c.Changes[j], grants)

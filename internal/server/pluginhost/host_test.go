@@ -211,6 +211,33 @@ func TestUndeclaredPatchAndMethodRefused(t *testing.T) {
 	}
 }
 
+func TestNativeCallbackPatchScopeIsolated(t *testing.T) {
+	native := conformance.Native(conformance.Options{Probe: func(_ context.Context, _ pluginapi.Host, c pluginapi.ProposedChange, _ pluginapi.SnapshotReader) error {
+		// Callback input is scratch space; it cannot redefine the host's
+		// original set of live resources eligible for returned patches.
+		c.Changes[0].Resource.Ref = pluginapi.RefByID("pl-b", "")
+		c.Changes[0].After = json.RawMessage(`{"fields":{"title":"other"}}`)
+		return nil
+	}})
+	h, err := New(Config{Natives: []sdk.Native{native}, Bindings: fixtureBindings()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := proposal()
+	before, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patches, err := h.Mutators()[0].Mutator.Mutate(context.Background(), c, &snapshot{})
+	if code(err) != ErrPatch || len(patches) != 0 {
+		t.Fatalf("callback input changed patch scope: %v %v", patches, err)
+	}
+	after, err := json.Marshal(c)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("callback input changed the core proposal: %s, %v", after, err)
+	}
+}
+
 func TestBindingLimitsAndSnapshotRefusal(t *testing.T) {
 	for _, change := range []func(*Binding){func(b *Binding) { b.Reads = []string{"fields.private"} }, func(b *Binding) { b.Owns = []string{"fields.private"} }, func(b *Binding) { b.MaxPointReads = 3 }, func(b *Binding) { b.MaxQueries = 2 }, func(b *Binding) { b.Timeout = 2 * time.Second }, func(b *Binding) { b.Project = "unrouted" }} {
 		bindings := fixtureBindings()
