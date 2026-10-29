@@ -68,6 +68,8 @@ func OpenLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 	if store == nil || closeStore == nil {
 		if closeStore != nil {
 			_ = closeStore()
+		} else if store != nil {
+			_ = store.Close()
 		}
 		return nil, fmt.Errorf("storage factory must return a store and cleanup")
 	}
