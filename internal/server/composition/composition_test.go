@@ -1,8 +1,11 @@
 package composition
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -115,6 +118,75 @@ func TestComposedSharedServerServesRPCAndEmbeddedUI(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Security-Policy") == "" {
 		t.Fatalf("UI response status=%d headers=%v", response.StatusCode, response.Header)
+	}
+}
+
+func TestComposedRPCSessionBridgesWatchLifetime(t *testing.T) {
+	f := startRuntime(t, Config{Driver: "memory", Project: "composition", Address: DefaultAddress})
+	endpoint := "http://" + f.server.Addr().String() + httpjson.Path
+	call := func(method string, params map[string]any, sessionID string) map[string]any {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": method, "method": method, "params": params})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Plug-RPC", "1")
+		if sessionID != "" {
+			request.Header.Set("Plug-Session", sessionID)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		data, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", method, response.StatusCode, data)
+		}
+		var envelope struct {
+			Result map[string]any  `json:"result"`
+			Error  json.RawMessage `json:"error"`
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			t.Fatalf("%s response=%s: %v", method, data, err)
+		}
+		if len(envelope.Error) != 0 {
+			t.Fatalf("%s error=%s", method, envelope.Error)
+		}
+		return envelope.Result
+	}
+
+	session := call("session.open", map[string]any{"_meta": map[string]any{"project": "composition"}}, "")
+	sessionID, ok := session["sessionId"].(string)
+	if !ok || sessionID == "" {
+		t.Fatalf("session=%v", session)
+	}
+	subscription := call("event.subscribe", map[string]any{
+		"filter": map[string]any{}, "_meta": map[string]any{"project": "composition"},
+	}, sessionID)
+	if id, ok := subscription["subscriptionId"].(string); !ok || id == "" {
+		t.Fatalf("subscription=%v", subscription)
+	}
+	if got := f.r.Watches.WatchCount(sessionID); got != 1 {
+		t.Fatalf("watch count=%d want 1", got)
+	}
+	call("session.close", map[string]any{
+		"sessionId": sessionID, "_meta": map[string]any{"project": "composition"},
+	}, sessionID)
+	deadline := time.Now().Add(time.Second)
+	for f.r.Watches.WatchCount(sessionID) != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := f.r.Watches.WatchCount(sessionID); got != 0 {
+		t.Fatalf("session close retained watch count=%d", got)
 	}
 }
 

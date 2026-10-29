@@ -270,7 +270,9 @@ func (r *Runtime) bind(config Config) error {
 	if err != nil {
 		return fmt.Errorf("composition: create RPC server: %w", err)
 	}
-	r.HTTPHandler, err = httpjson.New(r.RPC, r.Authenticator, config.HTTP)
+	httpConfig := config.HTTP
+	httpConfig.SessionBridge = r.bridgeRPCSession
+	r.HTTPHandler, err = httpjson.New(r.RPC, r.Authenticator, httpConfig)
 	if err != nil {
 		return fmt.Errorf("composition: create HTTP handler: %w", err)
 	}
@@ -281,6 +283,21 @@ func (r *Runtime) bind(config Config) error {
 		}
 	}
 	return nil
+}
+
+// bridgeRPCSession preserves a collaboration session beyond the short-lived
+// HTTP RPC request. The watch adapter receives this trusted lifetime through
+// its context; an unknown or foreign session is left unbridged so the RPC
+// watch handler fails closed.
+func (r *Runtime) bridgeRPCSession(ctx context.Context, principal model.PrincipalRef, sessionID, agent string) (context.Context, error) {
+	if r == nil || r.Sessions == nil || sessionID == "" {
+		return ctx, errors.New("composition: collaboration session is unavailable")
+	}
+	lifetime, err := r.Sessions.SessionContext(ctx, collab.Caller{Principal: principal, Agent: agent}, sessionID)
+	if err != nil {
+		return ctx, err
+	}
+	return watchhttp.WithSession(ctx, sessionID, lifetime), nil
 }
 
 // Listen mounts the already-composed handlers on one admitted listener. The
