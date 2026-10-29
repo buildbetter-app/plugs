@@ -209,6 +209,59 @@ func TestPipelineRefusesUndeclaredNativePatch(t *testing.T) {
 	}
 }
 
+func TestPipelineNativeAtomicBatchImages(t *testing.T) {
+	var checked atomic.Bool
+	native := conformance.Native(conformance.Options{Probe: func(_ context.Context, _ pluginapi.Host, c pluginapi.ProposedChange, _ pluginapi.SnapshotReader) error {
+		if len(c.Changes) != 2 || c.Changes[0].Resource != c.Changes[1].Resource {
+			return fmt.Errorf("batch lost per-operation changes: %+v", c)
+		}
+		if len(c.Changes[0].Before) != 0 || len(c.Changes[1].Before) != 0 {
+			return fmt.Errorf("batch-created record exposed an intermediate pre-image")
+		}
+		if string(c.Changes[0].After) != string(c.Changes[1].After) {
+			return fmt.Errorf("operations do not share the atomic post-image")
+		}
+		checked.Store(true)
+		return nil
+	}})
+	h, err := New(Config{Natives: []sdk.Native{native}, Bindings: fixtureBindings()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, store := nativeWriter(t, h)
+	cs := nativeCreate("initial")
+	cs.Ops[0].Create.Key = "new"
+	cs.Ops = append(cs.Ops, model.Op{Kind: model.OpPatch, Patch: &model.PatchOp{
+		Target: model.Ref{Key: "new"}, Fields: map[string]any{"title": "final"},
+	}})
+	commit, err := w.Apply(context.Background(), nativePrincipal, cs, nativeMeta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !checked.Load() || len(commit.Results) != 2 || commit.Revision.String() != "1" || commit.Results[0].Ref != commit.Results[1].Ref {
+		t.Fatalf("batch was not one atomic transition: %+v", commit)
+	}
+	for _, result := range commit.Results {
+		body, err := pipeline.DecodeDocument(result.Record)
+		if err != nil || body.Fields["title"] != "final" || body.Fields["normalized"] != "FINAL" || result.SetBy["fields.normalized"] != "normalize" {
+			t.Fatalf("batch normalization was not stored: %+v, %v", body, err)
+		}
+	}
+	r := nativeReader(t, store)
+	versions, err := r.Versions(context.Background(), commit.Results[0].Ref, driver.PageReq{})
+	if err != nil || len(versions.Items) != 1 {
+		t.Fatalf("batch published more than one version: %+v, %v", versions, err)
+	}
+	log, err := r.Changesets(context.Background(), nil, 10)
+	if err != nil || len(log) != 1 || len(log[0].Changes) != 1 {
+		t.Fatalf("batch published more than one changeset/change: %+v, %v", log, err)
+	}
+	wantPaths := []string{"/fields/normalized", "/fields/private", "/fields/title"}
+	if !reflect.DeepEqual(log[0].Changes[0].ChangedPaths, wantPaths) {
+		t.Fatalf("change paths are not canonical JSON Pointers: %+v", log[0].Changes[0].ChangedPaths)
+	}
+}
+
 func TestPipelineNativeValidatorRefusalPublishesNothing(t *testing.T) {
 	h, err := New(Config{Natives: []sdk.Native{conformance.Native(conformance.Options{})}, Bindings: fixtureBindings()})
 	if err != nil {

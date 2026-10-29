@@ -45,7 +45,14 @@ func Native(options Options) sdk.Native {
 						}
 					}
 					patches := make([]pluginapi.Patch, 0, len(c.Changes))
+					seen := map[pluginapi.ResourceRef]bool{}
 					for _, change := range c.Changes {
+						// Changes are per operation; an atomic record image can
+						// occur more than once in a create-plus-patch batch.
+						if seen[change.Resource] {
+							continue
+						}
+						seen[change.Resource] = true
 						var body struct {
 							Fields map[string]any `json:"fields"`
 						}
