@@ -92,6 +92,8 @@ type Lease struct {
 	Principal model.PrincipalRef
 	Agent     string
 	ExpiresAt time.Time
+	TTL       time.Duration
+	Epoch     model.Natural
 }
 
 type GetResult struct {
