@@ -18,6 +18,14 @@ type Factory func(*testing.T) driver.Store
 
 func Run(t *testing.T, factory Factory) {
 	t.Run("G1_concurrent_gapless_revisions", func(t *testing.T) { concurrentGapless(t, factory) })
+	t.Run("G2_locks_latest_and_conflicting", func(t *testing.T) { locksLatest(t, factory) })
+	t.Run("G2_atomic_lock_set_and_skip_locked", func(t *testing.T) { atomicLockSet(t, factory) })
+	t.Run("G3_atomic_rollback_and_snapshots", func(t *testing.T) { atomicPublication(t, factory) })
+	t.Run("G3_derived_predicate_consistency", func(t *testing.T) { derivedPredicates(t, factory) })
+	t.Run("G4_idempotency_and_responses", func(t *testing.T) { idempotency(t, factory) })
+	t.Run("G5_lease_fencing_and_incarnation", func(t *testing.T) { fencing(t, factory) })
+	t.Run("G5_checkpoint_CAS_and_isolation", func(t *testing.T) { checkpoints(t, factory) })
+	t.Run("history_replay_and_pagination", func(t *testing.T) { history(t, factory) })
 }
 
 func setup(t *testing.T, factory Factory) (context.Context, driver.Store, driver.ActiveLease, driver.Meta) {
