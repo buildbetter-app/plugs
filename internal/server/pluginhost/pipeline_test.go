@@ -65,6 +65,7 @@ func nativeReader(t *testing.T, store *memory.Store) driver.Reader {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	return r
 }
 
