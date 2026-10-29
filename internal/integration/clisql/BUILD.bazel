@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "clisql_test",
+    srcs = ["fixture_test.go", "lifecycle_test.go"],
+    args = ["-test.v"],
+    data = ["//cmd/plug:plug"],
+    env = {"PLUG_BINARY": "$(rootpath //cmd/plug:plug)"},
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/model",
+        "//internal/integration/apikey",
+        "//internal/plugins/authnapikey",
+        "//internal/server/transport/httpjson",
+        "//internal/storage/driver",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+        "@com_github_jackc_pgx_v5//stdlib:stdlib",
+    ],
+    size = "large",
+    tags = ["local", "requires-network"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
