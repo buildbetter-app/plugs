@@ -17,11 +17,29 @@ import (
 
 type pending struct {
 	ref      model.Ref
+	kind     string
 	doc      Document
+	memory   *MemoryDocument
 	before   json.RawMessage
 	revision model.Revision
 	deleted  bool
 	setBy    map[string]string
+}
+
+func (p *pending) body() (json.RawMessage, error) {
+	if p.kind == "memory" {
+		if p.memory == nil {
+			return nil, failure("internal_error", "memory write has no body")
+		}
+		body, err := json.Marshal(p.memory)
+		return body, err
+	}
+	body, err := json.Marshal(p.doc)
+	return body, err
+}
+
+func memoryMethod(method string) bool {
+	return method == "memory.save" || method == "memory.delete"
 }
 
 type prepared struct {
@@ -109,7 +127,7 @@ func (p *prepared) load(ctx context.Context, ref model.Ref) (*pending, error) {
 	if doc.ID != ref.ID {
 		return nil, failure("internal_error", "record identity differs from body")
 	}
-	pending := &pending{ref: ref, doc: doc, before: append(json.RawMessage(nil), r.Body...), revision: r.Revision, setBy: map[string]string{}}
+	pending := &pending{ref: ref, kind: "bead", doc: doc, before: append(json.RawMessage(nil), r.Body...), revision: r.Revision, setBy: map[string]string{}}
 	p.writes[ref.ID] = pending
 	return pending, nil
 }
@@ -175,7 +193,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if project == "" {
 				project = meta.Project
 			}
-			current = &pending{ref: target, doc: Document{ID: id, Type: c.Type, Project: project, Fields: map[string]any{}}, setBy: map[string]string{}}
+			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Fields: map[string]any{}}, setBy: map[string]string{}}
 			p.writes[id] = current
 			if err = applyFields(current, c.Fields, "request"); err != nil {
 				return nil, err
@@ -356,6 +374,203 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	return p, nil
 }
 
+// prepareMemory lowers memory.save/delete into the same prepared transaction
+// used by bead writes. The memory body is deliberately independent of the
+// bead Document and never enters ontology normalization or graph maintenance.
+func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (*prepared, error) {
+	snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}}
+	if _, err := snapshot.observe(ctx, []driver.LockKey{driver.GraphBlockingSentinelLock}); err != nil {
+		return nil, err
+	}
+	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}}
+	if len(cs.Ops) != 1 {
+		return nil, failure("invalid_params", "memory writes require exactly one operation")
+	}
+	op := cs.Ops[0]
+	if meta.Method == "memory.save" {
+		if op.Kind != model.OpCreate || op.Create == nil || op.Create.Type != "memory" {
+			return nil, failure("invalid_params", "memory.save requires a memory create operation")
+		}
+		key, ok := op.Create.Fields["key"].(string)
+		if !ok || strings.TrimSpace(key) == "" {
+			return nil, failure("invalid_params", "memory key must be nonempty")
+		}
+		content, ok := op.Create.Fields["content"].(string)
+		if !ok {
+			return nil, failure("invalid_params", "memory content must be a string")
+		}
+		metadata := map[string]any{}
+		if raw, exists := op.Create.Fields["metadata"]; exists && raw != nil {
+			var valid bool
+			metadata, valid = raw.(map[string]any)
+			if !valid {
+				return nil, failure("invalid_params", "memory metadata must be an object")
+			}
+		}
+		page, err := findMemoryByKey(ctx, snapshot, key)
+		if err != nil {
+			return nil, err
+		}
+		if len(page) > 1 {
+			return nil, failure("internal_error", "duplicate memory key")
+		}
+		var pendingRecord *pending
+		changeOp := op
+		if len(page) == 1 {
+			record := page[0]
+			doc, err := DecodeMemoryDocument(record.Body)
+			if err != nil || doc.ID != record.Ref.ID || record.Kind != "memory" {
+				return nil, failure("internal_error", "invalid persisted memory")
+			}
+			doc.Content, doc.Metadata = content, cloneAnyMap(metadata)
+			// The query guards the key predicate; the point read also guards the
+			// exact record image before an update lock is acquired.
+			rows, err := snapshot.Get(ctx, []model.Ref{record.Ref})
+			if err != nil || len(rows) != 1 {
+				if err != nil {
+					return nil, err
+				}
+				return nil, failure("internal_error", "memory record disappeared during snapshot")
+			}
+			pendingRecord = &pending{ref: record.Ref, kind: "memory", memory: &doc, before: append(json.RawMessage(nil), record.Body...), revision: record.Revision, setBy: map[string]string{"content": "request", "metadata": "request"}}
+			changeOp = model.Op{Kind: model.OpPatch, Patch: &model.PatchOp{Kind: model.OpPatch, Target: record.Ref, Fields: map[string]any{"content": content, "metadata": metadata}}}
+		} else {
+			id, err := w.cfg.newID()
+			if err != nil {
+				return nil, err
+			}
+			ref := model.RefByID(id, model.Natural64(0))
+			if _, err := snapshot.Get(ctx, []model.Ref{ref}); err != nil {
+				return nil, err
+			}
+			if state, exists := snapshot.reads.states[recordLockKey(ref)]; exists && state.Present {
+				return nil, errStale
+			}
+			doc := MemoryDocument{ID: id, Key: key, Content: content, Metadata: cloneAnyMap(metadata)}
+			pendingRecord = &pending{ref: ref, kind: "memory", memory: &doc, setBy: map[string]string{"key": "request", "content": "request", "metadata": "request"}}
+		}
+		p.writes[pendingRecord.ref.ID], p.refs = pendingRecord, append(p.refs, pendingRecord.ref)
+		p.proposal.Changes = append(p.proposal.Changes, port.Change{Resource: model.ResourceRef{Kind: "memory", Ref: pendingRecord.ref}, Op: changeOp, Before: pendingRecord.before})
+	} else if meta.Method == "memory.delete" {
+		if op.Kind != model.OpDelete || op.Delete == nil {
+			return nil, failure("invalid_params", "memory.delete requires a delete operation")
+		}
+		ref, err := p.resolve(op.Delete.Target, nil)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := snapshot.Get(ctx, []model.Ref{ref})
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) != 1 || rows[0].Kind != "memory" {
+			return nil, failure("not_found", "memory was not found")
+		}
+		doc, err := DecodeMemoryDocument(rows[0].Body)
+		if err != nil || doc.ID != rows[0].Ref.ID {
+			return nil, failure("internal_error", "invalid persisted memory")
+		}
+		pendingRecord := &pending{ref: ref, kind: "memory", memory: &doc, before: append(json.RawMessage(nil), rows[0].Body...), revision: rows[0].Revision, deleted: true, setBy: map[string]string{}}
+		p.writes[ref.ID], p.refs = pendingRecord, append(p.refs, ref)
+		p.proposal.Changes = append(p.proposal.Changes, port.Change{Resource: model.ResourceRef{Kind: "memory", Ref: ref}, Op: op, Before: pendingRecord.before})
+	} else {
+		return nil, failure("invalid_params", "unsupported memory method")
+	}
+	for _, expect := range cs.Expect {
+		ref, err := p.resolve(expect.Ref, nil)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := snapshot.Get(ctx, []model.Ref{ref})
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) != 1 {
+			return nil, failure("precondition_failed", "expected record is absent")
+		}
+		if expect.Revision != nil {
+			if expect.Field != "" || expect.Hash != "" || expect.Revision.String() != rows[0].Revision.String() {
+				return nil, failure("precondition_failed", "record revision changed")
+			}
+			continue
+		}
+		if expect.Field == "" || expect.Hash == "" {
+			return nil, failure("invalid_params", "precondition requires revision or field hash")
+		}
+		doc, err := DecodeMemoryDocument(rows[0].Body)
+		if err != nil {
+			return nil, failure("internal_error", "invalid persisted memory")
+		}
+		var value any
+		switch {
+		case expect.Field == "key":
+			value = doc.Key
+		case expect.Field == "content":
+			value = doc.Content
+		case strings.HasPrefix(expect.Field, "metadata."):
+			value = doc.Metadata[strings.TrimPrefix(expect.Field, "metadata.")]
+		default:
+			return nil, failure("invalid_params", "memory precondition field is unsupported")
+		}
+		hash, err := FieldHash(value)
+		if err != nil || hash != expect.Hash {
+			return nil, failure("precondition_failed", "field hash changed")
+		}
+	}
+	if err := p.refresh(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func recordLockKey(ref model.Ref) string {
+	key, _ := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &ref})
+	return key
+}
+
+func findMemoryByKey(ctx context.Context, snapshot *snapshotReader, key string) ([]driver.Record, error) {
+	found := make([]driver.Record, 0, 1)
+	var cursor *driver.Cursor
+	scanned := 0
+	for {
+		page, err := snapshot.Query(ctx, driver.Query{Filter: map[string]any{"kind": "memory"}, Limit: 1000, Cursor: cursor})
+		if err != nil {
+			return nil, err
+		}
+		scanned += len(page.Items)
+		if scanned > auditScanLimit {
+			return nil, failure("scope_too_large", "memory key scan exceeds 20000 records")
+		}
+		for _, record := range page.Items {
+			document, err := DecodeMemoryDocument(record.Body)
+			if err != nil {
+				return nil, failure("internal_error", "invalid persisted memory")
+			}
+			if record.Kind == "memory" && document.Key == key {
+				found = append(found, record)
+			}
+		}
+		if page.NextCursor == nil {
+			return found, nil
+		}
+		if len(page.Items) == 0 {
+			return nil, failure("internal_error", "memory key scan did not advance")
+		}
+		cursor = page.NextCursor
+	}
+}
+
+func cloneAnyMap(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	out := make(map[string]any, len(value))
+	for key, item := range value {
+		out[key] = item
+	}
+	return out
+}
+
 func applyFields(p *pending, fields map[string]any, setter string) error {
 	for name, value := range fields {
 		if name == "" || strings.ContainsAny(name, "./\x00") {
@@ -382,7 +597,7 @@ func (p *prepared) refresh() error {
 		if pending.deleted {
 			c.After = nil
 		} else {
-			body, err := json.Marshal(pending.doc)
+			body, err := pending.body()
 			if err != nil {
 				return err
 			}
@@ -501,8 +716,10 @@ func (p *prepared) sentinels() []driver.Sentinel {
 			continue
 		}
 		set[driver.SentinelGraphBlocking] = true
-		if s, err := driver.NewBeadSentinel(pending.ref.ID); err == nil {
-			set[s] = true
+		if pending.kind != "memory" {
+			if s, err := driver.NewBeadSentinel(pending.ref.ID); err == nil {
+				set[s] = true
+			}
 		}
 	}
 	result := make([]driver.Sentinel, 0, len(set))
@@ -526,15 +743,25 @@ func (p *prepared) detectChanges() error {
 			p.changed[id] = true
 			continue
 		}
-		before, err := DecodeDocument(pending.before)
+		var oldBody json.RawMessage
+		var err error
+		if pending.kind == "memory" {
+			memory, decodeErr := DecodeMemoryDocument(pending.before)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			oldBody, err = json.Marshal(memory)
+		} else {
+			before, decodeErr := DecodeDocument(pending.before)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			oldBody, err = json.Marshal(before)
+		}
 		if err != nil {
 			return err
 		}
-		oldBody, err := json.Marshal(before)
-		if err != nil {
-			return err
-		}
-		body, err := json.Marshal(pending.doc)
+		body, err := pending.body()
 		if err != nil {
 			return err
 		}

@@ -242,7 +242,11 @@ func (p *prepared) events(revision model.Revision, changes []model.ChangeRecord)
 			slot = strings.TrimPrefix(p.proposal.Meta.Method, "bead.")
 		}
 		provenance := model.EventProvenance{Method: p.proposal.Meta.Method, Slot: slot, SetBy: cloneMap(pending.setBy), Cause: p.audit.context.Cause, Chain: p.audit.context.Chain}
-		events = append(events, model.EventDescriptor{Index: model.Natural64(uint64(len(events))), ChangeIndex: model.Natural64(uint64(index)), Type: kind, Resource: model.AuditResource{Kind: "bead", Ref: change.Ref}, Provenance: provenance})
+		resourceKind := pending.kind
+		if resourceKind == "" {
+			resourceKind = "bead"
+		}
+		events = append(events, model.EventDescriptor{Index: model.Natural64(uint64(len(events))), ChangeIndex: model.Natural64(uint64(index)), Type: kind, Resource: model.AuditResource{Kind: resourceKind, Ref: change.Ref}, Provenance: provenance})
 		transition := p.audit.transitions[change.Ref.ID]
 		for _, dependent := range transition.dependents {
 			at := dependent.revision
@@ -271,6 +275,15 @@ func (p *prepared) ordinaryEvent(pending *pending, op model.OpKind) (model.Durab
 		if event, ok := map[string]model.DurableEventType{"bead.claim": model.EventBeadClaimed, "bead.close": model.EventBeadClosed, "bead.fail": model.EventBeadFailed, "bead.cancel": model.EventBeadCanceled, "bead.reopen": model.EventBeadReopened, "bead.defer": model.EventBeadDeferred}[p.proposal.Meta.Method]; ok {
 			return event, nil
 		}
+	}
+	if pending != nil && pending.kind == "memory" {
+		if op == model.OpDelete {
+			return model.EventMemoryDeleted, nil
+		}
+		if op == model.OpCreate || op == model.OpPatch || op == model.OpSetMeta {
+			return model.EventMemorySaved, nil
+		}
+		return "", fmt.Errorf("unsupported memory event operation %q", op)
 	}
 	event, ok := map[model.OpKind]model.DurableEventType{model.OpCreate: model.EventBeadCreated, model.OpPatch: model.EventBeadUpdated, model.OpSetMeta: model.EventBeadUpdated, model.OpComment: model.EventBeadCommented, model.OpLink: model.EventBeadLinked, model.OpUnlink: model.EventBeadUnlinked, model.OpDelete: model.EventBeadDeleted}[op]
 	if !ok {

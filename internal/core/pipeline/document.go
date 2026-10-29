@@ -23,6 +23,28 @@ type Document struct {
 	Lease       *ClaimLease                `json:"lease,omitempty"`
 }
 
+// MemoryDocument is the canonical body for a core memory record. Memories
+// share the Writer and driver record envelope with beads, but do not enter the
+// bead ontology or graph. Keeping their body separate prevents memory fields
+// from being mistaken for bead ontology data.
+type MemoryDocument struct {
+	ID       string         `json:"id"`
+	Key      string         `json:"key"`
+	Content  string         `json:"content"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+func DecodeMemoryDocument(body []byte) (MemoryDocument, error) {
+	var d MemoryDocument
+	if err := decode(body, &d); err != nil {
+		return MemoryDocument{}, err
+	}
+	if d.ID == "" || d.Key == "" {
+		return MemoryDocument{}, fmt.Errorf("memory body requires id and key")
+	}
+	return d, nil
+}
+
 type Comment struct {
 	Body      string             `json:"body"`
 	Principal model.PrincipalRef `json:"principal"`

@@ -1,0 +1,354 @@
+package service
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"sort"
+	"strings"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
+)
+
+func memoryRef(ref model.Ref) error {
+	if err := ref.Validate(); err != nil || !ref.IsID() || ref.ID == "" || !ref.Branch.IsZero() {
+		return failure("invalid_params", "memory methods require a nonempty ID on the main branch")
+	}
+	return nil
+}
+
+func (s *Service) memoryAuthorizationState(by model.PrincipalRef) (bool, error) {
+	if s == nil {
+		return false, failure("internal_error", "service is not configured")
+	}
+	installed := s.memoryReadAuthorizer != nil
+	if s.authorizationInstalled != nil {
+		installed = s.authorizationInstalled()
+	}
+	if installed && s.memoryReadAuthorizer == nil {
+		return false, failure("authz_unavailable", "current memory authorization is unavailable")
+	}
+	if !installed && s.memoryReadAuthorizer == nil && (by.Kind == "agent" || by.Sponsor != nil || len(by.Caveats) != 0) {
+		return false, failure("authz_not_installed", "scoped principals require an authorization plugin")
+	}
+	return installed, nil
+}
+
+func clonePrincipalValue(value model.PrincipalRef) (model.PrincipalRef, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return model.PrincipalRef{}, failure("invalid_params", "invalid principal")
+	}
+	var copy model.PrincipalRef
+	if err := json.Unmarshal(raw, &copy); err != nil {
+		return model.PrincipalRef{}, failure("invalid_params", "invalid principal")
+	}
+	return copy, nil
+}
+
+func cloneMemoryMetadata(value map[string]any) (map[string]any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var copy map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&copy); err != nil {
+		return nil, err
+	}
+	return copy, nil
+}
+
+func memoryValue(record driver.Record, document pipeline.MemoryDocument) (Memory, error) {
+	if record.Kind != "memory" || document.ID != record.Ref.ID || document.Key == "" {
+		return Memory{}, failure("internal_error", "invalid persisted memory")
+	}
+	metadata, err := cloneMemoryMetadata(document.Metadata)
+	if err != nil {
+		return Memory{}, failure("internal_error", "invalid persisted memory metadata")
+	}
+	return Memory{ID: document.ID, Key: document.Key, Content: document.Content, Metadata: metadata, Revision: record.Revision}, nil
+}
+
+func (s *Service) authorizeMemory(ctx context.Context, by model.PrincipalRef, memory Memory) (bool, error) {
+	installed, err := s.memoryAuthorizationState(by)
+	if err != nil {
+		return false, err
+	}
+	if !installed || s.memoryReadAuthorizer == nil {
+		return true, nil
+	}
+	principal, err := clonePrincipalValue(by)
+	if err != nil {
+		return false, err
+	}
+	allowed, err := s.memoryReadAuthorizer.CanReadMemory(ctx, principal, memory)
+	if ctx.Err() != nil {
+		return false, failure("busy", "request was canceled")
+	}
+	if err != nil {
+		return false, failure("authz_unavailable", "current memory authorization failed")
+	}
+	if s.authorizationInstalled != nil && installed != s.authorizationInstalled() {
+		return false, failure("authz_unavailable", "authorization installation changed during read")
+	}
+	return allowed, nil
+}
+
+func decodeMemoryRecord(record driver.Record) (Memory, error) {
+	decoder := json.NewDecoder(bytes.NewReader(record.Body))
+	decoder.UseNumber()
+	var document pipeline.MemoryDocument
+	if err := decoder.Decode(&document); err != nil {
+		return Memory{}, failure("internal_error", "invalid persisted memory")
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return Memory{}, failure("internal_error", "invalid persisted memory")
+	}
+	return memoryValue(record, document)
+}
+
+func (s *Service) MemoryGet(ctx context.Context, by model.PrincipalRef, req MemoryGetRequest) (Memory, error) {
+	if err := memoryRef(req.ID); err != nil {
+		return Memory{}, err
+	}
+	if _, err := s.memoryAuthorizationState(by); err != nil {
+		return Memory{}, err
+	}
+	r, err := s.reader(ctx, by, req.AsOf)
+	if err != nil {
+		return Memory{}, err
+	}
+	defer r.Close()
+	rows, err := r.Get(ctx, []model.Ref{req.ID})
+	if err != nil {
+		return Memory{}, mapped(err)
+	}
+	if len(rows) != 1 || rows[0].Kind != "memory" {
+		return Memory{}, failure("not_found", "memory was not found")
+	}
+	memory, err := decodeMemoryRecord(rows[0])
+	if err != nil {
+		return Memory{}, err
+	}
+	allowed, err := s.authorizeMemory(ctx, by, memory)
+	if err != nil {
+		return Memory{}, err
+	}
+	if !allowed {
+		return Memory{}, failure("not_found", "memory was not found")
+	}
+	return memory, nil
+}
+
+func memoryPageResult(items []Memory, limit int, position *PagePosition, asOf AsOf) (MemoryPage, error) {
+	if position != nil {
+		if position.AsOf.Incarnation != asOf.Incarnation {
+			return MemoryPage{}, mapped(driver.ErrIncarnationChanged{From: position.AsOf.Incarnation, To: asOf.Incarnation})
+		}
+		if position.Offset < 0 || position.Offset > scanLimit || position.AsOf.Revision.String() != asOf.Revision.String() {
+			return MemoryPage{}, failure("cursor_invalid", "page position does not match the memory snapshot")
+		}
+	}
+	offset := 0
+	if position != nil {
+		offset = position.Offset
+	}
+	if offset > len(items) {
+		return MemoryPage{}, failure("cursor_invalid", "page position exceeds the memory list")
+	}
+	end := min(offset+limit, len(items))
+	page := MemoryPage{Items: items[offset:end], AsOf: asOf}
+	if end < len(items) {
+		page.Next = &PagePosition{Offset: end, AsOf: asOf}
+	}
+	return page, nil
+}
+
+func (s *Service) MemoryList(ctx context.Context, by model.PrincipalRef, req MemoryListRequest) (MemoryPage, error) {
+	if req.Cursor != "" {
+		return MemoryPage{}, failure("cursor_invalid", "RPC must validate the opaque cursor before passing a domain page position")
+	}
+	if _, err := s.memoryAuthorizationState(by); err != nil {
+		return MemoryPage{}, err
+	}
+	if err := validatePosition(req.Position); err != nil {
+		return MemoryPage{}, err
+	}
+	limit := req.Limit
+	if limit == 0 {
+		limit = 100
+	}
+	if limit < 1 || limit > 1000 {
+		return MemoryPage{}, failure("invalid_params", "limit must be between 1 and 1000")
+	}
+	r, err := s.reader(ctx, by, nil)
+	if err != nil {
+		return MemoryPage{}, err
+	}
+	defer r.Close()
+	needle := strings.ToLower(req.Query)
+	items := make([]Memory, 0)
+	var cursor *driver.Cursor
+	for {
+		page, err := r.Query(ctx, driver.Query{Filter: map[string]any{"kind": "memory"}, Limit: 1000, Cursor: cursor})
+		if err != nil {
+			return MemoryPage{}, mapped(err)
+		}
+		for _, record := range page.Items {
+			memory, err := decodeMemoryRecord(record)
+			if err != nil {
+				return MemoryPage{}, err
+			}
+			if needle != "" && !strings.Contains(strings.ToLower(memory.Key), needle) && !strings.Contains(strings.ToLower(memory.Content), needle) {
+				continue
+			}
+			allowed, err := s.authorizeMemory(ctx, by, memory)
+			if err != nil {
+				return MemoryPage{}, err
+			}
+			if allowed {
+				items = append(items, memory)
+			}
+			if len(items) > scanLimit {
+				return MemoryPage{}, failure("scope_too_large", "memory scan exceeds 20000 records")
+			}
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		if len(page.Items) == 0 {
+			return MemoryPage{}, failure("internal_error", "memory scan did not advance")
+		}
+		cursor = page.NextCursor
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Key != items[j].Key {
+			return items[i].Key < items[j].Key
+		}
+		return items[i].ID < items[j].ID
+	})
+	view := r.Snapshot()
+	return memoryPageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation})
+}
+
+func (s *Service) MemorySave(ctx context.Context, by model.PrincipalRef, req MemorySaveRequest, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.memorySave(ctx, by, req, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) MemorySaveWithOutcome(ctx context.Context, by model.PrincipalRef, req MemorySaveRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.memorySave(ctx, by, req, meta, true)
+}
+
+func (s *Service) memorySave(ctx context.Context, by model.PrincipalRef, req MemorySaveRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	if strings.TrimSpace(req.Key) == "" {
+		return port.WriteOutcome{}, failure("invalid_params", "memory key must be nonempty")
+	}
+	if strings.TrimSpace(req.Content) == "" {
+		return port.WriteOutcome{}, failure("invalid_params", "memory content must be nonempty")
+	}
+	metadata, err := cloneMemoryMetadata(req.Metadata)
+	if err != nil {
+		return port.WriteOutcome{}, failure("invalid_params", "memory metadata must be a JSON object")
+	}
+	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "memory", Fields: map[string]any{"key": req.Key, "content": req.Content, "metadata": metadata}}}}, Expect: req.Expect}
+	return s.applyMemory(ctx, by, "memory.save", cs, meta, outcomeRequired)
+}
+
+func (s *Service) MemoryDelete(ctx context.Context, by model.PrincipalRef, req MemoryDeleteRequest, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.memoryDelete(ctx, by, req, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) MemoryDeleteWithOutcome(ctx context.Context, by model.PrincipalRef, req MemoryDeleteRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.memoryDelete(ctx, by, req, meta, true)
+}
+
+func (s *Service) memoryDelete(ctx context.Context, by model.PrincipalRef, req MemoryDeleteRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	if err := memoryRef(req.ID); err != nil {
+		return port.WriteOutcome{}, err
+	}
+	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpDelete, Delete: &model.DeleteOp{Kind: model.OpDelete, Target: req.ID}}}, Expect: req.Expect}
+	return s.applyMemory(ctx, by, "memory.delete", cs, meta, outcomeRequired)
+}
+
+func (s *Service) Brief(ctx context.Context, by model.PrincipalRef, req BriefRequest) (BriefResult, error) {
+	if req.BudgetTokens < 0 {
+		return BriefResult{}, failure("invalid_params", "budgetTokens must be nonnegative")
+	}
+	if err := s.admit(ctx, by); err != nil {
+		return BriefResult{}, err
+	}
+	memoryPage, err := s.MemoryList(ctx, by, MemoryListRequest{Limit: 1000})
+	if err != nil {
+		return BriefResult{}, err
+	}
+	result := BriefResult{
+		WhoAmI:          WhoAmIResult{Principal: by, Sponsor: by.Sponsor, Caveats: by.Caveats, DefaultProject: req.Project},
+		Claims:          []Bead{},
+		ReadyTop:        []Bead{},
+		RecentChanges:   []map[string]any{},
+		OntologySummary: map[string]any{},
+		Conventions:     map[string]any{},
+		Memories:        memoryPage.Items,
+	}
+	if by.Kind != "anonymous" {
+		claims, err := s.claimed(ctx, by, req.Project)
+		if err != nil {
+			return BriefResult{}, err
+		}
+		result.Claims = claims
+	}
+	if req.Project != "" {
+		ready, err := s.Ready(ctx, by, ReadyRequest{Project: req.Project, Limit: 20})
+		if err != nil {
+			return BriefResult{}, err
+		}
+		result.ReadyTop = ready.Items
+	}
+	return result, nil
+}
+
+func (s *Service) claimed(ctx context.Context, by model.PrincipalRef, project string) ([]Bead, error) {
+	r, err := s.reader(ctx, by, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	graph, err := scanBeads(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	holder, err := driver.PrincipalKey(by)
+	if err != nil {
+		return nil, failure("invalid_params", "invalid principal")
+	}
+	ids := sortedIDs(graph)
+	items := make([]Bead, 0)
+	for _, id := range ids {
+		row := graph[id]
+		if row.doc.Lease == nil || project != "" && row.doc.Project != project {
+			continue
+		}
+		leased, err := driver.PrincipalKey(row.doc.Lease.Principal)
+		if err != nil || leased != holder {
+			continue
+		}
+		bead, err := beadValue(row)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, bead)
+	}
+	return items, nil
+}

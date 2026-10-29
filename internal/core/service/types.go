@@ -3,6 +3,7 @@
 package service
 
 import (
+	"context"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -11,6 +12,79 @@ import (
 type AsOf struct {
 	Revision    model.Revision
 	Incarnation string
+}
+
+type Memory struct {
+	ID       string
+	Key      string
+	Content  string
+	Metadata map[string]any
+	Revision model.Revision
+}
+
+type MemoryPage struct {
+	Items []Memory
+	AsOf  AsOf
+	Next  *PagePosition
+}
+
+type MemoryGetRequest struct {
+	ID   model.Ref
+	AsOf *AsOf
+}
+
+type MemoryListRequest struct {
+	Query    string
+	Limit    int
+	Cursor   string
+	Position *PagePosition
+}
+
+type MemorySaveRequest struct {
+	Key      string
+	Content  string
+	Metadata map[string]any
+	Expect   []model.Precondition
+}
+
+type MemoryDeleteRequest struct {
+	ID     model.Ref
+	Expect []model.Precondition
+}
+
+type WhoAmIResult struct {
+	Principal      model.PrincipalRef
+	Sponsor        *model.PrincipalRef
+	Caveats        map[string]any
+	DefaultProject string
+}
+
+type BriefRequest struct {
+	Project      string
+	BudgetTokens int
+}
+
+type BriefResult struct {
+	WhoAmI          WhoAmIResult
+	Claims          []Bead
+	ReadyTop        []Bead
+	RecentChanges   []map[string]any
+	OntologySummary map[string]any
+	Conventions     map[string]any
+	Memories        []Memory
+}
+
+// MemoryReadAuthorizer evaluates current read visibility for one memory. It
+// is deliberately a service boundary: policy code sees a domain Memory and
+// never receives a driver reader or transaction.
+type MemoryReadAuthorizer interface {
+	CanReadMemory(context.Context, model.PrincipalRef, Memory) (bool, error)
+}
+
+type MemoryReadAuthorizerFunc func(context.Context, model.PrincipalRef, Memory) (bool, error)
+
+func (f MemoryReadAuthorizerFunc) CanReadMemory(ctx context.Context, by model.PrincipalRef, memory Memory) (bool, error) {
+	return f(ctx, by, memory)
 }
 
 // PagePosition is domain state, never an untrusted wire token. RPC signs and

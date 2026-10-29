@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/transport/inprocess"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
 type failingPost struct{ calls int }
@@ -28,6 +30,133 @@ type failingPost struct{ calls int }
 func (p *failingPost) After(context.Context, port.CommittedChange, port.SnapshotReader) error {
 	p.calls++
 	return errors.New("test subscriber unavailable")
+}
+
+func openSQLiteMemoryServer(t *testing.T, path string) (*rpc.Server, driver.Store, driver.ActiveLease) {
+	t.Helper()
+	ctx := context.Background()
+	store, err := (sqlite.Driver{}).Open(ctx, driver.Config{DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := store.Lease(ctx, "rpc-memory", driver.LeaseTTL)
+	if err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		_ = lease.Release(ctx)
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	ontology := service.NewOntology(nil)
+	writer := pipeline.New(store, lease, pipeline.WithOntology(ontology))
+	policy := service.MemoryReadAuthorizerFunc(func(_ context.Context, _ model.PrincipalRef, memory service.Memory) (bool, error) {
+		return memory.Key != "hidden", nil
+	})
+	domain := service.New(store, lease, writer,
+		service.WithOntology(ontology),
+		service.WithMemoryReadAuthorizer(policy),
+	)
+	registry, err := rpc.NewRegistry()
+	if err != nil {
+		_ = lease.Release(ctx)
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := rpc.BindService(registry, domain); err != nil {
+		_ = lease.Release(ctx)
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	config := pagingConfig()
+	config.Incarnation = meta.Incarnation
+	server, err := rpc.New(registry, config)
+	if err != nil {
+		_ = lease.Release(ctx)
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	return server, store, lease
+}
+
+func memoryIDs(t *testing.T, value map[string]any) []string {
+	t.Helper()
+	items := value["items"].([]any)
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.(map[string]any)["key"].(string))
+	}
+	return ids
+}
+
+func TestRealSQLiteMemoryBriefAuthorizationAndRestart(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "brief.db")
+	server, store, lease := openSQLiteMemoryServer(t, path)
+	save := func(key string) map[string]any {
+		t.Helper()
+		return writeResult(t, server, "memory.save", writeParams(t, map[string]any{
+			"key": key, "content": "content:" + key,
+		}), false)
+	}
+	// Insert out of lexical order; the read contract sorts by key, then ID.
+	var hiddenID, replaceID string
+	for _, key := range []string{"zeta", "hidden", "alpha", "middle", "replace"} {
+		commit := save(key)
+		if key == "hidden" {
+			hiddenID = createdRef(t, commit)["id"].(string)
+		}
+		if key == "replace" {
+			replaceID = createdRef(t, commit)["id"].(string)
+		}
+	}
+	updated := writeResult(t, server, "memory.save", writeParams(t, map[string]any{
+		"key": "replace", "content": "updated replace",
+	}), false)
+	if got := createdRef(t, updated)["id"].(string); got != replaceID {
+		t.Fatalf("memory replacement minted a new record: got %s want %s", got, replaceID)
+	}
+	replaced := result(t, call(t, server, ctx, "memory.get", paramsJSON(t, map[string]any{"id": replaceID})))
+	if replaced["content"] != "updated replace" {
+		t.Fatalf("memory replacement did not update content: %v", replaced)
+	}
+	writeResult(t, server, "memory.delete", writeParams(t, map[string]any{"id": replaceID}), false)
+	brief := result(t, call(t, server, ctx, "agent.brief", `{"budgetTokens":200}`))
+	if got := memoryIDs(t, map[string]any{"items": brief["memories"]}); !reflect.DeepEqual(got, []string{"alpha", "middle", "zeta"}) {
+		t.Fatalf("brief ordering or authorization: %v", got)
+	}
+	list := result(t, call(t, server, ctx, "memory.list", `{"limit":10}`))
+	if got := memoryIDs(t, list); !reflect.DeepEqual(got, []string{"alpha", "middle", "zeta"}) {
+		t.Fatalf("list ordering or authorization: %v", got)
+	}
+	// The hidden ID comes only from its write receipt; current authorization
+	// still maps the point read to not_found.
+	requireCode(t, call(t, server, ctx, "memory.get", paramsJSON(t, map[string]any{"id": hiddenID})), "not_found")
+	query := result(t, call(t, server, ctx, "memory.list", `{"query":"hidden"}`))
+	if items := query["items"].([]any); len(items) != 0 {
+		t.Fatalf("hidden memory leaked through query: %v", items)
+	}
+	if err := lease.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server, store, lease = openSQLiteMemoryServer(t, path)
+	t.Cleanup(func() {
+		_ = lease.Release(context.Background())
+		_ = store.Close()
+	})
+	list = result(t, call(t, server, ctx, "memory.list", `{"limit":10}`))
+	if got := memoryIDs(t, list); !reflect.DeepEqual(got, []string{"alpha", "middle", "zeta"}) {
+		t.Fatalf("reopened ordering or persistence: %v", got)
+	}
+	brief = result(t, call(t, server, ctx, "agent.brief", `{}`))
+	if got := memoryIDs(t, map[string]any{"items": brief["memories"]}); !reflect.DeepEqual(got, []string{"alpha", "middle", "zeta"}) {
+		t.Fatalf("reopened brief ordering: %v", got)
+	}
 }
 
 func realServiceServer(t *testing.T) (*rpc.Server, *failingPost, time.Time, uint64) {
