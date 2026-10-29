@@ -1,0 +1,36 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "claimrpc",
+    srcs = ["service.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/server/claimrpc",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/model",
+        "//internal/core/port",
+        "//internal/core/service",
+        "//internal/server/rpc",
+    ],
+)
+
+go_test(
+    name = "claimrpc_test",
+    srcs = ["service_test.go"],
+    embed = [":claimrpc"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
+        "//internal/server/rpc",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
