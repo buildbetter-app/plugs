@@ -57,6 +57,10 @@ func TestB08CloseReplayPreservesResultAndMarksOnlyTheResponse(t *testing.T) {
 	if at[int](t, first, "/result/revision") != 2 {
 		t.Fatalf("first close: %s", first)
 	}
+	receipt := f.receipt(t, "stable-close-key", "bead.close")
+	if receipt == nil || receipt.ResponsePending || receipt.Commit.Revision.String() != "2" {
+		t.Fatalf("first response is not a durable finalized receipt: %+v", receipt)
+	}
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(first, &envelope); err != nil {
 		t.Fatal(err)
@@ -77,6 +81,7 @@ func TestB08CloseReplayPreservesResultAndMarksOnlyTheResponse(t *testing.T) {
 		t.Fatalf("true replay lacks its response-only marker: %s", replay)
 	}
 	f.unchanged(t, before)
+	sameJSON(t, f.receipt(t, "stable-close-key", "bead.close"), receipt)
 	// Complete stored log/record comparison also proves the marker did not
 	// mutate the durable result, comments, history, or later head.
 }

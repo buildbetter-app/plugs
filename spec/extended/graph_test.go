@@ -101,6 +101,10 @@ func TestB06BlockingCyclesRollbackTheWholeBatch(t *testing.T) {
 				t.Fatalf("duplicate edge lost original row revision: %+v", noop)
 			}
 			f.unchanged(t, before)
+			receipt := f.receipt(t, "repeat-edge", "tx.apply")
+			if receipt == nil || receipt.ResponsePending || receipt.Changeset.Kind != "" || receipt.Commit.Revision.String() != "2" {
+				t.Fatalf("duplicate edge lacks a final no-op receipt: %+v", receipt)
+			}
 		})
 	}
 }

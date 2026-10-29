@@ -339,6 +339,13 @@ func (v image) document(t *testing.T, id string) pipeline.Document {
 
 func (f *fixture) noReceipt(t *testing.T, label, method string) {
 	t.Helper()
+	if v := f.receipt(t, label, method); v != nil {
+		t.Fatalf("refused write created a receipt: %+v", v)
+	}
+}
+
+func (f *fixture) receipt(t *testing.T, label, method string) *driver.IdempotencyRecord {
+	t.Helper()
 	r, err := f.store.Read(f.ctx, driver.View{Incarnation: incarnation})
 	if err != nil {
 		t.Fatal(err)
@@ -353,9 +360,10 @@ func (f *fixture) noReceipt(t *testing.T, label, method string) {
 		t.Fatal(err)
 	}
 	v, err := r.IdempotencyByKey(f.ctx, principal, agent, method, f.meta(label, method).IdempotencyKey)
-	if err != nil || v != nil {
-		t.Fatalf("refused write created a receipt: %+v, %v", v, err)
+	if err != nil {
+		t.Fatalf("read actual receipt: %v", err)
 	}
+	return v
 }
 
 func (f *fixture) advance(t *testing.T, d time.Duration) {
