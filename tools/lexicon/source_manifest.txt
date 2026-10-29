@@ -217,6 +217,8 @@ internal/core/pipeline/snapshot.go
 internal/core/port/BUILD.bazel
 internal/core/port/pipeline.go
 internal/core/service/BUILD.bazel
+internal/core/service/audit.go
+internal/core/service/audit_test.go
 internal/core/service/graph.go
 internal/core/service/ontology.go
 internal/core/service/reads.go

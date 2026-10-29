@@ -23,6 +23,7 @@ go_test(
         "//internal/core/ontology",
         "//internal/core/pipeline",
         "//internal/core/port",
+        "//internal/storage/conformance",
         "//internal/storage/driver",
         "//internal/storage/memory",
     ],
