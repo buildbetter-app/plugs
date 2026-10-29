@@ -968,6 +968,12 @@ provenance = ["NOTICE.md", "engdocs/adr/", "engdocs/design/", "docs/migrate-from
 
 **Codebase.** The [plan's work graph](clean-room-plan.md#work-graph-and-parallel-tracks) orders this work. M0 tags `beads-base`, creates `beads` and makes the new tree's first commit: `go.mod`, MODULE.bazel, LICENSE, `NOTICE.md`, blocking `tools/lexicon`, CI without upstream gates or caches; P38a reuses the operations exporter, and a C toolchain is mirrored under the same sha256 pins only if cgo is needed. Docs and ADRs start in M1 and grow with each milestone. M8 ships `plug` 0.1.0; when `beads` is frozen and deleted is CP3 and CP5.
 
+**CI replacement (#16).** The [plan's CI gate](clean-room-plan.md#ci-contract-replacement)
+requires exact-head qualification before a reviewed CI cutover to Plug-owned
+Bazel CI. Current hosted failures remain blocking until then; no settings
+change or failure waiver is authorized. This CI cutover is separate from the
+production-data cutover defined below.
+
 **Decided for this design.** P5b puts the new tree at the root of `main` until cutover; P5c uses `bd export --format plug-dump/1` on the `beads` branch and restores the result; P38d runs `git filter-repo` early while the repository is private; P39b commits design docs without transcripts and cites ADRs; P48b compiles the workflow plugin from this repository without Beads formula files; P79 starts without a remote build cache, adding a BuildBetter cache only for cgo or remote execution; and P81 fixes the usage-metrics fields and permits any operator OpenTelemetry collector. These are the [Made](#made) decisions, not open design questions.
 
 ## Operations, observability and testing

@@ -6,14 +6,19 @@ remains blocked pending Nikhil's approval of the revisited design.
 
 ## Open
 
-| # | Question | Recommendation |
-|---:|---|---|
-| 16 | **Inherited Beads CI.** Upstream's workflows (`bazel.yml`, `pr.yml` and the rest) fail on this repository (missing tag `v1.2.2`, gascity's `rbe-west` farm skipped) and test the Beads tree that P5b removes. Are they gates for Plug? | No. The swarm disables or removes them, and Plug's own Bazel CI (PR #12, on RunsOn once access works, GitHub-hosted until then) becomes the required check |
+No decisions are open.
 
 Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn GitHub App's repositories, and grant the remote-dev GitHub App **Workflows: Read and write** so the swarm can publish CI changes under its own identity.
 
 ## Answered
 
+- **#16 — DECIDED (2026-10-29, Paseo, about 03:37 UTC):** Nikhil chose
+  **Replace inherited workflows with qualified Plug CI (Recommended)**.
+  Plug-owned Bazel CI must qualify on the exact head before a reviewed CI
+  cutover; current hosted failures remain blocking until then. This decision
+  authorizes no settings change or failure waiver. The [CI gate](clean-room-plan.md#ci-contract-replacement)
+  preserves the bounded GitHub-hosted fallback, RunsOn admin dependency and
+  existing ownership, merge, review and stop-line rules.
 - **#17 (2026-10-29, in Paseo):** authorization uses fixed project and team permissions, Linear-style, not user-configurable policies. The repaired spike failed its latency gates; a concrete design is in progress, and Cedar in core is not adopted.
 
 Nikhil accepted every recommendation below on 2026-10-29 ([recorded](review-2026-10-27.md#decisions)).

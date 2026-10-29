@@ -99,6 +99,21 @@ The graph lives in a dedicated Beads workspace outside the repository, for examp
 
 ## CI and merge bootstrap
 
+### CI contract replacement
+
+**#16 — DECIDED (2026-10-29, Paseo, about 03:37 UTC):**
+**Replace inherited workflows with qualified Plug CI (Recommended)**.
+Plug-owned Bazel CI replaces the inherited Beads workflows only after
+exact-head qualification and a reviewed CI cutover. Current hosted failures
+remain blocking until then. This decision authorizes no settings change or
+failure waiver; existing ownership, merge, review and stop-line rules remain
+in force.
+
+RunsOn repository access remains an admin dependency: an administrator must
+add `plugs` to the RunsOn GitHub App's repositories, and the repository's own
+smoke run must pass before reliance on RunsOn. Failed or unavailable smoke
+blocks scale-up; GitHub-hosted Ubuntu remains the bounded-bootstrap fallback.
+
 ### RunsOn first
 
 The new tree owns `.github/runs-on.yml` and copies the four tested classes used by BuildBetter. `bb-x64-16` is the default for Plug CI. Its jobs use:
@@ -339,7 +354,7 @@ Keep the same graph, evidence, ownership, and merge rules at normal budget. Redu
 - **The weeks-0-to-56 M0-M8 calendar:** retired; the burst uses UTC hour and day windows through 2026-10-31 and dependency waves afterward.
 - **The old five-workstream staffing table:** retired; package ownership and graph dependencies determine concurrency.
 - **Routine human review of every command path or PR:** retired; census ratchets and independent adversarial review are the default, with Nikhil only at listed decision gates.
-- **Old rbe-west CI as the Plug trust boundary:** retired; the Plug-specific RunsOn and Bazel workflow is authoritative.
+- **Old rbe-west CI as the Plug trust boundary:** retired as the target; the Plug-specific RunsOn and Bazel workflow becomes authoritative only after #16's exact-head qualification and reviewed CI cutover. Current hosted failures remain blocking until then.
 
 ## Decided defaults
 
