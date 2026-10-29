@@ -3,7 +3,9 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -115,10 +117,17 @@ func (r *Reader) Read(ctx context.Context, req ReadRequest) (Page, error) {
 			return page, fmt.Errorf("invalid committed changeset order")
 		}
 		previous = set.Revision
+		if err := set.ValidateEvents(); err != nil {
+			return page, fmt.Errorf("invalid committed event plan: %w", err)
+		}
+		count := len(set.Changes)
+		if set.Events != nil {
+			count = len(set.Events)
+		}
 		start := 0
 		if equalNatural(set.Revision, req.After.Revision) {
 			index, err := req.After.Index.Uint64()
-			if err != nil || (len(set.Changes) > 0 && index >= uint64(len(set.Changes))) || (len(set.Changes) == 0 && index != 0) {
+			if err != nil || (count > 0 && index >= uint64(count)) || (count == 0 && index != 0) {
 				return page, ErrCursorInvalid
 			}
 			start = int(index) + 1
@@ -126,30 +135,53 @@ func (r *Reader) Read(ctx context.Context, req ReadRequest) (Page, error) {
 		group := Group{Revision: set.Revision, Time: set.Time, Events: []model.Event{}, End: page.Position}
 		// Empty changesets are durable receipts. Their scan marker is index 0;
 		// they advance delivery without inventing a graph event.
-		if len(set.Changes) == 0 {
+		if count == 0 {
 			group.End = Position{Incarnation: set.Incarnation, Revision: set.Revision}
 			page.Position = group.End
 		}
 		boundary := ""
-		for i := start; i < len(set.Changes); i++ {
+		for i := start; i < count; i++ {
+			position := Position{Incarnation: set.Incarnation, Revision: set.Revision, Index: model.Natural64(uint64(i))}
+			notice := set.Events != nil && set.Events[i].Type == model.EventDependencyConditionUnmet
+			if notice {
+				allowed, err := r.noticeReadable(ctx, req.Principal, set.Events[i])
+				if err != nil {
+					return page, err
+				}
+				if !allowed {
+					group.End, page.Position = position, position
+					continue
+				}
+			}
 			durable, err := r.Materializer.Materialize(ctx, set, i)
+			if notice && errors.Is(err, ErrNoticeUnavailable) {
+				group.End, page.Position = position, position
+				continue
+			}
 			if err != nil {
 				return page, err
 			}
-			position := Position{Incarnation: set.Incarnation, Revision: set.Revision, Index: model.Natural64(uint64(i))}
 			durable.EventPosition = eventPosition(position)
-			if _, err = json.Marshal(model.Event{Durable: &durable}); err != nil {
+			protected, err := cloneDurable(durable)
+			if err != nil {
 				return page, fmt.Errorf("invalid materialized event: %w", err)
 			}
-			visibility, err := r.Authorization.Read(ctx, req.Principal, durable)
+			visibility, err := r.Authorization.Read(ctx, req.Principal, protected)
 			if err != nil {
 				return page, err
 			}
 			var event model.Event
+			if notice && (visibility.Redacted || !reflect.DeepEqual(visibility.Before, durable.Before) || !reflect.DeepEqual(visibility.After, durable.After)) {
+				visibility.Readable = false
+			}
 			if visibility.Readable {
 				durable.Before, durable.After = visibility.Before, visibility.After
+				durable, err = cloneDurable(durable)
+				if err != nil {
+					return page, fmt.Errorf("invalid authorized event: %w", err)
+				}
 				event = model.Event{Category: model.EventDurable, Durable: &durable}
-			} else if visibility.PreviouslyVisible {
+			} else if !notice && visibility.PreviouslyVisible {
 				event = model.Event{Category: model.EventControl, Control: &model.ControlEvent{EventPosition: eventPosition(position), Type: model.EventVisibilityLost, Resource: durable.Resource, Details: model.VisibilityLostDetails{Reason: "authorization_changed"}}}
 			}
 			if event.Durable != nil || event.Control != nil {
@@ -190,4 +222,41 @@ func (r *Reader) Read(ctx context.Context, req ReadRequest) (Page, error) {
 		}
 	}
 	return page, nil
+}
+
+func (r *Reader) noticeReadable(ctx context.Context, principal model.PrincipalRef, descriptor model.EventDescriptor) (bool, error) {
+	authorization, ok := r.Authorization.(ResourceAuthorization)
+	if !ok {
+		return false, ErrResourceAuthorization
+	}
+	resources, err := descriptor.RequiredResources()
+	if err != nil {
+		return false, err
+	}
+	for _, resource := range resources {
+		visibility, err := authorization.ReadResource(ctx, principal, resource)
+		if err != nil {
+			return false, err
+		}
+		if !visibility.Readable || visibility.Redacted {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// The authorization port and returned pages each receive owned JSON values.
+// Typed details, provenance maps/chains and images must never alias log data or
+// a policy callback's mutable arguments/results. The model codec keeps numbers
+// exact and validates the closed event envelope on both sides of masking.
+func cloneDurable(event model.DurableEvent) (model.DurableEvent, error) {
+	raw, err := json.Marshal(model.Event{Durable: &event})
+	if err != nil {
+		return model.DurableEvent{}, err
+	}
+	var copied model.Event
+	if err := json.Unmarshal(raw, &copied); err != nil {
+		return model.DurableEvent{}, err
+	}
+	return *copied.Durable, nil
 }

@@ -166,6 +166,9 @@ type HistoryMaterializer struct {
 }
 
 func (m HistoryMaterializer) Materialize(ctx context.Context, set model.Changeset, index int) (model.DurableEvent, error) {
+	if set.Events != nil {
+		return m.materializeDescriptor(ctx, set, index)
+	}
 	var event model.DurableEvent
 	if index < 0 || index >= len(set.Changes) {
 		return event, core.ErrCursorInvalid

@@ -113,6 +113,7 @@ internal/core/events/natural.go
 internal/core/events/natural_test.go
 internal/core/events/ports.go
 internal/core/events/reader.go
+internal/core/events/reader_test.go
 internal/core/model/BUILD.bazel
 internal/core/model/audit.go
 internal/core/model/audit_test.go
@@ -176,6 +177,7 @@ internal/server/authn/authn_test.go
 internal/server/authn/http.go
 internal/server/authn/http_test.go
 internal/server/events/BUILD.bazel
+internal/server/events/audit.go
 internal/server/events/cursor.go
 internal/server/events/cursor_test.go
 internal/server/events/dispatcher_test.go
