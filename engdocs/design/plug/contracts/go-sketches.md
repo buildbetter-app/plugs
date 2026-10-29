@@ -31,6 +31,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/hex"
+	"unicode/utf8"
 	"fmt"
 	"io"
 	"math/big"
@@ -871,6 +873,358 @@ func (o *Op) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// AuditResource identifies a resource whose CURRENT read policy protects the
+// descriptor. Audit identities are resolved, nonempty ID refs on branch zero;
+// display keys and caller-supplied unresolved references are not log identities.
+type AuditResource struct {
+	Kind string `json:"kind"`
+	Ref  Ref    `json:"ref"`
+}
+
+type EventImage struct {
+	Ref      Ref      `json:"ref"`
+	Revision Revision `json:"revision"`
+}
+
+// ConditionalEdge is a directed edge stored in the dependent's source image.
+// (Dependent, Blocker, Kind) is its identity; Revision pins its membership.
+type ConditionalEdge struct {
+	Dependent Ref      `json:"dependent"`
+	Blocker   Ref      `json:"blocker"`
+	Kind      string   `json:"kind"`
+	Revision  Revision `json:"revision"`
+}
+
+// OntologyPin names the protected ontology document containing the base and
+// overlays. Digest pins the effective compilation used for this project. A nil
+// Project explicitly means the server base (a projectless blocker).
+type OntologyPin struct {
+	Ref      Ref      `json:"ref"`
+	Revision Revision `json:"revision"`
+	Digest   string   `json:"digest"`
+	Project  *Ref     `json:"project,omitempty"`
+}
+
+// ConditionDecision stores the resolved interpretation, never a live lookup.
+// Canceled has no outcome; completed has success/failure. Only completed/failure
+// satisfies conditional-blocks. Terminal and Satisfied are checked assertions.
+type ConditionDecision struct {
+	Status    string `json:"status"`
+	Category  string `json:"category"`
+	Outcome   string `json:"outcome"`
+	Terminal  bool   `json:"terminal"`
+	Satisfied bool   `json:"satisfied"`
+}
+
+type ConditionUnmetDetails struct {
+	Dependent     EventImage        `json:"dependent"`
+	BlockerBefore EventImage        `json:"blockerBefore"`
+	BlockerAfter  EventImage        `json:"blockerAfter"`
+	Edge          ConditionalEdge   `json:"edge"`
+	Ontology      OntologyPin       `json:"ontology"`
+	Before        ConditionDecision `json:"before"`
+	After         ConditionDecision `json:"after"`
+}
+
+const maxAuditText = 1024
+
+func auditText(value, name string) error {
+	if value == "" || !utf8.ValidString(value) || utf8.RuneCountInString(value) > maxAuditText {
+		return fmt.Errorf("%s must contain 1..%d Unicode characters", name, maxAuditText)
+	}
+	return nil
+}
+
+func auditRef(ref Ref) error {
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if !ref.IsID() || !ref.Branch.IsZero() {
+		return fmt.Errorf("audit reference must be a resolved branch-zero ID")
+	}
+	return auditText(ref.ID, "audit ID")
+}
+
+func sameAuditRef(a, b Ref) bool {
+	return a.ID == b.ID && a.IsID() && b.IsID() && a.Branch.IsZero() && b.Branch.IsZero()
+}
+
+func (r AuditResource) Validate() error {
+	switch r.Kind {
+	case "bead", "ontology", "plugin", "view", "memory", "sync", "derived", "project":
+	default:
+		return fmt.Errorf("unknown audit resource kind %q", r.Kind)
+	}
+	return auditRef(r.Ref)
+}
+func (r AuditResource) MarshalJSON() ([]byte, error) {
+	if err := r.Validate(); err != nil {
+		return nil, err
+	}
+	type wire AuditResource
+	return json.Marshal(wire(r))
+}
+func (r *AuditResource) UnmarshalJSON(data []byte) error {
+	type wire AuditResource
+	var v wire
+	if err := decodeStrict(data, &v, "kind", "ref"); err != nil {
+		return err
+	}
+	d := AuditResource(v)
+	if err := d.Validate(); err != nil {
+		return err
+	}
+	*r = d
+	return nil
+}
+
+func (i EventImage) Validate() error {
+	if err := auditRef(i.Ref); err != nil {
+		return err
+	}
+	return i.Revision.Validate()
+}
+func (i EventImage) MarshalJSON() ([]byte, error) {
+	if err := i.Validate(); err != nil {
+		return nil, err
+	}
+	type wire EventImage
+	return json.Marshal(wire(i))
+}
+func (i *EventImage) UnmarshalJSON(data []byte) error {
+	type wire EventImage
+	var v wire
+	if err := decodeStrict(data, &v, "ref", "revision"); err != nil {
+		return err
+	}
+	d := EventImage(v)
+	if err := d.Validate(); err != nil {
+		return err
+	}
+	*i = d
+	return nil
+}
+
+func (e ConditionalEdge) Validate() error {
+	if err := auditRef(e.Dependent); err != nil {
+		return err
+	}
+	if err := auditRef(e.Blocker); err != nil {
+		return err
+	}
+	if sameAuditRef(e.Dependent, e.Blocker) || e.Kind != "conditional-blocks" {
+		return fmt.Errorf("invalid conditional edge")
+	}
+	return e.Revision.Validate()
+}
+func (e ConditionalEdge) MarshalJSON() ([]byte, error) {
+	if err := e.Validate(); err != nil {
+		return nil, err
+	}
+	type wire ConditionalEdge
+	return json.Marshal(wire(e))
+}
+func (e *ConditionalEdge) UnmarshalJSON(data []byte) error {
+	type wire ConditionalEdge
+	var v wire
+	if err := decodeStrict(data, &v, "dependent", "blocker", "kind", "revision"); err != nil {
+		return err
+	}
+	d := ConditionalEdge(v)
+	if err := d.Validate(); err != nil {
+		return err
+	}
+	*e = d
+	return nil
+}
+
+func (p OntologyPin) Validate() error {
+	if err := auditRef(p.Ref); err != nil {
+		return err
+	}
+	if err := p.Revision.Validate(); err != nil {
+		return err
+	}
+	if p.Project != nil {
+		if err := auditRef(*p.Project); err != nil {
+			return err
+		}
+	}
+	digest, err := hex.DecodeString(p.Digest)
+	if err != nil || len(digest) != 32 || hex.EncodeToString(digest) != p.Digest {
+		return fmt.Errorf("ontology digest must be canonical lowercase SHA-256 hex")
+	}
+	return nil
+}
+func (p OntologyPin) MarshalJSON() ([]byte, error) {
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
+	type wire OntologyPin
+	return json.Marshal(wire(p))
+}
+func (p *OntologyPin) UnmarshalJSON(data []byte) error {
+	type wire OntologyPin
+	var v wire
+	if err := decodeStrict(data, &v, "ref", "revision", "digest"); err != nil {
+		return err
+	}
+	d := OntologyPin(v)
+	if err := d.Validate(); err != nil {
+		return err
+	}
+	*p = d
+	return nil
+}
+
+func (d ConditionDecision) Validate() error {
+	if err := auditText(d.Status, "status"); err != nil {
+		return err
+	}
+	terminal, satisfied := false, false
+	switch d.Category {
+	case "triage", "backlog", "unstarted", "started":
+		if d.Outcome != "" {
+			return fmt.Errorf("nonterminal status has an outcome")
+		}
+	case "canceled":
+		terminal = true
+		if d.Outcome != "" {
+			return fmt.Errorf("canceled status has an outcome")
+		}
+	case "completed":
+		terminal = true
+		if d.Outcome != "success" && d.Outcome != "failure" {
+			return fmt.Errorf("completed status needs success or failure outcome")
+		}
+		satisfied = d.Outcome == "failure"
+	default:
+		return fmt.Errorf("unknown status category %q", d.Category)
+	}
+	if d.Terminal != terminal || d.Satisfied != satisfied {
+		return fmt.Errorf("inconsistent terminal/condition decision")
+	}
+	return nil
+}
+func (d ConditionDecision) MarshalJSON() ([]byte, error) {
+	if err := d.Validate(); err != nil {
+		return nil, err
+	}
+	type wire ConditionDecision
+	return json.Marshal(wire(d))
+}
+func (d *ConditionDecision) UnmarshalJSON(data []byte) error {
+	type wire ConditionDecision
+	var v wire
+	if err := decodeStrict(data, &v, "status", "category", "outcome", "terminal", "satisfied"); err != nil {
+		return err
+	}
+	decoded := ConditionDecision(v)
+	if err := decoded.Validate(); err != nil {
+		return err
+	}
+	*d = decoded
+	return nil
+}
+
+func (d ConditionUnmetDetails) Validate() error {
+	for _, image := range []EventImage{d.Dependent, d.BlockerBefore, d.BlockerAfter} {
+		if err := image.Validate(); err != nil {
+			return err
+		}
+	}
+	if err := d.Edge.Validate(); err != nil {
+		return err
+	}
+	if err := d.Ontology.Validate(); err != nil {
+		return err
+	}
+	if err := d.Before.Validate(); err != nil {
+		return err
+	}
+	if err := d.After.Validate(); err != nil {
+		return err
+	}
+	if !sameAuditRef(d.BlockerBefore.Ref, d.BlockerAfter.Ref) || !sameAuditRef(d.Edge.Dependent, d.Dependent.Ref) || !sameAuditRef(d.Edge.Blocker, d.BlockerAfter.Ref) || d.Edge.Revision.String() != d.Dependent.Revision.String() {
+		return fmt.Errorf("conditional edge/source image identity mismatch")
+	}
+	if d.Before.Status == d.After.Status || !d.After.Terminal || d.After.Satisfied {
+		return fmt.Errorf("condition-unmet requires a changed status entering an unsatisfied terminal outcome")
+	}
+	if compareAuditRevision(d.BlockerBefore.Revision, d.BlockerAfter.Revision) >= 0 {
+		return fmt.Errorf("condition-unmet requires a later blocker image")
+	}
+	if compareAuditRevision(d.Dependent.Revision, d.BlockerAfter.Revision) > 0 || compareAuditRevision(d.Ontology.Revision, d.BlockerAfter.Revision) > 0 {
+		return fmt.Errorf("condition source image is from a future revision")
+	}
+	return nil
+}
+
+// Inputs have already passed Natural.Validate. Compare symbolic magnitudes;
+// even 1e1000000000 never expands into a billion-digit allocation.
+func compareAuditRevision(a, b Revision) int {
+	left, right := a.String(), b.String()
+	if left == right {
+		return 0
+	}
+	if left == "0" {
+		return -1
+	}
+	if right == "0" {
+		return 1
+	}
+	magnitude := func(value string) (string, *big.Int) {
+		coefficient, exponent, _ := strings.Cut(value, "e")
+		size := new(big.Int)
+		if exponent != "" {
+			size.SetString(exponent, 10)
+		}
+		size.Add(size, big.NewInt(int64(len(coefficient))))
+		return coefficient, size
+	}
+	l, lm := magnitude(left)
+	r, rm := magnitude(right)
+	if cmp := lm.Cmp(rm); cmp != 0 {
+		return cmp
+	}
+	for i := 0; i < max(len(l), len(r)); i++ {
+		lc, rc := byte('0'), byte('0')
+		if i < len(l) {
+			lc = l[i]
+		}
+		if i < len(r) {
+			rc = r[i]
+		}
+		if lc < rc {
+			return -1
+		}
+		if lc > rc {
+			return 1
+		}
+	}
+	return 0
+}
+func (d ConditionUnmetDetails) MarshalJSON() ([]byte, error) {
+	if err := d.Validate(); err != nil {
+		return nil, err
+	}
+	type wire ConditionUnmetDetails
+	return json.Marshal(wire(d))
+}
+func (d *ConditionUnmetDetails) UnmarshalJSON(data []byte) error {
+	type wire ConditionUnmetDetails
+	var v wire
+	if err := decodeStrict(data, &v, "dependent", "blockerBefore", "blockerAfter", "edge", "ontology", "before", "after"); err != nil {
+		return err
+	}
+	decoded := ConditionUnmetDetails(v)
+	if err := decoded.Validate(); err != nil {
+		return err
+	}
+	*d = decoded
+	return nil
+}
+
 type EventCategory string
 type DurableEventType string
 type ControlEventType string
@@ -879,34 +1233,35 @@ const (
 	EventDurable EventCategory = "durable"
 	EventControl EventCategory = "control"
 
-	EventBeadCreated        DurableEventType = "bead.created"
-	EventBeadUpdated        DurableEventType = "bead.updated"
-	EventBeadReparented     DurableEventType = "bead.reparented"
-	EventBeadLinked         DurableEventType = "bead.linked"
-	EventBeadUnlinked       DurableEventType = "bead.unlinked"
-	EventBeadCommented      DurableEventType = "bead.commented"
-	EventBeadAttached       DurableEventType = "bead.attached"
-	EventBeadDeleted        DurableEventType = "bead.deleted"
-	EventBeadClaimed        DurableEventType = "bead.claimed"
-	EventBeadReleased       DurableEventType = "bead.released"
-	EventBeadClosed         DurableEventType = "bead.closed"
-	EventBeadFailed         DurableEventType = "bead.failed"
-	EventBeadCanceled       DurableEventType = "bead.canceled"
-	EventBeadReopened       DurableEventType = "bead.reopened"
-	EventBeadDeferred       DurableEventType = "bead.deferred"
-	EventBeadLeaseReclaimed DurableEventType = "bead.lease.reclaimed"
-	EventGateApproved       DurableEventType = "gate.approved"
-	EventGateReported       DurableEventType = "gate.reported"
-	EventGateEscalated      DurableEventType = "gate.escalated"
-	EventOntologyApplied    DurableEventType = "ontology.applied"
-	EventPluginApplied      DurableEventType = "plugin.applied"
-	EventViewSaved          DurableEventType = "view.saved"
-	EventViewDeleted        DurableEventType = "view.deleted"
-	EventMemorySaved        DurableEventType = "memory.saved"
-	EventMemoryDeleted      DurableEventType = "memory.deleted"
-	EventSyncPushed         DurableEventType = "sync.pushed"
-	EventSyncImported       DurableEventType = "sync.imported"
-	EventDerivedUpdated     DurableEventType = "derived.updated"
+	EventBeadCreated              DurableEventType = "bead.created"
+	EventBeadUpdated              DurableEventType = "bead.updated"
+	EventBeadReparented           DurableEventType = "bead.reparented"
+	EventBeadLinked               DurableEventType = "bead.linked"
+	EventBeadUnlinked             DurableEventType = "bead.unlinked"
+	EventBeadCommented            DurableEventType = "bead.commented"
+	EventBeadAttached             DurableEventType = "bead.attached"
+	EventBeadDeleted              DurableEventType = "bead.deleted"
+	EventBeadClaimed              DurableEventType = "bead.claimed"
+	EventBeadReleased             DurableEventType = "bead.released"
+	EventBeadClosed               DurableEventType = "bead.closed"
+	EventBeadFailed               DurableEventType = "bead.failed"
+	EventBeadCanceled             DurableEventType = "bead.canceled"
+	EventBeadReopened             DurableEventType = "bead.reopened"
+	EventBeadDeferred             DurableEventType = "bead.deferred"
+	EventBeadLeaseReclaimed       DurableEventType = "bead.lease.reclaimed"
+	EventGateApproved             DurableEventType = "gate.approved"
+	EventGateReported             DurableEventType = "gate.reported"
+	EventGateEscalated            DurableEventType = "gate.escalated"
+	EventOntologyApplied          DurableEventType = "ontology.applied"
+	EventPluginApplied            DurableEventType = "plugin.applied"
+	EventViewSaved                DurableEventType = "view.saved"
+	EventViewDeleted              DurableEventType = "view.deleted"
+	EventMemorySaved              DurableEventType = "memory.saved"
+	EventMemoryDeleted            DurableEventType = "memory.deleted"
+	EventSyncPushed               DurableEventType = "sync.pushed"
+	EventSyncImported             DurableEventType = "sync.imported"
+	EventDerivedUpdated           DurableEventType = "derived.updated"
+	EventDependencyConditionUnmet DurableEventType = "dependency.conditionUnmet"
 
 	EventGap            ControlEventType = "event.gap"
 	EventWatchDelta     ControlEventType = "watch.delta"
@@ -951,16 +1306,17 @@ func (c EventCause) MarshalJSON() ([]byte, error) {
 
 type DurableEvent struct {
 	EventPosition
-	Type      DurableEventType  `json:"type"`
-	Resource  string            `json:"resource"`
-	Changed   []string          `json:"changed"`
-	Before    map[string]any    `json:"before,omitempty"`
-	After     map[string]any    `json:"after,omitempty"`
-	Principal PrincipalRef      `json:"principal"`
-	Chain     []string          `json:"chain"`
-	SetBy     map[string]string `json:"setBy"`
-	Cause     EventCause        `json:"cause"`
-	Derived   bool              `json:"derived"`
+	Type      DurableEventType       `json:"type"`
+	Resource  string                 `json:"resource"`
+	Changed   []string               `json:"changed"`
+	Before    map[string]any         `json:"before,omitempty"`
+	After     map[string]any         `json:"after,omitempty"`
+	Principal PrincipalRef           `json:"principal"`
+	Chain     []string               `json:"chain"`
+	SetBy     map[string]string      `json:"setBy"`
+	Cause     EventCause             `json:"cause"`
+	Derived   bool                   `json:"derived"`
+	Details   *ConditionUnmetDetails `json:"details,omitempty"`
 }
 type ControlDetails interface{ controlDetails() }
 type EventGapDetails struct {
@@ -1188,7 +1544,7 @@ func validDurableEventType(kind DurableEventType) bool {
 		EventBeadClosed, EventBeadFailed, EventBeadCanceled, EventBeadReopened, EventBeadDeferred,
 		EventBeadLeaseReclaimed, EventGateApproved, EventGateReported, EventGateEscalated, EventOntologyApplied,
 		EventPluginApplied, EventViewSaved, EventViewDeleted, EventMemorySaved, EventMemoryDeleted,
-		EventSyncPushed, EventSyncImported, EventDerivedUpdated:
+		EventSyncPushed, EventSyncImported, EventDerivedUpdated, EventDependencyConditionUnmet:
 		return true
 	default:
 		return false
@@ -1257,6 +1613,20 @@ func validateDurableEvent(value DurableEvent) error {
 	if value.Changed == nil || value.Chain == nil || value.SetBy == nil {
 		return fmt.Errorf("durable event has a missing required collection")
 	}
+	if value.Type == EventDependencyConditionUnmet {
+		if value.Details == nil {
+			return fmt.Errorf("condition-unmet event needs details")
+		}
+		if err := value.Details.Validate(); err != nil {
+			return err
+		}
+		if value.Resource != "bead/"+value.Details.Dependent.Ref.ID || len(value.Changed) != 0 || value.Before != nil || value.After != nil || value.Derived {
+			return fmt.Errorf("condition notice forbids fake dependent mutation/images")
+		}
+		if value.Revision.String() != value.Details.BlockerAfter.Revision.String() { return fmt.Errorf("notice revision must pin final blocker image") }
+	} else if value.Details != nil {
+		return fmt.Errorf("ordinary event forbids condition details")
+	}
 	if err := validatePrincipal(value.Principal); err != nil {
 		return err
 	}
@@ -1264,13 +1634,20 @@ func validateDurableEvent(value DurableEvent) error {
 }
 
 func validatePrincipal(value PrincipalRef) error {
-	if !validPrincipalKind(value.Kind) {
-		return fmt.Errorf("unknown principal kind %q", value.Kind)
+	seen := map[*PrincipalRef]bool{}
+	for {
+		if !validPrincipalKind(value.Kind) {
+			return fmt.Errorf("unknown principal kind %q", value.Kind)
+		}
+		if value.Sponsor == nil {
+			return nil
+		}
+		if seen[value.Sponsor] {
+			return fmt.Errorf("cyclic principal sponsor")
+		}
+		seen[value.Sponsor] = true
+		value = *value.Sponsor
 	}
-	if value.Sponsor != nil {
-		return validatePrincipal(*value.Sponsor)
-	}
-	return nil
 }
 
 func validateEventCause(value EventCause) error {
@@ -1399,16 +1776,17 @@ func (d *DurableEvent) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		Category EventCategory `json:"category"`
 		EventPosition
-		Type      DurableEventType  `json:"type"`
-		Resource  string            `json:"resource"`
-		Changed   []string          `json:"changed"`
-		Before    map[string]any    `json:"before,omitempty"`
-		After     map[string]any    `json:"after,omitempty"`
-		Principal PrincipalRef      `json:"principal"`
-		Chain     []string          `json:"chain"`
-		SetBy     map[string]string `json:"setBy"`
-		Cause     EventCause        `json:"cause"`
-		Derived   bool              `json:"derived"`
+		Type      DurableEventType       `json:"type"`
+		Resource  string                 `json:"resource"`
+		Changed   []string               `json:"changed"`
+		Before    map[string]any         `json:"before,omitempty"`
+		After     map[string]any         `json:"after,omitempty"`
+		Principal PrincipalRef           `json:"principal"`
+		Chain     []string               `json:"chain"`
+		SetBy     map[string]string      `json:"setBy"`
+		Cause     EventCause             `json:"cause"`
+		Derived   bool                   `json:"derived"`
+		Details   *ConditionUnmetDetails `json:"details,omitempty"`
 	}
 	if err := decodeStrict(data, &wire, "category", "cursor", "incarnation", "revision", "index", "type", "resource", "changed", "principal", "chain", "setBy", "cause", "derived"); err != nil {
 		return err
@@ -1437,6 +1815,7 @@ func (d *DurableEvent) UnmarshalJSON(data []byte) error {
 		SetBy:         wire.SetBy,
 		Cause:         wire.Cause,
 		Derived:       wire.Derived,
+		Details:       wire.Details,
 	}
 	if err := validateDurableEvent(value); err != nil {
 		return err
@@ -1464,14 +1843,14 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 	if err := decodeJSON(data, &head); err != nil {
 		return err
 	}
-	*e = Event{Category: head.Category}
+	decoded := Event{Category: head.Category}
 	switch head.Category {
 	case EventDurable:
 		var value DurableEvent
 		if err := decodeJSON(data, &value); err != nil {
 			return err
 		}
-		e.Durable = &value
+		decoded.Durable = &value
 	case EventControl:
 		var envelope struct {
 			Category EventCategory `json:"category"`
@@ -1542,59 +1921,17 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 		default:
 			return fmt.Errorf("unknown control event type %q", envelope.Type)
 		}
-		e.Control = &value
+		decoded.Control = &value
 		if err := validateControlDetails(value.Type, value.Details); err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("unknown event category %q", head.Category)
 	}
+	*e = decoded
 	return nil
 }
 
-type PrincipalRef struct {
-	Kind    string         `json:"kind"` // anonymous, user, agent, service, plugin, system
-	ID      string         `json:"id"`
-	Sponsor *PrincipalRef  `json:"sponsor,omitempty" wire:"nullable"`
-	Caveats map[string]any `json:"caveats,omitempty"`
-}
-
-func (p *PrincipalRef) UnmarshalJSON(data []byte) error {
-	type wirePrincipal PrincipalRef
-	var value wirePrincipal
-	if err := decodeStrict(data, &value, "kind", "id"); err != nil {
-		return err
-	}
-	if err := validatePrincipal(PrincipalRef(value)); err != nil {
-		return err
-	}
-	*p = PrincipalRef(value)
-	return nil
-}
-
-func (p PrincipalRef) MarshalJSON() ([]byte, error) {
-	if err := validatePrincipal(p); err != nil {
-		return nil, err
-	}
-	type wirePrincipal PrincipalRef
-	return json.Marshal(wirePrincipal(p))
-}
-
-type Commit struct {
-	Revision Revision   `json:"revision"`
-	Results  []OpResult `json:"results"`
-	Warnings []Warning  `json:"warnings"`
-	// Dry-run responses also carry these fields. They are omitted on a real
-	// commit unless the caller requested a dry run.
-	WouldCommit bool        `json:"wouldCommit,omitempty"`
-	Violations  []Violation `json:"violations,omitempty"`
-}
-type OpResult struct {
-	Ref      Ref               `json:"ref"`
-	Revision Revision          `json:"revision"`
-	Record   json.RawMessage   `json:"record,omitempty"`
-	SetBy    map[string]string `json:"setBy,omitempty"`
-}
 type Warning struct {
 	Code    WarningCode    `json:"code"`
 	Message string         `json:"message"`
@@ -1653,6 +1990,34 @@ const (
 	ChangesetRestore   ChangesetKind = "restore"
 )
 
+// MaxChangesetEvents bounds the complete atomic event plan, ordinary events
+// included. Overflow refuses the write; it never truncates condition notices.
+const MaxChangesetEvents = 1000 // same bound as model.MaxChangeSetOps
+
+// EventProvenance is stamped by the trusted Writer, not accepted from ChangeSet
+// input. Slot is empty for a non-slot write. Chain records authorization links.
+type EventProvenance struct {
+	Method string            `json:"method"`
+	Slot   string            `json:"slot"`
+	SetBy  map[string]string `json:"setBy"`
+	Cause  EventCause        `json:"cause"`
+	Chain  []string          `json:"chain"`
+}
+
+// EventDescriptor is a closed durable event plan. ChangeIndex anchors an actual
+// changed record, including notices whose resource is an unchanged dependent.
+// Index is the position in Changeset.Events. Images are reconstructed from the
+// pinned history, not duplicated here. Only conditionUnmet has Details.
+type EventDescriptor struct {
+	Index       Natural                `json:"index"`
+	ChangeIndex Natural                `json:"changeIndex"`
+	Type        DurableEventType       `json:"type"`
+	Resource    AuditResource          `json:"resource"`
+	Provenance  EventProvenance        `json:"provenance"`
+	Details     *ConditionUnmetDetails `json:"details,omitempty"`
+}
+
+
 type Changeset struct {
 	Revision       Revision       `json:"revision"`
 	Branch         Branch         `json:"branch"`
@@ -1660,16 +2025,17 @@ type Changeset struct {
 	Kind           ChangesetKind  `json:"kind"`
 	Time           time.Time      `json:"time"`
 	Principal      PrincipalRef   `json:"principal"`
-	Chain          []string       `json:"chain"`
+	Chain          []string       `json:"chain" wire:"nullable"`
 	IdempotencyKey string         `json:"idempotencyKey,omitempty"`
 	Mutators       []string       `json:"mutators,omitempty"`
-	Changes        []ChangeRecord `json:"changes"`
+	Changes        []ChangeRecord `json:"changes" wire:"nullable"`
+	Events         []EventDescriptor `json:"events,omitempty"`
 }
 type ChangeRecord struct {
 	Ref          Ref      `json:"ref"`
 	Op           OpKind   `json:"op"`
 	FromRevision Revision `json:"fromRevision"`
-	ChangedPaths []string `json:"changedPaths"`
+	ChangedPaths []string `json:"changedPaths" wire:"nullable"`
 }
 ```
 
@@ -1677,6 +2043,18 @@ type ChangeRecord struct {
 startup registry lint rejects an operation or method whose effect lowers to no
 member. Protected plugin-set, lock, instance-config, and ontology records are
 not legal targets for `tx.apply`, `setMeta`, or `history.revert`.
+
+The ordered descriptor data shapes above are canonical model fields. Their
+strict validation, complete-plan ordering, resource authorization, refusal caps,
+atomic driver-copy follow-on and legacy fallback are specified in
+[Atomic ordered audit descriptors](events.md#atomic-ordered-audit-descriptors-a3b02).
+`internal/core/model` implements `ValidateEvents`, `CloneEventDescriptors` and
+`EventDescriptor.RequiredResources`; emission and persistence are separate work.
+Persisted history decoding retains legacy nil slices and their JSON `null`
+representation for `Changeset.chain`, `Changeset.changes` and
+`ChangeRecord.changedPaths`. Null collection elements remain invalid. This
+compatibility does not relax `ChangeSet` requests or event descriptor fields;
+the canonical OpenRPC request schema is unchanged.
 
 ## `pluginapi` (public)
 
@@ -2655,6 +3033,7 @@ type ChangesetHeader struct {
 	ResponsePending bool // keyed graph write with posts; false is immutable final
 	Mutators        []string
 	Changes         []model.ChangeRecord
+	Events          []model.EventDescriptor // complete atomic plan; nil retains legacy indexes
 	LockKeys        []LockKey // complete, sorted set acquired before any write
 }
 
