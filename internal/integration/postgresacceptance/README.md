@@ -48,7 +48,7 @@ locking assertions under `//internal/storage/postgres:postgres_test` remain
 unchanged; final whole-tree verification includes that regression target.
 
 These are executed Plug expectations for useful slices, not whole-card or
-Beads-recorded goldens. B01's hybrid time buckets, parent/wisp/gate/defer rules,
+Beads-recorded goldens. B01's hybrid time buckets, parent/ephemeral/gate/defer rules,
 full views/filter grammar and stored-rank lag remain unqualified. B08's full
 guard/permission/force/claim-holder matrix is not covered. B18's redaction,
 restore, current authorization and all canonical numeric/history-floor cases
