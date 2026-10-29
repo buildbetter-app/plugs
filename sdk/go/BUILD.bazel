@@ -2,9 +2,10 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "sdk_go",
-    srcs = ["doc.go"],
+    srcs = ["doc.go", "native.go"],
     importpath = "github.com/buildbetter-app/plugs/sdk/go",
     visibility = ["//visibility:public"],
+    deps = ["//pluginapi"],
 )
 
 filegroup(
