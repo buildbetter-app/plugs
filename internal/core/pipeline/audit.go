@@ -43,11 +43,15 @@ func statusChanged(p *pending) bool {
 // detection. Every observation joins the existing sorted commit guard. No
 // callback or live ontology lookup runs after locks are acquired.
 func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
-	if !w.cfg.auditSet || len(p.changed) == 0 {
+	if (!w.cfg.auditSet && p.release == nil) || len(p.changed) == 0 {
 		return nil
 	}
+	coreRecovery := p.release != nil && p.release.reclaim
+	if p.release != nil && !coreRecovery && w.cfg.authorizer != nil && w.cfg.eventContext == nil {
+		return failure("invalid_params", "claim release requires trusted event context for an installed authorizer")
+	}
 	p.audit = &auditPlan{context: port.EventContext{Cause: model.EventCause{Root: p.proposal.Meta.IdempotencyKey, Depth: model.Natural64(0), Chain: []string{}}, Chain: []string{}}, transitions: map[string]auditTransition{}}
-	if w.cfg.eventContext != nil {
+	if w.cfg.eventContext != nil && !coreRecovery {
 		proposal, err := clone(p.proposal)
 		if err != nil {
 			return err
@@ -66,6 +70,11 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 	provenance := model.EventProvenance{Method: p.proposal.Meta.Method, SetBy: map[string]string{}, Cause: p.audit.context.Cause, Chain: p.audit.context.Chain}
 	if err := provenance.Validate(); err != nil {
 		return failure("invalid_params", "invalid trusted event context: "+err.Error())
+	}
+	if p.release != nil {
+		// Release/reclaim is itself the durable audit boundary. It does not run
+		// conditional blocker analysis, but it still gets a complete descriptor.
+		return nil
 	}
 	blockers := map[string]bool{}
 	for id, pending := range p.writes {
@@ -229,7 +238,7 @@ func (p *prepared) events(revision model.Revision, changes []model.ChangeRecord)
 			return nil, nil, err
 		}
 		slot := ""
-		if isSlot(p.proposal.Meta.Method) {
+		if p.release == nil && isSlot(p.proposal.Meta.Method) {
 			slot = strings.TrimPrefix(p.proposal.Meta.Method, "bead.")
 		}
 		provenance := model.EventProvenance{Method: p.proposal.Meta.Method, Slot: slot, SetBy: cloneMap(pending.setBy), Cause: p.audit.context.Cause, Chain: p.audit.context.Chain}
@@ -252,6 +261,12 @@ func (p *prepared) events(revision model.Revision, changes []model.ChangeRecord)
 }
 
 func (p *prepared) ordinaryEvent(pending *pending, op model.OpKind) (model.DurableEventType, error) {
+	if p.release != nil {
+		if p.release.reclaim {
+			return model.EventBeadLeaseReclaimed, nil
+		}
+		return model.EventBeadReleased, nil
+	}
 	if statusChanged(pending) {
 		if event, ok := map[string]model.DurableEventType{"bead.claim": model.EventBeadClaimed, "bead.close": model.EventBeadClosed, "bead.fail": model.EventBeadFailed, "bead.cancel": model.EventBeadCanceled, "bead.reopen": model.EventBeadReopened, "bead.defer": model.EventBeadDeferred}[p.proposal.Meta.Method]; ok {
 			return event, nil

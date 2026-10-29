@@ -128,18 +128,11 @@ func (c *Client) Call(ctx context.Context, method string, params map[string]any,
 		if err != nil {
 			return result, err
 		}
-		var remote wire.Error
-		if err := wire.DecodeInto(raw, &remote); err != nil {
-			return result, fmt.Errorf("invalid RPC error: %w", err)
+		remote, err := decodeRemoteError(c.catalog, raw)
+		if err != nil {
+			return result, err
 		}
-		canonical := c.catalog.NewError(remote.Data.Code, "", nil)
-		if canonical.Data.Code != remote.Data.Code || canonical.Code != remote.Code || canonical.Data.Retryable != remote.Data.Retryable {
-			return result, fmt.Errorf("RPC error violates catalog")
-		}
-		if err := c.catalog.ValidateError(&remote); err != nil {
-			return result, fmt.Errorf("RPC error data violates contract: %w", err)
-		}
-		return result, &remote
+		return result, remote
 	}
 	result.JSON, err = json.Marshal(envelope["result"])
 	if err != nil {
@@ -149,4 +142,19 @@ func (c *Client) Call(ctx context.Context, method string, params map[string]any,
 		return result, fmt.Errorf("RPC result violates contract: %w", err)
 	}
 	return result, nil
+}
+
+func decodeRemoteError(catalog *wire.Catalog, raw []byte) (*wire.Error, error) {
+	var remote wire.Error
+	if err := wire.DecodeInto(raw, &remote); err != nil {
+		return nil, fmt.Errorf("invalid RPC error: %w", err)
+	}
+	canonical := catalog.NewError(remote.Data.Code, "", nil)
+	if canonical.Data.Code != remote.Data.Code || canonical.Code != remote.Code || canonical.Data.Retryable != remote.Data.Retryable {
+		return nil, fmt.Errorf("RPC error violates catalog")
+	}
+	if err := catalog.ValidateError(&remote); err != nil {
+		return nil, fmt.Errorf("RPC error data violates contract: %w", err)
+	}
+	return &remote, nil
 }

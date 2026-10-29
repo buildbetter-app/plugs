@@ -1,0 +1,36 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "collab",
+    srcs = glob(["*.go"], exclude = ["*_test.go"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/server/collab",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/model",
+        "//internal/core/service",
+        "//internal/server/rpc",
+    ],
+)
+
+go_test(
+    name = "collab_test",
+    srcs = glob(["*_test.go"]),
+    deps = [
+        ":collab",
+        "//internal/api/wire",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
