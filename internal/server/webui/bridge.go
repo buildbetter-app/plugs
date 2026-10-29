@@ -244,7 +244,7 @@ func checkBridgeProjects(values map[string]json.RawMessage, expected, location s
 		}
 		if key == "projects" {
 			var projects []string
-			if err := json.Unmarshal(raw, &projects); err != nil {
+			if err := json.Unmarshal(raw, &projects); err != nil || projects == nil {
 				return &BridgeError{Code: "scope_denied", Message: fmt.Sprintf("%s.%s must be a project list", location, key)}
 			}
 			for _, project := range projects {
@@ -253,21 +253,23 @@ func checkBridgeProjects(values map[string]json.RawMessage, expected, location s
 				}
 			}
 		}
-		var nested map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &nested); err == nil && nested != nil {
-			if err := checkBridgeProjects(nested, expected, location+"."+key); err != nil {
-				return err
-			}
+		if err := checkBridgeProjectValue(raw, expected, location+"."+key); err != nil {
+			return err
 		}
-		var list []json.RawMessage
-		if err := json.Unmarshal(raw, &list); err == nil {
-			for index, item := range list {
-				var object map[string]json.RawMessage
-				if err := json.Unmarshal(item, &object); err == nil && object != nil {
-					if err := checkBridgeProjects(object, expected, fmt.Sprintf("%s.%s[%d]", location, key, index)); err != nil {
-						return err
-					}
-				}
+	}
+	return nil
+}
+
+func checkBridgeProjectValue(raw json.RawMessage, expected, location string) error {
+	var nested map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &nested); err == nil && nested != nil {
+		return checkBridgeProjects(nested, expected, location)
+	}
+	var list []json.RawMessage
+	if err := json.Unmarshal(raw, &list); err == nil && list != nil {
+		for index, item := range list {
+			if err := checkBridgeProjectValue(item, expected, fmt.Sprintf("%s[%d]", location, index)); err != nil {
+				return err
 			}
 		}
 	}

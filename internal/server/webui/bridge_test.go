@@ -3,6 +3,7 @@ package webui_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -47,6 +48,37 @@ func TestBridgeAllowsOnlyGrantedProjectScopedCalls(t *testing.T) {
 	}
 	if _, err := pluginCall.Authorize([]byte(`{"jsonrpc":"2.0","id":2,"method":"plug_call","params":{"_meta":{"project":"web"}}}`)); err != nil {
 		t.Fatalf("explicit plug_call grant refused: %v", err)
+	}
+}
+
+func TestBridgeRefusesProjectEscapesAtEveryDepth(t *testing.T) {
+	bridge, err := webui.NewBridge(webui.BridgeGrant{Project: "web", Methods: []string{"bead.get"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, params := range map[string]string{
+		"top_level":         `{"_meta":{"project":"web"},"project":"other"}`,
+		"nested":            `{"_meta":{"project":"web"},"selector":{"project":"other"}}`,
+		"list":              `{"_meta":{"project":"web"},"operations":[{"project":"other"}]}`,
+		"nested_list":       `{"_meta":{"project":"web"},"operations":[[{"project":"other"}]]}`,
+		"project_list":      `{"_meta":{"project":"web"},"projects":["web","other"]}`,
+		"bad_project_list":  `{"_meta":{"project":"web"},"projects":"other"}`,
+		"null_project_list": `{"_meta":{"project":"web"},"projects":null}`,
+		"null_project":      `{"_meta":{"project":"web"},"project":null}`,
+		"number_project":    `{"_meta":{"project":"web"},"project":7}`,
+		"empty_project":     `{"_meta":{"project":"web"},"project":""}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			message := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"bead.get","params":%s}`, params)
+			_, err := bridge.Authorize([]byte(message))
+			var refusal *webui.BridgeError
+			if !errors.As(err, &refusal) || refusal.Code != "scope_denied" {
+				t.Fatalf("project escape accepted: err=%v", err)
+			}
+		})
+	}
+	if _, err := bridge.Authorize([]byte(`{"jsonrpc":"2.0","id":1,"method":"bead.get","params":{"_meta":{"project":"web"},"project":"web","projects":["web"],"selector":{"project":"web"},"operations":[[{"project":"web"}]]}}`)); err != nil {
+		t.Fatalf("same-project nested/list values were refused: %v", err)
 	}
 }
 

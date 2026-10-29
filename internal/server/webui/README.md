@@ -42,6 +42,11 @@ and credential/egress fields are refused; `tx.apply` and `plug_call` require an
 explicit grant by exact name. The host caps each frame at 256 KiB per message
 and 20 bridge calls per second.
 
+Before stamping metadata, the live browser bridge checks every explicit
+`project` and `projects` value recursively through objects and arrays. A
+different project or malformed project value returns `scope_denied` without
+sending an RPC request. Omitted project metadata is supplied by the host grant.
+
 The handler reuses anonymous `authn.AdmitHTTP` Host, Origin, peer and listener
 checks for static requests, on a clone with an internal RPC sentinel. Actual
 browser RPC calls carry `Plug-RPC: 1` and pass the normal transport admission.
@@ -104,6 +109,13 @@ loading, empty states, unavailable methods, cancellation/deadline propagation
 to a held real driver read, and refusal after actual lease release. It checks
 browser RPC methods are reads and the store contains only the four harness
 writes. No product read response is fabricated.
+
+The same browser fixture creates two opaque frames and uses their Chrome
+debugging contexts to send real `postMessage` calls, preserving all CSP and
+sandbox settings. Cross-project and malformed-scope messages stop at the live
+bridge; calls with matching or omitted metadata reach real RPC and return a
+stored row, while the sibling frame cannot borrow the other frame's method
+grant. Responses and the RPC boundary evidence are recorded in `bridge-scope.json`.
 
 Standalone desktop/mobile/state screenshots and actual request/response logs
 are emitted to the Bazel test's `test.outputs/` directory (or undeclared-output

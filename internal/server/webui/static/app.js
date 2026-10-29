@@ -94,6 +94,19 @@
     if (Array.isArray(value)) return value.some(bridgeFieldDenied);
     return Object.entries(value).some(([key, child]) => bridgeDeniedFields.has(key.toLowerCase()) || bridgeFieldDenied(child));
   }
+  // A frame grant is the authority for every project-bearing value in a call.
+  // Check the caller's complete structured-clone payload before adding the
+  // host-owned _meta so top-level, nested, and list operations cannot select a
+  // different project through a method binding.
+  function bridgeProjectDenied(value, expected) {
+    if (Array.isArray(value)) return value.some((child) => bridgeProjectDenied(child, expected));
+    if (!value || typeof value !== "object") return false;
+    return Object.entries(value).some(([key, child]) => {
+      if (key === "project") return typeof child !== "string" || child !== expected;
+      if (key === "projects") return !Array.isArray(child) || Array.from(child).some((project) => typeof project !== "string" || project !== expected);
+      return bridgeProjectDenied(child, expected);
+    });
+  }
   function bridgeResponse(source, response) { source.postMessage(response, "*"); }
   function bridgeFailure(source, id, code, detail) {
     bridgeResponse(source, { jsonrpc: "2.0", id: id == null ? null : id, error: { code: -32000, message: detail, data: { code } } });
@@ -123,6 +136,9 @@
       const params = request.params == null ? {} : request.params;
       if (!params || typeof params !== "object" || Array.isArray(params) || bridgeFieldDenied(params)) {
         bridgeFailure(event.source, request.id, "bridge_field_denied", "Bridge params contain a credential or egress field."); return;
+      }
+      if (bridgeProjectDenied(params, project)) {
+        bridgeFailure(event.source, request.id, "scope_denied", "Bridge params are outside the granted project."); return;
       }
       const forwarded = Object.assign({}, params, { _meta: { project } });
       try {
