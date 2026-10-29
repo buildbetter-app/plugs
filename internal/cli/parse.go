@@ -27,6 +27,10 @@ Commands:
   update ID [--title TITLE] [--fields JSON] [--expect REVISION]
   comment ID --body TEXT [--expect REVISION]
   close ID [--reason TEXT] [--expect REVISION]
+  reopen ID [--reason TEXT] [--expect REVISION]
+  defer ID [--reason TEXT] [--expect REVISION]
+  cancel ID [--reason TEXT] [--expect REVISION]
+  fail ID [--reason TEXT] [--expect REVISION]
   history --as-of REVISION [--id ID] [--limit N] [--cursor TOKEN]
   session                 Read one JSON argv array per line from stdin.
 
@@ -97,7 +101,7 @@ func ParseCommand(args []string) (Command, error) {
 		return Command{}, fmt.Errorf("command is required")
 	}
 	name := args[0]
-	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "history": true}
+	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "reopen": true, "defer": true, "cancel": true, "fail": true, "history": true}
 	if !allowed[name] {
 		return Command{}, fmt.Errorf("unsupported command %q", name)
 	}
@@ -129,13 +133,16 @@ func ParseCommand(args []string) (Command, error) {
 	case "close":
 		add(&reason, "reason")
 		add(&expect, "expect")
+	case "reopen", "defer", "cancel", "fail":
+		add(&reason, "reason")
+		add(&expect, "expect")
 	case "history":
 		add(&asOf, "as-of")
 		add(&id, "id")
 		add(&cursor, "cursor")
 		fs.IntVar(&limit, "limit", 1000, "limit")
 	}
-	write := name == "create" || name == "update" || name == "claim" || name == "comment" || name == "close"
+	write := name == "create" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail"
 	if write {
 		add(&key, "idempotency-key")
 	}
@@ -148,7 +155,7 @@ func ParseCommand(args []string) (Command, error) {
 	}
 	p := map[string]any{}
 	c := Command{Method: "bead." + name, Params: p, Key: key}
-	needID := name == "get" || name == "update" || name == "claim" || name == "comment" || name == "close"
+	needID := name == "get" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail"
 	if needID {
 		if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
 			return c, fmt.Errorf("%s requires exactly one bead ID", name)
@@ -189,7 +196,7 @@ func ParseCommand(args []string) (Command, error) {
 		}
 		p["body"] = body
 	}
-	if name == "close" && seen["reason"] {
+	if (name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail") && seen["reason"] {
 		p["reason"] = reason
 	}
 	if seen["expect"] {
