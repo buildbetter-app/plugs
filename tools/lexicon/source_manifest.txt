@@ -382,6 +382,16 @@ internal/server/ontologyrpc/BUILD.bazel
 internal/server/ontologyrpc/README.md
 internal/server/ontologyrpc/bind.go
 internal/server/ontologyrpc/integration_test.go
+internal/server/pluginbuild/BUILD.bazel
+internal/server/pluginbuild/README.md
+internal/server/pluginbuild/build.go
+internal/server/pluginbuild/fixture/BUILD.bazel
+internal/server/pluginbuild/fixture/go.mod.template
+internal/server/pluginbuild/fixture/plug-plugin.json
+internal/server/pluginbuild/fixture/plugin.go
+internal/server/pluginbuild/process_other.go
+internal/server/pluginbuild/process_unix.go
+internal/server/pluginbuild/source_test.go
 internal/server/pluginhost/BUILD.bazel
 internal/server/pluginhost/adapters.go
 internal/server/pluginhost/call.go
