@@ -3,8 +3,27 @@
 This is the closed wire error catalog for Plug JSON-RPC 2.0. Each error has a
 stable machine code, a JSON-RPC integer, retryability metadata, an audience
 classification, and a flag indicating whether it may be returned as a
-`result.warnings` entry. The JSON schemas for the common error data envelope
-and each named error live in [`openrpc.json`](openrpc.json).
+`result.warnings` entry. The JSON schemas for the common error data envelope,
+the closed `ErrorCode` enum, and each named error live in
+[`openrpc.json`](openrpc.json). A payload with a code outside that enum is
+invalid, and a warning must use the closed warning-capable subset;
+implementations must not pass through an unregistered string. Each named
+JSON-RPC error component additionally pins `data.code` to its catalog row, so
+a `Forbidden` payload cannot carry a different registered code.
+
+This PR is a **bounded contract snapshot**. It no longer treats the OpenRPC
+document as evidence that generated the Markdown table. Independent source
+hashes, the method-selection rule, the allocation owner, the bounded method
+registry artifact, and the reproduction commands are recorded in
+`openrpc.json` under `x-source-evidence` and `x-method-registry`. The artifact
+must validate the method inventory and descriptor parity before implementation
+PRs consume it; a future generator may replace it only with equivalent checks.
+Decisions #17/#18 select fixed project/team permissions and the bounded X1–X9
+package; controller v2 authorizes its implementation. This snapshot does not
+yet describe the complete X1–X9 contract. Its recorded source hashes retain
+the historical inputs rather than claiming parity with later design edits.
+`x-contract-gaps` also records C7's unrestricted restore-manifest parameter,
+so typed restore consumers remain unsupported.
 
 A committed write returns warnings inside `result.warnings`; it never returns
 both a committed result and a JSON-RPC `error`. The `audience` value guides
@@ -79,8 +98,12 @@ for implementation and telemetry mapping.
 | `stale_snapshot` | `-32055` | yes | `internal` | no |
 
 The protocol range is the standard JSON-RPC allocation (`-32700` through
-`-32603`). Plug application errors use `-32000` through `-32055`; the
-allocation is contiguous and must remain stable once clients depend on it.
+`-32603`). Plug application errors use `-32000` through `-32055`. The bounded
+contract registry owns this range: values are append-only, never renumbered
+after publication, and new codes use the next unused value. The
+`x-error-catalog` array and the `ErrorCode` enum are the machine-readable
+allocation for this snapshot; any future registry or generator must preserve
+every existing row.
 
 ## Runtime mapping
 
@@ -96,3 +119,171 @@ allocation is contiguous and must remain stable once clients depend on it.
 Error detail members are method- or code-specific and may be carried in the
 open `details` object. The common envelope requires `code` and `retryable`
 and permits `retryAfterMs`, `hint`, `traceId`, and `details`.
+
+## Driver-to-wire mappings
+
+Driver sentinels never cross the JSON-RPC boundary as Go errors. The service
+maps them to these closed wire errors and preserves the typed detail shown
+below:
+
+| Driver error | Wire error | Typed `details` | Retry/handling rule |
+| --- | --- | --- | --- |
+| `ErrFenced` | `lease_not_held` (`-32021`) | `{expectedEpoch, observedEpoch}` | Retry only after acquiring a new active lease; the stale writer is never replayed. |
+| `ErrTruncated{Floor}` | `cursor_expired` (`-32019`) | `{floor}` | Reopen from a current snapshot or the returned gap cursor. |
+| `ErrIncarnationChanged{From, To}` | `incarnation_changed` (`-32024`) | `{fromIncarnation, toIncarnation}` | Discard the old cursor/view and reopen under the new incarnation. |
+| `ErrIndeterminate{IdempotencyKey}` | `stale_snapshot` (`-32055`, internal) | `{idempotencyKey, outcome: "unknown"}` | Resolve the commit by idempotency key before deciding whether a retry is safe; never duplicate the write. |
+
+The named OpenRPC error components for these wire codes reference
+`FencedDetails`, `TruncatedDetails`, `IncarnationChangedDetails`, and
+`IndeterminateDetails`, respectively. `stale_snapshot` remains an internal
+catalog entry even though its mapping is required for driver conformance.
+
+## Bounded registry validation
+
+`openrpc.json` contains a separately stored, human-maintained
+`x-method-registry` artifact with the complete method inventory, every
+parameter/result schema declaration, error attachments and descriptor fields.
+Its name and descriptor digests bind the stored artifact. The validator below
+reads that artifact independently; it never constructs its expected registry
+from `methods`. Deleting a method, dropping a descriptor or changing an error
+attachment on either side must fail. The separate wire inventory also checks
+the operation/event/error names against the schemas, Go and Markdown. The
+validator rejects duplicate JSON members and checks every named error's code
+and number plus every Markdown row's retryability, audience and warning flag.
+It also requires decision #14's `session.open` and `session.close`, even when
+both inventories and their digests are changed together.
+
+Run from this directory. The optional second argument checks the recorded
+source hashes against a checkout of those historical inputs; the live design
+checkout has since changed. Decision #19 and controller v2 select exact-head
+local Bazel checks plus independent review as the current merge gate. The
+historical authorization latency failure remains a failure; this contract
+check does not establish runtime or performance acceptance.
+
+```sh
+python3 - openrpc.json <<'PY'
+import hashlib, json, pathlib, re, sys
+
+def unique_members(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise SystemExit("duplicate JSON member: " + key)
+        result[key] = value
+    return result
+
+path = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "openrpc.json")
+doc = json.loads(path.read_text(), object_pairs_hook=unique_members)
+registry = doc["x-method-registry"]
+schemas = doc["components"]["schemas"]
+
+def require(condition, message):
+    if not condition:
+        raise SystemExit(message)
+
+def digest(value):
+    raw = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
+    return hashlib.sha256(raw).hexdigest()
+
+def pointer(ref):
+    require(ref.startswith("#/"), "external reference: " + ref)
+    value = doc
+    for part in ref[2:].split("/"):
+        key = part.replace("~1", "/").replace("~0", "~")
+        value = value[int(key)] if isinstance(value, list) else value[key]
+    return value
+
+def check_refs(value):
+    if isinstance(value, dict):
+        if "$ref" in value:
+            pointer(value["$ref"])
+        for child in value.values():
+            check_refs(child)
+    elif isinstance(value, list):
+        for child in value:
+            check_refs(child)
+
+entries = registry["methods"]
+names = [entry["name"] for entry in entries]
+methods = {method["name"]: method for method in doc["methods"]}
+require({"session.open", "session.close"} <= set(methods), "decision #14 requires session.open and session.close")
+require(len(names) == len(set(names)) == registry["methodCount"], "registry names/count")
+require(len(doc["methods"]) == len(methods) == len(entries), "method names/count")
+require(set(names) == set(methods), "missing or unexpected method")
+require(hashlib.sha256(("\n".join(names) + "\n").encode()).hexdigest() == registry["nameSha256"], "inventory hash")
+require(digest(entries) == registry["descriptorSha256"], "descriptor hash")
+for entry in entries:
+    method = methods[entry["name"]]
+    require(set(entry) == set(registry["requiredDescriptorFields"]), "descriptor fields")
+    params = [{"name": p["name"], "required": p.get("required", False), "schema": p["schema"]} for p in method["params"]]
+    expected = {"name": method["name"], "params": params, "resultSchema": method["result"]["schema"], "errors": [e["$ref"] for e in method.get("errors", [])]}
+    for key, extension in [("effect", "x-effect"), ("permission", "x-permission"), ("idempotency", "x-idempotency"), ("stability", "x-stability"), ("agentCore", "x-agent-core")]:
+        expected[key] = method[extension]
+    require(entry == expected, "descriptor mismatch: " + entry["name"])
+    for key in ("effect", "permission", "idempotency"):
+        require(entry[key] in doc["x-method-descriptor"][key], "unknown " + key)
+    require(entry["effect"] in registry["validation"]["closedEffects"], "registry effect")
+    require(entry["stability"] and type(entry["agentCore"]) is bool, "stability/agentCore")
+    require(len(params) == len({p["name"] for p in params}), "duplicate parameter")
+    require(all(type(p["required"]) is bool and isinstance(p["schema"], dict) for p in params), "parameter schema")
+    require(isinstance(entry["resultSchema"], dict), "result schema")
+    require(len(entry["errors"]) == len(set(entry["errors"])), "duplicate error")
+    require(entry["errors"] or entry["effect"] == "event", "missing errors")
+    require(all(e.startswith("#/components/errors/") for e in entry["errors"]), "error declaration")
+    if entry["effect"] in ("write", "restore"):
+        require(all("#/components/errors/" + e in entry["errors"] for e in ("LeaseNotHeld", "LeaseExpired")), "lease mapping")
+check_refs(doc)
+wire = registry["wireInventory"]
+require(wire["durableEventTypes"] == schemas["DurableEvent"]["properties"]["type"]["enum"], "durable inventory")
+require(wire["controlEventTypes"] == [v["properties"]["type"]["const"] for v in schemas["ControlEvent"]["oneOf"]], "control inventory")
+for key, schema in [("errorCodes", "ErrorCode"), ("warningCodes", "WarningCode")]:
+    require(wire[key] == schemas[schema]["enum"], schema + " inventory")
+require(wire["errorCodes"] == [r["code"] for r in doc["x-error-catalog"]], "error allocation")
+require(wire["warningCodes"] == [r["code"] for r in doc["x-error-catalog"] if r["warningCapable"]], "warning allocation")
+catalog = {row["code"]: row for row in doc["x-error-catalog"]}
+require(len(catalog) == len(doc["x-error-catalog"]), "duplicate catalog error")
+for code, row in catalog.items():
+    require(type(row["jsonRpc"]) is int, "catalog error number: " + code)
+    require(type(row["retryable"]) is bool and type(row["warningCapable"]) is bool, "catalog error flags: " + code)
+    require(row["audience"] in ("client", "operator", "plugin-host", "internal"), "catalog error audience: " + code)
+require(len({row["jsonRpc"] for row in catalog.values()}) == len(catalog), "duplicate error number")
+components = doc["components"]["errors"]
+require(len(components) == len(catalog), "error component count")
+component_codes = []
+for name, component in components.items():
+    data = component["data"]
+    code = data["properties"]["code"]["const"]
+    require(code in catalog, "unknown component error: " + name)
+    require(name.lower() == code.replace("_", ""), "error component name: " + name)
+    require(type(component["code"]) is int and component["code"] == catalog[code]["jsonRpc"], "error number: " + name)
+    require({"code", "retryable"} <= set(data["required"]), "error data members: " + name)
+    component_codes.append(code)
+require(len(set(component_codes)) == len(catalog), "duplicate component error")
+ops = schemas["ChangeSet"]["properties"]["ops"]["items"]["oneOf"]
+kinds = []
+for variant in ops:
+    kind = pointer(variant["$ref"])["properties"]["kind"]
+    kinds.extend(kind.get("enum", [kind.get("const")]))
+require(set(kinds) == set(wire["operationKinds"]), "operation inventory")
+go = (path.parent / "go-sketches.md").read_text()
+for typ, key in [("OpKind", "operationKinds"), ("DurableEventType", "durableEventTypes"), ("ControlEventType", "controlEventTypes")]:
+    require(set(re.findall(r'\b\w+\s+' + typ + r'\s*=\s*"([^"]+)"', go)) == set(wire[key]), "Go " + typ)
+for function, key in [("validErrorCode", "errorCodes"), ("validWarningCode", "warningCodes")]:
+    body = go.split("func " + function + "(", 1)[1].split("\n}", 1)[0]
+    require(set(re.findall(r'"([^"]+)"', body)) == set(wire[key]), "Go " + function)
+error_rows = []
+for line in (path.parent / "errors.md").read_text().splitlines():
+    if re.match(r'^\| `[^`]+` \| `-\d+`', line):
+        code, number, retryable, audience, warning = [part.strip().strip("`") for part in line.split("|")[1:-1]]
+        require(retryable in ("yes", "no") and warning in ("yes", "no"), "Markdown error flags")
+        error_rows.append({"code": code, "jsonRpc": int(number), "retryable": retryable == "yes", "audience": audience, "warningCapable": warning == "yes"})
+require(error_rows == doc["x-error-catalog"], "Markdown error metadata")
+event_rows = re.findall(r'^\| `([^`]+)` \|', (path.parent / "events.md").read_text(), re.M)
+require(set(event_rows) == set(wire["durableEventTypes"] + wire["controlEventTypes"]), "Markdown events")
+if len(sys.argv) > 2:
+    root = pathlib.Path(sys.argv[2])
+    for item in doc["x-source-evidence"]["inputs"]:
+        require(hashlib.sha256((root / item["path"]).read_bytes()).hexdigest() == item["sha256"], "source hash: " + item["path"])
+print(f"PASS: {len(entries)} methods; descriptor, wire, Go, Markdown and local reference parity")
+PY
+```
