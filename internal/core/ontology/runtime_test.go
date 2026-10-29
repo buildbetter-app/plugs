@@ -412,3 +412,65 @@ func TestPerTypeWorkflowDoesNotBorrowAnotherTypesStatuses(t *testing.T) {
 		t.Fatal("cross-type status was accepted")
 	}
 }
+
+func TestCloseSettlementKeepsSchemaGuardsAndStrictOrdinaryTransitions(t *testing.T) {
+	e := Default()
+	target, _ := e.SlotStatus("issue", Close)
+	before := BeadState{ID: "pl-settled", Project: "local", Type: "issue", Status: target, Fields: map[string]any{"title": "Closed"}}
+	observed := true
+	facts := GuardFacts{NoOpenChildren: &observed, NoOpenBlockers: &observed}
+	if got := ValidateCloseSettlement(e, &before, &before, facts); len(got) != 0 {
+		t.Fatal("valid close settlement refused", got)
+	}
+	if got := Validate(e, &before, &before, "bead.close", facts); len(got) == 0 {
+		t.Fatal("ordinary same-slot transition was weakened")
+	}
+	for _, name := range []string{"missing-observation", "blocker", "template", "schema", "status-touch", "different-workflow", "different-status", "not-closed"} {
+		t.Run(name, func(t *testing.T) {
+			after, _ := copyState(before)
+			prior, _ := copyState(before)
+			f := facts
+			code := "ontology_guard_failed"
+			switch name {
+			case "missing-observation":
+				f.NoOpenChildren = nil
+			case "blocker":
+				blocked := false
+				f.NoOpenBlockers = &blocked
+			case "template":
+				after.Fields["template"] = true
+			case "schema":
+				after.Fields["title"] = false
+				code = "invalid_params"
+			case "status-touch":
+				f.Touched = []string{"fields.status"}
+				code = "ontology_use_slot_verb"
+			case "different-workflow":
+				after.Project = "other"
+				code = "invalid_params"
+			case "different-status":
+				after.Status, _ = e.InitialStatus("issue")
+				code = "invalid_params"
+			case "not-closed":
+				prior.Status, _ = e.InitialStatus("issue")
+				code = "invalid_params"
+			}
+			got := ValidateCloseSettlement(e, &prior, &after, f)
+			if len(got) == 0 || string(got[0].Code) != code {
+				t.Fatalf("wanted %s, got %+v", code, got)
+			}
+		})
+	}
+	doc := DefaultDocument()
+	doc.Types["issue"].Fields["severity"] = Field{Type: "string", Owner: "triage"}
+	owned := compileForTest(t, doc, PluginCatalog{"triage": true})
+	after, _ := copyState(before)
+	after.Fields["severity"] = "high"
+	if got := ValidateCloseSettlement(owned, &before, &after, facts); len(got) == 0 || got[0].Code != "field_owned" {
+		t.Fatal("settlement bypassed field owner", got)
+	}
+	facts.SetBy = map[string]string{"fields.severity": "triage"}
+	if got := ValidateCloseSettlement(owned, &before, &after, facts); len(got) != 0 {
+		t.Fatal("valid owned field update refused", got)
+	}
+}
