@@ -92,6 +92,35 @@ func (f authorizerFunc) Authorize(ctx context.Context, s port.AuthorizationStage
 	return f(ctx, s, p, r)
 }
 
+func TestPostPrincipalInputsAreIsolated(t *testing.T) {
+	h := setup(t)
+	mutated := make(chan struct{})
+	w := h.writer(WithPostSubscribers(
+		PostBinding{ID: "mutates-own-input", Subscriber: postFunc(func(_ context.Context, change port.CommittedChange, _ port.SnapshotReader) error {
+			change.Principal.Caveats["label"] = "changed"
+			change.Principal.Sponsor.Caveats["label"] = "changed"
+			close(mutated)
+			return nil
+		})},
+		PostBinding{ID: "observes-own-input", Subscriber: postFunc(func(ctx context.Context, change port.CommittedChange, _ port.SnapshotReader) error {
+			select {
+			case <-mutated:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			if change.Principal.Caveats["label"] != "original" || change.Principal.Sponsor.Caveats["label"] != "original" {
+				return errors.New("another post subscriber mutated the principal")
+			}
+			return nil
+		})},
+	))
+	principal := model.PrincipalRef{Kind: "agent", ID: "test-agent", Caveats: map[string]any{"label": "original"}, Sponsor: &model.PrincipalRef{Kind: "user", ID: "test-user", Caveats: map[string]any{"label": "original"}}}
+	result, err := w.Apply(context.Background(), principal, model.ChangeSet{Ops: []model.Op{create("")}}, meta(1))
+	if err != nil || len(result.Warnings) != 0 || principal.Caveats["label"] != "original" || principal.Sponsor.Caveats["label"] != "original" {
+		t.Fatalf("post isolation result=%+v principal=%+v err=%v", result, principal, err)
+	}
+}
+
 func TestReplayReauthorizesAndDifferentParamsRefuse(t *testing.T) {
 	h := setup(t)
 	cs := model.ChangeSet{Ops: []model.Op{create("new")}}
