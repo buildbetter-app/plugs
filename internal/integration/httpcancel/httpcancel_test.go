@@ -462,7 +462,7 @@ func TestHTTPDeadlineBeforeCommitLeavesBothSQLStoresUnchanged(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
 			params := map[string]any{"type": "issue", "fields": map[string]any{"title": "must not publish"}}
 			started := callAsync(c, ctx, "bead.create", params)
@@ -476,8 +476,8 @@ func TestHTTPDeadlineBeforeCommitLeavesBothSQLStoresUnchanged(t *testing.T) {
 			// later explicit retry even though this call has no response.
 			<-ctx.Done()
 			outcome := <-started
-			if outcome.err == nil || outcome.result.IdempotencyKey == "" {
-				t.Fatalf("deadline call=%+v; expected cancellation and generated key", outcome)
+			if !errors.Is(outcome.err, context.DeadlineExceeded) || outcome.result.IdempotencyKey == "" {
+				t.Fatalf("deadline call=%+v; expected client deadline cancellation and generated key", outcome)
 			}
 			select {
 			case <-pre.done:
