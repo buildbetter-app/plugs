@@ -112,7 +112,7 @@ func maskChange(change pluginapi.Change, grants []string) (pluginapi.Change, err
 		return change, err
 	}
 	projection := map[string]any{"kind": change.Op.Kind}
-	for _, key := range []string{"target", "from", "to", "key"} {
+	for _, key := range []string{"target"} {
 		if value, ok := op[key]; ok {
 			projection[key] = value
 		}

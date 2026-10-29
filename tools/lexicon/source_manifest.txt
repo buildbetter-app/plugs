@@ -148,6 +148,7 @@ pluginapi/types_test.go
 sdk/go/BUILD.bazel
 sdk/go/conformance/BUILD.bazel
 sdk/go/conformance/fixture.go
+sdk/go/conformance/manifest.json
 sdk/go/doc.go
 sdk/go/native.go
 tools/lexicon/BUILD.bazel

@@ -4,6 +4,7 @@ package conformance
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"strings"
 
@@ -17,16 +18,21 @@ type Options struct {
 	After     func(context.Context, pluginapi.Host, pluginapi.CommittedChange, pluginapi.SnapshotReader) error
 }
 
+//go:embed manifest.json
+var manifestJSON []byte
+
+func fixtureManifest() pluginapi.PluginManifest {
+	manifest, err := pluginapi.DecodeManifest(manifestJSON)
+	if err != nil {
+		panic(err)
+	}
+	return manifest.Plugins[0]
+}
+
 func Native(options Options) sdk.Native {
 	return sdk.Native{
 		Instance: "default",
-		Manifest: pluginapi.PluginManifest{ID: "app.example.fixture", Alias: "fixture", Version: "1.0.0", PluginAPI: pluginapi.APIVersion, Runtime: "native",
-			Provides: []pluginapi.Provision{
-				{Kind: "subscriber", Name: "normalize", Phases: []pluginapi.Phase{pluginapi.PhaseMutate}, Reads: []string{"fields.title"}, Owns: []string{"fields.normalized"}, MaxPointReads: 2, MaxQueries: 1},
-				{Kind: "subscriber", Name: "check", Phases: []pluginapi.Phase{pluginapi.PhaseValidate}, Reads: []string{"fields.normalized"}},
-				{Kind: "subscriber", Name: "observe", Phases: []pluginapi.Phase{pluginapi.PhasePost}, Reads: []string{"fields.normalized"}},
-				{Kind: "methods", Prefix: "x.fixture", Methods: map[string]pluginapi.MethodGrant{"echo": {Permission: "read", Resource: "params.id"}}},
-			}, Requires: pluginapi.Requirements{Methods: []string{"bead.get", "bead.ready", "tx.apply"}}},
+		Manifest: fixtureManifest(),
 		New: func(host pluginapi.Host) (sdk.Registration, error) {
 			return sdk.Registration{
 				Methods: []sdk.Method{{Descriptor: pluginapi.Method{Name: "x.fixture.echo", Params: map[string]any{"type": "object"}, Result: map[string]any{"type": "object"}, Permission: "read", Resource: func(params any) []pluginapi.Ref {

@@ -115,6 +115,9 @@ func New(config Config) (*Host, error) {
 	}
 	seen := map[string]bool{}
 	for _, binding := range config.Bindings {
+		if binding.Project != "" || binding.Type != "" {
+			return nil, failure(ErrManifest, "scoped bindings require ontology routing, which this host does not yet implement")
+		}
 		if !pluginapi.ValidName(binding.ID) || seen[binding.ID] {
 			return nil, failure(ErrManifest, "binding id must be unique")
 		}
@@ -327,7 +330,7 @@ func order(bindings []*bound) ([]*bound, error) {
 	}
 	sort.Slice(others, func(i, j int) bool {
 		if others[i].Phase != others[j].Phase {
-			return others[i].Phase < others[j].Phase
+			return others[i].Phase == pluginapi.PhaseValidate
 		}
 		return others[i].ID < others[j].ID
 	})

@@ -22,10 +22,17 @@ type invocation struct {
 func (i *instance) run(ctx context.Context, phase pluginapi.Phase, timeout time.Duration, reader pluginapi.SnapshotReader, fn func(context.Context) error) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
 	case i.gate <- struct{}{}:
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		<-i.gate
+		return err
 	}
 	if scoped, ok := reader.(*scopedReader); ok {
 		scoped.ctx = ctx

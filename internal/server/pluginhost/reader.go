@@ -96,7 +96,9 @@ func (r *scopedReader) Beads(ctx context.Context, refs []pluginapi.Ref) ([]plugi
 		if err := decode(record.Body, &fields); err != nil {
 			return nil, err
 		}
-		out[j] = pluginapi.View{ID: record.Ref.ID, Fields: fields}
+		typ, _ := fields["type"].(string)
+		values, _ := fields["fields"].(map[string]any)
+		out[j] = pluginapi.View{ID: record.Ref.ID, Type: typ, Fields: values}
 	}
 	return out, nil
 }

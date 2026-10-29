@@ -212,7 +212,7 @@ func TestUndeclaredPatchAndMethodRefused(t *testing.T) {
 }
 
 func TestBindingLimitsAndSnapshotRefusal(t *testing.T) {
-	for _, change := range []func(*Binding){func(b *Binding) { b.Reads = []string{"fields.private"} }, func(b *Binding) { b.Owns = []string{"fields.private"} }, func(b *Binding) { b.MaxPointReads = 3 }, func(b *Binding) { b.MaxQueries = 2 }, func(b *Binding) { b.Timeout = 2 * time.Second }} {
+	for _, change := range []func(*Binding){func(b *Binding) { b.Reads = []string{"fields.private"} }, func(b *Binding) { b.Owns = []string{"fields.private"} }, func(b *Binding) { b.MaxPointReads = 3 }, func(b *Binding) { b.MaxQueries = 2 }, func(b *Binding) { b.Timeout = 2 * time.Second }, func(b *Binding) { b.Project = "unrouted" }} {
 		bindings := fixtureBindings()
 		change(&bindings[0])
 		if _, err := New(Config{Natives: []sdk.Native{conformance.Native(conformance.Options{})}, Bindings: bindings}); code(err) != ErrManifest {
@@ -229,6 +229,21 @@ func TestBindingLimitsAndSnapshotRefusal(t *testing.T) {
 				t.Fatalf("wrong snapshot accepted: %v", err)
 			}
 		}
+	}
+}
+
+func TestMaskHidesUndeclaredRelationshipPayload(t *testing.T) {
+	change := pluginapi.Change{Resource: pluginapi.ResourceRef{Kind: "bead", Ref: pluginapi.RefByID("pl-a", "")}, Op: pluginapi.Op{Kind: "link", Payload: json.RawMessage(`{"kind":"link","from":{"id":"pl-a"},"to":{"id":"PRIVATE-RELATED-ID"},"linkKind":"blocks"}`)}, After: json.RawMessage(`{"fields":{"title":"hello","private":"PRIVATE-FIELD"}}`)}
+	masked, err := maskChange(change, []string{"fields.title"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(masked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "PRIVATE-") {
+		t.Fatalf("relationship payload leaked undeclared data: %s", data)
 	}
 }
 
