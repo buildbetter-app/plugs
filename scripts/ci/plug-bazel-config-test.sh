@@ -38,15 +38,19 @@ required_workflow = {
     "--test_timeout=900",
     "--remote_cache=",
     "--remote_executor=",
-    "PLUG_BAZEL_EVIDENCE_DIR: ${{ github.workspace }}/.plug-bazel-evidence",
-    "PLUG_BAZEL_TARGETS_DIR: ${{ github.workspace }}/.plug-bazel-targets",
-    "PLUG_BAZEL_REPOSITORY_CACHE: ${{ github.workspace }}/.plug-bazel-repository-cache",
+    "PLUG_BAZEL_EVIDENCE_DIR=$RUNNER_TEMP/plug-bazel-evidence",
+    "PLUG_BAZEL_TARGETS_DIR=$RUNNER_TEMP/plug-bazel-targets",
+    "PLUG_BAZEL_REPOSITORY_CACHE=$RUNNER_TEMP/plug-bazel-repository-cache",
+    'export PLUG_BAZEL_EVIDENCE_DIR="$RUNNER_TEMP/plug-bazel-evidence"',
+    'export PLUG_BAZEL_TARGETS_DIR="$RUNNER_TEMP/plug-bazel-targets"',
+    'export PLUG_BAZEL_REPOSITORY_CACHE="$RUNNER_TEMP/plug-bazel-repository-cache"',
+    '>> "$GITHUB_ENV"',
 }
 missing = sorted(fragment for fragment in required_workflow if fragment not in workflow)
 if missing:
     raise SystemExit("config: workflow is missing: " + ", ".join(missing))
-if "runner.temp" in workflow:
-    raise SystemExit("config: runner.temp is unavailable in the job-level environment")
+if ".plug-bazel-evidence" in workflow or ".plug-bazel-targets" in workflow or ".plug-bazel-repository-cache" in workflow:
+    raise SystemExit("config: CI runtime paths must stay outside the checked-out source tree")
 
 def encoded(values):
     return "".join(chr(value) for value in values)
