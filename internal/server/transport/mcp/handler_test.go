@@ -1,10 +1,14 @@
 package mcp_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -90,9 +94,13 @@ func callHandler(t *testing.T, handler *mcp.Handler, body string) (int, []byte) 
 }
 
 func callHandlerWithHeaders(t *testing.T, handler *mcp.Handler, body string, headers map[string]string) (int, []byte) {
+	return callHandlerAt(t, handler, body, headers, "127.0.0.1:31000")
+}
+
+func callHandlerAt(t *testing.T, handler *mcp.Handler, body string, headers map[string]string, remote string) (int, []byte) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "http://localhost/mcp", strings.NewReader(body))
-	req.RemoteAddr = "127.0.0.1:31000"
+	req.RemoteAddr = remote
 	req.Header.Set("Plug-RPC", "1")
 	req.Header.Set("Content-Type", "application/json")
 	for key, value := range headers {
@@ -101,6 +109,21 @@ func callHandlerWithHeaders(t *testing.T, handler *mcp.Handler, body string, hea
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 	return recorder.Code, recorder.Body.Bytes()
+}
+
+func initializeSession(t *testing.T, handler *mcp.Handler) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}`))
+	req.RemoteAddr = "127.0.0.1:31000"
+	req.Header.Set("Plug-RPC", "1")
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	sessionID := response.Header().Get("MCP-Session-Id")
+	if response.Code != http.StatusOK || sessionID == "" {
+		t.Fatalf("initialize status=%d session=%q body=%s", response.Code, sessionID, response.Body.Bytes())
+	}
+	return sessionID
 }
 
 func decode(t *testing.T, body []byte) map[string]any {
@@ -201,6 +224,46 @@ func TestMCPCanonicalResultsWarningsAndErrors(t *testing.T) {
 	}
 }
 
+func TestMCPInputSchemasAreSelfContained(t *testing.T) {
+	f := newFixture(t)
+	_, body := call(t, f, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	tools := decode(t, body)["result"].(map[string]any)["tools"].([]any)
+	for _, entry := range tools {
+		tool := entry.(map[string]any)
+		root := tool["inputSchema"].(map[string]any)
+		var check func(any)
+		check = func(value any) {
+			switch value := value.(type) {
+			case map[string]any:
+				if ref, ok := value["$ref"].(string); ok {
+					if !strings.HasPrefix(ref, "#/") {
+						t.Fatalf("tool %s requires an external schema: %s", tool["name"], ref)
+					}
+					var target any = root
+					for _, part := range strings.Split(ref[2:], "/") {
+						object, ok := target.(map[string]any)
+						if !ok {
+							t.Fatalf("tool %s has a broken schema pointer: %s", tool["name"], ref)
+						}
+						target = object[strings.ReplaceAll(strings.ReplaceAll(part, "~1", "/"), "~0", "~")]
+					}
+					if target == nil {
+						t.Fatalf("tool %s has an unresolved schema: %s", tool["name"], ref)
+					}
+				}
+				for _, nested := range value {
+					check(nested)
+				}
+			case []any:
+				for _, nested := range value {
+					check(nested)
+				}
+			}
+		}
+		check(root)
+	}
+}
+
 func TestMCPRejectsMalformedAndUnsupportedInvocations(t *testing.T) {
 	f := newFixture(t)
 	status, body := call(t, f, `{`)
@@ -250,7 +313,7 @@ func TestMCPUsesCanonicalBytesForDirectComparison(t *testing.T) {
 func TestMCPBatchesRequestsAndAcceptsNotificationsWith202(t *testing.T) {
 	f := newFixture(t)
 	status, body := call(t, f, `[`+
-		`{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"batch","version":"1"}}},`+
+		`{"jsonrpc":"2.0","id":"write","method":"tools/call","params":{"name":"bead_create","arguments":{"type":"issue","fields":{"title":"batch"}}}},`+
 		`{"jsonrpc":"2.0","id":"ping","method":"ping","params":{}},`+
 		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`+
 		`]`)
@@ -261,12 +324,39 @@ func TestMCPBatchesRequestsAndAcceptsNotificationsWith202(t *testing.T) {
 	if err := json.Unmarshal(body, &responses); err != nil {
 		t.Fatal(err)
 	}
-	if len(responses) != 2 || responses[0]["id"] != "init" || responses[1]["id"] != "ping" {
+	if len(responses) != 2 || responses[0]["id"] != "write" || responses[1]["id"] != "ping" || f.post.calls.Load() != 1 {
 		t.Fatalf("batch responses=%s", body)
 	}
-	status, body = call(t, f, `{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`)
-	if status != http.StatusAccepted || len(body) != 0 {
-		t.Fatalf("notification status=%d body=%q", status, body)
+	for _, request := range []string{
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
+		`[{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}]`,
+		`{"jsonrpc":"2.0","id":"response","result":{}}`,
+		`[{"jsonrpc":"2.0","id":"response","result":{}},{"jsonrpc":"2.0","method":"notifications/initialized"}]`,
+	} {
+		status, body = call(t, f, request)
+		if status != http.StatusAccepted || len(body) != 0 {
+			t.Fatalf("notification/response status=%d body=%q", status, body)
+		}
+	}
+	for _, request := range []string{
+		`[{"jsonrpc":"2.0","id":"one","method":"ping"}]`,
+		`[{"jsonrpc":"2.0","id":"one","method":"ping"},{"jsonrpc":"2.0","method":"notifications/initialized"}]`,
+	} {
+		status, body = call(t, f, request)
+		responses = nil
+		if status != http.StatusOK || json.Unmarshal(body, &responses) != nil || len(responses) != 1 || responses[0]["id"] != "one" {
+			t.Fatalf("one-response batch lost its array: status=%d body=%s", status, body)
+		}
+	}
+	for _, request := range []string{
+		`[]`,
+		`[` + strings.Repeat(`{"jsonrpc":"2.0","id":1,"method":"ping"},`, 100) + `{"jsonrpc":"2.0","id":2,"method":"ping"}]`,
+		`[{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"batch","version":"1"}}}]`,
+	} {
+		status, body = call(t, f, request)
+		if status != http.StatusOK || errorCode(t, body) != "invalid_request" {
+			t.Fatalf("invalid batch accepted: status=%d body=%s", status, body)
+		}
 	}
 }
 
@@ -283,7 +373,7 @@ func TestMCPPreservesCanonicalReplayMetadataAndCallerKey(t *testing.T) {
 		t.Fatalf("replay status=%d body=%s", status, second)
 	}
 	outer := decode(t, second)
-	meta, ok := outer["_meta"].(map[string]any)
+	meta, ok := outer["result"].(map[string]any)["_meta"].(map[string]any)
 	if !ok || meta["replayed"] != true {
 		t.Fatalf("canonical replay metadata was not preserved: %s", second)
 	}
@@ -305,6 +395,117 @@ func TestMCPInitializeValidatesRequiredParameters(t *testing.T) {
 		if status != http.StatusOK || errorCode(t, response) != "invalid_params" {
 			t.Fatalf("invalid initialize status=%d body=%s", status, response)
 		}
+	}
+}
+
+func TestMCPPlugCallPreservesCallerMetadata(t *testing.T) {
+	for _, shape := range []string{"omitted", "empty", "nested", "matching"} {
+		t.Run(shape, func(t *testing.T) {
+			registry, err := rpc.NewRegistry()
+			if err != nil {
+				t.Fatal(err)
+			}
+			const key = "550e8400-e29b-41d4-a716-446655440000"
+			calls := 0
+			if err := registry.Register("bead.claimNext", func(_ context.Context, c rpc.Call) (any, error) {
+				calls++
+				if c.Meta.IdempotencyKey != key || c.Meta.Agent != "caller" || c.Meta.Project != "mcp-test" {
+					t.Fatalf("caller metadata changed: %+v", c.Meta)
+				}
+				return nil, nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			server, err := rpc.New(registry, rpc.Config{Incarnation: "mcp-meta", DefaultProject: "mcp-test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			authenticator, _ := authn.New(authn.Config{})
+			handler, err := mcp.New(server, authenticator, mcp.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta := `{"idempotencyKey":"` + key + `","agent":"caller"}`
+			params := map[string]string{
+				"omitted":  `"_meta":` + meta + `,"arguments":{"method":"bead.claimNext"}`,
+				"empty":    `"_meta":` + meta + `,"arguments":{"method":"bead.claimNext","params":{}}`,
+				"nested":   `"arguments":{"method":"bead.claimNext","params":{"_meta":` + meta + `}}`,
+				"matching": `"_meta":` + meta + `,"arguments":{"method":"bead.claimNext","params":{"_meta":` + meta + `}}`,
+			}[shape]
+			for range 2 {
+				status, body := callHandler(t, handler, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"plug_call",`+params+`}}`)
+				if status != http.StatusOK || decode(t, body)["result"].(map[string]any)["isError"] == true {
+					t.Fatalf("plug_call status=%d body=%s", status, body)
+				}
+			}
+			if calls != 2 {
+				t.Fatalf("canonical calls=%d", calls)
+			}
+		})
+	}
+	f := newFixture(t)
+	for _, nested := range []string{
+		`{"idempotencyKey":"550e8400-e29b-41d4-a716-446655440001"}`,
+		`null`,
+		`"invalid"`,
+	} {
+		status, body := call(t, f, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"plug_call","_meta":{"idempotencyKey":"550e8400-e29b-41d4-a716-446655440000"},"arguments":{"method":"bead.create","params":{"type":"issue","fields":{"title":"must not commit"},"_meta":`+nested+`}}}}`)
+		if status != http.StatusOK || errorCode(t, body) != "invalid_params" || f.post.calls.Load() != 0 {
+			t.Fatalf("conflicting or malformed metadata accepted: status=%d body=%s", status, body)
+		}
+	}
+	request := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"plug_call","_meta":{"idempotencyKey":"550e8400-e29b-41d4-a716-446655440000"},"arguments":{"method":"bead.create","params":{"type":"issue","fields":{"title":"one commit"}}}}}`
+	_, first := call(t, f, request)
+	_, replay := call(t, f, request)
+	firstResult := decode(t, first)["result"].(map[string]any)
+	replayResult := decode(t, replay)["result"].(map[string]any)
+	if firstResult["isError"] == true || replayResult["_meta"].(map[string]any)["replayed"] != true || f.post.calls.Load() != 1 {
+		t.Fatalf("wrapper retry did not replay one commit: first=%s replay=%s", first, replay)
+	}
+}
+
+func TestMCPBodyReadDeadline(t *testing.T) {
+	f := newFixture(t)
+	for _, limit := range []string{"read", "request"} {
+		t.Run(limit, func(t *testing.T) {
+			config := mcp.Config{ReadTimeout: time.Second, RequestTimeout: time.Second, MaxConcurrentRequests: 1}
+			if limit == "read" {
+				config.ReadTimeout = 50 * time.Millisecond
+			} else {
+				config.RequestTimeout = 50 * time.Millisecond
+			}
+			authenticator, _ := authn.New(authn.Config{})
+			handler, err := mcp.New(f.rpc, authenticator, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(handler)
+			defer server.Close()
+			conn, err := net.Dial("tcp", strings.TrimPrefix(server.URL, "http://"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := fmt.Fprint(conn, "POST /mcp HTTP/1.1\r\nHost: localhost\r\nPlug-RPC: 1\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"); err != nil {
+				t.Fatal(err)
+			}
+			response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+			if err != nil {
+				t.Fatalf("stalled body did not receive a bounded response: %v", err)
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil || response.StatusCode != http.StatusRequestTimeout || errorCode(t, body) != "busy" {
+				t.Fatalf("body deadline status=%d body=%s err=%v", response.StatusCode, body, err)
+			}
+			status, body := callHandler(t, handler, `{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+			if status != http.StatusOK || decode(t, body)["result"] == nil {
+				t.Fatalf("stalled body retained the concurrency slot: status=%d body=%s", status, body)
+			}
+		})
 	}
 }
 
@@ -347,7 +548,7 @@ func TestMCPEmitsToolsListChangedWhenVisibleHashChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	notifications := make(chan []byte, 1)
-	handler, err := mcp.New(rpcServer, authenticator, mcp.Config{OnNotification: func(_ context.Context, _ model.PrincipalRef, data []byte) { notifications <- data }})
+	handler, err := mcp.New(rpcServer, authenticator, mcp.Config{OnNotification: func(_ context.Context, _ model.PrincipalRef, _ string, data []byte) { notifications <- data }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +557,7 @@ func TestMCPEmitsToolsListChangedWhenVisibleHashChanges(t *testing.T) {
 		t.Fatalf("first tools/list status=%d body=%s", status, body)
 	}
 	allowReady.Store(false)
-	status, body = callHandler(t, handler, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+	status, body = callHandler(t, handler, `{"jsonrpc":"2.0","id":2,"method":"ping","params":{}}`)
 	if status != http.StatusOK {
 		t.Fatalf("second tools/list status=%d body=%s", status, body)
 	}
@@ -367,6 +568,35 @@ func TestMCPEmitsToolsListChangedWhenVisibleHashChanges(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("tools/list_changed notification was not emitted")
+	}
+
+	// Without a stream sink, the same change uses a finite SSE response with
+	// a notification followed by an ordinary ping result.
+	allowReady.Store(true)
+	handler, err = mcp.New(rpcServer, authenticator, mcp.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := initializeSession(t, handler)
+	allowReady.Store(false)
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"ping"}`))
+	req.RemoteAddr = "127.0.0.1:31000"
+	req.Header.Set("Plug-RPC", "1")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("MCP-Session-Id", sessionID)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("list-change stream status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.Bytes())
+	}
+	var messages []map[string]any
+	for _, line := range strings.Split(response.Body.String(), "\n") {
+		if data, ok := strings.CutPrefix(line, "data: "); ok {
+			messages = append(messages, decode(t, []byte(data)))
+		}
+	}
+	if len(messages) != 2 || messages[0]["method"] != "notifications/tools/list_changed" || messages[1]["id"] != json.Number("2") {
+		t.Fatalf("list-change messages=%s", response.Body.Bytes())
 	}
 }
 
@@ -463,7 +693,8 @@ func TestMCPCancellationIsScopedToSession(t *testing.T) {
 		status  int
 		body    []byte
 	}, 2)
-	for _, session := range []string{"session-a", "session-b"} {
+	sessionA, sessionB := initializeSession(t, handler), initializeSession(t, handler)
+	for _, session := range []string{sessionA, sessionB} {
 		session := session
 		go func() {
 			status, response := callHandlerWithHeaders(t, handler, body, map[string]string{"MCP-Session-Id": session})
@@ -481,13 +712,13 @@ func TestMCPCancellationIsScopedToSession(t *testing.T) {
 			t.Fatal("both session calls did not start")
 		}
 	}
-	status, response := callHandlerWithHeaders(t, handler, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"same"}}`, map[string]string{"MCP-Session-Id": "session-a"})
+	status, response := callHandlerWithHeaders(t, handler, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"same"}}`, map[string]string{"MCP-Session-Id": sessionA})
 	if status != http.StatusAccepted || len(response) != 0 {
 		t.Fatalf("session cancellation status=%d body=%q", status, response)
 	}
 	select {
 	case result := <-results:
-		if result.session != "session-a" || result.status != http.StatusOK {
+		if result.session != sessionA || result.status != http.StatusOK {
 			t.Fatalf("wrong session canceled first: %+v", result)
 		}
 	case <-time.After(time.Second):
@@ -498,16 +729,94 @@ func TestMCPCancellationIsScopedToSession(t *testing.T) {
 		t.Fatalf("session-b was canceled by session-a: %+v", result)
 	case <-time.After(50 * time.Millisecond):
 	}
-	status, response = callHandlerWithHeaders(t, handler, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"same"}}`, map[string]string{"MCP-Session-Id": "session-b"})
+	status, response = callHandlerWithHeaders(t, handler, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"same"}}`, map[string]string{"MCP-Session-Id": sessionB})
 	if status != http.StatusAccepted || len(response) != 0 {
 		t.Fatalf("second session cancellation status=%d body=%q", status, response)
 	}
 	select {
 	case result := <-results:
-		if result.session != "session-b" || result.status != http.StatusOK {
+		if result.session != sessionB || result.status != http.StatusOK {
 			t.Fatalf("session-b result=%+v", result)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("session-b call did not cancel")
+	}
+}
+
+func TestMCPCancellationUsesConnectionAndCanonicalIDs(t *testing.T) {
+	for _, id := range []string{`1e2`, `"\u0061ctive"`} {
+		t.Run(id, func(t *testing.T) {
+			registry, err := rpc.NewRegistry()
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := make(chan struct{}, 1)
+			if err := registry.Register("bead.ready", func(ctx context.Context, _ rpc.Call) (any, error) {
+				started <- struct{}{}
+				<-ctx.Done()
+				return nil, &model.Error{Data: model.ErrorData{Code: "busy", Hint: "request canceled"}}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			server, err := rpc.New(registry, rpc.Config{Incarnation: "mcp-connection", DefaultProject: "mcp-test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			authenticator, _ := authn.New(authn.Config{})
+			handler, err := mcp.New(server, authenticator, mcp.Config{RequestTimeout: 2 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := make(chan []byte, 1)
+			go func() {
+				_, body := callHandlerAt(t, handler, `{"jsonrpc":"2.0","id":`+id+`,"method":"tools/call","params":{"name":"bead_ready","arguments":{"_meta":{"agent":"caller"}}}}`, nil, "127.0.0.1:31000")
+				result <- body
+			}()
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("canonical call did not start")
+			}
+			normalized := `100.0`
+			if id[0] == '"' {
+				normalized = `"active"`
+			}
+			cancellation := `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":` + normalized + `,"_meta":{"agent":"caller"}}}`
+			_, _ = callHandlerAt(t, handler, cancellation, nil, "127.0.0.1:31001")
+			_, _ = callHandlerAt(t, handler, strings.Replace(cancellation, `"agent":"caller"`, `"agent":"other"`, 1), nil, "127.0.0.1:31000")
+			select {
+			case body := <-result:
+				t.Fatalf("other connection or agent canceled the call: %s", body)
+			case <-time.After(50 * time.Millisecond):
+			}
+			status, body := callHandlerAt(t, handler, `{"jsonrpc":"2.0","id":`+normalized+`,"method":"tools/call","params":{"name":"bead_ready","arguments":{"_meta":{"agent":"caller"}}}}`, nil, "127.0.0.1:31000")
+			if status != http.StatusOK || errorCode(t, body) != "invalid_request" {
+				t.Fatalf("duplicate active ID overwrote cancellation: status=%d body=%s", status, body)
+			}
+			_, _ = callHandlerAt(t, handler, cancellation, nil, "127.0.0.1:31000")
+			select {
+			case body := <-result:
+				if decode(t, body)["result"].(map[string]any)["isError"] != true {
+					t.Fatalf("normalized cancellation result=%s", body)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("equivalent request ID did not cancel the original call")
+			}
+		})
+	}
+}
+
+func TestMCPRejectsUnvalidatedSessionIDs(t *testing.T) {
+	f, other := newFixture(t), newFixture(t)
+	session := initializeSession(t, f.handler)
+	for _, id := range []string{"session-from-client", session[:len(session)-1], initializeSession(t, other.handler)} {
+		status, body := callHandlerWithHeaders(t, f.handler, `{"jsonrpc":"2.0","id":1,"method":"ping"}`, map[string]string{"MCP-Session-Id": id})
+		if status != http.StatusNotFound || errorCode(t, body) != "not_found" {
+			t.Fatalf("unvalidated session accepted: status=%d body=%s", status, body)
+		}
+	}
+	status, body := callHandlerWithHeaders(t, f.handler, `{"jsonrpc":"2.0","id":1,"method":"ping"}`, map[string]string{"MCP-Session-Id": session})
+	if status != http.StatusOK || decode(t, body)["result"] == nil {
+		t.Fatalf("issued session rejected: status=%d body=%s", status, body)
 	}
 }

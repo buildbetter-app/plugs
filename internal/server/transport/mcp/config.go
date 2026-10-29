@@ -26,15 +26,15 @@ const (
 
 // NotificationSink receives server-to-client JSON-RPC notifications that are
 // discovered while serving a request. A streamable-HTTP composition root can
-// put the bytes on its SSE/session stream; the JSON POST adapter also includes
-// a pending notification in the next JSON response when no sink is installed.
-// The sink must not mutate the supplied bytes.
-type NotificationSink func(context.Context, model.PrincipalRef, []byte)
+// put the bytes on the identified session's SSE stream. Without a sink, a
+// changed list is delivered on a finite SSE response to the next request.
+// The sink must honor the context deadline and must not mutate the supplied bytes.
+type NotificationSink func(context.Context, model.PrincipalRef, string, []byte)
 
-// Config bounds one MCP handler. Zero values select defaults. The handler is
-// stateless: callers that need a long-lived MCP session may keep using the
-// same admitted HTTP connection, while every request still gets a fresh
-// canonical method visibility check.
+// Config bounds one MCP handler. Zero values select defaults. Its session IDs
+// are authenticated without a session store. Callers send the
+// MCP-Session-Id returned by initialize on subsequent requests, while every
+// request still gets a fresh canonical method visibility check.
 type Config struct {
 	MaxBodyBytes          int64
 	MaxConcurrentRequests int

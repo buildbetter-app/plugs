@@ -3,13 +3,16 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"mime"
 	"net"
 	"net/http"
@@ -28,14 +31,15 @@ import (
 // Handler is a bounded MCP streamable HTTP adapter over one canonical RPC
 // server. It owns no store, lease, listener, or authorization policy.
 type Handler struct {
-	rpc      *rpc.Server
-	authn    *authn.Authenticator
-	cfg      Config
-	slots    chan struct{}
-	activeMu sync.Mutex
-	active   map[string]activeCall
-	methodMu sync.Mutex
-	methods  map[string]string
+	rpc        *rpc.Server
+	authn      *authn.Authenticator
+	cfg        Config
+	slots      chan struct{}
+	activeMu   sync.Mutex
+	active     map[string]activeCall
+	methodMu   sync.Mutex
+	methods    map[string]string
+	sessionKey [32]byte
 }
 
 // New constructs an MCP adapter over an existing canonical dispatcher.
@@ -51,7 +55,11 @@ func New(server *rpc.Server, authenticator *authn.Authenticator, config Config) 
 	if err != nil {
 		return nil, err
 	}
-	return &Handler{rpc: server, authn: authenticator, cfg: config, slots: make(chan struct{}, config.MaxConcurrentRequests), active: make(map[string]activeCall), methods: make(map[string]string)}, nil
+	h := &Handler{rpc: server, authn: authenticator, cfg: config, slots: make(chan struct{}, config.MaxConcurrentRequests), active: make(map[string]activeCall), methods: make(map[string]string)}
+	if _, err := rand.Read(h.sessionKey[:]); err != nil {
+		return nil, fmt.Errorf("mcp: session key unavailable: %w", err)
+	}
+	return h, nil
 }
 
 // ServeHTTP serves exactly POST /mcp. MCP protocol failures use JSON-RPC
@@ -90,7 +98,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx = authn.WithIdentity(ctx, identity)
 	ctx = WithPrincipal(ctx, identity.Principal())
-	ctx = WithSessionID(ctx, requestSessionID(r))
+	sessionID := "connection:" + r.RemoteAddr
+	if values := r.Header.Values("MCP-Session-Id"); len(values) != 0 {
+		if len(values) != 1 || values[0] == "" {
+			h.fail(w, http.StatusBadRequest, "invalid_request", "one MCP session id is required")
+			return
+		}
+		if !h.validSessionID(identity.Principal(), values[0]) {
+			h.fail(w, http.StatusNotFound, "not_found", "unknown MCP session")
+			return
+		}
+		sessionID = values[0]
+	}
+	ctx = WithSessionID(ctx, sessionID)
 	r = r.WithContext(ctx)
 	if len(r.Header.Values("Cookie")) != 0 {
 		h.fail(w, http.StatusForbidden, "forbidden", "cookie credentials are unsupported")
@@ -149,9 +169,46 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusRequestTimeout, "busy", "request deadline or cancellation reached")
 		return
 	}
+	var initializedSession string
+	if r.Header.Get("MCP-Session-Id") == "" && isInitialize(data) {
+		initializedSession, err = h.newSessionID(identity.Principal())
+		if err != nil {
+			h.fail(w, http.StatusServiceUnavailable, "busy", "MCP session unavailable")
+			return
+		}
+		ctx = WithSessionID(ctx, initializedSession)
+	}
 	response := h.dispatch(ctx, rpc.WithPrincipal(ctx, identity.Principal()), data)
 	if len(response) == 0 {
 		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	// Recheck on ordinary traffic as well as tools/list, so a client can
+	// learn that it must refresh its tools from its next call or ping.
+	if !isInitialize(data) {
+		if _, hash, err := h.visibleMethods(ctx, identity.Principal()); err == nil {
+			changed := h.observeMethods(ctx, identity.Principal(), hash)
+			if len(changed) != 0 && h.cfg.OnNotification == nil {
+				frames := [][]byte{changed}
+				appendResponses(&frames, response)
+				response = joinResponses(frames)
+			}
+		}
+	}
+	if initializedSession != "" {
+		var initialized map[string]json.RawMessage
+		if json.Unmarshal(response, &initialized) == nil && initialized["result"] != nil {
+			w.Header().Set("MCP-Session-Id", initializedSession)
+		}
+	}
+	if frames, ok := notificationFrames(response); ok {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, frame := range frames {
+			if _, err := fmt.Fprintf(w, "event: message\ndata: %s\n\n", frame); err != nil {
+				return
+			}
+		}
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -222,6 +279,11 @@ func (h *Handler) dispatch(ctx context.Context, ctxWithPrincipal context.Context
 		if len(batch) == 0 || len(batch) > rpc.MaxBatchCalls {
 			return h.syntheticError(ctxWithPrincipal, nil, "invalid_request", "batch must contain 1 to 100 calls")
 		}
+		for _, item := range batch {
+			if isInitialize(item) {
+				return h.syntheticError(ctxWithPrincipal, nil, "invalid_request", "initialize must be sent as a single request")
+			}
+		}
 		responses := make([][]byte, 0, len(batch))
 		for _, item := range batch {
 			appendResponses(&responses, h.dispatchOne(ctx, ctxWithPrincipal, item))
@@ -255,6 +317,9 @@ func (h *Handler) dispatchOne(ctx context.Context, ctxWithPrincipal context.Cont
 		if idValue, ok := object["id"]; !ok || (idValue != nil && !isJSONRPCID(idValue)) {
 			return h.syntheticError(ctxWithPrincipal, nil, "invalid_request", "MCP id must be a string, number or null")
 		}
+	}
+	if isResponse(object, hasID) {
+		return nil
 	}
 	method, ok := object["method"].(string)
 	if !ok || object["jsonrpc"] != "2.0" {
@@ -342,9 +407,6 @@ func appendResponses(responses *[][]byte, response []byte) {
 }
 
 func joinResponses(responses [][]byte) []byte {
-	if len(responses) == 1 {
-		return responses[0]
-	}
 	out := []byte{'['}
 	for i, response := range responses {
 		if i != 0 {
@@ -353,6 +415,75 @@ func joinResponses(responses [][]byte) []byte {
 		out = append(out, response...)
 	}
 	return append(out, ']')
+}
+
+func isInitialize(data []byte) bool {
+	var request struct {
+		Method string `json:"method"`
+	}
+	return json.Unmarshal(data, &request) == nil && request.Method == "initialize"
+}
+
+// Responses to server requests have no reply of their own. This adapter does
+// not initiate requests, so well-formed responses with unknown IDs are ignored.
+func isResponse(object map[string]any, hasID bool) bool {
+	if !hasID || object["jsonrpc"] != "2.0" {
+		return false
+	}
+	if _, hasMethod := object["method"]; hasMethod {
+		return false
+	}
+	_, result := object["result"]
+	errorValue, failure := object["error"]
+	if result == failure {
+		return false
+	}
+	for key := range object {
+		if key != "jsonrpc" && key != "id" && key != "result" && key != "error" {
+			return false
+		}
+	}
+	if failure {
+		detail, ok := errorValue.(map[string]any)
+		if !ok {
+			return false
+		}
+		code, ok := detail["code"].(json.Number)
+		if !ok {
+			return false
+		}
+		if _, err := code.Int64(); err != nil {
+			return false
+		}
+		if _, ok := detail["message"].(string); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// Streamable HTTP carries server notifications as SSE messages, followed by
+// the response. Ordinary batches remain JSON arrays, including a single reply.
+func notificationFrames(response []byte) ([]json.RawMessage, bool) {
+	var frames []json.RawMessage
+	if json.Unmarshal(response, &frames) != nil {
+		return nil, false
+	}
+	found := false
+	for i, frame := range frames {
+		var message struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal(frame, &message) == nil && message.Method == "notifications/tools/list_changed" {
+			found = true
+		}
+		var compact bytes.Buffer
+		if json.Compact(&compact, frame) != nil {
+			return nil, false
+		}
+		frames[i] = append(json.RawMessage(nil), compact.Bytes()...)
+	}
+	return frames, found
 }
 
 func idIfPresent(id json.RawMessage, present bool) json.RawMessage {
@@ -439,8 +570,6 @@ func (h *Handler) initialize(ctx context.Context, id json.RawMessage, params map
 			return h.syntheticError(ctx, id, "invalid_params", "initialize _meta must be an object")
 		}
 	}
-	version := h.cfg.ProtocolVersion
-	version = protocol
 	principal, _ := rpcPrincipal(ctx)
 	if _, hash, err := h.visibleMethods(ctx, principal); err == nil {
 		h.observeMethods(ctx, principal, hash)
@@ -457,7 +586,7 @@ func (h *Handler) initialize(ctx context.Context, id json.RawMessage, params map
 		}
 	}
 	result := map[string]any{
-		"protocolVersion": version,
+		"protocolVersion": protocol,
 		"capabilities":    map[string]any{"tools": map[string]any{"listChanged": true}},
 		"serverInfo":      map[string]any{"name": h.cfg.ServerName, "version": serverVersion},
 	}
@@ -471,6 +600,7 @@ type methodInfo struct {
 	AgentCore   bool
 	Idempotency string
 	Params      []wire.Param
+	Schemas     map[string]json.RawMessage
 }
 
 func (h *Handler) visibleMethods(ctx context.Context, principal model.PrincipalRef) (map[string]methodInfo, string, error) {
@@ -479,6 +609,9 @@ func (h *Handler) visibleMethods(ctx context.Context, principal model.PrincipalR
 		return nil, "", err
 	}
 	var parsed struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
 		Methods []struct {
 			Name        string       `json:"name"`
 			Summary     string       `json:"summary"`
@@ -499,7 +632,7 @@ func (h *Handler) visibleMethods(ctx context.Context, principal model.PrincipalR
 			}
 			continue
 		}
-		out[method.Name] = methodInfo{Name: method.Name, Summary: method.Summary, Description: method.Description, AgentCore: method.AgentCore, Idempotency: method.Idempotency, Params: method.Params}
+		out[method.Name] = methodInfo{Name: method.Name, Summary: method.Summary, Description: method.Description, AgentCore: method.AgentCore, Idempotency: method.Idempotency, Params: method.Params, Schemas: parsed.Components.Schemas}
 	}
 	names := make([]string, 0, len(out))
 	for name := range out {
@@ -523,7 +656,7 @@ func (h *Handler) observeMethods(ctx context.Context, principal model.PrincipalR
 	}
 	notification := toolsListChangedNotification()
 	if h.cfg.OnNotification != nil {
-		h.cfg.OnNotification(ctx, principal, append([]byte(nil), notification...))
+		h.cfg.OnNotification(ctx, principal, sessionIDFromContext(ctx), append([]byte(nil), notification...))
 	}
 	return notification
 }
@@ -586,9 +719,12 @@ func toolDefinition(method methodInfo) map[string]any {
 		description = method.Name
 	}
 	properties := map[string]any{}
+	definitions := map[string]any{}
 	required := []string{}
 	for _, param := range method.Params {
-		properties[param.Name] = json.RawMessage(param.Schema)
+		var schema any
+		_ = json.Unmarshal(param.Schema, &schema)
+		properties[param.Name] = toolSchema(schema, method.Schemas, definitions)
 		if param.Required {
 			required = append(required, param.Name)
 		}
@@ -597,7 +733,37 @@ func toolDefinition(method methodInfo) map[string]any {
 	if len(required) != 0 {
 		schema["required"] = required
 	}
+	if len(definitions) != 0 {
+		schema["$defs"] = definitions
+	}
 	return map[string]any{"name": toolName(method.Name), "description": description, "inputSchema": schema}
+}
+
+// An MCP tool is a standalone JSON Schema, so copy the transitive component
+// definitions it references rather than leaving OpenRPC-only pointers behind.
+func toolSchema(value any, components map[string]json.RawMessage, definitions map[string]any) any {
+	switch value := value.(type) {
+	case map[string]any:
+		if ref, ok := value["$ref"].(string); ok {
+			if name, local := strings.CutPrefix(ref, "#/components/schemas/"); local {
+				value["$ref"] = "#/$defs/" + name
+				if _, exists := definitions[name]; !exists {
+					definitions[name] = nil // mark before descending into recursive schemas
+					var definition any
+					_ = json.Unmarshal(components[name], &definition)
+					definitions[name] = toolSchema(definition, components, definitions)
+				}
+			}
+		}
+		for name, nested := range value {
+			value[name] = toolSchema(nested, components, definitions)
+		}
+	case []any:
+		for i, nested := range value {
+			value[i] = toolSchema(nested, components, definitions)
+		}
+	}
+	return value
 }
 
 func plugCallDefinition() map[string]any {
@@ -644,11 +810,15 @@ func (h *Handler) toolsCall(ctx context.Context, id json.RawMessage, params map[
 		if !ok {
 			return h.syntheticError(ctx, id, "invalid_params", "MCP _meta must be an object")
 		}
-		if existing, ok := arguments["_meta"].(map[string]any); ok {
-			arguments["_meta"] = mergeMetadata(metaMap, existing)
-		} else {
-			arguments["_meta"] = mergeMetadata(metaMap, nil)
+		existing, err := objectMetadata(arguments)
+		if err != nil {
+			return h.syntheticError(ctx, id, "invalid_params", err.Error())
 		}
+		merged, err := mergeMetadata(metaMap, existing)
+		if err != nil {
+			return h.syntheticError(ctx, id, "invalid_params", err.Error())
+		}
+		arguments["_meta"] = merged
 	}
 	principal, _ := rpcPrincipal(ctx)
 	methods, _, err := h.visibleMethods(ctx, principal)
@@ -658,7 +828,15 @@ func (h *Handler) toolsCall(ctx context.Context, id json.RawMessage, params map[
 	methodName := ""
 	switch name {
 	case "plug_call":
-		outerMeta, _ := arguments["_meta"].(map[string]any)
+		outerMeta, err := objectMetadata(arguments)
+		if err != nil {
+			return h.syntheticError(ctx, id, "invalid_params", err.Error())
+		}
+		for key := range arguments {
+			if key != "method" && key != "params" && key != "_meta" {
+				return h.syntheticError(ctx, id, "invalid_params", fmt.Sprintf("plug_call does not accept %q", key))
+			}
+		}
 		candidate, ok := arguments["method"].(string)
 		if !ok || candidate == "" {
 			return h.syntheticError(ctx, id, "invalid_params", "plug_call requires method")
@@ -666,15 +844,24 @@ func (h *Handler) toolsCall(ctx context.Context, id json.RawMessage, params map[
 		methodName = candidate
 		if nested, ok := arguments["params"].(map[string]any); ok {
 			arguments = nested
-			if nestedMeta, present := arguments["_meta"].(map[string]any); present {
-				arguments["_meta"] = mergeMetadata(outerMeta, nestedMeta)
-			} else if outerMeta != nil {
-				arguments["_meta"] = mergeMetadata(outerMeta, nil)
+			nestedMeta, err := objectMetadata(arguments)
+			if err != nil {
+				return h.syntheticError(ctx, id, "invalid_params", err.Error())
+			}
+			merged, err := mergeMetadata(outerMeta, nestedMeta)
+			if err != nil {
+				return h.syntheticError(ctx, id, "invalid_params", err.Error())
+			}
+			if merged != nil {
+				arguments["_meta"] = merged
 			}
 		} else if _, present := arguments["params"]; present {
 			return h.syntheticError(ctx, id, "invalid_params", "plug_call params must be an object")
 		} else {
 			arguments = map[string]any{}
+			if outerMeta != nil {
+				arguments["_meta"] = outerMeta
+			}
 		}
 	case "plug_describe":
 		methodName = "rpc.describe"
@@ -698,7 +885,10 @@ func (h *Handler) toolsCall(ctx context.Context, id json.RawMessage, params map[
 		}
 	}
 	request := canonicalRequest(id, methodName, arguments)
-	callCtx, finish := h.beginActive(WithCallerAgent(ctx, metadataAgent(arguments)), id)
+	callCtx, finish, err := h.beginActive(WithCallerAgent(ctx, metadataAgent(arguments)), id)
+	if err != nil {
+		return h.syntheticError(ctx, id, "invalid_request", err.Error())
+	}
 	defer finish()
 	response := h.rpc.Dispatch(callCtx, request)
 	return h.toolResponse(id, response)
@@ -706,20 +896,25 @@ func (h *Handler) toolsCall(ctx context.Context, id json.RawMessage, params map[
 
 func (h *Handler) activeKey(ctx context.Context, id json.RawMessage) string {
 	principal, _ := rpcPrincipal(ctx)
-	encoded, _ := json.Marshal(principal)
-	return string(encoded) + "\x00" + sessionIDFromContext(ctx) + "\x00" + callerAgentFromContext(ctx) + "\x00" + string(id)
+	encoded, _ := json.Marshal([]any{principal, sessionIDFromContext(ctx), callerAgentFromContext(ctx), normalizedID(id)})
+	return string(encoded)
 }
 
 type activeCall struct {
 	cancel context.CancelFunc
-	token  *struct{}
+	token  *byte
 }
 
-func (h *Handler) beginActive(ctx context.Context, id json.RawMessage) (context.Context, func()) {
+func (h *Handler) beginActive(ctx context.Context, id json.RawMessage) (context.Context, func(), error) {
 	callCtx, cancel := context.WithCancel(ctx)
 	key := h.activeKey(ctx, id)
-	token := &struct{}{}
+	token := new(byte)
 	h.activeMu.Lock()
+	if _, exists := h.active[key]; exists {
+		h.activeMu.Unlock()
+		cancel()
+		return nil, nil, fmt.Errorf("request id is already active in this MCP session")
+	}
 	h.active[key] = activeCall{cancel: cancel, token: token}
 	h.activeMu.Unlock()
 	return callCtx, func() {
@@ -729,7 +924,7 @@ func (h *Handler) beginActive(ctx context.Context, id json.RawMessage) (context.
 		}
 		h.activeMu.Unlock()
 		cancel()
-	}
+	}, nil
 }
 
 func (h *Handler) cancelActive(ctx context.Context, requestID string) {
@@ -743,8 +938,11 @@ func (h *Handler) cancelActive(ctx context.Context, requestID string) {
 }
 
 func ensureIdempotency(arguments map[string]any) error {
-	meta, ok := arguments["_meta"].(map[string]any)
-	if !ok {
+	meta, err := objectMetadata(arguments)
+	if err != nil {
+		return err
+	}
+	if meta == nil {
 		meta = map[string]any{}
 		arguments["_meta"] = meta
 	}
@@ -766,18 +964,39 @@ func ensureIdempotency(arguments map[string]any) error {
 	return nil
 }
 
-// mergeMetadata keeps the outer MCP metadata authoritative when a plug_call
-// also carries canonical metadata in its nested params. This preserves caller
-// idempotency, project, deadline and agent labels across both tool shapes.
-func mergeMetadata(outer, nested map[string]any) map[string]any {
+func objectMetadata(params map[string]any) (map[string]any, error) {
+	value, present := params["_meta"]
+	if !present {
+		return nil, nil
+	}
+	meta, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("_meta must be an object")
+	}
+	return meta, nil
+}
+
+// mergeMetadata preserves caller metadata at either layer and refuses
+// conflicting duplicates instead of silently replacing an idempotency key.
+func mergeMetadata(outer, nested map[string]any) (map[string]any, error) {
+	if outer == nil && nested == nil {
+		return nil, nil
+	}
 	merged := make(map[string]any, len(outer)+len(nested))
 	for key, value := range nested {
 		merged[key] = value
 	}
 	for key, value := range outer {
+		if previous, exists := merged[key]; exists {
+			before, _ := json.Marshal(previous)
+			after, _ := json.Marshal(value)
+			if !bytes.Equal(before, after) {
+				return nil, fmt.Errorf("conflicting _meta.%s", key)
+			}
+		}
 		merged[key] = value
 	}
-	return merged
+	return merged, nil
 }
 
 func canonicalRequest(id json.RawMessage, method string, params map[string]any) []byte {
@@ -798,11 +1017,18 @@ func (h *Handler) toolResponse(id json.RawMessage, response []byte) []byte {
 		return h.toolError(id, map[string]any{"code": "internal_error", "message": "canonical dispatcher returned invalid JSON"})
 	}
 	meta := envelope["_meta"]
+	result := map[string]any{}
+	if len(meta) != 0 && !bytes.Equal(bytes.TrimSpace(meta), []byte("null")) {
+		result["_meta"] = meta
+	}
 	if raw, ok := envelope["result"]; ok {
-		return mcpResponseWithMeta(id, map[string]any{"content": []map[string]any{{"type": "text", "text": string(raw)}}}, meta)
+		result["content"] = []map[string]any{{"type": "text", "text": string(raw)}}
+		return mcpResponse(id, result)
 	}
 	if raw, ok := envelope["error"]; ok {
-		return mcpResponseWithMeta(id, map[string]any{"content": []map[string]any{{"type": "text", "text": string(raw)}}, "isError": true}, meta)
+		result["content"] = []map[string]any{{"type": "text", "text": string(raw)}}
+		result["isError"] = true
+		return mcpResponse(id, result)
 	}
 	return h.toolError(id, map[string]any{"code": "internal_error", "message": "canonical dispatcher returned no result or error"})
 }
@@ -813,10 +1039,6 @@ func (h *Handler) toolError(id json.RawMessage, errorValue map[string]any) []byt
 }
 
 func mcpResponse(id json.RawMessage, result any) []byte {
-	return mcpResponseWithMeta(id, result, nil)
-}
-
-func mcpResponseWithMeta(id json.RawMessage, result any, meta json.RawMessage) []byte {
 	if len(id) == 0 {
 		id = []byte("null")
 	}
@@ -828,10 +1050,6 @@ func mcpResponseWithMeta(id json.RawMessage, result any, meta json.RawMessage) [
 	out = append(out, id...)
 	out = append(out, []byte(`,"result":`)...)
 	out = append(out, encoded...)
-	if len(meta) != 0 && !bytes.Equal(bytes.TrimSpace(meta), []byte("null")) && json.Valid(meta) {
-		out = append(out, []byte(`,"_meta":`)...)
-		out = append(out, meta...)
-	}
 	return append(out, '}')
 }
 
@@ -880,15 +1098,66 @@ type mcpPrincipalKey struct{}
 type mcpSessionKey struct{}
 type mcpCallerAgentKey struct{}
 
-func requestSessionID(r *http.Request) string {
-	if r == nil {
-		return ""
+func (h *Handler) sessionMAC(principal model.PrincipalRef, nonce []byte) []byte {
+	encoded, _ := json.Marshal(principal)
+	mac := hmac.New(sha256.New, h.sessionKey[:])
+	_, _ = mac.Write(encoded)
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write(nonce)
+	return mac.Sum(nil)
+}
+
+// Session IDs are random and authenticated for this handler and principal.
+// No session store or new authorization path is needed; restarts invalidate
+// these transport scopes and clients can initialize again.
+func (h *Handler) newSessionID(principal model.PrincipalRef) (string, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
 	}
-	values := r.Header.Values("MCP-Session-Id")
-	if len(values) != 1 {
-		return ""
+	return base64.RawURLEncoding.EncodeToString(append(nonce[:], h.sessionMAC(principal, nonce[:])...)), nil
+}
+
+func (h *Handler) validSessionID(principal model.PrincipalRef, sessionID string) bool {
+	if len(sessionID) != base64.RawURLEncoding.EncodedLen(16+sha256.Size) {
+		return false
 	}
-	return values[0]
+	value, err := base64.RawURLEncoding.DecodeString(sessionID)
+	return err == nil && len(value) == 16+sha256.Size && hmac.Equal(value[16:], h.sessionMAC(principal, value[:16]))
+}
+
+// Normalize strings and decimal IDs without float rounding or expanding huge
+// exponents. A cancellation for 1e2 must find the same call as ID 100.0.
+func normalizedID(id json.RawMessage) string {
+	value, err := wire.DecodeJSON(id)
+	if err != nil {
+		return string(id)
+	}
+	switch value := value.(type) {
+	case string:
+		return "s:" + value
+	case json.Number:
+		coefficient, exponentText, _ := strings.Cut(strings.ToLower(value.String()), "e")
+		exponent := new(big.Int)
+		if exponentText != "" {
+			exponent.SetString(exponentText, 10)
+		}
+		negative := strings.HasPrefix(coefficient, "-")
+		coefficient = strings.TrimPrefix(coefficient, "-")
+		whole, fraction, _ := strings.Cut(coefficient, ".")
+		digits := strings.TrimLeft(whole+fraction, "0")
+		if digits == "" {
+			return "n:0"
+		}
+		significant := strings.TrimRight(digits, "0")
+		exponent.Add(exponent, big.NewInt(int64(len(digits)-len(significant)-len(fraction))))
+		if negative {
+			significant = "-" + significant
+		}
+		return "n:" + significant + "e" + exponent.String()
+	default:
+		return "null"
+	}
 }
 
 func sessionIDFromContext(ctx context.Context) string {
