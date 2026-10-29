@@ -68,6 +68,13 @@ if [[ "$manifest_matrix_contract" != "$executable_matrix_contract" ]]; then
   exit 2
 fi
 
+runner_matrix_engines='["sqlite","postgres"]'
+executable_matrix_engines="$(jq -c '.matrix.engines' "$contract_file")"
+if [[ "$executable_matrix_engines" != "$runner_matrix_engines" ]]; then
+  echo "manifest contract: executable engine set is unsupported by this runner" >&2
+  exit 2
+fi
+
 expected_commands="$(jq -cn --arg iterations "$contract_iterations" '{
   sqlite: ("cd spikes/authz && AUTHZ_ENGINE=sqlite AUTHZ_ITERATIONS=" + $iterations + " AUTHZ_ARTIFACT_DIR=artifacts/sqlite ./run-benchmark.sh"),
   postgres: ("cd spikes/authz && AUTHZ_POSTGRES_DSN=<environment-only> AUTHZ_ENGINE=postgres AUTHZ_ITERATIONS=" + $iterations + " AUTHZ_ARTIFACT_DIR=artifacts/postgres ./run-benchmark.sh"),
