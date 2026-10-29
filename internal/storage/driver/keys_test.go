@@ -1,11 +1,25 @@
 package driver
 
 import (
+	"io"
 	"reflect"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
+
+func TestStorageLifetimeSignatures(t *testing.T) {
+	closer := reflect.TypeFor[io.Closer]()
+	for _, handle := range []reflect.Type{
+		reflect.TypeFor[Store](),
+		reflect.TypeFor[Reader](),
+		reflect.TypeFor[WriteTx](),
+	} {
+		if !handle.Implements(closer) {
+			t.Errorf("%s must expose Close() error through its interface", handle)
+		}
+	}
+}
 
 func TestCanonicalLockOrder(t *testing.T) {
 	ref := model.RefByID("bead-a", model.Natural("1.0"))

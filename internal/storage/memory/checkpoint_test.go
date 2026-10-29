@@ -103,3 +103,41 @@ func TestDeterministicOptions(t *testing.T) {
 		t.Fatal("invalid identity accepted")
 	}
 }
+
+func TestStorageFixtureKeepsChangeOrderAndTime(t *testing.T) {
+	ctx := context.Background()
+	s := New()
+	defer s.Close()
+	lease, err := s.Lease(ctx, "fixture", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixed := time.Date(2026, 10, 1, 2, 3, 4, 0, time.UTC)
+	h := driver.ChangesetHeader{Time: fixed, Principal: model.PrincipalRef{Kind: "system", ID: "fixture"}}
+	changes := []conformance.FixtureChange{{Ref: model.RefByID("pl-z", model.Natural64(0)), Kind: "bead", Op: model.OpCreate, Body: []byte(`{"value":1}`)}, {Ref: model.RefByID("pl-a", model.Natural64(0)), Kind: "bead", Op: model.OpCreate, Body: []byte(`{"value":2}`)}}
+	entry, err := conformance.Seed(ctx, s, lease, h, changes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !entry.Time.Equal(fixed) || len(entry.Changes) != 2 || entry.Changes[0].Ref.ID != "pl-z" || entry.Changes[1].Ref.ID != "pl-a" {
+		t.Fatalf("fixture=%+v", entry)
+	}
+	changes = []conformance.FixtureChange{{Ref: changes[0].Ref, Kind: "bead", Op: model.OpPatch, Body: []byte(`{"value":3}`)}}
+	if err := conformance.SeedRollback(ctx, s, lease, h, changes); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := s.Meta(ctx)
+	if m.Head.String() != "1" {
+		t.Fatalf("rollback advanced head=%s", m.Head)
+	}
+	entry, err = conformance.Seed(ctx, s, lease, h, changes)
+	if err != nil || entry.Changes[0].FromRevision.String() != "1" {
+		t.Fatalf("patch fixture=%+v %v", entry, err)
+	}
+	changes[0].Op = model.OpDelete
+	changes[0].Body = nil
+	entry, err = conformance.Seed(ctx, s, lease, h, changes)
+	if err != nil || entry.Changes[0].FromRevision.String() != "2" {
+		t.Fatalf("delete fixture=%+v %v", entry, err)
+	}
+}
