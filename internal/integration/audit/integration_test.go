@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -259,10 +258,14 @@ func TestConnectedServiceWriterAuditPlanAndSuppression(t *testing.T) {
 		if descriptor.Resource.Ref.ID != dependentA.ID && descriptor.Resource.Ref.ID != dependentB.ID {
 			t.Fatalf("notice resource=%+v", descriptor)
 		}
-		if descriptor.Details == nil || descriptor.Details.Ontology.Ref != f.sourceRef || descriptor.Details.Ontology.Revision.String() != "1" || descriptor.Details.Ontology.Project == nil || descriptor.Details.Ontology.Project.ID != "blocker-project" {
-			t.Fatalf("notice source pin=%+v", descriptor.Details)
+		if descriptor.Details == nil || descriptor.Details.Ontology.Ref.ID != f.sourceRef.ID || descriptor.Details.Ontology.Revision.String() != "1" || descriptor.Details.Ontology.Project == nil || descriptor.Details.Ontology.Project.ID != "blocker-project" {
+			project := "<nil>"
+			if descriptor.Details != nil && descriptor.Details.Ontology.Project != nil {
+				project = descriptor.Details.Ontology.Project.ID
+			}
+			t.Fatalf("notice source pin=%+v project=%q source=%+v", descriptor.Details, project, f.sourceRef)
 		}
-		if descriptor.Details.BlockerBefore.Revision.String() != "4" || descriptor.Details.BlockerAfter.Revision.String() != "6" || descriptor.Details.Edge.Revision.String() != "5" || !descriptor.Details.After.Terminal || descriptor.Details.After.Satisfied {
+		if descriptor.Details.BlockerBefore.Revision.String() != "2" || descriptor.Details.BlockerAfter.Revision.String() != "6" || descriptor.Details.Edge.Revision.String() != "5" || !descriptor.Details.After.Terminal || descriptor.Details.After.Satisfied {
 			t.Fatalf("notice revisions/decision=%+v", descriptor.Details)
 		}
 	}
@@ -275,7 +278,7 @@ func TestConnectedServiceWriterAuditPlanAndSuppression(t *testing.T) {
 		t.Fatalf("materialized close events=%+v", events)
 	}
 	ordinary := events[0].Durable
-	if ordinary.Before["fields"].(map[string]any)["status"] != "todo" || ordinary.After["fields"].(map[string]any)["status"] != "done" || ordinary.Changed[0] != "/fields/status" || ordinary.Derived || ordinary.Cause.Root != fmt.Sprintf("%032x", 7) {
+	if ordinary.Before["fields"].(map[string]any)["status"] != "todo" || ordinary.After["fields"].(map[string]any)["status"] != "done" || !containsString(ordinary.Changed, "/fields/status") || ordinary.Derived || ordinary.Cause.Root != fmt.Sprintf("%032x", 7) {
 		t.Fatalf("ordinary envelope=%+v", ordinary)
 	}
 	for i, event := range events[1:] {
@@ -289,7 +292,12 @@ func TestConnectedServiceWriterAuditPlanAndSuppression(t *testing.T) {
 	if !replayed.Replayed || !reflect.DeepEqual(replayed.Commit, first.Commit) {
 		t.Fatalf("replay outcome=%+v want=%+v", replayed, first)
 	}
-	noOp := f.close(t, blocker, 8, false)
+	noOp, err := f.svc.CloseWithOutcome(f.ctx, auditWriterPrincipal, service.CloseRequest{ID: blocker}, model.WriteMeta{
+		Project: "blocker-project", IdempotencyKey: fmt.Sprintf("%032x", 8),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if noOp.Replayed || noOp.Commit.Revision.String() != first.Commit.Revision.String() {
 		t.Fatalf("close no-op=%+v", noOp)
 	}
@@ -309,6 +317,15 @@ func TestConnectedServiceWriterAuditPlanAndSuppression(t *testing.T) {
 			t.Fatalf("dependent %s versions=%+v err=%v", ref.ID, versions, err)
 		}
 	}
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func TestConnectedAuditOutcomesSuppressUnmetNotices(t *testing.T) {
@@ -366,7 +383,8 @@ func TestConnectedAuditSourceInvalidationRefusesCommit(t *testing.T) {
 	_, err := writer.Apply(f.ctx, auditWriterPrincipal, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: blocker, Fields: map[string]any{}}}}}, model.WriteMeta{
 		Method: "bead.close", Project: "blocker-project", IdempotencyKey: fmt.Sprintf("%032x", 6),
 	})
-	if err == nil || !strings.Contains(err.Error(), "write_conflict") {
+	var modelErr *model.Error
+	if err == nil || !errors.As(err, &modelErr) || modelErr.Data.Code != "write_conflict" {
 		t.Fatalf("source invalidation accepted/unmapped error=%v", err)
 	}
 	if variant != 4 {

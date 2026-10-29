@@ -8,6 +8,7 @@ go_test(
         "//internal/core/model",
         "//internal/core/ontology",
         "//internal/core/pipeline",
+        "//internal/core/port",
         "//internal/core/service",
         "//internal/server/events",
         "//internal/storage/conformance",
