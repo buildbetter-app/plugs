@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "native_guard",
+    srcs = ["native.go"],
+    embedsrcs = ["manifest.json"],
+    importpath = "github.com/buildbetter-app/plugs/examples/plugins/native-guard",
+    visibility = ["//visibility:public"],
+    deps = ["//pluginapi", "//sdk/go:sdk_go"],
+)
+
+go_test(
+    name = "native_guard_test",
+    srcs = ["integration_test.go"],
+    embedsrcs = ["ontology.json"],
+    deps = [
+        ":native_guard",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/server/pluginhost",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//pluginapi",
+        "//sdk/go:sdk_go",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
