@@ -171,3 +171,223 @@ func TestIndependentTakeoverDuringEveryPublication(t *testing.T) {
 		})
 	}
 }
+
+func TestRenewWaitingOnExpiringPublication(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	dsn := freshDSN(t)
+	s, standby := openTest(t, dsn), openTest(t, dsn)
+	if _, err := s.db.ExecContext(ctx, `CREATE FUNCTION plug_postgres.expiring_publication() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN PERFORM pg_advisory_xact_lock(330077); RETURN NEW; END$$; CREATE TRIGGER expiring_publication BEFORE INSERT ON plug_postgres.checkpoints FOR EACH ROW EXECUTE FUNCTION plug_postgres.expiring_publication()`); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Close()
+	if _, err = gate.ExecContext(ctx, `SELECT pg_advisory_lock(330077)`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), time.Second)
+		defer done()
+		_, _ = gate.ExecContext(cleanup, `SELECT pg_advisory_unlock(330077)`)
+	}()
+	active, err := s.Lease(ctx, "expiring-publisher", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := active.(*activeLease)
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), time.Second)
+		defer done()
+		_ = l.Release(cleanup)
+	}()
+	l.mu.Lock()
+	expiry := l.timerDeadline
+	l.mu.Unlock()
+	pubCtx, pubCancel := context.WithCancel(ctx)
+	defer pubCancel()
+	renewCtx, renewCancel := context.WithCancel(ctx)
+	defer renewCancel()
+	published, renewed := make(chan error, 1), make(chan error, 1)
+	go func() {
+		_, err := s.SaveCheckpoint(pubCtx, l, "expiring", 0, []byte("must roll back"))
+		published <- err
+	}()
+	waitFor := func(query, label string) {
+		t.Helper()
+		for {
+			var waiting bool
+			if err := s.db.QueryRowContext(ctx, query).Scan(&waiting); err != nil {
+				t.Fatal(err)
+			}
+			if waiting {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("waiting for %s: %v", label, ctx.Err())
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
+	waitFor(`SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND objid=330077 AND NOT granted)`, "publication SQL gate")
+	go func() { renewed <- l.Renew(renewCtx) }()
+	waitFor(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'UPDATE plug_postgres.lease SET expires=%')`, "renewal waiting for publication's lease row")
+	t.Log("checkpoint holds lease row FOR SHARE; renewal is waiting on that row before expiry")
+
+	// A second heartbeat must honor cancellation even while the first waits.
+	queuedCtx, queuedCancel := context.WithCancel(ctx)
+	queuedCancel()
+	queued := make(chan error, 1)
+	go func() { queued <- l.Renew(queuedCtx) }()
+	select {
+	case err := <-queued:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("cancelled queued renewal: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Error("queued renewal ignored caller cancellation")
+	}
+
+	// Loss and the blocked heartbeat must finish while publication is still
+	// gated. Neither assertion is rescued by manually cancelling renewal.
+	select {
+	case <-l.Lost():
+	case <-time.After(time.Until(expiry) + 350*time.Millisecond):
+		t.Error("renewal's SQL wait prevented expiry notification")
+	}
+	var fenced driver.ErrFenced
+	select {
+	case err := <-renewed:
+		if !errors.As(err, &fenced) {
+			t.Errorf("renewal after expiry: %v", err)
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Error("expired renewal remained blocked on the publication row")
+	}
+	if _, err = gate.ExecContext(ctx, `SELECT pg_advisory_unlock(330077)`); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-published:
+		if !errors.As(err, &fenced) {
+			t.Fatalf("expired publication: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expired publication could not finish its final lease check")
+	}
+	if _, err = s.db.ExecContext(ctx, `DROP TRIGGER expiring_publication ON plug_postgres.checkpoints; DROP FUNCTION plug_postgres.expiring_publication()`); err != nil {
+		t.Fatal(err)
+	}
+	next, err := standby.Lease(ctx, "after-expiry", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Release(ctx)
+	if next.Epoch() <= l.Epoch() {
+		t.Fatal("takeover reused the expired epoch")
+	}
+	if cp, err := standby.LoadCheckpoint(ctx, "expiring"); err != nil || cp.Generation != 0 {
+		t.Fatalf("expired publication persisted: %+v %v", cp, err)
+	}
+	if cp, err := standby.SaveCheckpoint(ctx, next, "expiring", 0, []byte("new holder")); err != nil || cp.Generation != 1 {
+		t.Fatalf("new holder could not publish: %+v %v", cp, err)
+	}
+	if err := l.Renew(ctx); !errors.As(err, &fenced) {
+		t.Fatalf("expired lease was resurrected: %v", err)
+	}
+	t.Log("expiry cancels waiting renewal, fences and rolls back publication, and permits independent takeover without caller cancellation")
+}
+
+func TestRenewCancellationAndReplacedExpiry(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	s := openTest(t, freshDSN(t))
+	active, err := s.Lease(ctx, "renew-cancellation", 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := active.(*activeLease)
+	defer l.Release(ctx)
+	l.mu.Lock()
+	oldExpiry := l.timerDeadline
+	l.mu.Unlock()
+	blocker, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback()
+	if _, err = blocker.ExecContext(ctx, `SELECT epoch FROM plug_postgres.lease WHERE singleton FOR SHARE`); err != nil {
+		t.Fatal(err)
+	}
+	renewCtx, renewCancel := context.WithCancel(ctx)
+	defer renewCancel()
+	result := make(chan error, 1)
+	go func() { result <- l.Renew(renewCtx) }()
+	for {
+		var waiting bool
+		if err = s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'UPDATE plug_postgres.lease SET expires=%')`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(time.Millisecond):
+		}
+	}
+	renewCancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled SQL renewal: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("renewal ignored caller cancellation during SQL wait")
+	}
+	select {
+	case <-l.Lost():
+		t.Fatal("cancellation before expiry terminated the lease")
+	default:
+	}
+	if err = blocker.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	// Renew well before expiry, leaving room to observe the old timer deadline
+	// without crossing the replacement deadline on a loaded host.
+	select {
+	case <-time.After(time.Until(oldExpiry.Add(-time.Second))):
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if err = l.Renew(ctx); err != nil {
+		t.Fatal(err)
+	}
+	l.mu.Lock()
+	newExpiry := l.timerDeadline
+	l.mu.Unlock()
+	select {
+	case <-time.After(time.Until(oldExpiry.Add(100 * time.Millisecond))):
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case <-l.Lost():
+		t.Fatal("old expiry callback terminated a successfully renewed lease")
+	default:
+	}
+	select {
+	case <-l.Lost():
+	case <-time.After(time.Until(newExpiry) + 350*time.Millisecond):
+		t.Fatal("replacement expiry did not terminate the lease")
+	}
+	var fenced driver.ErrFenced
+	if err = l.Renew(ctx); !errors.As(err, &fenced) {
+		t.Fatalf("renewal resurrected the expired lease: %v", err)
+	}
+	t.Log("caller cancellation preserves the live lease; successful renewal replaces the old timer and cannot resurrect after the new expiry")
+}

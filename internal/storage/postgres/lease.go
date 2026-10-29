@@ -18,6 +18,7 @@ type activeLease struct {
 	owner         string
 	epoch         uint64
 	ttl           time.Duration
+	renewing      chan struct{}
 	mu            sync.Mutex
 	lost          chan struct{}
 	timer         *time.Timer
@@ -111,7 +112,7 @@ func (s *Store) Lease(ctx context.Context, holder string, ttl time.Duration) (dr
 		if e != nil {
 			return nil, e
 		}
-		l := &activeLease{store: s, owner: owner, epoch: n + 1, ttl: ttl, lost: make(chan struct{})}
+		l := &activeLease{store: s, owner: owner, epoch: n + 1, ttl: ttl, renewing: make(chan struct{}, 1), lost: make(chan struct{})}
 		l.mu.Lock()
 		l.deadline(started.Add(ttl))
 		l.mu.Unlock()
@@ -169,28 +170,63 @@ func (s *Store) checkLease(ctx context.Context, q querier, lease driver.ActiveLe
 }
 
 func (l *activeLease) Renew(ctx context.Context) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.ended() || !time.Now().Before(l.timerDeadline) {
-		l.signal()
-		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
+	fenced := driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
+	// Serialize heartbeats independently of the state mutex. A queued caller
+	// can stop waiting, and expiry/publication never wait for a SQL heartbeat.
+	select {
+	case l.renewing <- struct{}{}:
+		defer func() { <-l.renewing }()
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-l.Lost():
+		return fenced
 	}
 	if err := l.store.check(ctx); err != nil {
 		return err
 	}
+	l.mu.Lock()
+	if l.ended() || !time.Now().Before(l.timerDeadline) {
+		l.signal()
+		l.mu.Unlock()
+		return fenced
+	}
+	deadline := l.timerDeadline
+	l.mu.Unlock()
+	// A blocked UPDATE cannot outlive this lease. Loss also cancels it on
+	// Release, while the caller's own cancellation remains independently valid.
+	renewCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	go func() {
+		select {
+		case <-l.Lost():
+			cancel()
+		case <-renewCtx.Done():
+		}
+	}()
 	started := time.Now()
 	var epoch string
-	err := l.store.db.QueryRowContext(ctx, `UPDATE plug_postgres.lease SET expires=clock_timestamp()+($3::bigint*interval '1 microsecond') WHERE singleton AND epoch=$1 AND owner=$2 AND expires>clock_timestamp() RETURNING epoch::text`, decimal(l.epoch), l.owner, l.ttl.Microseconds()).Scan(&epoch)
+	err := l.store.db.QueryRowContext(renewCtx, `UPDATE plug_postgres.lease SET expires=clock_timestamp()+($3::bigint*interval '1 microsecond') WHERE singleton AND epoch=$1 AND owner=$2 AND expires>clock_timestamp() RETURNING epoch::text`, decimal(l.epoch), l.owner, l.ttl.Microseconds()).Scan(&epoch)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	// A successful SQL response arriving after local expiry cannot resurrect
+	// the holder or reset its timer. The old timer callback uses this same lock.
+	if l.ended() || !time.Now().Before(deadline) {
+		l.signal()
+		return fenced
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		l.signal()
 		return driver.ErrFenced{ExpectedEpoch: l.epoch}
 	}
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return err
 	}
 	if !time.Now().Before(started.Add(l.ttl)) {
 		l.signal()
-		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
+		return fenced
 	}
 	l.deadline(started.Add(l.ttl))
 	return nil
