@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -379,6 +380,9 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	if err := t.validateChanges(header.Changes); err != nil {
 		return model.Changeset{}, err
 	}
+	if err := t.validatePredicates(); err != nil {
+		return model.Changeset{}, err
+	}
 	head, err := s.state.meta.Head.Uint64()
 	if err != nil {
 		return model.Changeset{}, err
@@ -496,6 +500,68 @@ func (t *transaction) validateChanges(changes []model.ChangeRecord) error {
 	}
 	if len(seen) != len(t.records) {
 		return fmt.Errorf("memory: undeclared record write")
+	}
+	return nil
+}
+
+// Opaque row values do not encode affected predicate scopes. Core selects the
+// exact scopes; this structural check proves required families and atomic bumps,
+// rather than claiming to verify the semantic coverage of every affected row.
+func (t *transaction) validatePredicates() error {
+	for _, request := range t.acquired {
+		if request.Key.Kind == driver.LockSentinel && request.Mode != driver.LockShare {
+			if _, bumped := t.bumps[keyID(request.Key)]; !bumped {
+				return fmt.Errorf("memory: update sentinel must be bumped")
+			}
+		}
+	}
+	for id, record := range t.records {
+		kind := t.base.kinds[id]
+		if record != nil {
+			kind = record.Kind
+		}
+		if kind != "bead" {
+			continue
+		}
+		ref := t.recordRef(id)
+		if !ref.IsID() {
+			return fmt.Errorf("memory: bead writes require a resolved id")
+		}
+		sentinel, err := driver.NewBeadSentinel(ref.ID)
+		if err != nil {
+			return err
+		}
+		if _, bumped := t.bumps[keyID(driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})]; !bumped {
+			return fmt.Errorf("memory: bead write requires its exact bead sentinel bump")
+		}
+	}
+	for _, value := range t.derived {
+		family := ""
+		switch value.Key.Derived.Table {
+		case driver.DerivedReadyState:
+			family = "ready/"
+		case driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute:
+			family = "closure/"
+		case driver.DerivedGrant:
+			family = "grant/"
+		case driver.DerivedOntology:
+			family = "ontology"
+		case driver.DerivedPlugins:
+			family = "plugins"
+		}
+		if family == "" {
+			continue
+		}
+		found := false
+		for _, key := range t.bumps {
+			if key.Kind == driver.LockSentinel && (string(key.Sentinel) == family || strings.HasSuffix(family, "/") && strings.HasPrefix(string(key.Sentinel), family)) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("memory: derived table %s requires a %s predicate bump", value.Key.Derived.Table, family)
+		}
 	}
 	return nil
 }
