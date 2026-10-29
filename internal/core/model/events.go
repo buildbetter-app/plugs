@@ -14,34 +14,35 @@ const (
 	EventDurable EventCategory = "durable"
 	EventControl EventCategory = "control"
 
-	EventBeadCreated        DurableEventType = "bead.created"
-	EventBeadUpdated        DurableEventType = "bead.updated"
-	EventBeadReparented     DurableEventType = "bead.reparented"
-	EventBeadLinked         DurableEventType = "bead.linked"
-	EventBeadUnlinked       DurableEventType = "bead.unlinked"
-	EventBeadCommented      DurableEventType = "bead.commented"
-	EventBeadAttached       DurableEventType = "bead.attached"
-	EventBeadDeleted        DurableEventType = "bead.deleted"
-	EventBeadClaimed        DurableEventType = "bead.claimed"
-	EventBeadReleased       DurableEventType = "bead.released"
-	EventBeadClosed         DurableEventType = "bead.closed"
-	EventBeadFailed         DurableEventType = "bead.failed"
-	EventBeadCanceled       DurableEventType = "bead.canceled"
-	EventBeadReopened       DurableEventType = "bead.reopened"
-	EventBeadDeferred       DurableEventType = "bead.deferred"
-	EventBeadLeaseReclaimed DurableEventType = "bead.lease.reclaimed"
-	EventGateApproved       DurableEventType = "gate.approved"
-	EventGateReported       DurableEventType = "gate.reported"
-	EventGateEscalated      DurableEventType = "gate.escalated"
-	EventOntologyApplied    DurableEventType = "ontology.applied"
-	EventPluginApplied      DurableEventType = "plugin.applied"
-	EventViewSaved          DurableEventType = "view.saved"
-	EventViewDeleted        DurableEventType = "view.deleted"
-	EventMemorySaved        DurableEventType = "memory.saved"
-	EventMemoryDeleted      DurableEventType = "memory.deleted"
-	EventSyncPushed         DurableEventType = "sync.pushed"
-	EventSyncImported       DurableEventType = "sync.imported"
-	EventDerivedUpdated     DurableEventType = "derived.updated"
+	EventBeadCreated              DurableEventType = "bead.created"
+	EventBeadUpdated              DurableEventType = "bead.updated"
+	EventBeadReparented           DurableEventType = "bead.reparented"
+	EventBeadLinked               DurableEventType = "bead.linked"
+	EventBeadUnlinked             DurableEventType = "bead.unlinked"
+	EventBeadCommented            DurableEventType = "bead.commented"
+	EventBeadAttached             DurableEventType = "bead.attached"
+	EventBeadDeleted              DurableEventType = "bead.deleted"
+	EventBeadClaimed              DurableEventType = "bead.claimed"
+	EventBeadReleased             DurableEventType = "bead.released"
+	EventBeadClosed               DurableEventType = "bead.closed"
+	EventBeadFailed               DurableEventType = "bead.failed"
+	EventBeadCanceled             DurableEventType = "bead.canceled"
+	EventBeadReopened             DurableEventType = "bead.reopened"
+	EventBeadDeferred             DurableEventType = "bead.deferred"
+	EventBeadLeaseReclaimed       DurableEventType = "bead.lease.reclaimed"
+	EventGateApproved             DurableEventType = "gate.approved"
+	EventGateReported             DurableEventType = "gate.reported"
+	EventGateEscalated            DurableEventType = "gate.escalated"
+	EventOntologyApplied          DurableEventType = "ontology.applied"
+	EventPluginApplied            DurableEventType = "plugin.applied"
+	EventViewSaved                DurableEventType = "view.saved"
+	EventViewDeleted              DurableEventType = "view.deleted"
+	EventMemorySaved              DurableEventType = "memory.saved"
+	EventMemoryDeleted            DurableEventType = "memory.deleted"
+	EventSyncPushed               DurableEventType = "sync.pushed"
+	EventSyncImported             DurableEventType = "sync.imported"
+	EventDerivedUpdated           DurableEventType = "derived.updated"
+	EventDependencyConditionUnmet DurableEventType = "dependency.conditionUnmet"
 
 	EventGap            ControlEventType = "event.gap"
 	EventWatchDelta     ControlEventType = "watch.delta"
@@ -86,16 +87,17 @@ func (c EventCause) MarshalJSON() ([]byte, error) {
 
 type DurableEvent struct {
 	EventPosition
-	Type      DurableEventType  `json:"type"`
-	Resource  string            `json:"resource"`
-	Changed   []string          `json:"changed"`
-	Before    map[string]any    `json:"before,omitempty"`
-	After     map[string]any    `json:"after,omitempty"`
-	Principal PrincipalRef      `json:"principal"`
-	Chain     []string          `json:"chain"`
-	SetBy     map[string]string `json:"setBy"`
-	Cause     EventCause        `json:"cause"`
-	Derived   bool              `json:"derived"`
+	Type      DurableEventType       `json:"type"`
+	Resource  string                 `json:"resource"`
+	Changed   []string               `json:"changed"`
+	Before    map[string]any         `json:"before,omitempty"`
+	After     map[string]any         `json:"after,omitempty"`
+	Principal PrincipalRef           `json:"principal"`
+	Chain     []string               `json:"chain"`
+	SetBy     map[string]string      `json:"setBy"`
+	Cause     EventCause             `json:"cause"`
+	Derived   bool                   `json:"derived"`
+	Details   *ConditionUnmetDetails `json:"details,omitempty"`
 }
 type ControlDetails interface{ controlDetails() }
 type EventGapDetails struct {
@@ -323,7 +325,7 @@ func validDurableEventType(kind DurableEventType) bool {
 		EventBeadClosed, EventBeadFailed, EventBeadCanceled, EventBeadReopened, EventBeadDeferred,
 		EventBeadLeaseReclaimed, EventGateApproved, EventGateReported, EventGateEscalated, EventOntologyApplied,
 		EventPluginApplied, EventViewSaved, EventViewDeleted, EventMemorySaved, EventMemoryDeleted,
-		EventSyncPushed, EventSyncImported, EventDerivedUpdated:
+		EventSyncPushed, EventSyncImported, EventDerivedUpdated, EventDependencyConditionUnmet:
 		return true
 	default:
 		return false
@@ -391,6 +393,19 @@ func validateDurableEvent(value DurableEvent) error {
 	}
 	if value.Changed == nil || value.Chain == nil || value.SetBy == nil {
 		return fmt.Errorf("durable event has a missing required collection")
+	}
+	if value.Type == EventDependencyConditionUnmet {
+		if value.Details == nil {
+			return fmt.Errorf("condition-unmet event needs details")
+		}
+		if err := value.Details.Validate(); err != nil {
+			return err
+		}
+		if value.Resource != "bead/"+value.Details.Dependent.Ref.ID || len(value.Changed) != 0 || value.Before != nil || value.After != nil || value.Derived {
+			return fmt.Errorf("condition notice forbids fake dependent mutation/images")
+		}
+	} else if value.Details != nil {
+		return fmt.Errorf("ordinary event forbids condition details")
 	}
 	if err := validatePrincipal(value.Principal); err != nil {
 		return err
@@ -541,16 +556,17 @@ func (d *DurableEvent) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		Category EventCategory `json:"category"`
 		EventPosition
-		Type      DurableEventType  `json:"type"`
-		Resource  string            `json:"resource"`
-		Changed   []string          `json:"changed"`
-		Before    map[string]any    `json:"before,omitempty"`
-		After     map[string]any    `json:"after,omitempty"`
-		Principal PrincipalRef      `json:"principal"`
-		Chain     []string          `json:"chain"`
-		SetBy     map[string]string `json:"setBy"`
-		Cause     EventCause        `json:"cause"`
-		Derived   bool              `json:"derived"`
+		Type      DurableEventType       `json:"type"`
+		Resource  string                 `json:"resource"`
+		Changed   []string               `json:"changed"`
+		Before    map[string]any         `json:"before,omitempty"`
+		After     map[string]any         `json:"after,omitempty"`
+		Principal PrincipalRef           `json:"principal"`
+		Chain     []string               `json:"chain"`
+		SetBy     map[string]string      `json:"setBy"`
+		Cause     EventCause             `json:"cause"`
+		Derived   bool                   `json:"derived"`
+		Details   *ConditionUnmetDetails `json:"details,omitempty"`
 	}
 	if err := decodeStrict(data, &wire, "category", "cursor", "incarnation", "revision", "index", "type", "resource", "changed", "principal", "chain", "setBy", "cause", "derived"); err != nil {
 		return err
@@ -579,6 +595,7 @@ func (d *DurableEvent) UnmarshalJSON(data []byte) error {
 		SetBy:         wire.SetBy,
 		Cause:         wire.Cause,
 		Derived:       wire.Derived,
+		Details:       wire.Details,
 	}
 	if err := validateDurableEvent(value); err != nil {
 		return err
