@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,67 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 )
+
+func TestReplayMetadataIsValidatedSeparatelyFromStoredResult(t *testing.T) {
+	for _, tc := range []struct {
+		name, meta string
+		valid      bool
+	}{
+		{"first", "", true},
+		{"replayed", `,"_meta":{"replayed":true}`, true},
+		{"false", `,"_meta":{"replayed":false}`, false},
+		{"string", `,"_meta":{"replayed":"true"}`, false},
+		{"null", `,"_meta":null`, false},
+		{"empty", `,"_meta":{}`, false},
+		{"unknown", `,"_meta":{"replayed":true,"principal":"forged"}`, false},
+		{"duplicate", `,"_meta":{"replayed":true,"replayed":true}`, false},
+		{"unknown-envelope", `,"replayed":true`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stored := []byte(`{"results":[],"revision":9007199254740993,"warnings":[{"code":"post_subscriber_failed","message":"retained"}]}`)
+			c, err := New(roundTripFunc(func(_ context.Context, b []byte) ([]byte, error) {
+				var req struct{ ID string }
+				if err := json.Unmarshal(b, &req); err != nil {
+					t.Fatal(err)
+				}
+				return []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%q,"result":%s%s}`, req.ID, stored, tc.meta)), nil
+			}), "local", "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := c.Call(context.Background(), "bead.comment", map[string]any{"id": map[string]any{"id": "pl-1"}, "body": "text"}, "")
+			if !tc.valid {
+				if err == nil {
+					t.Fatal("malformed response metadata accepted")
+				}
+				return
+			}
+			if err != nil || result.Replayed != (tc.name == "replayed") || !bytes.Equal(result.JSON, stored) {
+				t.Fatalf("result or transient metadata changed: %+v %v", result, err)
+			}
+		})
+	}
+	for _, method := range []string{"bead.get", "bead.comment"} {
+		t.Run("refuse-error-meta-"+method, func(t *testing.T) {
+			c, err := New(roundTripFunc(func(_ context.Context, b []byte) ([]byte, error) {
+				var req struct{ ID string }
+				_ = json.Unmarshal(b, &req)
+				cat, _ := wire.DefaultCatalog()
+				return json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": cat.NewError("not_found", "", nil), "_meta": map[string]any{"replayed": true}})
+			}), "local", "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			params := map[string]any{"id": map[string]any{"id": "pl-1"}}
+			if method == "bead.comment" {
+				params["body"] = "text"
+			}
+			if _, err := c.Call(context.Background(), method, params, ""); err == nil || err.Error() != "invalid RPC replay response metadata" {
+				t.Fatalf("error metadata accepted: %v", err)
+			}
+		})
+	}
+}
 
 type roundTripFunc func(context.Context, []byte) ([]byte, error)
 

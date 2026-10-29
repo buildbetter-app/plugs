@@ -37,10 +37,12 @@ func New(transport Transport, project, agent string) (*Client, error) {
 
 // Result retains the complete result, including every warning. IdempotencyKey
 // is supplied even after a lost response so a caller can explicitly retry the
-// same operation. Call never retries a write using a new key.
+// same operation. Replayed is response metadata, separate from the stored result.
+// Call never retries a write using a new key.
 type Result struct {
 	JSON           json.RawMessage
 	IdempotencyKey string
+	Replayed       bool
 }
 
 func (c *Client) Call(ctx context.Context, method string, params map[string]any, key string) (Result, error) {
@@ -110,9 +112,16 @@ func (c *Client) Call(ctx context.Context, method string, params map[string]any,
 		return result, fmt.Errorf("RPC response must contain exactly one of result or error")
 	}
 	for k := range envelope {
-		if k != "jsonrpc" && k != "id" && k != "result" && k != "error" {
+		if k != "jsonrpc" && k != "id" && k != "result" && k != "error" && k != "_meta" {
 			return result, fmt.Errorf("unknown RPC response member %q", k)
 		}
+	}
+	if meta, present := envelope["_meta"]; present {
+		object, ok := meta.(map[string]any)
+		if !hasResult || desc.Idempotency != "required" || !ok || len(object) != 1 || object["replayed"] != true {
+			return result, fmt.Errorf("invalid RPC replay response metadata")
+		}
+		result.Replayed = true
 	}
 	if hasError {
 		raw, err := json.Marshal(envelope["error"])
