@@ -1,0 +1,91 @@
+// Package port contains the core-owned synchronous callback boundaries.
+package port
+
+import (
+	"context"
+	"encoding/json"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
+)
+
+// SnapshotReader has no write handle. Pre reads are pinned to BaseRevision
+// and recorded in the commit guard, including missing records and queries.
+// Post reads are pinned to the committed revision.
+type SnapshotReader interface {
+	Snapshot() driver.View
+	Get(context.Context, []model.Ref) ([]driver.Record, error)
+	Query(context.Context, driver.Query) (driver.Page[driver.Record], error)
+	Observe(context.Context, []driver.LockKey) ([]driver.LockState, error)
+}
+
+type Change struct {
+	Resource model.ResourceRef
+	Op       model.Op
+	Before   json.RawMessage
+	After    json.RawMessage
+	SetBy    map[string]string
+}
+
+type ProposedChange struct {
+	RequestID    string
+	Principal    model.PrincipalRef
+	BaseRevision model.Revision
+	DryRun       bool
+	Meta         model.WriteMeta
+	Changes      []Change
+}
+
+type CommittedChange struct {
+	RequestID string
+	Principal model.PrincipalRef
+	Revision  model.Revision
+	Meta      model.WriteMeta
+	Changes   []Change
+}
+
+// Paths use fields.<name>. A null value clears that field. A patch may only
+// target an already proposed, live record and a declared owned field.
+type Patch struct {
+	Resource model.ResourceRef
+	Paths    map[string]json.RawMessage
+}
+
+type Verdict struct {
+	Allow      bool
+	Violations []model.Violation
+}
+
+type Mutator interface {
+	Mutate(context.Context, ProposedChange, SnapshotReader) ([]Patch, error)
+}
+
+type Validator interface {
+	Validate(context.Context, ProposedChange, SnapshotReader) (Verdict, error)
+}
+
+type PostSubscriber interface {
+	After(context.Context, CommittedChange, SnapshotReader) error
+}
+
+// Ontology supplies defaults and named slot selection, then validates the
+// complete post-image and fixed guards. Its reads join the same commit guard.
+// A service must not validate transitions before Apply's idempotency lookup.
+type Ontology interface {
+	Normalize(context.Context, ProposedChange, SnapshotReader) ([]Patch, error)
+	Validate(context.Context, ProposedChange, SnapshotReader) error
+}
+
+type AuthorizationStage string
+
+const (
+	AuthorizeBefore AuthorizationStage = "before"
+	AuthorizeAfter  AuthorizationStage = "after"
+	AuthorizeReplay AuthorizationStage = "replay"
+)
+
+// Authorizer is optional. With none installed the pipeline allows the caller.
+// Replay is checked against current facts without rerunning pre/post callbacks.
+type Authorizer interface {
+	Authorize(context.Context, AuthorizationStage, ProposedChange, SnapshotReader) error
+}

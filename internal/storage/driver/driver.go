@@ -69,7 +69,8 @@ type Version struct {
 	CreatedAt time.Time
 	Principal model.PrincipalRef
 	// Deleted is a tombstone. A nil body alone never means deletion. Versions
-	// are append-only; every 32nd version (including creation) is a full base.
+	// are append-only, with a full base at creation and at least every 32
+	// versions thereafter, so historical replay needs at most 31 diffs.
 	Deleted bool
 }
 type DerivedTable string
@@ -549,6 +550,11 @@ type WriteTx interface {
 	// predicates. Each sentinel requires an acquired update/skipLocked lock.
 	// At commit each bumped key receives the new changeset revision, once.
 	BumpSentinels(context.Context, []Sentinel) error
+	// BumpReadFacts stages opaque read-fact revisions atomically with the
+	// changeset. Each fact requires an acquired update/skipLocked fact lock;
+	// the driver never infers a mapping from record or sentinel identities.
+	// Missing facts can be bumped; rollback publishes no new key revision.
+	BumpReadFacts(context.Context, []ReadFact) error
 	// Commit repeats exactly the acquired LockKeys, rejects undeclared writes
 	// and atomically publishes records, tombstones, versions, blobs, derived
 	// rows, bumped revisions and the changeset (G3). It enforces G4 under the
