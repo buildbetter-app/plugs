@@ -13,6 +13,13 @@ type AsOf struct {
 	Incarnation string
 }
 
+// PagePosition is domain state, never an untrusted wire token. RPC signs and
+// validates its method/principal/filter binding before passing it to service.
+type PagePosition struct {
+	Offset int
+	AsOf   AsOf
+}
+
 type Filter struct {
 	Query     string
 	Resources []string
@@ -27,11 +34,12 @@ type GetRequest struct {
 }
 
 type ReadyRequest struct {
-	Project string
-	ViewID  string
-	Filter  *Filter
-	Limit   int
-	Cursor  string
+	Project  string
+	ViewID   string
+	Filter   *Filter
+	Limit    int
+	Cursor   string
+	Position *PagePosition
 }
 
 type CreateRequest struct {
@@ -64,11 +72,12 @@ type CloseRequest struct {
 }
 
 type HistoryRequest struct {
-	Project string
-	AsOf    AsOf
-	Filter  *Filter
-	Limit   int
-	Cursor  string
+	Project  string
+	AsOf     AsOf
+	Filter   *Filter
+	Limit    int
+	Cursor   string
+	Position *PagePosition
 }
 
 type Bead struct {
@@ -106,6 +115,7 @@ type BeadPage struct {
 	Items      []Bead
 	NextCursor string
 	AsOf       AsOf
+	Next       *PagePosition
 }
 
 type ClaimResult struct {
