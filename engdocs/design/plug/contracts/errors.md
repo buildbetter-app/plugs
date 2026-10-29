@@ -18,6 +18,10 @@ registry artifact, and the reproduction commands are recorded in
 `openrpc.json` under `x-source-evidence` and `x-method-registry`. The artifact
 must validate the method inventory and descriptor parity before implementation
 PRs consume it; a future generator may replace it only with equivalent checks.
+The current source binding includes answered #17's fixed project/team
+permission requirement; approval of a concrete authorization design remains
+pending. `x-contract-gaps` also records C7's unrestricted restore-manifest
+parameter, so this bounded snapshot does not admit typed restore consumers.
 
 A committed write returns warnings inside `result.warnings`; it never returns
 both a committed result and a JSON-RPC `error`. The `audience` value guides

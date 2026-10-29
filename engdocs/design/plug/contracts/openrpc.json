@@ -11379,7 +11379,8 @@
   },
   "x-contract-gaps": [
     "The design names authn.authenticate and authz.* as plugin-host calls; authn.authenticate and authz.verify are represented, while other hot-path calls remain host-internal.",
-    "Authorization is reopened by accepted decision #15 after the failed repaired latency gate; affected implementation remains blocked pending human approval of the revisited design (D3). Existing descriptors are not a new model selection."
+    "Authorization is reopened by accepted decision #15 after the failed repaired latency gate. Answered #17 requires fixed project/team permissions; affected implementation remains blocked pending human approval of a concrete revisited design (D3). Existing descriptors do not select a concrete model or adopt Cedar.",
+    "C7 dependency: admin.restore.begin.manifest remains an unrestricted object (type: object, additionalProperties: true), including in the stored method registry. The plug-dump/1 manifest schema and samples, paired version census, version refusal, store/head/lock metadata, checksum and verification declarations, and kind/secret rules are deferred to C7. This catalog cannot generate a typed restore manifest validator; C7 and typed restore consumers remain blocked until that contract is published and accepted."
   ],
   "x-method-registry": {
     "format": "plug-method-registry/1",
@@ -15678,7 +15679,7 @@
       },
       {
         "path": "review-2026-10-27.md",
-        "sha256": "45c8b4b6b8fc577bbe7b2f97dc4ee4c9ccc48565a2dc5e7095786af7bc386052"
+        "sha256": "729a3d63ab77cbfa375000671d19248117b962584162d0bada6f5139f1bf1e6e"
       }
     ],
     "methodInventory": {
@@ -15719,7 +15720,7 @@
       "path": "/home/dev/plugs/engdocs/design/plug",
       "note": "The design inputs are intentionally untracked outside this contract worktree; this contract retains their digests. An implementation generator may later vendor the registry, but it must preserve this artifact's independent checks."
     },
-    "authorizationStatus": "D3 completed with correctness passing and unchanged latency targets failing. Affected authorization contract and consumer implementation remains blocked pending approval of a revisited design; this snapshot does not adopt Cedar or choose a replacement model."
+    "authorizationStatus": "D3 completed with correctness passing and unchanged latency targets failing. Answered decision #17 requires fixed project/team permissions, Linear-style; a concrete revisited design still needs human approval. Affected authorization contract and consumer implementation remains blocked; this snapshot does not adopt Cedar or choose a concrete replacement model."
   },
   "x-driver-error-mappings": [
     {

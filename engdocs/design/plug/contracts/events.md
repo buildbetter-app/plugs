@@ -97,6 +97,15 @@ boundary. A native plugin and a WASM plugin therefore see the flat OpenRPC
 frame shown below; neither receives a Go wrapper containing a nested event
 member.
 
+The wire schemas require string members by presence and type without imposing
+an additional minimum length. In particular, `visibility.lost.resource` is
+required even when empty, and every other control type forbids that member.
+Revisions, indexes and floors use the full nonnegative JSON integer domain;
+`1.0` and `1e0` are integral spellings, and Go codecs preserve values beyond
+machine integer ranges. `rpc.rejected.details.requestId` accepts a string or
+an arbitrary-precision signed integer and must decode every supported ID that
+its Go codec emits. `cause.depth` retains its maximum of 8.
+
 ## Event envelope
 
 Every event frame delivered to a client has the tagged-union shape below.

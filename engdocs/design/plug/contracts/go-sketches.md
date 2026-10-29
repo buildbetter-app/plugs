@@ -6,6 +6,21 @@ packages are internal. Names and fields are deliberately wire-oriented so a
 native plugin and a source-built WASM plugin receive the same JSON-RPC
 messages.
 
+**Completion Contract.** Done = native and WASM clients share the published
+operation, event, reference and principal wire domains, proven by schema-to-Go
+and Go-to-schema checks, self-roundtrips and registry validation; compilation
+or one accepted corpus alone does not count. This is a bounded contract
+artifact, with implementation and deferred contract gaps gated separately.
+
+String requirements check member presence and type; they do not add a minimum
+length absent from OpenRPC. References retain which member was present even
+when its string is empty. `Natural` preserves the schemas' unbounded
+nonnegative integers, including integral decimal and exponent spellings;
+engine-sized conversions must return an overflow error. `EventCause.depth`
+still has the schema's maximum of 8. The public principal codec validates the
+same shape and closed kinds as the model; transport authentication still
+stamps the effective principal.
+
 ## Shared model and `ChangeSet`
 
 ```go
@@ -18,14 +33,133 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
+	"math/big"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 )
 
-type Revision int64
-type Branch uint32
+// Natural is the lossless nonnegative JSON-integer wire domain. A zero Go
+// value represents zero. It deliberately has no uint32/int64/uint64 ceiling:
+// the accepted OpenRPC schemas specify no such maximum. Drivers must check
+// conversion to engine-sized integers and may never silently narrow a value.
+// Direct casts are checked again by Validate and MarshalJSON.
+type Natural string
+
+func Natural64(value uint64) Natural { return Natural(strconv.FormatUint(value, 10)) }
+
+func (value Natural) Canonical() (string, error) {
+	text := string(value)
+	if text == "" {
+		text = "0"
+	}
+	canonical, err := canonicalInteger([]byte(text))
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(canonical, "-") {
+		return "", fmt.Errorf("expected nonnegative integer")
+	}
+	return canonical, nil
+}
+
+func (value Natural) Validate() error {
+	_, err := value.Canonical()
+	return err
+}
+
+func (value Natural) IsZero() bool {
+	canonical, err := value.Canonical()
+	return err == nil && canonical == "0"
+}
+
+func (value Natural) String() string {
+	canonical, err := value.Canonical()
+	if err != nil {
+		return "<invalid integer>"
+	}
+	return canonical
+}
+
+func (value Natural) Uint64() (uint64, error) {
+	canonical, err := value.Canonical()
+	if err != nil {
+		return 0, err
+	}
+	// Canonical values of at most 20 digits are expanded. An exponent here
+	// therefore cannot fit uint64; ParseUint rejects it without allocation.
+	return strconv.ParseUint(canonical, 10, 64)
+}
+
+func (value Natural) MarshalJSON() ([]byte, error) {
+	canonical, err := value.Canonical()
+	return []byte(canonical), err
+}
+
+func (value *Natural) UnmarshalJSON(data []byte) error {
+	canonical, err := canonicalInteger(data)
+	if err != nil {
+		return err
+	}
+	decoded := Natural(canonical)
+	if err := decoded.Validate(); err != nil {
+		return err
+	}
+	*value = decoded
+	return nil
+}
+
+// canonicalInteger recognizes mathematical JSON integers, including 1.0,
+// 1e0, and large integral exponents, without float64 rounding. It normalizes
+// equivalent spellings. Exponents stay symbolic so a short input such as
+// 1e1000000000 does not allocate a billion-digit integer.
+func canonicalInteger(data []byte) (string, error) {
+	text := strings.TrimSpace(string(data))
+	if text == "" || !json.Valid([]byte(text)) || (text[0] != '-' && (text[0] < '0' || text[0] > '9')) {
+		return "", fmt.Errorf("expected JSON integer")
+	}
+	negative := strings.HasPrefix(text, "-")
+	if negative {
+		text = text[1:]
+	}
+	exponent := new(big.Int)
+	if index := strings.IndexAny(text, "eE"); index >= 0 {
+		if _, ok := exponent.SetString(text[index+1:], 10); !ok {
+			return "", fmt.Errorf("invalid integer exponent")
+		}
+		text = text[:index]
+	}
+	fractionDigits := 0
+	if index := strings.IndexByte(text, '.'); index >= 0 {
+		fractionDigits = len(text) - index - 1
+	}
+	digits := strings.TrimLeft(strings.ReplaceAll(text, ".", ""), "0")
+	if digits == "" {
+		return "0", nil
+	}
+	coefficient := strings.TrimRight(digits, "0")
+	trailingZeros := len(digits) - len(coefficient)
+	exponent.Sub(exponent, big.NewInt(int64(fractionDigits-trailingZeros)))
+	if exponent.Sign() < 0 {
+		return "", fmt.Errorf("JSON number is not integral")
+	}
+	canonical := coefficient
+	if exponent.Sign() > 0 {
+		if exponent.IsInt64() && exponent.Int64() <= int64(20-len(coefficient)) {
+			canonical += strings.Repeat("0", int(exponent.Int64()))
+		} else {
+			canonical += "e" + exponent.String()
+		}
+	}
+	if negative {
+		canonical = "-" + canonical
+	}
+	return canonical, nil
+}
+
+type Revision = Natural
+type Branch = Natural
 type ErrorCode string   // closed by components.schemas.ErrorCode in OpenRPC
 type WarningCode string // closed by components.schemas.WarningCode in OpenRPC
 
@@ -250,20 +384,57 @@ func (code *WarningCode) UnmarshalJSON(data []byte) error {
 }
 
 type Ref struct {
-	// The JSON representation is always an object. Exactly one of ID or Key is
-	// set; Branch is valid only when ID is set. This is the same oneOf as the
-	// OpenRPC Ref schema (there is no string shorthand on the wire).
-	ID     string `json:"id,omitempty"`
-	Branch Branch `json:"branch,omitempty"`
-	Key    string `json:"key,omitempty"`
+	// Presence selects the oneOf arm, including an explicit empty id or key.
+	// Use the constructors to select an empty arm in native Go code.
+	ID       string       `json:"id,omitempty"`
+	Branch   Natural      `json:"branch,omitempty"`
+	Key      string       `json:"key,omitempty"`
+	selected refSelection `json:"-"`
 }
 
-func (r Ref) Validate() error {
-	if (r.ID == "") == (r.Key == "") {
-		return fmt.Errorf("ref must contain exactly one of id or key")
+type refSelection uint8
+
+const (
+	refUnselected refSelection = iota
+	refID
+	refKey
+)
+
+func RefByID(id string, branch Natural) Ref { return Ref{ID: id, Branch: branch, selected: refID} }
+func RefByKey(key string) Ref               { return Ref{Key: key, selected: refKey} }
+
+func (r Ref) selection() refSelection {
+	if r.selected != refUnselected {
+		return r.selected
 	}
-	if r.Key != "" && r.Branch != 0 {
-		return fmt.Errorf("ref key cannot carry a branch")
+	if r.ID != "" || !r.Branch.IsZero() {
+		return refID
+	}
+	if r.Key != "" {
+		return refKey
+	}
+	return refUnselected
+}
+
+// IsID preserves the selected form even when the selected string is empty.
+// Callers validate the reference before using it as an identity or lock key.
+func (r Ref) IsID() bool { return r.selection() == refID }
+
+func (r Ref) Validate() error {
+	if err := r.Branch.Validate(); err != nil {
+		return fmt.Errorf("ref branch: %w", err)
+	}
+	switch r.selection() {
+	case refID:
+		if r.Key != "" {
+			return fmt.Errorf("ref cannot contain both id and key")
+		}
+	case refKey:
+		if r.ID != "" || !r.Branch.IsZero() {
+			return fmt.Errorf("ref key cannot carry an id or branch")
+		}
+	default:
+		return fmt.Errorf("ref must contain exactly one of id or key")
 	}
 	return nil
 }
@@ -272,8 +443,15 @@ func (r Ref) MarshalJSON() ([]byte, error) {
 	if err := r.Validate(); err != nil {
 		return nil, err
 	}
-	type wireRef Ref
-	return json.Marshal(wireRef(r))
+	if r.IsID() {
+		return json.Marshal(struct {
+			ID     string  `json:"id"`
+			Branch Natural `json:"branch,omitempty"`
+		}{r.ID, r.Branch})
+	}
+	return json.Marshal(struct {
+		Key string `json:"key"`
+	}{r.Key})
 }
 
 func (r *Ref) UnmarshalJSON(data []byte) error {
@@ -297,6 +475,11 @@ func (r *Ref) UnmarshalJSON(data []byte) error {
 		}
 	}
 	decoded := Ref(value)
+	if hasID {
+		decoded.selected = refID
+	} else {
+		decoded.selected = refKey
+	}
 	if err := decoded.Validate(); err != nil {
 		return err
 	}
@@ -437,9 +620,6 @@ func validateCreate(value CreateOp) error {
 	if value.Kind != OpCreate {
 		return fmt.Errorf("create operation has kind %q", value.Kind)
 	}
-	if value.Type == "" {
-		return fmt.Errorf("create operation requires type")
-	}
 	return requireNonNilMap("fields", value.Fields)
 }
 
@@ -460,9 +640,6 @@ func validateReparent(value ReparentOp) error {
 func validateLink(value LinkOp) error {
 	if value.Kind != OpLink && value.Kind != OpUnlink {
 		return fmt.Errorf("link operation has kind %q", value.Kind)
-	}
-	if value.LinkKind == "" {
-		return fmt.Errorf("link operation requires linkKind")
 	}
 	return nil
 }
@@ -491,9 +668,6 @@ func validateDelete(value DeleteOp) error {
 func validateSetMeta(value SetMetaOp) error {
 	if value.Kind != OpSetMeta {
 		return fmt.Errorf("setMeta operation has kind %q", value.Kind)
-	}
-	if value.Key == "" {
-		return fmt.Errorf("setMeta operation requires key")
 	}
 	if len(value.Value) == 0 {
 		return fmt.Errorf("setMeta operation requires a JSON value")
@@ -746,11 +920,11 @@ type EventPosition struct {
 	Cursor      string   `json:"cursor"`
 	Incarnation string   `json:"incarnation"`
 	Revision    Revision `json:"revision"`
-	Index       uint64   `json:"index"`
+	Index       Natural  `json:"index"`
 }
 type EventCause struct {
 	Root  string   `json:"root"`
-	Depth uint8    `json:"depth"`
+	Depth Natural  `json:"depth"`
 	Chain []string `json:"chain"`
 }
 
@@ -946,12 +1120,39 @@ type RPCRejectedDetails struct {
 
 func (RPCRejectedDetails) controlDetails() {}
 
+// marshalRequestID retains the complete string/integer schema domain. JSON
+// numbers are checked mathematically, without int64 or float64 conversion.
+func marshalRequestID(value any) ([]byte, error) {
+	switch value.(type) {
+	case string:
+		return json.Marshal(value)
+	case json.Number, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+		canonical, err := canonicalInteger(raw)
+		if err != nil {
+			return nil, fmt.Errorf("rpc.rejected requestId must be an integer: %w", err)
+		}
+		return []byte(canonical), nil
+	default:
+		return nil, fmt.Errorf("rpc.rejected requestId must be a string or integer")
+	}
+}
+
 func (d RPCRejectedDetails) MarshalJSON() ([]byte, error) {
 	if err := validateControlDetails(EventRPCRejected, d); err != nil {
 		return nil, err
 	}
-	type wireDetails RPCRejectedDetails
-	return json.Marshal(wireDetails(d))
+	requestID, err := marshalRequestID(d.RequestID)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(struct {
+		RequestID json.RawMessage `json:"requestId"`
+		Reason    string          `json:"reason"`
+	}{requestID, d.Reason})
 }
 
 func (d *RPCRejectedDetails) UnmarshalJSON(data []byte) error {
@@ -1040,10 +1241,10 @@ func validVisibilityReason(reason string) bool {
 }
 
 func validateEventPosition(position EventPosition) error {
-	if position.Cursor == "" || position.Incarnation == "" || position.Revision < 0 {
-		return fmt.Errorf("event position is incomplete")
+	if err := position.Revision.Validate(); err != nil {
+		return fmt.Errorf("event revision: %w", err)
 	}
-	return nil
+	return position.Index.Validate()
 }
 
 func validateDurableEvent(value DurableEvent) error {
@@ -1053,7 +1254,7 @@ func validateDurableEvent(value DurableEvent) error {
 	if !validDurableEventType(value.Type) {
 		return fmt.Errorf("unknown durable event type %q", value.Type)
 	}
-	if value.Resource == "" || value.Changed == nil || value.Chain == nil || value.SetBy == nil {
+	if value.Changed == nil || value.Chain == nil || value.SetBy == nil {
 		return fmt.Errorf("durable event has a missing required collection")
 	}
 	if err := validatePrincipal(value.Principal); err != nil {
@@ -1066,9 +1267,6 @@ func validatePrincipal(value PrincipalRef) error {
 	if !validPrincipalKind(value.Kind) {
 		return fmt.Errorf("unknown principal kind %q", value.Kind)
 	}
-	if value.ID == "" {
-		return fmt.Errorf("principal requires id")
-	}
 	if value.Sponsor != nil {
 		return validatePrincipal(*value.Sponsor)
 	}
@@ -1076,7 +1274,8 @@ func validatePrincipal(value PrincipalRef) error {
 }
 
 func validateEventCause(value EventCause) error {
-	if value.Root == "" || value.Depth > 8 || value.Chain == nil {
+	depth, err := value.Depth.Uint64()
+	if err != nil || depth > 8 || value.Chain == nil {
 		return fmt.Errorf("invalid event cause")
 	}
 	return nil
@@ -1086,22 +1285,22 @@ func validateControlDetails(kind ControlEventType, details ControlDetails) error
 	switch kind {
 	case EventGap:
 		value, ok := details.(EventGapDetails)
-		if !ok || !validGapReason(value.Reason) || value.Floor < 0 || value.FromIncarnation == "" || value.ToIncarnation == "" {
+		if !ok || !validGapReason(value.Reason) || value.Floor.Validate() != nil {
 			return fmt.Errorf("invalid event.gap details")
 		}
 	case EventStoreRestored:
 		value, ok := details.(StoreRestoredDetails)
-		if !ok || value.Reason != "restore" || value.FromIncarnation == "" || value.ToIncarnation == "" {
+		if !ok || value.Reason != "restore" {
 			return fmt.Errorf("invalid store.restored details")
 		}
 	case EventWatchDelta:
 		value, ok := details.(WatchDeltaDetails)
-		if !ok || value.SubscriptionID == "" || value.FromCursor == "" || value.ToCursor == "" || value.Events == nil {
+		if !ok || value.Events == nil {
 			return fmt.Errorf("invalid watch.delta details")
 		}
 	case EventWatchReset:
 		value, ok := details.(WatchResetDetails)
-		if !ok || value.SubscriptionID == "" || value.SnapshotCursor == "" || !validResetReason(value.Reason) {
+		if !ok || !validResetReason(value.Reason) {
 			return fmt.Errorf("invalid watch.reset details")
 		}
 	case EventVisibilityLost:
@@ -1114,22 +1313,8 @@ func validateControlDetails(kind ControlEventType, details ControlDetails) error
 		if !ok || value.Reason != "notification_no_result" || value.RequestID == nil {
 			return fmt.Errorf("invalid rpc.rejected details")
 		}
-		switch requestID := value.RequestID.(type) {
-		case string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-		case float32:
-			if math.IsNaN(float64(requestID)) || math.IsInf(float64(requestID), 0) || math.Trunc(float64(requestID)) != float64(requestID) {
-				return fmt.Errorf("rpc.rejected requestId must be an integer")
-			}
-		case float64:
-			if math.IsNaN(requestID) || math.IsInf(requestID, 0) || math.Trunc(requestID) != requestID {
-				return fmt.Errorf("rpc.rejected requestId must be an integer")
-			}
-		case json.Number:
-			if _, err := requestID.Int64(); err != nil {
-				return fmt.Errorf("rpc.rejected requestId must be an integer")
-			}
-		default:
-			return fmt.Errorf("rpc.rejected requestId must be a string or integer")
+		if _, err := marshalRequestID(value.RequestID); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("unknown control event type %q", kind)
@@ -1162,8 +1347,11 @@ func (e Event) MarshalJSON() ([]byte, error) {
 	if err := validateControlDetails(e.Control.Type, e.Control.Details); err != nil {
 		return nil, err
 	}
-	if (e.Control.Type == EventVisibilityLost) != (e.Control.Resource != "") {
-		return nil, fmt.Errorf("only visibility.lost carries a required resource")
+	var resource *string
+	if e.Control.Type == EventVisibilityLost {
+		resource = &e.Control.Resource // required even when the string is empty
+	} else if e.Control.Resource != "" {
+		return nil, fmt.Errorf("only visibility.lost carries a resource")
 	}
 	details, err := json.Marshal(e.Control.Details)
 	if err != nil {
@@ -1174,12 +1362,12 @@ func (e Event) MarshalJSON() ([]byte, error) {
 		Cursor      string           `json:"cursor"`
 		Incarnation string           `json:"incarnation"`
 		Revision    Revision         `json:"revision"`
-		Index       uint64           `json:"index"`
+		Index       Natural          `json:"index"`
 		Type        ControlEventType `json:"type"`
-		Resource    string           `json:"resource,omitempty"`
+		Resource    *string          `json:"resource,omitempty"`
 		Details     json.RawMessage  `json:"details"`
 		Derived     bool             `json:"derived"`
-	}{EventControl, e.Control.Cursor, e.Control.Incarnation, e.Control.Revision, e.Control.Index, e.Control.Type, e.Control.Resource, details, false})
+	}{EventControl, e.Control.Cursor, e.Control.Incarnation, e.Control.Revision, e.Control.Index, e.Control.Type, resource, details, false})
 }
 
 func controlDetailsMatch(kind ControlEventType, details ControlDetails) bool {
@@ -1299,15 +1487,13 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 		if envelope.Category != EventControl || !validControlEventType(envelope.Type) {
 			return fmt.Errorf("unknown control event type %q", envelope.Type)
 		}
-		if envelope.Type == EventVisibilityLost && envelope.Resource == "" {
-			return fmt.Errorf("visibility.lost requires resource")
-		}
 		var fields map[string]json.RawMessage
 		if err := decodeJSON(data, &fields); err != nil {
 			return err
 		}
-		if _, present := fields["resource"]; present && envelope.Type != EventVisibilityLost {
-			return fmt.Errorf("only visibility.lost carries a resource")
+		_, hasResource := fields["resource"]
+		if (envelope.Type == EventVisibilityLost) != hasResource {
+			return fmt.Errorf("only visibility.lost carries a required resource")
 		}
 		if err := validateEventPosition(envelope.EventPosition); err != nil {
 			return err
@@ -1504,15 +1690,135 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 )
 
 // These wire-safe types live in pluginapi itself. A public SDK cannot import
 // Plug's internal core/model package; the host converts these values at the
 // boundary.
-type Revision int64
+// Natural is the lossless nonnegative JSON-integer wire domain. A zero Go
+// value represents zero. It deliberately has no uint32/int64/uint64 ceiling:
+// the accepted OpenRPC schemas specify no such maximum. Drivers must check
+// conversion to engine-sized integers and may never silently narrow a value.
+// Direct casts are checked again by Validate and MarshalJSON.
+type Natural string
+
+func Natural64(value uint64) Natural { return Natural(strconv.FormatUint(value, 10)) }
+
+func (value Natural) Canonical() (string, error) {
+	text := string(value)
+	if text == "" {
+		text = "0"
+	}
+	canonical, err := canonicalInteger([]byte(text))
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(canonical, "-") {
+		return "", fmt.Errorf("expected nonnegative integer")
+	}
+	return canonical, nil
+}
+
+func (value Natural) Validate() error {
+	_, err := value.Canonical()
+	return err
+}
+
+func (value Natural) IsZero() bool {
+	canonical, err := value.Canonical()
+	return err == nil && canonical == "0"
+}
+
+func (value Natural) String() string {
+	canonical, err := value.Canonical()
+	if err != nil {
+		return "<invalid integer>"
+	}
+	return canonical
+}
+
+func (value Natural) Uint64() (uint64, error) {
+	canonical, err := value.Canonical()
+	if err != nil {
+		return 0, err
+	}
+	// Canonical values of at most 20 digits are expanded. An exponent here
+	// therefore cannot fit uint64; ParseUint rejects it without allocation.
+	return strconv.ParseUint(canonical, 10, 64)
+}
+
+func (value Natural) MarshalJSON() ([]byte, error) {
+	canonical, err := value.Canonical()
+	return []byte(canonical), err
+}
+
+func (value *Natural) UnmarshalJSON(data []byte) error {
+	canonical, err := canonicalInteger(data)
+	if err != nil {
+		return err
+	}
+	decoded := Natural(canonical)
+	if err := decoded.Validate(); err != nil {
+		return err
+	}
+	*value = decoded
+	return nil
+}
+
+// canonicalInteger recognizes mathematical JSON integers, including 1.0,
+// 1e0, and large integral exponents, without float64 rounding. It normalizes
+// equivalent spellings. Exponents stay symbolic so a short input such as
+// 1e1000000000 does not allocate a billion-digit integer.
+func canonicalInteger(data []byte) (string, error) {
+	text := strings.TrimSpace(string(data))
+	if text == "" || !json.Valid([]byte(text)) || (text[0] != '-' && (text[0] < '0' || text[0] > '9')) {
+		return "", fmt.Errorf("expected JSON integer")
+	}
+	negative := strings.HasPrefix(text, "-")
+	if negative {
+		text = text[1:]
+	}
+	exponent := new(big.Int)
+	if index := strings.IndexAny(text, "eE"); index >= 0 {
+		if _, ok := exponent.SetString(text[index+1:], 10); !ok {
+			return "", fmt.Errorf("invalid integer exponent")
+		}
+		text = text[:index]
+	}
+	fractionDigits := 0
+	if index := strings.IndexByte(text, '.'); index >= 0 {
+		fractionDigits = len(text) - index - 1
+	}
+	digits := strings.TrimLeft(strings.ReplaceAll(text, ".", ""), "0")
+	if digits == "" {
+		return "0", nil
+	}
+	coefficient := strings.TrimRight(digits, "0")
+	trailingZeros := len(digits) - len(coefficient)
+	exponent.Sub(exponent, big.NewInt(int64(fractionDigits-trailingZeros)))
+	if exponent.Sign() < 0 {
+		return "", fmt.Errorf("JSON number is not integral")
+	}
+	canonical := coefficient
+	if exponent.Sign() > 0 {
+		if exponent.IsInt64() && exponent.Int64() <= int64(20-len(coefficient)) {
+			canonical += strings.Repeat("0", int(exponent.Int64()))
+		} else {
+			canonical += "e" + exponent.String()
+		}
+	}
+	if negative {
+		canonical = "-" + canonical
+	}
+	return canonical, nil
+}
+
+type Revision = Natural
 
 func decodeStrict(data []byte, dst any, required ...string) error {
 	var fields map[string]json.RawMessage
@@ -1644,19 +1950,57 @@ func decodeJSON(data []byte, dst any) error {
 }
 
 type Ref struct {
-	// Host conversion applies the same object-form oneOf as model.Ref; this
-	// public alias never uses the old string shorthand.
-	ID     string `json:"id,omitempty"`
-	Branch uint32 `json:"branch,omitempty"`
-	Key    string `json:"key,omitempty"`
+	// Presence selects the oneOf arm, including an explicit empty id or key.
+	// Use the constructors to select an empty arm in native Go code.
+	ID       string       `json:"id,omitempty"`
+	Branch   Natural      `json:"branch,omitempty"`
+	Key      string       `json:"key,omitempty"`
+	selected refSelection `json:"-"`
 }
 
-func (r Ref) Validate() error {
-	if (r.ID == "") == (r.Key == "") {
-		return fmt.Errorf("ref must contain exactly one of id or key")
+type refSelection uint8
+
+const (
+	refUnselected refSelection = iota
+	refID
+	refKey
+)
+
+func RefByID(id string, branch Natural) Ref { return Ref{ID: id, Branch: branch, selected: refID} }
+func RefByKey(key string) Ref               { return Ref{Key: key, selected: refKey} }
+
+func (r Ref) selection() refSelection {
+	if r.selected != refUnselected {
+		return r.selected
 	}
-	if r.Key != "" && r.Branch != 0 {
-		return fmt.Errorf("ref key cannot carry a branch")
+	if r.ID != "" || !r.Branch.IsZero() {
+		return refID
+	}
+	if r.Key != "" {
+		return refKey
+	}
+	return refUnselected
+}
+
+// IsID preserves the selected form even when the selected string is empty.
+// Callers validate the reference before using it as an identity or lock key.
+func (r Ref) IsID() bool { return r.selection() == refID }
+
+func (r Ref) Validate() error {
+	if err := r.Branch.Validate(); err != nil {
+		return fmt.Errorf("ref branch: %w", err)
+	}
+	switch r.selection() {
+	case refID:
+		if r.Key != "" {
+			return fmt.Errorf("ref cannot contain both id and key")
+		}
+	case refKey:
+		if r.ID != "" || !r.Branch.IsZero() {
+			return fmt.Errorf("ref key cannot carry an id or branch")
+		}
+	default:
+		return fmt.Errorf("ref must contain exactly one of id or key")
 	}
 	return nil
 }
@@ -1665,8 +2009,15 @@ func (r Ref) MarshalJSON() ([]byte, error) {
 	if err := r.Validate(); err != nil {
 		return nil, err
 	}
-	type wireRef Ref
-	return json.Marshal(wireRef(r))
+	if r.IsID() {
+		return json.Marshal(struct {
+			ID     string  `json:"id"`
+			Branch Natural `json:"branch,omitempty"`
+		}{r.ID, r.Branch})
+	}
+	return json.Marshal(struct {
+		Key string `json:"key"`
+	}{r.Key})
 }
 
 func (r *Ref) UnmarshalJSON(data []byte) error {
@@ -1690,6 +2041,11 @@ func (r *Ref) UnmarshalJSON(data []byte) error {
 		}
 	}
 	decoded := Ref(value)
+	if hasID {
+		decoded.selected = refID
+	} else {
+		decoded.selected = refKey
+	}
 	if err := decoded.Validate(); err != nil {
 		return err
 	}
@@ -1704,9 +2060,50 @@ type ResourceRef struct {
 type PrincipalRef struct {
 	Kind    string         `json:"kind"`
 	ID      string         `json:"id"`
-	Sponsor *PrincipalRef  `json:"sponsor,omitempty"`
+	Sponsor *PrincipalRef  `json:"sponsor,omitempty" wire:"nullable"`
 	Caveats map[string]any `json:"caveats,omitempty"`
 }
+
+func validPrincipalKind(kind string) bool {
+	switch kind {
+	case "anonymous", "user", "agent", "service", "plugin", "system":
+		return true
+	default:
+		return false
+	}
+}
+
+func validatePrincipal(value PrincipalRef) error {
+	if !validPrincipalKind(value.Kind) {
+		return fmt.Errorf("unknown principal kind %q", value.Kind)
+	}
+	if value.Sponsor != nil {
+		return validatePrincipal(*value.Sponsor)
+	}
+	return nil
+}
+
+func (p *PrincipalRef) UnmarshalJSON(data []byte) error {
+	type wirePrincipal PrincipalRef
+	var value wirePrincipal
+	if err := decodeStrict(data, &value, "kind", "id"); err != nil {
+		return err
+	}
+	if err := validatePrincipal(PrincipalRef(value)); err != nil {
+		return err
+	}
+	*p = PrincipalRef(value)
+	return nil
+}
+
+func (p PrincipalRef) MarshalJSON() ([]byte, error) {
+	if err := validatePrincipal(p); err != nil {
+		return nil, err
+	}
+	type wirePrincipal PrincipalRef
+	return json.Marshal(wirePrincipal(p))
+}
+
 type Violation struct {
 	Guard   string         `json:"guard"`
 	Message string         `json:"message"`
@@ -1832,7 +2229,7 @@ type Cursor struct {
 	// plugins never choose or reinterpret the token.
 	Incarnation      string   `json:"incarnation"`
 	Revision         Revision `json:"revision"`
-	Index            uint64   `json:"index"`
+	Index            Natural  `json:"index"`
 	Method           string   `json:"method"`
 	FilterDigest     string   `json:"filterDigest"`
 	PrincipalDigest  string   `json:"principalDigest"`
@@ -2181,8 +2578,8 @@ func lockKeySortKey(key LockKey) string {
 	switch key.Kind {
 	case LockRecord:
 		rank = "0"
-		if key.Ref.ID != "" {
-			value = fmt.Sprintf("id:%s:%d", key.Ref.ID, key.Ref.Branch)
+		if key.Ref.IsID() {
+			value = fmt.Sprintf("id:%s:%s", key.Ref.ID, key.Ref.Branch.String())
 		} else {
 			value = "key:" + key.Ref.Key
 		}
@@ -2202,7 +2599,7 @@ func lockKeySortKey(key LockKey) string {
 type Cursor struct {
 	Incarnation      string
 	Revision         model.Revision
-	Index            uint64
+	Index            model.Natural
 	Method           string
 	FilterDigest     string
 	PrincipalDigest  string
