@@ -294,3 +294,51 @@ func TestReaderRefusesUnvalidatedPlansAndUnavailableResourceAuthorization(t *tes
 		})
 	}
 }
+
+type principalMutationAuthorization struct {
+	want     []byte
+	retained []model.PrincipalRef
+}
+
+func (a *principalMutationAuthorization) checkAndMutate(principal model.PrincipalRef) error {
+	raw, err := json.Marshal(principal)
+	if err != nil || string(raw) != string(a.want) {
+		return fmt.Errorf("authorization received a principal mutated by a previous callback: %s %v", raw, err)
+	}
+	a.retained = append(a.retained, principal)
+	principal.Sponsor.ID = "callback mutation"
+	principal.Caveats["scope"].(map[string]any)["project"] = "callback mutation"
+	return nil
+}
+
+func (a *principalMutationAuthorization) Read(_ context.Context, p model.PrincipalRef, e model.DurableEvent) (Visibility, error) {
+	return Visibility{Readable: true, Before: e.Before, After: e.After}, a.checkAndMutate(p)
+}
+
+func (a *principalMutationAuthorization) ReadResource(_ context.Context, p model.PrincipalRef, _ model.AuditResource) (ResourceVisibility, error) {
+	return ResourceVisibility{Readable: true}, a.checkAndMutate(p)
+}
+
+func TestAuthorizationPrincipalArgumentsDoNotAliasRequestOrOtherChecks(t *testing.T) {
+	principal := model.PrincipalRef{Kind: "agent", ID: "worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "reader"}, Caveats: map[string]any{"scope": map[string]any{"project": "project"}, "number": json.Number("9007199254740993")}}
+	want, err := json.Marshal(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &principalMutationAuthorization{want: want}
+	r := Reader{Log: planLog{readerPlan()}, Materializer: planMaterializer{}, Authorization: a}
+	if _, err := r.Read(context.Background(), ReadRequest{Principal: principal, Limit: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range a.retained {
+		p.Sponsor.ID = "retained mutation"
+		p.Caveats["scope"].(map[string]any)["project"] = "retained mutation"
+	}
+	got, err := json.Marshal(principal)
+	if err != nil || string(got) != string(want) {
+		t.Fatalf("authorization mutated caller principal: %s %v", got, err)
+	}
+	if _, err := r.Read(context.Background(), ReadRequest{Principal: principal, Limit: 1000}); err != nil {
+		t.Fatalf("retained policy arguments changed later authorization: %v", err)
+	}
+}

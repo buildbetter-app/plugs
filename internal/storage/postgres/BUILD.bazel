@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "postgres",
+    srcs = glob(["*.go"], exclude = ["*_test.go"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/storage/postgres",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/core/model",
+        "//internal/storage/driver",
+        "@com_github_jackc_pgx_v5//stdlib:stdlib",
+    ],
+)
+
+go_test(
+    name = "postgres_test",
+    srcs = glob(["*_test.go"]),
+    embed = [":postgres"],
+    deps = [
+        "//internal/core/model",
+        "//internal/storage/driver",
+        "//internal/storage/conformance",
+    ],
+    size = "large",
+    tags = ["local", "requires-network"],
+)
