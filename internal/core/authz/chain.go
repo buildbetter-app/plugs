@@ -242,7 +242,7 @@ func (c Chain) Compile(r ListRequest) (FilterTemplate, error) {
 		return FilterTemplate{}, unavailable(err)
 	}
 	t := FilterTemplate{Namespace: c.Namespace, Request: r, Permit: FilterExpr{Op: False}, Forbid: FilterExpr{Op: False}}
-	for _, l := range c.Links {
+	for j, l := range c.Links {
 		input, err := FreezeList(r)
 		if err != nil {
 			return FilterTemplate{}, err
@@ -255,22 +255,28 @@ func (c Chain) Compile(r ListRequest) (FilterTemplate, error) {
 			return FilterTemplate{}, err
 		}
 		t.Restrictions = append(t.Restrictions, f)
-	}
-	if len(c.Rules) == 0 && len(c.Links) > 0 {
-		terminal, ok := c.Links[len(c.Links)-1].(TerminalLink)
+		terminal, ok := l.(TerminalLink)
 		if !ok {
 			return FilterTemplate{}, ErrCheckOnly
 		}
-		input, err := FreezeList(r)
+		input, err = FreezeList(r)
 		if err != nil {
 			return FilterTemplate{}, err
 		}
-		t.Permit, err = bounded(context.Background(), b, func(context.Context) (FilterExpr, error) { return terminal.AllowFilter(input) })
+		allow, err := bounded(context.Background(), b, func(context.Context) (FilterExpr, error) { return terminal.AllowFilter(input) })
 		if err != nil {
 			return FilterTemplate{}, compileError(err)
 		}
-		if err := t.Permit.Validate(); err != nil {
+		if err := allow.Validate(); err != nil {
 			return FilterTemplate{}, err
+		}
+		if j == len(c.Links)-1 && len(c.Rules) == 0 {
+			t.Permit = allow
+		} else if allow.Op != False {
+			// A passing restriction may include an illegal Allow subset. The
+			// finite filter has no error-valued predicate, so do not turn the
+			// per-item P83 error into membership or a successful denial.
+			return FilterTemplate{}, ErrCheckOnly
 		}
 	}
 	for _, rules := range c.Rules {

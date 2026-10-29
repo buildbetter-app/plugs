@@ -215,6 +215,8 @@ func TestChainCompiledForbidAndIntersection(t *testing.T) {
 		{Namespace: namespace(), Rules: []RuleSet{permit(), forbid()}},
 		{Namespace: namespace(), Links: []Link{link{effect: NoDecision, restriction: &FilterExpr{Op: False}}}, Rules: []RuleSet{permit()}},
 		{Namespace: namespace(), Links: []Link{link{effect: Allow}}},
+		{Namespace: namespace(), Links: []Link{link{effect: NoDecision}, link{effect: Allow}}},
+		{Namespace: namespace(), Links: []Link{link{effect: Deny}, link{effect: Allow}}},
 		{Namespace: namespace(), Links: []Link{link{effect: NoDecision}}},
 	} {
 		q := request()
@@ -243,6 +245,59 @@ func TestChainCompiledForbidAndIntersection(t *testing.T) {
 	}
 }
 
+func TestChainCompileRefusesNonterminalAllow(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		links []Link
+		rules []RuleSet
+	}{
+		{"earlier Allow then final Allow", []Link{link{effect: Allow}, link{effect: Allow}}, nil},
+		{"code Allow before rules", []Link{link{effect: Allow}}, []RuleSet{permit()}},
+		{"restriction cannot hide illegal Allow", []Link{link{effect: Allow, restriction: &FilterExpr{Op: False}}, link{effect: Allow}}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Chain{Namespace: namespace(), Links: tc.links, Rules: tc.rules}
+			q := request()
+			_, err := c.Check(context.Background(), chainSlice{true}, []CheckRequest{q})
+			var checkErr *Error
+			if !errors.As(err, &checkErr) || checkErr.Code != "authz_link_allow_not_last" {
+				t.Fatalf("per-item chain must reject nonterminal Allow: %v", err)
+			}
+			f, err := c.Compile(ListRequest{Caller: q.Caller, Action: q.Action, ResourceKind: q.Resource.Kind})
+			if !errors.Is(err, ErrCheckOnly) {
+				ok, matchErr := f.Match(context.Background(), chainSlice{true}, q.Resource)
+				t.Fatalf("compilation must refuse the illegal Allow subset: compile=%v match=%v error=%v", err, ok, matchErr)
+			}
+		})
+	}
+}
+
+// Embedding only Link deliberately hides the optional AllowFilter capability.
+type filterOnlyLink struct{ Link }
+
+func TestChainCompileRequiresEveryAllowSubset(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		links []Link
+		rules []RuleSet
+	}{
+		{"before final code", []Link{filterOnlyLink{link{effect: NoDecision}}, link{effect: Allow}}, nil},
+		{"before rules", []Link{filterOnlyLink{link{effect: NoDecision}}}, []RuleSet{permit()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Chain{Namespace: namespace(), Links: tc.links, Rules: tc.rules}
+			q := request()
+			ds, err := c.Check(context.Background(), chainSlice{true}, []CheckRequest{q})
+			if err != nil || ds[0].Effect != Allow {
+				t.Fatalf("per-item checking remains available: %+v %v", ds, err)
+			}
+			if _, err := c.Compile(ListRequest{Caller: q.Caller, Action: q.Action, ResourceKind: q.Resource.Kind}); !errors.Is(err, ErrCheckOnly) {
+				t.Fatalf("unknown nonterminal Allow subset must be check-only: %v", err)
+			}
+		})
+	}
+}
+
 func TestFilterRejectsUnknownAndMalformedNodes(t *testing.T) {
 	for _, f := range []FilterExpr{{Op: "sql"}, {Op: True, Role: "admin"}, {Op: All, Kind: "user"}, {Op: GrantExists, Subject: CallerSubject, Scope: "all"}, {Op: SponsorKind, Kind: "team"}} {
 		if f.Validate() == nil {
@@ -264,10 +319,19 @@ func (mutatingLink) Filter(q ListRequest) (FilterExpr, error) {
 	q.Caller.Principal.Caveats["actions"] = []string{"admin"}
 	return FilterExpr{Op: True}, nil
 }
+
+type compiledMutatingLink struct{ mutatingLink }
+
+func (compiledMutatingLink) AllowFilter(q ListRequest) (FilterExpr, error) {
+	q.Caller.Principal.Kind = "service"
+	q.Caller.Principal.Caveats["actions"] = []string{"admin"}
+	return FilterExpr{Op: False}, nil
+}
+
 func TestCodeLinksCannotReplaceAuthenticatedBinding(t *testing.T) {
 	q := request()
 	q.Caller.Principal.Caveats = map[string]any{"actions": []string{"read"}}
-	c := Chain{Namespace: namespace(), Links: []Link{mutatingLink{}}, Rules: []RuleSet{permit()}}
+	c := Chain{Namespace: namespace(), Links: []Link{compiledMutatingLink{}}, Rules: []RuleSet{permit()}}
 	ds, err := c.Check(context.Background(), chainSlice{true}, []CheckRequest{q})
 	if err != nil || ds[0].Effect != Allow {
 		t.Fatalf("%+v %v", ds, err)

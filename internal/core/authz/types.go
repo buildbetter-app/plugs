@@ -184,13 +184,17 @@ type Link interface {
 	// sponsor, caveats or target. Returned restrictions only intersect.
 	Check(context.Context, Slice, []CheckRequest) ([]Step, error)
 	// Filter is the exact set passing this link's restrictions (Pass or Allow).
+	// It does not distinguish those effects; compilation also needs AllowFilter.
 	// A check-only link returns ErrCheckOnly; lists/claims cannot silently cap.
 	Filter(ListRequest) (FilterExpr, error)
 }
 
-// TerminalLink explicitly compiles the subset on which a last code link
-// returns Allow. Passing a restriction alone never manufactures a permit.
-// A code-only chain whose last link lacks this capability is check-only.
+// TerminalLink compiles the exact subset on which a code link returns Allow,
+// before applying its restrictions. Chain.Compile requires this capability
+// from every link. A nonterminal link, including any link followed by rules,
+// must return literal False for the bound request or the chain is check-only.
+// Only the last link of a code-only chain may contribute this subset as a
+// permit. Passing a restriction alone never manufactures a permit.
 type TerminalLink interface {
 	AllowFilter(ListRequest) (FilterExpr, error)
 }

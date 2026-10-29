@@ -186,6 +186,44 @@ func TestCP7ExhaustiveCompiledMembership(t *testing.T) {
 	t.Logf("%d comparisons against independent CP7/direct-one-hop truth table", checked)
 }
 
+type allowingCodeLink struct{}
+
+func (allowingCodeLink) Check(_ context.Context, _ authz.Slice, qs []authz.CheckRequest) ([]authz.Step, error) {
+	out := make([]authz.Step, len(qs))
+	for i := range out {
+		out[i] = authz.Step{Effect: authz.Allow}
+	}
+	return out, nil
+}
+func (allowingCodeLink) Filter(authz.ListRequest) (authz.FilterExpr, error) {
+	return authz.FilterExpr{Op: authz.True}, nil
+}
+func (allowingCodeLink) AllowFilter(authz.ListRequest) (authz.FilterExpr, error) {
+	return authz.FilterExpr{Op: authz.True}, nil
+}
+
+func TestChainCompileRefusesCodeAllowBeforeFixedRules(t *testing.T) {
+	c := caller("user", nil)
+	s := newSlice(c)
+	q := authz.CheckRequest{Caller: c, Action: authz.Read, Resource: authz.Resource{Kind: authz.Bead, Ref: ref("b")}}
+	r := rules(t)
+	ds, err := r.Eval(context.Background(), s, []authz.CheckRequest{q})
+	if err != nil || ds[0].Effect != authz.Allow {
+		t.Fatalf("CP7 User read must independently permit: %+v %v", ds, err)
+	}
+	chain := authz.Chain{Namespace: ns(), Links: []authz.Link{allowingCodeLink{}}, Rules: []authz.RuleSet{r}}
+	_, err = chain.Check(context.Background(), s, []authz.CheckRequest{q})
+	var checkErr *authz.Error
+	if !errors.As(err, &checkErr) || checkErr.Code != "authz_link_allow_not_last" {
+		t.Fatalf("fixed rules cannot bypass the illegal code Allow: %v", err)
+	}
+	f, err := chain.Compile(authz.ListRequest{Caller: c, Action: authz.Read, ResourceKind: authz.Bead})
+	if !errors.Is(err, authz.ErrCheckOnly) {
+		ok, matchErr := f.Match(context.Background(), s, q.Resource)
+		t.Fatalf("compiled CP7 permit must not bypass the illegal code Allow: compile=%v match=%v error=%v", err, ok, matchErr)
+	}
+}
+
 func TestCompiledFilterRevocationAndRecordedMisses(t *testing.T) {
 	u := user()
 	c := caller("agent", &u)
