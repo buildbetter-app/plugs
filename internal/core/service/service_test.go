@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -347,6 +348,121 @@ func TestCommittedWarningAndIdempotentReplay(t *testing.T) {
 	wantCode(t, err, "idempotency_key_reused")
 }
 
+func TestNamedWriteOutcomesUseActualReceipts(t *testing.T) {
+	for _, method := range []string{"create", "update", "claim", "comment", "close"} {
+		t.Run(method, func(t *testing.T) {
+			post := &failedPost{}
+			f := setup(t, pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "outcome-post", Subscriber: post}))
+			ctx := context.Background()
+			id, _ := create(t, f, "Original")
+			key := meta(t)
+			call := func() (port.WriteOutcome, error) {
+				switch method {
+				case "create":
+					return f.svc.CreateWithOutcome(ctx, anonymous, CreateRequest{Type: "issue", Fields: map[string]any{"title": "Outcome"}}, key)
+				case "update":
+					return f.svc.UpdateWithOutcome(ctx, anonymous, UpdateRequest{ID: id, Fields: map[string]any{"title": "Updated"}}, key)
+				case "claim":
+					return f.svc.ClaimWithOutcome(ctx, anonymous, ClaimRequest{ID: id}, key)
+				case "comment":
+					return f.svc.CommentWithOutcome(ctx, anonymous, CommentRequest{ID: id, Body: "Outcome"}, key)
+				default:
+					return f.svc.CloseWithOutcome(ctx, anonymous, CloseRequest{ID: id, Reason: "Outcome"}, key)
+				}
+			}
+			first, err := call()
+			if err != nil || first.Replayed || len(first.Commit.Warnings) != 1 {
+				t.Fatalf("first finalized outcome: %+v %v", first, err)
+			}
+			// Advance the head, then replay the actual original receipt. A
+			// revision comparison cannot distinguish these two executions.
+			create(t, f, "Later unrelated write")
+			before, _ := f.store.Meta(ctx)
+			calls := post.calls
+			replay, err := call()
+			after, _ := f.store.Meta(ctx)
+			a, marshalErr := json.Marshal(first.Commit)
+			b, replayMarshalErr := json.Marshal(replay.Commit)
+			if err != nil || marshalErr != nil || replayMarshalErr != nil || !replay.Replayed || !bytes.Equal(a, b) || post.calls != calls || before.Head.String() != after.Head.String() {
+				t.Fatalf("stored result or replay outcome changed: first=%s replay=%s outcome=%+v errors=%v/%v/%v posts=%d/%d", a, b, replay, err, marshalErr, replayMarshalErr, calls, post.calls)
+			}
+		})
+	}
+}
+
+func TestFreshNoopAndDryRunOutcomesAreNotReplayed(t *testing.T) {
+	post := &failedPost{}
+	f := setup(t, pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "outcome-post", Subscriber: post}))
+	ctx := context.Background()
+	id, original := create(t, f, "Unchanged")
+	_, later := create(t, f, "Later")
+	key := meta(t)
+	req := UpdateRequest{ID: id, Fields: map[string]any{"title": "Unchanged"}}
+	calls := post.calls
+	fresh, err := f.svc.UpdateWithOutcome(ctx, anonymous, req, key)
+	if err != nil || fresh.Replayed || fresh.Commit.Revision.String() != later.Revision.String() || fresh.Commit.Results[0].Revision.String() != original.Revision.String() || len(fresh.Commit.Warnings) != 0 || post.calls != calls {
+		t.Fatalf("fresh no-op confused with replay: %+v %v", fresh, err)
+	}
+	replay, err := f.svc.UpdateWithOutcome(ctx, anonymous, req, key)
+	if err != nil || !replay.Replayed || replay.Commit.Revision.String() != fresh.Commit.Revision.String() {
+		t.Fatalf("no-op receipt replay: %+v %v", replay, err)
+	}
+	claimed, err := f.svc.ClaimWithOutcome(ctx, anonymous, ClaimRequest{ID: id}, meta(t))
+	if err != nil || claimed.Replayed {
+		t.Fatalf("first claim: %+v %v", claimed, err)
+	}
+	f.now = f.now.Add(time.Minute)
+	key = meta(t)
+	calls = post.calls
+	fresh, err = f.svc.ClaimWithOutcome(ctx, anonymous, ClaimRequest{ID: id}, key)
+	if err != nil || fresh.Replayed || !fresh.Commit.LeaseExpiresAt.Equal(*claimed.Commit.LeaseExpiresAt) || fresh.Commit.LeaseTtlMs.String() != claimed.Commit.LeaseTtlMs.String() || post.calls != calls {
+		t.Fatalf("fresh same-holder claim changed durable lease or replay flag: %+v %v", fresh, err)
+	}
+	f.now = f.now.Add(6 * time.Minute)
+	replay, err = f.svc.ClaimWithOutcome(ctx, anonymous, ClaimRequest{ID: id}, key)
+	if err != nil || !replay.Replayed || !replay.Commit.LeaseExpiresAt.Equal(*fresh.Commit.LeaseExpiresAt) || post.calls != calls {
+		t.Fatalf("claim replay did not use original receipt: %+v %v", replay, err)
+	}
+	before, _ := f.store.Meta(ctx)
+	key = meta(t)
+	key.DryRun = true
+	for range 2 {
+		dry, err := f.svc.CreateWithOutcome(ctx, anonymous, CreateRequest{Type: "issue", Fields: map[string]any{"title": "Dry run"}}, key)
+		if err != nil || dry.Replayed || !dry.Commit.WouldCommit || post.calls != calls {
+			t.Fatalf("dry run became a replay or published posts: %+v %v", dry, err)
+		}
+	}
+	after, _ := f.store.Meta(ctx)
+	if before.Head.String() != after.Head.String() {
+		t.Fatal("dry runs advanced storage head")
+	}
+}
+
+type legacyOnlyWriter struct {
+	model.Writer
+	calls int
+}
+
+func (w *legacyOnlyWriter) Apply(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (model.Commit, error) {
+	w.calls++
+	return w.Writer.Apply(ctx, by, cs, meta)
+}
+
+func TestOutcomeMethodsRequireActualOutcomeWriterBeforeWriting(t *testing.T) {
+	f := setup(t)
+	legacy := &legacyOnlyWriter{Writer: f.writer}
+	f.svc.writer = legacy
+	req := CreateRequest{Type: "issue", Fields: map[string]any{"title": "Legacy"}}
+	_, err := f.svc.CreateWithOutcome(context.Background(), anonymous, req, meta(t))
+	wantCode(t, err, "internal_error")
+	if legacy.calls != 0 {
+		t.Fatal("outcome refusal happened after a legacy write")
+	}
+	if _, err := f.svc.Create(context.Background(), anonymous, req, meta(t)); err != nil || legacy.calls != 1 {
+		t.Fatalf("legacy writer compatibility: %v calls=%d", err, legacy.calls)
+	}
+}
+
 func TestLeaseOwnershipExpiryAndLostStorageLease(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
@@ -454,7 +570,13 @@ func TestSameClaimStillValidatesMutatorsAndPreservesLease(t *testing.T) {
 }
 
 func TestUnsupportedReadsAndParentRefuseWithoutPartialSuccess(t *testing.T) {
-	f := setup(t)
+	next := 0
+	f := setup(t, pipeline.WithIDGenerator(func() (string, error) {
+		ids := []string{"pl-a", "pl-b", "pl-c"}
+		id := ids[next]
+		next++
+		return id, nil
+	}))
 	ctx := context.Background()
 	id, _ := create(t, f, "One")
 	_, _ = create(t, f, "Two")
@@ -462,10 +584,14 @@ func TestUnsupportedReadsAndParentRefuseWithoutPartialSuccess(t *testing.T) {
 	if err != nil || len(first.Items) != 1 || first.Next == nil {
 		t.Fatalf("first page: %+v %v", first, err)
 	}
-	_, _ = create(t, f, "Later insert")
+	_, inserted := create(t, f, "Later insert")
 	second, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1, Position: first.Next})
-	if err != nil || len(second.Items) != 1 || second.Next != nil || second.Items[0].ID == first.Items[0].ID || second.AsOf.Revision.String() != first.AsOf.Revision.String() {
-		t.Fatalf("pinned second page: %+v %v", second, err)
+	if err != nil || len(second.Items) != 1 || second.Next == nil || second.Items[0].ID != "pl-b" || second.AsOf.Revision.String() != inserted.Revision.String() {
+		t.Fatalf("live second page: %+v %v", second, err)
+	}
+	third, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1, Position: second.Next})
+	if err != nil || len(third.Items) != 1 || third.Items[0].ID != "pl-c" || third.Next != nil {
+		t.Fatalf("later insert missing from live page: %+v %v", third, err)
 	}
 	_, err = f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Cursor: "unbound"})
 	wantCode(t, err, "cursor_invalid")
@@ -527,6 +653,92 @@ func TestReadyPriorityThenIDAndPinnedHistoryPages(t *testing.T) {
 	if err != nil || len(second.Items) != 2 || second.Items[0].ID <= first.Items[1].ID {
 		t.Fatalf("history second page: %+v %v", second, err)
 	}
+}
+
+func TestReadyContinuationReadsLiveRowsWhileHistoryStaysPinned(t *testing.T) {
+	for _, action := range []string{"close", "claim", "update"} {
+		t.Run(action, func(t *testing.T) {
+			ids := []string{"pl-a", "pl-b", "pl-c", "pl-d"}
+			next := 0
+			f := setup(t, pipeline.WithIDGenerator(func() (string, error) {
+				id := ids[next]
+				next++
+				return id, nil
+			}))
+			ctx := context.Background()
+			for _, title := range ids {
+				create(t, f, title)
+			}
+			first, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1})
+			if err != nil || first.Next == nil || first.Items[0].ID != "pl-a" {
+				t.Fatalf("first ready: %+v %v", first, err)
+			}
+			history, err := f.svc.History(ctx, anonymous, HistoryRequest{Project: "local", AsOf: first.AsOf, Limit: 1})
+			if err != nil || history.Next == nil {
+				t.Fatalf("first history: %+v %v", history, err)
+			}
+			pending := model.Ref{ID: "pl-b"}
+			var changed model.Commit
+			switch action {
+			case "close":
+				changed, err = f.svc.Close(ctx, anonymous, CloseRequest{ID: pending}, meta(t))
+			case "claim":
+				var claim ClaimResult
+				claim, err = f.svc.Claim(ctx, anonymous, ClaimRequest{ID: pending}, meta(t))
+				changed = claim.Commit
+			case "update":
+				changed, err = f.svc.Update(ctx, anonymous, UpdateRequest{ID: pending, Fields: map[string]any{"title": "Live title"}}, meta(t))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1, Position: first.Next})
+			wantID := "pl-c"
+			if action == "update" {
+				wantID = "pl-b"
+			}
+			if err != nil || len(second.Items) != 1 || second.Items[0].ID != wantID || second.AsOf.Revision.String() != changed.Revision.String() {
+				t.Fatalf("live continuation: %+v %v; write revision %v", second, err, changed.Revision)
+			}
+			if action == "update" && second.Items[0].Fields["title"] != "Live title" {
+				t.Fatalf("ready returned stale pending row: %+v", second.Items[0])
+			}
+			if second.Next == nil || second.Next.Offset <= first.Next.Offset || second.Next.AsOf.Revision.String() != second.AsOf.Revision.String() {
+				t.Fatalf("continuation failed to advance: %+v", second)
+			}
+			old, err := f.svc.History(ctx, anonymous, HistoryRequest{Project: "local", AsOf: history.AsOf, Limit: 1, Position: history.Next})
+			if err != nil || len(old.Items) != 1 || old.Items[0].ID != "pl-b" || old.Items[0].Fields["title"] != "pl-b" || old.AsOf.Revision.String() != first.AsOf.Revision.String() {
+				t.Fatalf("history lost its pinned row: %+v %v", old, err)
+			}
+		})
+	}
+}
+
+func TestReadyContinuationAllowsListShrinkAndRejectsOtherIncarnation(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	var ids []model.Ref
+	for _, title := range []string{"First", "Second", "Third"} {
+		id, _ := create(t, f, title)
+		ids = append(ids, id)
+	}
+	first, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Limit: 2})
+	if err != nil || first.Next == nil {
+		t.Fatalf("first page: %+v %v", first, err)
+	}
+	for _, id := range ids {
+		if _, err := f.svc.Close(ctx, anonymous, CloseRequest{ID: id}, meta(t)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Limit: 2, Position: first.Next})
+	if err != nil || len(page.Items) != 0 || page.Next != nil || page.AsOf.Revision.String() == first.AsOf.Revision.String() {
+		t.Fatalf("shrunk live page: %+v %v", page, err)
+	}
+	position := *first.Next
+	position.AsOf.Incarnation = "another-store"
+	_, err = f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Position: &position})
+	wantCode(t, err, "incarnation_changed")
 }
 
 func TestKernelFieldsAndSameValueStatusRefuseBeforeCommit(t *testing.T) {
