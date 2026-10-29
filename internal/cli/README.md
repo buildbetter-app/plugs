@@ -39,5 +39,8 @@ loading are not installed. If `.plug/config.yaml` exists, this slice refuses
 it explicitly instead of ignoring a possibly configured server. Choose
 `--server` or `PLUG_SERVER` until a config loader is implemented. Unsupported
 commands, including login, server startup, watches and generic RPC calls,
-continue to fail explicitly. This slice makes no full behavior-card or
-performance acceptance claim.
+continue to fail explicitly. The read surfaces are available as `events` (or
+`events tail`), `history get`, `history diff`, and `health`; they use the same
+opaque cursors, pinned revisions, bounded JSON Patch results, and read-only
+health response as their JSON-RPC methods. This slice makes no full
+behavior-card or performance acceptance claim.
