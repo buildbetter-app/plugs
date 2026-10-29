@@ -59,10 +59,10 @@ func main() {
 				}
 			}
 		}
-		if err := s.Reset(ctx); err != nil {
-			return err
-		}
-		if err := s.Seed(ctx, 1); err != nil {
+		// The graph/closures are unchanged by fraction sweeps; restore only the
+		// grant rows before the closure migration checks instead of rebuilding
+		// another 100,000-row closure fixture.
+		if err := s.SetVisibleFraction(ctx, 1); err != nil {
 			return err
 		}
 		if err := s.RefuseNormalClosureWrite(ctx, 2); err != nil {
