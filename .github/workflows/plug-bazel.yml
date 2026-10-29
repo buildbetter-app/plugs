@@ -1,0 +1,157 @@
+name: Plug Bazel
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plug-bazel-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bazel:
+    name: Plug Bazel lanes
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      PLUG_BAZEL_EVIDENCE_DIR: ${{ runner.temp }}/plug-bazel-evidence
+      PLUG_BAZEL_TARGETS_DIR: ${{ runner.temp }}/plug-bazel-targets
+      PLUG_BAZEL_REPOSITORY_CACHE: ${{ runner.temp }}/plug-bazel-repository-cache
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate Plug CI contract
+        run: |
+          mkdir -p "$PLUG_BAZEL_EVIDENCE_DIR"
+          scripts/ci/plug-bazel-config-test.sh | tee "$PLUG_BAZEL_EVIDENCE_DIR/config.log"
+
+      - name: Restore verified Bazel repository cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/plug-bazel-repository-cache
+          key: plug-bazel-repository-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'MODULE.bazel.lock') }}
+
+      - name: Install pinned Bazel toolchain
+        env:
+          BAZELISK_SHA256: 5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992
+          BAZEL_SHA256: d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8
+        run: |
+          set -euo pipefail
+          bazel_version="$(tr -d '[:space:]' < .bazelversion)"
+          [[ "$bazel_version" == 9.3.0 ]] || { echo "unsupported Bazel pin: $bazel_version" >&2; exit 1; }
+          mkdir -p "$RUNNER_TEMP/plug-bazelisk-home" "$PLUG_BAZEL_REPOSITORY_CACHE"
+          curl --fail --silent --show-error --location --retry 3 --max-time 120 \
+            --output "$RUNNER_TEMP/plug-bazelisk" \
+            https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64
+          printf '%s  %s\n' "$BAZELISK_SHA256" "$RUNNER_TEMP/plug-bazelisk" | sha256sum --check --status
+          chmod 755 "$RUNNER_TEMP/plug-bazelisk"
+          cat > "$RUNNER_TEMP/plug.bazelrc" <<EOF
+          common --enable_bzlmod
+          common --color=no
+          common --repository_cache=$PLUG_BAZEL_REPOSITORY_CACHE
+          common --remote_cache=
+          common --remote_executor=
+          common --repo_contents_cache=
+          test --nocache_test_results
+          test --test_output=errors
+          test --test_timeout=900
+          EOF
+          export BAZELISK_HOME="$RUNNER_TEMP/plug-bazelisk-home"
+          export BAZELISK_VERIFY_SHA256="$BAZEL_SHA256"
+          echo "BAZEL_BIN=$RUNNER_TEMP/plug-bazelisk" >> "$GITHUB_ENV"
+          echo "BAZEL_RC=$RUNNER_TEMP/plug.bazelrc" >> "$GITHUB_ENV"
+          echo "BAZELISK_HOME=$BAZELISK_HOME" >> "$GITHUB_ENV"
+          echo "BAZELISK_VERIFY_SHA256=$BAZELISK_VERIFY_SHA256" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/plug-bazelisk" --version | tee "$PLUG_BAZEL_EVIDENCE_DIR/bazel-version.log"
+          grep -Fq "bazel $bazel_version" "$PLUG_BAZEL_EVIDENCE_DIR/bazel-version.log"
+          printf '%s\n' "bazel_version=$bazel_version" "bazelisk_version=v1.29.0" \
+            "repository_cache=$PLUG_BAZEL_REPOSITORY_CACHE" \
+            "action_cache=disabled" "remote_execution=disabled" > "$PLUG_BAZEL_EVIDENCE_DIR/toolchain.txt"
+
+      - name: Resolve touched and reverse-dependent targets
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PLUG_BAZEL_TARGETS_DIR"
+          scripts/ci/plug-bazel-targets.sh \
+            --base "${BASE_SHA:-}" \
+            --head "${HEAD_SHA:-}" \
+            --output "$PLUG_BAZEL_TARGETS_DIR" | tee "$PLUG_BAZEL_EVIDENCE_DIR/target-resolution.log"
+          cp "$PLUG_BAZEL_TARGETS_DIR"/*.txt "$PLUG_BAZEL_EVIDENCE_DIR/"
+
+      - name: Lexicon lane
+        run: |
+          set -o pipefail
+          "$BAZEL_BIN" --nosystem_rc --nohome_rc --noworkspace_rc --bazelrc="$BAZEL_RC" \
+            test //:lexicon_gate --lockfile_mode=error --nocache_test_results \
+            --test_output=all --test_timeout=900 \
+            --build_event_json_file="$PLUG_BAZEL_EVIDENCE_DIR/lexicon.bep.json" \
+            2>&1 | tee "$PLUG_BAZEL_EVIDENCE_DIR/lexicon.log"
+
+      - name: Touched tests lane
+        run: |
+          set -euo pipefail
+          mapfile -t targets < <(sed '/^$/d' "$PLUG_BAZEL_TARGETS_DIR/touched-targets.txt")
+          ((${#targets[@]} > 0)) || { echo "target resolution produced no touched target" >&2; exit 1; }
+          printf '%s\n' "${targets[@]}" > "$PLUG_BAZEL_EVIDENCE_DIR/touched-command-targets.txt"
+          set -o pipefail
+          "$BAZEL_BIN" --nosystem_rc --nohome_rc --noworkspace_rc --bazelrc="$BAZEL_RC" \
+            test "${targets[@]}" --lockfile_mode=error --nocache_test_results \
+            --test_output=errors --test_timeout=900 \
+            --build_event_json_file="$PLUG_BAZEL_EVIDENCE_DIR/touched.bep.json" \
+            2>&1 | tee "$PLUG_BAZEL_EVIDENCE_DIR/touched.log"
+
+      - name: Reverse-dependency tests lane
+        run: |
+          set -euo pipefail
+          mapfile -t targets < <(sed '/^$/d' "$PLUG_BAZEL_TARGETS_DIR/reverse-targets.txt")
+          if ((${#targets[@]} == 0)); then
+            echo "no transitive reverse-dependent test targets for this change" | tee "$PLUG_BAZEL_EVIDENCE_DIR/reverse.log"
+            exit 0
+          fi
+          printf '%s\n' "${targets[@]}" > "$PLUG_BAZEL_EVIDENCE_DIR/reverse-command-targets.txt"
+          set -o pipefail
+          "$BAZEL_BIN" --nosystem_rc --nohome_rc --noworkspace_rc --bazelrc="$BAZEL_RC" \
+            test "${targets[@]}" --lockfile_mode=error --nocache_test_results \
+            --test_output=errors --test_timeout=900 \
+            --build_event_json_file="$PLUG_BAZEL_EVIDENCE_DIR/reverse.bep.json" \
+            2>&1 | tee "$PLUG_BAZEL_EVIDENCE_DIR/reverse.log"
+
+      - name: Stop Bazel server
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${BAZEL_BIN:-}" && -x "$BAZEL_BIN" ]]; then
+            "$BAZEL_BIN" shutdown > "$PLUG_BAZEL_EVIDENCE_DIR/bazel-shutdown.log" 2>&1 || true
+          fi
+
+      - name: Upload Plug CI evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: plug-bazel-evidence-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 14
+          path: ${{ runner.temp }}/plug-bazel-evidence
+
+      - name: Save verified Bazel repository cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && success()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/plug-bazel-repository-cache
+          key: plug-bazel-repository-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'MODULE.bazel.lock') }}
