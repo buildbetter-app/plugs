@@ -36,8 +36,8 @@ func (t *transaction) Snapshot() driver.View {
 	s := t.store
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	at := t.base.meta.Head
-	return driver.View{At: &at, Branch: model.Natural64(0), Incarnation: t.base.meta.Incarnation}
+	at := t.snapshotAt
+	return driver.View{At: &at, Branch: model.Natural64(0), Incarnation: t.incarnation}
 }
 
 func (t *transaction) Get(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
@@ -45,6 +45,7 @@ func (t *transaction) Get(ctx context.Context, refs []driver.Ref) ([]driver.Reco
 	if err != nil {
 		return nil, err
 	}
+	defer r.Close()
 	return r.Get(ctx, refs)
 }
 func (t *transaction) Blob(ctx context.Context, hash driver.Hash) ([]byte, error) {
@@ -52,6 +53,7 @@ func (t *transaction) Blob(ctx context.Context, hash driver.Hash) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
+	defer r.Close()
 	return r.Blob(ctx, hash)
 }
 func (t *transaction) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
@@ -59,6 +61,7 @@ func (t *transaction) Observe(ctx context.Context, keys []driver.LockKey) ([]dri
 	if err != nil {
 		return nil, err
 	}
+	defer r.Close()
 	return r.Observe(ctx, keys)
 }
 func (t *transaction) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
@@ -66,6 +69,7 @@ func (t *transaction) Query(ctx context.Context, q driver.Query) (driver.Page[dr
 	if err != nil {
 		return driver.Page[driver.Record]{}, err
 	}
+	defer r.Close()
 	return r.Query(ctx, q)
 }
 func (t *transaction) Versions(ctx context.Context, ref driver.Ref, req driver.PageReq) (driver.Page[driver.Version], error) {
@@ -73,6 +77,7 @@ func (t *transaction) Versions(ctx context.Context, ref driver.Ref, req driver.P
 	if err != nil {
 		return driver.Page[driver.Version]{}, err
 	}
+	defer r.Close()
 	return r.Versions(ctx, ref, req)
 }
 func (t *transaction) Changesets(ctx context.Context, cursor *driver.Cursor, limit int) ([]model.Changeset, error) {
@@ -80,6 +85,7 @@ func (t *transaction) Changesets(ctx context.Context, cursor *driver.Cursor, lim
 	if err != nil {
 		return nil, err
 	}
+	defer r.Close()
 	return r.Changesets(ctx, cursor, limit)
 }
 func (t *transaction) ChangesetByKey(ctx context.Context, principal, agent, method, key string) (*model.Changeset, error) {
@@ -87,6 +93,7 @@ func (t *transaction) ChangesetByKey(ctx context.Context, principal, agent, meth
 	if err != nil {
 		return nil, err
 	}
+	defer r.Close()
 	return r.ChangesetByKey(ctx, principal, agent, method, key)
 }
 func (t *transaction) IdempotencyByKey(ctx context.Context, principal, agent, method, key string) (*driver.IdempotencyRecord, error) {
@@ -94,6 +101,7 @@ func (t *transaction) IdempotencyByKey(ctx context.Context, principal, agent, me
 	if err != nil {
 		return nil, err
 	}
+	defer r.Close()
 	return r.IdempotencyByKey(ctx, principal, agent, method, key)
 }
 
