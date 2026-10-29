@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "apikeysql_test",
+    size = "large",
+    srcs = glob(["*_test.go"]),
+    args = ["-test.v"],
+    tags = ["local", "requires-network"],
+    deps = [
+        "//internal/core/model",
+        "//internal/integration/apikey",
+        "//internal/plugins/authnapikey",
+        "//internal/server/transport/httpjson",
+        "//internal/storage/driver",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
