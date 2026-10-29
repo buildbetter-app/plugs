@@ -29,8 +29,8 @@ The schema marks both fields read-only and checks their recorded setter.
 | `nativeguard-title` / `title` | validate | `fields.x_nativeguard_title` | none | 1 / 1 | 500 ms |
 | `nativeguard-observe` / `observe` | post | both derived fields | none | 16 / 1 | 500 ms |
 
-All bindings use alias `nativeguard`, instance `default`, and fail closed. The
-pre callbacks make no snapshot reads; post uses at most 16 point reads and no
+All bindings use alias `nativeguard` and instance `default`. Pre bindings fail
+closed; post failures are warnings. Pre callbacks make no snapshot reads; post uses at most 16 point reads and no
 queries. A zero read limit means the host default, so the manifest explicitly
 sets the smallest positive ceilings for unused read categories.
 
@@ -78,7 +78,9 @@ internal implementation details; they are not additional public plugin APIs.
 A same-value write still runs pre admission. It creates a durable no-op receipt,
 keeps graph/head/history unchanged and suppresses post. Replaying either receipt
 through a fresh Writer returns the stored response without rerunning callbacks.
-Post failures and their warnings also survive that replay. Native code is
+An in-flight post response is durably marked pending; replay must wait or fail
+explicitly until its final outcome is recorded. Post failures and their warnings
+also survive replay. Native code is
 trusted build-time code; the host checks its I/O and output grants but does not
 isolate arbitrary native code.
 

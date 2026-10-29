@@ -402,6 +402,66 @@ func TestPostWarningIsCommittedAndDurablyReplayed(t *testing.T) {
 	}
 }
 
+func TestPendingPostReceiptCannotReplayAsSuccess(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{}, 1)
+	t.Cleanup(func() {
+		select {
+		case release <- struct{}{}:
+		default:
+		}
+	})
+	f := setup(t, func(ctx context.Context, _ guard.Observation) error {
+		close(entered)
+		select {
+		case <-release:
+			return errors.New("synthetic pending observer failure")
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}, nil, nil)
+	cs := create("Pending response")
+	type outcome struct {
+		commit model.Commit
+		err    error
+	}
+	first := make(chan outcome, 1)
+	go func() {
+		c, err := f.writer().Apply(context.Background(), principal, cs, meta(1))
+		first <- outcome{c, err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("committed post callback did not start")
+	}
+	receipt, err := read(t, f).IdempotencyByKey(context.Background(), "user:synthetic-user", "", "tx.apply", meta(1).IdempotencyKey)
+	if err != nil || receipt == nil || !receipt.ResponsePending {
+		t.Fatalf("in-flight response was not durably pending: %+v; %v", receipt, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	if _, err := f.writer().Apply(ctx, principal, cs, meta(1)); err == nil {
+		t.Fatal("unfinalized pending receipt replayed as success")
+	}
+	f.calls.check(t, 1, 1, 1)
+	graphSize(t, f, "1", 1, 1, 1)
+	release <- struct{}{}
+	var committed model.Commit
+	select {
+	case result := <-first:
+		if result.err != nil || len(result.commit.Warnings) != 1 || result.commit.Warnings[0].Code != "post_subscriber_failed" {
+			t.Fatalf("known post outcome was not finalized: %+v; %v", result.commit, result.err)
+		}
+		committed = result.commit
+	case <-time.After(2 * time.Second):
+		t.Fatal("original writer did not finalize its response")
+	}
+	if replay := apply(t, f.writer(), cs, 1); wire(t, replay) != wire(t, committed) {
+		t.Fatal("final replay lost the original post warning")
+	}
+	f.calls.check(t, 1, 1, 1)
+}
+
 func TestRealSchemaEnforcesFieldOwnership(t *testing.T) {
 	f := setup(t, nil, nil, nil)
 	schema, violations := f.schema.effective.Schema("issue", "")
