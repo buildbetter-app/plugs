@@ -33,7 +33,7 @@ func MemoryFactory(ctx context.Context, cfg StorageConfig) (driver.Store, func()
 	if err != nil {
 		return nil, nil, err
 	}
-	return s, s.(*memory.Store).Close, nil
+	return s, s.Close, nil
 }
 
 type LocalConfig struct {
