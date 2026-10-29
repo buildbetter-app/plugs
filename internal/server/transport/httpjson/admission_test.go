@@ -1,6 +1,7 @@
 package httpjson_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
@@ -141,16 +143,12 @@ func TestNetworkAdmissionAndFramingNeverReachDomainOrStore(t *testing.T) {
 }
 
 type delayedProvider struct {
-	real    authn.Provider
-	entered chan struct{}
+	real authn.Provider
 }
 
 func (p delayedProvider) Authenticate(ctx context.Context, token string) (model.PrincipalRef, error) {
 	if _, err := p.real.Authenticate(ctx, token); err != nil {
 		return model.PrincipalRef{}, err
-	}
-	if p.entered != nil {
-		close(p.entered)
 	}
 	<-ctx.Done()
 	return model.PrincipalRef{}, errors.New("private provider diagnostic must never reach HTTP")
@@ -172,7 +170,25 @@ func TestUnavailableAndCanceledAuthenticationFailClosed(t *testing.T) {
 	r := f.request(t, data)
 	r.URL.Host = server.Listener.Addr().String()
 	r.Host = r.URL.Host
-	requireCode(t, f.send(t, r), 503, "authn_unavailable")
+	unavailable := f.send(t, r)
+	requireCode(t, unavailable, 503, "authn_unavailable")
+	if bytes.Contains(unavailable.body, []byte("private provider")) {
+		t.Fatal("provider diagnostic escaped to HTTP")
+	}
+	catalog, err := wire.DefaultCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Error *wire.Error `json:"error"`
+	}
+	if err := json.Unmarshal(unavailable.body, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error == nil || !envelope.Error.Data.Retryable || catalog.ValidateError(envelope.Error) != nil {
+		t.Fatal("HTTP admission error escaped shared catalog")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	r = f.request(t, data).WithContext(ctx)

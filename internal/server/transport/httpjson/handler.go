@@ -97,6 +97,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	controller := http.NewResponseController(w)
 	deadline, _ := ctx.Deadline()
+	if readDeadline := time.Now().Add(h.cfg.ReadTimeout); readDeadline.Before(deadline) {
+		deadline = readDeadline
+	}
 	if err := controller.SetReadDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		h.fail(w, http.StatusServiceUnavailable, "busy", "HTTP read deadline unavailable")
 		return

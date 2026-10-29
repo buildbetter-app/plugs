@@ -71,6 +71,16 @@ func TestBodyReadFailureAndDeadlineReachNoStore(t *testing.T) {
 	f := newFixture(t, false, false, httpjson.Config{RequestTimeout: 100 * time.Millisecond})
 	requireCode(t, rawRequest(t, f, "Content-Length: 32\r\nConnection: close\r\n", "{", true), 400, "invalid_request")
 	requireCode(t, rawRequest(t, f, "Content-Length: 32\r\nConnection: close\r\n", "{", false), 408, "busy")
+	shorterRead := newFixture(t, false, false, httpjson.Config{ReadTimeout: 80 * time.Millisecond, RequestTimeout: 2 * time.Second})
+	started := time.Now()
+	requireCode(t, rawRequest(t, shorterRead, "Content-Length: 32\r\nConnection: close\r\n", "{", false), 408, "busy")
+	if time.Since(started) > time.Second {
+		t.Fatal("request timeout overrode the shorter read deadline")
+	}
+	if shorterRead.store.reads.Load() != 0 {
+		t.Fatal("slow body reached store")
+	}
+
 	if f.domain.creates.Load() != 0 || f.store.reads.Load() != 0 || f.store.writes.Load() != 0 {
 		t.Fatal("partial/slow body reached domain/store")
 	}
