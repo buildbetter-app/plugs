@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "ontologymigration",
+    srcs = ["digest.go", "directives.go", "guards.go", "planner.go", "types.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/core/ontologymigration",
+    visibility = ["//internal:__subpackages__"],
+    deps = ["//internal/core/model", "//internal/core/ontology"],
+)
+
+go_test(
+    name = "ontologymigration_test",
+    srcs = ["digest_test.go", "integration_test.go", "planner_test.go", "validation_test.go"],
+    embed = [":ontologymigration"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
