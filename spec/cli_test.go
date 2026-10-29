@@ -72,7 +72,8 @@ func TestCLIRealMemorySession(t *testing.T) {
 		[]string{"get", "@last", "--as-of", "3"},
 		[]string{"close", "@last", "--reason", "done with note", "--expect", "4", "--idempotency-key", closeKey},
 	)
-	if err != nil || stderr != "" {
+	wantNotice := "warning: memory storage is disposable; all data is discarded when this process exits\n"
+	if err != nil || stderr != wantNotice {
 		t.Fatalf("actual plug session failed: %v\nstderr: %s", err, stderr)
 	}
 	if len(results) != 12 {

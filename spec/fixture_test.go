@@ -114,9 +114,18 @@ func (f *core) reader(t *testing.T) driver.Reader {
 	return r
 }
 
+func closeReader(t *testing.T, r driver.Reader) {
+	t.Helper()
+	if err := r.Close(); err != nil {
+		t.Error(err)
+	}
+}
+
 func (f *core) document(t *testing.T, id string) pipeline.Document {
 	t.Helper()
-	rows, err := f.reader(t).Get(f.ctx, []model.Ref{model.RefByID(id, model.Natural64(0))})
+	r := f.reader(t)
+	defer closeReader(t, r)
+	rows, err := r.Get(f.ctx, []model.Ref{model.RefByID(id, model.Natural64(0))})
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("read persisted %s: %d rows, %v", id, len(rows), err)
 	}
@@ -129,7 +138,9 @@ func (f *core) document(t *testing.T, id string) pipeline.Document {
 
 func (f *core) assertAbsent(t *testing.T, id string) {
 	t.Helper()
-	rows, err := f.reader(t).Get(f.ctx, []model.Ref{model.RefByID(id, model.Natural64(0))})
+	r := f.reader(t)
+	defer closeReader(t, r)
+	rows, err := r.Get(f.ctx, []model.Ref{model.RefByID(id, model.Natural64(0))})
 	if err != nil || len(rows) != 0 {
 		t.Fatalf("rollback published %s: %d rows, %v", id, len(rows), err)
 	}
@@ -138,6 +149,7 @@ func (f *core) assertAbsent(t *testing.T, id string) {
 func (f *core) assertLog(t *testing.T, count int) {
 	t.Helper()
 	r := f.reader(t)
+	defer closeReader(t, r)
 	changes, err := r.Changesets(f.ctx, nil, 1000)
 	if err != nil || len(changes) != count {
 		t.Fatalf("changesets: want %d, got %d, error %v", count, len(changes), err)
@@ -154,7 +166,9 @@ func (f *core) assertLog(t *testing.T, count int) {
 
 func (f *core) versions(t *testing.T, ref model.Ref) []driver.Version {
 	t.Helper()
-	page, err := f.reader(t).Versions(f.ctx, ref, driver.PageReq{Limit: 1000})
+	r := f.reader(t)
+	defer closeReader(t, r)
+	page, err := r.Versions(f.ctx, ref, driver.PageReq{Limit: 1000})
 	if err != nil || page.NextCursor != nil {
 		t.Fatalf("versions incomplete: %v, cursor %+v", err, page.NextCursor)
 	}
