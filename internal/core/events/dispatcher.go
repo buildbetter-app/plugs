@@ -38,7 +38,7 @@ type Dispatcher struct {
 	Admin       Administration
 	Now         func() time.Time
 	mu          sync.Mutex
-	locks       map[string]*sync.Mutex
+	locks       map[string]chan struct{}
 }
 
 type Progress struct {
@@ -47,19 +47,28 @@ type Progress struct {
 	Advanced  bool
 }
 
-func (d *Dispatcher) lock(id string) func() {
+func (d *Dispatcher) lock(ctx context.Context, id string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	d.mu.Lock()
 	if d.locks == nil {
-		d.locks = make(map[string]*sync.Mutex)
+		d.locks = make(map[string]chan struct{})
 	}
 	lock := d.locks[id]
 	if lock == nil {
-		lock = &sync.Mutex{}
+		lock = make(chan struct{}, 1)
 		d.locks[id] = lock
 	}
 	d.mu.Unlock()
-	lock.Lock()
-	return lock.Unlock
+	// Recovery retains serialization across callbacks, but waiting for it must
+	// respect the fresh post call's aggregate deadline.
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 func (d *Dispatcher) now() time.Time {
 	if d.Now != nil {
@@ -132,7 +141,10 @@ func (d *Dispatcher) step(ctx context.Context, b Binding, liveRevision *model.Re
 	if err := validateBinding(b); err != nil {
 		return progress, err
 	}
-	unlock := d.lock(b.ID)
+	unlock, err := d.lock(ctx, b.ID)
+	if err != nil {
+		return progress, err
+	}
 	defer unlock()
 	if err := d.active(ctx); err != nil {
 		return progress, err
@@ -387,7 +399,10 @@ func (d *Dispatcher) Skip(ctx context.Context, b Binding, by model.PrincipalRef,
 	if err := d.Admin.Authorize(ctx, "event.subscription.skip", b.ID, by); err != nil {
 		return err
 	}
-	unlock := d.lock(b.ID)
+	unlock, err := d.lock(ctx, b.ID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	if err := d.active(ctx); err != nil {
 		return err
@@ -417,7 +432,10 @@ func (d *Dispatcher) Resume(ctx context.Context, b Binding, by model.PrincipalRe
 	if err := d.Admin.Authorize(ctx, "event.subscription.resume", b.ID, by); err != nil {
 		return err
 	}
-	unlock := d.lock(b.ID)
+	unlock, err := d.lock(ctx, b.ID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	if err := d.active(ctx); err != nil {
 		return err

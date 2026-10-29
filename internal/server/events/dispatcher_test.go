@@ -208,6 +208,104 @@ func TestPostBindingsRunInParallelAndTimeoutDeadLetters(t *testing.T) {
 	}
 }
 
+func TestPostDeadlineWhileRecoveryHoldsBinding(t *testing.T) {
+	f := newFixture(t)
+	recovered := f.commit(t, time.Time{}, bead("pl-a", "a"), bead("pl-b", "b"))
+	fresh := f.commit(t, time.Time{}, bead("pl-c", "c"))
+	held := make(chan struct{})
+	release := sync.OnceFunc(func() { close(held) })
+	deliveries := make(chan core.Delivery, 3)
+	nextDelivery := func() core.Delivery {
+		t.Helper()
+		select {
+		case item := <-deliveries:
+			return item
+		case <-f.ctx.Done():
+			t.Fatal("missing post delivery")
+			return core.Delivery{}
+		}
+	}
+	b := core.Binding{ID: "post-recovery", Class: core.Post, Principal: request().Principal, Timeout: time.Second, Handler: handlerFunc(func(ctx context.Context, item core.Delivery) error {
+		deliveries <- item
+		if item.Key.Revision.String() == recovered.Revision.String() && item.Key.Index.IsZero() {
+			select {
+			case <-held:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	})}
+	d := f.dispatcher(t)
+	recoveryDone := make(chan struct{})
+	var recoveryErr error
+	go func() {
+		_, recoveryErr = d.Step(f.ctx, b)
+		close(recoveryDone)
+	}()
+	defer func() {
+		release()
+		select {
+		case <-recoveryDone:
+		case <-f.ctx.Done():
+			t.Error("recovery did not finish")
+		}
+	}()
+	item := nextDelivery()
+	if !item.Late || item.Key.Revision.String() != recovered.Revision.String() || !item.Key.Index.IsZero() {
+		t.Fatalf("first recovery delivery=%+v", item)
+	}
+
+	// The caller's deadline expires while recovery still owns the binding.
+	// Waiting must neither invoke the fresh callback nor publish a checkpoint.
+	postCtx, cancel := context.WithTimeout(f.ctx, 30*time.Millisecond)
+	defer cancel()
+	postDone := make(chan []model.Warning, 1)
+	go func() { postDone <- d.RunPost(postCtx, []core.Binding{b}, fresh.Revision) }()
+	select {
+	case warnings := <-postDone:
+		if !errors.Is(postCtx.Err(), context.DeadlineExceeded) || len(warnings) != 1 || warnings[0].Code != "post_subscriber_failed" || warnings[0].Details["binding"] != b.ID {
+			t.Fatalf("post deadline warnings=%+v context=%v", warnings, postCtx.Err())
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("fresh post waited for recovery beyond its deadline")
+	}
+	select {
+	case item := <-deliveries:
+		t.Fatalf("callback ran while recovery held binding: %+v", item)
+	default:
+	}
+	state, generation, err := f.checkpoints(t).Load(f.ctx, b.ID)
+	if err != nil || generation != 0 || !state.Position.Revision.IsZero() || state.Failure != nil {
+		t.Fatalf("cancelled waiter changed checkpoint=%+v generation=%d %v", state, generation, err)
+	}
+
+	release()
+	select {
+	case <-recoveryDone:
+		if recoveryErr != nil {
+			t.Fatal(recoveryErr)
+		}
+	case <-f.ctx.Done():
+		t.Fatal("recovery did not release binding")
+	}
+	item = nextDelivery()
+	if !item.Late || item.Key.Revision.String() != recovered.Revision.String() || item.Key.Index.String() != "1" {
+		t.Fatalf("second recovery delivery=%+v", item)
+	}
+	if warnings := d.RunPost(f.ctx, []core.Binding{b}, fresh.Revision); len(warnings) != 0 {
+		t.Fatalf("fresh post after recovery=%+v", warnings)
+	}
+	item = nextDelivery()
+	if item.Late || item.Key.Revision.String() != fresh.Revision.String() || !item.Key.Index.IsZero() {
+		t.Fatalf("fresh delivery after recovery=%+v", item)
+	}
+	state, generation, err = f.checkpoints(t).Load(f.ctx, b.ID)
+	if err != nil || generation != 3 || state.Position.Revision.String() != fresh.Revision.String() || !state.Position.Index.IsZero() || state.Failure != nil {
+		t.Fatalf("recovery/fresh checkpoint=%+v generation=%d %v", state, generation, err)
+	}
+}
+
 func TestPoisonListenerRequiresAuditedAuthorizedSkip(t *testing.T) {
 	f := newFixture(t)
 	f.commit(t, time.Time{}, bead("pl-a", "a"), bead("pl-b", "b"))
