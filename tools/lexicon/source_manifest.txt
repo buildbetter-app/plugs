@@ -211,6 +211,7 @@ internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
+internal/storage/driver/receipt_contract_test.go
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_test.go
