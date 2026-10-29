@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"sort"
-	"strconv"
 
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
@@ -43,10 +42,8 @@ func decodeDocument(raw []byte) (pipeline.Document, error) {
 			return doc, failure("invalid_params", "status must be a string")
 		}
 	}
-	if v, exists := doc.Fields["template"]; exists {
-		if _, ok := v.(bool); !ok {
-			return doc, failure("invalid_params", "template must be a boolean")
-		}
+	if _, violations := ontology.IsTemplate(state(doc)); len(violations) != 0 {
+		return doc, violationsError(violations)
 	}
 	if _, err := priority(doc); err != nil {
 		return doc, err
@@ -55,18 +52,8 @@ func decodeDocument(raw []byte) (pipeline.Document, error) {
 }
 
 func priority(doc pipeline.Document) (int, error) {
-	v, exists := doc.Fields["priority"]
-	if !exists {
-		return 2, nil
-	}
-	raw, err := json.Marshal(v)
-	if err == nil {
-		p, err := strconv.Atoi(string(raw))
-		if err == nil && p >= 0 && p <= 4 {
-			return p, nil
-		}
-	}
-	return 0, failure("invalid_params", "priority must be an integer from 0 through 4")
+	p, violations := ontology.Priority(state(doc))
+	return p, violationsError(violations)
 }
 
 // scanBeads reads one pinned snapshot, including every page, and never reports
@@ -106,14 +93,13 @@ func scanBeads(ctx context.Context, r queryReader) (map[string]storedBead, error
 func state(doc pipeline.Document) ontology.BeadState {
 	fields := make(map[string]any, len(doc.Fields))
 	for k, v := range doc.Fields {
-		if k != "status" && k != "template" && k != "priority" {
+		if k != "status" {
 			fields[k] = v
 		}
 	}
 	status, _ := doc.Fields["status"].(string)
 	template, _ := doc.Fields["template"].(bool)
-	p, _ := priority(doc) // decodeDocument validated the kernel values.
-	return ontology.BeadState{ID: doc.ID, Project: doc.Project, Type: doc.Type, Status: status, Template: template, Priority: &p, Fields: fields}
+	return ontology.BeadState{ID: doc.ID, Project: doc.Project, Type: doc.Type, Status: status, Template: template, Fields: fields}
 }
 
 func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]storedBead) (bool, error) {

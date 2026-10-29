@@ -33,6 +33,12 @@ func TestSchemaMatchesTypedFieldsAndTargetRequirements(t *testing.T) {
 		t.Fatal(fieldSchema)
 	}
 	definitions := fieldSchema["properties"].(map[string]any)
+	if !reflect.DeepEqual(definitions["priority"], map[string]any{"type": "integer", "minimum": json.Number("0"), "maximum": json.Number("4"), "default": json.Number("2")}) {
+		t.Fatal("schema omitted the fixed kernel priority", definitions["priority"])
+	}
+	if !reflect.DeepEqual(definitions["template"], map[string]any{"type": "boolean", "default": false}) {
+		t.Fatal("schema omitted the fixed kernel template flag", definitions["template"])
+	}
 	if definitions["severity"].(map[string]any)["readOnly"] != true || definitions["count"].(map[string]any)["default"] != json.Number("9007199254740993") {
 		t.Fatal(definitions)
 	}
