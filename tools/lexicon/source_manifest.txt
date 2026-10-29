@@ -282,6 +282,15 @@ internal/server/authn/authn.go
 internal/server/authn/authn_test.go
 internal/server/authn/http.go
 internal/server/authn/http_test.go
+internal/server/collab/BUILD.bazel
+internal/server/collab/README.md
+internal/server/collab/boundaries_test.go
+internal/server/collab/integration_test.go
+internal/server/collab/list.go
+internal/server/collab/manager.go
+internal/server/collab/resources.go
+internal/server/collab/rpc.go
+internal/server/collab/types.go
 internal/server/events/BUILD.bazel
 internal/server/events/audit.go
 internal/server/events/audit_delivery_test.go
