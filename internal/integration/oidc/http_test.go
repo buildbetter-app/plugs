@@ -102,15 +102,11 @@ func realHTTP(t *testing.T, idp *mockIDP) *httpFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	carried, err := authnoidc.CarryIdentity(f.auth, handler)
-	if err != nil {
-		t.Fatal(err)
-	}
 	listener, err := f.auth.Listen(context.Background(), "127.0.0.1:0", idp.server.TLS)
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpServer := &http.Server{Handler: carried, ReadHeaderTimeout: time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second}
+	httpServer := &http.Server{Handler: handler, ReadHeaderTimeout: time.Second, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second}
 	done := make(chan error, 1)
 	go func() { done <- httpServer.Serve(listener) }()
 	f.url, f.client = "https://"+listener.Addr().String(), idp.server.Client()
@@ -282,4 +278,62 @@ func TestRealHTTPSessionKeepsOriginHostCookieAndScopedAgentRestrictions(t *testi
 	}
 	expectCode(t, f.call(t, key.Token, "bead.create", writeParams(t), nil), http.StatusForbidden, "authz_not_installed")
 	result(t, f.call(t, session.Token, "bead.create", writeParams(t), func(r *http.Request) { r.Header.Set("Origin", f.url) }))
+}
+
+func TestRealHTTPSessionReconnectsWithSameCredentialUntilExpiry(t *testing.T) {
+	idp := newIDP(t)
+	f := realHTTP(t, idp)
+	session := login(t, idp, f.provider)
+	first := result(t, f.call(t, session.Token, "bead.create", writeParams(t), nil))
+	ref := first["results"].([]any)[0].(map[string]any)["ref"]
+
+	// A reconnect is a fresh HTTP client using the same opaque Plug session;
+	// it must re-admit the same User and read the existing durable state.
+	reconnected := &http.Client{Transport: f.client.Transport, Timeout: f.client.Timeout}
+	defer reconnected.CloseIdleConnections()
+	params := map[string]any{"jsonrpc": "2.0", "id": 2, "method": "bead.get", "params": map[string]any{"id": ref}}
+	payload, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, f.url+httpjson.Path, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Plug-RPC", "1")
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	response, err := reconnected.Do(req)
+	if err != nil {
+		t.Fatal("reconnected HTTP request failed", err)
+	}
+	data, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("reconnected request status=%d body=%s", response.StatusCode, data)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(data, &value); err != nil || value["error"] != nil {
+		t.Fatalf("reconnected session was not admitted: %s", data)
+	}
+	if got := value["result"].(map[string]any)["bead"].(map[string]any)["id"]; got != ref.(map[string]any)["id"] {
+		t.Fatalf("reconnected request read a different bead: %v", got)
+	}
+
+	// The same reconnect credential fails closed at the half-open expiry
+	// boundary; it must not fall back to anonymous or reach the writer.
+	meta, err := f.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	idp.now.Store(session.ExpiresAt.Unix())
+	expired := f.call(t, session.Token, "bead.create", writeParams(t), nil)
+	expectCode(t, expired, http.StatusUnauthorized, "token_expired")
+	after, err := f.store.Meta(context.Background())
+	if err != nil || after.Head != meta.Head || f.domain.sessionCreates.Load() != 1 {
+		t.Fatalf("expired reconnect changed core state: before=%s after=%s sessionCreates=%d", meta.Head, after.Head, f.domain.sessionCreates.Load())
+	}
 }

@@ -19,12 +19,13 @@ import (
 )
 
 type Session struct {
-	Client       *client.Client
-	Out          io.Writer
-	Err          io.Writer
-	JSON         bool
-	LastID       string
-	LastRevision string
+	Client        *client.Client
+	Out           io.Writer
+	Err           io.Writer
+	JSON          bool
+	HumanPresence map[string]any
+	LastID        string
+	LastRevision  string
 }
 
 func (s *Session) Run(ctx context.Context, args []string) error {
@@ -107,7 +108,16 @@ func (s *Session) Run(ctx context.Context, args []string) error {
 	return s.format(object)
 }
 
-var cliPresence = map[string]any{"mode": "presence_check", "challenge": "plug-cli", "proof": "plug-cli"}
+// HumanPresence is supplied by an interactive host when it has a trusted D32
+// verifier. The CLI never manufactures a challenge or proof. The empty shape
+// keeps the frozen RPC schema satisfied so the server can return its typed,
+// fail-closed human_presence_required error when no verifier is configured.
+func (s *Session) humanPresence() map[string]any {
+	if len(s.HumanPresence) == 0 {
+		return map[string]any{"mode": "presence_check", "challenge": "", "proof": ""}
+	}
+	return cloneAnyMap(s.HumanPresence)
+}
 
 func (s *Session) dump(ctx context.Context, args []string) error {
 	cmd, err := ParseCommand(append([]string{"dump"}, args...))
@@ -122,7 +132,10 @@ func (s *Session) dump(ctx context.Context, args []string) error {
 	dumpID := ""
 	var page uint64
 	for {
-		params := map[string]any{"history": history, "pageSize": pageSize, "humanPresence": cliPresence}
+		params := map[string]any{"history": history, "pageSize": pageSize}
+		if presence := s.humanPresence(); presence != nil {
+			params["humanPresence"] = presence
+		}
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
@@ -210,8 +223,11 @@ func (s *Session) restore(ctx context.Context, args []string) error {
 	if !ok {
 		return fmt.Errorf("restore manifest is not an object")
 	}
-	presence := cloneAnyMap(cliPresence)
-	begin, err := s.Client.Call(ctx, "admin.restore.begin", map[string]any{"manifest": manifest, "history": history, "humanPresence": presence}, "")
+	beginParams := map[string]any{"manifest": manifest, "history": history}
+	if presence := s.humanPresence(); presence != nil {
+		beginParams["humanPresence"] = presence
+	}
+	begin, err := s.Client.Call(ctx, "admin.restore.begin", beginParams, "")
 	if err != nil {
 		return err
 	}
@@ -235,9 +251,13 @@ func (s *Session) restore(ctx context.Context, args []string) error {
 		}
 		chunk := data[offset:end]
 		sum := sha256.Sum256(chunk)
-		_, err := s.Client.Call(ctx, "admin.restore.chunk", map[string]any{
-			"restoreId": restoreID, "page": page, "data": base64.StdEncoding.EncodeToString(chunk), "sha256": fmt.Sprintf("%x", sum[:]), "humanPresence": cloneAnyMap(cliPresence),
-		}, "")
+		chunkParams := map[string]any{
+			"restoreId": restoreID, "page": page, "data": base64.StdEncoding.EncodeToString(chunk), "sha256": fmt.Sprintf("%x", sum[:]),
+		}
+		if presence := s.humanPresence(); presence != nil {
+			chunkParams["humanPresence"] = presence
+		}
+		_, err := s.Client.Call(ctx, "admin.restore.chunk", chunkParams, "")
 		if err != nil {
 			return err
 		}
@@ -248,7 +268,11 @@ func (s *Session) restore(ctx context.Context, args []string) error {
 		return err
 	}
 	sum := sha256.Sum256(canonical)
-	finish, err := s.Client.Call(ctx, "admin.restore.finish", map[string]any{"restoreId": restoreID, "manifestSha256": fmt.Sprintf("%x", sum[:]), "humanPresence": cloneAnyMap(cliPresence)}, "")
+	finishParams := map[string]any{"restoreId": restoreID, "manifestSha256": fmt.Sprintf("%x", sum[:])}
+	if presence := s.humanPresence(); presence != nil {
+		finishParams["humanPresence"] = presence
+	}
+	finish, err := s.Client.Call(ctx, "admin.restore.finish", finishParams, "")
 	if err != nil {
 		return err
 	}

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
@@ -25,12 +26,24 @@ import (
 
 var presence = map[string]any{"mode": "presence_check", "challenge": "restore-test", "proof": "restore-test"}
 
+func trustedPresenceVerifier() restore.PresenceVerifier {
+	return restore.PresenceVerifierFunc(func(ctx context.Context, method, digest string, got restore.Presence) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if method == "" || digest == "" || got["proof"] != "restore-test" {
+			return fmt.Errorf("test presence is not bound to the admitted operation")
+		}
+		return nil
+	})
+}
+
 func TestDumpRestoreClaimAndApplyAcrossDrivers(t *testing.T) {
 	for _, driverName := range []string{"memory", "sqlite"} {
 		driverName := driverName
 		t.Run(driverName, func(t *testing.T) {
 			ctx := context.Background()
-			source, err := cli.OpenLocal(ctx, cli.LocalConfig{Project: "fixture", Agent: "source", Storage: cli.StorageConfig{Driver: "memory"}})
+			source, err := cli.OpenLocal(ctx, cli.LocalConfig{Project: "fixture", Agent: "source", Storage: cli.StorageConfig{Driver: "memory"}, PresenceVerifier: trustedPresenceVerifier()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -65,6 +78,7 @@ func TestDumpRestoreClaimAndApplyAcrossDrivers(t *testing.T) {
 			}
 			target, err := cli.OpenLocal(ctx, cli.LocalConfig{
 				Project: "fixture", Agent: "restorer", Storage: cli.StorageConfig{Driver: "provided"},
+				PresenceVerifier: trustedPresenceVerifier(),
 				Factory: func(context.Context, cli.StorageConfig) (driver.Store, func() error, error) {
 					return targetStore, cleanup, nil
 				},
@@ -135,7 +149,7 @@ func TestDumpCursorBindsHistoryAndPageSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lease.Release(ctx)
-	mgr := restore.NewManager(store, lease)
+	mgr := restore.NewManager(store, lease, trustedPresenceVerifier())
 	first, err := mgr.DumpPage(ctx, "full", "", 512, restore.Presence(presence))
 	if err != nil || first.Done || first.NextPage == nil {
 		t.Fatalf("first page=%+v err=%v", first, err)
@@ -154,7 +168,7 @@ func TestDumpCursorBindsHistoryAndPageSize(t *testing.T) {
 
 func TestRestoreRefusalsDoNotMutateTarget(t *testing.T) {
 	ctx := context.Background()
-	source, err := cli.OpenLocal(ctx, cli.LocalConfig{Project: "fixture", Agent: "source", Storage: cli.StorageConfig{Driver: "memory"}})
+	source, err := cli.OpenLocal(ctx, cli.LocalConfig{Project: "fixture", Agent: "source", Storage: cli.StorageConfig{Driver: "memory"}, PresenceVerifier: trustedPresenceVerifier()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +179,7 @@ func TestRestoreRefusalsDoNotMutateTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := manifestValue.(map[string]any)
-	target, err := cli.OpenLocal(ctx, cli.LocalConfig{Project: "fixture", Agent: "target", Storage: cli.StorageConfig{Driver: "memory"}})
+	target, err := cli.OpenLocal(ctx, cli.LocalConfig{Project: "fixture", Agent: "target", Storage: cli.StorageConfig{Driver: "memory"}, PresenceVerifier: trustedPresenceVerifier()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,13 +231,137 @@ func TestRestoreRefusalsDoNotMutateTarget(t *testing.T) {
 	}
 }
 
+func TestNativeFullHistoryRefusesBeforeMutation(t *testing.T) {
+	ctx := context.Background()
+	sourceStore := memory.New()
+	source, err := cli.OpenLocal(ctx, cli.LocalConfig{
+		Project: "history", Agent: "source", Storage: cli.StorageConfig{Driver: "provided"},
+		PresenceVerifier: trustedPresenceVerifier(),
+		Factory: func(context.Context, cli.StorageConfig) (driver.Store, func() error, error) {
+			return sourceStore, sourceStore.Close, nil
+		},
+	})
+	if err != nil {
+		sourceStore.Close()
+		t.Fatal(err)
+	}
+	defer source.Close()
+	created, err := source.Client.Call(ctx, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "before"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var commit model.Commit
+	if err := json.Unmarshal(created.JSON, &commit); err != nil || len(commit.Results) != 1 {
+		t.Fatalf("create response: %s %v", created.JSON, err)
+	}
+	if _, err := source.Client.Call(ctx, "bead.update", map[string]any{"id": map[string]any{"id": commit.Results[0].Ref.ID}, "fields": map[string]any{"title": "after"}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	data, _, err := restore.Dump(ctx, sourceStore, "full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := dumpformat.Read(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, manifestHash := manifestForRestore(t, archive)
+	if archive.Manifest().History != "full" || archive.Manifest().VersionCount < 2 || archive.Manifest().ChangesetCount < 2 {
+		t.Fatalf("fixture did not contain full history: %+v", archive.Manifest())
+	}
+
+	targetStore := memory.New()
+	defer targetStore.Close()
+	lease, err := targetStore.Lease(ctx, "full-history-target", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(ctx)
+	mgr := restore.NewManager(targetStore, lease, trustedPresenceVerifier())
+	status, err := mgr.Begin(ctx, manifest, "full", restore.Presence(presence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadManagerArchive(t, ctx, mgr, status.RestoreID, data, restore.Presence(presence))
+	_, err = mgr.Finish(ctx, status.RestoreID, manifestHash, model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "full-history-target"}, restore.Presence(presence))
+	var typed *model.Error
+	if err == nil || !errors.As(err, &typed) || typed.Data.Code != "restore_violation" || !strings.Contains(typed.Data.Hint, "full-history") {
+		t.Fatalf("full-history archive was not explicitly refused: %T %v", err, err)
+	}
+	assertEmptyRestoreTarget(t, ctx, targetStore)
+}
+
+func TestRestoreManifestBindsUploadedArchive(t *testing.T) {
+	ctx := context.Background()
+	sourceA := memory.New()
+	defer sourceA.Close()
+	dataA, _, err := restore.Dump(ctx, sourceA, "head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveA, err := dumpformat.Read(bytes.NewReader(dataA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestA, hashA := manifestForRestore(t, archiveA)
+
+	sourceBStore := memory.New()
+	sourceB, err := cli.OpenLocal(ctx, cli.LocalConfig{
+		Project: "manifest", Agent: "source", Storage: cli.StorageConfig{Driver: "provided"},
+		PresenceVerifier: trustedPresenceVerifier(),
+		Factory: func(context.Context, cli.StorageConfig) (driver.Store, func() error, error) {
+			return sourceBStore, sourceBStore.Close, nil
+		},
+	})
+	if err != nil {
+		sourceBStore.Close()
+		t.Fatal(err)
+	}
+	defer sourceB.Close()
+	if _, err := sourceB.Client.Call(ctx, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "archive B"}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	dataB, _, err := restore.Dump(ctx, sourceBStore, "head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveB, err := dumpformat.Read(bytes.NewReader(dataB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, hashB := manifestForRestore(t, archiveB)
+	if hashA == hashB {
+		t.Fatal("test archives unexpectedly share a manifest digest")
+	}
+
+	targetStore := memory.New()
+	defer targetStore.Close()
+	lease, err := targetStore.Lease(ctx, "manifest-target", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(ctx)
+	mgr := restore.NewManager(targetStore, lease, trustedPresenceVerifier())
+	status, err := mgr.Begin(ctx, manifestA, "head", restore.Presence(presence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	uploadManagerArchive(t, ctx, mgr, status.RestoreID, dataB, restore.Presence(presence))
+	_, err = mgr.Finish(ctx, status.RestoreID, hashA, model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "manifest-target"}, restore.Presence(presence))
+	var typed *model.Error
+	if err == nil || !errors.As(err, &typed) || typed.Data.Code != "restore_checksum_failed" {
+		t.Fatalf("mismatched uploaded archive was accepted: %T %v", err, err)
+	}
+	assertEmptyRestoreTarget(t, ctx, targetStore)
+}
+
 func captureDump(t *testing.T, ctx context.Context, client *client.Client) ([]byte, *dumpformat.Archive) {
 	t.Helper()
 	var data bytes.Buffer
 	cursor := ""
 	var dumpID string
 	for {
-		params := map[string]any{"history": "full", "pageSize": 512, "humanPresence": presence}
+		params := map[string]any{"history": "head", "pageSize": 512, "humanPresence": presence}
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
@@ -265,7 +403,7 @@ func restoreArchive(t *testing.T, ctx context.Context, client *client.Client, da
 		t.Fatal(err)
 	}
 	key := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	begin, err := client.Call(ctx, "admin.restore.begin", map[string]any{"manifest": manifestValue, "history": "full", "humanPresence": presence}, key)
+	begin, err := client.Call(ctx, "admin.restore.begin", map[string]any{"manifest": manifestValue, "history": "head", "humanPresence": presence}, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,6 +431,62 @@ func restoreArchive(t *testing.T, ctx context.Context, client *client.Client, da
 	sum := sha256.Sum256(canonical)
 	if _, err := client.Call(ctx, "admin.restore.finish", map[string]any{"restoreId": restoreID, "manifestSha256": hex.EncodeToString(sum[:]), "humanPresence": presence}, key+"ff"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func manifestForRestore(t *testing.T, archive *dumpformat.Archive) (map[string]any, string) {
+	t.Helper()
+	value, err := wire.DecodeJSON(mustMember(t, archive, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("manifest is not an object: %T", value)
+	}
+	canonical, err := json.Marshal(archive.Manifest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(canonical)
+	return manifest, hex.EncodeToString(sum[:])
+}
+
+func uploadManagerArchive(t *testing.T, ctx context.Context, mgr *restore.Manager, restoreID string, data []byte, presence restore.Presence) {
+	t.Helper()
+	for page, offset := uint64(0), 0; offset < len(data); page++ {
+		end := offset + 512
+		if end > len(data) {
+			end = len(data)
+		}
+		chunk := data[offset:end]
+		if _, err := mgr.Chunk(ctx, restoreID, page, chunk, sha(chunk), presence); err != nil {
+			t.Fatal(err)
+		}
+		offset = end
+	}
+}
+
+func assertEmptyRestoreTarget(t *testing.T, ctx context.Context, store driver.Store) {
+	t.Helper()
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !meta.Head.IsZero() || !meta.HistoryFloor.IsZero() {
+		t.Fatalf("restore refusal changed target metadata: %+v", meta)
+	}
+	reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	page, err := reader.Query(ctx, driver.Query{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("restore refusal wrote %d records", len(page.Items))
 	}
 }
 

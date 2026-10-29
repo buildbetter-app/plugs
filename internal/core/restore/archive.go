@@ -33,10 +33,31 @@ const (
 )
 
 // Presence is deliberately transport-neutral. Authentication and the full
-// D32 proof are owned by the eventual admin policy plugin; this local slice
-// still requires a bounded, non-empty challenge and proof before sensitive
-// dump/restore work is admitted.
+// D32 proof are owned by the host's trusted admin policy. The restore manager
+// never treats a client-shaped proof as sufficient on its own: a host must
+// inject a verifier that binds the proof to the operation and sensitive
+// archive digest.
 type Presence map[string]any
+
+// PresenceVerifier is the host-owned D32 admission seam. Implementations must
+// verify an issued challenge/session and bind it to method and digest. A nil
+// verifier is a fail-closed configuration: dump and restore are refused.
+type PresenceVerifier interface {
+	Verify(context.Context, string, string, Presence) error
+}
+
+// PresenceVerifierFunc adapts a function to PresenceVerifier. It is useful for
+// a host's injected verifier and for focused conformance fixtures; production
+// callers must provide a verifier backed by their trusted presence/session
+// authority.
+type PresenceVerifierFunc func(context.Context, string, string, Presence) error
+
+func (f PresenceVerifierFunc) Verify(ctx context.Context, method, digest string, presence Presence) error {
+	if f == nil {
+		return fmt.Errorf("trusted human presence verifier is unavailable")
+	}
+	return f(ctx, method, digest, presence)
+}
 
 func validatePresence(p Presence) error {
 	mode, _ := p["mode"].(string)
@@ -55,6 +76,14 @@ func validatePresence(p Presence) error {
 		}
 	}
 	return nil
+}
+
+func presenceError(err error) error {
+	hint := "trusted human presence verifier is unavailable"
+	if err != nil {
+		hint = err.Error()
+	}
+	return &model.Error{Data: model.ErrorData{Code: "human_presence_required", Hint: hint}}
 }
 
 type nativeRecord struct {
@@ -298,7 +327,6 @@ type restoreSession struct {
 	manifest map[string]any
 	history  string
 	hash     string
-	rawHash  string
 	pages    map[uint64][]byte
 	state    string
 	warnings []model.Warning
@@ -309,6 +337,7 @@ type restoreSession struct {
 type Manager struct {
 	store    driver.Store
 	lease    driver.ActiveLease
+	verifier PresenceVerifier
 	mu       sync.Mutex
 	dumps    map[string]dumpSnapshot
 	restores map[string]*restoreSession
@@ -318,10 +347,38 @@ type dumpSnapshot struct {
 	data     []byte
 	history  string
 	pageSize int
+	digest   string
 }
 
-func NewManager(store driver.Store, lease driver.ActiveLease) *Manager {
-	return &Manager{store: store, lease: lease, dumps: map[string]dumpSnapshot{}, restores: map[string]*restoreSession{}}
+func NewManager(store driver.Store, lease driver.ActiveLease, verifier ...PresenceVerifier) *Manager {
+	var presenceVerifier PresenceVerifier
+	if len(verifier) != 0 {
+		presenceVerifier = verifier[0]
+	}
+	return &Manager{store: store, lease: lease, verifier: presenceVerifier, dumps: map[string]dumpSnapshot{}, restores: map[string]*restoreSession{}}
+}
+
+func (m *Manager) requirePresence(p Presence) error {
+	if err := validatePresence(p); err != nil {
+		return presenceError(err)
+	}
+	if m.verifier == nil {
+		return presenceError(nil)
+	}
+	return nil
+}
+
+func (m *Manager) verifyPresence(ctx context.Context, method, digest string, p Presence) error {
+	if err := m.requirePresence(p); err != nil {
+		return err
+	}
+	if strings.TrimSpace(digest) == "" {
+		return presenceError(fmt.Errorf("sensitive digest is required for human presence admission"))
+	}
+	if err := m.verifier.Verify(ctx, method, digest, p); err != nil {
+		return presenceError(err)
+	}
+	return nil
 }
 
 type DumpPage struct {
@@ -334,8 +391,8 @@ type DumpPage struct {
 }
 
 func (m *Manager) DumpPage(ctx context.Context, history, cursor string, pageSize int, presence Presence) (DumpPage, error) {
-	if err := validatePresence(presence); err != nil {
-		return DumpPage{}, &model.Error{Data: model.ErrorData{Code: "human_presence_required", Hint: err.Error()}}
+	if err := m.requirePresence(presence); err != nil {
+		return DumpPage{}, err
 	}
 	if pageSize == 0 {
 		pageSize = defaultPageSize
@@ -368,12 +425,18 @@ func (m *Manager) DumpPage(ctx context.Context, history, cursor string, pageSize
 		if err != nil {
 			return DumpPage{}, err
 		}
+		digest := memberDigest(data)
+		if err := m.verifyPresence(ctx, "admin.dump", digest, presence); err != nil {
+			return DumpPage{}, err
+		}
 		dumpID = newID("dump")
-		snapshot = dumpSnapshot{data: data, history: history, pageSize: pageSize}
+		snapshot = dumpSnapshot{data: data, history: history, pageSize: pageSize, digest: digest}
 		m.dumps[dumpID] = snapshot
 		page = 0
 	} else if !found {
 		return DumpPage{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "dump snapshot not found"}}
+	} else if err := m.verifyPresence(ctx, "admin.dump", snapshot.digest, presence); err != nil {
+		return DumpPage{}, err
 	}
 	if snapshot.data != nil && (snapshot.history != history || snapshot.pageSize != pageSize) {
 		return DumpPage{}, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "dump cursor is bound to history and pageSize"}}
@@ -466,8 +529,8 @@ type RestoreStatus struct {
 }
 
 func (m *Manager) Begin(ctx context.Context, manifest map[string]any, history string, presence Presence) (RestoreStatus, error) {
-	if err := validatePresence(presence); err != nil {
-		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "human_presence_required", Hint: err.Error()}}
+	if err := m.requirePresence(presence); err != nil {
+		return RestoreStatus{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return RestoreStatus{}, err
@@ -497,16 +560,19 @@ func (m *Manager) Begin(ctx context.Context, manifest map[string]any, history st
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: err.Error()}}
 	}
 	hash := memberDigest(canonical)
+	if err := m.verifyPresence(ctx, "admin.restore.begin", hash, presence); err != nil {
+		return RestoreStatus{}, err
+	}
 	id := newID("restore")
 	m.mu.Lock()
-	m.restores[id] = &restoreSession{id: id, manifest: cloneMap(manifest), history: history, hash: hash, rawHash: memberDigest(manifestData), pages: map[uint64][]byte{}, state: "receiving"}
+	m.restores[id] = &restoreSession{id: id, manifest: cloneMap(manifest), history: history, hash: hash, pages: map[uint64][]byte{}, state: "receiving"}
 	m.mu.Unlock()
 	return RestoreStatus{RestoreID: id, State: "receiving", ReceivedPages: 0, Warnings: []model.Warning{}}, nil
 }
 
 func (m *Manager) Chunk(ctx context.Context, id string, page uint64, data []byte, checksum string, presence Presence) (RestoreStatus, error) {
-	if err := validatePresence(presence); err != nil {
-		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "human_presence_required", Hint: err.Error()}}
+	if err := m.requirePresence(presence); err != nil {
+		return RestoreStatus{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return RestoreStatus{}, err
@@ -529,6 +595,9 @@ func (m *Manager) Chunk(ctx context.Context, id string, page uint64, data []byte
 	if session.state != "receiving" {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "restore session is no longer receiving"}}
 	}
+	if err := m.verifyPresence(ctx, "admin.restore.chunk", session.hash, presence); err != nil {
+		return RestoreStatus{}, err
+	}
 	if page != uint64(len(session.pages)) {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "restore pages must be contiguous and unique"}}
 	}
@@ -547,8 +616,8 @@ func (m *Manager) Chunk(ctx context.Context, id string, page uint64, data []byte
 }
 
 func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal model.PrincipalRef, meta model.WriteMeta, presence Presence) (RestoreStatus, error) {
-	if err := validatePresence(presence); err != nil {
-		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "human_presence_required", Hint: err.Error()}}
+	if err := m.requirePresence(presence); err != nil {
+		return RestoreStatus{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return RestoreStatus{}, err
@@ -571,6 +640,22 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 		m.mu.Unlock()
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: "manifest checksum mismatch"}}
 	}
+	admittedManifestHash := session.hash
+	m.mu.Unlock()
+	if err := m.verifyPresence(ctx, "admin.restore.finish", admittedManifestHash, presence); err != nil {
+		return RestoreStatus{}, err
+	}
+	m.mu.Lock()
+	session = m.restores[id]
+	if session == nil {
+		m.mu.Unlock()
+		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "restore session not found"}}
+	}
+	if session.state != "receiving" {
+		status := restoreStatus(session)
+		m.mu.Unlock()
+		return status, nil
+	}
 	archiveBytes := make([]byte, 0)
 	for i := uint64(0); i < uint64(len(session.pages)); i++ {
 		archiveBytes = append(archiveBytes, session.pages[i]...)
@@ -584,6 +669,9 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 	}
 	if err := ctx.Err(); err != nil {
 		return m.fail(id, err)
+	}
+	if err := validateSupportedArchive(archive); err != nil {
+		return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}})
 	}
 	m.mu.Lock()
 	wantHistory := ""
@@ -599,14 +687,7 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 		return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: err.Error()}})
 	}
 	canonicalHash := memberDigest(canonicalManifest)
-	memberHash := ""
-	if member, ok := archive.Member("manifest.json"); ok {
-		memberHash = memberDigest(member)
-	}
-	m.mu.Lock()
-	acceptedManifestHash := strings.ToLower(manifestHash) == session.hash || strings.ToLower(manifestHash) == session.rawHash || strings.ToLower(manifestHash) == canonicalHash || strings.ToLower(manifestHash) == memberHash
-	m.mu.Unlock()
-	if !acceptedManifestHash {
+	if !strings.EqualFold(manifestHash, admittedManifestHash) || canonicalHash != admittedManifestHash {
 		return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: "manifest checksum mismatch"}})
 	}
 	_, err = m.emptyTarget(ctx)
@@ -752,6 +833,31 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	}
 	_, err = tx.Commit(ctx, header)
 	return err
+}
+
+// validateSupportedArchive is deliberately stricter than dumpformat.Read.
+// The driver contract can publish one current image atomically, but it cannot
+// inject source versions, changesets, allocator state, or converter
+// disclosures. Accepting those archives here would silently flatten them.
+// Refuse before the publication transaction instead.
+func validateSupportedArchive(archive *dumpformat.Archive) error {
+	if archive == nil {
+		return fmt.Errorf("restore archive is nil")
+	}
+	manifest := archive.Manifest()
+	if !archive.Native() {
+		return fmt.Errorf("converter archive restore is unavailable; source disclosures and allocator state must be preserved by the converter boundary")
+	}
+	if manifest.History != "head" {
+		return fmt.Errorf("native full-history restore is unavailable; source versions and changesets cannot be replayed by this driver")
+	}
+	if len(manifest.Projects) != 0 {
+		return fmt.Errorf("native archive allocator state is unsupported; restore requires a head archive without project metadata")
+	}
+	if len(manifest.Warnings) != 0 {
+		return fmt.Errorf("native archive disclosures are unsupported by this restore seam: %s", strings.Join(manifest.Warnings, "; "))
+	}
+	return nil
 }
 
 func restoreRecords(archive *dumpformat.Archive) ([]driver.Record, error) {

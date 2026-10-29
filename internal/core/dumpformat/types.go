@@ -110,7 +110,10 @@ func (a *Archive) NativeMember(path string) ([]byte, bool) {
 
 func (a *Archive) Manifest() Manifest {
 	m := a.manifest
-	m.Projects = append([]Project(nil), m.Projects...)
+	// Preserve empty arrays as empty arrays. Manifest digests bind the exact
+	// canonical JSON shape, so turning an exported [] into null would make a
+	// readback hash differ from the admitted manifest.
+	m.Projects = append([]Project{}, m.Projects...)
 	for i := range m.Projects {
 		c := make(map[string]uint64, len(m.Projects[i].ChildCounters))
 		for key, value := range m.Projects[i].ChildCounters {
@@ -118,9 +121,9 @@ func (a *Archive) Manifest() Manifest {
 		}
 		m.Projects[i].ChildCounters = c
 	}
-	m.Kinds = append([]Kind(nil), m.Kinds...)
-	m.Sources = append([]Disposition(nil), m.Sources...)
-	m.Warnings = append([]string(nil), m.Warnings...)
+	m.Kinds = append([]Kind{}, m.Kinds...)
+	m.Sources = append([]Disposition{}, m.Sources...)
+	m.Warnings = append([]string{}, m.Warnings...)
 	m.Files = make(map[string]File, len(a.manifest.Files))
 	for key, value := range a.manifest.Files {
 		m.Files[key] = value

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
@@ -19,25 +18,38 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
-func TestOfflineFixtureRestoreRetainsKindsAndSecrets(t *testing.T) {
+// The BUILD-13 converter owns conversion of this Beads archive. Until a
+// driver seam can retain its allocator and disclosure metadata, restore must
+// reject it before the destination publication transaction.
+func TestOfflineConverterArchiveRefusesBeforeMutation(t *testing.T) {
 	p := filepath.Join("..", "..", "integration", "converterroundtrip", "testdata", "synthetic-plug-dump-1.tar")
 	if root := os.Getenv("TEST_SRCDIR"); root != "" {
 		p = filepath.Join(root, os.Getenv("TEST_WORKSPACE"), "internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar")
 	}
-	b, e := os.ReadFile(p)
-	if e != nil {
-		t.Fatal(e)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
 	}
-	a, e := dumpformat.Read(bytes.NewReader(b))
-	if e != nil {
-		t.Fatal(e)
+	a, err := dumpformat.Read(bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
 	}
-	mb, _ := a.Member("manifest.json")
+	manifestBytes, ok := a.Member("manifest.json")
+	if !ok {
+		t.Fatal("converter archive has no manifest")
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.Marshal(a.Manifest())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, driverName := range []string{"memory", "sqlite"} {
 		t.Run(driverName, func(t *testing.T) {
 			ctx := context.Background()
 			var store driver.Store
-			var err error
 			if driverName == "memory" {
 				store = memory.New()
 			} else {
@@ -52,72 +64,51 @@ func TestOfflineFixtureRestoreRetainsKindsAndSecrets(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer lease.Release(ctx)
-			mgr := restore.NewManager(store, lease)
-			var manifest map[string]any
-			if err := json.Unmarshal(mb, &manifest); err != nil {
-				t.Fatal(err)
-			}
-			presence := restore.Presence{"mode": "presence_check", "challenge": "c", "proof": "p"}
-			st, err := mgr.Begin(ctx, manifest, "full", presence)
+			mgr := restore.NewManager(store, lease, trustedPresenceVerifier())
+			presence := restore.Presence{"mode": "presence_check", "challenge": "restore-test", "proof": "restore-test"}
+			status, err := mgr.Begin(ctx, manifest, "head", presence)
 			if err != nil {
 				t.Fatal(err)
 			}
-			for i := 0; i < len(b); i += 512 {
-				end := i + 512
+			for offset, page := 0, uint64(0); offset < len(b); offset, page = offset+512, page+1 {
+				end := offset + 512
 				if end > len(b) {
 					end = len(b)
 				}
-				chunk := b[i:end]
-				st, err = mgr.Chunk(ctx, st.RestoreID, uint64(i/512), chunk, sha(chunk), presence)
+				chunk := b[offset:end]
+				status, err = mgr.Chunk(ctx, status.RestoreID, page, chunk, sha(chunk), presence)
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
-			if _, err = mgr.Finish(ctx, st.RestoreID, sha(mb), model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, presence); err != nil {
-				t.Fatal(err)
+			_, err = mgr.Finish(ctx, status.RestoreID, sha(canonical), model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, presence)
+			if err == nil {
+				t.Fatal("unsupported converter archive was accepted")
 			}
 			meta, err := store.Meta(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+			if !meta.Head.IsZero() || !meta.HistoryFloor.IsZero() {
+				t.Fatalf("refusal mutated target metadata: %+v", meta)
+			}
+			reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer r.Close()
-			pg, err := r.Query(ctx, driver.Query{Limit: 10000})
+			page, err := reader.Query(ctx, driver.Query{Limit: 1})
+			_ = reader.Close()
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(pg.Items) != 113 {
-				t.Fatalf("records=%d", len(pg.Items))
-			}
-			counts := map[string]int{}
-			secretReference := false
-			beadIDs := map[string]bool{}
-			for _, record := range pg.Items {
-				counts[record.Kind]++
-				if record.Kind == "bead" {
-					beadIDs[record.Ref.ID] = true
-				}
-				if record.Kind == "config" && strings.Contains(string(record.Body), "$secret") {
-					secretReference = true
-				}
-			}
-			if !secretReference {
-				t.Fatal("secret reference was not retained")
-			}
-			for _, id := range []string{"demo-7", "demo-7.4", "demo-8"} {
-				if !beadIDs[id] {
-					t.Fatalf("restored source ID %s missing", id)
-				}
-			}
-			for kind, want := range map[string]int{"bead": 3, "edge": 1, "comment": 1, "memory": 1, "config": 2, "beads-archive": 105} {
-				if counts[kind] != want {
-					t.Fatalf("%s=%d want %d", kind, counts[kind], want)
-				}
+			if len(page.Items) != 0 {
+				t.Fatalf("refusal wrote %d records", len(page.Items))
 			}
 		})
 	}
 }
-func sha(b []byte) string { var h [32]byte; h = sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+
+func sha(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
