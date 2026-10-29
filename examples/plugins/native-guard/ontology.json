@@ -1,0 +1,14 @@
+{
+  "types": {
+    "issue": {
+      "name": "Guarded issue",
+      "workflow": "issue",
+      "fields": {
+        "title": {"type": "string", "required": true},
+        "description": {"type": "string"},
+        "x_nativeguard_title": {"type": "string", "required": true, "owner": "nativeguard-enrich"},
+        "x_nativeguard_words": {"type": "integer", "required": true, "owner": "nativeguard-enrich"}
+      }
+    }
+  }
+}

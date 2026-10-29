@@ -1,0 +1,16 @@
+{
+  "manifest_version": 1,
+  "plugins": [{
+    "id": "app.example.nativeguard",
+    "alias": "nativeguard",
+    "version": "1.0.0",
+    "plugin_api": "1.0",
+    "runtime": "native",
+    "provides": [
+      {"kind": "subscriber", "name": "enrich", "phases": ["mutate"], "reads": ["fields.title"], "owns": ["fields.x_nativeguard_title", "fields.x_nativeguard_words"], "max_point_reads": 1, "max_queries": 1},
+      {"kind": "subscriber", "name": "title", "phases": ["validate"], "reads": ["fields.x_nativeguard_title"], "max_point_reads": 1, "max_queries": 1},
+      {"kind": "subscriber", "name": "observe", "phases": ["post"], "reads": ["fields.x_nativeguard_title", "fields.x_nativeguard_words"], "max_point_reads": 16, "max_queries": 1}
+    ],
+    "requires": {}
+  }]
+}

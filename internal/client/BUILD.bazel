@@ -10,6 +10,7 @@ go_library(
 
 go_test(
     name = "client_test",
+    args = ["-test.v"],
     srcs = glob(["*_test.go"]),
     embed = [":client"],
     deps = ["//internal/api/wire"],
