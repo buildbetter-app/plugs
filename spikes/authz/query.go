@@ -341,6 +341,11 @@ func (s *Store) resetClaims(ctx context.Context) error {
 	return err
 }
 
+func (s *Store) resetClaim(ctx context.Context, id int) error {
+	_, err := s.DB.ExecContext(ctx, s.bind(`UPDATE bead SET claimed_by=NULL WHERE id=?`), id)
+	return err
+}
+
 // countIndexWalkCandidates measures the rows an ordered index walk must visit
 // before it can return the page.  The count includes hidden ready rows before
 // the last returned key, which is the work Plan B's EXISTS predicate has to
@@ -498,10 +503,13 @@ func (s *Store) Benchmark(ctx context.Context, fraction float64, iterations int)
 			var claimEvidence *ClaimEvidence
 			measuredCandidateIDs := make([]int, 0, iterations)
 			resetSamples, committedSamples, recheckSamples := 0, 0, 0
+			previousCandidate := 0
 			for i := 0; i < iterations+3; i++ {
 				if kind == Q5Claim {
-					if err := s.resetClaims(ctx); err != nil {
-						return nil, fmt.Errorf("reset claims for sample %d plan %s: %w", i, plan, err)
+					if previousCandidate != 0 {
+						if err := s.resetClaim(ctx, previousCandidate); err != nil {
+							return nil, fmt.Errorf("reset claim %d for sample %d plan %s: %w", previousCandidate, i, plan, err)
+						}
 					}
 					resetSamples++
 				}
@@ -524,6 +532,7 @@ func (s *Store) Benchmark(ctx context.Context, fraction float64, iterations int)
 						} else if !evidence.LockAcquired || !evidence.RecheckPassed || evidence.RowsAffected != 1 || !evidence.Committed {
 							err = fmt.Errorf("candidate %d claim evidence is not a committed lock/recheck/update: %+v", evidence.CandidateID, evidence)
 						} else {
+							previousCandidate = evidence.CandidateID
 							if i >= 3 && evidence.Committed {
 								committedSamples++
 							}
