@@ -84,7 +84,12 @@ func TestPendingPostReplayWaitsForDurableFailureWarning(t *testing.T) {
 	})}))
 	cs, m := model.ChangeSet{Ops: []model.Op{create("")}}, meta(1)
 	original := make(chan applyResult, 1)
-	go func() { c, e := w.Apply(context.Background(), by, cs, m); original <- applyResult{c, e} }()
+	originalReplay := make(chan bool, 1)
+	go func() {
+		outcome, err := w.ApplyWithOutcome(context.Background(), by, cs, m)
+		originalReplay <- outcome.Replayed
+		original <- applyResult{outcome.Commit, err}
+	}()
 	select {
 	case <-entered:
 	case <-time.After(time.Second):
@@ -95,7 +100,12 @@ func TestPendingPostReplayWaitsForDurableFailureWarning(t *testing.T) {
 		t.Fatalf("post was not published pending: %+v", initial)
 	}
 	duplicate := make(chan applyResult, 1)
-	go func() { c, e := h.writer().Apply(context.Background(), by, cs, m); duplicate <- applyResult{c, e} }()
+	duplicateReplay := make(chan bool, 1)
+	go func() {
+		outcome, err := h.writer().ApplyWithOutcome(context.Background(), by, cs, m)
+		duplicateReplay <- outcome.Replayed
+		duplicate <- applyResult{outcome.Commit, err}
+	}()
 	select {
 	case got := <-duplicate:
 		t.Fatalf("duplicate returned before held post outcome was durable: %+v", got)
@@ -113,6 +123,9 @@ func TestPendingPostReplayWaitsForDurableFailureWarning(t *testing.T) {
 	code(t, err, "busy")
 	once.Do(func() { close(release) })
 	a, b := awaitResult(t, original), awaitResult(t, duplicate)
+	if <-originalReplay || !<-duplicateReplay {
+		t.Fatal("own finalization must be fresh; waiting receipt replay must be marked")
+	}
 	c, err := h.writer().Apply(context.Background(), by, cs, m)
 	assertSameResponses(t, a, b, applyResult{c, err})
 	if len(a.commit.Warnings) != 1 || a.commit.Warnings[0].Code != "post_subscriber_failed" || posts.Load() != 1 || receipt(t, h, m).ResponsePending {
@@ -215,4 +228,114 @@ func TestUnresolvedFinalizerFailureRetainsRecoverableReceipt(t *testing.T) {
 		t.Fatalf("recovery=%+v posts=%d", a, posts.Load())
 	}
 	assertSingleGraphWrite(t, h, a)
+}
+
+func TestWriteOutcomeDistinguishesNoopDryRunAndStoredReplay(t *testing.T) {
+	h := setup(t)
+	w := h.writer()
+	cs, m := model.ChangeSet{Ops: []model.Op{create("")}}, meta(1)
+	first, err := w.ApplyWithOutcome(context.Background(), by, cs, m)
+	if err != nil || first.Replayed || first.Commit.Revision.String() != "1" {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	replay, err := h.writer().ApplyWithOutcome(context.Background(), by, cs, m)
+	assertSameResponses(t, applyResult{first.Commit, nil}, applyResult{replay.Commit, err})
+	if !replay.Replayed {
+		t.Fatal("stored graph response was not marked replayed")
+	}
+
+	noop := model.ChangeSet{Ops: []model.Op{patch(first.Commit.Results[0].Ref, map[string]any{"title": "initial"})}}
+	unchanged, err := w.ApplyWithOutcome(context.Background(), by, noop, meta(2))
+	if err != nil || unchanged.Replayed || unchanged.Commit.Revision.String() != "1" || receipt(t, h, meta(2)).ResponsePending {
+		t.Fatalf("fresh same-revision noop=%+v err=%v", unchanged, err)
+	}
+	apply(t, w, cs, meta(3))
+	noopReplay, err := h.writer().ApplyWithOutcome(context.Background(), by, noop, meta(2))
+	assertSameResponses(t, applyResult{unchanged.Commit, nil}, applyResult{noopReplay.Commit, err})
+	if !noopReplay.Replayed {
+		t.Fatal("stored noop response was not marked replayed after head advanced")
+	}
+
+	dryMeta := meta(4)
+	dryMeta.DryRun = true
+	for i := 0; i < 2; i++ {
+		dry, err := w.ApplyWithOutcome(context.Background(), by, cs, dryMeta)
+		if err != nil || dry.Replayed || !dry.Commit.WouldCommit || dry.Commit.Revision.String() != "2" {
+			t.Fatalf("dry run=%+v err=%v", dry, err)
+		}
+	}
+	principal, _ := driver.PrincipalKey(by)
+	if entry, err := h.read(t).IdempotencyByKey(context.Background(), principal, "", dryMeta.Method, dryMeta.IdempotencyKey); err != nil || entry != nil {
+		t.Fatalf("dry run stored receipt=%+v err=%v", entry, err)
+	}
+	// A dry run never claims the key or creates a graph revision. The actual
+	// execution is fresh even though it uses that same request key.
+	dryMeta.DryRun = false
+	actual, err := w.ApplyWithOutcome(context.Background(), by, cs, dryMeta)
+	if err != nil || actual.Replayed || actual.Commit.Revision.String() != "3" {
+		t.Fatalf("execution after dry run=%+v err=%v", actual, err)
+	}
+	log, err := h.read(t).Changesets(context.Background(), nil, 100)
+	if err != nil || len(log) != 3 {
+		t.Fatalf("noop/dry-run published graph entries=%+v err=%v", log, err)
+	}
+}
+
+func TestLeaseLossDuringPostLeavesRecoverablePendingResponse(t *testing.T) {
+	h := setup(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	var posts atomic.Int32
+	w := h.writer(WithPostSubscribers(PostBinding{ID: "post", Subscriber: postFunc(func(ctx context.Context, _ port.CommittedChange, _ port.SnapshotReader) error {
+		posts.Add(1)
+		close(entered)
+		select {
+		case <-release:
+			return errors.New("post failed after lease takeover")
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})}))
+	cs, m := model.ChangeSet{Ops: []model.Op{create("")}}, meta(1)
+	result := make(chan applyResult, 1)
+	go func() { c, e := w.Apply(context.Background(), by, cs, m); result <- applyResult{c, e} }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("post did not start")
+	}
+	if err := h.lease.Release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := h.store.Lease(context.Background(), "takeover", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	once.Do(func() { close(release) })
+	got := awaitResult(t, result)
+	code(t, got.err, "busy")
+	var failure *model.Error
+	if !errors.As(got.err, &failure) || !failure.Data.Retryable || failure.Data.Details["responsePending"] != true || failure.Data.Details["idempotencyKey"] != m.IdempotencyKey || !reflect.DeepEqual(got.commit, model.Commit{}) {
+		t.Fatalf("fenced response=%+v", got)
+	}
+	entry := receipt(t, h, m)
+	if !entry.ResponsePending || len(entry.Commit.Warnings) != 0 || failure.Data.Details["committedRevision"] != entry.Commit.Revision {
+		t.Fatalf("fenced receipt=%+v error=%+v", entry, failure)
+	}
+	// The active holder knows the completed post outcome and can finalize that
+	// same receipt. Recovery never re-executes a callback or graph transaction.
+	warnings := []model.Warning{{Code: "post_subscriber_failed", Message: "post subscriber failed after commit", Details: map[string]any{"binding": "post", "revision": entry.Commit.Revision}}}
+	principal, _ := driver.PrincipalKey(by)
+	if err := h.store.FinalizeResponse(context.Background(), lease, principal, "", m.Method, m.IdempotencyKey, entry.Commit.Revision, warnings); err != nil {
+		t.Fatal(err)
+	}
+	recovered := New(h.store, lease, WithOntology(testOntology{}))
+	a, ae := recovered.ApplyWithOutcome(context.Background(), by, cs, m)
+	b, be := recovered.ApplyWithOutcome(context.Background(), by, cs, m)
+	assertSameResponses(t, applyResult{a.Commit, ae}, applyResult{b.Commit, be})
+	if !a.Replayed || !b.Replayed || len(a.Commit.Warnings) != 1 || posts.Load() != 1 || receipt(t, h, m).ResponsePending {
+		t.Fatalf("takeover recovery=%+v posts=%d", a, posts.Load())
+	}
+	assertSingleGraphWrite(t, h, a.Commit)
 }
