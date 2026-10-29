@@ -192,6 +192,7 @@ func TestWASIPluginBuildRestoreAndAsyncRebuild(t *testing.T) {
 			t.Fatalf("mutated %s artifact was admitted: %v", name, err)
 		}
 	}
+	t.Setenv("PLUG_WASI_PROBE", "host-only")
 	host, err := artifact.Host(ctx, pluginhost.Config{Bindings: []pluginhost.Binding{
 		{ID: "wasi-normalize", Alias: "wasi", Instance: "default", Subscriber: "normalize", Phase: pluginapi.PhaseMutate, Reads: []string{"fields.title"}, Owns: []string{"fields.normalized"}},
 		{ID: "wasi-check", Alias: "wasi", Instance: "default", Subscriber: "check", Phase: pluginapi.PhaseValidate, Reads: []string{"fields.title"}},
@@ -212,7 +213,6 @@ func TestWASIPluginBuildRestoreAndAsyncRebuild(t *testing.T) {
 	if err := os.WriteFile(path, []byte("host-only"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PLUG_WASI_PROBE", "host-only")
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
