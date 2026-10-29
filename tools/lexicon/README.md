@@ -10,7 +10,11 @@ bazel test //:lexicon_gate --lockfile_mode=error --test_output=all
 Bazel package, and declares each file as an individual Bazel source input.
 Directory listings and each entry (including excluded output symlinks) are
 watched so additions, removals, link retargeting, and new package boundaries
-invalidate the inventory after a cached pass. The generated
+invalidate the inventory after a cached pass. This is a local repository rule:
+Bazel's persisted file-watch marker represents a directory as just `DIR`, so
+reusing that marker could hide a directory-to-directory link retarget. Local
+reevaluation preserves the watched path's target changes and also refreshes
+the inventory after server restarts. The generated
 repository uses flat artifact names; a source `BUILD` or `BUILD.bazel` never
 forms an unexamined package boundary. The test reads only those declared
 runfiles and a generated path mapping. It does not read the checkout, invoke

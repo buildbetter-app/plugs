@@ -127,4 +127,8 @@ filegroup(
 lexicon_sources = repository_rule(
     implementation = _lexicon_sources_impl,
     attrs = {"root_file": attr.label(mandatory = True, allow_single_file = True)},
+    # Persisted file-watch markers record a directory as just DIR, losing a
+    # symlink's target. Do not reuse that coarse marker after a watched path
+    # changes or the server restarts; refetch this local checkout inventory.
+    local = True,
 )
