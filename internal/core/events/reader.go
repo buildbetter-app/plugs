@@ -65,6 +65,9 @@ func (r *Reader) Read(ctx context.Context, req ReadRequest) (Page, error) {
 		return page, err
 	}
 	if req.After.Incarnation == "" {
+		if !req.After.Revision.IsZero() || !req.After.Index.IsZero() {
+			return page, ErrCursorInvalid
+		}
 		req.After.Incarnation = head.Incarnation
 		page.Position = req.After
 	}

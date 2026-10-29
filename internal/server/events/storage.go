@@ -35,7 +35,7 @@ func (l Log) Scan(ctx context.Context, after core.Position, limit int) ([]model.
 	}
 	reader, err := l.Store.Read(ctx, driver.View{Incarnation: after.Incarnation})
 	if err != nil {
-		return nil, err
+		return nil, boundaryError(ctx, l.Store, after.Incarnation, err)
 	}
 	var cursor *driver.Cursor
 	if !after.Revision.IsZero() {
@@ -50,6 +50,9 @@ func (l Log) Scan(ctx context.Context, after core.Position, limit int) ([]model.
 		if err != nil {
 			return nil, err
 		}
+		if meta.Incarnation != after.Incarnation {
+			return nil, &core.BoundaryError{Code: "incarnation_changed", From: after.Incarnation, Head: core.Head{Incarnation: meta.Incarnation, Revision: meta.Head, Floor: meta.HistoryFloor}, Reason: "failover"}
+		}
 		cmp, err := core.CompareNatural(previous, meta.HistoryFloor)
 		if err != nil {
 			return nil, err
@@ -58,7 +61,27 @@ func (l Log) Scan(ctx context.Context, after core.Position, limit int) ([]model.
 			cursor = &driver.Cursor{Incarnation: after.Incarnation, Revision: previous, Index: model.Natural64(0)}
 		}
 	}
-	return reader.Changesets(ctx, cursor, limit)
+	sets, err := reader.Changesets(ctx, cursor, limit)
+	return sets, boundaryError(ctx, l.Store, after.Incarnation, err)
+}
+
+func boundaryError(ctx context.Context, store ReadStore, from string, err error) error {
+	if err == nil {
+		return nil
+	}
+	code, _, mapped := driver.ErrorMapping(err)
+	if !mapped || (code != "incarnation_changed" && code != "cursor_expired") {
+		return err
+	}
+	meta, metaErr := store.Meta(ctx)
+	if metaErr != nil {
+		return err
+	}
+	reason := "failover"
+	if code == "cursor_expired" {
+		reason = "history_floor"
+	}
+	return &core.BoundaryError{Code: string(code), From: from, Head: core.Head{Incarnation: meta.Incarnation, Revision: meta.Head, Floor: meta.HistoryFloor}, Reason: reason}
 }
 
 type Checkpoints struct {
@@ -201,7 +224,7 @@ func (m HistoryMaterializer) image(ctx context.Context, incarnation string, ref 
 	}
 	reader, err := m.Store.Read(ctx, driver.View{Incarnation: incarnation, At: &revision})
 	if err != nil {
-		return nil, err
+		return nil, boundaryError(ctx, m.Store, incarnation, err)
 	}
 	records, err := reader.Get(ctx, []driver.Ref{ref})
 	if errors.Is(err, driver.ErrNotFound) {
@@ -238,6 +261,11 @@ func body(record *driver.Record) (map[string]any, error) {
 }
 func describeBasic(set model.Changeset, index int, kind string) (Description, error) {
 	change := set.Changes[index]
+	switch change.Op {
+	case model.OpCreate, model.OpPatch, model.OpSetMeta, model.OpReparent, model.OpLink, model.OpUnlink, model.OpComment, model.OpAttach, model.OpDelete:
+	default:
+		return Description{}, fmt.Errorf("unknown committed operation: %w", driver.ErrUnsupported)
+	}
 	// The current log sketch does not carry per-field mutator ownership or
 	// nested causal provenance. Refuse to fabricate that audit information.
 	if len(set.Mutators) > 0 || set.Principal.Kind == "plugin" {
@@ -258,7 +286,7 @@ func describeBasic(set model.Changeset, index int, kind string) (Description, er
 			d.Type = model.EventBeadCreated
 		case model.OpPatch, model.OpSetMeta:
 			for _, path := range change.ChangedPaths {
-				if path == "/status" || path == "/lease" || strings.HasPrefix(path, "/lease/") {
+				if path == "" || path == "/" || path == "/status" || strings.HasPrefix(path, "/status/") || path == "/lease" || strings.HasPrefix(path, "/lease/") {
 					return Description{}, fmt.Errorf("committed slot provenance unavailable: %w", driver.ErrUnsupported)
 				}
 			}
@@ -279,19 +307,23 @@ func describeBasic(set model.Changeset, index int, kind string) (Description, er
 	case "memory":
 		if change.Op == model.OpDelete {
 			d.Type = model.EventMemoryDeleted
-		} else {
+		} else if change.Op == model.OpCreate || change.Op == model.OpPatch || change.Op == model.OpSetMeta {
 			d.Type = model.EventMemorySaved
 		}
 	case "view":
 		if change.Op == model.OpDelete {
 			d.Type = model.EventViewDeleted
-		} else {
+		} else if change.Op == model.OpCreate || change.Op == model.OpPatch || change.Op == model.OpSetMeta {
 			d.Type = model.EventViewSaved
 		}
 	case "ontology":
-		d.Type = model.EventOntologyApplied
+		if change.Op == model.OpCreate || change.Op == model.OpPatch {
+			d.Type = model.EventOntologyApplied
+		}
 	case "plugins", "plugin_set":
-		d.Type = model.EventPluginApplied
+		if change.Op == model.OpCreate || change.Op == model.OpPatch {
+			d.Type = model.EventPluginApplied
+		}
 	}
 	if d.Type == "" {
 		return Description{}, fmt.Errorf("no canonical event for committed operation: %w", driver.ErrUnsupported)

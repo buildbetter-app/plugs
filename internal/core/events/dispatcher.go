@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -373,6 +374,9 @@ func (d *Dispatcher) RunPost(ctx context.Context, bindings []Binding, revision m
 	for warning := range warnings {
 		result = append(result, warning)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Details["binding"].(string) < result[j].Details["binding"].(string)
+	})
 	return result
 }
 

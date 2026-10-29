@@ -58,6 +58,18 @@ func (s Service) read(ctx context.Context, method string, req Request) (Page, er
 		// A gap is never suppressed by resource or event-type filters. Its
 		// cursor is a reopen marker; the caller must take a fresh snapshot.
 		position := core.Position{Incarnation: boundary.Head.Incarnation, Revision: boundary.Head.Revision}
+		if !position.Revision.IsZero() {
+			sets, scanErr := s.Reader.Log.Scan(ctx, position, 1)
+			if scanErr != nil {
+				return result, scanErr
+			}
+			if len(sets) != 1 {
+				return result, core.ErrCursorInvalid
+			}
+			if len(sets[0].Changes) > 0 {
+				position.Index = model.Natural64(uint64(len(sets[0].Changes) - 1))
+			}
+		}
 		cursor, encodeErr := s.Cursors.Encode(position, binding)
 		if encodeErr != nil {
 			return result, encodeErr
@@ -85,8 +97,22 @@ func (s Service) read(ctx context.Context, method string, req Request) (Page, er
 	if method == "event.subscribe" && page.Boundary != "" {
 		position := page.Position
 		reset := model.ControlEvent{EventPosition: model.EventPosition{Cursor: result.Cursor, Incarnation: position.Incarnation, Revision: position.Revision, Index: position.Index}, Type: model.EventWatchReset, Details: model.WatchResetDetails{SubscriptionID: req.SubscriptionID, Reason: page.Boundary, SnapshotCursor: result.Cursor}}
-		result.Events = append(result.Events, model.Event{Category: model.EventControl, Control: &reset})
+		if requestsType(req.Filter, "watch.reset") {
+			result.Events = append(result.Events, model.Event{Category: model.EventControl, Control: &reset})
+		}
 		result.Reset = true
 	}
 	return result, nil
+}
+
+func requestsType(filter core.Filter, kind string) bool {
+	if len(filter.Types) == 0 {
+		return true
+	}
+	for _, value := range filter.Types {
+		if value == kind {
+			return true
+		}
+	}
+	return false
 }

@@ -223,7 +223,7 @@ func TestMandatoryGapAndPolicyResetBoundaries(t *testing.T) {
 	f.commit(t, time.Time{}, change{id: "ontology", kind: "ontology", op: model.OpCreate, fields: map[string]any{"version": 1}, paths: []string{"/version"}})
 	f.commit(t, time.Time{}, bead("pl-after", "after"))
 	req := request()
-	req.Filter = core.Filter{Types: []string{"bead.created"}, Resources: []string{"bead/pl-before", "bead/pl-after"}}
+	req.Filter = core.Filter{Types: []string{"bead.created", "watch.reset"}, Resources: []string{"bead/pl-before", "bead/pl-after"}}
 	page, err := f.service.Poll(f.ctx, req)
 	if err != nil {
 		t.Fatal(err)
@@ -258,5 +258,73 @@ func TestMandatoryGapAndPolicyResetBoundaries(t *testing.T) {
 	var boundary *core.BoundaryError
 	if _, err = other.service.List(other.ctx, req); !errors.As(err, &boundary) || boundary.Code != "incarnation_changed" {
 		t.Fatalf("pull boundary=%v", err)
+	}
+}
+
+func TestRolledBackStorageFixtureEmitsNoEvent(t *testing.T) {
+	f := newFixture(t)
+	err := conformance.SeedRollback(f.ctx, f.store, f.lease, driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "user", ID: "author"}}, []conformance.FixtureChange{{Ref: model.RefByID("pl-rollback", model.Natural64(0)), Kind: "bead", Op: model.OpCreate, Body: []byte(`{"title":"never committed"}`), ChangedPaths: []string{"/title"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.service.List(f.ctx, request())
+	if err != nil || len(page.Events) != 0 {
+		t.Fatalf("rollback events=%+v %v", page, err)
+	}
+	set := f.commit(t, time.Time{}, bead("pl-real", "real"))
+	if set.Revision.String() != "1" {
+		t.Fatal("rollback consumed a revision")
+	}
+	page, err = f.service.List(f.ctx, request())
+	if err != nil || len(page.Events) != 1 || page.Events[0].Durable.Resource != "bead/pl-real" {
+		t.Fatalf("committed events=%+v %v", page, err)
+	}
+}
+
+type describerFunc func(context.Context, model.Changeset, int, string) (Description, error)
+
+func (fn describerFunc) Describe(ctx context.Context, set model.Changeset, index int, kind string) (Description, error) {
+	return fn(ctx, set, index, kind)
+}
+
+func TestUnsupportedProvenanceAndFreeFormTypesRefuse(t *testing.T) {
+	f := newFixture(t)
+	f.commit(t, time.Time{}, bead("pl-a", "a"))
+	f.commit(t, time.Time{}, change{id: "pl-a", kind: "bead", op: model.OpPatch, fields: map[string]any{"status": "done"}, paths: []string{"/status"}})
+	if page, err := f.service.List(f.ctx, request()); !errors.Is(err, driver.ErrUnsupported) || len(page.Events) != 0 {
+		t.Fatalf("invented slot event: %+v %v", page, err)
+	}
+	// Even an injected host description must select the closed event union.
+	f.reader.Materializer = HistoryMaterializer{Store: f.store, Describer: describerFunc(func(context.Context, model.Changeset, int, string) (Description, error) {
+		return Description{Type: "plugin.custom", SetBy: map[string]string{}, Cause: model.EventCause{Root: "root", Chain: []string{}}}, nil
+	})}
+	if _, err := f.service.List(f.ctx, request()); err == nil {
+		t.Fatal("free-form plugin event accepted")
+	}
+	set := model.Changeset{Incarnation: f.incarnation, Revision: "1", Principal: model.PrincipalRef{Kind: "user", ID: "author"}, Mutators: []string{"mutator"}, Changes: []model.ChangeRecord{{Op: model.OpCreate}}}
+	if _, err := describeBasic(set, 0, "bead"); !errors.Is(err, driver.ErrUnsupported) {
+		t.Fatal("fabricated missing mutator attribution")
+	}
+	set.Mutators = nil
+	set.Principal = model.PrincipalRef{Kind: "plugin", ID: "plugin:x/default"}
+	if _, err := describeBasic(set, 0, "bead"); !errors.Is(err, driver.ErrUnsupported) {
+		t.Fatal("fabricated missing causal provenance")
+	}
+	set.Principal = model.PrincipalRef{Kind: "user", ID: "author"}
+	set.Changes[0].Op = "arbitrary"
+	if _, err := describeBasic(set, 0, "memory"); !errors.Is(err, driver.ErrUnsupported) {
+		t.Fatal("invented event for unknown operation")
+	}
+}
+
+func TestReadRequiresAuthorizationAndIncarnation(t *testing.T) {
+	f := newFixture(t)
+	f.commit(t, time.Time{}, bead("pl-a", "a"))
+	if _, err := f.reader.Read(f.ctx, core.ReadRequest{After: core.Position{Revision: "1"}, Principal: request().Principal, Limit: 1}); !errors.Is(err, core.ErrCursorInvalid) {
+		t.Fatalf("unbound revision=%v", err)
+	}
+	f.reader.Authorization = nil
+	if _, err := f.service.List(f.ctx, request()); err == nil {
+		t.Fatal("missing authorization silently allowed")
 	}
 }
