@@ -23,18 +23,83 @@ type Output struct {
 	Closure          []authz.ClosureResult `json:"closure"`
 }
 
+type benchmarkContract struct {
+	Schema    string          `json:"schema"`
+	Module    string          `json:"module"`
+	Matrix    matrixContract  `json:"matrix"`
+	Dataset   datasetContract `json:"dataset"`
+	TargetsMS targetsContract `json:"targets_ms"`
+}
+
+type matrixContract struct {
+	Engines             []string          `json:"engines"`
+	VisibilityFractions []float64         `json:"visibility_fractions"`
+	Plans               []authz.Plan      `json:"plans"`
+	Queries             []authz.QueryKind `json:"queries"`
+	Warmups             int               `json:"warmups"`
+	MeasuredIterations  int               `json:"measured_iterations"`
+}
+
+type datasetContract struct {
+	Beads                     int `json:"beads"`
+	MaximumGraphDepth         int `json:"maximum_graph_depth"`
+	ClosureRewriteDescendants int `json:"closure_rewrite_descendants"`
+	NormalWriteClosureLimit   int `json:"normal_write_closure_limit"`
+}
+
+type targetsContract struct {
+	PageP95         float64 `json:"page_p95"`
+	GroupedCountP95 float64 `json:"grouped_count_p95"`
+}
+
+func supportedContract() benchmarkContract {
+	plans := authz.SupportedPlans()
+	queries := authz.SupportedQueries()
+	return benchmarkContract{
+		Schema: "plug-authz-benchmark/v1",
+		Module: "spikes/authz",
+		Matrix: matrixContract{
+			Engines:             authz.SupportedEngines(),
+			VisibilityFractions: authz.SupportedVisibilityFractions(),
+			Plans:               plans,
+			Queries:             queries,
+			Warmups:             authz.WarmupSamples,
+			MeasuredIterations:  authz.DefaultMeasuredIterations,
+		},
+		Dataset: datasetContract{
+			Beads:                     authz.BeadCount,
+			MaximumGraphDepth:         authz.MaxGraphDepth,
+			ClosureRewriteDescendants: authz.ReparentSize,
+			NormalWriteClosureLimit:   authz.ClosureLimit,
+		},
+		TargetsMS: targetsContract{
+			PageP95:         authz.PageP95TargetMS,
+			GroupedCountP95: authz.CountP95TargetMS,
+		},
+	}
+}
+
 func main() {
 	engine := flag.String("engine", "all", "sqlite, postgres, or all")
 	dsn := flag.String("postgres-dsn", os.Getenv("AUTHZ_POSTGRES_DSN"), "Postgres DSN")
-	iterations := flag.Int("iterations", 20, "measured iterations after three warmups")
+	iterations := flag.Int("iterations", authz.DefaultMeasuredIterations, "measured iterations after three warmups")
 	output := flag.String("output", "", "optional JSON output path")
+	printContract := flag.Bool("print-contract", false, "print the executable benchmark contract and exit")
 	flag.Parse()
+	if *printContract {
+		b, err := json.Marshal(supportedContract())
+		if err != nil {
+			fatal(err)
+		}
+		fmt.Println(string(b))
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	out := Output{GeneratedAt: time.Now().UTC().Format(time.RFC3339), N: authz.BeadCount, Depth: 10, PageP95TargetMS: 50, CountP95TargetMS: authz.CountP95TargetMS}
+	out := Output{GeneratedAt: time.Now().UTC().Format(time.RFC3339), N: authz.BeadCount, Depth: authz.MaxGraphDepth, PageP95TargetMS: authz.PageP95TargetMS, CountP95TargetMS: authz.CountP95TargetMS}
 	run := func(name string, s *authz.Store) error {
 		defer s.Close()
-		for i, f := range []float64{1, .01, .001} {
+		for i, f := range authz.SupportedVisibilityFractions() {
 			if i == 0 {
 				if err := s.Reset(ctx); err != nil {
 					return err

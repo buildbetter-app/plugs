@@ -36,6 +36,14 @@ the environment. The runner never writes credentials to an artifact. The
 manifest includes the engine start command template and every output filename
 needed to attach the run to a result table.
 
+Before it checks a DSN, creates an artifact directory, or starts the benchmark,
+the runner asks the executable for `-print-contract` and fail-closed compares
+the complete supported matrix, dataset, targets, command templates, Postgres
+provisioning declaration, and artifact names with the manifest. Focused
+mutation coverage is available from
+[`manifest-contract-test.sh`](manifest-contract-test.sh); it rejects altered
+declarations before setup and exercises a valid bounded command path.
+
 The JSON `CandidateRows` field is measured SQL cardinality evidence for the
 rows a plan must qualify or walk: scope-first counts its qualified ready rows,
 while index-walk counts ready rows through the returned key (or all ready rows

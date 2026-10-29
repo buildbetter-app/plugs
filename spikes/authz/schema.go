@@ -16,15 +16,33 @@ const (
 )
 
 const (
-	BeadCount    = 100_000
-	ReparentSize = 50_000
+	BeadCount                 = 100_000
+	ReparentSize              = 50_000
+	MaxGraphDepth             = 10
+	ClosureLimit              = 5_000
+	WarmupSamples             = 3
+	DefaultMeasuredIterations = 20
+	PageP95TargetMS           = 50.0
+	CountP95TargetMS          = 250.0
 	// SparseGrantStart is the first of the shallow, leaf-only rows. Grants in
 	// this range do not overlap one another or the large epic subtree, so a
 	// sparse grant set exposes exactly one bead per grant.
 	SparseGrantStart = ReparentSize + 3
-	ClosureLimit     = 5_000
-	CountP95TargetMS = 250.0
 )
+
+// SupportedVisibilityFractions is the executable matrix used by the
+// benchmark. The runner obtains this value through -print-contract instead of
+// maintaining a second, silently driftable list in shell.
+func SupportedVisibilityFractions() []float64 {
+	return []float64{1, .01, .001}
+}
+
+// SupportedEngines is the set of database engines represented by the matrix.
+// The runner's "all" mode is an orchestration convenience over these two
+// executable engine values and is not an additional matrix case.
+func SupportedEngines() []string {
+	return []string{string(DialectSQLite), string(DialectPostgres)}
+}
 
 // Store owns the synthetic graph and its authorization indexes.
 type Store struct {
@@ -172,7 +190,7 @@ func parentAndDepth(id int) (int, int) {
 		// IDs 3..10. Every such row is under epic 2. The stored depth is the
 		// edge distance from root 1, so it is one greater than the level used
 		// to select the parent (the old fixture stored this one level too low).
-		level := 2 + ((id - 11) % 8)
+		level := 2 + ((id - 11) % (MaxGraphDepth - 2))
 		return level + 1, level + 1
 	}
 	return 1, 1

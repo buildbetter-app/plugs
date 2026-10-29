@@ -21,7 +21,7 @@ func TestParentAndDepthMatchesGraph(t *testing.T) {
 			t.Fatalf("id %d has invalid parent %d", id, parent)
 		}
 	}
-	if got, want := maxDepth, 10; got != want {
+		if got, want := maxDepth, MaxGraphDepth; got != want {
 		t.Fatalf("maximum stored depth = %d, want %d", got, want)
 	}
 
@@ -30,7 +30,7 @@ func TestParentAndDepthMatchesGraph(t *testing.T) {
 	descendants := 0
 	for id := 1; id <= BeadCount; id++ {
 		for cur, seen := id, 0; cur != 0; seen++ {
-			if seen > 10 {
+			if seen > MaxGraphDepth {
 				t.Fatalf("id %d exceeded depth bound while walking parents", id)
 			}
 			if cur == 2 {
@@ -100,8 +100,8 @@ func TestSparseGrantVisibilityMatchesFraction(t *testing.T) {
 			if visible != tc.visible {
 				t.Errorf("visible rows = %d, want %d", visible, tc.visible)
 			}
-			if maxBeadDepth != 10 || maxClosureDepth != 10 {
-				t.Errorf("depth maxima bead=%d closure=%d, want 10/10", maxBeadDepth, maxClosureDepth)
+			if maxBeadDepth != MaxGraphDepth || maxClosureDepth != MaxGraphDepth {
+				t.Errorf("depth maxima bead=%d closure=%d, want %d/%d", maxBeadDepth, maxClosureDepth, MaxGraphDepth, MaxGraphDepth)
 			}
 		})
 	}

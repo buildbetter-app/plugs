@@ -23,6 +23,17 @@ const (
 	PlanB Plan = "B index-walk"
 )
 
+// SupportedPlans and SupportedQueries are the executable matrix dimensions.
+// They are exported so the command's contract printer and the benchmark loop
+// share the same values that the runner validates against the manifest.
+func SupportedPlans() []Plan {
+	return []Plan{PlanA, PlanB}
+}
+
+func SupportedQueries() []QueryKind {
+	return []QueryKind{Q4Ready, Q5Claim, Q6Count}
+}
+
 type BenchCase struct {
 	Engine              Dialect
 	Plan                Plan
@@ -468,8 +479,8 @@ func (s *Store) measureCount(ctx context.Context, plan Plan, subject string) (qu
 func (s *Store) Benchmark(ctx context.Context, fraction float64, iterations int) ([]BenchCase, error) {
 	cases := make([]BenchCase, 0, 6)
 	subject := "principal:sample"
-	for _, plan := range []Plan{PlanA, PlanB} {
-		for _, kind := range []QueryKind{Q4Ready, Q5Claim, Q6Count} {
+	for _, plan := range SupportedPlans() {
+		for _, kind := range SupportedQueries() {
 			if kind == Q5Claim {
 				if err := s.resetClaims(ctx); err != nil {
 					return nil, fmt.Errorf("reset claims before plan %s: %w", plan, err)
@@ -496,9 +507,9 @@ func (s *Store) Benchmark(ctx context.Context, fraction float64, iterations int)
 				if countErr != nil {
 					return nil, fmt.Errorf("count Q5 candidates plan %s: %w", plan, countErr)
 				}
-				want := iterations + 3
+				want := iterations + WarmupSamples
 				if available < want {
-					return nil, fmt.Errorf("Q5 plan %s has %d claimable candidates, need %d for %d warmups and %d measured samples", plan, available, want, 3, iterations)
+					return nil, fmt.Errorf("Q5 plan %s has %d claimable candidates, need %d for %d warmups and %d measured samples", plan, available, want, WarmupSamples, iterations)
 				}
 			}
 			vals := make([]float64, 0, iterations)
@@ -506,7 +517,7 @@ func (s *Store) Benchmark(ctx context.Context, fraction float64, iterations int)
 			measuredCandidateIDs := make([]int, 0, iterations)
 			resetSamples, committedSamples, recheckSamples := 0, 0, 0
 			previousCandidate := 0
-			for i := 0; i < iterations+3; i++ {
+			for i := 0; i < iterations+WarmupSamples; i++ {
 				if kind == Q5Claim {
 					if previousCandidate != 0 {
 						if err := s.resetClaim(ctx, previousCandidate); err != nil {
@@ -535,13 +546,13 @@ func (s *Store) Benchmark(ctx context.Context, fraction float64, iterations int)
 							err = fmt.Errorf("candidate %d claim evidence is not a committed lock/recheck/update: %+v", evidence.CandidateID, evidence)
 						} else {
 							previousCandidate = evidence.CandidateID
-							if i >= 3 && evidence.Committed {
+							if i >= WarmupSamples && evidence.Committed {
 								committedSamples++
 							}
-							if i >= 3 && evidence.RecheckPassed {
+							if i >= WarmupSamples && evidence.RecheckPassed {
 								recheckSamples++
 							}
-							if i >= 3 {
+							if i >= WarmupSamples {
 								measuredCandidateIDs = append(measuredCandidateIDs, evidence.CandidateID)
 								if claimEvidence == nil {
 									first := evidence
@@ -561,7 +572,7 @@ func (s *Store) Benchmark(ctx context.Context, fraction float64, iterations int)
 				if err != nil {
 					return nil, fmt.Errorf("%s plan %s: %w", kind, plan, err)
 				}
-				if i >= 3 {
+				if i >= WarmupSamples {
 					vals = append(vals, float64(time.Since(start).Microseconds())/1000)
 				}
 			}
@@ -570,7 +581,7 @@ func (s *Store) Benchmark(ctx context.Context, fraction float64, iterations int)
 					return nil, fmt.Errorf("Q5 plan %s produced no measured claim evidence", plan)
 				}
 				if claimEvidence != nil {
-					claimEvidence.WarmupSamples = 3
+					claimEvidence.WarmupSamples = WarmupSamples
 					claimEvidence.MeasuredSamples = iterations
 					claimEvidence.ResetSamples = resetSamples
 					claimEvidence.FreshCandidateCount = len(measuredCandidateIDs)
