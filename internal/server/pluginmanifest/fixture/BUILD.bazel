@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "fixture",
+    srcs = ["native.go"],
+    embedsrcs = ["plug-plugin.json"],
+    importpath = "github.com/buildbetter-app/plugs/internal/server/pluginmanifest/fixture",
+    visibility = ["//internal/server/pluginmanifest:__pkg__"],
+    deps = ["//pluginapi", "//sdk/go:sdk_go"],
+)
+
+filegroup(
+    name = "sources",
+    srcs = ["BUILD.bazel", "native.go", "plug-plugin.json"],
+    visibility = ["//internal/server/pluginmanifest:__pkg__"],
+)
