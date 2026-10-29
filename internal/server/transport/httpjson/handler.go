@@ -111,7 +111,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.As(err, &tooLarge):
 			h.fail(w, http.StatusRequestEntityTooLarge, "invalid_request", "HTTP request body exceeds the configured limit")
-		case ctx.Err() != nil || (errors.As(err, &timeout) && timeout.Timeout()):
+		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout()):
 			h.fail(w, http.StatusRequestTimeout, "busy", "HTTP body deadline or cancellation reached")
 		default:
 			h.fail(w, http.StatusBadRequest, "invalid_request", "unable to read HTTP request body")

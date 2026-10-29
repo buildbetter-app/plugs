@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,15 +29,33 @@ import (
 type observedStore struct {
 	*memory.Store
 	reads, writes atomic.Int64
+	readers       atomic.Int64
 }
 
 func (s *observedStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
 	s.reads.Add(1)
-	return s.Store.Read(ctx, view)
+	r, err := s.Store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	s.readers.Add(1)
+	return &observedReader{Reader: r, owner: s}, nil
 }
 func (s *observedStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
 	s.writes.Add(1)
 	return s.Store.Write(ctx, lease)
+}
+
+type observedReader struct {
+	driver.Reader
+	owner *observedStore
+	once  sync.Once
+}
+
+func (r *observedReader) Close() error {
+	err := r.Reader.Close()
+	r.once.Do(func() { r.owner.readers.Add(-1) })
+	return err
 }
 
 type observedService struct {
@@ -62,6 +81,7 @@ type fixture struct {
 	provider  *authnapikey.Provider
 	token     string
 	keyID     string
+	keyClock  atomic.Int64
 	principal model.PrincipalRef
 	store     *observedStore
 	domain    *observedService
@@ -74,7 +94,7 @@ type fixture struct {
 	cancel    context.CancelFunc
 }
 
-func newFixture(t *testing.T, authenticated, warnings bool, cfg httpjson.Config) *fixture {
+func newFixture(t *testing.T, authenticated, warnings bool, cfg httpjson.Config, extra ...pipeline.Option) *fixture {
 	t.Helper()
 	f := &fixture{}
 	f.baseCtx, f.cancel = context.WithCancel(context.Background())
@@ -82,6 +102,9 @@ func newFixture(t *testing.T, authenticated, warnings bool, cfg httpjson.Config)
 	store := memory.New()
 	f.store = &observedStore{Store: store}
 	t.Cleanup(func() {
+		if f.store.readers.Load() != 0 {
+			t.Error("HTTP work retained store readers")
+		}
 		if err := store.Close(); err != nil {
 			t.Error(err)
 		}
@@ -106,6 +129,7 @@ func newFixture(t *testing.T, authenticated, warnings bool, cfg httpjson.Config)
 	if warnings {
 		opts = append(opts, pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "http-warning", Subscriber: f.post}))
 	}
+	opts = append(opts, extra...)
 	writer := pipeline.New(f.store, f.lease, opts...)
 	f.domain = &observedService{Service: service.New(f.store, f.lease, writer, service.WithOntology(ontology))}
 	registry, err := rpc.NewRegistry()
@@ -120,7 +144,8 @@ func newFixture(t *testing.T, authenticated, warnings bool, cfg httpjson.Config)
 	f.principal = model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
 	if authenticated {
 		f.principal = model.PrincipalRef{Kind: "service", ID: "service:http-client"}
-		f.provider = authnapikey.New(authnapikey.Config{})
+		f.keyClock.Store(time.Now().UnixNano())
+		f.provider = authnapikey.New(authnapikey.Config{Now: func() time.Time { return time.Unix(0, f.keyClock.Load()) }})
 		issued, err := f.provider.Issue(f.principal, time.Now().Add(time.Hour))
 		if err != nil {
 			t.Fatal(err)
