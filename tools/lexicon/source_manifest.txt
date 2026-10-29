@@ -279,6 +279,10 @@ internal/integration/auditsql/audit_sql_test.go
 internal/integration/auditsql/engine_test.go
 internal/integration/auditsql/faults_test.go
 internal/integration/auditsql/fixture_test.go
+internal/integration/batchsql/BUILD.bazel
+internal/integration/batchsql/README.md
+internal/integration/batchsql/batch_test.go
+internal/integration/batchsql/fixture_test.go
 internal/integration/claimsql/BUILD.bazel
 internal/integration/claimsql/README.md
 internal/integration/claimsql/claim_sql_test.go
@@ -288,6 +292,9 @@ internal/integration/clisql/BUILD.bazel
 internal/integration/clisql/README.md
 internal/integration/clisql/fixture_test.go
 internal/integration/clisql/lifecycle_test.go
+internal/integration/cursorhttp/BUILD.bazel
+internal/integration/cursorhttp/cursor_test.go
+internal/integration/cursorhttp/fixture_test.go
 internal/integration/graphacceptance/BUILD.bazel
 internal/integration/graphacceptance/README.md
 internal/integration/graphacceptance/fixture_test.go
@@ -381,6 +388,16 @@ internal/server/ontologyrpc/BUILD.bazel
 internal/server/ontologyrpc/README.md
 internal/server/ontologyrpc/bind.go
 internal/server/ontologyrpc/integration_test.go
+internal/server/pluginbuild/BUILD.bazel
+internal/server/pluginbuild/README.md
+internal/server/pluginbuild/build.go
+internal/server/pluginbuild/fixture/BUILD.bazel
+internal/server/pluginbuild/fixture/go.mod.template
+internal/server/pluginbuild/fixture/plug-plugin.json
+internal/server/pluginbuild/fixture/plugin.go
+internal/server/pluginbuild/process_other.go
+internal/server/pluginbuild/process_unix.go
+internal/server/pluginbuild/source_test.go
 internal/server/pluginhost/BUILD.bazel
 internal/server/pluginhost/adapters.go
 internal/server/pluginhost/call.go
