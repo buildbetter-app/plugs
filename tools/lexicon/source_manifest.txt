@@ -234,7 +234,10 @@ internal/server/pluginhost/state.go
 internal/storage/conformance/BUILD.bazel
 internal/storage/conformance/atomic.go
 internal/storage/conformance/audit.go
+internal/storage/conformance/audit_atomic.go
 internal/storage/conformance/audit_fixtures.go
+internal/storage/conformance/audit_isolation.go
+internal/storage/conformance/audit_validation.go
 internal/storage/conformance/checkpoints.go
 internal/storage/conformance/conformance.go
 internal/storage/conformance/fixtures.go

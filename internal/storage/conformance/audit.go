@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -11,6 +12,35 @@ import (
 // event plans. Run remains the unchanged baseline for drivers adopting it later.
 func RunAudit(t *testing.T, factory Factory) {
 	t.Run("ordered_plan_seed_log_lookup_and_pinned_history", func(t *testing.T) { auditPublication(t, factory) })
+	t.Run("logical_order_between_actual_changes", func(t *testing.T) { auditChangeOrder(t, factory) })
+	t.Run("invalid_plans_refuse_atomically", func(t *testing.T) { auditValidation(t, factory) })
+	t.Run("complete_plan_cap_and_overflow", func(t *testing.T) { auditEventBound(t, factory) })
+	t.Run("noop_refusal_and_nil_legacy_indexes", func(t *testing.T) { auditNoopAndLegacy(t, factory) })
+	t.Run("copy_isolation_replay_and_finalization_CAS", func(t *testing.T) { auditIsolationAndReceipts(t, factory) })
+	t.Run("rollback_cancel_and_fence_publish_nothing", func(t *testing.T) { auditAborts(t, factory) })
+	t.Run("takeover_races_atomic_event_publication", func(t *testing.T) { auditTakeoverRace(t, factory) })
+}
+
+func auditChangeOrder(t *testing.T, factory Factory) {
+	f := newAuditFixture(t, factory, 2)
+	// This record sorts before the blocker in the lock set, but its actual
+	// change and ordinary event follow the blocker's entire notice group.
+	f.changes = append(f.changes, FixtureChange{Ref: ref("pl-a"), Kind: "bead", Op: model.OpCreate, Body: []byte(`{}`)})
+	p := f.header.Events[0].Provenance
+	p.Method, p.Slot = "bead.create", ""
+	f.header.Events = append(f.header.Events, model.EventDescriptor{Index: "3", ChangeIndex: "1", Type: model.EventBeadCreated, Resource: model.AuditResource{Kind: "bead", Ref: ref("pl-a")}, Provenance: p})
+	entry, err := Seed(f.ctx, f.store, f.lease, f.header, f.changes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := read(t, f.ctx, f.store, f.meta, nil)
+	log, err := r.Changesets(f.ctx, &driver.Cursor{Incarnation: f.meta.Incarnation, Revision: "1"}, 1)
+	if err != nil || len(log) != 1 || !reflect.DeepEqual(log[0], entry) || !reflect.DeepEqual(entry.Events, f.header.Events) {
+		t.Fatalf("logical event order changed: %+v %v", log, err)
+	}
+	if len(entry.Changes) != 2 || entry.Changes[0].Ref.ID != "pl-blocker" || entry.Changes[1].Ref.ID != "pl-a" || len(entry.Events) != 4 {
+		t.Fatalf("changes/descriptor order changed: %+v", entry)
+	}
 }
 
 func auditPublication(t *testing.T, factory Factory) {
