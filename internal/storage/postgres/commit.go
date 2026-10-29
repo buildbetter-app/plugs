@@ -247,7 +247,15 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	if h.Changes == nil {
 		h.Changes = []model.ChangeRecord{}
 	}
-	entry, err := copied(model.Changeset{Revision: revision, Branch: model.Natural64(0), Incarnation: h.Incarnation, Kind: h.Kind, Time: when, Principal: h.Principal, Chain: h.Chain, IdempotencyKey: h.IdempotencyKey, Mutators: h.Mutators, Changes: h.Changes})
+	// A non-nil event plan is a complete, ordered description of this
+	// publication. Validate it against the actual changes and allocated
+	// revision before touching any graph, version, log or receipt row. Clone
+	// first so the SQL transaction owns every nested collection and source pin.
+	entry := model.Changeset{Revision: revision, Branch: model.Natural64(0), Incarnation: h.Incarnation, Kind: h.Kind, Time: when, Principal: h.Principal, Chain: h.Chain, IdempotencyKey: h.IdempotencyKey, Mutators: h.Mutators, Changes: h.Changes, Events: model.CloneEventDescriptors(h.Events)}
+	if err := entry.ValidateEvents(); err != nil {
+		return zero, fmt.Errorf("postgres: event plan: %w", err)
+	}
+	entry, err = copied(entry)
 	if err != nil {
 		return zero, err
 	}
@@ -369,6 +377,9 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 	scope, err := t.header(h)
 	if err != nil {
 		return zero, err
+	}
+	if h.Events != nil {
+		return zero, fmt.Errorf("postgres: no-op cannot contain an event plan")
 	}
 	if len(h.Changes)+len(t.records)+len(t.derived)+len(t.blobs)+len(t.bumps) != 0 {
 		return zero, fmt.Errorf("postgres: no-op cannot contain staged mutations")
