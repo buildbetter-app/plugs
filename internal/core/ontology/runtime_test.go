@@ -38,7 +38,7 @@ func TestEachFixedGuardRequiresItsObservation(t *testing.T) {
 				delete(before.Fields, "description")
 			}
 			if tc.guard.Kind == NotTemplate {
-				before.Template = true
+				before.Fields["template"] = true
 			}
 			_, violations := Transition(e, before, Close, tc.no)
 			if len(violations) != 1 || violations[0].Code != "ontology_guard_failed" || violations[0].Guard != tc.guard.Kind {
@@ -200,8 +200,8 @@ func TestLifecycleChecksTrustedMethodAndActualSlot(t *testing.T) {
 	if _, violations := Transition(e, closed, Claim, facts); len(violations) == 0 {
 		t.Fatal("claim from terminal accepted")
 	}
-	if violations := Validate(e, nil, &closed, "bead.create", facts); len(violations) == 0 {
-		t.Fatal("create bypassed lifecycle")
+	if violations := Validate(e, nil, &closed, "bead.create", facts); len(violations) != 1 || violations[0].Code != "ontology_use_slot_verb" {
+		t.Fatal("create bypassed lifecycle", violations)
 	}
 	if _, violations := Transition(e, before, Slot("unknown"), facts); len(violations) == 0 {
 		t.Fatal("unknown slot accepted")
@@ -237,8 +237,7 @@ func TestUntouchedDriftWarnsAndChangedViolationsFail(t *testing.T) {
 		t.Fatal("status drift hid a new field violation", result)
 	}
 	initial, _ := Defaults(e, BeadState{Type: "issue"})
-	badPriority := 5
-	initial.Priority = &badPriority
+	initial.Fields["priority"] = 5
 	changed, _ := copyState(initial)
 	changed.Fields["brand_new"] = true
 	result = Check(e, &initial, &changed, nil, "bead.update", GuardFacts{})
@@ -247,16 +246,116 @@ func TestUntouchedDriftWarnsAndChangedViolationsFail(t *testing.T) {
 	}
 }
 
-func TestFixedPriorityAndCrossProjectBlockerSemantics(t *testing.T) {
+func TestFixedKernelPriority(t *testing.T) {
 	e := Default()
-	state, _ := Defaults(e, BeadState{Type: "issue"})
-	for _, priority := range []int{-1, 0, 4, 5} {
-		state.Priority = &priority
-		violations := Validate(e, nil, &state, "bead.create", GuardFacts{})
-		if (len(violations) == 0) != (priority >= 0 && priority <= 4) {
-			t.Fatal(priority, violations)
+	input := BeadState{Type: "issue"}
+	state, violations := Defaults(e, input)
+	if len(violations) != 0 || state.Fields["priority"] != json.Number("2") || input.Fields != nil {
+		t.Fatal("priority default did not preserve the input", state, violations)
+	}
+	if value, violations := Priority(input); value != 2 || len(violations) != 0 {
+		t.Fatal("missing priority must read as P2", value, violations)
+	}
+	for _, tc := range []struct {
+		value any
+		want  int
+		valid bool
+	}{
+		{0, 0, true}, {4, 4, true}, {float64(2), 2, true}, {json.Number("2.00"), 2, true},
+		{json.Number("40e-1"), 4, true}, {json.Number("-0e-1000000000"), 0, true},
+		{-1, 0, false}, {5, 0, false}, {2.5, 0, false}, {"2", 0, false}, {false, 0, false}, {nil, 0, false},
+		{json.Number("9007199254740993"), 0, false}, {json.Number("1e1000000000"), 0, false},
+		{json.Number("1e-1000000000"), 0, false},
+	} {
+		t.Run(stringValue(tc.value), func(t *testing.T) {
+			proposal := BeadState{Type: "issue", Fields: map[string]any{"priority": tc.value}}
+			value, violations := Priority(proposal)
+			if (len(violations) == 0) != tc.valid || (tc.valid && value != tc.want) {
+				t.Fatal(value, violations)
+			}
+			state, violations := Defaults(e, proposal)
+			if len(violations) != 0 {
+				t.Fatal(violations)
+			}
+			violations = Validate(e, nil, &state, "bead.create", GuardFacts{})
+			if tc.valid && len(violations) != 0 {
+				t.Fatal(violations)
+			}
+			if !tc.valid && (len(violations) != 1 || violations[0].Field != "fields.priority" || violations[0].Code != "invalid_params") {
+				t.Fatal("invalid priority was defaulted or treated as a custom field", violations)
+			}
+		})
+	}
+}
+
+func TestFixedKernelTemplate(t *testing.T) {
+	e := Default()
+	for _, tc := range []struct {
+		name  string
+		state BeadState
+		want  bool
+		valid bool
+	}{
+		{"absent", BeadState{}, false, true},
+		{"raw false", BeadState{Fields: map[string]any{"template": false}}, false, true},
+		{"raw true", BeadState{Fields: map[string]any{"template": true}}, true, true},
+		{"string", BeadState{Fields: map[string]any{"template": "false"}}, false, false},
+		{"number", BeadState{Fields: map[string]any{"template": 0}}, false, false},
+		{"null", BeadState{Fields: map[string]any{"template": nil}}, false, false},
+		{"trusted view", BeadState{Template: true}, true, true},
+		{"contradiction", BeadState{Template: true, Fields: map[string]any{"template": false}}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			flag, violations := IsTemplate(tc.state)
+			if (len(violations) == 0) != tc.valid || (tc.valid && flag != tc.want) {
+				t.Fatal(flag, violations)
+			}
+			tc.state.Type = "issue"
+			state, violations := Defaults(e, tc.state)
+			if len(violations) != 0 {
+				t.Fatal(violations)
+			}
+			violations = Validate(e, nil, &state, "bead.create", GuardFacts{})
+			if (len(violations) == 0) != tc.valid || (!tc.valid && violations[0].Field != "fields.template") {
+				t.Fatal("raw template value was discarded", violations)
+			}
+			_, violations = Transition(e, state, Claim, GuardFacts{NoOpenBlockers: boolFact(true)})
+			if (len(violations) == 0) != (tc.valid && !tc.want) {
+				t.Fatal("not_template did not use the raw flag", violations)
+			}
+		})
+	}
+}
+
+func TestOwnedJSONValuesSurviveSlotLowering(t *testing.T) {
+	doc := DefaultDocument()
+	doc.Types["issue"].Fields["count"] = Field{Type: "integer", Owner: "x.triage/assign"}
+	doc.Types["issue"].Fields["tags"] = Field{Type: "strings", Owner: "x.triage/assign"}
+	e := compileForTest(t, doc, PluginCatalog{"x.triage/assign": true})
+	before := BeadState{Type: "issue", Status: "todo", Fields: map[string]any{"count": 2, "tags": []string{"tag"}}}
+	if _, violations := Transition(e, before, Claim, GuardFacts{NoOpenBlockers: boolFact(true)}); len(violations) != 0 {
+		t.Fatal("JSON copying falsely charged an unchanged owned field", violations)
+	}
+}
+
+func TestCreationRequiresInitialStatus(t *testing.T) {
+	e := Default()
+	for _, status := range []string{"in_progress", "done", "failed", "canceled", "backlog"} {
+		for _, method := range []string{"bead.create", "tx.apply"} {
+			state, violations := Defaults(e, BeadState{Type: "issue", Status: status})
+			if len(violations) != 0 {
+				t.Fatal(violations)
+			}
+			violations = Validate(e, nil, &state, method, GuardFacts{})
+			if len(violations) != 1 || violations[0].Code != "ontology_use_slot_verb" {
+				t.Fatal("create entered a slot without a lifecycle verb", status, method, violations)
+			}
 		}
 	}
+}
+
+func TestCrossProjectBlockerSemantics(t *testing.T) {
+	e := Default()
 	for _, tc := range []struct {
 		key                 string
 		blocks, conditional bool

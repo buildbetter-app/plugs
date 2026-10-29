@@ -24,7 +24,7 @@ func Check(e Effective, before, after *BeadState, touched model.FieldSet, method
 		// violation. Add the actual state differences before classifying drift.
 		for name, value := range after.Fields {
 			old, exists := before.Fields[name]
-			if !exists || !reflect.DeepEqual(old, value) {
+			if !exists || !sameValue(old, value) {
 				touched = append(touched, "fields."+name)
 			}
 		}
@@ -38,7 +38,7 @@ func Check(e Effective, before, after *BeadState, touched model.FieldSet, method
 			before, after any
 		}{
 			{"id", before.ID, after.ID}, {"type", before.Type, after.Type}, {"project", before.Project, after.Project},
-			{"status", before.Status, after.Status}, {"template", before.Template, after.Template}, {"priority", before.Priority, after.Priority},
+			{"status", before.Status, after.Status}, {"template", before.Template, after.Template},
 		} {
 			if !reflect.DeepEqual(pair.before, pair.after) {
 				touched = append(touched, pair.name)
