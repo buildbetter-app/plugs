@@ -190,6 +190,9 @@ func (p *prepared) auditGraph(ctx context.Context) (map[string]auditRow, error) 
 			graph[id] = auditRow{pending.ref, pending.revision, pending.doc}
 		}
 	}
+	if len(graph) > auditScanLimit {
+		return nil, failure("scope_too_large", "final conditional edge scan exceeds 20000 beads")
+	}
 	return graph, nil
 }
 

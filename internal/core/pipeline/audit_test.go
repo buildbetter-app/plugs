@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -279,5 +280,25 @@ func TestAuditTrustedContextAndDecisionOwnership(t *testing.T) {
 	fresh := auditEntry(t, h, result.Revision)
 	if fresh.Events[1].Provenance.Chain[0] != "authz/project" || fresh.Events[2].Details.Ontology.Project.ID != "blocker-project" {
 		t.Fatal("read-side descriptor alias escaped")
+	}
+}
+
+func TestAuditPostFinalizationRetainsPlanAndReplayBytes(t *testing.T) {
+	h, blocker, _ := auditFixture(t, 1, "blocker-project")
+	var posts atomic.Int32
+	w := auditWriter(h, WithPostSubscribers(PostBinding{ID: "audit-post", Subscriber: postFunc(func(context.Context, port.CommittedChange, port.SnapshotReader) error {
+		posts.Add(1)
+		return errors.New("post warning fixture")
+	})}))
+	cs, m := model.ChangeSet{Ops: []model.Op{patch(blocker, map[string]any{})}}, slotMeta(10, "bead.close")
+	first := apply(t, w, cs, m)
+	again := apply(t, w, cs, m)
+	entry := auditEntry(t, h, first.Revision)
+	stored := receipt(t, h, m)
+	want, _ := json.Marshal(first)
+	got, _ := json.Marshal(again)
+	durable, _ := json.Marshal(stored.Commit)
+	if posts.Load() != 1 || len(first.Warnings) != 1 || stored.ResponsePending || len(entry.Events) != 2 || string(want) != string(got) || string(want) != string(durable) || h.read(t).Snapshot().At.String() != "2" {
+		t.Fatalf("audit post/replay changed receipt or plan: first=%+v replay=%+v stored=%+v posts=%d", first, again, stored, posts.Load())
 	}
 }
