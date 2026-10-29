@@ -13,6 +13,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/inprocess"
@@ -74,6 +75,78 @@ func requireCode(t *testing.T, response map[string]any, code string) {
 	data := e["data"].(map[string]any)
 	if data["code"] != code {
 		t.Fatalf("expected %s, got %v", code, e)
+	}
+}
+
+func TestTransportErrorsUseCanonicalEnvelope(t *testing.T) {
+	r := registry(t)
+	s := server(t, r, rpc.Config{})
+	for _, code := range []string{"unauthenticated", "token_expired", "authn_unavailable", "invalid_request", "not_found", "busy"} {
+		t.Run(code, func(t *testing.T) {
+			raw := s.TransportError(fmt.Errorf("transport admission: %w", &model.Error{Data: model.ErrorData{Code: model.ErrorCode(code)}}))
+			var got struct {
+				JSONRPC string          `json:"jsonrpc"`
+				ID      json.RawMessage `json:"id"`
+				Error   wire.Error      `json:"error"`
+			}
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatal(err)
+			}
+			want := r.Catalog().NewError(code, "", nil)
+			if got.JSONRPC != "2.0" || string(got.ID) != "null" || got.Error.Code != want.Code || got.Error.Message != want.Message || got.Error.Data.Code != code || got.Error.Data.Retryable != want.Data.Retryable || got.Error.Data.TraceID == "" {
+				t.Fatalf("noncanonical transport error: %s", raw)
+			}
+		})
+	}
+	raw := s.TransportError(&wire.Error{Code: 123, Message: "private text", Data: wire.ErrorData{Code: "busy", TraceID: "transport-trace"}})
+	v, err := wire.DecodeJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireCode(t, v.(map[string]any), "busy")
+	if v.(map[string]any)["error"].(map[string]any)["data"].(map[string]any)["traceId"] != "transport-trace" || bytes.Contains(raw, []byte("private text")) {
+		t.Fatalf("trace or sanitization changed: %s", raw)
+	}
+	raw = s.TransportError(errors.New("private transport failure"))
+	v, err = wire.DecodeJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireCode(t, v.(map[string]any), "internal_error")
+	if bytes.Contains(raw, []byte("private transport failure")) {
+		t.Fatalf("transport failure leaked: %s", raw)
+	}
+}
+
+func TestHandlerOutcomeKeepsResultBytesAndIDs(t *testing.T) {
+	r := registry(t)
+	calls := 0
+	if err := r.Register("bead.create", func(context.Context, rpc.Call) (any, error) {
+		calls++
+		return rpc.Outcome{Result: commitResult(), Replayed: calls == 2}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := server(t, r, rpc.Config{})
+	var original json.RawMessage
+	for i := range 3 {
+		raw := s.Dispatch(context.Background(), []byte(`{"jsonrpc":"2.0","id":1.0e1000,"method":"bead.create","params":{"type":"task","fields":{},"_meta":{"idempotencyKey":"550e8400-e29b-41d4-a716-446655440000"}}}`))
+		var reply struct {
+			ID     json.RawMessage `json:"id"`
+			Result json.RawMessage `json:"result"`
+			Meta   *struct {
+				Replayed bool `json:"replayed"`
+			} `json:"_meta"`
+		}
+		if err := json.Unmarshal(raw, &reply); err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			original = reply.Result
+		}
+		if string(reply.ID) != "1.0e1000" || len(original) == 0 || !bytes.Equal(original, reply.Result) || (i == 1 && (reply.Meta == nil || !reply.Meta.Replayed)) || (i != 1 && reply.Meta != nil) {
+			t.Fatalf("outcome changed ID/result or inferred replay from the repeated revision: %s", raw)
+		}
 	}
 }
 
@@ -292,25 +365,26 @@ func (p *serviceProbe) History(ctx context.Context, by model.PrincipalRef, r ser
 	p.record("history", by, r, model.WriteMeta{})
 	return service.BeadPage{Items: []service.Bead{{ID: "p-1", Type: "task", Revision: r.AsOf.Revision}}, AsOf: r.AsOf}, p.failure
 }
-func (p *serviceProbe) Create(ctx context.Context, by model.PrincipalRef, r service.CreateRequest, m model.WriteMeta) (model.Commit, error) {
+func (p *serviceProbe) CreateWithOutcome(ctx context.Context, by model.PrincipalRef, r service.CreateRequest, m model.WriteMeta) (port.WriteOutcome, error) {
 	p.record("create", by, r, m)
-	return model.Commit{Revision: model.Natural64(9), Warnings: []model.Warning{{Code: "post_subscriber_failed", Message: "sync will retry"}}}, p.failure
+	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(9), Warnings: []model.Warning{{Code: "post_subscriber_failed", Message: "sync will retry"}}}}, p.failure
 }
-func (p *serviceProbe) Update(ctx context.Context, by model.PrincipalRef, r service.UpdateRequest, m model.WriteMeta) (model.Commit, error) {
+func (p *serviceProbe) UpdateWithOutcome(ctx context.Context, by model.PrincipalRef, r service.UpdateRequest, m model.WriteMeta) (port.WriteOutcome, error) {
 	p.record("update", by, r, m)
-	return model.Commit{Revision: model.Natural64(10)}, p.failure
+	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(10)}}, p.failure
 }
-func (p *serviceProbe) Claim(ctx context.Context, by model.PrincipalRef, r service.ClaimRequest, m model.WriteMeta) (service.ClaimResult, error) {
+func (p *serviceProbe) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, r service.ClaimRequest, m model.WriteMeta) (port.WriteOutcome, error) {
 	p.record("claim", by, r, m)
-	return service.ClaimResult{Commit: model.Commit{Revision: model.Natural64(11)}, LeaseTTL: 30 * time.Second, LeaseExpiresAt: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}, p.failure
+	expires, ttl := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC), model.Natural64(30000)
+	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(11), LeaseExpiresAt: &expires, LeaseTtlMs: &ttl}}, p.failure
 }
-func (p *serviceProbe) Comment(ctx context.Context, by model.PrincipalRef, r service.CommentRequest, m model.WriteMeta) (model.Commit, error) {
+func (p *serviceProbe) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, r service.CommentRequest, m model.WriteMeta) (port.WriteOutcome, error) {
 	p.record("comment", by, r, m)
-	return model.Commit{Revision: model.Natural64(12)}, p.failure
+	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(12)}}, p.failure
 }
-func (p *serviceProbe) Close(ctx context.Context, by model.PrincipalRef, r service.CloseRequest, m model.WriteMeta) (model.Commit, error) {
+func (p *serviceProbe) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, r service.CloseRequest, m model.WriteMeta) (port.WriteOutcome, error) {
 	p.record("close", by, r, m)
-	return model.Commit{Revision: model.Natural64(13)}, p.failure
+	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(13)}}, p.failure
 }
 
 func TestServiceBindingsAtByteBoundary(t *testing.T) {
@@ -322,7 +396,7 @@ func TestServiceBindingsAtByteBoundary(t *testing.T) {
 	if err := rpc.BindService(r, p); err == nil {
 		t.Fatal("duplicate service binding accepted")
 	}
-	s := server(t, r, rpc.Config{DefaultProject: "default"})
+	s := server(t, r, rpc.Config{DefaultProject: "default", Incarnation: "inc"})
 	ctx := rpc.WithPrincipal(context.Background(), model.PrincipalRef{Kind: "user", ID: "u-1"})
 	got := result(t, call(t, s, ctx, "bead.get", `{"id":{"id":"p-1"},"asOf":{"revision":9007199254740993}}`))
 	if p.request.(service.GetRequest).AsOf.Revision != model.Natural("9007199254740993") || got["bead"].(map[string]any)["revision"] != json.Number("9007199254740993") {
@@ -337,7 +411,7 @@ func TestServiceBindingsAtByteBoundary(t *testing.T) {
 	if ready.Limit != 1000 || ready.Project != "default" || ready.ViewID != "v" || len(ready.Filter.Types) != 1 || len(got["items"].([]any)) != 0 {
 		t.Fatal("ready mapping", ready, got)
 	}
-	result(t, call(t, s, ctx, "history.query", `{"asOf":{"revision":1e1000000000,"incarnation":"before"},"limit":5,"_meta":{"project":"other"}}`))
+	result(t, call(t, s, ctx, "history.query", `{"asOf":{"revision":1e1000000000,"incarnation":"inc"},"limit":5,"_meta":{"project":"other"}}`))
 	history := p.request.(service.HistoryRequest)
 	if history.AsOf.Revision != model.Natural("1e1000000000") || history.Project != "other" || history.Cursor != "" {
 		t.Fatal("history mapping", history)
