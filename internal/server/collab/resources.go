@@ -53,6 +53,9 @@ func (m *Manager) read(ctx context.Context, by model.PrincipalRef, resource stri
 		return service.GetResult{}, false, err
 	}
 	v, err := m.config.Service.Get(ctx, p, service.GetRequest{ID: model.RefByID(id, model.Natural64(0))})
+	if ctx.Err() != nil {
+		return service.GetResult{}, false, failure("busy", "request was canceled")
+	}
 	if isAbsent(err) {
 		return service.GetResult{}, false, nil
 	}
@@ -68,6 +71,9 @@ func (m *Manager) read(ctx context.Context, by model.PrincipalRef, resource stri
 		}
 		p, _ = clonePrincipal(by)
 		allowed, err := m.config.Policy.CanRead(ctx, p, v.Bead)
+		if ctx.Err() != nil {
+			return service.GetResult{}, false, failure("busy", "request was canceled")
+		}
 		if err != nil {
 			return service.GetResult{}, false, failure("authz_unavailable", "current resource authorization failed")
 		}

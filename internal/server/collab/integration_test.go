@@ -33,6 +33,7 @@ type fixture struct {
 	store   *memory.Store
 	lease   driver.ActiveLease
 	service *service.Service
+	writer  *pipeline.Writer
 	manager *collab.Manager
 	server  *rpc.Server
 	clock   *testClock
@@ -52,6 +53,7 @@ func newFixture(t *testing.T, configure func(*collab.Config)) *fixture {
 	t.Cleanup(func() { _ = f.lease.Release(context.Background()) })
 	ontology := service.NewOntology(nil)
 	writer := pipeline.New(f.store, f.lease, pipeline.WithOntology(ontology), pipeline.WithClock(f.clock.now))
+	f.writer = writer
 	f.service = service.New(f.store, f.lease, writer, service.WithOntology(ontology), service.WithClock(f.clock.now))
 	f.config = collab.Config{Service: f.service, Lease: f.lease, Clock: f.clock.now, AuthorizationInstalled: func() bool { return false }}
 	if configure != nil {
@@ -250,4 +252,154 @@ func TestRealRPCOnlyBoundMethodsDiscoverAndStrictParamsRejectSubstitution(t *tes
 	if !strings.Contains(fmt.Sprint(f.rows(t, alice, "project-a")), alice.ID) {
 		t.Fatal("owner was replaced")
 	}
+}
+
+func TestRealRPCHalfOpenExpiryOnlySuccessfulSetRenewsAndReconnectReopens(t *testing.T) {
+	f := newFixture(t, nil)
+	id := f.open(t, alice, map[string]any{})
+	lifetime, err := f.manager.SessionContext(context.Background(), collab.Caller{Principal: alice}, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.clock.advance(4 * time.Minute)
+	if len(f.rows(t, alice, "project-a")) != 1 {
+		t.Fatal("expired early")
+	}
+	code(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": id, "focus": "bead/missing"}), "not_found")
+	f.clock.advance(time.Minute)
+	if len(f.rows(t, alice, "project-a")) != 0 {
+		t.Fatal("list/failed set renewed expiry at exact boundary")
+	}
+	if lifetime.Err() == nil {
+		t.Fatal("expiry did not cancel session context")
+	}
+	code(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": id}), "not_found")
+	code(t, f.call(t, alice, "session.close", map[string]any{"sessionId": id}), "not_found")
+	reopened := f.open(t, alice, map[string]any{})
+	if reopened == id {
+		t.Fatal("reconnect reused expired ID")
+	}
+	f.clock.advance(4 * time.Minute)
+	result(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": reopened, "focus": "", "workingOn": []string{}}))
+	f.clock.advance(4 * time.Minute)
+	if len(f.rows(t, alice, "project-a")) != 1 {
+		t.Fatal("successful set did not renew")
+	}
+	f.clock.advance(time.Minute)
+	if len(f.rows(t, alice, "project-a")) != 0 {
+		t.Fatal("renewed session exceeded five minutes")
+	}
+}
+
+func TestRealRPCQuotasAreReclaimedByCloseAndExpiry(t *testing.T) {
+	f := newFixture(t, func(c *collab.Config) { c.Limits = collab.Limits{Sessions: 3, PerPrincipal: 2, PerSponsor: 2} })
+	first := f.open(t, alice, map[string]any{})
+	f.open(t, alice, map[string]any{})
+	code(t, f.call(t, alice, "session.open", map[string]any{}), "too_many_sessions")
+	f.open(t, bob, map[string]any{})
+	charlie := model.PrincipalRef{Kind: "user", ID: "user:charlie"}
+	code(t, f.call(t, charlie, "session.open", map[string]any{}), "too_many_sessions")
+	result(t, f.call(t, alice, "session.close", map[string]any{"sessionId": first}))
+	f.open(t, charlie, map[string]any{})
+	f.clock.advance(collab.SessionTTL)
+	if len(f.rows(t, alice, "project-a")) != 0 {
+		t.Fatal("quota retained expired rows")
+	}
+	f.open(t, alice, map[string]any{})
+}
+
+func TestRealRPCFortySessionsCompactWithoutTransferringOwnership(t *testing.T) {
+	f := newFixture(t, nil)
+	ids := map[string]bool{}
+	for range 40 {
+		id := f.open(t, alice, map[string]any{"onBehalfOf": alice.ID})
+		if len(id) != 64 || ids[id] {
+			t.Fatal("session IDs are not distinct 256-bit tokens")
+		}
+		ids[id] = true
+	}
+	rows := f.rows(t, bob, "project-a")
+	if len(rows) != 1 {
+		t.Fatalf("forty sessions produced %d rows", len(rows))
+	}
+	row := rows[0].(map[string]any)
+	if row["onBehalfOf"] != alice.ID || !ids[row["sessionId"].(string)] || len(row) != 3 {
+		t.Fatal(row)
+	}
+	code(t, f.call(t, bob, "session.close", map[string]any{"sessionId": row["sessionId"]}), "not_found")
+	result(t, f.call(t, alice, "session.close", map[string]any{"sessionId": row["sessionId"]}))
+	if len(f.rows(t, bob, "project-a")) != 1 {
+		t.Fatal("closing a representative dropped other live members")
+	}
+	code(t, f.call(t, bob, "session.open", map[string]any{"onBehalfOf": alice.ID}), "forbidden")
+	f.open(t, bob, map[string]any{})
+	if len(f.rows(t, bob, "project-a")) != 2 {
+		t.Fatal("unrelated session was grouped")
+	}
+}
+
+func TestRealRPCWorkingOnRequiresLiveCallerClaimsAndRechecksCurrentState(t *testing.T) {
+	f := newFixture(t, nil)
+	bead := f.create(t, "project-a")
+	resource := "bead/" + bead
+	aliceSession := f.open(t, alice, map[string]any{})
+	bobSession := f.open(t, bob, map[string]any{})
+	code(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": aliceSession, "workingOn": []string{resource}}), "forbidden")
+	f.write(t, alice, "bead.claim", map[string]any{"id": map[string]any{"id": bead}})
+	code(t, f.call(t, bob, "presence.set", map[string]any{"sessionId": bobSession, "workingOn": []string{resource}}), "forbidden")
+	result(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": aliceSession, "focus": resource, "workingOn": []string{resource}}))
+	f.clock.advance(4 * time.Minute)
+	result(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": aliceSession}))
+	f.clock.advance(time.Minute)
+	rows := f.rows(t, bob, "project-a")
+	if len(rows) != 1 {
+		t.Fatal(rows)
+	}
+	row := rows[0].(map[string]any)
+	if row["focus"] != resource || row["workingOn"] != nil {
+		t.Fatal("expired claim left a marker", row)
+	}
+	f.write(t, bob, "bead.claim", map[string]any{"id": map[string]any{"id": bead}})
+	code(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": aliceSession}), "forbidden")
+	result(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": aliceSession, "workingOn": []string{}}))
+	if f.rows(t, bob, "project-a")[0].(map[string]any)["workingOn"] != nil {
+		t.Fatal("reclaimed claim leaked as current work")
+	}
+}
+
+func TestRealRPCDeletedFocusHasNoMarkerAndCrossProjectFocusRefuses(t *testing.T) {
+	f := newFixture(t, nil)
+	bead := f.create(t, "project-a")
+	other := f.create(t, "project-b")
+	id := f.open(t, alice, map[string]any{})
+	code(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": id, "focus": "bead/" + other}), "not_found")
+	result(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": id, "focus": "bead/" + bead}))
+	_, err := f.writer.Apply(context.Background(), alice, model.ChangeSet{Ops: []model.Op{{Kind: model.OpDelete, Delete: &model.DeleteOp{Target: model.RefByID(bead, model.Natural64(0))}}}}, model.WriteMeta{Method: "bead.delete", Project: "project-a", IdempotencyKey: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := f.rows(t, bob, "project-a")
+	row := rows[0].(map[string]any)
+	if len(row) != 2 || row["focus"] != nil || strings.Contains(fmt.Sprint(rows), bead) {
+		t.Fatal("deleted focus left a resource marker", rows)
+	}
+	result(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": id, "focus": ""}))
+}
+
+func TestRealRPCInputBoundsAndAnonymousClaimLabels(t *testing.T) {
+	f := newFixture(t, nil)
+	id := f.open(t, alice, map[string]any{})
+	for _, focus := range []string{"view/not-supported", "bead/", "bead/" + strings.Repeat("a", collab.MaxResourceBytes)} {
+		code(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": id, "focus": focus}), "invalid_params")
+	}
+	resources := make([]string, collab.MaxWorkingOn+1)
+	code(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": id, "workingOn": resources}), "invalid_params")
+	code(t, f.call(t, alice, "presence.list", map[string]any{"project": ""}), "project_required")
+	anonymous := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	bead := f.create(t, "project-a")
+	f.write(t, anonymous, "bead.claim", map[string]any{"id": map[string]any{"id": bead}, "_meta": map[string]any{"agent": "client-a"}})
+	session := f.open(t, anonymous, map[string]any{"_meta": map[string]any{"agent": "client-a"}})
+	code(t, f.call(t, anonymous, "presence.set", map[string]any{"sessionId": session, "_meta": map[string]any{"agent": "client-b"}}), "not_found")
+	result(t, f.call(t, anonymous, "presence.set", map[string]any{"sessionId": session, "workingOn": []string{"bead/" + bead}, "_meta": map[string]any{"agent": "client-a"}}))
+	code(t, f.call(t, alice, "session.close", map[string]any{"sessionId": session, "_meta": map[string]any{"agent": "client-a"}}), "not_found")
 }

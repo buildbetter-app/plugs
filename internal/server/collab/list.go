@@ -50,6 +50,10 @@ func (m *Manager) List(ctx context.Context, caller Caller, project string) ([]Pr
 			return result, nil
 		}
 		v, visible, err := m.read(ctx, caller.Principal, resource)
+		// Retain only collaboration facts after policy has examined the real
+		// bead. Large text/attachment bodies do not accumulate in this cache.
+		v.Bead = service.Bead{ID: v.Bead.ID, Project: v.Bead.Project}
+		v.Attachments = nil
 		result := resourceRead{value: v, visible: visible && v.Bead.Project == project}
 		if err == nil {
 			cache[resource] = result
