@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "rpc",
+    srcs = ["registry.go", "server.go", "service.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/server/rpc",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/api/wire", "//internal/core/model", "//internal/core/service"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
