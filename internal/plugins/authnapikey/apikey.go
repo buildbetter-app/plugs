@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -28,10 +27,30 @@ type Config struct {
 }
 
 type Provider struct {
-	mu    sync.RWMutex
+	mu    keyRingMutex
 	keys  map[string]keyRecord
 	authz func() bool
 	now   func() time.Time
+}
+
+// Provisioning and lookup hold this gate only for a map access. A channel lets
+// a lookup abandon contention at the authn deadline without spawning a worker
+// that might outlive the request. Callbacks and digest checks run outside it.
+type keyRingMutex chan struct{}
+
+func (m keyRingMutex) Lock()   { m <- struct{}{} }
+func (m keyRingMutex) Unlock() { <-m }
+
+func (m keyRingMutex) lockContext(ctx context.Context) bool {
+	select {
+	case m <- struct{}{}:
+		if ctx.Err() == nil {
+			return true
+		}
+		m.Unlock()
+	case <-ctx.Done():
+	}
+	return false
 }
 
 type keyRecord struct {
@@ -45,7 +64,7 @@ type keyRecord struct {
 // Callers must deliver it privately, never place it in logs or RPC audit data.
 type IssuedKey struct {
 	ID        string
-	Token     string
+	Token     string `json:"-"`
 	ExpiresAt time.Time
 }
 
@@ -60,7 +79,7 @@ func New(config Config) *Provider {
 	if now == nil {
 		now = time.Now
 	}
-	return &Provider{keys: make(map[string]keyRecord), authz: config.AuthorizationInstalled, now: now}
+	return &Provider{mu: make(keyRingMutex, 1), keys: make(map[string]keyRecord), authz: config.AuthorizationInstalled, now: now}
 }
 
 // Issue is a trusted host operation, not an unauthenticated RPC method. The
@@ -126,9 +145,11 @@ func (p *Provider) Authenticate(ctx context.Context, token string) (model.Princi
 	if !ok {
 		return model.PrincipalRef{}, authn.ErrUnauthenticated
 	}
-	p.mu.RLock()
+	if !p.mu.lockContext(ctx) {
+		return model.PrincipalRef{}, authn.ErrUnavailable
+	}
 	record, exists := p.keys[id]
-	p.mu.RUnlock()
+	p.mu.Unlock()
 	// Both operands are fixed-size digests, even for an unknown key ID.
 	digest := sha256.Sum256([]byte(token))
 	match := subtle.ConstantTimeCompare(digest[:], record.digest[:])

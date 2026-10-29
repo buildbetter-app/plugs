@@ -219,10 +219,14 @@ internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
 internal/doc.go
+internal/integration/apikey/BUILD.bazel
+internal/integration/apikey/compose.go
 internal/plugins/authnapikey/BUILD.bazel
+internal/plugins/authnapikey/README.md
 internal/plugins/authnapikey/apikey.go
 internal/plugins/authnapikey/apikey_test.go
 internal/plugins/authnapikey/http_test.go
+internal/plugins/authnapikey/lookup_test.go
 internal/plugins/authzfixed/BUILD.bazel
 internal/plugins/authzfixed/facts.go
 internal/plugins/authzfixed/facts_test.go
