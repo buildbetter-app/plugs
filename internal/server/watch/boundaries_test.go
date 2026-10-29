@@ -2,6 +2,7 @@ package watch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -39,6 +40,125 @@ func TestAuthorizationPortNeverNamesUndeliveredResource(t *testing.T) {
 type bindingFunc func(context.Context, Request) (Binding, error)
 
 func (fn bindingFunc) Current(ctx context.Context, req Request) (Binding, error) { return fn(ctx, req) }
+
+// boundaryHeadLog keeps the real memory log and materializer in the service
+// path while presenting one of the reader's actual cursor-boundary heads. The
+// service must still scan the returned head to construct its signed gap cursor.
+type boundaryHeadLog struct {
+	inner coreevents.Log
+	head  coreevents.Head
+}
+
+func (l boundaryHeadLog) Head(context.Context) (coreevents.Head, error) { return l.head, nil }
+
+func (l boundaryHeadLog) Scan(ctx context.Context, after coreevents.Position, limit int) ([]model.Changeset, error) {
+	if limit > 0 && after.Incarnation == l.head.Incarnation && after.Revision.String() == l.head.Revision.String() && !l.head.Revision.IsZero() {
+		return []model.Changeset{{Incarnation: l.head.Incarnation, Revision: l.head.Revision}}, nil
+	}
+	return l.inner.Scan(ctx, after, limit)
+}
+
+func TestGapBoundariesRemainMandatoryCanonicalTerminalFrames(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		from   string
+		after  model.Revision
+		head   coreevents.Head
+	}{
+		{name: "incarnation", reason: "failover", from: "old-incarnation", after: "1"},
+		{name: "history-floor", reason: "history_floor", from: "watch-incarnation-0001", after: "1", head: coreevents.Head{Incarnation: "watch-incarnation-0001", Revision: "2", Floor: "2"}},
+		{name: "checkpoint", reason: "checkpoint", from: "watch-incarnation-0001", after: "2", head: coreevents.Head{Incarnation: "watch-incarnation-0001", Revision: "1", Floor: "0"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newWatchFixture(t, 8, 5*time.Millisecond, time.Second)
+			meta, err := f.store.Meta(f.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			head := tc.head
+			if head.Incarnation == "" {
+				head = coreevents.Head{Incarnation: meta.Incarnation, Revision: meta.Head, Floor: meta.HistoryFloor}
+			}
+			f.manager.config.Events.Reader.Log = boundaryHeadLog{inner: f.manager.config.Events.Reader.Log, head: head}
+			req := f.request("gap-" + tc.name)
+			binding, err := f.manager.binding(f.ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cursorBinding, err := serverevents.BindingFor(string(req.Method), binding.Filter, binding.Principal, binding.Ontology, binding.PolicyVersion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.From, err = f.manager.config.Events.Cursors.Encode(coreevents.Position{Incarnation: tc.from, Revision: tc.after}, cursorBinding)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sub := f.open(t, req)
+			frame := nextFrame(t, sub, time.Second)
+			if frame.Kind != FrameReset || frame.Reason != "" || len(frame.Events) != 1 || frame.Events[0].Control == nil || frame.Events[0].Control.Type != model.EventGap {
+				t.Fatalf("gap frame=%+v", frame)
+			}
+			details, ok := frame.Events[0].Control.Details.(model.EventGapDetails)
+			if !ok || details.Reason != tc.reason {
+				t.Fatalf("gap details=%+v want reason %q", frame.Events[0].Control.Details, tc.reason)
+			}
+			wire := frame.WireEvents()
+			if len(wire) != 1 || wire[0].Control == nil || wire[0].Control.Type != model.EventGap {
+				t.Fatalf("gap wire=%+v", wire)
+			}
+			if _, err := json.Marshal(frame); err != nil {
+				t.Fatalf("gap frame marshal=%v", err)
+			}
+			if _, err := sub.Next(f.ctx); !errors.Is(err, ErrResetRequired) {
+				t.Fatalf("gap stream resumed: %v", err)
+			}
+		})
+	}
+}
+
+func TestTerminalResetDropsQueuedDurableImagesAtAuthorizationBoundary(t *testing.T) {
+	f := newWatchFixture(t, 8, 5*time.Millisecond, time.Second)
+	f.manager.config.Events.Reader.Authorization = f.auth
+	f.commit(t, "before-reset", "must be omitted", model.OpCreate)
+	source := service.OntologySource{Base: ontology.DefaultDocument()}
+	body, err := service.MarshalOntologySource(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "user", ID: "admin"}}, []conformance.FixtureChange{{Ref: model.RefByID("ontology/current", "0"), Kind: "ontology", Op: model.OpCreate, Body: body}}); err != nil {
+		t.Fatal(err)
+	}
+	f.commit(t, "after-reset", "must not be queued", model.OpCreate)
+	sub := f.open(t, f.request("reset-authz"))
+	waitQueued(t, sub)
+	sub.watch.queueMu.Lock()
+	queued := <-sub.watch.queue
+	sub.watch.queue <- queued
+	sub.watch.queueMu.Unlock()
+	if queued.Kind != FrameReset || queued.Reason != "ontology_changed" {
+		t.Fatalf("queued terminal frame=%+v", queued)
+	}
+	for _, event := range queued.Events {
+		if event.Durable != nil {
+			t.Fatalf("queued terminal frame retained durable image=%+v", event)
+		}
+	}
+	f.auth.SetAllowed(false)
+	frame := nextFrame(t, sub, time.Second)
+	if frame.Kind != FrameReset || frame.Reason != "ontology_changed" {
+		t.Fatalf("delivered terminal frame=%+v", frame)
+	}
+	for _, event := range frame.Events {
+		if event.Durable != nil {
+			t.Fatalf("delivered terminal frame leaked durable image=%+v", event)
+		}
+	}
+	if _, err := json.Marshal(frame); err != nil {
+		t.Fatalf("terminal frame marshal=%v", err)
+	}
+}
 
 func TestBindingPortChangesResetBeforeQueuedPayloadAndRequireReopen(t *testing.T) {
 	for _, kind := range []string{"policy", "ontology"} {

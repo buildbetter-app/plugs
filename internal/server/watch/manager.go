@@ -585,6 +585,13 @@ func (current *watch) frame(kind FrameKind, from string, page serverevents.Page,
 		if event.Control != nil && event.Control.Type == model.EventWatchReset {
 			continue
 		}
+		// A terminal boundary never carries queued before/after images. The
+		// next delivery may occur after authorization changes, and a reset
+		// already provides the safe reopen point. Mandatory control markers,
+		// including event.gap, remain in the frame.
+		if kind == FrameReset && event.Durable != nil {
+			continue
+		}
 		frame.Events = append(frame.Events, event)
 	}
 	return frame
@@ -730,6 +737,12 @@ func (current *watch) next(ctx context.Context, consumer *Subscription) (Frame, 
 		frame = *current.replacement
 	}
 	current.mu.Unlock()
+	if frame.Kind == FrameReset {
+		// Keep the terminal-frame invariant at the delivery boundary too. This
+		// protects the authorization boundary if another internal producer ever
+		// queues a reset with a durable payload.
+		frame.Events = terminalResetEvents(frame.Events)
+	}
 	if err := ctx.Err(); err != nil {
 		return Frame{}, err
 	}
@@ -899,6 +912,20 @@ func (current *watch) recordVisible(frame Frame) bool {
 	return true
 }
 
+func terminalResetEvents(events []model.Event) []model.Event {
+	controls := make([]model.Event, 0, len(events))
+	for _, event := range events {
+		if event.Durable != nil {
+			continue
+		}
+		if event.Control != nil && event.Control.Type == model.EventWatchReset {
+			continue
+		}
+		controls = append(controls, event)
+	}
+	return controls
+}
+
 func (current *watch) closeQueue() {
 	current.queueMu.Lock()
 	defer current.queueMu.Unlock()
@@ -1009,9 +1036,10 @@ func compactStrings(values []string) []string {
 func pageBoundaryReason(page serverevents.Page) string {
 	for _, event := range page.Events {
 		if event.Control != nil && event.Control.Type == model.EventGap {
-			if details, ok := event.Control.Details.(model.EventGapDetails); ok && details.Reason != "" {
-				return details.Reason
-			}
+			// event.gap has its own closed reason enum (failover,
+			// history_floor, checkpoint). It is the safe terminal boundary;
+			// never copy that value into watch.reset.
+			return ""
 		}
 		if event.Control != nil && event.Control.Type == model.EventWatchReset {
 			if details, ok := event.Control.Details.(model.WatchResetDetails); ok {

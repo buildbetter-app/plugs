@@ -182,6 +182,13 @@ func (f Frame) WireEvents() []model.Event {
 		return out
 	case FrameReset:
 		out := cloneEvents(f.Events)
+		if f.Reason == "" {
+			// An event.gap is itself the mandatory terminal boundary for
+			// incarnation, history-floor, and checkpoint recovery. Those
+			// reasons are intentionally outside the watch.reset enum, so do
+			// not manufacture a second, invalid reset control.
+			return out
+		}
 		return append(out, resetEvent(f.SubscriptionID, f.Reason, f.Cursor, f.position))
 	default:
 		return nil
