@@ -1,0 +1,17 @@
+{
+  "manifest_version": 1,
+  "plugins": [{
+    "id": "app.example.fixture",
+    "alias": "fixture",
+    "version": "1.0.0",
+    "plugin_api": "1.0",
+    "runtime": "native",
+    "provides": [
+      {"kind": "subscriber", "name": "normalize", "phases": ["mutate"], "reads": ["fields.title"], "owns": ["fields.normalized"], "max_point_reads": 2, "max_queries": 1},
+      {"kind": "subscriber", "name": "check", "phases": ["validate"], "reads": ["fields.normalized"]},
+      {"kind": "subscriber", "name": "observe", "phases": ["post"], "reads": ["fields.normalized"]},
+      {"kind": "methods", "prefix": "x.fixture", "methods": {"echo": {"permission": "read", "resource": "params.id"}}}
+    ],
+    "requires": {"methods": ["bead.get", "bead.ready", "tx.apply"]}
+  }]
+}

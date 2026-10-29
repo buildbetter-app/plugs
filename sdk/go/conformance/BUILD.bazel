@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "conformance",
+    srcs = ["fixture.go"],
+    embedsrcs = ["manifest.json"],
+    importpath = "github.com/buildbetter-app/plugs/sdk/go/conformance",
+    visibility = ["//visibility:public"],
+    deps = ["//pluginapi", "//sdk/go:sdk_go"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

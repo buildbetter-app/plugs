@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -23,7 +24,7 @@ type auditFixture struct {
 // audited write; every dependent and ontology pin names an unchanged version.
 func newAuditFixture(t *testing.T, factory Factory, notices int) auditFixture {
 	t.Helper()
-	ctx, s, lease, meta := setup(t, factory)
+	ctx, s, lease, meta := setupAudit(t, factory, notices)
 	initial := []FixtureChange{
 		{Ref: ref("pl-blocker"), Kind: "bead", Op: model.OpCreate, Body: []byte(`{"status":"working"}`)},
 		{Ref: ref("pl-ontology"), Kind: "ontology", Op: model.OpCreate, Body: []byte(`{"task":{"working":"started","finished":"completed"}}`)},
@@ -75,4 +76,28 @@ func newAuditFixture(t *testing.T, factory Factory, notices int) auditFixture {
 		Response: model.Commit{Results: []model.OpResult{{Ref: ref("pl-blocker"), Revision: model.Natural64(n + 1)}, {Ref: ref("pl-dependent-0000"), Revision: versions["pl-dependent-0000"]}}, Warnings: []model.Warning{}},
 	}
 	return auditFixture{ctx: ctx, store: s, lease: lease, meta: meta, header: h, changes: []FixtureChange{{Ref: ref("pl-blocker"), Kind: "bead", Op: model.OpPatch, Body: []byte(`{"status":"finished"}`), ChangedPaths: []string{"/status"}}}}
+}
+
+func setupAudit(t *testing.T, factory Factory, notices int) (context.Context, driver.Store, driver.ActiveLease, driver.Meta) {
+	t.Helper()
+	if notices < model.MaxChangesetEvents {
+		return setup(t, factory)
+	}
+	// The full-cap case seeds and compares over 1,000 real source histories.
+	// Give that bounded fixture a longer request and lease under the race
+	// detector; the separate expiry/takeover cases exercise lease refusal.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	t.Cleanup(cancel)
+	s := factory(t)
+	t.Cleanup(func() { _ = s.Close() })
+	lease, err := s.Lease(ctx, "audit-cap", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lease.Release(context.Background()) })
+	meta, err := s.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ctx, s, lease, meta
 }

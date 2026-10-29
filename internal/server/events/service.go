@@ -66,8 +66,15 @@ func (s Service) read(ctx context.Context, method string, req Request) (Page, er
 			if len(sets) != 1 {
 				return result, core.ErrCursorInvalid
 			}
-			if len(sets[0].Changes) > 0 {
-				position.Index = model.Natural64(uint64(len(sets[0].Changes) - 1))
+			if err := sets[0].ValidateEvents(); err != nil {
+				return result, err
+			}
+			count := len(sets[0].Changes)
+			if sets[0].Events != nil {
+				count = len(sets[0].Events)
+			}
+			if count > 0 {
+				position.Index = model.Natural64(uint64(count - 1))
 			}
 		}
 		cursor, encodeErr := s.Cursors.Encode(position, binding)
