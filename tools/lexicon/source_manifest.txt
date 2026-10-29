@@ -226,6 +226,8 @@ internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
 internal/doc.go
+internal/integration/httpcancel/BUILD.bazel
+internal/integration/httpcancel/httpcancel_test.go
 internal/plugins/authnapikey/BUILD.bazel
 internal/plugins/authnapikey/apikey.go
 internal/plugins/authnapikey/apikey_test.go
