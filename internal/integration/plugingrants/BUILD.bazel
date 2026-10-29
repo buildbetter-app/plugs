@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "plugingrants_test",
+    srcs = ["integration_test.go"],
+    args = ["-test.v"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/server/pluginhost",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//pluginapi",
+        "//sdk/go:sdk_go",
+        "//sdk/go/conformance",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

@@ -20,6 +20,7 @@ go_library(
 
 go_test(
     name = "cli_test",
+    args = ["-test.v"],
     srcs = glob(["*_test.go"]),
     embed = [":cli"],
     deps = [
