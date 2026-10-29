@@ -8,6 +8,13 @@ go_library(
     deps = ["//internal/api/wire", "//internal/core/model", "//internal/core/service"],
 )
 
+go_test(
+    name = "rpc_test",
+    srcs = ["openrpc_test.go", "rpc_test.go"],
+    embedsrcs = ["openrpc.json"],
+    deps = [":rpc", "//internal/api/wire", "//internal/core/model", "//internal/core/service", "//internal/server/transport/inprocess"],
+)
+
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),

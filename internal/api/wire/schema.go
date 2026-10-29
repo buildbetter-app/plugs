@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -102,6 +103,19 @@ func (c *Catalog) validate(schema, value any, path string, request bool, depth i
 	if request && s["readOnly"] == true {
 		return fmt.Errorf("%s: response-only member", path)
 	}
+	if types, ok := s["type"].([]any); ok {
+		for _, typ := range types {
+			variant := make(map[string]any, len(s))
+			for k, v := range s {
+				variant[k] = v
+			}
+			variant["type"] = typ
+			if c.validate(variant, value, path, request, depth+1) == nil {
+				return nil
+			}
+		}
+		return fmt.Errorf("%s: expected an allowed type", path)
+	}
 	if variants, ok := s["oneOf"].([]any); ok {
 		matches := 0
 		for _, v := range variants {
@@ -148,6 +162,11 @@ func (c *Catalog) validate(schema, value any, path string, request bool, depth i
 			n, _ := bound.Int64()
 			if int64(utf8.RuneCountInString(v)) < n {
 				return fmt.Errorf("%s: string too short", path)
+			}
+		}
+		if s["format"] == "date-time" {
+			if _, err := time.Parse(time.RFC3339Nano, v); err != nil {
+				return fmt.Errorf("%s: invalid date-time", path)
 			}
 		}
 	case "number", "integer":

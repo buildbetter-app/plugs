@@ -169,6 +169,12 @@ func commitJSON(v model.Commit) map[string]any {
 	if v.Violations != nil {
 		out["violations"] = v.Violations
 	}
+	if v.LeaseExpiresAt != nil {
+		out["leaseExpiresAt"] = timestamp(*v.LeaseExpiresAt)
+	}
+	if v.LeaseTtlMs != nil {
+		out["leaseTtlMs"] = v.LeaseTtlMs
+	}
 	return out
 }
 func pageJSON(v service.BeadPage) map[string]any {

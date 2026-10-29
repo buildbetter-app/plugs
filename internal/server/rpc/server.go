@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
@@ -146,6 +147,8 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 	if !idPresent && bound.desc.Idempotency == "required" {
 		if s.config.DroppedNotification != nil {
 			s.config.DroppedNotification(ctx, method)
+		} else {
+			slog.WarnContext(ctx, "dropped write notification", "method", method)
 		}
 		return nil
 	}
@@ -232,6 +235,9 @@ func (s *Server) failure(id []byte, code, hint string, details map[string]any) [
 	return s.errorResponse(id, s.registry.catalog.NewError(code, hint, details))
 }
 func (s *Server) errorResponse(id []byte, e *wire.Error) []byte {
+	if s.registry.catalog.ValidateError(e) != nil {
+		e = s.registry.catalog.NewError("internal_error", "", nil)
+	}
 	if e.Data.TraceID == "" {
 		var b [16]byte
 		if _, err := rand.Read(b[:]); err == nil {
@@ -286,22 +292,22 @@ func (s *Server) methods(ctx context.Context, c Call) (any, error) {
 }
 func (s *Server) describe(ctx context.Context, c Call) (any, error) {
 	var params struct {
-		Method string `json:"method"`
+		Method *string `json:"method"`
 	}
 	_ = json.Unmarshal(c.Params, &params)
 	descriptors, _, hash, err := s.visible(ctx, c.Principal)
 	if err != nil {
 		return nil, err
 	}
-	if params.Method != "" {
+	if params.Method != nil {
 		for _, d := range descriptors {
-			if d.Name == params.Method {
-				return map[string]any{"method": d, "errors": s.registry.catalog.ErrorCatalog()}, nil
+			if d.Name == *params.Method {
+				return map[string]any{"method": d, "errors": s.registry.catalog.ErrorCatalog(), "components": s.registry.catalog.ComponentsJSON()}, nil
 			}
 		}
 		return nil, s.registry.catalog.NewError("method_not_found", "", nil)
 	}
-	return map[string]any{"methods": descriptors, "methodsHash": hash, "errors": s.registry.catalog.ErrorCatalog()}, nil
+	return map[string]any{"methods": descriptors, "methodsHash": hash, "errors": s.registry.catalog.ErrorCatalog(), "components": s.registry.catalog.ComponentsJSON()}, nil
 }
 func (s *Server) discover(ctx context.Context, c Call) (any, error) {
 	descriptors, _, hash, err := s.visible(ctx, c.Principal)

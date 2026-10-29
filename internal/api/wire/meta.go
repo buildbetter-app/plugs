@@ -23,6 +23,7 @@ type Meta struct {
 }
 
 var uuid4 = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+var uuidLike = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 var ulid = regexp.MustCompile(`(?i)^[0-7][0-9A-HJKMNP-TV-Z]{25}$`)
 
 // ValidateIdempotencyKey verifies an encoding large enough for caller-generated
@@ -32,11 +33,14 @@ func ValidateIdempotencyKey(key string) error {
 	if uuid4.MatchString(key) || ulid.MatchString(key) {
 		return nil
 	}
+	if uuidLike.MatchString(key) {
+		return fmt.Errorf("idempotency UUID must be version 4")
+	}
 	if b, err := hex.DecodeString(key); err == nil && len(b) >= 16 {
 		return nil
 	}
 	if !strings.ContainsAny(key, "=+/") {
-		if b, err := base64.RawURLEncoding.DecodeString(key); err == nil && len(b) >= 16 {
+		if b, err := base64.RawURLEncoding.Strict().DecodeString(key); err == nil && len(b) >= 16 {
 			return nil
 		}
 	}
