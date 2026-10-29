@@ -2,7 +2,7 @@
   "openrpc": "1.3.2",
   "info": {
     "title": "Plug JSON-RPC contract",
-    "description": "Machine-readable v1 contract derived from Plug design sections A1, A2, A4, A5, A6 and A7. Core and plugin methods share JSON-RPC 2.0 envelopes.",
+    "description": "Canonical tagged JSON-RPC v1 contract snapshot for Plug. Go and OpenRPC share the operation, event, cursor, and error encodings; source provenance is recorded in x-source-evidence until the C1 registry generator lands.",
     "version": "0.1.0"
   },
   "servers": [
@@ -411,6 +411,9 @@
       },
       "errors": [
         {
+          "$ref": "#/components/errors/AuthzPostfilterCap"
+        },
+        {
           "$ref": "#/components/errors/NotFound"
         },
         {
@@ -436,7 +439,8 @@
       "x-idempotency": "none",
       "x-permission": "read",
       "x-agent-core": true,
-      "x-stability": "v1"
+      "x-stability": "v1",
+      "x-authz-postfilter": "accepted-capped"
     },
     {
       "name": "bead.create",
@@ -2190,6 +2194,9 @@
       },
       "errors": [
         {
+          "$ref": "#/components/errors/AuthzPostfilterCap"
+        },
+        {
           "$ref": "#/components/errors/NotFound"
         },
         {
@@ -2215,7 +2222,8 @@
       "x-idempotency": "none",
       "x-permission": "read",
       "x-agent-core": true,
-      "x-stability": "v1"
+      "x-stability": "v1",
+      "x-authz-postfilter": "accepted-capped"
     },
     {
       "name": "event.subscribe",
@@ -2470,6 +2478,14 @@
           "required": true
         },
         {
+          "name": "humanPresence",
+          "schema": {
+            "$ref": "#/components/schemas/HumanPresence"
+          },
+          "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+          "required": true
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -2485,6 +2501,9 @@
         }
       },
       "errors": [
+        {
+          "$ref": "#/components/errors/HumanPresenceRequired"
+        },
         {
           "$ref": "#/components/errors/NotFound"
         },
@@ -2508,7 +2527,19 @@
       "x-idempotency": "required",
       "x-permission": "admin",
       "x-agent-core": false,
-      "x-stability": "v1"
+      "x-stability": "v1",
+      "x-human-presence": {
+        "required": true,
+        "authenticatedMode": "interactive_session",
+        "anonymousMode": "presence_check",
+        "binding": "method-and-sensitive-digest",
+        "forbiddenTransports": [
+          "api_key",
+          "iframe",
+          "other_origin_bearer"
+        ],
+        "authenticatedPrincipal": "user"
+      }
     },
     {
       "name": "plugin.plan",
@@ -2554,6 +2585,9 @@
         }
       },
       "errors": [
+        {
+          "$ref": "#/components/errors/AuthzLinkAllowNotLast"
+        },
         {
           "$ref": "#/components/errors/Forbidden"
         },
@@ -2622,8 +2656,10 @@
         {
           "name": "humanPresence",
           "schema": {
-            "type": "string"
-          }
+            "$ref": "#/components/schemas/HumanPresence"
+          },
+          "required": true,
+          "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action."
         },
         {
           "name": "_meta",
@@ -2676,7 +2712,19 @@
       "x-idempotency": "required",
       "x-permission": "admin",
       "x-agent-core": false,
-      "x-stability": "v1"
+      "x-stability": "v1",
+      "x-human-presence": {
+        "required": true,
+        "authenticatedMode": "interactive_session",
+        "anonymousMode": "presence_check",
+        "binding": "method-and-sensitive-digest",
+        "forbiddenTransports": [
+          "api_key",
+          "iframe",
+          "other_origin_bearer"
+        ],
+        "authenticatedPrincipal": "user"
+      }
     },
     {
       "name": "authn.authenticate",
@@ -3358,6 +3406,14 @@
           "required": true
         },
         {
+          "name": "humanPresence",
+          "schema": {
+            "$ref": "#/components/schemas/HumanPresence"
+          },
+          "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+          "required": true
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -3375,6 +3431,9 @@
       "errors": [
         {
           "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/HumanPresenceRequired"
         },
         {
           "$ref": "#/components/errors/PreconditionFailed"
@@ -3408,7 +3467,19 @@
       "x-idempotency": "required",
       "x-permission": "admin",
       "x-agent-core": false,
-      "x-stability": "v1"
+      "x-stability": "v1",
+      "x-human-presence": {
+        "required": true,
+        "authenticatedMode": "interactive_session",
+        "anonymousMode": "presence_check",
+        "binding": "method-and-sensitive-digest",
+        "forbiddenTransports": [
+          "api_key",
+          "iframe",
+          "other_origin_bearer"
+        ],
+        "authenticatedPrincipal": "user"
+      }
     },
     {
       "name": "ontology.history",
@@ -3830,6 +3901,9 @@
       },
       "errors": [
         {
+          "$ref": "#/components/errors/AuthzPostfilterCap"
+        },
+        {
           "$ref": "#/components/errors/Forbidden"
         },
         {
@@ -3852,7 +3926,8 @@
       "x-idempotency": "none",
       "x-permission": "read",
       "x-agent-core": false,
-      "x-stability": "v1"
+      "x-stability": "v1",
+      "x-authz-postfilter": "accepted-capped"
     },
     {
       "name": "history.diff",
@@ -4071,6 +4146,14 @@
           }
         },
         {
+          "name": "humanPresence",
+          "schema": {
+            "$ref": "#/components/schemas/HumanPresence"
+          },
+          "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+          "required": true
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -4086,6 +4169,9 @@
         }
       },
       "errors": [
+        {
+          "$ref": "#/components/errors/HumanPresenceRequired"
+        },
         {
           "$ref": "#/components/errors/NotFound"
         },
@@ -4115,7 +4201,19 @@
       "x-idempotency": "required",
       "x-permission": "admin",
       "x-agent-core": false,
-      "x-stability": "v1"
+      "x-stability": "v1",
+      "x-human-presence": {
+        "required": true,
+        "authenticatedMode": "interactive_session",
+        "anonymousMode": "presence_check",
+        "binding": "method-and-sensitive-digest",
+        "forbiddenTransports": [
+          "api_key",
+          "iframe",
+          "other_origin_bearer"
+        ],
+        "authenticatedPrincipal": "user"
+      }
     },
     {
       "name": "admin.health",
@@ -4193,6 +4291,21 @@
           }
         },
         {
+          "name": "humanPresence",
+          "schema": {
+            "$ref": "#/components/schemas/HumanPresence"
+          },
+          "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+          "required": true
+        },
+        {
+          "name": "includeCiphertext",
+          "schema": {
+            "type": "boolean"
+          },
+          "description": "Include ciphertext only with the required D32 proof; secret references remain the default."
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -4212,6 +4325,9 @@
           "$ref": "#/components/errors/Forbidden"
         },
         {
+          "$ref": "#/components/errors/HumanPresenceRequired"
+        },
+        {
           "$ref": "#/components/errors/Busy"
         },
         {
@@ -4225,7 +4341,19 @@
       "x-idempotency": "none",
       "x-permission": "admin",
       "x-agent-core": false,
-      "x-stability": "v1"
+      "x-stability": "v1",
+      "x-human-presence": {
+        "required": true,
+        "authenticatedMode": "interactive_session",
+        "anonymousMode": "presence_check",
+        "binding": "method-and-sensitive-digest",
+        "forbiddenTransports": [
+          "api_key",
+          "iframe",
+          "other_origin_bearer"
+        ],
+        "authenticatedPrincipal": "user"
+      }
     },
     {
       "name": "admin.restore.begin",
@@ -4257,6 +4385,14 @@
           }
         },
         {
+          "name": "humanPresence",
+          "schema": {
+            "$ref": "#/components/schemas/HumanPresence"
+          },
+          "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+          "required": true
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -4276,6 +4412,9 @@
           "$ref": "#/components/errors/Forbidden"
         },
         {
+          "$ref": "#/components/errors/HumanPresenceRequired"
+        },
+        {
           "$ref": "#/components/errors/RestoreRequiresEmpty"
         },
         {
@@ -4292,7 +4431,19 @@
       "x-idempotency": "required",
       "x-permission": "admin",
       "x-agent-core": false,
-      "x-stability": "v1"
+      "x-stability": "v1",
+      "x-human-presence": {
+        "required": true,
+        "authenticatedMode": "interactive_session",
+        "anonymousMode": "presence_check",
+        "binding": "method-and-sensitive-digest",
+        "forbiddenTransports": [
+          "api_key",
+          "iframe",
+          "other_origin_bearer"
+        ],
+        "authenticatedPrincipal": "user"
+      }
     },
     {
       "name": "admin.restore.chunk",
@@ -4335,6 +4486,14 @@
           "required": true
         },
         {
+          "name": "humanPresence",
+          "schema": {
+            "$ref": "#/components/schemas/HumanPresence"
+          },
+          "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+          "required": true
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -4352,6 +4511,9 @@
       "errors": [
         {
           "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/HumanPresenceRequired"
         },
         {
           "$ref": "#/components/errors/NotFound"
@@ -4376,7 +4538,19 @@
       "x-idempotency": "required",
       "x-permission": "admin",
       "x-agent-core": false,
-      "x-stability": "v1"
+      "x-stability": "v1",
+      "x-human-presence": {
+        "required": true,
+        "authenticatedMode": "interactive_session",
+        "anonymousMode": "presence_check",
+        "binding": "method-and-sensitive-digest",
+        "forbiddenTransports": [
+          "api_key",
+          "iframe",
+          "other_origin_bearer"
+        ],
+        "authenticatedPrincipal": "user"
+      }
     },
     {
       "name": "admin.restore.finish",
@@ -4404,6 +4578,14 @@
           "required": true
         },
         {
+          "name": "humanPresence",
+          "schema": {
+            "$ref": "#/components/schemas/HumanPresence"
+          },
+          "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+          "required": true
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -4421,6 +4603,9 @@
       "errors": [
         {
           "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/HumanPresenceRequired"
         },
         {
           "$ref": "#/components/errors/NotFound"
@@ -4448,7 +4633,19 @@
       "x-idempotency": "required",
       "x-permission": "admin",
       "x-agent-core": false,
-      "x-stability": "v1"
+      "x-stability": "v1",
+      "x-human-presence": {
+        "required": true,
+        "authenticatedMode": "interactive_session",
+        "anonymousMode": "presence_check",
+        "binding": "method-and-sensitive-digest",
+        "forbiddenTransports": [
+          "api_key",
+          "iframe",
+          "other_origin_bearer"
+        ],
+        "authenticatedPrincipal": "user"
+      }
     },
     {
       "name": "admin.binding.suspend",
@@ -4487,6 +4684,14 @@
           "required": true
         },
         {
+          "name": "humanPresence",
+          "schema": {
+            "$ref": "#/components/schemas/HumanPresence"
+          },
+          "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+          "required": true
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -4504,6 +4709,9 @@
       "errors": [
         {
           "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/HumanPresenceRequired"
         },
         {
           "$ref": "#/components/errors/NotFound"
@@ -4525,7 +4733,19 @@
       "x-idempotency": "required",
       "x-permission": "admin",
       "x-agent-core": false,
-      "x-stability": "v1"
+      "x-stability": "v1",
+      "x-human-presence": {
+        "required": true,
+        "authenticatedMode": "interactive_session",
+        "anonymousMode": "presence_check",
+        "binding": "method-and-sensitive-digest",
+        "forbiddenTransports": [
+          "api_key",
+          "iframe",
+          "other_origin_bearer"
+        ],
+        "authenticatedPrincipal": "user"
+      }
     },
     {
       "name": "admin.compact",
@@ -5161,6 +5381,9 @@
       },
       "errors": [
         {
+          "$ref": "#/components/errors/AuthzPostfilterCap"
+        },
+        {
           "$ref": "#/components/errors/Forbidden"
         },
         {
@@ -5192,7 +5415,8 @@
       "x-idempotency": "none",
       "x-permission": "read",
       "x-agent-core": false,
-      "x-stability": "v1"
+      "x-stability": "v1",
+      "x-authz-postfilter": "accepted-capped"
     },
     {
       "name": "view.explain",
@@ -5543,6 +5767,14 @@
           }
         },
         {
+          "name": "humanPresence",
+          "schema": {
+            "$ref": "#/components/schemas/HumanPresence"
+          },
+          "description": "Required D32 proof. The challenge is bound to this method and its sensitive digest/archive action.",
+          "required": true
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -5560,6 +5792,9 @@
       "errors": [
         {
           "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/HumanPresenceRequired"
         },
         {
           "$ref": "#/components/errors/DestinationPaused"
@@ -5581,7 +5816,19 @@
       "x-idempotency": "required",
       "x-permission": "write",
       "x-agent-core": false,
-      "x-stability": "v1"
+      "x-stability": "v1",
+      "x-human-presence": {
+        "required": true,
+        "authenticatedMode": "interactive_session",
+        "anonymousMode": "presence_check",
+        "binding": "method-and-sensitive-digest",
+        "forbiddenTransports": [
+          "api_key",
+          "iframe",
+          "other_origin_bearer"
+        ],
+        "authenticatedPrincipal": "user"
+      }
     },
     {
       "name": "memory.get",
@@ -5682,6 +5929,9 @@
       },
       "errors": [
         {
+          "$ref": "#/components/errors/AuthzPostfilterCap"
+        },
+        {
           "$ref": "#/components/errors/Forbidden"
         },
         {
@@ -5699,7 +5949,8 @@
       "x-permission": "read",
       "x-agent-core": false,
       "x-stability": "v1",
-      "x-inferred": true
+      "x-inferred": true,
+      "x-authz-postfilter": "accepted-capped"
     },
     {
       "name": "memory.save",
@@ -5900,9 +6151,6 @@
       "Ref": {
         "oneOf": [
           {
-            "type": "string"
-          },
-          {
             "type": "object",
             "properties": {
               "id": {
@@ -5917,8 +6165,21 @@
               "id"
             ],
             "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key"
+            ],
+            "additionalProperties": false
           }
-        ]
+        ],
+        "description": "Canonical wire reference. Exactly one of id or key is present; branch is valid only with id."
       },
       "ExpectRevision": {
         "type": "object",
@@ -6189,7 +6450,7 @@
         "type": "object",
         "properties": {
           "code": {
-            "type": "string"
+            "$ref": "#/components/schemas/ErrorCode"
           },
           "message": {
             "type": "string"
@@ -6363,7 +6624,7 @@
             "additionalProperties": true
           },
           "parent": {
-            "type": "string"
+            "$ref": "#/components/schemas/Ref"
           },
           "project": {
             "type": "string"
@@ -6787,79 +7048,14 @@
         "additionalProperties": false
       },
       "Event": {
-        "type": "object",
-        "properties": {
-          "cursor": {
-            "type": "string"
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/DurableEvent"
           },
-          "incarnation": {
-            "type": "string"
-          },
-          "revision": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "index": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "type": {
-            "type": "string"
-          },
-          "resource": {
-            "type": "string"
-          },
-          "changed": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "before": {
-            "type": "object",
-            "additionalProperties": true
-          },
-          "after": {
-            "type": "object",
-            "additionalProperties": true
-          },
-          "principal": {
-            "$ref": "#/components/schemas/Principal"
-          },
-          "chain": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "setBy": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            }
-          },
-          "cause": {
-            "$ref": "#/components/schemas/EventCause"
-          },
-          "derived": {
-            "type": "boolean"
+          {
+            "$ref": "#/components/schemas/ControlEvent"
           }
-        },
-        "required": [
-          "cursor",
-          "incarnation",
-          "revision",
-          "index",
-          "type",
-          "resource",
-          "changed",
-          "principal",
-          "chain",
-          "setBy",
-          "cause",
-          "derived"
-        ],
-        "additionalProperties": false
+        ]
       },
       "EventPage": {
         "type": "object",
@@ -7627,7 +7823,7 @@
         "type": "object",
         "properties": {
           "code": {
-            "type": "string"
+            "$ref": "#/components/schemas/ErrorCode"
           },
           "retryable": {
             "type": "boolean"
@@ -7652,6 +7848,691 @@
           "retryable"
         ],
         "additionalProperties": false
+      },
+      "EventGapDetails": {
+        "type": "object",
+        "properties": {
+          "fromIncarnation": {
+            "type": "string"
+          },
+          "toIncarnation": {
+            "type": "string"
+          },
+          "floor": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "restore",
+              "failover",
+              "history_floor",
+              "checkpoint"
+            ]
+          }
+        },
+        "required": [
+          "fromIncarnation",
+          "toIncarnation",
+          "floor",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "WatchDeltaDetails": {
+        "type": "object",
+        "properties": {
+          "subscriptionId": {
+            "type": "string"
+          },
+          "fromCursor": {
+            "type": "string"
+          },
+          "toCursor": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "fromCursor",
+          "toCursor",
+          "events"
+        ],
+        "additionalProperties": false
+      },
+      "WatchResetDetails": {
+        "type": "object",
+        "properties": {
+          "subscriptionId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "policy_changed",
+              "ontology_changed",
+              "view_changed",
+              "overflow",
+              "lag",
+              "visibility_changed",
+              "view_deleted"
+            ]
+          },
+          "snapshotCursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "reason",
+          "snapshotCursor"
+        ],
+        "additionalProperties": false
+      },
+      "VisibilityLostDetails": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "authorization_changed",
+              "redacted",
+              "resource_deleted"
+            ]
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "RPCRejectedDetails": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "notification_no_result"
+            ]
+          }
+        },
+        "required": [
+          "requestId",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "DurableEvent": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "const": "durable"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "incarnation": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "bead.created",
+              "bead.updated",
+              "bead.reparented",
+              "bead.linked",
+              "bead.unlinked",
+              "bead.commented",
+              "bead.attached",
+              "bead.deleted",
+              "bead.claimed",
+              "bead.released",
+              "bead.closed",
+              "bead.failed",
+              "bead.canceled",
+              "bead.reopened",
+              "bead.deferred",
+              "bead.lease.reclaimed",
+              "gate.approved",
+              "gate.reported",
+              "gate.escalated",
+              "ontology.applied",
+              "plugin.applied",
+              "view.saved",
+              "view.deleted",
+              "memory.saved",
+              "memory.deleted",
+              "sync.pushed",
+              "sync.imported",
+              "derived.updated",
+              "store.restored"
+            ]
+          },
+          "resource": {
+            "type": "string"
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "before": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "after": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "principal": {
+            "$ref": "#/components/schemas/Principal"
+          },
+          "chain": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "setBy": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "cause": {
+            "$ref": "#/components/schemas/EventCause"
+          },
+          "derived": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "category",
+          "cursor",
+          "incarnation",
+          "revision",
+          "index",
+          "type",
+          "resource",
+          "changed",
+          "principal",
+          "chain",
+          "setBy",
+          "cause",
+          "derived"
+        ],
+        "additionalProperties": false
+      },
+      "ControlEventBase": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "const": "control"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "incarnation": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "event.gap",
+              "watch.delta",
+              "watch.reset",
+              "visibility.lost",
+              "rpc.rejected"
+            ]
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "derived": {
+            "const": false
+          }
+        },
+        "required": [
+          "category",
+          "cursor",
+          "incarnation",
+          "revision",
+          "index",
+          "type",
+          "details",
+          "derived"
+        ]
+      },
+      "ControlEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "control"
+              },
+              "cursor": {
+                "type": "string"
+              },
+              "incarnation": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": {
+                "const": "event.gap"
+              },
+              "details": {
+                "$ref": "#/components/schemas/EventGapDetails"
+              },
+              "derived": {
+                "const": false
+              }
+            },
+            "required": [
+              "category",
+              "cursor",
+              "incarnation",
+              "revision",
+              "index",
+              "type",
+              "details",
+              "derived"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "control"
+              },
+              "cursor": {
+                "type": "string"
+              },
+              "incarnation": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": {
+                "const": "watch.delta"
+              },
+              "details": {
+                "$ref": "#/components/schemas/WatchDeltaDetails"
+              },
+              "derived": {
+                "const": false
+              }
+            },
+            "required": [
+              "category",
+              "cursor",
+              "incarnation",
+              "revision",
+              "index",
+              "type",
+              "details",
+              "derived"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "control"
+              },
+              "cursor": {
+                "type": "string"
+              },
+              "incarnation": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": {
+                "const": "watch.reset"
+              },
+              "details": {
+                "$ref": "#/components/schemas/WatchResetDetails"
+              },
+              "derived": {
+                "const": false
+              }
+            },
+            "required": [
+              "category",
+              "cursor",
+              "incarnation",
+              "revision",
+              "index",
+              "type",
+              "details",
+              "derived"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "control"
+              },
+              "cursor": {
+                "type": "string"
+              },
+              "incarnation": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": {
+                "const": "visibility.lost"
+              },
+              "details": {
+                "$ref": "#/components/schemas/VisibilityLostDetails"
+              },
+              "derived": {
+                "const": false
+              },
+              "resource": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "category",
+              "cursor",
+              "incarnation",
+              "revision",
+              "index",
+              "type",
+              "details",
+              "derived",
+              "resource"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "control"
+              },
+              "cursor": {
+                "type": "string"
+              },
+              "incarnation": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": {
+                "const": "rpc.rejected"
+              },
+              "details": {
+                "$ref": "#/components/schemas/RPCRejectedDetails"
+              },
+              "derived": {
+                "const": false
+              }
+            },
+            "required": [
+              "category",
+              "cursor",
+              "incarnation",
+              "revision",
+              "index",
+              "type",
+              "details",
+              "derived"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "ErrorCode": {
+        "type": "string",
+        "enum": [
+          "parse_error",
+          "invalid_request",
+          "method_not_found",
+          "invalid_params",
+          "internal_error",
+          "not_found",
+          "unauthenticated",
+          "token_expired",
+          "authn_unavailable",
+          "forbidden",
+          "authz_unavailable",
+          "authz_policy_invalid",
+          "authz_postfilter_cap",
+          "authz_link_allow_not_last",
+          "authz_not_installed",
+          "ontology_guard_failed",
+          "closure_too_large",
+          "protected_record",
+          "subscriber_unavailable",
+          "precondition_failed",
+          "write_conflict",
+          "busy",
+          "rate_limited",
+          "cursor_invalid",
+          "cursor_expired",
+          "idempotency_key_reused",
+          "lease_not_held",
+          "lease_expired",
+          "project_required",
+          "incarnation_changed",
+          "field_owned",
+          "ontology_plan_stale",
+          "ontology_migration_too_large",
+          "ontology_drifted",
+          "ontology_unknown_field",
+          "ontology_use_slot_verb",
+          "authz_requires_authn",
+          "lockout_refused",
+          "plugin_busy",
+          "plugin_host_write_in_sync_call",
+          "plugin_egress_in_hot_path",
+          "plugin_reentrant_write",
+          "plugin_patch_out_of_scope",
+          "subscriber_skipped",
+          "post_subscriber_failed",
+          "history_gone",
+          "visibility_lost",
+          "too_many_sessions",
+          "filter_too_broad",
+          "scope_too_large",
+          "destination_paused",
+          "ref_moved",
+          "unknown_field",
+          "restore_requires_empty",
+          "restore_checksum_failed",
+          "restore_violation",
+          "human_presence_required",
+          "authz_verify_failed",
+          "invalid_cursor",
+          "compaction_unavailable",
+          "stale_snapshot"
+        ],
+        "description": "Closed Plug wire error-code registry."
+      },
+      "FencedDetails": {
+        "type": "object",
+        "properties": {
+          "expectedEpoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "observedEpoch": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "expectedEpoch",
+          "observedEpoch"
+        ],
+        "additionalProperties": false
+      },
+      "TruncatedDetails": {
+        "type": "object",
+        "properties": {
+          "floor": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "floor"
+        ],
+        "additionalProperties": false
+      },
+      "IndeterminateDetails": {
+        "type": "object",
+        "properties": {
+          "idempotencyKey": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "unknown"
+            ]
+          }
+        },
+        "required": [
+          "idempotencyKey",
+          "outcome"
+        ],
+        "additionalProperties": false
+      },
+      "IncarnationChangedDetails": {
+        "type": "object",
+        "properties": {
+          "fromIncarnation": {
+            "type": "string"
+          },
+          "toIncarnation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fromIncarnation",
+          "toIncarnation"
+        ],
+        "additionalProperties": false
+      },
+      "HumanPresence": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "interactive_session"
+              },
+              "sessionId": {
+                "type": "string"
+              },
+              "challenge": {
+                "type": "string"
+              },
+              "proof": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode",
+              "sessionId",
+              "challenge",
+              "proof"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "presence_check"
+              },
+              "challenge": {
+                "type": "string"
+              },
+              "proof": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode",
+              "challenge",
+              "proof"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "description": "D32 proof bound to the method and plan/archive digest. API keys and iframe or other-origin bearer calls cannot satisfy interactive_session."
       }
     },
     "errors": {
@@ -7662,7 +8543,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "parse_error"
             },
             "retryable": {
               "type": "boolean"
@@ -7696,7 +8577,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "invalid_request"
             },
             "retryable": {
               "type": "boolean"
@@ -7730,7 +8611,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "method_not_found"
             },
             "retryable": {
               "type": "boolean"
@@ -7764,7 +8645,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "invalid_params"
             },
             "retryable": {
               "type": "boolean"
@@ -7798,7 +8679,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "internal_error"
             },
             "retryable": {
               "type": "boolean"
@@ -7832,7 +8713,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "not_found"
             },
             "retryable": {
               "type": "boolean"
@@ -7866,7 +8747,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "unauthenticated"
             },
             "retryable": {
               "type": "boolean"
@@ -7900,7 +8781,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "token_expired"
             },
             "retryable": {
               "type": "boolean"
@@ -7934,7 +8815,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "authn_unavailable"
             },
             "retryable": {
               "type": "boolean"
@@ -7968,7 +8849,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "forbidden"
             },
             "retryable": {
               "type": "boolean"
@@ -8002,7 +8883,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "authz_unavailable"
             },
             "retryable": {
               "type": "boolean"
@@ -8036,7 +8917,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "authz_policy_invalid"
             },
             "retryable": {
               "type": "boolean"
@@ -8070,7 +8951,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "authz_postfilter_cap"
             },
             "retryable": {
               "type": "boolean"
@@ -8104,7 +8985,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "authz_link_allow_not_last"
             },
             "retryable": {
               "type": "boolean"
@@ -8138,7 +9019,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "authz_not_installed"
             },
             "retryable": {
               "type": "boolean"
@@ -8172,7 +9053,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "ontology_guard_failed"
             },
             "retryable": {
               "type": "boolean"
@@ -8206,7 +9087,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "closure_too_large"
             },
             "retryable": {
               "type": "boolean"
@@ -8240,7 +9121,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "protected_record"
             },
             "retryable": {
               "type": "boolean"
@@ -8274,7 +9155,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "subscriber_unavailable"
             },
             "retryable": {
               "type": "boolean"
@@ -8308,7 +9189,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "precondition_failed"
             },
             "retryable": {
               "type": "boolean"
@@ -8342,7 +9223,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "write_conflict"
             },
             "retryable": {
               "type": "boolean"
@@ -8376,7 +9257,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "busy"
             },
             "retryable": {
               "type": "boolean"
@@ -8410,7 +9291,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "rate_limited"
             },
             "retryable": {
               "type": "boolean"
@@ -8444,7 +9325,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "cursor_invalid"
             },
             "retryable": {
               "type": "boolean"
@@ -8478,7 +9359,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "cursor_expired"
             },
             "retryable": {
               "type": "boolean"
@@ -8494,8 +9375,7 @@
               "type": "string"
             },
             "details": {
-              "type": "object",
-              "additionalProperties": true
+              "$ref": "#/components/schemas/TruncatedDetails"
             }
           },
           "required": [
@@ -8512,7 +9392,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "idempotency_key_reused"
             },
             "retryable": {
               "type": "boolean"
@@ -8546,7 +9426,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "lease_not_held"
             },
             "retryable": {
               "type": "boolean"
@@ -8562,8 +9442,7 @@
               "type": "string"
             },
             "details": {
-              "type": "object",
-              "additionalProperties": true
+              "$ref": "#/components/schemas/FencedDetails"
             }
           },
           "required": [
@@ -8580,7 +9459,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "lease_expired"
             },
             "retryable": {
               "type": "boolean"
@@ -8614,7 +9493,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "project_required"
             },
             "retryable": {
               "type": "boolean"
@@ -8648,7 +9527,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "incarnation_changed"
             },
             "retryable": {
               "type": "boolean"
@@ -8664,8 +9543,7 @@
               "type": "string"
             },
             "details": {
-              "type": "object",
-              "additionalProperties": true
+              "$ref": "#/components/schemas/IncarnationChangedDetails"
             }
           },
           "required": [
@@ -8682,7 +9560,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "field_owned"
             },
             "retryable": {
               "type": "boolean"
@@ -8716,7 +9594,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "ontology_plan_stale"
             },
             "retryable": {
               "type": "boolean"
@@ -8750,7 +9628,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "ontology_migration_too_large"
             },
             "retryable": {
               "type": "boolean"
@@ -8784,7 +9662,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "ontology_drifted"
             },
             "retryable": {
               "type": "boolean"
@@ -8818,7 +9696,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "ontology_unknown_field"
             },
             "retryable": {
               "type": "boolean"
@@ -8852,7 +9730,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "ontology_use_slot_verb"
             },
             "retryable": {
               "type": "boolean"
@@ -8886,7 +9764,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "authz_requires_authn"
             },
             "retryable": {
               "type": "boolean"
@@ -8920,7 +9798,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "lockout_refused"
             },
             "retryable": {
               "type": "boolean"
@@ -8954,7 +9832,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "plugin_busy"
             },
             "retryable": {
               "type": "boolean"
@@ -8988,7 +9866,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "plugin_host_write_in_sync_call"
             },
             "retryable": {
               "type": "boolean"
@@ -9022,7 +9900,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "plugin_egress_in_hot_path"
             },
             "retryable": {
               "type": "boolean"
@@ -9056,7 +9934,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "plugin_reentrant_write"
             },
             "retryable": {
               "type": "boolean"
@@ -9090,7 +9968,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "plugin_patch_out_of_scope"
             },
             "retryable": {
               "type": "boolean"
@@ -9124,7 +10002,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "subscriber_skipped"
             },
             "retryable": {
               "type": "boolean"
@@ -9158,7 +10036,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "post_subscriber_failed"
             },
             "retryable": {
               "type": "boolean"
@@ -9192,7 +10070,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "history_gone"
             },
             "retryable": {
               "type": "boolean"
@@ -9226,7 +10104,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "visibility_lost"
             },
             "retryable": {
               "type": "boolean"
@@ -9260,7 +10138,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "too_many_sessions"
             },
             "retryable": {
               "type": "boolean"
@@ -9294,7 +10172,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "filter_too_broad"
             },
             "retryable": {
               "type": "boolean"
@@ -9328,7 +10206,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "scope_too_large"
             },
             "retryable": {
               "type": "boolean"
@@ -9362,7 +10240,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "destination_paused"
             },
             "retryable": {
               "type": "boolean"
@@ -9396,7 +10274,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "ref_moved"
             },
             "retryable": {
               "type": "boolean"
@@ -9430,7 +10308,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "unknown_field"
             },
             "retryable": {
               "type": "boolean"
@@ -9464,7 +10342,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "restore_requires_empty"
             },
             "retryable": {
               "type": "boolean"
@@ -9498,7 +10376,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "restore_checksum_failed"
             },
             "retryable": {
               "type": "boolean"
@@ -9532,7 +10410,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "restore_violation"
             },
             "retryable": {
               "type": "boolean"
@@ -9566,7 +10444,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "human_presence_required"
             },
             "retryable": {
               "type": "boolean"
@@ -9600,7 +10478,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "authz_verify_failed"
             },
             "retryable": {
               "type": "boolean"
@@ -9634,7 +10512,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "invalid_cursor"
             },
             "retryable": {
               "type": "boolean"
@@ -9668,7 +10546,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "compaction_unavailable"
             },
             "retryable": {
               "type": "boolean"
@@ -9702,7 +10580,7 @@
           "type": "object",
           "properties": {
             "code": {
-              "type": "string"
+              "const": "stale_snapshot"
             },
             "retryable": {
               "type": "boolean"
@@ -9718,8 +10596,7 @@
               "type": "string"
             },
             "details": {
-              "type": "object",
-              "additionalProperties": true
+              "$ref": "#/components/schemas/IndeterminateDetails"
             }
           },
           "required": [
@@ -10201,5 +11078,135 @@
   "x-contract-gaps": [
     "The design names admin.restore.* and memory.* without fixing concrete verbs; begin/chunk/finish and get/list/save/delete are provisional entries.",
     "The design names authn.authenticate and authz.* as plugin-host calls; authn.authenticate and authz.verify are represented, while other hot-path calls remain host-internal."
-  ]
+  ],
+  "x-source-evidence": {
+    "format": "plug-contract-source/1",
+    "status": "provisional-snapshot",
+    "inputs": [
+      {
+        "path": "design.md",
+        "sha256": "c592f5447b05134f20f9bc5ff447ae5e4a087be76d4ddd61b577abbf0d97e71f"
+      },
+      {
+        "path": "clean-room-plan.md",
+        "sha256": "1adb6b687d9a2593be33be8ae38700ade03a120c25a955f68ba17084a713cc2a"
+      },
+      {
+        "path": "review-2026-10-27.md",
+        "sha256": "45c8b4b6b8fc577bbe7b2f97dc4ee4c9ccc48565a2dc5e7095786af7bc386052"
+      }
+    ],
+    "methodInventory": {
+      "sourceAnchors": [
+        "A1",
+        "A2",
+        "A4",
+        "A5",
+        "A6",
+        "A7",
+        "clean-room-plan#P63-P69"
+      ],
+      "rule": "Explicit JSON-RPC verbs in the source sections are expanded into named methods; entries called provisional remain marked in x-contract-gaps."
+    },
+    "wireModel": {
+      "operationUnion": "#/components/schemas/ChangeSet",
+      "eventUnion": "#/components/schemas/Event",
+      "errorEnum": "#/components/schemas/ErrorCode",
+      "goCodecRule": "model.Op MarshalJSON and UnmarshalJSON emit and accept exactly the tagged flat operation schemas."
+    },
+    "errorAllocation": {
+      "owner": "Plug C1 contract registry",
+      "range": "-32000..-32055",
+      "rule": "Values are append-only and never renumbered once published; the registry is the source of truth for new allocations."
+    },
+    "reproduce": [
+      "PLUG_DESIGN_ROOT=/home/dev/plugs/engdocs/design/plug; sha256sum \"$PLUG_DESIGN_ROOT/design.md\" \"$PLUG_DESIGN_ROOT/clean-room-plan.md\" \"$PLUG_DESIGN_ROOT/review-2026-10-27.md\"",
+      "jq -e . openrpc.json",
+      "python3 /tmp/plug-swarm/work/validate-contracts.py"
+    ],
+    "generator": {
+      "status": "deferred-to-C1",
+      "requiredGate": "A registry/generator must replace this provisional snapshot before implementation PRs consume it."
+    },
+    "sourceRoot": {
+      "kind": "external-design-checkout",
+      "path": "/home/dev/plugs/engdocs/design/plug",
+      "note": "The design inputs are intentionally untracked outside this contract worktree; C1 must vendor the registry/generator and retain these digests before implementation."
+    }
+  },
+  "x-driver-error-mappings": [
+    {
+      "driver": "ErrFenced",
+      "wireCode": "lease_not_held",
+      "jsonRpc": -32021,
+      "detailsSchema": {
+        "$ref": "#/components/schemas/FencedDetails"
+      }
+    },
+    {
+      "driver": "ErrTruncated",
+      "wireCode": "cursor_expired",
+      "jsonRpc": -32019,
+      "detailsSchema": {
+        "$ref": "#/components/schemas/TruncatedDetails"
+      }
+    },
+    {
+      "driver": "ErrIncarnationChanged",
+      "wireCode": "incarnation_changed",
+      "jsonRpc": -32024,
+      "detailsSchema": {
+        "$ref": "#/components/schemas/IncarnationChangedDetails"
+      }
+    },
+    {
+      "driver": "ErrIndeterminate",
+      "wireCode": "stale_snapshot",
+      "jsonRpc": -32055,
+      "detailsSchema": {
+        "$ref": "#/components/schemas/IndeterminateDetails"
+      }
+    }
+  ],
+  "x-wire-contract": {
+    "version": "plug-wire/1",
+    "operation": {
+      "schema": "#/components/schemas/ChangeSet",
+      "encoding": "flat-object",
+      "discriminator": "kind",
+      "rule": "Each ops item is exactly one tagged object from the ChangeSet oneOf; Go model.Op MarshalJSON/UnmarshalJSON uses this encoding."
+    },
+    "ref": {
+      "schema": "#/components/schemas/Ref",
+      "encoding": "object-only",
+      "rule": "Exactly one of id or key; branch is allowed only with id; no string shorthand."
+    },
+    "event": {
+      "schema": "#/components/schemas/Event",
+      "encoding": "tagged-union",
+      "discriminator": "category then type",
+      "rule": "Durable events carry graph envelope fields; control events carry only typed details and never before/after."
+    },
+    "error": {
+      "schema": "#/components/schemas/ErrorCode",
+      "rule": "Error data code is closed and named error components pin their code constant."
+    }
+  },
+  "x-cursor-contract": {
+    "encoding": "opaque-string",
+    "decodedTuple": [
+      "incarnation",
+      "revision",
+      "index"
+    ],
+    "binding": [
+      "method",
+      "filterDigest",
+      "principalDigest",
+      "ontologyRevision"
+    ],
+    "staleIncarnationError": "incarnation_changed",
+    "truncatedHistoryError": "cursor_expired",
+    "rule": "The driver decodes and checks the tuple before reading; a token from another incarnation is never treated as a revision in the new incarnation."
+  }
 }

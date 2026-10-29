@@ -3,8 +3,19 @@
 This is the closed wire error catalog for Plug JSON-RPC 2.0. Each error has a
 stable machine code, a JSON-RPC integer, retryability metadata, an audience
 classification, and a flag indicating whether it may be returned as a
-`result.warnings` entry. The JSON schemas for the common error data envelope
-and each named error live in [`openrpc.json`](openrpc.json).
+`result.warnings` entry. The JSON schemas for the common error data envelope,
+the closed `ErrorCode` enum, and each named error live in
+[`openrpc.json`](openrpc.json). A payload with a code outside that enum is
+invalid; implementations must not pass through an unregistered string. Each
+named JSON-RPC error component additionally pins `data.code` to its catalog
+row, so a `Forbidden` payload cannot carry a different registered code.
+
+This PR is a **provisional contract snapshot**. It no longer treats the
+OpenRPC document as evidence that generated the Markdown table. Independent
+source hashes, the method-selection rule, the allocation owner, and the
+reproduction commands are recorded in `openrpc.json` under
+`x-source-evidence`. C1 must replace this snapshot with the checked-in
+registry/generator before implementation PRs consume it.
 
 A committed write returns warnings inside `result.warnings`; it never returns
 both a committed result and a JSON-RPC `error`. The `audience` value guides
@@ -79,8 +90,12 @@ for implementation and telemetry mapping.
 | `stale_snapshot` | `-32055` | yes | `internal` | no |
 
 The protocol range is the standard JSON-RPC allocation (`-32700` through
-`-32603`). Plug application errors use `-32000` through `-32055`; the
-allocation is contiguous and must remain stable once clients depend on it.
+`-32603`). Plug application errors use `-32000` through `-32055`. The Plug C1
+contract registry owns this range: values are append-only, never renumbered
+after publication, and new codes use the next unused value. The
+`x-error-catalog` array and the `ErrorCode` enum are the machine-readable
+allocation for this snapshot; a future registry must preserve every existing
+row.
 
 ## Runtime mapping
 
@@ -96,3 +111,21 @@ allocation is contiguous and must remain stable once clients depend on it.
 Error detail members are method- or code-specific and may be carried in the
 open `details` object. The common envelope requires `code` and `retryable`
 and permits `retryAfterMs`, `hint`, `traceId`, and `details`.
+
+## Driver-to-wire mappings
+
+Driver sentinels never cross the JSON-RPC boundary as Go errors. The service
+maps them to these closed wire errors and preserves the typed detail shown
+below:
+
+| Driver error | Wire error | Typed `details` | Retry/handling rule |
+| --- | --- | --- | --- |
+| `ErrFenced` | `lease_not_held` (`-32021`) | `{expectedEpoch, observedEpoch}` | Retry only after acquiring a new active lease; the stale writer is never replayed. |
+| `ErrTruncated{Floor}` | `cursor_expired` (`-32019`) | `{floor}` | Reopen from a current snapshot or the returned gap cursor. |
+| `ErrIncarnationChanged{From, To}` | `incarnation_changed` (`-32024`) | `{fromIncarnation, toIncarnation}` | Discard the old cursor/view and reopen under the new incarnation. |
+| `ErrIndeterminate{IdempotencyKey}` | `stale_snapshot` (`-32055`, internal) | `{idempotencyKey, outcome: "unknown"}` | Resolve the commit by idempotency key before deciding whether a retry is safe; never duplicate the write. |
+
+The named OpenRPC error components for these wire codes reference
+`FencedDetails`, `TruncatedDetails`, `IncarnationChangedDetails`, and
+`IndeterminateDetails`, respectively. `stale_snapshot` remains an internal
+catalog entry even though its mapping is required for driver conformance.

@@ -15,18 +15,50 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
 type Revision int64
 type Branch uint32
+type ErrorCode string // closed by components.schemas.ErrorCode in OpenRPC
 type Ref struct {
+	// The JSON representation is always an object. Exactly one of ID or Key is
+	// set; Branch is valid only when ID is set. This is the same oneOf as the
+	// OpenRPC Ref schema (there is no string shorthand on the wire).
 	ID     string `json:"id,omitempty"`
 	Branch Branch `json:"branch,omitempty"`
-	// Key addresses a record created earlier in the same ChangeSet. Exactly
-	// one of ID or Key is set on the wire.
-	Key string `json:"key,omitempty"`
+	Key    string `json:"key,omitempty"`
 }
+
+func (r Ref) MarshalJSON() ([]byte, error) {
+	if (r.ID == "") == (r.Key == "") {
+		return nil, fmt.Errorf("ref must contain exactly one of id or key")
+	}
+	if r.Key != "" && r.Branch != 0 {
+		return nil, fmt.Errorf("ref key cannot carry a branch")
+	}
+	type wireRef Ref
+	return json.Marshal(wireRef(r))
+}
+
+func (r *Ref) UnmarshalJSON(data []byte) error {
+	type wireRef Ref
+	var value wireRef
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	decoded := Ref(value)
+	if (decoded.ID == "") == (decoded.Key == "") {
+		return fmt.Errorf("ref must contain exactly one of id or key")
+	}
+	if decoded.Key != "" && decoded.Branch != 0 {
+		return fmt.Errorf("ref key cannot carry a branch")
+	}
+	*r = decoded
+	return nil
+}
+
 type ResourceRef struct {
 	Kind string `json:"kind"`
 	Ref  Ref    `json:"ref"`
@@ -46,15 +78,15 @@ type ChangeSet struct {
 }
 
 type Op struct {
-	Kind     OpKind      `json:"kind"`
-	Create   *CreateOp   `json:"create,omitempty"`
-	Patch    *PatchOp    `json:"patch,omitempty"`
-	Reparent *ReparentOp `json:"reparent,omitempty"`
-	Link     *LinkOp     `json:"link,omitempty"`
-	Comment  *CommentOp  `json:"comment,omitempty"`
-	Attach   *AttachOp   `json:"attach,omitempty"`
-	Delete   *DeleteOp   `json:"delete,omitempty"`
-	SetMeta  *SetMetaOp  `json:"setMeta,omitempty"`
+	Kind     OpKind      `json:"-"`
+	Create   *CreateOp   `json:"-"`
+	Patch    *PatchOp    `json:"-"`
+	Reparent *ReparentOp `json:"-"`
+	Link     *LinkOp     `json:"-"` // carries both link and unlink
+	Comment  *CommentOp  `json:"-"`
+	Attach   *AttachOp   `json:"-"`
+	Delete   *DeleteOp   `json:"-"`
+	SetMeta  *SetMetaOp  `json:"-"`
 }
 
 type OpKind string
@@ -72,6 +104,7 @@ const (
 )
 
 type CreateOp struct {
+	Kind    OpKind         `json:"kind"`
 	Key     string         `json:"key,omitempty"`
 	Type    string         `json:"type"`
 	Fields  map[string]any `json:"fields"`
@@ -79,38 +112,428 @@ type CreateOp struct {
 	Project string         `json:"project,omitempty"`
 }
 type PatchOp struct {
+	Kind   OpKind         `json:"kind"`
 	Target Ref            `json:"target"`
 	Fields map[string]any `json:"fields"`
 }
 type ReparentOp struct {
+	Kind    OpKind `json:"kind"`
 	Target  Ref    `json:"target"`
 	Parent  *Ref   `json:"parent,omitempty"`
 	Project string `json:"project,omitempty"`
 }
 type LinkOp struct {
-	From Ref    `json:"from"`
-	To   Ref    `json:"to"`
-	Kind string `json:"kind"`
+	Kind     OpKind `json:"kind"`
+	From     Ref    `json:"from"`
+	To       Ref    `json:"to"`
+	LinkKind string `json:"linkKind"`
 }
 type CommentOp struct {
+	Kind   OpKind `json:"kind"`
 	Target Ref    `json:"target"`
 	Body   string `json:"body"`
 }
 type AttachOp struct {
-	Target     Ref    `json:"target"`
+	Kind       OpKind     `json:"kind"`
+	Target     Ref        `json:"target"`
+	Attachment Attachment `json:"attachment"`
+}
+type DeleteOp struct {
+	Kind   OpKind `json:"kind"`
+	Target Ref    `json:"target"`
+}
+type SetMetaOp struct {
+	Kind   OpKind          `json:"kind"`
+	Target Ref             `json:"target"`
+	Key    string          `json:"key"`
+	Value  json.RawMessage `json:"value"`
+}
+type Attachment struct {
 	Kind       string `json:"kind"`
 	URI        string `json:"uri,omitempty"`
 	ContentRef string `json:"contentRef,omitempty"`
 	MediaType  string `json:"mediaType"`
 	Summary    string `json:"summary"`
 }
-type DeleteOp struct {
-	Target Ref `json:"target"`
+
+// MarshalJSON flattens the selected member. The result is exactly one of the
+// OpenRPC ChangeSet.ops oneOf schemas; it is never a {kind, create: {...}}
+// wrapper. UnmarshalJSON performs the inverse discriminator selection.
+func (o Op) MarshalJSON() ([]byte, error) {
+	switch o.Kind {
+	case OpCreate:
+		if o.Create == nil {
+			return nil, fmt.Errorf("operation %q has no payload", o.Kind)
+		}
+		value := *o.Create
+		value.Kind = OpCreate
+		return json.Marshal(value)
+	case OpPatch:
+		if o.Patch == nil {
+			return nil, fmt.Errorf("operation %q has no payload", o.Kind)
+		}
+		value := *o.Patch
+		value.Kind = OpPatch
+		return json.Marshal(value)
+	case OpReparent:
+		if o.Reparent == nil {
+			return nil, fmt.Errorf("operation %q has no payload", o.Kind)
+		}
+		value := *o.Reparent
+		value.Kind = OpReparent
+		return json.Marshal(value)
+	case OpLink, OpUnlink:
+		if o.Link == nil {
+			return nil, fmt.Errorf("operation %q has no payload", o.Kind)
+		}
+		value := *o.Link
+		value.Kind = o.Kind
+		return json.Marshal(value)
+	case OpComment:
+		if o.Comment == nil {
+			return nil, fmt.Errorf("operation %q has no payload", o.Kind)
+		}
+		value := *o.Comment
+		value.Kind = OpComment
+		return json.Marshal(value)
+	case OpAttach:
+		if o.Attach == nil {
+			return nil, fmt.Errorf("operation %q has no payload", o.Kind)
+		}
+		value := *o.Attach
+		value.Kind = OpAttach
+		return json.Marshal(value)
+	case OpDelete:
+		if o.Delete == nil {
+			return nil, fmt.Errorf("operation %q has no payload", o.Kind)
+		}
+		value := *o.Delete
+		value.Kind = OpDelete
+		return json.Marshal(value)
+	case OpSetMeta:
+		if o.SetMeta == nil {
+			return nil, fmt.Errorf("operation %q has no payload", o.Kind)
+		}
+		value := *o.SetMeta
+		value.Kind = OpSetMeta
+		return json.Marshal(value)
+	default:
+		return nil, fmt.Errorf("unknown operation kind %q", o.Kind)
+	}
 }
-type SetMetaOp struct {
-	Target Ref             `json:"target"`
-	Key    string          `json:"key"`
-	Value  json.RawMessage `json:"value"`
+
+func (o *Op) UnmarshalJSON(data []byte) error {
+	var tag struct {
+		Kind OpKind `json:"kind"`
+	}
+	if err := json.Unmarshal(data, &tag); err != nil {
+		return err
+	}
+	*o = Op{Kind: tag.Kind}
+	switch tag.Kind {
+	case OpCreate:
+		var value CreateOp
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Create = &value
+	case OpPatch:
+		var value PatchOp
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Patch = &value
+	case OpReparent:
+		var value ReparentOp
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Reparent = &value
+	case OpLink, OpUnlink:
+		var value LinkOp
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Link = &value
+	case OpComment:
+		var value CommentOp
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Comment = &value
+	case OpAttach:
+		var value AttachOp
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Attach = &value
+	case OpDelete:
+		var value DeleteOp
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.Delete = &value
+	case OpSetMeta:
+		var value SetMetaOp
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		o.SetMeta = &value
+	default:
+		return fmt.Errorf("unknown operation kind %q", tag.Kind)
+	}
+	return nil
+}
+
+type EventCategory string
+type DurableEventType string
+type ControlEventType string
+
+const (
+	EventDurable EventCategory = "durable"
+	EventControl EventCategory = "control"
+
+	EventBeadCreated        DurableEventType = "bead.created"
+	EventBeadUpdated        DurableEventType = "bead.updated"
+	EventBeadReparented     DurableEventType = "bead.reparented"
+	EventBeadLinked         DurableEventType = "bead.linked"
+	EventBeadUnlinked       DurableEventType = "bead.unlinked"
+	EventBeadCommented      DurableEventType = "bead.commented"
+	EventBeadAttached       DurableEventType = "bead.attached"
+	EventBeadDeleted        DurableEventType = "bead.deleted"
+	EventBeadClaimed        DurableEventType = "bead.claimed"
+	EventBeadReleased       DurableEventType = "bead.released"
+	EventBeadClosed         DurableEventType = "bead.closed"
+	EventBeadFailed         DurableEventType = "bead.failed"
+	EventBeadCanceled       DurableEventType = "bead.canceled"
+	EventBeadReopened       DurableEventType = "bead.reopened"
+	EventBeadDeferred       DurableEventType = "bead.deferred"
+	EventBeadLeaseReclaimed DurableEventType = "bead.lease.reclaimed"
+	EventGateApproved       DurableEventType = "gate.approved"
+	EventGateReported       DurableEventType = "gate.reported"
+	EventGateEscalated      DurableEventType = "gate.escalated"
+	EventOntologyApplied    DurableEventType = "ontology.applied"
+	EventPluginApplied      DurableEventType = "plugin.applied"
+	EventViewSaved          DurableEventType = "view.saved"
+	EventViewDeleted        DurableEventType = "view.deleted"
+	EventMemorySaved        DurableEventType = "memory.saved"
+	EventMemoryDeleted      DurableEventType = "memory.deleted"
+	EventSyncPushed         DurableEventType = "sync.pushed"
+	EventSyncImported       DurableEventType = "sync.imported"
+	EventDerivedUpdated     DurableEventType = "derived.updated"
+	EventStoreRestored      DurableEventType = "store.restored"
+
+	EventGap            ControlEventType = "event.gap"
+	EventWatchDelta     ControlEventType = "watch.delta"
+	EventWatchReset     ControlEventType = "watch.reset"
+	EventVisibilityLost ControlEventType = "visibility.lost"
+	EventRPCRejected    ControlEventType = "rpc.rejected"
+)
+
+type EventPosition struct {
+	Cursor      string   `json:"cursor"`
+	Incarnation string   `json:"incarnation"`
+	Revision    Revision `json:"revision"`
+	Index       uint64   `json:"index"`
+}
+type EventCause struct {
+	Root  string   `json:"root"`
+	Depth uint8    `json:"depth"`
+	Chain []string `json:"chain"`
+}
+type DurableEvent struct {
+	EventPosition
+	Type      DurableEventType  `json:"type"`
+	Resource  string            `json:"resource"`
+	Changed   []string          `json:"changed"`
+	Before    map[string]any    `json:"before,omitempty"`
+	After     map[string]any    `json:"after,omitempty"`
+	Principal PrincipalRef      `json:"principal"`
+	Chain     []string          `json:"chain"`
+	SetBy     map[string]string `json:"setBy"`
+	Cause     EventCause        `json:"cause"`
+	Derived   bool              `json:"derived"`
+}
+type ControlDetails interface{ controlDetails() }
+type EventGapDetails struct {
+	FromIncarnation string   `json:"fromIncarnation"`
+	ToIncarnation   string   `json:"toIncarnation"`
+	Floor           Revision `json:"floor"`
+	Reason          string   `json:"reason"`
+}
+
+func (EventGapDetails) controlDetails() {}
+
+type WatchDeltaDetails struct {
+	SubscriptionID string  `json:"subscriptionId"`
+	FromCursor     string  `json:"fromCursor"`
+	ToCursor       string  `json:"toCursor"`
+	Events         []Event `json:"events"`
+}
+
+func (WatchDeltaDetails) controlDetails() {}
+
+type WatchResetDetails struct {
+	SubscriptionID string `json:"subscriptionId"`
+	Reason         string `json:"reason"`
+	SnapshotCursor string `json:"snapshotCursor"`
+}
+
+func (WatchResetDetails) controlDetails() {}
+
+type VisibilityLostDetails struct {
+	Reason string `json:"reason"`
+}
+
+func (VisibilityLostDetails) controlDetails() {}
+
+type RPCRejectedDetails struct {
+	RequestID any    `json:"requestId"`
+	Reason    string `json:"reason"`
+}
+
+func (RPCRejectedDetails) controlDetails() {}
+
+type ControlEvent struct {
+	EventPosition
+	Type     ControlEventType `json:"type"`
+	Resource string           `json:"resource,omitempty"`
+	Details  ControlDetails   `json:"-"`
+}
+type Event struct {
+	Category EventCategory `json:"-"`
+	Durable  *DurableEvent `json:"-"`
+	Control  *ControlEvent `json:"-"`
+}
+
+func (e Event) MarshalJSON() ([]byte, error) {
+	if (e.Durable == nil) == (e.Control == nil) {
+		return nil, fmt.Errorf("event must select exactly one durable or control member")
+	}
+	if e.Durable != nil {
+		if e.Category != "" && e.Category != EventDurable {
+			return nil, fmt.Errorf("durable event has category %q", e.Category)
+		}
+		return json.Marshal(struct {
+			Category EventCategory `json:"category"`
+			DurableEvent
+		}{EventDurable, *e.Durable})
+	}
+	if e.Category != "" && e.Category != EventControl {
+		return nil, fmt.Errorf("control event has category %q", e.Category)
+	}
+	if e.Control.Details == nil || !controlDetailsMatch(e.Control.Type, e.Control.Details) {
+		return nil, fmt.Errorf("control event %q has the wrong details type", e.Control.Type)
+	}
+	details, err := json.Marshal(e.Control.Details)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(struct {
+		Category    EventCategory    `json:"category"`
+		Cursor      string           `json:"cursor"`
+		Incarnation string           `json:"incarnation"`
+		Revision    Revision         `json:"revision"`
+		Index       uint64           `json:"index"`
+		Type        ControlEventType `json:"type"`
+		Resource    string           `json:"resource,omitempty"`
+		Details     json.RawMessage  `json:"details"`
+		Derived     bool             `json:"derived"`
+	}{EventControl, e.Control.Cursor, e.Control.Incarnation, e.Control.Revision, e.Control.Index, e.Control.Type, e.Control.Resource, details, false})
+}
+
+func controlDetailsMatch(kind ControlEventType, details ControlDetails) bool {
+	switch kind {
+	case EventGap:
+		_, ok := details.(EventGapDetails)
+		return ok
+	case EventWatchDelta:
+		_, ok := details.(WatchDeltaDetails)
+		return ok
+	case EventWatchReset:
+		_, ok := details.(WatchResetDetails)
+		return ok
+	case EventVisibilityLost:
+		_, ok := details.(VisibilityLostDetails)
+		return ok
+	case EventRPCRejected:
+		_, ok := details.(RPCRejectedDetails)
+		return ok
+	default:
+		return false
+	}
+}
+
+func (e *Event) UnmarshalJSON(data []byte) error {
+	var head struct {
+		Category EventCategory `json:"category"`
+		Type     string        `json:"type"`
+	}
+	if err := json.Unmarshal(data, &head); err != nil {
+		return err
+	}
+	*e = Event{Category: head.Category}
+	switch head.Category {
+	case EventDurable:
+		var value DurableEvent
+		if err := json.Unmarshal(data, &value); err != nil {
+			return err
+		}
+		e.Durable = &value
+	case EventControl:
+		var envelope struct {
+			EventPosition
+			Type     ControlEventType `json:"type"`
+			Resource string           `json:"resource,omitempty"`
+			Details  json.RawMessage  `json:"details"`
+			Derived  bool             `json:"derived"`
+		}
+		if err := json.Unmarshal(data, &envelope); err != nil {
+			return err
+		}
+		if envelope.Derived {
+			return fmt.Errorf("control event cannot be derived")
+		}
+		value := ControlEvent{EventPosition: envelope.EventPosition, Type: envelope.Type, Resource: envelope.Resource}
+		switch envelope.Type {
+		case EventGap:
+			var details EventGapDetails
+			if err := json.Unmarshal(envelope.Details, &details); err != nil {
+				return err
+			}
+			value.Details = details
+		case EventWatchDelta:
+			var details WatchDeltaDetails
+			if err := json.Unmarshal(envelope.Details, &details); err != nil {
+				return err
+			}
+			value.Details = details
+		case EventWatchReset:
+			var details WatchResetDetails
+			if err := json.Unmarshal(envelope.Details, &details); err != nil {
+				return err
+			}
+			value.Details = details
+		case EventVisibilityLost:
+			var details VisibilityLostDetails
+			if err := json.Unmarshal(envelope.Details, &details); err != nil {
+				return err
+			}
+			value.Details = details
+		case EventRPCRejected:
+			var details RPCRejectedDetails
+			if err := json.Unmarshal(envelope.Details, &details); err != nil {
+				return err
+			}
+			value.Details = details
+		default:
+			return fmt.Errorf("unknown control event type %q", envelope.Type)
+		}
+		e.Control = &value
+	default:
+		return fmt.Errorf("unknown event category %q", head.Category)
+	}
+	return nil
 }
 
 type PrincipalRef struct {
@@ -135,7 +558,7 @@ type OpResult struct {
 	SetBy    map[string]string `json:"setBy,omitempty"`
 }
 type Warning struct {
-	Code    string         `json:"code"`
+	Code    ErrorCode      `json:"code"`
 	Message string         `json:"message"`
 	Details map[string]any `json:"details,omitempty"`
 }
@@ -204,6 +627,7 @@ package pluginapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -213,34 +637,68 @@ import (
 // boundary.
 type Revision int64
 type Ref struct {
-	ID     string
-	Branch uint32
-	Key    string
+	// Host conversion applies the same object-form oneOf as model.Ref; this
+	// public alias never uses the old string shorthand.
+	ID     string `json:"id,omitempty"`
+	Branch uint32 `json:"branch,omitempty"`
+	Key    string `json:"key,omitempty"`
 }
+
+func (r Ref) MarshalJSON() ([]byte, error) {
+	if (r.ID == "") == (r.Key == "") {
+		return nil, fmt.Errorf("ref must contain exactly one of id or key")
+	}
+	if r.Key != "" && r.Branch != 0 {
+		return nil, fmt.Errorf("ref key cannot carry a branch")
+	}
+	type wireRef Ref
+	return json.Marshal(wireRef(r))
+}
+
+func (r *Ref) UnmarshalJSON(data []byte) error {
+	type wireRef Ref
+	var value wireRef
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	decoded := Ref(value)
+	if (decoded.ID == "") == (decoded.Key == "") {
+		return fmt.Errorf("ref must contain exactly one of id or key")
+	}
+	if decoded.Key != "" && decoded.Branch != 0 {
+		return fmt.Errorf("ref key cannot carry a branch")
+	}
+	*r = decoded
+	return nil
+}
+
 type ResourceRef struct {
-	Kind string
-	Ref  Ref
+	Kind string `json:"kind"`
+	Ref  Ref    `json:"ref"`
 }
 type PrincipalRef struct {
-	Kind    string
-	ID      string
-	Sponsor *PrincipalRef
-	Caveats map[string]any
+	Kind    string         `json:"kind"`
+	ID      string         `json:"id"`
+	Sponsor *PrincipalRef  `json:"sponsor,omitempty"`
+	Caveats map[string]any `json:"caveats,omitempty"`
 }
 type Violation struct {
-	Guard   string
-	Message string
-	Details map[string]any
+	Guard   string         `json:"guard"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
 }
 type Op struct {
-	Kind    string
-	Payload json.RawMessage
+	Kind string `json:"kind"`
+	// Payload is the selected flat operation object (including its kind), not
+	// a nested {kind, create: {...}} wrapper. The host validates it with the
+	// model.Op/OpenRPC union before dispatch.
+	Payload json.RawMessage `json:"-"`
 }
 type Record struct {
-	Ref      Ref
-	Kind     string
-	Revision Revision
-	Body     json.RawMessage
+	Ref      Ref             `json:"ref"`
+	Kind     string          `json:"kind"`
+	Revision Revision        `json:"revision"`
+	Body     json.RawMessage `json:"body"`
 }
 
 type ConfigDoc = map[string]any
@@ -341,12 +799,23 @@ type PostSubscriber interface {
 
 type Query struct {
 	Filter map[string]any
-	Cursor string
+	Cursor *Cursor
 	Limit  int
+}
+type Cursor struct {
+	// The JSON-RPC adapter encodes this bound value as the opaque cursor string;
+	// plugins never choose or reinterpret the token.
+	Incarnation      string   `json:"incarnation"`
+	Revision         Revision `json:"revision"`
+	Index            uint64   `json:"index"`
+	Method           string   `json:"method"`
+	FilterDigest     string   `json:"filterDigest"`
+	PrincipalDigest  string   `json:"principalDigest"`
+	OntologyRevision Revision `json:"ontologyRevision"`
 }
 type Page[T any] struct {
 	Items      []T
-	NextCursor string
+	NextCursor *Cursor
 	AsOf       Revision
 }
 type View struct {
@@ -417,8 +886,9 @@ type Meta struct {
 	HistoryFloor  model.Revision
 }
 type View struct {
-	Branch model.Branch
-	At     *model.Revision
+	Branch      model.Branch
+	At          *model.Revision
+	Incarnation string // required; must match Meta.Incarnation
 }
 type Ref = model.Ref
 type Record struct {
@@ -429,12 +899,12 @@ type Record struct {
 }
 type Query struct {
 	Filter map[string]any
-	Cursor string
+	Cursor *Cursor
 	Limit  int
 	AsOf   *model.Revision
 }
 type PageReq struct {
-	Cursor string
+	Cursor *Cursor
 	Limit  int
 }
 type Version struct {
@@ -451,6 +921,101 @@ type DerivedRow struct {
 	Key   string
 	Value []byte
 }
+type LockKeyKind string
+type ReadFact string
+type Sentinel string
+
+const (
+	LockRecord   LockKeyKind = "record"
+	LockReadFact LockKeyKind = "read_fact"
+	LockSentinel LockKeyKind = "sentinel"
+	LockDerived  LockKeyKind = "derived"
+)
+
+// LockKey is the engine-neutral name for every item in the transaction lock
+// set. Ref is used for records, ReadFact for recorded predicate/read facts,
+// Sentinel for predicates, and DerivedRowKey for derived rows. Exactly one
+// key form matches Kind. Drivers compare the tuple (kind-rank, encoded-key)
+// bytewise.
+type LockKey struct {
+	Kind     LockKeyKind
+	Ref      *Ref
+	Fact     ReadFact
+	Sentinel Sentinel
+	Derived  *DerivedRowKey
+}
+type DerivedRowKey struct {
+	Table DerivedTable
+	Key   string
+}
+type LockRequest struct {
+	Key  LockKey
+	Mode LockMode
+}
+type LockState struct {
+	Key      LockKey
+	Revision model.Revision
+	Record   *Record
+	Derived  *DerivedRow
+}
+type LockSet []LockRequest
+
+var (
+	SentinelGraphBlocking = LockKey{Kind: LockSentinel, Sentinel: "graph/blocking"}
+	SentinelReadySet      = LockKey{Kind: LockSentinel, Sentinel: "ready-set"}
+	SentinelClosure       = LockKey{Kind: LockSentinel, Sentinel: "closure"}
+	SentinelGrant         = LockKey{Kind: LockSentinel, Sentinel: "grant"}
+	SentinelOntology      = LockKey{Kind: LockSentinel, Sentinel: "ontology"}
+	SentinelPlugin        = LockKey{Kind: LockSentinel, Sentinel: "plugin"}
+)
+
+const (
+	DerivedReadyState DerivedTable = "ready_state"
+	DerivedClosure    DerivedTable = "closure"
+	DerivedGrant      DerivedTable = "grant"
+	DerivedOntology   DerivedTable = "ontology"
+	DerivedPlugin     DerivedTable = "plugin"
+)
+
+// Cursor is the decoded driver form of the opaque RPC cursor. The binding
+// fields prevent a cursor issued for another method, filter, principal, or
+// ontology from being replayed against this reader.
+type Cursor struct {
+	Incarnation      string
+	Revision         model.Revision
+	Index            uint64
+	Method           string
+	FilterDigest     string
+	PrincipalDigest  string
+	OntologyRevision model.Revision
+}
+
+type ErrFenced struct {
+	ExpectedEpoch uint64
+	ObservedEpoch uint64
+}
+
+func (e ErrFenced) Error() string { return "driver lease fenced" }
+
+type ErrTruncated struct {
+	Floor model.Revision
+}
+
+func (e ErrTruncated) Error() string { return "history is truncated" }
+
+type ErrIndeterminate struct {
+	IdempotencyKey string
+}
+
+func (e ErrIndeterminate) Error() string { return "commit outcome indeterminate" }
+
+type ErrIncarnationChanged struct {
+	From string
+	To   string
+}
+
+func (e ErrIncarnationChanged) Error() string { return "store incarnation changed" }
+
 type LockMode string
 
 const (
@@ -469,6 +1034,7 @@ type ChangesetHeader struct {
 	IdempotencyKey string
 	Mutators       []string
 	Changes        []model.ChangeRecord
+	LockKeys       []LockKey // complete, sorted set acquired before any write
 }
 type StoreHealth struct {
 	Driver               string
@@ -520,12 +1086,14 @@ type Reader interface {
 	Get(context.Context, []Ref) ([]Record, error)
 	Query(context.Context, Query) (Page[Record], error)
 	Versions(context.Context, Ref, PageReq) (Page[Version], error)
-	Changesets(context.Context, model.Revision, int) ([]model.Changeset, error)
-	ChangesetByKey(context.Context, string, string, string) (*model.Changeset, error)
+	Changesets(context.Context, *Cursor, int) ([]model.Changeset, error)
+	ChangesetByKey(context.Context, string, string, string, string) (*model.Changeset, error)
 }
 type WriteTx interface {
 	Reader
-	Lock(context.Context, []Ref, LockMode) ([]Record, error)
+	// keys must be globally sorted and duplicate-free. The returned state is
+	// the revision observed while holding each lock.
+	Lock(context.Context, []LockRequest) ([]LockState, error)
 	Head(context.Context) (model.Revision, error)
 	Put(context.Context, Record) error
 	PutBlob(context.Context, []byte) (Hash, error)
@@ -539,21 +1107,49 @@ The driver conformance contract is:
 
 - **G1:** revisions are gapless and commit ordered; the head row is taken last
   in Postgres and `BEGIN IMMEDIATE` provides the SQLite equivalent.
-- **G2:** `Lock` returns the latest committed state (`FOR SHARE`/`FOR UPDATE`
-  on Postgres; the driver's transaction lock on SQLite; per-ref locks in
-  memory).
+- **G2:** `Lock` accepts the complete sorted lock set: written refs, recorded
+  read facts, predicate sentinels, and derived rows. The global order is
+  `record < read_fact < sentinel < derived`, then the canonical encoded key;
+  an unsorted or duplicate set is rejected. It returns the latest committed
+  state and revision (`FOR SHARE`/`FOR UPDATE` on Postgres; the driver's
+  transaction lock on SQLite; per-key locks in memory).
 - **G3:** records, versions, blobs, derived rows, and the changeset commit
-  atomically.
+  atomically. Every `PutDerived` call must have the corresponding
+  `LockDerived` rows in the lock set; sentinel revisions are bumped in the
+  same transaction as the operation or derived-row write. The commit header
+  repeats the exact lock-key set so conformance can verify the declaration.
 - **G4:** `(principal, anonymous-agent label when applicable, method, key)` is
   unique for 24 hours and the key is retained on the changeset.
 - **G5:** every write, heartbeat, and checkpoint commits only under the active
   lease epoch. A deposed holder receives `ErrFenced`; after `Lost()` closes,
   the server stops admitting reads and writes until a new lease is acquired.
+  A cursor or `View.Incarnation` that differs from `Meta.Incarnation` is
+  rejected before any read with `ErrIncarnationChanged`, never interpreted as
+  a revision in the new incarnation. `ErrTruncated` reports the history floor.
+
+The sentinel catalog and bump rules are fixed for this contract:
+
+| Sentinel | Read facts that record it | Operations or derived tables that bump it |
+| --- | --- | --- |
+| `graph/blocking` | cycle and blocking-edge predicates | `link`/`unlink` of a blocking edge |
+| `ready-set` | ready-set membership and claim-next selection | bead status, dependency, lease, and `ready_state` changes |
+| `closure` | ancestor/cut-closure predicates | reparent, restricted-toggle, and `closure` rows |
+| `grant` | authorization grant and compiled-filter reads | grant writes and `grant` rows |
+| `ontology` | ontology revision and guard reads | ontology apply and `ontology` rows |
+| `plugin` | plugin-set, lock, and binding reads | plugin apply and `plugin` rows |
+
+Each lock returns the current committed revision for its key. A bump writes the
+new key revision in the same transaction and changeset as the operation or
+`PutDerived` rows. Deferred fan-out acquires the same typed derived-row keys in
+the follow-up `derived` changeset; it may lag ordering, but it cannot bypass
+the lock set or revise a sentinel without recording that changeset.
 
 The lease policy selected by P71 is a ten-second TTL and three-second renewal.
-`ErrFenced`, `ErrTruncated`, and `ErrIndeterminate` are driver errors with
-wire mappings in [errors.md](errors.md); they are not additional JSON-RPC
-methods.
+`ErrFenced`, `ErrTruncated`, `ErrIndeterminate`, and
+`ErrIncarnationChanged` are driver errors with typed wire mappings in
+[errors.md](errors.md); they are not additional JSON-RPC methods. A driver
+must preserve the `ErrIndeterminate` idempotency key so the service can resolve
+the outcome by key before retrying.
 
 ## Deliberate boundaries
 
