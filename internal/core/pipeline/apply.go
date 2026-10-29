@@ -114,9 +114,12 @@ func (w *Writer) Apply(ctx context.Context, by model.PrincipalRef, cs model.Chan
 		if err == nil {
 			err = w.claims(p, by, meta)
 		}
+		if err == nil {
+			err = p.detectChanges()
+		}
 		if err == nil && meta.DryRun {
 			commit, err := p.response(*reader.Snapshot().At, meta)
-			commit.WouldCommit = err == nil
+			commit.WouldCommit = err == nil && len(p.changed) > 0
 			return commit, err
 		}
 		var commit model.Commit
@@ -142,6 +145,9 @@ func (w *Writer) Apply(ctx context.Context, by model.PrincipalRef, cs model.Chan
 				return model.Commit{}, failure("busy", "write pre phases exceeded their deadline")
 			}
 			return model.Commit{}, err
+		}
+		if len(p.changed) == 0 {
+			return clone(commit)
 		}
 		warnings := w.post(ctx, p, commit)
 		if len(w.cfg.posts) > 0 {
@@ -218,6 +224,9 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 	for _, ref := range p.refs {
 		pending := p.writes[ref.ID]
 		result := model.OpResult{Ref: ref, Revision: revision, SetBy: cloneMap(pending.setBy)}
+		if !p.changed[ref.ID] {
+			result.Revision = pending.revision
+		}
 		if !pending.deleted && meta.Return != "minimal" {
 			body, err := json.Marshal(pending.doc)
 			if err != nil {
@@ -236,7 +245,13 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 
 func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRef, meta model.WriteMeta, principal, hash string) (model.Commit, error) {
 	sentinels := p.sentinels()
-	locks, err := p.snapshot.locks(p.writes, sentinels)
+	writes := map[string]*pending{}
+	for id, pending := range p.writes {
+		if p.changed[id] {
+			writes[id] = pending
+		}
+	}
+	locks, err := p.snapshot.locks(writes, sentinels)
 	if err != nil {
 		return model.Commit{}, err
 	}
@@ -267,6 +282,21 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	} else if prior != nil {
 		return model.Commit{}, errStale
 	}
+	keys := make([]driver.LockKey, len(locks))
+	for i, lock := range locks {
+		keys[i] = lock.Key
+	}
+	if len(writes) == 0 {
+		noop, ok := tx.(driver.NoopCommitter)
+		if !ok {
+			return model.Commit{}, driver.ErrUnsupported
+		}
+		response, err := p.response(head, meta)
+		if err != nil {
+			return model.Commit{}, err
+		}
+		return noop.CommitNoop(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
+	}
 	n, err := head.Uint64()
 	if err != nil || n == math.MaxUint64 {
 		return model.Commit{}, failure("write_conflict", "driver revision space is exhausted")
@@ -276,8 +306,8 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err != nil {
 		return model.Commit{}, err
 	}
-	ids := make([]string, 0, len(p.writes))
-	for id := range p.writes {
+	ids := make([]string, 0, len(writes))
+	for id := range writes {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -317,10 +347,6 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	}
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		return model.Commit{}, err
-	}
-	keys := make([]driver.LockKey, len(locks))
-	for i, lock := range locks {
-		keys[i] = lock.Key
 	}
 	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, Mutators: p.mutators, Changes: changes, LockKeys: keys})
 	if err != nil {
