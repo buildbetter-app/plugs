@@ -231,6 +231,10 @@ internal/integration/apikey/README.md
 internal/integration/apikey/compose.go
 internal/integration/apikey/fixture_test.go
 internal/integration/apikey/http_test.go
+internal/integration/oidcpermissions/BUILD.bazel
+internal/integration/oidcpermissions/README.md
+internal/integration/oidcpermissions/idp_test.go
+internal/integration/oidcpermissions/integration_test.go
 internal/integration/permissions/BUILD.bazel
 internal/integration/permissions/compose.go
 internal/integration/permissions/permissions_test.go
