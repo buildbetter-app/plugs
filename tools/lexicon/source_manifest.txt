@@ -104,6 +104,12 @@ engdocs/design/plug/spike-authz-results.md
 engdocs/design/plug/spike-ux-decision.md
 engdocs/style/BUILD.bazel
 engdocs/style/lexicon.toml
+examples/plugins/native-guard/BUILD.bazel
+examples/plugins/native-guard/README.md
+examples/plugins/native-guard/integration_test.go
+examples/plugins/native-guard/manifest.json
+examples/plugins/native-guard/native.go
+examples/plugins/native-guard/ontology.json
 go.mod
 internal/BUILD.bazel
 internal/core/model/BUILD.bazel
