@@ -11,6 +11,7 @@ import (
 	"math"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -99,6 +100,7 @@ func (w *Writer) Apply(ctx context.Context, by model.PrincipalRef, cs model.Chan
 		if err != nil {
 			return model.Commit{}, err
 		}
+		defer reader.Close()
 		if commit, found, err := w.replay(preCtx, reader, principal, by, cs, meta, hash); found || err != nil {
 			return commit, err
 		}
@@ -130,6 +132,7 @@ func (w *Writer) Apply(ctx context.Context, by model.PrincipalRef, cs model.Chan
 				// Only a durable receipt can resolve an uncertain outcome. Never
 				// execute another attempt merely because its response was lost.
 				if fresh, e := w.reader(ctx); e == nil {
+					defer fresh.Close()
 					if result, found, e := w.replay(ctx, fresh, principal, by, cs, meta, hash); found || e != nil {
 						return result, e
 					}
@@ -165,6 +168,7 @@ func (w *Writer) reader(ctx context.Context) (driver.Reader, error) {
 		return nil, err
 	}
 	if reader.Snapshot().At == nil {
+		_ = reader.Close()
 		return nil, fmt.Errorf("driver returned an unbound snapshot")
 	}
 	return reader, nil
@@ -240,6 +244,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err != nil {
 		return model.Commit{}, err
 	}
+	defer tx.Close()
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	states, err := tx.Lock(ctx, locks)
 	if err != nil {
@@ -293,7 +298,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		}
 		paths := make([]string, 0, len(pending.setBy))
 		for path := range pending.setBy {
-			paths = append(paths, path)
+			paths = append(paths, changedPath(path))
 		}
 		sort.Strings(paths)
 		kind := model.OpPatch
@@ -325,4 +330,15 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		return model.Commit{}, driver.ErrIndeterminate{IdempotencyKey: meta.IdempotencyKey}
 	}
 	return commit, nil
+}
+
+func changedPath(path string) string {
+	escape := func(part string) string { return strings.ReplaceAll(strings.ReplaceAll(part, "~", "~0"), "/", "~1") }
+	if name, ok := strings.CutPrefix(path, "fields."); ok {
+		return "/fields/" + escape(name)
+	}
+	if name, ok := strings.CutPrefix(path, "metadata."); ok {
+		return "/metadata/" + escape(name)
+	}
+	return "/" + escape(path)
 }

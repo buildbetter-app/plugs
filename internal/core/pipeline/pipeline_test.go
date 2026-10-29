@@ -126,6 +126,7 @@ func (h *harness) read(t *testing.T) driver.Reader {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	return r
 }
 func code(t *testing.T, err error, want string) {
