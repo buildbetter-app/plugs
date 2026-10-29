@@ -105,6 +105,11 @@ engdocs/style/BUILD.bazel
 engdocs/style/lexicon.toml
 go.mod
 internal/BUILD.bazel
+internal/acceptance/BUILD.bazel
+internal/acceptance/harness_test.go
+internal/acceptance/inputs.go
+internal/acceptance/projection.go
+internal/acceptance/trace.go
 internal/api/wire/BUILD.bazel
 internal/api/wire/catalog.go
 internal/api/wire/catalog.json
@@ -198,6 +203,13 @@ pluginapi/BUILD.bazel
 pluginapi/doc.go
 sdk/go/BUILD.bazel
 sdk/go/doc.go
+spec/BUILD.bazel
+spec/README.md
+spec/assertions_test.go
+spec/cli_test.go
+spec/fixture_test.go
+spec/pipeline_test.go
+spec/rpc_test.go
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
 tools/lexicon/checker.go
