@@ -49,7 +49,11 @@ grandfathered. Other grandfather directives identify one exact resulting
 violation on one exact row, record a reason and leave that violation visible.
 
 The trusted plugin host supplies an explicit complete validating-pre manifest,
-even if empty. `Build` invokes each applicable callback for each affected row,
+even if empty. Global bindings admit active types from the base and effective
+projects identified by the complete row inventory or explicit manifest scopes.
+An overlay-only type needs one of those admitted project contexts; it need not
+exist in the base. Admission preserves the binding's all-project callback scope.
+`Build` invokes each applicable callback for each affected row,
 retains every rejection and requires its disposition. Callback errors and
 malformed results cannot be grandfathered. Affected rows include changed
 images/defaults, changed applicable ontology rules, row drift and explicitly

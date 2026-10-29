@@ -164,9 +164,31 @@ func Build(ctx context.Context, req Request, source RowSource, pre ValidatingPre
 		refuse(Refusal{Code: "missing_facts", Message: "validating-pre manifest does not bind the candidate and complete bindings"})
 		return finish(report), nil
 	}
+	// Global scope is not the server base. Resolve active types in the base and
+	// effective projects admitted by the complete rows or explicit manifest
+	// scopes, without adding definitions to the base or narrowing the binding.
+	projects := map[string]bool{"": true}
+	for _, row := range rows {
+		projects[row.State.Project] = true
+	}
 	for _, binding := range manifest.Bindings {
-		t, exists := req.Candidate.Snapshot.Effective(binding.Project).Document().Types[binding.Type]
-		if !exists || t.Archived {
+		projects[binding.Project] = true
+	}
+	activeTypes := map[string]bool{}
+	for project := range projects {
+		for key, typ := range req.Candidate.Snapshot.Effective(project).Document().Types {
+			if !typ.Archived {
+				activeTypes[key] = true
+			}
+		}
+	}
+	for _, binding := range manifest.Bindings {
+		active := activeTypes[binding.Type]
+		if binding.Project != "" {
+			t, exists := req.Candidate.Snapshot.Effective(binding.Project).Document().Types[binding.Type]
+			active = exists && !t.Archived
+		}
+		if !active {
 			refuse(Refusal{Code: "invalid_params", Message: "validating-pre binding targets an unknown or archived candidate type: " + binding.ID})
 		}
 	}
