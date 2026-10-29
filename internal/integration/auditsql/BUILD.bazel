@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "auditsql_test",
+    srcs = glob(["*_test.go"]),
+    deps = [
+        "//internal/core/events",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
+        "//internal/server/events",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+    ],
+    size = "large",
+    tags = ["local", "requires-network"],
+)
