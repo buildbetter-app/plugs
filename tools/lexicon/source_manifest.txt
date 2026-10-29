@@ -102,6 +102,8 @@ engdocs/design/plug/spec/ux-screens/people-25.png
 engdocs/design/plug/spec/ux-screens/people-50.png
 engdocs/design/plug/spike-authz-results.md
 engdocs/design/plug/spike-ux-decision.md
+engdocs/plug-packages/README.md
+engdocs/plug-packages/storage.md
 engdocs/style/BUILD.bazel
 engdocs/style/lexicon.toml
 go.mod
