@@ -90,7 +90,7 @@ func seed(ctx context.Context, store driver.Store, lease driver.ActiveLease, hea
 	if err != nil {
 		return model.Changeset{}, err
 	}
-	defer tx.Rollback(context.Background())
+	defer tx.Close()
 	states, err := tx.Lock(ctx, locks)
 	if err != nil {
 		return model.Changeset{}, err

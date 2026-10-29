@@ -22,6 +22,8 @@ type transaction struct {
 	store                   *Store
 	lease                   driver.ActiveLease
 	base                    *state
+	snapshotAt              model.Revision
+	incarnation             string
 	closed, locked, hasHead bool
 	acquired                driver.LockSet
 	records                 map[string]*driver.Record
@@ -67,12 +69,18 @@ func (t *transaction) finish() {
 	}
 	t.closed = true
 	delete(s.transactions, t)
+	t.base = nil
+	t.acquired = nil
 	t.records = nil
 	t.derived = nil
 	t.blobs = nil
 	t.bumps = nil
 	s.signal()
 }
+
+// Close is cleanup, never an implicit commit. Rollback deliberately releases
+// resources even when the original request context has been cancelled.
+func (t *transaction) Close() error { return t.Rollback(context.Background()) }
 
 func (t *transaction) Rollback(ctx context.Context) error {
 	s := t.store
@@ -86,6 +94,13 @@ func (t *transaction) Rollback(ctx context.Context) error {
 func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) ([]driver.LockState, error) {
 	if err := driver.ValidateLockSet(requests); err != nil {
 		return nil, err
+	}
+	for _, request := range requests {
+		if request.Key.Kind == driver.LockRecord {
+			if _, err := recordKey(*request.Key.Ref); err != nil {
+				return nil, err
+			}
+		}
 	}
 	s := t.store
 	for {
@@ -146,6 +161,7 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 		}
 		t.locked = true
 		t.base = s.state
+		t.snapshotAt = s.state.meta.Head
 		s.mu.Unlock()
 		return states, nil
 	}
@@ -167,6 +183,7 @@ func (t *transaction) Head(ctx context.Context) (model.Revision, error) {
 			s.head = t
 			t.hasHead = true
 			t.base = s.state
+			t.snapshotAt = s.state.meta.Head
 			head := s.state.meta.Head
 			s.mu.Unlock()
 			return head, nil
@@ -492,6 +509,11 @@ func (t *transaction) recordRef(id string) driver.Ref {
 func (t *transaction) validateChanges(changes []model.ChangeRecord) error {
 	seen := make(map[string]bool)
 	for _, change := range changes {
+		switch change.Op {
+		case model.OpCreate, model.OpPatch, model.OpReparent, model.OpLink, model.OpUnlink, model.OpComment, model.OpAttach, model.OpDelete, model.OpSetMeta:
+		default:
+			return fmt.Errorf("memory: unknown change operation")
+		}
 		id, err := recordKey(change.Ref)
 		if err != nil {
 			return err
@@ -500,6 +522,9 @@ func (t *transaction) validateChanges(changes []model.ChangeRecord) error {
 			return fmt.Errorf("memory: changes must describe each staged record exactly once")
 		}
 		seen[id] = true
+		if (t.records[id] == nil) != (change.Op == model.OpDelete) {
+			return fmt.Errorf("memory: deletion and change operation disagree")
+		}
 		previous := t.store.state.keys[id].Revision
 		if change.FromRevision.String() != previous.String() {
 			return driver.ErrConflict

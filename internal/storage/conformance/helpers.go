@@ -42,7 +42,7 @@ func begin(t *testing.T, ctx context.Context, s driver.Store, lease driver.Activ
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	t.Cleanup(func() { _ = tx.Close() })
 	if _, err = tx.Lock(ctx, requests); err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +54,7 @@ func read(t *testing.T, ctx context.Context, s driver.Store, meta driver.Meta, a
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	return r
 }
 func put(t *testing.T, ctx context.Context, s driver.Store, lease driver.ActiveLease, meta driver.Meta, id, body string) model.Changeset {

@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -8,6 +9,72 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+func takeoverRace(t *testing.T, factory Factory) {
+	for i := 0; i < 8; i++ {
+		ctx, s, old, meta := setup(t, factory)
+		tx := begin(t, ctx, s, old, nil)
+		if _, err := tx.Head(ctx); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		committed := make(chan error, 1)
+		go func() {
+			<-start
+			_, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetDerived, Principal: model.PrincipalRef{Kind: "system", ID: "heartbeat"}})
+			committed <- err
+		}()
+		type acquisition struct {
+			lease driver.ActiveLease
+			err   error
+		}
+		taken := make(chan acquisition, 1)
+		go func() {
+			<-start
+			if err := old.Release(ctx); err != nil {
+				taken <- acquisition{err: err}
+				return
+			}
+			lease, err := s.Lease(ctx, "takeover", driver.LeaseTTL)
+			taken <- acquisition{lease, err}
+		}()
+		close(start)
+		commitErr := <-committed
+		next := <-taken
+		if next.err != nil {
+			t.Fatal(next.err)
+		}
+		if next.lease == nil || next.lease.Epoch() <= old.Epoch() {
+			t.Fatal("takeover did not advance epoch")
+		}
+		var expected uint64
+		if commitErr == nil {
+			expected = 1
+		} else {
+			requireFenced(t, commitErr)
+		}
+		after, err := s.Meta(ctx)
+		if err != nil || after.Head.String() != model.Natural64(expected).String() {
+			t.Fatalf("racing commit head=%s error=%v commitError=%v", after.Head, err, commitErr)
+		}
+		r := read(t, ctx, s, meta, nil)
+		log, err := r.Changesets(ctx, nil, 100)
+		if err != nil || len(log) != int(expected) {
+			t.Fatalf("racing commit log=%v %v", log, err)
+		}
+		// The new holder can publish immediately; stale transactions cannot keep
+		// either row locks or the revision lock after loss.
+		live := begin(t, ctx, s, next.lease, nil)
+		if _, err := live.Head(ctx); err != nil {
+			t.Fatal(err)
+		}
+		entry, err := live.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetDerived, Principal: model.PrincipalRef{Kind: "system", ID: "heartbeat"}})
+		if err != nil || entry.Revision.String() != model.Natural64(expected+1).String() {
+			t.Fatalf("new heartbeat=%+v %v", entry, err)
+		}
+		_ = next.lease.Release(context.Background())
+	}
+}
 
 func requireFenced(t *testing.T, err error) {
 	t.Helper()
