@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "pluginmanifest",
+    srcs = ["bundle.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/server/pluginmanifest",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//pluginapi",
+        "//sdk/go:sdk_go",
+    ],
+)
+
+go_test(
+    name = "pluginmanifest_test",
+    srcs = ["bundle_test.go"],
+    embedsrcs = glob(["testdata/**"]),
+    embed = [":pluginmanifest"],
+    deps = [
+        "//internal/server/pluginhost",
+        "//pluginapi",
+        "//sdk/go/conformance",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
