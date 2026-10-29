@@ -157,11 +157,54 @@ func TestTraceRejectsInvalidEnvelopesAndTransportFailure(t *testing.T) {
 		})
 	}
 	want := errors.New("transport unavailable")
-	trace, _ := NewTrace(transportFunc(func(context.Context, []byte) ([]byte, error) { return nil, want }), time.Now)
+	clock := func() time.Time { return time.Unix(1, 0) }
+	trace, _ := NewTrace(transportFunc(func(context.Context, []byte) ([]byte, error) { return nil, want }), clock)
 	if _, err := trace.Call(context.Background(), "bead.get", nil); !errors.Is(err, want) {
 		t.Fatalf("transport error was lost: %v", err)
 	}
-	if _, err := NewTrace(nil, time.Now); err == nil {
+	if _, err := NewTrace(nil, clock); err == nil {
 		t.Fatal("accepted missing transport")
+	}
+	if _, err := NewTrace(transportFunc(func(context.Context, []byte) ([]byte, error) { return nil, nil }), nil); err == nil {
+		t.Fatal("accepted missing clock")
+	}
+}
+
+func TestIdenticalInputsProduceIdenticalTraceBytes(t *testing.T) {
+	run := func() []byte {
+		in, err := NewInputs(time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC), "p-1", "p-2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		trace, _ := NewTrace(transportFunc(func(_ context.Context, request []byte) ([]byte, error) {
+			var call struct {
+				ID json.Number `json:"id"`
+			}
+			if err := json.Unmarshal(request, &call); err != nil {
+				return nil, err
+			}
+			id, err := in.NextID()
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(map[string]any{"jsonrpc": "2.0", "id": call.ID, "result": map[string]any{"id": id, "at": in.Now()}})
+		}), in.Now)
+		for range 2 {
+			if _, err := trace.Call(context.Background(), "measurement.selfTest", map[string]any{}); err != nil {
+				t.Fatal(err)
+			}
+			if err := in.Advance(time.Second); err != nil {
+				t.Fatal(err)
+			}
+		}
+		data, err := json.Marshal(trace.Frames())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	first, second := run(), run()
+	if string(first) != string(second) {
+		t.Fatalf("same inputs changed trace bytes\nfirst: %s\nsecond: %s", first, second)
 	}
 }
