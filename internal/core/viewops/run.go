@@ -22,11 +22,16 @@ func parseQuery(query string) ([]queryTerm, error) {
 	}
 	// The admitted slice is deliberately small and closed: equality clauses
 	// joined by AND. No unknown operator is ignored or treated as a match-all.
-	query = strings.ReplaceAll(query, "&&", " and ")
 	parts := strings.Fields(query)
-	terms := make([]queryTerm, 0, len(parts))
-	for _, part := range parts {
-		if strings.EqualFold(part, "and") {
+	if len(parts)%2 == 0 {
+		return nil, failure("invalid_params", "unsupported view query; use equality clauses joined by AND")
+	}
+	terms := make([]queryTerm, 0, (len(parts)+1)/2)
+	for i, part := range parts {
+		if i%2 == 1 {
+			if !strings.EqualFold(part, "and") {
+				return nil, failure("invalid_params", "unsupported view query; use equality clauses joined by AND")
+			}
 			continue
 		}
 		key, value, ok := strings.Cut(part, "=")
