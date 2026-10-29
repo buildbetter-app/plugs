@@ -116,15 +116,25 @@ bazel_version="$(tr -d '[:space:]' < .bazelversion)"
 [[ "$bazel_version" == "9.3.0" ]] || fail "unsupported .bazelversion '$bazel_version'; add its verified digest before changing the pin"
 
 gms_pure_go_mode=not-required
-if rg -q 'com_github_dolthub_go_mysql_server|go-mysql-server' \
-  MODULE.bazel gazelle.go.work go.mod; then
-  if [[ ! -f .bazelrc ]] || ! rg -q \
-    '^[[:space:]]*build([:[:space:]]|:).*--@rules_go//go/config:tags=[^#]*gms_pure_go' \
-    .bazelrc; then
-    fail "go-mysql-server is present but the inherited gms_pure_go declaration is missing"
-  fi
-  gms_pure_go_mode=inherited-required-explicit
-fi
+case "${PLUG_BAZEL_GMS_PURE_GO:-}" in
+  1|true)
+    gms_pure_go_mode=workflow-required-explicit
+    ;;
+  '')
+    if grep -Eq 'com_github_dolthub_go_mysql_server|go-mysql-server' \
+      MODULE.bazel gazelle.go.work go.mod; then
+      if [[ ! -f .bazelrc ]] || ! grep -Eq \
+        '^[[:space:]]*build([:[:space:]]|:).*--@rules_go//go/config:tags=[^#]*gms_pure_go' \
+        .bazelrc; then
+        fail "go-mysql-server is present but the inherited gms_pure_go declaration is missing"
+      fi
+      gms_pure_go_mode=inherited-required-explicit
+    fi
+    ;;
+  *)
+    fail "PLUG_BAZEL_GMS_PURE_GO must be 1 or unset"
+    ;;
+esac
 
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64)
@@ -169,7 +179,8 @@ common --remote_executor=
 test --test_output=errors
 test --test_env=GO_TEST_WRAP_TESTV=1
 EOF
-if [[ "$gms_pure_go_mode" == inherited-required-explicit ]]; then
+if [[ "$gms_pure_go_mode" == inherited-required-explicit ||
+  "$gms_pure_go_mode" == workflow-required-explicit ]]; then
   printf '%s\n' 'build --@rules_go//go/config:tags=gms_pure_go' >>"$rc"
 fi
 

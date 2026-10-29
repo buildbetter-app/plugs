@@ -44,6 +44,9 @@ jobs:
       - name: Run fresh Plug Bazel build and test
         env:
           PLUG_BAZEL_EVIDENCE_DIR: ${{ runner.temp }}/plug-bazel-evidence
+          # The hosted image is intentionally minimal; pass the inherited
+          # compatibility tag explicitly instead of relying on image tools.
+          PLUG_BAZEL_GMS_PURE_GO: '1'
         run: |
           set -euo pipefail
           chmod 755 scripts/ci/plug-bazel-preflight.sh
