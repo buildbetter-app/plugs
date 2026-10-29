@@ -617,6 +617,12 @@ spec/extended/time_test.go
 spec/fixture_test.go
 spec/pipeline_test.go
 spec/rpc_test.go
+tools/census/BUILD.bazel
+tools/census/census.go
+tools/census/cmd/census_check/main.go
+tools/census/gate_test.go
+tools/census/README.md
+tools/census/testdata/census.json
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
 tools/lexicon/checker.go

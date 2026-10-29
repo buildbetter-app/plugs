@@ -131,6 +131,7 @@ func DefaultTreePolicy() TreePolicy {
 		},
 		BinarySHA256: map[string]string{
 			".github/images/agent-using-beads.jpg":                "92f98f20c17f2ebb0c75815da94cc8a6fce98bb6d10b2bbf3555b706414ee778",
+			"tools/census/testdata/census.json":                   "d005db62a2110979e7b3884a37fdb9c8b410a964184582776f0987457a85080f",
 			"engdocs/design/plug/spec/ux-screens/blocked-100.png": "62b21ea8dca4b02230c4cc008e662fdd88fd6602735d8885b486c456580c31a7",
 			"engdocs/design/plug/spec/ux-screens/blocked-25.png":  "ef6e3ad0e6233c3bed3bd0abfeb2d7fffa51386ae6b20f22a1ea9a5bd58d86d4",
 			"engdocs/design/plug/spec/ux-screens/blocked-50.png":  "2502f4e818e593e3a95242eba6afb74db4722d3fb28e9b694c1a1b7f963c756d",
