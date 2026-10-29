@@ -33,8 +33,13 @@ closing their store and should use bounded operation contexts.
 
 Idempotency uses the full principal/anonymous-label/method/key scope for 24 hours
 on the database clock, independently of attribution time. Authenticated labels
-are ignored. Request-digest mismatches conflict. Receipts and finalized post
-warnings survive pool closure and reopen. No-op receipts retain the current
+are ignored. Request-digest mismatches conflict. Keyed ordinary graph writes
+can publish a pending response atomically with their data. Readers retain that
+state across pool closure and reopen; core must await durable finalization
+before returning success. The fenced finalizer appends its outcome once and
+clears pending even for no warnings, preserving receipt age and graph state.
+Final receipts are immutable; identical post outcomes replay, different ones
+conflict. No-op replay refuses pending receipts. No-op receipts retain the current
 head and each result's original revision and create no graph or history entry.
 Unknown COMMIT outcomes return ErrIndeterminate with the original key.
 
@@ -71,4 +76,5 @@ memory store. The image is
 (observed PostgreSQL 17.11). Shared conformance runs directly on this driver.
 Additional tests cover reopen persistence, independent SQL sessions, a late
 engine error rolling back every data family, 24 concurrent snapshots, numeric
-boundaries, expiry, and takeover during graph/no-op/checkpoint/finalizer writes.
+boundaries, expiry, pending receipt recovery after an SQL finalizer error, and
+takeover during graph/no-op/checkpoint/finalizer writes.

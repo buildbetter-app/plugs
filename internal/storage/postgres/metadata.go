@@ -114,8 +114,7 @@ func (s *Store) FinalizeResponse(ctx context.Context, lease driver.ActiveLease, 
 		return err
 	}
 	var raw, storedPost []byte
-	var finalized bool
-	err = tx.QueryRowContext(ctx, `SELECT value,finalized,post FROM plug_postgres.receipts WHERE scope=$1 AND expires>clock_timestamp() FOR UPDATE`, scope).Scan(&raw, &finalized, &storedPost)
+	err = tx.QueryRowContext(ctx, `SELECT value,post FROM plug_postgres.receipts WHERE scope=$1 AND expires>clock_timestamp() FOR UPDATE`, scope).Scan(&raw, &storedPost)
 	if errors.Is(err, sql.ErrNoRows) {
 		return driver.ErrNotFound
 	}
@@ -129,12 +128,15 @@ func (s *Store) FinalizeResponse(ctx context.Context, lease driver.ActiveLease, 
 	if value.Commit.Revision.String() != revision.String() {
 		return driver.ErrConflict
 	}
-	if finalized {
-		if !bytes.Equal(storedPost, post) {
+	if !value.ResponsePending {
+		// An initially final receipt has no post outcome and accepts only an
+		// empty replay. Finalized pending receipts retain their exact outcome.
+		if storedPost == nil && len(warnings) != 0 || storedPost != nil && !bytes.Equal(storedPost, post) {
 			return driver.ErrConflict
 		}
 	} else {
 		value.Commit.Warnings = append(value.Commit.Warnings, warnings...)
+		value.ResponsePending = false
 		if raw, err = encodeReceipt(value); err != nil {
 			return err
 		}

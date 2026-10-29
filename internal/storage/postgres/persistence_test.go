@@ -127,6 +127,7 @@ func TestPersistenceAcrossHandlesAndReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.IdempotencyKey, h.Method, h.RequestHash = "durable", "bead.update", "request-1"
+	h.ResponsePending = true
 	h.AgentLabel = "ignored-authenticated-agent"
 	h.Changes = []model.ChangeRecord{{Ref: ref, Op: model.OpCreate}}
 	h.Response = model.Commit{Results: []model.OpResult{{Ref: ref, Revision: model.Natural64(0), Record: []byte(`{"value":1}`)}}}

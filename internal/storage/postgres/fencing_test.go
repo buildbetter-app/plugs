@@ -44,6 +44,7 @@ func TestIndependentTakeoverDuringEveryPublication(t *testing.T) {
 				table, event = "receipts", "UPDATE"
 				tx, h := beginTest(t, oldStore, old)
 				h.Method, h.IdempotencyKey, h.RequestHash = "test.finalize", "racing", "hash"
+				h.ResponsePending = true
 				entry, err := tx.Commit(ctx, h)
 				if err != nil {
 					t.Fatal(err)
@@ -157,7 +158,7 @@ func TestIndependentTakeoverDuringEveryPublication(t *testing.T) {
 				r := testRead(t, newStore, nil)
 				value, err := r.IdempotencyByKey(ctx, "system:postgres-test", "", "test.finalize", "racing")
 				_ = r.Close()
-				if err != nil || value == nil || len(value.Commit.Warnings) != 0 {
+				if err != nil || value == nil || !value.ResponsePending || len(value.Commit.Warnings) != 0 {
 					t.Fatalf("stale warnings published: %+v %v", value, err)
 				}
 			}

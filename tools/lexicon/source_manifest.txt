@@ -192,6 +192,7 @@ internal/storage/postgres/engine_test.go
 internal/storage/postgres/fencing_test.go
 internal/storage/postgres/lease.go
 internal/storage/postgres/metadata.go
+internal/storage/postgres/pending_test.go
 internal/storage/postgres/persistence_test.go
 internal/storage/postgres/query.go
 internal/storage/postgres/reader.go

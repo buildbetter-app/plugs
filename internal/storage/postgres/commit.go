@@ -32,6 +32,9 @@ func (t *transaction) header(h driver.ChangesetHeader) ([]byte, error) {
 	if err = h.Kind.Validate(); err != nil {
 		return nil, err
 	}
+	if h.ResponsePending && (h.IdempotencyKey == "" || h.Kind != model.ChangesetWrite) {
+		return nil, fmt.Errorf("postgres: pending response requires a keyed ordinary write")
+	}
 	if h.IdempotencyKey == "" {
 		return nil, nil
 	}
@@ -166,11 +169,11 @@ func (t *transaction) saveReceipt(ctx context.Context, scope []byte, h driver.Ch
 	if scope == nil {
 		return nil
 	}
-	raw, err := encodeReceipt(driver.IdempotencyRecord{RequestHash: h.RequestHash, Commit: response, Changeset: entry})
+	raw, err := encodeReceipt(driver.IdempotencyRecord{RequestHash: h.RequestHash, Commit: response, Changeset: entry, ResponsePending: h.ResponsePending})
 	if err != nil {
 		return err
 	}
-	_, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.receipts (scope,revision,expires,value) VALUES ($1,$2,clock_timestamp()+interval '24 hours',$3) ON CONFLICT (scope) DO UPDATE SET revision=EXCLUDED.revision,expires=EXCLUDED.expires,value=EXCLUDED.value,finalized=false,post=NULL`, scope, response.Revision.String(), raw)
+	_, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.receipts (scope,revision,expires,value,finalized) VALUES ($1,$2,clock_timestamp()+interval '24 hours',$3,$4) ON CONFLICT (scope) DO UPDATE SET revision=EXCLUDED.revision,expires=EXCLUDED.expires,value=EXCLUDED.value,finalized=EXCLUDED.finalized,post=NULL`, scope, response.Revision.String(), raw, !h.ResponsePending)
 	return err
 }
 
@@ -370,6 +373,9 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 	if len(h.Changes)+len(t.records)+len(t.derived)+len(t.blobs)+len(t.bumps) != 0 {
 		return zero, fmt.Errorf("postgres: no-op cannot contain staged mutations")
 	}
+	if h.ResponsePending {
+		return zero, fmt.Errorf("postgres: no-op response must be final")
+	}
 	response, err := responseAt(h.Response, model.Natural64(t.at))
 	if err != nil {
 		return zero, err
@@ -384,7 +390,7 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 			return zero, err
 		}
 		if previous != nil {
-			if previous.RequestHash != h.RequestHash {
+			if previous.RequestHash != h.RequestHash || previous.ResponsePending {
 				return zero, driver.ErrConflict
 			}
 			response = previous.Commit
