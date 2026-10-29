@@ -32,6 +32,7 @@ type prepared struct {
 	mutators []string
 	refs     []model.Ref
 	changed  map[string]bool
+	audit    *auditPlan
 }
 
 func failure(code model.ErrorCode, message string) error {

@@ -420,7 +420,14 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	if when.IsZero() {
 		when = s.now().UTC()
 	}
-	entry := model.Changeset{Revision: revision, Branch: model.Natural64(0), Incarnation: header.Incarnation, Kind: header.Kind, Time: when, Principal: header.Principal, Chain: header.Chain, IdempotencyKey: header.IdempotencyKey, Mutators: header.Mutators, Changes: header.Changes}
+	entry := model.Changeset{Revision: revision, Branch: model.Natural64(0), Incarnation: header.Incarnation, Kind: header.Kind, Time: when, Principal: header.Principal, Chain: header.Chain, IdempotencyKey: header.IdempotencyKey, Mutators: header.Mutators, Changes: header.Changes, Events: header.Events}
+	// Validate the complete plan against the actual changes and allocated
+	// revision before preparing any graph, log or receipt publication. Nil
+	// retains the legacy ChangeRecord index space; an empty plan is invalid.
+	if err := entry.ValidateEvents(); err != nil {
+		return model.Changeset{}, fmt.Errorf("memory: event plan: %w", err)
+	}
+	entry.Events = model.CloneEventDescriptors(entry.Events)
 	entry, err = cloneJSON(entry)
 	if err != nil {
 		return model.Changeset{}, err
@@ -492,7 +499,8 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	}
 	// Allocation and validation are complete. Epoch and publication share this
 	// mutex, so a takeover cannot interleave with the final fenced commit.
-	if err := s.checkLease(t.lease); err != nil {
+	// Cancellation during validation/copying must also publish nothing.
+	if err := t.check(ctx); err != nil {
 		return model.Changeset{}, err
 	}
 	s.state = next

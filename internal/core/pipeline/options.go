@@ -33,19 +33,35 @@ type PostBinding struct {
 }
 
 type config struct {
-	ontology   port.Ontology
-	authorizer port.Authorizer
-	mutators   []MutatorBinding
-	validators []ValidatorBinding
-	posts      []PostBinding
-	now        func() time.Time
-	newID      func() (string, error)
-	claimTTL   time.Duration
+	ontology     port.Ontology
+	audit        port.OntologyAudit
+	auditSet     bool
+	eventContext port.EventContextSource
+	authorizer   port.Authorizer
+	mutators     []MutatorBinding
+	validators   []ValidatorBinding
+	posts        []PostBinding
+	now          func() time.Time
+	newID        func() (string, error)
+	claimTTL     time.Duration
 }
 
 type Option func(*config)
 
-func WithOntology(o port.Ontology) Option     { return func(c *config) { c.ontology = o } }
+func WithOntology(o port.Ontology) Option { return func(c *config) { c.ontology = o } }
+
+// WithOntologyAudit opts into complete ordered event plans and conditional
+// notices. The source must resolve actual pinned ontology through tracked reads.
+// Omitting this option retains the legacy nil-plan behavior of existing hosts.
+func WithOntologyAudit(o port.OntologyAudit) Option {
+	return func(c *config) { c.audit, c.auditSet = o, true }
+}
+
+// WithEventContext supplies trusted causal and authorization provenance for
+// audited writes. It is required when an authorizer is installed with audit.
+func WithEventContext(s port.EventContextSource) Option {
+	return func(c *config) { c.eventContext = s }
+}
 func WithAuthorizer(a port.Authorizer) Option { return func(c *config) { c.authorizer = a } }
 func WithMutators(b ...MutatorBinding) Option {
 	return func(c *config) { c.mutators = append(c.mutators, b...) }
@@ -88,6 +104,9 @@ func New(store driver.Store, lease driver.ActiveLease, options ...Option) *Write
 func (w *Writer) configure() error {
 	if w.store == nil || w.lease == nil || w.cfg.now == nil || w.cfg.newID == nil || w.cfg.claimTTL < time.Millisecond {
 		return fmt.Errorf("pipeline requires a store, active lease, clock and positive claim TTL")
+	}
+	if w.cfg.auditSet && (w.cfg.audit == nil || w.cfg.authorizer != nil && w.cfg.eventContext == nil) {
+		return fmt.Errorf("audit requires a pinned ontology source and trusted context for an installed authorizer")
 	}
 	ids := map[string]bool{}
 	add := func(id string, missing bool) error {

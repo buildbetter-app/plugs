@@ -1,21 +1,25 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 )
 
-func runPlug(t *testing.T, input string, args ...string) (string, string, error) {
+func plugBinary(t *testing.T) string {
 	t.Helper()
 	binary := os.Getenv("PLUG_BINARY")
 	if binary == "" {
@@ -24,9 +28,14 @@ func runPlug(t *testing.T, input string, args ...string) (string, string, error)
 	if !filepath.IsAbs(binary) {
 		binary = filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), binary)
 	}
+	return binary
+}
+
+func runPlug(t *testing.T, input string, args ...string) (string, string, error) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd := exec.CommandContext(ctx, plugBinary(t), args...)
 	cmd.Env = append(os.Environ(), "PLUG_SERVER=", "PLUG_TOKEN=")
 	cmd.Stdin = strings.NewReader(input)
 	var out, errOut bytes.Buffer
@@ -36,6 +45,68 @@ func runPlug(t *testing.T, input string, args ...string) (string, string, error)
 		t.Fatalf("executable timed out: %v; %s", ctx.Err(), errOut.String())
 	}
 	return out.String(), errOut.String(), err
+}
+
+func TestExecutableIdleSessionExitsOnSignalBeforeStdinEOF(t *testing.T) {
+	for _, signal := range []os.Signal{syscall.SIGTERM, os.Interrupt} {
+		t.Run(signal.String(), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, plugBinary(t), "--memory", "--json", "session")
+			cmd.Env = append(os.Environ(), "PLUG_SERVER=", "PLUG_TOKEN=")
+			stdin, err := cmd.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stdin.Close()
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var errOut bytes.Buffer
+			cmd.Stderr = &errOut
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			read := make(chan bool, 1)
+			go func() { read <- bufio.NewScanner(stdout).Scan() }()
+			if _, err := io.WriteString(stdin, "[\"ready\"]\n"); err != nil {
+				_ = cmd.Process.Kill()
+				<-done
+				t.Fatal(err)
+			}
+			select {
+			case ok := <-read:
+				if !ok {
+					_ = cmd.Process.Kill()
+					<-done
+					t.Fatal("session did not return the first command result")
+				}
+			case <-time.After(2 * time.Second):
+				_ = cmd.Process.Kill()
+				<-done
+				t.Fatal("session did not become idle")
+			}
+			if err := cmd.Process.Signal(signal); err != nil {
+				_ = cmd.Process.Kill()
+				<-done
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(errOut.String(), "context canceled") {
+					t.Fatalf("signal did not report cancellation: %v; %s", err, errOut.String())
+				}
+			case <-time.After(2 * time.Second):
+				_ = cmd.Process.Kill()
+				<-done
+				t.Fatal("idle session ignored cancellation while stdin remained open")
+			}
+		})
+	}
 }
 
 func TestExecutableMemoryLifecycle(t *testing.T) {

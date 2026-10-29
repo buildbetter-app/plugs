@@ -12,7 +12,7 @@ go_test(
     name = "events_test",
     srcs = glob(["*_test.go"]),
     embed = [":events"],
-    deps = ["//internal/core/events", "//internal/core/model", "//internal/core/pipeline", "//internal/core/port", "//internal/storage/conformance", "//internal/storage/driver", "//internal/storage/memory"],
+    deps = ["//internal/core/events", "//internal/core/model", "//internal/core/pipeline", "//internal/core/port", "//internal/core/service", "//internal/storage/conformance", "//internal/storage/driver", "//internal/storage/memory"],
 )
 
 filegroup(
