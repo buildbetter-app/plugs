@@ -178,15 +178,18 @@ func (c *pageCodec) page(call Call, p serviceParams, previous *service.PagePosit
 	if value.NextCursor != "" {
 		return nil, fmt.Errorf("service returned an unsigned legacy cursor")
 	}
+	pageIncarnation := value.AsOf.Incarnation
+	if pageIncarnation == "" {
+		pageIncarnation = c.incarnation
+	}
+	if previous != nil && (pageIncarnation != previous.AsOf.Incarnation || !sameRevision(value.AsOf.Revision, previous.AsOf.Revision)) {
+		return nil, fmt.Errorf("service changed the pinned page snapshot")
+	}
 	out := pageJSON(value)
 	if value.Next == nil {
 		return out, nil
 	}
 	position := *value.Next
-	pageIncarnation := value.AsOf.Incarnation
-	if pageIncarnation == "" {
-		pageIncarnation = c.incarnation
-	}
 	if position.AsOf.Incarnation == "" {
 		position.AsOf.Incarnation = c.incarnation
 	}
