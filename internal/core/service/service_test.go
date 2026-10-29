@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -345,6 +346,121 @@ func TestCommittedWarningAndIdempotentReplay(t *testing.T) {
 	req.Fields = map[string]any{"title": "Different request"}
 	_, err = f.svc.Create(ctx, anonymous, req, m)
 	wantCode(t, err, "idempotency_key_reused")
+}
+
+func TestNamedWriteOutcomesUseActualReceipts(t *testing.T) {
+	for _, method := range []string{"create", "update", "claim", "comment", "close"} {
+		t.Run(method, func(t *testing.T) {
+			post := &failedPost{}
+			f := setup(t, pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "outcome-post", Subscriber: post}))
+			ctx := context.Background()
+			id, _ := create(t, f, "Original")
+			key := meta(t)
+			call := func() (port.WriteOutcome, error) {
+				switch method {
+				case "create":
+					return f.svc.CreateWithOutcome(ctx, anonymous, CreateRequest{Type: "issue", Fields: map[string]any{"title": "Outcome"}}, key)
+				case "update":
+					return f.svc.UpdateWithOutcome(ctx, anonymous, UpdateRequest{ID: id, Fields: map[string]any{"title": "Updated"}}, key)
+				case "claim":
+					return f.svc.ClaimWithOutcome(ctx, anonymous, ClaimRequest{ID: id}, key)
+				case "comment":
+					return f.svc.CommentWithOutcome(ctx, anonymous, CommentRequest{ID: id, Body: "Outcome"}, key)
+				default:
+					return f.svc.CloseWithOutcome(ctx, anonymous, CloseRequest{ID: id, Reason: "Outcome"}, key)
+				}
+			}
+			first, err := call()
+			if err != nil || first.Replayed || len(first.Commit.Warnings) != 1 {
+				t.Fatalf("first finalized outcome: %+v %v", first, err)
+			}
+			// Advance the head, then replay the actual original receipt. A
+			// revision comparison cannot distinguish these two executions.
+			create(t, f, "Later unrelated write")
+			before, _ := f.store.Meta(ctx)
+			calls := post.calls
+			replay, err := call()
+			after, _ := f.store.Meta(ctx)
+			a, marshalErr := json.Marshal(first.Commit)
+			b, replayMarshalErr := json.Marshal(replay.Commit)
+			if err != nil || marshalErr != nil || replayMarshalErr != nil || !replay.Replayed || !bytes.Equal(a, b) || post.calls != calls || before.Head.String() != after.Head.String() {
+				t.Fatalf("stored result or replay outcome changed: first=%s replay=%s outcome=%+v errors=%v/%v/%v posts=%d/%d", a, b, replay, err, marshalErr, replayMarshalErr, calls, post.calls)
+			}
+		})
+	}
+}
+
+func TestFreshNoopAndDryRunOutcomesAreNotReplayed(t *testing.T) {
+	post := &failedPost{}
+	f := setup(t, pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "outcome-post", Subscriber: post}))
+	ctx := context.Background()
+	id, original := create(t, f, "Unchanged")
+	_, later := create(t, f, "Later")
+	key := meta(t)
+	req := UpdateRequest{ID: id, Fields: map[string]any{"title": "Unchanged"}}
+	calls := post.calls
+	fresh, err := f.svc.UpdateWithOutcome(ctx, anonymous, req, key)
+	if err != nil || fresh.Replayed || fresh.Commit.Revision.String() != later.Revision.String() || fresh.Commit.Results[0].Revision.String() != original.Revision.String() || len(fresh.Commit.Warnings) != 0 || post.calls != calls {
+		t.Fatalf("fresh no-op confused with replay: %+v %v", fresh, err)
+	}
+	replay, err := f.svc.UpdateWithOutcome(ctx, anonymous, req, key)
+	if err != nil || !replay.Replayed || replay.Commit.Revision.String() != fresh.Commit.Revision.String() {
+		t.Fatalf("no-op receipt replay: %+v %v", replay, err)
+	}
+	claimed, err := f.svc.ClaimWithOutcome(ctx, anonymous, ClaimRequest{ID: id}, meta(t))
+	if err != nil || claimed.Replayed {
+		t.Fatalf("first claim: %+v %v", claimed, err)
+	}
+	f.now = f.now.Add(time.Minute)
+	key = meta(t)
+	calls = post.calls
+	fresh, err = f.svc.ClaimWithOutcome(ctx, anonymous, ClaimRequest{ID: id}, key)
+	if err != nil || fresh.Replayed || !fresh.Commit.LeaseExpiresAt.Equal(*claimed.Commit.LeaseExpiresAt) || fresh.Commit.LeaseTtlMs.String() != claimed.Commit.LeaseTtlMs.String() || post.calls != calls {
+		t.Fatalf("fresh same-holder claim changed durable lease or replay flag: %+v %v", fresh, err)
+	}
+	f.now = f.now.Add(6 * time.Minute)
+	replay, err = f.svc.ClaimWithOutcome(ctx, anonymous, ClaimRequest{ID: id}, key)
+	if err != nil || !replay.Replayed || !replay.Commit.LeaseExpiresAt.Equal(*fresh.Commit.LeaseExpiresAt) || post.calls != calls {
+		t.Fatalf("claim replay did not use original receipt: %+v %v", replay, err)
+	}
+	before, _ := f.store.Meta(ctx)
+	key = meta(t)
+	key.DryRun = true
+	for range 2 {
+		dry, err := f.svc.CreateWithOutcome(ctx, anonymous, CreateRequest{Type: "issue", Fields: map[string]any{"title": "Dry run"}}, key)
+		if err != nil || dry.Replayed || !dry.Commit.WouldCommit || post.calls != calls {
+			t.Fatalf("dry run became a replay or published posts: %+v %v", dry, err)
+		}
+	}
+	after, _ := f.store.Meta(ctx)
+	if before.Head.String() != after.Head.String() {
+		t.Fatal("dry runs advanced storage head")
+	}
+}
+
+type legacyOnlyWriter struct {
+	model.Writer
+	calls int
+}
+
+func (w *legacyOnlyWriter) Apply(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (model.Commit, error) {
+	w.calls++
+	return w.Writer.Apply(ctx, by, cs, meta)
+}
+
+func TestOutcomeMethodsRequireActualOutcomeWriterBeforeWriting(t *testing.T) {
+	f := setup(t)
+	legacy := &legacyOnlyWriter{Writer: f.writer}
+	f.svc.writer = legacy
+	req := CreateRequest{Type: "issue", Fields: map[string]any{"title": "Legacy"}}
+	_, err := f.svc.CreateWithOutcome(context.Background(), anonymous, req, meta(t))
+	wantCode(t, err, "internal_error")
+	if legacy.calls != 0 {
+		t.Fatal("outcome refusal happened after a legacy write")
+	}
+	if _, err := f.svc.Create(context.Background(), anonymous, req, meta(t)); err != nil || legacy.calls != 1 {
+		t.Fatalf("legacy writer compatibility: %v calls=%d", err, legacy.calls)
+	}
 }
 
 func TestLeaseOwnershipExpiryAndLostStorageLease(t *testing.T) {
