@@ -16,20 +16,20 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(c.Descriptors()); got != 80 {
+	if got := len(c.Descriptors()); got != 81 {
 		t.Fatalf("method inventory = %d", got)
 	}
 	if got := len(c.ErrorCatalog()); got != 61 {
 		t.Fatalf("error inventory = %d", got)
 	}
-	if digest(catalogJSON) != "163e3d12ae7615acefb7c1a82bebc98d0106cdaabf248ab5bf62cd0a684b6c14" {
+	if digest(catalogJSON) != "9c1a66e78923a8c9f5aad7d3119f92ba788082b5fe3fd54b299d04c283e2225e" {
 		t.Fatal("bounded source snapshot changed; reconcile approved contract")
 	}
 	// These changes affect one of two independent descriptor representations.
 	for _, change := range []struct{ before, after string }{
 		{`"x-agent-core": true`, `"x-agent-core": false`},
-		{`"methodCount": 80`, `"methodCount": 79`},
-		{`"nameSha256": "355deea0`, `"nameSha256": "455deea0`},
+		{`"methodCount": 81`, `"methodCount": 80`},
+		{`"nameSha256": "925afc30`, `"nameSha256": "825afc30`},
 		{`"stability": "v1"`, `"stability": ""`},
 		{`"#/components/errors/RateLimited"`, `"#/components/errors/NotARealError"`},
 	} {
@@ -58,7 +58,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if err = json.Unmarshal(generated, &document); err != nil {
 		t.Fatal(err)
 	}
-	if len(document.Methods) != 80 {
+	if len(document.Methods) != 81 {
 		t.Fatal("generator dropped inventory methods")
 	}
 	for _, method := range document.Methods {
@@ -108,6 +108,49 @@ func TestBoundedCatalogParity(t *testing.T) {
 	}
 }
 
+func TestDecidedSessionMethodsCannotDisappearTogether(t *testing.T) {
+	for _, missing := range []string{"session.open", "session.close", "presence.set"} {
+		t.Run(missing, func(t *testing.T) {
+			value, err := DecodeJSON(catalogJSON)
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc := value.(map[string]any)
+			registry := doc["x-method-registry"].(map[string]any)
+			without := func(items []any) []any {
+				var kept []any
+				for _, item := range items {
+					if item.(map[string]any)["name"] != missing {
+						kept = append(kept, item)
+					}
+				}
+				return kept
+			}
+			doc["methods"] = without(doc["methods"].([]any))
+			entries := without(registry["methods"].([]any))
+			registry["methods"] = entries
+			registry["methodCount"] = len(entries)
+			raw, err := json.Marshal(entries)
+			if err != nil {
+				t.Fatal(err)
+			}
+			registry["descriptorSha256"] = digest(raw)
+			var names bytes.Buffer
+			for _, item := range entries {
+				names.WriteString(item.(map[string]any)["name"].(string) + "\n")
+			}
+			registry["nameSha256"] = digest(names.Bytes())
+			raw, err = json.Marshal(doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = ParseCatalog(raw); err == nil {
+				t.Fatal("mutually omitted decided method was accepted after recomputing both inventory digests")
+			}
+		})
+	}
+}
+
 func TestStrictParameters(t *testing.T) {
 	c, err := DefaultCatalog()
 	if err != nil {
@@ -121,6 +164,9 @@ func TestStrictParameters(t *testing.T) {
 		{"bead.create", `{"type":"issue","fields":{},"parent":{"id":"","branch":1e1000000000}}`, true},
 		{"bead.get", `{"id":{"key":""},"asOf":{"revision":1.0e1000000000}}`, true},
 		{"bead.ready", `{"limit":1.0e3,"filter":{"types":["issue"]}}`, true},
+		{"session.close", `{"sessionId":"session-1"}`, true},
+		{"session.close", `{}`, false},
+		{"session.close", `{"sessionId":"session-1","unexpected":true}`, false},
 		{"history.redact", `{"ref":{"id":"p-1"},"paths":["description"],"humanPresence":{"mode":"presence_check","challenge":"test","proof":"test"}}`, true},
 		{"history.redact", `{"ref":{"id":"p-1"},"paths":[],"humanPresence":{"mode":"presence_check","challenge":"test","proof":"test"}}`, false},
 		{"bead.ready", `{"filter":{"unknown":true}}`, false},
@@ -140,6 +186,7 @@ func TestStrictParameters(t *testing.T) {
 		{"rpc.methods", `{"_meta":{"return":"brief"}}`, false},
 		{"rpc.methods", `{"_meta":{"principal":{"kind":"user","id":"admin"}}}`, false},
 		{"rpc.methods", `{"_meta":{"replayed":false}}`, false},
+		{"bead.claim", `{"id":{"id":"p-1"},"_meta":{"sameClaim":true,"idempotencyKey":"550e8400-e29b-41d4-a716-446655440000"}}`, false},
 		{"rpc.methods", `{"_meta":{"agent":"a","agent":"b"}}`, false},
 		{"rpc.methods", `null`, false},
 		{"rpc.methods", `[]`, false},

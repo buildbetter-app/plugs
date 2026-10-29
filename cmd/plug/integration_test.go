@@ -113,3 +113,66 @@ func TestExecutableRefusesUnsupportedAndStopsSession(t *testing.T) {
 		t.Fatalf("session refusal: %q %q %v", out, errOut, err)
 	}
 }
+
+func TestExecutableNoopAndClaimReplayPreserveHistoryAndLease(t *testing.T) {
+	claimKey := strings.Repeat("c", 64)
+	commands := [][]string{
+		{"create", "--title", "Stable"},
+		{"update", "@last", "--title", "Stable"},
+		{"claim", "@last"},
+		{"get", "@last"},
+		{"claim", "@last", "--idempotency-key", claimKey},
+		{"get", "@last"},
+		{"comment", "@last", "--body", "Later write"},
+		{"claim", "@last", "--idempotency-key", claimKey},
+		{"get", "@last"},
+		{"history", "--as-of", "3", "--id", "@last"},
+	}
+	var input strings.Builder
+	for _, command := range commands {
+		raw, err := json.Marshal(command)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input.Write(raw)
+		input.WriteByte('\n')
+	}
+	out, errOut, err := runPlug(t, input.String(), "--memory", "--json", "session")
+	if err != nil {
+		t.Fatalf("plug failed: %v\nstdout: %s\nstderr: %s", err, out, errOut)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != len(commands) {
+		t.Fatalf("wanted %d results: %s", len(commands), out)
+	}
+	results := make([]map[string]any, len(lines))
+	for i, line := range lines {
+		decoded, err := wire.DecodeJSON([]byte(line))
+		if err != nil {
+			t.Fatal(err)
+		}
+		results[i] = decoded.(map[string]any)
+	}
+	for _, pair := range [][2]int{{0, 1}, {1, 1}, {2, 2}, {4, 2}, {6, 3}, {7, 2}} {
+		if results[pair[0]]["revision"] != json.Number(strconv.Itoa(pair[1])) {
+			t.Fatalf("no-op or replay minted a revision: %s", lines[pair[0]])
+		}
+	}
+	for _, i := range []int{4, 7} {
+		if results[i]["leaseTtlMs"] != results[2]["leaseTtlMs"] || results[i]["leaseExpiresAt"] != results[2]["leaseExpiresAt"] {
+			t.Fatalf("claim changed original TTL or expiry: %s", lines[i])
+		}
+	}
+	lease, _ := json.Marshal(results[3]["lease"])
+	for _, i := range []int{5, 8} {
+		got, _ := json.Marshal(results[i]["lease"])
+		if !bytes.Equal(got, lease) {
+			t.Fatalf("durable lease changed after no-op/replay: before %s after %s", lease, got)
+		}
+	}
+	bead := results[8]["bead"].(map[string]any)
+	history := results[9]["items"].([]any)
+	if bead["revision"] != json.Number("3") || len(history) != 1 || history[0].(map[string]any)["revision"] != json.Number("3") {
+		t.Fatalf("no-op/replay changed committed history: %s", out)
+	}
+}
