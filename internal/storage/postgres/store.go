@@ -180,7 +180,7 @@ func (s *Store) Health(ctx context.Context) (driver.StoreHealth, error) {
 	role := "standby"
 	s.mu.Lock()
 	for l := range s.leases {
-		if l.owner == owner && active {
+		if l.owner == owner && active && !l.ended() {
 			role = "active"
 		}
 	}

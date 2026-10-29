@@ -70,7 +70,6 @@ func (s *Store) Lease(ctx context.Context, holder string, ttl time.Duration) (dr
 		if err = s.check(ctx); err != nil {
 			return nil, err
 		}
-		started := time.Now()
 		tx, e := s.db.BeginTx(ctx, nil)
 		if e != nil {
 			return nil, e
@@ -102,6 +101,7 @@ func (s *Store) Lease(ctx context.Context, holder string, ttl time.Duration) (dr
 			_ = tx.Rollback()
 			return nil, fmt.Errorf("%w: postgres lease epoch exhausted", driver.ErrUnsupported)
 		}
+		started := time.Now()
 		_, e = tx.ExecContext(ctx, `UPDATE plug_postgres.lease SET epoch=$1,owner=$2,holder=$3,expires=clock_timestamp()+($4::bigint*interval '1 microsecond') WHERE singleton`, decimal(n+1), owner, holder, ttl.Microseconds())
 		if e == nil {
 			e = tx.Commit()
@@ -171,7 +171,8 @@ func (s *Store) checkLease(ctx context.Context, q querier, lease driver.ActiveLe
 func (l *activeLease) Renew(ctx context.Context) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.ended() {
+	if l.ended() || !time.Now().Before(l.timerDeadline) {
+		l.signal()
 		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
 	}
 	if err := l.store.check(ctx); err != nil {
@@ -186,6 +187,10 @@ func (l *activeLease) Renew(ctx context.Context) error {
 	}
 	if err != nil {
 		return err
+	}
+	if !time.Now().Before(started.Add(l.ttl)) {
+		l.signal()
+		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
 	}
 	l.deadline(started.Add(l.ttl))
 	return nil
