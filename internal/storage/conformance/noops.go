@@ -49,7 +49,7 @@ func noopReceipts(t *testing.T, factory Factory) {
 	}
 	r := read(t, ctx, s, meta, nil)
 	cached, err := r.IdempotencyByKey(ctx, "system:conformance", "", h.Method, h.IdempotencyKey)
-	if err != nil || cached == nil || cached.RequestHash != h.RequestHash || !reflect.DeepEqual(cached.Commit, first) || !reflect.DeepEqual(cached.Changeset, model.Changeset{}) {
+	if err != nil || cached == nil || cached.ResponsePending || cached.RequestHash != h.RequestHash || !reflect.DeepEqual(cached.Commit, first) || !reflect.DeepEqual(cached.Changeset, model.Changeset{}) {
 		t.Fatalf("receipt=%+v %v", cached, err)
 	}
 	if entry, err := r.ChangesetByKey(ctx, "system:conformance", "", h.Method, h.IdempotencyKey); err != nil || entry != nil {
@@ -96,11 +96,16 @@ func noopReceipts(t *testing.T, factory Factory) {
 		t.Fatal("ResponseFinalizer capability missing")
 	}
 	warnings := []model.Warning{{Code: "post_subscriber_failed", Message: "post"}}
-	if err := finalizer.FinalizeResponse(ctx, lease, "system:conformance", "", h.Method, h.IdempotencyKey, first.Revision, warnings); err != nil {
-		t.Fatal(err)
+	if err := finalizer.FinalizeResponse(ctx, lease, "system:conformance", "", h.Method, h.IdempotencyKey, first.Revision, warnings); !errors.Is(err, driver.ErrConflict) {
+		t.Fatalf("immutable no-op accepted post outcome: %v", err)
+	}
+	for _, empty := range [][]model.Warning{nil, {}} {
+		if err := finalizer.FinalizeResponse(ctx, lease, "system:conformance", "", h.Method, h.IdempotencyKey, first.Revision, empty); err != nil {
+			t.Fatalf("empty no-op finalization: %v", err)
+		}
 	}
 	final, err := commit(h)
-	if err != nil || len(final.Warnings) != 1 || final.Revision.String() != "1" {
+	if err != nil || !reflect.DeepEqual(final, first) {
 		t.Fatalf("finalized no-op replay=%+v %v", final, err)
 	}
 	// A deposed transaction must not publish even receipt-only metadata.
