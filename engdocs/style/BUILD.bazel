@@ -1,1 +1,7 @@
 exports_files(["lexicon.toml"])
+
+filegroup(
+    name = "lexicon_files",
+    srcs = ["BUILD.bazel", "lexicon.toml"],
+    visibility = ["//visibility:public"],
+)

@@ -154,6 +154,18 @@ func quotedValues(value string) ([]string, error) {
 // It scans every supplied path; callers that retain protected paths must
 // filter them before calling this function.
 func CheckFiles(files map[string][]byte, cfg Config) ([]Finding, error) {
+	return checkFiles(files, cfg, nil)
+}
+
+// CheckFilesWithPolicy checks files using the checked-in tree policy. The
+// policy is intentionally separate from the vocabulary config: retained CI
+// and design assets have an explicit protected boundary while B1-owned files
+// are scanned normally.
+func CheckFilesWithPolicy(files map[string][]byte, cfg Config, policy TreePolicy) ([]Finding, error) {
+	return checkFiles(files, cfg, &policy)
+}
+
+func checkFiles(files map[string][]byte, cfg Config, policy *TreePolicy) ([]Finding, error) {
 	var findings []Finding
 	paths := make([]string, 0, len(files))
 	for path := range files {
@@ -162,6 +174,21 @@ func CheckFiles(files map[string][]byte, cfg Config) ([]Finding, error) {
 	sort.Strings(paths)
 	for _, path := range paths {
 		content := files[path]
+		if policy != nil {
+			disposition, err := policy.disposition(path, content)
+			if err != nil {
+				return nil, err
+			}
+			switch disposition {
+			case dispositionBinary:
+				continue
+			case dispositionProtected:
+				if !utf8.Valid(content) {
+					return nil, fmt.Errorf("%s: protected content is not valid UTF-8 and is not a declared binary", path)
+				}
+				continue
+			}
+		}
 		if !utf8.Valid(content) {
 			return nil, fmt.Errorf("%s: content is not valid UTF-8", path)
 		}
@@ -183,9 +210,9 @@ func CheckFiles(files map[string][]byte, cfg Config) ([]Finding, error) {
 	return findings, nil
 }
 
-// CheckTree checks tracked files in root. The protected CI directory is
-// deliberately deferred to its owner task; pass PLUG_LEXICON_INCLUDE_PROTECTED=1
-// to include it in a local audit.
+// CheckTree checks tracked files in root using the explicit B1 policy. It does
+// not consult environment variables: a newly tracked protected path or an
+// unlisted binary fails closed.
 func CheckTree(root string) ([]Finding, error) {
 	if root == "" {
 		return nil, errors.New("empty repository root")
@@ -210,21 +237,79 @@ func CheckTree(root string) ([]Finding, error) {
 		if raw == "" {
 			continue
 		}
-		if strings.HasPrefix(raw, ".github/") && os.Getenv("PLUG_LEXICON_INCLUDE_PROTECTED") != "1" {
-			continue
-		}
-		// These files are copied planning inputs. They remain byte-for-byte
-		// until the documentation owner publishes the clean ADR set.
-		if strings.HasPrefix(raw, "engdocs/design/plug/") && os.Getenv("PLUG_LEXICON_INCLUDE_PROTECTED") != "1" {
-			continue
-		}
 		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(raw)))
 		if err != nil {
 			return nil, fmt.Errorf("read tracked file %s: %w", raw, err)
 		}
 		files[raw] = b
 	}
-	return CheckFiles(files, cfg)
+	return CheckFilesWithPolicy(files, cfg, DefaultTreePolicy())
+}
+
+// CheckRunfiles checks a hermetic tree assembled by a Bazel data target. It
+// deliberately walks the supplied root instead of invoking git, which is not
+// available in a Bazel sandbox.
+func CheckRunfiles(root string) ([]Finding, error) {
+	if root == "" {
+		return nil, errors.New("empty runfiles root")
+	}
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("runfiles root is not a directory: %s", root)
+	}
+	cfg, err := LoadConfig(filepath.Join(root, "engdocs/style/lexicon.toml"))
+	if err != nil {
+		return nil, err
+	}
+	files := make(map[string][]byte)
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		// Bazel places the test executable beside source runfiles under a
+		// generated *_ directory. It is not part of the checked-in tree and
+		// may be a binary; source data symlinks resolve outside bazel-out.
+		if entry.Type()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(filepath.ToSlash(target), "/bazel-out/") {
+				return nil
+			}
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		// Manifest-based and Windows runfiles may materialize generated test
+		// outputs as regular files. Bazel names those output directories with a
+		// trailing underscore; source package directories in this tree do not.
+		for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+			if strings.HasSuffix(part, "_") {
+				return nil
+			}
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read runfiles file %s: %w", rel, err)
+		}
+		files[filepath.ToSlash(rel)] = content
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk runfiles: %w", err)
+	}
+	return CheckFilesWithPolicy(files, cfg, DefaultTreePolicy())
 }
 
 func isProvenance(path string, zones []string) bool {

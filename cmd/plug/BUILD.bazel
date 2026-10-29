@@ -6,3 +6,9 @@ go_binary(
     importpath = "github.com/buildbetter-app/plugs/cmd/plug",
     visibility = ["//visibility:public"],
 )
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

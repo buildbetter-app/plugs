@@ -1,6 +1,6 @@
 # Plug: clean-room plan
 
-Status: proposal, 2026-10-28, re-planned for an agent swarm. This plan follows [design.md](design.md), the recorded [design review](review-2026-10-27.md), and the [decision ledger](decisions-needed.md). The Open table in `design.md` is empty; only the plan-level questions in [Decisions for Nikhil](#decisions-for-nikhil) remain.
+Status: proposal, 2026-10-28, re-planned for an agent swarm. This plan follows [design.md](design.md), the recorded [design review](../../adr/0005-plug-design-decisions.md), and the [decision ledger](decisions-needed.md). The Open table in `design.md` is empty; only the plan-level questions in [Decisions for Nikhil](#decisions-for-nikhil) remain.
 
 ## Completion contract
 
@@ -18,7 +18,7 @@ The 2026-10-31 stop line is the end of the unlimited-budget burst, not a release
 
 ## Binding decisions
 
-The following decisions are carried from `design.md` and [review-2026-10-27.md](review-2026-10-27.md). They are inputs to the graph, not questions for an implementation agent.
+The following decisions are carried from `design.md` and [../../adr/0005-plug-design-decisions.md](../../adr/0005-plug-design-decisions.md). They are inputs to the graph, not questions for an implementation agent.
 
 ### Product, API, and repository
 

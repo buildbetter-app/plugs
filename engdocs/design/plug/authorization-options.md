@@ -1,6 +1,6 @@
 # Authorization: a Cedar-style model?
 
-Analysis for Nikhil's question of 2026-10-28 ([review, open question 1](review-2026-10-27.md#open-questions)). Revised the same day after a critic pass.
+Analysis for Nikhil's question of 2026-10-28 (recorded in the [decision record](../../adr/0005-plug-design-decisions.md#decisions)). Revised the same day after a critic pass.
 
 **Answer.** Adopt the data contract now. Adopt Cedar if the spike passes. Your concern is the right one: Cedar does no I/O, so Plug has to plan every read a policy can trigger and every list it must filter. P4 and P50 already fix most of those reads. Write them down as a contract, accept only policies that compile onto it, and measure the list plans on Postgres and SQLite at 100,000 beads before changing P16. If Cedar is adopted, put it where the checked decision already points: **core hosts the Cedar evaluator and compiler, authorization plugins supply policies as data, and with no policy plugin nothing runs and every request is allowed** (option (v) below). Authorization stays optional, and no plugin has to rebuild core's data plane. If the spike fails, authorization is revisited altogether, leaning toward simple Linear-style team permissions (AZ1, decided 2026-10-28).
 
@@ -232,7 +232,7 @@ If the recommendation is taken:
 | AZ2 | How to decide P16 | (a) the narrowed spike above; (b) decide now | **(a)**, with the stated fallback |
 | AZ5 | How the chain combines (P28a, open question 2) | (a) the first decision wins, as decided; (b) any link may deny or append context, only the end allows, no decision means deny; (c) one Cedar evaluation over merged fragments | **(b) with (c)** for Cedar policies. Under (a), an earlier Allow skips a later forbid, the guardrail Cedar is built around |
 | AZ6 | Policy errors | (a) Cedar's default: skip; (b) any error denies; (c) an erroring forbid denies, an erroring permit is skipped, alerted and reported by `authz.verify` | **(c).** Only an erroring forbid is a safety risk; (b) lets one faulty permit from one plugin deny what other plugins allow. Apply-time and ontology revalidation make errors rare |
-| AZ8 | "Fixed in v1: role-scoped workflow permissions" ([review](review-2026-10-27.md#decisions)) against "out of scope for v1" ([A3](design.md#a3-ontology-and-enforcement)) | (a) included in v1; (b) fixed, not customizable | Needs your reading |
+| AZ8 | "Fixed in v1: role-scoped workflow permissions" ([review](../../adr/0005-plug-design-decisions.md#decisions)) against "out of scope for v1" ([A3](design.md#a3-ontology-and-enforcement)) | (a) included in v1; (b) fixed, not customizable | Needs your reading |
 | AZ9 | The A3 `permission` guard, tied to AZ8 and P23b (tentative) | (a) stays in the fixed catalog and delegates to the chain, with a `transition` action and the target status in context; (b) removed in favor of a `transition` action; (c) stays a plain role check | **(a).** Keeps P23b's fixed catalog. With no authorization plugin it allows |
 
 ### Decide after the spike
@@ -246,7 +246,7 @@ If the recommendation is taken:
 
 ## Sources
 
-Repository (relative to this file): [review-2026-10-27.md](review-2026-10-27.md), [design.md](design.md) (A2 to A7 and the decision table), [transcript.md](transcript.md) ([05:05]), [ready.go](../../../internal/storage/sqlbuild/ready.go) (hybrid order, lines 57 to 65), [sqlbuild.go](../../../internal/storage/sqlbuild/sqlbuild.go), [claim.go](../../../internal/storage/issueops/claim.go). Working research notes are outside the repository in `/tmp/plug-authz/`. On partial evaluation they are wrong: r1 says cedar-go has none, and r2 says its partial evaluator is internal only. This document relies on the cedar-go source instead.
+Repository (relative to this file): [decision record](../../adr/0005-plug-design-decisions.md#decisions), [design.md](design.md) (A2 to A7 and the decision table), [ready.go](../../../internal/storage/sqlbuild/ready.go) (hybrid order, lines 57 to 65), [sqlbuild.go](../../../internal/storage/sqlbuild/sqlbuild.go), [claim.go](../../../internal/storage/issueops/claim.go). Working research notes are outside the repository in `/tmp/plug-authz/`. On partial evaluation they are wrong: r1 says cedar-go has none, and r2 says its partial evaluator is internal only. This document relies on the cedar-go source instead.
 
 External sources are linked where they are used.
 

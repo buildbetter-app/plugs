@@ -1,15 +1,14 @@
 # Plug: current state and desired state
 
 Plug is the planned rename and re-architecture of this Beads fork. This
-document turns Nikhil's voice memo ([transcript](transcript.md), timestamps in
-brackets below) into a picture of where the code is today and where the memo
-wants it to go.
+document summarizes the accepted decisions in the [decision record](../../adr/0005-plug-design-decisions.md)
+into a picture of where the code is today and where the design wants it to go.
 
 - **Current state** describes the imported Beads source pinned in
   [FORK.md](../../../FORK.md), checked against the code on 2026-10-26. The
   [architecture guide](../../architecture-guide/README.md) has the detail.
-- **Desired state** is the memo's vision. None of it is implemented, and the
-  memo leaves several parts open on purpose; see [open questions](#open-questions).
+- **Desired state** is the design's vision. None of it is implemented, and the
+  design leaves several parts open on purpose; see [open questions](#open-questions).
 
 Nikhil answered the open questions on 2026-10-27. The
 [refined design](design.md) records those decisions (D1 to D13) and

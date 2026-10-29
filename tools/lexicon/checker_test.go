@@ -1,6 +1,8 @@
 package lexicon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -86,5 +88,55 @@ func TestCheckTreeFailsClosedOutsideGit(t *testing.T) {
 	}
 	if _, err := CheckTree(root); err == nil {
 		t.Fatal("a non-repository root was accepted")
+	}
+}
+
+func TestPolicyProtectsDeclaredPathsAndRejectsUnknownProtectedBinary(t *testing.T) {
+	content := []byte("legacy vocabulary")
+	digest := sha256.Sum256(content)
+	policy := TreePolicy{
+		ProtectedPrefixes:       []string{".ci/"},
+		StrictProtectedPrefixes: []string{".ci/"},
+		ProtectedPaths:          map[string]struct{}{".ci/known.txt": {}},
+		BinarySHA256:            map[string]string{".ci/known.bin": hex.EncodeToString(digest[:])},
+	}
+	cfg := testConfig()
+	findings, err := CheckFilesWithPolicy(map[string][]byte{
+		".ci/known.txt": []byte{119, 105, 115, 112},
+	}, cfg, policy)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("declared protected text was not skipped: findings=%#v err=%v", findings, err)
+	}
+	if _, err := CheckFilesWithPolicy(map[string][]byte{
+		".ci/unknown.bin": {0xff},
+	}, cfg, policy); err == nil || !strings.Contains(err.Error(), "unlisted protected path") {
+		t.Fatalf("unknown protected path did not fail closed: %v", err)
+	}
+	if _, err := CheckFilesWithPolicy(map[string][]byte{
+		".ci/known.bin": []byte("different"),
+	}, cfg, policy); err == nil || !strings.Contains(err.Error(), "SHA-256") {
+		t.Fatalf("binary hash mismatch did not fail closed: %v", err)
+	}
+}
+
+func TestPolicyAcceptsOnlyDeclaredBinaryBytes(t *testing.T) {
+	content := []byte("legacy vocabulary")
+	digest := sha256.Sum256(content)
+	policy := TreePolicy{
+		ProtectedPrefixes:       []string{".ci/"},
+		StrictProtectedPrefixes: []string{".ci/"},
+		ProtectedPaths:          map[string]struct{}{".ci/known.bin": {}},
+		BinarySHA256:            map[string]string{".ci/known.bin": hex.EncodeToString(digest[:])},
+	}
+	findings, err := CheckFilesWithPolicy(map[string][]byte{".ci/known.bin": content}, testConfig(), policy)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("declared binary was not accepted: findings=%#v err=%v", findings, err)
+	}
+}
+
+func TestPolicyRejectsInvalidUTF8OutsideDeclaredBinary(t *testing.T) {
+	policy := TreePolicy{}
+	if _, err := CheckFilesWithPolicy(map[string][]byte{"README.md": {0xff}}, testConfig(), policy); err == nil {
+		t.Fatal("invalid UTF-8 outside a declared binary was accepted")
 	}
 }

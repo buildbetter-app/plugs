@@ -1,6 +1,6 @@
 # Plug: refined design
 
-Status: proposal, updated 2026-10-28 with Nikhil's decisions from the [design review](review-2026-10-27.md) and the [authorization analysis](authorization-options.md). Nothing is implemented. Earlier sources are the memo [transcript](transcript.md) and the [current and desired state](current-and-desired-state.md) overview; where they disagree with this document, this one supersedes them.
+Status: proposal, updated 2026-10-28 with Nikhil's decisions from the [design review](../../adr/0005-plug-design-decisions.md) and the [authorization analysis](authorization-options.md). Nothing is implemented. Earlier source material is summarized in the [decision record](../../adr/0005-plug-design-decisions.md) and the [current and desired state](current-and-desired-state.md) overview; where they disagree with this document, this one supersedes them.
 
 ## Summary
 
@@ -24,7 +24,7 @@ Nothing in the design itself is open. Nikhil answered every row on 2026-10-28; t
 
 ### Made
 
-Every decision so far. D1 to D13 are Nikhil's answers of 2026-10-27, recorded in the [overview](current-and-desired-state.md#open-questions); D17 to D31 are the review's chat decisions, numbered in the order they appear there. Each ID links to its source, where timestamps and wording are kept; P and AZ IDs keep their original numbers. P27 became D16; P33 and P34 were removed with the fork-and-flush aspect (see [How this was produced](#how-this-was-produced)).
+Every decision so far. D1 to D13 are Nikhil's answers of 2026-10-27, recorded in the [overview](current-and-desired-state.md#open-questions); D17 to D31 are the review's chat decisions, numbered in the order they appear there. Each ID links to its scrubbed decision source; P and AZ IDs keep their original numbers. P27 became D16; P33 and P34 were removed with the fork-and-flush aspect (see [How this was produced](#how-this-was-produced)).
 
 | ID | Decision |
 |---|---|
@@ -43,131 +43,131 @@ Every decision so far. D1 to D13 are Nikhil's answers of 2026-10-27, recorded in
 | [D13](current-and-desired-state.md#open-questions) | Big choices are surfaced to Nikhil as decisions |
 | D14 | Every graph item is a bead; `issue` is one type |
 | D15 | The repository stays `buildbetter-app/plugs` |
-| [D16](review-2026-10-27.md#decisions) | Agents plan plugin changes; only a `user` principal applies them (was P27), enforced only with an authentication provider (D18) |
-| [D17](review-2026-10-27.md#decisions) | Authorization exists only as optional plugins; core has no authorizer, and with none installed every request is allowed |
-| [D18](review-2026-10-27.md#decisions) | Core keeps no authorization of principals: D16 stays as platform safety; plugin sandboxing stays in the host; rules are plugin data core evaluates; the authentication plugin issues scoped agent tokens and the chain enforces them |
-| [D19](review-2026-10-27.md#decisions) | Policy enforcement is completely optional |
-| [D20](review-2026-10-27.md#decisions) | Policy enforcement requires authentication; `plugin.plan` refuses an authorization plugin without a provider |
-| [D21](review-2026-10-27.md#decisions) | An anonymous principal mode, the default with no authentication provider |
-| [D22](review-2026-10-27.md#decisions) | Anonymous mode serves only localhost, with no override |
-| [D23](review-2026-10-27.md#decisions) | Authorization plugins form a chain; how links combine is AZ5 |
-| [D24](review-2026-10-27.md#decisions) | Project overlay definitions overwrite base definitions with the same key |
-| [D25](review-2026-10-27.md#decisions) | Fixed in v1: bead templates, role-scoped workflow permissions, priorities, dependency types |
-| [D26](review-2026-10-27.md#decisions) | An old version is readable only by someone who can read the bead now |
-| [D27](review-2026-10-27.md#decisions) | Local mode runs the server, and its plugins, in the CLI process |
-| [D28](review-2026-10-27.md#decisions) | Partial failures are `result.warnings` from the error catalog, never an `error` beside a `result` |
-| [D29](review-2026-10-27.md#decisions) | Two kinds of custom UI: same-origin `ui` plugins on session cookies, and apps on other origins that sign users in with OIDC PKCE as public clients and send short-lived bearer tokens, only from an operator-configured CORS allowlist (was P32e (b)) |
-| [D30](review-2026-10-27.md#decisions) | Plugin UI bundles are prebuilt and committed at the pinned commit, served as-is after a digest check; no JavaScript build on the server in v1 (was P32c (a)) |
-| [D31](review-2026-10-27.md#decisions) | Declarative panels, columns and buttons stay beside iframes; iframes are for custom logic and drawing (was P32d (a)) |
-| [P1](review-2026-10-27.md#decisions) | (b) Clean-room rewrite, not strangler slices ([plan](#clean-room-plan)) |
-| [P2](review-2026-10-27.md#decisions) | (a) One typed `ChangeSet`, a union over all change kinds |
-| [P3](review-2026-10-27.md#decisions) | Pre subscribers (before the transaction, may change the write) and post subscribers (after commit, before the answer, cannot) |
-| [P4](review-2026-10-27.md#decisions) | (a) Authorization data derived in the write's transaction, when a plugin is installed |
-| [P5](review-2026-10-27.md#decisions) | (a) Hard fork |
-| [P6](review-2026-10-27.md#decisions) | (a) A Plug change log in every driver |
-| [P7](review-2026-10-27.md#decisions) | (a) Record store plus `sqlkit` |
-| [P8](review-2026-10-27.md#decisions) | (a) Mode 2 runs in-process on wazero |
-| [P9](review-2026-10-27.md#decisions) | (a) Mutators in dataflow order, one owner per scalar field |
-| [P10](review-2026-10-27.md#decisions) | (a) Ontology stored on the server, versioned, migration-like |
-| [P11](review-2026-10-27.md#decisions) | (a) Go registry generating OpenRPC |
-| [P12](review-2026-10-27.md#decisions) | (a) Many projects in one graph |
-| [P13](review-2026-10-27.md#decisions) | (a) Manifest sets maximum reads and owns; the ontology narrows them per type |
-| [P14](review-2026-10-27.md#decisions) | (a) Authorization plugins compiled in only, for v1 |
-| [P15](review-2026-10-27.md#decisions) | Storage and secret providers mode 1 only; `authz` mode 1 in v1; wasm sync subscribers by grant |
-| [P16](review-2026-10-27.md#decisions) | The narrowed spike validates the core-hosted Cedar path; if it fails, authorization is revisited toward simple Linear-style team permissions (AZ1, AZ2) |
-| [P17](review-2026-10-27.md#decisions) | (b) Trackers: export plus one-shot import |
-| [P18](review-2026-10-27.md#decisions) | (a) Reserve `Ref.Branch`, build nothing |
-| [P19](review-2026-10-27.md#decisions) | Secrets in dumps as references, ciphertext by flag |
-| [P20](review-2026-10-27.md#decisions) | Full-history dumps, head-only by flag |
-| [P21](review-2026-10-27.md#decisions) | (a) Violations on ontology apply need directives; atomic below 5,000 rows |
-| [P22](review-2026-10-27.md#decisions) | (a) Import accepts Plug's semantics |
-| [P23a](review-2026-10-27.md#decisions) | (a) Typed `fields` apart from `metadata` |
-| [P23b](review-2026-10-27.md#decisions) | (a) A fixed guard catalog; anything conditional is a validate subscriber |
-| [P24](review-2026-10-27.md#decisions) | (a) Fail closed by default; per-binding fail-open and audited `admin.binding.suspend` stay |
-| [P25](review-2026-10-27.md#decisions) | (a) Mode-2 sync phases by operator grant |
-| [P26a](review-2026-10-27.md#decisions) | (a) Plugin set and lock as versioned store objects |
-| [P26b](review-2026-10-27.md#decisions) | (a) Plugin methods only under `x.<alias>.*` |
-| [P28a](review-2026-10-27.md#decisions) | (b) Zero or more chained authorization plugins |
-| [P28b](review-2026-10-27.md#decisions) | (a) Unreadable blockers shown as a count |
-| [P28c](review-2026-10-27.md#decisions) | (a) OIDC through revocable core sessions |
-| [P28d](review-2026-10-27.md#decisions) | Not a core decision: external engines are the authorization plugin's business |
-| [P29a](review-2026-10-27.md#decisions) | (a) Lagging consumers stall: listeners at 7 days, projections at 30 |
-| [P29b](review-2026-10-27.md#decisions) | (a) Script hooks deleted; listeners replace them |
-| [P30](review-2026-10-27.md#decisions) | (b) Versions stored as diffs |
-| [P31a](review-2026-10-27.md#decisions) | (a) Field-scoped compare-and-set for text |
-| [P31b](review-2026-10-27.md#decisions) | (a) Views are a core resource |
-| [P32a](review-2026-10-27.md#decisions) | (c) Plugin UI in sandboxed iframes with a narrow message bridge |
-| [P32b](review-2026-10-27.md#decisions) | (a) UI embedded in the binary |
-| [P35](review-2026-10-27.md#decisions) | (a) HTTP v0 deleted at cutover |
-| [P36](review-2026-10-27.md#decisions) | (a) Driver lock plus `plug server --local` |
-| [P37](review-2026-10-27.md#decisions) | (a) Docs print `plug`; `plg` is an alias |
-| [P38a](review-2026-10-27.md#decisions) | (b) Usage metrics opt-in, exported to an operator's OpenTelemetry collector |
-| [P38b](review-2026-10-27.md#decisions) | MIT license |
-| [P38c](review-2026-10-27.md#decisions) | (a) This repository's history, after `git filter-repo` removes personal data |
-| [P39](review-2026-10-27.md#decisions) | (a) Transcripts never committed; public docs link ADRs; Mintlify site |
-| [P40](review-2026-10-27.md#decisions) | Public at 0.1.0, after the gate |
-| [P41](review-2026-10-27.md#decisions) | (a) One organization per deployment; server base ontology plus per-project overlays |
-| [P42](review-2026-10-27.md#decisions) | (a) Declarative rules that core runs in the transaction |
-| [P43](review-2026-10-27.md#decisions) | (b) Mode-2 plugins always built from source at a pinned commit, Go only at first |
-| [P44](review-2026-10-27.md#decisions) | (a) Restore only into an empty store |
-| [P45](review-2026-10-27.md#decisions) | (a) History and audit kept forever; only `history.redact` removes; ephemeral runs unversioned |
-| [P46](review-2026-10-27.md#decisions) | (a) No `bd` compatibility |
-| [P47](review-2026-10-27.md#decisions) | (a) `beads.go` and `backend/` deleted, with the rest of today's public Go API; the new `pluginapi` and `sdk/go` are the only public Go |
-| [P48](review-2026-10-27.md#decisions) | (b) Formulas and molecules become a plugin |
-| [P49](review-2026-10-27.md#decisions) | (a) One active server plus a standby; the storage plugin owns replication, failover, backup and the lease |
-| [P50](review-2026-10-27.md#decisions) | (a) Transactional ancestor closure plus a semi-join |
-| [AZ2](review-2026-10-27.md#decisions) | The narrowed spike validates P16; if it fails, revisit authorization altogether, leaning toward simple Linear-style team permissions rather than the relationship-schema fallback |
-| [AZ5](review-2026-10-27.md#decisions) | Any link may deny or append context; only the end of the chain allows; no decision denies; Cedar rules from every plugin are one merged set |
-| [AZ6](review-2026-10-27.md#decisions) | An erroring forbid denies; an erroring permit is skipped, alerted and reported by `authz.verify` |
-| [AZ8](review-2026-10-27.md#decisions) | Role-scoped workflow permissions stay out of the ontology in v1 |
-| [AZ9](review-2026-10-27.md#decisions) | The `permission` guard stays in the fixed catalog and asks the chain with a `transition` action |
-| [AZ10](review-2026-10-27.md#decisions) | Adopt the authorization data contract before choosing a policy language |
-| [AZ1](review-2026-10-27.md#decisions) | (v) core hosts an inert Cedar evaluator and plugins supply policies as data, if the spike passes. If it fails, authorization is revisited altogether, leaning toward simple Linear-style team permissions; this replaces the (iii) fallback |
-| [AZ3](review-2026-10-27.md#decisions) | (a) `cedar-go`, pinned, with Plug's subset compiler; revisit Rust partial evaluation once it is stable |
-| [AZ4](review-2026-10-27.md#decisions) | (a) read rules that cannot compile to a list filter are refused at plan |
-| [AZ7](review-2026-10-27.md#decisions) | (a) grants are plugin-declared records, seen by policies as principal attributes |
-| [P51](review-2026-10-27.md#decisions) | If schema plugins are used, they merge into one schema at the end of the chain; a failed authorization spike reopens the authorization approach under AZ1 |
-| [P52](review-2026-10-27.md#decisions) | (a) no egress in `authz.*` calls; external engines are mirrored by listeners |
-| [P53](review-2026-10-27.md#decisions) | (a) policy-data-only authorization plugins are mode 1 only in v1 (P14) |
-| [P54](review-2026-10-27.md#decisions) | (b) an explicit code-link order in the plugin set, defaulting to apply order and shown by `plugin.plan` |
-| [P55](review-2026-10-27.md#decisions) | (a) a fixed authorizer view in v1; `authz_visible` ontology fields only after the spike prices their indexes |
-| [P56](review-2026-10-27.md#decisions) | (c) a closure rewrite above the limit is refused with `closure_too_large`, or runs as one locked migration-class write by explicit admin call |
-| [P57](review-2026-10-27.md#decisions) | (a) no `authz.explain {asOf}`; history uses current permissions (D26) |
-| [P58](review-2026-10-27.md#decisions) | (a) the authentication plugin refuses scoped agent tokens (`authz_not_installed`) when no authorization plugin is installed |
-| [P59](review-2026-10-27.md#decisions) | (b) no break-glass `authz.rootPrincipals`; recovery goes through P62's bootstrap admin or offline repair |
-| [P60](review-2026-10-27.md#decisions) | (b) in anonymous mode an unverified, client-asserted `_meta.agent` label scopes leases and is recorded beside `anonymous` |
-| [P61](review-2026-10-27.md#decisions) | (b) `authn-local` (the OS user) survives as an optional provider over in-process, stdio and Unix-socket peer credentials only |
-| [P62](review-2026-10-27.md#decisions) | (b) the boot tier may hold one authentication provider and a bootstrap admin, so a network-facing server starts authenticated |
-| [P63](review-2026-10-27.md#decisions) | (b) with authentication, `ontology.apply`, `override_guard`, `admin.binding.suspend`, `event.subscription.skip` and `admin.restore.*` need a `user` principal; widens D18 |
-| [P64](review-2026-10-27.md#decisions) | (a) `ontology.plan` refuses manual gates needing more than one approval when no authentication provider is configured |
-| [P65](review-2026-10-27.md#decisions) | Overlays only archive base elements; moving a bead between projects whose overlays differ needs `map_status` and `map_type` directives. Plain Beads data must be ingestible into Plug |
-| [P66](review-2026-10-27.md#decisions) | (a) a failed post subscriber returns the `Commit` with `post_subscriber_failed`, is dead-lettered and counts toward its breaker; post subscribers make no graph writes; egress within 1 s |
-| [P67](review-2026-10-27.md#decisions) | Toolchain in the server image; artifacts stored by digest, so the standby never builds; reproducibility checked in CI; old artifacts kept until a plan rebuilds; a per-principal build quota |
-| [P68](review-2026-10-27.md#decisions) | (a) local mode takes mode-2 plugins only on Linux at first, then (b) builds in a Linux container, then (c) unsandboxed builds by explicit flag later; not "never (c)" |
-| [P69](review-2026-10-27.md#decisions) | (b) end users see every warning; the catalog's `audience` field does not filter warnings |
-| [P70](review-2026-10-27.md#decisions) | (b) in v1 the storage plugin delegates replication, failover and backup to a managed HA Postgres; `Store.Lease` and `Store.Health` are its topology methods; narrows P49's wording |
-| [P71](review-2026-10-27.md#decisions) | (a) `Store.Lease` with fenced `Commit`; a server that loses its lease stops reads and writes; TTL 10 s, renewal 3 s |
-| [P72](review-2026-10-27.md#decisions) | (b) RPO and RTO documented per storage plugin; Postgres meets 5 minutes and 1 hour |
-| [P73](review-2026-10-27.md#decisions) | JSON Patch diffs with a full base every 32 versions, confirmed after benchmarking `history.query {asOf}` |
-| [P74](review-2026-10-27.md#decisions) | The stored ready order lags by at most 1 minute |
-| [P75](review-2026-10-27.md#decisions) | Restore loads the dumped plugin artifacts after checking each against the lock's digest; the rebuild from the pinned commit runs as an asynchronous check that alerts on mismatch |
-| [P76](review-2026-10-27.md#decisions) | (b) the export merges several Beads stores, one project per prefix; an offline merge before an empty-store restore is within P44 |
-| [P77](review-2026-10-27.md#decisions) | (a) tracker `sync.import` may run into any project, minting new IDs, head state only; P44 governs restores, not writes that mint new IDs |
-| [P78](review-2026-10-27.md#decisions) | (a) a remote edit to a synced field is overwritten on the next push and counted as drift |
-| [P83](review-2026-10-27.md#decisions) | (a) the last code link may return `Allow`; from an earlier link it is an error (`authz_link_allow_not_last`) |
-| [P84](review-2026-10-27.md#decisions) | (b) check-only code links are allowed in lists when the operator accepts a capped post-filter that fails with `authz_postfilter_cap`, never a short page |
-| [P85](review-2026-10-27.md#decisions) | (a) memories are a core record kind with `memory.*` methods, returned in `agent.brief` |
-| [P5b](review-2026-10-27.md#decisions) | (a) the new tree sits at the root of `main`; Beads is read from `beads-base` or the `beads` branch |
-| [P38d](review-2026-10-27.md#decisions) | (a) `git filter-repo` runs early, while the repository is private, before tags exist |
-| [P39b](review-2026-10-27.md#decisions) | (a) design docs are committed without transcripts, citing ADRs |
-| [P48b](review-2026-10-27.md#decisions) | (a) the workflow plugin is compiled in from this repository, without Beads formula files |
-| [P79](review-2026-10-27.md#decisions) | No remote build cache at first; a BuildBetter cache only for cgo or remote execution |
-| [P80](review-2026-10-27.md#decisions) | A delegate drafts the keep, fold or drop list for `bd`'s command paths, each drop tied to a decision; Nikhil signs off the families to drop in one batch, and only drops of commands seen in use go to him one by one |
-| [P81](review-2026-10-27.md#decisions) | Usage-metrics fields: method, result code, latency bucket, principal kind, client version; no IDs or text; any OpenTelemetry collector |
-| [P82](review-2026-10-27.md#decisions) | (a) behavior goldens frozen at `beads-base`, plus recorded fixes from the `beads` branch, each re-record a reviewed PR to `main`, backed by nightly diffs |
-| [P5c](review-2026-10-27.md#decisions) | (b) Beads stores are read by `bd export --format plug-dump/1` on the `beads` branch, then restored; shipped standalone, the same exporter lets outside Beads users ingest plain Beads data. No Dolt in the new tree |
-| [D32](review-2026-10-27.md#decisions) | "A human" for D16 means an interactive login session, not an API key, when authenticated, and a human-presence check, such as typing the plan's digest, in anonymous mode |
-| [D33](review-2026-10-27.md#decisions) | The nine [interpretations](#interpretations-confirmed) are confirmed |
+| [D16](../../adr/0005-plug-design-decisions.md#decisions) | Agents plan plugin changes; only a `user` principal applies them (was P27), enforced only with an authentication provider (D18) |
+| [D17](../../adr/0005-plug-design-decisions.md#decisions) | Authorization exists only as optional plugins; core has no authorizer, and with none installed every request is allowed |
+| [D18](../../adr/0005-plug-design-decisions.md#decisions) | Core keeps no authorization of principals: D16 stays as platform safety; plugin sandboxing stays in the host; rules are plugin data core evaluates; the authentication plugin issues scoped agent tokens and the chain enforces them |
+| [D19](../../adr/0005-plug-design-decisions.md#decisions) | Policy enforcement is completely optional |
+| [D20](../../adr/0005-plug-design-decisions.md#decisions) | Policy enforcement requires authentication; `plugin.plan` refuses an authorization plugin without a provider |
+| [D21](../../adr/0005-plug-design-decisions.md#decisions) | An anonymous principal mode, the default with no authentication provider |
+| [D22](../../adr/0005-plug-design-decisions.md#decisions) | Anonymous mode serves only localhost, with no override |
+| [D23](../../adr/0005-plug-design-decisions.md#decisions) | Authorization plugins form a chain; how links combine is AZ5 |
+| [D24](../../adr/0005-plug-design-decisions.md#decisions) | Project overlay definitions overwrite base definitions with the same key |
+| [D25](../../adr/0005-plug-design-decisions.md#decisions) | Fixed in v1: bead templates, role-scoped workflow permissions, priorities, dependency types |
+| [D26](../../adr/0005-plug-design-decisions.md#decisions) | An old version is readable only by someone who can read the bead now |
+| [D27](../../adr/0005-plug-design-decisions.md#decisions) | Local mode runs the server, and its plugins, in the CLI process |
+| [D28](../../adr/0005-plug-design-decisions.md#decisions) | Partial failures are `result.warnings` from the error catalog, never an `error` beside a `result` |
+| [D29](../../adr/0005-plug-design-decisions.md#decisions) | Two kinds of custom UI: same-origin `ui` plugins on session cookies, and apps on other origins that sign users in with OIDC PKCE as public clients and send short-lived bearer tokens, only from an operator-configured CORS allowlist (was P32e (b)) |
+| [D30](../../adr/0005-plug-design-decisions.md#decisions) | Plugin UI bundles are prebuilt and committed at the pinned commit, served as-is after a digest check; no JavaScript build on the server in v1 (was P32c (a)) |
+| [D31](../../adr/0005-plug-design-decisions.md#decisions) | Declarative panels, columns and buttons stay beside iframes; iframes are for custom logic and drawing (was P32d (a)) |
+| [P1](../../adr/0005-plug-design-decisions.md#decisions) | (b) Clean-room rewrite, not strangler slices ([plan](#clean-room-plan)) |
+| [P2](../../adr/0005-plug-design-decisions.md#decisions) | (a) One typed `ChangeSet`, a union over all change kinds |
+| [P3](../../adr/0005-plug-design-decisions.md#decisions) | Pre subscribers (before the transaction, may change the write) and post subscribers (after commit, before the answer, cannot) |
+| [P4](../../adr/0005-plug-design-decisions.md#decisions) | (a) Authorization data derived in the write's transaction, when a plugin is installed |
+| [P5](../../adr/0005-plug-design-decisions.md#decisions) | (a) Hard fork |
+| [P6](../../adr/0005-plug-design-decisions.md#decisions) | (a) A Plug change log in every driver |
+| [P7](../../adr/0005-plug-design-decisions.md#decisions) | (a) Record store plus `sqlkit` |
+| [P8](../../adr/0005-plug-design-decisions.md#decisions) | (a) Mode 2 runs in-process on wazero |
+| [P9](../../adr/0005-plug-design-decisions.md#decisions) | (a) Mutators in dataflow order, one owner per scalar field |
+| [P10](../../adr/0005-plug-design-decisions.md#decisions) | (a) Ontology stored on the server, versioned, migration-like |
+| [P11](../../adr/0005-plug-design-decisions.md#decisions) | (a) Go registry generating OpenRPC |
+| [P12](../../adr/0005-plug-design-decisions.md#decisions) | (a) Many projects in one graph |
+| [P13](../../adr/0005-plug-design-decisions.md#decisions) | (a) Manifest sets maximum reads and owns; the ontology narrows them per type |
+| [P14](../../adr/0005-plug-design-decisions.md#decisions) | (a) Authorization plugins compiled in only, for v1 |
+| [P15](../../adr/0005-plug-design-decisions.md#decisions) | Storage and secret providers mode 1 only; `authz` mode 1 in v1; wasm sync subscribers by grant |
+| [P16](../../adr/0005-plug-design-decisions.md#decisions) | The narrowed spike validates the core-hosted Cedar path; if it fails, authorization is revisited toward simple Linear-style team permissions (AZ1, AZ2) |
+| [P17](../../adr/0005-plug-design-decisions.md#decisions) | (b) Trackers: export plus one-shot import |
+| [P18](../../adr/0005-plug-design-decisions.md#decisions) | (a) Reserve `Ref.Branch`, build nothing |
+| [P19](../../adr/0005-plug-design-decisions.md#decisions) | Secrets in dumps as references, ciphertext by flag |
+| [P20](../../adr/0005-plug-design-decisions.md#decisions) | Full-history dumps, head-only by flag |
+| [P21](../../adr/0005-plug-design-decisions.md#decisions) | (a) Violations on ontology apply need directives; atomic below 5,000 rows |
+| [P22](../../adr/0005-plug-design-decisions.md#decisions) | (a) Import accepts Plug's semantics |
+| [P23a](../../adr/0005-plug-design-decisions.md#decisions) | (a) Typed `fields` apart from `metadata` |
+| [P23b](../../adr/0005-plug-design-decisions.md#decisions) | (a) A fixed guard catalog; anything conditional is a validate subscriber |
+| [P24](../../adr/0005-plug-design-decisions.md#decisions) | (a) Fail closed by default; per-binding fail-open and audited `admin.binding.suspend` stay |
+| [P25](../../adr/0005-plug-design-decisions.md#decisions) | (a) Mode-2 sync phases by operator grant |
+| [P26a](../../adr/0005-plug-design-decisions.md#decisions) | (a) Plugin set and lock as versioned store objects |
+| [P26b](../../adr/0005-plug-design-decisions.md#decisions) | (a) Plugin methods only under `x.<alias>.*` |
+| [P28a](../../adr/0005-plug-design-decisions.md#decisions) | (b) Zero or more chained authorization plugins |
+| [P28b](../../adr/0005-plug-design-decisions.md#decisions) | (a) Unreadable blockers shown as a count |
+| [P28c](../../adr/0005-plug-design-decisions.md#decisions) | (a) OIDC through revocable core sessions |
+| [P28d](../../adr/0005-plug-design-decisions.md#decisions) | Not a core decision: external engines are the authorization plugin's business |
+| [P29a](../../adr/0005-plug-design-decisions.md#decisions) | (a) Lagging consumers stall: listeners at 7 days, projections at 30 |
+| [P29b](../../adr/0005-plug-design-decisions.md#decisions) | (a) Script hooks deleted; listeners replace them |
+| [P30](../../adr/0005-plug-design-decisions.md#decisions) | (b) Versions stored as diffs |
+| [P31a](../../adr/0005-plug-design-decisions.md#decisions) | (a) Field-scoped compare-and-set for text |
+| [P31b](../../adr/0005-plug-design-decisions.md#decisions) | (a) Views are a core resource |
+| [P32a](../../adr/0005-plug-design-decisions.md#decisions) | (c) Plugin UI in sandboxed iframes with a narrow message bridge |
+| [P32b](../../adr/0005-plug-design-decisions.md#decisions) | (a) UI embedded in the binary |
+| [P35](../../adr/0005-plug-design-decisions.md#decisions) | (a) HTTP v0 deleted at cutover |
+| [P36](../../adr/0005-plug-design-decisions.md#decisions) | (a) Driver lock plus `plug server --local` |
+| [P37](../../adr/0005-plug-design-decisions.md#decisions) | (a) Docs print `plug`; `plg` is an alias |
+| [P38a](../../adr/0005-plug-design-decisions.md#decisions) | (b) Usage metrics opt-in, exported to an operator's OpenTelemetry collector |
+| [P38b](../../adr/0005-plug-design-decisions.md#decisions) | MIT license |
+| [P38c](../../adr/0005-plug-design-decisions.md#decisions) | (a) This repository's history, after `git filter-repo` removes personal data |
+| [P39](../../adr/0005-plug-design-decisions.md#decisions) | (a) Transcripts never committed; public docs link ADRs; Mintlify site |
+| [P40](../../adr/0005-plug-design-decisions.md#decisions) | Public at 0.1.0, after the gate |
+| [P41](../../adr/0005-plug-design-decisions.md#decisions) | (a) One organization per deployment; server base ontology plus per-project overlays |
+| [P42](../../adr/0005-plug-design-decisions.md#decisions) | (a) Declarative rules that core runs in the transaction |
+| [P43](../../adr/0005-plug-design-decisions.md#decisions) | (b) Mode-2 plugins always built from source at a pinned commit, Go only at first |
+| [P44](../../adr/0005-plug-design-decisions.md#decisions) | (a) Restore only into an empty store |
+| [P45](../../adr/0005-plug-design-decisions.md#decisions) | (a) History and audit kept forever; only `history.redact` removes; ephemeral runs unversioned |
+| [P46](../../adr/0005-plug-design-decisions.md#decisions) | (a) No `bd` compatibility |
+| [P47](../../adr/0005-plug-design-decisions.md#decisions) | (a) `beads.go` and `backend/` deleted, with the rest of today's public Go API; the new `pluginapi` and `sdk/go` are the only public Go |
+| [P48](../../adr/0005-plug-design-decisions.md#decisions) | (b) Formulas and molecules become a plugin |
+| [P49](../../adr/0005-plug-design-decisions.md#decisions) | (a) One active server plus a standby; the storage plugin owns replication, failover, backup and the lease |
+| [P50](../../adr/0005-plug-design-decisions.md#decisions) | (a) Transactional ancestor closure plus a semi-join |
+| [AZ2](../../adr/0005-plug-design-decisions.md#decisions) | The narrowed spike validates P16; if it fails, revisit authorization altogether, leaning toward simple Linear-style team permissions rather than the relationship-schema fallback |
+| [AZ5](../../adr/0005-plug-design-decisions.md#decisions) | Any link may deny or append context; only the end of the chain allows; no decision denies; Cedar rules from every plugin are one merged set |
+| [AZ6](../../adr/0005-plug-design-decisions.md#decisions) | An erroring forbid denies; an erroring permit is skipped, alerted and reported by `authz.verify` |
+| [AZ8](../../adr/0005-plug-design-decisions.md#decisions) | Role-scoped workflow permissions stay out of the ontology in v1 |
+| [AZ9](../../adr/0005-plug-design-decisions.md#decisions) | The `permission` guard stays in the fixed catalog and asks the chain with a `transition` action |
+| [AZ10](../../adr/0005-plug-design-decisions.md#decisions) | Adopt the authorization data contract before choosing a policy language |
+| [AZ1](../../adr/0005-plug-design-decisions.md#decisions) | (v) core hosts an inert Cedar evaluator and plugins supply policies as data, if the spike passes. If it fails, authorization is revisited altogether, leaning toward simple Linear-style team permissions; this replaces the (iii) fallback |
+| [AZ3](../../adr/0005-plug-design-decisions.md#decisions) | (a) `cedar-go`, pinned, with Plug's subset compiler; revisit Rust partial evaluation once it is stable |
+| [AZ4](../../adr/0005-plug-design-decisions.md#decisions) | (a) read rules that cannot compile to a list filter are refused at plan |
+| [AZ7](../../adr/0005-plug-design-decisions.md#decisions) | (a) grants are plugin-declared records, seen by policies as principal attributes |
+| [P51](../../adr/0005-plug-design-decisions.md#decisions) | If schema plugins are used, they merge into one schema at the end of the chain; a failed authorization spike reopens the authorization approach under AZ1 |
+| [P52](../../adr/0005-plug-design-decisions.md#decisions) | (a) no egress in `authz.*` calls; external engines are mirrored by listeners |
+| [P53](../../adr/0005-plug-design-decisions.md#decisions) | (a) policy-data-only authorization plugins are mode 1 only in v1 (P14) |
+| [P54](../../adr/0005-plug-design-decisions.md#decisions) | (b) an explicit code-link order in the plugin set, defaulting to apply order and shown by `plugin.plan` |
+| [P55](../../adr/0005-plug-design-decisions.md#decisions) | (a) a fixed authorizer view in v1; `authz_visible` ontology fields only after the spike prices their indexes |
+| [P56](../../adr/0005-plug-design-decisions.md#decisions) | (c) a closure rewrite above the limit is refused with `closure_too_large`, or runs as one locked migration-class write by explicit admin call |
+| [P57](../../adr/0005-plug-design-decisions.md#decisions) | (a) no `authz.explain {asOf}`; history uses current permissions (D26) |
+| [P58](../../adr/0005-plug-design-decisions.md#decisions) | (a) the authentication plugin refuses scoped agent tokens (`authz_not_installed`) when no authorization plugin is installed |
+| [P59](../../adr/0005-plug-design-decisions.md#decisions) | (b) no break-glass `authz.rootPrincipals`; recovery goes through P62's bootstrap admin or offline repair |
+| [P60](../../adr/0005-plug-design-decisions.md#decisions) | (b) in anonymous mode an unverified, client-asserted `_meta.agent` label scopes leases and is recorded beside `anonymous` |
+| [P61](../../adr/0005-plug-design-decisions.md#decisions) | (b) `authn-local` (the OS user) survives as an optional provider over in-process, stdio and Unix-socket peer credentials only |
+| [P62](../../adr/0005-plug-design-decisions.md#decisions) | (b) the boot tier may hold one authentication provider and a bootstrap admin, so a network-facing server starts authenticated |
+| [P63](../../adr/0005-plug-design-decisions.md#decisions) | (b) with authentication, `ontology.apply`, `override_guard`, `admin.binding.suspend`, `event.subscription.skip` and `admin.restore.*` need a `user` principal; widens D18 |
+| [P64](../../adr/0005-plug-design-decisions.md#decisions) | (a) `ontology.plan` refuses manual gates needing more than one approval when no authentication provider is configured |
+| [P65](../../adr/0005-plug-design-decisions.md#decisions) | Overlays only archive base elements; moving a bead between projects whose overlays differ needs `map_status` and `map_type` directives. Plain Beads data must be ingestible into Plug |
+| [P66](../../adr/0005-plug-design-decisions.md#decisions) | (a) a failed post subscriber returns the `Commit` with `post_subscriber_failed`, is dead-lettered and counts toward its breaker; post subscribers make no graph writes; egress within 1 s |
+| [P67](../../adr/0005-plug-design-decisions.md#decisions) | Toolchain in the server image; artifacts stored by digest, so the standby never builds; reproducibility checked in CI; old artifacts kept until a plan rebuilds; a per-principal build quota |
+| [P68](../../adr/0005-plug-design-decisions.md#decisions) | (a) local mode takes mode-2 plugins only on Linux at first, then (b) builds in a Linux container, then (c) unsandboxed builds by explicit flag later; not "never (c)" |
+| [P69](../../adr/0005-plug-design-decisions.md#decisions) | (b) end users see every warning; the catalog's `audience` field does not filter warnings |
+| [P70](../../adr/0005-plug-design-decisions.md#decisions) | (b) in v1 the storage plugin delegates replication, failover and backup to a managed HA Postgres; `Store.Lease` and `Store.Health` are its topology methods; narrows P49's wording |
+| [P71](../../adr/0005-plug-design-decisions.md#decisions) | (a) `Store.Lease` with fenced `Commit`; a server that loses its lease stops reads and writes; TTL 10 s, renewal 3 s |
+| [P72](../../adr/0005-plug-design-decisions.md#decisions) | (b) RPO and RTO documented per storage plugin; Postgres meets 5 minutes and 1 hour |
+| [P73](../../adr/0005-plug-design-decisions.md#decisions) | JSON Patch diffs with a full base every 32 versions, confirmed after benchmarking `history.query {asOf}` |
+| [P74](../../adr/0005-plug-design-decisions.md#decisions) | The stored ready order lags by at most 1 minute |
+| [P75](../../adr/0005-plug-design-decisions.md#decisions) | Restore loads the dumped plugin artifacts after checking each against the lock's digest; the rebuild from the pinned commit runs as an asynchronous check that alerts on mismatch |
+| [P76](../../adr/0005-plug-design-decisions.md#decisions) | (b) the export merges several Beads stores, one project per prefix; an offline merge before an empty-store restore is within P44 |
+| [P77](../../adr/0005-plug-design-decisions.md#decisions) | (a) tracker `sync.import` may run into any project, minting new IDs, head state only; P44 governs restores, not writes that mint new IDs |
+| [P78](../../adr/0005-plug-design-decisions.md#decisions) | (a) a remote edit to a synced field is overwritten on the next push and counted as drift |
+| [P83](../../adr/0005-plug-design-decisions.md#decisions) | (a) the last code link may return `Allow`; from an earlier link it is an error (`authz_link_allow_not_last`) |
+| [P84](../../adr/0005-plug-design-decisions.md#decisions) | (b) check-only code links are allowed in lists when the operator accepts a capped post-filter that fails with `authz_postfilter_cap`, never a short page |
+| [P85](../../adr/0005-plug-design-decisions.md#decisions) | (a) memories are a core record kind with `memory.*` methods, returned in `agent.brief` |
+| [P5b](../../adr/0005-plug-design-decisions.md#decisions) | (a) the new tree sits at the root of `main`; Beads is read from `beads-base` or the `beads` branch |
+| [P38d](../../adr/0005-plug-design-decisions.md#decisions) | (a) `git filter-repo` runs early, while the repository is private, before tags exist |
+| [P39b](../../adr/0005-plug-design-decisions.md#decisions) | (a) design docs are committed without transcripts, citing ADRs |
+| [P48b](../../adr/0005-plug-design-decisions.md#decisions) | (a) the workflow plugin is compiled in from this repository, without Beads formula files |
+| [P79](../../adr/0005-plug-design-decisions.md#decisions) | No remote build cache at first; a BuildBetter cache only for cgo or remote execution |
+| [P80](../../adr/0005-plug-design-decisions.md#decisions) | A delegate drafts the keep, fold or drop list for `bd`'s command paths, each drop tied to a decision; Nikhil signs off the families to drop in one batch, and only drops of commands seen in use go to him one by one |
+| [P81](../../adr/0005-plug-design-decisions.md#decisions) | Usage-metrics fields: method, result code, latency bucket, principal kind, client version; no IDs or text; any OpenTelemetry collector |
+| [P82](../../adr/0005-plug-design-decisions.md#decisions) | (a) behavior goldens frozen at `beads-base`, plus recorded fixes from the `beads` branch, each re-record a reviewed PR to `main`, backed by nightly diffs |
+| [P5c](../../adr/0005-plug-design-decisions.md#decisions) | (b) Beads stores are read by `bd export --format plug-dump/1` on the `beads` branch, then restored; shipped standalone, the same exporter lets outside Beads users ingest plain Beads data. No Dolt in the new tree |
+| [D32](../../adr/0005-plug-design-decisions.md#decisions) | "A human" for D16 means an interactive login session, not an API key, when authenticated, and a human-presence check, such as typing the plan's digest, in anonymous mode |
+| [D33](../../adr/0005-plug-design-decisions.md#decisions) | The nine [interpretations](#interpretations-confirmed) are confirmed |
 
 ## Target architecture
 
@@ -879,7 +879,7 @@ Plug is a hard fork of Beads (P5), rewritten clean-room (P1): the new tree is cl
 - **Repository.** `origin` is `buildbetter-app/plugs`, with 11,400 commits of Beads history; [FORK.md](../../../FORK.md) claims remotes that are not configured. The [LICENSE](../../../LICENSE) is MIT, held by "Beads Contributors".
 - **Vocabulary.** `wisp` is on about 19,000 lines and a table name ([0020](../../../internal/storage/schema/migrations/0020_create_wisps.up.sql)); orchestrator coupling sits in [parser.go](../../../internal/formula/parser.go) and [doctor_orchestrator_guard.go](../../../cmd/bd/doctor_orchestrator_guard.go).
 - **Upstream ties.** Usage metrics post upstream by default ([metrics.go](../../../internal/metrics/metrics.go)). The cache in [.bazelrc](../../../.bazelrc) and the mirrors in [MODULE.bazel](../../../MODULE.bazel) and [tools/rbe](../../../tools/rbe/worker-env-sync-copy) use gascity; 388 files name `gastownhall/beads`, five workflows among them ([release.yml](../../../.github/workflows/release.yml)).
-- **Personal data and transcripts.** [issues.jsonl](../../../issues.jsonl) holds a contributor's email. This directory is uncommitted; this document, the [overview](current-and-desired-state.md) and the [authorization analysis](authorization-options.md) link [transcript.md](transcript.md), and the [review](review-2026-10-27.md) contains a transcript.
+- **Personal data and transcripts.** The source transcript and private issue export are intentionally omitted; this document, the [overview](current-and-desired-state.md) and the [authorization analysis](authorization-options.md) link the scrubbed [decision record](../../adr/0005-plug-design-decisions.md).
 
 **Names.** One binary, `plug`, with `plg` as a second name; docs print `plug` (P37). Module `github.com/buildbetter-app/plugs` (D15), Bazel module `plugs`, variables `PLUG_*`, npm `@buildbetter/plug`. Beads data enters only by restore into an empty store (P44; restores, one-shot imports are P77).
 
@@ -905,7 +905,7 @@ Plug is a hard fork of Beads (P5), rewritten clean-room (P1): the new tree is cl
 | The `bd` command | `plug`, no translator; `bd` calls stop working at cutover | P46 |
 | Usage metrics | Opt-in, to an operator's OpenTelemetry collector | P38a |
 
-**Fork.** Tag `beads-base` at `9013b29da`, the docs-only commit that adds FORK.md and the [architecture guide](../../architecture-guide/README.md) on top of `9d6fff760`; Beads behavior at the tag is that of `9d6fff760`, and links to those docs resolve as tag permalinks. No upstream merges, ports ledger or upstream scan (P5): upstream patches do not apply to rewritten code. Until the Beads tree is frozen, `bd` fixes land on a `beads` branch from the tag. Code reused from Beads (A6 keeps `depid` and `idgen`) is copied with a `Copied-from: beads-base:<path>` trailer and credited in `NOTICE.md`. Layout until cutover is P5b.
+**Fork.** The verified `beads-base` tag is `9d6fff760b7a314b476539198504d77ce0959656`, the Beads behavior snapshot. The `beads` branch currently points at `9013b29dabab39df633fa0e7a2748a55f147bd8f` and carries the docs-only FORK.md and [architecture guide](../../architecture-guide/README.md) additions on top of that snapshot; links to those docs resolve on that branch. No upstream merges, ports ledger or upstream scan (P5): upstream patches do not apply to rewritten code. Until the Beads tree is frozen, `bd` fixes land on a `beads` branch from the tag. Code reused from Beads (A6 keeps `depid` and `idgen`) is copied with a `Copied-from: beads-base:<path>` trailer and credited in `NOTICE.md`. Layout until cutover is P5b.
 
 ```toml
 # engdocs/style/lexicon.toml
@@ -998,4 +998,4 @@ Fork-and-Flush (Cai, Ziakas et al., Microsoft Research, 2026) is the method used
 | A7 | 111 | 120 | Same |
 | A8 | 113 | 119 | Same |
 
-On 2026-10-28 each section was rewritten against Nikhil's [review](review-2026-10-27.md) and the [authorization analysis](authorization-options.md), the rewrites were reconciled with each other, and the points they raised became the decisions P51 onward.
+On 2026-10-28 each section was rewritten against Nikhil's [review](../../adr/0005-plug-design-decisions.md) and the [authorization analysis](authorization-options.md), the rewrites were reconciled with each other, and the points they raised became the decisions P51 onward.

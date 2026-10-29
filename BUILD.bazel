@@ -6,3 +6,37 @@ go_library(
     importpath = "github.com/buildbetter-app/plugs",
     visibility = ["//visibility:public"],
 )
+
+filegroup(
+    name = "lexicon_tree",
+    srcs = [
+        ".bazelversion",
+        "BUILD.bazel",
+        "LICENSE",
+        "MODULE.bazel",
+        "MODULE.bazel.lock",
+        "NOTICE.md",
+        "OWNERS.toml",
+        "SKELETON.md",
+        "doc.go",
+        ".gitignore",
+        "go.mod",
+        "//cmd/plug:lexicon_files",
+        "//engdocs/style:lexicon_files",
+        "//internal:lexicon_files",
+        "//pluginapi:lexicon_files",
+        "//sdk/go:lexicon_files",
+        "//tools/lexicon:lexicon_files",
+    ] + glob([
+        ".github/**",
+        "engdocs/adr/**",
+        "engdocs/design/plug/**",
+    ]),
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "lexicon_gate",
+    tests = ["//tools/lexicon:lexicon_gate"],
+    visibility = ["//visibility:public"],
+)

@@ -6,3 +6,9 @@ go_library(
     importpath = "github.com/buildbetter-app/plugs/sdk/go",
     visibility = ["//visibility:public"],
 )
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
