@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -131,6 +132,63 @@ func TestPendingReceiptSurvivesReopenAndTakeover(t *testing.T) {
 	}
 	t.Log("pending survives reopen/epoch takeover; invalid or canceled outcomes leave it intact; finalized response is durable, immutable and snapshot isolated")
 }
+func TestSQLFinalizationFailureRemainsRecoverableAfterReopen(t *testing.T) {
+	ctx := testContext(t)
+	path := filepath.Join(t.TempDir(), "failed-finalization.db")
+	s := openStore(t, ctx, path)
+	old := getLease(t, ctx, s, driver.LeaseTTL)
+	entry, h := commitReceipt(t, ctx, s, old, "pl-finalization-fault", true)
+	meta := getMeta(t, ctx, s)
+	before := lookupReceipt(t, ctx, getReader(t, ctx, s, meta, nil), h)
+	if _, err := s.db.ExecContext(ctx, `CREATE TRIGGER reject_finalization BEFORE UPDATE ON replays BEGIN SELECT RAISE(ABORT,'injected finalization failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	post := []model.Warning{{Code: "post_subscriber_failed", Message: "durable post outcome"}}
+	if err := s.FinalizeResponse(ctx, old, "system:engine-test", "", h.Method, h.IdempotencyKey, entry.Revision, post); err == nil || !strings.Contains(err.Error(), "injected finalization failure") {
+		t.Fatalf("expected actual SQL finalizer failure, got %v", err)
+	}
+	if got := lookupReceipt(t, ctx, getReader(t, ctx, s, meta, nil), h); !reflect.DeepEqual(before, got) {
+		t.Fatalf("failed SQL finalization changed pending receipt: %+v", got)
+	}
+	if err := old.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened := openStore(t, ctx, path)
+	active := getLease(t, ctx, reopened, driver.LeaseTTL)
+	if active.Epoch() != old.Epoch()+1 {
+		t.Fatalf("reopen did not advance lease epoch: %d", active.Epoch())
+	}
+	if got := lookupReceipt(t, ctx, getReader(t, ctx, reopened, meta, nil), h); !reflect.DeepEqual(before, got) {
+		t.Fatalf("pending receipt did not survive failed finalization and reopen: %+v", got)
+	}
+	requireFenced(t, reopened.FinalizeResponse(ctx, old, "system:engine-test", "", h.Method, h.IdempotencyKey, entry.Revision, post))
+	if _, err := reopened.db.ExecContext(ctx, `DROP TRIGGER reject_finalization`); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := reopened.FinalizeResponse(ctx, active, "system:engine-test", "", h.Method, h.IdempotencyKey, entry.Revision, post); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := getReader(t, ctx, reopened, meta, nil)
+	after := lookupReceipt(t, ctx, r, h)
+	if after.ResponsePending || len(after.Commit.Warnings) != 2 || after.Commit.Warnings[1].Message != post[0].Message || !reflect.DeepEqual(after.Commit.Results, before.Commit.Results) || !reflect.DeepEqual(after.Changeset, entry) {
+		t.Fatalf("recovered response changed original publication or duplicated warnings: %+v", after)
+	}
+	versions, err := r.Versions(ctx, testRef("pl-finalization-fault"), driver.PageReq{})
+	if err != nil || len(versions.Items) != 1 || r.Snapshot().At.String() != "1" {
+		t.Fatalf("finalization retry changed graph history/head: %+v %v", versions, err)
+	}
+	log, err := r.Changesets(ctx, nil, 100)
+	if err != nil || len(log) != 1 {
+		t.Fatalf("finalization retry changed graph log: %+v %v", log, err)
+	}
+	t.Log("actual SQL finalizer abort leaves durable pending receipt; reopen and next epoch recover the same outcome without another graph write")
+}
+
 func TestPendingNoopAndUnkeyedHeadersRefuse(t *testing.T) {
 	ctx := testContext(t)
 	s := openStore(t, ctx, filepath.Join(t.TempDir(), "invalid-pending.db"))
