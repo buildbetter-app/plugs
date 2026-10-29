@@ -190,6 +190,11 @@ func (r *reader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.L
 	}
 	result := make([]driver.LockState, 0, len(keys))
 	for _, key := range keys {
+		if key.Kind == driver.LockRecord {
+			if _, err := recordKey(*key.Ref); err != nil {
+				return nil, err
+			}
+		}
 		value := driver.LockState{Key: key, Revision: model.Natural64(0)}
 		history := r.state.keyHistory[keyID(key)]
 		index := sort.Search(len(history), func(i int) bool { n, _ := history[i].Revision.Uint64(); return n > r.at }) - 1
@@ -252,6 +257,9 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 		case "kind", "id", "key", "type", "project", "status":
 		default:
 			return driver.Page[driver.Record]{}, fmt.Errorf("%w: query filter %q", driver.ErrUnsupported, field)
+		}
+		if _, ok := q.Filter[field].(string); !ok {
+			return driver.Page[driver.Record]{}, fmt.Errorf("memory: equality filter %q requires string", field)
 		}
 	}
 	digest, err := filterDigest(q.Filter)

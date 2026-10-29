@@ -24,6 +24,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("G3_derived_predicate_consistency", func(t *testing.T) { derivedPredicates(t, factory) })
 	t.Run("G4_idempotency_and_responses", func(t *testing.T) { idempotency(t, factory) })
 	t.Run("G5_lease_fencing_and_incarnation", func(t *testing.T) { fencing(t, factory) })
+	t.Run("G5_takeover_races_commit", func(t *testing.T) { takeoverRace(t, factory) })
 	t.Run("G5_checkpoint_CAS_and_isolation", func(t *testing.T) { checkpoints(t, factory) })
 	t.Run("history_replay_and_pagination", func(t *testing.T) { history(t, factory) })
 }

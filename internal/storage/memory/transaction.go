@@ -87,6 +87,13 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 	if err := driver.ValidateLockSet(requests); err != nil {
 		return nil, err
 	}
+	for _, request := range requests {
+		if request.Key.Kind == driver.LockRecord {
+			if _, err := recordKey(*request.Key.Ref); err != nil {
+				return nil, err
+			}
+		}
+	}
 	s := t.store
 	for {
 		s.mu.Lock()
@@ -492,6 +499,11 @@ func (t *transaction) recordRef(id string) driver.Ref {
 func (t *transaction) validateChanges(changes []model.ChangeRecord) error {
 	seen := make(map[string]bool)
 	for _, change := range changes {
+		switch change.Op {
+		case model.OpCreate, model.OpPatch, model.OpReparent, model.OpLink, model.OpUnlink, model.OpComment, model.OpAttach, model.OpDelete, model.OpSetMeta:
+		default:
+			return fmt.Errorf("memory: unknown change operation")
+		}
 		id, err := recordKey(change.Ref)
 		if err != nil {
 			return err
@@ -500,6 +512,9 @@ func (t *transaction) validateChanges(changes []model.ChangeRecord) error {
 			return fmt.Errorf("memory: changes must describe each staged record exactly once")
 		}
 		seen[id] = true
+		if (t.records[id] == nil) != (change.Op == model.OpDelete) {
+			return fmt.Errorf("memory: deletion and change operation disagree")
+		}
 		previous := t.store.state.keys[id].Revision
 		if change.FromRevision.String() != previous.String() {
 			return driver.ErrConflict
