@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sqlite",
+    srcs = glob(["*.go"], exclude = ["*_test.go"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/storage/sqlite",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/core/model",
+        "//internal/storage/driver",
+        "@org_modernc_sqlite//:sqlite",
+    ],
+)
+
+go_test(
+    name = "sqlite_test",
+    srcs = glob(["*_test.go"]),
+    embed = [":sqlite"],
+    deps = [
+        "//internal/core/model",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+    ],
+)
