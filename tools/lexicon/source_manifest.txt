@@ -140,6 +140,15 @@ internal/core/pipeline/snapshot.go
 internal/core/port/BUILD.bazel
 internal/core/port/pipeline.go
 internal/doc.go
+internal/plugins/authnapikey/BUILD.bazel
+internal/plugins/authnapikey/apikey.go
+internal/plugins/authnapikey/apikey_test.go
+internal/plugins/authnapikey/http_test.go
+internal/server/authn/BUILD.bazel
+internal/server/authn/authn.go
+internal/server/authn/authn_test.go
+internal/server/authn/http.go
+internal/server/authn/http_test.go
 internal/storage/conformance/BUILD.bazel
 internal/storage/conformance/atomic.go
 internal/storage/conformance/checkpoints.go
