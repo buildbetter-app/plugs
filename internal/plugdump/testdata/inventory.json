@@ -1,0 +1,181 @@
+{
+  "version": "beads-inventory/1",
+  "store_id": "synthetic-store",
+  "machine": "synthetic-machine",
+  "projects": [
+    {
+      "prefix": "demo",
+      "id_mode": "sequential",
+      "hash_length": 0,
+      "last_id": 5,
+      "child_counters": {}
+    }
+  ],
+  "quiesced": true,
+  "remotes_merged": true,
+  "working_set_clean": true,
+  "history": "available-unverified",
+  "config_policy": {
+    "config/github.token": "secret",
+    "config/kv.memory.fixture": "public",
+    "metadata/project_id": "public"
+  },
+  "external": [
+    {
+      "family": "user-legacy-config",
+      "path": "$FIXTURE_ROOT/user-legacy-config",
+      "state": "absent",
+      "precedence": 0
+    },
+    {
+      "family": "user-xdg-config",
+      "path": "$FIXTURE_ROOT/user-xdg-config",
+      "state": "absent",
+      "precedence": 1
+    },
+    {
+      "family": "user-native-config",
+      "path": "$FIXTURE_ROOT/user-native-config",
+      "state": "absent",
+      "precedence": 2
+    },
+    {
+      "family": "project-config",
+      "path": "$FIXTURE_ROOT/project-config",
+      "state": "absent",
+      "precedence": 3
+    },
+    {
+      "family": "beads-dir-config",
+      "path": "$FIXTURE_ROOT/beads-dir-config",
+      "state": "absent",
+      "precedence": 4
+    },
+    {
+      "family": "project-local-config",
+      "path": "$FIXTURE_ROOT/project-local-config",
+      "state": "absent",
+      "precedence": 5
+    },
+    {
+      "family": "environment-and-flags",
+      "path": "$FIXTURE_ROOT/environment-and-flags",
+      "state": "absent",
+      "precedence": 6
+    },
+    {
+      "family": "metadata-json",
+      "path": "$FIXTURE_ROOT/metadata-json",
+      "state": "absent",
+      "precedence": 7
+    },
+    {
+      "family": "legacy-config-json",
+      "path": "$FIXTURE_ROOT/legacy-config-json",
+      "state": "absent",
+      "precedence": 8
+    },
+    {
+      "family": "beads-hooks",
+      "path": "$FIXTURE_ROOT/beads-hooks",
+      "state": "absent",
+      "precedence": 9
+    },
+    {
+      "family": "legacy-hooks",
+      "path": "$FIXTURE_ROOT/legacy-hooks",
+      "state": "absent",
+      "precedence": 10
+    },
+    {
+      "family": "git-hooks",
+      "path": "$FIXTURE_ROOT/git-hooks",
+      "state": "absent",
+      "precedence": 11
+    },
+    {
+      "family": "external-hook-managers",
+      "path": "$FIXTURE_ROOT/external-hook-managers",
+      "state": "absent",
+      "precedence": 12
+    },
+    {
+      "family": "routes-jsonl",
+      "path": "$FIXTURE_ROOT/routes-jsonl",
+      "state": "absent",
+      "precedence": 13
+    },
+    {
+      "family": "formulas",
+      "path": "$FIXTURE_ROOT/formulas",
+      "state": "absent",
+      "precedence": 14
+    },
+    {
+      "family": "formula-search-paths",
+      "path": "$FIXTURE_ROOT/formula-search-paths",
+      "state": "absent",
+      "precedence": 15
+    },
+    {
+      "family": "issues-jsonl",
+      "path": "$FIXTURE_ROOT/issues-jsonl",
+      "state": "absent",
+      "precedence": 16
+    },
+    {
+      "family": "interactions-jsonl",
+      "path": "$FIXTURE_ROOT/interactions-jsonl",
+      "state": "absent",
+      "precedence": 17
+    },
+    {
+      "family": "dolt-ignore",
+      "path": "$FIXTURE_ROOT/dolt-ignore",
+      "state": "absent",
+      "precedence": 18
+    },
+    {
+      "family": "dolt-nonlocal-tables",
+      "path": "$FIXTURE_ROOT/dolt-nonlocal-tables",
+      "state": "absent",
+      "precedence": 19
+    },
+    {
+      "family": "dolt-working-set",
+      "path": "$FIXTURE_ROOT/dolt-working-set",
+      "state": "absent",
+      "precedence": 20
+    },
+    {
+      "family": "dolt-commit-graph",
+      "path": "$FIXTURE_ROOT/dolt-commit-graph",
+      "state": "absent",
+      "precedence": 21
+    },
+    {
+      "family": "dolt-remotes",
+      "path": "$FIXTURE_ROOT/dolt-remotes",
+      "state": "absent",
+      "precedence": 22
+    },
+    {
+      "family": "dolt-conflicts",
+      "path": "$FIXTURE_ROOT/dolt-conflicts",
+      "state": "absent",
+      "precedence": 23
+    },
+    {
+      "family": "dolt-history-maintenance",
+      "path": "$FIXTURE_ROOT/dolt-history-maintenance",
+      "state": "absent",
+      "precedence": 24
+    },
+    {
+      "family": "store-files-and-quiescence",
+      "path": "$FIXTURE_ROOT/store-files-and-quiescence",
+      "state": "absent",
+      "precedence": 25
+    }
+  ]
+}

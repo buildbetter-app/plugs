@@ -2,6 +2,13 @@
 
 This is Nikhil's Beads fork for plugin development. Start with the [architecture field guide](engdocs/architecture-guide/README.md); its render script generates an offline HTML edition. [Fork provenance](FORK.md) pins the upstream source. The plugin runtime is currently a documented proposal.
 
+The `beads` branch also provides an offline `bd --readonly export --format
+plug-dump/1 --plug-inventory inventory.json -o dump.tar` path. The
+[export format and input inventory](internal/plugdump/README.md) describe its
+supported head-state slice, source archives, and explicit refusals. Ordinary
+`bd export` still defaults to JSONL. This exporter does not certify a complete
+store migration or a Plug restore.
+
 **Distributed graph issue tracker for AI agents, powered by [Dolt](https://github.com/dolthub/dolt).**
 
 **Platforms:** macOS, Linux, Windows, FreeBSD
