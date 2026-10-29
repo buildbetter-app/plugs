@@ -18,10 +18,11 @@ func main() {
 	claimers := flag.Int("claimers", 200, "concurrent lazy claimers")
 	mutators := flag.Int("mutators", 200, "concurrent mutators")
 	deadline := flag.Duration("deadline", 90*time.Second, "overall probe deadline")
+	runID := flag.String("run-id", "", "optional run namespace; empty generates a fresh ID")
 	output := flag.String("output", "", "optional JSON output path")
 	flag.Parse()
 
-	config := runtimeprobe.ProbeConfig{Records: *records, Claimers: *claimers, Mutators: *mutators, Deadline: *deadline}
+	config := runtimeprobe.ProbeConfig{Records: *records, Claimers: *claimers, Mutators: *mutators, Deadline: *deadline, RunID: *runID}
 	ctx := context.Background()
 	var (
 		report runtimeprobe.ProbeReport

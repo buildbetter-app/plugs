@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -26,6 +27,12 @@ const (
 	defaultMutators = 200
 )
 
+var probeSequence atomic.Uint64
+
+func newRunID() string {
+	return fmt.Sprintf("%d-%d", time.Now().UTC().UnixNano(), probeSequence.Add(1))
+}
+
 // ProbeConfig controls the bounded stress run.  The defaults are the E5
 // acceptance matrix; smaller values are useful for focused unit tests.
 type ProbeConfig struct {
@@ -34,6 +41,10 @@ type ProbeConfig struct {
 	Mutators int
 	Deadline time.Duration
 	Seed     int64
+	// RunID namespaces seed records and idempotency keys. When empty, each
+	// invocation receives a fresh ID so a reused DSN cannot replay an earlier
+	// probe. Supplying a fixed ID is useful for testing replay refusal.
+	RunID string
 }
 
 func (c ProbeConfig) normalized() (ProbeConfig, error) {
@@ -52,6 +63,14 @@ func (c ProbeConfig) normalized() (ProbeConfig, error) {
 	if c.Records < 1 || c.Claimers < 1 || c.Mutators < 1 || c.Deadline <= 0 {
 		return ProbeConfig{}, fmt.Errorf("runtime probe: counts and deadline must be positive")
 	}
+	c.RunID = strings.TrimSpace(c.RunID)
+	if c.RunID != "" {
+		if len(c.RunID) > 96 || strings.IndexFunc(c.RunID, func(r rune) bool {
+			return !(r == '-' || r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r))
+		}) >= 0 {
+			return ProbeConfig{}, fmt.Errorf("runtime probe: run ID must contain only letters, digits, '-' or '_'")
+		}
+	}
 	return c, nil
 }
 
@@ -60,6 +79,7 @@ func (c ProbeConfig) normalized() (ProbeConfig, error) {
 // and the timeout/error fields being clear.
 type ProbeReport struct {
 	Engine             string         `json:"engine"`
+	RunID              string         `json:"runId"`
 	Records            int            `json:"records"`
 	Claimers           int            `json:"claimers"`
 	Mutators           int            `json:"mutators"`
@@ -99,7 +119,7 @@ type counters struct {
 
 func (c *counters) report(config ProbeConfig, engine string, started time.Time, failover FailoverReport) ProbeReport {
 	return ProbeReport{
-		Engine: engine, Records: config.Records, Claimers: config.Claimers, Mutators: config.Mutators,
+		Engine: engine, RunID: config.RunID, Records: config.Records, Claimers: config.Claimers, Mutators: config.Mutators,
 		Claimed: c.claimed.Load(), Mutations: c.mutations.Load(), CandidatesExamined: c.examined.Load(),
 		SkippedLocked: c.skipped.Load(), NotReady: c.notReady.Load(), Attempts: c.attempts.Load(),
 		Retries: c.retries.Load(), Conflicts: c.conflicts.Load(), Deadlocks: c.deadlocks.Load(),
@@ -136,6 +156,9 @@ func runStore(parent context.Context, store driver.Store, engine string, config 
 	if err != nil {
 		return ProbeReport{}, err
 	}
+	if config.RunID == "" {
+		config.RunID = newRunID()
+	}
 	ctx, cancel := context.WithTimeout(parent, config.Deadline)
 	defer cancel()
 	started := time.Now()
@@ -147,12 +170,12 @@ func runStore(parent context.Context, store driver.Store, engine string, config 
 	if config.Deadline >= leaseTTL {
 		leaseTTL = config.Deadline + driver.LeaseRenewEvery
 	}
-	lease, err := store.Lease(ctx, "e5-active", leaseTTL)
+	lease, err := store.Lease(ctx, "e5-active-"+config.RunID, leaseTTL)
 	if err != nil {
 		return ProbeReport{}, err
 	}
 	defer func() { _ = lease.Release(context.Background()) }()
-	refs, err := seedQueue(ctx, store, lease, config.Records)
+	refs, err := seedQueue(ctx, store, lease, config.Records, config.RunID)
 	if err != nil {
 		return ProbeReport{}, err
 	}
@@ -206,19 +229,29 @@ func runStore(parent context.Context, store driver.Store, engine string, config 
 	if err != nil {
 		return c.report(config, engine, started, FailoverReport{}), err
 	}
+	if err := requireCurrentClaims(c, config.Records); err != nil {
+		return c.report(config, engine, started, FailoverReport{}), err
+	}
 	if err := assertClaimed(ctx, store, refs, config.Records); err != nil {
 		return c.report(config, engine, started, FailoverReport{}), err
 	}
 	// Force one real stale-snapshot conflict, then let the normal retry path
 	// perform the same mutation with a fresh observation.
-	if err := injectConflict(ctx, store, lease, refs[0], c); err != nil {
+	if err := injectConflict(ctx, store, lease, refs[0], config.RunID, c); err != nil {
 		return c.report(config, engine, started, FailoverReport{}), err
 	}
-	failover, err := exerciseFailover(ctx, store, lease, refs[0], c)
+	failover, err := exerciseFailover(ctx, store, lease, refs[0], config.RunID, c)
 	if err != nil {
 		return c.report(config, engine, started, failover), err
 	}
 	return c.report(config, engine, started, failover), nil
+}
+
+func requireCurrentClaims(c *counters, records int) error {
+	if got := c.claimed.Load(); got != int64(records) {
+		return fmt.Errorf("runtime probe: current run claimed %d records, want %d", got, records)
+	}
+	return nil
 }
 
 type queueDocument struct {
@@ -228,10 +261,10 @@ type queueDocument struct {
 	Fields  map[string]any `json:"fields"`
 }
 
-func seedQueue(ctx context.Context, store driver.Store, lease driver.ActiveLease, count int) ([]model.Ref, error) {
+func seedQueue(ctx context.Context, store driver.Store, lease driver.ActiveLease, count int, runID string) ([]model.Ref, error) {
 	refs := make([]model.Ref, count)
 	for i := range refs {
-		refs[i] = model.RefByID(fmt.Sprintf("e5-%04d", i), model.Natural64(0))
+		refs[i] = model.RefByID(fmt.Sprintf("e5-%s-%04d", runID, i), model.Natural64(0))
 	}
 	meta, err := store.Meta(ctx)
 	if err != nil {
@@ -299,10 +332,11 @@ func seedQueue(ctx context.Context, store driver.Store, lease driver.ActiveLease
 	for _, ref := range refs {
 		changes = append(changes, model.ChangeRecord{Ref: ref, Op: model.OpCreate, FromRevision: model.Natural64(0)})
 	}
+	seedKey := "e5-seed-" + runID
 	header := driver.ChangesetHeader{
 		Incarnation: meta.Incarnation, Kind: model.ChangesetWrite, Time: time.Now().UTC(),
-		Principal: model.PrincipalRef{Kind: "system", ID: "e5-seed"}, Method: "e5.seed",
-		IdempotencyKey: "e5-seed", RequestHash: "e5-seed-v1", LockKeys: keys, Changes: changes,
+		Principal: model.PrincipalRef{Kind: "system", ID: seedKey}, Method: "e5.seed",
+		IdempotencyKey: seedKey, RequestHash: seedKey + "-v1", LockKeys: keys, Changes: changes,
 		Response: model.Commit{Results: []model.OpResult{}},
 	}
 	if _, err := tx.Commit(ctx, header); err != nil {
@@ -474,7 +508,7 @@ func retry(ctx context.Context, c *counters, operation func() error) error {
 	return fmt.Errorf("runtime probe: retry budget exhausted")
 }
 
-func injectConflict(ctx context.Context, store driver.Store, lease driver.ActiveLease, ref model.Ref, c *counters) error {
+func injectConflict(ctx context.Context, store driver.Store, lease driver.ActiveLease, ref model.Ref, runID string, c *counters) error {
 	tx, err := store.Write(ctx, lease)
 	if err != nil {
 		return err
@@ -511,7 +545,7 @@ func injectConflict(ctx context.Context, store driver.Store, lease driver.Active
 		_ = tx.Rollback(context.Background())
 		return err
 	}
-	header := changeHeader(tx.Snapshot().Incarnation, "e5.conflict", "e5-conflict", model.Natural64(0), ref, keys)
+	header := changeHeader(tx.Snapshot().Incarnation, "e5.conflict", "e5-conflict-"+runID, model.Natural64(0), ref, keys)
 	_, err = tx.Commit(ctx, header)
 	_ = tx.Rollback(context.Background())
 	if !errors.Is(err, driver.ErrConflict) {
@@ -522,7 +556,7 @@ func injectConflict(ctx context.Context, store driver.Store, lease driver.Active
 	return retry(ctx, c, func() error { return mutateOne(ctx, store, lease, ref, 0) })
 }
 
-func exerciseFailover(ctx context.Context, store driver.Store, oldLease driver.ActiveLease, ref model.Ref, c *counters) (FailoverReport, error) {
+func exerciseFailover(ctx context.Context, store driver.Store, oldLease driver.ActiveLease, ref model.Ref, runID string, c *counters) (FailoverReport, error) {
 	oldEpoch := oldLease.Epoch()
 	tx, err := store.Write(ctx, oldLease)
 	if err != nil {
@@ -559,7 +593,7 @@ func exerciseFailover(ctx context.Context, store driver.Store, oldLease driver.A
 	}
 	c.fenced.Add(1)
 	_ = tx.Rollback(context.Background())
-	next, err := store.Lease(ctx, "e5-standby", driver.LeaseTTL)
+	next, err := store.Lease(ctx, "e5-standby-"+runID, driver.LeaseTTL)
 	if err != nil {
 		return FailoverReport{}, err
 	}

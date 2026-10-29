@@ -54,7 +54,12 @@ transaction connection; this keeps the wide probe bounded by the driver's
 96-connection pool without changing the storage contract.
 
 The acceptance run starts 200 claimers and 200 mutators together over 200
-ready records. It injects one stale-snapshot conflict through the real driver,
+ready records. Every invocation gets a fresh run ID, which namespaces its
+record IDs, lease holders, and idempotency keys; callers may pass a validated
+`ProbeConfig.RunID` when they need a reproducible replay test. The runner
+fails if the current invocation's claim counter is not exactly the configured
+record count, even if an existing database already contains rows that look
+claimed. It injects one stale-snapshot conflict through the real driver,
 records the retry, then releases the active lease while a transaction is
 staged. The stale transaction receives `ErrFenced` and cannot publish. A fresh
 holder observes a higher epoch. The stress lease is extended to the probe
@@ -73,6 +78,8 @@ From the repository root:
 go test ./spikes/runtime -run 'TestCandidateABI|TestEgressPolicy|TestLockOrder' -count=1 -v
 go test ./spikes/runtime -run TestMemoryE5ProbeRunsConcurrentClaimersAndMutators -count=1 -v
 go run ./spikes/runtime/cmd/runtime-spike -engine=memory -output=/tmp/e5-memory.json
+# Optional: pin a validated namespace to prove replay refusal on a reused DSN.
+go run ./spikes/runtime/cmd/runtime-spike -engine=postgres -run-id=review-replay -output=/tmp/e5-replay.json
 ```
 
 For the real PostgreSQL lane, start a disposable loopback-only container and

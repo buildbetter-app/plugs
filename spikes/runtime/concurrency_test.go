@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +30,25 @@ func TestLockOrderIsGlobalAndDeterministic(t *testing.T) {
 	duplicate[1] = duplicate[0]
 	if err := driver.ValidateLockKeys(duplicate); err == nil {
 		t.Fatal("duplicate lock set accepted")
+	}
+}
+
+func TestProbeRunNamespaceAndClaimCountAreFailClosed(t *testing.T) {
+	first := newRunID()
+	second := newRunID()
+	if first == second {
+		t.Fatalf("generated run IDs collided: %q", first)
+	}
+	if _, err := (ProbeConfig{RunID: "bad run"}).normalized(); err == nil {
+		t.Fatal("invalid run ID accepted")
+	}
+	c := &counters{}
+	if err := requireCurrentClaims(c, 1); err == nil || !strings.Contains(err.Error(), "current run claimed 0 records") {
+		t.Fatalf("zero current claims accepted: %v", err)
+	}
+	c.claimed.Store(1)
+	if err := requireCurrentClaims(c, 1); err != nil {
+		t.Fatal(err)
 	}
 }
 
