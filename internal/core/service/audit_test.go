@@ -20,6 +20,33 @@ type auditSnapshot struct {
 	reads int
 }
 
+// mutatingAudit delegates the decision to the real service adapter, then
+// advances the protected source before Writer acquires its commit locks. The
+// test proves that the adapter's tracked read cannot be used after a source
+// revision changes underneath the plan.
+type mutatingAudit struct {
+	inner  port.OntologyAudit
+	store  driver.Store
+	lease  driver.ActiveLease
+	source model.Ref
+	body   []byte
+	calls  int
+}
+
+func (a *mutatingAudit) DecideConditional(ctx context.Context, change port.Change, reader port.SnapshotReader) (port.ConditionalDecision, error) {
+	decision, err := a.inner.DecideConditional(ctx, change, reader)
+	if err != nil {
+		return port.ConditionalDecision{}, err
+	}
+	a.calls++
+	if _, err := conformance.Seed(ctx, a.store, a.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{
+		Ref: a.source, Kind: "ontology", Op: model.OpPatch, Body: a.body,
+	}}); err != nil {
+		return port.ConditionalDecision{}, err
+	}
+	return decision, nil
+}
+
 func (r *auditSnapshot) Snapshot() driver.View { return driver.View{} }
 func (r *auditSnapshot) Get(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
 	if err := ctx.Err(); err != nil {
@@ -116,6 +143,71 @@ func TestTrackedOntologyAuditPinsSourceAndClassifiesOwnProject(t *testing.T) {
 	}
 	if reader.reads != len(cases) {
 		t.Fatalf("source reads=%d, want %d", reader.reads, len(cases))
+	}
+}
+
+func TestTrackedOntologyAuditProjectlessAndArchivedDefinitions(t *testing.T) {
+	base := ontology.DefaultDocument()
+	base.Statuses["draft"] = ontology.Status{Name: "Draft", Category: ontology.Unstarted}
+	workflow := base.Workflows["issue"]
+	workflow.Statuses = append(workflow.Statuses, "draft")
+	base.Workflows["issue"] = workflow
+	baseSnapshot, problems := ontology.Compile(base, nil, nil)
+	if len(problems) != 0 {
+		t.Fatalf("base source compile: %+v", problems)
+	}
+	ref := model.Ref{ID: "ontology/audit"}
+	baseBody, err := MarshalOntologySource(OntologySource{Base: base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenProject := "missing"
+	locator := func(project string) (model.Ref, error) {
+		seenProject = project
+		return ref, nil
+	}
+	reader := &auditSnapshot{row: driver.Record{Ref: ref, Kind: "ontology", Revision: model.Natural64(9), Body: baseBody}}
+	decision, err := NewOntologyAudit(locator).DecideConditional(context.Background(), auditChange(t, "", "todo", "done"), reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seenProject != "" || decision.Ontology.Project != nil || decision.Ontology.Digest != baseSnapshot.Digest() {
+		t.Fatalf("projectless decision=%+v locatorProject=%q", decision, seenProject)
+	}
+
+	cases := []struct {
+		name    string
+		overlay ontology.Document
+		status  string
+	}{
+		{
+			name: "archived-status",
+			overlay: ontology.Document{Statuses: map[string]ontology.Status{
+				"draft": {Archived: true},
+			}},
+			status: "draft",
+		},
+		{
+			name: "archived-type",
+			overlay: ontology.Document{Types: map[string]ontology.Type{
+				"issue": {Archived: true},
+			}},
+			status: "done",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			source := OntologySource{Base: base, Overlays: map[string]ontology.Document{"project": tc.overlay}}
+			body, err := MarshalOntologySource(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader := &auditSnapshot{row: driver.Record{Ref: ref, Kind: "ontology", Revision: model.Natural64(10), Body: body}}
+			_, err = NewOntologyAudit(StaticOntologySource(ref)).DecideConditional(context.Background(), auditChange(t, "project", "todo", tc.status), reader)
+			if err == nil {
+				t.Fatal("archived ontology definition was accepted")
+			}
+		})
 	}
 }
 
@@ -220,5 +312,61 @@ func TestTrackedOntologyAuditRunsThroughWriterAndPinsTrackedMemorySource(t *test
 	versions, err := reader.Versions(context.Background(), dependent, driver.PageReq{})
 	if err != nil || len(versions.Items) != 1 {
 		t.Fatalf("dependent versions=%+v err=%v", versions, err)
+	}
+}
+
+func TestTrackedOntologyAuditSourceChangeInvalidatesWriterPlan(t *testing.T) {
+	f := setup(t)
+	source, compiled := auditSource(t, nil)
+	body, err := MarshalOntologySource(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceRef := model.Ref{ID: "ontology/audit"}
+	blocker := model.Ref{ID: "pl-audit-race-blocker"}
+	dependent := model.Ref{ID: "pl-audit-race-dependent"}
+	blockerBody, _ := json.Marshal(pipeline.Document{ID: blocker.ID, Type: "issue", Project: "blocker-project", Fields: map[string]any{"title": "blocker", "status": "todo"}})
+	dependentBody, _ := json.Marshal(pipeline.Document{ID: dependent.ID, Type: "issue", Project: "dependent-project", Fields: map[string]any{"title": "dependent", "status": "todo"}, Links: []pipeline.Link{{To: blocker, Kind: "conditional-blocks"}}})
+	_, err = conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{
+		{Ref: sourceRef, Kind: "ontology", Op: model.OpCreate, Body: body},
+		{Ref: blocker, Kind: "bead", Op: model.OpCreate, Body: blockerBody},
+		{Ref: dependent, Kind: "bead", Op: model.OpCreate, Body: dependentBody},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := NewOntologyAudit(StaticOntologySource(sourceRef))
+	tracing := &mutatingAudit{inner: inner, store: f.store, lease: f.lease, source: sourceRef, body: body}
+	writer := pipeline.New(f.store, f.lease, pipeline.WithOntology(NewOntology(compiled.Effective)), pipeline.WithOntologyAudit(tracing))
+	meta := meta(t)
+	meta.Project = "blocker-project"
+	meta.Method = "bead.close"
+	_, err = writer.Apply(context.Background(), anonymous, model.ChangeSet{Ops: []model.Op{
+		{Kind: model.OpPatch, Patch: &model.PatchOp{Target: blocker, Fields: map[string]any{}}},
+	}}, meta)
+	wantCode(t, err, "write_conflict")
+	if tracing.calls != 4 {
+		t.Fatalf("adapter calls=%d, want four guarded attempts", tracing.calls)
+	}
+	storeMeta, err := f.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := f.store.Read(context.Background(), driver.View{Incarnation: storeMeta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	rows, err := reader.Get(context.Background(), []model.Ref{blocker, sourceRef})
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("post-race rows=%+v err=%v", rows, err)
+	}
+	for _, row := range rows {
+		if row.Ref == blocker {
+			doc, decodeErr := pipeline.DecodeDocument(row.Body)
+			if decodeErr != nil || doc.Fields["status"] != "todo" {
+				t.Fatalf("blocker changed after source race: %+v err=%v", doc, decodeErr)
+			}
+		}
 	}
 }
