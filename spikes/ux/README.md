@@ -36,7 +36,11 @@ directory supplied as its first argument).
 The browser smoke check runs the same matrix through headless Chrome, checks
 that each view stays within its node budget, binds every rendered bead row to
 the independent `fixture-oracle.py`, and fails on browser `console.error` or an
-uncaught exception through `browser-check.mjs`:
+uncaught exception through `browser-check.mjs`. After `Page.loadEventFired`,
+the checker keeps CDP Runtime observation open for a deterministic 500 ms
+settle window. That is the checker contract for catching page failures
+scheduled up to 250 ms after load, with margin for timer and event-delivery
+jitter:
 
 ```sh
 ./spikes/ux/check.sh

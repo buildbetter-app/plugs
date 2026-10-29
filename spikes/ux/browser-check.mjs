@@ -10,6 +10,10 @@ const options = parseArgs(process.argv.slice(2));
 const chrome = options.chrome || "/usr/bin/google-chrome";
 const url = options.url;
 const domPath = options.dom;
+// Keep Runtime observation open after load for a deterministic quiescence
+// window.  The UX spike's browser gate promises to catch failures scheduled
+// up to 250 ms after load, with margin for timer and CDP delivery jitter.
+const POST_LOAD_SETTLE_MS = 500;
 if (!url || !domPath) {
   throw new Error("usage: browser-check.mjs --url URL --dom PATH [--chrome PATH]");
 }
@@ -53,7 +57,7 @@ try {
   const load = cdp.waitForEvent("Page.loadEventFired");
   await cdp.command("Page.navigate", { url });
   await withTimeout(load, 15_000, "timed out waiting for page load");
-  await sleep(75);
+  await sleep(POST_LOAD_SETTLE_MS);
   const evaluated = await cdp.command("Runtime.evaluate", {
     expression: "document.documentElement.outerHTML",
     returnByValue: true,
