@@ -1,7 +1,7 @@
 # Plug behavior catalog
 
 Status: research-only specification for the clean-room rewrite. The Beads
-reference is commit `9d6fff760b7a314b476539198504d77ce0959656` (`beads-base`),
+reference is commit [`9d6fff760b7a314b476539198504d77ce0959656`](https://github.com/buildbetter-app/plugs/tree/9d6fff760b7a314b476539198504d77ce0959656) (`beads-base`),
 with later behavior fixes re-recorded only from the `beads` branch under P82.
 No Plug implementation is implied by this document.
 
@@ -17,6 +17,10 @@ change and records both projections; `drop` is only for behavior outside Plug's
 contract (usually P46/P47/P48).
 
 ## Evidence and card method
+
+All Beads source paths and symbols below refer to that frozen tree, not the
+current Plug implementation. The companion [command inventory](commands.md)
+and [storage census](census.md) use the same behavior pin.
 
 The planned source census draws from the 46 role contracts in
 `backend/conformance/`, the 29 protocol test files and corpus, Oracle A's 523

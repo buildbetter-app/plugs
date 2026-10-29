@@ -1,5 +1,7 @@
 # Identity and content behavior cards
 
+Source pin and evidence limits: [behavior catalog](../behaviors.md).
+
 ## B09 — hash IDs and adaptive collision handling
 
 **Behavior.** The shared hash allocator emits `prefix-<base36>` from the
@@ -69,7 +71,7 @@ values are honored, and breadth is unbounded.
 
 **Pinning tests.** `internal/types/id_generator_test.go:TestGenerateChildID`,
 `TestParseHierarchicalID`, `TestCheckHierarchyDepth`; `cmd/bd/protocol/child_id_test.go:
-TestProtocol_ChildIDCounterNeverReusesNumbers; `internal/storage/domain/db/
+TestProtocol_ChildIDCounterNeverReusesNumbers`; `internal/storage/domain/db/
 child_counter_test.go:TestChildCounterSQLRepository` (the FirstChildReturnsDotOne,
 MonotonicallyIncrements, RecoversFromStaleCounter, GrandchildrenDoNotInfluenceCounter,
 and Wisp subtests); `internal/storage/embeddeddolt/child_id_test.go:TestGetNextChildID`;

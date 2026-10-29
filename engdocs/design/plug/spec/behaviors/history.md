@@ -1,5 +1,7 @@
 # History and transaction behavior cards
 
+Source pin and evidence limits: [behavior catalog](../behaviors.md).
+
 ## B18 — versions, revisions, and as-of reads
 
 **Behavior.** When versioned history is enabled, each accepted durable mutation
@@ -46,15 +48,18 @@ permission even for old versions (D26/P57).
 
 ## B19 — revert, redact, dump, and restore
 
-**Behavior.** A revert changes only paths whose current head still equals the
-chosen base, refusing conflicts and protected records; redaction is the sole
-removal and reaches every stored copy/blob/audit payload it can, reporting
-external copies as warnings. Full-history dumps restore only into an empty
-store, continue under a new incarnation, and refuse stale checksums or unknown
-record kinds.
+**Behavior.** Beads as-of reads distinguish removed versions from unknown
+addresses and preserve the recorded removal reason. The retention/epoch
+contracts specify address stability, retained bounds, holds, and epoch changes;
+their presence is not proof of a complete production redaction path.
+`MarkLatestVersionRemovedInTx` is explicitly a test-support seam, not a
+production removal operation. Beads `restore` reverses compaction (B12), and
+its JSONL interchange preserves issue state (B27); neither implements the
+Plug dump/restore format.
 
 **Beads implementation.** `internal/storage/issueops/asof_read.go:
-MarkLatestVersionRemovedInTx`; history/revert and export/restore operations;
+MarkLatestVersionRemovedInTx` (test support); `internal/storage/issueops/compaction.go:
+RestoreFromSnapshotInTx`; `cmd/bd/export.go` and `cmd/bd/import.go`;
 `internal/storage/issueops/version_history.go` canonical state and participation.
 
 **Pinning tests.** conformance `RunAsOfReadRefusesAsGoneOrUnknownNeverSubstitutingAnotherVersion`,
@@ -80,16 +85,19 @@ TestAsOfReadMapsAnyStoredRestrictionOutsideTheVocabularyToUnknown`,
 TestCheckSchemaSkew_EqualVersion_NoError`, `TestCheckSchemaSkew_OneAhead_ReturnsSchemaSkewError`,
 `TestCheckSchemaSkew_EscapeHatch_ReturnsNilAndWarns`.
 
-**Edge cases.** Redaction can affect old diffs, bases, blobs, dead letters,
+**Edge cases.** Plug redaction can affect old diffs, bases, blobs, dead letters,
 checkpoints, and audit rows but not already-created backups or external plugin
 destinations. Head-only restore establishes a store-wide history floor;
 old incarnation tokens fail after restore.
 
-**Plug disposition.** **Keep with new format**: `history.redact` is the only
-removal (P45), dumps default to full history with a head-only option (P20),
+**Plug disposition.** **Deviate**: path-scoped revert refuses a head/base
+conflict or a protected record (A6); `history.redact` is the only removal
+(P45) and reports unreachable external copies as warnings. Dumps default to
+full history with a head-only option (P20),
 restore is empty-store-only (P44), and restore loads plugin artifacts only
 after lock-digest verification (P75). Tracker `sync.import` is an ordinary
-head-state write that mints new IDs (P77), not a restore.
+head-state write that mints new IDs (P77), not a restore. Plug restore starts a
+new incarnation and refuses bad checksums and unknown record kinds (A6).
 
 ## B20 — events journal and delivery order
 
