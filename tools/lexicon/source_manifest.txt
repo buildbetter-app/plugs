@@ -145,6 +145,7 @@ internal/core/pipeline/callbacks_test.go
 internal/core/pipeline/document.go
 internal/core/pipeline/guard_test.go
 internal/core/pipeline/noop_test.go
+internal/core/pipeline/operations_test.go
 internal/core/pipeline/options.go
 internal/core/pipeline/pipeline_test.go
 internal/core/pipeline/prepare.go
