@@ -20,4 +20,4 @@ class = "ban"
 allow = ["✓", "✗", "⚠", "❄"]
 
 [zones]
-provenance = ["NOTICE.md", "engdocs/adr/", "engdocs/design/", "docs/migrate-from-beads.mdx", "internal/core/dumpformat/catalog.go", "internal/core/dumpformat/records.go", "internal/core/dumpformat/validate.go"]
+provenance = ["NOTICE.md", "engdocs/adr/", "engdocs/design/", "docs/migrate-from-beads.mdx", "internal/core/dumpformat/catalog.go", "internal/core/dumpformat/records.go", "internal/core/dumpformat/validate.go", "internal/core/dumpformat/merge_fixture_test.go"]
