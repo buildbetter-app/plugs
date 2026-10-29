@@ -19,7 +19,7 @@ func DefaultDocument() Document {
 				Slots:    map[Slot]string{Claim: "in_progress", Close: "done", Reopen: "todo", Fail: "failed", Cancel: "canceled", Defer: "backlog"},
 				Transitions: []Rule{
 					{From: []string{"todo"}, To: "in_progress", Guards: []Guard{{Kind: NotTemplate}, {Kind: NoOpenBlockers}, {Kind: Permission}}},
-					{To: "done", Guards: []Guard{{Kind: NoOpenChildren}, {Kind: NoOpenBlockers}, {Kind: Permission}}},
+					{To: "done", Guards: []Guard{{Kind: NotTemplate}, {Kind: NoOpenChildren}, {Kind: NoOpenBlockers}, {Kind: Permission}}},
 					{To: "failed", Guards: []Guard{{Kind: NoOpenChildren}, {Kind: Permission}}},
 					{To: "canceled", Guards: []Guard{{Kind: Permission}}},
 					{To: "todo", Guards: []Guard{{Kind: Permission}}},
