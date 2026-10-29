@@ -34,11 +34,15 @@ func main() {
 	out := Output{GeneratedAt: time.Now().UTC().Format(time.RFC3339), N: authz.BeadCount, Depth: 10, PageP95TargetMS: 50, CountP95TargetMS: authz.CountP95TargetMS}
 	run := func(name string, s *authz.Store) error {
 		defer s.Close()
-		for _, f := range []float64{1, .01, .001} {
-			if err := s.Reset(ctx); err != nil {
-				return err
-			}
-			if err := s.Seed(ctx, f); err != nil {
+		for i, f := range []float64{1, .01, .001} {
+			if i == 0 {
+				if err := s.Reset(ctx); err != nil {
+					return err
+				}
+				if err := s.Seed(ctx, f); err != nil {
+					return err
+				}
+			} else if err := s.SetVisibleFraction(ctx, f); err != nil {
 				return err
 			}
 			cases, err := s.Benchmark(ctx, f, *iterations)

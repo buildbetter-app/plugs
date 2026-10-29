@@ -123,6 +123,28 @@ func (s *Store) Seed(ctx context.Context, visibleFraction float64) error {
 	return nil
 }
 
+// SetVisibleFraction changes only the grant rows after a corpus has been
+// seeded. The graph and closure tables are immutable benchmark inputs, so
+// reusing them makes each visibility case independent without rebuilding
+// 100,000 rows of closure data.
+func (s *Store) SetVisibleFraction(ctx context.Context, visibleFraction float64) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM plugin_grant`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE bead SET claimed_by=NULL WHERE claimed_by IS NOT NULL`); err != nil {
+		return err
+	}
+	if err = insertGrants(ctx, tx, s.Dialect, visibleFraction); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func parentAndDepth(id int) (int, int) {
 	if id == 1 {
 		return 0, 0
