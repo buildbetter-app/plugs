@@ -338,7 +338,7 @@ func TestRealRPCFortySessionsCompactWithoutTransferringOwnership(t *testing.T) {
 	}
 }
 
-func TestRealRPCWorkingOnRequiresLiveCallerClaimsAndRechecksCurrentState(t *testing.T) {
+func TestRealRPCWorkingOnRequiresLiveCallerClaimsAndExpiredReclaimRefuses(t *testing.T) {
 	f := newFixture(t, nil)
 	bead := f.create(t, "project-a")
 	resource := "bead/" + bead
@@ -359,11 +359,40 @@ func TestRealRPCWorkingOnRequiresLiveCallerClaimsAndRechecksCurrentState(t *test
 	if row["focus"] != resource || row["workingOn"] != nil {
 		t.Fatal("expired claim left a marker", row)
 	}
-	f.write(t, bob, "bead.claim", map[string]any{"id": map[string]any{"id": bead}})
+	// B05 recovery has no implemented service/RPC producer at this base.
+	// Expiry alone does not reopen a lifecycle slot. Actual expired foreign
+	// takeover and durable reclaim behavior remain unqualified.
+	before := durableState(t, f)
+	code(t, f.call(t, bob, "bead.claim", map[string]any{"id": map[string]any{"id": bead}, "_meta": map[string]any{"idempotencyKey": strings.Repeat("c", 32)}}), "invalid_params")
+	if string(before) != string(durableState(t, f)) {
+		t.Fatal("unsupported expired takeover changed durable state")
+	}
 	code(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": aliceSession}), "forbidden")
 	result(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": aliceSession, "workingOn": []string{}}))
 	if f.rows(t, bob, "project-a")[0].(map[string]any)["workingOn"] != nil {
-		t.Fatal("reclaimed claim leaked as current work")
+		t.Fatal("expired claim leaked as current work")
+	}
+}
+
+func TestRealRPCClosedClaimIsRemovedFromCurrentWorkingOn(t *testing.T) {
+	f := newFixture(t, nil)
+	bead := f.create(t, "project-a")
+	resource := "bead/" + bead
+	f.write(t, alice, "bead.claim", map[string]any{"id": map[string]any{"id": bead}})
+	id := f.open(t, alice, map[string]any{})
+	result(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": id, "focus": resource, "workingOn": []string{resource}}))
+	// Use the delivered bound lifecycle operation, while the claim is live.
+	// This is a real current-state change, independent of B05 recovery.
+	f.write(t, alice, "bead.close", map[string]any{"id": map[string]any{"id": bead}})
+	before := durableState(t, f)
+	row := f.rows(t, bob, "project-a")[0].(map[string]any)
+	if row["focus"] != resource || row["workingOn"] != nil {
+		t.Fatal("closed claim remained working-on or removed readable focus", row)
+	}
+	code(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": id}), "forbidden")
+	result(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": id, "workingOn": []string{}}))
+	if string(before) != string(durableState(t, f)) {
+		t.Fatal("current-claim presence checks changed durable state")
 	}
 }
 

@@ -340,6 +340,14 @@ func (m *Manager) Set(ctx context.Context, caller Caller, req SetRequest) (Prese
 }
 
 func (m *Manager) set(ctx context.Context, caller Caller, req SetRequest, before entry) (Presence, error) {
+	// Owning an ID does not permit moving a session out of a project whose
+	// current access has been revoked. Unreadable sessions share not_found.
+	if err := m.admit(ctx, caller.Principal, before.project); err != nil {
+		if isAbsent(err) {
+			return Presence{}, failure("not_found", "live session was not found")
+		}
+		return Presence{}, err
+	}
 	if len(req.WorkingOn) > MaxWorkingOn {
 		return Presence{}, failure("invalid_params", "workingOn exceeds 64 resources")
 	}
@@ -387,6 +395,9 @@ func (m *Manager) set(ctx context.Context, caller Caller, req SetRequest, before
 		project = v.Bead.Project
 	}
 	if err := m.admit(ctx, caller.Principal, project); err != nil {
+		if isAbsent(err) {
+			return Presence{}, failure("not_found", "live session was not found")
+		}
 		return Presence{}, err
 	}
 	m.mu.Lock()

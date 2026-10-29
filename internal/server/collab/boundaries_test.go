@@ -333,3 +333,42 @@ func TestRealLeaseTakeoverAndServerCancellationClearPresence(t *testing.T) {
 		t.Fatal("server cancellation did not clear session")
 	}
 }
+
+func TestReadPolicyPortRevokedSessionIsNotFoundAndCannotMoveProjects(t *testing.T) {
+	var allowed atomic.Bool
+	allowed.Store(true)
+	f := newFixture(t, func(c *collab.Config) {
+		c.AuthorizationInstalled = func() bool { return true }
+		c.Policy = controlledPolicy{admit: func(_ context.Context, _ model.PrincipalRef, project string) (bool, error) {
+			return project == "project-b" || allowed.Load(), nil
+		}}
+	})
+	id := f.open(t, alice, map[string]any{})
+	lifetime, err := f.manager.SessionContext(context.Background(), collab.Caller{Principal: alice}, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := durableState(t, f)
+	f.clock.advance(4 * time.Minute)
+	allowed.Store(false)
+	for _, params := range []map[string]any{
+		{"sessionId": id},
+		{"sessionId": id, "_meta": map[string]any{"project": "project-b"}},
+	} {
+		code(t, f.call(t, alice, "presence.set", params), "not_found")
+	}
+	code(t, f.call(t, alice, "session.close", map[string]any{"sessionId": id}), "not_found")
+	_, err = f.manager.SessionContext(context.Background(), collab.Caller{Principal: alice}, id)
+	domainCode(t, err, "not_found")
+	allowed.Store(true)
+	if len(f.rows(t, bob, "project-a")) != 1 || len(f.rows(t, bob, "project-b")) != 0 {
+		t.Fatal("denied update moved or closed the session")
+	}
+	f.clock.advance(time.Minute)
+	if len(f.rows(t, bob, "project-a")) != 0 || lifetime.Err() == nil {
+		t.Fatal("denied update renewed expiry")
+	}
+	if string(before) != string(durableState(t, f)) {
+		t.Fatal("denied session operations changed durable state")
+	}
+}

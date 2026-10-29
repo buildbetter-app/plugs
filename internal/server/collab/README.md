@@ -31,6 +31,12 @@ anonymous claim label). Omission preserves that selection; `[]` clears it.
 Each list re-reads current focus and claim state as its viewer, suppressing
 absent/denied/moved resources and expired or reclaimed claims without markers.
 
+At the fixed base the service has no release or expired-claim recovery producer.
+`bead.claim` of expired in-progress work explicitly refuses: time passing cannot
+reopen a lifecycle slot. Tests exercise live, closed and expired claims through
+the real bound service. B05 durable recovery and subsequent foreign-owner
+takeover remain unqualified until actual core support is adopted.
+
 `onBehalfOf` can identify only the caller or its trusted direct sponsor. Sponsored
 clients default to their sponsor. Grouped presence uses one actual session and
 principal as its representative, the first visible focus, and the sorted union
