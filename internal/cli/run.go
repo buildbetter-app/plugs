@@ -10,14 +10,18 @@ import (
 	"github.com/buildbetter-app/plugs/internal/client"
 )
 
-// Execute selects an explicit server, then PLUG_SERVER, then the workspace
-// config, then persistent local SQLite. --memory is the explicit disposable
-// local choice. Remote failures never open a local store.
+// Execute selects an explicit server, then PLUG_SERVER, then workspace config,
+// then persistent local SQLite. --memory is the explicit disposable local
+// choice. The shared server command keeps its own composition lifecycle, while
+// client-mode remote failures never open a local store.
 func Execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) int {
 	return execute(ctx, args, in, out, errOut, nil)
 }
 
 func execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer, factory StorageFactory) int {
+	if isServerCommand(args) {
+		return executeServer(ctx, args, out, errOut)
+	}
 	o, command, err := Parse(args)
 	if errors.Is(err, ErrHelp) {
 		fmt.Fprint(out, Usage)
@@ -41,7 +45,21 @@ func execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 		server, source = os.Getenv("PLUG_SERVER"), "PLUG_SERVER"
 	}
 	if server != "" {
-		return runRemote(ctx, server, source, o, command, in, out, errOut)
+		transport, err := client.NewHTTP(client.HTTPConfig{Server: server, Token: os.Getenv("PLUG_TOKEN")})
+		if err != nil {
+			fmt.Fprintf(errOut, "%s: %v\n", source, err)
+			return 2
+		}
+		defer transport.Close()
+		remote, err := client.New(transport, o.Project, o.Agent)
+		if err == nil {
+			err = runSession(ctx, &Session{Client: remote, Out: out, Err: errOut, JSON: o.JSON}, command, in)
+		}
+		if err != nil {
+			fmt.Fprintf(errOut, "%s: %v\n", source, err)
+			return 1
+		}
+		return 0
 	}
 	file, err := resolveFileConfig()
 	if err != nil {
