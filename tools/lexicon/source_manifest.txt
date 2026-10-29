@@ -483,6 +483,12 @@ internal/server/transport/httpjson/server.go
 internal/server/transport/inprocess/BUILD.bazel
 internal/server/transport/inprocess/inprocess.go
 internal/server/transport/inprocess/inprocess_test.go
+internal/server/transport/websocket/BUILD.bazel
+internal/server/transport/websocket/backpressure_test.go
+internal/server/transport/websocket/config.go
+internal/server/transport/websocket/conn.go
+internal/server/transport/websocket/handler.go
+internal/server/transport/websocket/websocket_test.go
 internal/server/watch/BUILD.bazel
 internal/server/watch/authorization.go
 internal/server/watch/boundaries_test.go
