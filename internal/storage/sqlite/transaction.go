@@ -391,7 +391,13 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		if when.IsZero() {
 			when = time.Now().UTC()
 		}
-		entry := model.Changeset{Revision: revision, Branch: model.Natural64(0), Incarnation: h.Incarnation, Kind: h.Kind, Time: when, Principal: h.Principal, Chain: h.Chain, IdempotencyKey: h.IdempotencyKey, Mutators: h.Mutators, Changes: h.Changes}
+		entry := model.Changeset{Revision: revision, Branch: model.Natural64(0), Incarnation: h.Incarnation, Kind: h.Kind, Time: when, Principal: h.Principal, Chain: h.Chain, IdempotencyKey: h.IdempotencyKey, Mutators: h.Mutators, Changes: h.Changes, Events: model.CloneEventDescriptors(h.Events)}
+		// Validate the complete plan against the actual changes and allocated
+		// revision before preparing any graph, log, or receipt publication. Nil
+		// retains the legacy history discriminator; an empty plan is invalid.
+		if err := entry.ValidateEvents(); err != nil {
+			return fmt.Errorf("sqlite: event plan: %w", err)
+		}
 		data, err := json.Marshal(entry)
 		if err != nil {
 			return err

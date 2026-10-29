@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -93,6 +94,65 @@ func auditChange(t *testing.T, project, beforeStatus, afterStatus string) port.C
 		Before:   before,
 		After:    after,
 		SetBy:    map[string]string{"fields.status": "request"},
+	}
+}
+
+func TestDecodeOntologySourceRoundTrip(t *testing.T) {
+	source := OntologySource{
+		Base: ontology.DefaultDocument(),
+		Overlays: map[string]ontology.Document{"project": {
+			Statuses: map[string]ontology.Status{"todo": {Name: "Project todo", Category: ontology.Unstarted}},
+		}},
+		Plugins: ontology.PluginCatalog{"available": true, "unavailable": false},
+	}
+	envelope, err := MarshalOntologySource(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := json.Marshal(source.Base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+		want OntologySource
+	}{
+		{"envelope", envelope, source},
+		{"plain-document", plain, OntologySource{Base: source.Base}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DecodeOntologySource(tc.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("decoded source=%+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecodeOntologySourceRejectsAmbiguousAndUnsupportedBodies(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw string
+	}{
+		{"trailing-json", `{} {}`},
+		{"non-object", `[]`},
+		{"unknown-document-member", `{"digest":"asserted"}`},
+		{"unknown-envelope-member", `{"base":{},"digest":"asserted"}`},
+		{"duplicate-envelope-member", `{"base":{},"base":{}}`},
+		{"duplicate-document-member", `{"base":{"statuses":{},"statuses":{}}}`},
+		{"unknown-overlay-member", `{"base":{},"overlays":{"project":{"decision":true}}}`},
+		{"invalid-base-shape", `{"base":null}`},
+		{"invalid-overlay-shape", `{"base":{},"overlays":{"project":[]}}`},
+		{"invalid-plugin-shape", `{"base":{},"plugins":{"plugin":"true"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := DecodeOntologySource([]byte(tc.raw)); err == nil {
+				t.Fatal("unsupported source body was accepted")
+			}
+		})
 	}
 }
 

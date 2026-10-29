@@ -134,7 +134,7 @@ func (a *TrackedOntologyAudit) DecideConditional(ctx context.Context, change por
 	if len(rows) != 1 || !sameResolvedRef(rows[0].Ref, sourceRef) || rows[0].Kind != "ontology" {
 		return port.ConditionalDecision{}, auditError("ontology source record is missing or has an unsupported kind")
 	}
-	source, err := decodeOntologySource(rows[0].Body)
+	source, err := DecodeOntologySource(rows[0].Body)
 	if err != nil {
 		return port.ConditionalDecision{}, auditError("unsupported protected ontology source: " + err.Error())
 	}
@@ -187,11 +187,12 @@ func conditionDecision(effective ontology.Effective, typ, status string) (model.
 	return decision, nil
 }
 
-// decodeOntologySource accepts either the internal {base, overlays, plugins}
+// DecodeOntologySource accepts either the internal {base, overlays, plugins}
 // envelope or a plain ontology.Document for the base-only case. Both forms
 // use the pure decoder; unknown members, duplicate JSON keys and arbitrary
-// digest/project assertions are refused.
-func decodeOntologySource(raw []byte) (OntologySource, error) {
+// digest/project assertions are refused. Callers must separately validate the
+// protected source record and compile the decoded documents before use.
+func DecodeOntologySource(raw []byte) (OntologySource, error) {
 	value, err := uniqueJSON(raw)
 	if err != nil {
 		return OntologySource{}, err
