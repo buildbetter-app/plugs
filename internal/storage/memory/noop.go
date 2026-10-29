@@ -40,6 +40,9 @@ func (t *transaction) CommitNoop(ctx context.Context, header driver.ChangesetHea
 	if header.ResponsePending {
 		return model.Commit{}, fmt.Errorf("memory: no-op response cannot be pending")
 	}
+	if header.Events != nil {
+		return model.Commit{}, fmt.Errorf("memory: no-op commit cannot contain an event plan")
+	}
 	if len(header.Changes) != 0 || len(t.records) != 0 || len(t.blobs) != 0 || len(t.derived) != 0 || len(t.bumps) != 0 {
 		return model.Commit{}, fmt.Errorf("memory: no-op commit cannot contain staged mutations")
 	}
