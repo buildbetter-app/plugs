@@ -274,6 +274,12 @@ internal/integration/oidc/flow_test.go
 internal/integration/oidc/http_test.go
 internal/integration/oidc/idp_test.go
 internal/integration/oidc/refusal_test.go
+internal/integration/postphase/BUILD.bazel
+internal/integration/postphase/README.md
+internal/integration/postphase/delivery_test.go
+internal/integration/postphase/native_test.go
+internal/integration/postphase/postphase_test.go
+internal/integration/postphase/receipts_test.go
 internal/integration/sqliteacceptance/BUILD.bazel
 internal/integration/sqliteacceptance/README.md
 internal/integration/sqliteacceptance/durability_test.go
