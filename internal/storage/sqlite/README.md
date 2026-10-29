@@ -30,7 +30,8 @@ sentinel selection for opaque derived rows.
 
 Use one stable database path on a local filesystem with working flock and WAL
 shared-memory locks. All handles/processes must use this driver and retain the
-lock directory; do not remove or replace it while handles are open. SQLite has
+lock directory; do not remove or replace it while handles are open. Hard-linked
+files and existing non-Plug databases refuse. SQLite has
 no standby, replication or failover capability. Automated backups and scheduled
 engine-neutral dumps are not implemented here; health leaves the backup
 checkpoint unset. No production cutover or data movement is provided.

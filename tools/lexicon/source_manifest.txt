@@ -169,10 +169,13 @@ internal/storage/memory/transaction.go
 internal/storage/memory/transaction_reader.go
 internal/storage/sqlite/BUILD.bazel
 internal/storage/sqlite/README.md
+internal/storage/sqlite/boundaries_test.go
+internal/storage/sqlite/engine_test.go
 internal/storage/sqlite/lease.go
 internal/storage/sqlite/locks_other.go
 internal/storage/sqlite/locks_unix.go
 internal/storage/sqlite/metadata.go
+internal/storage/sqlite/process_test.go
 internal/storage/sqlite/reader.go
 internal/storage/sqlite/schema.go
 internal/storage/sqlite/sqlite_test.go

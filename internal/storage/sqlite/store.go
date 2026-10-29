@@ -76,6 +76,10 @@ func (Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, error)
 	if err != nil {
 		return nil, err
 	}
+	if err = validateDatabaseFile(f); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
 	if err = f.Close(); err != nil {
 		return nil, err
 	}
@@ -96,6 +100,23 @@ func (Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, error)
 	// Open/init and every publication share an OS file lock across handles and
 	// processes. WAL read transactions never need this lock.
 	err = s.immediate(ctx, nil, func(c *sql.Conn) error {
+		var hasMeta bool
+		if e := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta')`).Scan(&hasMeta); e != nil {
+			return e
+		}
+		if hasMeta {
+			if _, e := readMeta(ctx, c); e != nil {
+				return e
+			}
+		} else {
+			var tables int
+			if e := c.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`).Scan(&tables); e != nil {
+				return e
+			}
+			if tables != 0 {
+				return fmt.Errorf("%w: sqlite database is not an empty or Plug store", driver.ErrUnsupported)
+			}
+		}
 		_, e := c.ExecContext(ctx, schema)
 		if e != nil {
 			return e

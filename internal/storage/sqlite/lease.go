@@ -34,6 +34,7 @@ type activeLease struct {
 	epoch    uint64
 	token    string
 	ttl      time.Duration
+	renewMu  sync.Mutex
 	mu       sync.Mutex
 	deadline time.Time
 	timer    *time.Timer
@@ -166,17 +167,38 @@ func (s *Store) Lease(ctx context.Context, holder string, ttl time.Duration) (dr
 	}
 }
 func (l *activeLease) Renew(ctx context.Context) error {
+	l.renewMu.Lock()
+	defer l.renewMu.Unlock()
 	if err := l.store.check(ctx); err != nil {
 		return err
 	}
 	// Do not hold l.mu while fencing: the fence may signal Lost.
-	var deadline time.Time
+	updated := false
 	err := l.store.immediate(ctx, l, func(c *sql.Conn) error {
-		deadline = time.Now().Add(l.ttl)
+		deadline := time.Now().Add(l.ttl)
 		_, err := c.ExecContext(ctx, `UPDATE active_lease SET expires=? WHERE singleton=1`, deadline.UnixNano())
-		return err
+		if err != nil {
+			return err
+		}
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if l.lostFlag {
+			return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
+		}
+		// Publish the new timer while still inside the SQL publication lock.
+		// Failed SQL publication closes Lost instead of trusting this deadline.
+		l.deadline = deadline
+		if l.timer != nil {
+			l.timer.Stop()
+		}
+		l.timer = time.AfterFunc(time.Until(deadline), l.expire)
+		updated = true
+		return nil
 	})
 	if err != nil {
+		if updated {
+			l.signalLost()
+		}
 		return err
 	}
 	l.mu.Lock()
@@ -186,11 +208,6 @@ func (l *activeLease) Renew(ctx context.Context) error {
 	if l.lostFlag {
 		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
 	}
-	l.deadline = deadline
-	if l.timer != nil {
-		l.timer.Stop()
-	}
-	l.timer = time.AfterFunc(time.Until(deadline), l.expire)
 	return nil
 }
 func (l *activeLease) Release(ctx context.Context) error {

@@ -180,7 +180,7 @@ func (r *reader) recordAt(ctx context.Context, id string) (driver.Record, bool, 
 		return record, err == nil, err
 	}
 	// Locate the last version and preceding base, then replay at most 31
-	// forward patches. Recreated records have a fresh base after tombstones.
+	// forward patches. Tombstones reset the body before a recreation patch.
 	var lastRev string
 	var lastData []byte
 	err := r.tx.QueryRowContext(ctx, `SELECT rev,data FROM versions WHERE key=? AND rev<=? ORDER BY rev DESC LIMIT 1`, id, revKey(r.at)).Scan(&lastRev, &lastData)
@@ -216,6 +216,10 @@ func (r *reader) recordAt(ctx context.Context, id string) (driver.Record, bool, 
 		}
 		if err = json.Unmarshal(data, &v); err != nil {
 			return driver.Record{}, false, err
+		}
+		if v.Deleted {
+			body = nil
+			continue
 		}
 		if v.Base {
 			body = bytes.Clone(v.Body)
