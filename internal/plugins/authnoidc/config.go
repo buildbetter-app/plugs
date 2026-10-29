@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -143,12 +144,16 @@ func normalizeOrigin(raw string) (string, bool) {
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.User != nil || u.Host == "" || u.Path != "" || u.RawQuery != "" ||
-		u.ForceQuery || u.Fragment != "" || u.Opaque != "" || (u.Scheme != "https" && u.Scheme != "http") {
+		u.ForceQuery || u.Fragment != "" || u.Opaque != "" || strings.HasSuffix(u.Host, ":") ||
+		(u.Scheme != "https" && u.Scheme != "http") {
 		return "", false
 	}
 	host := strings.ToLower(u.Hostname())
-	if host == "" || strings.ContainsAny(host, "[]%") {
+	if host == "" || strings.ContainsAny(host, "[]%") || strings.HasSuffix(host, ".") {
 		return "", false
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		host = ip.String()
 	}
 	port := u.Port()
 	if port != "" {
@@ -230,8 +235,27 @@ func httpsURL(raw string) bool {
 		return false
 	}
 	u, err := url.Parse(raw)
-	return err == nil && u.Scheme == "https" && u.Host != "" && u.Hostname() != "" && u.User == nil &&
-		u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && u.Opaque == ""
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.Hostname() == "" || u.User != nil ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || strings.HasSuffix(u.Host, ":") {
+		return false
+	}
+	port := u.Port()
+	if port == "" {
+		return true
+	}
+	for _, digit := range port {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	number := 0
+	for _, digit := range port {
+		number = number*10 + int(digit-'0')
+		if number > 65535 {
+			return false
+		}
+	}
+	return number > 0
 }
 
 func boundedText(value string, max int) bool {

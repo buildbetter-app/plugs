@@ -176,8 +176,8 @@ func isLoginPath(path string) bool {
 }
 
 func handlePreflight(w http.ResponseWriter, r *http.Request) {
-	method := r.Header.Get("Access-Control-Request-Method")
-	if method != http.MethodGet && method != http.MethodPost {
+	methods := r.Header.Values("Access-Control-Request-Method")
+	if len(methods) != 1 || (methods[0] != http.MethodGet && methods[0] != http.MethodPost) {
 		writeHTTPError(w, http.StatusForbidden, authn.ErrForbidden)
 		return
 	}
