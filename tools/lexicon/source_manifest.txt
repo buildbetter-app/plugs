@@ -169,6 +169,13 @@ internal/core/pipeline/response_test.go
 internal/core/pipeline/snapshot.go
 internal/core/port/BUILD.bazel
 internal/core/port/pipeline.go
+internal/core/service/BUILD.bazel
+internal/core/service/graph.go
+internal/core/service/ontology.go
+internal/core/service/reads.go
+internal/core/service/service.go
+internal/core/service/service_test.go
+internal/core/service/types.go
 internal/doc.go
 internal/plugins/authnapikey/BUILD.bazel
 internal/plugins/authnapikey/apikey.go
