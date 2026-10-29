@@ -125,7 +125,19 @@ func (w *Writer) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 		if err == nil {
 			err = p.detectChanges()
 		}
+		if err == nil {
+			err = w.prepareAudit(preCtx, p)
+		}
 		if err == nil && meta.DryRun {
+			if p.audit != nil {
+				n, e := reader.Snapshot().At.Uint64()
+				if e != nil || n == math.MaxUint64 {
+					return port.WriteOutcome{}, failure("write_conflict", "driver revision space is exhausted")
+				}
+				if _, _, e := p.events(model.Natural64(n+1), p.changeRecords()); e != nil {
+					return port.WriteOutcome{}, e
+				}
+			}
 			commit, err := p.response(*reader.Snapshot().At, meta)
 			commit.WouldCommit = err == nil && len(p.changed) > 0
 			return port.WriteOutcome{Commit: commit}, err
@@ -325,7 +337,6 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	changes := make([]model.ChangeRecord, 0, len(ids))
 	for _, id := range ids {
 		pending := p.writes[id]
 		if pending.deleted {
@@ -340,6 +351,34 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		if err != nil {
 			return model.Commit{}, err
 		}
+	}
+	changes := p.changeRecords()
+	events, chain, err := p.events(revision, changes)
+	if err != nil {
+		return model.Commit{}, err
+	}
+	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
+		return model.Commit{}, err
+	}
+	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
+	if err != nil {
+		return model.Commit{}, err
+	}
+	if entry.Revision.String() != revision.String() {
+		return model.Commit{}, driver.ErrIndeterminate{IdempotencyKey: meta.IdempotencyKey}
+	}
+	return commit, nil
+}
+
+func (p *prepared) changeRecords() []model.ChangeRecord {
+	ids := make([]string, 0, len(p.changed))
+	for id := range p.changed {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	changes := make([]model.ChangeRecord, 0, len(ids))
+	for _, id := range ids {
+		pending := p.writes[id]
 		paths := make([]string, 0, len(pending.setBy))
 		for path := range pending.setBy {
 			paths = append(paths, changedPath(path))
@@ -357,19 +396,14 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		if pending.deleted {
 			kind = model.OpDelete
 		}
+		// A slot patch plus its optional reason comment is one transition.
+		// Keep the changed blocker anchored to the patch, not the comment.
+		if p.audit != nil && isSlot(p.proposal.Meta.Method) && statusChanged(pending) {
+			kind = model.OpPatch
+		}
 		changes = append(changes, model.ChangeRecord{Ref: pending.ref, Op: kind, FromRevision: pending.revision, ChangedPaths: paths})
 	}
-	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
-		return model.Commit{}, err
-	}
-	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, LockKeys: keys})
-	if err != nil {
-		return model.Commit{}, err
-	}
-	if entry.Revision.String() != revision.String() {
-		return model.Commit{}, driver.ErrIndeterminate{IdempotencyKey: meta.IdempotencyKey}
-	}
-	return commit, nil
+	return changes
 }
 
 func changedPath(path string) string {
