@@ -18,10 +18,12 @@ registry artifact, and the reproduction commands are recorded in
 `openrpc.json` under `x-source-evidence` and `x-method-registry`. The artifact
 must validate the method inventory and descriptor parity before implementation
 PRs consume it; a future generator may replace it only with equivalent checks.
-The current source binding includes answered #17's fixed project/team
-permission requirement; approval of a concrete authorization design remains
-pending. `x-contract-gaps` also records C7's unrestricted restore-manifest
-parameter, so this bounded snapshot does not admit typed restore consumers.
+Decisions #17/#18 select fixed project/team permissions and the bounded X1–X9
+package; controller v2 authorizes its implementation. This snapshot does not
+yet describe the complete X1–X9 contract. Its recorded source hashes retain
+the historical inputs rather than claiming parity with later design edits.
+`x-contract-gaps` also records C7's unrestricted restore-manifest parameter,
+so typed restore consumers remain unsupported.
 
 A committed write returns warnings inside `result.warnings`; it never returns
 both a committed result and a JSON-RPC `error`. The `audience` value guides
@@ -145,19 +147,31 @@ Its name and descriptor digests bind the stored artifact. The validator below
 reads that artifact independently; it never constructs its expected registry
 from `methods`. Deleting a method, dropping a descriptor or changing an error
 attachment on either side must fail. The separate wire inventory also checks
-the operation/event/error names against the schemas, Go and Markdown.
+the operation/event/error names against the schemas, Go and Markdown. The
+validator rejects duplicate JSON members and checks every named error's code
+and number plus every Markdown row's retryability, audience and warning flag.
 
-Run from this directory. The optional second argument checks source hashes
-against the external design checkout. D3's failed authorization latency gate
-and pending redesign approval still block affected implementation, even when
-this bounded artifact passes; it selects no replacement authorization model.
+Run from this directory. The optional second argument checks the recorded
+source hashes against a checkout of those historical inputs; the live design
+checkout has since changed. Decision #19 and controller v2 select exact-head
+local Bazel checks plus independent review as the current merge gate. The
+historical authorization latency failure remains a failure; this contract
+check does not establish runtime or performance acceptance.
 
 ```sh
-python3 - openrpc.json /home/dev/plugs/engdocs/design/plug <<'PY'
+python3 - openrpc.json <<'PY'
 import hashlib, json, pathlib, re, sys
 
+def unique_members(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise SystemExit("duplicate JSON member: " + key)
+        result[key] = value
+    return result
+
 path = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "openrpc.json")
-doc = json.loads(path.read_text())
+doc = json.loads(path.read_text(), object_pairs_hook=unique_members)
 registry = doc["x-method-registry"]
 schemas = doc["components"]["schemas"]
 
@@ -223,6 +237,25 @@ for key, schema in [("errorCodes", "ErrorCode"), ("warningCodes", "WarningCode")
     require(wire[key] == schemas[schema]["enum"], schema + " inventory")
 require(wire["errorCodes"] == [r["code"] for r in doc["x-error-catalog"]], "error allocation")
 require(wire["warningCodes"] == [r["code"] for r in doc["x-error-catalog"] if r["warningCapable"]], "warning allocation")
+catalog = {row["code"]: row for row in doc["x-error-catalog"]}
+require(len(catalog) == len(doc["x-error-catalog"]), "duplicate catalog error")
+for code, row in catalog.items():
+    require(type(row["jsonRpc"]) is int, "catalog error number: " + code)
+    require(type(row["retryable"]) is bool and type(row["warningCapable"]) is bool, "catalog error flags: " + code)
+    require(row["audience"] in ("client", "operator", "plugin-host", "internal"), "catalog error audience: " + code)
+require(len({row["jsonRpc"] for row in catalog.values()}) == len(catalog), "duplicate error number")
+components = doc["components"]["errors"]
+require(len(components) == len(catalog), "error component count")
+component_codes = []
+for name, component in components.items():
+    data = component["data"]
+    code = data["properties"]["code"]["const"]
+    require(code in catalog, "unknown component error: " + name)
+    require(name.lower() == code.replace("_", ""), "error component name: " + name)
+    require(type(component["code"]) is int and component["code"] == catalog[code]["jsonRpc"], "error number: " + name)
+    require({"code", "retryable"} <= set(data["required"]), "error data members: " + name)
+    component_codes.append(code)
+require(len(set(component_codes)) == len(catalog), "duplicate component error")
 ops = schemas["ChangeSet"]["properties"]["ops"]["items"]["oneOf"]
 kinds = []
 for variant in ops:
@@ -235,8 +268,13 @@ for typ, key in [("OpKind", "operationKinds"), ("DurableEventType", "durableEven
 for function, key in [("validErrorCode", "errorCodes"), ("validWarningCode", "warningCodes")]:
     body = go.split("func " + function + "(", 1)[1].split("\n}", 1)[0]
     require(set(re.findall(r'"([^"]+)"', body)) == set(wire[key]), "Go " + function)
-error_rows = [line.split("|")[1].strip().strip("`") for line in (path.parent / "errors.md").read_text().splitlines() if re.match(r'^\| `[^`]+` \| `-\d+`', line)]
-require(error_rows == wire["errorCodes"], "Markdown errors")
+error_rows = []
+for line in (path.parent / "errors.md").read_text().splitlines():
+    if re.match(r'^\| `[^`]+` \| `-\d+`', line):
+        code, number, retryable, audience, warning = [part.strip().strip("`") for part in line.split("|")[1:-1]]
+        require(retryable in ("yes", "no") and warning in ("yes", "no"), "Markdown error flags")
+        error_rows.append({"code": code, "jsonRpc": int(number), "retryable": retryable == "yes", "audience": audience, "warningCapable": warning == "yes"})
+require(error_rows == doc["x-error-catalog"], "Markdown error metadata")
 event_rows = re.findall(r'^\| `([^`]+)` \|', (path.parent / "events.md").read_text(), re.M)
 require(set(event_rows) == set(wire["durableEventTypes"] + wire["controlEventTypes"]), "Markdown events")
 if len(sys.argv) > 2:
