@@ -215,14 +215,76 @@ func (s *Service) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, r
 }
 
 func (s *Service) close(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
-	if err := namedRef(req.ID); err != nil {
+	return s.lifecycle(ctx, by, "bead.close", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
+}
+
+// Reopen moves an existing bead through the ontology's reopen slot. The
+// transition, lease settlement, guard evaluation and history publication all
+// remain in the shared Writer pipeline used by every named lifecycle verb.
+func (s *Service) Reopen(ctx context.Context, by model.PrincipalRef, req ReopenRequest, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.reopen(ctx, by, req, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) ReopenWithOutcome(ctx context.Context, by model.PrincipalRef, req ReopenRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.reopen(ctx, by, req, meta, true)
+}
+
+func (s *Service) reopen(ctx context.Context, by model.PrincipalRef, req ReopenRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	return s.lifecycle(ctx, by, "bead.reopen", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
+}
+
+// Defer moves an existing bead through the ontology's defer slot.
+func (s *Service) Defer(ctx context.Context, by model.PrincipalRef, req DeferRequest, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.deferBead(ctx, by, req, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) DeferWithOutcome(ctx context.Context, by model.PrincipalRef, req DeferRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.deferBead(ctx, by, req, meta, true)
+}
+
+func (s *Service) deferBead(ctx context.Context, by model.PrincipalRef, req DeferRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	return s.lifecycle(ctx, by, "bead.defer", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
+}
+
+// Cancel moves an existing bead through the ontology's cancel slot.
+func (s *Service) Cancel(ctx context.Context, by model.PrincipalRef, req CancelRequest, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.cancel(ctx, by, req, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) CancelWithOutcome(ctx context.Context, by model.PrincipalRef, req CancelRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.cancel(ctx, by, req, meta, true)
+}
+
+func (s *Service) cancel(ctx context.Context, by model.PrincipalRef, req CancelRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	return s.lifecycle(ctx, by, "bead.cancel", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
+}
+
+// Fail moves an existing bead through the ontology's failure slot.
+func (s *Service) Fail(ctx context.Context, by model.PrincipalRef, req FailRequest, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.fail(ctx, by, req, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) FailWithOutcome(ctx context.Context, by model.PrincipalRef, req FailRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.fail(ctx, by, req, meta, true)
+}
+
+func (s *Service) fail(ctx context.Context, by model.PrincipalRef, req FailRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	return s.lifecycle(ctx, by, "bead.fail", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
+}
+
+func (s *Service) lifecycle(ctx context.Context, by model.PrincipalRef, method string, id model.Ref, reason string, expect []model.Precondition, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	if err := namedRef(id); err != nil {
 		return port.WriteOutcome{}, err
 	}
-	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: req.ID, Fields: map[string]any{}}}}, Expect: req.Expect}
-	if req.Reason != "" {
-		cs.Ops = append(cs.Ops, model.Op{Kind: model.OpComment, Comment: &model.CommentOp{Target: req.ID, Body: req.Reason}})
+	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: id, Fields: map[string]any{}}}}, Expect: expect}
+	if reason != "" {
+		cs.Ops = append(cs.Ops, model.Op{Kind: model.OpComment, Comment: &model.CommentOp{Target: id, Body: reason}})
 	}
-	return s.apply(ctx, by, "bead.close", cs, meta, outcomeRequired)
+	return s.apply(ctx, by, method, cs, meta, outcomeRequired)
 }
 
 func (s *Service) reader(ctx context.Context, by model.PrincipalRef, asOf *AsOf) (driver.Reader, error) {

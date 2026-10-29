@@ -15,6 +15,10 @@ import (
 
 const Usage = `Usage: plug [--server URL | --memory] [--project PROJECT] [--agent LABEL] [--json] COMMAND
 
+Shared server:
+  server                 Start the configured shared HTTP server
+  server --local         Start a disposable loopback server with embedded UI
+
 Commands:
   ready [--type TYPE] [--limit N] [--cursor TOKEN]
   get ID [--as-of REVISION]
@@ -23,6 +27,10 @@ Commands:
   update ID [--title TITLE] [--fields JSON] [--expect REVISION]
   comment ID --body TEXT [--expect REVISION]
   close ID [--reason TEXT] [--expect REVISION]
+  reopen ID [--reason TEXT] [--expect REVISION]
+  defer ID [--reason TEXT] [--expect REVISION]
+  cancel ID [--reason TEXT] [--expect REVISION]
+  fail ID [--reason TEXT] [--expect REVISION]
   history --as-of REVISION [--id ID] [--limit N] [--cursor TOKEN]
   history get ID --as-of REVISION
   history diff ID --from REVISION --to REVISION
@@ -34,7 +42,8 @@ Memory storage is disposable and exists only for this process. In a session,
 @last is the ID returned by the last write; @revision is its revision.
 Server selection: --server, then PLUG_SERVER; PLUG_TOKEN supplies the bearer.
 An unreachable configured server is an error. Remote calls use POST /rpc/v1.
-Config-file loading and persistent local storage are not installed in this slice.
+The shared server reads .plug/config.yaml. In-process --memory storage remains
+disposable and never starts a listener or UI.
 Global options precede COMMAND. Command options may precede or follow ID.
 Writes accept --idempotency-key KEY to retry a write whose response was lost.
 `
@@ -107,7 +116,7 @@ func ParseCommand(args []string) (Command, error) {
 	} else if name == "events" && len(commandArgs) > 0 && commandArgs[0] == "tail" {
 		commandArgs = commandArgs[1:]
 	}
-	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "history": true, "history.get": true, "history.diff": true, "events": true, "health": true}
+	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "reopen": true, "defer": true, "cancel": true, "fail": true, "history": true, "history.get": true, "history.diff": true, "events": true, "health": true}
 	if !allowed[name] {
 		return Command{}, fmt.Errorf("unsupported command %q", name)
 	}
@@ -139,6 +148,9 @@ func ParseCommand(args []string) (Command, error) {
 	case "close":
 		add(&reason, "reason")
 		add(&expect, "expect")
+	case "reopen", "defer", "cancel", "fail":
+		add(&reason, "reason")
+		add(&expect, "expect")
 	case "history":
 		add(&asOf, "as-of")
 		add(&id, "id")
@@ -159,7 +171,7 @@ func ParseCommand(args []string) (Command, error) {
 		fs.IntVar(&limit, "limit", 1000, "limit")
 	case "health":
 	}
-	write := name == "create" || name == "update" || name == "claim" || name == "comment" || name == "close"
+	write := name == "create" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail"
 	if write {
 		add(&key, "idempotency-key")
 	}
@@ -172,7 +184,7 @@ func ParseCommand(args []string) (Command, error) {
 	}
 	p := map[string]any{}
 	c := Command{Method: "bead." + name, Params: p, Key: key}
-	needID := name == "get" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "history.get" || name == "history.diff"
+	needID := name == "get" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail" || name == "history.get" || name == "history.diff"
 	if needID {
 		if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
 			return c, fmt.Errorf("%s requires exactly one bead ID", name)
@@ -217,7 +229,7 @@ func ParseCommand(args []string) (Command, error) {
 		}
 		p["body"] = body
 	}
-	if name == "close" && seen["reason"] {
+	if (name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail") && seen["reason"] {
 		p["reason"] = reason
 	}
 	if seen["expect"] {

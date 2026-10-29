@@ -12,6 +12,7 @@ go_library(
         "//internal/core/model",
         "//internal/core/pipeline",
         "//internal/core/service",
+        "//internal/server/composition",
         "//internal/server/rpc",
         "//internal/server/events",
         "//internal/server/transport/inprocess",
@@ -28,6 +29,7 @@ go_test(
     embed = [":cli"],
     deps = [
         "//internal/api/wire",
+        "//internal/client",
         "//internal/core/pipeline",
         "//internal/core/port",
         "//internal/storage/driver",
