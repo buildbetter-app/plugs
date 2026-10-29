@@ -211,6 +211,10 @@ internal/server/authn/http.go
 internal/server/authn/http_test.go
 internal/server/events/BUILD.bazel
 internal/server/events/audit.go
+internal/server/events/audit_delivery_test.go
+internal/server/events/audit_dispatcher_test.go
+internal/server/events/audit_masking_test.go
+internal/server/events/audit_test.go
 internal/server/events/cursor.go
 internal/server/events/cursor_test.go
 internal/server/events/dispatcher_test.go
