@@ -27,6 +27,11 @@ notice; unavailable authorization capability fails explicitly. Ordinary images
 are masked by current policy. Materialization/history errors must not become a
 successful empty page.
 
+Legacy nil plans cannot supply slot/lease, mutator or nested causal provenance
+by inference. Without a trusted `Describer`, unsupported provenance explicitly
+refuses materialization; baseline CLI writes alone do not install a complete
+slot-event stream.
+
 The transport-independent [Service](../../internal/server/events/service.go)
 offers `List` and `Poll`; its [opaque cursor](../../internal/server/events/cursor.go)
 binds method, filter, effective principal/caveats, ontology, policy generation
