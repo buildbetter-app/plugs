@@ -181,9 +181,6 @@ func (l *activeLease) Renew(ctx context.Context) error {
 	case <-l.Lost():
 		return fenced
 	}
-	if err := l.store.check(ctx); err != nil {
-		return err
-	}
 	l.mu.Lock()
 	if l.ended() || !time.Now().Before(l.timerDeadline) {
 		l.signal()
@@ -192,6 +189,9 @@ func (l *activeLease) Renew(ctx context.Context) error {
 	}
 	deadline := l.timerDeadline
 	l.mu.Unlock()
+	if err := l.store.check(ctx); err != nil {
+		return err
+	}
 	// A blocked UPDATE cannot outlive this lease. Loss also cancels it on
 	// Release, while the caller's own cancellation remains independently valid.
 	renewCtx, cancel := context.WithDeadline(ctx, deadline)
