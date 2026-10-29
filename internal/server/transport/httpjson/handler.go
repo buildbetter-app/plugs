@@ -65,6 +65,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.respond(w, status, h.rpc.TransportError(err))
 		return
 	}
+	// Keep the transport's live identity in the request context as well as
+	// stamping its detached principal into RPC.  The principal alone is not
+	// human proof: D16 consumers must be able to re-check the opaque OIDC
+	// session (including revocation and expiry) at their domain boundary.  A
+	// wrapper is not required for the ordinary HTTP handler path.
+	ctx = authn.WithIdentity(ctx, identity)
+	r = r.WithContext(ctx)
 	// Cookies and compressed bodies have no credential/decoding semantics in
 	// this transport. No CORS response headers or preflight path are installed.
 	if len(r.Header.Values("Cookie")) != 0 {
