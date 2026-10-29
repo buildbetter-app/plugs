@@ -279,6 +279,9 @@ internal/integration/oidc/flow_test.go
 internal/integration/oidc/http_test.go
 internal/integration/oidc/idp_test.go
 internal/integration/oidc/refusal_test.go
+internal/integration/permissions/BUILD.bazel
+internal/integration/permissions/compose.go
+internal/integration/permissions/permissions_test.go
 internal/integration/sqliteacceptance/BUILD.bazel
 internal/integration/sqliteacceptance/README.md
 internal/integration/sqliteacceptance/durability_test.go
@@ -311,6 +314,11 @@ internal/server/authn/http.go
 internal/server/authn/http_test.go
 internal/server/authn/session.go
 internal/server/authn/session_test.go
+internal/server/authzrpc/BUILD.bazel
+internal/server/authzrpc/authzrpc.go
+internal/server/authzrpc/checker.go
+internal/server/authzrpc/service.go
+internal/server/authzrpc/slice.go
 internal/server/collab/BUILD.bazel
 internal/server/collab/README.md
 internal/server/collab/boundaries_test.go
