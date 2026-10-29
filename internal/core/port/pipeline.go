@@ -110,6 +110,18 @@ type OntologyAudit interface {
 	DecideConditional(context.Context, Change, SnapshotReader) (ConditionalDecision, error)
 }
 
+// EventContext is trusted host provenance, never ChangeSet input. Without a
+// source the Writer uses a new root request and an empty authorization chain;
+// an installed authorizer requires a source so its chain is not fabricated.
+type EventContext struct {
+	Cause model.EventCause
+	Chain []string
+}
+
+type EventContextSource interface {
+	EventContext(context.Context, ProposedChange, SnapshotReader) (EventContext, error)
+}
+
 type AuthorizationStage string
 
 const (

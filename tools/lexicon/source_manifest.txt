@@ -155,6 +155,8 @@ internal/core/ontology/schema_test.go
 internal/core/ontology/types.go
 internal/core/pipeline/BUILD.bazel
 internal/core/pipeline/apply.go
+internal/core/pipeline/audit.go
+internal/core/pipeline/audit_test.go
 internal/core/pipeline/callbacks.go
 internal/core/pipeline/callbacks_test.go
 internal/core/pipeline/document.go
