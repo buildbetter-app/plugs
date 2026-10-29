@@ -1,5 +1,7 @@
 # Surface and infrastructure behavior cards
 
+Source pin and evidence limits: [behavior catalog](../behaviors.md).
+
 ## B23 — search, list, counts, and statistics
 
 **Behavior.** Search/list filters are composable and plane-aware: text matches
@@ -150,7 +152,7 @@ independent record tables in
 **Pinning tests.** `cmd/bd/protocol/roundtrip_test.go:TestProtocol_ImportPreservesRelationalData,
 TestProtocol_FieldsRoundTrip, TestProtocol_MetadataRoundTrip,
 TestProtocol_SpecIDRoundTrip, TestProtocol_CloseReasonRoundTrip,
-TestProtocol_ParentChildDepShowRoundTrip, TestProtocol_LabelAddRemoveRoundTrip;
+TestProtocol_ParentChildDepShowRoundTrip, TestProtocol_LabelAddRemoveRoundTrip`;
 `cmd/bd/protocol/interchange_test.go:TestProtocol_Interchange_RoundTripEquivalence`,
 `TestProtocol_Interchange_ImportNeverDeletes`,
 `TestProtocol_Interchange_MissingDepTargetSkippedAndReported`;
@@ -200,5 +202,7 @@ failure.
 validators, post subscribers, projections, and listeners (P3/P29b). Pre is
 fail-closed by default with per-binding fail-open warnings (P24); post failure
 returns the committed result with `post_subscriber_failed`, dead-letters, and
-alerts (P66/D28). Plugin failures and permission checks are represented in
-`result.warnings`, not an error beside a result.
+alerts (P66/D28). A committed post-subscriber failure is represented in
+`result.warnings`, not an error beside a result. Permission denials and
+fail-closed pre-subscriber failures refuse the write before commit; they are
+not downgraded to committed-result warnings (A4/A5).
