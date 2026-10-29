@@ -259,6 +259,12 @@ internal/core/pipeline/response_test.go
 internal/core/pipeline/snapshot.go
 internal/core/port/BUILD.bazel
 internal/core/port/pipeline.go
+internal/core/reverseconverter/BUILD.bazel
+internal/core/reverseconverter/README.md
+internal/core/reverseconverter/archive.go
+internal/core/reverseconverter/convert.go
+internal/core/reverseconverter/reverseconverter_test.go
+internal/core/reverseconverter/types.go
 internal/core/service/BUILD.bazel
 internal/core/service/audit.go
 internal/core/service/audit_test.go
