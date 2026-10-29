@@ -33,10 +33,9 @@ func (Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, error)
 
 type scope struct{ principal, agent, method, key string }
 type replay struct {
-	value     driver.IdempotencyRecord
-	at        time.Time
-	finalized bool
-	post      []model.Warning
+	value driver.IdempotencyRecord
+	at    time.Time
+	post  []model.Warning
 }
 type blob struct {
 	bytes    []byte

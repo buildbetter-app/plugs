@@ -37,6 +37,9 @@ func (t *transaction) CommitNoop(ctx context.Context, header driver.ChangesetHea
 	if err := header.Kind.Validate(); err != nil {
 		return model.Commit{}, err
 	}
+	if header.ResponsePending {
+		return model.Commit{}, fmt.Errorf("memory: no-op response cannot be pending")
+	}
 	if len(header.Changes) != 0 || len(t.records) != 0 || len(t.blobs) != 0 || len(t.derived) != 0 || len(t.bumps) != 0 {
 		return model.Commit{}, fmt.Errorf("memory: no-op commit cannot contain staged mutations")
 	}
@@ -46,7 +49,7 @@ func (t *transaction) CommitNoop(ctx context.Context, header driver.ChangesetHea
 			return model.Commit{}, err
 		}
 		if previous, exists := s.state.replays[id]; exists && s.now().Before(previous.at.Add(driver.IdempotencyWindow)) {
-			if previous.value.RequestHash != header.RequestHash {
+			if previous.value.RequestHash != header.RequestHash || previous.value.ResponsePending {
 				return model.Commit{}, driver.ErrConflict
 			}
 			response, err := cloneJSON(previous.value.Commit)

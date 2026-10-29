@@ -1,6 +1,6 @@
 # Plug: clean-room plan
 
-Status: proposal, 2026-10-28, re-planned for an agent swarm. This plan follows [design.md](design.md), the recorded [design review](../../adr/0005-plug-design-decisions.md), and the [decision ledger](decisions-needed.md). The Open table in `design.md` is empty; only the plan-level questions in [Decisions for Nikhil](#decisions-for-nikhil) remain.
+Status: scoped implementation waves authorized under controller v2, 2026-10-29. This plan follows [design.md](design.md), the recorded [design review](review-2026-10-27.md), and the [decision ledger](decisions-needed.md). Decisions 1–20 are answered. The #15 rerun passed correctness, corpus, Q5, closure and independent differential checks but failed unchanged latency targets. #17 fixed the vocabulary; #18 adopts the reviewed bounded X1–X9 candidate semantics. #20 settles only the bounded type-summary cap requirements direction. Contract compatibility and runtime/performance acceptance still require evidence. #19 selects recorded exact-head local Bazel checks and one independent Codex review as the current PR gate, together with task scope and no PAUSE. Hosted CI returns when RunsOn serves this repository and the App has Workflows permission.
 
 ## Completion contract
 
@@ -18,7 +18,7 @@ The 2026-10-31 stop line is the end of the unlimited-budget burst, not a release
 
 ## Binding decisions
 
-The following decisions are carried from `design.md` and [../../adr/0005-plug-design-decisions.md](../../adr/0005-plug-design-decisions.md). They are inputs to the graph, not questions for an implementation agent.
+The following decisions are carried from `design.md` and [review-2026-10-27.md](review-2026-10-27.md). They are inputs to the graph, not questions for an implementation agent.
 
 ### Product, API, and repository
 
@@ -31,8 +31,8 @@ The following decisions are carried from `design.md` and [../../adr/0005-plug-de
 | D29-D33 | Same-origin UI plugins use session cookies. Other-origin apps use OIDC PKCE and short-lived Plug-audience bearer tokens from an operator CORS allowlist. Bundles are prebuilt and digest checked. Declarative panels sit beside iframes. The nine interpretations in `design.md` are confirmed, including local server UI versus in-process no-UI and the P44 history floor. |
 | P1-P5 | Clean-room rewrite, one typed `ChangeSet`, pre subscribers before the transaction and post subscribers after commit, authorization facts derived in the write when a plugin is installed, and a hard fork. |
 | P6-P11 | Every driver has a Plug change log; drivers are record store plus `sqlkit`; wasm runs in-process on wazero; mutators run in dataflow order with one scalar owner; ontology is stored and versioned on the server; a Go registry generates OpenRPC. |
-| P12-P16 | Many projects share one graph. Manifests set maximum reads and ownership, ontology narrows them. Authorization plugins are compiled in for v1, with storage, secret, and policy-data plugins in mode 1; the narrowed spike decides Cedar evaluated by core versus the relationship schema, and a failed spike reopens authorization rather than silently selecting a weaker fallback. |
-| P17-P24 | Trackers export plus one-shot import. `Ref.Branch` is reserved. Dumps contain secret references and ciphertext only by flag, carry full history by default with head-only by flag, and require ontology directives for violations. Imports accept Plug semantics. Typed fields are separate from metadata. Guards are a fixed catalog, conditional rules are validate subscribers, bindings fail closed by default, and the audited per-binding fail-open and `admin.binding.suspend` controls remain. |
+| P12-P16 | Many projects share one graph. Manifests set maximum reads and ownership, ontology narrows them. Authorization plugins are compiled in for v1, with storage, secret, and policy-data plugins in mode 1. The failed follow-up latency gate activated #15’s revisit; #18 now adopts the bounded finite-component semantics, with separate contract, implementation and evidence gates. |
+| P17-P24 | Trackers export plus one-shot import through generic `sync.*` methods; provider-specific tracker commands have no successor. `Ref.Branch` is reserved. Dumps contain secret references and ciphertext only by flag, carry full history by default with head-only by flag, and require ontology directives for violations. Imports accept Plug semantics. Typed fields are separate from metadata. Guards are a fixed catalog, conditional rules are validate subscribers, bindings fail closed by default, and the audited per-binding fail-open and `admin.binding.suspend` controls remain. |
 | P25-P32b | Mode-2 sync phases require operator grants. The plugin set and lock are versioned objects, plugin methods use `x.<alias>.*`, authorization is a chain, unreadable blockers appear as counts, OIDC uses revocable core sessions, lagging listeners and projections stall, script hooks are replaced by listeners, versions are JSON Patch diffs with bases, text uses field-scoped compare-and-set, views are core resources, and UI uses sandboxed iframes with a narrow bridge embedded in the binary. |
 | P35-P40 | HTTP v0 is deleted at cutover. A driver lock and `plug server --local` provide local concurrency. Docs print `plug`. Usage metrics are opt-in to an operator collector, the license is MIT, history is filtered with `git filter-repo` before tags, transcripts are never committed, public release is after the gate at 0.1.0. |
 | P41-P50 | One organization has a server base ontology and per-project overlays. Core runs declarative rules in the transaction. Mode-2 plugins are source-built at pinned commits. Restore accepts only an empty store. History and audit remain forever except explicit redaction, with ephemeral runs unversioned. There is no `bd` compatibility or old public Go API. Formulas and molecules are a workflow plugin. Storage owns active and standby topology. Ancestor closure is transactional and lists use a semi-join. |
@@ -41,23 +41,106 @@ The following decisions are carried from `design.md` and [../../adr/0005-plug-de
 
 | IDs | Binding decision |
 |---|---|
-| AZ2, AZ5, AZ6, AZ8, AZ9, AZ10 | Adopt the authorization data contract before choosing a language. Any chain link may deny or append context; only the end allows and no decision denies. Cedar policies are evaluated as one merged set. An erroring forbid denies; an erroring permit is skipped, alerted, and reported. Role-scoped workflow permissions stay out of the ontology. The fixed `permission` guard asks the chain for `transition`. |
-| AZ1, AZ3, AZ4, AZ7 | If the narrowed spike passes, core hosts an inert `cedar-go` evaluator and plugins supply policies as data. If it fails, authorization is revisited toward simple Linear-style team permissions. `cedar-go` is pinned, rules that cannot compile to list filters are refused at plan, and grants are plugin-declared records exposed as principal attributes. |
+| AZ2, AZ5, AZ6, AZ8, AZ9, AZ10 | Adopt the authorization data contract before choosing a language. Any chain link may deny or append context; only the end allows and no decision denies. If a Cedar ruleset is approved, policies are evaluated as one merged set. An erroring forbid denies; an erroring permit is skipped, alerted, and reported. Role-scoped workflow permissions stay out of the ontology. The fixed `permission` guard asks the chain for `transition`. |
+| AZ1, AZ3, AZ4, AZ7 | The repaired historical rerun still fails unchanged latency targets. #18 adopts the optional native finite component and complete bounded X1–X9 semantics recorded in A5. Conditional Cedar/`cedar-go`/principal-attribute choices are not selected. Controller v2 authorizes scoped integration and implementation; contract compatibility and acceptance still need evidence. |
 | P51-P56 | Schema plugins merge into one schema. `authz.*` has no egress. Policy-data authorization is mode 1 only. Code links have explicit order and the order is shown by `plugin.plan`. v1 has a fixed authorizer view. A closure rewrite over the limit is refused with `closure_too_large` or is one explicit locked migration-class write. |
 | P57-P62 | There is no `authz.explain {asOf}`; history uses current permissions. Authentication refuses scoped agent tokens when no authorization plugin exists. There is no break-glass root list; recovery is through the bootstrap admin or offline repair. Anonymous mode records a client-asserted `_meta.agent` label beside `anonymous` and uses it for lease and idempotency scope. `authn-local` is optional. A boot tier may hold one provider and a bootstrap admin. |
 | P63-P69 | With authentication, `ontology.apply`, `override_guard`, binding suspension, event-subscription skip, restore administration, `history.redact`, ciphertext dumps, protected reverts, and `sync.import` require a `user` principal and the D32 human proof. Anonymous multi-approval gates are refused. Overlay moves need `map_status` and `map_type`. Failed post subscribers return the commit with a warning, dead-letter, and breaker count and make no graph writes. Artifacts are digest locked, reproducibility is checked in CI, local mode begins Linux-only then uses a Linux container, and all warnings reach end users. |
-| P70-P78 | v1 delegates replication, failover, and backup to managed HA Postgres. `Store.Lease` fences commits with a 10-second TTL and 3-second renewal; the server stops reads and writes after lease loss. Each storage plugin documents RPO and RTO, with Postgres at 5 minutes and 1 hour. History uses JSON Patch with a full base every 32 versions after the as-of benchmark. Stored ready order may lag one minute. Restore loads digest-checked artifacts and rebuilds asynchronously as a check. Offline export merges stores by project. `sync.import` may mint new IDs into an existing project, and remote edits are overwritten on push and counted as drift. |
+| P70-P78 | v1 delegates replication, failover, and backup to managed HA Postgres. `Store.Lease` fences commits with a 10-second TTL and 3-second renewal; the server stops reads and writes after lease loss. Every uncertain lease-epoch change mints a new incarnation before the new holder admits traffic, preventing revision reuse. Each storage plugin documents RPO and RTO, with Postgres at 5 minutes and 1 hour. History uses JSON Patch with a full base every 32 versions after the as-of benchmark. Stored ready order may lag one minute. Restore loads digest-checked artifacts and rebuilds asynchronously as a check. Offline export merges stores by project. `sync.import` may mint new IDs into an existing project, and remote edits are overwritten on push and counted as drift. |
 | P83-P85 | The last code link may allow. Check-only links may use an explicitly accepted capped post-filter that fails with `authz_postfilter_cap`, never a short page. Memories are core records returned by `agent.brief`. |
-| P5b, P5c, P38d, P39b, P48b, P79-P82 | The new tree is at `main` root, and Beads is read through `bd export --format plug-dump/1` on `beads`; the exporter is standalone for plain Beads users. History filtering runs early while private. Design docs are committed without transcripts. The workflow plugin is compiled in from this repository without Beads formula files. No remote build cache is used at first. A delegate drafts the command keep/fold/drop list, Nikhil signs off families and only in-use command drops individually. Metrics contain method, result code, latency bucket, principal kind, and client version, never IDs or text. Goldens freeze at `beads-base`, fixes on `beads` re-record through reviewed PRs, and nightly diffs back them. |
+| P5b, P5c, P38d, P39b, P48b, P79-P82 | The new tree is at `main` root, and Beads is read through `bd export --format plug-dump/1` on `beads`; the exporter is standalone for plain Beads users. History filtering runs early while private. Design docs are committed without transcripts. The workflow plugin is compiled in from this repository without Beads formula files. No remote build cache is used at first. P80's accepted batch drops Dolt and merge-conflict plumbing, federation and version-control sync, destructive cleanup, raw SQL and untyped key-value commands, script hooks, orchestration-only helpers, Beads ID rewrites, and legacy migration modes, including the named visible commands. Metrics contain method, result code, latency bucket, principal kind, and client version, never IDs or text. Goldens freeze at `beads-base`, fixes on `beads` re-record through reviewed PRs, and nightly diffs back them. |
 | P76-P78, P83-P85 | Offline multi-store merge remains inside P44. Tracker imports and late data are ordinary head-only writes with new IDs. Synced remote edits are overwritten and counted as drift. The last code link can allow, check-only links have the capped post-filter option, and memories are a core kind. |
 | D32-D33 | For D16, authenticated apply requires an interactive login session rather than an API key; anonymous apply requires a human-presence check such as typing the plan digest. All nine design interpretations are confirmed. |
 
+### Concrete authorization adoption 18
+
+**#18 — DECIDED (2026-10-29, Paseo): Adopt reviewed bounded candidate
+(Recommended).** #17 fixes project/team vocabulary; #18 selects the entire
+bounded X1–X9 semantics in [A5](design.md#bounded-fixed-permission-candidate-18).
+Plain provenance: proposal `c9f5f29d`, independent paper-readiness PASS
+`c9bb013d`, report `a64fcd3e`. The complete package is binding:
+
+- X1–X3: optional native finite Eval/Compile and four-form direct/one-hop
+  explicit-team facts; canonical Ref scope/internal recorded relations; core
+  stored project source, immutable name/Ref registry and declared projections.
+- X4–X6: persistent ACL/context/seed/proof/receipt miss facts and full atomic
+  lock/derived census; core-protected authority/installation, applier/digest-bound
+  seed and lifecycle simulation; authoritative context/revocation and protected
+  five-minute method/digest/key/User-session admission/consumption/replay.
+- X7–X9: restricted SQL positive/current-terminal claim and durable null/K
+  receipt; five exact User-attributed host-controlled protected-source management
+  verbs with ownership/pre/post/proof/deputy boundaries; one initialized core
+  ready codec with all-reader/writer/miss coverage and raw/mixed-state refusal.
+
+The initial positive slice is current User reads, exact CP7, minimal lifecycle
+and grant/team management, and Agent claim/claimNext/update on existing assigned
+beads with fixed project/parent. Create/reparent/reassignment, project rename/
+delete, additional User/service/plugin/deputy permissions, metadata/revert,
+key-arm/nonzero scopes, actual restore/rebuild and unsupported consumers remain
+denied or gated. No nested teams, hidden User membership or writer/editor
+threshold, imported-admin restore permission or generalized policy language is
+introduced. C7 empty-store/archive execution and unsupported lease/heartbeat/
+view/check-only terminal integration remain separate prerequisites.
+
+Done for this adoption record means the chosen semantics and held edges are
+explicit; implementation, a prototype or paper examples do not prove acceptance.
+Frozen C0 `60702e1` is an input, not an implementation of the added APIs/control/
+codec/terminal semantics. C6/I5/authz-dependent I7 need separately scoped exact
+contract/compatibility and implementation assignments. Historical latency stays
+FAIL/BLOCK. Retain the full 100k/depth-10/both-engine Plan A/B Q4/Q5/Q6 matrix,
+exact 100,000/1,000/100 populations at 100%/1%/0.1%, three warmups/20 samples,
+page/full-Q5 `<50 ms` and count `<250 ms` p95, and full Q5 retries/terminal/COMMIT.
+Both reparent and restricted-toggle require 50,000 descendants/50,001 target
+rows, timed from before BEGIN through COMMIT; ordinary over-5,000 closure work
+refuses or needs an explicit locked migration-class operation. Preserve
+independent facts/actual SQL/all pages/counts and later real-host history, authn,
+proof and every dependency/miss race on all drivers. The actual 200-agent queue
+with authz installed and a wasm mutator bound must stay under 1% `write_conflict`.
+No candidate is measured or runtime accepted. Executable manifest validation,
+C7/R14 and product data cutover remain separate gates; no historical rerun
+follows from validator repair alone. Controller v2 authorizes scoped
+implementation under #18; migration and unsupported-slice widening remain excluded.
+PR admission follows #19's local Bazel gate below.
+
+### Bounded type-summary cap direction 20
+
+**#20 — DECIDED (2026-10-29, Paseo):** at most **100,000 authorized inputs
+only for fully compiled type count summaries**, with **explicitly present
+`fields=[]`**, **at most 100 groups**; **ordinary views retain 20,000**.
+The [A7 record](design.md#bounded-type-summary-cap-20) narrows the previous
+universal-20,000 requirements direction within those four bounds. The
+[answer ledger](decisions-needed.md#answered) binds the explicit answer and
+frozen packet/review/receipt. No other CAP-SUMMARY or TG clauses are adopted.
+
+Done for this source record means the selected requirements and held edges are
+consistent in all four sources, proven by their before/after inventory and
+D7's immutable FINAL receipt; source completion does not count as integrated
+contract acceptance, implementation or qualification. Exact candidate accounting/
+qualification, compiler eligibility, type/group/result/elision/continuation,
+budget/refusal/error, caller/presence/serializer and ordinary-continuation
+compatibility remain held. No omitted/default/empty behavior or interface/version
+choice is settled. W1/W2/W3/W4/W5/AZP-1 exact integration and independent review
+remain separate prerequisites. No new permission, domain, API, implementation
+or execution authority follows.
+
+#20 removes the unanswered cap choice and cannot close **AZE-1** by itself.
+Historical measured latency remains **FAIL/BLOCK**. Retain the 100k workload,
+both engines, both plans, all fractions, all **36 cases**, **3 warmups + 20
+measured samples per case**, page and whole-Q5 p95 `<50 ms`, and whole-Q6
+count p95 `<250 ms`; no smaller population, omitted dense case or cap-error
+response supplies positive dense Q6 evidence. Existing resource ceilings,
+runtime/real-host/proof/200-agent, C7/R14 and product
+cutover gates remain separate. R14 behavioral verification remains
+**UNVERIFIED**, both findings **OPEN**. #17/#18/#19 remain **DECIDED**;
+exact-head local Bazel CI governs PR admission. Frozen D6, C0 and published PR15 pins
+retain their original bytes and verdicts.
+
 ### Swarm decisions and infrastructure facts
 
-- The swarm starts immediately after this re-plan is approved. Its budget is effectively unlimited through 2026-10-31.
+- Controller v2 authorizes scoped implementation waves now. The burst runs through 2026-10-31 with the stop lines below.
 - The only swarm models are GPT-6.1-Sol through `gpt-worker-max` and Codex through Paseo as `codex/gpt-6.1-sol` with thinking `max` or `ultra`. Claude remains orchestration only.
-- Agents open PRs with the remote-dev GitHub App identity and merge on green after Bazel CI and an adversarial review by a second agent. Nikhil is pulled in at decision gates only.
-- CI runs on RunsOn classes used by BuildBetter. The new tree owns `.github/runs-on.yml`; a smoke run must pass before the swarm relies on the service.
+- Agents open PRs with the remote-dev GitHub App identity; only the controller merges after the four #19 gates below. Nikhil is pulled in only for genuinely new product questions.
+- Local Bazel CI is the current merge gate. Future hosted CI uses RunsOn classes used by BuildBetter; a smoke run must pass before reliance on that service.
 - The authorization spike uses these three real policies: only admin users can import bulk history; all users can read all beads; agents can modify only projects their sponsoring user is involved in.
 
 ## Repository and infrastructure baseline
@@ -67,7 +150,7 @@ These facts were checked against this checkout and the host on 2026-10-28:
 - `origin` is `buildbetter-app/plugs`, the branch is `main`, and the repository is private. [`.bazelversion`](../../../.bazelversion) pins Bazel 9.3.0. The host `bb-forge-us-01` has 32 cores, 249 GiB RAM, and 4.4 TiB free disk, with Nix, `bd` 1.3.1, `gh`, `aws`, `jq`, `openssl`, and `blacksmith`; Go, Bazel, and Bazelisk are not installed globally.
 - The existing [Bazel workflow](../../../.github/workflows/bazel.yml) and [PR workflow](../../../.github/workflows/pr.yml) require or assume rbe-west for the Linux gate. The new tree cannot use that workflow as its trust boundary and must run its own Bazel lane without rbe-west credentials or cache.
 - The current [module](../../../go.mod) is `github.com/steveyegge/beads`; the new module is `github.com/buildbetter-app/plugs`. The current release workflow publishes only for `gastownhall/beads`, so it is reference-only for Plug.
-- The repository has 72 main migration files in [migrations](../../../internal/storage/schema/migrations) and 28 ignored migration files under `migrations/ignored`; [schema.go](../../../internal/storage/schema/schema.go) maintains the second cursor `ignored_schema_migrations`. The census must treat both series as a pair per machine.
+- The repository has 72 main migration files in [migrations](https://github.com/buildbetter-app/plugs/tree/9d6fff760b7a314b476539198504d77ce0959656/internal/storage/schema/migrations) and 28 ignored migration files under `migrations/ignored`; [schema.go](https://github.com/buildbetter-app/plugs/blob/9d6fff760b7a314b476539198504d77ce0959656/internal/storage/schema/schema.go) maintains the second cursor `ignored_schema_migrations`. The census must treat both series as a pair per machine.
 - The source inventory contains 46 role-contract cases even though `backend/conformance` also has helper and test files, 29 protocol test files, 306 command paths in `tree.golden`, and 13,139 Go test functions. The counts are census inputs, not proof of parity.
 - GitHub state is Actions enabled, `allow_auto_merge` false, and `main` unprotected. No worker changes settings. A repository administrator must enable branch protection, required checks, and native GitHub auto-merge if that native mechanism is desired; otherwise the app-owned merge controller below is authoritative.
 - BuildBetter's `/home/dev/buildbetter/.github/runs-on.yml` defines `bb-x64-16`, `bb-x64-16-nvme`, `bb-x64-16-ondemand`, and `bb-x64-4`. The normal Plug job uses `bb-x64-16` (16 vCPU, 64 GiB, Spot families m8i, m7i, m8a, m7a, Ubuntu 24 full image, 200 GB gp3, S3 cache). The pinned `runs-on/action` is `17b59092eb37ebfdbb034460892887c09100eaa3` (v2.5.0).
@@ -98,6 +181,37 @@ A peak wave may use up to 16 short GPT workers and six Paseo worktrees, but the 
 The graph lives in a dedicated Beads workspace outside the repository, for example `/home/dev/.local/state/plug-swarm/workgraph`. It is not a BuildBetter issue store and never holds customer data. Each item records a stable ID, dependencies, owner, inputs, output paths, acceptance command, risk class, evidence artifact, worker lane, PR, and merge state. The controller exports a signed JSON snapshot after each merge. The states are `blocked`, `ready`, `running`, `review`, `merged`, and `rejected`; unresolved work is never deleted.
 
 ## CI and merge bootstrap
+
+### CI contract replacement
+
+**#16 — DECIDED (2026-10-29, Paseo, about 03:37 UTC):**
+**Replace inherited workflows with qualified Plug CI (Recommended)**.
+Plug-owned Bazel CI replaces the inherited Beads workflows only after
+exact-head qualification and a reviewed CI cutover. Historical hosted failures
+remain recorded. This decision authorizes no settings change; existing
+ownership and stop-line rules remain in force.
+
+**#19 — DECIDED (2026-10-29, chat): local Bazel CI is the interim merge gate.**
+The controller merges only when all four conditions hold:
+
+1. Exact-head local Bazel checks pass over touched targets plus reverse
+   dependencies (`bazel test`, or `bazel build` for docs-only PRs), with command,
+   Bazel version, targets, result and logs recorded.
+2. One independent Codex review finds no correctness, security, contract, build
+   or recorded-decision blocker. Other findings become follow-up work.
+3. The PR stays within its task's scope.
+4. `/tmp/plug-swarm/PAUSE` is absent.
+
+No per-PR human approval, documentary certificate or hosted result is an
+additional current merge gate. Hosted CI becomes required again when RunsOn
+serves this repository and the remote-dev App has Workflows permission.
+Workers do not merge or publish workflow changes. This gate supplies no
+runtime/performance acceptance, production cutover or public-release authority.
+
+RunsOn repository access remains an admin dependency: an administrator must
+add `plugs` to the RunsOn GitHub App's repositories, and the repository's own
+smoke run must pass before reliance on RunsOn. Failed or unavailable smoke
+blocks scale-up; GitHub-hosted Ubuntu remains the bounded-bootstrap fallback.
 
 ### RunsOn first
 
@@ -157,7 +271,7 @@ The graph is contract-first. Each row below is one agent-sized task with an expl
 | C3 | A6 driver guarantees, lease, version, dump and history decisions | `Driver`, `Store`, `Reader`, `WriteTx`, lease, version, changeset, blob, and derived-table interfaces | Memory and SQLite doubles pass identical fixtures; stale lease commit returns `ErrFenced`; service code cannot see `WriteTx` |
 | C4 | P2, A1, operation inventory | Closed `ChangeSet` union, preconditions, commit and warning models | Every write lowers to one operation and a generation check fails for an effect without an operation or a union member with extra payload |
 | C5 | A3 ontology, status and type inventory, UX fields | Versioned ontology schema, overlays-by-key, categories, slots, guards, migration directives | Base plus overlay compilation is deterministic; fixed v1 items cannot be redefined; dry-run emits a typed plan digest |
-| C6 | AZ10 and authorization analysis | Indexed bead view, ancestor and cut closures, grant shapes, `FilterExpr` boundary | Policy fixtures request only declared facts; revoke-during-write and list filters record all reads in the commit guard; no plugin creates an allow path |
+| C6 | AZ10, adopted #18 bounded semantics and authorization analysis | Indexed bead view, ancestor/cut closures, canonical scope/grant/project facts and `FilterExpr` boundary | Exact integration remains held for a separately scoped assignment; fixtures request only declared facts, misses/revokes/filter reads join the guard, and no plugin creates an allow path |
 | C7 | Both migration series, config loaders, data inventory, P19/P20/P44 | `plug-dump/1` schema and samples, paired census, archive policy, converter manifest | Unknown main or ignored versions refuse; secrets are references by default; restore accepts only an empty store |
 
 ### Evidence and spikes
@@ -167,7 +281,7 @@ The graph is contract-first. Each row below is one agent-sized task with an expl
 | E1 | `beads-base`, protocol catalog, role cases, Oracle A, regression log | Spec cards, Beads twins, controlled-clock provenance, projection goldens | Re-recording a card twice gives one digest. `keep` has a golden; `deviate` stores both results and a decision |
 | E2 | E1 harness, all tests, both schema series, config sources | Seeded graph traces, test census and store census ratchets | Any undispositioned test, table, column, ignored table, or configuration source fails the target; counts only decrease |
 | E3 | `bd serve`, 20,000-bead disposable corpus, 50 simulated agents | UX decision record for views, home, blocked explanation, history, presence, declarative UI | Five scripted tasks produce observations and timings and name the required view and wire fields |
-| E4 | C6, the three real policies, synthetic 100,000-bead Postgres and SQLite tables | Authorization plan comparison and policy-fit report | Plans A and B measure page and count targets. A 50,000-descendant reparent is measured as a migration-class write, not misclassified as a normal 5,000-row write |
+| E4 | C6, the three real policies, synthetic 100,000-bead Postgres and SQLite tables | Authorization plan comparison and policy-fit report | Published historical correctness/corpus/Q5/closure/independent differential passes remain source-bound. Page/full-Q5 p95 `<50 ms` and counts `<250 ms` still fail; #18’s bounded semantic adoption supplies no candidate measurement. Both reparent and restricted-toggle require 50,000 descendants/50,001 target rows, timed before BEGIN through COMMIT as migration-class evidence, not a normal 5,000-row write |
 | E5 | C2-C4, Linux host, wazero candidate, Postgres | WASI ABI, sandbox, lock-order, lazy-claim, and failover report | Two-export ABI runs; 200 claimers and mutators exercise deadlocks, retries, stale leases; failover choice is recorded before production design freezes |
 
 The authorization spike uses these real policies, exactly as answered today:
@@ -176,7 +290,9 @@ The authorization spike uses these real policies, exactly as answered today:
 2. All users can read all beads.
 3. Agents can modify only projects their sponsoring user is involved in.
 
-The page target is p95 under 50 ms at 100,000 beads for visible fractions 100%, 1%, and 0.1% on Postgres and SQLite. The count target is set at the decision gate, with 250 ms p95 at 100,000 beads as the recommendation. The spike also times the 50,000-descendant closure rewrite and tests revoke-during-write and list-filter consistency. If it fails, authorization is revisited toward simple Linear-style team permissions; the data contract, closure, and filter shapes remain.
+The page and full-Q5 target remains p95 under 50 ms at 100,000 beads for visible fractions 100%, 1% and 0.1% on Postgres and SQLite; grouped counts remain p95 under 250 ms. Historical correctness/corpus/Q5/closure/independent differential passes do not change the **failed unchanged latency gate**. #18 selects the bounded concrete semantics after #17’s vocabulary decision; candidate SQL/transaction/performance and all later real-host evidence remain unproved. Controller v2 authorizes scoped implementation against those semantics and explicit contracts.
+
+The evidence is published in [PR #10](https://github.com/buildbetter-app/plugs/pull/10) at publication head `93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8`. The measurements bind to source `69f28caaf71a673296abe3120c60be5cb3af5aec` in the [readout](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/readout.md) and [provenance manifest](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/provenance-manifest.json). Reviewable artifact publication is complete. Executable manifest validation remains open: checking warmups and iterations alone does not bind the engines, fractions, plans, queries, dataset, targets, and artifact declarations to the executable matrix. R10b's review and hosted observations remain historical evidence for the measured source; current PR admission follows #19. Manifest validation or PR admission would not change the failed latency result. [A5](design.md#a5-identity-and-authorization) records the outcomes separately.
 
 ### Implementation waves
 
@@ -186,13 +302,13 @@ The page target is p95 under 50 ms at 100,000 beads for visible fractions 100%, 
 | I2 | I1, C1, C2, E3 | In-process `plug` slice for ready, claim, update, comment, close, history, dump, and restore | A fresh restored fixture goes from ready to close. In-process mode has no listener and no `/ui/`; asynchronous work is drained or owned by `plug server --local` |
 | I3 | C1, C3, I1, E5 | HTTP, WebSocket, stdio, MCP, API-key auth, local server, native plugin host | The same JSON-RPC bytes work on each transport. Anonymous mode is loopback-only and rejects hostile `Host` and `Origin`. D16 checks apply |
 | I4 | C4, C5, I1, C2 | Pre, invariant, post, projection, listener, and gate phases | Core invariants run in the transaction; post failure returns a warning and dead-letter; event log and write are atomic; multi-approval gates count sponsor-resolved humans |
-| I5 | C6, E4, I1, I3 | Relationship schema or Cedar implementation chosen by the spike, filters, chain, grants | Compiled lists equal per-item decisions on every driver. Tests cover no-plugin allow, forbid precedence, erroring-forbid denial, current-permission history, post-image checks, and revoke-during-write |
+| I5 | C6, E4, I1, I3, adopted #18 semantics | Authorization filters/chain/grants for the bounded slice in controller-v2 assignments | **Scoped implementation authorized by controller v2.** Exact contracts/compatibility still require evidence. Compiled lists must equal per-item decisions on every driver, with no-plugin allow, forbid/error rules, current history, post-image and every dependency/miss race; runtime/performance acceptance remains unproved |
 | I6 | C7, E1/E2, the Beads branch, store inventory | `bd export --format plug-dump/1`, converter, restore validator, diff report, reverse converter | Every inventoried store exports and restores to a new store. Counts, IDs, prefixes, counters, dependencies, versions, wisp-plane dispositions, archives, and digests are explained or block the run |
 | I7 | C2, E5, I3/I4, D29-D31 | Sandboxed Go `wasip1` builder, digest lock, static bundle checks, iframe bridge, declarative catalog | Pinned source builds reproduce in CI. Restore loads artifacts by digest before an asynchronous rebuild check. UI tests cover CSP, `event.source`, no credentials, no egress, and CORS without credentials |
 | I8 | I2, I3, I6, agent callers and prompts | `plug` agent plugin, `agent.brief`, caller rewrite, staging shadow harness, backups and rollback images | A sampled factory pool runs against staging with no GitHub writes or production egress. Reverse conversion and full image, prompt, plugin, and data rollback are rehearsed |
 | V1 | Every task diff, contract, evidence, and review finding | Independent review, mutation checks, security and data-loss findings | A clean-worktree verifier finds no weakened test, hidden skip, privilege bypass, secret, layer violation, or unverified claim; findings block merge until fixed or gated |
 
-The critical path is RunsOn smoke and Bazel bootstrap, B0-B3, C1-C7, I1, I2 and I3, I6's first restore, three clean rehearsals, I8's shadow evidence, and the G2 switch decision. E1, E3, E4, and E5 run in parallel after B0. I4, I5, and I7 proceed as soon as their contracts are green. A failed spike is evidence and a blocked edge, never a passing stub.
+The implementation path starts with the local Bazel bootstrap, B0-B3, C1-C7, I1, I2 and I3; RunsOn smoke is a dependency only for future hosted execution. I6’s first restore, three clean rehearsals, I8’s shadow evidence and the G2 switch decision remain later product gates. E1, E3, E4 and E5 run in parallel after B0. I4 proceeds when its contracts are green. I5 and authz-dependent C6/I7/consumers proceed in scoped controller-v2 assignments against #18; each still needs its applicable contract and acceptance evidence. A failed spike remains failed evidence, never a passing stub.
 
 ```mermaid
 flowchart LR
@@ -200,7 +316,7 @@ flowchart LR
   B --> C["RPC, plugin, driver, ChangeSet, ontology, authz, and dump contracts"]
   B --> E1["Behavior recorder and census"]
   B --> E3["UX spike"]
-  B --> E4["Authorization spike"]
+  B --> E4["Authorization evidence published; latency gate failed"]
   B --> E5["Runtime and concurrency spike"]
   E1 --> C
   E3 --> C
@@ -210,8 +326,9 @@ flowchart LR
   I1 --> I2["Local vertical slice"]
   I1 --> I3["Server, authentication, and native host"]
   C --> I6["Converter and restore"]
-  I3 --> I5["Authorization differential suite"]
-  E4 --> I5
+  I3 --> I5["Authorization held: scoped contracts, implementation and evidence"]
+  E4 -->|"failed latency remains"| AZ1["#18 adopted bounded semantics; no runtime or latency pass"]
+  AZ1 -->|"separate scoped authorization, contracts and evidence"| I5
   I2 --> I8["Caller rewrite and staging shadow"]
   I3 --> I8
   I6 --> N["Nightly fresh-store diffs"]
@@ -258,7 +375,7 @@ The store census treats the main `schema_migrations` series and the per-machine 
 
 ID continuity is a card family. Every project keeps its prefix, ID mode, adaptive hash length, top-level and child counters. Restore seeds counters from stored values and observed IDs, including ephemeral-run children, and proves that new hash IDs cannot collide with restored IDs. History inventory records version-history enablement, flatten and compaction, Dolt commit depth, missing dependencies, and the machine holding ignored working-set rows. The converter never fabricates attribution or a complete history when the source cannot prove it.
 
-Dropped behavior is explicit: sync and branch federation, Dolt commit and merge semantics, script hooks, HTTP v0, CLI text and exit envelopes, the public Go API, formula and molecule commands in core, literal statuses in favor of categories, prefix routing across stores, and upstream metrics. Each drop points to its binding decision and remains visible in the census.
+Dropped behavior is explicit: the `bd sync`, version-control and branch/federation command families, Dolt commit and merge semantics, destructive cleanup, raw SQL and untyped key-value commands, script hooks, HTTP v0, CLI text and exit envelopes, the public Go API, formula and molecule commands in core, literal statuses in favor of categories, prefix routing across stores, and upstream metrics. Generic `sync.*` tracker methods remain as the accepted provider-neutral integration surface. Each drop points to its binding decision and remains visible in the census.
 
 ## Data cutover, converter, and rollback
 
@@ -268,7 +385,7 @@ The dump has a kind registry. Restore refuses an unknown kind rather than droppi
 
 The exporter runs on the `beads` branch as `bd export --format plug-dump/1` using Beads code. It accepts the main and ignored schema pair for every machine holding a store working set, takes configuration sources alongside data, and can merge several stores offline by project prefix. The restore validator is built from Plug and accepts only an empty target. No Plug package links Dolt.
 
-Mapping preserves IDs, prefixes, ID mode, counters, dependencies, status categories, versions, memories, and declared overlays. `issue_versions` and compaction snapshots become diff history where present. Events, ignored working-set tables, and configuration sources are copied from their owning machine. Missing history is reported as a history floor or an attachment with unverified attribution; it is never invented. The recommended default is verified history plus an explicit floor or archive when flattening or compaction removed states. The full Dolt reconstruction option is a Nikhil decision under CP11.
+Mapping preserves IDs, prefixes, ID mode, counters, dependencies, status categories, versions, memories, and declared overlays. `issue_versions` and compaction snapshots become diff history where present. Events, ignored working-set tables, and configuration sources are copied from their owning machine. Missing history is reported as an events attachment plus verified history where available, with no fabricated history. Rebuild from Dolt is used only where completeness and cost are proven (decision #6).
 
 From the first converter task, a BuildBetter-controlled host takes read-only filesystem snapshots of every inventoried store and its external config sources. It exports, validates, restores into a fresh SQLite store, and compares per-project bead and edge counts, IDs and counters, ready and blocked sets, cycle results, sampled and available history, source row counts, content digests, and every archived or dropped item. The same job repeats against Postgres once that driver exists. Copies remain off shared CI, are retained seven days by default, and never contain customer data in evidence artifacts.
 
@@ -278,13 +395,16 @@ The shadow fortnight runs before the internal switch. A duplicate factory pool u
 
 G2 also requires every parity-set card to pass or carry an approved deviation, a fully dispositioned paired census, every BuildBetter `bd` caller and prompt rewritten, authenticated network service, the selected D16 human proof, a production-topology failover drill within its RPO and RTO, and a full software-and-data rollback rehearsal. If workflow or gate records are daily-critical, they join the parity set and the move waits for that plugin path.
 
-Rollback has two layers. Software rollback pins the pre-switch images, prompts, `plugins/beads`, and HTTP v0 consumers by digest and rehearses redeployment. Data rollback keeps Beads stores read-only during a proposed 30-day window and uses a reverse converter for a Plug head-state dump into the frozen Beads branch. The reverse report lists lost post-switch history, Plug-only kinds, blobs, principals, warnings, and unsupported fields. Production creates no kind that the reverse path cannot represent while the window is open. This is the recommended CP5 option and remains blocked until Nikhil chooses it.
+Rollback has two layers. Software rollback pins the pre-switch images, prompts, `plugins/beads`, and HTTP v0 consumers by digest and rehearses redeployment. Data rollback keeps Beads stores read-only during a proposed 30-day window and uses a reverse converter for a Plug head-state dump into the frozen Beads branch. The reverse report lists lost post-switch history, Plug-only kinds, blobs, principals, warnings, and unsupported fields. Production creates no kind that the reverse path cannot represent while the window is open. This accepted rollback proof is required before G2 (decision #5).
 
 The internal switch stops agents, quiesces or locks embedded stores, makes server stores read-only, exports with the pinned `bd`, restores into the empty Plug target, requires a clean comparison, points images at `PLUG_SERVER`, and removes `bd` so stale calls fail loudly. It tags `beads-final` and freezes the reference branch. There is no public release, no 0.1.0 claim, and no production movement during the burst.
 
 ## Timeline through 2026-10-31
 
-All times are UTC. `H` is the moment Nikhil approves this re-plan. Approval does not move the stop line.
+All times are UTC. The original launch schedule below is retained as history;
+its approval, hosted-bootstrap and dispatch holds are superseded by controller
+v2's active scoped assignments and the four merge gates above. `H` was the
+original re-plan approval time. The stop lines remain binding.
 
 ### First hour after approval
 
@@ -303,7 +423,7 @@ All times are UTC. `H` is the moment Nikhil approves this re-plan. Approval does
 
 ### 2026-10-29
 
-By 06:00, the graph has a green CI skeleton, first RPC and driver schemas, first Beads projections, and all three spikes running. By 12:00, the target is the contract pack for RPC, `pluginapi`, driver, `ChangeSet`, ontology, authorization data, and dump manifest, with generated artifacts and negative tests. The first decision batch is due: the count target, release scope, move timing, failover choice, rollback, history depth, factory pin, freeze window, and external converter support.
+By 06:00, the graph has a green CI skeleton, first RPC and driver schemas, first Beads projections, and all three spikes running. By 12:00, the target is the contract pack for RPC, `pluginapi`, driver, `ChangeSet`, ontology, authorization data, and dump manifest, with generated artifacts and negative tests. The first decision batch is recorded: the count target, release scope, move timing, failover choice, rollback, history depth, factory pin, freeze window, external converter support, command drops, rename semantics, tracker methods, UX direction, contract defaults, and authorization follow-up.
 
 From 12:00 to midnight, workers implement memory and SQLite contract doubles, the controlled recorder clock, the first local pipeline, and the provisional dump validator in parallel. E5 measures lock order, lazy claim, and failover on disposable Postgres. No source-built plugin or UI work enters without C2 and security contracts.
 
@@ -311,7 +431,7 @@ From 12:00 to midnight, workers implement memory and SQLite contract doubles, th
 
 The target is a thin real vertical slice on memory and SQLite: a fresh restored fixture, `bead.ready`, `bead.claimNext`, update, comment, close guard, history, `tx.apply`, warnings, and the generated registry path. The converter dry run covers every available inventory sample. The first adversarial pass targets test gaming, layer violations, no outbound connections, anonymous isolation, post-image authorization, and projection independence.
 
-Transport, API-key authentication, native host seams, ontology phase ordering, Postgres conformance, and the authorization differential suite proceed in parallel when their contracts are green. A failed experiment remains a blocked graph edge with its evidence.
+Transport, API-key authentication, native host seams, ontology phase ordering and Postgres conformance proceed when their contracts are green. #18 has selected the bounded authorization semantics; I5 and dependent integration/implementation remain held for separate assignments and exact contracts, with final differential/runtime/performance acceptance still open. The failed experiment remains a blocked evidence edge.
 
 ### 2026-10-31 and the stop line
 
@@ -326,7 +446,7 @@ Keep the same graph, evidence, ownership, and merge rules at normal budget. Redu
 ## Gates
 
 - **G1 continuation gate:** the control plane, contracts, first local vertical slice, independent behavior evidence, and provisional converter are green. If they are not, pause and re-plan; do not widen scope to make the graph look healthy.
-- **G2 internal switch gate:** the parity set, paired census, three-night rehearsal streak, shadow metrics, caller rewrite, authenticated service, failover drill, freeze-window rehearsal, and full software-and-data rollback proof all pass. G2 is the only gate that can authorize the one empty-store production restore, and only after the selected Nikhil decisions are recorded.
+- **G2 internal switch gate:** the parity set, paired census, three-night rehearsal streak, shadow metrics, caller rewrite, authenticated service, failover drill, freeze-window rehearsal, and full software-and-data rollback proof all pass. G2 is the only gate that can authorize the one empty-store production restore, after these recorded decisions and all other gates pass.
 - **G3 release gate:** the 0.1.0 scope is still supportable, four weeks of dogfood has no open data-loss or corruption issue, performance and UI/plugin safety checks pass, the publication scan is clean, and the release is separately approved. G3 never turns a green PR or G2 restore into an automatic public release.
 
 ## Retired plan items
@@ -336,96 +456,86 @@ Keep the same graph, evidence, ownership, and merge rules at normal budget. Redu
 - **The weeks-0-to-56 M0-M8 calendar:** retired; the burst uses UTC hour and day windows through 2026-10-31 and dependency waves afterward.
 - **The old five-workstream staffing table:** retired; package ownership and graph dependencies determine concurrency.
 - **Routine human review of every command path or PR:** retired; census ratchets and independent adversarial review are the default, with Nikhil only at listed decision gates.
-- **Old rbe-west CI as the Plug trust boundary:** retired; the Plug-specific RunsOn and Bazel workflow is authoritative.
+- **Old rbe-west CI as the Plug trust boundary:** retired as the target; #19 selects local Bazel CI as the interim merge gate. Plug-specific hosted CI returns after RunsOn access, App Workflows permission, exact-head qualification and reviewed CI cutover.
 
-## Defaults adopted from the adversarial review
+## Decided defaults
 
-These defaults are active unless Nikhil changes them in the decision table below. The swarm model changes staffing and timing only.
+These defaults were accepted on 2026-10-29 and remain binding. #15’s provisional Cedar phase ended with the repaired rerun’s failed unchanged latency gate. #17 fixed the vocabulary and #18 adopted the bounded X1–X9 semantics. Controller v2 authorizes scoped implementation; contract compatibility and acceptance still require evidence. #19 is decided and selects the local Bazel merge gate above.
 
-- AZ3 uses pinned `cedar-go`; AZ7 uses plugin-declared grant records; P51 merges schema plugins into one schema.
+- Historical Cedar-specific AZ3/AZ4/AZ7 choices are not selected by #18. P51 still merges schema plugins if used.
 - P55 uses a fixed authorizer view in v1. P56 refuses an over-limit closure or runs it only as an explicit locked migration-class write.
 - P58 refuses scoped tokens without an authorization plugin. P62 uses a boot-tier provider and bootstrap admin. P64 refuses anonymous multi-approval gates.
 - P65 archives base elements and requires `map_status` and `map_type` for overlay moves. P66 returns a committed write with a warning, dead-letter, and breaker count. P67 keeps the toolchain in the server image and stores artifacts by digest. P68 starts Linux-only, then a Linux container.
 - P73 is confirmed by the `asOf` benchmark. P74 permits one-minute ready-order lag. P75 loads dumped artifacts by digest and treats rebuilding as an asynchronous check.
-- P5c, P85, P5b, P38d, P48b, P79, P81, and P82 use the decisions recorded above. P80 uses a delegate for command dispositions and one-batch family sign-off.
+- P5c, P85, P5b, P38d, P48b, P79, P81, and P82 use the decisions recorded above. P80 uses the accepted one-batch drop of its command families, including the named visible commands.
 - Interpretations 2 through 9 remain as written in `design.md`. CP1, CP6, CP8, CP9, CP10, CP12, CP14 after the per-type wisp inventory, CP15, CP16, and CP19 use the adversarial recommendations.
 - The review's P69 default is superseded by Nikhil's explicit decision: end users see every warning. The plan does not hide a warning based on catalog audience.
 
-## Decisions for Nikhil
+## Decisions
 
-Only these plan-level choices remain. All product and design decisions above are already made. Each recommendation is the default for the graph; a decision is needed before the affected gate can close.
+All 15 plan-level decisions were accepted on 2026-10-29. The entries below are binding inputs to the graph and preserve the existing CP anchors used by the decision ledger. Decision #15 was a process decision; its repaired authorization rerun has now reported, with the failed latency gate activating the documented authorization revisit.
 
 ### CP7 count target
 
-**Question:** Set the authorization spike's grouped-count target to p95 under 250 ms at 100,000 beads, or choose a stricter or looser target before E4 runs?
-
-**Options:** (a) 250 ms p95; (b) a stricter target; (c) a looser target with a documented reason.
-
-**Recommendation:** (a). Keep the page target at p95 under 50 ms at visible fractions 100%, 1%, and 0.1%.
+**#1 — Decided (2026-10-29):** The authorization spike uses a grouped-count target of p95 under 250 ms at 100,000 beads. Pages remain under 50 ms p95 at visible fractions 100%, 1%, and 0.1%.
 
 ### CP2 scope at G3
 
-**Question:** Keep the full design in 0.1.0, or move mode-2 plugins and iframes to 0.2?
-
-**Options:** (a) full design in 0.1.0; (b) mode 2 and iframes in 0.2; (c) release only core and server.
-
-**Recommendation:** (a), with a G3 re-cut if the evidence cannot support it.
+**#2 — Decided (2026-10-29):** Keep the full design in 0.1.0. Re-cut at G3 only if the evidence cannot support that scope.
 
 ### CP3 internal move
 
-**Question:** When may BuildBetter move its data?
-
-**Options:** (a) at 0.1.0; (b) at G2 on measured parity; (c) after M4 workflow and authorization.
-
-**Recommendation:** (b), unless the census shows daily workflow or gate use, in which case use (c). The switch remains one empty-store restore.
+**#3 — Decided (2026-10-29):** BuildBetter may move its data at G2 on measured parity, or after M4 if the inventory shows daily workflow or gate use. The switch remains one restore into an empty store.
 
 ### P70-P72 failover
 
-**Question:** Which rule prevents revision reuse after uncertain replication?
-
-**Options:** (a) synchronous replication with RPO 0; (b) mint a new incarnation on every uncertain lease-epoch change; (c) keep a durable head watermark outside the database.
-
-**Recommendation:** (b), with managed HA Postgres under P70, the P71 lease fence, and P72's documented 5-minute RPO and 1-hour RTO. No production failover claim is accepted until E5 and the production-topology drill pass.
+**#4 — Decided (2026-10-29):** Mint a new incarnation on every uncertain lease-epoch change. Use managed HA Postgres, with the `Store.Lease` fence and documented 5-minute RPO and 1-hour RTO.
 
 ### CP5 rollback
 
-**Question:** What rollback evidence is required for the unstageable cutover?
-
-**Options:** (a) no rollback; (b) read-only Beads and manual re-entry; (c) read-only Beads, a reverse converter, pinned software and prompts, and a full rehearsal.
-
-**Recommendation:** (c), with a proposed 30-day window and an explicit report of post-switch loss.
+**#5 — Decided (2026-10-29):** Require read-only Beads, a reverse converter, pinned software and prompts, and a full rehearsal over a proposed 30-day window. The rehearsal must report post-switch loss before G2.
 
 ### CP11 history depth
 
-**Question:** How should stores with flattened, compacted, or never-enabled version history be restored?
-
-**Options:** (a) baseline restore at the earliest recorded state; (b) head-only `HistoryFloor`; (c) events attachment plus verified history where available; (d) rebuild every missing version from Dolt history.
-
-**Recommendation:** (c) by default after the inventory. Never fabricate history. Choose (d) only where the store proves Dolt history is complete and the cost is measured.
+**#6 — Decided (2026-10-29):** Restore incomplete history as an events attachment plus verified history where available, with no fabricated history. Rebuild from Dolt only when completeness and cost are proven.
 
 ### CP18 factory `bd` pin
 
-**Question:** After the M0 version inventory, should the factory use one pinned `beads` build or continue with the current production `bd`?
-
-**Options:** (a) pin the `beads-base`-derived build after copies migrate to one main and ignored pair; (b) keep the current production build and record its version.
-
-**Recommendation:** (a), with a stated tracker-feature freeze and a re-tagged spec base if any store is newer than the candidate. Never downgrade a live store.
+**#7 — Decided (2026-10-29):** Pin the `beads-base`-derived build after copies converge on one main and ignored schema pair, with a stated tracker-feature freeze. Never downgrade a live store.
 
 ### CP20 freeze window
 
-**Question:** How long may the factory be down on switch day?
-
-**Options:** (a) at most four hours in a weekend slot; (b) a longer window approved after rehearsal; (c) no fixed cap.
-
-**Recommendation:** (a). A rehearsal over budget blocks G2 until the window or topology changes.
+**#8 — Decided (2026-10-29):** Cap the switch-day factory outage at four hours in a weekend slot. An over-budget rehearsal blocks G2.
 
 ### External converter support
 
-**Question:** Is the standalone exporter/converter for external Beads users part of this release?
+**#9 — Decided (2026-10-29):** Standalone migration support is in scope. Ship the exporter standalone so plain Beads data can be ingested, as already established by P5c and P65.
 
-**Options:** (a) BuildBetter-only converter; (b) tagged standalone converter from `beads-final`.
+### Drop families
 
-**Recommendation:** (b) if the converter remains isolated from the Plug tree and costs about one bounded implementation task; otherwise retain the standalone `bd export` format and record the gap at G3.
+**#10 — Decided (2026-10-29):** Approve one batch drop of Dolt and merge-conflict plumbing, federation and version-control sync, destructive cleanup, raw SQL and untyped key-value commands, script hooks, orchestration-only helpers, Beads ID rewrites, and legacy migration modes. The named visible commands (`bd sync`, `bd dolt push`/`pull`, `bd prime`, `bd codex-hook`, setup and hooks, `merge-slot`, `swarm`, `branch`, and `worktree`) are included in that batch.
+
+### `bd rename`
+
+**#11 — Decided (2026-10-29):** Keep title and display edits through `bead.update`; drop ID and prefix rewrites. Bead keys remain immutable.
+
+### Tracker methods
+
+**#12 — Decided (2026-10-29):** Generic `sync.*` methods replace every provider-specific tracker command.
+
+### UX direction
+
+**#13 — Decided (2026-10-29):** The UX direction is Home as “What changed since I looked,” bounded views that say what they hid, stable deltas, compact presence, epic progress as counts, and the declarative catalog. It is not graph-first navigation. Validate it with five people against real view and watch data before the UI milestone.
+
+### Contract defaults
+
+**#14 — Decided (2026-10-29):** Freeze the catalog defaults for `admin.restore.begin/chunk/finish`, `memory.*`, `admin.compact`, and gates; use the contiguous error-number allocation; carry an incarnation on every cursor; add `session.close` with bounded expiry and reconnect; and settle rollback, close, the changeset header, error mapping, and the anonymous agent label in the driver contract before code generation.
+
+### Authorization spike readout
+
+**#15 — Decided (2026-10-29):** Run a quick follow-up spike that fixes the SQL plans and reruns the speed gate. Proceed provisionally with Cedar in core until the repaired rerun reports; if it cannot support the path, revisit authorization rather than silently selecting the old relationship-schema fallback.
+
+**Outcome (2026-10-29):** The repaired rerun passes correctness/corpus/Q5/closure/independent differential but fails unchanged latency targets. The [published evidence](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/readout.md) binds publication `93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8` separately from measured source `69f28caaf71a673296abe3120c60be5cb3af5aec`. #18 later adopts the bounded fixed-permission semantics; no historical failure is rewritten or candidate measured. Controller v2 authorizes scoped contract/implementation work. Publication is complete; executable validation and runtime/compatibility acceptance remain open, while PR admission follows #19.
 
 ## Risks and containment
 
