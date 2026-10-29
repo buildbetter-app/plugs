@@ -211,7 +211,7 @@ func claimNextRace(err error) bool {
 		return false
 	}
 	switch value.Data.Code {
-	case "forbidden", "not_found", "busy", "write_conflict", "precondition_failed", "ontology_guard_failed", "lease_not_held", "lease_expired":
+	case "forbidden", "not_found", "precondition_failed", "ontology_guard_failed":
 		return true
 	default:
 		return false

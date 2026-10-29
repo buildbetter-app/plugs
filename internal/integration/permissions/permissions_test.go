@@ -287,9 +287,42 @@ func TestRealHTTPClaimNextAndPinnedFactsInvalidation(t *testing.T) {
 		}
 	}
 	emptyParams := map[string]any{"filter": map[string]any{"types": []string{"issue"}}, "_meta": writeMeta(201)}
+	beforeEmpty, err := f.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	empty := f.call(t, agent.Token, "bead.claimNext", emptyParams)
 	if empty.status != http.StatusOK || empty.value["error"] != nil || empty.value["result"] != nil {
 		t.Fatalf("claimNext returned a non-null result after its candidates were claimed: %s", empty.body)
+	}
+	afterEmpty, err := f.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeRevision, err := beforeEmpty.Head.Uint64()
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterRevision, err := afterEmpty.Head.Uint64()
+	if err != nil || afterRevision != beforeRevision+1 {
+		t.Fatalf("empty claimNext did not publish exactly one H+1 receipt: before=%s after=%s", beforeEmpty.Head, afterEmpty.Head)
+	}
+	principal, err := driver.PrincipalKey(model.PrincipalRef{Kind: "agent", ID: "agent:worker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptReader, err := f.store.Read(context.Background(), driver.View{Incarnation: afterEmpty.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := emptyParams["_meta"].(map[string]any)["idempotencyKey"].(string)
+	receipt, err := receiptReader.IdempotencyByKey(context.Background(), principal, "", "bead.claimNext", key)
+	_ = receiptReader.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt == nil || receipt.Commit.Revision.String() != afterEmpty.Head.String() || receipt.Changeset.Kind != model.ChangesetWrite || len(receipt.Changeset.Changes) != 0 || len(receipt.Changeset.Events) != 0 {
+		t.Fatalf("empty claimNext receipt was not durable H+1 zero-change state: %+v", receipt)
 	}
 	// The null is a durable terminal receipt. It remains null after a later
 	// ready bead appears, while changing either selector component conflicts
