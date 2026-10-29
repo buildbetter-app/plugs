@@ -15,6 +15,8 @@ type AsOf struct {
 
 // PagePosition is domain state, never an untrusted wire token. RPC signs and
 // validates its method/principal/filter binding before passing it to service.
+// Ready continues at Offset in the live ordered list; AsOf identifies the last
+// observed page and incarnation. History instead pins every page to AsOf.
 type PagePosition struct {
 	Offset int
 	AsOf   AsOf
