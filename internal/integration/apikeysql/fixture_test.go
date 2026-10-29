@@ -457,10 +457,10 @@ func createdRef(t *testing.T, result map[string]any) model.Ref {
 
 func credentialFree(t *testing.T, data []byte, keys ...authnapikey.IssuedKey) {
 	t.Helper()
-	for _, issued := range keys {
+	for keyIndex, issued := range keys {
 		parts := strings.SplitN(strings.TrimPrefix(issued.Token, "plg_k_"), "_", 2)
 		if bytes.Contains(data, []byte(issued.Token)) || bytes.Contains(data, []byte(issued.ID)) || len(parts) == 2 && bytes.Contains(data, []byte(parts[1])) {
-			t.Fatalf("credential material escaped into SQL/API data: %s", data)
+			t.Fatalf("credential material escaped into SQL/API data (credential check %d)", keyIndex+1)
 		}
 	}
 }
