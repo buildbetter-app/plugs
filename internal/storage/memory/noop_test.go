@@ -64,6 +64,11 @@ func TestNoopRejectsMutationsAndInvalidGuards(t *testing.T) {
 			return nil
 		}},
 		{"invalid_key", func(_ driver.WriteTx, h *driver.ChangesetHeader) error { h.IdempotencyKey = " invalid "; return nil }},
+		{"invalid_anonymous_label", func(_ driver.WriteTx, h *driver.ChangesetHeader) error {
+			h.Principal = model.PrincipalRef{Kind: "anonymous", ID: "guest"}
+			h.AgentLabel = " invalid "
+			return nil
+		}},
 		{"missing_method", func(_ driver.WriteTx, h *driver.ChangesetHeader) error { h.Method = ""; return nil }},
 		{"missing_hash", func(_ driver.WriteTx, h *driver.ChangesetHeader) error { h.RequestHash = ""; return nil }},
 	}
