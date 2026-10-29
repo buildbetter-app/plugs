@@ -37,3 +37,12 @@ func assign(value, dst any) error {
 	}
 	return decode(data, dst)
 }
+
+// Core's detached JSON callback values encode absent RawMessage images as
+// null. Public before/after images use omission for that same absence.
+func copyImage(data json.RawMessage) json.RawMessage {
+	if len(data) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
+	}
+	return append(json.RawMessage(nil), data...)
+}

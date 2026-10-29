@@ -7,6 +7,7 @@ go_library(
     visibility = ["//:__subpackages__"],
     deps = [
         "//internal/core/model",
+        "//internal/core/pipeline",
         "//internal/core/port",
         "//internal/storage/driver",
         "//pluginapi",
@@ -16,12 +17,14 @@ go_library(
 
 go_test(
     name = "pluginhost_test",
-    srcs = ["host_test.go"],
+    srcs = glob(["*_test.go"]),
     embed = [":pluginhost"],
     deps = [
         "//internal/core/model",
+        "//internal/core/pipeline",
         "//internal/core/port",
         "//internal/storage/driver",
+        "//internal/storage/memory",
         "//pluginapi",
         "//sdk/go:sdk_go",
         "//sdk/go/conformance",

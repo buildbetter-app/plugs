@@ -2,9 +2,10 @@ package pluginhost
 
 import (
 	"context"
-	"encoding/json"
+	"sort"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/pluginapi"
 )
@@ -35,6 +36,58 @@ func (h *Host) Subscribers() []Subscriber {
 			subscriber.Post = adapter
 		}
 		result = append(result, subscriber)
+	}
+	return result
+}
+
+// Mutators supplies pipeline bindings with detached configuration. Expand read
+// grants to concrete owned paths because pipeline dataflow uses exact paths.
+func (h *Host) Mutators() []pipeline.MutatorBinding {
+	result := []pipeline.MutatorBinding{}
+	for _, s := range h.Subscribers() {
+		if s.Mutator == nil {
+			continue
+		}
+		reads := map[string]bool{}
+		for _, read := range s.Binding.Reads {
+			reads[read] = true
+			for _, owner := range h.bindings {
+				if owner.Phase != pluginapi.PhaseMutate {
+					continue
+				}
+				for _, path := range owner.Owns {
+					if overlap(read, path) {
+						reads[path] = true
+					}
+				}
+			}
+		}
+		paths := make([]string, 0, len(reads))
+		for path := range reads {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		result = append(result, pipeline.MutatorBinding{ID: s.Binding.ID, Reads: paths, Owns: s.Binding.Owns, FailOpen: s.Binding.FailOpen, Mutator: s.Mutator})
+	}
+	return result
+}
+
+func (h *Host) Validators() []pipeline.ValidatorBinding {
+	result := []pipeline.ValidatorBinding{}
+	for _, s := range h.Subscribers() {
+		if s.Validator != nil {
+			result = append(result, pipeline.ValidatorBinding{ID: s.Binding.ID, FailOpen: s.Binding.FailOpen, Validator: s.Validator})
+		}
+	}
+	return result
+}
+
+func (h *Host) Posts() []pipeline.PostBinding {
+	result := []pipeline.PostBinding{}
+	for _, s := range h.Subscribers() {
+		if s.Post != nil {
+			result = append(result, pipeline.PostBinding{ID: s.Binding.ID, Subscriber: s.Post})
+		}
 	}
 	return result
 }
@@ -175,7 +228,7 @@ func toPublicProposal(c port.ProposedChange, binding Binding) (pluginapi.Propose
 		if err := assign(change.Op, &op); err != nil {
 			return out, err
 		}
-		out.Changes = append(out.Changes, pluginapi.Change{Resource: resource, Op: op, Before: append(json.RawMessage(nil), change.Before...), After: append(json.RawMessage(nil), change.After...), SetBy: change.SetBy})
+		out.Changes = append(out.Changes, pluginapi.Change{Resource: resource, Op: op, Before: copyImage(change.Before), After: copyImage(change.After), SetBy: change.SetBy})
 	}
 	return pluginapi.CloneJSON(out)
 }

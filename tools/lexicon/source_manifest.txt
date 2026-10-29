@@ -139,6 +139,7 @@ internal/server/pluginhost/fields.go
 internal/server/pluginhost/host_test.go
 internal/server/pluginhost/json.go
 internal/server/pluginhost/load.go
+internal/server/pluginhost/pipeline_test.go
 internal/server/pluginhost/reader.go
 internal/server/pluginhost/state.go
 internal/storage/conformance/BUILD.bazel
