@@ -6,6 +6,8 @@ import (
 	"math/big"
 	"reflect"
 	"strings"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
 // SlotForMethod recognizes only named lifecycle verbs. A caller-controlled
@@ -86,6 +88,12 @@ func Defaults(e Effective, state BeadState) (BeadState, []Violation) {
 	if copy.Fields == nil {
 		copy.Fields = map[string]any{}
 	}
+	if _, present := copy.Fields["priority"]; !present {
+		copy.Fields["priority"] = DefaultPriority
+	}
+	if _, present := copy.Fields["template"]; !present {
+		copy.Fields["template"] = copy.Template
+	}
 	for name, field := range t.Fields {
 		if _, exists := copy.Fields[name]; !exists && field.Default != nil && field.Owner == "" {
 			copy.Fields[name] = field.Default
@@ -134,9 +142,10 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 		return []Violation{{Code: "ontology_use_slot_verb", Field: "status", Message: "status must be changed through a lifecycle verb"}}
 	}
 	var violations []Violation
-	if after.Priority != nil && (*after.Priority < 0 || *after.Priority > 4) {
-		violations = append(violations, invalid("priority", "priority must be P0 through P4")...)
-	}
+	_, priorityViolations := Priority(*after)
+	violations = append(violations, priorityViolations...)
+	_, templateViolations := IsTemplate(*after)
+	violations = append(violations, templateViolations...)
 	t, ok := e.document.Types[after.Type]
 	if !ok || t.Archived {
 		return append(violations, invalid("type", "unknown or archived type")...)
@@ -150,6 +159,9 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 		violations = append(violations, invalid("status", "status is outside the active type workflow")...)
 	}
 	for _, name := range keys(after.Fields) {
+		if name == "priority" || name == "template" {
+			continue
+		} // fixed kernel field, checked above
 		field, ok := t.Fields[name]
 		if !ok {
 			violations = append(violations, Violation{Code: "ontology_unknown_field", Field: "fields." + name, Message: "unknown typed field"})
@@ -168,7 +180,7 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 		changed := exists
 		if before != nil {
 			old, present := before.Fields[name]
-			changed = present != exists || !reflect.DeepEqual(old, value)
+			changed = present != exists || !sameValue(old, value)
 		}
 		if changed && field.Owner != "" && facts.SetBy["fields."+name] != field.Owner {
 			violations = append(violations, Violation{Code: "field_owned", Field: "fields." + name, Message: "field may only be written by its owner"})
@@ -218,6 +230,48 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 	return violations
 }
 
+// DefaultPriority is the fixed v1 default in the P0 through P4 kernel domain.
+const DefaultPriority = 2
+
+// Priority reads the fixed kernel field, including its default. The service
+// can use this value followed by bead ID to order ready work without duplicating
+// parsing or range rules. JSON numbers remain lossless until the checked 0..4
+// conversion; string, boolean, fractional and null values are refused.
+func Priority(state BeadState) (int, []Violation) {
+	value, present := state.Fields["priority"]
+	if !present {
+		return DefaultPriority, nil
+	}
+	if !validValue(Field{Type: "integer"}, value) {
+		return 0, invalid("fields.priority", "priority must be an integer from P0 through P4")
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return 0, invalid("fields.priority", "priority must be an integer from P0 through P4")
+	}
+	priority, err := model.Natural(string(data)).Uint64()
+	if err != nil || priority > 4 {
+		return 0, invalid("fields.priority", "priority must be an integer from P0 through P4")
+	}
+	return int(priority), nil
+}
+
+// IsTemplate validates the fixed kernel template flag. Adapters must preserve
+// the raw stored field instead of discarding a failed boolean assertion. The
+// Template member remains a trusted compatibility view for existing callers;
+// it cannot override a contradictory raw value.
+func IsTemplate(state BeadState) (bool, []Violation) {
+	value, present := state.Fields["template"]
+	if !present {
+		return state.Template, nil
+	}
+	flag, ok := value.(bool)
+	if !ok || (state.Template && !flag) {
+		return false, invalid("fields.template", "template must be a boolean consistent with the record view")
+	}
+	return flag, nil
+}
+
 func evaluateGuard(guard Guard, after BeadState, facts GuardFacts) []Violation {
 	failed := false
 	switch guard.Kind {
@@ -235,7 +289,8 @@ func evaluateGuard(guard Guard, after BeadState, facts GuardFacts) []Violation {
 	case NoOpenBlockers:
 		failed = facts.NoOpenBlockers == nil || !*facts.NoOpenBlockers
 	case NotTemplate:
-		failed = after.Template
+		flag, problems := IsTemplate(after)
+		failed = flag || len(problems) != 0
 	case GatesResolved:
 		for _, kind := range guard.Kinds {
 			failed = failed || !facts.Gates[kind]
@@ -328,4 +383,16 @@ func copyState(state BeadState) (BeadState, error) {
 		copy.Fields = map[string]any{}
 	}
 	return copy, err
+}
+
+func sameValue(left, right any) bool {
+	if reflect.DeepEqual(left, right) {
+		return true
+	}
+	l, err := json.Marshal(left)
+	if err != nil {
+		return false
+	}
+	r, err := json.Marshal(right)
+	return err == nil && bytes.Equal(l, r)
 }
