@@ -1,0 +1,36 @@
+# SQLite storage
+
+`sqlite.Driver{}.Open(ctx, driver.Config{DSN: "/local/path/store.db"})`
+opens a persistent local file. Local `file:` URIs without query parameters also
+work. In-memory databases, custom options, nonzero branches, unknown query
+filters, and migrations other than the current schema explicitly refuse.
+
+The driver uses modernc.org/sqlite, WAL, and FULL synchronous publication.
+Readers pin real SQLite read transactions. Close every reader and transaction;
+Close is idempotent and unfinished transactions roll back. Store.Close also
+releases outstanding local resources and its leases.
+
+Sorted guard sets use driver-owned advisory file locks in `<database>.plug-locks`.
+Failed acquisitions release the entire partial set before waiting; skipLocked
+omits conflicts. Head is the last file lock. Records, tombstones, forward-patch
+versions, blobs, derived observations, predicates, replay receipts and log rows
+publish together under BEGIN IMMEDIATE. Lease acquisition, renewal, release,
+checkpoint CAS and response finalization use the same publication lock and SQL
+transaction. Epoch checks occur inside that transaction, including immediately
+before COMMIT. Staging holds no SQLite write transaction, so lease release and
+expiry takeover can fence unfinished writers.
+
+Revisions, epochs and checkpoint generations use lossless unsigned decimal
+TEXT. The current implementation checks the uint64 boundary and refuses larger
+revisions or exhausted counters before publication. JSON bodies retain exact
+bytes in current rows and bases; other history entries use RFC 6902 root replace
+patches, with a base every 32 versions. Query implements only exact equality on
+kind, id, key, type, project and status. Core owns semantic graph rules and exact
+sentinel selection for opaque derived rows.
+
+Use one stable database path on a local filesystem with working flock and WAL
+shared-memory locks. All handles/processes must use this driver and retain the
+lock directory; do not remove or replace it while handles are open. SQLite has
+no standby, replication or failover capability. Automated backups and scheduled
+engine-neutral dumps are not implemented here; health leaves the backup
+checkpoint unset. No production cutover or data movement is provided.
