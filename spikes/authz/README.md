@@ -42,3 +42,11 @@ while index-walk counts ready rows through the returned key (or all ready rows
 for grouped counts). It is named and reported as candidate cardinality, not as
 an engine-level executor counter; `database/sql` does not expose one portable
 row-loop counter across the pure-Go SQLite and Postgres drivers used here.
+
+## Published v6 evidence
+
+The repaired run's concise [v6 result readout](evidence-v6/readout.md),
+structured SQLite/PostgreSQL outputs, and credential-free
+[provenance manifest](evidence-v6/provenance-manifest.json) are committed with
+the spike. The readout records the measured source commit separately from the
+later evidence-only publication commit; raw logs and DSNs are not committed.
