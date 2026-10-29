@@ -186,6 +186,9 @@ func (w *Writer) post(ctx context.Context, p *prepared, commit model.Commit) []m
 	view := p.snapshot.Snapshot()
 	view.At = &commit.Revision
 	reader, readErr := w.store.Read(ctx, view)
+	if reader != nil {
+		defer reader.Close()
+	}
 	results := make([]chan error, len(w.cfg.posts))
 	for i, binding := range w.cfg.posts {
 		done := make(chan error, 1)
