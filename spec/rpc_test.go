@@ -111,7 +111,15 @@ func TestB04DirectClaimLeaseAndForeignRefusal(t *testing.T) {
 		t.Fatalf("claim did not persist its actual principal and agent scope: %+v", lease)
 	}
 	// Reclaim by the same actor is a no-op even under a fresh request key.
-	f.success(t, "bead.claim", map[string]any{"id": idRef("pl-claim")})
+	reclaimed := f.success(t, "bead.claim", map[string]any{"id": idRef("pl-claim")})
+	assertPaths(t, reclaimed, map[string]any{
+		"/result/revision": 2, "/result/results/0/revision": 2,
+		"/result/leaseTtlMs":     300000,
+		"/result/leaseExpiresAt": f.core.inputs.Now().Add(5 * time.Minute).Format(time.RFC3339Nano),
+	})
+	if !reflect.DeepEqual(f.core.document(t, "pl-claim").Lease, lease) {
+		t.Fatal("same-owner fresh-key claim changed the durable lease")
+	}
 	f.core.assertLog(t, 2)
 	foreign := rpc.WithPrincipal(f.core.ctx, model.PrincipalRef{Kind: "user", ID: "another-user"})
 	response := f.callAs(t, foreign, "bead.claim", map[string]any{"id": idRef("pl-claim")})

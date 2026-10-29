@@ -131,6 +131,28 @@ func TestTraceRetainsTypedRefusalAndNullAsDifferentOutcomes(t *testing.T) {
 	}
 }
 
+func TestTraceRetainsWireBytesWithoutAliasingTransportOrCaller(t *testing.T) {
+	want := " {\"result\":{ \"text\": \"exact\" }, \"id\":1, \"jsonrpc\":\"2.0\"}\n"
+	response := []byte(want)
+	trace, err := NewTrace(transportFunc(func(context.Context, []byte) ([]byte, error) {
+		return response, nil
+	}), func() time.Time { return time.Unix(1, 0) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := trace.Call(context.Background(), "bead.get", map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Fatalf("trace rewrote validated wire bytes: %q", got)
+	}
+	response[1], got[1] = '!', '?'
+	if string(trace.Frames()[0].Response) != want {
+		t.Fatal("transport or caller changed the retained wire response")
+	}
+}
+
 func TestTraceRejectsInvalidEnvelopesAndTransportFailure(t *testing.T) {
 	for _, response := range []string{
 		`null`, `[]`, `{"id":1,"result":null}`,

@@ -37,7 +37,9 @@ Every RPC stack fixes UTC time, finite IDs, store identity, incarnation, and
 the cursor signing key. A positive lifecycle runs twice in fresh stores and
 compares every request/response byte. Full exchanges, including those preceding
 a failure, are saved as `*.rpc.json` in Bazel's undeclared test outputs under
-`bazel-testlogs/spec/acceptance/test.outputs/`.
+`bazel-testlogs/spec/acceptance/test.outputs/`. The trace retains validated wire
+response bytes; semantic projections normalize object keys separately. JSON
+artifact formatting does not certify whitespace-identical artifact files.
 
 `//spec:cli_acceptance` launches the actual Bazel-built `plug` executable in a
 disposable memory session. It covers all eight bound verbs, historical reads,

@@ -84,12 +84,9 @@ func (t *Trace) Call(ctx context.Context, method string, params any) (json.RawMe
 			return nil, fmt.Errorf("%s response error needs an integer code and message", method)
 		}
 	}
-	canonical, err := json.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	t.frames = append(t.frames, Frame{At: at, Request: request, Response: canonical})
-	return append(json.RawMessage(nil), canonical...), nil
+	retained := append(json.RawMessage(nil), response...)
+	t.frames = append(t.frames, Frame{At: at, Request: request, Response: retained})
+	return append(json.RawMessage(nil), retained...), nil
 }
 
 func (t *Trace) Frames() []Frame {
