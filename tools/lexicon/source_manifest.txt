@@ -204,6 +204,7 @@ internal/core/pipeline/audit_guard_test.go
 internal/core/pipeline/audit_test.go
 internal/core/pipeline/callbacks.go
 internal/core/pipeline/callbacks_test.go
+internal/core/pipeline/claim_recovery.go
 internal/core/pipeline/document.go
 internal/core/pipeline/guard_test.go
 internal/core/pipeline/noop_test.go
@@ -219,6 +220,9 @@ internal/core/port/pipeline.go
 internal/core/service/BUILD.bazel
 internal/core/service/audit.go
 internal/core/service/audit_test.go
+internal/core/service/claim_recovery.go
+internal/core/service/claim_recovery_integration_test.go
+internal/core/service/claim_recovery_test.go
 internal/core/service/graph.go
 internal/core/service/ontology.go
 internal/core/service/reads.go
@@ -240,6 +244,9 @@ internal/server/authn/authn.go
 internal/server/authn/authn_test.go
 internal/server/authn/http.go
 internal/server/authn/http_test.go
+internal/server/claimrpc/BUILD.bazel
+internal/server/claimrpc/service.go
+internal/server/claimrpc/service_test.go
 internal/server/events/BUILD.bazel
 internal/server/events/audit.go
 internal/server/events/audit_delivery_test.go
