@@ -118,6 +118,9 @@ func (s *Store) Seed(ctx context.Context, visibleFraction float64) error {
 	if err = insertGrants(ctx, tx, s.Dialect, visibleFraction); err != nil {
 		return err
 	}
+	if err = analyzeBenchmarkTables(ctx, tx, s.Dialect); err != nil {
+		return err
+	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
@@ -143,7 +146,18 @@ func (s *Store) SetVisibleFraction(ctx context.Context, visibleFraction float64)
 	if err = insertGrants(ctx, tx, s.Dialect, visibleFraction); err != nil {
 		return err
 	}
+	if err = analyzeBenchmarkTables(ctx, tx, s.Dialect); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+func analyzeBenchmarkTables(ctx context.Context, tx *sql.Tx, d Dialect) error {
+	if d == DialectSQLite {
+		_, err := tx.ExecContext(ctx, `ANALYZE`)
+		return err
+	}
+	return nil
 }
 
 func parentAndDepth(id int) (int, int) {
