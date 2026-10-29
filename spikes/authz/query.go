@@ -298,9 +298,9 @@ type sortKey struct {
 }
 
 func (s *Store) countVisible(ctx context.Context, subject string) (int, error) {
-	q := `SELECT COUNT(*) FROM bead b
-		WHERE EXISTS (SELECT 1 FROM authz_cut_closure c JOIN plugin_grant g ON g.scope=c.ancestor
-			WHERE c.descendant=b.id AND g.subject=? AND g.role='reader')`
+	q := `SELECT COUNT(DISTINCT c.descendant)
+		FROM plugin_grant g JOIN authz_cut_closure c ON c.ancestor=g.scope
+		WHERE g.subject=? AND g.role='reader'`
 	var n int64
 	if err := s.DB.QueryRowContext(ctx, s.bind(q), subject).Scan(&n); err != nil {
 		return 0, err
@@ -313,12 +313,14 @@ func (s *Store) countQualified(ctx context.Context, subject string, unclaimedOnl
 	if unclaimedOnly {
 		ready += " AND b.claimed_by IS NULL"
 	}
-	q := fmt.Sprintf(`SELECT COUNT(*) FROM bead b
-		WHERE %s AND (b.sort_bucket,b.sort_rank,b.sort_created,b.id)>(?,?,?,?)
-		AND EXISTS (SELECT 1 FROM authz_cut_closure c JOIN plugin_grant g ON g.scope=c.ancestor
-			WHERE c.descendant=b.id AND g.subject=? AND g.role='reader')`, ready)
+	q := fmt.Sprintf(`WITH visible AS MATERIALIZED (
+			SELECT c.descendant FROM plugin_grant g JOIN authz_cut_closure c ON c.ancestor=g.scope
+			WHERE g.subject=? AND g.role='reader' GROUP BY c.descendant
+		)
+		SELECT COUNT(*) FROM bead b JOIN visible v ON v.descendant=b.id
+		WHERE %s AND (b.sort_bucket,b.sort_rank,b.sort_created,b.id)>(?,?,?,?)`, ready)
 	var n int64
-	if err := s.DB.QueryRowContext(ctx, s.bind(q), -1, 0, 0, 0, subject).Scan(&n); err != nil {
+	if err := s.DB.QueryRowContext(ctx, s.bind(q), subject, -1, 0, 0, 0).Scan(&n); err != nil {
 		return 0, err
 	}
 	return checkedCount(n)
