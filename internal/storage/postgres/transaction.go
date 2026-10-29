@@ -129,13 +129,26 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 			return nil, err
 		}
 	}
-	// Placeholder rows carry no graph state. Commit their creation independently
-	// so missing keys can be shared/locked across sessions without hash collisions.
+	// Placeholder rows carry no graph state. Check for already-created rows
+	// without taking a row lock, then prepare only missing rows on the driver's
+	// reserved lock connection. Asking the general pool for a second connection
+	// while every writer already owns one self-deadlocks under a wide probe, and
+	// repeatedly inserting existing rows would contend with the lock set itself.
+	missing := make([]string, 0, len(ids))
 	for _, id := range ids {
-		if _, err = t.store.db.ExecContext(ctx, `INSERT INTO plug_postgres.locks (key) VALUES ($1) ON CONFLICT DO NOTHING`, []byte(id)); err != nil {
+		var present bool
+		if err = t.sql.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM plug_postgres.locks WHERE key=$1)`, []byte(id)).Scan(&present); err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
+			return nil, err
+		}
+		if !present {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) != 0 {
+		if err = t.store.ensureLockKeys(ctx, missing); err != nil {
 			return nil, err
 		}
 	}

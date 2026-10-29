@@ -180,6 +180,8 @@ internal/core/events/natural_test.go
 internal/core/events/ports.go
 internal/core/events/reader.go
 internal/core/events/reader_test.go
+internal/core/events/registry.go
+internal/core/events/registry_test.go
 internal/core/model/BUILD.bazel
 internal/core/model/audit.go
 internal/core/model/audit_test.go
@@ -625,6 +627,15 @@ spec/extended/time_test.go
 spec/fixture_test.go
 spec/pipeline_test.go
 spec/rpc_test.go
+spikes/runtime/BUILD.bazel
+spikes/runtime/README.md
+spikes/runtime/abi.go
+spikes/runtime/abi_test.go
+spikes/runtime/cmd/runtime-spike/main.go
+spikes/runtime/concurrency.go
+spikes/runtime/concurrency_test.go
+spikes/runtime/sandbox.go
+spikes/runtime/sandbox_test.go
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
 tools/lexicon/checker.go
