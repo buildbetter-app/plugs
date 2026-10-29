@@ -1,7 +1,9 @@
 package httpjson
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -132,12 +134,74 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusRequestTimeout, "busy", "request deadline or cancellation reached")
 		return
 	}
+	if h.cfg.SessionBridge != nil {
+		if sessionID, ok := sessionID(r.Header); ok {
+			if agent, valid := requestAgent(data); valid {
+				if bridged, err := h.cfg.SessionBridge(ctx, identity.Principal(), sessionID, agent); err == nil {
+					ctx = bridged
+				}
+			}
+		}
+	}
 	response := h.rpc.Dispatch(rpc.WithPrincipal(ctx, identity.Principal()), data)
 	if len(response) == 0 {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	h.respond(w, http.StatusOK, response)
+}
+
+func sessionID(header http.Header) (string, bool) {
+	values := header.Values("Plug-Session")
+	if len(values) != 1 || values[0] == "" {
+		return "", false
+	}
+	return values[0], true
+}
+
+// requestAgent extracts the unverified collaboration label from every call in
+// a request. A mixed-agent batch cannot safely share one session lifetime, so
+// it is left without a bridge and fails closed in the watch handler.
+func requestAgent(data []byte) (string, bool) {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return "", false
+	}
+	var calls []json.RawMessage
+	if data[0] == '[' {
+		if err := json.Unmarshal(data, &calls); err != nil || len(calls) == 0 {
+			return "", false
+		}
+	} else {
+		calls = []json.RawMessage{data}
+	}
+	var agent string
+	for index, raw := range calls {
+		var envelope struct {
+			Params json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return "", false
+		}
+		current := ""
+		if len(envelope.Params) != 0 && string(envelope.Params) != "null" {
+			var params struct {
+				Meta struct {
+					Agent string `json:"agent"`
+				} `json:"_meta"`
+			}
+			if err := json.Unmarshal(envelope.Params, &params); err != nil {
+				return "", false
+			}
+			current = params.Meta.Agent
+		}
+		if index == 0 {
+			agent = current
+		} else if current != agent {
+			return "", false
+		}
+	}
+	return agent, true
 }
 
 func jsonContentType(raw string) bool {
