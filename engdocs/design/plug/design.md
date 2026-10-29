@@ -20,7 +20,7 @@ Status: proposal, updated 2026-10-29 with Nikhil's decisions from the [design re
 
 ### Open
 
-The prior design rows and plan decisions remain recorded under [Made](#made) and [Decisions](clean-room-plan.md#decisions). #18 is DECIDED: the reviewed bounded X1–X9 semantics are adopted, distinct from #17’s vocabulary requirement. The local-CI merge recommendation #19 remains PENDING and grants no waiver of #16’s qualified exact-head CI and reviewed cutover. [A5](#bounded-fixed-permission-candidate-18) records the supported slice and unproved contract, implementation and acceptance gates; [Decisions needed](decisions-needed.md) is the answer ledger.
+The prior design rows and plan decisions remain recorded under [Made](#made) and [Decisions](clean-room-plan.md#decisions). #18 is DECIDED: the reviewed bounded X1–X9 semantics are adopted, distinct from #17’s vocabulary requirement. #20 is DECIDED for the [bounded type-summary cap direction](#bounded-type-summary-cap-20) only; exact contract integration and qualification remain held. The local-CI merge recommendation #19 remains PENDING and grants no waiver of #16’s qualified exact-head CI and reviewed cutover. [A5](#bounded-fixed-permission-candidate-18) records the supported slice and unproved contract, implementation and acceptance gates; [Decisions needed](decisions-needed.md) is the answer ledger.
 
 ### Made
 
@@ -176,6 +176,7 @@ Every decision so far. D1 to D13 are Nikhil's answers of 2026-10-27, recorded in
 | [T4 / #14](review-2026-10-27.md#decisions) | Freeze `admin.restore.begin/chunk/finish`, `memory.*`, `admin.compact`, and gate shapes; use contiguous error numbers; carry incarnation on every cursor; add `session.close` with bounded expiry and reconnect; settle rollback, close, the changeset header, error mapping, and the anonymous agent label in the driver contract |
 | [#17](review-2026-10-27.md#decisions) | Fixed project/team permission vocabulary; no user-configurable policy language |
 | [#18](review-2026-10-27.md#decisions) | **DECIDED:** Adopt reviewed bounded candidate (Recommended), proposal `c9f5f29d`, entire X1–X9 package; design semantics only, with separate contract/implementation/acceptance gates |
+| [#20](review-2026-10-27.md#decisions) | **DECIDED:** At most 100,000 authorized inputs only for fully compiled type count summaries, explicitly present `fields=[]`, at most 100 groups; ordinary views retain 20,000. Exact contract/compatibility and qualification remain held |
 
 ## Target architecture
 
@@ -908,7 +909,7 @@ sync.status, sync.run, sync.import                                  errors: dest
 
 **Presence.** A session is a live client; one-shot CLI commands open none. The session and presence schemas are in the [OpenRPC catalog](contracts/openrpc.json). `session.close` explicitly closes a session; expiry is bounded, disconnects are reclaimed by expiry, and a reconnect reopens the session and resumes watches from their cursors (plan #14). "Working on" comes from claims, focus is visible only to principals the chain lets read the resource (A5), and `onBehalfOf` shows forty factory workers as one row. After a failover (P49), clients re-open sessions and resume watches from their cursors.
 
-**Views (P31b).** A facet is a view: a schema-validated definition whose filter uses today's query grammar. `view.run`, `bead.ready` and `bead.claimNext` take a `viewId` or inline definition. `view.run` returns `{items, nextCursor, asOf, groups?: [{key, count, items, elided?: {count, reason, continueWith: {method, params}}}]}`. Views are versioned and saved with compare-and-set. An unknown field is an error, and a run over 20,000 candidates, counted after authorization, fails instead of scanning. Noise rules: never exceed the budget, every cut says what it hid, overflow becomes count rows, deltas never reorder visible rows, and the home view is *Changes since I looked*. Denied beads leave no trace in items, counts or elisions, except as a hidden-blocker count (P28b).
+**Views (P31b).** A facet is a view: a schema-validated definition whose filter uses today's query grammar. `view.run`, `bead.ready` and `bead.claimNext` take a `viewId` or inline definition. `view.run` returns `{items, nextCursor, asOf, groups?: [{key, count, items, elided?: {count, reason, continueWith: {method, params}}}]}`. Views are versioned and saved with compare-and-set. An unknown field is an error. For ordinary views, a run over 20,000 candidates, counted after authorization, fails instead of scanning. The separately decided type-summary requirements direction and held exact contract integration are recorded below. Noise rules: never exceed the budget, every cut says what it hid, overflow becomes count rows, deltas never reorder visible rows, and the home view is *Changes since I looked*. Denied beads leave no trace in items, counts or elisions, except as a hidden-blocker count (P28b).
 
 ```mermaid
 sequenceDiagram
@@ -962,6 +963,37 @@ type SyncDestination interface { // A2 SDK, wire types only
 **Trackers (P17, plan #12).** Export is the only ongoing direction (D10). Generic `sync.*` methods replace every provider-specific tracker command. `sync.import` is a one-shot adoption into `import` changesets and may run into any project, minting new IDs and keeping remote IDs as link metadata (P77); P44's empty-store rule governs restores only. The `sync.status`, `sync.run` and `sync.import` wire shapes are in the [OpenRPC catalog](contracts/openrpc.json). Pushes skip unchanged content hashes; a remote edit to a synced field is overwritten on the next push and counted as drift (P78). Links are `linear/link`-style metadata set with `expect: [{ref, field, hash: null}]`. An unmapped status pauses the destination, never Plug writes. The active server runs each destination (P49).
 
 **Codebase.** Clean-room (P1): carry `events:watch`'s cursor contract into A1, build `graph`, `ready` and `human list` as view clients, route title and display edits through `bead.update`, and do not carry ID or prefix rewrites from `bd rename` (plan #11). Keep goldmark and bluemonday behind one renderer, and write the tracker SDK and runner fresh around generic `sync.*` methods, Linear first, without today's conflict resolution.
+
+### Bounded type-summary cap 20
+
+**#20 — DECIDED (2026-10-29, Paseo):** allow at most **100,000 authorized
+inputs only for fully compiled type count summaries**, with **explicitly present
+`fields=[]`** and **at most 100 groups**; **ordinary views retain 20,000**.
+These four bounds amend the previous universal-20,000 requirements direction
+only within the selected summary scope. Frozen C0 and the adopted proposal
+bytes remain unchanged; their exact successor contract integration is held.
+The [answer ledger](decisions-needed.md#answered) binds Nikhil's explicit
+answer20 and the historical reviewed packet and receipt.
+
+Only those bounds are decided. The packet's complete CAP-SUMMARY and TG clauses
+are not adopted. Exact candidate accounting/qualification stages, compiler
+eligibility, type/group/result/elision/continuation and output-budget semantics,
+refusal/error rules, ordinary continuation compatibility, and caller/presence/
+serializer compatibility remain held for exact contract review. Explicit
+`fields=[]` must be present for the selected direction; this record settles no
+omitted/default/empty behavior, serializer implementation or interface/version
+choice. No new permission, domain or API is selected, and no implementation or
+execution is authorized.
+
+#20 removes the unanswered cap choice but cannot close **AZE-1** on its own.
+W1/W2/W3/W4/W5/AZP-1 exact integration and independent acceptance remain held.
+Historical measured latency remains **FAIL/BLOCK**. Preserve the 100k workload,
+both engines, both plans, all fractions, **36 cases**, **3 warmups + 20 measured
+samples per case**, page and whole-Q5 p95 `<50 ms`, and whole-Q6 count p95
+`<250 ms`. Existing resource ceilings, runtime/real-host/proof/200-agent,
+C7/R14, exact-head hosted CI and reviewed cutover gates remain separate.
+R14 behavioral verification remains **UNVERIFIED**, both findings **OPEN**.
+#17/#18 remain **DECIDED**; #19 remains **PENDING**, with no local-CI waiver.
 
 ## A8 Project identity and hygiene
 

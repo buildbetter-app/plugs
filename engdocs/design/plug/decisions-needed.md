@@ -1,8 +1,9 @@
 # Decisions needed from Nikhil
 
-Decisions 1–18 are accepted. #17 fixes the project/team permission vocabulary;
-#18 adopts the reviewed bounded X1–X9 candidate semantics. Affected contract
-integration, implementation and runtime acceptance remain separately gated.
+Decisions 1–18 and #20 are accepted. #17 fixes the project/team permission
+vocabulary; #18 adopts the reviewed bounded X1–X9 candidate semantics. #20
+settles only the bounded type-summary cap requirements direction. Affected
+contract integration, implementation and runtime acceptance remain separately gated.
 
 ## Open
 
@@ -17,6 +18,7 @@ Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn G
 
 ## Answered
 
+- **#20 (2026-10-29, in Paseo):** only fully compiled type count summaries (explicit `fields=[]`, at most 100 groups) may scan up to 100,000 inputs; ordinary views keep the 20,000 cap.
 - **#18 (2026-10-29, in Paseo):** adopted the reviewed fixed-permission authorization candidate (`c9f5f29d`); create, reparent and project moves are denied under the plugin until later slices.
 - **#16 — DECIDED (2026-10-29, Paseo, about 03:37 UTC):** Nikhil chose
   **Replace inherited workflows with qualified Plug CI (Recommended)**.
@@ -45,6 +47,43 @@ Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn G
   measured candidate, runtime acceptance or migration permission; failed historical
   latency, exact contract/compatibility, executable, real-host/200-agent, C7/R14
   and hosted CI gates remain open. #19 is not answered by this decision.
+
+- **#20 — DECIDED (2026-10-29, Paseo):** Nikhil answered **Allow 100k only
+  for fully compiled type count summaries (explicit fields=[], max 100 groups);
+  keep ordinary views at 20k (Recommended)**. This selects at most **100,000
+  authorized inputs only for fully compiled type count summaries**, **explicitly
+  present `fields=[]`**, **at most 100 groups**; **ordinary views retain 20,000**.
+  This amends the previous universal-20,000 requirements direction only within
+  those four bounds. See [A7](design.md#bounded-type-summary-cap-20) and the
+  [plan record](clean-room-plan.md#bounded-type-summary-cap-direction-20).
+
+  Exact answer: `/tmp/plug-swarm/observations/decision20-answer-20261029T0621Z.json`,
+  SHA-256 `da8ef4a6a6b4f9322abf9682901bd1acb56eda66e9d847b9a433be2e114b0cdc`.
+  Historical packet: `/tmp/plug-swarm/work/az-evidence-plan2-4l3kaz18/cap-resolution-packet.md`,
+  SHA-256 `c03e698e451df2d1f30c60ab3f90aabd02d3abd1f19a0956d01a176cff4b6113`.
+  Independent FINAL presentation review: `/tmp/plug-swarm/reviews/AZ-candidate-evidence-plan2.md`,
+  SHA-256 `08bf78caebba628f9cb805db71b06fbd5e4601039e5d07a28b030a2a234cf7aa`;
+  receipt `/tmp/plug-swarm/work/az-evidence-review2-vta96jbs/final-receipt.json`,
+  SHA-256 `4d526bc5217f1e9ebfab070ff5fa0acbc1c0a899ba12caac978c0161475ae7d0`.
+  That review predates this answer: its PASS WITH EXPLICIT HOLDS presentation
+  verdict, AZE-1 BLOCK/AZE-2 HOLD and unadopted alternatives remain historical.
+
+  Only the four bounds are selected. The packet's complete CAP-SUMMARY and TG
+  clauses are not adopted. Exact accounting/qualification, compiler eligibility,
+  type/group/result/elision/continuation, budget/refusal/error, caller/presence/
+  serializer and ordinary-continuation compatibility remain held; no omitted/
+  default/empty behavior or interface/version choice is settled. W1/W2/W3/W4/
+  W5/AZP-1 exact integration and independent acceptance remain separate.
+  No new permission, domain, API, implementation or execution is authorized.
+
+  #20 removes the unanswered cap choice but cannot close **AZE-1** alone.
+  Historical measured latency remains **FAIL/BLOCK**. Retain 100k, both engines,
+  both plans, all fractions, **36 cases**, **3 warmups + 20 measured samples
+  per case**, page and whole-Q5 p95 `<50 ms`, whole-Q6 count p95 `<250 ms`,
+  existing resource ceilings and runtime/real-host/proof/200-agent/C7/R14/hosted
+  CI/reviewed-cutover gates. R14 remains **UNVERIFIED**, both findings **OPEN**.
+  #17/#18 remain **DECIDED**; #19 remains **PENDING**, with no local-CI waiver.
+  Frozen D6/C0/PR15 bytes and earlier verdicts are not rebound to this successor.
 
 Nikhil accepted every recommendation below on 2026-10-29 ([recorded](review-2026-10-27.md#decisions)).
 

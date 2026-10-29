@@ -1,6 +1,6 @@
 # Plug: clean-room plan
 
-Status: proposal, 2026-10-29, re-planned for an agent swarm. This plan follows [design.md](design.md), the recorded [design review](review-2026-10-27.md), and the [decision ledger](decisions-needed.md). The #15 rerun passed correctness, corpus, Q5, closure and independent differential checks but failed unchanged latency targets. #17 fixed the vocabulary; #18 now adopts the reviewed bounded X1–X9 candidate semantics. Contract integration, implementation authorization and runtime/performance/hosted acceptance remain separate gates. Reviewable historical publication is complete; executable manifest validation, independent evidence review and hosted CI remain separate.
+Status: proposal, 2026-10-29, re-planned for an agent swarm. This plan follows [design.md](design.md), the recorded [design review](review-2026-10-27.md), and the [decision ledger](decisions-needed.md). The #15 rerun passed correctness, corpus, Q5, closure and independent differential checks but failed unchanged latency targets. #17 fixed the vocabulary; #18 now adopts the reviewed bounded X1–X9 candidate semantics. #20 settles the bounded type-summary cap requirements direction only. Contract integration, implementation authorization and runtime/performance/hosted acceptance remain separate gates. Reviewable historical publication is complete; executable manifest validation, independent evidence review and hosted CI remain separate.
 
 ## Completion contract
 
@@ -100,6 +100,39 @@ No candidate is measured or runtime accepted. Executable manifest validation,
 C7/R14, exact-head hosted CI, reviewed CI cutover and product
 data cutover remain separate gates; no historical rerun follows from validator
 repair alone. #18 authorizes no implementation, execution, migration or widening.
+
+### Bounded type-summary cap direction 20
+
+**#20 — DECIDED (2026-10-29, Paseo):** at most **100,000 authorized inputs
+only for fully compiled type count summaries**, with **explicitly present
+`fields=[]`**, **at most 100 groups**; **ordinary views retain 20,000**.
+The [A7 record](design.md#bounded-type-summary-cap-20) narrows the previous
+universal-20,000 requirements direction within those four bounds. The
+[answer ledger](decisions-needed.md#answered) binds the explicit answer and
+frozen packet/review/receipt. No other CAP-SUMMARY or TG clauses are adopted.
+
+Done for this source record means the selected requirements and held edges are
+consistent in all four sources, proven by their before/after inventory and
+D7's immutable FINAL receipt; source completion does not count as integrated
+contract acceptance, implementation or qualification. Exact candidate accounting/
+qualification, compiler eligibility, type/group/result/elision/continuation,
+budget/refusal/error, caller/presence/serializer and ordinary-continuation
+compatibility remain held. No omitted/default/empty behavior or interface/version
+choice is settled. W1/W2/W3/W4/W5/AZP-1 exact integration and independent review
+remain separate prerequisites. No new permission, domain, API, implementation
+or execution authority follows.
+
+#20 removes the unanswered cap choice and cannot close **AZE-1** by itself.
+Historical measured latency remains **FAIL/BLOCK**. Retain the 100k workload,
+both engines, both plans, all fractions, all **36 cases**, **3 warmups + 20
+measured samples per case**, page and whole-Q5 p95 `<50 ms`, and whole-Q6
+count p95 `<250 ms`; no smaller population, omitted dense case or cap-error
+response supplies positive dense Q6 evidence. Existing resource ceilings,
+runtime/real-host/proof/200-agent, C7/R14, exact-head hosted CI and reviewed
+cutover gates remain separate. R14 behavioral verification remains
+**UNVERIFIED**, both findings **OPEN**. #17/#18 remain **DECIDED**; #19 remains
+**PENDING**, with no local-CI waiver. Frozen D6, C0 and published PR15 pins
+retain their original bytes and verdicts.
 
 ### Swarm decisions and infrastructure facts
 
