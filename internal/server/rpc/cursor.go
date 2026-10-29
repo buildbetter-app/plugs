@@ -182,8 +182,13 @@ func (c *pageCodec) page(call Call, p serviceParams, previous *service.PagePosit
 	if pageIncarnation == "" {
 		pageIncarnation = c.incarnation
 	}
-	if previous != nil && (pageIncarnation != previous.AsOf.Incarnation || !sameRevision(value.AsOf.Revision, previous.AsOf.Revision)) {
-		return nil, fmt.Errorf("service changed the pinned page snapshot")
+	if pageIncarnation != c.incarnation {
+		return nil, fmt.Errorf("service returned another page incarnation")
+	}
+	// Ready is a live list: the signed offset continues in current data and
+	// each page reports its own revision. Only history pins the prior snapshot.
+	if previous != nil && call.Method == "history.query" && !sameRevision(value.AsOf.Revision, previous.AsOf.Revision) {
+		return nil, fmt.Errorf("service changed the pinned history snapshot")
 	}
 	out := pageJSON(value)
 	if value.Next == nil {

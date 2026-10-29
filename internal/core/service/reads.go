@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest) (GetResult, error) {
@@ -77,16 +78,21 @@ func matchesFilter(row storedBead, project string, filter *Filter) bool {
 		(len(filter.Resources) == 0 || slices.Contains(filter.Resources, row.doc.ID))
 }
 
-func pageResult(items []Bead, limit int, position *PagePosition, asOf AsOf) (BeadPage, error) {
+func pageResult(items []Bead, limit int, position *PagePosition, asOf AsOf, pinned bool) (BeadPage, error) {
 	offset := 0
 	if position != nil {
-		if position.Offset < 0 || position.Offset > len(items) || position.AsOf.Incarnation != asOf.Incarnation || position.AsOf.Revision.String() != asOf.Revision.String() {
+		if position.AsOf.Incarnation != asOf.Incarnation {
+			return BeadPage{}, mapped(driver.ErrIncarnationChanged{From: position.AsOf.Incarnation, To: asOf.Incarnation})
+		}
+		if position.Offset < 0 || position.Offset > scanLimit || (pinned && (position.Offset > len(items) || position.AsOf.Revision.String() != asOf.Revision.String())) {
 			return BeadPage{}, failure("cursor_invalid", "page position does not match the snapshot")
 		}
 		offset = position.Offset
 	}
 	end := min(offset+limit, len(items))
-	page := BeadPage{Items: items[offset:end], AsOf: asOf}
+	// A live list may shrink below its previous cutoff. Its tail is then an
+	// empty page, while snapshot history retains strict position validation.
+	page := BeadPage{Items: items[min(offset, len(items)):end], AsOf: asOf}
 	if end < len(items) {
 		page.Next = &PagePosition{Offset: end, AsOf: asOf}
 	}
@@ -108,11 +114,7 @@ func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyReq
 	if err := validatePosition(req.Position); err != nil {
 		return BeadPage{}, err
 	}
-	var asOf *AsOf
-	if req.Position != nil {
-		asOf = &req.Position.AsOf
-	}
-	r, err := s.reader(ctx, by, asOf)
+	r, err := s.reader(ctx, by, nil)
 	if err != nil {
 		return BeadPage{}, err
 	}
@@ -159,7 +161,7 @@ func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyReq
 		return BeadPage{}, err
 	}
 	view := r.Snapshot()
-	return pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation})
+	return pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, false)
 }
 
 func (s *Service) History(ctx context.Context, by model.PrincipalRef, req HistoryRequest) (BeadPage, error) {
@@ -201,5 +203,5 @@ func (s *Service) History(ctx context.Context, by model.PrincipalRef, req Histor
 		return BeadPage{}, err
 	}
 	view := r.Snapshot()
-	return pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation})
+	return pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, true)
 }

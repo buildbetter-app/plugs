@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -73,51 +74,95 @@ func namedRef(ref model.Ref) error {
 	return nil
 }
 
-func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method string, cs model.ChangeSet, meta model.WriteMeta) (model.Commit, error) {
+func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method string, cs model.ChangeSet, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
 	if err := s.admit(ctx, by); err != nil {
-		return model.Commit{}, err
+		return port.WriteOutcome{}, err
 	}
 	if strings.TrimSpace(meta.Project) == "" {
-		return model.Commit{}, failure("project_required", "supply a project")
+		return port.WriteOutcome{}, failure("project_required", "supply a project")
 	}
 	meta.Method = method
+	if writer, ok := s.writer.(port.OutcomeWriter); ok {
+		v, err := writer.ApplyWithOutcome(ctx, by, cs, meta)
+		return v, mapped(err)
+	}
+	if outcomeRequired {
+		return port.WriteOutcome{}, failure("internal_error", "writer does not supply transient write outcomes")
+	}
+	// Legacy methods keep model.Writer compatibility. An outcome-aware caller
+	// must use an actual OutcomeWriter; replay is never inferred from a commit.
 	v, err := s.writer.Apply(ctx, by, cs, meta)
-	return v, mapped(err)
+	return port.WriteOutcome{Commit: v}, mapped(err)
 }
 
 func (s *Service) Create(ctx context.Context, by model.PrincipalRef, req CreateRequest, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.create(ctx, by, req, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) CreateWithOutcome(ctx context.Context, by model.PrincipalRef, req CreateRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.create(ctx, by, req, meta, true)
+}
+
+func (s *Service) create(ctx context.Context, by model.PrincipalRef, req CreateRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
 	if req.Type == "" || req.Fields == nil {
-		return model.Commit{}, failure("invalid_params", "type and fields are required")
+		return port.WriteOutcome{}, failure("invalid_params", "type and fields are required")
 	}
 	if req.Parent != nil {
-		return model.Commit{}, failure("invalid_params", "parent creation is not supported by this slice")
+		return port.WriteOutcome{}, failure("invalid_params", "parent creation is not supported by this slice")
 	}
 	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: req.Type, Fields: req.Fields, Project: meta.Project}}}}
-	return s.apply(ctx, by, "bead.create", cs, meta)
+	return s.apply(ctx, by, "bead.create", cs, meta, outcomeRequired)
 }
 
 func (s *Service) Update(ctx context.Context, by model.PrincipalRef, req UpdateRequest, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.update(ctx, by, req, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) UpdateWithOutcome(ctx context.Context, by model.PrincipalRef, req UpdateRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.update(ctx, by, req, meta, true)
+}
+
+func (s *Service) update(ctx context.Context, by model.PrincipalRef, req UpdateRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
 	if err := namedRef(req.ID); err != nil {
-		return model.Commit{}, err
+		return port.WriteOutcome{}, err
 	}
 	if len(req.Fields) == 0 {
-		return model.Commit{}, failure("invalid_params", "update requires fields")
+		return port.WriteOutcome{}, failure("invalid_params", "update requires fields")
 	}
 	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: req.ID, Fields: req.Fields}}}, Expect: req.Expect}
-	return s.apply(ctx, by, "bead.update", cs, meta)
+	return s.apply(ctx, by, "bead.update", cs, meta, outcomeRequired)
 }
 
 func (s *Service) Claim(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta) (ClaimResult, error) {
-	if err := namedRef(req.ID); err != nil {
+	v, err := s.claim(ctx, by, req, meta, false)
+	if err != nil {
 		return ClaimResult{}, err
+	}
+	return claimResult(v.Commit)
+}
+
+func (s *Service) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	v, err := s.claim(ctx, by, req, meta, true)
+	if err != nil {
+		return port.WriteOutcome{}, err
+	}
+	_, err = claimResult(v.Commit)
+	return v, err
+}
+
+func (s *Service) claim(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	if err := namedRef(req.ID); err != nil {
+		return port.WriteOutcome{}, err
 	}
 	// Slot normalization belongs after the pipeline's idempotency lookup. This
 	// stable request replays even after the current bead has changed status.
 	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: req.ID, Fields: map[string]any{}}}}, Expect: req.Expect}
-	v, err := s.apply(ctx, by, "bead.claim", cs, meta)
-	if err != nil {
-		return ClaimResult{}, err
-	}
+	return s.apply(ctx, by, "bead.claim", cs, meta, outcomeRequired)
+}
+
+func claimResult(v model.Commit) (ClaimResult, error) {
 	if v.LeaseExpiresAt == nil || v.LeaseTtlMs == nil {
 		return ClaimResult{}, failure("internal_error", "claim commit is missing its durable lease result")
 	}
@@ -137,25 +182,43 @@ func durationMS(n model.Natural) (time.Duration, error) {
 }
 
 func (s *Service) Comment(ctx context.Context, by model.PrincipalRef, req CommentRequest, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.comment(ctx, by, req, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, req CommentRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.comment(ctx, by, req, meta, true)
+}
+
+func (s *Service) comment(ctx context.Context, by model.PrincipalRef, req CommentRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
 	if err := namedRef(req.ID); err != nil {
-		return model.Commit{}, err
+		return port.WriteOutcome{}, err
 	}
 	if strings.TrimSpace(req.Body) == "" {
-		return model.Commit{}, failure("invalid_params", "comment body must not be empty")
+		return port.WriteOutcome{}, failure("invalid_params", "comment body must not be empty")
 	}
 	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpComment, Comment: &model.CommentOp{Target: req.ID, Body: req.Body}}}, Expect: req.Expect}
-	return s.apply(ctx, by, "bead.comment", cs, meta)
+	return s.apply(ctx, by, "bead.comment", cs, meta, outcomeRequired)
 }
 
 func (s *Service) Close(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.close(ctx, by, req, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.close(ctx, by, req, meta, true)
+}
+
+func (s *Service) close(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
 	if err := namedRef(req.ID); err != nil {
-		return model.Commit{}, err
+		return port.WriteOutcome{}, err
 	}
 	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: req.ID, Fields: map[string]any{}}}}, Expect: req.Expect}
 	if req.Reason != "" {
 		cs.Ops = append(cs.Ops, model.Op{Kind: model.OpComment, Comment: &model.CommentOp{Target: req.ID, Body: req.Reason}})
 	}
-	return s.apply(ctx, by, "bead.close", cs, meta)
+	return s.apply(ctx, by, "bead.close", cs, meta, outcomeRequired)
 }
 
 func (s *Service) reader(ctx context.Context, by model.PrincipalRef, asOf *AsOf) (driver.Reader, error) {
