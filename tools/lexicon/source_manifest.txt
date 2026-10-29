@@ -270,6 +270,10 @@ internal/integration/apikey/README.md
 internal/integration/apikey/compose.go
 internal/integration/apikey/fixture_test.go
 internal/integration/apikey/http_test.go
+internal/integration/apikeysql/BUILD.bazel
+internal/integration/apikeysql/README.md
+internal/integration/apikeysql/fixture_test.go
+internal/integration/apikeysql/http_sql_test.go
 internal/integration/audit/BUILD.bazel
 internal/integration/audit/README.md
 internal/integration/audit/integration_test.go
