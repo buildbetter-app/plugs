@@ -1,0 +1,7 @@
+module fixture.example/source
+
+go 1.26.5
+
+toolchain go1.26.10
+
+require github.com/buildbetter-app/plugs v0.0.0
