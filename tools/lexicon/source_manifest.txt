@@ -227,7 +227,11 @@ internal/core/service/service_test.go
 internal/core/service/types.go
 internal/doc.go
 internal/integration/postphase/BUILD.bazel
+internal/integration/postphase/README.md
+internal/integration/postphase/delivery_test.go
+internal/integration/postphase/native_test.go
 internal/integration/postphase/postphase_test.go
+internal/integration/postphase/receipts_test.go
 internal/plugins/authnapikey/BUILD.bazel
 internal/plugins/authnapikey/apikey.go
 internal/plugins/authnapikey/apikey_test.go

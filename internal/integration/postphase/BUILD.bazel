@@ -2,12 +2,17 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "postphase_test",
-    srcs = ["postphase_test.go"],
+    srcs = [
+        "delivery_test.go",
+        "native_test.go",
+        "postphase_test.go",
+        "receipts_test.go",
+    ],
     deps = [
         "//internal/core/events",
         "//internal/core/model",
         "//internal/core/pipeline",
-        "//internal/core/port",
+        "//internal/core/service",
         "//internal/server/events",
         "//internal/server/pluginhost",
         "//internal/storage/driver",
