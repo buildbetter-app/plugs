@@ -1,6 +1,6 @@
 # Authorization: a Cedar-style model?
 
-Analysis for Nikhil's question of 2026-10-28 (recorded in the [decision record](../../adr/0005-plug-design-decisions.md#decisions)). Revised the same day after a critic pass.
+Analysis for Nikhil's question of 2026-10-28 ([review, open question 1](review-2026-10-27.md#open-questions)). Revised the same day after a critic pass.
 
 **Answer.** Adopt the data contract now. Adopt Cedar if the spike passes. Your concern is the right one: Cedar does no I/O, so Plug has to plan every read a policy can trigger and every list it must filter. P4 and P50 already fix most of those reads. Write them down as a contract, accept only policies that compile onto it, and measure the list plans on Postgres and SQLite at 100,000 beads before changing P16. If Cedar is adopted, put it where the checked decision already points: **core hosts the Cedar evaluator and compiler, authorization plugins supply policies as data, and with no policy plugin nothing runs and every request is allowed** (option (v) below). Authorization stays optional, and no plugin has to rebuild core's data plane. If the spike fails, authorization is revisited altogether, leaning toward simple Linear-style team permissions (AZ1, decided 2026-10-28).
 
@@ -31,8 +31,8 @@ Only what bears on this decision:
 | Q1 | `bead.get`, `bead.transitions` | The bead's authorizer view, its ancestor IDs (about 10), the principal set, grants on those ancestors | **Easy.** About four indexed reads |
 | Q2 | Writes, `tx.apply` up to 1,000 ops | Q1 for each pre-image, and the post-image when a reparent or label change alters it | **Moderate.** One batched load; every fact joins the read set |
 | Q3 | Mutator-set fields, deputies | Q2's slice plus context (field, setter, root principal) | **Easy for Cedar**, awkward for relations |
-| Q4 | `bead.ready`: ordered, limited, cursored | The ready predicate ([ready.go](../../../internal/storage/sqlbuild/ready.go)) **and** read permission | **Hard.** Permission is a predicate in the same SQL |
-| Q5 | `bead.claimNext` | Q4, then `claim` re-checked on the locked candidate ([claim.go](../../../internal/storage/issueops/claim.go)) | **Hard** |
+| Q4 | `bead.ready`: ordered, limited, cursored | The ready predicate ([ready.go](https://github.com/buildbetter-app/plugs/blob/9d6fff760b7a314b476539198504d77ce0959656/internal/storage/sqlbuild/ready.go)) **and** read permission | **Hard.** Permission is a predicate in the same SQL |
+| Q5 | `bead.claimNext` | Q4, then `claim` re-checked on the locked candidate ([claim.go](https://github.com/buildbetter-app/plugs/blob/9d6fff760b7a314b476539198504d77ce0959656/internal/storage/issueops/claim.go)) | **Hard** |
 | Q6 | `view.run` with `groups[].count` | Counts over visible rows only ("restricted items leave no trace", [A7](design.md#a7-collaboration-and-ui)) | **Hard.** Touches every visible row |
 | Q7 | Watches: 500 at 50 writes/s | Before and after visibility per subscriber | **Moderate.** Route by scope, then a compiled filter in memory |
 | Q8 | `history.*`, as-of lists | Read permission **now** (decided) | **Easy** |
@@ -94,7 +94,7 @@ Moving the filter into SQL does not remove the `k / f` cost by itself; it depend
 
 At `N = 100,000` the crossover is near `f²N = 10k`, about 7% visible (back-of-envelope). Core estimates `V` from per-scope descendant counts kept with the closure. The plans need these rules:
 
-- **Stored sort keys only.** Today's default hybrid order is a CASE around a moving 48-hour cutoff ([ready.go](../../../internal/storage/sqlbuild/ready.go)), which no index can return in order. Store the bucket and rank as columns, and have a background job move beads across the cutoff. Ordering then lags by the job interval; permissions do not.
+- **Stored sort keys only.** Today's default hybrid order is a CASE around a moving 48-hour cutoff ([ready.go](https://github.com/buildbetter-app/plugs/blob/9d6fff760b7a314b476539198504d77ce0959656/internal/storage/sqlbuild/ready.go)), which no index can return in order. Store the bucket and rank as columns, and have a background job move beads across the cutoff. Ordering then lags by the job interval; permissions do not.
 - **Indexed attributes.** A6 keeps bead fields in JSON record bodies ([A6](design.md#a6-storage-and-versioning)). The authorizer view and sort keys become generated columns or expression indexes on Postgres and SQLite ([Postgres](https://www.postgresql.org/docs/current/indexes-expressional.html), [SQLite](https://www.sqlite.org/expridx.html)). The memory driver has no planner and implements both shapes in Go.
 - **Grouped counts** touch every visible row: 100,000 at `f = 100%`. The 50 ms p95 target applies to pages. The spike sets a separate target for counts.
 - **The 20,000-candidate cap** ([A7](design.md#a7-collaboration-and-ui)) counts rows **after** authorization. A cap counted before it would tell a principal how many hidden beads exist. Statement timeouts bound the scan.
@@ -106,7 +106,7 @@ A reparent, or a label change that sets `restricted`, rewrites closure and cut-c
 ### Compile rules
 
 - **Compile at plan time, bind at request time.** Compile with the principal symbolic, then bind the principal set per request. A residual computed for a concrete principal has that principal's ID folded in, so reusing it for someone else silently grants their access ([cedar-java#372](https://github.com/cedar-policy/cedar-java/pull/372)). That a residual computed with the principal unknown stays safe to reuse is **inference**, not a claim of the PR. Plug's compiler must guarantee it, and the differential test enforces it.
-- **Grant attributes appear only inside `containsAny` or as the right side of `in`.** In SQL they are joins, never `IN` lists; today's code splits `IN` lists into batches of 200 ([sqlbuild.go](../../../internal/storage/sqlbuild/sqlbuild.go)).
+- **Grant attributes appear only inside `containsAny` or as the right side of `in`.** In SQL they are joins, never `IN` lists; today's code splits `IN` lists into batches of 200 ([sqlbuild.go](https://github.com/buildbetter-app/plugs/blob/9d6fff760b7a314b476539198504d77ce0959656/internal/storage/sqlbuild/sqlbuild.go)).
 - **Level 1 or 2, current state only.** As-of reads use current policy, as decided.
 
 ## The contract, and who owns it
@@ -232,7 +232,7 @@ If the recommendation is taken:
 | AZ2 | How to decide P16 | (a) the narrowed spike above; (b) decide now | **(a)**, with the stated fallback |
 | AZ5 | How the chain combines (P28a, open question 2) | (a) the first decision wins, as decided; (b) any link may deny or append context, only the end allows, no decision means deny; (c) one Cedar evaluation over merged fragments | **(b) with (c)** for Cedar policies. Under (a), an earlier Allow skips a later forbid, the guardrail Cedar is built around |
 | AZ6 | Policy errors | (a) Cedar's default: skip; (b) any error denies; (c) an erroring forbid denies, an erroring permit is skipped, alerted and reported by `authz.verify` | **(c).** Only an erroring forbid is a safety risk; (b) lets one faulty permit from one plugin deny what other plugins allow. Apply-time and ontology revalidation make errors rare |
-| AZ8 | "Fixed in v1: role-scoped workflow permissions" ([review](../../adr/0005-plug-design-decisions.md#decisions)) against "out of scope for v1" ([A3](design.md#a3-ontology-and-enforcement)) | (a) included in v1; (b) fixed, not customizable | Needs your reading |
+| AZ8 | "Fixed in v1: role-scoped workflow permissions" ([review](review-2026-10-27.md#decisions)) against "out of scope for v1" ([A3](design.md#a3-ontology-and-enforcement)) | (a) included in v1; (b) fixed, not customizable | Needs your reading |
 | AZ9 | The A3 `permission` guard, tied to AZ8 and P23b (tentative) | (a) stays in the fixed catalog and delegates to the chain, with a `transition` action and the target status in context; (b) removed in favor of a `transition` action; (c) stays a plain role check | **(a).** Keeps P23b's fixed catalog. With no authorization plugin it allows |
 
 ### Decide after the spike
@@ -246,7 +246,7 @@ If the recommendation is taken:
 
 ## Sources
 
-Repository (relative to this file): [decision record](../../adr/0005-plug-design-decisions.md#decisions), [design.md](design.md) (A2 to A7 and the decision table), [ready.go](../../../internal/storage/sqlbuild/ready.go) (hybrid order, lines 57 to 65), [sqlbuild.go](../../../internal/storage/sqlbuild/sqlbuild.go), [claim.go](../../../internal/storage/issueops/claim.go). Working research notes are outside the repository in `/tmp/plug-authz/`. On partial evaluation they are wrong: r1 says cedar-go has none, and r2 says its partial evaluator is internal only. This document relies on the cedar-go source instead.
+Repository (relative to this file): [review-2026-10-27.md](review-2026-10-27.md), [design.md](design.md) (A2 to A7 and the decision table), [working transcript intentionally not committed; decision record: review-2026-10-27.md](review-2026-10-27.md) ([05:05]), [ready.go](https://github.com/buildbetter-app/plugs/blob/9d6fff760b7a314b476539198504d77ce0959656/internal/storage/sqlbuild/ready.go) (hybrid order, lines 57 to 65), [sqlbuild.go](https://github.com/buildbetter-app/plugs/blob/9d6fff760b7a314b476539198504d77ce0959656/internal/storage/sqlbuild/sqlbuild.go), [claim.go](https://github.com/buildbetter-app/plugs/blob/9d6fff760b7a314b476539198504d77ce0959656/internal/storage/issueops/claim.go). Working research notes are outside the repository in `/tmp/plug-authz/`. On partial evaluation they are wrong: r1 says cedar-go has none, and r2 says its partial evaluator is internal only. This document relies on the cedar-go source instead.
 
 External sources are linked where they are used.
 
