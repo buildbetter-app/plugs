@@ -71,13 +71,13 @@ func TestManualApprovalCountsDistinctSponsorResolvedHumans(t *testing.T) {
 
 func TestManualApprovalRefusesAnonymousMultiApproval(t *testing.T) {
 	e := manualGateEffective(t, 2)
-	_, err := e.ApproveGate(gateState(), model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, false)
+	_, err := e.ApproveGate(gateState(), model.PrincipalRef{Kind: "anonymous"}, false)
 	if got := errorCode(t, err); got != "forbidden" {
 		t.Fatalf("anonymous multi-approval code = %q", got)
 	}
 
 	one := manualGateEffective(t, 1)
-	decision, err := one.ApproveGate(gateState(), model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, false)
+	decision, err := one.ApproveGate(gateState(), model.PrincipalRef{Kind: "anonymous"}, false)
 	if err != nil || decision.State != GateStateResolved || decision.Approvals != 1 {
 		t.Fatalf("single anonymous approval: %+v, %v", decision, err)
 	}

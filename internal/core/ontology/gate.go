@@ -332,7 +332,11 @@ func principalChain(principal model.PrincipalRef) ([]model.PrincipalRef, error) 
 			return nil, fmt.Errorf("cyclic principal sponsor")
 		}
 		seen[current] = true
-		if current.Kind == "" || current.ID == "" {
+		// Anonymous is the one principal kind whose wire identity may have an
+		// empty ID; it is canonicalized below so client labels cannot create
+		// additional approval identities. Authenticated and internal principals
+		// still need a stable ID for counting.
+		if current.Kind == "" || (current.ID == "" && current.Kind != "anonymous") {
 			return nil, fmt.Errorf("principal kind and id are required")
 		}
 		switch current.Kind {
