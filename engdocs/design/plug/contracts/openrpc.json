@@ -4986,7 +4986,7 @@
     {
       "name": "session.open",
       "summary": "Open a live collaboration session.",
-      "description": "Open a live collaboration session.",
+      "description": "Open a caller-owned live collaboration session. Its idle expiry is bounded to five minutes after opening or the latest successful presence.set. Disconnects are reclaimed by expiry; one-shot CLI calls open no session. After reconnect or failover, open a new session and recreate watches using their last acknowledged cursors. Existing cursor expiry, reset and incarnation-gap rules apply.",
       "tags": [
         {
           "name": "collab"
@@ -5033,9 +5033,66 @@
       "x-stability": "v1"
     },
     {
+      "name": "session.close",
+      "summary": "Close a live collaboration session.",
+      "description": "Close the caller-owned session and release its presence, watches and watch quota. An unknown, expired, already closed or unreadable session returns not_found. Session closure changes only ephemeral collaboration state and returns no changeset or revision.",
+      "tags": [
+        {
+          "name": "collab"
+        }
+      ],
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "sessionId",
+          "schema": {
+            "type": "string"
+          },
+          "required": true
+        },
+        {
+          "name": "_meta",
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "description": "Transport metadata; not an application actor field."
+        }
+      ],
+      "result": {
+        "name": "result",
+        "description": "The caller-owned session and its watches are closed.",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "closed": {
+              "type": "boolean",
+              "const": true
+            }
+          },
+          "required": [
+            "closed"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/Forbidden"
+        }
+      ],
+      "x-effect": "read",
+      "x-idempotency": "none",
+      "x-permission": "read",
+      "x-agent-core": false,
+      "x-stability": "v1"
+    },
+    {
       "name": "presence.set",
       "summary": "Update a session presence record.",
-      "description": "Update a session presence record.",
+      "description": "Update a caller-owned live session presence record and renew its idle expiry to no more than five minutes after this successful update. Unknown, expired, closed or unreadable sessions return not_found; a disconnected client must session.open again and resume watches from their last acknowledged cursors.",
       "tags": [
         {
           "name": "collab"
@@ -11386,10 +11443,10 @@
     "format": "plug-method-registry/1",
     "status": "bounded-contract-artifact",
     "purpose": "Human-maintained bounded contract artifact, read independently of methods at validation time; validates the closed method inventory, descriptor fields and wire inventories before an implementation generator exists.",
-    "methodCount": 80,
+    "methodCount": 81,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
-    "nameSha256": "355deea070d9682db79d7993e9f284ac911c0a2a35374cc1d5b60eede071f874",
-    "descriptorSha256": "88d77831d2da23890dd8fd226aaea5b07b812a83baa5c59f67b92ed458a1795e",
+    "nameSha256": "925afc30e52e4659b24e34f311698c96930f215ba460fee7c1634634d1ff04ff",
+    "descriptorSha256": "c9660540601a1a646c0e909ef486947a879c18fcfc900b65bad6193a2db59d64",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -14670,6 +14727,47 @@
           "#/components/errors/Forbidden",
           "#/components/errors/TooManySessions",
           "#/components/errors/RateLimited"
+        ]
+      },
+      {
+        "name": "session.close",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "closed": {
+              "type": "boolean",
+              "const": true
+            }
+          },
+          "required": [
+            "closed"
+          ],
+          "additionalProperties": false
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden"
         ]
       },
       {
