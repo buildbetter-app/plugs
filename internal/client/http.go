@@ -235,7 +235,8 @@ func (h *HTTPTransport) admissionError(body []byte) *wire.Error {
 		return nil
 	}
 	envelope, ok := value.(map[string]any)
-	if !ok || len(envelope) != 3 || envelope["jsonrpc"] != "2.0" || envelope["id"] != nil || envelope["error"] == nil {
+	_, hasID := envelope["id"]
+	if !ok || len(envelope) != 3 || !hasID || envelope["jsonrpc"] != "2.0" || envelope["id"] != nil || envelope["error"] == nil {
 		return nil
 	}
 	raw, _ := json.Marshal(envelope["error"])

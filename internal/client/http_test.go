@@ -236,3 +236,43 @@ func TestHTTPCanonicalAdmissionErrorsKeepTypedCatalogData(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPRejectsMalformedAdmissionEnvelopeAndUntrustedTLS(t *testing.T) {
+	cat, _ := wire.DefaultCatalog()
+	remote, _ := json.Marshal(cat.NewError("unauthenticated", "", nil))
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","other":null,"error":` + string(remote) + `}`,
+		`{"jsonrpc":"2.0","id":"plug-1","error":` + string(remote) + `}`,
+		`{"jsonrpc":"2.0","id":null,"result":{},"error":` + string(remote) + `}`,
+		`{"jsonrpc":"2.0","id":null,"error":{"code":-32001,"message":"bad","data":{"code":"unauthenticated","retryable":true}}}`,
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, body)
+		}))
+		transport, err := NewHTTP(HTTPConfig{Server: server.URL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = transport.RoundTrip(context.Background(), []byte(`{}`))
+		transport.Close()
+		server.Close()
+		var typed *wire.Error
+		if err == nil || errors.As(err, &typed) {
+			t.Fatal("malformed HTTP error was admitted as a canonical RPC error")
+		}
+	}
+	var requests atomic.Int64
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1) }))
+	defer server.Close()
+	transport, err := NewHTTP(HTTPConfig{Server: server.URL, Token: "private-credential"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.Close()
+	_, err = transport.RoundTrip(context.Background(), []byte(`{}`))
+	if err == nil || requests.Load() != 0 || strings.Contains(err.Error(), "private-credential") {
+		t.Fatal("untrusted TLS received bearer request or exposed a credential")
+	}
+}

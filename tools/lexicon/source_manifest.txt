@@ -62,6 +62,8 @@ SKELETON.md
 cmd/plug/BUILD.bazel
 cmd/plug/integration_test.go
 cmd/plug/main.go
+cmd/plug/remote_fixture_test.go
+cmd/plug/remote_test.go
 doc.go
 engdocs/adr/0005-plug-design-decisions.md
 engdocs/design/plug/adversarial-review-2026-10-28.md
