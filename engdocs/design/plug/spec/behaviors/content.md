@@ -2,19 +2,30 @@
 
 ## B09 — hash IDs and adaptive collision handling
 
-**Behavior.** The issue allocator's hash mode emits `prefix-<base36>` with a
-requested length from 3 through 8. Its SHA-256 input is
-`title|description|creator|timestamp.UnixNano|nonce`; the allocator tries
-lengths and nonces against existing IDs and refuses only after the configured
-collision budget is exhausted. The separate `internal/types.GenerateHashID`
-helper returns a full hexadecimal SHA-256 over title, description,
-`RFC3339Nano` creation time, and workspace ID; it is not the allocator's hash
-contract.
+**Behavior.** The shared hash allocator emits `prefix-<base36>` from the
+SHA-256 input `title|description|creator|timestamp.UnixNano|nonce`.
+`internal/idgen.GenerateHashID` has explicit digest byte widths for requested
+lengths 3 through 8; any other requested length uses its three-byte fallback,
+while `EncodeBase36` still pads or truncates to the exact requested width. The
+allocator contract is path-specific: the legacy `issueops` table allocator
+hard-caps its maximum tried length at 8 (the documented 3-through-8 range),
+while the domain `mintTopLevelID` path reads the configured
+`max_hash_length` and tries through that maximum (default 8;
+`docs/core-concepts/adaptive-ids.md` pins an example of 10).
+`max_collision_prob` chooses the birthday-paradox starting length; it is not a
+retry budget. At each tried
+length, the paths make exactly ten nonce attempts (`0` through `9`) before
+advancing to the next length, and refuse after the final length is exhausted.
+The separate `internal/types.GenerateHashID` helper returns a full hexadecimal
+SHA-256 over title, description, `RFC3339Nano` creation time, and workspace ID;
+it is not the allocator's hash contract.
 
 **Beads implementation.** Allocator: `internal/idgen/hash.go:EncodeBase36`,
-`GenerateHashID`; `internal/storage/issueops/helpers.go:GenerateIssueIDInTable`,
-`GetAdaptiveIDLengthTx`; `internal/storage/domain/issue.go:mintTopLevelID`.
-Separate helper: `internal/types/id_generator.go:GenerateHashID`.
+`GenerateHashID`; legacy path `internal/storage/issueops/helpers.go:
+GenerateIssueIDInTable`, `GetAdaptiveIDLengthTx`, `GetAdaptiveConfigTx`; domain
+path `internal/storage/domain/issue.go:mintTopLevelID`,
+`internal/storage/domain/db/config.go:GetAdaptiveIDConfig`. Separate helper:
+`internal/types/id_generator.go:GenerateHashID`.
 
 **Pinning tests.** Allocator: `internal/idgen/hash_test.go:
 TestGenerateHashIDMatchesJiraVector`; `internal/storage/dolt/store_unit_test.go:
@@ -24,18 +35,25 @@ TestCreateIssueCommitsInitialRelationalData`, and
 Separate helper: `internal/types/id_generator_test.go:
 TestGenerateHashID_Deterministic`, `TestGenerateHashID_DifferentInputs`.
 
-**Edge cases.** For the allocator, unsupported lengths use the documented
-fallback; base36 is zero-padded/truncated to the exact length. Existing
-imported IDs, explicit prefixes, and collisions between rows in one batch must
-be considered; a creator, timestamp, or nonce change changes its digest. The
-separate helper has no creator or nonce and is classified independently.
+**Edge cases.** For the allocator, unsupported lengths use the three-byte
+fallback but still produce the requested base36 width. Thus the domain path
+can try lengths 9 and 10 when `max_hash_length=10`, with candidates derived
+from only those three digest bytes; the legacy path stops at 8 even when its
+configuration is higher. Existing imported IDs, explicit prefixes, and
+collisions between rows in one batch must be considered; a creator, timestamp,
+or nonce change changes its digest. The separate helper has no creator or nonce
+and is classified independently.
 
-**Plug disposition.** **Keep** the allocator's byte-identical behavior (ported
-utility under P1), preserving prefix, hash/counter mode and adaptive settings
-across restore (A1/P44). A card additionally proves no generated hash
-collides with a restored ID. The `internal/types.GenerateHashID` helper is a
-separate legacy utility, not allocator evidence; its own golden is deferred
-until a caller requires that helper's behavior.
+**Plug disposition.** **Deviate from the legacy clamp:** Plug's single
+allocator contract follows the domain path's configured maximum, including the
+pinned `max_hash_length=10` example, and preserves that adaptive setting across
+restore (A1/P44). It does not promise byte-identical behavior with the legacy
+issueops/Dolt allocator above length 8; for lengths 3 through 8 it keeps the
+copied `idgen` encoding and the fixed ten-nonce retry semantics. A card
+additionally proves no generated hash collides with a restored ID. The
+`internal/types.GenerateHashID` helper is a separate legacy utility, not
+allocator evidence; its own golden is deferred until a caller requires that
+helper's behavior.
 
 ## B10 — hierarchical child IDs and counters
 
