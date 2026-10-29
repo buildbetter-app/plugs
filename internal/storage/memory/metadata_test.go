@@ -114,10 +114,34 @@ func TestResponseFinalizerFencedAndAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := model.RefByID("pl-response", model.Natural64(0))
-	h := driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "user", ID: "u"}, Method: "bead.create", IdempotencyKey: "key", RequestHash: "hash", Response: model.Commit{Results: []model.OpResult{{Ref: ref}}, Warnings: []model.Warning{{Code: "subscriber_skipped", Message: "initial"}}}}
+	h := driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "user", ID: "u"}, Method: "bead.create", IdempotencyKey: "key", RequestHash: "hash", ResponsePending: true, Response: model.Commit{Results: []model.OpResult{{Ref: ref}}, Warnings: []model.Warning{{Code: "subscriber_skipped", Message: "initial"}}}}
 	entry, err := conformance.Seed(ctx, s, lease, h, []conformance.FixtureChange{{Ref: ref, Kind: "test", Op: model.OpCreate, Body: []byte(`{}`)}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	meta, _ := s.Meta(ctx)
+	pinned, err := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned.Close()
+	before, err := pinned.IdempotencyByKey(ctx, "user:u", "", h.Method, h.IdempotencyKey)
+	if err != nil || before == nil || !before.ResponsePending {
+		t.Fatalf("initial pending response=%+v %v", before, err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	// Cancellation during serialization must be checked again before the
+	// pending bit and warning outcome are published together.
+	interrupted := []model.Warning{{Code: "post_subscriber_failed", Details: map[string]any{"cancel": cancelOnMarshal{cancel}}}}
+	if err := s.FinalizeResponse(cancelled, lease, "user:u", "", h.Method, h.IdempotencyKey, entry.Revision, interrupted); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled finalization=%v", err)
+	}
+	invalid := []model.Warning{{Code: "post_subscriber_failed", Details: map[string]any{"invalid": make(chan int)}}}
+	if err := s.FinalizeResponse(ctx, lease, "user:u", "", h.Method, h.IdempotencyKey, entry.Revision, invalid); err == nil {
+		t.Fatal("invalid warning outcome accepted")
+	}
+	if err := s.FinalizeResponse(ctx, lease, "user:u", "", h.Method, h.IdempotencyKey, model.Natural64(2), nil); !errors.Is(err, driver.ErrConflict) {
+		t.Fatalf("wrong finalization revision=%v", err)
 	}
 	other := New()
 	defer other.Close()
@@ -140,12 +164,11 @@ func TestResponseFinalizerFencedAndAtomic(t *testing.T) {
 	if err := s.FinalizeResponse(ctx, lease, "user:u", "", "bead.create", "key", entry.Revision, warnings); !errors.As(err, &fenced) {
 		t.Fatalf("stale finalize=%v", err)
 	}
-	meta, _ := s.Meta(ctx)
 	r, _ := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
 	defer r.Close()
 	cached, _ := r.IdempotencyByKey(ctx, "user:u", "", "bead.create", "key")
-	if len(cached.Commit.Warnings) != 1 {
-		t.Fatal("fenced finalize published warnings")
+	if !reflect.DeepEqual(cached, before) {
+		t.Fatalf("failed finalization changed pending receipt: %+v", cached)
 	}
 	if err := s.FinalizeResponse(ctx, next, "user:u", "", "bead.create", "key", entry.Revision, warnings); err != nil {
 		t.Fatal(err)
@@ -153,8 +176,12 @@ func TestResponseFinalizerFencedAndAtomic(t *testing.T) {
 	r, _ = s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
 	defer r.Close()
 	cached, _ = r.IdempotencyByKey(ctx, "user:u", "", "bead.create", "key")
-	if len(cached.Commit.Warnings) != 2 || cached.Commit.Warnings[0].Message != "initial" || cached.Commit.Warnings[1].Message != "post" {
+	if cached.ResponsePending || len(cached.Commit.Warnings) != 2 || cached.Commit.Warnings[0].Message != "initial" || cached.Commit.Warnings[1].Message != "post" {
 		t.Fatalf("final response=%+v", cached)
+	}
+	old, err := pinned.IdempotencyByKey(ctx, "user:u", "", h.Method, h.IdempotencyKey)
+	if err != nil || !reflect.DeepEqual(old, before) {
+		t.Fatalf("takeover finalization changed pinned pending receipt: %+v %v", old, err)
 	}
 	if err := s.FinalizeResponse(ctx, next, "user:u", "", "missing", "key", entry.Revision, nil); !errors.Is(err, driver.ErrNotFound) {
 		t.Fatalf("missing scope=%v", err)
@@ -163,6 +190,13 @@ func TestResponseFinalizerFencedAndAtomic(t *testing.T) {
 	if newMeta.Head.String() != meta.Head.String() {
 		t.Fatal("finalizer changed graph head")
 	}
+}
+
+type cancelOnMarshal struct{ cancel context.CancelFunc }
+
+func (value cancelOnMarshal) MarshalJSON() ([]byte, error) {
+	value.cancel()
+	return []byte(`"cancelled"`), nil
 }
 
 func TestOrdinaryResponsePreservesUnchangedRowRevision(t *testing.T) {
