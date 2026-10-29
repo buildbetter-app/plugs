@@ -32,7 +32,22 @@ func historyGone(err error) error {
 	if errors.As(err, &truncatedPtr) && truncatedPtr != nil {
 		return &model.Error{Data: model.ErrorData{Code: "history_gone", Details: map[string]any{"floor": truncatedPtr.Floor}}}
 	}
+	var future driver.ErrFutureRevision
+	if errors.As(err, &future) {
+		return futureHistoryNotFound(future)
+	}
+	var futurePtr *driver.ErrFutureRevision
+	if errors.As(err, &futurePtr) && futurePtr != nil {
+		return futureHistoryNotFound(*futurePtr)
+	}
 	return mapped(err)
+}
+
+func futureHistoryNotFound(future driver.ErrFutureRevision) error {
+	return &model.Error{Data: model.ErrorData{Code: "not_found", Details: map[string]any{
+		"requestedRevision": future.Requested,
+		"headRevision":      future.Head,
+	}}}
 }
 
 func (s *Service) HistoryGet(ctx context.Context, by model.PrincipalRef, req HistoryVersionRequest) (HistoryVersion, error) {

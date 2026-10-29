@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	serverevents "github.com/buildbetter-app/plugs/internal/server/events"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -75,4 +77,43 @@ func TestHistoryEventAndHealthReadsUsePinnedStorageWithoutMutation(t *testing.T)
 		t.Fatal(err)
 	}
 	_ = reader.Close()
+}
+
+func TestHistoryReadsMapFutureRevisionToNotFound(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	ref, created := create(t, f, "future revision")
+	storeMeta, err := f.store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := storeMeta.Head.Uint64()
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := model.Natural64(head + 1)
+
+	assertFutureHistoryNotFound := func(name string, err error) {
+		t.Helper()
+		var typed *model.Error
+		if !errors.As(err, &typed) || typed.Data.Code != "not_found" {
+			t.Fatalf("%s error=%T %v, want typed not_found", name, err, err)
+		}
+		if typed.Data.Details["requestedRevision"] != future || typed.Data.Details["headRevision"] != storeMeta.Head {
+			t.Fatalf("%s details=%#v, want requested=%s head=%s", name, typed.Data.Details, future, storeMeta.Head)
+		}
+	}
+
+	_, err = f.svc.HistoryGet(ctx, anonymous, HistoryVersionRequest{
+		Ref:  ref,
+		AsOf: AsOf{Revision: future, Incarnation: storeMeta.Incarnation},
+	})
+	assertFutureHistoryNotFound("history.get", err)
+
+	_, err = f.svc.HistoryDiff(ctx, anonymous, HistoryDiffRequest{
+		Ref:          ref,
+		FromRevision: created.Revision,
+		ToRevision:   future,
+	})
+	assertFutureHistoryNotFound("history.diff", err)
 }
