@@ -55,6 +55,12 @@ func (l link) Check(ctx context.Context, _ Slice, qs []CheckRequest) ([]Step, er
 	return ds, nil
 }
 func (l link) Filter(ListRequest) (FilterExpr, error) {
+	if l.panic {
+		panic("broken compiler")
+	}
+	if l.wait {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if l.checkOnly {
 		return FilterExpr{}, ErrCheckOnly
 	}
@@ -64,10 +70,17 @@ func (l link) Filter(ListRequest) (FilterExpr, error) {
 	if l.restriction != nil {
 		return *l.restriction, nil
 	}
-	if l.effect == Deny || l.effect == NoDecision {
+	if l.effect == Deny {
 		return FilterExpr{Op: False}, nil
 	}
 	return FilterExpr{Op: True}, nil
+}
+
+func (l link) AllowFilter(ListRequest) (FilterExpr, error) {
+	if l.effect == Allow {
+		return FilterExpr{Op: True}, nil
+	}
+	return FilterExpr{Op: False}, nil
 }
 
 type rule struct {
@@ -184,11 +197,21 @@ func TestChainBudgetAndInvalidContext(t *testing.T) {
 	if err != nil || ds[0].Effect != Deny {
 		t.Fatalf("invalid context allowed: %+v %v", ds, err)
 	}
+	q := request()
+	for _, broken := range []link{{panic: true}, {wait: true}} {
+		c = Chain{Namespace: namespace(), Links: []Link{broken}, Budget: time.Millisecond}
+		_, err := c.Compile(ListRequest{Caller: q.Caller, Action: q.Action, ResourceKind: q.Resource.Kind})
+		var e *Error
+		if !errors.As(err, &e) || e.Code != "authz_unavailable" || !e.Retryable {
+			t.Fatalf("compiler failure escaped deny/error boundary: %v", err)
+		}
+	}
 }
 
 func TestChainCompiledForbidAndIntersection(t *testing.T) {
 	for _, c := range []Chain{
 		{Namespace: namespace(), Rules: []RuleSet{permit()}},
+		{Namespace: namespace(), Links: []Link{link{effect: NoDecision}}, Rules: []RuleSet{permit()}},
 		{Namespace: namespace(), Rules: []RuleSet{permit(), forbid()}},
 		{Namespace: namespace(), Links: []Link{link{effect: NoDecision, restriction: &FilterExpr{Op: False}}}, Rules: []RuleSet{permit()}},
 		{Namespace: namespace(), Links: []Link{link{effect: Allow}}},
@@ -212,6 +235,11 @@ func TestChainCompiledForbidAndIntersection(t *testing.T) {
 	q := request()
 	if _, err := c.Compile(ListRequest{Caller: q.Caller, Action: q.Action, ResourceKind: q.Resource.Kind}); !errors.Is(err, ErrCheckOnly) {
 		t.Fatal("check-only filter must explicitly refuse")
+	}
+	c = Chain{Namespace: namespace(), Links: []Link{mutatingLink{}}}
+	q.Caller.Principal.Caveats = map[string]any{"actions": []string{"read"}}
+	if _, err := c.Compile(ListRequest{Caller: q.Caller, Action: q.Action, ResourceKind: q.Resource.Kind}); !errors.Is(err, ErrCheckOnly) {
+		t.Fatal("code-only chain manufactured permit without terminal Allow filter")
 	}
 }
 

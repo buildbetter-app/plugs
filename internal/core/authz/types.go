@@ -183,10 +183,16 @@ type Link interface {
 	// Inputs are isolated copies; a link cannot replace the host's caller,
 	// sponsor, caveats or target. Returned restrictions only intersect.
 	Check(context.Context, Slice, []CheckRequest) ([]Step, error)
-	// With rules, Filter is the exact set passing this link's restrictions.
-	// Without rules, the terminal link's Filter is its exact Allow set.
+	// Filter is the exact set passing this link's restrictions (Pass or Allow).
 	// A check-only link returns ErrCheckOnly; lists/claims cannot silently cap.
 	Filter(ListRequest) (FilterExpr, error)
+}
+
+// TerminalLink explicitly compiles the subset on which a last code link
+// returns Allow. Passing a restriction alone never manufactures a permit.
+// A code-only chain whose last link lacks this capability is check-only.
+type TerminalLink interface {
+	AllowFilter(ListRequest) (FilterExpr, error)
 }
 
 var ErrCheckOnly = errors.New("authz check-only link cannot compile")

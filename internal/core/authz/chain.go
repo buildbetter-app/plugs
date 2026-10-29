@@ -233,10 +233,11 @@ func (c Chain) Compile(r ListRequest) (FilterTemplate, error) {
 		}
 		return FilterTemplate{NoPlugins: true, Request: r, Permit: FilterExpr{Op: True}, Forbid: FilterExpr{Op: False}}, nil
 	}
-	if _, err := c.budget(); err != nil {
+	b, err := c.budget()
+	if err != nil {
 		return FilterTemplate{}, unavailable(err)
 	}
-	r, err := FreezeList(r)
+	r, err = FreezeList(r)
 	if err != nil {
 		return FilterTemplate{}, unavailable(err)
 	}
@@ -246,9 +247,9 @@ func (c Chain) Compile(r ListRequest) (FilterTemplate, error) {
 		if err != nil {
 			return FilterTemplate{}, err
 		}
-		f, err := l.Filter(input)
+		f, err := bounded(context.Background(), b, func(context.Context) (FilterExpr, error) { return l.Filter(input) })
 		if err != nil {
-			return FilterTemplate{}, err
+			return FilterTemplate{}, compileError(err)
 		}
 		if err := f.Validate(); err != nil {
 			return FilterTemplate{}, err
@@ -256,17 +257,30 @@ func (c Chain) Compile(r ListRequest) (FilterTemplate, error) {
 		t.Restrictions = append(t.Restrictions, f)
 	}
 	if len(c.Rules) == 0 && len(c.Links) > 0 {
-		// A terminal code link's Filter must describe its exact Allow set.
-		t.Permit = FilterExpr{Op: True}
+		terminal, ok := c.Links[len(c.Links)-1].(TerminalLink)
+		if !ok {
+			return FilterTemplate{}, ErrCheckOnly
+		}
+		input, err := FreezeList(r)
+		if err != nil {
+			return FilterTemplate{}, err
+		}
+		t.Permit, err = bounded(context.Background(), b, func(context.Context) (FilterExpr, error) { return terminal.AllowFilter(input) })
+		if err != nil {
+			return FilterTemplate{}, compileError(err)
+		}
+		if err := t.Permit.Validate(); err != nil {
+			return FilterTemplate{}, err
+		}
 	}
 	for _, rules := range c.Rules {
 		input, err := FreezeList(r)
 		if err != nil {
 			return FilterTemplate{}, err
 		}
-		f, err := rules.Compile(input)
+		f, err := bounded(context.Background(), b, func(context.Context) (FilterTemplate, error) { return rules.Compile(input) })
 		if err != nil {
-			return FilterTemplate{}, err
+			return FilterTemplate{}, compileError(err)
 		}
 		if !sameTemplateBinding(t, f) {
 			return FilterTemplate{}, errors.New("ruleset changed filter binding")
@@ -279,6 +293,13 @@ func (c Chain) Compile(r ListRequest) (FilterTemplate, error) {
 		t.Restrictions = append(t.Restrictions, f.Restrictions...)
 	}
 	return t, t.Validate()
+}
+
+func compileError(err error) error {
+	if errors.Is(err, ErrCheckOnly) {
+		return ErrCheckOnly
+	}
+	return unavailable(err)
 }
 
 func freezeChecks(reqs []CheckRequest) ([]CheckRequest, error) {
