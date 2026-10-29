@@ -6,9 +6,10 @@ classification, and a flag indicating whether it may be returned as a
 `result.warnings` entry. The JSON schemas for the common error data envelope,
 the closed `ErrorCode` enum, and each named error live in
 [`openrpc.json`](openrpc.json). A payload with a code outside that enum is
-invalid; implementations must not pass through an unregistered string. Each
-named JSON-RPC error component additionally pins `data.code` to its catalog
-row, so a `Forbidden` payload cannot carry a different registered code.
+invalid, and a warning must use the closed warning-capable subset;
+implementations must not pass through an unregistered string. Each named
+JSON-RPC error component additionally pins `data.code` to its catalog row, so
+a `Forbidden` payload cannot carry a different registered code.
 
 This PR is a **provisional contract snapshot**. It no longer treats the
 OpenRPC document as evidence that generated the Markdown table. Independent

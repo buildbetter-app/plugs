@@ -6450,7 +6450,7 @@
         "type": "object",
         "properties": {
           "code": {
-            "$ref": "#/components/schemas/ErrorCode"
+            "$ref": "#/components/schemas/WarningCode"
           },
           "message": {
             "type": "string"
@@ -8533,6 +8533,16 @@
           }
         ],
         "description": "D32 proof bound to the method and plan/archive digest. API keys and iframe or other-origin bearer calls cannot satisfy interactive_session."
+      },
+      "WarningCode": {
+        "type": "string",
+        "enum": [
+          "ontology_drifted",
+          "subscriber_skipped",
+          "post_subscriber_failed",
+          "visibility_lost"
+        ],
+        "description": "Closed subset of error codes permitted in result.warnings."
       }
     },
     "errors": {

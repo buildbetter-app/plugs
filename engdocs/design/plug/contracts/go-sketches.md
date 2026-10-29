@@ -21,7 +21,8 @@ import (
 
 type Revision int64
 type Branch uint32
-type ErrorCode string // closed by components.schemas.ErrorCode in OpenRPC
+type ErrorCode string   // closed by components.schemas.ErrorCode in OpenRPC
+type WarningCode string // closed by components.schemas.WarningCode in OpenRPC
 type Ref struct {
 	// The JSON representation is always an object. Exactly one of ID or Key is
 	// set; Branch is valid only when ID is set. This is the same oneOf as the
@@ -558,7 +559,7 @@ type OpResult struct {
 	SetBy    map[string]string `json:"setBy,omitempty"`
 }
 type Warning struct {
-	Code    ErrorCode      `json:"code"`
+	Code    WarningCode    `json:"code"`
 	Message string         `json:"message"`
 	Details map[string]any `json:"details,omitempty"`
 }
