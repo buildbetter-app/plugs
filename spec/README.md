@@ -15,6 +15,41 @@ The scenario expectations are authored Plug contract assertions. There are
 **no recorded reference goldens in this change**, and passing these assertions
 does not establish reference parity.
 
+## Running the connected scenarios
+
+```sh
+bazel --ignore_all_rc_files test //spec:acceptance //spec:cli_acceptance \
+  --jobs=2 --test_output=all --lockfile_mode=error
+```
+
+`//spec:acceptance` composes the real in-process transport, RPC registry, core
+service, ontology adapter, Writer, and memory driver. Graph setup and batch
+scenarios use the same Writer directly for operations without a bound RPC
+method. No seed transaction, substitute handler, or fake store is involved.
+The selected assertions cover ready categories/order/paging, ordinary and
+conditional blockers, direct claim/no-op/foreign refusal, comments, historical
+reads/no-op suppression, atomic batches, concurrent CAS, and pre/post warnings.
+No-op receipts are replayed after another mutation advances the head; mixed
+batches must preserve each unchanged row's own revision and suppress extra
+versions and post callbacks.
+
+Every RPC stack fixes UTC time, finite IDs, store identity, incarnation, and
+the cursor signing key. A positive lifecycle runs twice in fresh stores and
+compares every request/response byte. Full exchanges, including those preceding
+a failure, are saved as `*.rpc.json` in Bazel's undeclared test outputs under
+`bazel-testlogs/spec/acceptance/test.outputs/`.
+
+`//spec:cli_acceptance` launches the actual Bazel-built `plug` executable in a
+disposable memory session. It covers all eight bound verbs, historical reads,
+idempotent close replay, and a typed stale-CAS refusal that stops the session
+with a nonzero exit. The executable uses its production clock and random IDs;
+these CLI checks assert semantics and do not claim byte-repeatable traces.
+
+All scenarios execute, including unsupported behavior that fails its contract
+assertion. Current results and dependency gaps belong in the exact-head test
+report; a failing scenario is not an accepted refusal or a skipped card. The
+table below records what the full cards still require beyond this slice.
+
 ## Dispositions and remaining proof
 
 | Card | Disposition retained | Assertions and evidence still required by the full card |

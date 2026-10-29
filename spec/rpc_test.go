@@ -115,7 +115,14 @@ func TestB04DirectClaimLeaseAndForeignRefusal(t *testing.T) {
 	f.core.assertLog(t, 2)
 	foreign := rpc.WithPrincipal(f.core.ctx, model.PrincipalRef{Kind: "user", ID: "another-user"})
 	response := f.callAs(t, foreign, "bead.claim", map[string]any{"id": idRef("pl-claim")})
-	assertPaths(t, response, map[string]any{"/error/data/code": "precondition_failed"})
+	assertPaths(t, response, map[string]any{"/error/data/code": "busy"})
+	response = f.callAs(t, foreign, "bead.update", map[string]any{"id": idRef("pl-claim"), "fields": map[string]any{"title": "must not land"}})
+	assertPaths(t, response, map[string]any{"/error/data/code": "lease_not_held"})
+	response = f.callAs(t, foreign, "bead.close", map[string]any{"id": idRef("pl-claim")})
+	assertPaths(t, response, map[string]any{"/error/data/code": "lease_not_held"})
+	assertPaths(t, f.success(t, "bead.get", map[string]any{"id": idRef("pl-claim")}), map[string]any{
+		"/result/bead/status": "in_progress", "/result/bead/fields/title": "claimable",
+	})
 	f.core.assertLog(t, 2)
 }
 

@@ -209,6 +209,64 @@ func TestB28CommittedPostWarningAndReplay(t *testing.T) {
 	f.assertLog(t, 1)
 }
 
+func TestB18B28NoOpReplayAndMixedResultRevisions(t *testing.T) {
+	var posts atomic.Int32
+	f := newCore(t, []string{"pl-unchanged", "pl-changed"}, pipeline.WithPostSubscribers(pipeline.PostBinding{
+		ID: "x.accept/post",
+		Subscriber: postFunc(func(context.Context, port.CommittedChange, port.SnapshotReader) error {
+			posts.Add(1)
+			return nil
+		}),
+	}))
+	seed := f.apply(t, "seed", model.ChangeSet{Ops: []model.Op{createOp("first", "first"), createOp("second", "second")}})
+	first, second := seed.Results[0].Ref, seed.Results[1].Ref
+	f.apply(t, "change-second", model.ChangeSet{Ops: []model.Op{patchOp(second, map[string]any{"title": "edited"})}})
+	noop := model.ChangeSet{Ops: []model.Op{patchOp(first, map[string]any{"title": "first"})}}
+	receipt := f.apply(t, "unchanged", noop)
+	if receipt.Revision.String() != "2" || len(receipt.Results) != 1 || receipt.Results[0].Revision.String() != "1" || len(receipt.Warnings) != 0 {
+		t.Fatalf("no-op must retain the head and the unchanged row revision: %+v", receipt)
+	}
+	f.assertLog(t, 2)
+	if posts.Load() != 2 {
+		t.Fatalf("no-op ran a post callback: %d calls for two mutations", posts.Load())
+	}
+
+	mixed := f.apply(t, "mixed", model.ChangeSet{Ops: []model.Op{
+		patchOp(first, map[string]any{"title": "first"}),
+		patchOp(second, map[string]any{"title": "third"}),
+	}})
+	if mixed.Revision.String() != "3" || len(mixed.Results) != 2 || mixed.Results[0].Revision.String() != "1" || mixed.Results[1].Revision.String() != "3" {
+		t.Fatalf("mixed batch lost unchanged/changed row revisions or operation order: %+v", mixed)
+	}
+	if mixed.Results[0].Ref.ID != first.ID || mixed.Results[1].Ref.ID != second.ID {
+		t.Fatalf("mixed batch reordered results: %+v", mixed.Results)
+	}
+	// Replay the no-op after a real mutation has advanced the head. The stored
+	// receipt still describes its original observation and must not run post.
+	replay := f.apply(t, "unchanged", noop)
+	a, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(replay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := acceptance.EqualJSON(a, b); err != nil {
+		t.Fatalf("no-op replay changed its stored response: %v", err)
+	}
+	if posts.Load() != 3 {
+		t.Fatalf("no-op/replay added post calls: %d calls for three mutations", posts.Load())
+	}
+	f.assertLog(t, 3)
+	if versions := f.versions(t, first); len(versions) != 1 {
+		t.Fatalf("unchanged batch row minted versions: %d", len(versions))
+	}
+	if versions := f.versions(t, second); len(versions) != 3 {
+		t.Fatalf("changed batch row lost a committed version: %d", len(versions))
+	}
+}
+
 func TestB28FailOpenPreReturnsExplicitWarning(t *testing.T) {
 	f := newCore(t, []string{"pl-fail-open"}, pipeline.WithValidators(pipeline.ValidatorBinding{
 		ID: "x.accept/optional-pre", FailOpen: true,
