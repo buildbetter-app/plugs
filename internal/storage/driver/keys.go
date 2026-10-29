@@ -66,6 +66,8 @@ func PrincipalKey(principal model.PrincipalRef) (string, error) {
 	return principal.Kind + ":" + principal.ID, nil
 }
 
+// ValidateCheckpointKey accepts a nonempty opaque key without edge whitespace
+// or NUL. Delimiters such as slash/colon are preserved as part of the identity.
 func ValidateCheckpointKey(key string) error {
 	if key == "" || strings.TrimSpace(key) != key || strings.ContainsRune(key, '\x00') {
 		return fmt.Errorf("checkpoint key is not canonical")
