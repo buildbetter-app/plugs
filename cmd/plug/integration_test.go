@@ -173,6 +173,61 @@ func TestExecutableMemoryLifecycle(t *testing.T) {
 	}
 }
 
+func TestExecutableMemoryNamedLifecycleCommands(t *testing.T) {
+	commands := `
+["create","--title","Lifecycle","--idempotency-key","00000000000000000000000000000001"]
+["defer","@last","--reason","waiting","--idempotency-key","00000000000000000000000000000002"]
+["reopen","@last","--reason","retry","--idempotency-key","00000000000000000000000000000003"]
+["claim","@last","--idempotency-key","00000000000000000000000000000004"]
+["fail","@last","--reason","failed","--idempotency-key","00000000000000000000000000000005"]
+["reopen","@last","--idempotency-key","00000000000000000000000000000006"]
+["cancel","@last","--reason","canceled","--idempotency-key","00000000000000000000000000000007"]
+["reopen","@last","--idempotency-key","00000000000000000000000000000008"]
+["claim","@last","--idempotency-key","00000000000000000000000000000009"]
+["close","@last","--reason","done","--idempotency-key","0000000000000000000000000000000a"]
+["reopen","@last","--idempotency-key","0000000000000000000000000000000b"]
+["fail","@last","--reason","terminal","--idempotency-key","0000000000000000000000000000000c"]
+["fail","@last","--reason","terminal","--idempotency-key","0000000000000000000000000000000c"]
+["get","@last"]
+["history","--as-of","@revision","--id","@last"]
+["ready"]
+`
+	out, errOut, err := runPlug(t, commands, "--memory", "--json", "session")
+	if err != nil || !strings.Contains(errOut, "memory storage is disposable") {
+		t.Fatalf("named lifecycle session failed: %v\nstdout: %s\nstderr: %s", err, out, errOut)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 16 {
+		t.Fatalf("wanted one result per lifecycle command, got %d: %s", len(lines), out)
+	}
+	if lines[11] != lines[12] {
+		t.Fatalf("same keyed fail did not replay identical CLI result:\nfirst=%s\nreplay=%s", lines[11], lines[12])
+	}
+	get, err := wire.DecodeJSON([]byte(lines[13]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bead := get.(map[string]any)["bead"].(map[string]any)
+	if bead["status"] != "failed" {
+		t.Fatalf("final CLI lifecycle status=%v", bead["status"])
+	}
+	history, err := wire.DecodeJSON([]byte(lines[14]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := history.(map[string]any)["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["status"] != "failed" {
+		t.Fatalf("CLI history lost final lifecycle image: %s", lines[14])
+	}
+	ready, err := wire.DecodeJSON([]byte(lines[15]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ready.(map[string]any)["items"].([]any)) != 0 {
+		t.Fatalf("failed bead remained ready: %s", lines[15])
+	}
+}
+
 func TestExecutableRefusesUnsupportedAndStopsSession(t *testing.T) {
 	out, errOut, err := runPlug(t, "", "ready")
 	if err == nil || out != "" || !strings.Contains(errOut, "persistent storage is not installed") {
