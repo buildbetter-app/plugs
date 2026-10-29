@@ -1,0 +1,69 @@
+{
+  "format": "plug-recorded-goldens/1",
+  "provenance": {
+    "sourceRepository": "beads-base provenance tag in buildbetter-app/plugs",
+    "sourceRef": "refs/tags/beads-base",
+    "sourceCommit": "9d6fff760b7a314b476539198504d77ce0959656",
+    "binary": {
+      "buildCommand": "cd /tmp/plug-swarm/work/build09-beads-base.LYTBwF && go build -tags gms_pure_go -o /tmp/plug-swarm/work/build09-bd-9d6fff760 ./cmd/bd",
+      "path": "/tmp/plug-swarm/work/build09-bd-9d6fff760",
+      "version": "bd version 1.3.0 (dev)",
+      "sha256": "e7a70432e3137161c8d8a7530e1db4236bb5ac8a36d7de41f5b831fdbde2f776"
+    },
+    "runtime": "go1.26.10 linux/amd64; Python 3.12.3",
+    "recordedCards": ["B17", "B24"],
+    "referenceEngine": "embedded-dolt",
+    "clockNote": "B17 omits timestamp fields; B24 uses fixed past/future defer inputs against the recorder runtime clock and omits timestamp fields"
+  },
+  "recorders": {
+    "B17": {
+      "sourceTests": [
+        "backend/conformance/metadata_cas_contract.go::RunMetadataCASCreatesAKeyThatWasAbsent",
+        "backend/conformance/metadata_cas_contract.go::RunMetadataCASRefusesASecondCreateAndReportsTheHolder",
+        "backend/conformance/metadata_cas_contract.go::RunMetadataCASSwapsOnAMatchAndReportsTheNewValue",
+        "backend/conformance/metadata_cas_contract.go::RunMetadataCASRefusalReportsTheCurrentValueAndWritesNothing",
+        "backend/conformance/metadata_cas_contract.go::RunMetadataCASComparesCanonically",
+        "backend/conformance/metadata_cas_contract.go::RunMetadataCASReportsTheValueTheRowHolds",
+        "backend/conformance/metadata_cas_contract.go::RunMetadataCASDistinguishesAnAbsentKeyFromAStoredNull",
+        "backend/conformance/metadata_cas_contract.go::RunMetadataCASRemovesTheKeyWhenTheValueIsAbsent",
+        "backend/conformance/metadata_cas_contract.go::RunMetadataCASPreservesSiblingKeys",
+        "backend/conformance/metadata_cas_contract.go::RunMetadataCASNoOpSwapWritesNothing",
+        "backend/conformance/metadata_cas_contract.go::RunMetadataCASRefusesAnIDOnNeitherPlane"
+      ],
+      "sourceFiles": [
+        {
+          "path": "internal/storage/embeddeddolt/build09_record_test.go",
+          "sha256": "999217f9457e9edd28d992206284051c5d110fdced9b36675160a4ad9845314a"
+        }
+      ],
+      "commands": [
+        "cd /tmp/plug-swarm/work/build09-beads-base.LYTBwF && BEADS_TEST_EMBEDDED_DOLT=1 BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b17-record-a.json go test -tags gms_pure_go ./internal/storage/embeddeddolt -run '^TestBuild09RecordB17$' -count=1 -v",
+        "cd /tmp/plug-swarm/work/build09-beads-base.LYTBwF && BEADS_TEST_EMBEDDED_DOLT=1 BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b17-record-b.json go test -tags gms_pure_go ./internal/storage/embeddeddolt -run '^TestBuild09RecordB17$' -count=1 -v"
+      ],
+      "rawJSON": "{\"card\":\"B17\",\"engine\":\"embedded-dolt\",\"outcomes\":{\"canonicalObjectCAS\":\"PASS\",\"ephemeralMetadataCAS\":\"PASS\",\"noOpSwap\":\"PASS\",\"nullVersusAbsent\":\"PASS\",\"removeAbsent\":\"PASS\",\"siblingPreserved\":\"PASS\"},\"source\":\"backend/conformance/metadata_cas_contract.go\",\"tests\":[\"RunMetadataCASCreatesAKeyThatWasAbsent\",\"RunMetadataCASRefusesASecondCreateAndReportsTheHolder\",\"RunMetadataCASSwapsOnAMatchAndReportsTheNewValue\",\"RunMetadataCASRefusalReportsTheCurrentValueAndWritesNothing\",\"RunMetadataCASComparesCanonically\",\"RunMetadataCASReportsTheValueTheRowHolds\",\"RunMetadataCASDistinguishesAnAbsentKeyFromAStoredNull\",\"RunMetadataCASRemovesTheKeyWhenTheValueIsAbsent\",\"RunMetadataCASPreservesSiblingKeys\",\"RunMetadataCASNoOpSwapWritesNothing\",\"RunMetadataCASRefusesAnIDOnNeitherPlane\"]}",
+      "digest": "aab4a8ef882b6486503960589fefd36e5749daa7745539f5bf3fd71aa9ebd689",
+      "artifactSha256": "3ed940892a2cc2fdadb0a9ad789868eb50ad50924f81975985aef58cd526b75b",
+      "repeatArtifactSha256": "3ed940892a2cc2fdadb0a9ad789868eb50ad50924f81975985aef58cd526b75b"
+    },
+    "B24": {
+      "sourceTests": [
+        "cmd/bd/defer_wake_embedded_test.go::TestEmbeddedDeferAutoWake",
+        "cmd/bd/reopen_defer_test.go::TestCLI_ReopenClearsDeferUntil"
+      ],
+      "sourceFiles": [
+        {
+          "path": "build09_record_b24.py",
+          "sha256": "4ad3e54d67eefe5b610099257f1a662ed6b57628eb403e16eff13c4311d5ce31"
+        }
+      ],
+      "commands": [
+        "BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b24-record-a.json python3 /tmp/plug-swarm/work/build09_record_b24.py /tmp/plug-swarm/work/build09-bd-9d6fff760",
+        "BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b24-record-b.json python3 /tmp/plug-swarm/work/build09_record_b24.py /tmp/plug-swarm/work/build09-bd-9d6fff760"
+      ],
+      "rawJSON": "{\"card\":\"B24\",\"engine\":\"embedded-dolt\",\"inputs\":{\"claimLabel\":\"wake-claim-test\",\"datelessReason\":\"waiting for upstream\",\"ephemeralType\":\"heartbeat\",\"expiredUntil\":\"2020-01-01\",\"futureUntil\":\"+8760h\"},\"outcomes\":{\"datelessDefer\":\"stays-deferred\",\"expiredDatedClaim\":\"claimable-and-in-progress\",\"expiredDatedDefer\":\"auto-wakes-on-ready-and-clears-defer\",\"expiredDatedEphemeral\":\"auto-wakes-on-ready-and-clears-defer\",\"futureDatedDefer\":\"stays-deferred\",\"reopenClearsDefer\":\"open-ready-and-clears-defer\"},\"source\":[\"cmd/bd/defer_wake_embedded_test.go::TestEmbeddedDeferAutoWake\",\"cmd/bd/reopen_defer_test.go::TestCLI_ReopenClearsDeferUntil\"]}",
+      "digest": "9fddd7a374875eeff92502f26114386b34c78e121f970a506cf32d54e9bea1b4",
+      "artifactSha256": "70ac84166752614db8d449690b6c7f093bc860f2b50682d4151b2ccd155024f1",
+      "repeatArtifactSha256": "70ac84166752614db8d449690b6c7f093bc860f2b50682d4151b2ccd155024f1"
+    }
+  }
+}

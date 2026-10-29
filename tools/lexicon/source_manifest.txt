@@ -616,6 +616,10 @@ spec/extended/paging_test.go
 spec/extended/time_test.go
 spec/fixture_test.go
 spec/pipeline_test.go
+spec/recorded/BUILD.bazel
+spec/recorded/README.md
+spec/recorded/goldens.json
+spec/recorded/goldens_test.go
 spec/rpc_test.go
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
