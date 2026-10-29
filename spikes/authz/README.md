@@ -56,15 +56,45 @@ successful real export and the intended rejection reason. It also tests
 exporter failure, object/numeric equivalence, meaningful array order,
 duplicate rejection, and engine routing. Accepted benchmark commands are
 explicit fakes that write only a stub result; they prove no performance or
-database behavior. A separate fake exporter checks matching engine-set drift.
+database behavior. The engine-set drift check compiles a disposable source
+copy whose actual executable exports SQLite only, with a matching manifest,
+and requires rejection before the PostgreSQL route.
 
 The same executable contract and guarded harness run under Bazel with
-`bazel test //spikes/authz:manifest_contract_test --config=ci --cache_test_results=no --test_output=all`.
-Every real export delegates to the registered Go SDK. The nested module still
-needs a populated module cache or runtime dependency downloads; those modules
-are not yet declared Bazel inputs. Repository inventory/guard integration for
-this package also remains pending. This target alone does not establish
-portable offline acceptance or continuing repository-guard coverage.
+`bazel test //spikes/authz:manifest_contract_test --config=ci --lockfile_mode=error --cache_test_results=no --test_output=all`.
+Every real export delegates to the registered Go 1.26.10 SDK. On Linux/amd64,
+the wrapper starts with empty private module/build caches and uses only the
+declared file proxy, with module writes, workspace overrides, checksum-server
+access, VCS fallback and automatic toolchain downloads disabled. An inherited
+seccomp filter denies network syscalls; the wrapper verifies IPv4/IPv6 socket
+denial and fails if isolation cannot be established. Cache population messages
+refer to the declared file proxy, not runtime network fetches.
+
+[`contract-modules.lock.json`](contract-modules.lock.json) covers every `.mod`
+and `.zip` checksum in the unchanged `go.sum` (45 module records, 38 archives).
+The self-contained [`module-proxy.bzl`](module-proxy.bzl) verifies raw SHA-256
+hashes at repository fetch time, which may use the network. To regenerate or
+check the lock, run the maintenance generator with network access or a retained
+download directory:
+
+```sh
+python3 spikes/authz/gen-contract-modules-lock.py --download-dir /tmp/authz-proxy --check
+```
+
+The generator verifies Go's `h1` checksums before recording raw file hashes;
+it never runs during acceptance. The wrapper also checks all proxy members,
+the lock marker, SDK version and source hashes, and proves `go.mod`/`go.sum`
+unchanged after execution. Separate whole-harness controls must fail before
+any mutation success for an unavailable, missing or malformed selected SDK
+and for a missing or corrupt required archive. Test outputs retain those logs,
+the actual invocation ledger and the dependency inventory.
+
+This package supplies the generated `repo_*` partitions and exports its nested
+`go.mod` for the retained root repository guards. Continuing formatting coverage
+is checked with `//scripts/repochecks:fmt_test`; the contract target does not
+execute the nested Go unit suite. Shell, Git, Python, jq and coreutils remain
+execution-platform requirements. These bounded checks do not certify the
+clean Plug skeleton, hosted CI, performance, or an authorization design.
 
 The JSON `CandidateRows` field is measured SQL cardinality evidence for the
 rows a plan must qualify or walk: scope-first counts its qualified ready rows,

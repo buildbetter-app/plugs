@@ -29,6 +29,7 @@ mkdir -p "$fake_bin"
 cat >"$fake_bin/go" <<'GUARDED_GO'
 #!/usr/bin/env bash
 set -euo pipefail
+printf '%s\t%s\n' "${AUTHZ_TEST_EXPORT_MODE:?}" "$*" >>"${AUTHZ_TEST_ALL_INVOCATIONS:?}"
 if [[ "$#" == 3 && "$1" == run && "$2" == ./cmd/authz-spike && "$3" == -print-contract ]]; then
   case "${AUTHZ_TEST_EXPORT_MODE:?}" in
     real)
@@ -41,10 +42,6 @@ if [[ "$#" == 3 && "$1" == run && "$2" == ./cmd/authz-spike && "$3" == -print-co
       ;;
     invalid_json)
       printf '%s\n' 'deliberately invalid test exporter JSON'
-      ;;
-    fixture)
-      cat "${AUTHZ_TEST_CONTRACT:?}"
-      printf '%s\n' fake >>"${AUTHZ_TEST_EXPORT_LOG:?}"
       ;;
     *) exit 97 ;;
   esac
@@ -75,6 +72,7 @@ GUARDED_GO
 chmod +x "$fake_bin/go"
 export AUTHZ_TEST_REAL_GO="$real_go" AUTHZ_GO_BIN="$fake_bin/go"
 export PATH="$fake_bin:$PATH" AUTHZ_TEST_EXPORT_MODE=real AUTHZ_TEST_ALLOW_FAKE_BENCHMARK=0
+export AUTHZ_TEST_ALL_INVOCATIONS="$work_dir/all-invocations.log"
 
 # A real successful export is a prerequisite, not a late accepted-path check.
 # The per-case guard log also proves a fresh real export for every mutation
@@ -86,10 +84,14 @@ if ! (cd "$script_dir" && AUTHZ_TEST_EXPORT_LOG="$work_dir/baseline-export.log" 
   echo "manifest contract test: initial real executable export failed" >&2
   exit 1
 fi
-jq -e 'type == "object"' "$contract_json" >/dev/null
+if ! jq -e 'type == "object"' "$contract_json" >/dev/null; then
+  echo "manifest contract test: initial real executable export returned invalid JSON" >&2
+  exit 1
+fi
 test "$(cat "$work_dir/baseline-export.log")" = real
 test ! -e "$work_dir/baseline-go-args"
 echo "real executable contract export succeeded using selected Go SDK"
+printf '%s\t%s\t%s\n' baseline initial real >"$work_dir/receipts.tsv"
 
 run_case() {
   local name="$1"
@@ -150,6 +152,7 @@ expect_rejected_manifest() {
   fi
   assert_export "$name" "$expected_export"
   assert_before_setup "$name"
+  printf '%s\t%s\t%s\n' "$name" rejected "$expected_export" >>"$work_dir/receipts.tsv"
   echo "rejected before setup (export=$expected_export): $name"
 }
 
@@ -177,6 +180,7 @@ expect_exporter_failure() {
   fi
   assert_export "$name" none
   assert_before_setup "$name"
+  printf '%s\t%s\t%s\n' "$name" exporter_failure none >>"$work_dir/receipts.tsv"
   echo "exporter/tool failure distinguished before setup: $name"
 }
 
@@ -241,16 +245,36 @@ done
 expect_rejected_manifest duplicate_nested "$work_dir/duplicate_nested.json" \
   'invalid JSON (duplicate object member: warmups)' none
 
-# Deliberately fake only this exporter response to exercise matching
-# executable/manifest engine drift. It must still fail the runner capability
-# check before the guarded PostgreSQL benchmark route.
-drift_contract="$work_dir/drift-contract.json"
+# Malformed declarations also stop before any exporter or benchmark call.
+printf '%s' '{"schema":' >"$work_dir/malformed.json"
+expect_rejected_manifest malformed_manifest "$work_dir/malformed.json" \
+  'invalid JSON (Expecting value: line 1 column 11 (char 10))' none
+printf '%s' '{} {}' >"$work_dir/multiple-documents.json"
+expect_rejected_manifest multiple_documents "$work_dir/multiple-documents.json" \
+  'invalid JSON (Extra data: line 1 column 4 (char 3))' none
+
+# Change the actual executable in a disposable copy, then request a matching
+# manifest. Its authentic export must still fail the runner's engine-set
+# capability check. No replayed contract can stand in for this invocation.
+drift_module="$work_dir/drift-checkout/spikes/authz"
+mkdir -p "$drift_module"
+cp -RL "$script_dir/." "$drift_module/"
+python3 - "$drift_module/schema.go" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1])
+contents = source.read_text()
+needle = 'return []string{string(DialectSQLite), string(DialectPostgres)}'
+if contents.count(needle) != 1:
+    raise SystemExit("executable engine declaration was not found exactly once")
+source.write_text(contents.replace(needle, 'return []string{string(DialectSQLite)}', 1))
+PY
 drift_manifest="$work_dir/drift-manifest.json"
-jq '.matrix.engines = ["sqlite"]' "$contract_json" >"$drift_contract"
 jq '.matrix.engines = ["sqlite"]' "$manifest" >"$drift_manifest"
-AUTHZ_TEST_EXPORT_MODE=fixture AUTHZ_TEST_CONTRACT="$drift_contract" \
+runner="$drift_module/run-benchmark.sh" \
   expect_rejected_manifest engine_set_drift "$drift_manifest" \
-    'executable engine set is unsupported by this runner' fake postgres
+    'executable engine set is unsupported by this runner' real postgres
 
 expect_accepted_engine() {
   local name="$1"
@@ -272,6 +296,7 @@ expect_accepted_engine() {
   test -s "$artifact_dir/command.txt"
   test -s "$artifact_dir/source-files.sha256"
   test "$(cat "$work_dir/$name-go-args")" = "$expected_args"
+  printf '%s\t%s\t%s\n' "$name" accepted real >>"$work_dir/receipts.tsv"
   echo "valid contract reached fake $engine benchmark command: $name"
 }
 
@@ -297,12 +322,12 @@ def reverse_objects(item):
 
 (output / "reversed-objects.json").write_text(json.dumps(reverse_objects(value)), encoding="utf-8")
 # Use raw JSON spellings: jq versions that preserve number tokens must still
-# see 20.0/20e0 here rather than normalizing them while creating the fixture.
+# see 20.0/2e1 here rather than normalizing them while creating the fixture.
 needle = '"measured_iterations": 20'
 if source.count(needle) != 1:
     raise SystemExit("measured iteration declaration was not found exactly once")
 (output / "decimal-iterations.json").write_text(source.replace(needle, '"measured_iterations": 20.0'), encoding="utf-8")
-(output / "exponent-iterations.json").write_text(source.replace(needle, '"measured_iterations": 20e0'), encoding="utf-8")
+(output / "exponent-iterations.json").write_text(source.replace(needle, '"measured_iterations": 2e1'), encoding="utf-8")
 (output / "decimal-integrals.json").write_text(json.dumps(json.loads(source, parse_int=float)), encoding="utf-8")
 PY
 for input_manifest in "$reordered_manifest" "$work_dir/reversed-objects.json" \
@@ -322,3 +347,29 @@ expect_accepted_engine exponent_iterations sqlite "$work_dir/exponent-iterations
 expect_accepted_engine decimal_integrals sqlite "$work_dir/decimal-integrals.json"
 expect_accepted_engine valid_postgres postgres "$manifest"
 expect_accepted_engine valid_all all "$manifest"
+
+if [[ -n "${AUTHZ_TEST_EVIDENCE_DIR:-}" ]]; then
+  mkdir -p "$AUTHZ_TEST_EVIDENCE_DIR"
+  cp "$contract_json" "$work_dir/all-invocations.log" "$AUTHZ_TEST_EVIDENCE_DIR/"
+  python3 - "$work_dir" "$AUTHZ_TEST_EVIDENCE_DIR/case-ledger.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+work, output = map(Path, sys.argv[1:])
+cases = []
+for line in (work / "receipts.tsv").read_text().splitlines():
+    name, outcome, export = line.split("\t")
+    args = work / (name + "-go-args")
+    cases.append({"name": name, "outcome": outcome,
+                  "successful_real_exports": int(export == "real"),
+                  "fake_benchmark_commands": args.read_text().splitlines() if args.exists() else []})
+assert sum(case["successful_real_exports"] for case in cases) == 33
+assert sum(case["outcome"] == "rejected" and case["successful_real_exports"] == 1 for case in cases) == 24
+assert sum(case["outcome"] == "rejected" and case["successful_real_exports"] == 0 for case in cases) == 5
+assert sum(len(case["fake_benchmark_commands"]) for case in cases) == 8
+assert all(not case["fake_benchmark_commands"] for case in cases if case["outcome"] != "accepted")
+output.write_text(json.dumps({"cases": cases, "real_benchmark_commands": 0}, indent=2) + "\n")
+print("contract ledger: 33 authentic exports, 24 value rejections, 5 parsing rejections, 8 fake routes")
+PY
+fi
