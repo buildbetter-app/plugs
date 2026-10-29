@@ -1,11 +1,14 @@
 # `bd` command inventory for Plug (P80)
 
-Status: draft for P80 sign-off, 2026-10-28. This is an inventory and fate
-proposal, not an implementation plan. It reads the command tree frozen in
-[`cmd/bd/testdata/command_tree/tree.golden`](../../../../cmd/bd/testdata/command_tree/tree.golden)
+Status: research inventory, updated for accepted decisions #10 and #11.
+This records command dispositions, not implemented behavior or parity. It
+reads the command tree at behavior commit
+`9d6fff760b7a314b476539198504d77ce0959656` in
+[`cmd/bd/testdata/command_tree/tree.golden`](https://github.com/buildbetter-app/plugs/blob/9d6fff760b7a314b476539198504d77ce0959656/cmd/bd/testdata/command_tree/tree.golden)
 and the Plug design sections A1, A7, and A8. The tree contains **307 paths**
 (the root plus 306 descendants); A1's “306 command paths” sentence predates the
-current golden.
+current golden. The inventory and census ratchet count all **307 paths**; “306”
+is the descendants-only denominator used by the older design sentence.
 
 Plug is a clean-room rewrite. A `bd` name is not a compatibility promise:
 P46 says there is no `bd` translator, and P1 says that behavior is rebuilt
@@ -20,7 +23,8 @@ inventory uses these labels:
   old path is not a second compatibility alias.
 - **Drop** — there is no v1 Plug surface. A `[widely used]` marker means the
   repository's docs, skills, examples, or tests show the command as an active
-  workflow; P80 requires Nikhil to review those drops individually.
+  workflow. Decision #10 accepts the family batch and the named visible
+  commands; these markers record source use rather than pending approvals.
 
 A namespace-only row (for example `bd dep`) follows the fate of its children;
 it is listed so every golden path is accounted for. Method names below are the
@@ -124,7 +128,7 @@ folded into the core contract rather than copied as Beads aliases.
 | `bd label list`, `bd label list-all` | **Fold** — `bead.get`/`view.run` projection | P31b |
 | `bd label propagate` | **Fold** — bounded `tx.apply`/`bead.update` batch | P2; no recursive CLI policy |
 | `bd label rename` | **Fold** — ontology/data migration plan and `tx.apply` | P10; labels are typed fields |
-| `bd rename` | **Drop for immutable IDs**; a title/display edit is `bead.update` | A3 says keys are immutable; A7 says to build a rename client, so this needs an explicit interpretation before a parity card |
+| `bd rename` | **Drop for immutable IDs**; a title/display edit is `bead.update` | A3; decision #11 explicitly keeps display edits and drops ID rewrites |
 | `bd rename-prefix` | **Drop** — no prefix rewrite under immutable global keys | A1 global IDs, A3 immutable keys, P46 |
 
 ### Ontology, validation, and maintenance
@@ -142,7 +146,7 @@ folded into the core contract rather than copied as Beads aliases.
 | `bd admin reset` | **Drop** — empty-store restore and operator lifecycle replace destructive reset | P44/P46 |
 | `bd compact` | **Fold** — `admin.compact` | P45; storage-specific Dolt squashing is gone |
 | `bd gc` | **Fold** — `admin.compact` for semantic compaction; driver maintenance is plugin-owned | P45/P7 |
-| `bd prune`, `bd purge` | **Drop** — no row/history deletion outside `history.redact` | P45; these are candidate individual-review drops if call sites are found |
+| `bd prune`, `bd purge` | **Drop** — no row/history deletion outside `history.redact` | P45; destructive cleanup is included in decision #10's accepted batch |
 | `bd flatten` | **Drop** — history is kept forever; no Dolt history squash | P45; D10 |
 | `bd rules`, `bd rules audit`, `bd rules compact` | **Drop** — editor/orchestrator rule files are outside Plug's graph contract | P1/P46; no A1/A7 method |
 
@@ -206,7 +210,7 @@ new core methods.
 | `bd mol wisp create` | **Keep** — `x.workflow.ephemeral.create` | P48 |
 | `bd mol wisp gc` | **Keep** — `x.workflow.ephemeral.gc` | P48/P45; retention is plugin policy and still logged |
 | `bd mol wisp list` | **Keep** — `x.workflow.ephemeral.list` | P48 |
-| `bd swarm` | **Drop [widely used in CLI/orchestration docs]** — swarm orchestration and roles have no Plug core counterpart | P1/PROJECT_CHARTER; verify factory argv use before individual sign-off |
+| `bd swarm` | **Drop [widely used in CLI/orchestration docs]** — swarm orchestration and roles have no Plug core counterpart | P1/PROJECT_CHARTER; the named visible command is dropped by decision #10 |
 | `bd swarm create`, `bd swarm list`, `bd swarm status`, `bd swarm validate` | **Drop [widely used in CLI/orchestration docs]** — same fate as the namespace | P1/PROJECT_CHARTER |
 
 A workflow plugin may expose a new, explicitly reviewed replacement for a
@@ -376,20 +380,18 @@ kept as aliases. A provider can expose additional methods under
 | `bd cursor-hook` | **Drop** — same listener/plugin replacement | P29b/P46 |
 | `bd db-proxy-child` | **Drop** — `dbproxy` and the proxied-server twins are deleted | P47/P36 |
 
-## Open interpretation to resolve before parity cards
+## Immutable identity interpretation (decision #11)
 
-The inventory has one direct tension in the supplied design:
+Decision #11 resolves the original tension in the design:
 
 - A3 says ontology keys are immutable and A1 says IDs are global.
 - A7's “Today”/codebase paragraph nevertheless says to build `rename` as a
   view client, while today's `bd rename` rewrites IDs and references.
 
-The safe reading is that a Plug view client may edit a display/title field or
-present a migration preview, but it cannot rewrite an immutable key. Under
-that reading `bd rename-prefix` is a drop and `bd rename` is a drop unless
-Nikhil explicitly defines a new migration-class method. This is the only
-inventory row whose fate cannot be made exact from the named decisions; it
-should be settled before a parity card is accepted.
+Title and display edits use `bead.update`; ID and prefix rewrites are dropped.
+Thus `bd rename-prefix` and the ID-rewrite form of `bd rename` have a decided
+fate. They do not require a new product decision before cards can record that
+deviation.
 
 ## Remaining namespaces and local helpers
 
@@ -403,27 +405,28 @@ These paths are short but still part of the golden inventory:
 | `bd worktree` | **Drop [widely used in integration docs] as namespace** — source-control worktree management is outside Plug | P1/D10 |
 | `bd worktree create`, `bd worktree info`, `bd worktree list`, `bd worktree remove` | **Drop [widely used in integration docs]** — use Git directly; Plug has no worktree state | P1/D10 |
 
-## Families proposed for one-batch drop sign-off
+## Accepted command-family drops (decision #10)
 
-The table is intentionally at family level, as P80 requests. It excludes
+The table records the accepted family batch from P80 and decision #10. It excludes
 provider-specific paths and aliases that are folded into generic Plug methods.
-Rows marked **individual** contain a command the repository visibly teaches or
-runs; those are the one-by-one exceptions to the batch approval rule.
+The named visible commands are included in that acceptance. Source-use notes
+remain context for caller migration; they do not reopen the drop decision.
 
-| Family to drop | Golden paths covered | Decision anchor | Use review |
+| Dropped family | Golden paths covered | Decision anchor | Source-use context |
 |---|---|---|---|
-| Dolt and merge-conflict plumbing | `bd dolt`; `bd dolt clean-databases`, `killall`, `commit`, `pull`, `push`, all `remote` paths; `bd conflicts` and all children; `bd flatten` | D10, P7, P45, P47 | `bd dolt push`/`pull` are **individual**; `dolt status/show/start/stop/test/set` fold to server/admin methods |
-| Federation and branch/version-control sync | `bd branch`; `bd federation` and all children; `bd sync`; `bd repo` and all children; `bd vc` and all children; `bd migrate sync` | D10, P18 | `bd sync` is **individual** |
-| Destructive row/working-set cleanup | `bd admin cleanup`, `bd admin reset`, `bd prune`, `bd purge`, `bd init-safety` | P44, P45, P46 | review if a production cleanup script is found |
+| Dolt and merge-conflict plumbing | `bd dolt`; `bd dolt clean-databases`, `killall`, `commit`, `pull`, `push`, all `remote` paths; `bd conflicts` and all children; `bd flatten` | D10, P7, P45, P47, #10 | The named visible `bd dolt push`/`pull` are dropped; `dolt status/show/start/stop/test/set` fold to server/admin methods |
+| Federation and branch/version-control sync | `bd branch`; `bd federation` and all children; `bd sync`; `bd repo` and all children; `bd vc` and all children; `bd migrate sync` | D10, P18, #10 | The named visible `bd sync` and `bd branch` are dropped |
+| Destructive row/working-set cleanup | `bd admin cleanup`, `bd admin reset`, `bd prune`, `bd purge`, `bd init-safety` | P44, P45, P46, #10 | Any active cleanup caller needs migration; the drop is decided |
 | Generic untyped KV and raw SQL | `bd kv`, `bd kv set`, `bd kv clear` (non-memory `get/list` uses), `bd sql` | A2, P7, P23a | memory-key `get/list` folds to `memory.*` |
-| Script hooks and hidden agent process hooks | `bd hooks` and all children; `bd codex-hook`; `bd cursor-hook`; `bd db-proxy-child`; `bd send-metrics` | P29b, P38a, P36, P47 | `bd codex-hook`/`bd prime` integration is **individual** |
-| Orchestration-only helpers | `bd merge-slot` and all children; `bd human` and all children; `bd preflight`; `bd ship`; `bd rules` and all children; `bd mail`; `bd setup`; `bd upgrade` and all children; `bd swarm` and all children | P1, P46, PROJECT_CHARTER | inspect factory usage before closing the family |
-| Beads-only identity rewrite | `bd rename-prefix`; the ID-rewrite form of `bd rename` | A1, A3, P46 | **individual design decision** because A7 mentions a rename client |
+| Script hooks and hidden agent process hooks | `bd hooks` and all children; `bd codex-hook`; `bd cursor-hook`; `bd db-proxy-child`; `bd send-metrics` | P29b, P38a, P36, P47, #10 | The named visible hooks and `bd codex-hook`/`bd prime` integration are dropped |
+| Orchestration-only helpers | `bd merge-slot` and all children; `bd human` and all children; `bd preflight`; `bd ship`; `bd rules` and all children; `bd mail`; `bd setup`; `bd upgrade` and all children; `bd swarm` and all children | P1, P46, PROJECT_CHARTER, #10 | The named visible setup, merge-slot, swarm, and worktree callers need migration |
+| Beads-only identity rewrite | `bd rename-prefix`; the ID-rewrite form of `bd rename` | A1, A3, P46, #11 | Title/display edits remain `bead.update`; ID/prefix rewrites are dropped |
 | Legacy migration mode | the four `bd migrate from-*-server-to-*` paths; `bd migrate hooks`; `bd migrate legacy-sqlite` | P5c, P29b, P36, P47 | `bd migrate issues`/`bd migrate-issues` fold to export/restore; converter work stays on the `beads` branch |
 
-The one-by-one review set currently visible in repository guidance is:
+The accepted named visible-command set from decision #10 is:
 `bd sync`, `bd dolt push`, `bd dolt pull`, `bd prime`, `bd codex-hook`,
 `bd setup`/hooks, `bd merge-slot`, `bd swarm`, `bd branch`, and `bd worktree`
 where repository docs show them. “Visible” means documented
-or wired in this checkout, not measured production frequency; a runtime argv census should replace this heuristic before cutover.
-
+or wired in the pinned Beads checkout, not measured production frequency. A
+runtime argv inventory remains caller-migration evidence before cutover, not
+a prerequisite for publishing this catalog or a new drop approval.
