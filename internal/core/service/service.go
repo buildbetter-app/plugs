@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -144,7 +145,11 @@ func (s *Service) Claim(ctx context.Context, by model.PrincipalRef, req ClaimReq
 }
 
 func (s *Service) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
-	v, err := s.claim(ctx, by, req, meta, true)
+	method := ""
+	if meta.Method == "bead.claimNext" {
+		method = meta.Method
+	}
+	v, err := s.claimWithMethod(ctx, by, req, meta, true, method)
 	if err != nil {
 		return port.WriteOutcome{}, err
 	}
@@ -153,13 +158,95 @@ func (s *Service) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, r
 }
 
 func (s *Service) claim(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	return s.claimWithMethod(ctx, by, req, meta, outcomeRequired, "")
+}
+
+// ClaimNextWithOutcome walks the live ready set and lowers the first candidate
+// through the same claim pipeline as bead.claim. A candidate can disappear or
+// lose its claim race while the queue is being walked; those ordinary races
+// advance to the next candidate. nil is the cataloged JSON-null result when
+// the ready set is empty at commit.
+func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta) (*port.WriteOutcome, error) {
+	if err := s.admit(ctx, by); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.Project) == "" {
+		return nil, failure("project_required", "supply a project")
+	}
+
+	// A successful claim has a durable receipt under the claimNext method. On a
+	// retry after the bead is no longer ready, recover its target and re-enter
+	// the ordinary pipeline so replay authorization remains current.
+	if meta.IdempotencyKey != "" {
+		principal, err := driver.PrincipalKey(by)
+		if err != nil {
+			return nil, failure("invalid_params", "invalid principal")
+		}
+		reader, err := s.reader(ctx, by, nil)
+		if err != nil {
+			return nil, err
+		}
+		entry, lookupErr := reader.IdempotencyByKey(ctx, principal, meta.AgentLabel, "bead.claimNext", meta.IdempotencyKey)
+		_ = reader.Close()
+		if lookupErr != nil {
+			return nil, mapped(lookupErr)
+		}
+		if entry != nil && len(entry.Commit.Results) > 0 {
+			id := entry.Commit.Results[0].Ref
+			out, claimErr := s.claimWithMethod(ctx, by, ClaimRequest{ID: id}, meta, true, "bead.claimNext")
+			if claimErr != nil {
+				return nil, claimErr
+			}
+			return &out, nil
+		}
+	}
+
+	position := (*PagePosition)(nil)
+	for {
+		page, err := s.Ready(ctx, by, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position})
+		if err != nil {
+			return nil, err
+		}
+		for _, bead := range page.Items {
+			out, claimErr := s.claimWithMethod(ctx, by, ClaimRequest{ID: model.RefByID(bead.ID, model.Natural64(0))}, meta, true, "bead.claimNext")
+			if claimErr == nil {
+				return &out, nil
+			}
+			if !claimNextRace(claimErr) {
+				return nil, claimErr
+			}
+		}
+		if page.Next == nil {
+			return nil, nil
+		}
+		position = page.Next
+	}
+}
+
+func claimNextRace(err error) bool {
+	var value *model.Error
+	if !errors.As(err, &value) {
+		return false
+	}
+	switch value.Data.Code {
+	case "forbidden", "not_found", "busy", "write_conflict", "precondition_failed", "ontology_guard_failed", "lease_not_held", "lease_expired":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) claimWithMethod(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta, outcomeRequired bool, method string) (port.WriteOutcome, error) {
 	if err := namedRef(req.ID); err != nil {
 		return port.WriteOutcome{}, err
 	}
 	// Slot normalization belongs after the pipeline's idempotency lookup. This
 	// stable request replays even after the current bead has changed status.
 	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: req.ID, Fields: map[string]any{}}}}, Expect: req.Expect}
-	return s.apply(ctx, by, "bead.claim", cs, meta, outcomeRequired)
+	if method == "" {
+		method = "bead.claim"
+	}
+	return s.apply(ctx, by, method, cs, meta, outcomeRequired)
 }
 
 func claimResult(v model.Commit) (ClaimResult, error) {

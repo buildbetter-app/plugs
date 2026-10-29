@@ -61,6 +61,15 @@ type ClaimRequest struct {
 	Expect []model.Precondition
 }
 
+// ClaimNextRequest describes the ready-set selection for the atomic queue
+// claim. The RPC layer supplies the project and filter after schema/cursor
+// validation; the service keeps the same bounded ready vocabulary as Ready.
+type ClaimNextRequest struct {
+	Project string
+	ViewID  string
+	Filter  *Filter
+}
+
 type CommentRequest struct {
 	ID     model.Ref
 	Body   string

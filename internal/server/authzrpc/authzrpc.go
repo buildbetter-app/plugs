@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -48,8 +49,15 @@ type StaticFacts struct {
 	Facts authzfixed.Facts
 }
 
-func (s StaticFacts) Load(_ context.Context, _ Snapshot) (authzfixed.Facts, error) {
-	return cloneFacts(s.Facts)
+func (s StaticFacts) Load(ctx context.Context, snapshot Snapshot) (authzfixed.Facts, error) {
+	facts, err := cloneFacts(s.Facts)
+	if err != nil {
+		return authzfixed.Facts{}, err
+	}
+	if _, err := observeACL(ctx, snapshot, facts.Namespace); err != nil {
+		return authzfixed.Facts{}, err
+	}
+	return facts, nil
 }
 
 // CallerSource binds an authenticated principal to the host's verified
@@ -139,6 +147,11 @@ func New(ctx context.Context, config Config) (*Composition, error) {
 	}
 	chain := authz.Chain{Namespace: ns, Rules: []authz.RuleSet{rules}}
 	checker := &Checker{chain: chain, source: config.Facts, caller: caller, store: config.Store}
+	if mutable, ok := config.Facts.(*MutableFacts); ok {
+		if err := mutable.bind(ctx, config.Store, config.Lease, ns); err != nil {
+			return nil, err
+		}
+	}
 	ontology := service.NewOntology(nil)
 	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithAuthorizer(checker), pipeline.WithEventContext(checker)}
 	if config.Audit != nil {
@@ -201,8 +214,13 @@ func cloneFacts(in authzfixed.Facts) (authzfixed.Facts, error) {
 // deliberately explicit: updates replace the complete validated source and do
 // not expose a grant mutation RPC or a permission cache.
 type MutableFacts struct {
-	mu    sync.RWMutex
-	facts authzfixed.Facts
+	mu           sync.RWMutex
+	facts        authzfixed.Facts
+	store        driver.Store
+	lease        driver.ActiveLease
+	namespace    authz.Namespace
+	factRevision model.Revision
+	bound        bool
 }
 
 func NewMutableFacts(facts authzfixed.Facts) (*MutableFacts, error) {
@@ -212,13 +230,28 @@ func NewMutableFacts(facts authzfixed.Facts) (*MutableFacts, error) {
 	}
 	return &MutableFacts{facts: copy}, nil
 }
-func (s *MutableFacts) Load(_ context.Context, _ Snapshot) (authzfixed.Facts, error) {
+func (s *MutableFacts) Load(ctx context.Context, snapshot Snapshot) (authzfixed.Facts, error) {
 	if s == nil {
 		return authzfixed.Facts{}, errors.New("authorization facts source is nil")
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return cloneFacts(s.facts)
+	facts, err := cloneFacts(s.facts)
+	expected, bound, namespace := s.factRevision, s.bound, s.namespace
+	s.mu.RUnlock()
+	if err != nil {
+		return authzfixed.Facts{}, err
+	}
+	if !bound {
+		namespace = facts.Namespace
+	}
+	state, err := observeACL(ctx, snapshot, namespace)
+	if err != nil {
+		return authzfixed.Facts{}, err
+	}
+	if bound && state.Revision.String() != expected.String() {
+		return authzfixed.Facts{}, fmt.Errorf("authorization facts changed after the pinned snapshot")
+	}
+	return facts, nil
 }
 func (s *MutableFacts) Replace(facts authzfixed.Facts) error {
 	copy, err := cloneFacts(facts)
@@ -226,9 +259,103 @@ func (s *MutableFacts) Replace(facts authzfixed.Facts) error {
 		return err
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.bound {
+		s.facts = copy
+		return nil
+	}
+	// The composition namespace remains pinned by the Checker. Replacing with
+	// a different namespace is retained as source state so the next Load fails
+	// closed through that binding check rather than silently changing scope.
+	ctx := context.Background()
+	fact, err := driver.NewReadFact(authz.ACLDependency(s.namespace).Key)
+	if err != nil {
+		return err
+	}
+	tx, err := s.store.Write(ctx, s.lease)
+	if err != nil {
+		return err
+	}
+	defer tx.Close()
+	defer tx.Rollback(context.Background())
+	lock := driver.LockKey{Kind: driver.LockReadFact, Fact: fact}
+	states, err := tx.Lock(ctx, []driver.LockRequest{{Key: lock, Mode: driver.LockUpdate}})
+	if err != nil {
+		return err
+	}
+	if len(states) != 1 {
+		return errors.New("authorization fact lock was not acquired")
+	}
+	if _, err := tx.Head(ctx); err != nil {
+		return err
+	}
+	if err := tx.BumpReadFacts(ctx, []driver.ReadFact{fact}); err != nil {
+		return err
+	}
+	entry, err := tx.Commit(ctx, driver.ChangesetHeader{
+		Incarnation: s.namespace.Incarnation,
+		Kind:        model.ChangesetDerived,
+		Time:        time.Now().UTC(),
+		Principal:   model.PrincipalRef{Kind: "system", ID: "authzrpc"},
+		LockKeys:    []driver.LockKey{lock},
+	})
+	if err != nil {
+		return err
+	}
+	s.factRevision = entry.Revision
 	s.facts = copy
-	s.mu.Unlock()
 	return nil
+}
+
+func (s *MutableFacts) bind(ctx context.Context, store driver.Store, lease driver.ActiveLease, namespace authz.Namespace) error {
+	if s == nil || nilValue(store) || nilValue(lease) {
+		return errors.New("authorization facts source cannot be bound")
+	}
+	if err := namespace.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.facts.Namespace != namespace {
+		return fmt.Errorf("authorization facts namespace does not match composition")
+	}
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		return err
+	}
+	if namespace.StoreID != string(meta.StoreID) || namespace.Incarnation != meta.Incarnation {
+		return fmt.Errorf("authorization facts namespace does not match store")
+	}
+	reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		return err
+	}
+	state, err := observeACL(ctx, reader, namespace)
+	_ = reader.Close()
+	if err != nil {
+		return err
+	}
+	s.store, s.lease, s.namespace, s.factRevision, s.bound = store, lease, namespace, state.Revision, true
+	return nil
+}
+
+func observeACL(ctx context.Context, snapshot Snapshot, namespace authz.Namespace) (driver.LockState, error) {
+	if snapshot == nil {
+		return driver.LockState{}, errors.New("authorization snapshot is unavailable")
+	}
+	dep := authz.ACLDependency(namespace)
+	fact, err := driver.NewReadFact(dep.Key)
+	if err != nil {
+		return driver.LockState{}, err
+	}
+	states, err := snapshot.Observe(ctx, []driver.LockKey{{Kind: driver.LockReadFact, Fact: fact}})
+	if err != nil {
+		return driver.LockState{}, err
+	}
+	if len(states) != 1 {
+		return driver.LockState{}, errors.New("authorization fact observation was incomplete")
+	}
+	return states[0], nil
 }
 
 func samePrincipal(a, b model.PrincipalRef) bool {
