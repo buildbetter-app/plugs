@@ -13,6 +13,20 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 )
 
+type lookupContext struct {
+	context.Context
+	started chan struct{}
+}
+
+func (c lookupContext) Err() error {
+	err := c.Context.Err()
+	select {
+	case c.started <- struct{}{}:
+	default:
+	}
+	return err
+}
+
 func TestCanceledLookupDoesNotWaitForKeyRing(t *testing.T) {
 	p := New(Config{})
 	issued, err := p.Issue(model.PrincipalRef{Kind: "service", ID: "service:lookup"}, time.Now().Add(time.Hour))
@@ -22,7 +36,8 @@ func TestCanceledLookupDoesNotWaitForKeyRing(t *testing.T) {
 	// Hold the actual ring lock across cancellation. Authentication must return
 	// without waiting for the trusted provisioning operation to finish.
 	p.mu.Lock()
-	ctx, cancel := context.WithCancel(context.Background())
+	base, cancel := context.WithCancel(context.Background())
+	ctx := lookupContext{Context: base, started: make(chan struct{}, 1)}
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
@@ -33,8 +48,9 @@ func TestCanceledLookupDoesNotWaitForKeyRing(t *testing.T) {
 		}
 		done <- err
 	}()
-	// Let Authenticate enter the contended lookup, then cancel its budget.
-	time.Sleep(10 * time.Millisecond)
+	// The first context check has observed a live budget. The held ring gate
+	// prevents lookup from finishing while we cancel it.
+	<-ctx.started
 	cancel()
 	select {
 	case err := <-done:

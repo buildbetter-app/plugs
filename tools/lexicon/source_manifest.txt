@@ -220,7 +220,10 @@ internal/core/service/service_test.go
 internal/core/service/types.go
 internal/doc.go
 internal/integration/apikey/BUILD.bazel
+internal/integration/apikey/README.md
 internal/integration/apikey/compose.go
+internal/integration/apikey/fixture_test.go
+internal/integration/apikey/http_test.go
 internal/plugins/authnapikey/BUILD.bazel
 internal/plugins/authnapikey/README.md
 internal/plugins/authnapikey/apikey.go

@@ -17,6 +17,20 @@ go_library(
     ],
 )
 
+go_test(
+    name = "apikey_test",
+    srcs = ["fixture_test.go", "http_test.go"],
+    deps = [
+        ":apikey",
+        "//internal/core/model",
+        "//internal/plugins/authnapikey",
+        "//internal/server/authn",
+        "//internal/server/transport/httpjson",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
+)
+
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
