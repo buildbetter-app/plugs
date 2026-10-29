@@ -1,0 +1,28 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# This target runs the real nested-module executable's -print-contract path,
+# then the focused mutation and routing harness. The harness guards every
+# benchmark command with a fake, so Bazel acceptance never opens a database,
+# seeds a corpus, or runs the expensive benchmark.
+filegroup(
+    name = "authz_sources",
+    srcs = glob([
+        "**",
+    ], exclude = [
+        "BUILD.bazel",
+        "bazel-manifest-contract-test.sh",
+    ]),
+    visibility = ["//visibility:private"],
+)
+
+sh_test(
+    name = "manifest_contract_test",
+    size = "medium",
+    srcs = ["bazel-manifest-contract-test.sh"],
+    args = ["$(rlocationpath @go_sdk//:bin/go)"],
+    data = [
+        ":authz_sources",
+        "@go_sdk//:bin/go",
+        "@go_sdk//:files",
+    ],
+)

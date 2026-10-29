@@ -43,6 +43,9 @@ provisioning declaration, and artifact names with the manifest. Focused
 mutation coverage is available from
 [`manifest-contract-test.sh`](manifest-contract-test.sh); it rejects altered
 declarations before setup and exercises a valid bounded command path.
+The same executable contract and guarded mutation path run under Bazel with
+`bazel test //spikes/authz:manifest_contract_test --config=ci --test_output=all`;
+the acceptance target replaces benchmark invocations with a fake command.
 
 The JSON `CandidateRows` field is measured SQL cardinality evidence for the
 rows a plan must qualify or walk: scope-first counts its qualified ready rows,

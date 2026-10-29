@@ -21,6 +21,48 @@ artifact_result_digest_name="result.sha256"
 artifact_stdout_digest_name="stdout.sha256"
 artifact_exit_status_name="exit-status.txt"
 
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 is required to validate benchmark-manifest.json" >&2
+  exit 2
+fi
+
+# jq normalizes duplicate object members to the last value it sees. Reject
+# those ambiguous declarations first, before any jq normalization or runner
+# setup can occur. The validator uses only Python's standard library and also
+# rejects non-standard JSON constants accepted by Python's decoder by default.
+if ! python3 - "$manifest" <<'PY'
+import json
+import sys
+
+
+def reject_duplicate_members(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate object member: {key}")
+        result[key] = value
+    return result
+
+
+def reject_constant(value):
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        json.load(
+            stream,
+            object_pairs_hook=reject_duplicate_members,
+            parse_constant=reject_constant,
+        )
+except (OSError, UnicodeDecodeError, ValueError) as exc:
+    print(f"manifest contract: invalid JSON ({exc})", file=sys.stderr)
+    raise SystemExit(1)
+PY
+then
+  exit 2
+fi
+
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required to validate benchmark-manifest.json" >&2
   exit 2
@@ -61,8 +103,8 @@ if [[ "$manifest_top_level" != "$expected_top_level" ]]; then
   exit 2
 fi
 
-manifest_matrix_contract="$(jq -c '{schema,module,matrix,dataset,targets_ms}' "$manifest")"
-executable_matrix_contract="$(jq -c '{schema,module,matrix,dataset,targets_ms}' "$contract_file")"
+manifest_matrix_contract="$(jq -cS '{schema,module,matrix,dataset,targets_ms}' "$manifest")"
+executable_matrix_contract="$(jq -cS '{schema,module,matrix,dataset,targets_ms}' "$contract_file")"
 if [[ "$manifest_matrix_contract" != "$executable_matrix_contract" ]]; then
   echo "manifest contract: matrix, dataset, targets, schema, or module diverges from executable" >&2
   exit 2

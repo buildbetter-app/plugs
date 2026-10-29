@@ -21,7 +21,7 @@ func TestParentAndDepthMatchesGraph(t *testing.T) {
 			t.Fatalf("id %d has invalid parent %d", id, parent)
 		}
 	}
-		if got, want := maxDepth, MaxGraphDepth; got != want {
+	if got, want := maxDepth, MaxGraphDepth; got != want {
 		t.Fatalf("maximum stored depth = %d, want %d", got, want)
 	}
 
