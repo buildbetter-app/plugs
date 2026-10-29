@@ -1,0 +1,10 @@
+load("@lexicon_sources//:output_links.bzl", "CHECKOUT_NAME", "EXECUTION_ROOT", "OUTPUT_LINKS")
+load("//tools/lexicon:inventory.bzl", "lexicon_output_links")
+
+lexicon_output_links(
+    name = "verified",
+    checkout_name = CHECKOUT_NAME,
+    execution_root = EXECUTION_ROOT,
+    links = OUTPUT_LINKS,
+    visibility = ["//visibility:public"],
+)

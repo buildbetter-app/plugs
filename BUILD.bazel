@@ -11,7 +11,10 @@ filegroup(
     name = "lexicon_tree",
     # A checkout inventory crosses package and hidden-directory boundaries;
     # native globs and a list of known package targets cannot do that.
-    srcs = ["@lexicon_sources//:tree"],
+    srcs = [
+        "//tools/lexicon/output_links:verified",
+        "@lexicon_sources//:tree",
+    ],
     visibility = ["//visibility:public"],
 )
 

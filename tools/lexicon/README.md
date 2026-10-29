@@ -8,8 +8,9 @@ bazel test //:lexicon_gate --lockfile_mode=error --test_output=all
 
 `inventory.bzl` walks the checkout, including hidden directories and every
 Bazel package, and declares each file as an individual Bazel source input.
-Directory listings and files are watched so additions, removals, and new
-package boundaries invalidate the inventory after a cached pass. The generated
+Directory listings and each entry (including excluded output symlinks) are
+watched so additions, removals, link retargeting, and new package boundaries
+invalidate the inventory after a cached pass. The generated
 repository uses flat artifact names; a source `BUILD` or `BUILD.bazel` never
 forms an unexamined package boundary. The test reads only those declared
 runfiles and a generated path mapping. It does not read the checkout, invoke
@@ -19,6 +20,17 @@ Git, or use the network inside its sandbox.
 with sorted `missing` and `extra` paths when it differs from the checkout.
 All ordinary files are source, even ignored or untracked files. Only the root
 `.git` metadata entry and actual Bazel convenience symlinks are omitted.
+The output-link exception is bound to the current Bazel output base: the
+repository rule locates its own Bazel-supplied external-repository directory
+and verifies the output base's workspace marker. `bazel-out` must resolve to
+that base's `execroot/_main/bazel-out`, and `bazel-<checkout-name>` to its
+`execroot/_main`. The required `output_links:verified` dependency also compares
+each recorded link against Bazel's configured `ctx.bin_dir.path` metadata.
+`bazel-bin` and `bazel-testlogs` must resolve to the exact current configuration's
+`bin` and `testlogs` directories, respectively, under that verified root.
+A matching basename or an output-shaped path elsewhere is insufficient.
+This supports Bazel 9's default convenience links; clear stale links before
+switching output bases, configurations, or using a different symlink prefix.
 Other symlinks fail closed with their source path; use regular source files
 and directories. Ordinary paths named `bazel-*` are still source. Generated
 outputs should be kept outside the checkout or in Bazel's output directories.

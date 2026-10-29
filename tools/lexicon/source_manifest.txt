@@ -119,5 +119,6 @@ tools/lexicon/gate_test.go
 tools/lexicon/inventory.bzl
 tools/lexicon/inventory.go
 tools/lexicon/inventory_test.go
+tools/lexicon/output_links/BUILD.bazel
 tools/lexicon/policy.go
 tools/lexicon/source_manifest.txt
