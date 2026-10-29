@@ -360,6 +360,12 @@ internal/integration/sqlreadersnapshots/BUILD.bazel
 internal/integration/sqlreadersnapshots/integration_test.go
 internal/integration/watchsql/BUILD.bazel
 internal/integration/watchsql/integration_test.go
+internal/integration/webacceptance/BUILD.bazel
+internal/integration/webacceptance/README.md
+internal/integration/webacceptance/browser_check.mjs
+internal/integration/webacceptance/browser_test.go
+internal/integration/webacceptance/fixture_test.go
+internal/integration/webacceptance/web_test.go
 internal/plugins/authnapikey/BUILD.bazel
 internal/plugins/authnapikey/README.md
 internal/plugins/authnapikey/apikey.go
