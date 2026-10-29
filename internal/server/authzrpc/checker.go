@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
@@ -131,9 +132,16 @@ func (c *Checker) validateExistingWrite(ctx context.Context, reader Snapshot, pr
 	if len(rows) != 1 {
 		return forbidden("bead disappeared during authorization")
 	}
+	actual, err := recordImage(rows[0], rows[0].Body)
+	if err != nil {
+		return forbidden("invalid stored bead image")
+	}
 	before, err := recordImage(rows[0], change.Before)
 	if err != nil {
 		return forbidden("invalid stored bead image")
+	}
+	if !reflect.DeepEqual(actual.Body, before.Body) {
+		return forbidden("stored bead image changed during authorization")
 	}
 	after, err := recordImage(rows[0], change.After)
 	if err != nil {

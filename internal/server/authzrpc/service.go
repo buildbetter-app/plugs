@@ -22,6 +22,8 @@ type GuardedService struct {
 
 var _ rpc.Service = (*GuardedService)(nil)
 
+const candidateCap = 20000
+
 func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req service.GetRequest) (service.GetResult, error) {
 	allowed, err := s.checkRead(ctx, by, "bead.get", req.ID)
 	if err != nil {
@@ -48,9 +50,24 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 	if err != nil {
 		return service.BeadPage{}, err
 	}
-	if page.Next != nil {
+	items := append([]service.Bead(nil), page.Items...)
+	for page.Next != nil {
+		if len(items) >= candidateCap {
+			return service.BeadPage{}, postfilterCap()
+		}
+		position := *page.Next
+		full.Position = &position
+		page, err = s.delegate.Ready(ctx, by, full)
+		if err != nil {
+			return service.BeadPage{}, err
+		}
+		items = append(items, page.Items...)
+	}
+	if len(items) > candidateCap {
 		return service.BeadPage{}, postfilterCap()
 	}
+	page.Items = items
+	page.Next = nil
 	return s.filterPage(ctx, by, "bead.ready", req.Limit, req.Position, page, false)
 }
 
@@ -66,9 +83,24 @@ func (s *GuardedService) History(ctx context.Context, by model.PrincipalRef, req
 	if err != nil {
 		return service.BeadPage{}, err
 	}
-	if page.Next != nil {
+	items := append([]service.Bead(nil), page.Items...)
+	for page.Next != nil {
+		if len(items) >= candidateCap {
+			return service.BeadPage{}, postfilterCap()
+		}
+		position := *page.Next
+		full.Position = &position
+		page, err = s.delegate.History(ctx, by, full)
+		if err != nil {
+			return service.BeadPage{}, err
+		}
+		items = append(items, page.Items...)
+	}
+	if len(items) > candidateCap {
 		return service.BeadPage{}, postfilterCap()
 	}
+	page.Items = items
+	page.Next = nil
 	return s.filterPage(ctx, by, "history.query", req.Limit, req.Position, page, true)
 }
 
