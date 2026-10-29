@@ -134,7 +134,7 @@ func (s *Session) bead(row map[string]any) error {
 	return err
 }
 
-// RunInput executes one command array per line against this same local core.
+// RunInput executes one command array per line against the selected core.
 // It stops on the first refusal; earlier committed writes stay committed.
 // A blocking input must implement io.ReadCloser so cancellation can interrupt
 // its pending read. Finite readers need no additional lifetime handling.

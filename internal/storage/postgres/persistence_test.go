@@ -126,9 +126,15 @@ func TestPersistenceAcrossHandlesAndReopen(t *testing.T) {
 	if err = tx.BumpReadFacts(ctx, []driver.ReadFact{fact.Fact}); err != nil {
 		t.Fatal(err)
 	}
-	h.IdempotencyKey, h.Method, h.RequestHash = "durable", "bead.update", "request-1"
+	h.IdempotencyKey, h.Method, h.RequestHash = "durable", "bead.create", "request-1"
 	h.ResponsePending = true
 	h.AgentLabel = "ignored-authenticated-agent"
+	h.Chain = []string{}
+	h.Events = []model.EventDescriptor{{
+		Index: "0", ChangeIndex: "0", Type: model.EventBeadCreated,
+		Resource:   model.AuditResource{Kind: "bead", Ref: ref},
+		Provenance: model.EventProvenance{Method: "bead.create", SetBy: map[string]string{"body": "request"}, Cause: model.EventCause{Root: "request-1", Depth: "0", Chain: []string{}}, Chain: []string{}},
+	}}
 	h.Changes = []model.ChangeRecord{{Ref: ref, Op: model.OpCreate}}
 	h.Response = model.Commit{Results: []model.OpResult{{Ref: ref, Revision: model.Natural64(0), Record: []byte(`{"value":1}`)}}}
 	first, err := tx.Commit(ctx, h)
@@ -235,6 +241,12 @@ func TestSQLFailureAfterStagingRollsBackEveryFamily(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.IdempotencyKey, h.Method, h.RequestHash = "rollback", "bead.create", "request"
+	h.Chain = []string{}
+	h.Events = []model.EventDescriptor{{
+		Index: "0", ChangeIndex: "0", Type: model.EventBeadCreated,
+		Resource:   model.AuditResource{Kind: "bead", Ref: ref},
+		Provenance: model.EventProvenance{Method: "bead.create", SetBy: map[string]string{"body": "request"}, Cause: model.EventCause{Root: "request", Depth: "0", Chain: []string{}}, Chain: []string{}},
+	}}
 	h.Changes = []model.ChangeRecord{{Ref: ref, Op: model.OpCreate}}
 	if _, err = tx.Commit(ctx, h); err == nil {
 		t.Fatal("engine fault did not fail commit")

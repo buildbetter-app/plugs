@@ -1,0 +1,30 @@
+{
+  "manifest_version": 1,
+  "plugins": [
+    {
+      "id": "app.example.normalize",
+      "alias": "normalize",
+      "version": "1.0.0",
+      "plugin_api": "1.0",
+      "runtime": "native",
+      "provides": [
+        {"kind": "subscriber", "name": "title", "phases": ["mutate"], "reads": ["fields.title"], "owns": ["fields.normalized"], "max_point_reads": 2, "max_queries": 1},
+        {"kind": "subscriber", "name": "check", "phases": ["validate"], "reads": ["fields.normalized"], "max_point_reads": 1, "max_queries": 1}
+      ]
+    },
+    {
+      "id": "app.example.echo",
+      "alias": "echo",
+      "version": "1.0.0",
+      "plugin_api": "1.0",
+      "runtime": "native",
+      "provides": [
+        {"kind": "methods", "prefix": "x.echo", "methods": {
+          "echo": {"permission": "read", "resource": "params.id"},
+          "access": {"permission": "read", "resource": "params.id"}
+        }}
+      ],
+      "requires": {"methods": ["bead.get"], "egress": ["allowed.example:443"]}
+    }
+  ]
+}
