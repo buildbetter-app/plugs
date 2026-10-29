@@ -105,6 +105,12 @@ engdocs/style/BUILD.bazel
 engdocs/style/lexicon.toml
 go.mod
 internal/BUILD.bazel
+internal/core/events/BUILD.bazel
+internal/core/events/dispatcher.go
+internal/core/events/natural.go
+internal/core/events/natural_test.go
+internal/core/events/ports.go
+internal/core/events/reader.go
 internal/core/model/BUILD.bazel
 internal/core/model/changes.go
 internal/core/model/changes_test.go
@@ -126,6 +132,13 @@ internal/core/model/runtime.go
 internal/core/model/schema_test.go
 internal/core/model/testdata/openrpc-components.json
 internal/doc.go
+internal/server/events/BUILD.bazel
+internal/server/events/cursor.go
+internal/server/events/cursor_test.go
+internal/server/events/dispatcher_test.go
+internal/server/events/integration_test.go
+internal/server/events/service.go
+internal/server/events/storage.go
 internal/storage/conformance/BUILD.bazel
 internal/storage/conformance/atomic.go
 internal/storage/conformance/checkpoints.go
