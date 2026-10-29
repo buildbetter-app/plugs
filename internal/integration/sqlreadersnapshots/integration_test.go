@@ -216,6 +216,9 @@ func runSnapshotLifetime(t *testing.T, backend backend) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if snapshot := pinned.Snapshot(); snapshot.At == nil || snapshot.At.String() != "1" || snapshot.Incarnation != initial.Incarnation {
+		t.Fatalf("driver reader was not pinned at revision 1: %+v", snapshot)
+	}
 	pinnedRecord, err := pinned.Get(ctx, []driver.Ref{ref})
 	if err != nil || len(pinnedRecord) != 1 {
 		t.Fatalf("pinned initial read: %+v %v", pinnedRecord, err)
@@ -247,6 +250,9 @@ func runSnapshotLifetime(t *testing.T, backend backend) {
 	stillPinned, err := pinned.Get(ctx, []driver.Ref{ref, createdLater.Results[0].Ref})
 	if err != nil || len(stillPinned) != 1 || string(stillPinned[0].Body) != string(initialBody) {
 		t.Fatalf("driver snapshot moved or admitted later record: %+v %v", stillPinned, err)
+	}
+	if snapshot := pinned.Snapshot(); snapshot.At == nil || snapshot.At.String() != "1" {
+		t.Fatalf("driver reader snapshot advanced: %+v", snapshot)
 	}
 	serviceAsOf, err := svc.Get(ctx, principal, service.GetRequest{ID: ref, AsOf: &service.AsOf{Revision: initialRevision, Incarnation: initial.Incarnation}})
 	if err != nil || serviceAsOf.Bead.Fields["title"] != "before" || serviceAsOf.Bead.Revision.String() != "1" {
@@ -294,11 +300,17 @@ func runSnapshotLifetime(t *testing.T, backend backend) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := autoClosed.Get(ctx, []driver.Ref{ref}); !errors.Is(err, driver.ErrTxClosed) {
 		t.Fatalf("store-close reader error=%v, want ErrTxClosed", err)
 	}
 	if err := staged.Rollback(ctx); err != nil {
 		t.Fatalf("store-close transaction rollback=%v", err)
+	}
+	if err := staged.Rollback(ctx); err != nil {
+		t.Fatalf("store-close transaction second rollback=%v", err)
 	}
 	select {
 	case <-lease.Lost():
