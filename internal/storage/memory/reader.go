@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -17,9 +18,11 @@ import (
 )
 
 type reader struct {
-	state *state
-	at    uint64
-	now   func() time.Time
+	mu          sync.RWMutex
+	state       *state
+	at          uint64
+	incarnation string
+	now         func() time.Time
 }
 
 func newReader(s *state, v driver.View, now func() time.Time) (*reader, error) {
@@ -50,7 +53,28 @@ func newReader(s *state, v driver.View, now func() time.Time) (*reader, error) {
 	if at > head {
 		return nil, fmt.Errorf("memory: requested revision is beyond head")
 	}
-	return &reader{state: s, at: at, now: now}, nil
+	return &reader{state: s, at: at, incarnation: s.meta.Incarnation, now: now}, nil
+}
+
+// Close drops the pinned state after in-flight reads finish. Snapshot returns
+// copied identity metadata even after close; data operations require a live
+// reader. Closing never changes committed storage.
+func (r *reader) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.state = nil
+	r.now = nil
+	return nil
+}
+
+func (r *reader) check(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if r.state == nil {
+		return fmt.Errorf("memory: reader closed")
+	}
+	return nil
 }
 
 func branchZero(b model.Branch) error {
@@ -74,7 +98,7 @@ func keyID(key driver.LockKey) string { value, _ := driver.EncodeLockKey(key); r
 
 func (r *reader) Snapshot() driver.View {
 	at := model.Natural64(r.at)
-	return driver.View{Branch: model.Natural64(0), At: &at, Incarnation: r.state.meta.Incarnation}
+	return driver.View{Branch: model.Natural64(0), At: &at, Incarnation: r.incarnation}
 }
 
 func copyRecord(value driver.Record) driver.Record {
@@ -83,7 +107,9 @@ func copyRecord(value driver.Record) driver.Record {
 }
 
 func (r *reader) Get(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
-	if err := ctx.Err(); err != nil {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if err := r.check(ctx); err != nil {
 		return nil, err
 	}
 	result := make([]driver.Record, 0, len(refs))
@@ -150,7 +176,9 @@ func (r *reader) recordAt(key string) (driver.Record, bool, error) {
 }
 
 func (r *reader) Blob(ctx context.Context, hash driver.Hash) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if err := r.check(ctx); err != nil {
 		return nil, err
 	}
 	b, ok := r.state.blobs[hash]
@@ -182,7 +210,9 @@ func copyLock(value driver.LockState) driver.LockState {
 }
 
 func (r *reader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
-	if err := ctx.Err(); err != nil {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if err := r.check(ctx); err != nil {
 		return nil, err
 	}
 	if err := driver.ValidateLockKeys(keys); err != nil {
@@ -246,7 +276,9 @@ func limitValue(limit int) (int, error) {
 }
 
 func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
-	if err := ctx.Err(); err != nil {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if err := r.check(ctx); err != nil {
 		return driver.Page[driver.Record]{}, err
 	}
 	if q.AsOf != nil && q.AsOf.String() != model.Natural64(r.at).String() {
@@ -349,7 +381,9 @@ func matches(record driver.Record, filter map[string]any) (bool, error) {
 }
 
 func (r *reader) Versions(ctx context.Context, ref driver.Ref, req driver.PageReq) (driver.Page[driver.Version], error) {
-	if err := ctx.Err(); err != nil {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if err := r.check(ctx); err != nil {
 		return driver.Page[driver.Version]{}, err
 	}
 	key, err := recordKey(ref)
@@ -400,7 +434,9 @@ func cloneJSON[T any](value T) (T, error) {
 }
 
 func (r *reader) Changesets(ctx context.Context, after *driver.Cursor, limit int) ([]model.Changeset, error) {
-	if err := ctx.Err(); err != nil {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if err := r.check(ctx); err != nil {
 		return nil, err
 	}
 	max, err := limitValue(limit)
@@ -462,7 +498,9 @@ func normalizedScope(principal, agent, method, key string) scope {
 }
 
 func (r *reader) IdempotencyByKey(ctx context.Context, principal, agent, method, key string) (*driver.IdempotencyRecord, error) {
-	if err := ctx.Err(); err != nil {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if err := r.check(ctx); err != nil {
 		return nil, err
 	}
 	entry, ok := r.state.replays[normalizedScope(principal, agent, method, key)]

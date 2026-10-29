@@ -17,6 +17,7 @@ import (
 type Factory func(*testing.T) driver.Store
 
 func Run(t *testing.T, factory Factory) {
+	t.Run("lifetime_close_rolls_back_and_releases", func(t *testing.T) { lifetimes(t, factory) })
 	t.Run("G1_concurrent_gapless_revisions", func(t *testing.T) { concurrentGapless(t, factory) })
 	t.Run("G2_locks_latest_and_conflicting", func(t *testing.T) { locksLatest(t, factory) })
 	t.Run("G2_atomic_lock_set_and_skip_locked", func(t *testing.T) { atomicLockSet(t, factory) })
@@ -34,6 +35,7 @@ func setup(t *testing.T, factory Factory) (context.Context, driver.Store, driver
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	t.Cleanup(cancel)
 	s := factory(t)
+	t.Cleanup(func() { _ = s.Close() })
 	l, err := s.Lease(ctx, "conformance", driver.LeaseTTL)
 	if err != nil {
 		t.Fatal(err)
@@ -97,6 +99,7 @@ func concurrentGapless(t *testing.T, factory Factory) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer r.Close()
 	log, err := r.Changesets(ctx, nil, 100)
 	if err != nil {
 		t.Fatal(err)
