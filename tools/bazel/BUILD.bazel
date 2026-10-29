@@ -232,6 +232,7 @@ release_cross_build(
         "//internal/migration:migration",
         "//internal/molecules:molecules",
         "//internal/notion:notion",
+        "//internal/plugdump:plugdump",
         "//internal/procid:procid",
         "//internal/query:query",
         "//internal/recipes:recipes",

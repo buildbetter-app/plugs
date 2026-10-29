@@ -46,7 +46,12 @@ EXAMPLES:
   bd export -o issues.jsonl              # Export issues to file
   bd export --include-memories           # Export issues + memories
   bd export --all -o full.jsonl          # Include infra + templates + gates + memories
-  bd export --scrub -o clean.jsonl       # Exclude test/pollution records`,
+  bd export --scrub -o clean.jsonl       # Exclude test/pollution records
+  bd --readonly export --format plug-dump/1 --plug-inventory inventory.json -o dump.tar
+
+plug-dump/1 is an offline head-state and source-archive exporter. It requires
+an explicit paired source/configuration inventory and refuses unsupported
+inputs. It does not certify a complete store migration or Plug restore.`,
 	GroupID:       "sync",
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -62,9 +67,13 @@ var (
 	exportIncludeMemories bool
 	exportExcludeOwners   []string
 	exportVerbose         bool
+	exportFormat          string
+	exportPlugInventory   string
 )
 
 func init() {
+	exportCmd.Flags().StringVar(&exportFormat, "format", "jsonl", "Export format: jsonl or plug-dump/1 (offline source archive)")
+	exportCmd.Flags().StringVar(&exportPlugInventory, "plug-inventory", "", "Required source/configuration census JSON for plug-dump/1")
 	exportCmd.Flags().StringVarP(&exportOutput, "output", "o", "", "Output file path (default: stdout)")
 	exportCmd.Flags().BoolVar(&exportAll, "all", false, "Include all records (infra, templates, gates, memories)")
 	exportCmd.Flags().BoolVar(&exportIncludeInfra, "include-infra", false, "Include infrastructure beads (agents, roles, messages)")
@@ -78,6 +87,15 @@ func init() {
 }
 
 func runExport(cmd *cobra.Command, args []string) error {
+	if exportFormat == "plug-dump/1" {
+		return runPlugExport(cmd)
+	}
+	if exportFormat != "jsonl" && exportFormat != "" {
+		return HandleErrorRespectJSON("unsupported export format: %s", exportFormat)
+	}
+	if exportPlugInventory != "" {
+		return HandleErrorRespectJSON("--plug-inventory requires --format plug-dump/1")
+	}
 	evt := metrics.NewCommandEvent("export")
 	defer func() {
 		if c := metrics.Global(); c != nil {

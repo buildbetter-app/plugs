@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:plug-dump:1:beads-head-archive:manifest:1",
+  "title": "Beads offline-head-and-source-archives manifest",
+  "description": "Archive integrity schema. Capture, SQL definitions, A6 history and Plug restore remain explicitly unverified. Executable validation also checks member and registry consistency.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "schema", "beads_reference", "store_id", "machine", "main_version", "ignored_version", "scope", "history", "projects", "kind_registry", "files", "sources", "warnings", "verification"],
+  "properties": {
+    "format": {"const": "plug-dump/1"},
+    "schema": {"const": 1},
+    "beads_reference": {"const": "9d6fff760b7a314b476539198504d77ce0959656"},
+    "store_id": {"type": "string", "minLength": 1},
+    "machine": {"type": "string", "minLength": 1},
+    "main_version": {"const": 72},
+    "ignored_version": {"const": 28},
+    "scope": {"const": "offline-head-and-source-archives"},
+    "history": {"enum": ["unavailable", "available-unverified"]},
+    "projects": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/project"}},
+    "kind_registry": {"type": "array", "items": {"$ref": "#/$defs/kind"}},
+    "files": {"type": "object", "minProperties": 1, "additionalProperties": {"$ref": "#/$defs/file"}},
+    "sources": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/source"}},
+    "warnings": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capture", "schema", "history", "a3", "authz.verify", "derived", "plugin_lock", "ontology"],
+      "properties": {
+        "capture": {"const": "operator declarations; freeze/remotes/working-set not independently verified"},
+        "schema": {"const": "paired migration hashes and exact column names; SQL types, indexes and constraints not independently verified"},
+        "history": {"const": "available source rows archived only; no A6 replay or completeness claim"},
+        "a3": {"const": "not-run"},
+        "authz.verify": {"const": "not-run"},
+        "derived": {"const": "not-run"},
+        "plugin_lock": {"const": "not-produced"},
+        "ontology": {"const": "built-in status mapping only"}
+      }
+    }
+  },
+  "$defs": {
+    "natural": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prefix", "id_mode", "hash_length", "last_id", "child_counters"],
+      "properties": {
+        "prefix": {"type": "string", "pattern": "^[a-zA-Z][a-zA-Z0-9_-]{0,31}$"},
+        "id_mode": {"enum": ["hash", "sequential"]},
+        "hash_length": {"type": "integer", "minimum": 0, "maximum": 64},
+        "last_id": {"$ref": "#/$defs/natural"},
+        "child_counters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/natural"}}
+      },
+      "allOf": [{"if": {"properties": {"id_mode": {"const": "hash"}}}, "then": {"properties": {"hash_length": {"minimum": 1}}}}]
+    },
+    "kind": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "file", "count"],
+      "properties": {
+        "name": {"enum": ["bead", "edge", "comment", "memory", "config", "beads-archive"]},
+        "version": {"const": 1},
+        "file": {"type": "string", "pattern": "^records/(bead|edge|comment|memory|config|beads-archive)\\.ndjson$"},
+        "count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "size"],
+      "properties": {
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "size": {"type": "integer", "minimum": 0, "maximum": 134217728}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["family", "rows", "action", "reason"],
+      "properties": {
+        "family": {"type": "string", "minLength": 1},
+        "rows": {"type": "integer", "minimum": 0},
+        "action": {"enum": ["carry", "archive", "manifest/rebuild", "refuse-if-nonempty"]},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
