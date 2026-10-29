@@ -463,6 +463,137 @@ func TestOutcomeMethodsRequireActualOutcomeWriterBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestAlreadyClosedCloseUsesGuardedNoopReceipt(t *testing.T) {
+	post := &failedPost{}
+	f := setup(t, pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "close-post", Subscriber: post}))
+	ctx := context.Background()
+	id, _ := create(t, f, "Close settlement")
+	closed, err := f.svc.CloseWithOutcome(ctx, anonymous, CloseRequest{ID: id}, meta(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := post.calls
+	key := meta(t)
+	fresh, err := f.svc.CloseWithOutcome(ctx, anonymous, CloseRequest{ID: id}, key)
+	if err != nil || fresh.Replayed || fresh.Commit.Revision.String() != closed.Commit.Revision.String() || fresh.Commit.Results[0].Revision.String() != closed.Commit.Results[0].Revision.String() || len(fresh.Commit.Warnings) != 0 || post.calls != calls {
+		t.Fatalf("fresh close settlement did not retain no-op semantics: %+v %v posts=%d/%d", fresh, err, calls, post.calls)
+	}
+	replay, err := f.svc.CloseWithOutcome(ctx, anonymous, CloseRequest{ID: id}, key)
+	a, _ := json.Marshal(fresh.Commit)
+	b, _ := json.Marshal(replay.Commit)
+	if err != nil || !replay.Replayed || !bytes.Equal(a, b) || post.calls != calls {
+		t.Fatalf("close settlement replay: %+v %v", replay, err)
+	}
+	withReason, err := f.svc.CloseWithOutcome(ctx, anonymous, CloseRequest{ID: id, Reason: "Additional evidence"}, meta(t))
+	if err != nil || withReason.Replayed || withReason.Commit.Revision.String() == closed.Commit.Revision.String() || post.calls != calls+1 {
+		t.Fatalf("reason comment was lost as a no-op: %+v %v", withReason, err)
+	}
+	doc, err := pipeline.DecodeDocument(withReason.Commit.Results[0].Record)
+	if err != nil || len(doc.Comments) != 1 || doc.Comments[0].Body != "Additional evidence" {
+		t.Fatalf("reason comment was not committed: %+v %v", doc, err)
+	}
+	got, err := f.svc.Get(ctx, anonymous, GetRequest{ID: id})
+	if err != nil || len(got.Bead.Fields) == 0 || got.Lease != nil {
+		t.Fatalf("settled bead: %+v %v", got, err)
+	}
+	stale := closed.Commit.Revision
+	_, err = f.svc.CloseWithOutcome(ctx, anonymous, CloseRequest{ID: id, Expect: []model.Precondition{{Ref: id, Revision: &stale}}}, meta(t))
+	wantCode(t, err, "precondition_failed")
+}
+
+func TestAlreadyClosedCloseRechecksLiveGuards(t *testing.T) {
+	for _, guard := range []string{"template", "blocker"} {
+		t.Run(guard, func(t *testing.T) {
+			f := setup(t)
+			ctx := context.Background()
+			id, _ := create(t, f, "Already closed")
+			if _, err := f.svc.Close(ctx, anonymous, CloseRequest{ID: id}, meta(t)); err != nil {
+				t.Fatal(err)
+			}
+			if guard == "template" {
+				if _, err := f.svc.Update(ctx, anonymous, UpdateRequest{ID: id, Fields: map[string]any{"template": true}}, meta(t)); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				blocker, _ := create(t, f, "New blocker")
+				m := meta(t)
+				m.Method = "tx.apply"
+				if _, err := f.writer.Apply(ctx, anonymous, model.ChangeSet{Ops: []model.Op{{Kind: model.OpLink, Link: &model.LinkOp{From: id, To: blocker, LinkKind: "blocks"}}}}, m); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, _ := f.store.Meta(ctx)
+			_, err := f.svc.CloseWithOutcome(ctx, anonymous, CloseRequest{ID: id}, meta(t))
+			wantCode(t, err, "ontology_guard_failed")
+			after, _ := f.store.Meta(ctx)
+			if before.Head.String() != after.Head.String() {
+				t.Fatal("refused close settlement advanced head")
+			}
+		})
+	}
+}
+
+type settledCloseMutator struct{ status bool }
+
+func (m settledCloseMutator) Mutate(_ context.Context, p port.ProposedChange, _ port.SnapshotReader) ([]port.Patch, error) {
+	if p.Meta.Method != "bead.close" || !hasDocument(p.Changes[0].Before) {
+		return nil, nil
+	}
+	doc, err := pipeline.DecodeDocument(p.Changes[0].Before)
+	if err != nil {
+		return nil, err
+	}
+	target, _ := ontology.Default().SlotStatus(doc.Type, ontology.Close)
+	if doc.Fields["status"] != target {
+		return nil, nil
+	}
+	path, raw := "fields.description", json.RawMessage(`"Settlement synchronized"`)
+	if m.status {
+		path = "fields.status"
+		raw, _ = json.Marshal(target)
+	}
+	return []port.Patch{{Resource: p.Changes[0].Resource, Paths: map[string]json.RawMessage{path: raw}}}, nil
+}
+
+func TestAlreadyClosedCloseValidatesMutatorsAndOriginalPatch(t *testing.T) {
+	for _, status := range []bool{false, true} {
+		t.Run(map[bool]string{false: "real-field-change", true: "same-status-touch"}[status], func(t *testing.T) {
+			path := "fields.description"
+			if status {
+				path = "fields.status"
+			}
+			f := setup(t, pipeline.WithMutators(pipeline.MutatorBinding{ID: "close-sync", Owns: []string{path}, Mutator: settledCloseMutator{status: status}}))
+			ctx := context.Background()
+			id, _ := create(t, f, "Close callbacks")
+			first, err := f.svc.Close(ctx, anonymous, CloseRequest{ID: id}, meta(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := f.svc.CloseWithOutcome(ctx, anonymous, CloseRequest{ID: id}, meta(t))
+			if status {
+				wantCode(t, err, "ontology_use_slot_verb")
+				return
+			}
+			if err != nil || second.Replayed || second.Commit.Revision.String() == first.Revision.String() {
+				t.Fatalf("real close mutator change was lost: %+v %v", second, err)
+			}
+			got, err := f.svc.Get(ctx, anonymous, GetRequest{ID: id})
+			if err != nil || got.Bead.Fields["description"] != "Settlement synchronized" {
+				t.Fatalf("mutator change missing: %+v %v", got, err)
+			}
+		})
+	}
+	f := setup(t)
+	id, _ := create(t, f, "Original patch")
+	if _, err := f.svc.Close(context.Background(), anonymous, CloseRequest{ID: id}, meta(t)); err != nil {
+		t.Fatal(err)
+	}
+	m := meta(t)
+	m.Method = "bead.close"
+	_, err := f.writer.Apply(context.Background(), anonymous, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: id, Fields: map[string]any{"title": "Not an empty slot patch"}}}}}, m)
+	wantCode(t, err, "invalid_params")
+}
+
 func TestLeaseOwnershipExpiryAndLostStorageLease(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
