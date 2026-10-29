@@ -56,7 +56,14 @@ func (s *Session) Run(ctx context.Context, args []string) error {
 		return err
 	}
 	object, _ := decoded.(map[string]any)
-	if warnings, ok := object["warnings"].([]any); ok {
+	commit := object
+	if nested, ok := object["commit"].(map[string]any); ok {
+		// Gate results wrap the canonical commit beside gate state and approval
+		// count. Keep session aliases and warning handling tied to that commit as
+		// with bead writes.
+		commit = nested
+	}
+	if warnings, ok := commit["warnings"].([]any); ok {
 		for _, item := range warnings {
 			warning, _ := item.(map[string]any)
 			if _, err := fmt.Fprintf(s.Err, "warning [%v]: %v", warning["code"], warning["message"]); err != nil {
@@ -73,10 +80,10 @@ func (s *Session) Run(ctx context.Context, args []string) error {
 			}
 		}
 	}
-	if revision, ok := object["revision"].(json.Number); ok {
+	if revision, ok := commit["revision"].(json.Number); ok {
 		s.LastRevision = revision.String()
 	}
-	if results, ok := object["results"].([]any); ok {
+	if results, ok := commit["results"].([]any); ok {
 		for _, item := range results {
 			row, _ := item.(map[string]any)
 			ref, _ := row["ref"].(map[string]any)

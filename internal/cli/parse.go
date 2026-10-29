@@ -24,6 +24,8 @@ Commands:
   comment ID --body TEXT [--expect REVISION]
   close ID [--reason TEXT] [--expect REVISION]
   history --as-of REVISION [--id ID] [--limit N] [--cursor TOKEN]
+  gate approve ID [--expect REVISION]
+  gate report ID --state STATE [--details JSON] [--expect REVISION]
   session                 Read one JSON argv array per line from stdin.
 
 Memory storage is disposable and exists only for this process. In a session,
@@ -92,6 +94,9 @@ func ParseCommand(args []string) (Command, error) {
 		return Command{}, fmt.Errorf("command is required")
 	}
 	name := args[0]
+	if name == "gate" {
+		return parseGateCommand(args[1:])
+	}
 	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "history": true}
 	if !allowed[name] {
 		return Command{}, fmt.Errorf("unsupported command %q", name)
