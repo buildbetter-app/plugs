@@ -136,7 +136,12 @@ func readTables(ctx context.Context, src Source) (map[string]Table, error) {
 					return nil, fmt.Errorf("missing source field in %s", name)
 				}
 			}
-			if err := validateSecretReferences(map[string]any(row)); err != nil {
+			values := map[string]any(row)
+			if name == "local_metadata" {
+				// "key" is a SQL column name, not the configuration key.
+				values = map[string]any{text(row, "key"): row["value"]}
+			}
+			if err := validateSecretReferences(values); err != nil {
 				// Config/metadata credentials are replaced using explicit policy.
 				if name != "config" && name != "metadata" {
 					return nil, fmt.Errorf("family %s: %w", name, err)

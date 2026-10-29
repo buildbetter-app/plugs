@@ -12,8 +12,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"github.com/steveyegge/beads/internal/config"
 )
 
 type fixtureSource map[string]Table
@@ -240,31 +238,33 @@ func TestDumpExternalConfigAndLosslessCounters(t *testing.T) {
 	}
 }
 
-func TestDumpSecretClassificationMatchesConfigPredicate(t *testing.T) {
-	keys := []string{"service.api-key", "integrations.apikey", "database.passwd", "signing.privatekey", "tls.private_key", "database.dsn"}
-	for _, key := range keys {
-		if !config.IsSecretKey(key) && !strings.Contains(key, "dsn") {
-			t.Fatalf("test key %q is not recognized by the shared predicate", key)
-		}
-		if !secretKey(key) {
-			t.Fatalf("dump classifier does not reuse the shared predicate for %q", key)
-		}
-	}
+var dumpSecretTestKeys = []string{
+	"service.api-key", "integrations.apikey", "database.passwd", "signing.privatekey",
+	"tls.private_key", "ssh.privkey", "ssh.key", "service.keys", "database.pwd",
+	"github.pat", "github.auth", "registry.bearer", "tls.cert", "aws.credentials",
+	"service.credential", "service.secret", "service.token", "service.password",
+	"service.APIKEY", "database.dsn", "legacy.access_keyname",
+}
 
+func TestDumpSecretClassificationMatchesConfigPredicate(t *testing.T) {
 	source, inventory := fixture(t)
-	for _, key := range keys {
-		table := source["config"]
-		table.Rows = append(table.Rows, Row{"key": key, "value": "fixture-classified-value"})
-		source["config"] = table
-		inventory.ConfigPolicy["config/"+key] = "secret"
+	for _, name := range []string{"config", "metadata"} {
+		for _, key := range dumpSecretTestKeys {
+			table := source[name]
+			table.Rows = append(table.Rows, Row{"key": key, "value": "fixture-classified-value"})
+			source[name] = table
+			inventory.ConfigPolicy[name+"/"+key] = "secret"
+		}
 	}
 	data := buildFixture(t, source, inventory)
 	if bytes.Contains(data, []byte("fixture-classified-value")) {
 		t.Fatal("recognized secret value entered the archive")
 	}
-	for _, key := range keys {
-		if !bytes.Contains(data, []byte(`"$secret":"config/`+key+`"`)) {
-			t.Errorf("missing secret reference for %q", key)
+	for _, name := range []string{"config", "metadata"} {
+		for _, key := range dumpSecretTestKeys {
+			if !bytes.Contains(data, []byte(`"$secret":"`+name+`/`+key+`"`)) {
+				t.Errorf("missing secret reference for %q", name+"/"+key)
+			}
 		}
 	}
 
@@ -280,6 +280,76 @@ func TestDumpSecretClassificationMatchesConfigPredicate(t *testing.T) {
 	if !bytes.Contains(data, []byte("fixture-public-value")) {
 		t.Fatal("nested external public value was lost")
 	}
+	if err := os.WriteFile(external.Path, []byte(`{"nested":{"api-key":null,"apikey":null,"passwd":null,"privatekey":null}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := Build(context.Background(), source, inventory); err == nil || len(data) != 0 {
+		t.Fatal("nested external JSON accepted missing credential references")
+	}
+}
+
+func TestDumpSecretClassificationPolicyRefusals(t *testing.T) {
+	for _, key := range dumpSecretTestKeys {
+		t.Run(key, func(t *testing.T) {
+			for _, name := range []string{"config", "metadata"} {
+				source, inventory := fixture(t)
+				table := source[name]
+				table.Rows = append(table.Rows, Row{"key": key, "value": nil})
+				source[name] = table
+				inventory.ConfigPolicy[name+"/"+key] = "public"
+				if data, err := Build(context.Background(), source, inventory); err == nil || len(data) != 0 || !strings.Contains(err.Error(), "requires explicit public/secret policy") {
+					t.Fatalf("%s accepted public policy for a recognized secret key", name)
+				}
+				record := Record{Kind: "config", ID: name + "/" + key,
+					Body:   map[string]any{"classification": "public", "value": nil},
+					Source: Provenance{Table: name, Fields: Row{"key": key, "value": nil}}}
+				if err := validateRecord(record, nil, map[string]int{}); err == nil || !strings.Contains(err.Error(), "unclassified or raw credential record") {
+					t.Fatalf("archive record validation accepted public policy for %s", name)
+				}
+			}
+		})
+	}
+}
+
+func TestDumpSecretClassificationNestedReferences(t *testing.T) {
+	for _, key := range dumpSecretTestKeys {
+		t.Run(key, func(t *testing.T) {
+			for _, value := range []any{nil, false, map[string]any{"$secret": ""}, map[string]any{"$secret": "fixture/reference", "extra": true}} {
+				nested := map[string]any{"nested": []any{map[string]any{key: value}}}
+				if err := validateSecretReferences(nested); err == nil {
+					t.Fatal("nested recognized key accepted a missing or malformed reference")
+				}
+			}
+			valid := map[string]any{"nested": []any{map[string]any{key: map[string]any{"$secret": "fixture/reference"}}}}
+			if err := validateSecretReferences(valid); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for _, key := range []string{"issue.path", "export.pattern", "commit.author", "sort.keyword", "build.compat"} {
+		if err := validateSecretReferences(map[string]any{key: false}); err != nil {
+			t.Fatalf("ordinary public key %s was rejected: %v", key, err)
+		}
+	}
+}
+
+func TestDumpLocalMetadataUsesEntryKey(t *testing.T) {
+	source, inventory := fixture(t)
+	table := source["local_metadata"]
+	table.Rows = []Row{{"key": "bd_version", "value": "fixture-version"}}
+	source["local_metadata"] = table
+	data := buildFixture(t, source, inventory)
+	if !bytes.Contains(archiveMembers(t, data)["records/beads-archive.ndjson"], []byte("fixture-version")) {
+		t.Fatal("ordinary local metadata was not archived")
+	}
+	table.Rows[0] = Row{"key": "service.api-key", "value": false}
+	source["local_metadata"] = table
+	if data, err := Build(context.Background(), source, inventory); err == nil || len(data) != 0 {
+		t.Fatal("local metadata accepted a recognized key without a reference")
+	}
+	table.Rows[0]["value"] = map[string]any{"$secret": "fixture/reference"}
+	source["local_metadata"] = table
+	buildFixture(t, source, inventory)
 }
 
 func TestDumpInvalidArchive(t *testing.T) {

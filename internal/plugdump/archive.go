@@ -258,6 +258,11 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 			return fmt.Errorf("missing source record column")
 		}
 	}
+	if table == "local_metadata" {
+		if err := validateSecretReferences(map[string]any{text(record.Source.Fields, "key"): record.Source.Fields["value"]}); err != nil {
+			return err
+		}
+	}
 	if record.Kind == "bead" || record.Kind == "edge" || record.Kind == "comment" {
 		if record.ID != text(record.Source.Fields, "id") {
 			return fmt.Errorf("record/source identity mismatch")

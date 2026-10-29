@@ -251,10 +251,11 @@ func readExternal(inputs []ExternalInput) ([]byte, []Disposition, error) {
 
 func secretKey(key string) bool {
 	// Keep dump classification aligned with the existing configuration
-	// security predicate. The exporter retains its historical dump-only DSN
-	// classification, while the shared predicate covers api-key/apikey,
+	// security predicate. Retain dump-specific substring classifications,
+	// while the shared predicate covers api-key/apikey,
 	// passwd/privatekey and equivalent recognized names.
-	return config.IsSecretKey(key) || strings.Contains(strings.ToLower(key), "dsn")
+	lower := strings.ToLower(key)
+	return config.IsSecretKey(key) || strings.Contains(lower, "dsn") || strings.Contains(lower, "access_key")
 }
 
 func validateSecretReferences(value any) error {
