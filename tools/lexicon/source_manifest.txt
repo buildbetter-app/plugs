@@ -73,6 +73,7 @@ engdocs/design/plug/contracts/openrpc.json
 engdocs/design/plug/current-and-desired-state.md
 engdocs/design/plug/decisions-needed.md
 engdocs/design/plug/design.md
+engdocs/design/plug/review-2026-10-27.md
 engdocs/design/plug/spec/behaviors.md
 engdocs/design/plug/spec/behaviors/content.md
 engdocs/design/plug/spec/behaviors/history.md
@@ -104,6 +105,7 @@ engdocs/design/plug/spike-ux-decision.md
 engdocs/style/BUILD.bazel
 engdocs/style/lexicon.toml
 go.mod
+go.sum
 internal/BUILD.bazel
 internal/core/authz/BUILD.bazel
 internal/core/authz/chain.go
@@ -135,6 +137,19 @@ internal/core/model/response.go
 internal/core/model/runtime.go
 internal/core/model/schema_test.go
 internal/core/model/testdata/openrpc-components.json
+internal/core/ontology/BUILD.bazel
+internal/core/ontology/check.go
+internal/core/ontology/compile.go
+internal/core/ontology/compile_test.go
+internal/core/ontology/decode.go
+internal/core/ontology/default.go
+internal/core/ontology/ontology_test.go
+internal/core/ontology/plan.go
+internal/core/ontology/runtime.go
+internal/core/ontology/runtime_test.go
+internal/core/ontology/schema.go
+internal/core/ontology/schema_test.go
+internal/core/ontology/types.go
 internal/doc.go
 internal/plugins/authnapikey/BUILD.bazel
 internal/plugins/authnapikey/apikey.go
@@ -156,6 +171,7 @@ internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
+internal/storage/driver/receipt_contract_test.go
 pluginapi/BUILD.bazel
 pluginapi/doc.go
 sdk/go/BUILD.bazel
