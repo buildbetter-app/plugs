@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -19,6 +20,10 @@ type reader struct {
 	at     uint64
 	closed bool
 	writer *transaction
+	// Writers reserve their connection so cancellation cleanup can wait for
+	// pgx's asynchronous server termination before another lock probe starts.
+	conn        *sql.Conn
+	cleanupDone <-chan struct{}
 }
 
 func (s *Store) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
@@ -85,6 +90,20 @@ func (r *reader) finish() error {
 	err := r.sql.Rollback()
 	if errors.Is(err, sql.ErrTxDone) {
 		err = nil
+	}
+	if r.conn != nil {
+		if err != nil {
+			// A context-cancelled query may return while PostgreSQL still holds
+			// its prefix locks. Failed rollback means pgx is terminating that
+			// connection asynchronously; wait for its bounded cleanup first.
+			timer := time.NewTimer(15 * time.Second)
+			select {
+			case <-r.cleanupDone:
+			case <-timer.C:
+			}
+			timer.Stop()
+		}
+		_ = r.conn.Close()
 	}
 	r.store.untrack(r)
 	if r.writer != nil {

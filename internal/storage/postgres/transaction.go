@@ -13,6 +13,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 type transaction struct {
@@ -36,21 +37,35 @@ func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.Wri
 	if err != nil {
 		return nil, err
 	}
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	conn, err := s.db.Conn(ctx)
 	if err != nil {
+		return nil, err
+	}
+	var cleanupDone <-chan struct{}
+	if err = conn.Raw(func(raw any) error {
+		cleanupDone = raw.(*stdlib.Conn).Conn().PgConn().CleanupDone()
+		return nil
+	}); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	tx, err := conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	m, err := readMeta(ctx, tx, "")
 	if err != nil {
 		_ = tx.Rollback()
+		_ = conn.Close()
 		return nil, err
 	}
-	r := &reader{store: s, sql: tx, meta: m}
+	r := &reader{store: s, sql: tx, meta: m, conn: conn, cleanupDone: cleanupDone}
 	r.at, _ = m.Head.Uint64()
 	t := &transaction{reader: r, lease: l, records: make(map[string]*driver.Record), identities: make(map[string]driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), bumps: make(map[string]driver.LockKey), done: make(chan struct{})}
 	r.writer = t
 	if err = s.track(r); err != nil {
-		_ = tx.Rollback()
+		_ = r.finish()
 		return nil, err
 	}
 	// Loss also releases idle transactions, so an old holder cannot retain the
@@ -74,9 +89,26 @@ func sqlState(err error) string {
 }
 func (t *transaction) Rollback(context.Context) error { return t.Close() }
 
-func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) ([]driver.LockState, error) {
+func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (_ []driver.LockState, err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	defer func() {
+		if err == nil {
+			return
+		}
+		// pgx can close a timed-out connection before the context's timer has
+		// recorded Err(). Preserve the public deadline result at every SQL
+		// boundary, including lease checks and savepoint release, and release
+		// any acquired prefix before returning a cancelled acquisition.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = ctxErr
+		} else if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			err = context.DeadlineExceeded
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			_ = t.finish()
+		}
+	}()
 	if err := t.check(ctx); err != nil {
 		return nil, err
 	}
@@ -86,7 +118,7 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 	if err := driver.ValidateLockSet(requests); err != nil {
 		return nil, err
 	}
-	requests, err := copied(requests)
+	requests, err = copied(requests)
 	if err != nil {
 		return nil, err
 	}
