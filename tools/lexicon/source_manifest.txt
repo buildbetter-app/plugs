@@ -182,6 +182,15 @@ internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
 internal/doc.go
+internal/plugins/authnapikey/BUILD.bazel
+internal/plugins/authnapikey/apikey.go
+internal/plugins/authnapikey/apikey_test.go
+internal/plugins/authnapikey/http_test.go
+internal/server/authn/BUILD.bazel
+internal/server/authn/authn.go
+internal/server/authn/authn_test.go
+internal/server/authn/http.go
+internal/server/authn/http_test.go
 internal/server/rpc/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/main.go

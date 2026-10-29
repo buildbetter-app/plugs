@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "authnapikey",
+    srcs = glob(["*.go"], exclude = ["*_test.go"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/plugins/authnapikey",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/core/model",
+        "//internal/server/authn",
+    ],
+)
+
+go_test(
+    name = "authnapikey_test",
+    srcs = glob(["*_test.go"]),
+    embed = [":authnapikey"],
+    deps = [
+        "//internal/core/model",
+        "//internal/server/authn",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
