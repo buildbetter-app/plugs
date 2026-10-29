@@ -182,6 +182,8 @@ internal/core/events/natural_test.go
 internal/core/events/ports.go
 internal/core/events/reader.go
 internal/core/events/reader_test.go
+internal/core/events/registry.go
+internal/core/events/registry_test.go
 internal/core/model/BUILD.bazel
 internal/core/model/audit.go
 internal/core/model/audit_test.go
