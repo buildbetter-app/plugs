@@ -277,6 +277,11 @@ internal/integration/clisql/BUILD.bazel
 internal/integration/clisql/README.md
 internal/integration/clisql/fixture_test.go
 internal/integration/clisql/lifecycle_test.go
+internal/integration/graphacceptance/BUILD.bazel
+internal/integration/graphacceptance/README.md
+internal/integration/graphacceptance/fixture_test.go
+internal/integration/graphacceptance/graph_test.go
+internal/integration/graphacceptance/unsupported_test.go
 internal/integration/localclisession/BUILD.bazel
 internal/integration/localclisession/session_test.go
 internal/integration/oidc/BUILD.bazel
