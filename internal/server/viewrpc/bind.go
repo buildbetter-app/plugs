@@ -149,6 +149,12 @@ func encodeResult(codec *CursorCodec, call rpc.Call, p params, result viewops.Re
 	items := make([]viewops.Bead, 0, len(result.Items))
 	items = append(items, result.Items...)
 	out := map[string]any{"items": items, "asOf": map[string]any{"revision": result.AsOf.Revision}}
+	if result.Projection != nil {
+		// Projection health is response metadata, not part of the signed
+		// paging cursor. Preserve the exact status observed with this pinned
+		// view snapshot while keeping continuation tokens unchanged.
+		out["projection"] = result.Projection
+	}
 	if result.AsOf.Incarnation != "" {
 		out["asOf"].(map[string]any)["incarnation"] = result.AsOf.Incarnation
 	}
