@@ -58,6 +58,9 @@ host must supply the current read authorizer. Planning requires access to the
 whole inventory and refuses any denied row instead of silently dropping it.
 Plans and source history also require read access to every configured overlay,
 including projects without rows. Projectless rows refuse migration planning.
+Compiler diagnostics require access to all overlays they can name. Source
+history authorizes both historical source images under current permissions,
+including overlays removed from the current document.
 
 Run `bazel --ignore_all_rc_files test //internal/core/ontologyops:ontologyops_test
 --jobs=2 --test_output=all --test_timeout=900`.

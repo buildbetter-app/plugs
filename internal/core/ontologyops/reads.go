@@ -188,6 +188,7 @@ func (s *Service) History(ctx context.Context, by model.PrincipalRef, project st
 	}
 	result := HistoryResult{Revisions: []model.Changeset{}}
 	cursor := &driver.Cursor{Incarnation: r.Snapshot().Incarnation, Revision: after, Method: "changesets"}
+	authorizedVersions := map[string]bool{src.guard.Revision.String(): true}
 	for {
 		entries, err := r.Changesets(ctx, cursor, 1000)
 		if err != nil {
@@ -201,6 +202,21 @@ func (s *Service) History(ctx context.Context, by model.PrincipalRef, project st
 				}
 			}
 			if len(changes) != 0 {
+				if s.cfg.AuthorizeRead != nil {
+					// A removed overlay can still occur in changed paths. Check
+					// both actual source images under current permissions.
+					for _, change := range changes {
+						for _, at := range []model.Revision{change.FromRevision, entry.Revision} {
+							if at.IsZero() || authorizedVersions[at.String()] {
+								continue
+							}
+							if err := s.authorizeSourceVersion(ctx, by, project, r.Snapshot().Incarnation, src.guard.Ref, at); err != nil {
+								return HistoryResult{}, err
+							}
+							authorizedVersions[at.String()] = true
+						}
+					}
+				}
 				entry.Changes, entry.Events = changes, nil
 				if entry.Chain == nil {
 					entry.Chain = []string{}
@@ -216,4 +232,23 @@ func (s *Service) History(ctx context.Context, by model.PrincipalRef, project st
 			return result, nil
 		}
 	}
+}
+
+func (s *Service) authorizeSourceVersion(ctx context.Context, by model.PrincipalRef, project, incarnation string, ref model.Ref, at model.Revision) error {
+	_, r, err := s.reader(ctx, by, &at)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	if r.Snapshot().Incarnation != incarnation {
+		return failure("incarnation_changed", "ontology history belongs to a different store incarnation")
+	}
+	src, err := s.source(ctx, by, r, project)
+	if err != nil {
+		return err
+	}
+	if !sameRef(src.guard.Ref, ref) {
+		return failure("invalid_params", "historical ontology source locator changed")
+	}
+	return s.authorizeSource(ctx, by, src)
 }

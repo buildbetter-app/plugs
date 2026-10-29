@@ -436,3 +436,38 @@ func TestSourceCompilationAndReadAuthorizationAreNeverSilentlyFiltered(t *testin
 	_, err = f.svc.Plan(context.Background(), caller, PlanRequest{Project: "p", Document: raw})
 	wantCode(t, err, "invalid_params")
 }
+
+func TestCrossOverlayDiagnosticsAndHistoricalPathsRequireCurrentAccess(t *testing.T) {
+	denyPrivate := func(_ context.Context, _ model.PrincipalRef, _ model.ResourceRef, project string) error {
+		if project == "private" {
+			return failure("forbidden", "unreadable project source")
+		}
+		return nil
+	}
+	t.Run("compiler diagnostics", func(t *testing.T) {
+		f := newFixture(t)
+		overlay := ontology.Document{Types: map[string]ontology.Type{"secret": {Workflow: "private-missing-workflow"}}}
+		f.seed(t, conformance.FixtureChange{Ref: f.ref, Kind: "ontology", Op: model.OpPatch, Body: marshalSource(t, service.OntologySource{Base: f.base, Overlays: map[string]ontology.Document{"private": overlay}})})
+		f.svc.cfg.AuthorizeRead = denyPrivate
+		_, err := f.svc.Get(context.Background(), caller, "p")
+		wantCode(t, err, "forbidden")
+		_, err = f.svc.Check(context.Background(), caller, "p")
+		wantCode(t, err, "forbidden")
+	})
+	t.Run("removed historical overlay", func(t *testing.T) {
+		f := newFixture(t)
+		overlay := ontology.Document{Types: map[string]ontology.Type{"issue": f.base.Types["issue"]}}
+		f.seed(t, conformance.FixtureChange{Ref: f.ref, Kind: "ontology", Op: model.OpPatch, Body: marshalSource(t, service.OntologySource{Base: f.base, Overlays: map[string]ontology.Document{"private": overlay}}), ChangedPaths: []string{"overlays.private"}})
+		f.seed(t, conformance.FixtureChange{Ref: f.ref, Kind: "ontology", Op: model.OpPatch, Body: marshalSource(t, service.OntologySource{Base: f.base}), ChangedPaths: []string{"overlays.private"}})
+		f.svc.cfg.AuthorizeRead = denyPrivate
+		for _, after := range []model.Revision{model.Natural64(1), model.Natural64(2)} {
+			_, err := f.svc.History(context.Background(), caller, "p", after, 1)
+			wantCode(t, err, "forbidden")
+		}
+		f.svc.cfg.AuthorizeRead = func(context.Context, model.PrincipalRef, model.ResourceRef, string) error { return nil }
+		history, err := f.svc.History(context.Background(), caller, "p", model.Natural64(0), 100)
+		if err != nil || len(history.Revisions) != 3 || history.Revisions[2].Changes[0].ChangedPaths[0] != "overlays.private" {
+			t.Fatalf("authorized actual source history = %+v, %v", history, err)
+		}
+	})
+}

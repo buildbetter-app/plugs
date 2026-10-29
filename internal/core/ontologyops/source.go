@@ -132,12 +132,19 @@ func (s *Service) source(ctx context.Context, by model.PrincipalRef, r driver.Re
 	// The service owner supplies the one strict source-envelope decoder.
 	doc, err := service.DecodeOntologySource(rows[0].Body)
 	if err != nil {
-		return source{}, failure("invalid_params", "protected ontology source cannot be decoded: "+err.Error())
+		return source{}, failure("invalid_params", "protected ontology source cannot be decoded")
 	}
 	compiled, problems := ontology.Compile(doc.Base, doc.Overlays, doc.Plugins)
 	out := source{document: doc, compiled: compiled, problems: []Problem{}, guard: SourceGuard{Ref: ref, Revision: rows[0].Revision, BodyHash: bytesDigest(rows[0].Body), Digest: compiled.Digest()}}
 	for _, p := range problems {
 		out.problems = append(out.problems, Problem{Path: p.Path, Code: string(p.Code), Message: p.Message})
+	}
+	// Compilation diagnostics describe the whole source, including names in
+	// other project overlays. They require the same access as a full report.
+	if len(out.problems) != 0 {
+		if err := s.authorizeSource(ctx, by, out); err != nil {
+			return source{}, err
+		}
 	}
 	return out, nil
 }
