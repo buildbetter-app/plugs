@@ -270,6 +270,10 @@ internal/integration/apikey/README.md
 internal/integration/apikey/compose.go
 internal/integration/apikey/fixture_test.go
 internal/integration/apikey/http_test.go
+internal/integration/apikeysql/BUILD.bazel
+internal/integration/apikeysql/README.md
+internal/integration/apikeysql/fixture_test.go
+internal/integration/apikeysql/http_sql_test.go
 internal/integration/audit/BUILD.bazel
 internal/integration/audit/README.md
 internal/integration/audit/integration_test.go
@@ -334,6 +338,14 @@ internal/integration/postphase/delivery_test.go
 internal/integration/postphase/native_test.go
 internal/integration/postphase/postphase_test.go
 internal/integration/postphase/receipts_test.go
+internal/integration/postsql/BUILD.bazel
+internal/integration/postsql/README.md
+internal/integration/postsql/delivery_test.go
+internal/integration/postsql/engine_test.go
+internal/integration/postsql/faults_test.go
+internal/integration/postsql/fixture_test.go
+internal/integration/postsql/native_test.go
+internal/integration/postsql/receipts_test.go
 internal/integration/receiptconcurrency/BUILD.bazel
 internal/integration/receiptconcurrency/README.md
 internal/integration/receiptconcurrency/receiptconcurrency_test.go
