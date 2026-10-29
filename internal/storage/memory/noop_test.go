@@ -71,6 +71,7 @@ func TestNoopRejectsMutationsAndInvalidGuards(t *testing.T) {
 		}},
 		{"missing_method", func(_ driver.WriteTx, h *driver.ChangesetHeader) error { h.Method = ""; return nil }},
 		{"missing_hash", func(_ driver.WriteTx, h *driver.ChangesetHeader) error { h.RequestHash = ""; return nil }},
+		{"pending_response", func(_ driver.WriteTx, h *driver.ChangesetHeader) error { h.ResponsePending = true; return nil }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
