@@ -61,6 +61,17 @@ func newFixture(t *testing.T) *fixture {
 
 	sourceRef := model.Ref{ID: "ontology/audit"}
 	source := service.OntologySource{Base: ontology.DefaultDocument()}
+	// The same status means success in the dependents' project and failure
+	// in the blocker's project. Consulting a dependent's ontology would make
+	// the real fail transition emit notices or refuse instead of satisfying.
+	dependentWorkflow := ontology.DefaultDocument().Workflows["issue"]
+	delete(dependentWorkflow.Slots, ontology.Fail)
+	source.Overlays = map[string]ontology.Document{
+		"dependent-project": {
+			Statuses:  map[string]ontology.Status{"failed": {Name: "Successful end", Category: ontology.Completed, Outcome: ontology.Success}},
+			Workflows: map[string]ontology.Workflow{"issue": dependentWorkflow},
+		},
+	}
 	body, err := service.MarshalOntologySource(source)
 	if err != nil {
 		t.Fatal(err)
@@ -250,7 +261,7 @@ func TestConnectedServiceWriterAuditPlanAndSuppression(t *testing.T) {
 		t.Fatalf("close plan=%+v", entry)
 	}
 	for i, descriptor := range entry.Events {
-		if descriptor.Index.String() != fmt.Sprint(i) || descriptor.ChangeIndex.String() != "0" || descriptor.Provenance.Method != "bead.close" || descriptor.Provenance.Slot != "close" || descriptor.Provenance.Cause.Root != fmt.Sprintf("%032x", 7) || len(descriptor.Provenance.Chain) != 0 {
+		if descriptor.Index.String() != fmt.Sprint(i) || descriptor.ChangeIndex.String() != "0" || descriptor.Provenance.Method != "bead.close" || descriptor.Provenance.Slot != "close" || descriptor.Provenance.Cause.Root != fmt.Sprintf("%032x", 7) || !descriptor.Provenance.Cause.Depth.IsZero() || len(descriptor.Provenance.Cause.Chain) != 0 || len(descriptor.Provenance.Chain) != 0 || descriptor.Provenance.SetBy["fields.status"] != "request" {
 			t.Fatalf("provenance[%d]=%+v", i, descriptor.Provenance)
 		}
 	}
@@ -258,15 +269,19 @@ func TestConnectedServiceWriterAuditPlanAndSuppression(t *testing.T) {
 		if descriptor.Resource.Ref.ID != dependentA.ID && descriptor.Resource.Ref.ID != dependentB.ID {
 			t.Fatalf("notice resource=%+v", descriptor)
 		}
-		if descriptor.Details == nil || descriptor.Details.Ontology.Ref.ID != f.sourceRef.ID || descriptor.Details.Ontology.Revision.String() != "1" || descriptor.Details.Ontology.Project == nil || descriptor.Details.Ontology.Project.ID != "blocker-project" {
+		if descriptor.Details == nil || !sameRef(descriptor.Details.Ontology.Ref, f.sourceRef) || descriptor.Details.Ontology.Revision.String() != "1" || descriptor.Details.Ontology.Digest != f.compiled.Digest() || descriptor.Details.Ontology.Project == nil || !sameRef(*descriptor.Details.Ontology.Project, model.Ref{ID: "blocker-project"}) {
 			project := "<nil>"
 			if descriptor.Details != nil && descriptor.Details.Ontology.Project != nil {
 				project = descriptor.Details.Ontology.Project.ID
 			}
 			t.Fatalf("notice source pin=%+v project=%q source=%+v", descriptor.Details, project, f.sourceRef)
 		}
-		if descriptor.Details.BlockerBefore.Revision.String() != "2" || descriptor.Details.BlockerAfter.Revision.String() != "6" || descriptor.Details.Edge.Revision.String() != "5" || !descriptor.Details.After.Terminal || descriptor.Details.After.Satisfied {
+		details := descriptor.Details
+		if !sameRef(details.BlockerBefore.Ref, blocker) || !sameRef(details.BlockerAfter.Ref, blocker) || details.BlockerBefore.Revision.String() != "2" || details.BlockerAfter.Revision.String() != "6" || !sameRef(details.Dependent.Ref, descriptor.Resource.Ref) || details.Dependent.Revision.String() != link.Revision.String() || !sameRef(details.Edge.Dependent, details.Dependent.Ref) || !sameRef(details.Edge.Blocker, blocker) || details.Edge.Kind != "conditional-blocks" || details.Edge.Revision.String() != link.Revision.String() {
 			t.Fatalf("notice revisions/decision=%+v", descriptor.Details)
+		}
+		if details.Before != (model.ConditionDecision{Status: "todo", Category: "unstarted"}) || details.After != (model.ConditionDecision{Status: "done", Category: "completed", Outcome: "success", Terminal: true}) {
+			t.Fatalf("notice resolved decisions=%+v -> %+v", details.Before, details.After)
 		}
 	}
 	if entry.Events[1].Resource.Ref.ID != dependentA.ID || entry.Events[2].Resource.Ref.ID != dependentB.ID {
@@ -282,11 +297,9 @@ func TestConnectedServiceWriterAuditPlanAndSuppression(t *testing.T) {
 		t.Fatalf("ordinary envelope=%+v", ordinary)
 	}
 	for i, event := range events[1:] {
-		notice := event.Durable
-		if notice.Type != model.EventDependencyConditionUnmet || len(notice.Changed) != 0 || notice.Before != nil || notice.After != nil || notice.Derived || notice.Details == nil || notice.Index.String() != fmt.Sprint(i+1) {
-			t.Fatalf("notice envelope=%+v", notice)
-		}
+		assertNoticeEnvelope(t, event, entry, i+1)
 	}
+	t.Logf("service close revision=%s: ordinary index=0, sorted notices=%s,%s; ontology=%s@1 digest=%s", first.Commit.Revision, dependentA.ID, dependentB.ID, f.sourceRef.ID, f.compiled.Digest())
 
 	replayed := f.close(t, blocker, 7, false)
 	if !replayed.Replayed || !reflect.DeepEqual(replayed.Commit, first.Commit) {
@@ -316,6 +329,67 @@ func TestConnectedServiceWriterAuditPlanAndSuppression(t *testing.T) {
 		if err != nil || len(versions.Items) != 2 {
 			t.Fatalf("dependent %s versions=%+v err=%v", ref.ID, versions, err)
 		}
+		rows, err := reader.Get(f.ctx, []model.Ref{ref})
+		if err != nil || len(rows) != 1 || rows[0].Revision.String() != link.Revision.String() {
+			t.Fatalf("notice changed dependent head %s: %+v err=%v", ref.ID, rows, err)
+		}
+	}
+
+	// Advance only the protected fixture source. Its current interpretation of
+	// "done" now satisfies the condition; historical delivery must retain the
+	// original success decision and digest without a live ontology lookup.
+	nextSource := service.OntologySource{Base: ontology.DefaultDocument()}
+	nextSource.Base.Statuses["done"] = nextSource.Base.Statuses["failed"]
+	nextSource.Base.Statuses["new_success"] = f.source.Base.Statuses["done"]
+	workflow := nextSource.Base.Workflows["issue"]
+	workflow.Statuses = append(workflow.Statuses, "new_success")
+	workflow.Slots[ontology.Close] = "new_success"
+	nextSource.Base.Workflows["issue"] = workflow
+	nextCompiled, problems := ontology.Compile(nextSource.Base, nextSource.Overlays, nextSource.Plugins)
+	if len(problems) != 0 || nextCompiled.Digest() == f.compiled.Digest() || !nextCompiled.Effective("blocker-project").SatisfiesConditionalBlocks("done") {
+		t.Fatalf("updated fixture source does not change the decision: %+v", problems)
+	}
+	body, err := service.MarshalOntologySource(nextSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceChange, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{Principal: auditWriterPrincipal}, []conformance.FixtureChange{{
+		Ref: f.sourceRef, Kind: "ontology", Op: model.OpPatch, Body: body,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A consumer also owns the copies returned from the changeset log.
+	entry.Events[1].Details.Ontology.Project.ID = "consumer-mutated"
+	entry.Events[1].Details.After.Status = "consumer-mutated"
+	entry.Events[1].Provenance.SetBy["fields.status"] = "consumer-mutated"
+	request := coreevents.ReadRequest{After: start, Principal: auditReaderPrincipal, Limit: 3}
+	historical, err := f.reader(coreevents.AllowAll{}).Read(f.ctx, request)
+	if err != nil || !reflect.DeepEqual(historical.Events(), events) {
+		t.Fatalf("historical close changed after source revision %s: %+v err=%v", sourceChange.Revision, historical.Events(), err)
+	}
+	historical.Events()[1].Durable.Details.Ontology.Project.ID = "consumer-mutated"
+	historical.Events()[1].Durable.Details.After.Status = "consumer-mutated"
+	again, err := f.reader(coreevents.AllowAll{}).Read(f.ctx, request)
+	if err != nil || !reflect.DeepEqual(again.Events(), events) {
+		t.Fatalf("materialized details alias persisted history: %+v err=%v", again.Events(), err)
+	}
+	t.Logf("historical revision=%s remains exact after ontology source revision=%s and caller-copy mutations", first.Commit.Revision, sourceChange.Revision)
+}
+
+func sameRef(left, right model.Ref) bool {
+	return left.IsID() && right.IsID() && left.ID == right.ID && left.Branch.String() == right.Branch.String()
+}
+
+func assertNoticeEnvelope(t *testing.T, event model.Event, set model.Changeset, index int) {
+	t.Helper()
+	notice := event.Durable
+	if notice == nil || notice.Type != model.EventDependencyConditionUnmet || notice.Changed == nil || len(notice.Changed) != 0 || notice.Before != nil || notice.After != nil || notice.Derived || notice.Index.String() != fmt.Sprint(index) || notice.Revision.String() != set.Revision.String() || notice.Incarnation != set.Incarnation {
+		t.Fatalf("notice envelope=%+v", notice)
+	}
+	descriptor := set.Events[index]
+	if notice.Resource != "bead/"+descriptor.Resource.Ref.ID || !reflect.DeepEqual(notice.Details, descriptor.Details) || !reflect.DeepEqual(notice.Principal, set.Principal) || !reflect.DeepEqual(notice.SetBy, descriptor.Provenance.SetBy) || !reflect.DeepEqual(notice.Chain, descriptor.Provenance.Chain) || !reflect.DeepEqual(notice.Cause, descriptor.Provenance.Cause) {
+		t.Fatalf("delivered notice differs from persisted descriptor: %+v want %+v", notice, descriptor)
 	}
 }
 
@@ -334,10 +408,11 @@ func TestConnectedAuditOutcomesSuppressUnmetNotices(t *testing.T) {
 		method   string
 		ordinary model.DurableEventType
 		notices  int
+		decision model.ConditionDecision
 	}{
-		{name: "cancel-direct-writer", method: "bead.cancel", ordinary: model.EventBeadCanceled, notices: 2},
-		{name: "failure-direct-writer", method: "bead.fail", ordinary: model.EventBeadFailed, notices: 0},
-		{name: "open-direct-writer", method: "bead.defer", ordinary: model.EventBeadDeferred, notices: 0},
+		{name: "cancel-direct-writer", method: "bead.cancel", ordinary: model.EventBeadCanceled, notices: 2, decision: model.ConditionDecision{Status: "canceled", Category: "canceled", Terminal: true}},
+		{name: "failure-direct-writer", method: "bead.fail", ordinary: model.EventBeadFailed, notices: 0, decision: model.ConditionDecision{Status: "failed", Category: "completed", Outcome: "failure", Terminal: true, Satisfied: true}},
+		{name: "open-direct-writer", method: "bead.defer", ordinary: model.EventBeadDeferred, notices: 0, decision: model.ConditionDecision{Status: "backlog", Category: "backlog"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)
@@ -358,6 +433,16 @@ func TestConnectedAuditOutcomesSuppressUnmetNotices(t *testing.T) {
 			if len(page) != 1+tc.notices || page[0].Durable.Type != tc.ordinary {
 				t.Fatalf("%s materialized=%+v", tc.method, page)
 			}
+			if page[0].Durable.After["fields"].(map[string]any)["status"] != tc.decision.Status {
+				t.Fatalf("%s did not reach its real ontology slot: %+v", tc.method, page[0].Durable.After)
+			}
+			for i, event := range page[1:] {
+				assertNoticeEnvelope(t, event, entry, i+1)
+				if event.Durable.Details.After != tc.decision || event.Durable.Details.Ontology.Digest != f.compiled.Digest() || event.Durable.Details.Ontology.Project == nil || event.Durable.Details.Ontology.Project.ID != "blocker-project" {
+					t.Fatalf("%s notice decision/source=%+v", tc.method, event.Durable.Details)
+				}
+			}
+			t.Logf("direct Writer %s: status=%s revision=%s ordinary+notices=1+%d", tc.method, tc.decision.Status, outcome.Commit.Revision, tc.notices)
 		})
 	}
 }
@@ -407,6 +492,7 @@ func TestConnectedAuditSourceInvalidationRefusesCommit(t *testing.T) {
 	if err != nil || meta.Head.String() != fmt.Sprint(5+variant) || link.Revision.String() != "5" {
 		t.Fatalf("source race head=%+v variant=%d err=%v", meta, variant, err)
 	}
+	t.Logf("source invalidation: %d guarded attempts refused, head=%s contains only protected-source advances; blocker stays todo", variant, meta.Head)
 }
 
 func TestConnectedAuditResourceAuthorizationAndLostAckRecovery(t *testing.T) {
@@ -465,10 +551,14 @@ func TestConnectedAuditResourceAuthorizationAndLostAckRecovery(t *testing.T) {
 	if len(deliveries) != 4 || deliveries[1].Key.String() != deliveries[2].Key.String() || !reflect.DeepEqual(deliveries[1].Event, deliveries[2].Event) || deliveries[0].Event.Durable.Type != model.EventBeadClosed || deliveries[3].Event.Durable.Type != model.EventDependencyConditionUnmet {
 		t.Fatalf("recovery deliveries=%+v", deliveries)
 	}
+	if deliveries[1].Key.Index.String() != "1" || deliveries[1].Key.Revision.String() != close.Commit.Revision.String() || deliveries[1].Key.Incarnation != f.inc || deliveries[1].Key.Binding != binding.ID {
+		t.Fatalf("lost-ack retry is not the exact first notice key: %+v", deliveries[1].Key)
+	}
 	state, _, err = checkpoints.Load(f.ctx, binding.ID)
 	if err != nil || state.Position.Revision.String() != close.Commit.Revision.String() || state.Position.Index.String() != "2" {
 		t.Fatalf("final checkpoint=%+v err=%v", state, err)
 	}
+	t.Logf("authorization refusal/masking passed; lost-ack notice key=%s replayed byte-equivalent payload; final logical index=%s", deliveries[1].Key.String(), state.Position.Index)
 }
 
 // jsonDecode keeps this test's source-image assertion on the existing strict
