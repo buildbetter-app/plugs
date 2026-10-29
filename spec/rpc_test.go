@@ -188,21 +188,17 @@ func TestB18HistoricalReadBoundaryAndNoOp(t *testing.T) {
 }
 
 func TestConnectedTraceRepeatability(t *testing.T) {
-	run := func() []byte {
+	run := func() []acceptance.Frame {
 		f := newStack(t, []string{"pl-repeatable"})
 		f.create(t, "original", nil)
 		f.success(t, "bead.ready", map[string]any{})
 		f.success(t, "bead.update", map[string]any{"id": idRef("pl-repeatable"), "fields": map[string]any{"title": "edited"}})
 		f.success(t, "bead.get", map[string]any{"id": idRef("pl-repeatable")})
-		bytes, err := json.Marshal(f.trace.Frames())
-		if err != nil {
-			t.Fatal(err)
-		}
-		return bytes
+		return f.trace.Frames()
 	}
 	first, second := run(), run()
-	if string(first) != string(second) {
-		t.Fatalf("fresh real stacks with the same inputs changed their trace\nfirst: %s\nsecond: %s", first, second)
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("fresh real stacks with the same inputs changed their wire frames\nfirst: %#v\nsecond: %#v", first, second)
 	}
 }
 

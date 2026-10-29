@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -193,7 +194,7 @@ func TestTraceRejectsInvalidEnvelopesAndTransportFailure(t *testing.T) {
 }
 
 func TestIdenticalInputsProduceIdenticalTraceBytes(t *testing.T) {
-	run := func() []byte {
+	run := func() []Frame {
 		in, err := NewInputs(time.Date(2026, 10, 27, 10, 0, 0, 0, time.UTC), "p-1", "p-2")
 		if err != nil {
 			t.Fatal(err)
@@ -219,14 +220,10 @@ func TestIdenticalInputsProduceIdenticalTraceBytes(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		data, err := json.Marshal(trace.Frames())
-		if err != nil {
-			t.Fatal(err)
-		}
-		return data
+		return trace.Frames()
 	}
 	first, second := run(), run()
-	if string(first) != string(second) {
-		t.Fatalf("same inputs changed trace bytes\nfirst: %s\nsecond: %s", first, second)
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("same inputs changed wire frames\nfirst: %#v\nsecond: %#v", first, second)
 	}
 }
