@@ -483,6 +483,12 @@ internal/server/transport/httpjson/server.go
 internal/server/transport/inprocess/BUILD.bazel
 internal/server/transport/inprocess/inprocess.go
 internal/server/transport/inprocess/inprocess_test.go
+internal/server/transport/mcp/BUILD.bazel
+internal/server/transport/mcp/README.md
+internal/server/transport/mcp/config.go
+internal/server/transport/mcp/errors.go
+internal/server/transport/mcp/handler.go
+internal/server/transport/mcp/handler_test.go
 internal/server/watch/BUILD.bazel
 internal/server/watch/authorization.go
 internal/server/watch/boundaries_test.go
