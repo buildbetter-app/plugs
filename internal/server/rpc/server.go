@@ -242,6 +242,14 @@ func response(id []byte, member string, payload []byte) []byte {
 func (s *Server) failure(id []byte, code, hint string, details map[string]any) []byte {
 	return s.errorResponse(id, s.registry.catalog.NewError(code, hint, details))
 }
+
+// TransportError encodes an admission or framing failure before a request ID
+// has been admitted. It uses the dispatcher catalog and trace handling, with
+// an id:null envelope. Arbitrary errors are sanitized as internal_error.
+func (s *Server) TransportError(err error) []byte {
+	return s.errorResponse(nil, s.registry.catalog.MapError(err))
+}
+
 func (s *Server) errorResponse(id []byte, e *wire.Error) []byte {
 	if s.registry.catalog.ValidateError(e) != nil {
 		e = s.registry.catalog.NewError("internal_error", "", nil)
