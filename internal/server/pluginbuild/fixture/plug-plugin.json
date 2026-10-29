@@ -1,0 +1,34 @@
+{
+  "manifest_version": 1,
+  "plugins": [
+    {
+      "id": "app.example.source",
+      "alias": "source",
+      "version": "1.0.0",
+      "plugin_api": "1.0",
+      "runtime": "native",
+      "provides": [
+        {
+          "kind": "subscriber",
+          "name": "normalize",
+          "phases": ["mutate"],
+          "reads": ["fields.title"],
+          "owns": ["fields.normalized"]
+        },
+        {
+          "kind": "subscriber",
+          "name": "check",
+          "phases": ["validate"],
+          "reads": ["fields.title"]
+        },
+        {
+          "kind": "methods",
+          "prefix": "x.source",
+          "methods": {
+            "echo": {"permission": "read", "resource": "params.id"}
+          }
+        }
+      ]
+    }
+  ]
+}
