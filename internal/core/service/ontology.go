@@ -108,6 +108,7 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 		}
 		method = "bead.update"
 	}
+	settlement := o.closeSettlement(proposal)
 	var graph map[string]storedBead
 	if _, lifecycle := ontology.SlotForMethod(proposal.Meta.Method); lifecycle {
 		var err error
@@ -181,11 +182,45 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 		}
 		// The slot patch and optional reason comment share the final target
 		// post-image; neither introduces an independent status transition.
-		if err := violationsError(ontology.Validate(o.effective(doc.Project), before, &after, method, facts)); err != nil {
+		var violations []ontology.Violation
+		if settlement {
+			violations = ontology.ValidateCloseSettlement(o.effective(doc.Project), before, &after, facts)
+		} else {
+			violations = ontology.Validate(o.effective(doc.Project), before, &after, method, facts)
+		}
+		if err := violationsError(violations); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// Recognize only the named empty slot patch and optional same-target reason.
+// Before comes from the pipeline's guarded read; mutators cannot supply it.
+// The core still owns lease admission, CAS and final change/no-op detection.
+func (o *Ontology) closeSettlement(p port.ProposedChange) bool {
+	if p.Meta.Method != "bead.close" || len(p.Changes) < 1 || len(p.Changes) > 2 {
+		return false
+	}
+	first := p.Changes[0]
+	if first.Resource.Kind != "bead" || first.Op.Kind != model.OpPatch || first.Op.Patch == nil || len(first.Op.Patch.Fields) != 0 || !hasDocument(first.Before) {
+		return false
+	}
+	before, err := decodeDocument(first.Before)
+	if err != nil {
+		return false
+	}
+	target, ok := o.effective(before.Project).SlotStatus(before.Type, ontology.Close)
+	if !ok || state(before).Status != target {
+		return false
+	}
+	if len(p.Changes) == 2 {
+		reason := p.Changes[1]
+		if reason.Resource.Kind != "bead" || reason.Resource.Ref.ID != first.Resource.Ref.ID || reason.Resource.Ref.Branch.String() != first.Resource.Ref.Branch.String() || reason.Op.Kind != model.OpComment || reason.Op.Comment == nil {
+			return false
+		}
+	}
+	return true
 }
 
 var _ port.Ontology = (*Ontology)(nil)
