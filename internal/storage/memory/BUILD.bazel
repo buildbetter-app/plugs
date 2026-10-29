@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "memory",
+    srcs = glob(["*.go"], exclude = ["*_test.go"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/storage/memory",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/core/model", "//internal/storage/driver"],
+)
+
+go_test(
+    name = "memory_test",
+    srcs = glob(["*_test.go"]),
+    embed = [":memory"],
+    deps = ["//internal/core/model", "//internal/storage/driver", "//internal/storage/conformance"],
+)
