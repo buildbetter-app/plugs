@@ -118,6 +118,16 @@ internal/core/model/natural.go
 internal/core/model/principal.go
 internal/core/model/ref.go
 internal/core/model/runtime.go
+internal/core/pipeline/BUILD.bazel
+internal/core/pipeline/apply.go
+internal/core/pipeline/callbacks.go
+internal/core/pipeline/document.go
+internal/core/pipeline/options.go
+internal/core/pipeline/pipeline_test.go
+internal/core/pipeline/prepare.go
+internal/core/pipeline/snapshot.go
+internal/core/port/BUILD.bazel
+internal/core/port/pipeline.go
 internal/doc.go
 internal/storage/conformance/BUILD.bazel
 internal/storage/conformance/conformance.go
