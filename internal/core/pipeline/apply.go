@@ -201,11 +201,32 @@ func (w *Writer) reader(ctx context.Context) (driver.Reader, error) {
 }
 
 func requestHash(cs model.ChangeSet, meta model.WriteMeta) (string, error) {
-	data, err := json.Marshal(struct {
-		ChangeSet               model.ChangeSet
-		Method, Project, Return string
-		DryRun                  bool
-	}{cs, meta.Method, meta.Project, meta.Return, meta.DryRun})
+	if meta.GateAutoCAS && len(cs.Expect) != 0 {
+		// GateService appends its current bead revision after the caller's
+		// expectations. That value changes after the first approval/report, so
+		// keep it in the transaction CAS but out of the durable request hash.
+		cs.Expect = append([]model.Precondition(nil), cs.Expect[:len(cs.Expect)-1]...)
+	}
+	var (
+		data []byte
+		err  error
+	)
+	if meta.GateAction == "" {
+		// Keep the pre-gate request identity byte-for-byte compatible so a
+		// rolling restart can still replay receipts created by an older host.
+		data, err = json.Marshal(struct {
+			ChangeSet               model.ChangeSet
+			Method, Project, Return string
+			DryRun                  bool
+		}{cs, meta.Method, meta.Project, meta.Return, meta.DryRun})
+	} else {
+		data, err = json.Marshal(struct {
+			ChangeSet                                      model.ChangeSet
+			Method, GateAction, GateState, Project, Return string
+			GateDetails                                    map[string]any
+			DryRun                                         bool
+		}{cs, meta.Method, meta.GateAction, meta.GateState, meta.Project, meta.Return, meta.GateDetails, meta.DryRun})
+	}
 	if err != nil {
 		return "", err
 	}

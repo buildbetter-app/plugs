@@ -43,10 +43,15 @@ func statusChanged(p *pending) bool {
 // detection. Every observation joins the existing sorted commit guard. No
 // callback or live ontology lookup runs after locks are acquired.
 func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
-	if (!w.cfg.auditSet && p.release == nil) || len(p.changed) == 0 {
+	gate := isGateMethod(p.proposal.Meta.Method)
+	if len(p.changed) == 0 || (!w.cfg.auditSet && p.release == nil && !gate) {
 		return nil
 	}
 	coreRecovery := p.release != nil && p.release.reclaim
+	if gate && !w.cfg.auditSet {
+		p.audit = &auditPlan{context: port.EventContext{Cause: model.EventCause{Root: p.proposal.Meta.IdempotencyKey, Depth: model.Natural64(0), Chain: []string{}}, Chain: []string{}}, transitions: map[string]auditTransition{}}
+		return nil
+	}
 	if p.release != nil && !coreRecovery && w.cfg.authorizer != nil && w.cfg.eventContext == nil {
 		return failure("invalid_params", "claim release requires trusted event context for an installed authorizer")
 	}
@@ -142,7 +147,7 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 		if !decision.After.Terminal || decision.After.Satisfied {
 			continue
 		}
-		method := p.proposal.Meta.Method
+		method := gateLifecycleMethod(p.proposal.Meta.Method, pending)
 		if method != "bead.close" && method != "bead.cancel" || method == "bead.close" && (decision.After.Category != "completed" || decision.After.Outcome != "success") || method == "bead.cancel" && decision.After.Category != "canceled" {
 			return failure("invalid_params", "unsatisfied terminal decision requires its trusted close or cancel slot")
 		}
@@ -238,11 +243,25 @@ func (p *prepared) events(revision model.Revision, changes []model.ChangeRecord)
 			return nil, nil, err
 		}
 		slot := ""
-		if p.release == nil && isSlot(p.proposal.Meta.Method) {
-			slot = strings.TrimPrefix(p.proposal.Meta.Method, "bead.")
+		if p.release == nil {
+			method := gateLifecycleMethod(p.proposal.Meta.Method, pending)
+			if isSlot(method) {
+				slot = strings.TrimPrefix(method, "bead.")
+			}
 		}
 		provenance := model.EventProvenance{Method: p.proposal.Meta.Method, Slot: slot, SetBy: cloneMap(pending.setBy), Cause: p.audit.context.Cause, Chain: p.audit.context.Chain}
 		events = append(events, model.EventDescriptor{Index: model.Natural64(uint64(len(events))), ChangeIndex: model.Natural64(uint64(index)), Type: kind, Resource: model.AuditResource{Kind: "bead", Ref: change.Ref}, Provenance: provenance})
+		if gate := gateEventType(p.proposal.Meta.Method); gate != "" {
+			// A resolved gate produces the workflow slot event first and the
+			// gate event second, both anchored to the same atomic bead image.
+			// A pending approval has no slot transition, so its gate event is
+			// the single ordinary event for the change.
+			if !statusChanged(pending) {
+				events[len(events)-1].Type = gate
+			} else {
+				events = append(events, model.EventDescriptor{Index: model.Natural64(uint64(len(events))), ChangeIndex: model.Natural64(uint64(index)), Type: gate, Resource: model.AuditResource{Kind: "bead", Ref: change.Ref}, Provenance: provenance})
+			}
+		}
 		transition := p.audit.transitions[change.Ref.ID]
 		for _, dependent := range transition.dependents {
 			at := dependent.revision
@@ -268,7 +287,8 @@ func (p *prepared) ordinaryEvent(pending *pending, op model.OpKind) (model.Durab
 		return model.EventBeadReleased, nil
 	}
 	if statusChanged(pending) {
-		if event, ok := map[string]model.DurableEventType{"bead.claim": model.EventBeadClaimed, "bead.close": model.EventBeadClosed, "bead.fail": model.EventBeadFailed, "bead.cancel": model.EventBeadCanceled, "bead.reopen": model.EventBeadReopened, "bead.defer": model.EventBeadDeferred}[p.proposal.Meta.Method]; ok {
+		method := gateLifecycleMethod(p.proposal.Meta.Method, pending)
+		if event, ok := map[string]model.DurableEventType{"bead.claim": model.EventBeadClaimed, "bead.close": model.EventBeadClosed, "bead.fail": model.EventBeadFailed, "bead.cancel": model.EventBeadCanceled, "bead.reopen": model.EventBeadReopened, "bead.defer": model.EventBeadDeferred}[method]; ok {
 			return event, nil
 		}
 	}

@@ -152,6 +152,10 @@ func (d EventDescriptor) Validate() error {
 	}
 	return nil
 }
+
+func isGateEvent(kind DurableEventType) bool {
+	return kind == EventGateApproved || kind == EventGateReported
+}
 func (d EventDescriptor) MarshalJSON() ([]byte, error) {
 	if err := d.Validate(); err != nil {
 		return nil, err
@@ -258,6 +262,7 @@ func (c Changeset) ValidateEvents() error {
 	change := -1
 	var ordinary EventDescriptor
 	lastDependent := ""
+	gateForChange := false
 	for index, event := range c.Events {
 		if err := event.Validate(); err != nil {
 			return fmt.Errorf("event %d: %w", index, err)
@@ -269,6 +274,13 @@ func (c Changeset) ValidateEvents() error {
 		}
 		if !slices.Equal(event.Provenance.Chain, c.Chain) {
 			return fmt.Errorf("event/header authorization chain mismatch")
+		}
+		if isGateEvent(event.Type) && change >= 0 && anchor == uint64(change) {
+			if gateForChange || !sameAuditRef(event.Resource.Ref, ordinary.Resource.Ref) || !sameEventProvenance(event.Provenance, ordinary.Provenance) {
+				return fmt.Errorf("gate event must follow its bead event exactly once")
+			}
+			gateForChange = true
+			continue
 		}
 		if event.Type != EventDependencyConditionUnmet {
 			if anchor != uint64(change+1) {
@@ -282,6 +294,7 @@ func (c Changeset) ValidateEvents() error {
 			if err := validateOrdinaryOp(event.Type, c.Changes[change].Op); err != nil {
 				return err
 			}
+			gateForChange = false
 		} else {
 			if change < 0 || anchor != uint64(change) {
 				return fmt.Errorf("notice must follow its ordinary event")

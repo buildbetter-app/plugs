@@ -30,19 +30,21 @@ type Service interface {
 }
 
 type serviceParams struct {
-	ID     model.Ref            `json:"id"`
-	AsOf   *asOf                `json:"asOf"`
-	ViewID string               `json:"viewId"`
-	Filter *filter              `json:"filter"`
-	Limit  model.Natural        `json:"limit"`
-	Cursor string               `json:"cursor"`
-	Type   string               `json:"type"`
-	Fields map[string]any       `json:"fields"`
-	Parent *model.Ref           `json:"parent"`
-	Expect []model.Precondition `json:"expect"`
-	Body   string               `json:"body"`
-	Reason string               `json:"reason"`
-	Meta   wire.Meta            `json:"_meta"`
+	ID      model.Ref            `json:"id"`
+	AsOf    *asOf                `json:"asOf"`
+	ViewID  string               `json:"viewId"`
+	Filter  *filter              `json:"filter"`
+	Limit   model.Natural        `json:"limit"`
+	Cursor  string               `json:"cursor"`
+	Type    string               `json:"type"`
+	Fields  map[string]any       `json:"fields"`
+	Parent  *model.Ref           `json:"parent"`
+	Expect  []model.Precondition `json:"expect"`
+	Body    string               `json:"body"`
+	Reason  string               `json:"reason"`
+	State   string               `json:"state"`
+	Details map[string]any       `json:"details"`
+	Meta    wire.Meta            `json:"_meta"`
 }
 type asOf struct {
 	Revision    model.Revision `json:"revision"`
@@ -76,6 +78,9 @@ func BindService(registry *Registry, svc Service) error {
 		return fmt.Errorf("nil service or registry")
 	}
 	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "history.query"}
+	if _, ok := svc.(port.GateService); ok {
+		names = append(names, "gate.approve", "gate.report")
+	}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 	for _, name := range names {
@@ -168,9 +173,27 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 	case "bead.claim":
 		v, err := svc.ClaimWithOutcome(ctx, c.Principal, service.ClaimRequest{ID: p.ID, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
+	case "gate.approve":
+		gate, ok := svc.(port.GateService)
+		if !ok {
+			return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
+		}
+		v, err := gate.ApproveGate(ctx, c.Principal, service.GateApproveRequest{ID: p.ID, Expect: p.Expect}, meta)
+		return Outcome{Result: gateJSON(v.Result), Replayed: v.Replayed}, err
+	case "gate.report":
+		gate, ok := svc.(port.GateService)
+		if !ok {
+			return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
+		}
+		v, err := gate.ReportGate(ctx, c.Principal, service.GateReportRequest{ID: p.ID, State: p.State, Details: p.Details, Expect: p.Expect}, meta)
+		return Outcome{Result: gateJSON(v.Result), Replayed: v.Replayed}, err
 	default:
 		return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
 	}
+}
+
+func gateJSON(v port.GateResult) map[string]any {
+	return map[string]any{"commit": commitJSON(v.Commit), "state": v.State, "approvals": v.Approvals}
 }
 
 func writeOutcome(v port.WriteOutcome) Outcome {

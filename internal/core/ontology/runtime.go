@@ -10,6 +10,26 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
+const (
+	gateKindField      = "gate_kind"
+	gateStateField     = "gate_state"
+	gateApprovalsField = "gate_approvals"
+	gateDetailsField   = "gate_details"
+)
+
+func isGateMethod(method string) bool {
+	return method == "gate.approve" || method == "gate.report"
+}
+
+func isGateField(name string) bool {
+	switch name {
+	case gateKindField, gateStateField, gateApprovalsField, gateDetailsField:
+		return true
+	default:
+		return false
+	}
+}
+
 // SlotForMethod recognizes only named lifecycle verbs. A caller-controlled
 // status patch is never sufficient authority to choose a transition.
 func SlotForMethod(method string) (Slot, bool) {
@@ -137,6 +157,17 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 	if before != nil && before.ID != after.ID {
 		return invalid("id", "bead identity is immutable")
 	}
+	gateMethod := isGateMethod(method)
+	if gateMethod {
+		switch after.Fields[gateStateField] {
+		case GateStateResolved:
+			method = "bead.close"
+		case GateStateFailed:
+			method = "bead.fail"
+		default:
+			method = "bead.update"
+		}
+	}
 	slot, lifecycle := SlotForMethod(method)
 	if before != nil && !lifecycle && (before.Status != after.Status || hasPath(facts.Touched, "status") || hasPath(facts.Touched, "fields.status")) {
 		return []Violation{{Code: "ontology_use_slot_verb", Field: "status", Message: "status must be changed through a lifecycle verb"}}
@@ -162,6 +193,18 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 		if name == "priority" || name == "template" {
 			continue
 		} // fixed kernel field, checked above
+		if isGateField(name) {
+			// Gate state is a core-reserved image. The gate service is the only
+			// named writer allowed to change it; ordinary bead updates may carry
+			// the fields on creation but cannot mutate an existing gate.
+			if before != nil && !gateMethod {
+				old, present := before.Fields[name]
+				if present != (after.Fields[name] != nil) || !sameValue(old, after.Fields[name]) || hasPath(facts.Touched, "fields."+name) {
+					violations = append(violations, Violation{Code: "ontology_use_slot_verb", Field: "fields." + name, Message: "gate state must be changed through a gate verb"})
+				}
+			}
+			continue
+		}
 		field, ok := t.Fields[name]
 		if !ok {
 			violations = append(violations, Violation{Code: "ontology_unknown_field", Field: "fields." + name, Message: "unknown typed field"})

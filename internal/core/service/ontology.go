@@ -8,6 +8,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 )
 
@@ -44,6 +45,9 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if isGateMethod(proposal.Meta.Method) && proposal.Meta.GateAction == "" {
+		return nil, failure("invalid_params", "gate method requires trusted gate lowering context")
+	}
 	patches := []port.Patch{}
 	for _, change := range proposal.Changes {
 		if change.Resource.Kind != "bead" || !hasDocument(change.After) {
@@ -52,6 +56,20 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 		doc, err := decodeDocument(change.After)
 		if err != nil {
 			return nil, err
+		}
+		if proposal.Meta.GateAction != "" {
+			if len(proposal.Changes) != 1 || !isGateAction(proposal.Meta.GateAction) || proposal.Meta.Method != "gate."+proposal.Meta.GateAction {
+				return nil, failure("invalid_params", "invalid gate lowering context")
+			}
+			if !hasDocument(change.Before) {
+				return nil, failure("invalid_params", "gate operation requires an existing bead")
+			}
+			patch, err := o.normalizeGate(proposal, change.Resource, doc)
+			if err != nil {
+				return nil, err
+			}
+			patches = append(patches, patch)
+			continue
 		}
 		before := state(doc)
 		after := before
@@ -94,6 +112,120 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 	return patches, nil
 }
 
+const (
+	gateKindField      = "gate_kind"
+	gateStateField     = "gate_state"
+	gateApprovalsField = "gate_approvals"
+	gateDetailsField   = "gate_details"
+)
+
+func isGateAction(action string) bool {
+	return action == "approve" || action == "report"
+}
+
+func isGateMethod(method string) bool {
+	return method == "gate.approve" || method == "gate.report"
+}
+
+func isGateField(name string) bool {
+	switch name {
+	case gateKindField, gateStateField, gateApprovalsField, gateDetailsField:
+		return true
+	default:
+		return false
+	}
+}
+
+func gateLifecycleMethod(doc pipeline.Document) string {
+	state, _ := doc.Fields[gateStateField].(string)
+	switch state {
+	case ontology.GateStateResolved:
+		return "bead.close"
+	case ontology.GateStateFailed:
+		return "bead.fail"
+	default:
+		return ""
+	}
+}
+
+func decodeGateState(doc pipeline.Document) (ontology.GateState, error) {
+	kind, ok := doc.Fields[gateKindField].(string)
+	if !ok || kind == "" {
+		return ontology.GateState{}, failure("invalid_params", "gate_kind must be a nonempty string")
+	}
+	state := ontology.GateState{Kind: kind, Type: doc.Type, State: ontology.GateStatePending, Approvals: []ontology.GateApproval{}}
+	if raw, present := doc.Fields[gateStateField]; present {
+		value, ok := raw.(string)
+		if !ok {
+			return ontology.GateState{}, failure("invalid_params", "gate_state must be a string")
+		}
+		state.State = value
+	}
+	if raw, present := doc.Fields[gateApprovalsField]; present {
+		data, err := json.Marshal(raw)
+		if err != nil {
+			return ontology.GateState{}, failure("invalid_params", "gate_approvals must be an array")
+		}
+		if err := json.Unmarshal(data, &state.Approvals); err != nil || state.Approvals == nil {
+			return ontology.GateState{}, failure("invalid_params", "gate_approvals must be an array")
+		}
+	}
+	return state, nil
+}
+
+func (o *Ontology) normalizeGate(proposal port.ProposedChange, resource model.ResourceRef, doc pipeline.Document) (port.Patch, error) {
+	state, err := decodeGateState(doc)
+	if err != nil {
+		return port.Patch{}, err
+	}
+	effective := o.effective(doc.Project)
+	var decision ontology.GateDecision
+	switch proposal.Meta.GateAction {
+	case "approve":
+		decision, err = effective.ApproveGate(state, proposal.Principal, proposal.Principal.Kind != "anonymous")
+		if err == nil && decision.Added && decision.Approval != nil {
+			decision.Approval.Token = proposal.RequestID
+		}
+	case "report":
+		decision, err = effective.ReportGate(state, ontology.Outcome(proposal.Meta.GateState))
+	default:
+		return port.Patch{}, failure("invalid_params", "unknown gate action")
+	}
+	if err != nil {
+		return port.Patch{}, err
+	}
+	approvals := append([]ontology.GateApproval(nil), state.Approvals...)
+	if decision.Added {
+		if decision.Approval == nil {
+			return port.Patch{}, failure("internal_error", "gate approval decision omitted its approval")
+		}
+		approvals = append(approvals, *decision.Approval)
+	}
+	paths := map[string]json.RawMessage{}
+	for name, value := range map[string]any{gateStateField: decision.State, gateApprovalsField: approvals} {
+		data, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			return port.Patch{}, marshalErr
+		}
+		paths["fields."+name] = data
+	}
+	if proposal.Meta.GateAction == "report" && proposal.Meta.GateDetails != nil {
+		data, marshalErr := json.Marshal(proposal.Meta.GateDetails)
+		if marshalErr != nil {
+			return port.Patch{}, failure("invalid_params", "gate details must be JSON")
+		}
+		paths["fields."+gateDetailsField] = data
+	}
+	if decision.Transition != nil {
+		data, marshalErr := json.Marshal(decision.Transition.Status)
+		if marshalErr != nil {
+			return port.Patch{}, marshalErr
+		}
+		paths["fields.status"] = data
+	}
+	return port.Patch{Resource: resource, Paths: paths}, nil
+}
+
 func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, reader port.SnapshotReader) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -109,8 +241,27 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 		method = "bead.update"
 	}
 	settlement := o.closeSettlement(proposal)
+	_, lifecycle := ontology.SlotForMethod(proposal.Meta.Method)
+	if !lifecycle && isGateMethod(proposal.Meta.Method) {
+		// A resolved gate lowers to the close/fail slot inside Normalize. The
+		// public method remains gate.* so the service must still collect the
+		// graph facts required by that terminal transition.
+		for _, change := range proposal.Changes {
+			if !hasDocument(change.After) {
+				continue
+			}
+			doc, err := decodeDocument(change.After)
+			if err != nil {
+				return failure("internal_error", "invalid proposed gate bead")
+			}
+			if gateLifecycleMethod(doc) != "" {
+				lifecycle = true
+				break
+			}
+		}
+	}
 	var graph map[string]storedBead
-	if _, lifecycle := ontology.SlotForMethod(proposal.Meta.Method); lifecycle {
+	if lifecycle {
 		var err error
 		graph, err = scanBeads(ctx, reader)
 		if err != nil {

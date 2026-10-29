@@ -246,6 +246,7 @@ internal/core/pipeline/callbacks.go
 internal/core/pipeline/callbacks_test.go
 internal/core/pipeline/claim_recovery.go
 internal/core/pipeline/document.go
+internal/core/pipeline/gate.go
 internal/core/pipeline/guard_test.go
 internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
@@ -265,6 +266,7 @@ internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
 internal/core/service/claim_recovery_test.go
 internal/core/service/graph.go
+internal/core/service/gate.go
 internal/core/service/ontology.go
 internal/core/service/reads.go
 internal/core/service/service.go
@@ -483,6 +485,7 @@ internal/server/rpc/cmd/openrpcgen/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/main.go
 internal/server/rpc/cursor.go
 internal/server/rpc/cursor_test.go
+internal/server/rpc/gate_integration_test.go
 internal/server/rpc/integration_test.go
 internal/server/rpc/openrpc.json
 internal/server/rpc/openrpc_test.go
