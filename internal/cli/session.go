@@ -105,6 +105,10 @@ func (s *Session) format(object map[string]any) error {
 				return err
 			}
 		}
+		if next, ok := object["nextCursor"].(string); ok && next != "" {
+			_, err := fmt.Fprintf(s.Out, "Next cursor: %s\n", next)
+			return err
+		}
 		return nil
 	}
 	if bead, ok := object["bead"].(map[string]any); ok {

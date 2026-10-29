@@ -127,6 +127,9 @@ func (c *Client) Call(ctx context.Context, method string, params map[string]any,
 		if canonical.Data.Code != remote.Data.Code || canonical.Code != remote.Code || canonical.Data.Retryable != remote.Data.Retryable {
 			return result, fmt.Errorf("RPC error violates catalog")
 		}
+		if err := c.catalog.ValidateError(&remote); err != nil {
+			return result, fmt.Errorf("RPC error data violates contract: %w", err)
+		}
 		return result, &remote
 	}
 	result.JSON, err = json.Marshal(envelope["result"])

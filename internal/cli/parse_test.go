@@ -24,6 +24,7 @@ func TestUnsupportedOrAmbiguousInputIsRefused(t *testing.T) {
 	cases := [][]string{
 		{"heartbeat", "pl-1"}, {"update", "pl-1"}, {"create", "--fields", "null"},
 		{"create", "--fields", "{} {}"}, {"comment", "pl-1", "--body", " "},
+		{"create", "--fields", `{"title":"first","title":"second"}`},
 		{"ready", "--limit", "0"}, {"ready", "--query", "type=issue"},
 		{"close", "pl-1", "--expect", "-1"}, {"history"}, {"get", "pl-1", "--as-of", "1e2"},
 		{"claim", "pl-1", "extra"}, {"close", "pl-1", "--fields", "{}"},

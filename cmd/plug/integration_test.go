@@ -1,0 +1,115 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/buildbetter-app/plugs/internal/api/wire"
+)
+
+func runPlug(t *testing.T, input string, args ...string) (string, string, error) {
+	t.Helper()
+	binary := os.Getenv("PLUG_BINARY")
+	if binary == "" {
+		t.Fatal("Bazel must supply the real plug executable")
+	}
+	if !filepath.IsAbs(binary) {
+		binary = filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), binary)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Env = append(os.Environ(), "PLUG_SERVER=", "PLUG_TOKEN=")
+	cmd.Stdin = strings.NewReader(input)
+	var out, errOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		t.Fatalf("executable timed out: %v; %s", ctx.Err(), errOut.String())
+	}
+	return out.String(), errOut.String(), err
+}
+
+func TestExecutableMemoryLifecycle(t *testing.T) {
+	commands := `
+["ready"]
+["create","--title","Original"]
+["ready"]
+["claim","@last"]
+["get","@last"]
+["update","@last","--title","Updated"]
+["comment","@last","--body","Evidence"]
+["close","@last","--reason","Done"]
+["history","--as-of","@revision","--id","@last"]
+["get","@last","--as-of","1"]
+["ready"]
+`
+	out, errOut, err := runPlug(t, commands, "--memory", "--json", "session")
+	if err != nil {
+		t.Fatalf("plug failed: %v\nstdout: %s\nstderr: %s", err, out, errOut)
+	}
+	if !strings.Contains(errOut, "memory storage is disposable") {
+		t.Fatalf("disposable storage warning missing: %s", errOut)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 11 {
+		t.Fatalf("wanted eleven results, got %d: %s", len(lines), out)
+	}
+	results := make([]map[string]any, len(lines))
+	for i, line := range lines {
+		v, err := wire.DecodeJSON([]byte(line))
+		if err != nil {
+			t.Fatalf("result %d: %v", i, err)
+		}
+		var ok bool
+		results[i], ok = v.(map[string]any)
+		if !ok {
+			t.Fatalf("result %d is not an object", i)
+		}
+	}
+	if len(results[0]["items"].([]any)) != 0 || len(results[2]["items"].([]any)) != 1 || len(results[10]["items"].([]any)) != 0 {
+		t.Fatalf("readiness did not follow lifecycle: %s", out)
+	}
+	for _, pair := range [][2]int{{1, 1}, {3, 2}, {5, 3}, {6, 4}, {7, 5}} {
+		if results[pair[0]]["revision"].(json.Number).String() != strconv.Itoa(pair[1]) {
+			t.Fatalf("write revision: %v", results[pair[0]])
+		}
+	}
+	lease := results[4]["lease"].(map[string]any)
+	if lease["ttlMs"].(json.Number).String() != "300000" || lease["holder"] != "anonymous" {
+		t.Fatalf("real persisted lease missing: %v", lease)
+	}
+	historical := results[8]["items"].([]any)
+	if len(historical) != 1 || historical[0].(map[string]any)["fields"].(map[string]any)["title"] != "Updated" {
+		t.Fatalf("history did not read committed final state: %s", lines[8])
+	}
+	if results[9]["bead"].(map[string]any)["fields"].(map[string]any)["title"] != "Original" {
+		t.Fatalf("historical get returned current state: %s", lines[9])
+	}
+	// A new invocation opens a new disposable store, proving the lifetime is
+	// explicit even when every command uses the same project and agent label.
+	fresh, _, err := runPlug(t, "", "--memory", "--json", "ready")
+	if err != nil || !strings.Contains(fresh, `"items":[]`) {
+		t.Fatalf("fresh process state: %s %v", fresh, err)
+	}
+}
+
+func TestExecutableRefusesUnsupportedAndStopsSession(t *testing.T) {
+	out, errOut, err := runPlug(t, "", "ready")
+	if err == nil || out != "" || !strings.Contains(errOut, "persistent storage is not installed") {
+		t.Fatalf("implicit storage fallback: %q %q %v", out, errOut, err)
+	}
+	input := "[\"create\",\"--title\",\"First\"]\n[\"get\",\"pl-missing\"]\n[\"create\",\"--title\",\"Must not run\"]\n"
+	out, errOut, err = runPlug(t, input, "--memory", "--json", "session")
+	if err == nil || len(strings.Split(strings.TrimSpace(out), "\n")) != 1 || !strings.Contains(errOut, "not_found") || !strings.Contains(errOut, "session line 2") {
+		t.Fatalf("session refusal: %q %q %v", out, errOut, err)
+	}
+}

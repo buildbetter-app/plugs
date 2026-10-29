@@ -8,6 +8,13 @@ go_library(
     deps = [
         "//internal/api/wire",
         "//internal/client",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
     ],
 )
 
@@ -15,6 +22,13 @@ go_test(
     name = "cli_test",
     srcs = glob(["*_test.go"]),
     embed = [":cli"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
 )
 
 filegroup(

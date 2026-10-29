@@ -2,7 +2,6 @@
 package cli
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,19 +9,21 @@ import (
 	"io"
 	"math/big"
 	"strings"
+
+	"github.com/buildbetter-app/plugs/internal/api/wire"
 )
 
 const Usage = `Usage: plug --memory [--project PROJECT] [--agent LABEL] [--json] COMMAND
 
 Commands:
-  ready [--type TYPE] [--limit N]
+  ready [--type TYPE] [--limit N] [--cursor TOKEN]
   get ID [--as-of REVISION]
   create --title TITLE [--type issue] [--fields JSON]
   claim ID [--expect REVISION]
-  update ID [--title TITLE] --fields JSON [--expect REVISION]
+  update ID [--title TITLE] [--fields JSON] [--expect REVISION]
   comment ID --body TEXT [--expect REVISION]
   close ID [--reason TEXT] [--expect REVISION]
-  history --as-of REVISION [--id ID] [--limit N]
+  history --as-of REVISION [--id ID] [--limit N] [--cursor TOKEN]
   session                 Read one JSON argv array per line from stdin.
 
 Memory storage is disposable and exists only for this process. In a session,
@@ -80,7 +81,7 @@ func ParseCommand(args []string) (Command, error) {
 	if !allowed[name] {
 		return Command{}, fmt.Errorf("unsupported command %q", name)
 	}
-	var title, typ, fields, body, reason, asOf, expect, id, key string
+	var title, typ, fields, body, reason, asOf, expect, id, key, cursor string
 	var limit int
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -88,6 +89,7 @@ func ParseCommand(args []string) (Command, error) {
 	switch name {
 	case "ready":
 		add(&typ, "type")
+		add(&cursor, "cursor")
 		fs.IntVar(&limit, "limit", 1000, "limit")
 	case "get":
 		add(&asOf, "as-of")
@@ -110,6 +112,7 @@ func ParseCommand(args []string) (Command, error) {
 	case "history":
 		add(&asOf, "as-of")
 		add(&id, "id")
+		add(&cursor, "cursor")
 		fs.IntVar(&limit, "limit", 1000, "limit")
 	}
 	write := name == "create" || name == "update" || name == "claim" || name == "comment" || name == "close"
@@ -139,15 +142,12 @@ func ParseCommand(args []string) (Command, error) {
 	if name == "create" || name == "update" {
 		f := map[string]any{}
 		if seen["fields"] {
-			dec := json.NewDecoder(bytes.NewBufferString(fields))
-			dec.UseNumber()
-			if err := dec.Decode(&f); err != nil || f == nil {
+			value, err := wire.DecodeJSON([]byte(fields))
+			object, ok := value.(map[string]any)
+			if err != nil || !ok {
 				return c, fmt.Errorf("--fields must be a JSON object")
 			}
-			var extra any
-			if err := dec.Decode(&extra); err != io.EOF {
-				return c, fmt.Errorf("--fields must contain one JSON object")
-			}
+			f = object
 		}
 		if seen["title"] {
 			f["title"] = title
@@ -193,6 +193,12 @@ func ParseCommand(args []string) (Command, error) {
 		p["asOf"] = map[string]any{"revision": n}
 	}
 	if name == "ready" || name == "history" {
+		if seen["cursor"] {
+			if cursor == "" {
+				return c, fmt.Errorf("--cursor must not be empty")
+			}
+			p["cursor"] = cursor
+		}
 		if limit < 1 || limit > 1000 {
 			return c, fmt.Errorf("--limit must be between 1 and 1000")
 		}
