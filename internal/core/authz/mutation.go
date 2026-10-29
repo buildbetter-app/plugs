@@ -1,6 +1,7 @@
 package authz
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -35,8 +36,9 @@ func ValidateBeadWrite(method string, before, after model.Record, setter model.P
 		return errors.New("explicit stored project assignment required")
 	}
 	if p, present := before.Body["parent"]; present && p != nil {
-		r, ok := p.(model.Ref)
-		if !ok || CanonicalRef(r) != nil {
+		encoded, err := json.Marshal(p)
+		var r model.Ref
+		if err != nil || json.Unmarshal(encoded, &r) != nil || CanonicalRef(r) != nil || strings.Contains(r.ID, "/") {
 			return errors.New("canonical stored parent required")
 		}
 	}

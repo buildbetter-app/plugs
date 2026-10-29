@@ -62,7 +62,12 @@ func bounded[T any](ctx context.Context, b time.Duration, fn func(context.Contex
 
 func scoped(r CheckRequest) bool {
 	p := &r.Caller.Principal
+	depth := 0
 	for p != nil {
+		if depth > 1 {
+			return true
+		}
+		depth++
 		if len(p.Caveats) > 0 {
 			return true
 		}
@@ -89,6 +94,10 @@ func (c Chain) Check(ctx context.Context, s Slice, reqs []CheckRequest) ([]Decis
 	if err != nil {
 		return nil, unavailable(err)
 	}
+	reqs, err = freezeChecks(reqs)
+	if err != nil {
+		return nil, unavailable(err)
+	}
 	valid := make([]bool, len(reqs))
 	restrictions := make([][]FilterExpr, len(reqs))
 	for i, r := range reqs {
@@ -107,7 +116,11 @@ func (c Chain) Check(ctx context.Context, s Slice, reqs []CheckRequest) ([]Decis
 		}
 	}
 	for j, l := range c.Links {
-		steps, e := bounded(ctx, b, func(call context.Context) ([]Step, error) { return l.Check(call, s, reqs) })
+		input, e := freezeChecks(reqs)
+		if e != nil {
+			return nil, unavailable(e)
+		}
+		steps, e := bounded(ctx, b, func(call context.Context) ([]Step, error) { return l.Check(call, s, input) })
 		if e != nil {
 			return nil, unavailable(e)
 		}
@@ -138,7 +151,11 @@ func (c Chain) Check(ctx context.Context, s Slice, reqs []CheckRequest) ([]Decis
 		}
 	}
 	for _, rules := range c.Rules {
-		ds, e := bounded(ctx, b, func(call context.Context) ([]Decision, error) { return rules.Eval(call, s, reqs) })
+		input, e := freezeChecks(reqs)
+		if e != nil {
+			return nil, unavailable(e)
+		}
+		ds, e := bounded(ctx, b, func(call context.Context) ([]Decision, error) { return rules.Eval(call, s, input) })
 		if e != nil {
 			return nil, unavailable(e)
 		}
@@ -225,7 +242,11 @@ func (c Chain) Compile(r ListRequest) (FilterTemplate, error) {
 	}
 	t := FilterTemplate{Namespace: c.Namespace, Request: r, Permit: FilterExpr{Op: False}, Forbid: FilterExpr{Op: False}}
 	for _, l := range c.Links {
-		f, err := l.Filter(r)
+		input, err := FreezeList(r)
+		if err != nil {
+			return FilterTemplate{}, err
+		}
+		f, err := l.Filter(input)
 		if err != nil {
 			return FilterTemplate{}, err
 		}
@@ -239,7 +260,11 @@ func (c Chain) Compile(r ListRequest) (FilterTemplate, error) {
 		t.Permit = FilterExpr{Op: True}
 	}
 	for _, rules := range c.Rules {
-		f, err := rules.Compile(r)
+		input, err := FreezeList(r)
+		if err != nil {
+			return FilterTemplate{}, err
+		}
+		f, err := rules.Compile(input)
 		if err != nil {
 			return FilterTemplate{}, err
 		}
@@ -254,4 +279,17 @@ func (c Chain) Compile(r ListRequest) (FilterTemplate, error) {
 		t.Restrictions = append(t.Restrictions, f.Restrictions...)
 	}
 	return t, t.Validate()
+}
+
+func freezeChecks(reqs []CheckRequest) ([]CheckRequest, error) {
+	out := make([]CheckRequest, len(reqs))
+	for i, q := range reqs {
+		r, err := FreezeList(ListRequest{Caller: q.Caller})
+		if err != nil {
+			return nil, err
+		}
+		q.Caller = r.Caller
+		out[i] = q
+	}
+	return out, nil
 }

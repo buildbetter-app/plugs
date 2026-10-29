@@ -176,7 +176,12 @@ type Step struct {
 	Reason      string
 }
 type Link interface {
+	// Inputs are isolated copies; a link cannot replace the host's caller,
+	// sponsor, caveats or target. Returned restrictions only intersect.
 	Check(context.Context, Slice, []CheckRequest) ([]Step, error)
+	// With rules, Filter is the exact set passing this link's restrictions.
+	// Without rules, the terminal link's Filter is its exact Allow set.
+	// A check-only link returns ErrCheckOnly; lists/claims cannot silently cap.
 	Filter(ListRequest) (FilterExpr, error)
 }
 

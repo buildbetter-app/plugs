@@ -102,6 +102,12 @@ type FilterTemplate struct {
 }
 
 func (t FilterTemplate) Validate() error {
+	if err := t.Permit.Validate(); err != nil {
+		return err
+	}
+	if err := t.Forbid.Validate(); err != nil {
+		return err
+	}
 	if t.NoPlugins {
 		if t.Permit.Op != True || t.Forbid.Op != False || len(t.Restrictions) != 0 {
 			return errors.New("invalid unrestricted filter")
@@ -109,12 +115,6 @@ func (t FilterTemplate) Validate() error {
 		return nil
 	}
 	if err := t.Namespace.Validate(); err != nil {
-		return err
-	}
-	if err := t.Permit.Validate(); err != nil {
-		return err
-	}
-	if err := t.Forbid.Validate(); err != nil {
 		return err
 	}
 	for _, f := range t.Restrictions {
@@ -427,6 +427,9 @@ func caveatsAllow(ctx context.Context, s Slice, r CheckRequest) (bool, error) {
 
 // FreezeList copies mutable principal/caveat inputs at the compilation boundary.
 func FreezeList(r ListRequest) (ListRequest, error) {
+	if p := r.Caller.Principal.Sponsor; p != nil && p.Sponsor != nil {
+		return ListRequest{}, errors.New("nested sponsor is unsupported")
+	}
 	b, err := json.Marshal(r.Caller.Principal)
 	if err != nil {
 		return ListRequest{}, err
