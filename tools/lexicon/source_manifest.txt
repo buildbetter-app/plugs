@@ -116,11 +116,14 @@ internal/api/wire/meta.go
 internal/api/wire/schema.go
 internal/api/wire/wire_test.go
 internal/core/model/BUILD.bazel
+internal/core/model/audit.go
+internal/core/model/audit_test.go
 internal/core/model/changes.go
 internal/core/model/changes_test.go
 internal/core/model/checkpoint_test.go
 internal/core/model/codes.go
 internal/core/model/commit.go
+internal/core/model/condition.go
 internal/core/model/doc.go
 internal/core/model/encodings_test.go
 internal/core/model/events.go

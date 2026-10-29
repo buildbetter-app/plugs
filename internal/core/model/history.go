@@ -24,6 +24,9 @@ type Changeset struct {
 	IdempotencyKey string         `json:"idempotencyKey,omitempty"`
 	Mutators       []string       `json:"mutators,omitempty"`
 	Changes        []ChangeRecord `json:"changes"`
+	// Events is a complete ordered event plan, atomically stored with this row.
+	// Nil means a legacy row: event indexes remain ChangeRecord indexes.
+	Events []EventDescriptor `json:"events,omitempty"`
 }
 type ChangeRecord struct {
 	Ref          Ref      `json:"ref"`
