@@ -49,18 +49,21 @@ func TestMain(m *testing.M) {
 	out, err := docker("port", name, "5432/tcp")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "real PostgreSQL port lookup failed: %v %s\n", err, out)
+		cleanup()
 		os.Exit(1)
 	}
 	addr := strings.TrimSpace(string(out))
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil || host != "127.0.0.1" {
 		fmt.Fprintf(os.Stderr, "test PostgreSQL must bind loopback, got %q (%v)\n", addr, err)
+		cleanup()
 		os.Exit(1)
 	}
 	postgresTestDSN = "postgres://postgres@" + addr + "/plug_test?sslmode=disable"
 	db, err := sql.Open("pgx", postgresTestDSN)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "real PostgreSQL SQL open failed: %v\n", err)
+		cleanup()
 		os.Exit(1)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
