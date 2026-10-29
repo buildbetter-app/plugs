@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 )
 
@@ -68,6 +69,57 @@ func checkShape(value any, typ reflect.Type) error {
 	case reflect.Int, reflect.Int64, reflect.Uint64:
 		if _, ok := value.(json.Number); !ok {
 			return fmt.Errorf("expected JSON integer")
+		}
+	}
+	return nil
+}
+
+// The standard decoder replaces unpaired UTF-16 escapes with U+FFFD. Refuse
+// that lossy repair while allowing valid surrogate pairs and literal UTF-8.
+func checkUnicodeEscapes(data []byte) error {
+	quoted := false
+	unit := func(at int) (uint64, error) {
+		if at+4 > len(data) {
+			return 0, fmt.Errorf("invalid Unicode escape")
+		}
+		n, err := strconv.ParseUint(string(data[at:at+4]), 16, 16)
+		if err != nil {
+			return 0, fmt.Errorf("invalid Unicode escape")
+		}
+		return n, nil
+	}
+	for i := 0; i < len(data); i++ {
+		if data[i] == '"' {
+			quoted = !quoted
+			continue
+		}
+		if !quoted || data[i] != '\\' {
+			continue
+		}
+		i++
+		if i >= len(data) {
+			return fmt.Errorf("invalid JSON escape")
+		}
+		if data[i] != 'u' {
+			continue
+		}
+		n, err := unit(i + 1)
+		if err != nil {
+			return err
+		}
+		i += 4
+		if n >= 0xdc00 && n <= 0xdfff {
+			return fmt.Errorf("unpaired Unicode surrogate")
+		}
+		if n >= 0xd800 && n <= 0xdbff {
+			if i+6 >= len(data) || data[i+1] != '\\' || data[i+2] != 'u' {
+				return fmt.Errorf("unpaired Unicode surrogate")
+			}
+			low, err := unit(i + 3)
+			if err != nil || low < 0xdc00 || low > 0xdfff {
+				return fmt.Errorf("unpaired Unicode surrogate")
+			}
+			i += 6
 		}
 	}
 	return nil

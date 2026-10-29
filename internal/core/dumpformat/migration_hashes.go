@@ -1,4 +1,5 @@
-// Code generated from the pinned Beads migration bytes; DO NOT EDIT.
+// Wire schema fingerprints from exporter 10953a8536c3a90b7cf54896d2ed5513b48a8e99,
+// internal/plugdump/migration_hashes.go, against the pinned source schema.
 // Re-pin only with an explicit schema-support change.
 package dumpformat
 
