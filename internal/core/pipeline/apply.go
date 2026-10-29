@@ -125,6 +125,9 @@ func (w *Writer) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 		if err == nil {
 			err = p.detectChanges()
 		}
+		if err == nil {
+			err = w.prepareAudit(preCtx, p)
+		}
 		if err == nil && meta.DryRun {
 			commit, err := p.response(*reader.Snapshot().At, meta)
 			commit.WouldCommit = err == nil && len(p.changed) > 0
@@ -357,12 +360,21 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		if pending.deleted {
 			kind = model.OpDelete
 		}
+		// A slot patch plus its optional reason comment is one transition.
+		// Keep the changed blocker anchored to the patch, not the comment.
+		if p.audit != nil && isSlot(meta.Method) && statusChanged(pending) {
+			kind = model.OpPatch
+		}
 		changes = append(changes, model.ChangeRecord{Ref: pending.ref, Op: kind, FromRevision: pending.revision, ChangedPaths: paths})
+	}
+	events, chain, err := p.events(revision, changes)
+	if err != nil {
+		return model.Commit{}, err
 	}
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		return model.Commit{}, err
 	}
-	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, LockKeys: keys})
+	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
 	if err != nil {
 		return model.Commit{}, err
 	}

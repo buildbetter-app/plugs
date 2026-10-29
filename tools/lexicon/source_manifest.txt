@@ -172,6 +172,8 @@ internal/core/ontologymigration/types.go
 internal/core/ontologymigration/validation_test.go
 internal/core/pipeline/BUILD.bazel
 internal/core/pipeline/apply.go
+internal/core/pipeline/audit.go
+internal/core/pipeline/audit_test.go
 internal/core/pipeline/callbacks.go
 internal/core/pipeline/callbacks_test.go
 internal/core/pipeline/document.go
@@ -217,6 +219,8 @@ internal/server/events/service.go
 internal/server/events/storage.go
 internal/storage/conformance/BUILD.bazel
 internal/storage/conformance/atomic.go
+internal/storage/conformance/audit.go
+internal/storage/conformance/audit_fixtures.go
 internal/storage/conformance/checkpoints.go
 internal/storage/conformance/conformance.go
 internal/storage/conformance/fixtures.go
@@ -229,6 +233,7 @@ internal/storage/conformance/locks.go
 internal/storage/conformance/noops.go
 internal/storage/conformance/responses.go
 internal/storage/driver/BUILD.bazel
+internal/storage/driver/audit_contract_test.go
 internal/storage/driver/driver.go
 internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
@@ -236,6 +241,7 @@ internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/memory/BUILD.bazel
+internal/storage/memory/audit_test.go
 internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_test.go
 internal/storage/memory/lease.go

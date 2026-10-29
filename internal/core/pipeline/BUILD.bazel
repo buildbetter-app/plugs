@@ -19,6 +19,7 @@ go_test(
     deps = [
         "//internal/core/model",
         "//internal/core/port",
+        "//internal/storage/conformance",
         "//internal/storage/driver",
         "//internal/storage/memory",
     ],
