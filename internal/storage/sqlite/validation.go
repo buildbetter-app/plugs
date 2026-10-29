@@ -1,0 +1,136 @@
+package sqlite
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
+)
+
+func (t *transaction) validateHeader(ctx context.Context, h driver.ChangesetHeader) error {
+	if err := t.check(ctx); err != nil {
+		return err
+	}
+	if !t.hasHead {
+		return fmt.Errorf("sqlite: commit requires Head")
+	}
+	if h.ResponsePending && h.IdempotencyKey == "" {
+		return fmt.Errorf("sqlite: pending response requires an idempotency key")
+	}
+	if err := driver.ValidateHeaderLocks(h.LockKeys, t.acquired); err != nil {
+		return err
+	}
+	if err := branchZero(h.Branch); err != nil {
+		return err
+	}
+	if h.Incarnation != t.meta.Incarnation {
+		return driver.ErrIncarnationChanged{From: h.Incarnation, To: t.meta.Incarnation}
+	}
+	if _, err := driver.PrincipalKey(h.Principal); err != nil {
+		return err
+	}
+	return h.Kind.Validate()
+}
+func (t *transaction) validateChanges(ctx context.Context, changes []model.ChangeRecord) error {
+	seen := make(map[string]bool)
+	for _, change := range changes {
+		switch change.Op {
+		case model.OpCreate, model.OpPatch, model.OpReparent, model.OpLink, model.OpUnlink, model.OpComment, model.OpAttach, model.OpDelete, model.OpSetMeta:
+		default:
+			return fmt.Errorf("sqlite: invalid change operation")
+		}
+		id, err := recordKey(change.Ref)
+		if err != nil {
+			return err
+		}
+		staged, ok := t.records[id]
+		if !ok || seen[id] {
+			return fmt.Errorf("sqlite: each staged record must appear exactly once")
+		}
+		seen[id] = true
+		if (staged == nil) != (change.Op == model.OpDelete) {
+			return fmt.Errorf("sqlite: tombstone disagrees with change operation")
+		}
+		if err = change.FromRevision.Validate(); err != nil {
+			return err
+		}
+		previous, err := t.observe(ctx, driver.LockKey{Kind: driver.LockRecord, Ref: &change.Ref})
+		if err != nil {
+			return err
+		}
+		if change.FromRevision.String() != previous.Revision.String() {
+			return driver.ErrConflict
+		}
+	}
+	if len(seen) != len(t.records) {
+		return fmt.Errorf("sqlite: undeclared record mutation")
+	}
+	return nil
+}
+func (t *transaction) validatePredicates(ctx context.Context) error {
+	for _, r := range t.acquired {
+		if r.Key.Kind == driver.LockSentinel && r.Mode != driver.LockShare {
+			if _, ok := t.bumps[keyID(r.Key)]; !ok {
+				return fmt.Errorf("sqlite: update sentinel must be bumped")
+			}
+		}
+	}
+	for id, record := range t.records {
+		var kind string
+		if record != nil {
+			kind = record.Kind
+		} else {
+			if err := t.tx.QueryRowContext(ctx, `SELECT kind FROM objects WHERE key=?`, id).Scan(&kind); err != nil && err != sql.ErrNoRows {
+				return err
+			}
+		}
+		if kind != "bead" {
+			continue
+		}
+		ref := t.recordRef(id)
+		if !ref.IsID() {
+			return fmt.Errorf("sqlite: bead requires resolved ID")
+		}
+		sentinel, err := driver.NewBeadSentinel(ref.ID)
+		if err != nil {
+			return err
+		}
+		if _, ok := t.bumps[keyID(driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})]; !ok {
+			return fmt.Errorf("sqlite: bead requires its exact sentinel bump")
+		}
+	}
+	// Derived row contents are opaque. This checks structural family coverage;
+	// core is responsible for selecting every semantically affected exact scope.
+	for _, v := range t.derived {
+		var family string
+		switch v.Key.Derived.Table {
+		case driver.DerivedReadyState:
+			family = "ready/"
+		case driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute:
+			family = "closure/"
+		case driver.DerivedGrant:
+			family = "grant/"
+		case driver.DerivedOntology:
+			family = "ontology"
+		case driver.DerivedPlugins:
+			family = "plugins"
+		}
+		if family == "" {
+			continue
+		}
+		found := false
+		for _, key := range t.bumps {
+			if key.Kind == driver.LockSentinel && (string(key.Sentinel) == family || strings.HasSuffix(family, "/") && strings.HasPrefix(string(key.Sentinel), family)) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("sqlite: derived table %s requires %s predicate bump", v.Key.Derived.Table, family)
+		}
+	}
+	return nil
+}
