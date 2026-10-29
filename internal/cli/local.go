@@ -12,6 +12,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/client"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/inprocess"
@@ -104,6 +105,12 @@ func OpenLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 		return fail(err)
 	}
 	if err := rpc.BindService(registry, svc); err != nil {
+		return fail(err)
+	}
+	if err := rpc.BindTxApply(registry, svc); err != nil {
+		return fail(err)
+	}
+	if err := rpc.BindAdmin(registry, restore.NewManager(store, lease)); err != nil {
 		return fail(err)
 	}
 	meta, err := store.Meta(localCtx)

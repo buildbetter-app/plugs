@@ -124,6 +124,7 @@ internal/api/wire/meta.go
 internal/api/wire/schema.go
 internal/api/wire/wire_test.go
 internal/cli/BUILD.bazel
+internal/cli/archive_test.go
 internal/cli/local.go
 internal/cli/local_test.go
 internal/cli/parse.go
@@ -226,6 +227,10 @@ internal/core/pipeline/response_test.go
 internal/core/pipeline/snapshot.go
 internal/core/port/BUILD.bazel
 internal/core/port/pipeline.go
+internal/core/restore/BUILD.bazel
+internal/core/restore/archive.go
+internal/core/restore/fixture_test.go
+internal/core/restore/restore_test.go
 internal/core/service/BUILD.bazel
 internal/core/service/audit.go
 internal/core/service/audit_test.go
@@ -281,6 +286,7 @@ internal/server/pluginhost/pipeline_test.go
 internal/server/pluginhost/reader.go
 internal/server/pluginhost/state.go
 internal/server/rpc/BUILD.bazel
+internal/server/rpc/admin.go
 internal/server/rpc/cmd/openrpcgen/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/main.go
 internal/server/rpc/cursor.go
