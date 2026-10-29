@@ -64,6 +64,7 @@ cmd/plug/integration_test.go
 cmd/plug/main.go
 cmd/plug/remote_fixture_test.go
 cmd/plug/remote_test.go
+cmd/plug/server_integration_test.go
 doc.go
 engdocs/adr/0005-plug-design-decisions.md
 engdocs/design/plug/adversarial-review-2026-10-28.md
@@ -154,6 +155,8 @@ internal/cli/parse.go
 internal/cli/parse_test.go
 internal/cli/remote_test.go
 internal/cli/run.go
+internal/cli/server.go
+internal/cli/server_test.go
 internal/cli/session.go
 internal/client/BUILD.bazel
 internal/client/client.go
@@ -412,6 +415,11 @@ internal/server/collab/manager.go
 internal/server/collab/resources.go
 internal/server/collab/rpc.go
 internal/server/collab/types.go
+internal/server/composition/BUILD.bazel
+internal/server/composition/composition_test.go
+internal/server/composition/config.go
+internal/server/composition/configfile.go
+internal/server/composition/configfile_test.go
 internal/server/events/BUILD.bazel
 internal/server/events/audit.go
 internal/server/events/audit_delivery_test.go
@@ -499,6 +507,12 @@ internal/server/transport/stdio/fixture/BUILD.bazel
 internal/server/transport/stdio/fixture/main.go
 internal/server/transport/stdio/stdio.go
 internal/server/transport/stdio/stdio_test.go
+internal/server/transport/websocket/BUILD.bazel
+internal/server/transport/websocket/backpressure_test.go
+internal/server/transport/websocket/config.go
+internal/server/transport/websocket/conn.go
+internal/server/transport/websocket/handler.go
+internal/server/transport/websocket/websocket_test.go
 internal/server/watch/BUILD.bazel
 internal/server/watch/authorization.go
 internal/server/watch/boundaries_test.go

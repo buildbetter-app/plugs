@@ -141,12 +141,25 @@ func TestBuiltRemoteCLIReopensSQLiteAndPostgres(t *testing.T) {
 			commands := commandInput(t,
 				[]string{"ready"},
 				[]string{"create", "--title", "Original", "--idempotency-key", createKey},
-				[]string{"claim", "@last"},
-				[]string{"update", "@last", "--title", "Updated"},
-				[]string{"comment", "@last", "--body", "Evidence"},
-				[]string{"close", "@last", "--reason", "Finished"},
-				[]string{"history", "--as-of", "@revision", "--id", "@last"},
+				[]string{"claim", "@last", "--idempotency-key", strings.Repeat("b", 64)},
+				[]string{"update", "@last", "--title", "Updated", "--idempotency-key", strings.Repeat("c", 64)},
+				[]string{"comment", "@last", "--body", "Evidence", "--idempotency-key", strings.Repeat("d", 64)},
+				[]string{"defer", "@last", "--reason", "Waiting", "--idempotency-key", strings.Repeat("e", 64)},
+				[]string{"reopen", "@last", "--reason", "Retrying", "--idempotency-key", strings.Repeat("f", 64)},
+				[]string{"fail", "@last", "--reason", "Failed validation", "--idempotency-key", strings.Repeat("1", 64)},
+				[]string{"reopen", "@last", "--reason", "Retry after failure", "--idempotency-key", strings.Repeat("2", 64)},
+				[]string{"cancel", "@last", "--reason", "No longer needed", "--idempotency-key", strings.Repeat("3", 64)},
+				[]string{"reopen", "@last", "--reason", "Reconsidered", "--idempotency-key", strings.Repeat("4", 64)},
+				[]string{"claim", "@last", "--idempotency-key", strings.Repeat("5", 64)},
+				[]string{"close", "@last", "--reason", "Finished", "--idempotency-key", strings.Repeat("6", 64)},
 				[]string{"get", "@last"},
+				[]string{"reopen", "@last", "--reason", "Follow-up", "--idempotency-key", strings.Repeat("7", 64)},
+				[]string{"get", "@last"},
+				[]string{"fail", "@last", "--reason", "Terminal", "--idempotency-key", strings.Repeat("8", 64)},
+				[]string{"fail", "@last", "--reason", "Terminal", "--idempotency-key", strings.Repeat("8", 64)},
+				[]string{"get", "@last"},
+				[]string{"history", "--as-of", "@revision", "--id", "@last"},
+				[]string{"ready"},
 			)
 			// The first run selects the remote server through PLUG_SERVER. It is a
 			// separate process, so @last and @revision exercise the real CLI session.
@@ -158,21 +171,37 @@ func TestBuiltRemoteCLIReopensSQLiteAndPostgres(t *testing.T) {
 				t.Fatalf("successful SQL CLI lifecycle wrote diagnostics: %s", errOut)
 			}
 			results := decodeCLI(t, out)
-			if len(results) != 8 || len(results[0]["items"].([]any)) != 0 {
+			if len(results) != 21 || len(results[0]["items"].([]any)) != 0 {
 				t.Fatalf("unexpected lifecycle result count/readiness: %s", out)
 			}
 			id := resultID(t, results[1])
-			if resultRevision(t, results[1]) != "1" || resultRevision(t, results[2]) != "2" || resultRevision(t, results[3]) != "3" || resultRevision(t, results[4]) != "4" || resultRevision(t, results[5]) != "5" {
-				t.Fatalf("CLI lifecycle revisions changed: %s", out)
+			writeIndexes := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16, 17}
+			for index, want := range []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "14"} {
+				actual := resultRevision(t, results[writeIndexes[index]])
+				if actual != want {
+					t.Fatalf("CLI lifecycle result %d revision=%s want=%s: %s", index, actual, want, out)
+				}
 			}
-			for _, result := range results[1:6] {
+			for _, result := range results[1:13] {
 				assertEmptyWarnings(t, result)
 			}
-			if results[6]["asOf"].(map[string]any)["revision"] != json.Number("5") || results[7]["bead"].(map[string]any)["revision"] != json.Number("5") {
-				t.Fatalf("history/current result revision changed: %s", out)
+			for _, index := range []int{14, 16, 17} {
+				assertEmptyWarnings(t, results[index])
 			}
-			if got := results[7]["bead"].(map[string]any)["status"]; got != "done" {
-				t.Fatalf("CLI get did not see terminal state: %#v", got)
+			if got := results[13]["bead"].(map[string]any)["status"]; got != "done" {
+				t.Fatalf("CLI get did not observe close before reopen: %#v", got)
+			}
+			if got := results[15]["bead"].(map[string]any)["status"]; got != "todo" {
+				t.Fatalf("CLI get did not observe reopen after close: %#v", got)
+			}
+			if got := results[18]["bead"].(map[string]any)["status"]; got != "failed" {
+				t.Fatalf("CLI get did not see terminal failure state: %#v", got)
+			}
+			if results[19]["asOf"].(map[string]any)["revision"] != json.Number("14") || results[19]["items"].([]any)[0].(map[string]any)["status"] != "failed" {
+				t.Fatalf("history/current result changed: %s", out)
+			}
+			if len(results[20]["items"].([]any)) != 0 {
+				t.Fatalf("failed bead remained ready: %s", out)
 			}
 
 			// A second request through the actual HTTP endpoint proves the response
@@ -194,6 +223,22 @@ func TestBuiltRemoteCLIReopensSQLiteAndPostgres(t *testing.T) {
 				t.Fatalf("actual RPC replay did not return original result: %#v", replay.value["result"])
 			}
 
+			// A different key cannot repeat a terminal slot transition. The typed
+			// refusal must not advance the SQL head or publish a receipt.
+			illegal := postRPC(t, server.url, issued.Token, map[string]any{
+				"jsonrpc": "2.0", "id": "illegal", "method": "bead.fail",
+				"params": map[string]any{
+					"id": map[string]any{"id": id}, "reason": "must be refused",
+					"_meta": map[string]any{"project": "sql-e2e", "agent": "cli-agent", "idempotencyKey": strings.Repeat("9", 64)},
+				},
+			})
+			if illegal.status != http.StatusOK || illegal.value["result"] != nil {
+				t.Fatalf("illegal lifecycle transition unexpectedly committed: %#v", illegal.value)
+			}
+			if e, ok := illegal.value["error"].(map[string]any); !ok || e["data"].(map[string]any)["code"] != "invalid_params" {
+				t.Fatalf("illegal lifecycle transition lost typed error: %#v", illegal.value["error"])
+			}
+
 			// Close both the listener and the SQL store, then open a fresh handle.
 			server.close(t)
 			server.reopen(t)
@@ -204,15 +249,15 @@ func TestBuiltRemoteCLIReopensSQLiteAndPostgres(t *testing.T) {
 				t.Fatalf("fresh-handle CLI flag selection failed: %v %s %s", freshRunErr, freshOut, freshErr)
 			}
 			fresh := decodeCLI(t, freshOut)
-			if len(fresh) != 1 || fresh[0]["bead"].(map[string]any)["status"] != "done" || fresh[0]["bead"].(map[string]any)["fields"].(map[string]any)["title"] != "Updated" {
+			if len(fresh) != 1 || fresh[0]["bead"].(map[string]any)["status"] != "failed" || fresh[0]["bead"].(map[string]any)["revision"] != json.Number("14") || fresh[0]["bead"].(map[string]any)["fields"].(map[string]any)["title"] != "Updated" {
 				t.Fatalf("fresh SQL handle lost current state: %s", freshOut)
 			}
-			historyOut, historyErr, historyRunErr := runCLI(t, server.url, issued.Token, "", "--project", "sql-e2e", "--agent", "cli-agent", "--json", "history", "--as-of", "5", "--id", id)
+			historyOut, historyErr, historyRunErr := runCLI(t, server.url, issued.Token, "", "--project", "sql-e2e", "--agent", "cli-agent", "--json", "history", "--as-of", "14", "--id", id)
 			if historyRunErr != nil || historyErr != "" {
 				t.Fatalf("fresh-handle history failed: %v %s %s", historyRunErr, historyOut, historyErr)
 			}
 			history := decodeCLI(t, historyOut)
-			if len(history) != 1 || len(history[0]["items"].([]any)) != 1 || history[0]["items"].([]any)[0].(map[string]any)["status"] != "done" {
+			if len(history) != 1 || history[0]["asOf"].(map[string]any)["revision"] != json.Number("14") || len(history[0]["items"].([]any)) != 1 || history[0]["items"].([]any)[0].(map[string]any)["status"] != "failed" {
 				t.Fatalf("fresh SQL handle lost history: %s", historyOut)
 			}
 
@@ -233,7 +278,7 @@ func TestBuiltRemoteCLIReopensSQLiteAndPostgres(t *testing.T) {
 			if err := json.Unmarshal(records[0].Body, &document); err != nil {
 				t.Fatal(err)
 			}
-			if document.Fields["status"] != "done" || document.Fields["title"] != "Updated" || len(document.Comments) != 2 || document.Comments[0].Body != "Evidence" || document.Comments[1].Body != "Finished" {
+			if document.Fields["status"] != "failed" || document.Fields["title"] != "Updated" || len(document.Comments) != 10 || document.Comments[0].Body != "Evidence" || document.Comments[7].Body != "Finished" || document.Comments[8].Body != "Follow-up" || document.Comments[9].Body != "Terminal" {
 				t.Fatalf("fresh persisted document lost lifecycle data: %+v", document)
 			}
 			for _, comment := range document.Comments {
@@ -242,7 +287,7 @@ func TestBuiltRemoteCLIReopensSQLiteAndPostgres(t *testing.T) {
 				}
 			}
 			changesets, err := reader.Changesets(context.Background(), nil, 20)
-			if err != nil || len(changesets) != 5 {
+			if err != nil || len(changesets) != 14 {
 				t.Fatalf("fresh SQL changesets=%d err=%v", len(changesets), err)
 			}
 			for _, changeset := range changesets {
