@@ -32,8 +32,8 @@ func (t *transaction) header(h driver.ChangesetHeader) ([]byte, error) {
 	if err = h.Kind.Validate(); err != nil {
 		return nil, err
 	}
-	if h.ResponsePending && (h.IdempotencyKey == "" || h.Kind != model.ChangesetWrite) {
-		return nil, fmt.Errorf("postgres: pending response requires a keyed ordinary write")
+	if h.ResponsePending && h.IdempotencyKey == "" {
+		return nil, fmt.Errorf("postgres: pending response requires an idempotency key")
 	}
 	if h.IdempotencyKey == "" {
 		return nil, nil

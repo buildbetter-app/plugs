@@ -33,7 +33,7 @@ closing their store and should use bounded operation contexts.
 
 Idempotency uses the full principal/anonymous-label/method/key scope for 24 hours
 on the database clock, independently of attribution time. Authenticated labels
-are ignored. Request-digest mismatches conflict. Keyed ordinary graph writes
+are ignored. Request-digest mismatches conflict. Keyed graph writes
 can publish a pending response atomically with their data. Readers retain that
 state across pool closure and reopen; core must await durable finalization
 before returning success. The fenced finalizer appends its outcome once and

@@ -190,8 +190,21 @@ func TestPendingReceiptNoopAndImmutableOutcomes(t *testing.T) {
 				h.Kind = model.ChangesetDerived
 				h.Method, h.IdempotencyKey, h.RequestHash = "test.pending", "derived", "digest"
 			}
-			if _, err := tx.Commit(ctx, h); err == nil {
-				t.Fatal("pending response accepted outside keyed ordinary graph write")
+			entry, err := tx.Commit(ctx, h)
+			if mode == "unkeyed" {
+				if err == nil {
+					t.Fatal("unkeyed pending response accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("keyed derived commit rejected pending response: %v", err)
+			}
+			if got := receiptTest(t, s, "derived"); !got.ResponsePending || got.Changeset.Kind != model.ChangesetDerived {
+				t.Fatalf("derived pending response: %+v", got)
+			}
+			if err := finalize("derived", entry.Revision, nil); err != nil {
+				t.Fatalf("derived response finalization: %v", err)
 			}
 		})
 	}
