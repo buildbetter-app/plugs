@@ -1,4 +1,4 @@
-// Package cli implements the local Plug command line.
+// Package cli implements the local and remote Plug command line.
 package cli
 
 import (
@@ -13,7 +13,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 )
 
-const Usage = `Usage: plug --memory [--project PROJECT] [--agent LABEL] [--json] COMMAND
+const Usage = `Usage: plug [--server URL | --memory] [--project PROJECT] [--agent LABEL] [--json] COMMAND
 
 Commands:
   ready [--type TYPE] [--limit N] [--cursor TOKEN]
@@ -28,6 +28,9 @@ Commands:
 
 Memory storage is disposable and exists only for this process. In a session,
 @last is the ID returned by the last write; @revision is its revision.
+Server selection: --server, then PLUG_SERVER; PLUG_TOKEN supplies the bearer.
+An unreachable configured server is an error. Remote calls use POST /rpc/v1.
+Config-file loading and persistent local storage are not installed in this slice.
 Global options precede COMMAND. Command options may precede or follow ID.
 Writes accept --idempotency-key KEY to retry a write whose response was lost.
 `
@@ -35,10 +38,12 @@ Writes accept --idempotency-key KEY to retry a write whose response was lost.
 var ErrHelp = errors.New("help requested")
 
 type Options struct {
-	Memory  bool
-	Project string
-	Agent   string
-	JSON    bool
+	Memory    bool
+	Server    string
+	Project   string
+	Agent     string
+	JSON      bool
+	serverSet bool
 }
 
 type Command struct {
@@ -47,12 +52,13 @@ type Command struct {
 	Key    string
 }
 
-// Parse separates the local session configuration from one named command.
+// Parse separates the connection/session configuration from one named command.
 func Parse(args []string) (Options, []string, error) {
 	var o Options
 	fs := flag.NewFlagSet("plug", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.BoolVar(&o.Memory, "memory", false, "disposable memory storage")
+	fs.StringVar(&o.Server, "server", "", "server origin or /rpc/v1 URL")
 	fs.StringVar(&o.Project, "project", "local", "project")
 	fs.StringVar(&o.Agent, "agent", "plug-cli", "unverified anonymous agent label")
 	fs.BoolVar(&o.JSON, "json", false, "JSON output")
@@ -65,6 +71,14 @@ func Parse(args []string) (Options, []string, error) {
 	if len(fs.Args()) == 0 {
 		return o, nil, ErrHelp
 	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "server" {
+			o.serverSet = true
+		}
+	})
+	if o.serverSet && strings.TrimSpace(o.Server) == "" {
+		return o, nil, fmt.Errorf("--server must not be empty")
+	}
 	if strings.TrimSpace(o.Project) == "" {
 		return o, nil, fmt.Errorf("--project must not be empty")
 	}
@@ -72,7 +86,7 @@ func Parse(args []string) (Options, []string, error) {
 }
 
 // ParseCommand builds canonical named parameters; validation at the registry
-// remains authoritative. The CLI exposes only verbs backed by the local slice.
+// remains authoritative. Both transports expose the same named command slice.
 func ParseCommand(args []string) (Command, error) {
 	if len(args) == 0 {
 		return Command{}, fmt.Errorf("command is required")
