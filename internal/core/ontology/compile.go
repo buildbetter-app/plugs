@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"strings"
 )
@@ -16,17 +17,23 @@ import (
 func Decode(data []byte) (Document, error) {
 	var doc Document
 	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
 	dec.UseNumber()
-	if err := dec.Decode(&doc); err != nil {
+	value, err := uniqueValue(dec)
+	if err != nil {
 		return Document{}, err
 	}
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		return Document{}, fmt.Errorf("expected one ontology object")
 	}
-	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		return Document{}, fmt.Errorf("expected ontology object")
+	if err := checkShape(value, reflect.TypeFor[Document](), "ontology"); err != nil {
+		return Document{}, err
+	}
+	dec = json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	dec.UseNumber()
+	if err := dec.Decode(&doc); err != nil {
+		return Document{}, err
 	}
 	return doc, nil
 }
@@ -70,13 +77,25 @@ func Compile(base Document, overlays map[string]Document, plugins PluginCatalog)
 		})
 		return Snapshot{}, problems
 	}
-	// JSON orders map keys. Cloned documents ensure unsupported defaults cannot
-	// hide a Marshal failure. Include plugins because they determine degradation.
-	data, _ := json.Marshal(struct {
+	// Hash normalized effective definitions, in JSON's canonical map-key order.
+	// No caller-owned map participates after cloning. Include plugin availability
+	// because it determines whether a type is degraded.
+	projects := map[string]Document{}
+	for project, effective := range compiled.projects {
+		projects[project] = effective.document
+	}
+	if plugins == nil {
+		plugins = PluginCatalog{}
+	}
+	data, err := json.Marshal(struct {
 		Base     Document            `json:"base"`
-		Overlays map[string]Document `json:"overlays"`
+		Projects map[string]Document `json:"projects"`
 		Plugins  PluginCatalog       `json:"plugins"`
-	}{base, overlays, plugins})
+	}{base, projects, plugins})
+	if err != nil {
+		add("digest", err.Error())
+		return Snapshot{}, problems
+	}
 	digest := sha256.Sum256(data)
 	compiled.digest = hex.EncodeToString(digest[:])
 	return compiled, nil
@@ -155,9 +174,8 @@ func compileEffective(doc Document, plugins PluginCatalog, prefix string, add fu
 			continue
 		}
 		seen := map[string]bool{}
-		ready := false
 		for _, status := range w.Statuses {
-			s, ok := doc.Statuses[status]
+			_, ok := doc.Statuses[status]
 			if !ok {
 				add(path+".statuses", "unknown status "+status)
 			}
@@ -165,7 +183,10 @@ func compileEffective(doc Document, plugins PluginCatalog, prefix string, add fu
 				add(path+".statuses", "duplicate status "+status)
 			}
 			seen[status] = true
-			ready = ready || (!s.Archived && s.Category.ReadyEligible())
+		}
+		if w.Initial == "" {
+			w.Initial = w.Slots[Reopen]
+			doc.Workflows[key] = w
 		}
 		if s, ok := doc.Statuses[w.Initial]; !ok || s.Archived || !seen[w.Initial] {
 			add(path+".initial", "initial must name an active workflow status")
@@ -174,9 +195,6 @@ func compileEffective(doc Document, plugins PluginCatalog, prefix string, add fu
 			if w.Slots[slot] == "" {
 				add(path+".slots."+string(slot), "required slot missing")
 			}
-		}
-		if ready && w.Slots[Claim] == "" {
-			add(path+".slots.claim", "ready-eligible workflow requires claim")
 		}
 		for _, slot := range keys(w.Slots) {
 			target := w.Slots[slot]
@@ -230,10 +248,22 @@ func compileEffective(doc Document, plugins PluginCatalog, prefix string, add fu
 		if !ok || w.Archived {
 			add(path+".workflow", "unknown or archived workflow")
 		}
+		if t.ReadyEligible == nil || *t.ReadyEligible {
+			for _, status := range w.Statuses {
+				s := doc.Statuses[status]
+				if !s.Archived && s.Category.ReadyEligible() && w.Slots[Claim] == "" {
+					add(path+".workflow", "ready-eligible type requires claim slot")
+					break
+				}
+			}
+		}
 		for _, name := range keys(t.Fields) {
 			field := t.Fields[name]
 			fp := path + ".fields." + name
 			checkKey(name, fp, add)
+			if contains([]string{"status", "type", "project", "template", "priority", "metadata", "id"}, name) {
+				add(fp, "kernel field cannot be redefined as a typed field")
+			}
 			switch field.Type {
 			case "string", "integer", "number", "boolean", "strings":
 				if len(field.Values) != 0 {
@@ -242,6 +272,13 @@ func compileEffective(doc Document, plugins PluginCatalog, prefix string, add fu
 			case "enum":
 				if len(field.Values) == 0 {
 					add(fp, "enum requires values")
+				}
+				seen := map[string]bool{}
+				for _, value := range field.Values {
+					if seen[value] {
+						add(fp+".values", "duplicate enum value")
+					}
+					seen[value] = true
 				}
 			default:
 				add(fp+".type", "unsupported field type")
