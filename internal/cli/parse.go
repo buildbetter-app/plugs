@@ -149,6 +149,8 @@ func ParseCommand(args []string) (Command, error) {
 	if err := fs.Parse(ordered); err != nil {
 		return Command{}, err
 	}
+	seen := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
 	p := map[string]any{}
 	method := "bead." + name
 	if name == "batch" {
@@ -169,14 +171,12 @@ func ParseCommand(args []string) (Command, error) {
 		p["from"] = map[string]any{"id": from}
 		p["to"] = map[string]any{"id": to}
 	} else if name == "batch" {
-		if fs.NArg() > 1 {
+		if fs.NArg() > 1 || (fs.NArg() == 1 && seen["changeset"]) {
 			return c, fmt.Errorf("batch accepts one changeset JSON value")
 		}
 	} else if fs.NArg() != 0 {
 		return c, fmt.Errorf("%s takes no positional arguments", name)
 	}
-	seen := map[string]bool{}
-	fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
 	if name == "create" || name == "update" {
 		f := map[string]any{}
 		if seen["fields"] {

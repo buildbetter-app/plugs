@@ -81,6 +81,7 @@ func TestParseDependencyAndBatchRejectInvalidInput(t *testing.T) {
 		{"unlink", "pl-from", "pl-to", "--kind", " "},
 		{"link", "pl-from", "pl-to", "--kind", "blocks", "extra"},
 		{"batch"},
+		{"batch", "--changeset", `{"ops":[]}`, "extra"},
 		{"batch", "--changeset", "[]"},
 	} {
 		t.Run(args[0], func(t *testing.T) {
