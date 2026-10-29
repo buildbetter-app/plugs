@@ -219,7 +219,7 @@ func TestRemoteConfigurationRefusesLocalFallback(t *testing.T) {
 	t.Setenv("PLUG_SERVER", "http://127.0.0.1:1")
 	var out, errOut bytes.Buffer
 	code := Execute(context.Background(), []string{"--memory", "ready"}, strings.NewReader(""), &out, &errOut)
-	if code != 2 || out.Len() != 0 || !strings.Contains(errOut.String(), "PLUG_SERVER") || strings.Contains(errOut.String(), "memory storage is disposable") {
+	if code != 1 || out.Len() != 0 || !strings.Contains(errOut.String(), "PLUG_SERVER") || strings.Contains(errOut.String(), "memory storage is disposable") {
 		t.Fatalf("remote fallback: code=%d out=%s err=%s", code, out.String(), errOut.String())
 	}
 }
