@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "conformance",
+    srcs = glob(["*.go"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/storage/conformance",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/core/model", "//internal/storage/driver"],
+)
