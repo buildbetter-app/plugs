@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -30,6 +31,7 @@ type prepared struct {
 	warnings []model.Warning
 	mutators []string
 	refs     []model.Ref
+	changed  map[string]bool
 }
 
 func failure(code model.ErrorCode, message string) error {
@@ -213,6 +215,12 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if err = w.checkLease(current.doc, by, meta); err != nil {
 				return nil, err
 			}
+			if meta.Method == "bead.claim" && current.doc.Lease != nil && w.cfg.now().Before(current.doc.Lease.ExpiresAt) {
+				if len(cs.Ops) != 1 || op.Kind != model.OpPatch || len(op.Patch.Fields) != 0 {
+					return nil, failure("invalid_params", "an already-owned claim requires one empty patch")
+				}
+				p.proposal.SameClaim = true
+			}
 			if isSlot(meta.Method) {
 				if slotRef == "" {
 					slotRef = target.ID
@@ -240,7 +248,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				current.setBy["comments"] = "request"
 			case model.OpLink, model.OpUnlink:
 				kind := op.Link.LinkKind
-				if kind != "blocks" && kind != "relates-to" {
+				if kind != "blocks" && kind != "conditional-blocks" && kind != "relates-to" {
 					return nil, failure("invalid_params", "unsupported link kind")
 				}
 				to, e := p.resolve(op.Link.To, aliases)
@@ -445,7 +453,11 @@ func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.Writ
 	}
 	if meta.Method == "bead.claim" {
 		if w.cfg.now().Before(lease.ExpiresAt) {
-			return failure("busy", "bead already has a live claim")
+			principal, _ := driver.PrincipalKey(by)
+			holder, _ := driver.PrincipalKey(lease.Principal)
+			if principal != holder || by.Kind == "anonymous" && meta.AgentLabel != lease.Agent {
+				return failure("busy", "bead already has a live claim")
+			}
 		}
 		return nil
 	}
@@ -461,13 +473,13 @@ func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.Writ
 }
 
 func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta) error {
-	if meta.Method == "bead.claim" {
+	if meta.Method == "bead.claim" && !p.proposal.SameClaim {
 		ttl := model.Natural64(uint64(w.cfg.claimTTL / time.Millisecond))
 		for _, pending := range p.writes {
 			pending.doc.Lease = &ClaimLease{Principal: by, Agent: meta.AgentLabel, ExpiresAt: w.cfg.now().UTC().Add(w.cfg.claimTTL), TtlMs: ttl, Epoch: model.Natural64(w.lease.Epoch())}
 			pending.setBy["lease"] = "request"
 		}
-	} else if isSlot(meta.Method) {
+	} else if isSlot(meta.Method) && meta.Method != "bead.claim" {
 		for _, pending := range p.writes {
 			pending.doc.Lease = nil
 			pending.setBy["lease"] = "request"
@@ -477,8 +489,12 @@ func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta
 }
 
 func (p *prepared) sentinels() []driver.Sentinel {
-	set := map[driver.Sentinel]bool{driver.SentinelGraphBlocking: true}
+	set := map[driver.Sentinel]bool{}
 	for _, pending := range p.writes {
+		if !p.changed[pending.ref.ID] {
+			continue
+		}
+		set[driver.SentinelGraphBlocking] = true
 		if s, err := driver.NewBeadSentinel(pending.ref.ID); err == nil {
 			set[s] = true
 		}
@@ -489,6 +505,38 @@ func (p *prepared) sentinels() []driver.Sentinel {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
 	return result
+}
+
+func (p *prepared) detectChanges() error {
+	p.changed = map[string]bool{}
+	for id, pending := range p.writes {
+		if len(pending.before) == 0 {
+			if !pending.deleted {
+				p.changed[id] = true
+			}
+			continue
+		}
+		if pending.deleted {
+			p.changed[id] = true
+			continue
+		}
+		before, err := DecodeDocument(pending.before)
+		if err != nil {
+			return err
+		}
+		oldBody, err := json.Marshal(before)
+		if err != nil {
+			return err
+		}
+		body, err := json.Marshal(pending.doc)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(oldBody, body) {
+			p.changed[id] = true
+		}
+	}
+	return nil
 }
 
 func (p *prepared) graph(ctx context.Context) error {
@@ -552,7 +600,7 @@ func (p *prepared) graph(ctx context.Context) error {
 		}
 		visiting[id] = true
 		for _, link := range docs[id].Links {
-			if link.Kind == "blocks" {
+			if link.Kind == "blocks" || link.Kind == "conditional-blocks" {
 				if err := walk(link.To.ID); err != nil {
 					return err
 				}

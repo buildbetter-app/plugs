@@ -131,6 +131,8 @@ internal/core/pipeline/callbacks.go
 internal/core/pipeline/callbacks_test.go
 internal/core/pipeline/document.go
 internal/core/pipeline/guard_test.go
+internal/core/pipeline/noop_test.go
+internal/core/pipeline/operations_test.go
 internal/core/pipeline/options.go
 internal/core/pipeline/pipeline_test.go
 internal/core/pipeline/prepare.go
@@ -138,6 +140,15 @@ internal/core/pipeline/snapshot.go
 internal/core/port/BUILD.bazel
 internal/core/port/pipeline.go
 internal/doc.go
+internal/plugins/authnapikey/BUILD.bazel
+internal/plugins/authnapikey/apikey.go
+internal/plugins/authnapikey/apikey_test.go
+internal/plugins/authnapikey/http_test.go
+internal/server/authn/BUILD.bazel
+internal/server/authn/authn.go
+internal/server/authn/authn_test.go
+internal/server/authn/http.go
+internal/server/authn/http_test.go
 internal/server/pluginhost/BUILD.bazel
 internal/server/pluginhost/adapters.go
 internal/server/pluginhost/call.go
@@ -162,6 +173,7 @@ internal/storage/conformance/idempotency.go
 internal/storage/conformance/leases.go
 internal/storage/conformance/lifetimes.go
 internal/storage/conformance/locks.go
+internal/storage/conformance/noops.go
 internal/storage/driver/BUILD.bazel
 internal/storage/driver/driver.go
 internal/storage/driver/errors.go
@@ -175,6 +187,8 @@ internal/storage/memory/lease.go
 internal/storage/memory/lifetimes_test.go
 internal/storage/memory/metadata.go
 internal/storage/memory/metadata_test.go
+internal/storage/memory/noop.go
+internal/storage/memory/noop_test.go
 internal/storage/memory/reader.go
 internal/storage/memory/store.go
 internal/storage/memory/transaction.go
