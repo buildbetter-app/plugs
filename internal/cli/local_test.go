@@ -84,6 +84,19 @@ func TestStorageFactoryUsesOneStoreAndClosesOnce(t *testing.T) {
 	}
 }
 
+func TestInvalidFactoryResultClosesReturnedStore(t *testing.T) {
+	store := memory.New()
+	l, err := OpenLocal(context.Background(), LocalConfig{Factory: func(context.Context, StorageConfig) (driver.Store, func() error, error) {
+		return store, nil, nil
+	}})
+	if err == nil || l != nil {
+		t.Fatalf("invalid factory result accepted: %v %v", l, err)
+	}
+	if _, err := store.Meta(context.Background()); err == nil {
+		t.Fatal("failed composition left the returned store open")
+	}
+}
+
 func TestRemoteConfigurationRefusesLocalFallback(t *testing.T) {
 	t.Setenv("PLUG_SERVER", "http://127.0.0.1:1")
 	var out, errOut bytes.Buffer

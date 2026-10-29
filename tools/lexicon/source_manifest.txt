@@ -187,6 +187,7 @@ internal/server/rpc/cmd/openrpcgen/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/main.go
 internal/server/rpc/cursor.go
 internal/server/rpc/cursor_test.go
+internal/server/rpc/integration_test.go
 internal/server/rpc/openrpc.json
 internal/server/rpc/openrpc_test.go
 internal/server/rpc/registry.go

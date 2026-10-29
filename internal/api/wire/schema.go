@@ -198,6 +198,12 @@ func (c *Catalog) validate(schema, value any, path string, request bool, depth i
 		if !ok {
 			return fmt.Errorf("%s: expected array", path)
 		}
+		if bound, ok := s["minItems"].(json.Number); ok {
+			n, _ := bound.Int64()
+			if int64(len(v)) < n {
+				return fmt.Errorf("%s: too few items", path)
+			}
+		}
 		if bound, ok := s["maxItems"].(json.Number); ok {
 			n, _ := bound.Int64()
 			if int64(len(v)) > n {
