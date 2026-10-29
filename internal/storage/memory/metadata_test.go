@@ -76,6 +76,7 @@ func TestIdempotencyWindowAndAuthenticatedScope(t *testing.T) {
 	}
 	meta, _ := s.Meta(ctx)
 	r, _ := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	defer r.Close()
 	cached, err := r.IdempotencyByKey(ctx, "user:u", "any-label", "bead.create", "key")
 	if err != nil || cached == nil || cached.Commit.Results[0].Ref.ID != firstRef.ID {
 		t.Fatalf("cached=%+v %v", cached, err)
@@ -97,6 +98,7 @@ func TestIdempotencyWindowAndAuthenticatedScope(t *testing.T) {
 		t.Fatalf("expired key reuse=%+v %v", second, err)
 	}
 	r, _ = s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	defer r.Close()
 	log, err := r.Changesets(ctx, nil, 100)
 	if err != nil || len(log) != 2 || log[0].IdempotencyKey != "key" || log[1].IdempotencyKey != "key" {
 		t.Fatalf("log lost retained keys=%v %v", log, err)
@@ -140,6 +142,7 @@ func TestResponseFinalizerFencedAndAtomic(t *testing.T) {
 	}
 	meta, _ := s.Meta(ctx)
 	r, _ := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	defer r.Close()
 	cached, _ := r.IdempotencyByKey(ctx, "user:u", "", "bead.create", "key")
 	if len(cached.Commit.Warnings) != 1 {
 		t.Fatal("fenced finalize published warnings")
@@ -148,6 +151,7 @@ func TestResponseFinalizerFencedAndAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, _ = s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	defer r.Close()
 	cached, _ = r.IdempotencyByKey(ctx, "user:u", "", "bead.create", "key")
 	if len(cached.Commit.Warnings) != 2 || cached.Commit.Warnings[0].Message != "initial" || cached.Commit.Warnings[1].Message != "post" {
 		t.Fatalf("final response=%+v", cached)
