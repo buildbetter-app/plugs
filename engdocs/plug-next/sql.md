@@ -71,4 +71,3 @@ and recovery incarnation changes remain deployment work.
 The [older storage guide](../plug-runtime/storage.md) remains pinned to
 `471d0199` and correctly describes that snapshot's audit-plan limitation. This
 page is the current SQL delta; it does not rewrite that historical evidence.
-
