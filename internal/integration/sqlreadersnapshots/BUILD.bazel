@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "sqlreadersnapshots_test",
+    srcs = ["integration_test.go"],
+    args = ["-test.v"],
+    size = "large",
+    tags = ["local", "requires-network"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/storage/driver",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+    ],
+)
