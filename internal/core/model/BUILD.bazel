@@ -11,6 +11,8 @@ go_test(
     name = "model_test",
     srcs = glob(["*_test.go"]),
     embed = [":model"],
+    embedsrcs = ["testdata/openrpc-components.json"],
+    size = "small",
 )
 
 filegroup(

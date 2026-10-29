@@ -399,13 +399,20 @@ func validateDurableEvent(value DurableEvent) error {
 }
 
 func validatePrincipal(value PrincipalRef) error {
-	if !validPrincipalKind(value.Kind) {
-		return fmt.Errorf("unknown principal kind %q", value.Kind)
+	seen := map[*PrincipalRef]bool{}
+	for {
+		if !validPrincipalKind(value.Kind) {
+			return fmt.Errorf("unknown principal kind %q", value.Kind)
+		}
+		if value.Sponsor == nil {
+			return nil
+		}
+		if seen[value.Sponsor] {
+			return fmt.Errorf("cyclic principal sponsor")
+		}
+		seen[value.Sponsor] = true
+		value = *value.Sponsor
 	}
-	if value.Sponsor != nil {
-		return validatePrincipal(*value.Sponsor)
-	}
-	return nil
 }
 
 func validateEventCause(value EventCause) error {
@@ -599,14 +606,14 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 	if err := decodeJSON(data, &head); err != nil {
 		return err
 	}
-	*e = Event{Category: head.Category}
+	decoded := Event{Category: head.Category}
 	switch head.Category {
 	case EventDurable:
 		var value DurableEvent
 		if err := decodeJSON(data, &value); err != nil {
 			return err
 		}
-		e.Durable = &value
+		decoded.Durable = &value
 	case EventControl:
 		var envelope struct {
 			Category EventCategory `json:"category"`
@@ -677,12 +684,13 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 		default:
 			return fmt.Errorf("unknown control event type %q", envelope.Type)
 		}
-		e.Control = &value
+		decoded.Control = &value
 		if err := validateControlDetails(value.Type, value.Details); err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("unknown event category %q", head.Category)
 	}
+	*e = decoded
 	return nil
 }
