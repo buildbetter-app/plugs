@@ -4,7 +4,7 @@ go_library(
     name = "acceptance",
     srcs = ["inputs.go", "projection.go", "trace.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/acceptance",
-    visibility = ["//spec:__pkg__"],
+    visibility = ["//spec:__pkg__", "//spec/extended:__pkg__"],
 )
 
 go_test(
