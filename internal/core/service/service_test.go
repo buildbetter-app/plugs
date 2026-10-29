@@ -269,6 +269,87 @@ func TestLeaseOwnershipExpiryAndLostStorageLease(t *testing.T) {
 	wantCode(t, err, "busy")
 }
 
+func TestSameActorClaimAndSameValueUpdateDoNotAdvanceHead(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	id, _ := create(t, f, "Unchanged")
+	before, _ := f.store.Meta(ctx)
+	_, err := f.svc.Update(ctx, anonymous, UpdateRequest{ID: id, Fields: map[string]any{"title": "Unchanged"}}, meta(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := f.store.Meta(ctx)
+	if before.Head.String() != after.Head.String() {
+		t.Fatal("same-value update advanced head")
+	}
+	claimed, err := f.svc.Claim(ctx, anonymous, ClaimRequest{ID: id}, meta(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.now = f.now.Add(time.Minute)
+	key := meta(t)
+	reclaimed, err := f.svc.Claim(ctx, anonymous, ClaimRequest{ID: id}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reclaimed.Commit.Revision.String() != claimed.Commit.Revision.String() || !reclaimed.LeaseExpiresAt.Equal(claimed.LeaseExpiresAt) || reclaimed.LeaseTTL != claimed.LeaseTTL {
+		t.Fatalf("same-actor claim changed commit or lease: before=%+v after=%+v", claimed, reclaimed)
+	}
+	replayed, err := f.svc.Claim(ctx, anonymous, ClaimRequest{ID: id}, key)
+	if err != nil || replayed.Commit.Revision.String() != reclaimed.Commit.Revision.String() {
+		t.Fatalf("no-op claim replay: %+v %v", replayed, err)
+	}
+}
+
+type claimMutator struct{ status bool }
+
+func (m claimMutator) Mutate(_ context.Context, p port.ProposedChange, _ port.SnapshotReader) ([]port.Patch, error) {
+	if !p.SameClaim {
+		return nil, nil
+	}
+	path, raw := "fields.description", json.RawMessage(`"Synchronized"`)
+	if m.status {
+		doc, err := pipeline.DecodeDocument(p.Changes[0].After)
+		if err != nil {
+			return nil, err
+		}
+		path = "fields.status"
+		raw, _ = json.Marshal(doc.Fields["status"])
+	}
+	return []port.Patch{{Resource: p.Changes[0].Resource, Paths: map[string]json.RawMessage{path: raw}}}, nil
+}
+
+func TestSameClaimStillValidatesMutatorsAndPreservesLease(t *testing.T) {
+	for _, status := range []bool{false, true} {
+		t.Run(map[bool]string{false: "real-field-change", true: "same-status-touch"}[status], func(t *testing.T) {
+			path := "fields.description"
+			if status {
+				path = "fields.status"
+			}
+			f := setup(t, pipeline.WithMutators(pipeline.MutatorBinding{ID: "claim-sync", Owns: []string{path}, Mutator: claimMutator{status: status}}))
+			ctx := context.Background()
+			id, _ := create(t, f, "Claim callbacks")
+			first, err := f.svc.Claim(ctx, anonymous, ClaimRequest{ID: id}, meta(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.now = f.now.Add(time.Minute)
+			second, err := f.svc.Claim(ctx, anonymous, ClaimRequest{ID: id}, meta(t))
+			if status {
+				wantCode(t, err, "ontology_use_slot_verb")
+				return
+			}
+			if err != nil || second.Commit.Revision.String() == first.Commit.Revision.String() || !second.LeaseExpiresAt.Equal(first.LeaseExpiresAt) {
+				t.Fatalf("mutator write or durable lease: %+v %v", second, err)
+			}
+			got, err := f.svc.Get(ctx, anonymous, GetRequest{ID: id})
+			if err != nil || got.Bead.Fields["description"] != "Synchronized" {
+				t.Fatalf("mutator change missing: %+v %v", got, err)
+			}
+		})
+	}
+}
+
 func TestUnsupportedReadsAndParentRefuseWithoutPartialSuccess(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()

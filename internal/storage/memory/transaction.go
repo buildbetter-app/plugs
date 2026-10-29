@@ -434,9 +434,6 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 		return model.Changeset{}, err
 	}
 	response.Revision = revision
-	for i := range response.Results {
-		response.Results[i].Revision = revision
-	}
 	response, err = cloneJSON(response)
 	if err != nil {
 		return model.Changeset{}, err
