@@ -157,6 +157,7 @@ func TestMemoryPipelineServiceLifecycleAndHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer r.Close()
 	rows, err := r.Get(ctx, []model.Ref{id})
 	if err != nil || len(rows) != 1 {
 		t.Fatal(err)
