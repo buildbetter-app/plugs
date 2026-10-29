@@ -210,6 +210,69 @@ func TestPreCallbacksRunPerAffectedRowAndRejectionsRequireDisposition(t *testing
 	}
 }
 
+func TestGlobalPreBindingUsesEffectiveOverlayTypes(t *testing.T) {
+	base := ontology.DefaultDocument()
+	current, candidate := map[string]ontology.Document{}, map[string]ontology.Document{}
+	for _, project := range []string{"P", "Q"} {
+		current[project] = ontology.Document{Types: map[string]ontology.Type{
+			"project_type": {Name: "Project type", Workflow: "issue"},
+		}}
+		candidate[project] = ontology.Document{Types: map[string]ontology.Type{
+			"project_type": {Name: "Project type", Workflow: "issue", Fields: map[string]ontology.Field{
+				"planned": {Type: "string", Default: project},
+			}},
+		}}
+	}
+	req := Request{
+		Current:   Version{Revision: "7", Snapshot: compiled(t, base, current, nil)},
+		Candidate: Version{Revision: "8", Snapshot: compiled(t, base, candidate, nil)},
+	}
+	if _, exists := req.Candidate.Snapshot.Effective("").Document().Types["project_type"]; exists {
+		t.Fatal("fixture must keep the overlay-only type out of the base")
+	}
+	for _, mode := range []string{"global callbacks", "admitted unused type", "unknown type", "scoped absent type", "archived type"} {
+		t.Run(mode, func(t *testing.T) {
+			local := req
+			pRow, qRow := bead("P-1", "P", nil), bead("Q-1", "Q", nil)
+			pRow.State.Type, qRow.State.Type = "project_type", "project_type"
+			binding := Binding{ID: "global", Type: "project_type", Digest: strings.Repeat("a", 64)}
+			wantReady, wantCalls := true, 2
+			switch mode {
+			case "admitted unused type":
+				pRow.State.Type, qRow.State.Type = "issue", "issue"
+				wantCalls = 0
+			case "unknown type":
+				binding.Type, wantReady, wantCalls = "absent", false, 0
+			case "scoped absent type":
+				binding.Project, wantReady, wantCalls = "R", false, 0
+			case "archived type":
+				archived := ontology.DefaultDocument()
+				archived.Types["retired"] = ontology.Type{Archived: true}
+				local.Candidate.Snapshot = compiled(t, archived, candidate, nil)
+				binding.Type, wantReady, wantCalls = "retired", false, 0
+			}
+			seen := map[string]bool{}
+			pre := &fixturePre{bindings: []Binding{binding}, run: func(_ context.Context, b Binding, change Change) ([]ontology.Violation, error) {
+				if b.Project != "" || change.After.State.Type != "project_type" || change.After.State.Fields["planned"] != change.After.State.Project {
+					t.Fatalf("global callback lost its scope or effective row image: %+v %+v", b, change)
+				}
+				seen[change.After.State.Project] = true
+				return nil, nil
+			}}
+			plan := build(t, local, rowsFor(t, local, qRow, pRow, bead("R-1", "R", nil)), pre)
+			if plan.Ready() != wantReady || pre.calls != wantCalls || (!wantReady && !hasRefusal(plan, "invalid_params")) {
+				t.Fatalf("binding admission ready=%v calls=%d, want ready=%v calls=%d: %+v", plan.Ready(), pre.calls, wantReady, wantCalls, plan.Report().Refusals)
+			}
+			if wantCalls == 2 && (!seen["P"] || !seen["Q"]) {
+				t.Fatal("global binding did not run in both effective overlays")
+			}
+			if _, exists := local.Candidate.Snapshot.Effective("").Document().Types["project_type"]; exists {
+				t.Fatal("binding admission fabricated a base type")
+			}
+		})
+	}
+}
+
 func TestWorkflowFieldRequirementsAndDefaultsDoNotCoerceExistingValues(t *testing.T) {
 	current, candidate := ontology.DefaultDocument(), ontology.DefaultDocument()
 	for _, doc := range []ontology.Document{current, candidate} {
