@@ -167,6 +167,11 @@ internal/storage/memory/reader.go
 internal/storage/memory/store.go
 internal/storage/memory/transaction.go
 internal/storage/memory/transaction_reader.go
+internal/storage/postgres/BUILD.bazel
+internal/storage/postgres/engine_test.go
+internal/storage/postgres/lease.go
+internal/storage/postgres/schema.go
+internal/storage/postgres/store.go
 pluginapi/BUILD.bazel
 pluginapi/doc.go
 sdk/go/BUILD.bazel
