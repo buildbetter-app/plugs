@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "oidc_test",
+    srcs = glob(["*_test.go"]),
+    deps = [
+        "//internal/plugins/authnoidc",
+        "//internal/server/authn",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
