@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Run Plug's clean, local Bazel preflight.
 #
-# This script deliberately does not read the repository .bazelrc. The current
-# checkout still contains the Beads-era rc, including optional remote settings;
-# the clean Plug lane must remain usable while that tree is being replaced.
+# This script does not consume the repository .bazelrc. The current checkout
+# still contains the Beads-era rc, including optional remote settings; the clean
+# Plug lane must remain usable while that tree is being replaced. It reads only
+# the inherited gms_pure_go declaration when go-mysql-server is still present,
+# and refuses to infer that compatibility setting if its declaration is absent.
 # A temporary rc and output root make every invocation independent of a user's
 # Bazel server, disk cache, credentials, and workspace rc files.
 set -euo pipefail
@@ -47,6 +49,45 @@ cd "$repo_root"
 evidence_dir="${PLUG_BAZEL_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/plug-bazel-evidence.XXXXXX")}"
 mkdir -p "$evidence_dir"
 
+manifest_path="$evidence_dir/manifest.sha256"
+phase=initializing
+
+write_manifest() {
+  local tmp_manifest
+  tmp_manifest="$(mktemp "${TMPDIR:-/tmp}/plug-bazel-manifest.XXXXXX")" || return 1
+  if ! {
+    find "$evidence_dir" -type f ! -path "$manifest_path" -print0 \
+      | LC_ALL=C sort -z \
+      | xargs -r -0 /usr/bin/sha256sum
+    if [[ -d bazel-testlogs ]]; then
+      find -L bazel-testlogs -type f -name 'test.xml' -print0 \
+        | LC_ALL=C sort -z \
+        | xargs -r -0 /usr/bin/sha256sum
+    fi
+  } >"$tmp_manifest"; then
+    rm -f "$tmp_manifest"
+    return 1
+  fi
+  mv -f "$tmp_manifest" "$manifest_path"
+}
+
+finish() {
+  local status=$?
+  printf 'exit_status=%s\nphase=%s\n' "$status" "$phase" \
+    >"$evidence_dir/preflight-result.txt"
+  if ! write_manifest; then
+    echo "plug-bazel-preflight: could not write $manifest_path" >&2
+    ((status == 0)) && status=1
+  fi
+  exit "$status"
+}
+trap finish EXIT
+# Preserve a signal status in the evidence when the runner or an outer timeout
+# stops the preflight while Bazel is running.  The EXIT trap still writes the
+# result and manifest before returning the conventional shell signal status.
+trap 'exit 143' TERM
+trap 'exit 130' INT
+
 fail() {
   echo "plug-bazel-preflight: $*" >&2
   exit 1
@@ -73,6 +114,17 @@ done
 [[ -f .bazelversion ]] || fail "missing .bazelversion"
 bazel_version="$(tr -d '[:space:]' < .bazelversion)"
 [[ "$bazel_version" == "9.3.0" ]] || fail "unsupported .bazelversion '$bazel_version'; add its verified digest before changing the pin"
+
+gms_pure_go_mode=not-required
+if rg -q 'com_github_dolthub_go_mysql_server|go-mysql-server' \
+  MODULE.bazel gazelle.go.work go.mod; then
+  if [[ ! -f .bazelrc ]] || ! rg -q \
+    '^[[:space:]]*build([:[:space:]]|:).*--@rules_go//go/config:tags=[^#]*gms_pure_go' \
+    .bazelrc; then
+    fail "go-mysql-server is present but the inherited gms_pure_go declaration is missing"
+  fi
+  gms_pure_go_mode=inherited-required-explicit
+fi
 
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64)
@@ -117,6 +169,9 @@ common --remote_executor=
 test --test_output=errors
 test --test_env=GO_TEST_WRAP_TESTV=1
 EOF
+if [[ "$gms_pure_go_mode" == inherited-required-explicit ]]; then
+  printf '%s\n' 'build --@rules_go//go/config:tags=gms_pure_go' >>"$rc"
+fi
 
 output_root="$work_dir/bazel-output"
 startup=(
@@ -150,7 +205,11 @@ else
 fi
 
 source_digest="$(git ls-files -z | xargs -0 /usr/bin/sha256sum | LC_ALL=C sort -k2 | /usr/bin/sha256sum | awk '{print $1}')"
-generator_digest="$(/usr/bin/sha256sum .bazelversion MODULE.bazel MODULE.bazel.lock | /usr/bin/sha256sum | awk '{print $1}')"
+generator_inputs=(.bazelversion MODULE.bazel MODULE.bazel.lock)
+for generator_input in go.mod go.sum gazelle.go.work tools/nogo/go.mod tools/nogo/go.sum; do
+  [[ -f "$generator_input" ]] && generator_inputs+=("$generator_input")
+done
+generator_digest="$(/usr/bin/sha256sum "${generator_inputs[@]}" | /usr/bin/sha256sum | awk '{print $1}')"
 runner_class="${PLUG_RUNNER_CLASS:-github-hosted-ubuntu}"
 
 cat >"$evidence_dir/preflight.txt" <<EOF
@@ -162,6 +221,7 @@ runner_class=$runner_class
 remote_executor=disabled
 remote_action_cache=disabled
 test_result_cache=fresh
+gms_pure_go_mode=$gms_pure_go_mode
 source_digest=$source_digest
 generator_digest=$generator_digest
 EOF
@@ -177,16 +237,14 @@ printf '\n' >>"$evidence_dir/build-command.txt"
 printf '%q ' "$bazelisk" "${test_command[@]}" | sed 's/ $//' >"$evidence_dir/test-command.txt"
 printf '\n' >>"$evidence_dir/test-command.txt"
 
+phase=build
 echo "plug-bazel-preflight: bazel build $targets_text"
 run_bazel build "${targets[@]}" "--build_event_json_file=$build_bep" --show_result=0 2>&1 | tee "$evidence_dir/build.log"
 
+phase=test
 echo "plug-bazel-preflight: bazel test $targets_text (fresh results)"
 run_bazel test "${targets[@]}" "--build_event_json_file=$test_bep" --nocache_test_results --test_output=errors 2>&1 | tee "$evidence_dir/test.log"
 
-{
-  find "$evidence_dir" -type f -print0 | sort -z | xargs -0 /usr/bin/sha256sum
-  find -L bazel-testlogs -type f -name 'test.xml' -print0 2>/dev/null | sort -z | xargs -r -0 /usr/bin/sha256sum
-} >"$evidence_dir/manifest.sha256"
-
+phase=complete
 echo "plug-bazel-preflight: evidence=$evidence_dir"
 echo "plug-bazel-preflight: bazel=$bazel_version go_sdk=$go_sdk_version runner=$runner_class"

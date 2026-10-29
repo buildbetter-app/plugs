@@ -9,6 +9,11 @@ on:
       - 'MODULE.bazel'
       - 'MODULE.bazel.lock'
       - 'BUILD.bazel'
+      - 'go.mod'
+      - 'go.sum'
+      - 'gazelle.go.work'
+      - 'tools/nogo/go.mod'
+      - 'tools/nogo/go.sum'
       - '**/BUILD.bazel'
       - '**/*.bzl'
       - '**/*.go'
@@ -29,15 +34,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      PLUG_BAZEL_EVIDENCE_DIR: ${{ runner.temp }}/plug-bazel-evidence
       PLUG_RUNNER_CLASS: github-hosted-ubuntu
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Run fresh Plug Bazel build and test
+        env:
+          PLUG_BAZEL_EVIDENCE_DIR: ${{ runner.temp }}/plug-bazel-evidence
         run: |
           set -euo pipefail
           chmod 755 scripts/ci/plug-bazel-preflight.sh
