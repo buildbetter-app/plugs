@@ -25,6 +25,8 @@ func (e Effective) Schema(typ, status string) (map[string]any, []Violation) {
 	}
 	sort.Strings(statuses)
 	properties := map[string]any{}
+	properties["priority"] = map[string]any{"type": "integer", "minimum": 0, "maximum": 4, "default": DefaultPriority}
+	properties["template"] = map[string]any{"type": "boolean", "default": false}
 	requiredSet := map[string]bool{}
 	for _, name := range keys(t.Fields) {
 		field := t.Fields[name]
@@ -80,7 +82,7 @@ func (e Effective) Schema(typ, status string) (map[string]any, []Violation) {
 			"id": map[string]any{"type": "string"}, "project": map[string]any{"type": "string"},
 			"type": map[string]any{"type": "string", "const": typ}, "status": statusSchema,
 			"template": map[string]any{"type": "boolean"},
-			"priority": map[string]any{"type": "integer", "minimum": 0, "maximum": 4}, "fields": fields,
+			"fields":   fields,
 		},
 	}
 	if len(required) != 0 {

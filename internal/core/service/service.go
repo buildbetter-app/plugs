@@ -181,9 +181,11 @@ func (s *Service) reader(ctx context.Context, by model.PrincipalRef, asOf *AsOf)
 		return nil, mapped(err)
 	}
 	if err := s.admit(ctx, by); err != nil {
+		_ = r.Close()
 		return nil, err
 	}
 	if r.Snapshot().At == nil {
+		_ = r.Close()
 		return nil, fmt.Errorf("driver returned an unpinned read snapshot")
 	}
 	return r, nil

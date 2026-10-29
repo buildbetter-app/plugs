@@ -17,6 +17,7 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 	if err != nil {
 		return GetResult{}, err
 	}
+	defer r.Close()
 	rows, err := r.Get(ctx, []model.Ref{req.ID})
 	if err != nil {
 		return GetResult{}, mapped(err)
@@ -115,6 +116,7 @@ func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyReq
 	if err != nil {
 		return BeadPage{}, err
 	}
+	defer r.Close()
 	graph, err := scanBeads(ctx, r)
 	if err != nil {
 		return BeadPage{}, err
@@ -178,6 +180,7 @@ func (s *Service) History(ctx context.Context, by model.PrincipalRef, req Histor
 	if err != nil {
 		return BeadPage{}, err
 	}
+	defer r.Close()
 	graph, err := scanBeads(ctx, r)
 	if err != nil {
 		return BeadPage{}, err

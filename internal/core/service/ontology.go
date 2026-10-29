@@ -70,9 +70,6 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 			after.Status = target
 		}
 		paths := map[string]json.RawMessage{}
-		if _, exists := doc.Fields["priority"]; !exists && !hasDocument(change.Before) {
-			paths["fields.priority"] = json.RawMessage("2")
-		}
 		if after.Status != before.Status {
 			raw, err := json.Marshal(after.Status)
 			if err != nil {
