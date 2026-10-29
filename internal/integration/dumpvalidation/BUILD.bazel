@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "dumpvalidation_test",
+    size = "large",
+    srcs = ["dumpvalidation_test.go"],
+    args = ["-test.v"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/server/rpc",
+        "//internal/storage/driver",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+        "@com_github_jackc_pgx_v5//stdlib:stdlib",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
