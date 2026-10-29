@@ -2,7 +2,10 @@ package events
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -31,14 +34,183 @@ type planMaterializer struct{}
 
 func (planMaterializer) Materialize(_ context.Context, set model.Changeset, i int) (model.DurableEvent, error) {
 	e := model.DurableEvent{Type: model.EventBeadUpdated, Resource: "bead/" + set.Changes[0].Ref.ID, Changed: []string{}, Principal: set.Principal, Chain: []string{}, SetBy: map[string]string{}, Cause: model.EventCause{Root: "root", Chain: []string{}}}
+	e.Before = map[string]any{"title": "record", "nested": map[string]any{"value": json.Number("9007199254740993")}}
+	e.After = map[string]any{"title": "record", "nested": map[string]any{"value": json.Number("9007199254740993")}}
 	if set.Events != nil {
 		d := set.Events[i]
 		e.Type, e.Resource = d.Type, d.Resource.Kind+"/"+d.Resource.Ref.ID
 		e.SetBy, e.Cause, e.Chain, e.Details = d.Provenance.SetBy, d.Provenance.Cause, d.Provenance.Chain, d.Details
+		if d.Details != nil {
+			e.Before, e.After = nil, nil
+		}
 	} else {
 		e.Resource = "bead/" + set.Changes[i].Ref.ID
 	}
 	return e, nil
+}
+
+type noticeAuthorization struct {
+	deny, redact                     string
+	primaryDeny, primaryMask, mutate bool
+	fail                             error
+	resources                        []string
+	retained                         map[string]any
+	retainedDetails                  *model.ConditionUnmetDetails
+}
+
+func (a *noticeAuthorization) ReadResource(_ context.Context, _ model.PrincipalRef, r model.AuditResource) (ResourceVisibility, error) {
+	key := r.Kind + "/" + r.Ref.ID
+	a.resources = append(a.resources, key)
+	if a.fail != nil {
+		return ResourceVisibility{}, a.fail
+	}
+	return ResourceVisibility{Readable: key != a.deny, Redacted: key == a.redact}, nil
+}
+
+func (a *noticeAuthorization) Read(_ context.Context, _ model.PrincipalRef, e model.DurableEvent) (Visibility, error) {
+	v := Visibility{Readable: true, Before: e.Before, After: e.After}
+	if e.Type == model.EventDependencyConditionUnmet {
+		if a.primaryDeny {
+			return Visibility{PreviouslyVisible: true}, nil
+		}
+		if a.primaryMask {
+			v.After = map[string]any{"title": "dependent"}
+		}
+		if a.mutate {
+			e.Details.Ontology.Project.ID = "tampered"
+			e.Details.After.Status = "tampered"
+			e.SetBy["status"] = "tampered"
+			e.Cause.Root = "tampered"
+		}
+		a.retainedDetails = e.Details
+	} else {
+		a.retained = e.After
+	}
+	return v, nil
+}
+
+func TestNoticeAuthorizationProtectsEveryResourceAndSuppressesMarkers(t *testing.T) {
+	for _, action := range []string{"deny", "redact"} {
+		for _, resource := range []string{"bead/blocker", "bead/dependent-a", "bead/dependent-b", "ontology/ontology", "project/project"} {
+			t.Run(action+"/"+resource, func(t *testing.T) {
+				a := &noticeAuthorization{}
+				if action == "deny" {
+					a.deny = resource
+				} else {
+					a.redact = resource
+				}
+				r := Reader{Log: planLog{readerPlan()}, Materializer: planMaterializer{}, Authorization: a}
+				page, err := r.Read(context.Background(), ReadRequest{Limit: 1000})
+				want := 2
+				if strings.Contains(resource, "dependent-") {
+					want = 3
+				}
+				if err != nil || len(page.Events()) != want || page.Position.Index.String() != "3" {
+					t.Fatalf("resource masking: %+v, %v", page, err)
+				}
+				for _, e := range page.Events() {
+					if e.Control != nil {
+						t.Fatal("hidden notice leaked a visibility marker")
+					}
+					if e.Durable.Details != nil && "bead/"+e.Durable.Details.Dependent.Ref.ID == resource {
+						t.Fatal("hidden dependent leaked")
+					}
+				}
+			})
+		}
+	}
+	for _, mask := range []bool{false, true} {
+		a := &noticeAuthorization{primaryDeny: !mask, primaryMask: mask}
+		r := Reader{Log: planLog{readerPlan()}, Materializer: planMaterializer{}, Authorization: a}
+		page, err := r.Read(context.Background(), ReadRequest{Limit: 1000})
+		if err != nil || len(page.Events()) != 2 {
+			t.Fatalf("primary denied/masked notice leaked: %+v, %v", page, err)
+		}
+		for _, e := range page.Events() {
+			if e.Control != nil || e.Durable.Details != nil {
+				t.Fatal("notice-specific existence leak")
+			}
+		}
+	}
+	set := readerPlan()
+	a := &noticeAuthorization{}
+	r := Reader{Log: planLog{set}, Materializer: planMaterializer{}, Authorization: a}
+	if _, err := r.Read(context.Background(), ReadRequest{Limit: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(a.resources, []string{"bead/blocker", "bead/dependent-a", "ontology/ontology", "project/project", "bead/blocker", "bead/dependent-b", "ontology/ontology", "project/project"}) {
+		t.Fatalf("protection set=%v", a.resources)
+	}
+	r.Authorization = primaryOnlyAuthorization{}
+	if _, err := r.Read(context.Background(), ReadRequest{Limit: 1000}); !errors.Is(err, ErrResourceAuthorization) {
+		t.Fatalf("missing capability: %v", err)
+	}
+	denied := errors.New("policy unavailable")
+	r.Authorization = &noticeAuthorization{fail: denied}
+	if _, err := r.Read(context.Background(), ReadRequest{Limit: 1000}); !errors.Is(err, denied) {
+		t.Fatalf("policy error swallowed: %v", err)
+	}
+}
+
+func TestNoticeValuesDoNotAliasLogPolicyOrReturnedPages(t *testing.T) {
+	set := readerPlan()
+	before, err := json.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &noticeAuthorization{mutate: true}
+	r := Reader{Log: planLog{set}, Materializer: planMaterializer{}, Authorization: a}
+	page, err := r.Read(context.Background(), ReadRequest{Limit: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.retained["title"] = "retained policy mutation"
+	a.retainedDetails.After.Status = "retained policy mutation"
+	e := page.Events()[2].Durable
+	if e.Details.After.Status != "done" || e.Details.Ontology.Project.ID != "project" || e.SetBy["status"] != "request" || e.Cause.Root != "root" || e.Before != nil || e.After != nil || page.Events()[3].Durable.After["title"] != "record" {
+		t.Fatalf("policy mutated committed envelope: %+v", e)
+	}
+	e.Details.After.Status = "returned page mutation"
+	e.Details.Ontology.Project.ID = "returned page mutation"
+	e.SetBy["status"] = "returned page mutation"
+	page.Events()[3].Durable.Before["nested"].(map[string]any)["value"] = "returned page mutation"
+	after, _ := json.Marshal(set)
+	if string(before) != string(after) {
+		t.Fatal("event materialization/masking mutated log data")
+	}
+	page, err = r.Read(context.Background(), ReadRequest{Limit: 1000})
+	if err != nil || page.Events()[2].Durable.Details.After.Status != "done" || page.Events()[3].Durable.Before["nested"].(map[string]any)["value"].(json.Number).String() != "9007199254740993" {
+		t.Fatalf("replay changed: %+v, %v", page, err)
+	}
+}
+
+type alteredMaterializer struct{ legacy bool }
+
+func (m alteredMaterializer) Materialize(ctx context.Context, set model.Changeset, i int) (model.DurableEvent, error) {
+	if m.legacy {
+		set = readerPlan()
+		i = 1
+	}
+	e, err := (planMaterializer{}).Materialize(ctx, set, i)
+	if !m.legacy && e.Details != nil {
+		copy := *e.Details
+		copy.Ontology.Digest = strings.Repeat("cd", 32)
+		e.Details = &copy
+	}
+	return e, err
+}
+
+func TestReaderRefusesSynthesizedOrReinterpretedNotices(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		set := readerPlan()
+		if legacy {
+			set.Events = nil
+		}
+		r := Reader{Log: planLog{set}, Materializer: alteredMaterializer{legacy: legacy}, Authorization: AllowAll{}}
+		if _, err := r.Read(context.Background(), ReadRequest{Limit: 1000}); err == nil {
+			t.Fatal("uncommitted or reinterpreted decision accepted")
+		}
+	}
 }
 
 func readerPlan() model.Changeset {
@@ -86,6 +258,14 @@ func TestReaderLogicalPlanAndLegacyResume(t *testing.T) {
 		if _, err := r.Read(context.Background(), ReadRequest{After: Position{Incarnation: "store", Revision: "2", Index: model.Natural(index)}, Limit: 1}); err == nil {
 			t.Fatal("accepted impossible logical index", index)
 		}
+	}
+	whole, err := r.Read(context.Background(), ReadRequest{Limit: 1, WholeChangesets: true, OneChangeset: true})
+	if err != nil || len(whole.Groups) != 1 || len(whole.Events()) != 4 || whole.Position.Index.String() != "3" {
+		t.Fatalf("projection truncated logical revision: %+v, %v", whole, err)
+	}
+	whole, err = r.Read(context.Background(), ReadRequest{After: whole.Position, Limit: 1, WholeChangesets: true, OneChangeset: true, Changesets: 1})
+	if err != nil || len(whole.Events()) != 2 || whole.Position.Revision.String() != "3" || whole.Position.Index.String() != "1" {
+		t.Fatalf("projection failed legacy successor progress: %+v, %v", whole, err)
 	}
 }
 

@@ -33,10 +33,9 @@ func (m HistoryMaterializer) materializeDescriptor(ctx context.Context, set mode
 	}
 	event = model.DurableEvent{Type: d.Type, Resource: d.Resource.Kind + "/" + d.Resource.Ref.ID, Changed: []string{}, Principal: set.Principal, Chain: d.Provenance.Chain, SetBy: d.Provenance.SetBy, Cause: d.Provenance.Cause, Derived: set.Kind == model.ChangesetDerived, Details: d.Details}
 	if d.Type == model.EventDependencyConditionUnmet {
-		// The dependent is a source image, not a graph mutation. Both envelope
-		// images name that same pinned version. Never infer today's decision.
-		dependent, err := m.pinnedImage(ctx, set.Incarnation, d.Details.Dependent, "bead")
-		if err != nil {
+		// The unchanged dependent is only a source pin in Details. Notices
+		// forbid before/after envelopes and never imply a graph mutation.
+		if _, err := m.pinnedImage(ctx, set.Incarnation, d.Details.Dependent, "bead"); err != nil {
 			return event, err
 		}
 		for _, pin := range []model.EventImage{d.Details.BlockerBefore, d.Details.BlockerAfter} {
@@ -47,12 +46,7 @@ func (m HistoryMaterializer) materializeDescriptor(ctx context.Context, set mode
 		if _, err := m.pinnedImage(ctx, set.Incarnation, model.EventImage{Ref: d.Details.Ontology.Ref, Revision: d.Details.Ontology.Revision}, "ontology"); err != nil {
 			return event, err
 		}
-		event.Before, err = body(dependent)
-		if err != nil {
-			return event, err
-		}
-		event.After, err = body(dependent)
-		return event, err
+		return event, nil
 	}
 	if change.Ref.ID != d.Resource.Ref.ID || !change.Ref.IsID() || !change.Ref.Branch.IsZero() {
 		return event, fmt.Errorf("descriptor changed-resource mismatch")

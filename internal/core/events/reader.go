@@ -161,6 +161,17 @@ func (r *Reader) Read(ctx context.Context, req ReadRequest) (Page, error) {
 			if err != nil {
 				return page, err
 			}
+			if set.Events != nil {
+				d := set.Events[i]
+				if durable.Type != d.Type || durable.Resource != d.Resource.Kind+"/"+d.Resource.Ref.ID ||
+					!reflect.DeepEqual(durable.Details, d.Details) || !reflect.DeepEqual(durable.SetBy, d.Provenance.SetBy) ||
+					!reflect.DeepEqual(durable.Chain, d.Provenance.Chain) || !reflect.DeepEqual(durable.Cause, d.Provenance.Cause) ||
+					!reflect.DeepEqual(durable.Principal, set.Principal) || durable.Derived != (set.Kind == model.ChangesetDerived) || (notice && len(durable.Changed) != 0) {
+					return page, fmt.Errorf("materialized event differs from committed descriptor")
+				}
+			} else if durable.Type == model.EventDependencyConditionUnmet {
+				return page, fmt.Errorf("condition notice requires a committed descriptor")
+			}
 			durable.EventPosition = eventPosition(position)
 			protected, err := cloneDurable(durable)
 			if err != nil {
