@@ -51,20 +51,96 @@ mkdir -p "$evidence_dir"
 
 manifest_path="$evidence_dir/manifest.sha256"
 phase=initializing
+work_dir=
+testlogs_root=
+active_bazel_pid=
+stream_pid=
+termination_signal=none
+
+# Each invocation uses batch mode in its own session: no Bazel daemon can keep
+# writing after its client exits. Only signal processes descended from our PID.
+stop_owned_bazel() {
+  local pid state attempt signal running=false
+  local -a owned_pids=()
+  if [[ -n "$active_bazel_pid" ]]; then
+    mapfile -t owned_pids < <(ps -eo pid=,ppid= | awk -v root="$active_bazel_pid" '
+      { parent[$1] = $2 }
+      END {
+        owned[root] = 1
+        do {
+          changed = 0
+          for (pid in parent)
+            if ((parent[pid] in owned) && !(pid in owned)) {
+              owned[pid] = 1
+              changed = 1
+            }
+        } while (changed)
+        for (pid in owned) print pid
+      }')
+    for pid in "${owned_pids[@]}"; do
+      [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 1 && pid != $$ && pid != PPID)) || return 1
+    done
+    for signal in INT TERM KILL; do
+      kill -s "$signal" -- "-$active_bazel_pid" 2>/dev/null || :
+      # Give Bazel time to cancel actions itself before terminating descendants.
+      if [[ "$signal" != INT ]]; then
+        kill -s "$signal" -- "${owned_pids[@]}" 2>/dev/null || :
+      fi
+      for ((attempt = 0; attempt < 10; attempt++)); do
+        running=false
+        for pid in "${owned_pids[@]}"; do
+          state="$(ps -o stat= -p "$pid")" || continue
+          [[ "$state" == *Z* ]] || running=true
+        done
+        [[ "$running" == true ]] || break
+        sleep 0.5
+      done
+      [[ "$running" == true ]] || break
+    done
+    wait "$active_bazel_pid" 2>/dev/null || :
+    active_bazel_pid=
+    if [[ "$running" == true ]]; then
+      echo 'plug-bazel-preflight: owned Bazel processes did not stop; evidence cannot freeze' >&2
+      return 1
+    fi
+  fi
+  if [[ -n "$stream_pid" ]]; then
+    kill "$stream_pid" 2>/dev/null || :
+    wait "$stream_pid" 2>/dev/null || :
+    stream_pid=
+  fi
+}
+
+snapshot_evidence() {
+  local name xml relative
+  [[ -n "$work_dir" ]] || return 0
+  for name in bazel-version.txt bazel-release.txt go-sdk.txt bazel-testlogs.txt \
+    build-command.txt test-command.txt build-events.json test-events.json \
+    build.log test.log owned-processes.txt plug.bazelrc; do
+    if [[ -f "$work_dir/$name" ]]; then
+      cp -- "$work_dir/$name" "$evidence_dir/$name" || return 1
+    fi
+  done
+  # Read only our output root, never the mutable workspace bazel-testlogs link.
+  if [[ -n "$testlogs_root" && -d "$testlogs_root" ]]; then
+    while IFS= read -r -d '' xml; do
+      relative="${xml#"$testlogs_root/"}"
+      mkdir -p -- "$evidence_dir/test-xml/$(dirname "$relative")" || return 1
+      cp -- "$xml" "$evidence_dir/test-xml/$relative" || return 1
+    done < <(find -L "$testlogs_root" -type f -name test.xml -print0)
+  fi
+  df -B1 -- "$work_dir" "$evidence_dir" >"$evidence_dir/disk-after-preflight.txt"
+}
 
 write_manifest() {
   local tmp_manifest
   tmp_manifest="$(mktemp "${TMPDIR:-/tmp}/plug-bazel-manifest.XXXXXX")" || return 1
-  if ! {
-    find "$evidence_dir" -type f ! -path "$manifest_path" -print0 \
+  if ! (
+    cd "$evidence_dir" || exit 1
+    find . -type f ! -path ./manifest.sha256 -print0 \
       | LC_ALL=C sort -z \
       | xargs -r -0 /usr/bin/sha256sum
-    if [[ -d bazel-testlogs ]]; then
-      find -L bazel-testlogs -type f -name 'test.xml' -print0 \
-        | LC_ALL=C sort -z \
-        | xargs -r -0 /usr/bin/sha256sum
-    fi
-  } >"$tmp_manifest"; then
+  ) >"$tmp_manifest"; then
     rm -f "$tmp_manifest"
     return 1
   fi
@@ -73,9 +149,17 @@ write_manifest() {
 
 finish() {
   local status=$?
-  printf 'exit_status=%s\nphase=%s\n' "$status" "$phase" \
+  local evidence_frozen=true
+  trap - EXIT
+  trap '' INT TERM
+  if ! stop_owned_bazel || ! snapshot_evidence; then
+    evidence_frozen=false
+    ((status != 0)) || status=1
+  fi
+  printf 'exit_status=%s\nphase=%s\ntermination_signal=%s\nevidence_frozen=%s\nbazel_mode=batch\n' \
+    "$status" "$phase" "$termination_signal" "$evidence_frozen" \
     >"$evidence_dir/preflight-result.txt"
-  if ! write_manifest; then
+  if [[ "$evidence_frozen" == true ]] && ! write_manifest; then
     echo "plug-bazel-preflight: could not write $manifest_path" >&2
     ((status == 0)) && status=1
   fi
@@ -85,8 +169,8 @@ trap finish EXIT
 # Preserve a signal status in the evidence when the runner or an outer timeout
 # stops the preflight while Bazel is running.  The EXIT trap still writes the
 # result and manifest before returning the conventional shell signal status.
-trap 'exit 143' TERM
-trap 'exit 130' INT
+trap 'termination_signal=TERM; exit 143' TERM
+trap 'termination_signal=INT; exit 130' INT
 
 fail() {
   echo "plug-bazel-preflight: $*" >&2
@@ -110,6 +194,32 @@ for name in \
     fail "$name must be unset for the Plug preflight"
   fi
 done
+
+df -B1 -- "$evidence_dir" >"$evidence_dir/disk-before-preflight.txt"
+case "${PLUG_BAZEL_CLEAN_HOSTED_RUNNER:-}" in
+  '') ;;
+  1)
+    [[ "${GITHUB_ACTIONS:-}" == true &&
+      "${RUNNER_ENVIRONMENT:-}" == github-hosted &&
+      "${RUNNER_OS:-}" == Linux ]] || fail "toolchain cleanup requires an ephemeral GitHub-hosted Linux runner"
+    phase=runner-cleanup
+    cp -- "$evidence_dir/disk-before-preflight.txt" "$evidence_dir/disk-before-cleanup.txt"
+    # Fixed allowlist of unused image toolchains. Keep the OS, Docker, Node and
+    # Python; Bazel and Go come from the verified pins below, not these paths.
+    for toolchain in /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup \
+      /usr/local/swift /usr/share/swift /opt/ghc /opt/hostedtoolcache/CodeQL; do
+      if [[ -e "$toolchain" ]]; then
+        sudo --non-interactive du -sx -B1 -- "$toolchain" \
+          | tee -a "$evidence_dir/removed-toolchains.txt"
+        sudo --non-interactive rm --recursive --force --one-file-system -- "$toolchain"
+      fi
+    done
+    df -B1 -- "$evidence_dir" | tee "$evidence_dir/disk-after-cleanup.txt"
+    free_bytes="$(df -B1 --output=avail -- "$evidence_dir" | tail -1)"
+    ((free_bytes >= 30 * 1024 * 1024 * 1024)) || fail "less than 30 GiB free after hosted toolchain cleanup"
+    ;;
+  *) fail "PLUG_BAZEL_CLEAN_HOSTED_RUNNER must be 1 or unset" ;;
+esac
 
 [[ -f .bazelversion ]] || fail "missing .bazelversion"
 bazel_version="$(tr -d '[:space:]' < .bazelversion)"
@@ -186,27 +296,44 @@ fi
 
 output_root="$work_dir/bazel-output"
 startup=(
+  --batch
   --nosystem_rc
+  --nohome_rc
   --noworkspace_rc
   "--bazelrc=$rc"
   "--output_user_root=$output_root"
 )
 
 run_bazel() {
-  "$bazelisk" "${startup[@]}" "$@"
+  local log="$1" status
+  shift
+  # Reset the signals Bash normally ignores for asynchronous children. Keeping
+  # the wait in this shell lets TERM/INT interrupt it and enter the EXIT trap.
+  setsid --wait env --default-signal=INT,TERM \
+    "$bazelisk" "${startup[@]}" "$@" >"$log" 2>&1 &
+  active_bazel_pid=$!
+  printf 'pid=%s command=%s\n' "$active_bazel_pid" "$1" >>"$work_dir/owned-processes.txt"
+  tail --pid="$active_bazel_pid" --sleep-interval=0.1 -n +1 -f "$log" &
+  stream_pid=$!
+  if wait "$active_bazel_pid"; then status=0; else status=$?; fi
+  active_bazel_pid=
+  wait "$stream_pid" || :
+  stream_pid=
+  return "$status"
 }
 
-version_output="$(BAZELISK_HOME="$BAZELISK_HOME" BAZELISK_VERIFY_SHA256="$BAZELISK_VERIFY_SHA256" "$bazelisk" --version 2>&1)"
-printf '%s\n' "$version_output" | tee "$evidence_dir/bazel-version.txt"
-grep -Fq "bazel ${bazel_version}" <<<"$version_output" || fail "Bazelisk did not resolve Bazel $bazel_version"
+run_bazel "$work_dir/bazel-version.txt" version --gnu_format
+grep -Fq "bazel ${bazel_version}" "$work_dir/bazel-version.txt" || fail "Bazelisk did not resolve Bazel $bazel_version"
 
-release_output="$(run_bazel info release 2>&1)"
-printf '%s\n' "$release_output" | tee "$evidence_dir/bazel-release.txt"
-grep -Fxq "release $bazel_version" <<<"$release_output" || fail "Bazel release is not $bazel_version"
+run_bazel "$work_dir/bazel-release.txt" info release
+grep -Fxq "release $bazel_version" "$work_dir/bazel-release.txt" || fail "Bazel release is not $bazel_version"
 
-go_sdk_output="$(run_bazel cquery @go_sdk//:go_sdk --output=build 2>&1)"
-printf '%s\n' "$go_sdk_output" >"$evidence_dir/go-sdk.txt"
-go_sdk_version="$(sed -n 's/^  version = "\([^"]*\)".*/\1/p' "$evidence_dir/go-sdk.txt" | head -1)"
+run_bazel "$work_dir/bazel-testlogs.txt" info bazel-testlogs
+testlogs_root="$(tail -1 "$work_dir/bazel-testlogs.txt")"
+[[ "$testlogs_root" == "$output_root/"* ]] || fail "Bazel test logs escaped the owned output root"
+
+run_bazel "$work_dir/go-sdk.txt" cquery @go_sdk//:go_sdk --output=build
+go_sdk_version="$(sed -n 's/^  version = "\([^"]*\)".*/\1/p' "$work_dir/go-sdk.txt" | head -1)"
 [[ -n "$go_sdk_version" ]] || fail "could not resolve the Bazel Go SDK version"
 
 if command -v nix >/dev/null 2>&1; then
@@ -217,7 +344,8 @@ fi
 
 source_digest="$(git ls-files -z | xargs -0 /usr/bin/sha256sum | LC_ALL=C sort -k2 | /usr/bin/sha256sum | awk '{print $1}')"
 generator_inputs=(.bazelversion MODULE.bazel MODULE.bazel.lock)
-for generator_input in go.mod go.sum gazelle.go.work tools/nogo/go.mod tools/nogo/go.sum; do
+for generator_input in .bazelrc .bazelignore .golangci.yml go.mod go.sum gazelle.go.work \
+  tools/nogo/go.mod tools/nogo/go.sum tools/nogo/config.json third_party/patches/*.patch; do
   [[ -f "$generator_input" ]] && generator_inputs+=("$generator_input")
 done
 generator_digest="$(/usr/bin/sha256sum "${generator_inputs[@]}" | /usr/bin/sha256sum | awk '{print $1}')"
@@ -238,23 +366,23 @@ generator_digest=$generator_digest
 EOF
 printf '%s\n' "$targets_text" >"$evidence_dir/targets.txt"
 
-build_bep="$evidence_dir/build-events.json"
-test_bep="$evidence_dir/test-events.json"
+build_bep="$work_dir/build-events.json"
+test_bep="$work_dir/test-events.json"
 build_command=("${startup[@]}" build "${targets[@]}" "--build_event_json_file=$build_bep" --show_result=0)
 test_command=("${startup[@]}" test "${targets[@]}" "--build_event_json_file=$test_bep" --nocache_test_results --test_output=errors)
 
-printf '%q ' "$bazelisk" "${build_command[@]}" | sed 's/ $//' >"$evidence_dir/build-command.txt"
-printf '\n' >>"$evidence_dir/build-command.txt"
-printf '%q ' "$bazelisk" "${test_command[@]}" | sed 's/ $//' >"$evidence_dir/test-command.txt"
-printf '\n' >>"$evidence_dir/test-command.txt"
+printf '%q ' "$bazelisk" "${build_command[@]}" | sed 's/ $//' >"$work_dir/build-command.txt"
+printf '\n' >>"$work_dir/build-command.txt"
+printf '%q ' "$bazelisk" "${test_command[@]}" | sed 's/ $//' >"$work_dir/test-command.txt"
+printf '\n' >>"$work_dir/test-command.txt"
 
 phase=build
 echo "plug-bazel-preflight: bazel build $targets_text"
-run_bazel build "${targets[@]}" "--build_event_json_file=$build_bep" --show_result=0 2>&1 | tee "$evidence_dir/build.log"
+run_bazel "$work_dir/build.log" build "${targets[@]}" "--build_event_json_file=$build_bep" --show_result=0
 
 phase="test"
 echo "plug-bazel-preflight: bazel test $targets_text (fresh results)"
-run_bazel test "${targets[@]}" "--build_event_json_file=$test_bep" --nocache_test_results --test_output=errors 2>&1 | tee "$evidence_dir/test.log"
+run_bazel "$work_dir/test.log" test "${targets[@]}" "--build_event_json_file=$test_bep" --nocache_test_results --test_output=errors
 
 phase=complete
 echo "plug-bazel-preflight: evidence=$evidence_dir"

@@ -3,22 +3,9 @@ name: Plug Bazel
 on:
   push:
     branches: [main]
+  # The all-target graph includes rc/ignore files, nogo configuration, patches,
+  # shell helpers, fixtures and generated inputs. Every PR must exercise it.
   pull_request:
-    paths:
-      - '.bazelversion'
-      - 'MODULE.bazel'
-      - 'MODULE.bazel.lock'
-      - 'BUILD.bazel'
-      - 'go.mod'
-      - 'go.sum'
-      - 'gazelle.go.work'
-      - 'tools/nogo/go.mod'
-      - 'tools/nogo/go.sum'
-      - '**/BUILD.bazel'
-      - '**/*.bzl'
-      - '**/*.go'
-      - 'scripts/ci/plug-bazel-preflight.sh'
-      - '.github/workflows/plug-bazel.yml'
   workflow_dispatch:
 
 permissions:
@@ -44,6 +31,7 @@ jobs:
       - name: Run fresh Plug Bazel build and test
         env:
           PLUG_BAZEL_EVIDENCE_DIR: ${{ runner.temp }}/plug-bazel-evidence
+          PLUG_BAZEL_CLEAN_HOSTED_RUNNER: '1'
           # The hosted image is intentionally minimal; pass the inherited
           # compatibility tag explicitly instead of relying on image tools.
           PLUG_BAZEL_GMS_PURE_GO: '1'
@@ -59,6 +47,4 @@ jobs:
           name: plug-bazel-evidence-${{ github.run_id }}
           if-no-files-found: warn
           retention-days: 14
-          path: |
-            ${{ runner.temp }}/plug-bazel-evidence
-            bazel-testlogs/**/test.xml
+          path: ${{ runner.temp }}/plug-bazel-evidence
