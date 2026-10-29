@@ -91,7 +91,13 @@ func (r *Reader) Read(ctx context.Context, req ReadRequest) (Page, error) {
 	if cmp > 0 {
 		return page, &BoundaryError{Code: "cursor_invalid", From: req.After.Incarnation, Head: head, Reason: "checkpoint"}
 	}
-	sets, err := r.Log.Scan(ctx, req.After, req.Changesets)
+	scanLimit := req.Changesets
+	if !req.After.Revision.IsZero() && scanLimit == 1 {
+		// Rereading the acknowledged revision consumes a scan slot. Keep
+		// room for its successor so a one-changeset page can advance.
+		scanLimit++
+	}
+	sets, err := r.Log.Scan(ctx, req.After, scanLimit)
 	if err != nil {
 		return page, err
 	}

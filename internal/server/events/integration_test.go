@@ -163,6 +163,14 @@ func TestPullAcrossChangesetScanPageBoundaries(t *testing.T) {
 	if count != 130 || !seen["65:1"] {
 		t.Fatalf("count=%d last=%v", count, seen["65:1"])
 	}
+	position := core.Position{}
+	for revision := 1; revision <= 65; revision++ {
+		page, err := f.reader.Read(f.ctx, core.ReadRequest{After: position, Principal: req.Principal, Limit: 1000, Changesets: 1})
+		if err != nil || len(page.Events()) != 2 || page.Position.Revision.String() != fmt.Sprint(revision) {
+			t.Fatalf("single-changeset page%d: %+v err=%v", revision, page, err)
+		}
+		position = page.Position
+	}
 }
 
 // This injected test ontology accepts ordinary title writes. The Writer,
