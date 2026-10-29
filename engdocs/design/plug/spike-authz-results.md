@@ -1,7 +1,7 @@
 # Authorization spike results
 
 Run date: 2026-10-28 UTC, branch `spike/authz`, commit recorded in the draft
-PR. The implementation is the standalone module [`spikes/authz`](../../../spikes/authz)
+PR. The implementation is the historical standalone module [`spikes/authz`](https://github.com/buildbetter-app/plugs/tree/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz)
 with `cedar-go` v1.8.0, `modernc.org/sqlite` v1.46.1, Go 1.26.10, and
 Postgres 16 in Docker container `plug-swarm-authz`. The container was removed
 after the run. The synthetic database has 100,000 beads, maximum depth 10,

@@ -1,6 +1,6 @@
 # Plug: refined design
 
-Status: proposal, updated 2026-10-29 with Nikhil's decisions from the [design review](review-2026-10-27.md), the accepted plan decisions, and the [authorization analysis](authorization-options.md). Nothing is implemented. Earlier sources are the memo [working transcript intentionally not committed; decision record: review-2026-10-27.md](review-2026-10-27.md) and the [current and desired state](current-and-desired-state.md) overview; where they disagree with this document, this one supersedes them.
+Status: adopted design, updated 2026-10-29 with Nikhil's decisions from the [design review](review-2026-10-27.md), the accepted plan decisions, and the [authorization analysis](authorization-options.md). Scoped implementation proceeds under controller v2; this design records requirements, not implementation acceptance. Earlier sources are the memo [working transcript intentionally not committed; decision record: review-2026-10-27.md](review-2026-10-27.md) and the [current and desired state](current-and-desired-state.md) overview; where they disagree with this document, this one supersedes them.
 
 ## Summary
 
@@ -10,7 +10,7 @@ Status: proposal, updated 2026-10-29 with Nikhil's decisions from the [design re
 - **Partial failures are warnings.** A committed write with a failed part returns `result.warnings`, never an `error` beside a `result` (D28).
 - **Two plugin modes, one contract.** Plugins are compiled in, or built from Go source at a pinned commit and run as in-process WebAssembly. Only a human applies plugin changes: an interactive session when authenticated, a presence check otherwise ([A2](#a2-plugin-platform); P8, P43, D16, D32).
 - **A customizable ontology.** A server base plus per-project overlays that overwrite it by key: status categories, per-type workflows with slots, typed fields and gates, with a short list fixed in v1 ([A3](#a3-ontology-and-enforcement); P10, P41, D25).
-- **Identity and authorization are optional plugins.** With no authentication provider the server is anonymous and serves only localhost. Authorization remains an optional plugin chain over a fixed data contract; with none installed, every request is allowed subject to host checks. #17 fixes the project/team vocabulary; #18 adopts the reviewed bounded X1–X9 candidate semantics. Historical latency still fails; exact contract integration, implementation authorization and runtime/performance/hosted acceptance remain separate ([A5](#a5-identity-and-authorization)).
+- **Identity and authorization are optional plugins.** With no authentication provider the server is anonymous and serves only localhost. Authorization remains an optional plugin chain over a fixed data contract; with none installed, every request is allowed subject to host checks. #17 fixes the project/team vocabulary; #18 adopts the reviewed bounded X1–X9 candidate semantics. Controller v2 authorizes scoped implementation; historical latency still fails and contract/runtime/performance acceptance still needs evidence ([A5](#a5-identity-and-authorization)).
 - **Versioning in every driver.** Each write is one gapless revision and one changeset, with versions stored as diffs and history kept forever. Data enters a server only by restore into an empty store (restores; one-shot imports are P77) ([A6](#a6-storage-and-versioning); P6, P30, P44, P45).
 - **The storage plugin owns topology.** One active server plus a standby, chosen by a storage-plugin lease that fences stale commits ([A6](#a6-storage-and-versioning), [Operations](#operations-observability-and-testing); P49).
 - **Low-noise collaboration.** Presence, budgeted views and delta watches. The embedded web UI is served only by a shared server, plugin UI runs in sandboxed iframes beside declarative additions, and trackers are export plus one-shot import ([A7](#a7-collaboration-and-ui); D1, D29 to D31, P17, P32a).
@@ -20,7 +20,7 @@ Status: proposal, updated 2026-10-29 with Nikhil's decisions from the [design re
 
 ### Open
 
-The prior design rows and plan decisions remain recorded under [Made](#made) and [Decisions](clean-room-plan.md#decisions). #18 is DECIDED: the reviewed bounded X1–X9 semantics are adopted, distinct from #17’s vocabulary requirement. #20 is DECIDED for the [bounded type-summary cap direction](#bounded-type-summary-cap-20) only; exact contract integration and qualification remain held. The local-CI merge recommendation #19 remains PENDING and grants no waiver of #16’s qualified exact-head CI and reviewed cutover. [A5](#bounded-fixed-permission-candidate-18) records the supported slice and unproved contract, implementation and acceptance gates; [Decisions needed](decisions-needed.md) is the answer ledger.
+The prior design rows and plan decisions remain recorded under [Made](#made) and [Decisions](clean-room-plan.md#decisions). Decisions 1–20 are answered. #18 adopts the reviewed bounded X1–X9 semantics, distinct from #17’s vocabulary requirement. #20 selects the [bounded type-summary cap direction](#bounded-type-summary-cap-20) only; contract compatibility and qualification still need evidence. #19 makes exact-head local Bazel checks, one independent Codex review, task scope and no PAUSE the current merge gate. Hosted CI returns when RunsOn serves this repository and the App has Workflows permission. Controller v2 authorizes scoped implementation waves. [A5](#bounded-fixed-permission-candidate-18) records supported and excluded behavior; [Decisions needed](decisions-needed.md) is the answer ledger.
 
 ### Made
 
@@ -176,6 +176,7 @@ Every decision so far. D1 to D13 are Nikhil's answers of 2026-10-27, recorded in
 | [T4 / #14](review-2026-10-27.md#decisions) | Freeze `admin.restore.begin/chunk/finish`, `memory.*`, `admin.compact`, and gate shapes; use contiguous error numbers; carry incarnation on every cursor; add `session.close` with bounded expiry and reconnect; settle rollback, close, the changeset header, error mapping, and the anonymous agent label in the driver contract |
 | [#17](review-2026-10-27.md#decisions) | Fixed project/team permission vocabulary; no user-configurable policy language |
 | [#18](review-2026-10-27.md#decisions) | **DECIDED:** Adopt reviewed bounded candidate (Recommended), proposal `c9f5f29d`, entire X1–X9 package; design semantics only, with separate contract/implementation/acceptance gates |
+| [#19](review-2026-10-27.md#decisions) | **DECIDED:** Exact-head local Bazel checks over touched targets plus reverse dependencies, one independent Codex review without a blocker, task scope and no PAUSE govern merges until RunsOn and App Workflows permission enable hosted CI |
 | [#20](review-2026-10-27.md#decisions) | **DECIDED:** At most 100,000 authorized inputs only for fully compiled type count summaries, explicitly present `fields=[]`, at most 100 groups; ordinary views retain 20,000. Exact contract/compatibility and qualification remain held |
 
 ## Target architecture
@@ -649,9 +650,9 @@ Every request carries one server-stamped principal from an authentication plugin
 | Measured latency | **Fail** at unchanged page p95 `<50 ms` for 100%, 1%, and 0.1% visibility on SQLite and Postgres, and grouped-count p95 `<250 ms` at 100,000 beads. SQLite Plan A dense pages reach 129.418 ms, Plan B sparse pages reach 139.656 ms and counts reach 347.435 ms; Postgres dense pages reach 307.805 ms |
 | Reviewable artifact publication | Complete at the publication head above; this resolves R10b's missing-publication finding |
 | Executable manifest validation | Still open: the runner checks warmups and iterations, but must also validate engines, fractions, plans, queries, dataset, targets, and artifact declarations against the executable matrix |
-| Independent review and hosted CI | Separate pending gates for the publication head. R10b blocked the measured source; that review and its failed/queued/skipped hosted jobs do not certify the later head |
+| Independent review and CI | Historical R10b blocked the measured source; its failed/queued/skipped hosted jobs remain recorded for that head. Current PR admission follows #19's exact-head local Bazel gate and one independent review |
 
-The failed measured gate activated #15’s AZ1/AZ2 revisit. #17 answered the fixed project/team vocabulary; #18 now adopts the reviewed bounded candidate semantics below. This closes the concrete design choice for that slice, not the failed historical latency result or any contract, implementation, runtime or hosted admission gate. Historical Cedar-specific material and old proposal statuses remain historical; they are not part of #18’s chosen finite component.
+The failed measured gate activated #15’s AZ1/AZ2 revisit. #17 answered the fixed project/team vocabulary; #18 now adopts the reviewed bounded candidate semantics below. This closes the concrete design choice for that slice; the failed historical latency result and contract/runtime acceptance obligations remain. Controller v2 separately authorizes scoped implementation, with PR admission under #19. Historical Cedar-specific material and old proposal statuses remain historical; they are not part of #18’s chosen finite component.
 
 ### Bounded fixed-permission candidate 18
 
@@ -706,12 +707,14 @@ Fixture setup is not a product import or migration bypass. No-authz allow,
 P58/P83/P84, authn/error/pre/post-image/deputy/human-proof rules, current history
 permissions, no root bypass and existing recovery/stop lines remain unchanged.
 
-**Separate gates:** #18 authorizes design semantics only, with no prototype,
-implementation, measured candidate, runtime acceptance or production migration.
+**Separate gates:** #18 adopts design semantics; controller v2 separately
+authorizes scoped implementation waves. Neither supplies a measured candidate,
+runtime acceptance or production migration permission.
 Frozen C0 `60702e1` supplies neither the new source/context/codec semantics nor
 the added relations/current-terminal/result primitive. Exact reviewed wire,
 schema, storage/driver compatibility and separately scoped contract/implementation
-assignments remain required; C6/I5/authz-dependent I7 stay held on those edges.
+assignments remain required; C6/I5/authz-dependent I7 must implement those edges
+within their assigned scope and prove acceptance separately.
 Historical latency remains **FAIL/BLOCK**. Candidate evidence retains 100,000
 beads/depth 10, exact 100,000/1,000/100 populations at 100%/1%/0.1%, both
 SQLite/PostgreSQL, Plans A/B, Q4/Q5/Q6, three warmups/20 samples, every Q4/full-Q5
@@ -722,9 +725,9 @@ ordinary over-5,000 closure work refuses or needs explicit locked migration.
 Independent facts/actual SQL/all pages/counts, executable manifest validation,
 real-host history/authn/proof/dependency-miss races on every driver and the
 actual 200-agent queue with authz plus a wasm mutator under 1% `write_conflict`
-remain unproved. C7/R14 and exact-head hosted CI admission remain separate.
-#16 qualified CI is decided; #19 local-CI merge recommendation is **PENDING**
-and supplies no waiver. No historical rerun is required solely for validator
+remain unproved. C7/R14 and product cutover remain separate.
+#19 is **DECIDED**: exact-head local Bazel CI and one independent review govern
+PR admission until hosted CI is available. No historical rerun is required solely for validator
 repair, and no performance or acceptance threshold is reduced.
 
 **Today.** Server auth compares shared token digests, "no token MINTING here and no identity" ([auth.go](../../../internal/httpapi/auth.go)); `--insecure-no-auth` waives the token beyond loopback ([serve.go](../../../cmd/bd/serve.go)). The actor is "caller-ASSERTED" ([close.go](../../../internal/httpapi/close.go)). The `Authorize*` functions ([aggregate.go](../../../internal/storage/issueops/aggregate.go)) are data invariants, not permissions. Identity in core departs from the [charter](../../PROJECT_CHARTER.md).
@@ -814,7 +817,7 @@ sequenceDiagram
 
 **Failure and audit.** A failed derivation fails the write. On closure drift found by `authz.verify`, the chain denies until repair. P59 keeps break-glass `authz.rootPrincipals` out of the boot config; recovery uses P62's bootstrap admin or offline repair. A6's log audits mutations; authentication events and denials go to an append-only `audit` table, throttled under floods.
 
-**Authorization shape and current gate.** #18 selects the bounded X1–X9 semantics above; it grants no implementation authorization or acceptance certificate. The data/chain/closure/filter and P52–P75/P83/P84 safety rules remain binding. Historical latency remains FAIL/BLOCK; exact contracts/compatibility, executable evidence, real-host/race/performance and hosted CI gates remain open. The [contract catalog](contracts/openrpc.json) is a frozen input for later reconciliation, not an implementation of X1–X9. C6/I5/authz-dependent I7 remain held for separately scoped assignments and their applicable evidence; unrelated work may continue.
+**Authorization shape and current gate.** #18 selects the bounded X1–X9 semantics above; controller v2 separately authorizes scoped implementation. The data/chain/closure/filter and P52–P75/P83/P84 safety rules remain binding. Historical latency remains FAIL/BLOCK; exact contracts/compatibility, executable evidence and real-host/race/performance acceptance remain unproved. The [contract catalog](contracts/openrpc.json) requires explicit reconciliation with X1–X9. C6/I5/authz-dependent I7 proceed within scoped assignments and prove their applicable behavior; PR admission follows #19.
 
 **Codebase.** Under P1's clean-room rewrite, carry ideas, not code: `auth.go`'s constant-time compare and hitless reload into `authn-apikey`, and `ValidateAuthPosture` as "a network listener needs an authenticator", minus `--insecure-no-auth`. `Authorize*` become A3 guards. Caller-asserted actors and federation credentials ([credentials.go](../../../internal/storage/dolt/credentials.go)) are not carried.
 
@@ -991,9 +994,9 @@ Historical measured latency remains **FAIL/BLOCK**. Preserve the 100k workload,
 both engines, both plans, all fractions, **36 cases**, **3 warmups + 20 measured
 samples per case**, page and whole-Q5 p95 `<50 ms`, and whole-Q6 count p95
 `<250 ms`. Existing resource ceilings, runtime/real-host/proof/200-agent,
-C7/R14, exact-head hosted CI and reviewed cutover gates remain separate.
+C7/R14 and product cutover gates remain separate; #19 governs PR admission.
 R14 behavioral verification remains **UNVERIFIED**, both findings **OPEN**.
-#17/#18 remain **DECIDED**; #19 remains **PENDING**, with no local-CI waiver.
+#17/#18/#19 remain **DECIDED**; the local Bazel merge gate supplies no product acceptance.
 
 ## A8 Project identity and hygiene
 
@@ -1078,9 +1081,12 @@ provenance = ["NOTICE.md", "engdocs/adr/", "engdocs/design/", "docs/migrate-from
 
 **CI replacement (#16).** The [plan's CI gate](clean-room-plan.md#ci-contract-replacement)
 requires exact-head qualification before a reviewed CI cutover to Plug-owned
-Bazel CI. Current hosted failures remain blocking until then; no settings
-change or failure waiver is authorized. This CI cutover is separate from the
-production-data cutover defined below.
+Bazel CI. The later #19 decision makes recorded exact-head local Bazel checks
+over touched targets and reverse dependencies (`build` for docs-only PRs), one
+independent Codex review without a blocker, task scope and no PAUSE the current
+merge gate. Hosted CI becomes required when RunsOn serves this repository and
+the App has Workflows permission. Settings, workflow publication and production
+cutover are separate from this interim merge gate.
 
 **Decided for this design.** P5b puts the new tree at the root of `main` until cutover; P5c uses `bd export --format plug-dump/1` on the `beads` branch and restores the result; P38d runs `git filter-repo` early while the repository is private; P39b commits design docs without transcripts and cites ADRs; P48b compiles the workflow plugin from this repository without Beads formula files; P79 starts without a remote build cache, adding a BuildBetter cache only for cgo or remote execution; and P81 fixes the usage-metrics fields and permits any operator OpenTelemetry collector. These are the [Made](#made) decisions, not open design questions.
 
@@ -1094,7 +1100,7 @@ production-data cutover defined below.
 
 **Observability.** Operational telemetry is always on: OpenTelemetry spans per pipeline phase and plugin call; Prometheus metrics (`lane_ms`, `write_conflict_total`, `plugin_call_ms`, `breaker_state`, `subscription_lag_revisions`, `dlq_depth`, `lease_epoch`, and `authz_*` with an authorization plugin); logs keyed by revision. Halts, breakers, dead letters, lease loss and erroring permits (AZ6) alert through `alert_sink`. Usage metrics are separate and opt-in (P38a), exported only to an operator-configured OpenTelemetry collector, never to upstream's endpoint, today's default in [metrics.go](../../../internal/metrics/metrics.go).
 
-**Testing**, all under `bazel test`. Beads behavior is the clean-room spec (P1): its [conformance contracts](../../../backend/conformance/conformance.go), CLI goldens and [protocol corpus](../../../cmd/bd/protocol/testdata/corpus/manifest.json) become JSON-RPC scenarios, each passing or a recorded deviation (P22, P46); behavior goldens are frozen at `beads-base`, fixes from the `beads` branch are recorded through reviewed PRs, and nightly diffs back the re-recordings (P82). Driver conformance on memory, SQLite and Postgres adds diff replay (P30) and lease fencing across failover. The `pluginapi` kit in `sdk/go` runs pre and post subscribers (P3) on native and source-built wasm artifacts (P43). A differential test on every driver checks that compiled list filters equal per-item decisions, and that no authorization plugin means allow. The repaired authorization evidence passes correctness, corpus, Q5, closure, and independent differential checks but fails the unchanged page and grouped-count latency targets. The #15 revisit led to #17’s fixed vocabulary and #18’s bounded X1–X9 semantic adoption; affected contract integration and implementation still need separate assignments, and post-design differential/runtime/performance acceptance remains unproved. Reviewable publication is complete, while independent review, hosted CI, and executable manifest validation remain separate gates. End-to-end runs drive agents over MCP and the software factory.
+**Testing**, all under `bazel test`. Beads behavior is the clean-room spec (P1): its [conformance contracts](../../../backend/conformance/conformance.go), CLI goldens and [protocol corpus](../../../cmd/bd/protocol/testdata/corpus/manifest.json) become JSON-RPC scenarios, each passing or a recorded deviation (P22, P46); behavior goldens are frozen at `beads-base`, fixes from the `beads` branch are recorded through reviewed PRs, and nightly diffs back the re-recordings (P82). Driver conformance on memory, SQLite and Postgres adds diff replay (P30) and lease fencing across failover. The `pluginapi` kit in `sdk/go` runs pre and post subscribers (P3) on native and source-built wasm artifacts (P43). A differential test on every driver checks that compiled list filters equal per-item decisions, and that no authorization plugin means allow. The repaired authorization evidence passes correctness, corpus, Q5, closure, and independent differential checks but fails the unchanged page and grouped-count latency targets. The #15 revisit led to #17’s fixed vocabulary and #18’s bounded X1–X9 semantic adoption; controller v2 authorizes scoped contract integration and implementation, while post-design differential/runtime/performance acceptance remains unproved. Reviewable publication is complete; executable manifest validation remains open and current PR admission follows #19. End-to-end runs drive agents over MCP and the software factory.
 
 ## Clean-room plan
 

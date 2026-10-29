@@ -1,30 +1,36 @@
 # Decisions needed from Nikhil
 
-Decisions 1–18 and #20 are accepted. #17 fixes the project/team permission
+Decisions 1–20 are accepted. #17 fixes the project/team permission
 vocabulary; #18 adopts the reviewed bounded X1–X9 candidate semantics. #20
-settles only the bounded type-summary cap requirements direction. Affected
-contract integration, implementation and runtime acceptance remain separately gated.
+settles only the bounded type-summary cap requirements direction. Controller v2
+authorizes scoped implementation waves; contract compatibility and runtime
+acceptance still require evidence. #19 sets the current local Bazel merge gate.
 
 ## Open
 
-| # | Question | Recommendation |
-|---:|---|---|
-| 19 | **Merge on local Bazel CI until hosted CI works?** Hosted CI can't go green yet (inherited workflows, no RunsOn, no Workflows permission), so nothing has merged. Allow merges on Bazel CI run on this host, with evidence recorded, plus the adversarial review | Yes, temporarily; hosted CI becomes required again once RunsOn and the Workflows permission are in place |
-
-#19 is **PENDING**; its recommendation grants no local-CI merge waiver.
-#16's exact-head qualification and reviewed CI cutover remain required.
+None. All twenty decisions are answered. New product questions need options
+and a recommendation; routine implementation choices follow the recorded design.
 
 Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn GitHub App's repositories, and grant the remote-dev GitHub App **Workflows: Read and write** so the swarm can publish CI changes under its own identity.
 
 ## Answered
 
+- **#19 — DECIDED (2026-10-29, chat):** merge on exact-head local Bazel CI
+  until hosted CI works. Record the command, version, targets, result and logs
+  for touched targets plus reverse dependencies (`build` for docs-only PRs).
+  Controller v2 also requires one independent Codex review without a
+  correctness, security, contract, build or decision blocker, task scope, and
+  no `/tmp/plug-swarm/PAUSE`. No per-PR human approval is required. Hosted CI
+  becomes required again once RunsOn serves this repository and the remote-dev
+  App has Workflows permission. This does not authorize workflow publication,
+  settings changes, production cutover or a public release.
 - **#20 (2026-10-29, in Paseo):** only fully compiled type count summaries (explicit `fields=[]`, at most 100 groups) may scan up to 100,000 inputs; ordinary views keep the 20,000 cap.
 - **#18 (2026-10-29, in Paseo):** adopted the reviewed fixed-permission authorization candidate (`c9f5f29d`); create, reparent and project moves are denied under the plugin until later slices.
 - **#16 — DECIDED (2026-10-29, Paseo, about 03:37 UTC):** Nikhil chose
   **Replace inherited workflows with qualified Plug CI (Recommended)**.
   Plug-owned Bazel CI must qualify on the exact head before a reviewed CI
-  cutover; current hosted failures remain blocking until then. This decision
-  authorizes no settings change or failure waiver. The [CI gate](clean-room-plan.md#ci-contract-replacement)
+  cutover. #19 later selects local Bazel CI as the interim merge gate; hosted
+  failures are retained as evidence. #16 authorizes no settings change. The [CI gate](clean-room-plan.md#ci-contract-replacement)
   preserves the bounded GitHub-hosted fallback, RunsOn admin dependency and
   existing ownership, merge, review and stop-line rules.
 - **#17 — DECIDED (2026-10-29, Paseo):** authorization uses a fixed project
@@ -43,10 +49,11 @@ Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn G
   lifecycle/management and Agent claim/update on existing assigned beads.
   Create/reparent/reassignment, project rename/delete, extra deputy/other
   permissions, generic metadata/revert, restore/rebuild and unsupported consumers
-  remain denied or gated. Adoption supplies no implementation authorization,
-  measured candidate, runtime acceptance or migration permission; failed historical
+  remain denied or gated. Controller v2 separately authorizes scoped
+  implementation; adoption supplies no measured candidate, runtime acceptance
+  or migration permission. Failed historical
   latency, exact contract/compatibility, executable, real-host/200-agent, C7/R14
-  and hosted CI gates remain open. #19 is not answered by this decision.
+  and product cutover gates remain open; #19 governs PR admission.
 
 - **#20 — DECIDED (2026-10-29, Paseo):** Nikhil answered **Allow 100k only
   for fully compiled type count summaries (explicit fields=[], max 100 groups);
@@ -80,9 +87,9 @@ Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn G
   Historical measured latency remains **FAIL/BLOCK**. Retain 100k, both engines,
   both plans, all fractions, **36 cases**, **3 warmups + 20 measured samples
   per case**, page and whole-Q5 p95 `<50 ms`, whole-Q6 count p95 `<250 ms`,
-  existing resource ceilings and runtime/real-host/proof/200-agent/C7/R14/hosted
-  CI/reviewed-cutover gates. R14 remains **UNVERIFIED**, both findings **OPEN**.
-  #17/#18 remain **DECIDED**; #19 remains **PENDING**, with no local-CI waiver.
+  existing resource ceilings and runtime/real-host/proof/200-agent/C7/R14/
+  product-cutover gates. R14 remains **UNVERIFIED**, both findings **OPEN**.
+  #17/#18/#19 remain **DECIDED**; exact-head local Bazel CI governs PR admission.
   Frozen D6/C0/PR15 bytes and earlier verdicts are not rebound to this successor.
 
 Nikhil accepted every recommendation below on 2026-10-29 ([recorded](review-2026-10-27.md#decisions)).
@@ -122,13 +129,14 @@ The unchanged latency gate fails: page p95 `<50 ms` at 100,000 beads with
 100%, 1%, and 0.1% visibility on both SQLite and Postgres, and grouped-count
 p95 `<250 ms`. Under accepted #15 this triggers the authorization revisit.
 That revisit led to #17's vocabulary decision and #18's adoption of the
-reviewed bounded X1–X9 semantics. Cedar is not adopted. Affected contract
-integration and implementation remain held for separately scoped authorization;
+reviewed bounded X1–X9 semantics. Cedar is not adopted. Controller v2 authorizes
+scoped contract integration and implementation;
 candidate compatibility, runtime and performance acceptance remain unproved.
 
 **Evidence status.** Reviewable publication is complete at evidence-only head
 `93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8` ([v6 readout](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/readout.md)).
-The independent R10c review admits the published negative artifact but blocks
-overall merge readiness; executable manifest validation and exact-head hosted
-CI remain separate blocked gates. Closing those gates would not clear the
+The independent R10c review admitted the published negative artifact but blocked
+overall merge readiness under the historical gate. Executable manifest
+validation remains open; current PR admission follows #19. Closing that
+validation would not clear the
 failed latency gate or supply acceptance evidence for the adopted candidate.

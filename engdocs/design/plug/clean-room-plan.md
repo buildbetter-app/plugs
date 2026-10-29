@@ -1,6 +1,6 @@
 # Plug: clean-room plan
 
-Status: proposal, 2026-10-29, re-planned for an agent swarm. This plan follows [design.md](design.md), the recorded [design review](review-2026-10-27.md), and the [decision ledger](decisions-needed.md). The #15 rerun passed correctness, corpus, Q5, closure and independent differential checks but failed unchanged latency targets. #17 fixed the vocabulary; #18 now adopts the reviewed bounded X1–X9 candidate semantics. #20 settles the bounded type-summary cap requirements direction only. Contract integration, implementation authorization and runtime/performance/hosted acceptance remain separate gates. Reviewable historical publication is complete; executable manifest validation, independent evidence review and hosted CI remain separate.
+Status: scoped implementation waves authorized under controller v2, 2026-10-29. This plan follows [design.md](design.md), the recorded [design review](review-2026-10-27.md), and the [decision ledger](decisions-needed.md). Decisions 1–20 are answered. The #15 rerun passed correctness, corpus, Q5, closure and independent differential checks but failed unchanged latency targets. #17 fixed the vocabulary; #18 adopts the reviewed bounded X1–X9 candidate semantics. #20 settles only the bounded type-summary cap requirements direction. Contract compatibility and runtime/performance acceptance still require evidence. #19 selects recorded exact-head local Bazel checks and one independent Codex review as the current PR gate, together with task scope and no PAUSE. Hosted CI returns when RunsOn serves this repository and the App has Workflows permission.
 
 ## Completion contract
 
@@ -42,7 +42,7 @@ The following decisions are carried from `design.md` and [review-2026-10-27.md](
 | IDs | Binding decision |
 |---|---|
 | AZ2, AZ5, AZ6, AZ8, AZ9, AZ10 | Adopt the authorization data contract before choosing a language. Any chain link may deny or append context; only the end allows and no decision denies. If a Cedar ruleset is approved, policies are evaluated as one merged set. An erroring forbid denies; an erroring permit is skipped, alerted, and reported. Role-scoped workflow permissions stay out of the ontology. The fixed `permission` guard asks the chain for `transition`. |
-| AZ1, AZ3, AZ4, AZ7 | The repaired historical rerun still fails unchanged latency targets. #18 adopts the optional native finite component and complete bounded X1–X9 semantics recorded in A5. Conditional Cedar/`cedar-go`/principal-attribute choices are not selected. Exact contract integration, implementation authorization and all acceptance evidence remain open. |
+| AZ1, AZ3, AZ4, AZ7 | The repaired historical rerun still fails unchanged latency targets. #18 adopts the optional native finite component and complete bounded X1–X9 semantics recorded in A5. Conditional Cedar/`cedar-go`/principal-attribute choices are not selected. Controller v2 authorizes scoped integration and implementation; contract compatibility and acceptance still need evidence. |
 | P51-P56 | Schema plugins merge into one schema. `authz.*` has no egress. Policy-data authorization is mode 1 only. Code links have explicit order and the order is shown by `plugin.plan`. v1 has a fixed authorizer view. A closure rewrite over the limit is refused with `closure_too_large` or is one explicit locked migration-class write. |
 | P57-P62 | There is no `authz.explain {asOf}`; history uses current permissions. Authentication refuses scoped agent tokens when no authorization plugin exists. There is no break-glass root list; recovery is through the bootstrap admin or offline repair. Anonymous mode records a client-asserted `_meta.agent` label beside `anonymous` and uses it for lease and idempotency scope. `authn-local` is optional. A boot tier may hold one provider and a bootstrap admin. |
 | P63-P69 | With authentication, `ontology.apply`, `override_guard`, binding suspension, event-subscription skip, restore administration, `history.redact`, ciphertext dumps, protected reverts, and `sync.import` require a `user` principal and the D32 human proof. Anonymous multi-approval gates are refused. Overlay moves need `map_status` and `map_type`. Failed post subscribers return the commit with a warning, dead-letter, and breaker count and make no graph writes. Artifacts are digest locked, reproducibility is checked in CI, local mode begins Linux-only then uses a Linux container, and all warnings reach end users. |
@@ -97,9 +97,10 @@ independent facts/actual SQL/all pages/counts and later real-host history, authn
 proof and every dependency/miss race on all drivers. The actual 200-agent queue
 with authz installed and a wasm mutator bound must stay under 1% `write_conflict`.
 No candidate is measured or runtime accepted. Executable manifest validation,
-C7/R14, exact-head hosted CI, reviewed CI cutover and product
-data cutover remain separate gates; no historical rerun follows from validator
-repair alone. #18 authorizes no implementation, execution, migration or widening.
+C7/R14 and product data cutover remain separate gates; no historical rerun
+follows from validator repair alone. Controller v2 authorizes scoped
+implementation under #18; migration and unsupported-slice widening remain excluded.
+PR admission follows #19's local Bazel gate below.
 
 ### Bounded type-summary cap direction 20
 
@@ -128,18 +129,18 @@ both engines, both plans, all fractions, all **36 cases**, **3 warmups + 20
 measured samples per case**, page and whole-Q5 p95 `<50 ms`, and whole-Q6
 count p95 `<250 ms`; no smaller population, omitted dense case or cap-error
 response supplies positive dense Q6 evidence. Existing resource ceilings,
-runtime/real-host/proof/200-agent, C7/R14, exact-head hosted CI and reviewed
+runtime/real-host/proof/200-agent, C7/R14 and product
 cutover gates remain separate. R14 behavioral verification remains
-**UNVERIFIED**, both findings **OPEN**. #17/#18 remain **DECIDED**; #19 remains
-**PENDING**, with no local-CI waiver. Frozen D6, C0 and published PR15 pins
+**UNVERIFIED**, both findings **OPEN**. #17/#18/#19 remain **DECIDED**;
+exact-head local Bazel CI governs PR admission. Frozen D6, C0 and published PR15 pins
 retain their original bytes and verdicts.
 
 ### Swarm decisions and infrastructure facts
 
-- The swarm starts immediately after this re-plan is approved. Its budget is effectively unlimited through 2026-10-31.
+- Controller v2 authorizes scoped implementation waves now. The burst runs through 2026-10-31 with the stop lines below.
 - The only swarm models are GPT-6.1-Sol through `gpt-worker-max` and Codex through Paseo as `codex/gpt-6.1-sol` with thinking `max` or `ultra`. Claude remains orchestration only.
-- Agents open PRs with the remote-dev GitHub App identity and merge on green after Bazel CI and an adversarial review by a second agent. Nikhil is pulled in at decision gates only.
-- CI runs on RunsOn classes used by BuildBetter. The new tree owns `.github/runs-on.yml`; a smoke run must pass before the swarm relies on the service.
+- Agents open PRs with the remote-dev GitHub App identity; only the controller merges after the four #19 gates below. Nikhil is pulled in only for genuinely new product questions.
+- Local Bazel CI is the current merge gate. Future hosted CI uses RunsOn classes used by BuildBetter; a smoke run must pass before reliance on that service.
 - The authorization spike uses these three real policies: only admin users can import bulk history; all users can read all beads; agents can modify only projects their sponsoring user is involved in.
 
 ## Repository and infrastructure baseline
@@ -186,13 +187,26 @@ The graph lives in a dedicated Beads workspace outside the repository, for examp
 **#16 — DECIDED (2026-10-29, Paseo, about 03:37 UTC):**
 **Replace inherited workflows with qualified Plug CI (Recommended)**.
 Plug-owned Bazel CI replaces the inherited Beads workflows only after
-exact-head qualification and a reviewed CI cutover. Current hosted failures
-remain blocking until then. This decision authorizes no settings change or
-failure waiver; existing ownership, merge, review and stop-line rules remain
-in force.
+exact-head qualification and a reviewed CI cutover. Historical hosted failures
+remain recorded. This decision authorizes no settings change; existing
+ownership and stop-line rules remain in force.
 
-#19's local-Bazel-CI merge recommendation remains **PENDING** and grants no
-waiver of these qualification, review, merge or hosted admission requirements.
+**#19 — DECIDED (2026-10-29, chat): local Bazel CI is the interim merge gate.**
+The controller merges only when all four conditions hold:
+
+1. Exact-head local Bazel checks pass over touched targets plus reverse
+   dependencies (`bazel test`, or `bazel build` for docs-only PRs), with command,
+   Bazel version, targets, result and logs recorded.
+2. One independent Codex review finds no correctness, security, contract, build
+   or recorded-decision blocker. Other findings become follow-up work.
+3. The PR stays within its task's scope.
+4. `/tmp/plug-swarm/PAUSE` is absent.
+
+No per-PR human approval, documentary certificate or hosted result is an
+additional current merge gate. Hosted CI becomes required again when RunsOn
+serves this repository and the remote-dev App has Workflows permission.
+Workers do not merge or publish workflow changes. This gate supplies no
+runtime/performance acceptance, production cutover or public-release authority.
 
 RunsOn repository access remains an admin dependency: an administrator must
 add `plugs` to the RunsOn GitHub App's repositories, and the repository's own
@@ -276,9 +290,9 @@ The authorization spike uses these real policies, exactly as answered today:
 2. All users can read all beads.
 3. Agents can modify only projects their sponsoring user is involved in.
 
-The page and full-Q5 target remains p95 under 50 ms at 100,000 beads for visible fractions 100%, 1% and 0.1% on Postgres and SQLite; grouped counts remain p95 under 250 ms. Historical correctness/corpus/Q5/closure/independent differential passes do not change the **failed unchanged latency gate**. #18 selects the bounded concrete semantics after #17’s vocabulary decision; candidate SQL/transaction/performance and all later real-host evidence remain unproved. Affected implementation stays held for separate scoped authorization and exact contracts.
+The page and full-Q5 target remains p95 under 50 ms at 100,000 beads for visible fractions 100%, 1% and 0.1% on Postgres and SQLite; grouped counts remain p95 under 250 ms. Historical correctness/corpus/Q5/closure/independent differential passes do not change the **failed unchanged latency gate**. #18 selects the bounded concrete semantics after #17’s vocabulary decision; candidate SQL/transaction/performance and all later real-host evidence remain unproved. Controller v2 authorizes scoped implementation against those semantics and explicit contracts.
 
-The evidence is published in [PR #10](https://github.com/buildbetter-app/plugs/pull/10) at publication head `93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8`. The measurements bind to source `69f28caaf71a673296abe3120c60be5cb3af5aec` in the [readout](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/readout.md) and [provenance manifest](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/provenance-manifest.json). Reviewable artifact publication is complete. Executable manifest validation remains open: checking warmups and iterations alone does not bind the engines, fractions, plans, queries, dataset, targets, and artifact declarations to the executable matrix. Independent review and hosted CI remain separate pending gates for the publication head; R10b's review and hosted observations were for the measured source. Completing those gates would not change the failed latency result. [A5](design.md#a5-identity-and-authorization) records the outcomes separately.
+The evidence is published in [PR #10](https://github.com/buildbetter-app/plugs/pull/10) at publication head `93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8`. The measurements bind to source `69f28caaf71a673296abe3120c60be5cb3af5aec` in the [readout](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/readout.md) and [provenance manifest](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/provenance-manifest.json). Reviewable artifact publication is complete. Executable manifest validation remains open: checking warmups and iterations alone does not bind the engines, fractions, plans, queries, dataset, targets, and artifact declarations to the executable matrix. R10b's review and hosted observations remain historical evidence for the measured source; current PR admission follows #19. Manifest validation or PR admission would not change the failed latency result. [A5](design.md#a5-identity-and-authorization) records the outcomes separately.
 
 ### Implementation waves
 
@@ -288,13 +302,13 @@ The evidence is published in [PR #10](https://github.com/buildbetter-app/plugs/p
 | I2 | I1, C1, C2, E3 | In-process `plug` slice for ready, claim, update, comment, close, history, dump, and restore | A fresh restored fixture goes from ready to close. In-process mode has no listener and no `/ui/`; asynchronous work is drained or owned by `plug server --local` |
 | I3 | C1, C3, I1, E5 | HTTP, WebSocket, stdio, MCP, API-key auth, local server, native plugin host | The same JSON-RPC bytes work on each transport. Anonymous mode is loopback-only and rejects hostile `Host` and `Origin`. D16 checks apply |
 | I4 | C4, C5, I1, C2 | Pre, invariant, post, projection, listener, and gate phases | Core invariants run in the transaction; post failure returns a warning and dead-letter; event log and write are atomic; multi-approval gates count sponsor-resolved humans |
-| I5 | C6, E4, I1, I3, adopted #18 semantics | Authorization filters/chain/grants for the bounded slice after separately authorized work | **Design semantics adopted; implementation not authorized by #18 or this record.** Exact reviewed contracts/compatibility and scoped assignments remain required. Compiled lists must equal per-item decisions on every driver, with no-plugin allow, forbid/error rules, current history, post-image and every dependency/miss race; runtime/performance/hosted gates remain open |
+| I5 | C6, E4, I1, I3, adopted #18 semantics | Authorization filters/chain/grants for the bounded slice in controller-v2 assignments | **Scoped implementation authorized by controller v2.** Exact contracts/compatibility still require evidence. Compiled lists must equal per-item decisions on every driver, with no-plugin allow, forbid/error rules, current history, post-image and every dependency/miss race; runtime/performance acceptance remains unproved |
 | I6 | C7, E1/E2, the Beads branch, store inventory | `bd export --format plug-dump/1`, converter, restore validator, diff report, reverse converter | Every inventoried store exports and restores to a new store. Counts, IDs, prefixes, counters, dependencies, versions, wisp-plane dispositions, archives, and digests are explained or block the run |
 | I7 | C2, E5, I3/I4, D29-D31 | Sandboxed Go `wasip1` builder, digest lock, static bundle checks, iframe bridge, declarative catalog | Pinned source builds reproduce in CI. Restore loads artifacts by digest before an asynchronous rebuild check. UI tests cover CSP, `event.source`, no credentials, no egress, and CORS without credentials |
 | I8 | I2, I3, I6, agent callers and prompts | `plug` agent plugin, `agent.brief`, caller rewrite, staging shadow harness, backups and rollback images | A sampled factory pool runs against staging with no GitHub writes or production egress. Reverse conversion and full image, prompt, plugin, and data rollback are rehearsed |
 | V1 | Every task diff, contract, evidence, and review finding | Independent review, mutation checks, security and data-loss findings | A clean-worktree verifier finds no weakened test, hidden skip, privilege bypass, secret, layer violation, or unverified claim; findings block merge until fixed or gated |
 
-The critical path is RunsOn smoke and Bazel bootstrap, B0-B3, C1-C7, I1, I2 and I3, I6’s first restore, three clean rehearsals, I8’s shadow evidence and the G2 switch decision. E1, E3, E4 and E5 run in parallel after B0. I4 proceeds when its contracts are green. #18 closes the bounded design-adoption dependency only; I5 and authz-dependent C6/I7/consumers remain held for separately scoped contract/implementation assignments and applicable evidence. Unaffected work may proceed. A failed spike remains failed evidence, never a passing stub.
+The implementation path starts with the local Bazel bootstrap, B0-B3, C1-C7, I1, I2 and I3; RunsOn smoke is a dependency only for future hosted execution. I6’s first restore, three clean rehearsals, I8’s shadow evidence and the G2 switch decision remain later product gates. E1, E3, E4 and E5 run in parallel after B0. I4 proceeds when its contracts are green. I5 and authz-dependent C6/I7/consumers proceed in scoped controller-v2 assignments against #18; each still needs its applicable contract and acceptance evidence. A failed spike remains failed evidence, never a passing stub.
 
 ```mermaid
 flowchart LR
@@ -387,7 +401,10 @@ The internal switch stops agents, quiesces or locks embedded stores, makes serve
 
 ## Timeline through 2026-10-31
 
-All times are UTC. `H` is the moment Nikhil approves this re-plan. Approval does not move the stop line.
+All times are UTC. The original launch schedule below is retained as history;
+its approval, hosted-bootstrap and dispatch holds are superseded by controller
+v2's active scoped assignments and the four merge gates above. `H` was the
+original re-plan approval time. The stop lines remain binding.
 
 ### First hour after approval
 
@@ -439,11 +456,11 @@ Keep the same graph, evidence, ownership, and merge rules at normal budget. Redu
 - **The weeks-0-to-56 M0-M8 calendar:** retired; the burst uses UTC hour and day windows through 2026-10-31 and dependency waves afterward.
 - **The old five-workstream staffing table:** retired; package ownership and graph dependencies determine concurrency.
 - **Routine human review of every command path or PR:** retired; census ratchets and independent adversarial review are the default, with Nikhil only at listed decision gates.
-- **Old rbe-west CI as the Plug trust boundary:** retired as the target; the Plug-specific RunsOn and Bazel workflow becomes authoritative only after #16's exact-head qualification and reviewed CI cutover. Current hosted failures remain blocking until then.
+- **Old rbe-west CI as the Plug trust boundary:** retired as the target; #19 selects local Bazel CI as the interim merge gate. Plug-specific hosted CI returns after RunsOn access, App Workflows permission, exact-head qualification and reviewed CI cutover.
 
 ## Decided defaults
 
-These defaults were accepted on 2026-10-29 and remain binding. #15’s provisional Cedar phase ended with the repaired rerun’s failed unchanged latency gate. #17 fixed the vocabulary and #18 adopted the bounded X1–X9 semantics; exact contract integration, implementation authorization and acceptance remain separate. The swarm model changes staffing/timing only, and #19 remains pending with no CI waiver.
+These defaults were accepted on 2026-10-29 and remain binding. #15’s provisional Cedar phase ended with the repaired rerun’s failed unchanged latency gate. #17 fixed the vocabulary and #18 adopted the bounded X1–X9 semantics. Controller v2 authorizes scoped implementation; contract compatibility and acceptance still require evidence. #19 is decided and selects the local Bazel merge gate above.
 
 - Historical Cedar-specific AZ3/AZ4/AZ7 choices are not selected by #18. P51 still merges schema plugins if used.
 - P55 uses a fixed authorizer view in v1. P56 refuses an over-limit closure or runs it only as an explicit locked migration-class write.
@@ -518,7 +535,7 @@ All 15 plan-level decisions were accepted on 2026-10-29. The entries below are b
 
 **#15 — Decided (2026-10-29):** Run a quick follow-up spike that fixes the SQL plans and reruns the speed gate. Proceed provisionally with Cedar in core until the repaired rerun reports; if it cannot support the path, revisit authorization rather than silently selecting the old relationship-schema fallback.
 
-**Outcome (2026-10-29):** The repaired rerun passes correctness/corpus/Q5/closure/independent differential but fails unchanged latency targets. The [published evidence](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/readout.md) binds publication `93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8` separately from measured source `69f28caaf71a673296abe3120c60be5cb3af5aec`. #18 later adopts the bounded fixed-permission semantics; no historical failure is rewritten or candidate measured. Affected contract/implementation work needs separate scoped authorization. Publication is complete; executable validation, independent review, runtime/compatibility and hosted CI remain separate gates.
+**Outcome (2026-10-29):** The repaired rerun passes correctness/corpus/Q5/closure/independent differential but fails unchanged latency targets. The [published evidence](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/readout.md) binds publication `93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8` separately from measured source `69f28caaf71a673296abe3120c60be5cb3af5aec`. #18 later adopts the bounded fixed-permission semantics; no historical failure is rewritten or candidate measured. Controller v2 authorizes scoped contract/implementation work. Publication is complete; executable validation and runtime/compatibility acceptance remain open, while PR admission follows #19.
 
 ## Risks and containment
 
