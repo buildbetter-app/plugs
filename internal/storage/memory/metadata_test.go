@@ -76,6 +76,7 @@ func TestIdempotencyWindowAndAuthenticatedScope(t *testing.T) {
 	}
 	meta, _ := s.Meta(ctx)
 	r, _ := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	defer r.Close()
 	cached, err := r.IdempotencyByKey(ctx, "user:u", "any-label", "bead.create", "key")
 	if err != nil || cached == nil || cached.Commit.Results[0].Ref.ID != firstRef.ID {
 		t.Fatalf("cached=%+v %v", cached, err)
@@ -97,6 +98,7 @@ func TestIdempotencyWindowAndAuthenticatedScope(t *testing.T) {
 		t.Fatalf("expired key reuse=%+v %v", second, err)
 	}
 	r, _ = s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	defer r.Close()
 	log, err := r.Changesets(ctx, nil, 100)
 	if err != nil || len(log) != 2 || log[0].IdempotencyKey != "key" || log[1].IdempotencyKey != "key" {
 		t.Fatalf("log lost retained keys=%v %v", log, err)
@@ -140,6 +142,7 @@ func TestResponseFinalizerFencedAndAtomic(t *testing.T) {
 	}
 	meta, _ := s.Meta(ctx)
 	r, _ := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	defer r.Close()
 	cached, _ := r.IdempotencyByKey(ctx, "user:u", "", "bead.create", "key")
 	if len(cached.Commit.Warnings) != 1 {
 		t.Fatal("fenced finalize published warnings")
@@ -148,6 +151,7 @@ func TestResponseFinalizerFencedAndAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, _ = s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	defer r.Close()
 	cached, _ = r.IdempotencyByKey(ctx, "user:u", "", "bead.create", "key")
 	if len(cached.Commit.Warnings) != 2 || cached.Commit.Warnings[0].Message != "initial" || cached.Commit.Warnings[1].Message != "post" {
 		t.Fatalf("final response=%+v", cached)
@@ -158,5 +162,31 @@ func TestResponseFinalizerFencedAndAtomic(t *testing.T) {
 	newMeta, _ := s.Meta(ctx)
 	if newMeta.Head.String() != meta.Head.String() {
 		t.Fatal("finalizer changed graph head")
+	}
+}
+
+func TestOrdinaryResponsePreservesUnchangedRowRevision(t *testing.T) {
+	ctx := context.Background()
+	s := New()
+	defer s.Close()
+	lease, err := s.Lease(ctx, "test", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRef, newRef := model.RefByID("pl-old", model.Natural64(0)), model.RefByID("pl-new", model.Natural64(0))
+	if _, err := conformance.Seed(ctx, s, lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: oldRef, Kind: "test", Op: model.OpCreate, Body: []byte(`{}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	results := []model.OpResult{{Ref: oldRef, Revision: model.Natural64(1)}, {Ref: newRef, Revision: model.Natural64(2)}}
+	h := driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "system", ID: "test"}, Method: "bead.batch", IdempotencyKey: "mixed", RequestHash: "digest", Response: model.Commit{Results: results, Warnings: []model.Warning{}}}
+	if _, err := conformance.Seed(ctx, s, lease, h, []conformance.FixtureChange{{Ref: newRef, Kind: "test", Op: model.OpCreate, Body: []byte(`{}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := s.Meta(ctx)
+	r, _ := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	defer r.Close()
+	response, err := r.IdempotencyByKey(ctx, "system:test", "", h.Method, h.IdempotencyKey)
+	if err != nil || response == nil || response.Commit.Revision.String() != "2" || !reflect.DeepEqual(response.Commit.Results, results) {
+		t.Fatalf("cached response changed row revisions: %+v %v", response, err)
 	}
 }

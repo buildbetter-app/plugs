@@ -1,12 +1,26 @@
 package driver
 
 import (
+	"context"
 	"io"
 	"reflect"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
+
+func TestNoopCommitterSignature(t *testing.T) {
+	want := reflect.TypeFor[interface {
+		CommitNoop(context.Context, ChangesetHeader) (model.Commit, error)
+	}]()
+	got := reflect.TypeFor[NoopCommitter]()
+	if !got.Implements(want) || !want.Implements(got) {
+		t.Fatalf("NoopCommitter must expose exactly CommitNoop(context.Context, ChangesetHeader) (model.Commit, error): %s", got)
+	}
+	if _, mandatory := reflect.TypeFor[WriteTx]().MethodByName("CommitNoop"); mandatory {
+		t.Fatal("CommitNoop must remain an optional transaction capability")
+	}
+}
 
 func TestStorageLifetimeSignatures(t *testing.T) {
 	closer := reflect.TypeFor[io.Closer]()

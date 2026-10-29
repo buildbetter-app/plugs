@@ -32,8 +32,11 @@ type ProposedChange struct {
 	Principal    model.PrincipalRef
 	BaseRevision model.Revision
 	DryRun       bool
-	Meta         model.WriteMeta
-	Changes      []Change
+	// SameClaim is core-proven: one empty claim patch, the same live holder
+	// and anonymous agent label. It preserves the lease, with no transition.
+	SameClaim bool
+	Meta      model.WriteMeta
+	Changes   []Change
 }
 
 type CommittedChange struct {
