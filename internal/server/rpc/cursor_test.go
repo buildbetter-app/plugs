@@ -58,7 +58,7 @@ func (p *pagedService) page(limit int, at service.AsOf, position *service.PagePo
 		out.Next.AsOf.Incarnation = "other"
 	case "resnapshot":
 		if position != nil {
-			out.AsOf.Revision = model.Natural64(2)
+			out.AsOf.Revision = model.Natural("9007199254740994")
 			if out.Next != nil {
 				out.Next.AsOf = out.AsOf
 			}
@@ -274,14 +274,26 @@ func TestAnonymousCursorBindsAgentLabel(t *testing.T) {
 	}
 }
 
-func TestCursorRefusesServiceSnapshotChangeOnLastPage(t *testing.T) {
-	probe := &pagedService{badPage: "resnapshot"}
-	s := pagingServer(t, probe, pagingConfig())
-	params := pageParams("bead.ready")
-	first := result(t, call(t, s, context.Background(), "bead.ready", paramsJSON(t, params)))
-	params["cursor"] = first["nextCursor"]
-	params["limit"] = 2
-	requireCode(t, call(t, s, context.Background(), "bead.ready", paramsJSON(t, params)), "internal_error")
+func TestLiveReadyAllowsNewRevisionButHistoryRemainsPinned(t *testing.T) {
+	for _, method := range []string{"bead.ready", "history.query"} {
+		t.Run(method, func(t *testing.T) {
+			probe := &pagedService{badPage: "resnapshot"}
+			s := pagingServer(t, probe, pagingConfig())
+			params := pageParams(method)
+			first := result(t, call(t, s, context.Background(), method, paramsJSON(t, params)))
+			params["cursor"] = first["nextCursor"]
+			params["limit"] = 2
+			reply := call(t, s, context.Background(), method, paramsJSON(t, params))
+			if method == "history.query" {
+				requireCode(t, reply, "internal_error")
+				return
+			}
+			page := result(t, reply)
+			if len(page["items"].([]any)) != 2 || page["asOf"].(map[string]any)["revision"] != json.Number("9007199254740994") || page["nextCursor"] != nil {
+				t.Fatal("live Ready did not accept a newer final page", page)
+			}
+		})
+	}
 }
 
 func TestCursorConfigurationAndServiceInvariants(t *testing.T) {

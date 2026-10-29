@@ -209,6 +209,10 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 	if callErr != nil {
 		return s.errorResponse(id, s.registry.catalog.MapError(callErr))
 	}
+	replayed := false
+	if outcome, ok := result.(Outcome); ok {
+		result, replayed = outcome.Result, outcome.Replayed
+	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		return s.failure(id, "internal_error", "", nil)
@@ -216,7 +220,7 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 	if err = s.registry.catalog.ValidateResult(bound.desc, encoded); err != nil {
 		return s.failure(id, "internal_error", "handler returned an invalid result", nil)
 	}
-	return response(id, "result", encoded)
+	return response(id, "result", encoded, replayed)
 }
 
 func invoke(ctx context.Context, handler Handler, call Call) (result any, err error) {
@@ -229,7 +233,7 @@ func invoke(ctx context.Context, handler Handler, call Call) (result any, err er
 	return handler(ctx, call)
 }
 
-func response(id []byte, member string, payload []byte) []byte {
+func response(id []byte, member string, payload []byte, replayed bool) []byte {
 	if len(id) == 0 {
 		id = []byte("null")
 	}
@@ -237,6 +241,9 @@ func response(id []byte, member string, payload []byte) []byte {
 	out = append(out, id...)
 	out = append(out, []byte(`,"`+member+`":`)...)
 	out = append(out, payload...)
+	if replayed {
+		out = append(out, `,"_meta":{"replayed":true}`...)
+	}
 	return append(out, '}')
 }
 func (s *Server) failure(id []byte, code, hint string, details map[string]any) []byte {
@@ -264,7 +271,7 @@ func (s *Server) errorResponse(id []byte, e *wire.Error) []byte {
 	if err != nil {
 		encoded = []byte(`{"code":-32603,"message":"internal error","data":{"code":"internal_error","retryable":false}}`)
 	}
-	return response(id, "error", encoded)
+	return response(id, "error", encoded, false)
 }
 
 func (s *Server) visible(ctx context.Context, by model.PrincipalRef) ([]wire.MethodDesc, []string, string, error) {
