@@ -22,6 +22,8 @@ import (
 // Independent Open calls share only the durable state in the DSN's database.
 type Store struct {
 	db        *sql.DB
+	lockConn  *sql.Conn
+	lockMu    sync.Mutex
 	mu        sync.Mutex
 	closed    bool
 	resources map[interface{ Close() error }]struct{}
@@ -40,8 +42,14 @@ func Open(ctx context.Context, cfg driver.Config) (*Store, error) {
 	}
 	db.SetMaxOpenConns(96)
 	db.SetMaxIdleConns(16)
-	s := &Store{db: db, resources: make(map[interface{ Close() error }]struct{}), leases: make(map[*activeLease]struct{})}
+	lockConn, err := db.Conn(ctx)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	s := &Store{db: db, lockConn: lockConn, resources: make(map[interface{ Close() error }]struct{}), leases: make(map[*activeLease]struct{})}
 	if err := s.initialize(ctx); err != nil {
+		_ = lockConn.Close()
 		_ = db.Close()
 		return nil, err
 	}
@@ -132,6 +140,29 @@ func (s *Store) check(ctx context.Context) error {
 	}
 	return nil
 }
+
+// ensureLockKeys uses the connection reserved for lock-row preparation. Lock
+// acquisition itself holds one pooled writer connection; using the general
+// pool here would deadlock when all writers reach this boundary together.
+func (s *Store) ensureLockKeys(ctx context.Context, ids []string) error {
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.lockConn == nil {
+		return driver.ErrTxClosed
+	}
+	for _, id := range ids {
+		if _, err := s.lockConn.ExecContext(ctx, `INSERT INTO plug_postgres.locks (key) VALUES ($1) ON CONFLICT DO NOTHING`, []byte(id)); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+	}
+	return nil
+}
 func (s *Store) track(r interface{ Close() error }) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -214,6 +245,12 @@ func (s *Store) Close() error {
 	for _, l := range leases {
 		errs = append(errs, l.Release(ctx))
 	}
+	s.lockMu.Lock()
+	if s.lockConn != nil {
+		errs = append(errs, s.lockConn.Close())
+		s.lockConn = nil
+	}
+	s.lockMu.Unlock()
 	errs = append(errs, s.db.Close())
 	return errors.Join(errs...)
 }
