@@ -52,6 +52,10 @@ type Admitter interface {
 
 type Config struct {
 	Provider Provider
+	// CoreSessions is an explicitly trusted host authority for opaque Plug
+	// sessions issued after a verified interactive login. Ordinary Provider
+	// claims, including User identities, never supply this authority.
+	CoreSessions CoreSessionSource
 	// AuthorizationInstalled reads the current installed chain, not a caller
 	// supplied claim. Nil means no authorization plugin is installed.
 	AuthorizationInstalled func() bool
@@ -59,12 +63,16 @@ type Config struct {
 
 type Authenticator struct {
 	provider Provider
+	sessions CoreSessionSource
 	authz    func() bool
 }
 
 func New(config Config) (*Authenticator, error) {
-	if config.Provider != nil {
-		value := reflect.ValueOf(config.Provider)
+	for _, configured := range []any{config.Provider, config.CoreSessions} {
+		if configured == nil {
+			continue
+		}
+		value := reflect.ValueOf(configured)
 		switch value.Kind() {
 		case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 			if value.IsNil() {
@@ -72,20 +80,22 @@ func New(config Config) (*Authenticator, error) {
 			}
 		}
 	}
-	a := &Authenticator{provider: config.Provider, authz: config.AuthorizationInstalled}
-	if a.provider == nil && a.hasAuthorization() {
+	a := &Authenticator{provider: config.Provider, sessions: config.CoreSessions, authz: config.AuthorizationInstalled}
+	if !a.configured() && a.hasAuthorization() {
 		return nil, ErrAuthzRequiresAuthn
 	}
 	return a, nil
 }
 
 func (a *Authenticator) hasAuthorization() bool { return a.authz != nil && a.authz() }
+func (a *Authenticator) configured() bool       { return a.provider != nil || a.sessions != nil }
 
-// Identity has no caller-settable proof flags. Only anonymous and bearer
-// identities exist in this slice; even a User authenticated by API key fails
-// RequireInteractiveUser. Interactive sessions/proofs are a separate feature.
+// Identity has no caller-settable proof flags. A live interactive proof can
+// originate only from the configured CoreSessions authority. Even a User
+// authenticated by an ordinary Provider has no interactive authority.
 type Identity struct {
 	principal model.PrincipalRef
+	session   CoreSession
 }
 
 // Principal returns a detached copy so callers cannot mutate stored caveats or
@@ -95,15 +105,13 @@ func (i Identity) Principal() model.PrincipalRef {
 	return p
 }
 
-func (i Identity) RequireInteractiveUser() error { return ErrHumanPresenceRequired }
-
 // Admit is for trusted in-process/stdio callers and prevalidated transports.
 // Errors always return the zero Identity, never a partially admitted principal.
 func (a *Authenticator) Admit(ctx context.Context, token string) (Identity, error) {
 	if ctx.Err() != nil {
 		return Identity{}, ErrUnavailable
 	}
-	if a.provider == nil {
+	if !a.configured() {
 		if token != "" {
 			return Identity{}, ErrUnauthenticated
 		}
@@ -117,6 +125,12 @@ func (a *Authenticator) Admit(ctx context.Context, token string) (Identity, erro
 	}
 	ctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
+	if strings.HasPrefix(token, CoreSessionPrefix) {
+		return a.admitSession(ctx, token)
+	}
+	if a.provider == nil {
+		return Identity{}, ErrUnauthenticated
+	}
 	p, err := a.provider.Authenticate(ctx, token)
 	if ctx.Err() != nil {
 		return Identity{}, ErrUnavailable
