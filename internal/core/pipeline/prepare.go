@@ -248,7 +248,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				current.setBy["comments"] = "request"
 			case model.OpLink, model.OpUnlink:
 				kind := op.Link.LinkKind
-				if kind != "blocks" && kind != "relates-to" {
+				if kind != "blocks" && kind != "conditional-blocks" && kind != "relates-to" {
 					return nil, failure("invalid_params", "unsupported link kind")
 				}
 				to, e := p.resolve(op.Link.To, aliases)
@@ -600,7 +600,7 @@ func (p *prepared) graph(ctx context.Context) error {
 		}
 		visiting[id] = true
 		for _, link := range docs[id].Links {
-			if link.Kind == "blocks" {
+			if link.Kind == "blocks" || link.Kind == "conditional-blocks" {
 				if err := walk(link.To.ID); err != nil {
 					return err
 				}

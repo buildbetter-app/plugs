@@ -212,6 +212,109 @@ func TestReadinessAndSlotGuardUseLiveBlockers(t *testing.T) {
 	}
 }
 
+func TestConditionalBlockerFailureUnlocksReadyAndClose(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		ready  bool
+	}{{"bead.fail", true}, {"bead.close", false}, {"bead.cancel", false}} {
+		t.Run(tc.method, func(t *testing.T) {
+			f := setup(t)
+			ctx := context.Background()
+			blocker, _ := create(t, f, "Conditional blocker")
+			dependent, _ := create(t, f, "Dependent")
+			m := meta(t)
+			m.Method = "tx.apply"
+			_, err := f.writer.Apply(ctx, anonymous, model.ChangeSet{Ops: []model.Op{{Kind: model.OpLink, Link: &model.LinkOp{From: dependent, To: blocker, LinkKind: "conditional-blocks"}}}}, m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = f.svc.Close(ctx, anonymous, CloseRequest{ID: dependent}, meta(t))
+			wantCode(t, err, "ontology_guard_failed")
+			m = meta(t)
+			m.Method = tc.method
+			_, err = f.writer.Apply(ctx, anonymous, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: blocker, Fields: map[string]any{}}}}}, m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			page, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local"})
+			wantCount := 0
+			if tc.ready {
+				wantCount = 1
+			}
+			if err != nil || len(page.Items) != wantCount || (len(page.Items) == 1 && page.Items[0].ID != dependent.ID) {
+				t.Fatalf("conditional readiness: %+v %v", page, err)
+			}
+			before, _ := f.store.Meta(ctx)
+			_, err = f.svc.Close(ctx, anonymous, CloseRequest{ID: dependent}, meta(t))
+			if tc.ready {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				wantCode(t, err, "ontology_guard_failed")
+				after, _ := f.store.Meta(ctx)
+				if before.Head.String() != after.Head.String() {
+					t.Fatal("conditional close refusal advanced head")
+				}
+			}
+		})
+	}
+}
+
+func TestConditionalBlockerUsesBlockerProjectOutcome(t *testing.T) {
+	f := setup(t)
+	doc := ontology.DefaultDocument()
+	base := ontology.Default()
+	closeStatus, _ := base.SlotStatus("issue", ontology.Close)
+	failStatus, _ := base.SlotStatus("issue", ontology.Fail)
+	status := doc.Statuses[closeStatus]
+	status.Outcome = ontology.Failure
+	doc.Statuses[closeStatus] = status
+	status = doc.Statuses[failStatus]
+	status.Outcome = ontology.Success
+	doc.Statuses[failStatus] = status
+	workflow := doc.Workflows["issue"]
+	workflow.Slots[ontology.Close], workflow.Slots[ontology.Fail] = failStatus, closeStatus
+	doc.Workflows["issue"] = workflow
+	snapshot, problems := ontology.Compile(doc, nil, nil)
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	o := NewOntology(func(project string) ontology.Effective {
+		if project == "upstream" {
+			return snapshot.Effective(project)
+		}
+		return base
+	})
+	f.writer = pipeline.New(f.store, f.lease, pipeline.WithOntology(o))
+	f.svc = New(f.store, f.lease, f.writer, WithOntology(o))
+	ctx := context.Background()
+	m := meta(t)
+	m.Project = "upstream"
+	created, err := f.svc.Create(ctx, anonymous, CreateRequest{Type: "issue", Fields: map[string]any{"title": "Other project"}}, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocker := created.Results[0].Ref
+	dependent, _ := create(t, f, "Local dependent")
+	m = meta(t)
+	m.Method = "tx.apply"
+	_, err = f.writer.Apply(ctx, anonymous, model.ChangeSet{Ops: []model.Op{{Kind: model.OpLink, Link: &model.LinkOp{From: dependent, To: blocker, LinkKind: "conditional-blocks"}}}}, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = meta(t)
+	m.Project = "upstream"
+	m.Method = "bead.fail"
+	if _, err := f.writer.Apply(ctx, anonymous, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: blocker, Fields: map[string]any{}}}}}, m); err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local"})
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != dependent.ID {
+		t.Fatalf("used dependent's success outcome instead of blocker's failure outcome: %+v %v", page, err)
+	}
+}
+
 type failedPost struct{ calls int }
 
 func (p *failedPost) After(context.Context, port.CommittedChange, port.SnapshotReader) error {
