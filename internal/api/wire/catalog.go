@@ -127,6 +127,13 @@ func ParseCatalog(data []byte) (*Catalog, error) {
 		c.methods[d.Name] = d
 		names.WriteString(d.Name + "\n")
 	}
+	// Decision 14 requires the complete session lifecycle independently of
+	// parity: omitting a method from both arrays must not validate itself.
+	for _, name := range []string{"session.open", "session.close", "presence.set"} {
+		if _, exists := c.methods[name]; !exists {
+			return nil, fmt.Errorf("catalog missing decided session method %s", name)
+		}
+	}
 	if digest(names.Bytes()) != doc.Registry.NameHash {
 		return nil, fmt.Errorf("catalog name digest mismatch")
 	}
