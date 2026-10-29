@@ -12,10 +12,14 @@ import (
 )
 
 var (
-	ErrCursorInvalid = errors.New("invalid event cursor")
-	ErrHalted        = errors.New("event binding halted")
-	ErrStalled       = errors.New("event binding stalled")
-	ErrSkipForbidden = errors.New("event skip requires an audited listener or post failure")
+	ErrCursorInvalid         = errors.New("invalid event cursor")
+	ErrHalted                = errors.New("event binding halted")
+	ErrStalled               = errors.New("event binding stalled")
+	ErrSkipForbidden         = errors.New("event skip requires an audited listener or post failure")
+	ErrResourceAuthorization = errors.New("event resource authorization unavailable")
+	// ErrNoticeUnavailable suppresses a notice whose pinned source is absent.
+	// History/fencing errors must remain errors, never this suppression signal.
+	ErrNoticeUnavailable = errors.New("event notice source unavailable")
 )
 
 type Position struct {
@@ -58,7 +62,9 @@ type Log interface {
 }
 
 // Materializer reconstructs images from version history and resolves the
-// canonical operation/slot type and provenance. Unknown operations must fail.
+// canonical operation/slot type and provenance. The index is a logical Events
+// position for a nonnil plan, and a ChangeRecord position only for legacy nil.
+// The reader validates the complete plan before calling this port.
 type Materializer interface {
 	Materialize(context.Context, model.Changeset, int) (model.DurableEvent, error)
 }
@@ -66,6 +72,7 @@ type Materializer interface {
 type Visibility struct {
 	Readable          bool
 	PreviouslyVisible bool
+	Redacted          bool
 	Before            map[string]any
 	After             map[string]any
 }
@@ -77,11 +84,29 @@ type Authorization interface {
 	Read(context.Context, model.PrincipalRef, model.DurableEvent) (Visibility, error)
 }
 
+// ResourceAuthorization is required for condition notices. Each required
+// resource must exist and be currently readable without redacting audit facts.
+// Denial/redaction hides the entire notice, including any visibility marker.
+// This capability is optional for legacy/ordinary events; absence refuses a
+// notice explicitly instead of treating primary-resource access as sufficient.
+type ResourceAuthorization interface {
+	ReadResource(context.Context, model.PrincipalRef, model.AuditResource) (ResourceVisibility, error)
+}
+
+type ResourceVisibility struct {
+	Readable bool
+	Redacted bool
+}
+
 // AllowAll is selected explicitly when no authorization chain is installed.
 type AllowAll struct{}
 
 func (AllowAll) Read(_ context.Context, _ model.PrincipalRef, e model.DurableEvent) (Visibility, error) {
 	return Visibility{Readable: true, Before: e.Before, After: e.After}, nil
+}
+
+func (AllowAll) ReadResource(context.Context, model.PrincipalRef, model.AuditResource) (ResourceVisibility, error) {
+	return ResourceVisibility{Readable: true}, nil
 }
 
 type Filter struct {

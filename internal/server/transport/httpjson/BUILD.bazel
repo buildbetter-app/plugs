@@ -1,0 +1,38 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "httpjson",
+    srcs = ["config.go", "handler.go", "server.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/server/transport/httpjson",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/core/model",
+        "//internal/server/authn",
+        "//internal/server/rpc",
+    ],
+)
+
+go_test(
+    name = "httpjson_test",
+    srcs = glob(["*_test.go"]),
+    deps = [
+        ":httpjson",
+        "//internal/api/wire",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
+        "//internal/plugins/authnapikey",
+        "//internal/server/authn",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

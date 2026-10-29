@@ -77,6 +77,9 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 	if h.ResponsePending || len(h.Changes) != 0 || len(t.records) != 0 || len(t.derived) != 0 || len(t.bumps) != 0 || len(t.blobs) != 0 {
 		return model.Commit{}, fmt.Errorf("sqlite: no-op cannot publish staged mutations")
 	}
+	if h.Events != nil {
+		return model.Commit{}, fmt.Errorf("sqlite: no-op commit cannot contain an event plan")
+	}
 	var result model.Commit
 	err := t.store.immediate(ctx, t.lease, func(c *sql.Conn) error {
 		previous, err := t.replay(ctx, c, h)
