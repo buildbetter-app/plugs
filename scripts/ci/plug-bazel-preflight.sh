@@ -241,7 +241,7 @@ phase=build
 echo "plug-bazel-preflight: bazel build $targets_text"
 run_bazel build "${targets[@]}" "--build_event_json_file=$build_bep" --show_result=0 2>&1 | tee "$evidence_dir/build.log"
 
-phase=test
+phase="test"
 echo "plug-bazel-preflight: bazel test $targets_text (fresh results)"
 run_bazel test "${targets[@]}" "--build_event_json_file=$test_bep" --nocache_test_results --test_output=errors 2>&1 | tee "$evidence_dir/test.log"
 
