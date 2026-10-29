@@ -16,8 +16,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-// ReadStore deliberately excludes WriteTx. Checkpoint writes use the optional
-// driver capability, never graph transactions or a delivery-owned map.
+// ReadStore exposes metadata and read snapshots. Checkpoint writes use the
+// optional driver capability, never graph transactions or a delivery-owned map.
 type ReadStore interface {
 	Meta(context.Context) (driver.Meta, error)
 	Read(context.Context, driver.View) (driver.Reader, error)
@@ -37,6 +37,7 @@ func (l Log) Scan(ctx context.Context, after core.Position, limit int) ([]model.
 	if err != nil {
 		return nil, boundaryError(ctx, l.Store, after.Incarnation, err)
 	}
+	defer reader.Close()
 	var cursor *driver.Cursor
 	if !after.Revision.IsZero() {
 		// Engines explicitly check their supported revision domain. This
@@ -226,6 +227,7 @@ func (m HistoryMaterializer) image(ctx context.Context, incarnation string, ref 
 	if err != nil {
 		return nil, boundaryError(ctx, m.Store, incarnation, err)
 	}
+	defer reader.Close()
 	records, err := reader.Get(ctx, []driver.Ref{ref})
 	if errors.Is(err, driver.ErrNotFound) {
 		return nil, nil

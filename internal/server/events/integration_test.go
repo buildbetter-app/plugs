@@ -328,3 +328,68 @@ func TestReadRequiresAuthorizationAndIncarnation(t *testing.T) {
 		t.Fatal("missing authorization silently allowed")
 	}
 }
+
+type readerTracker struct {
+	ReadStore
+	opened, closed int
+}
+
+func (s *readerTracker) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	reader, err := s.ReadStore.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	s.opened++
+	return &trackedReader{Reader: reader, closed: &s.closed}, nil
+}
+
+type trackedReader struct {
+	driver.Reader
+	closed *int
+}
+
+func (r *trackedReader) Close() error {
+	*r.closed += 1
+	return r.Reader.Close()
+}
+
+func TestStorageReadersCloseOnSuccessAndFailure(t *testing.T) {
+	f := newFixture(t)
+	set := f.commit(t, time.Time{}, bead("pl-a", "a"))
+	for _, test := range []struct {
+		name    string
+		run     func(*readerTracker) error
+		wantErr bool
+	}{
+		{"scan", func(store *readerTracker) error {
+			_, err := (Log{Store: store}).Scan(f.ctx, core.Position{Incarnation: f.incarnation}, 10)
+			return err
+		}, false},
+		{"scan-invalid-limit", func(store *readerTracker) error {
+			_, err := (Log{Store: store}).Scan(f.ctx, core.Position{Incarnation: f.incarnation}, -1)
+			return err
+		}, true},
+		{"scan-overflow", func(store *readerTracker) error {
+			_, err := (Log{Store: store}).Scan(f.ctx, core.Position{Incarnation: f.incarnation, Revision: "18446744073709551616"}, 10)
+			return err
+		}, true},
+		{"image", func(store *readerTracker) error {
+			_, err := (HistoryMaterializer{Store: store}).image(f.ctx, f.incarnation, model.RefByID("pl-a", model.Natural64(0)), set.Revision)
+			return err
+		}, false},
+		{"missing-image", func(store *readerTracker) error {
+			_, err := (HistoryMaterializer{Store: store}).image(f.ctx, f.incarnation, model.RefByID("pl-missing", model.Natural64(0)), set.Revision)
+			return err
+		}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &readerTracker{ReadStore: f.store}
+			if err := test.run(store); (err != nil) != test.wantErr {
+				t.Fatalf("error=%v wantErr=%v", err, test.wantErr)
+			}
+			if store.opened != 1 || store.closed != store.opened {
+				t.Fatalf("readers opened=%d closed=%d", store.opened, store.closed)
+			}
+		})
+	}
+}
