@@ -4,6 +4,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
+	"strings"
+	"unicode/utf8"
 )
 
 // AuditResource identifies a resource whose CURRENT read policy protects the
@@ -62,8 +65,8 @@ type ConditionUnmetDetails struct {
 const maxAuditText = 1024
 
 func auditText(value, name string) error {
-	if value == "" || len(value) > maxAuditText {
-		return fmt.Errorf("%s must contain 1..%d bytes", name, maxAuditText)
+	if value == "" || !utf8.ValidString(value) || utf8.RuneCountInString(value) > maxAuditText {
+		return fmt.Errorf("%s must contain 1..%d Unicode characters", name, maxAuditText)
 	}
 	return nil
 }
@@ -284,10 +287,58 @@ func (d ConditionUnmetDetails) Validate() error {
 	if d.Before.Status == d.After.Status || !d.After.Terminal || d.After.Satisfied {
 		return fmt.Errorf("condition-unmet requires a changed status entering an unsatisfied terminal outcome")
 	}
-	if d.BlockerBefore.Revision.String() == d.BlockerAfter.Revision.String() {
-		return fmt.Errorf("condition-unmet requires a new blocker image")
+	if compareAuditRevision(d.BlockerBefore.Revision, d.BlockerAfter.Revision) >= 0 {
+		return fmt.Errorf("condition-unmet requires a later blocker image")
+	}
+	if compareAuditRevision(d.Dependent.Revision, d.BlockerAfter.Revision) > 0 || compareAuditRevision(d.Ontology.Revision, d.BlockerAfter.Revision) > 0 {
+		return fmt.Errorf("condition source image is from a future revision")
 	}
 	return nil
+}
+
+// Inputs have already passed Natural.Validate. Compare symbolic magnitudes;
+// even 1e1000000000 never expands into a billion-digit allocation.
+func compareAuditRevision(a, b Revision) int {
+	left, right := a.String(), b.String()
+	if left == right {
+		return 0
+	}
+	if left == "0" {
+		return -1
+	}
+	if right == "0" {
+		return 1
+	}
+	magnitude := func(value string) (string, *big.Int) {
+		coefficient, exponent, _ := strings.Cut(value, "e")
+		size := new(big.Int)
+		if exponent != "" {
+			size.SetString(exponent, 10)
+		}
+		size.Add(size, big.NewInt(int64(len(coefficient))))
+		return coefficient, size
+	}
+	l, lm := magnitude(left)
+	r, rm := magnitude(right)
+	if cmp := lm.Cmp(rm); cmp != 0 {
+		return cmp
+	}
+	for i := 0; i < max(len(l), len(r)); i++ {
+		lc, rc := byte('0'), byte('0')
+		if i < len(l) {
+			lc = l[i]
+		}
+		if i < len(r) {
+			rc = r[i]
+		}
+		if lc < rc {
+			return -1
+		}
+		if lc > rc {
+			return 1
+		}
+	}
+	return 0
 }
 func (d ConditionUnmetDetails) MarshalJSON() ([]byte, error) {
 	if err := d.Validate(); err != nil {

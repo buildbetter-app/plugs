@@ -1,6 +1,6 @@
 {
   "source": "contracts/openrpc.json",
-  "sourceSHA256": "163e3d12ae7615acefb7c1a82bebc98d0106cdaabf248ab5bf62cd0a684b6c14",
+  "sourceSHA256": "a02eb474d11c48a03be45fbfe0be55f336a36991bfc562d0a22f6804bebb7263",
   "schemas": {
     "ChangeSet": {
       "type": "object",
@@ -674,6 +674,14 @@
             "type": "object",
             "additionalProperties": true
           }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/EventDescriptor"
+          },
+          "maxItems": 1000,
+          "minItems": 1
         }
       },
       "required": [
@@ -686,7 +694,8 @@
         "chain",
         "changes"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "x-event-order": "Absent events means legacy ChangeRecord indexes. Present events is the complete atomic plan. No partial plans, empty plans, synthetic dependent changes, or truncation. Public resume tuple remains incarnation/revision/index; projections consume the complete revision."
     },
     "Event": {
       "oneOf": [
@@ -699,113 +708,14 @@
       ]
     },
     "DurableEvent": {
-      "type": "object",
-      "properties": {
-        "category": {
-          "const": "durable"
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OrdinaryDurableEvent"
         },
-        "cursor": {
-          "type": "string"
-        },
-        "incarnation": {
-          "type": "string"
-        },
-        "revision": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "index": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "type": {
-          "type": "string",
-          "enum": [
-            "bead.created",
-            "bead.updated",
-            "bead.reparented",
-            "bead.linked",
-            "bead.unlinked",
-            "bead.commented",
-            "bead.attached",
-            "bead.deleted",
-            "bead.claimed",
-            "bead.released",
-            "bead.closed",
-            "bead.failed",
-            "bead.canceled",
-            "bead.reopened",
-            "bead.deferred",
-            "bead.lease.reclaimed",
-            "gate.approved",
-            "gate.reported",
-            "gate.escalated",
-            "ontology.applied",
-            "plugin.applied",
-            "view.saved",
-            "view.deleted",
-            "memory.saved",
-            "memory.deleted",
-            "sync.pushed",
-            "sync.imported",
-            "derived.updated"
-          ]
-        },
-        "resource": {
-          "type": "string"
-        },
-        "changed": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "before": {
-          "type": "object",
-          "additionalProperties": true
-        },
-        "after": {
-          "type": "object",
-          "additionalProperties": true
-        },
-        "principal": {
-          "$ref": "#/components/schemas/Principal"
-        },
-        "chain": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "setBy": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "cause": {
-          "$ref": "#/components/schemas/EventCause"
-        },
-        "derived": {
-          "type": "boolean"
+        {
+          "$ref": "#/components/schemas/DependencyConditionUnmetEvent"
         }
-      },
-      "required": [
-        "category",
-        "cursor",
-        "incarnation",
-        "revision",
-        "index",
-        "type",
-        "resource",
-        "changed",
-        "principal",
-        "chain",
-        "setBy",
-        "cause",
-        "derived"
-      ],
-      "additionalProperties": false
+      ]
     },
     "EventCause": {
       "type": "object",
@@ -1238,6 +1148,761 @@
       ],
       "additionalProperties": false,
       "description": "Restore crossed the incarnation boundary; the envelope carries the new incarnation."
+    },
+    "AuditRef": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "branch": {
+          "const": 0
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "AuditResource": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "bead",
+            "ontology",
+            "plugin",
+            "view",
+            "memory",
+            "sync",
+            "derived",
+            "project"
+          ]
+        },
+        "ref": {
+          "$ref": "#/components/schemas/AuditRef"
+        }
+      },
+      "required": [
+        "kind",
+        "ref"
+      ],
+      "additionalProperties": false
+    },
+    "EventImage": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/components/schemas/AuditRef"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "ref",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "ConditionalEdge": {
+      "type": "object",
+      "properties": {
+        "dependent": {
+          "$ref": "#/components/schemas/AuditRef"
+        },
+        "blocker": {
+          "$ref": "#/components/schemas/AuditRef"
+        },
+        "kind": {
+          "const": "conditional-blocks"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "dependent",
+        "blocker",
+        "kind",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "OntologyPin": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/components/schemas/AuditRef"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "project": {
+          "$ref": "#/components/schemas/AuditRef"
+        }
+      },
+      "required": [
+        "ref",
+        "revision",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "ConditionDecision": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "triage",
+                "backlog",
+                "unstarted",
+                "started"
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                ""
+              ]
+            },
+            "terminal": {
+              "const": false
+            },
+            "satisfied": {
+              "const": false
+            }
+          },
+          "required": [
+            "status",
+            "category",
+            "outcome",
+            "terminal",
+            "satisfied"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "completed"
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "success"
+              ]
+            },
+            "terminal": {
+              "const": true
+            },
+            "satisfied": {
+              "const": false
+            }
+          },
+          "required": [
+            "status",
+            "category",
+            "outcome",
+            "terminal",
+            "satisfied"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "completed"
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "failure"
+              ]
+            },
+            "terminal": {
+              "const": true
+            },
+            "satisfied": {
+              "const": true
+            }
+          },
+          "required": [
+            "status",
+            "category",
+            "outcome",
+            "terminal",
+            "satisfied"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "canceled"
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                ""
+              ]
+            },
+            "terminal": {
+              "const": true
+            },
+            "satisfied": {
+              "const": false
+            }
+          },
+          "required": [
+            "status",
+            "category",
+            "outcome",
+            "terminal",
+            "satisfied"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ConditionUnmetDecision": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "completed"
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "success"
+              ]
+            },
+            "terminal": {
+              "const": true
+            },
+            "satisfied": {
+              "const": false
+            }
+          },
+          "required": [
+            "status",
+            "category",
+            "outcome",
+            "terminal",
+            "satisfied"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "canceled"
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                ""
+              ]
+            },
+            "terminal": {
+              "const": true
+            },
+            "satisfied": {
+              "const": false
+            }
+          },
+          "required": [
+            "status",
+            "category",
+            "outcome",
+            "terminal",
+            "satisfied"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ConditionUnmetDetails": {
+      "type": "object",
+      "properties": {
+        "dependent": {
+          "$ref": "#/components/schemas/EventImage"
+        },
+        "blockerBefore": {
+          "$ref": "#/components/schemas/EventImage"
+        },
+        "blockerAfter": {
+          "$ref": "#/components/schemas/EventImage"
+        },
+        "edge": {
+          "$ref": "#/components/schemas/ConditionalEdge"
+        },
+        "ontology": {
+          "$ref": "#/components/schemas/OntologyPin"
+        },
+        "before": {
+          "$ref": "#/components/schemas/ConditionDecision"
+        },
+        "after": {
+          "$ref": "#/components/schemas/ConditionUnmetDecision"
+        }
+      },
+      "required": [
+        "dependent",
+        "blockerBefore",
+        "blockerAfter",
+        "edge",
+        "ontology",
+        "before",
+        "after"
+      ],
+      "additionalProperties": false,
+      "x-validation": "Refs must match the directed edge; edge revision equals dependent image revision; blocker before/after refs match and revisions differ; status changes. Resolved decisions use the pinned blocker-own-project ontology, never live interpretation. Blocker-after must be strictly later than blocker-before; dependent and ontology source revisions cannot be later than blocker-after."
+    },
+    "AuditEventCause": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "maxItems": 200
+        }
+      },
+      "required": [
+        "root",
+        "depth",
+        "chain"
+      ],
+      "additionalProperties": false
+    },
+    "EventProvenance": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "slot": {
+          "type": "string",
+          "enum": [
+            "",
+            "claim",
+            "close",
+            "reopen",
+            "fail",
+            "cancel",
+            "defer"
+          ]
+        },
+        "setBy": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "maxProperties": 1000
+        },
+        "cause": {
+          "$ref": "#/components/schemas/AuditEventCause"
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "maxItems": 200
+        }
+      },
+      "required": [
+        "method",
+        "slot",
+        "setBy",
+        "cause",
+        "chain"
+      ],
+      "additionalProperties": false
+    },
+    "OrdinaryDurableEvent": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "const": "durable"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "incarnation": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "bead.created",
+            "bead.updated",
+            "bead.reparented",
+            "bead.linked",
+            "bead.unlinked",
+            "bead.commented",
+            "bead.attached",
+            "bead.deleted",
+            "bead.claimed",
+            "bead.released",
+            "bead.closed",
+            "bead.failed",
+            "bead.canceled",
+            "bead.reopened",
+            "bead.deferred",
+            "bead.lease.reclaimed",
+            "gate.approved",
+            "gate.reported",
+            "gate.escalated",
+            "ontology.applied",
+            "plugin.applied",
+            "view.saved",
+            "view.deleted",
+            "memory.saved",
+            "memory.deleted",
+            "sync.pushed",
+            "sync.imported",
+            "derived.updated"
+          ]
+        },
+        "resource": {
+          "type": "string"
+        },
+        "changed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "before": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "after": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "principal": {
+          "$ref": "#/components/schemas/Principal"
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "setBy": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "cause": {
+          "$ref": "#/components/schemas/EventCause"
+        },
+        "derived": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "category",
+        "cursor",
+        "incarnation",
+        "revision",
+        "index",
+        "type",
+        "resource",
+        "changed",
+        "principal",
+        "chain",
+        "setBy",
+        "cause",
+        "derived"
+      ],
+      "additionalProperties": false
+    },
+    "DependencyConditionUnmetEvent": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "const": "durable"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "incarnation": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "type": {
+          "const": "dependency.conditionUnmet"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "changed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 0
+        },
+        "principal": {
+          "$ref": "#/components/schemas/Principal"
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "setBy": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "cause": {
+          "$ref": "#/components/schemas/EventCause"
+        },
+        "derived": {
+          "const": false
+        },
+        "details": {
+          "$ref": "#/components/schemas/ConditionUnmetDetails"
+        }
+      },
+      "required": [
+        "category",
+        "cursor",
+        "incarnation",
+        "revision",
+        "index",
+        "type",
+        "resource",
+        "changed",
+        "principal",
+        "chain",
+        "setBy",
+        "cause",
+        "derived",
+        "details"
+      ],
+      "additionalProperties": false,
+      "x-validation": "resource is bead/<dependent ID>; revision equals blockerAfter.revision. No mutation of the dependent is implied. Current read authorization and redaction cover dependent, blocker, ontology and optional blocker project; suppress the entire notice on any denial."
+    },
+    "OrdinaryEventDescriptor": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "changeIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "bead.created",
+            "bead.updated",
+            "bead.reparented",
+            "bead.linked",
+            "bead.unlinked",
+            "bead.commented",
+            "bead.attached",
+            "bead.deleted",
+            "bead.claimed",
+            "bead.released",
+            "bead.closed",
+            "bead.failed",
+            "bead.canceled",
+            "bead.reopened",
+            "bead.deferred",
+            "bead.lease.reclaimed",
+            "gate.approved",
+            "gate.reported",
+            "gate.escalated",
+            "ontology.applied",
+            "plugin.applied",
+            "view.saved",
+            "view.deleted",
+            "memory.saved",
+            "memory.deleted",
+            "sync.pushed",
+            "sync.imported",
+            "derived.updated"
+          ]
+        },
+        "resource": {
+          "$ref": "#/components/schemas/AuditResource"
+        },
+        "provenance": {
+          "$ref": "#/components/schemas/EventProvenance"
+        }
+      },
+      "required": [
+        "index",
+        "changeIndex",
+        "type",
+        "resource",
+        "provenance"
+      ],
+      "additionalProperties": false
+    },
+    "ConditionUnmetDescriptor": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "changeIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "type": {
+          "const": "dependency.conditionUnmet"
+        },
+        "resource": {
+          "$ref": "#/components/schemas/AuditResource"
+        },
+        "provenance": {
+          "$ref": "#/components/schemas/EventProvenance"
+        },
+        "details": {
+          "$ref": "#/components/schemas/ConditionUnmetDetails"
+        }
+      },
+      "required": [
+        "index",
+        "changeIndex",
+        "type",
+        "resource",
+        "provenance",
+        "details"
+      ],
+      "additionalProperties": false
+    },
+    "EventDescriptor": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OrdinaryEventDescriptor"
+        },
+        {
+          "$ref": "#/components/schemas/ConditionUnmetDescriptor"
+        }
+      ],
+      "x-validation": "Index equals array position. Exactly one ordinary event for every ChangeRecord in ChangeIndex order, followed immediately by notices sorted uniquely by dependent ID. Notices retain ordinary close/cancel slot event and identical provenance, anchor the changed blocker and from/current revisions. Chain matches the changeset header. Event/resource kind, operation and slot must agree."
     }
   }
 }

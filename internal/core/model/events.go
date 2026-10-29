@@ -404,6 +404,9 @@ func validateDurableEvent(value DurableEvent) error {
 		if value.Resource != "bead/"+value.Details.Dependent.Ref.ID || len(value.Changed) != 0 || value.Before != nil || value.After != nil || value.Derived {
 			return fmt.Errorf("condition notice forbids fake dependent mutation/images")
 		}
+		if value.Revision.String() != value.Details.BlockerAfter.Revision.String() {
+			return fmt.Errorf("notice revision must pin final blocker image")
+		}
 	} else if value.Details != nil {
 		return fmt.Errorf("ordinary event forbids condition details")
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 )
 
@@ -110,11 +111,11 @@ func eventResourceKind(t DurableEventType) string {
 }
 
 func (d EventDescriptor) Validate() error {
-	if _, err := d.Index.Uint64(); err != nil {
-		return fmt.Errorf("event index: %w", err)
+	if index, err := d.Index.Uint64(); err != nil || index >= MaxChangesetEvents {
+		return fmt.Errorf("event index must be below %d", MaxChangesetEvents)
 	}
-	if _, err := d.ChangeIndex.Uint64(); err != nil {
-		return fmt.Errorf("change index: %w", err)
+	if index, err := d.ChangeIndex.Uint64(); err != nil || index >= MaxChangeSetOps {
+		return fmt.Errorf("change index must be below %d", MaxChangeSetOps)
 	}
 	if !validDurableEventType(d.Type) {
 		return fmt.Errorf("unknown descriptor type %q", d.Type)
@@ -266,6 +267,9 @@ func (c Changeset) ValidateEvents() error {
 		if i != uint64(index) || anchor >= uint64(len(c.Changes)) {
 			return fmt.Errorf("event indexes must be contiguous and anchored in changes")
 		}
+		if !slices.Equal(event.Provenance.Chain, c.Chain) {
+			return fmt.Errorf("event/header authorization chain mismatch")
+		}
 		if event.Type != EventDependencyConditionUnmet {
 			if anchor != uint64(change+1) {
 				return fmt.Errorf("each change needs exactly one ordinary event in change order")
@@ -275,12 +279,15 @@ func (c Changeset) ValidateEvents() error {
 			if !sameAuditRef(event.Resource.Ref, c.Changes[change].Ref) {
 				return fmt.Errorf("ordinary event/changed resource mismatch")
 			}
+			if err := validateOrdinaryOp(event.Type, c.Changes[change].Op); err != nil {
+				return err
+			}
 		} else {
 			if change < 0 || anchor != uint64(change) {
 				return fmt.Errorf("notice must follow its ordinary event")
 			}
 			d := event.Details
-			if (ordinary.Type != EventBeadClosed && ordinary.Type != EventBeadCanceled) || !reflect.DeepEqual(event.Provenance, ordinary.Provenance) {
+			if (ordinary.Type != EventBeadClosed && ordinary.Type != EventBeadCanceled) || !sameEventProvenance(event.Provenance, ordinary.Provenance) {
 				return fmt.Errorf("notice must retain ordinary terminal slot event and provenance")
 			}
 			if !sameAuditRef(d.BlockerAfter.Ref, c.Changes[change].Ref) || d.BlockerBefore.Revision.String() != c.Changes[change].FromRevision.String() || d.BlockerAfter.Revision.String() != c.Revision.String() {
@@ -294,6 +301,26 @@ func (c Changeset) ValidateEvents() error {
 	}
 	if change+1 != len(c.Changes) {
 		return fmt.Errorf("event plan omits ordinary events")
+	}
+	return nil
+}
+
+func sameEventProvenance(a, b EventProvenance) bool {
+	a.Cause.Depth = Natural(a.Cause.Depth.String())
+	b.Cause.Depth = Natural(b.Cause.Depth.String())
+	return reflect.DeepEqual(a, b)
+}
+
+func validateOrdinaryOp(event DurableEventType, op OpKind) error {
+	if err := op.Validate(); err != nil {
+		return err
+	}
+	expected := map[DurableEventType]OpKind{EventBeadCreated: OpCreate, EventBeadReparented: OpReparent, EventBeadLinked: OpLink, EventBeadUnlinked: OpUnlink, EventBeadCommented: OpComment, EventBeadAttached: OpAttach, EventBeadDeleted: OpDelete, EventBeadClaimed: OpPatch, EventBeadReleased: OpPatch, EventBeadClosed: OpPatch, EventBeadFailed: OpPatch, EventBeadCanceled: OpPatch, EventBeadReopened: OpPatch, EventBeadDeferred: OpPatch, EventBeadLeaseReclaimed: OpPatch}
+	if kind, ok := expected[event]; ok && op != kind {
+		return fmt.Errorf("ordinary event/operation mismatch")
+	}
+	if event == EventBeadUpdated && op != OpPatch && op != OpSetMeta {
+		return fmt.Errorf("update event needs patch or setMeta")
 	}
 	return nil
 }
