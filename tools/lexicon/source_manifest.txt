@@ -117,6 +117,12 @@ internal/core/authz/identity_test.go
 internal/core/authz/mutation.go
 internal/core/authz/mutation_test.go
 internal/core/authz/types.go
+internal/core/events/BUILD.bazel
+internal/core/events/dispatcher.go
+internal/core/events/natural.go
+internal/core/events/natural_test.go
+internal/core/events/ports.go
+internal/core/events/reader.go
 internal/core/model/BUILD.bazel
 internal/core/model/audit.go
 internal/core/model/audit_test.go
@@ -202,6 +208,13 @@ internal/server/authn/authn.go
 internal/server/authn/authn_test.go
 internal/server/authn/http.go
 internal/server/authn/http_test.go
+internal/server/events/BUILD.bazel
+internal/server/events/cursor.go
+internal/server/events/cursor_test.go
+internal/server/events/dispatcher_test.go
+internal/server/events/integration_test.go
+internal/server/events/service.go
+internal/server/events/storage.go
 internal/storage/conformance/BUILD.bazel
 internal/storage/conformance/atomic.go
 internal/storage/conformance/checkpoints.go
