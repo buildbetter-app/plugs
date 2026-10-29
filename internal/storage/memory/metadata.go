@@ -74,12 +74,21 @@ func (s *Store) FinalizeResponse(ctx context.Context, lease driver.ActiveLease, 
 	if current.value.Commit.Revision.String() != revision.String() {
 		return driver.ErrConflict
 	}
+	// Nil and empty post lists describe the same outcome, including a receipt
+	// initially published final, whose private post outcome is empty.
+	if warnings == nil {
+		warnings = []model.Warning{}
+	}
 	encoded, err := json.Marshal(warnings)
 	if err != nil {
 		return err
 	}
-	if current.finalized {
-		previous, err := json.Marshal(current.post)
+	if !current.value.ResponsePending {
+		post := current.post
+		if post == nil {
+			post = []model.Warning{}
+		}
+		previous, err := json.Marshal(post)
 		if err != nil {
 			return err
 		}
@@ -97,9 +106,12 @@ func (s *Store) FinalizeResponse(ctx context.Context, lease driver.ActiveLease, 
 		return err
 	}
 	current.value.Commit.Warnings = append(current.value.Commit.Warnings, current.post...)
-	current.finalized = true
+	current.value.ResponsePending = false
 	next := s.state.fork()
 	next.replays[id] = current
+	if err := s.check(ctx); err != nil {
+		return err
+	}
 	if err := s.checkLease(lease); err != nil {
 		return err
 	}
