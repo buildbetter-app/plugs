@@ -177,7 +177,11 @@ func (r *Reader) Read(ctx context.Context, req ReadRequest) (Page, error) {
 			if err != nil {
 				return page, fmt.Errorf("invalid materialized event: %w", err)
 			}
-			visibility, err := r.Authorization.Read(ctx, req.Principal, protected)
+			principal, err := clonePrincipal(req.Principal)
+			if err != nil {
+				return page, err
+			}
+			visibility, err := r.Authorization.Read(ctx, principal, protected)
 			if err != nil {
 				return page, err
 			}
@@ -245,6 +249,10 @@ func (r *Reader) noticeReadable(ctx context.Context, principal model.PrincipalRe
 		return false, err
 	}
 	for _, resource := range resources {
+		principal, err := clonePrincipal(principal)
+		if err != nil {
+			return false, err
+		}
 		visibility, err := authorization.ReadResource(ctx, principal, resource)
 		if err != nil {
 			return false, err
@@ -254,6 +262,23 @@ func (r *Reader) noticeReadable(ctx context.Context, principal model.PrincipalRe
 		}
 	}
 	return true, nil
+}
+
+// Principal strings are values; sponsors and JSON caveats must be copied for
+// each policy callback so one callback cannot change a later check's identity.
+func clonePrincipal(principal model.PrincipalRef) (model.PrincipalRef, error) {
+	if principal.Sponsor == nil && principal.Caveats == nil {
+		return principal, nil
+	}
+	raw, err := json.Marshal(principal)
+	if err != nil {
+		return model.PrincipalRef{}, err
+	}
+	var copied model.PrincipalRef
+	if err := json.Unmarshal(raw, &copied); err != nil {
+		return model.PrincipalRef{}, err
+	}
+	return copied, nil
 }
 
 // The authorization port and returned pages each receive owned JSON values.
