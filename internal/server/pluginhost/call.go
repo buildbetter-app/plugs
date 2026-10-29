@@ -1,0 +1,213 @@
+package pluginhost
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/buildbetter-app/plugs/pluginapi"
+)
+
+type invocation struct {
+	ctx    context.Context
+	phase  pluginapi.Phase
+	reader pluginapi.SnapshotReader
+}
+
+// Native callbacks are serialized per instance. A timed-out callback keeps
+// its slot until it exits; it cannot retain usable I/O after its deadline.
+func (i *instance) run(ctx context.Context, phase pluginapi.Phase, timeout time.Duration, reader pluginapi.SnapshotReader, fn func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	select {
+	case i.gate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if scoped, ok := reader.(*scopedReader); ok {
+		scoped.ctx = ctx
+	}
+	i.mu.Lock()
+	i.active = &invocation{ctx, phase, reader}
+	i.mu.Unlock()
+	result := make(chan error, 1)
+	go func() {
+		var err error
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				err = fmt.Errorf("native callback panic: %v", recovered)
+			}
+			i.mu.Lock()
+			i.active = nil
+			i.mu.Unlock()
+			<-i.gate
+			result <- err
+		}()
+		err = fn(ctx)
+	}()
+	select {
+	case err := <-result:
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (i *instance) current() (*invocation, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.active == nil {
+		return nil, failure(ErrInactive, "host is available only during a host-driven call")
+	}
+	if err := i.active.ctx.Err(); err != nil {
+		return nil, err
+	}
+	return i.active, nil
+}
+func (c *invocation) hot() bool {
+	return c.phase == pluginapi.PhaseMutate || c.phase == pluginapi.PhaseValidate
+}
+
+type capabilities struct{ instance *instance }
+
+var _ pluginapi.Host = (*capabilities)(nil)
+
+func (c *capabilities) Call(ctx context.Context, method string, params, result any) error {
+	call, err := c.instance.current()
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	data, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	// Never classify methods by a name prefix. The server registry supplies
+	// the effect; absent methods cannot dispatch, even when declared.
+	effect, known := Read, false
+	if c.instance.owner.dispatcher != nil {
+		effect, known = c.instance.owner.dispatcher.Effect(method)
+	}
+	if call.hot() {
+		if known && effect == Write {
+			return failure(ErrHotWrite, "%s", method)
+		}
+		// RPC-shaped reads need the registry's serializer and opaque cursors.
+		// Until that adapter exists, refuse them instead of returning a record
+		// array under a core RPC method's different result schema.
+		return failure(ErrMethod, "synchronous callbacks read through SnapshotReader; Host.Call RPC reads are unsupported")
+	}
+	if call.phase == pluginapi.PhasePost {
+		if known && effect == Write {
+			return failure(ErrReentrant, "%s", method)
+		}
+		return failure(ErrMethod, "post callbacks read through their committed SnapshotReader")
+	}
+	if !known || effect != Read && effect != Write {
+		return failure(ErrMethod, "unknown method %s", method)
+	}
+	if effect == Write {
+		return failure(ErrMethod, "outbound graph writes require the registry's field-grant adapter, which is not implemented")
+	}
+	if !contains(c.instance.manifest.Requires.Methods, method) {
+		return failure(ErrMethod, "undeclared method %s", method)
+	}
+	response, err := c.instance.owner.dispatcher.Call(call.ctx, pluginapi.PrincipalRef{Kind: "plugin", ID: c.instance.manifest.ID + "/" + c.instance.name}, method, data)
+	if err != nil {
+		return err
+	}
+	if result == nil {
+		return nil
+	}
+	return decode(response, result)
+}
+
+func (c *capabilities) State() pluginapi.StateStore { return &stateAccess{c.instance} }
+func (c *capabilities) HTTP() *http.Client {
+	return &http.Client{Transport: &egressTransport{instance: c.instance}, Timeout: time.Second, CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return failure(ErrEgress, "too many redirects")
+		}
+		return nil
+	}}
+}
+func (c *capabilities) Secret(ctx context.Context, name string) (pluginapi.SecretValue, error) {
+	call, err := c.instance.current()
+	if err != nil {
+		return pluginapi.SecretValue{}, err
+	}
+	if call.hot() {
+		return pluginapi.SecretValue{}, failure(ErrHotEgress, "secret injection")
+	}
+	return pluginapi.SecretValue{}, failure(ErrEgress, "secret injection is unsupported")
+}
+
+func contains(values []string, value string) bool {
+	for _, v := range values {
+		if v == value {
+			return true
+		}
+	}
+	return false
+}
+
+// Invoke runs a declared native extension. The embedding server authorizes
+// its permission/resource before dispatch; schemas remain registry-owned.
+func (h *Host) Invoke(ctx context.Context, name string, params json.RawMessage) (json.RawMessage, error) {
+	m, ok := h.methods[name]
+	if !ok {
+		return nil, failure(ErrMethod, "undeclared method %s", name)
+	}
+	var value map[string]any
+	if err := decode(params, &value); err != nil || value == nil {
+		return nil, failure(ErrMethod, "params must be an object")
+	}
+	resource, ok := lookup(value, strings.TrimPrefix(m.grant.Resource, "params."))
+	if !ok {
+		return nil, failure(ErrMethod, "missing declared resource parameter")
+	}
+	var ref pluginapi.Ref
+	if id, ok := resource.(string); ok {
+		ref = pluginapi.RefByID(id, "")
+	} else {
+		data, err := json.Marshal(resource)
+		if err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(data, &ref); err != nil {
+			return nil, err
+		}
+	}
+	if err := ref.Validate(); err != nil {
+		return nil, err
+	}
+	if h.authorize != nil {
+		if err := h.authorize(ctx, m.grant.Permission, []pluginapi.Ref{ref}); err != nil {
+			return nil, err
+		}
+	}
+	var response json.RawMessage
+	err := m.instance.run(ctx, "method", time.Second, nil, func(ctx context.Context) error {
+		data, err := m.Handle(ctx, append(json.RawMessage(nil), params...))
+		if err != nil {
+			return err
+		}
+		if !json.Valid(data) {
+			return fmt.Errorf("native method returned invalid JSON")
+		}
+		response = append(json.RawMessage(nil), data...)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return response, nil
+}
