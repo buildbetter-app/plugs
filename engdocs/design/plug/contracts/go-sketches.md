@@ -2025,17 +2025,17 @@ type Changeset struct {
 	Kind           ChangesetKind  `json:"kind"`
 	Time           time.Time      `json:"time"`
 	Principal      PrincipalRef   `json:"principal"`
-	Chain          []string       `json:"chain"`
+	Chain          []string       `json:"chain" wire:"nullable"`
 	IdempotencyKey string         `json:"idempotencyKey,omitempty"`
 	Mutators       []string       `json:"mutators,omitempty"`
-	Changes        []ChangeRecord `json:"changes"`
+	Changes        []ChangeRecord `json:"changes" wire:"nullable"`
 	Events         []EventDescriptor `json:"events,omitempty"`
 }
 type ChangeRecord struct {
 	Ref          Ref      `json:"ref"`
 	Op           OpKind   `json:"op"`
 	FromRevision Revision `json:"fromRevision"`
-	ChangedPaths []string `json:"changedPaths"`
+	ChangedPaths []string `json:"changedPaths" wire:"nullable"`
 }
 ```
 
@@ -2050,6 +2050,11 @@ atomic driver-copy follow-on and legacy fallback are specified in
 [Atomic ordered audit descriptors](events.md#atomic-ordered-audit-descriptors-a3b02).
 `internal/core/model` implements `ValidateEvents`, `CloneEventDescriptors` and
 `EventDescriptor.RequiredResources`; emission and persistence are separate work.
+Persisted history decoding retains legacy nil slices and their JSON `null`
+representation for `Changeset.chain`, `Changeset.changes` and
+`ChangeRecord.changedPaths`. Null collection elements remain invalid. This
+compatibility does not relax `ChangeSet` requests or event descriptor fields;
+the canonical OpenRPC request schema is unchanged.
 
 ## `pluginapi` (public)
 

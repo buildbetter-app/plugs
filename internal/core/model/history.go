@@ -20,10 +20,10 @@ type Changeset struct {
 	Kind           ChangesetKind  `json:"kind"`
 	Time           time.Time      `json:"time"`
 	Principal      PrincipalRef   `json:"principal"`
-	Chain          []string       `json:"chain"`
+	Chain          []string       `json:"chain" wire:"nullable"`
 	IdempotencyKey string         `json:"idempotencyKey,omitempty"`
 	Mutators       []string       `json:"mutators,omitempty"`
-	Changes        []ChangeRecord `json:"changes"`
+	Changes        []ChangeRecord `json:"changes" wire:"nullable"`
 	// Events is a complete ordered event plan, atomically stored with this row.
 	// Nil means a legacy row: event indexes remain ChangeRecord indexes.
 	Events []EventDescriptor `json:"events,omitempty"`
@@ -32,5 +32,5 @@ type ChangeRecord struct {
 	Ref          Ref      `json:"ref"`
 	Op           OpKind   `json:"op"`
 	FromRevision Revision `json:"fromRevision"`
-	ChangedPaths []string `json:"changedPaths"`
+	ChangedPaths []string `json:"changedPaths" wire:"nullable"`
 }
