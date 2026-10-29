@@ -197,12 +197,11 @@ func (w *Writer) post(ctx context.Context, p *prepared, commit model.Commit) []m
 			done <- readErr
 			continue
 		}
-		changes, err := clone(p.proposal.Changes)
+		change, err := clone(port.CommittedChange{RequestID: p.proposal.RequestID, Principal: p.proposal.Principal, Revision: commit.Revision, Meta: p.proposal.Meta, Changes: p.proposal.Changes})
 		if err != nil {
 			done <- err
 			continue
 		}
-		change := port.CommittedChange{RequestID: p.proposal.RequestID, Principal: p.proposal.Principal, Revision: commit.Revision, Meta: p.proposal.Meta, Changes: changes}
 		go func(binding PostBinding) {
 			snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}, bounded: true}
 			_, err := invoke(ctx, 500*time.Millisecond, func(call context.Context) (struct{}, error) {
