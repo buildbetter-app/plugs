@@ -29,6 +29,7 @@ Commands:
 Memory storage is disposable and exists only for this process. In a session,
 @last is the ID returned by the last write; @revision is its revision.
 Global options precede COMMAND. Command options may precede or follow ID.
+Writes accept --idempotency-key KEY to retry a write whose response was lost.
 `
 
 var ErrHelp = errors.New("help requested")
