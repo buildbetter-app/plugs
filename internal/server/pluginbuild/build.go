@@ -1,10 +1,11 @@
-// Package pluginbuild builds a trusted, pinned native plugin from a local
+// Package pluginbuild builds a pinned native or wasip1 plugin from a local
 // source checkout and admits only the resulting implementation to pluginhost.
 //
-// This is deliberately a small native-source slice. It does not fetch source,
-// install a plugin, start a listener, persist a lock, or expose a write-capable
-// control-plane adapter. The caller chooses the already checked-out commit;
-// pluginmanifest owns the source and public-manifest validation.
+// This is deliberately a small source-build slice. It does not fetch source,
+// install a plugin, start a listener, or expose a write-capable control-plane
+// adapter. ArtifactStore provides only the process-local lock/restore seam;
+// the caller chooses the already checked-out commit and pluginmanifest owns
+// source and public-manifest validation.
 package pluginbuild
 
 import (
@@ -56,13 +57,16 @@ const (
 // executed directly, never through a shell.
 type Request struct {
 	// TrustedNative is an explicit opt-in to trusted, unisolated native code.
-	// This checkpoint does not implement the sandboxed mode-2 WASM runtime.
+	// wasip1 builds are sandboxed at runtime and do not require this flag.
 	TrustedNative bool
-	Source        pluginmanifest.Checkout
-	Package       string
-	Export        string
-	ModuleRoot    string
-	GoBinary      string
+	// Runtime is empty for the source manifest's sole runtime. Explicit values
+	// are "native" and "wasip1" and must match every declared plugin.
+	Runtime    string
+	Source     pluginmanifest.Checkout
+	Package    string
+	Export     string
+	ModuleRoot string
+	GoBinary   string
 }
 
 // File is the immutable inventory entry for a produced artifact.
@@ -77,12 +81,14 @@ type File struct {
 // retained so a later host admission can refuse source or output drift.
 type Artifact struct {
 	bundle         *pluginmanifest.Bundle
+	manifest       pluginapi.Manifest
 	outputDir      string
 	path           string
 	commit         string
 	sourceDigest   string
 	manifestDigest string
 	digest         string
+	runtime        string
 	files          []File
 
 	mu      sync.Mutex
@@ -92,19 +98,19 @@ type Artifact struct {
 	natives []sdk.Native
 }
 
-// Build verifies the complete local checkout, builds its root Go package as a
-// native plugin with a fixed offline command, and inventories the disposable
-// output. The output directory is removed on every failure. A successful
-// result owns that directory until Close is called.
+// Build verifies the complete local checkout, builds its root Go package with
+// a fixed offline command, and inventories the disposable output. A native
+// build is explicitly trusted; a wasip1 build is admitted only through the
+// sandboxed two-export host. The output directory is removed on every failure.
 func Build(ctx context.Context, request Request) (*Artifact, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !request.TrustedNative {
-		return nil, refusal(ErrConfig, "trusted native source must be explicitly selected; WASM builds are unsupported")
-	}
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "freebsd" {
-		return nil, refusal(ErrUnsupported, "native Go plugins are unsupported on %s", runtime.GOOS)
+	// Preserve a clear configuration refusal for an entirely empty request.
+	// Runtime inference below must remain reachable when a pinned source
+	// manifest declares wasip1; that runtime does not require TrustedNative.
+	if !request.TrustedNative && request.Runtime == "" && request.Source.Root == "" {
+		return nil, refusal(ErrConfig, "trusted native source must be explicitly selected")
 	}
 	packagePath := request.Package
 	if packagePath == "" {
@@ -113,12 +119,48 @@ func Build(ctx context.Context, request Request) (*Artifact, error) {
 	if !safePackage(packagePath) {
 		return nil, refusal(ErrConfig, "package must be a relative Go package directory")
 	}
-	export := request.Export
-	if export == "" {
-		export = Entrypoint
+	bundle, err := pluginmanifest.Load(ctx, request.Source)
+	if err != nil {
+		return nil, err
 	}
-	if export != Entrypoint {
-		return nil, refusal(ErrConfig, "source entrypoint must be %s", Entrypoint)
+	manifest, err := bundle.Manifest()
+	if err != nil {
+		return nil, err
+	}
+	runtimeMode := request.Runtime
+	for _, declared := range manifest.Plugins {
+		if runtimeMode == "" {
+			runtimeMode = declared.Runtime
+		} else if declared.Runtime != runtimeMode {
+			return nil, refusal(ErrConfig, "one source build cannot mix native and wasip1 plugins")
+		}
+	}
+	if runtimeMode != pluginapi.RuntimeNative && runtimeMode != pluginapi.RuntimeWASI {
+		return nil, refusal(ErrConfig, "unsupported plugin runtime %q", runtimeMode)
+	}
+	for _, declared := range manifest.Plugins {
+		if declared.Runtime != runtimeMode {
+			return nil, refusal(ErrConfig, "requested runtime %q differs from plugin %q", runtimeMode, declared.Alias)
+		}
+	}
+	if runtimeMode == pluginapi.RuntimeNative {
+		if !request.TrustedNative {
+			return nil, refusal(ErrConfig, "trusted native source must be explicitly selected")
+		}
+		if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "freebsd" {
+			return nil, refusal(ErrUnsupported, "native Go plugins are unsupported on %s", runtime.GOOS)
+		}
+	} else if request.Export != "" {
+		return nil, refusal(ErrConfig, "wasip1 uses the fixed plug_alloc/plug_handle ABI")
+	}
+	if runtimeMode == pluginapi.RuntimeNative {
+		export := request.Export
+		if export == "" {
+			export = Entrypoint
+		}
+		if export != Entrypoint {
+			return nil, refusal(ErrConfig, "source entrypoint must be %s", Entrypoint)
+		}
 	}
 	if request.ModuleRoot != "" {
 		if err := validateModuleRoot(request.ModuleRoot); err != nil {
@@ -129,16 +171,12 @@ func Build(ctx context.Context, request Request) (*Artifact, error) {
 	if goBinary == "" {
 		goBinary = defaultGoBinary
 	}
-	bundle, err := pluginmanifest.Load(ctx, request.Source)
-	if err != nil {
-		return nil, err
-	}
-	outputDir, err := os.MkdirTemp("", "plug-native-build-")
+	outputDir, err := os.MkdirTemp("", "plug-build-")
 	if err != nil {
 		return nil, err
 	}
 	cleanup := func() { _ = os.RemoveAll(outputDir) }
-	stagingDir, err := os.MkdirTemp("", "plug-native-source-")
+	stagingDir, err := os.MkdirTemp("", "plug-source-")
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -158,19 +196,23 @@ func Build(ctx context.Context, request Request) (*Artifact, error) {
 		cleanup()
 		return nil, err
 	}
-	outputPath := filepath.Join(outputDir, "plugin.so")
-	args := []string{
-		"build",
-		"-p=2",
-		"-trimpath",
-		"-buildvcs=false",
-		"-buildmode=plugin",
-		"-mod=readonly",
-		"-modfile=" + filepath.Base(moduleFile),
-		"-o", outputPath,
-		"./" + path.Clean(packagePath),
+	outputName := "plugin.so"
+	if runtimeMode == pluginapi.RuntimeWASI {
+		outputName = "plugin.wasm"
 	}
-	if _, err := runGo(ctx, goBinary, stagingDir, args...); err != nil {
+	outputPath := filepath.Join(outputDir, outputName)
+	args := []string{"build", "-p=2", "-trimpath", "-buildvcs=false", "-mod=readonly", "-modfile=" + filepath.Base(moduleFile), "-o", outputPath, "./" + path.Clean(packagePath)}
+	if runtimeMode == pluginapi.RuntimeNative {
+		args = []string{"build", "-p=2", "-trimpath", "-buildvcs=false", "-buildmode=plugin", "-mod=readonly", "-modfile=" + filepath.Base(moduleFile), "-o", outputPath, "./" + path.Clean(packagePath)}
+	} else {
+		args = append([]string{"build", "-p=2", "-trimpath", "-buildvcs=false", "-buildmode=c-shared", "-mod=readonly", "-modfile=" + filepath.Base(moduleFile), "-o", outputPath}, "./"+path.Clean(packagePath))
+	}
+	if runtimeMode == pluginapi.RuntimeWASI {
+		_, err = runGoTarget(ctx, goBinary, stagingDir, "wasip1", "wasm", args...)
+	} else {
+		_, err = runGo(ctx, goBinary, stagingDir, args...)
+	}
+	if err != nil {
 		cleanup()
 		return nil, err
 	}
@@ -178,9 +220,6 @@ func Build(ctx context.Context, request Request) (*Artifact, error) {
 		cleanup()
 		return nil, err
 	}
-	// The loader's checkout is intentionally mutable. Recheck it after the
-	// compiler returns so a source revision or content change cannot be paired
-	// with an artifact built from different bytes.
 	if err := bundle.Verify(ctx); err != nil {
 		cleanup()
 		return nil, err
@@ -190,16 +229,18 @@ func Build(ctx context.Context, request Request) (*Artifact, error) {
 		cleanup()
 		return nil, err
 	}
-	return &Artifact{
-		bundle:         bundle,
-		outputDir:      outputDir,
-		path:           outputPath,
-		commit:         bundle.Commit(),
-		sourceDigest:   bundle.Digest(),
-		manifestDigest: bundle.ManifestDigest(),
-		digest:         digest,
-		files:          files,
-	}, nil
+	if runtimeMode == pluginapi.RuntimeWASI {
+		data, readErr := os.ReadFile(outputPath)
+		if readErr != nil {
+			cleanup()
+			return nil, refusal(ErrArtifact, "WASM artifact cannot be read: %v", readErr)
+		}
+		if err := pluginhost.ValidateWASMArtifact(data); err != nil {
+			cleanup()
+			return nil, err
+		}
+	}
+	return &Artifact{bundle: bundle, manifest: manifest, outputDir: outputDir, path: outputPath, commit: bundle.Commit(), sourceDigest: bundle.Digest(), manifestDigest: bundle.ManifestDigest(), digest: digest, runtime: runtimeMode, files: files}, nil
 }
 
 // BuildSource is a descriptive alias for callers that prefer the operation's
@@ -243,6 +284,14 @@ func (a *Artifact) ArtifactDigest() string {
 
 func (a *Artifact) Digest() string { return a.ArtifactDigest() }
 
+// Runtime returns the admitted source runtime (native or wasip1).
+func (a *Artifact) Runtime() string {
+	if a == nil {
+		return ""
+	}
+	return a.runtime
+}
+
 // Path returns the disposable output path. Callers must not retain it after
 // Close; Host verifies it before every admission.
 func (a *Artifact) Path() string {
@@ -262,16 +311,22 @@ func (a *Artifact) Files() []File {
 
 // Source returns the immutable checkout identity used for this artifact.
 func (a *Artifact) Source() pluginmanifest.Checkout {
-	if a == nil || a.bundle == nil {
+	if a == nil {
 		return pluginmanifest.Checkout{}
+	}
+	if a.bundle == nil {
+		return pluginmanifest.Checkout{Commit: a.commit, ExpectedDigest: a.sourceDigest}
 	}
 	return pluginmanifest.Checkout{Root: a.bundle.Root(), Commit: a.bundle.Commit(), ManifestFile: a.bundle.ManifestPath(), ExpectedDigest: a.bundle.Digest()}
 }
 
 // Manifest returns a detached copy of the validated public manifest.
 func (a *Artifact) Manifest() (pluginapi.Manifest, error) {
-	if a == nil || a.bundle == nil {
+	if a == nil {
 		return pluginapi.Manifest{}, refusal(ErrClosed, "artifact is required")
+	}
+	if a.bundle == nil {
+		return pluginapi.CloneJSON(a.manifest)
 	}
 	return a.bundle.Manifest()
 }
@@ -280,7 +335,7 @@ func (a *Artifact) Manifest() (pluginapi.Manifest, error) {
 // call before every use and deliberately refuses a changed checkout, removed
 // output, mode change, or digest drift.
 func (a *Artifact) Verify(ctx context.Context) error {
-	if a == nil || a.bundle == nil {
+	if a == nil {
 		return refusal(ErrClosed, "artifact is required")
 	}
 	a.mu.Lock()
@@ -292,15 +347,26 @@ func (a *Artifact) Verify(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := a.bundle.Verify(ctx); err != nil {
-		return err
+	if a.bundle != nil {
+		if err := a.bundle.Verify(ctx); err != nil {
+			return err
+		}
 	}
 	files, digest, err := inventory(a.path)
 	if err != nil {
 		return err
 	}
-	if digest != a.digest || len(files) != len(a.files) || files[0] != a.files[0] {
+	if digest != a.digest || len(files) != len(a.files) || len(files) == 0 || files[0] != a.files[0] {
 		return refusal(ErrDigest, "produced artifact bytes differ from the recorded digest")
+	}
+	if a.runtime == pluginapi.RuntimeWASI {
+		data, err := os.ReadFile(a.path)
+		if err != nil {
+			return refusal(ErrDigest, "WASM artifact cannot be read: %v", err)
+		}
+		if err := pluginhost.ValidateWASMArtifact(data); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -318,13 +384,42 @@ func (a *Artifact) Host(ctx context.Context, config pluginhost.Config) (*pluginh
 	if err := a.Verify(ctx); err != nil {
 		return nil, err
 	}
-	natives, err := a.loadNatives(ctx)
-	if err != nil {
-		return nil, err
+	var err error
+	var natives []sdk.Native
+	if a.runtime == pluginapi.RuntimeWASI {
+		data, err := os.ReadFile(a.path)
+		if err != nil {
+			return nil, refusal(ErrArtifact, "WASM artifact cannot be read: %v", err)
+		}
+		manifest, err := a.Manifest()
+		if err != nil {
+			return nil, err
+		}
+		for _, declared := range manifest.Plugins {
+			native, err := pluginhost.NewWASMNative(data, declared, "default")
+			if err != nil {
+				return nil, err
+			}
+			natives = append(natives, native)
+		}
+	} else {
+		var err error
+		natives, err = a.loadNatives(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
-	descriptors, err := a.bundle.Natives(ctx, natives)
-	if err != nil {
-		return nil, err
+	var descriptors []sdk.Native
+	if a.bundle != nil {
+		descriptors, err = a.bundle.Natives(ctx, natives)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if err := validateRestoredNatives(a.manifest, natives); err != nil {
+			return nil, err
+		}
+		descriptors = natives
 	}
 	config.Natives = descriptors
 	return pluginhost.New(config)
@@ -396,7 +491,7 @@ func (a *Artifact) loadNatives(ctx context.Context) ([]sdk.Native, error) {
 	return natives, nil
 }
 
-func buildEnvironment(values []string) []string {
+func buildEnvironment(values []string, targetOS, targetArch string) []string {
 	// Keep only toolchain/cache/process-location inputs. In particular, discard
 	// GOFLAGS, GOENV, GOPROXY and VCS settings before applying the fixed local
 	// build policy below.
@@ -411,8 +506,8 @@ func buildEnvironment(values []string) []string {
 			env = append(env, value)
 		}
 	}
-	// Build mode plugin must match the host process. Explicitly pin these
-	// values instead of inheriting a cross-compilation request.
+	// Explicitly pin the target instead of inheriting a cross-compilation
+	// request. Native plugins match the host; mode-2 builds are wasip1/wasm.
 	env = append(env,
 		"GOTOOLCHAIN=local",
 		"GOPROXY=off",
@@ -421,9 +516,14 @@ func buildEnvironment(values []string) []string {
 		"GOWORK=off",
 		"GOENV=off",
 		"GOFLAGS=",
-		"GOOS="+runtime.GOOS,
-		"GOARCH="+runtime.GOARCH,
-		"CGO_ENABLED=1",
+		"GOOS="+targetOS,
+		"GOARCH="+targetArch,
+		"CGO_ENABLED="+func() string {
+			if targetOS == "wasip1" {
+				return "0"
+			}
+			return "1"
+		}(),
 	)
 	return env
 }
@@ -585,9 +685,13 @@ func prepareModuleFile(ctx context.Context, goBinary, sourceRoot, moduleRoot str
 }
 
 func runGo(ctx context.Context, binary, directory string, args ...string) ([]byte, error) {
+	return runGoTarget(ctx, binary, directory, runtime.GOOS, runtime.GOARCH, args...)
+}
+
+func runGoTarget(ctx context.Context, binary, directory, targetOS, targetArch string, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, binary, args...)
 	command.Dir = directory
-	command.Env = buildEnvironment(os.Environ())
+	command.Env = buildEnvironment(os.Environ(), targetOS, targetArch)
 	configureBuildProcess(command)
 	var output buildOutput
 	command.Stdout, command.Stderr = &output, &output

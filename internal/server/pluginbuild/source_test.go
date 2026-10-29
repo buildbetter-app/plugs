@@ -1,6 +1,7 @@
 package pluginbuild_test
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -15,9 +16,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/server/pluginbuild"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/server/pluginmanifest"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/pluginapi"
 	sdk "github.com/buildbetter-app/plugs/sdk/go"
 )
 
@@ -28,6 +33,9 @@ import (
 //
 //go:embed fixture/go.mod.template fixture/plugin.go fixture/plug-plugin.json
 var sourceFiles embed.FS
+
+//go:embed fixture-wasi/go.mod.template fixture-wasi/plugin.go fixture-wasi/plug-plugin.json
+var wasiSourceFiles embed.FS
 
 const helperMain = `package main
 
@@ -148,6 +156,131 @@ func TestPinnedSourceBuildLoadsActualCompiledCallback(t *testing.T) {
 		t.Fatalf("artifact inventory is not complete: %#v", result["files"])
 	}
 	t.Log("compiled source -> real SDK/host -> memory Writer: normalized=HELLO; validator refused; hot write/egress refused; instance state isolated")
+}
+
+func TestWASIPluginBuildRestoreAndAsyncRebuild(t *testing.T) {
+	root := moduleRoot(t)
+	source := wasiCheckout(t, root)
+	ctx := context.Background()
+	// Let Build infer the sandboxed runtime from the pinned manifest. This
+	// protects the admission path from requiring a redundant caller hint.
+	artifact, err := pluginbuild.Build(ctx, pluginbuild.Request{Source: source, GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifact.Close()
+	if artifact.Runtime() != pluginapi.RuntimeWASI || len(artifact.Files()) != 1 {
+		t.Fatalf("unexpected WASI artifact: runtime=%q files=%v", artifact.Runtime(), artifact.Files())
+	}
+	wasmBytes, err := os.ReadFile(artifact.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pluginhost.ValidateWASMArtifact(wasmBytes); err != nil {
+		t.Fatalf("static validation rejected the real artifact: %v", err)
+	}
+	for name, replacement := range map[string]string{
+		"wasi_snapshot_preview1": "evil_snapshot_preview1",
+		"plug_alloc":             "evil_alloc",
+	} {
+		mutated := bytes.Replace(wasmBytes, []byte(name), []byte(replacement), 1)
+		if bytes.Equal(mutated, wasmBytes) {
+			t.Fatalf("fixture did not contain %q", name)
+		}
+		if err := pluginhost.ValidateWASMArtifact(mutated); !hasPluginHostCode(err, pluginhost.ErrManifest) {
+			t.Fatalf("mutated %s artifact was admitted: %v", name, err)
+		}
+	}
+	host, err := artifact.Host(ctx, pluginhost.Config{Bindings: []pluginhost.Binding{
+		{ID: "wasi-normalize", Alias: "wasi", Instance: "default", Subscriber: "normalize", Phase: pluginapi.PhaseMutate, Reads: []string{"fields.title"}, Owns: []string{"fields.normalized"}},
+		{ID: "wasi-check", Alias: "wasi", Instance: "default", Subscriber: "check", Phase: pluginapi.PhaseValidate, Reads: []string{"fields.title"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	echo, err := host.Invoke(ctx, "x.wasi.echo", json.RawMessage(`{"id":"wasi-1","value":9007199254740993}`))
+	if err != nil || string(echo) != `{"id":"wasi-1","value":9007199254740993}` {
+		t.Fatalf("WASI method did not round-trip JSON: %s (%v)", echo, err)
+	}
+	change := port.ProposedChange{RequestID: "wasi-test", Principal: model.PrincipalRef{Kind: "user", ID: "test"}, BaseRevision: model.Natural64(1), Changes: []port.Change{{
+		Resource: model.ResourceRef{Kind: "bead", Ref: model.RefByID("wasi-1", "")},
+		Op:       model.Op{Kind: model.OpCreate, Create: &model.CreateOp{Kind: model.OpCreate, Type: "issue", Fields: map[string]any{"title": "hello"}}},
+		After:    []byte(`{"type":"issue","fields":{"title":"hello"}}`),
+	}}}
+	mutators := host.Mutators()
+	patches, err := mutators[0].Mutator.Mutate(ctx, change, &wasiSnapshot{revision: model.Natural64(1)})
+	if err != nil || len(patches) != 1 || string(patches[0].Paths["fields.normalized"]) != `"HELLO"` {
+		t.Fatalf("WASI mutator did not return its declared patch: %#v (%v)", patches, err)
+	}
+	change.Changes[0].After = []byte(`{"type":"issue","fields":{"title":"private"}}`)
+	if _, err := mutators[0].Mutator.Mutate(ctx, change, &wasiSnapshot{revision: model.Natural64(1)}); !hasPluginHostCode(err, pluginhost.ErrPatch) {
+		t.Fatalf("undeclared WASI patch was admitted: %v", err)
+	}
+	lockStore := pluginbuild.NewArtifactStore()
+	lock, err := lockStore.Put(ctx, artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The store owns a detached lock. Mutating the caller's nested manifest
+	// after Put must not alter the bytes admitted by the store.
+	lock.Manifest.Plugins[0].Alias = "mutated"
+	if restored, err := lockStore.Restore(ctx, lock); err == nil {
+		_ = restored.Close()
+		t.Fatal("mutated lock was accepted")
+	}
+	lock, err = artifact.Lock(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored, err := lockStore.Restore(ctx, lock); err != nil {
+		t.Fatalf("mutating the returned lock changed stored admission: %v", err)
+	} else {
+		_ = restored.Close()
+	}
+	block := make(chan struct{})
+	restored, checks, err := lockStore.RestoreAndCheck(ctx, lock, func(context.Context) (*pluginbuild.Artifact, error) {
+		<-block
+		return pluginbuild.Build(ctx, pluginbuild.Request{Runtime: pluginapi.RuntimeWASI, Source: source, GoBinary: goPath(t)})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Verify(ctx); err != nil {
+		t.Fatalf("digest restore was not immediately usable: %v", err)
+	}
+	restoredHost, err := restored.Host(ctx, pluginhost.Config{})
+	if err != nil {
+		t.Fatalf("restored WASI artifact could not be admitted: %v", err)
+	}
+	restoredEcho, err := restoredHost.Invoke(ctx, "x.wasi.echo", json.RawMessage(`{"id":"restored"}`))
+	if err != nil || string(restoredEcho) != `{"id":"restored"}` {
+		t.Fatalf("restored WASI host did not execute: %s (%v)", restoredEcho, err)
+	}
+	close(block)
+	check := <-checks
+	if check.Err != nil || !check.Match {
+		t.Fatalf("rebuild check did not match lock: %+v", check)
+	}
+	_ = restored.Close()
+	t.Log("real GOOS=wasip1 build -> wazero host callbacks -> digest restore before asynchronous rebuild; undeclared patch refused")
+}
+
+func hasPluginHostCode(err error, want string) bool {
+	var hostErr *pluginhost.Error
+	return errors.As(err, &hostErr) && hostErr.Code == want
+}
+
+type wasiSnapshot struct{ revision model.Revision }
+
+func (s *wasiSnapshot) Snapshot() driver.View {
+	return driver.View{At: &s.revision, Incarnation: "wasi-test"}
+}
+func (*wasiSnapshot) Get(context.Context, []model.Ref) ([]driver.Record, error) { return nil, nil }
+func (s *wasiSnapshot) Query(context.Context, driver.Query) (driver.Page[driver.Record], error) {
+	return driver.Page[driver.Record]{AsOf: s.revision}, nil
+}
+func (*wasiSnapshot) Observe(context.Context, []driver.LockKey) ([]driver.LockState, error) {
+	return nil, nil
 }
 
 func TestBuildFailureAndCancellationAreRefusals(t *testing.T) {
@@ -310,8 +443,41 @@ func runHelper(t *testing.T, root string, source pluginmanifest.Checkout) map[st
 	if err := os.WriteFile(filepath.Join(helper, "main.go"), []byte(helperMain), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	goMod := fmt.Sprintf("module github.com/buildbetter-app/plugs/runner\n\ngo 1.26.5\n\ntoolchain go1.26.10\n\nrequire github.com/buildbetter-app/plugs v0.0.0\n\nreplace github.com/buildbetter-app/plugs => %s\n", root)
+	moduleCache := strings.TrimSpace(string(mustCommand(t, goBinary, "env", "GOMODCACHE")))
+	if home, err := os.UserHomeDir(); err == nil {
+		candidate := filepath.Join(home, "go", "pkg", "mod")
+		if _, statErr := os.Stat(filepath.Join(candidate, "github.com", "tetratelabs", "wazero@v1.9.0")); statErr == nil {
+			moduleCache = candidate
+		}
+	}
+	wazeroRoot := filepath.Join(moduleCache, "github.com", "tetratelabs", "wazero@v1.9.0")
+	if _, err := os.Stat(wazeroRoot); err != nil {
+		for current := mustWorkingDir(t); current != filepath.Dir(current); current = filepath.Dir(current) {
+			candidate := filepath.Join(current, "external", "gazelle++go_deps+com_github_tetratelabs_wazero")
+			if _, statErr := os.Stat(filepath.Join(candidate, "go.mod")); statErr == nil {
+				wazeroRoot = candidate
+				break
+			}
+		}
+	}
+	if _, err := os.Stat(wazeroRoot); err != nil {
+		t.Fatalf("wazero source is not available in the offline module cache: %v", err)
+	}
+	goMod := fmt.Sprintf("module github.com/buildbetter-app/plugs/runner\n\ngo 1.26.5\n\ntoolchain go1.26.10\n\nrequire (\n\tgithub.com/buildbetter-app/plugs v0.0.0\n\tgithub.com/tetratelabs/wazero v1.9.0\n)\n\nreplace github.com/buildbetter-app/plugs => %s\nreplace github.com/tetratelabs/wazero => %s\n", root, wazeroRoot)
 	if err := os.WriteFile(filepath.Join(helper, "go.mod"), []byte(goMod), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootSums, err := os.ReadFile(filepath.Join(root, "go.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var helperSums []byte
+	for _, line := range strings.Split(string(rootSums), "\n") {
+		if strings.HasPrefix(line, "github.com/tetratelabs/wazero ") {
+			helperSums = append(helperSums, []byte(line+"\n")...)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(helper, "go.sum"), helperSums, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	command := exec.Command(goBinary, "run", "-p=2", "-trimpath", "-buildvcs=false", "-mod=readonly", ".")
@@ -331,6 +497,25 @@ func runHelper(t *testing.T, root string, source pluginmanifest.Checkout) map[st
 	return result
 }
 
+func mustWorkingDir(t *testing.T) string {
+	t.Helper()
+	directory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return directory
+}
+
+func mustCommand(t *testing.T, binary string, args ...string) []byte {
+	t.Helper()
+	command := exec.Command(binary, args...)
+	data, err := command.Output()
+	if err != nil {
+		t.Fatalf("%s %v: %v", binary, args, err)
+	}
+	return data
+}
+
 func checkout(t *testing.T, root string, broken bool) pluginmanifest.Checkout {
 	t.Helper()
 	source := t.TempDir()
@@ -340,6 +525,31 @@ func checkout(t *testing.T, root string, broken bool) pluginmanifest.Checkout {
 	git(t, source, "commit", "-q", "--no-verify", "-m", "source fixture")
 	commit := git(t, source, "rev-parse", "HEAD")
 	return pluginmanifest.Checkout{Root: source, Commit: commit}
+}
+
+func wasiCheckout(t *testing.T, root string) pluginmanifest.Checkout {
+	t.Helper()
+	source := t.TempDir()
+	if err := fs.WalkDir(wasiSourceFiles, ".", func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return walkErr
+		}
+		data, err := wasiSourceFiles.ReadFile(name)
+		if err != nil {
+			return err
+		}
+		if name == "fixture-wasi/go.mod.template" {
+			name = "fixture-wasi/go.mod"
+			data = []byte(strings.ReplaceAll(string(data), "__PLUG_ROOT__", root))
+		}
+		return os.WriteFile(filepath.Join(source, strings.TrimPrefix(name, "fixture-wasi/")), data, 0o644)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	git(t, source, "init", "-q", "--template=", "--initial-branch=main")
+	git(t, source, "add", "--all")
+	git(t, source, "commit", "-q", "--no-verify", "-m", "WASI source fixture")
+	return pluginmanifest.Checkout{Root: source, Commit: git(t, source, "rev-parse", "HEAD")}
 }
 
 func writeFixture(t *testing.T, source, root string, broken bool) {

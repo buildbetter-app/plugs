@@ -436,9 +436,14 @@ internal/server/pluginbuild/fixture/BUILD.bazel
 internal/server/pluginbuild/fixture/go.mod.template
 internal/server/pluginbuild/fixture/plug-plugin.json
 internal/server/pluginbuild/fixture/plugin.go
+internal/server/pluginbuild/fixture-wasi/BUILD.bazel
+internal/server/pluginbuild/fixture-wasi/go.mod.template
+internal/server/pluginbuild/fixture-wasi/plug-plugin.json
+internal/server/pluginbuild/fixture-wasi/plugin.go
 internal/server/pluginbuild/process_other.go
 internal/server/pluginbuild/process_unix.go
 internal/server/pluginbuild/source_test.go
+internal/server/pluginbuild/store.go
 internal/server/pluginhost/BUILD.bazel
 internal/server/pluginhost/adapters.go
 internal/server/pluginhost/call.go
@@ -452,6 +457,7 @@ internal/server/pluginhost/load.go
 internal/server/pluginhost/pipeline_test.go
 internal/server/pluginhost/reader.go
 internal/server/pluginhost/state.go
+internal/server/pluginhost/wasm.go
 internal/server/pluginmanifest/BUILD.bazel
 internal/server/pluginmanifest/README.md
 internal/server/pluginmanifest/bundle.go
