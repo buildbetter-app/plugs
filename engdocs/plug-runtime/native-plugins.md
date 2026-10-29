@@ -1,78 +1,75 @@
 # Native SDK and host
 
-Source: **`471d0199c89acf9e242f44978f2824120726de32`**;
-[guide scope](README.md#snapshot-and-boundaries).
+Source: **127ac22e1d003cce4babe6cbcbc8367ad264e649**;
+[guide scope](README.md#snapshot-and-package-boundaries).
 
 ## Register compiled-in code
 
-Plugins import [`pluginapi`](../../pluginapi/types.go) and
-[`sdk/go`](../../sdk/go/native.go). These public packages do not import Plug's
-internal model, storage or server packages. The SDK supplies `sdk.Native`
-(manifest, instance and constructor), `Registration`, and callback helpers
-`MutateFunc`, `ValidateFunc` and `AfterFunc`. It is a native plugin SDK, not a
-general remote application client.
+Plugins import pluginapi and sdk/go. These are the only public Go packages for
+plugins; they do not expose Plug's internal model, storage or server packages.
+The SDK supplies sdk.Native (manifest, instance and constructor), Registration,
+and callback helpers MutateFunc, ValidateFunc and AfterFunc. It is an embedding
+SDK, not a general remote client.
 
 The [manifest](../../pluginapi/manifest.go) accepts manifest version 1,
-`plugin_api: "1.0"` and `runtime: "native"`. Declare subscriber phases/read
-grants/owned fields, and extension methods under exactly `x.<alias>.*` with
-permission and resource extraction. Implement each declared method/callback.
-Duplicate instances, missing implementations, wider effective grants,
-overlapping field owners and mutator dependency cycles fail host construction.
+plugin_api: "1.0" and runtime: "native". Declare subscriber phases, read
+grants, owned fields and extension methods under exactly x.<alias>.*. Host
+construction refuses duplicate instances, missing implementations, wider
+effective grants, overlapping field owners and mutator dependency cycles.
+Bindings may narrow a manifest; current writable ownership supports concrete
+fields.<name> only. Scoped project/type routing and metadata ownership refuse.
 
-The composition root creates [pluginhost.New](../../internal/server/pluginhost/load.go)
-with explicit natives and bindings, then connects `host.Mutators()`,
-`host.Validators()` and `host.Posts()` to the single Writer's pipeline options.
-Bindings may narrow the manifest. Current writable ownership is concrete
-`fields.<name>` only; scoped project/type routing and metadata ownership
-refuse. The CLI does not load manifests or automatically attach these plugins.
-Host extension registration is separate from the bounded RPC registry;
-embedding code must supply authorization/schema/registry adapters before
-exposing it as a network API.
+The composition root creates
+[pluginhost.New](../../internal/server/pluginhost/load.go) with explicit native
+instances and bindings, then connects the returned mutators, validators and
+post callbacks to the existing Writer. Extension methods are separate from
+the bounded RPC registry: an embedding application must supply the registry,
+schema and authorization adapter before exposing one over a network.
 
 ## Capabilities and callback lifetime
 
 Native plugins are trusted compiled-in code, **not runtime-isolated**. The host
-checks the capabilities it supplies; code review and static restrictions must
-also prevent direct filesystem/network access outside that Host.
+checks capabilities, while static restrictions and review must prevent direct
+filesystem or network access outside the Host.
 
 | Phase | Supported host behavior |
 | --- | --- |
-| Mutate / validate | Masked proposal and declared, pinned `SnapshotReader` reads join the commit guard. No graph/state writes, mutable state reads or egress. RPC-shaped `Host.Call` reads refuse; use the reader. |
-| Post | Committed-revision reader, instance state CAS and granted HTTPS egress. Graph writes and `Host.Call` RPC reads refuse. Failure is a warning on the committed result. |
-| Extension method | Declared method/resource checks and optional caller authorization. Granted outbound core reads require the supplied Dispatcher; outbound graph writes refuse pending the field-grant adapter. |
+| Mutate / validate | Masked proposal and declared, pinned SnapshotReader reads join the commit guard. No graph/state writes, mutable state reads or egress. RPC-shaped Host.Call reads refuse; use the reader. |
+| Post | Committed-revision reader, process-local instance-state CAS and granted HTTPS egress. Graph writes and RPC reads refuse. Failure is a warning on the committed result. |
+| Extension method | Declared method/resource checks and optional caller authorization. Granted outbound core reads require the supplied Dispatcher; outbound graph writes refuse pending a field-grant adapter. |
 
-[Readers](../../internal/server/pluginhost/reader.go) enforce field grants and
-budgets of at most 32 point reads and four queries per binding call; omitted
-manifest budgets use those defaults. Closure/Grants conversion is unsupported.
-Values are detached/masked; retaining a callback map cannot widen its patch
-targets. An undeclared patch refuses before graph publication.
+Readers enforce field grants and budgets of at most 32 point reads and four
+queries per binding call; omitted budgets use those defaults. Values are
+detached and masked. A retained callback map cannot widen patch targets, and an
+undeclared patch refuses before graph publication.
 
-[Calls](../../internal/server/pluginhost/call.go) serialize per native instance.
-Default host budgets are 250 ms mutate, 500 ms validate/post and 1 s extension;
-binding timeouts cannot exceed 1 s, and the Writer may impose a shorter budget.
-Honor context and release retained work: a timed-out native callback retains
-its instance slot until it exits. Supplied capabilities expire with the call;
-the host cannot kill arbitrary native code. Pre failures fail closed by default;
-an explicitly fail-open pre binding produces a visible `subscriber_skipped`
-warning. Post failure produces `post_subscriber_failed` after commit.
+Calls serialize per native instance. Default host budgets are 250 ms for
+mutate and 500 ms for validate/post, with 1 s for extensions; a binding cannot
+raise the 1 s ceiling. The Writer may impose a shorter budget. Context
+cancellation releases completed work, but a timed-out native callback retains
+its instance slot until it exits. Pre failures fail closed by default; an
+explicit fail-open pre binding produces a visible subscriber_skipped warning.
+Post failure produces post_subscriber_failed after commit.
 
-[State](../../internal/server/pluginhost/state.go) is per-instance, process-local
-CAS, not a persistent event checkpoint. [Egress](../../internal/server/pluginhost/egress.go)
-requires exact declared host:port over HTTPS, public DNS results on every
-request/redirect, and at most 10 MiB each request/response body; the supplied
-client has a 1 s timeout. Secret declarations/injection refuse. WASI/wasm,
-artifact building, plugin UI, durable plugin state and automatic network
-extension exposure remain follow-ons.
+State is per instance and process-local CAS, not a durable event checkpoint.
+Egress requires exact declared HTTPS host:port, public DNS checks on every
+request/redirect and at most 10 MiB per body with a 1 s timeout. Secret
+injection, WASI/WASM artifacts, plugin UI, durable plugin state and automatic
+network extension exposure are unsupported by this host snapshot.
 
 ## Run the real native fixture
 
-The complete [fixture](../../sdk/go/conformance/fixture.go) and its
+The complete [fixture](../../sdk/go/conformance/fixture.go) and
 [manifest](../../sdk/go/conformance/manifest.json) demonstrate registration.
 [Pipeline tests](../../internal/server/pluginhost/pipeline_test.go) connect it
-to the real Writer and memory driver, including normalization, refusal,
-no-op and replay without fresh post callbacks:
+to the real Writer and memory driver, including normalization, refusal, no-op
+and replay without re-running a post callback:
 
-```sh
+~~~~sh
 bazel --ignore_all_rc_files test //internal/server/pluginhost:pluginhost_test \
-  --jobs=2 --lockfile_mode=error --test_output=all --test_arg=-test.v --test_timeout=900
-```
+  --jobs=2 --lockfile_mode=error --test_output=all --test_timeout=900
+~~~~
+
+This is package behavior evidence only. It does not certify a sandbox, a
+plugin ABI, source-built artifacts, deployment, performance or production
+network policy.
