@@ -30,6 +30,8 @@ var expectedRecordings = map[string]struct {
 	sourceSHA   string
 	sourcePath  string
 	sourceCount int
+	sourceTests []string
+	commands    []string
 }{
 	"B17": {
 		digest:      "aab4a8ef882b6486503960589fefd36e5749daa7745539f5bf3fd71aa9ebd689",
@@ -37,6 +39,23 @@ var expectedRecordings = map[string]struct {
 		sourceSHA:   "999217f9457e9edd28d992206284051c5d110fdced9b36675160a4ad9845314a",
 		sourcePath:  "internal/storage/embeddeddolt/build09_record_test.go",
 		sourceCount: 11,
+		sourceTests: []string{
+			"backend/conformance/metadata_cas_contract.go::RunMetadataCASCreatesAKeyThatWasAbsent",
+			"backend/conformance/metadata_cas_contract.go::RunMetadataCASRefusesASecondCreateAndReportsTheHolder",
+			"backend/conformance/metadata_cas_contract.go::RunMetadataCASSwapsOnAMatchAndReportsTheNewValue",
+			"backend/conformance/metadata_cas_contract.go::RunMetadataCASRefusalReportsTheCurrentValueAndWritesNothing",
+			"backend/conformance/metadata_cas_contract.go::RunMetadataCASComparesCanonically",
+			"backend/conformance/metadata_cas_contract.go::RunMetadataCASReportsTheValueTheRowHolds",
+			"backend/conformance/metadata_cas_contract.go::RunMetadataCASDistinguishesAnAbsentKeyFromAStoredNull",
+			"backend/conformance/metadata_cas_contract.go::RunMetadataCASRemovesTheKeyWhenTheValueIsAbsent",
+			"backend/conformance/metadata_cas_contract.go::RunMetadataCASPreservesSiblingKeys",
+			"backend/conformance/metadata_cas_contract.go::RunMetadataCASNoOpSwapWritesNothing",
+			"backend/conformance/metadata_cas_contract.go::RunMetadataCASRefusesAnIDOnNeitherPlane",
+		},
+		commands: []string{
+			"cd /tmp/plug-swarm/work/build09-beads-base.LYTBwF && BEADS_TEST_EMBEDDED_DOLT=1 BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b17-record-a.json go test -tags gms_pure_go ./internal/storage/embeddeddolt -run '^TestBuild09RecordB17$' -count=1 -v",
+			"cd /tmp/plug-swarm/work/build09-beads-base.LYTBwF && BEADS_TEST_EMBEDDED_DOLT=1 BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b17-record-b.json go test -tags gms_pure_go ./internal/storage/embeddeddolt -run '^TestBuild09RecordB17$' -count=1 -v",
+		},
 	},
 	"B24": {
 		digest:      "9fddd7a374875eeff92502f26114386b34c78e121f970a506cf32d54e9bea1b4",
@@ -44,6 +63,14 @@ var expectedRecordings = map[string]struct {
 		sourceSHA:   "4ad3e54d67eefe5b610099257f1a662ed6b57628eb403e16eff13c4311d5ce31",
 		sourcePath:  "build09_record_b24.py",
 		sourceCount: 2,
+		sourceTests: []string{
+			"cmd/bd/defer_wake_embedded_test.go::TestEmbeddedDeferAutoWake",
+			"cmd/bd/reopen_defer_test.go::TestCLI_ReopenClearsDeferUntil",
+		},
+		commands: []string{
+			"BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b24-record-a.json python3 /tmp/plug-swarm/work/build09_record_b24.py /tmp/plug-swarm/work/build09-bd-9d6fff760",
+			"BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b24-record-b.json python3 /tmp/plug-swarm/work/build09_record_b24.py /tmp/plug-swarm/work/build09-bd-9d6fff760",
+		},
 	},
 }
 
@@ -162,6 +189,12 @@ func TestRecordedVectorsReplayTheirIndependentDigests(t *testing.T) {
 			want := expectedRecordings[card]
 			if len(recorder.SourceTests) != want.sourceCount || len(recorder.SourceFiles) != 1 || len(recorder.Commands) != 2 {
 				t.Fatalf("incomplete recorder provenance: %+v", recorder)
+			}
+			if !equalStrings(recorder.SourceTests, want.sourceTests) {
+				t.Fatalf("recorder source tests drifted: %v, want %v", recorder.SourceTests, want.sourceTests)
+			}
+			if !equalStrings(recorder.Commands, want.commands) {
+				t.Fatalf("recorder commands drifted: %v, want %v", recorder.Commands, want.commands)
 			}
 			for i, command := range recorder.Commands {
 				if strings.TrimSpace(command) == "" || !strings.Contains(command, "build09-") {
