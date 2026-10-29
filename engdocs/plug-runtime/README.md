@@ -1,12 +1,12 @@
 # Plug runtime guides
 
-These guides describe accepted source **`471d0199c89acf9e242f44978f2824120726de32`**
-(2026-10-29). Start with the [disposable CLI session](cli.md) to try the
-implemented lifecycle without configuring a server or database.
+These guides describe the accepted runtime surfaces. Start with the [local CLI
+session](cli.md) to try the implemented lifecycle without configuring a server;
+the default local store is a persistent SQLite file below `.plug/`.
 
 | Guide | Use it for |
 | --- | --- |
-| [CLI](cli.md) | One-process memory sessions, commands, retries and cancellation. |
+| [CLI](cli.md) | Local SQLite or explicit memory sessions, commands, retries and cancellation. |
 | [RPC and HTTP](rpc-http.md) | Bound methods, JSON-RPC bytes, admission and HTTP limits. |
 | [Native plugins](native-plugins.md) | Public SDK registration and trusted host capabilities. |
 | [Events](events.md) | Committed events, current visibility, delivery and checkpoints. |
@@ -25,8 +25,9 @@ an entry there alone does not install an RPC handler or CLI command.
 
 At this snapshot:
 
-- The CLI composes a real core, Writer, memory store, RPC dispatcher and
-  in-process byte transport. Each invocation discards its memory store.
+- The CLI composes a real core, Writer, SQLite or explicit memory store, RPC
+  dispatcher and in-process byte transport. SQLite records survive process
+  restart; `--memory` remains process-lifetime state.
 - HTTP is an embeddable admitted transport. There is no runnable `plug server`
   command or remote CLI transport in this snapshot.
 - Native plugins are compiled in and explicitly connected by a composition
@@ -45,7 +46,7 @@ ontology RPC adapters are also absent from this pin. Remote CLI/HTTP-client
 adapters are follow-ons even though the embeddable HTTP server transport is
 present. No follow-on implementation commit is incorporated by these guides.
 
-The local examples use synthetic disposable state. Package tests establish
-their named boundaries; they do not qualify production deployment, failover,
+The local examples use disposable workspaces. Package tests establish their
+named boundaries; they do not qualify production deployment, failover,
 performance, hosted CI, migration or a public release. Historical race and
 benchmark results are not certification of this runtime snapshot.

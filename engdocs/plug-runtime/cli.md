@@ -1,4 +1,4 @@
-# Try the disposable CLI
+# Try the local CLI
 
 Source: **`471d0199c89acf9e242f44978f2824120726de32`**;
 [guide scope](README.md#snapshot-and-boundaries).
@@ -6,14 +6,16 @@ Source: **`471d0199c89acf9e242f44978f2824120726de32`**;
 ## Run one local session
 
 From this repository, compile and test the real executable with Bazel 9.3.0,
-then run its memory-backed session. No listener, UI or database service starts.
-An empty `PLUG_SERVER` selects this supported local example explicitly.
+then run a local session. No listener or UI starts. Without `--memory`, the
+CLI opens persistent SQLite at `.plug/plug.db`, creating its parent directory
+with private permissions. Use `--memory` when a process-lifetime store is
+wanted.
 
 ```sh
 bazel --ignore_all_rc_files test //cmd/plug:plug_test \
   --jobs=2 --lockfile_mode=error --test_output=all --test_timeout=900
 
-PLUG_SERVER= PLUG_TOKEN= bazel-bin/cmd/plug/plug_/plug --memory --json session <<'EOF'
+PLUG_SERVER= PLUG_TOKEN= bazel-bin/cmd/plug/plug_/plug --json session <<'EOF'
 ["ready"]
 ["create","--title","Original"]
 ["claim","@last"]
@@ -30,8 +32,9 @@ Expect nine JSON result lines: writes advance revisions 1 through 5, history
 at revision 5 contains the updated bead, the historical get returns `Original`,
 and the final ready list is empty. IDs are generated, so do not hard-code them.
 `@last` refers to the last write's returned ID; `@revision` is its revision.
-The disposable-storage warning goes to stderr. Starting another invocation
-creates an empty store, even with the same project and agent label.
+The persistent invocation has no storage warning. A `--memory` invocation
+prints a disposable-storage warning to stderr and starts empty on the next
+process, even with the same project and agent label.
 
 ## Commands and failures
 
@@ -62,15 +65,17 @@ renews the active store lease, releases it and closes the store once on exit.
 Exit 2 reports configuration/argument refusals; execution/cancellation failures
 exit 1. Success/help exit 0.
 
-## Remote and persistent follow-ons
+## Remote and configuration selection
 
 [Execute](../../internal/cli/run.go) refuses a nonempty `PLUG_SERVER` without
-contacting it and refuses normal execution without `--memory`. `--server`,
-`--token`, config-file selection, `plug call`, `plug describe`, persistent
-driver selection, `plug server --local`, dump/restore and plugin installation
-are not commands here. Do not assume a remote failure falls back to memory.
-The internal `StorageFactory` seam supports later composition; it does not
-make SQLite or PostgreSQL selectable from this executable.
+contacting it and never falls back to local storage after a remote failure.
+`--server` wins over `PLUG_SERVER`; a workspace `.plug/config.yaml` is used
+only when neither is selected. The supported local config is either
+`server: URL` or `storage` with `driver: sqlite` and an optional `path`.
+Unknown, malformed, duplicate, or conflicting values fail closed. PostgreSQL,
+memory-in-config, arbitrary driver options, and unsupported command families
+remain refused. The internal `StorageFactory` seam keeps the same service and
+Writer composition for memory and SQLite.
 
 [Executable tests](../../cmd/plug/integration_test.go) exercise the real binary's
 lifecycle, fresh-process disposal, no-op/replay behavior, stop-on-refusal and
