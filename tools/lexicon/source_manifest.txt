@@ -209,6 +209,8 @@ internal/core/ontology/compile.go
 internal/core/ontology/compile_test.go
 internal/core/ontology/decode.go
 internal/core/ontology/default.go
+internal/core/ontology/gate.go
+internal/core/ontology/gate_test.go
 internal/core/ontology/ontology_test.go
 internal/core/ontology/plan.go
 internal/core/ontology/runtime.go
@@ -254,6 +256,7 @@ internal/core/pipeline/response.go
 internal/core/pipeline/response_test.go
 internal/core/pipeline/snapshot.go
 internal/core/port/BUILD.bazel
+internal/core/port/gate.go
 internal/core/port/pipeline.go
 internal/core/service/BUILD.bazel
 internal/core/service/audit.go

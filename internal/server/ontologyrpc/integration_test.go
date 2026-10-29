@@ -208,7 +208,7 @@ func TestCanonicalRPCParameterAndSourceRefusals(t *testing.T) {
 		{"ontology.get", `{"unexpected":true}`, "invalid_params"},
 		{"ontology.schema", `{"type":"issue"}`, "invalid_params"},
 		{"ontology.schema", `{"project":"p","type":"missing"}`, "not_found"},
-		{"ontology.plan", `{"document":{"statuses":{},"gate_kinds":{}}}`, "invalid_params"},
+		{"ontology.plan", `{"document":{"statuses":{},"gate_kinds":{"broken":{"resolver":"builtin.manual","params":{"min_approvals":0}}}}}`, "invalid_params"},
 		{"ontology.plan", `{"document":{},"directives":[]}`, "invalid_params"},
 		{"ontology.history", `{"limit":1001}`, "invalid_params"},
 		{"ontology.history", `{"after":99999999999999999999999999999}`, "cursor_invalid"},
