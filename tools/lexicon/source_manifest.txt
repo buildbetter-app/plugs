@@ -620,6 +620,7 @@ spec/recorded/BUILD.bazel
 spec/recorded/README.md
 spec/recorded/goldens.json
 spec/recorded/goldens_test.go
+spec/recorded/provenance.py
 spec/rpc_test.go
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md

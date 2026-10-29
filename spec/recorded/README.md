@@ -20,10 +20,49 @@ bazel --ignore_all_rc_files test //spec/recorded:goldens_test \
   --test_output=all --lockfile_mode=error
 ```
 
-The recorder commands and source-file hashes are retained in `goldens.json`.
-The B17 recorder is the pinned metadata conformance runner. The B24 recorder
-runs the pinned `bd` binary through fixed past/future defer inputs and explicit
-reopen/claim probes. The B24 source uses the runtime clock for the date
-comparison; timestamp-bearing fields are intentionally absent from its
-projection, so this artifact is an outcome golden rather than a controlled-time
-certificate.
+The exact recorder sources are versioned as UTF-8 strings in each card's
+`sourceFiles[].content` in `goldens.json`, alongside their paths and SHA-256
+hashes. Extract those bytes to the recorded paths before using the retained
+commands against a disposable copy of the pinned reference source. They are
+reference-only inputs; the Bazel test does not compile or execute them.
+
+B17 executes 13 metadata conformance cases, including the ephemeral swap and
+exactly-one-history-entry cases. Each outcome is emitted only after its case
+passes, and incomplete or failed runs cannot emit a recording. The raw vector
+and semantic projection retain the measured durable swap delta (1), durable
+no-op delta (0), ephemeral history delta (0), and ephemeral durable event count
+(0). Both fresh runs must reproduce those observations.
+
+B24 runs the pinned `bd` binary through fixed past/future defer inputs and
+explicit reopen/claim probes. Its raw vector and artifact are unchanged by the
+B17 repair. Both recorders use runtime clocks and omit timestamp fields. B24
+remains an outcome golden rather than a controlled-time certificate.
+
+Each card retains its catalog disposition with scope `recorded-reference-vector`.
+That disposition records the catalog decision; it does not certify the entire
+card or cross-driver parity. The recorded census remains two cards (B17/B24);
+the other 26 cards, complete store/configuration census, controlled-clock B24,
+and connected replay remain outside this package.
+
+`provenance.py` independently projects each fresh raw artifact and emits its
+provenance. It checks every reference source blob against the local pinned tag,
+the executable and recorder hashes, driver version, paired schema inventory,
+and configuration/input digests. The schema cursors are the maximum versions
+in the pinned migration series; B17 also reads both initialized schema tables.
+Each schema digest hashes canonical JSON of the sorted migration paths and
+their individual SHA-256 hashes. B24's CLI does not expose raw SQL in embedded
+mode, so its schema evidence is the pinned migration inventory.
+
+Run the projector separately for each card and each fresh artifact:
+
+```sh
+python3 spec/recorded/provenance.py B17 <artifact.json> <reference-source> \
+  <reference-binary> <extracted-recorder-source> <provenance-output.json>
+```
+
+The manifest retains each run's canonical projection and provenance bytes with
+separate raw, projection, configuration, input, source, and provenance digests.
+The validator binds repeated provenance to all retained evidence and rejects
+missing or mismatched recorder, driver, schema, configuration, clock/ID/graph,
+projection, or disposition fields. Its negative cases remove evidence from
+both cards and attempt to rehash incomplete repeated provenance.

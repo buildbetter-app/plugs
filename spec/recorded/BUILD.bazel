@@ -3,7 +3,10 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "goldens_test",
     srcs = ["goldens_test.go"],
-    embedsrcs = ["goldens.json"],
+    embedsrcs = [
+        "goldens.json",
+        "provenance.py",
+    ],
     args = ["-test.v"],
 )
 

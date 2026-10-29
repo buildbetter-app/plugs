@@ -11,9 +11,38 @@
       "sha256": "e7a70432e3137161c8d8a7530e1db4236bb5ac8a36d7de41f5b831fdbde2f776"
     },
     "runtime": "go1.26.10 linux/amd64; Python 3.12.3",
-    "recordedCards": ["B17", "B24"],
+    "recordedCards": [
+      "B17",
+      "B24"
+    ],
     "referenceEngine": "embedded-dolt",
-    "clockNote": "B17 omits timestamp fields; B24 uses fixed past/future defer inputs against the recorder runtime clock and omits timestamp fields"
+    "clockNote": "B17 omits timestamp fields; B24 uses fixed past/future defer inputs against the recorder runtime clock and omits timestamp fields",
+    "recorder": {
+      "identity": "build09-reference-provenance",
+      "version": "2",
+      "source": "spec/recorded/provenance.py",
+      "sha256": "5e1bee184441bb46d2c6c63cf5aec3ef08b00544217bbfa69bc3df488e80523e"
+    },
+    "driver": {
+      "name": "embedded-dolt",
+      "version": "github.com/dolthub/dolt/go@v0.40.5-0.20260806213044-796d07497741"
+    },
+    "schema": {
+      "mainCursor": 72,
+      "ignoredCursor": 28,
+      "mainDigest": "c649854f6d67016df0db1c3b324679a41e090b8fad0ae5ac5d94cf72d5e8f0f2",
+      "ignoredDigest": "31abcfd3374b7e7ae7b95727785a1591107cac63cbf5db59ea6685350c05b470",
+      "cursorSource": "pinned migration inventory; B17 also queries initialized schema tables"
+    },
+    "configuration": {
+      "value": {
+        "referenceEngine": "embedded-dolt",
+        "sourceRef": "refs/tags/beads-base",
+        "workspaceRoot": "/tmp/plug-swarm/work",
+        "outputVariable": "BUILD09_RECORDER_OUTPUT"
+      },
+      "digest": "dec965e6dabb48a245250fc27dbb56865562f6927f90bd636e9ff0f677daf066"
+    }
   },
   "recorders": {
     "B17": {
@@ -28,22 +57,109 @@
         "backend/conformance/metadata_cas_contract.go::RunMetadataCASRemovesTheKeyWhenTheValueIsAbsent",
         "backend/conformance/metadata_cas_contract.go::RunMetadataCASPreservesSiblingKeys",
         "backend/conformance/metadata_cas_contract.go::RunMetadataCASNoOpSwapWritesNothing",
-        "backend/conformance/metadata_cas_contract.go::RunMetadataCASRefusesAnIDOnNeitherPlane"
+        "backend/conformance/metadata_cas_contract.go::RunMetadataCASRefusesAnIDOnNeitherPlane",
+        "backend/conformance/metadata_cas_contract.go::RunMetadataCASAWispSwapRecordsNoDurableHistory",
+        "backend/conformance/metadata_cas_contract.go::RunMetadataCASRecordsExactlyOneHistoryEntry"
       ],
       "sourceFiles": [
         {
           "path": "internal/storage/embeddeddolt/build09_record_test.go",
-          "sha256": "999217f9457e9edd28d992206284051c5d110fdced9b36675160a4ad9845314a"
+          "sha256": "82041707d89878b8dd48cc7478af368038672605432394024cdb8658dbc875aa",
+          "content": "//go:build cgo\n\npackage embeddeddolt_test\n\nimport (\n\t\"context\"\n\t\"crypto/sha256\"\n\t\"encoding/hex\"\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"os\"\n\t\"testing\"\n\n\t\"github.com/steveyegge/beads/backend/conformance\"\n)\n\nfunc TestBuild09RecordB17(t *testing.T) {\n\tif os.Getenv(\"BEADS_TEST_EMBEDDED_DOLT\") != \"1\" {\n\t\tt.Fatal(\"set BEADS_TEST_EMBEDDED_DOLT=1; skipped recordings are forbidden\")\n\t}\n\tte := newTestEnv(t, \"build09record\")\n\tctx := t.Context()\n\tfixture := newEmbeddedMetadataCASFixture(t, te, \"build09record\")\n\tcases := []struct {\n\t\tname    string\n\t\toutcome string\n\t\trun     func(*testing.T, conformance.MetadataCASFixture)\n\t}{\n\t\t{name: \"RunMetadataCASCreatesAKeyThatWasAbsent\", run: func(t *testing.T, fixture conformance.MetadataCASFixture) {\n\t\t\tconformance.RunMetadataCASCreatesAKeyThatWasAbsent(t, ctx, fixture)\n\t\t}},\n\t\t{name: \"RunMetadataCASRefusesASecondCreateAndReportsTheHolder\", run: func(t *testing.T, fixture conformance.MetadataCASFixture) {\n\t\t\tconformance.RunMetadataCASRefusesASecondCreateAndReportsTheHolder(t, ctx, fixture)\n\t\t}},\n\t\t{name: \"RunMetadataCASSwapsOnAMatchAndReportsTheNewValue\", run: func(t *testing.T, fixture conformance.MetadataCASFixture) {\n\t\t\tconformance.RunMetadataCASSwapsOnAMatchAndReportsTheNewValue(t, ctx, fixture)\n\t\t}},\n\t\t{name: \"RunMetadataCASRefusalReportsTheCurrentValueAndWritesNothing\", run: func(t *testing.T, fixture conformance.MetadataCASFixture) {\n\t\t\tconformance.RunMetadataCASRefusalReportsTheCurrentValueAndWritesNothing(t, ctx, fixture)\n\t\t}},\n\t\t{name: \"RunMetadataCASComparesCanonically\", outcome: \"canonicalObjectCAS\", run: func(t *testing.T, fixture conformance.MetadataCASFixture) {\n\t\t\tconformance.RunMetadataCASComparesCanonically(t, ctx, fixture)\n\t\t}},\n\t\t{name: \"RunMetadataCASReportsTheValueTheRowHolds\", run: func(t *testing.T, fixture conformance.MetadataCASFixture) {\n\t\t\tconformance.RunMetadataCASReportsTheValueTheRowHolds(t, ctx, fixture)\n\t\t}},\n\t\t{name: \"RunMetadataCASDistinguishesAnAbsentKeyFromAStoredNull\", outcome: \"nullVersusAbsent\", run: func(t *testing.T, fixture conformance.MetadataCASFixture) {\n\t\t\tconformance.RunMetadataCASDistinguishesAnAbsentKeyFromAStoredNull(t, ctx, fixture)\n\t\t}},\n\t\t{name: \"RunMetadataCASRemovesTheKeyWhenTheValueIsAbsent\", outcome: \"removeAbsent\", run: func(t *testing.T, fixture conformance.MetadataCASFixture) {\n\t\t\tconformance.RunMetadataCASRemovesTheKeyWhenTheValueIsAbsent(t, ctx, fixture)\n\t\t}},\n\t\t{name: \"RunMetadataCASPreservesSiblingKeys\", outcome: \"siblingPreserved\", run: func(t *testing.T, fixture conformance.MetadataCASFixture) {\n\t\t\tconformance.RunMetadataCASPreservesSiblingKeys(t, ctx, fixture)\n\t\t}},\n\t\t{name: \"RunMetadataCASNoOpSwapWritesNothing\", outcome: \"noOpSwap\", run: func(t *testing.T, fixture conformance.MetadataCASFixture) {\n\t\t\tconformance.RunMetadataCASNoOpSwapWritesNothing(t, ctx, fixture)\n\t\t}},\n\t\t{name: \"RunMetadataCASRefusesAnIDOnNeitherPlane\", run: func(t *testing.T, fixture conformance.MetadataCASFixture) {\n\t\t\tconformance.RunMetadataCASRefusesAnIDOnNeitherPlane(t, ctx, fixture)\n\t\t}},\n\t\t{name: \"RunMetadataCASAWispSwapRecordsNoDurableHistory\", outcome: \"ephemeralMetadataCAS\", run: func(t *testing.T, fixture conformance.MetadataCASFixture) {\n\t\t\tconformance.RunMetadataCASAWispSwapRecordsNoDurableHistory(t, ctx, fixture)\n\t\t}},\n\t\t{name: \"RunMetadataCASRecordsExactlyOneHistoryEntry\", outcome: \"durableHistory\", run: func(t *testing.T, fixture conformance.MetadataCASFixture) {\n\t\t\tconformance.RunMetadataCASRecordsExactlyOneHistoryEntry(t, ctx, fixture)\n\t\t}},\n\t}\n\tvar mainCursor, ignoredCursor int\n\tif err := fixture.QueryScalar(ctx, \"SELECT MAX(version) FROM schema_migrations\", nil, &mainCursor); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tif err := fixture.QueryScalar(ctx, \"SELECT MAX(version) FROM ignored_schema_migrations\", nil, &ignoredCursor); err != nil {\n\t\tt.Fatal(err)\n\t}\n\tpassed := make([]string, 0, len(cases))\n\toutcomes := make(map[string]string)\n\tobservations := make(map[string]any)\n\tfor _, tc := range cases {\n\t\tt.Run(tc.name, func(t *testing.T) {\n\t\t\tmeasured := fixture\n\t\t\tcounts := []int{}\n\t\t\tif fixture.CountHistory == nil || fixture.CommitPending == nil {\n\t\t\t\tt.Fatal(\"the recorder requires observable, settled history\")\n\t\t\t}\n\t\t\tmeasured.CountHistory = func(ctx context.Context) (int, error) {\n\t\t\t\tcount, err := fixture.CountHistory(ctx)\n\t\t\t\tif err == nil {\n\t\t\t\t\tcounts = append(counts, count)\n\t\t\t\t}\n\t\t\t\treturn count, err\n\t\t\t}\n\t\t\ttc.run(t, measured)\n\t\t\tif t.Failed() || t.Skipped() {\n\t\t\t\treturn\n\t\t\t}\n\t\t\tswitch tc.outcome {\n\t\t\tcase \"ephemeralMetadataCAS\":\n\t\t\t\tif len(counts) != 2 {\n\t\t\t\t\tt.Fatalf(\"ephemeral history observation count = %d\", len(counts))\n\t\t\t\t}\n\t\t\t\tvar durableEvents int\n\t\t\t\tif err := fixture.QueryScalar(ctx, \"SELECT COUNT(*) FROM events WHERE issue_id = ?\", []any{fixture.IssuePrefix + \"-cas-wisphistory\"}, &durableEvents); err != nil {\n\t\t\t\t\tt.Fatal(err)\n\t\t\t\t}\n\t\t\t\tobservations[tc.outcome] = map[string]int{\"historyDelta\": counts[1] - counts[0], \"durableEvents\": durableEvents}\n\t\t\tcase \"durableHistory\":\n\t\t\t\tif len(counts) != 4 {\n\t\t\t\t\tt.Fatalf(\"durable history observation count = %d\", len(counts))\n\t\t\t\t}\n\t\t\t\tobservations[tc.outcome] = map[string]int{\"swapDelta\": counts[1] - counts[0], \"noOpDelta\": counts[3] - counts[2]}\n\t\t\t}\n\t\t\tpassed = append(passed, tc.name)\n\t\t\tif tc.outcome != \"\" {\n\t\t\t\toutcomes[tc.outcome] = \"PASS\"\n\t\t\t}\n\t\t})\n\t}\n\tif t.Failed() || len(passed) != len(cases) {\n\t\tt.Fatal(\"incomplete or failed reference run; no recording emitted\")\n\t}\n\tvector := map[string]any{\n\t\t\"card\":         \"B17\",\n\t\t\"engine\":       \"embedded-dolt\",\n\t\t\"source\":       \"backend/conformance/metadata_cas_contract.go\",\n\t\t\"tests\":        passed,\n\t\t\"outcomes\":     outcomes,\n\t\t\"observations\": observations,\n\t}\n\traw, err := json.Marshal(vector)\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\tsum := sha256.Sum256(raw)\n\tresult := map[string]any{\n\t\t\"digest\":        hex.EncodeToString(sum[:]),\n\t\t\"vector\":        vector,\n\t\t\"rawJSON\":       string(raw),\n\t\t\"schemaCursors\": map[string]int{\"mainCursor\": mainCursor, \"ignoredCursor\": ignoredCursor},\n\t}\n\tout, err := json.MarshalIndent(result, \"\", \"  \")\n\tif err != nil {\n\t\tt.Fatal(err)\n\t}\n\tout = append(out, '\\n')\n\tif path := os.Getenv(\"BUILD09_RECORDER_OUTPUT\"); path != \"\" {\n\t\tif err := os.WriteFile(path, out, 0o600); err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n\t}\n\tfmt.Printf(\"BUILD09_B17_DIGEST=%s\\n\", hex.EncodeToString(sum[:]))\n\tfmt.Printf(\"BUILD09_B17_VECTOR=%s\\n\", raw)\n}\n"
         }
       ],
       "commands": [
-        "cd /tmp/plug-swarm/work/build09-beads-base.LYTBwF && BEADS_TEST_EMBEDDED_DOLT=1 BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b17-record-a.json go test -tags gms_pure_go ./internal/storage/embeddeddolt -run '^TestBuild09RecordB17$' -count=1 -v",
-        "cd /tmp/plug-swarm/work/build09-beads-base.LYTBwF && BEADS_TEST_EMBEDDED_DOLT=1 BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b17-record-b.json go test -tags gms_pure_go ./internal/storage/embeddeddolt -run '^TestBuild09RecordB17$' -count=1 -v"
+        "cd /tmp/plug-swarm/work/build09-beads-base.LYTBwF && TMPDIR=/tmp/plug-swarm/work/build09-recorder-tmp BEADS_TEST_EMBEDDED_DOLT=1 BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b17-repair-a.json go test -tags gms_pure_go ./internal/storage/embeddeddolt -run '^TestBuild09RecordB17$' -count=1 -v",
+        "cd /tmp/plug-swarm/work/build09-beads-base.LYTBwF && TMPDIR=/tmp/plug-swarm/work/build09-recorder-tmp BEADS_TEST_EMBEDDED_DOLT=1 BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b17-repair-b.json go test -tags gms_pure_go ./internal/storage/embeddeddolt -run '^TestBuild09RecordB17$' -count=1 -v"
       ],
-      "rawJSON": "{\"card\":\"B17\",\"engine\":\"embedded-dolt\",\"outcomes\":{\"canonicalObjectCAS\":\"PASS\",\"ephemeralMetadataCAS\":\"PASS\",\"noOpSwap\":\"PASS\",\"nullVersusAbsent\":\"PASS\",\"removeAbsent\":\"PASS\",\"siblingPreserved\":\"PASS\"},\"source\":\"backend/conformance/metadata_cas_contract.go\",\"tests\":[\"RunMetadataCASCreatesAKeyThatWasAbsent\",\"RunMetadataCASRefusesASecondCreateAndReportsTheHolder\",\"RunMetadataCASSwapsOnAMatchAndReportsTheNewValue\",\"RunMetadataCASRefusalReportsTheCurrentValueAndWritesNothing\",\"RunMetadataCASComparesCanonically\",\"RunMetadataCASReportsTheValueTheRowHolds\",\"RunMetadataCASDistinguishesAnAbsentKeyFromAStoredNull\",\"RunMetadataCASRemovesTheKeyWhenTheValueIsAbsent\",\"RunMetadataCASPreservesSiblingKeys\",\"RunMetadataCASNoOpSwapWritesNothing\",\"RunMetadataCASRefusesAnIDOnNeitherPlane\"]}",
-      "digest": "aab4a8ef882b6486503960589fefd36e5749daa7745539f5bf3fd71aa9ebd689",
-      "artifactSha256": "3ed940892a2cc2fdadb0a9ad789868eb50ad50924f81975985aef58cd526b75b",
-      "repeatArtifactSha256": "3ed940892a2cc2fdadb0a9ad789868eb50ad50924f81975985aef58cd526b75b"
+      "rawJSON": "{\"card\":\"B17\",\"engine\":\"embedded-dolt\",\"observations\":{\"durableHistory\":{\"noOpDelta\":0,\"swapDelta\":1},\"ephemeralMetadataCAS\":{\"durableEvents\":0,\"historyDelta\":0}},\"outcomes\":{\"canonicalObjectCAS\":\"PASS\",\"durableHistory\":\"PASS\",\"ephemeralMetadataCAS\":\"PASS\",\"noOpSwap\":\"PASS\",\"nullVersusAbsent\":\"PASS\",\"removeAbsent\":\"PASS\",\"siblingPreserved\":\"PASS\"},\"source\":\"backend/conformance/metadata_cas_contract.go\",\"tests\":[\"RunMetadataCASCreatesAKeyThatWasAbsent\",\"RunMetadataCASRefusesASecondCreateAndReportsTheHolder\",\"RunMetadataCASSwapsOnAMatchAndReportsTheNewValue\",\"RunMetadataCASRefusalReportsTheCurrentValueAndWritesNothing\",\"RunMetadataCASComparesCanonically\",\"RunMetadataCASReportsTheValueTheRowHolds\",\"RunMetadataCASDistinguishesAnAbsentKeyFromAStoredNull\",\"RunMetadataCASRemovesTheKeyWhenTheValueIsAbsent\",\"RunMetadataCASPreservesSiblingKeys\",\"RunMetadataCASNoOpSwapWritesNothing\",\"RunMetadataCASRefusesAnIDOnNeitherPlane\",\"RunMetadataCASAWispSwapRecordsNoDurableHistory\",\"RunMetadataCASRecordsExactlyOneHistoryEntry\"]}",
+      "digest": "e91e136dd7fd0455a8c7416d9fd37ac252574ec9b7752934233b098e406d653b",
+      "artifactSha256": "fff0ec437df90cef03a0937786ea4e2326d28ffd8171fcbf56131ae69644480e",
+      "repeatArtifactSha256": "fff0ec437df90cef03a0937786ea4e2326d28ffd8171fcbf56131ae69644480e",
+      "disposition": {
+        "status": "keep",
+        "source": "engdocs/design/plug/spec/behaviors/content.md#B17",
+        "scope": "recorded-reference-vector"
+      },
+      "configuration": {
+        "value": {
+          "fixture": "newTestEnv + newEmbeddedMetadataCASFixture",
+          "database": "build09record",
+          "issuePrefix": "build09record",
+          "actor": "cas-tester",
+          "buildTags": [
+            "gms_pure_go"
+          ],
+          "environment": {
+            "BEADS_TEST_EMBEDDED_DOLT": "1",
+            "TMPDIR": "/tmp/plug-swarm/work/build09-recorder-tmp"
+          },
+          "actors": [
+            "cas-seed",
+            "cas-tester",
+            "cas-winner",
+            "cas-loser"
+          ]
+        },
+        "digest": "ab7f7941c4ff04ab93c76c331aa77612df1b3559243699e9a7cdc1b0056f45f3"
+      },
+      "inputs": {
+        "value": {
+          "clock": {
+            "mode": "runtime",
+            "fieldsOmitted": [
+              "timestamps"
+            ],
+            "schedule": "runtime Go and SQL clocks; no injected schedule"
+          },
+          "ids": {
+            "prefix": "build09record",
+            "seed": "conformance-owned suffixes",
+            "collisionState": "fresh disposable store",
+            "explicit": [
+              "build09record-cas-create",
+              "build09record-cas-race",
+              "build09record-cas-swap",
+              "build09record-cas-stale",
+              "build09record-cas-canon",
+              "build09record-cas-rowholds",
+              "build09record-cas-null",
+              "build09record-cas-release",
+              "build09record-cas-siblings",
+              "build09record-cas-noop",
+              "build09record-cas-wisphistory",
+              "build09record-cas-history",
+              "build09record-ghost-9999"
+            ],
+            "counterState": "unused: all issue IDs are explicit"
+          },
+          "graph": {
+            "seed": "none",
+            "nodes": 0,
+            "edges": 0
+          }
+        },
+        "digest": "cf7583f5f30291e29f36433a2e4dfab3958f7d48bb9ece90436b3d98b6182ea1"
+      },
+      "projection": {
+        "format": "plug-recorded-projection/1",
+        "paths": [
+          "card",
+          "engine",
+          "outcomes",
+          "observations"
+        ],
+        "json": "{\"card\":\"B17\",\"engine\":\"embedded-dolt\",\"observations\":{\"durableHistory\":{\"noOpDelta\":0,\"swapDelta\":1},\"ephemeralMetadataCAS\":{\"durableEvents\":0,\"historyDelta\":0}},\"outcomes\":{\"canonicalObjectCAS\":\"PASS\",\"durableHistory\":\"PASS\",\"ephemeralMetadataCAS\":\"PASS\",\"noOpSwap\":\"PASS\",\"nullVersusAbsent\":\"PASS\",\"removeAbsent\":\"PASS\",\"siblingPreserved\":\"PASS\"}}",
+        "digest": "4ad0342c3d500df6e0fa41a95e377af04a30aee66a4f7aa17d9f0e161bcfc3bd"
+      },
+      "rawDigest": "e91e136dd7fd0455a8c7416d9fd37ac252574ec9b7752934233b098e406d653b",
+      "projectionDigest": "4ad0342c3d500df6e0fa41a95e377af04a30aee66a4f7aa17d9f0e161bcfc3bd",
+      "repeatedProvenance": {
+        "first": "{\"binarySha256\":\"e7a70432e3137161c8d8a7530e1db4236bb5ac8a36d7de41f5b831fdbde2f776\",\"card\":\"B17\",\"configurationDigest\":\"ab7f7941c4ff04ab93c76c331aa77612df1b3559243699e9a7cdc1b0056f45f3\",\"disposition\":{\"scope\":\"recorded-reference-vector\",\"source\":\"engdocs/design/plug/spec/behaviors/content.md#B17\",\"status\":\"keep\"},\"driver\":{\"name\":\"embedded-dolt\",\"version\":\"github.com/dolthub/dolt/go@v0.40.5-0.20260806213044-796d07497741\"},\"globalConfigurationDigest\":\"dec965e6dabb48a245250fc27dbb56865562f6927f90bd636e9ff0f677daf066\",\"inputDigest\":\"cf7583f5f30291e29f36433a2e4dfab3958f7d48bb9ece90436b3d98b6182ea1\",\"projectionDigest\":\"4ad0342c3d500df6e0fa41a95e377af04a30aee66a4f7aa17d9f0e161bcfc3bd\",\"rawDigest\":\"e91e136dd7fd0455a8c7416d9fd37ac252574ec9b7752934233b098e406d653b\",\"recorder\":{\"identity\":\"build09-reference-provenance\",\"sha256\":\"5e1bee184441bb46d2c6c63cf5aec3ef08b00544217bbfa69bc3df488e80523e\",\"source\":\"spec/recorded/provenance.py\",\"version\":\"2\"},\"schema\":{\"cursorSource\":\"pinned migration inventory; B17 also queries initialized schema tables\",\"ignoredCursor\":28,\"ignoredDigest\":\"31abcfd3374b7e7ae7b95727785a1591107cac63cbf5db59ea6685350c05b470\",\"mainCursor\":72,\"mainDigest\":\"c649854f6d67016df0db1c3b324679a41e090b8fad0ae5ac5d94cf72d5e8f0f2\"},\"sourceCommit\":\"9d6fff760b7a314b476539198504d77ce0959656\",\"sources\":[{\"path\":\"internal/storage/embeddeddolt/build09_record_test.go\",\"sha256\":\"82041707d89878b8dd48cc7478af368038672605432394024cdb8658dbc875aa\"}]}",
+        "repeat": "{\"binarySha256\":\"e7a70432e3137161c8d8a7530e1db4236bb5ac8a36d7de41f5b831fdbde2f776\",\"card\":\"B17\",\"configurationDigest\":\"ab7f7941c4ff04ab93c76c331aa77612df1b3559243699e9a7cdc1b0056f45f3\",\"disposition\":{\"scope\":\"recorded-reference-vector\",\"source\":\"engdocs/design/plug/spec/behaviors/content.md#B17\",\"status\":\"keep\"},\"driver\":{\"name\":\"embedded-dolt\",\"version\":\"github.com/dolthub/dolt/go@v0.40.5-0.20260806213044-796d07497741\"},\"globalConfigurationDigest\":\"dec965e6dabb48a245250fc27dbb56865562f6927f90bd636e9ff0f677daf066\",\"inputDigest\":\"cf7583f5f30291e29f36433a2e4dfab3958f7d48bb9ece90436b3d98b6182ea1\",\"projectionDigest\":\"4ad0342c3d500df6e0fa41a95e377af04a30aee66a4f7aa17d9f0e161bcfc3bd\",\"rawDigest\":\"e91e136dd7fd0455a8c7416d9fd37ac252574ec9b7752934233b098e406d653b\",\"recorder\":{\"identity\":\"build09-reference-provenance\",\"sha256\":\"5e1bee184441bb46d2c6c63cf5aec3ef08b00544217bbfa69bc3df488e80523e\",\"source\":\"spec/recorded/provenance.py\",\"version\":\"2\"},\"schema\":{\"cursorSource\":\"pinned migration inventory; B17 also queries initialized schema tables\",\"ignoredCursor\":28,\"ignoredDigest\":\"31abcfd3374b7e7ae7b95727785a1591107cac63cbf5db59ea6685350c05b470\",\"mainCursor\":72,\"mainDigest\":\"c649854f6d67016df0db1c3b324679a41e090b8fad0ae5ac5d94cf72d5e8f0f2\"},\"sourceCommit\":\"9d6fff760b7a314b476539198504d77ce0959656\",\"sources\":[{\"path\":\"internal/storage/embeddeddolt/build09_record_test.go\",\"sha256\":\"82041707d89878b8dd48cc7478af368038672605432394024cdb8658dbc875aa\"}]}",
+        "firstDigest": "b8e81989474ea64f82a8ecc2aebf6fe43b50308f06bd5e8ff5697117afd5c3ce",
+        "repeatDigest": "b8e81989474ea64f82a8ecc2aebf6fe43b50308f06bd5e8ff5697117afd5c3ce"
+      }
     },
     "B24": {
       "sourceTests": [
@@ -53,17 +169,84 @@
       "sourceFiles": [
         {
           "path": "build09_record_b24.py",
-          "sha256": "4ad3e54d67eefe5b610099257f1a662ed6b57628eb403e16eff13c4311d5ce31"
+          "sha256": "4ad3e54d67eefe5b610099257f1a662ed6b57628eb403e16eff13c4311d5ce31",
+          "content": "#!/usr/bin/env python3\nimport hashlib\nimport json\nimport os\nimport subprocess\nimport sys\nimport tempfile\nfrom pathlib import Path\n\nBD = Path(sys.argv[1]).resolve()\noutput = Path(os.environ.get(\"BUILD09_RECORDER_OUTPUT\", \"\")) if len(sys.argv) < 3 else Path(sys.argv[2])\nif not output:\n    raise SystemExit(\"BUILD09_RECORDER_OUTPUT or output argument is required\")\nroot = Path(tempfile.mkdtemp(prefix=\"build09-b24-record-\", dir=\"/tmp/plug-swarm/work\"))\nenv = os.environ.copy()\nenv.update({\"BEADS_DOLT_AUTO_START\": \"1\", \"BEADS_ACTOR\": \"build09-recorder\", \"CI\": \"1\"})\n\ndef run(*args):\n    proc = subprocess.run([str(BD), *args], cwd=root, env=env, text=True,\n                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n    if proc.returncode:\n        raise RuntimeError(f\"bd {' '.join(args)} failed ({proc.returncode})\\nstdout={proc.stdout}\\nstderr={proc.stderr}\")\n    return proc.stdout\n\ndef show(issue):\n    value = json.loads(run(\"show\", issue, \"--json\"))\n    if not isinstance(value, list) or len(value) != 1:\n        raise RuntimeError(f\"unexpected show result for {issue}: {value!r}\")\n    return value[0]\n\ndef ready(*extra):\n    value = json.loads(run(\"ready\", \"--json\", *extra))\n    if not isinstance(value, list):\n        raise RuntimeError(f\"unexpected ready result: {value!r}\")\n    return sorted(item[\"id\"] for item in value)\n\ndef require(condition, message):\n    if not condition:\n        raise RuntimeError(message)\n\nrun(\"init\", \"--non-interactive\", \"--prefix\", \"b24\", \"--quiet\")\nrun(\"create\", \"--id\", \"b24-expired\", \"--type\", \"task\", \"--title\", \"Expired snooze\")\nrun(\"defer\", \"b24-expired\", \"--until\", \"2020-01-01\")\nexpired_before = show(\"b24-expired\")\nrequire(expired_before[\"status\"] == \"deferred\", \"expired precondition did not defer\")\nexpired_ready = ready()\nexpired_after = show(\"b24-expired\")\nrequire(expired_ready == [\"b24-expired\"], f\"expired ready={expired_ready!r}\")\nrequire(expired_after[\"status\"] == \"open\", f\"expired wake status={expired_after['status']!r}\")\nrequire(expired_after.get(\"defer_until\") in (None, \"\"), f\"expired defer_until={expired_after.get('defer_until')!r}\")\n\nrun(\"create\", \"--id\", \"b24-dateless\", \"--type\", \"task\", \"--title\", \"Indefinite icebox\")\nrun(\"defer\", \"b24-dateless\", \"--reason\", \"waiting for upstream\")\ndateless = show(\"b24-dateless\")\ndateless_ready = ready()\nrequire(dateless[\"status\"] == \"deferred\", f\"dateless status={dateless['status']!r}\")\nrequire(\"b24-dateless\" not in dateless_ready, f\"dateless was ready: {dateless_ready!r}\")\n\nrun(\"create\", \"--id\", \"b24-future\", \"--type\", \"task\", \"--title\", \"Future snooze\")\nrun(\"defer\", \"b24-future\", \"--until\", \"+8760h\")\nfuture = show(\"b24-future\")\nfuture_ready = ready()\nrequire(future[\"status\"] == \"deferred\", f\"future status={future['status']!r}\")\nrequire(\"b24-future\" not in future_ready, f\"future was ready: {future_ready!r}\")\n\nrun(\"create\", \"--id\", \"b24-wisp\", \"--type\", \"task\", \"--title\", \"Wisp snooze\", \"--ephemeral\", \"--wisp-type\", \"heartbeat\")\nrun(\"defer\", \"b24-wisp\", \"--until\", \"2020-01-01\")\nrequire(show(\"b24-wisp\")[\"status\"] == \"deferred\", \"wisp precondition did not defer\")\nwisp_ready = ready()\nwisp_after = show(\"b24-wisp\")\nrequire(wisp_after[\"status\"] == \"open\", f\"wisp wake status={wisp_after['status']!r}\")\nrequire(wisp_after.get(\"defer_until\") in (None, \"\"), f\"wisp defer_until={wisp_after.get('defer_until')!r}\")\n\nrun(\"create\", \"--id\", \"b24-claim\", \"--type\", \"task\", \"--title\", \"Claimable snooze\", \"--labels\", \"wake-claim-test\")\nrun(\"defer\", \"b24-claim\", \"--until\", \"2020-01-01\")\nclaimed_ready = ready(\"--claim\", \"-l\", \"wake-claim-test\")\nclaimed = show(\"b24-claim\")\nrequire(claimed_ready == [\"b24-claim\"], f\"claimed ready={claimed_ready!r}\")\nrequire(claimed[\"status\"] == \"in_progress\", f\"claimed status={claimed['status']!r}\")\n\nrun(\"create\", \"--id\", \"b24-reopen\", \"--type\", \"task\", \"--title\", \"Deferred then reopened\")\nrun(\"defer\", \"b24-reopen\", \"--until\", \"+8760h\")\nrun(\"close\", \"b24-reopen\")\nrun(\"reopen\", \"b24-reopen\")\nreopened = show(\"b24-reopen\")\nreopened_ready = ready()\nrequire(reopened[\"status\"] == \"open\", f\"reopened status={reopened['status']!r}\")\nrequire(reopened.get(\"defer_until\") in (None, \"\"), f\"reopened defer_until={reopened.get('defer_until')!r}\")\nrequire(\"b24-reopen\" in reopened_ready, f\"reopened was not ready: {reopened_ready!r}\")\n\nvector = {\n    \"card\": \"B24\",\n    \"engine\": \"embedded-dolt\",\n    \"source\": [\n        \"cmd/bd/defer_wake_embedded_test.go::TestEmbeddedDeferAutoWake\",\n        \"cmd/bd/reopen_defer_test.go::TestCLI_ReopenClearsDeferUntil\",\n    ],\n    \"inputs\": {\n        \"expiredUntil\": \"2020-01-01\",\n        \"futureUntil\": \"+8760h\",\n        \"datelessReason\": \"waiting for upstream\",\n        \"ephemeralType\": \"heartbeat\",\n        \"claimLabel\": \"wake-claim-test\",\n    },\n    \"outcomes\": {\n        \"expiredDatedDefer\": \"auto-wakes-on-ready-and-clears-defer\",\n        \"datelessDefer\": \"stays-deferred\",\n        \"futureDatedDefer\": \"stays-deferred\",\n        \"expiredDatedEphemeral\": \"auto-wakes-on-ready-and-clears-defer\",\n        \"expiredDatedClaim\": \"claimable-and-in-progress\",\n        \"reopenClearsDefer\": \"open-ready-and-clears-defer\",\n    },\n}\nraw = json.dumps(vector, sort_keys=True, separators=(\",\", \":\")).encode()\ndigest = hashlib.sha256(raw).hexdigest()\nrecord = {\"digest\": digest, \"rawJSON\": raw.decode(), \"vector\": vector}\noutput.parent.mkdir(parents=True, exist_ok=True)\noutput.write_text(json.dumps(record, indent=2) + \"\\n\")\nprint(f\"BUILD09_B24_DIGEST={digest}\")\nprint(f\"BUILD09_B24_VECTOR={raw.decode()}\")\nprint(f\"BUILD09_B24_WORKSPACE={root}\")\n"
         }
       ],
       "commands": [
-        "BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b24-record-a.json python3 /tmp/plug-swarm/work/build09_record_b24.py /tmp/plug-swarm/work/build09-bd-9d6fff760",
-        "BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b24-record-b.json python3 /tmp/plug-swarm/work/build09_record_b24.py /tmp/plug-swarm/work/build09-bd-9d6fff760"
+        "BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b24-repair-a.json python3 /tmp/plug-swarm/work/build09_record_b24.py /tmp/plug-swarm/work/build09-bd-9d6fff760",
+        "BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b24-repair-b.json python3 /tmp/plug-swarm/work/build09_record_b24.py /tmp/plug-swarm/work/build09-bd-9d6fff760"
       ],
       "rawJSON": "{\"card\":\"B24\",\"engine\":\"embedded-dolt\",\"inputs\":{\"claimLabel\":\"wake-claim-test\",\"datelessReason\":\"waiting for upstream\",\"ephemeralType\":\"heartbeat\",\"expiredUntil\":\"2020-01-01\",\"futureUntil\":\"+8760h\"},\"outcomes\":{\"datelessDefer\":\"stays-deferred\",\"expiredDatedClaim\":\"claimable-and-in-progress\",\"expiredDatedDefer\":\"auto-wakes-on-ready-and-clears-defer\",\"expiredDatedEphemeral\":\"auto-wakes-on-ready-and-clears-defer\",\"futureDatedDefer\":\"stays-deferred\",\"reopenClearsDefer\":\"open-ready-and-clears-defer\"},\"source\":[\"cmd/bd/defer_wake_embedded_test.go::TestEmbeddedDeferAutoWake\",\"cmd/bd/reopen_defer_test.go::TestCLI_ReopenClearsDeferUntil\"]}",
       "digest": "9fddd7a374875eeff92502f26114386b34c78e121f970a506cf32d54e9bea1b4",
       "artifactSha256": "70ac84166752614db8d449690b6c7f093bc860f2b50682d4151b2ccd155024f1",
-      "repeatArtifactSha256": "70ac84166752614db8d449690b6c7f093bc860f2b50682d4151b2ccd155024f1"
+      "repeatArtifactSha256": "70ac84166752614db8d449690b6c7f093bc860f2b50682d4151b2ccd155024f1",
+      "disposition": {
+        "status": "keep",
+        "source": "engdocs/design/plug/spec/behaviors/surfaces.md#B24",
+        "scope": "recorded-reference-vector"
+      },
+      "configuration": {
+        "value": {
+          "binary": "/tmp/plug-swarm/work/build09-bd-9d6fff760",
+          "database": "temporary embedded-dolt workspace",
+          "issuePrefix": "b24",
+          "actor": "build09-recorder",
+          "environment": {
+            "BEADS_DOLT_AUTO_START": "1",
+            "BEADS_ACTOR": "build09-recorder",
+            "CI": "1"
+          }
+        },
+        "digest": "aa3f41cebf0780d64902811ef701013419aeee2112ff789d43879b9e7c45351a"
+      },
+      "inputs": {
+        "value": {
+          "clock": {
+            "mode": "runtime",
+            "schedule": "fixed past/future defer inputs",
+            "fieldsOmitted": [
+              "timestamps"
+            ]
+          },
+          "ids": {
+            "explicit": [
+              "b24-expired",
+              "b24-dateless",
+              "b24-future",
+              "b24-wisp",
+              "b24-claim",
+              "b24-reopen"
+            ],
+            "collisionState": "fresh disposable store"
+          },
+          "graph": {
+            "seed": "none",
+            "nodes": 0,
+            "edges": 0
+          }
+        },
+        "digest": "5ee49df6ad5c7442241cd716824b3a5fd311ed238a3d670011a69f7fa2720abd"
+      },
+      "projection": {
+        "format": "plug-recorded-projection/1",
+        "paths": [
+          "card",
+          "engine",
+          "inputs",
+          "outcomes"
+        ],
+        "json": "{\"card\":\"B24\",\"engine\":\"embedded-dolt\",\"inputs\":{\"claimLabel\":\"wake-claim-test\",\"datelessReason\":\"waiting for upstream\",\"ephemeralType\":\"heartbeat\",\"expiredUntil\":\"2020-01-01\",\"futureUntil\":\"+8760h\"},\"outcomes\":{\"datelessDefer\":\"stays-deferred\",\"expiredDatedClaim\":\"claimable-and-in-progress\",\"expiredDatedDefer\":\"auto-wakes-on-ready-and-clears-defer\",\"expiredDatedEphemeral\":\"auto-wakes-on-ready-and-clears-defer\",\"futureDatedDefer\":\"stays-deferred\",\"reopenClearsDefer\":\"open-ready-and-clears-defer\"}}",
+        "digest": "ccb04e27ec44c9c7a32b4bbb8be959f85d14dcebf272d0b5c95bf5310ca3a956"
+      },
+      "rawDigest": "9fddd7a374875eeff92502f26114386b34c78e121f970a506cf32d54e9bea1b4",
+      "projectionDigest": "ccb04e27ec44c9c7a32b4bbb8be959f85d14dcebf272d0b5c95bf5310ca3a956",
+      "repeatedProvenance": {
+        "first": "{\"binarySha256\":\"e7a70432e3137161c8d8a7530e1db4236bb5ac8a36d7de41f5b831fdbde2f776\",\"card\":\"B24\",\"configurationDigest\":\"aa3f41cebf0780d64902811ef701013419aeee2112ff789d43879b9e7c45351a\",\"disposition\":{\"scope\":\"recorded-reference-vector\",\"source\":\"engdocs/design/plug/spec/behaviors/surfaces.md#B24\",\"status\":\"keep\"},\"driver\":{\"name\":\"embedded-dolt\",\"version\":\"github.com/dolthub/dolt/go@v0.40.5-0.20260806213044-796d07497741\"},\"globalConfigurationDigest\":\"dec965e6dabb48a245250fc27dbb56865562f6927f90bd636e9ff0f677daf066\",\"inputDigest\":\"5ee49df6ad5c7442241cd716824b3a5fd311ed238a3d670011a69f7fa2720abd\",\"projectionDigest\":\"ccb04e27ec44c9c7a32b4bbb8be959f85d14dcebf272d0b5c95bf5310ca3a956\",\"rawDigest\":\"9fddd7a374875eeff92502f26114386b34c78e121f970a506cf32d54e9bea1b4\",\"recorder\":{\"identity\":\"build09-reference-provenance\",\"sha256\":\"5e1bee184441bb46d2c6c63cf5aec3ef08b00544217bbfa69bc3df488e80523e\",\"source\":\"spec/recorded/provenance.py\",\"version\":\"2\"},\"schema\":{\"cursorSource\":\"pinned migration inventory; B17 also queries initialized schema tables\",\"ignoredCursor\":28,\"ignoredDigest\":\"31abcfd3374b7e7ae7b95727785a1591107cac63cbf5db59ea6685350c05b470\",\"mainCursor\":72,\"mainDigest\":\"c649854f6d67016df0db1c3b324679a41e090b8fad0ae5ac5d94cf72d5e8f0f2\"},\"sourceCommit\":\"9d6fff760b7a314b476539198504d77ce0959656\",\"sources\":[{\"path\":\"build09_record_b24.py\",\"sha256\":\"4ad3e54d67eefe5b610099257f1a662ed6b57628eb403e16eff13c4311d5ce31\"}]}",
+        "repeat": "{\"binarySha256\":\"e7a70432e3137161c8d8a7530e1db4236bb5ac8a36d7de41f5b831fdbde2f776\",\"card\":\"B24\",\"configurationDigest\":\"aa3f41cebf0780d64902811ef701013419aeee2112ff789d43879b9e7c45351a\",\"disposition\":{\"scope\":\"recorded-reference-vector\",\"source\":\"engdocs/design/plug/spec/behaviors/surfaces.md#B24\",\"status\":\"keep\"},\"driver\":{\"name\":\"embedded-dolt\",\"version\":\"github.com/dolthub/dolt/go@v0.40.5-0.20260806213044-796d07497741\"},\"globalConfigurationDigest\":\"dec965e6dabb48a245250fc27dbb56865562f6927f90bd636e9ff0f677daf066\",\"inputDigest\":\"5ee49df6ad5c7442241cd716824b3a5fd311ed238a3d670011a69f7fa2720abd\",\"projectionDigest\":\"ccb04e27ec44c9c7a32b4bbb8be959f85d14dcebf272d0b5c95bf5310ca3a956\",\"rawDigest\":\"9fddd7a374875eeff92502f26114386b34c78e121f970a506cf32d54e9bea1b4\",\"recorder\":{\"identity\":\"build09-reference-provenance\",\"sha256\":\"5e1bee184441bb46d2c6c63cf5aec3ef08b00544217bbfa69bc3df488e80523e\",\"source\":\"spec/recorded/provenance.py\",\"version\":\"2\"},\"schema\":{\"cursorSource\":\"pinned migration inventory; B17 also queries initialized schema tables\",\"ignoredCursor\":28,\"ignoredDigest\":\"31abcfd3374b7e7ae7b95727785a1591107cac63cbf5db59ea6685350c05b470\",\"mainCursor\":72,\"mainDigest\":\"c649854f6d67016df0db1c3b324679a41e090b8fad0ae5ac5d94cf72d5e8f0f2\"},\"sourceCommit\":\"9d6fff760b7a314b476539198504d77ce0959656\",\"sources\":[{\"path\":\"build09_record_b24.py\",\"sha256\":\"4ad3e54d67eefe5b610099257f1a662ed6b57628eb403e16eff13c4311d5ce31\"}]}",
+        "firstDigest": "8e42d2d01b71630f4690c87c6f6ecd247c399bbd0f406f111b87a034f934506c",
+        "repeatDigest": "8e42d2d01b71630f4690c87c6f6ecd247c399bbd0f406f111b87a034f934506c"
+      }
     }
   }
 }
