@@ -378,6 +378,11 @@ func (p *serviceProbe) ClaimWithOutcome(ctx context.Context, by model.PrincipalR
 	expires, ttl := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC), model.Natural64(30000)
 	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(11), LeaseExpiresAt: &expires, LeaseTtlMs: &ttl}}, p.failure
 }
+func (p *serviceProbe) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRef, r service.ClaimNextRequest, m model.WriteMeta) (*port.WriteOutcome, error) {
+	p.record("claimNext", by, r, m)
+	expires, ttl := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC), model.Natural64(30000)
+	return &port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(14), LeaseExpiresAt: &expires, LeaseTtlMs: &ttl}}, p.failure
+}
 func (p *serviceProbe) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, r service.CommentRequest, m model.WriteMeta) (port.WriteOutcome, error) {
 	p.record("comment", by, r, m)
 	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(12)}}, p.failure
@@ -444,6 +449,10 @@ func TestServiceBindingsAtByteBoundary(t *testing.T) {
 				t.Fatal("claim was not flattened", got)
 			}
 		}
+	}
+	claimNext := result(t, call(t, s, ctx, "bead.claimNext", `{"filter":{"types":["task"]},`+meta+`}`))
+	if p.method != "claimNext" || p.meta.Method != "bead.claimNext" || p.request.(service.ClaimNextRequest).Project != "default" || claimNext["leaseTtlMs"] != json.Number("30000") || claimNext["leaseExpiresAt"] != "2026-10-29T12:00:00Z" {
+		t.Fatalf("claimNext mapping or flattened lease result changed: request=%+v result=%v", p.request, claimNext)
 	}
 	p.failure = &model.Error{Data: model.ErrorData{Code: "precondition_failed", Details: map[string]any{"reason": "revision"}}}
 	requireCode(t, call(t, s, ctx, "bead.close", `{"id":{"id":"p-1"},`+meta+`}`), "precondition_failed")

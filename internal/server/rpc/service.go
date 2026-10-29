@@ -20,6 +20,7 @@ type Service interface {
 	CreateWithOutcome(context.Context, model.PrincipalRef, service.CreateRequest, model.WriteMeta) (port.WriteOutcome, error)
 	UpdateWithOutcome(context.Context, model.PrincipalRef, service.UpdateRequest, model.WriteMeta) (port.WriteOutcome, error)
 	ClaimWithOutcome(context.Context, model.PrincipalRef, service.ClaimRequest, model.WriteMeta) (port.WriteOutcome, error)
+	ClaimNextWithOutcome(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta) (*port.WriteOutcome, error)
 	CommentWithOutcome(context.Context, model.PrincipalRef, service.CommentRequest, model.WriteMeta) (port.WriteOutcome, error)
 	CloseWithOutcome(context.Context, model.PrincipalRef, service.CloseRequest, model.WriteMeta) (port.WriteOutcome, error)
 	History(context.Context, model.PrincipalRef, service.HistoryRequest) (service.BeadPage, error)
@@ -71,7 +72,7 @@ func BindService(registry *Registry, svc Service) error {
 	if registry == nil || svc == nil {
 		return fmt.Errorf("nil service or registry")
 	}
-	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.comment", "bead.close", "history.query"}
+	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.claimNext", "bead.comment", "bead.close", "history.query"}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 	for _, name := range names {
@@ -152,6 +153,12 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 	case "bead.claim":
 		v, err := svc.ClaimWithOutcome(ctx, c.Principal, service.ClaimRequest{ID: p.ID, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
+	case "bead.claimNext":
+		v, err := svc.ClaimNextWithOutcome(ctx, c.Principal, service.ClaimNextRequest{Project: c.Meta.Project, ViewID: p.ViewID, Filter: p.Filter.domain()}, meta)
+		if err != nil || v == nil {
+			return nil, err
+		}
+		return writeOutcome(*v), nil
 	default:
 		return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
 	}

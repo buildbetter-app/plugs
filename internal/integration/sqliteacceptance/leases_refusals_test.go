@@ -83,7 +83,7 @@ func TestUnsupportedCardRemainderRefusesWithoutWrites(t *testing.T) {
 	ref, _, _ := f.create(t, "unsupported controls")
 	before := f.state(t)
 	for _, method := range []string{
-		"tx.apply", "bead.claimNext", "bead.heartbeat", "bead.reopen",
+		"tx.apply", "bead.heartbeat", "bead.reopen",
 		"history.get", "history.versions", "history.revert", "history.redact",
 		"admin.restore.begin", "view.run", "event.list",
 	} {
@@ -103,5 +103,5 @@ func TestUnsupportedCardRemainderRefusesWithoutWrites(t *testing.T) {
 		domainCode(t, err, "invalid_params")
 	}
 	requireSameState(t, before, f.state(t))
-	t.Log("unbound public batch/claim-next/heartbeat/reopen/history-mutation/restore/view/event methods and unsupported parent/attach/reparent/status/unknown-field writes explicitly refused")
+	t.Log("unbound public batch/heartbeat/reopen/history-mutation/restore/view/event methods and unsupported parent/attach/reparent/status/unknown-field writes explicitly refused")
 }

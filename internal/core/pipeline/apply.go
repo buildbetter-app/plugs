@@ -92,7 +92,7 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	if !validKey(meta.IdempotencyKey) {
 		return port.WriteOutcome{}, failure("invalid_params", "idempotency key must encode at least 128 bits as UUIDv4, ULID, hex or base64url")
 	}
-	if len(cs.Ops) == 0 || len(cs.Ops) > 1000 {
+	if (len(cs.Ops) == 0 && meta.Method != "bead.claimNext") || len(cs.Ops) > 1000 {
 		return port.WriteOutcome{}, failure("invalid_params", "change set requires 1 to 1000 operations")
 	}
 	// Validate the closed tagged unions and detach all caller-owned maps.
@@ -204,8 +204,9 @@ func requestHash(cs model.ChangeSet, meta model.WriteMeta) (string, error) {
 	data, err := json.Marshal(struct {
 		ChangeSet               model.ChangeSet
 		Method, Project, Return string
+		ClaimNextIdentity       string `json:",omitempty"`
 		DryRun                  bool
-	}{cs, meta.Method, meta.Project, meta.Return, meta.DryRun})
+	}{cs, meta.Method, meta.Project, meta.Return, meta.ClaimNextIdentity, meta.DryRun})
 	if err != nil {
 		return "", err
 	}
@@ -268,7 +269,7 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 			result.Record = body
 		}
 		commit.Results = append(commit.Results, result)
-		if meta.Method == "bead.claim" && pending.doc.Lease != nil {
+		if isClaim(meta.Method) && pending.doc.Lease != nil {
 			expires, ttl := pending.doc.Lease.ExpiresAt, pending.doc.Lease.TtlMs
 			commit.LeaseExpiresAt, commit.LeaseTtlMs = &expires, &ttl
 		}

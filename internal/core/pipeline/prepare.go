@@ -122,7 +122,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}}
 	aliases := map[string]model.Ref{}
 	slotRef := ""
-	if isSlot(meta.Method) {
+	if len(cs.Ops) == 0 {
+		if meta.Method != "bead.claimNext" {
+			return nil, failure("invalid_params", "empty change set is only valid for claimNext")
+		}
+	} else if isSlot(meta.Method) {
 		// A method is host-supplied lowering context, not a batch-wide bypass.
 		if len(cs.Ops) < 1 || cs.Ops[0].Kind != model.OpPatch {
 			return nil, failure("invalid_params", "slot method requires a patch first")
@@ -221,7 +225,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			} else if err = w.checkLease(current.doc, by, meta); err != nil {
 				return nil, err
 			}
-			if meta.Method == "bead.claim" && current.doc.Lease != nil && w.cfg.now().Before(current.doc.Lease.ExpiresAt) {
+			if isClaim(meta.Method) && current.doc.Lease != nil && w.cfg.now().Before(current.doc.Lease.ExpiresAt) {
 				if len(cs.Ops) != 1 || op.Kind != model.OpPatch || len(op.Patch.Fields) != 0 {
 					return nil, failure("invalid_params", "an already-owned claim requires one empty patch")
 				}
@@ -446,18 +450,20 @@ func FieldHash(value any) (string, error) {
 
 func isSlot(method string) bool {
 	switch method {
-	case "bead.claim", "bead.close", "bead.fail", "bead.cancel", "bead.reopen", "bead.defer", "bead.release":
+	case "bead.claim", "bead.claimNext", "bead.close", "bead.fail", "bead.cancel", "bead.reopen", "bead.defer", "bead.release":
 		return true
 	}
 	return false
 }
+
+func isClaim(method string) bool { return method == "bead.claim" || method == "bead.claimNext" }
 
 func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.WriteMeta) error {
 	lease := doc.Lease
 	if lease == nil {
 		return nil
 	}
-	if meta.Method == "bead.claim" {
+	if isClaim(meta.Method) {
 		if w.cfg.now().Before(lease.ExpiresAt) {
 			principal, _ := driver.PrincipalKey(by)
 			holder, _ := driver.PrincipalKey(lease.Principal)
@@ -479,13 +485,13 @@ func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.Writ
 }
 
 func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta) error {
-	if meta.Method == "bead.claim" && !p.proposal.SameClaim {
+	if isClaim(meta.Method) && !p.proposal.SameClaim {
 		ttl := model.Natural64(uint64(w.cfg.claimTTL / time.Millisecond))
 		for _, pending := range p.writes {
 			pending.doc.Lease = &ClaimLease{Principal: by, Agent: meta.AgentLabel, ExpiresAt: w.cfg.now().UTC().Add(w.cfg.claimTTL), TtlMs: ttl, Epoch: model.Natural64(w.lease.Epoch())}
 			pending.setBy["lease"] = "request"
 		}
-	} else if isSlot(meta.Method) && meta.Method != "bead.claim" {
+	} else if isSlot(meta.Method) && !isClaim(meta.Method) {
 		for _, pending := range p.writes {
 			pending.doc.Lease = nil
 			pending.setBy["lease"] = "request"
