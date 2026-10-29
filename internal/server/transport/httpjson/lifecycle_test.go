@@ -28,6 +28,14 @@ func TestAuthenticatedLoopbackLifecycle(t *testing.T) {
 	}
 	replayedResponse := f.call(t, "bead.create", params)
 	replayed := result(t, replayedResponse)
+	if meta := decoded(t, createdResponse.body)["_meta"]; meta != nil {
+		t.Fatal("first write was marked replayed")
+	}
+	meta, ok := decoded(t, replayedResponse.body)["_meta"].(map[string]any)
+	if !ok || meta["replayed"] != true {
+		t.Fatal("HTTP lost transient replay metadata")
+	}
+
 	if !reflect.DeepEqual(created, replayed) || f.post.calls.Load() != 1 {
 		t.Fatal("HTTP retry changed durable result or repeated post subscriber")
 	}
@@ -63,11 +71,11 @@ func TestAuthenticatedLoopbackLifecycle(t *testing.T) {
 		t.Fatal("HTTP history did not preserve pre-claim state")
 	}
 	// Check actual append-only storage as well as the exposed RPC slice.
-	meta, err := f.store.Meta(context.Background())
+	storeMeta, err := f.store.Meta(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	reader, err := f.store.Read(context.Background(), driver.View{Incarnation: meta.Incarnation})
+	reader, err := f.store.Read(context.Background(), driver.View{Incarnation: storeMeta.Incarnation})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +118,8 @@ func TestAuthenticatedLoopbackLifecycle(t *testing.T) {
 
 func TestHTTPAndInprocessByteParity(t *testing.T) {
 	f := newFixture(t, true, true, httpjson.Config{})
-	created := result(t, f.call(t, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "parity"}})))
+	params := writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "parity"}})
+	created := result(t, f.call(t, "bead.create", params))
 	ref := createdRef(t, created)
 	identity, err := f.auth.Admit(context.Background(), f.token)
 	if err != nil {
@@ -118,6 +127,16 @@ func TestHTTPAndInprocessByteParity(t *testing.T) {
 	}
 	ctx := rpc.WithPrincipal(context.Background(), identity.Principal())
 	local := inprocess.New(f.rpc)
+	replayMessage := message(t, "bead.create", params, []byte(`9007199254740993123456789`))
+	replayBytes, err := local.RoundTrip(ctx, replayMessage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayHTTP := f.send(t, f.request(t, replayMessage))
+	if !bytes.Equal(replayHTTP.body, replayBytes) || f.post.calls.Load() != 1 {
+		t.Fatal("HTTP changed durable replay/warning bytes or repeated posts")
+	}
+
 	for _, rawID := range []string{`900719925474099312345678901`, `-123456789012345678901`, `9.007199254740993e+30`, `null`, `"escaped\u002did"`} {
 		t.Run(rawID, func(t *testing.T) {
 			data := message(t, "bead.get", map[string]any{"id": ref}, json.RawMessage(rawID))
@@ -207,5 +226,36 @@ func TestNotificationsDoNotWriteAndReturnNoContent(t *testing.T) {
 	ready := result(t, f.call(t, "bead.ready", map[string]any{}))
 	if len(ready["items"].([]any)) != 0 {
 		t.Fatal("notification wrote a bead")
+	}
+}
+
+func TestReadyContinuationIsLiveAndHistoryRemainsPinnedOverHTTP(t *testing.T) {
+	f := newFixture(t, true, false, httpjson.Config{})
+	refs := make([]map[string]any, 0, 3)
+	for priority := 0; priority < 3; priority++ {
+		c := result(t, f.call(t, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "live page", "priority": priority}})))
+		refs = append(refs, createdRef(t, c))
+	}
+	first := result(t, f.call(t, "bead.ready", map[string]any{"limit": 1}))
+	if first["items"].([]any)[0].(map[string]any)["id"] != refs[0]["id"] || first["nextCursor"] == nil {
+		t.Fatal("missing first live page")
+	}
+	closed := result(t, f.call(t, "bead.close", writeParams(t, map[string]any{"id": refs[1], "reason": "between pages"})))
+	next := result(t, f.call(t, "bead.ready", map[string]any{"limit": 1, "cursor": first["nextCursor"]}))
+	items := next["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["id"] != refs[2]["id"] || next["nextCursor"] != nil {
+		t.Fatal("Ready continuation returned closed or stale row")
+	}
+	if next["asOf"].(map[string]any)["revision"] != closed["revision"] {
+		t.Fatal("live page revision did not advance")
+	}
+	history := result(t, f.call(t, "history.query", map[string]any{"asOf": first["asOf"], "limit": 10}))
+	if !reflect.DeepEqual(history["asOf"], first["asOf"]) || len(history["items"].([]any)) != 3 {
+		t.Fatal("history snapshot moved with live Ready")
+	}
+	for _, item := range history["items"].([]any) {
+		if item.(map[string]any)["status"] != "todo" {
+			t.Fatal("history lost the pre-close snapshot")
+		}
 	}
 }

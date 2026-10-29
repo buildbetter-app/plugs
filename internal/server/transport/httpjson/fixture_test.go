@@ -63,9 +63,9 @@ type observedService struct {
 	creates atomic.Int64
 }
 
-func (s *observedService) Create(ctx context.Context, p model.PrincipalRef, req service.CreateRequest, meta model.WriteMeta) (model.Commit, error) {
+func (s *observedService) CreateWithOutcome(ctx context.Context, p model.PrincipalRef, req service.CreateRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	s.creates.Add(1)
-	return s.Service.Create(ctx, p, req, meta)
+	return s.Service.CreateWithOutcome(ctx, p, req, meta)
 }
 
 type warningPost struct{ calls atomic.Int64 }
