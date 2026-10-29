@@ -472,33 +472,41 @@ func randomID() string {
 }
 
 func TestMain(m *testing.M) {
+	os.Exit(runTestMain(m))
+}
+
+// runTestMain returns only after its defers run. TestMain must call os.Exit
+// after this helper returns so the disposable PostgreSQL container is removed
+// on normal completion and every setup failure after startup.
+func runTestMain(m *testing.M) int {
 	name := "plug-swarm-v3-receipt-concurrency-" + randomID()
-	out, err := docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_test", "-p", "127.0.0.1::5432", postgresImage)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "start PostgreSQL: %v: %s\n", err, out)
-		os.Exit(1)
-	}
 	defer func() {
 		if out, err := docker("rm", "-f", name); err != nil {
 			fmt.Fprintf(os.Stderr, "remove PostgreSQL: %v: %s\n", err, out)
 		}
 	}()
+
+	out, err := docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_test", "-p", "127.0.0.1::5432", postgresImage)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "start PostgreSQL: %v: %s\n", err, out)
+		return 1
+	}
 	out, err = docker("port", name, "5432/tcp")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "find PostgreSQL port: %v: %s\n", err, out)
-		os.Exit(1)
+		return 1
 	}
 	address := strings.TrimSpace(string(out))
 	host, _, splitErr := net.SplitHostPort(address)
 	if splitErr != nil || host != "127.0.0.1" {
 		fmt.Fprintf(os.Stderr, "PostgreSQL must bind loopback: %q\n", address)
-		os.Exit(1)
+		return 1
 	}
 	postgresBaseDSN = "postgres://postgres@" + address + "/plug_test?sslmode=disable"
 	db, err := sql.Open("pgx", postgresBaseDSN)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open PostgreSQL probe: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -509,7 +517,7 @@ func TestMain(m *testing.M) {
 		if ctx.Err() != nil {
 			fmt.Fprintf(os.Stderr, "PostgreSQL did not become ready: %v\n", err)
 			_ = db.Close()
-			os.Exit(1)
+			return 1
 		}
 		time.Sleep(30 * time.Millisecond)
 	}
@@ -517,11 +525,11 @@ func TestMain(m *testing.M) {
 	if err = db.QueryRowContext(ctx, "SELECT version()").Scan(&version); err != nil {
 		fmt.Fprintf(os.Stderr, "probe PostgreSQL version: %v\n", err)
 		_ = db.Close()
-		os.Exit(1)
+		return 1
 	}
 	_ = db.Close()
 	fmt.Fprintf(os.Stderr, "real PostgreSQL receipt-concurrency engine: %s\n", version)
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 func freshPostgresDSN(t *testing.T) string {
