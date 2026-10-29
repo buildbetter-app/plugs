@@ -3,6 +3,7 @@ package dumpformat
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -30,5 +31,47 @@ func TestTypedJSONRequiresExactPresentNonNullMembers(t *testing.T) {
 	var value File
 	if err := decodeJSON([]byte(`{"sha256":"x","size":1}`), &value); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestJSONRejectsInvalidUnicodeEscapesAndExcessiveNesting(t *testing.T) {
+	for _, data := range []string{`"\ud800"`, `"\udc00"`, `"\ud800\u0041"`} {
+		var value any
+		if err := decodeJSON([]byte(data), &value); err == nil {
+			t.Fatalf("accepted invalid Unicode escape %s", data)
+		}
+	}
+	var value any
+	if err := decodeJSON([]byte(`"\ud83d\ude42"`), &value); err != nil {
+		t.Fatal(err)
+	}
+	if err := decodeJSON([]byte(strings.Repeat("[", 130)+"0"+strings.Repeat("]", 130)), &value); err == nil {
+		t.Fatal("unbounded nesting accepted")
+	}
+}
+
+func TestCredentialReferencesMatchProducerPredicate(t *testing.T) {
+	for _, key := range []string{"github.api_key", "github.api-key", "github.apikey", "github.secret", "github.token", "github.password", "github.passwd", "github.credential", "github.private_key", "github.privatekey", "github.privkey", "github.pwd", "github.pat", "github.auth", "github.bearer", "github.cert", "github.key", "github.keys", "database.dsn", "cloud.access_key", "GITHUB.TOKEN"} {
+		t.Run(key, func(t *testing.T) {
+			if !secretKey(key) {
+				t.Fatal("missed producer credential key")
+			}
+			if err := validateSecretReferences(map[string]any{"nested": []any{map[string]any{key: "raw-or-digest"}}}); err == nil {
+				t.Fatal("raw nested credential accepted")
+			}
+			if err := validateSecretReferences(map[string]any{key: map[string]any{"$secret": "synthetic/reference"}}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for _, key := range []string{"project_id", "commit.author", "issue.path", "export.pattern", "sort.keyword"} {
+		if secretKey(key) {
+			t.Fatalf("public near miss %s classified as credential", key)
+		}
+	}
+	for _, ref := range []any{map[string]any{"$secret": ""}, map[string]any{"$secret": nil}, map[string]any{"$secret": "valid", "extra": true}} {
+		if err := validateSecretReferences(ref); err == nil {
+			t.Fatal("invalid reference accepted")
+		}
 	}
 }

@@ -274,6 +274,9 @@ func decodeJSON(data []byte, target any) error {
 	if !utf8.Valid(data) {
 		return fmt.Errorf("JSON must be UTF-8")
 	}
+	if err := checkUnicodeEscapes(data); err != nil {
+		return err
+	}
 	check := json.NewDecoder(bytes.NewReader(data))
 	check.UseNumber()
 	if err := checkValue(check, 0); err != nil {
