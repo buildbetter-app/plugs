@@ -17,6 +17,7 @@ import (
 type pending struct {
 	ref      model.Ref
 	doc      Document
+	before   json.RawMessage
 	revision model.Revision
 	deleted  bool
 	setBy    map[string]string
@@ -104,7 +105,7 @@ func (p *prepared) load(ctx context.Context, ref model.Ref) (*pending, error) {
 	if doc.ID != ref.ID {
 		return nil, failure("internal_error", "record identity differs from body")
 	}
-	pending := &pending{ref: ref, doc: doc, revision: r.Revision, setBy: map[string]string{}}
+	pending := &pending{ref: ref, doc: doc, before: append(json.RawMessage(nil), r.Body...), revision: r.Revision, setBy: map[string]string{}}
 	p.writes[ref.ID] = pending
 	return pending, nil
 }
@@ -360,6 +361,10 @@ func (p *prepared) refresh() error {
 	for i := range p.proposal.Changes {
 		c := &p.proposal.Changes[i]
 		pending := p.writes[c.Resource.Ref.ID]
+		// All operations on a record describe the same atomic transition.
+		// A later patch of a batch-created record therefore still has no
+		// committed pre-image, even after ontology defaults are supplied.
+		c.Before = append(json.RawMessage(nil), pending.before...)
 		if pending.deleted {
 			c.After = nil
 		} else {
