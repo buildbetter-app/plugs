@@ -17,6 +17,7 @@ Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn G
 
 ## Answered
 
+- **#18 (2026-10-29, in Paseo):** adopted the reviewed fixed-permission authorization candidate (`c9f5f29d`); create, reparent and project moves are denied under the plugin until later slices.
 - **#16 — DECIDED (2026-10-29, Paseo, about 03:37 UTC):** Nikhil chose
   **Replace inherited workflows with qualified Plug CI (Recommended)**.
   Plug-owned Bazel CI must qualify on the exact head before a reviewed CI
