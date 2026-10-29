@@ -11379,7 +11379,7 @@
   },
   "x-contract-gaps": [
     "The design names authn.authenticate and authz.* as plugin-host calls; authn.authenticate and authz.verify are represented, while other hot-path calls remain host-internal.",
-    "Authorization is reopened by accepted decision #15 after the failed repaired latency gate. Answered #17 requires fixed project/team permissions; affected implementation remains blocked pending human approval of a concrete revisited design (D3). Existing descriptors do not select a concrete model or adopt Cedar.",
+    "Decisions #17/#18 select fixed project/team permissions and the bounded X1–X9 package; controller v2 authorizes implementation. This snapshot does not yet describe the complete X1–X9 contract and does not adopt Cedar. Historical failed latency evidence remains failed and is not runtime or performance acceptance for that package.",
     "C7 dependency: admin.restore.begin.manifest remains an unrestricted object (type: object, additionalProperties: true), including in the stored method registry. The plug-dump/1 manifest schema and samples, paired version census, version refusal, store/head/lock metadata, checksum and verification declarations, and kind/secret rules are deferred to C7. This catalog cannot generate a typed restore manifest validator; C7 and typed restore consumers remain blocked until that contract is published and accepted."
   ],
   "x-method-registry": {
@@ -15720,7 +15720,7 @@
       "path": "/home/dev/plugs/engdocs/design/plug",
       "note": "The design inputs are intentionally untracked outside this contract worktree; this contract retains their digests. An implementation generator may later vendor the registry, but it must preserve this artifact's independent checks."
     },
-    "authorizationStatus": "D3 completed with correctness passing and unchanged latency targets failing. Answered decision #17 requires fixed project/team permissions, Linear-style; a concrete revisited design still needs human approval. Affected authorization contract and consumer implementation remains blocked; this snapshot does not adopt Cedar or choose a concrete replacement model."
+    "authorizationStatus": "Decisions #17/#18 select fixed project/team permissions and the bounded X1–X9 package; controller v2 authorizes implementation. Decision #19 selects exact-head local Bazel checks plus independent review as the current merge gate. This snapshot retains historical source hashes and does not yet describe the complete X1–X9 contract. D3's unchanged latency targets failed; no runtime or performance acceptance is claimed."
   },
   "x-driver-error-mappings": [
     {
