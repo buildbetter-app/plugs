@@ -365,6 +365,13 @@ go_module_proxy(
     lock = "//tests/migration:source_tag_modules.json",
 )
 
+authz_module_proxy = use_repo_rule("//spikes/authz:module-proxy.bzl", "go_module_proxy")
+
+authz_module_proxy(
+    name = "authz_contract_goproxy",
+    lock = "//spikes/authz:contract-modules.lock.json",
+)
+
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_archive(
