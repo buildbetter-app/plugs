@@ -231,6 +231,9 @@ internal/integration/apikey/README.md
 internal/integration/apikey/compose.go
 internal/integration/apikey/fixture_test.go
 internal/integration/apikey/http_test.go
+internal/integration/permissions/BUILD.bazel
+internal/integration/permissions/compose.go
+internal/integration/permissions/permissions_test.go
 internal/plugins/authnapikey/BUILD.bazel
 internal/plugins/authnapikey/README.md
 internal/plugins/authnapikey/apikey.go
@@ -247,6 +250,11 @@ internal/server/authn/authn.go
 internal/server/authn/authn_test.go
 internal/server/authn/http.go
 internal/server/authn/http_test.go
+internal/server/authzrpc/BUILD.bazel
+internal/server/authzrpc/authzrpc.go
+internal/server/authzrpc/checker.go
+internal/server/authzrpc/service.go
+internal/server/authzrpc/slice.go
 internal/server/events/BUILD.bazel
 internal/server/events/audit.go
 internal/server/events/audit_delivery_test.go
