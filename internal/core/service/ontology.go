@@ -62,7 +62,7 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 			if err := violationsError(violations); err != nil {
 				return nil, err
 			}
-		} else if slot, lifecycle := ontology.SlotForMethod(proposal.Meta.Method); lifecycle && change.Op.Kind == model.OpPatch {
+		} else if slot, lifecycle := ontology.SlotForMethod(proposal.Meta.Method); lifecycle && !proposal.SameClaim && change.Op.Kind == model.OpPatch {
 			target, ok := e.SlotStatus(doc.Type, slot)
 			if !ok {
 				return nil, failure("invalid_params", "lifecycle slot is unavailable for this type")
@@ -97,6 +97,16 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, reader port.SnapshotReader) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	method := proposal.Meta.Method
+	if proposal.SameClaim {
+		// Core proved the same live holder before callbacks. There is no slot
+		// transition, but final schema, ownership and status-touch checks still
+		// apply to every mutator change through the ordinary update rules.
+		if method != "bead.claim" {
+			return failure("internal_error", "same-claim marker requires a claim")
+		}
+		method = "bead.update"
 	}
 	var graph map[string]storedBead
 	if _, lifecycle := ontology.SlotForMethod(proposal.Meta.Method); lifecycle {
@@ -142,6 +152,9 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 			before = &v
 		}
 		facts := ontology.GuardFacts{SetBy: change.SetBy}
+		for path := range change.SetBy {
+			facts.Touched = append(facts.Touched, path)
+		}
 		// Include the request's original paths even if a patch writes the same
 		// value. Final-image comparison alone would let direct status edits pass.
 		if change.Op.Patch != nil {
@@ -168,7 +181,7 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 		}
 		// The slot patch and optional reason comment share the final target
 		// post-image; neither introduces an independent status transition.
-		if err := violationsError(ontology.Validate(o.effective(doc.Project), before, &after, proposal.Meta.Method, facts)); err != nil {
+		if err := violationsError(ontology.Validate(o.effective(doc.Project), before, &after, method, facts)); err != nil {
 			return err
 		}
 	}
