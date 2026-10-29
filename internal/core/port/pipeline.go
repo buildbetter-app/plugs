@@ -93,6 +93,23 @@ type Ontology interface {
 	Validate(context.Context, ProposedChange, SnapshotReader) error
 }
 
+// ConditionalDecision interprets both blocker images in the blocker's own
+// project ontology. The pin identifies the protected source read through the
+// supplied tracked snapshot, including its effective compilation digest.
+type ConditionalDecision struct {
+	Ontology model.OntologyPin
+	Before   model.ConditionDecision
+	After    model.ConditionDecision
+}
+
+// OntologyAudit is an optional trusted extension, separate from existing
+// Ontology implementations. It classifies final images; it never discovers
+// edges, constructs descriptors, or writes storage. Unsupported source/pinning
+// configurations must return an error rather than inventing an interpretation.
+type OntologyAudit interface {
+	DecideConditional(context.Context, Change, SnapshotReader) (ConditionalDecision, error)
+}
+
 type AuthorizationStage string
 
 const (
