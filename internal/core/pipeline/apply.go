@@ -320,7 +320,11 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	for i, lock := range locks {
 		keys[i] = lock.Key
 	}
-	if len(writes) == 0 {
+	// Legacy no-op receipts keep the existing head-only NoopCommitter
+	// semantics. claimNext's terminal null is different: the contract gives
+	// it a durable H+1 receipt, with no graph changes, so it continues through
+	// the ordinary changeset commit path below.
+	if len(writes) == 0 && meta.Method != "bead.claimNext" {
 		noop, ok := tx.(driver.NoopCommitter)
 		if !ok {
 			return model.Commit{}, driver.ErrUnsupported
