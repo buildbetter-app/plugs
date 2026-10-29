@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -90,7 +91,7 @@ func validateReplayScope(header driver.ChangesetHeader, principal string) error 
 	if !canonicalKey(header.IdempotencyKey) || !canonicalKey(header.Method) || !canonicalKey(header.RequestHash) {
 		return fmt.Errorf("memory: idempotent write requires canonical key, method and request hash")
 	}
-	if principal == "anonymous:" && header.AgentLabel != "" && !canonicalKey(header.AgentLabel) {
+	if strings.HasPrefix(principal, "anonymous:") && header.AgentLabel != "" && !canonicalKey(header.AgentLabel) {
 		return fmt.Errorf("memory: invalid anonymous agent label")
 	}
 	return nil
