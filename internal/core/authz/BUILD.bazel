@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "authz",
+    srcs = glob(["*.go"], exclude = ["*_test.go"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/core/authz",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/core/model"],
+)
+
+go_test(
+    name = "authz_test",
+    srcs = glob(["*_test.go"]),
+    embed = [":authz"],
+    deps = ["//internal/core/model"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
