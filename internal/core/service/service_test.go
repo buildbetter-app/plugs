@@ -454,7 +454,13 @@ func TestSameClaimStillValidatesMutatorsAndPreservesLease(t *testing.T) {
 }
 
 func TestUnsupportedReadsAndParentRefuseWithoutPartialSuccess(t *testing.T) {
-	f := setup(t)
+	next := 0
+	f := setup(t, pipeline.WithIDGenerator(func() (string, error) {
+		ids := []string{"pl-a", "pl-b", "pl-c"}
+		id := ids[next]
+		next++
+		return id, nil
+	}))
 	ctx := context.Background()
 	id, _ := create(t, f, "One")
 	_, _ = create(t, f, "Two")
@@ -462,10 +468,14 @@ func TestUnsupportedReadsAndParentRefuseWithoutPartialSuccess(t *testing.T) {
 	if err != nil || len(first.Items) != 1 || first.Next == nil {
 		t.Fatalf("first page: %+v %v", first, err)
 	}
-	_, _ = create(t, f, "Later insert")
+	_, inserted := create(t, f, "Later insert")
 	second, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1, Position: first.Next})
-	if err != nil || len(second.Items) != 1 || second.Next != nil || second.Items[0].ID == first.Items[0].ID || second.AsOf.Revision.String() != first.AsOf.Revision.String() {
-		t.Fatalf("pinned second page: %+v %v", second, err)
+	if err != nil || len(second.Items) != 1 || second.Next == nil || second.Items[0].ID != "pl-b" || second.AsOf.Revision.String() != inserted.Revision.String() {
+		t.Fatalf("live second page: %+v %v", second, err)
+	}
+	third, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1, Position: second.Next})
+	if err != nil || len(third.Items) != 1 || third.Items[0].ID != "pl-c" || third.Next != nil {
+		t.Fatalf("later insert missing from live page: %+v %v", third, err)
 	}
 	_, err = f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Cursor: "unbound"})
 	wantCode(t, err, "cursor_invalid")
@@ -527,6 +537,92 @@ func TestReadyPriorityThenIDAndPinnedHistoryPages(t *testing.T) {
 	if err != nil || len(second.Items) != 2 || second.Items[0].ID <= first.Items[1].ID {
 		t.Fatalf("history second page: %+v %v", second, err)
 	}
+}
+
+func TestReadyContinuationReadsLiveRowsWhileHistoryStaysPinned(t *testing.T) {
+	for _, action := range []string{"close", "claim", "update"} {
+		t.Run(action, func(t *testing.T) {
+			ids := []string{"pl-a", "pl-b", "pl-c", "pl-d"}
+			next := 0
+			f := setup(t, pipeline.WithIDGenerator(func() (string, error) {
+				id := ids[next]
+				next++
+				return id, nil
+			}))
+			ctx := context.Background()
+			for _, title := range ids {
+				create(t, f, title)
+			}
+			first, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1})
+			if err != nil || first.Next == nil || first.Items[0].ID != "pl-a" {
+				t.Fatalf("first ready: %+v %v", first, err)
+			}
+			history, err := f.svc.History(ctx, anonymous, HistoryRequest{Project: "local", AsOf: first.AsOf, Limit: 1})
+			if err != nil || history.Next == nil {
+				t.Fatalf("first history: %+v %v", history, err)
+			}
+			pending := model.Ref{ID: "pl-b"}
+			var changed model.Commit
+			switch action {
+			case "close":
+				changed, err = f.svc.Close(ctx, anonymous, CloseRequest{ID: pending}, meta(t))
+			case "claim":
+				var claim ClaimResult
+				claim, err = f.svc.Claim(ctx, anonymous, ClaimRequest{ID: pending}, meta(t))
+				changed = claim.Commit
+			case "update":
+				changed, err = f.svc.Update(ctx, anonymous, UpdateRequest{ID: pending, Fields: map[string]any{"title": "Live title"}}, meta(t))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1, Position: first.Next})
+			wantID := "pl-c"
+			if action == "update" {
+				wantID = "pl-b"
+			}
+			if err != nil || len(second.Items) != 1 || second.Items[0].ID != wantID || second.AsOf.Revision.String() != changed.Revision.String() {
+				t.Fatalf("live continuation: %+v %v; write revision %v", second, err, changed.Revision)
+			}
+			if action == "update" && second.Items[0].Fields["title"] != "Live title" {
+				t.Fatalf("ready returned stale pending row: %+v", second.Items[0])
+			}
+			if second.Next == nil || second.Next.Offset <= first.Next.Offset || second.Next.AsOf.Revision.String() != second.AsOf.Revision.String() {
+				t.Fatalf("continuation failed to advance: %+v", second)
+			}
+			old, err := f.svc.History(ctx, anonymous, HistoryRequest{Project: "local", AsOf: history.AsOf, Limit: 1, Position: history.Next})
+			if err != nil || len(old.Items) != 1 || old.Items[0].ID != "pl-b" || old.Items[0].Fields["title"] != "pl-b" || old.AsOf.Revision.String() != first.AsOf.Revision.String() {
+				t.Fatalf("history lost its pinned row: %+v %v", old, err)
+			}
+		})
+	}
+}
+
+func TestReadyContinuationAllowsListShrinkAndRejectsOtherIncarnation(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	var ids []model.Ref
+	for _, title := range []string{"First", "Second", "Third"} {
+		id, _ := create(t, f, title)
+		ids = append(ids, id)
+	}
+	first, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Limit: 2})
+	if err != nil || first.Next == nil {
+		t.Fatalf("first page: %+v %v", first, err)
+	}
+	for _, id := range ids {
+		if _, err := f.svc.Close(ctx, anonymous, CloseRequest{ID: id}, meta(t)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Limit: 2, Position: first.Next})
+	if err != nil || len(page.Items) != 0 || page.Next != nil || page.AsOf.Revision.String() == first.AsOf.Revision.String() {
+		t.Fatalf("shrunk live page: %+v %v", page, err)
+	}
+	position := *first.Next
+	position.AsOf.Incarnation = "another-store"
+	_, err = f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Position: &position})
+	wantCode(t, err, "incarnation_changed")
 }
 
 func TestKernelFieldsAndSameValueStatusRefuseBeforeCommit(t *testing.T) {

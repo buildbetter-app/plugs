@@ -9,6 +9,20 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
+// WriteOutcome carries response-only execution information outside the durable
+// Commit. Replayed means this invocation returned a full-scope stored receipt;
+// equal revisions, unchanged writes and dry runs do not imply replay.
+type WriteOutcome struct {
+	Commit   model.Commit
+	Replayed bool
+}
+
+// OutcomeWriter is an additive host seam. model.Writer.Apply remains available
+// for callers that do not need transport replay metadata.
+type OutcomeWriter interface {
+	ApplyWithOutcome(context.Context, model.PrincipalRef, model.ChangeSet, model.WriteMeta) (WriteOutcome, error)
+}
+
 // SnapshotReader has no write handle. Pre reads are pinned to BaseRevision
 // and recorded in the commit guard, including missing records and queries.
 // Post reads are pinned to the committed revision.

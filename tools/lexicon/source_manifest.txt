@@ -106,6 +106,7 @@ engdocs/design/plug/spike-ux-decision.md
 engdocs/style/BUILD.bazel
 engdocs/style/lexicon.toml
 go.mod
+go.sum
 internal/BUILD.bazel
 internal/acceptance/BUILD.bazel
 internal/acceptance/harness_test.go
@@ -221,12 +222,14 @@ internal/storage/conformance/leases.go
 internal/storage/conformance/lifetimes.go
 internal/storage/conformance/locks.go
 internal/storage/conformance/noops.go
+internal/storage/conformance/responses.go
 internal/storage/driver/BUILD.bazel
 internal/storage/driver/driver.go
 internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
+internal/storage/driver/receipt_contract_test.go
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_test.go

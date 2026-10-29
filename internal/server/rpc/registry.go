@@ -23,6 +23,14 @@ type Call struct {
 
 type Handler func(context.Context, Call) (any, error)
 
+// Outcome carries transient execution metadata for a handler result. Result
+// alone is schema-validated and serialized as the response's result; Replayed
+// adds response-only _meta.replayed without changing durable commit bytes.
+type Outcome struct {
+	Result   any
+	Replayed bool
+}
+
 type binding struct {
 	desc    wire.MethodDesc
 	handler Handler
