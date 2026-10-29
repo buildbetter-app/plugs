@@ -107,6 +107,12 @@ engdocs/design/plug/spike-authz-results.md
 engdocs/design/plug/spike-ux-decision.md
 engdocs/plug-packages/README.md
 engdocs/plug-packages/storage.md
+engdocs/plug-runtime/README.md
+engdocs/plug-runtime/cli.md
+engdocs/plug-runtime/events.md
+engdocs/plug-runtime/native-plugins.md
+engdocs/plug-runtime/rpc-http.md
+engdocs/plug-runtime/storage.md
 engdocs/style/BUILD.bazel
 engdocs/style/lexicon.toml
 examples/plugins/native-guard/BUILD.bazel
