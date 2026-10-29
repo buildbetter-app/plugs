@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "pipeline",
+    srcs = glob(["*.go"], exclude = ["*_test.go"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/core/pipeline",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/port",
+        "//internal/storage/driver",
+    ],
+)
+
+go_test(
+    name = "pipeline_test",
+    srcs = glob(["*_test.go"]),
+    embed = [":pipeline"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/port",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
