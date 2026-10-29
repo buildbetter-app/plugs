@@ -203,13 +203,13 @@ func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.Wri
 	if err := s.checkLease(lease); err != nil {
 		return nil, err
 	}
-	t := &transaction{store: s, lease: lease, base: s.state, records: make(map[string]*driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), bumps: make(map[string]driver.LockKey)}
+	t := &transaction{store: s, lease: lease, base: s.state, snapshotAt: s.state.meta.Head, incarnation: s.state.meta.Incarnation, records: make(map[string]*driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), bumps: make(map[string]driver.LockKey)}
 	s.transactions[t] = true
 	return t, nil
 }
 
-// Close releases timers and fences outstanding writers. Previously returned
-// immutable readers remain usable, just as a captured snapshot does.
+// Close releases store state, timers and the lease, rolling back unfinished
+// writers. Callers close readers and finish transactions before the store.
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -218,6 +218,12 @@ func (s *Store) Close() error {
 		if s.active != nil {
 			s.endLease()
 		}
+		for tx := range s.transactions {
+			tx.finish()
+		}
+		s.state = nil
+		s.checkpoints = nil
+		s.locks = nil
 		s.signal()
 	}
 	return nil
