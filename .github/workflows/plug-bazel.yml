@@ -22,9 +22,9 @@ jobs:
     permissions:
       contents: read
     env:
-      PLUG_BAZEL_EVIDENCE_DIR: ${{ runner.temp }}/plug-bazel-evidence
-      PLUG_BAZEL_TARGETS_DIR: ${{ runner.temp }}/plug-bazel-targets
-      PLUG_BAZEL_REPOSITORY_CACHE: ${{ runner.temp }}/plug-bazel-repository-cache
+      PLUG_BAZEL_EVIDENCE_DIR: ${{ github.workspace }}/.plug-bazel-evidence
+      PLUG_BAZEL_TARGETS_DIR: ${{ github.workspace }}/.plug-bazel-targets
+      PLUG_BAZEL_REPOSITORY_CACHE: ${{ github.workspace }}/.plug-bazel-repository-cache
     steps:
       - name: Checkout exact revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
@@ -41,7 +41,7 @@ jobs:
       - name: Restore verified Bazel repository cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/plug-bazel-repository-cache
+          path: ${{ github.workspace }}/.plug-bazel-repository-cache
           key: plug-bazel-repository-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'MODULE.bazel.lock') }}
 
       - name: Install pinned Bazel toolchain
@@ -147,11 +147,11 @@ jobs:
           name: plug-bazel-evidence-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 14
-          path: ${{ runner.temp }}/plug-bazel-evidence
+          path: ${{ github.workspace }}/.plug-bazel-evidence
 
       - name: Save verified Bazel repository cache
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && success()
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/plug-bazel-repository-cache
+          path: ${{ github.workspace }}/.plug-bazel-repository-cache
           key: plug-bazel-repository-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'MODULE.bazel.lock') }}

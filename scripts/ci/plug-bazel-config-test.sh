@@ -38,10 +38,15 @@ required_workflow = {
     "--test_timeout=900",
     "--remote_cache=",
     "--remote_executor=",
+    "PLUG_BAZEL_EVIDENCE_DIR: ${{ github.workspace }}/.plug-bazel-evidence",
+    "PLUG_BAZEL_TARGETS_DIR: ${{ github.workspace }}/.plug-bazel-targets",
+    "PLUG_BAZEL_REPOSITORY_CACHE: ${{ github.workspace }}/.plug-bazel-repository-cache",
 }
 missing = sorted(fragment for fragment in required_workflow if fragment not in workflow)
 if missing:
     raise SystemExit("config: workflow is missing: " + ", ".join(missing))
+if "runner.temp" in workflow:
+    raise SystemExit("config: runner.temp is unavailable in the job-level environment")
 
 def encoded(values):
     return "".join(chr(value) for value in values)
