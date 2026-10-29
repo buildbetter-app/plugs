@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/buildbetter-app/plugs/internal/client"
 )
 
-// Execute opens exactly one local core for the invocation. Only explicit
-// --memory selects disposable state; unimplemented remote or persistent modes
-// return an error instead of silently losing data or falling back to local.
+// Execute selects an explicit server, then PLUG_SERVER, then local mode. The
+// current tree has no config-file loader: an existing config is refused. Only
+// --memory selects disposable local state. Remote failures never open a store.
 func Execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) int {
 	return execute(ctx, args, in, out, errOut, nil)
 }
@@ -25,14 +27,6 @@ func execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 		fmt.Fprintln(errOut, err)
 		return 2
 	}
-	if os.Getenv("PLUG_SERVER") != "" {
-		fmt.Fprintln(errOut, "remote transport is not implemented by this slice; PLUG_SERVER was not contacted")
-		return 2
-	}
-	if !o.Memory {
-		fmt.Fprintln(errOut, "persistent storage is not installed; use --memory for an explicit disposable session")
-		return 2
-	}
 	if command[0] == "session" {
 		if len(command) != 1 {
 			fmt.Fprintln(errOut, "session takes no arguments")
@@ -42,6 +36,38 @@ func execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 		fmt.Fprintln(errOut, err)
 		return 2
 	}
+	server, source := o.Server, "--server"
+	if !o.serverSet {
+		server, source = os.Getenv("PLUG_SERVER"), "PLUG_SERVER"
+	}
+	if server != "" {
+		transport, err := client.NewHTTP(client.HTTPConfig{Server: server, Token: os.Getenv("PLUG_TOKEN")})
+		if err != nil {
+			fmt.Fprintf(errOut, "%s: %v\n", source, err)
+			return 2
+		}
+		defer transport.Close()
+		remote, err := client.New(transport, o.Project, o.Agent)
+		if err == nil {
+			err = runSession(ctx, &Session{Client: remote, Out: out, Err: errOut, JSON: o.JSON}, command, in)
+		}
+		if err != nil {
+			fmt.Fprintf(errOut, "%s: %v\n", source, err)
+			return 1
+		}
+		return 0
+	}
+	if _, err := os.Stat(".plug/config.yaml"); err == nil {
+		fmt.Fprintln(errOut, ".plug/config.yaml loading is not installed; select --server explicitly")
+		return 2
+	} else if !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintln(errOut, "unable to inspect .plug/config.yaml")
+		return 2
+	}
+	if !o.Memory {
+		fmt.Fprintln(errOut, "persistent storage is not installed; use --memory for an explicit disposable session")
+		return 2
+	}
 	fmt.Fprintln(errOut, "warning: memory storage is disposable; all data is discarded when this process exits")
 	l, err := OpenLocal(ctx, LocalConfig{Project: o.Project, Agent: o.Agent, Storage: StorageConfig{Driver: "memory"}, Factory: factory})
 	if err != nil {
@@ -49,15 +75,18 @@ func execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 		return 1
 	}
 	s := &Session{Client: l.Client, Out: out, Err: errOut, JSON: o.JSON}
-	if command[0] == "session" {
-		err = s.RunInput(ctx, in)
-	} else {
-		err = s.Run(ctx, command)
-	}
+	err = runSession(ctx, s, command, in)
 	closeErr := l.Close()
 	if err = errors.Join(err, closeErr); err != nil {
 		fmt.Fprintln(errOut, err)
 		return 1
 	}
 	return 0
+}
+
+func runSession(ctx context.Context, s *Session, command []string, in io.Reader) error {
+	if command[0] == "session" {
+		return s.RunInput(ctx, in)
+	}
+	return s.Run(ctx, command)
 }
