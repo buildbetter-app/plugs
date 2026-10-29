@@ -5,6 +5,10 @@ go_library(
     srcs = glob(["*.go"], exclude = ["*_test.go"]),
     importpath = "github.com/buildbetter-app/plugs/internal/cli",
     visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/client",
+    ],
 )
 
 go_test(
