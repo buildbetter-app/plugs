@@ -57,7 +57,7 @@ and graph scans above 20,000 beads refuse instead of returning a partial page.
 [httpjson.New](../../internal/server/transport/httpjson/handler.go) creates a
 handler for exactly `POST /rpc/v1`. Every request needs
 `Plug-RPC: 1` and `Content-Type: application/json` (optional
-`charset=utf-8)); cookies and Content-Encoding are refused. Admission runs
+`charset=utf-8`); cookies and Content-Encoding are refused. Admission runs
 before body reading and domain dispatch. RPC results/errors use HTTP 200,
 notification-only requests use 204, and transport failures use the shared
 JSON-RPC error envelope with `id:null`.
