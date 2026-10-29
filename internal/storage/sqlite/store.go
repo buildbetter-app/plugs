@@ -315,6 +315,8 @@ func (s *Store) Health(ctx context.Context) (driver.StoreHealth, error) {
 // ErrIndeterminate with the original request key rather than retrying blindly.
 type commitError struct{ error }
 
+func (e commitError) Unwrap() error { return e.error }
+
 func (s *Store) immediate(ctx context.Context, l *activeLease, fn func(*sql.Conn) error) error {
 	var lost <-chan struct{}
 	if l != nil {
