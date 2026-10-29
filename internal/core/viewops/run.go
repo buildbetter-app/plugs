@@ -25,9 +25,17 @@ func parseQuery(query string) ([]queryTerm, error) {
 	query = strings.ReplaceAll(query, "&&", " and ")
 	parts := strings.Fields(query)
 	terms := make([]queryTerm, 0, len(parts))
+	wantTerm := true
 	for _, part := range parts {
-		if strings.EqualFold(part, "and") {
+		if !wantTerm {
+			if !strings.EqualFold(part, "and") {
+				return nil, failure("invalid_params", "unsupported view query; use equality clauses joined by AND")
+			}
+			wantTerm = true
 			continue
+		}
+		if strings.EqualFold(part, "and") {
+			return nil, failure("invalid_params", "unsupported view query; use equality clauses joined by AND")
 		}
 		key, value, ok := strings.Cut(part, "=")
 		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
@@ -40,9 +48,13 @@ func parseQuery(query string) ([]queryTerm, error) {
 			return nil, &model.Error{Data: model.ErrorData{Code: "unknown_field", Hint: "view query field is not supported: " + key}}
 		}
 		terms = append(terms, queryTerm{key: key, value: value})
+		wantTerm = false
 	}
 	if len(terms) == 0 {
 		return nil, failure("invalid_params", "view query contains no equality clause")
+	}
+	if wantTerm {
+		return nil, failure("invalid_params", "unsupported view query; use equality clauses joined by AND")
 	}
 	return terms, nil
 }

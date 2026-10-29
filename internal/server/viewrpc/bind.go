@@ -202,8 +202,15 @@ func continuationParams(call rpc.Call, p params, cursor string) (map[string]any,
 		}
 		params["definition"] = raw
 	}
-	if call.Meta.Project != "" {
-		params["_meta"] = map[string]any{"project": call.Meta.Project}
+	if call.Meta.Project != "" || call.Meta.Agent != "" {
+		meta := map[string]any{}
+		if call.Meta.Project != "" {
+			meta["project"] = call.Meta.Project
+		}
+		if call.Meta.Agent != "" {
+			meta["agent"] = call.Meta.Agent
+		}
+		params["_meta"] = meta
 	}
 	return params, nil
 }

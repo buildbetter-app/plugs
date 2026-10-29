@@ -155,7 +155,7 @@ func TestByteRPCViewRunAuthorizationGroupingAndExplain(t *testing.T) {
 	f.views.values["issues"] = viewops.Definition{Filter: &viewops.Filter{Types: []string{"issue"}}}
 
 	definition := map[string]any{"filter": map[string]any{"types": []string{"issue"}}, "fields": []string{"id"}, "groupBy": []string{"type"}, "budgetTokens": 1}
-	run := resultMap(t, f.call(t, context.Background(), "view.run", map[string]any{"definition": definition, "_meta": map[string]any{"project": "p"}}))
+	run := resultMap(t, f.call(t, context.Background(), "view.run", map[string]any{"definition": definition, "_meta": map[string]any{"project": "p", "agent": "grouped"}}))
 	if len(run["items"].([]any)) != 0 {
 		t.Fatal("grouped result leaked top-level items")
 	}
@@ -178,7 +178,12 @@ func TestByteRPCViewRunAuthorizationGroupingAndExplain(t *testing.T) {
 	if continuation["method"] != "view.run" || continuation["params"].(map[string]any)["cursor"] != next {
 		t.Fatalf("bad continuation: %v", continuation)
 	}
-	lastPage := resultMap(t, f.call(t, context.Background(), "view.run", continuation["params"]))
+	continuationParams := continuation["params"].(map[string]any)
+	continuationMeta, ok := continuationParams["_meta"].(map[string]any)
+	if !ok || continuationMeta["agent"] != "grouped" {
+		t.Fatalf("grouped continuation dropped agent metadata: %v", continuation)
+	}
+	lastPage := resultMap(t, f.call(t, context.Background(), "view.run", continuationParams))
 	lastGroup := lastPage["groups"].([]any)[0].(map[string]any)
 	if len(lastGroup["items"].([]any)) != 1 || lastGroup["elided"] != nil || lastPage["nextCursor"] != nil {
 		t.Fatalf("continuation did not finish the group: %v", lastPage)
@@ -271,6 +276,10 @@ func TestUnsupportedViewShapesRefuseAndSavedWritesStayUnbound(t *testing.T) {
 		{name: "unknown field", params: map[string]any{"definition": map[string]any{"filter": map[string]any{}, "fields": []string{"fields.not-supported"}}}, code: "unknown_field"},
 		{name: "event filter", params: map[string]any{"definition": map[string]any{"filter": map[string]any{"events": []string{"bead.created"}}}}, code: "invalid_params"},
 		{name: "unknown query field", params: map[string]any{"definition": map[string]any{"filter": map[string]any{"query": "title=bug"}}}, code: "unknown_field"},
+		{name: "query missing conjunction", params: map[string]any{"definition": map[string]any{"filter": map[string]any{"query": "id=a type=issue"}}}, code: "invalid_params"},
+		{name: "query leading conjunction", params: map[string]any{"definition": map[string]any{"filter": map[string]any{"query": "AND id=a"}}}, code: "invalid_params"},
+		{name: "query trailing conjunction", params: map[string]any{"definition": map[string]any{"filter": map[string]any{"query": "id=a AND"}}}, code: "invalid_params"},
+		{name: "query repeated conjunction", params: map[string]any{"definition": map[string]any{"filter": map[string]any{"query": "id=a AND AND type=issue"}}}, code: "invalid_params"},
 		{name: "group without explicit fields", params: map[string]any{"definition": map[string]any{"filter": map[string]any{}, "groupBy": []string{"type"}}}, code: "invalid_params"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
