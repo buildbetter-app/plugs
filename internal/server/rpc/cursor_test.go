@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ import (
 )
 
 // A domain-only fixture checks the wire/Position seam. The real service's
-// storage ordering and snapshot semantics are verified by its own tests.
+// storage ordering and live/historical semantics are verified by real tests.
 type pagedService struct {
 	serviceProbe
 	ready   []service.ReadyRequest
@@ -122,7 +123,7 @@ func TestSignedCursorPagingAtByteBoundary(t *testing.T) {
 				}
 				ids = append(ids, items[0].(map[string]any)["id"].(string))
 				if got["asOf"].(map[string]any)["revision"] != json.Number("9007199254740993") {
-					t.Fatalf("page lost pinned revision: %v", got)
+					t.Fatalf("page lost observed revision: %v", got)
 				}
 				if i == 2 {
 					if _, ok := got["nextCursor"]; ok {
@@ -276,23 +277,36 @@ func TestAnonymousCursorBindsAgentLabel(t *testing.T) {
 
 func TestLiveReadyAllowsNewRevisionButHistoryRemainsPinned(t *testing.T) {
 	for _, method := range []string{"bead.ready", "history.query"} {
-		t.Run(method, func(t *testing.T) {
-			probe := &pagedService{badPage: "resnapshot"}
-			s := pagingServer(t, probe, pagingConfig())
-			params := pageParams(method)
-			first := result(t, call(t, s, context.Background(), method, paramsJSON(t, params)))
-			params["cursor"] = first["nextCursor"]
-			params["limit"] = 2
-			reply := call(t, s, context.Background(), method, paramsJSON(t, params))
-			if method == "history.query" {
-				requireCode(t, reply, "internal_error")
-				return
-			}
-			page := result(t, reply)
-			if len(page["items"].([]any)) != 2 || page["asOf"].(map[string]any)["revision"] != json.Number("9007199254740994") || page["nextCursor"] != nil {
-				t.Fatal("live Ready did not accept a newer final page", page)
-			}
-		})
+		for _, limit := range []int{1, 2} {
+			t.Run(fmt.Sprintf("%s/limit%d", method, limit), func(t *testing.T) {
+				probe := &pagedService{badPage: "resnapshot"}
+				s := pagingServer(t, probe, pagingConfig())
+				params := pageParams(method)
+				first := result(t, call(t, s, context.Background(), method, paramsJSON(t, params)))
+				params["cursor"] = first["nextCursor"]
+				params["limit"] = limit
+				reply := call(t, s, context.Background(), method, paramsJSON(t, params))
+				if method == "history.query" {
+					requireCode(t, reply, "internal_error")
+					return
+				}
+				page := result(t, reply)
+				if len(page["items"].([]any)) != limit || page["asOf"].(map[string]any)["revision"] != json.Number("9007199254740994") {
+					t.Fatal("live Ready did not accept a newer page", page)
+				}
+				if limit == 1 {
+					params["cursor"] = page["nextCursor"]
+					page = result(t, call(t, s, context.Background(), method, paramsJSON(t, params)))
+					position := probe.ready[2].Position
+					if position.Offset != 2 || position.AsOf.Revision != model.Natural("9007199254740994") || page["items"].([]any)[0].(map[string]any)["id"] != "p-3" {
+						t.Fatal("live Ready lost the newly signed continuation", position, page)
+					}
+				}
+				if page["nextCursor"] != nil {
+					t.Fatal("live Ready returned an extra final cursor", page)
+				}
+			})
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 package rpc_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -11,11 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
+	"github.com/buildbetter-app/plugs/internal/server/transport/inprocess"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
@@ -71,6 +74,74 @@ func createdRef(t *testing.T, commit map[string]any) map[string]any {
 		t.Fatalf("missing create result: %v", commit)
 	}
 	return rows[0].(map[string]any)["ref"].(map[string]any)
+}
+
+func writeResult(t *testing.T, s *rpc.Server, method string, params map[string]any, replayed bool) map[string]any {
+	t.Helper()
+	reply := call(t, s, context.Background(), method, paramsJSON(t, params))
+	meta, valid := reply["_meta"].(map[string]any)
+	_, present := reply["_meta"]
+	if (replayed && (!valid || meta["replayed"] != true)) || (!replayed && present) {
+		t.Fatalf("wrong replay metadata for %s (want %t): %v", method, replayed, reply)
+	}
+	return result(t, reply)
+}
+
+func TestRealWriteReplayMetadataPreservesResultBytes(t *testing.T) {
+	s, post, _, _ := realServiceServer(t)
+	ctx := context.Background()
+	head := func() any { return result(t, call(t, s, ctx, "bead.ready", `{}`))["asOf"].(map[string]any)["revision"] }
+	var ref map[string]any
+	for _, method := range []string{"bead.create", "bead.claim", "bead.update", "bead.comment", "bead.close"} {
+		t.Run(method, func(t *testing.T) {
+			params := map[string]any{"id": ref}
+			switch method {
+			case "bead.create":
+				params = map[string]any{"type": "issue", "fields": map[string]any{"title": "Original"}}
+			case "bead.update":
+				params["fields"] = map[string]any{"title": "Changed"}
+			case "bead.comment":
+				params["body"] = "Replay evidence"
+			case "bead.close":
+				params["reason"] = "Completed"
+			}
+			writeParams(t, params)
+			if method == "bead.claim" || method == "bead.update" {
+				params["_meta"].(map[string]any)["return"] = "minimal"
+			}
+			var original json.RawMessage
+			var postCalls int
+			var revision any
+			for i := range 2 {
+				raw, err := inprocess.New(s).RoundTrip(ctx, request(method, paramsJSON(t, params)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var reply map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &reply); err != nil {
+					t.Fatal(err)
+				}
+				if len(reply["error"]) != 0 || len(reply["result"]) == 0 {
+					t.Fatalf("write failed: %s", raw)
+				}
+				if i == 0 {
+					if len(reply["_meta"]) != 0 {
+						t.Fatalf("first committed/finalized response marked replay: %s", raw)
+					}
+					original, postCalls, revision = reply["result"], post.calls, head()
+					if method == "bead.create" {
+						v, err := wire.DecodeJSON(original)
+						if err != nil {
+							t.Fatal(err)
+						}
+						ref = createdRef(t, v.(map[string]any))
+					}
+				} else if string(reply["_meta"]) != `{"replayed":true}` || !bytes.Equal(original, reply["result"]) || head() != revision || post.calls != postCalls {
+					t.Fatalf("replay changed stored result bytes/head/post effects or omitted metadata: %s", raw)
+				}
+			}
+		})
+	}
 }
 
 func TestRealServiceLifecycleThroughInprocess(t *testing.T) {
@@ -133,49 +204,55 @@ func TestRealServiceLifecycleThroughInprocess(t *testing.T) {
 	}
 }
 
-func TestRealServiceSignedPagingAcrossWrites(t *testing.T) {
+func TestRealServiceLiveReadyAndPinnedHistoryAcrossWrites(t *testing.T) {
 	s, _, _, _ := realServiceServer(t)
 	ctx := context.Background()
 	var ids []string
-	for _, priority := range []int{3, 1, 1} {
-		created := result(t, call(t, s, ctx, "bead.create", paramsJSON(t, writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "page", "priority": priority}}))))
+	for priority, title := range []string{"first", "pending-close", "third", "pending-update"} {
+		created := writeResult(t, s, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": title, "priority": priority}}), false)
 		ids = append(ids, createdRef(t, created)["id"].(string))
 	}
-	// Ready order is priority then stable ID; history order is stable ID.
-	expectedReady := append([]string(nil), ids[1:]...)
-	sort.Strings(expectedReady)
-	expectedReady = append(expectedReady, ids[0])
 	params := map[string]any{"limit": 1}
 	first := result(t, call(t, s, ctx, "bead.ready", paramsJSON(t, params)))
 	at := first["asOf"].(map[string]any)
-	// A later write must not enter the service's pinned continuation snapshot.
-	result(t, call(t, s, ctx, "bead.create", paramsJSON(t, writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "later", "priority": 0}}))))
-	var readyIDs []string
-	page := first
-	for i := range 3 {
-		if len(page["items"].([]any)) != 1 || !reflect.DeepEqual(page["asOf"], at) {
-			t.Fatal("real ready limit or pinned asOf changed", page)
-		}
-		readyIDs = append(readyIDs, page["items"].([]any)[0].(map[string]any)["id"].(string))
-		if i < 2 {
-			params["cursor"] = page["nextCursor"]
-			page = result(t, call(t, s, ctx, "bead.ready", paramsJSON(t, params)))
-		} else if page["nextCursor"] != nil {
-			t.Fatal("ready continued beyond pinned items")
-		}
+	if first["items"].([]any)[0].(map[string]any)["id"] != ids[0] {
+		t.Fatal("Ready lost priority order", first)
 	}
-	if !reflect.DeepEqual(readyIDs, expectedReady) {
-		t.Fatal("real ready ordering or traversal changed", readyIDs, expectedReady)
+	// Close a row that has not been delivered. A frozen continuation would
+	// return it next; live Ready must instead evaluate the current eligible set.
+	later := writeResult(t, s, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "later", "priority": 4}}), false)
+	laterID := createdRef(t, later)["id"].(string)
+	closed := writeResult(t, s, "bead.close", writeParams(t, map[string]any{"id": map[string]any{"id": ids[1]}, "reason": "Closed between pages"}), false)
+	params["cursor"] = first["nextCursor"]
+	page := result(t, call(t, s, ctx, "bead.ready", paramsJSON(t, params)))
+	if len(page["items"].([]any)) != 1 || page["items"].([]any)[0].(map[string]any)["id"] != ids[2] || page["asOf"].(map[string]any)["revision"] != closed["revision"] {
+		t.Fatal("Ready returned the old pending row or rejected the live revision", page)
+	}
+	updated := writeResult(t, s, "bead.update", writeParams(t, map[string]any{"id": map[string]any{"id": ids[3]}, "fields": map[string]any{"title": "Changed between pages"}}), false)
+	params["cursor"] = page["nextCursor"]
+	page = result(t, call(t, s, ctx, "bead.ready", paramsJSON(t, params)))
+	bead := page["items"].([]any)[0].(map[string]any)
+	if bead["id"] != ids[3] || bead["fields"].(map[string]any)["title"] != "Changed between pages" || page["asOf"].(map[string]any)["revision"] != updated["revision"] {
+		t.Fatal("Ready did not read the pending row's current value", page)
+	}
+	params["cursor"] = page["nextCursor"]
+	page = result(t, call(t, s, ctx, "bead.ready", paramsJSON(t, params)))
+	if len(page["items"].([]any)) != 1 || page["items"].([]any)[0].(map[string]any)["id"] != laterID || page["nextCursor"] != nil {
+		t.Fatal("Ready did not traverse the later live insert", page)
 	}
 	params = map[string]any{"limit": 1, "asOf": at}
 	var historyIDs []string
-	for i := range 3 {
+	for i := range 4 {
 		page = result(t, call(t, s, ctx, "history.query", paramsJSON(t, params)))
 		if len(page["items"].([]any)) != 1 || !reflect.DeepEqual(page["asOf"], at) {
 			t.Fatal("real history lost its snapshot", page)
 		}
-		historyIDs = append(historyIDs, page["items"].([]any)[0].(map[string]any)["id"].(string))
-		if i < 2 {
+		bead := page["items"].([]any)[0].(map[string]any)
+		historyIDs = append(historyIDs, bead["id"].(string))
+		if bead["id"] == ids[3] && bead["fields"].(map[string]any)["title"] != "pending-update" {
+			t.Fatal("History returned the later pending-row update", page)
+		}
+		if i < 3 {
 			params["cursor"] = page["nextCursor"]
 		} else if page["nextCursor"] != nil {
 			t.Fatal("history continued beyond pinned items")
@@ -187,20 +264,39 @@ func TestRealServiceSignedPagingAcrossWrites(t *testing.T) {
 	}
 }
 
+func TestRealServiceLiveReadyAcceptsEmptyShrunkenTail(t *testing.T) {
+	s, _, _, _ := realServiceServer(t)
+	ctx := context.Background()
+	var refs []map[string]any
+	for priority := range 2 {
+		created := writeResult(t, s, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "tail", "priority": priority}}), false)
+		refs = append(refs, createdRef(t, created))
+	}
+	first := result(t, call(t, s, ctx, "bead.ready", `{"limit":1}`))
+	var last map[string]any
+	for _, ref := range refs {
+		last = writeResult(t, s, "bead.close", writeParams(t, map[string]any{"id": ref, "reason": "Shrink list"}), false)
+	}
+	page := result(t, call(t, s, ctx, "bead.ready", paramsJSON(t, map[string]any{"limit": 1, "cursor": first["nextCursor"]})))
+	if len(page["items"].([]any)) != 0 || page["nextCursor"] != nil || page["asOf"].(map[string]any)["revision"] != last["revision"] {
+		t.Fatal("valid live continuation did not terminate after list shrink", page)
+	}
+}
+
 func TestRealServiceNoopReceiptsPreserveWireRevisionsAndLease(t *testing.T) {
 	s, post, _, _ := realServiceServer(t)
 	ctx := context.Background()
 	head := func() any {
 		return result(t, call(t, s, ctx, "bead.ready", `{}`))["asOf"].(map[string]any)["revision"]
 	}
-	created := result(t, call(t, s, ctx, "bead.create", paramsJSON(t, writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "Original"}}))))
+	created := writeResult(t, s, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "Original"}}), false)
 	ref := createdRef(t, created)
-	claim := result(t, call(t, s, ctx, "bead.claim", paramsJSON(t, writeParams(t, map[string]any{"id": ref}))))
+	claim := writeResult(t, s, "bead.claim", writeParams(t, map[string]any{"id": ref}), false)
 	lease := result(t, call(t, s, ctx, "bead.get", paramsJSON(t, map[string]any{"id": ref})))["lease"]
 	postCalls := post.calls
 	sameClaimParams := writeParams(t, map[string]any{"id": ref})
 	sameClaimParams["_meta"].(map[string]any)["return"] = "minimal"
-	sameClaim := result(t, call(t, s, ctx, "bead.claim", paramsJSON(t, sameClaimParams)))
+	sameClaim := writeResult(t, s, "bead.claim", sameClaimParams, false)
 	if sameClaim["revision"] != claim["revision"] || sameClaim["leaseTtlMs"] != claim["leaseTtlMs"] || sameClaim["leaseExpiresAt"] != claim["leaseExpiresAt"] || head() != claim["revision"] || post.calls != postCalls {
 		t.Fatal("fresh-key same-owner claim changed head, lease or subscriber effects", sameClaim)
 	}
@@ -209,22 +305,52 @@ func TestRealServiceNoopReceiptsPreserveWireRevisionsAndLease(t *testing.T) {
 	}
 	// A no-op receipt reports current head while retaining the older record's
 	// own revision. Wire conversion must preserve both independently.
-	other := result(t, call(t, s, ctx, "bead.create", paramsJSON(t, writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "Other"}}))))
+	other := writeResult(t, s, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "Other"}}), false)
 	postCalls = post.calls
 	noopParams := writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "Original"}})
-	noop := result(t, call(t, s, ctx, "bead.update", paramsJSON(t, noopParams)))
+	noop := writeResult(t, s, "bead.update", noopParams, false)
 	rows := noop["results"].([]any)
 	if noop["revision"] != other["revision"] || len(rows) != 1 || rows[0].(map[string]any)["revision"] != claim["revision"] || head() != other["revision"] || post.calls != postCalls {
 		t.Fatal("no-op changed head or narrowed record/receipt revisions", noop)
 	}
-	updated := result(t, call(t, s, ctx, "bead.update", paramsJSON(t, writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "Changed"}}))))
+	updated := writeResult(t, s, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "Changed"}}), false)
 	postCalls = post.calls
-	replay := result(t, call(t, s, ctx, "bead.update", paramsJSON(t, noopParams)))
+	replay := writeResult(t, s, "bead.update", noopParams, true)
 	if !reflect.DeepEqual(replay, noop) || head() != updated["revision"] || post.calls != postCalls {
 		t.Fatal("no-op replay lost its exact stored response or advanced head", replay)
 	}
-	replay = result(t, call(t, s, ctx, "bead.claim", paramsJSON(t, sameClaimParams)))
+	replay = writeResult(t, s, "bead.claim", sameClaimParams, true)
 	if !reflect.DeepEqual(replay, sameClaim) || head() != updated["revision"] || post.calls != postCalls {
 		t.Fatal("same-owner claim replay changed its receipt or current head", replay)
+	}
+}
+
+func TestRealDryRunDoesNotBecomeReceiptReplay(t *testing.T) {
+	s, post, _, _ := realServiceServer(t)
+	ctx := context.Background()
+	created := writeResult(t, s, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "Original"}}), false)
+	ref := createdRef(t, created)
+	params := writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "Previewed"}})
+	meta := params["_meta"].(map[string]any)
+	meta["dryRun"] = true
+	postCalls := post.calls
+	for range 2 {
+		preview := writeResult(t, s, "bead.update", params, false)
+		page := result(t, call(t, s, ctx, "bead.ready", `{}`))
+		bead := result(t, call(t, s, ctx, "bead.get", paramsJSON(t, map[string]any{"id": ref})))["bead"].(map[string]any)
+		if preview["wouldCommit"] != true || page["asOf"].(map[string]any)["revision"] != created["revision"] || bead["fields"].(map[string]any)["title"] != "Original" || post.calls != postCalls {
+			t.Fatal("dry-run changed durable state or post effects", preview, bead)
+		}
+	}
+	// The preview did not reserve a receipt: the same key can now execute the
+	// real request, and only the retry of that execution is marked replayed.
+	delete(meta, "dryRun")
+	committed := writeResult(t, s, "bead.update", params, false)
+	if committed["revision"] == created["revision"] || post.calls != postCalls+1 {
+		t.Fatal("real execution after dry-run did not commit once", committed)
+	}
+	replayed := writeResult(t, s, "bead.update", params, true)
+	if !reflect.DeepEqual(replayed, committed) || post.calls != postCalls+1 {
+		t.Fatal("real receipt after dry-run did not replay exactly", replayed)
 	}
 }
