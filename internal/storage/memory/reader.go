@@ -507,11 +507,11 @@ func (r *reader) IdempotencyByKey(ctx context.Context, principal, agent, method,
 	if !ok || !r.now().Before(entry.at.Add(driver.IdempotencyWindow)) {
 		return nil, nil
 	}
-	revision, _ := entry.value.Changeset.Revision.Uint64()
+	revision, _ := entry.value.Commit.Revision.Uint64()
 	if revision > r.at {
 		return nil, nil
 	}
-	copy, err := cloneJSON(entry.value)
+	copy, err := copyIdempotency(entry.value)
 	if err != nil {
 		return nil, err
 	}
@@ -520,7 +520,7 @@ func (r *reader) IdempotencyByKey(ctx context.Context, principal, agent, method,
 
 func (r *reader) ChangesetByKey(ctx context.Context, principal, agent, method, key string) (*model.Changeset, error) {
 	entry, err := r.IdempotencyByKey(ctx, principal, agent, method, key)
-	if err != nil || entry == nil {
+	if err != nil || entry == nil || entry.Changeset.Kind == "" {
 		return nil, err
 	}
 	return &entry.Changeset, nil

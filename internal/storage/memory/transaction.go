@@ -379,11 +379,16 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	}
 	key := normalizedScope(principal, header.AgentLabel, header.Method, header.IdempotencyKey)
 	if header.IdempotencyKey != "" {
-		if !canonicalKey(header.Method) || header.RequestHash == "" {
-			return model.Changeset{}, fmt.Errorf("memory: idempotent write requires method and request hash")
+		if err := validateReplayScope(header, principal); err != nil {
+			return model.Changeset{}, err
 		}
 		if previous, exists := s.state.replays[key]; exists && s.now().Before(previous.at.Add(driver.IdempotencyWindow)) {
 			if previous.value.RequestHash != header.RequestHash {
+				return model.Changeset{}, driver.ErrConflict
+			}
+			if previous.value.Changeset.Kind == "" {
+				// This scope completed without a graph commit. Callers replay its
+				// Commit through IdempotencyByKey or CommitNoop, never invent a log.
 				return model.Changeset{}, driver.ErrConflict
 			}
 			copy, err := cloneJSON(previous.value.Changeset)
