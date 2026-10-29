@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -202,6 +203,50 @@ func TestWASIPluginBuildRestoreAndAsyncRebuild(t *testing.T) {
 	if err != nil || string(echo) != `{"id":"wasi-1","value":9007199254740993}` {
 		t.Fatalf("WASI method did not round-trip JSON: %s (%v)", echo, err)
 	}
+	if _, err := host.Invoke(ctx, "x.other.echo", json.RawMessage(`{"id":"wasi-1"}`)); !hasPluginHostCode(err, pluginhost.ErrMethod) {
+		t.Fatalf("undeclared method prefix was admitted: %v", err)
+	}
+	// Exercise real guest syscalls against a host path and a listening host
+	// endpoint. No preopened files, ambient environment or sockets are granted.
+	path := filepath.Join(t.TempDir(), "host-file")
+	if err := os.WriteFile(path, []byte("host-only"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PLUG_WASI_PROBE", "host-only")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	params, _ := json.Marshal(map[string]string{"id": "wasi-1", "path": path, "address": listener.Addr().String()})
+	probe, err := host.Invoke(ctx, "x.wasi.probe", params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var denied map[string]bool
+	if err := json.Unmarshal(probe, &denied); err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range []string{"read_denied", "write_denied", "create_denied", "dial_denied", "environment_empty"} {
+		if !denied[capability] {
+			t.Errorf("guest obtained ambient capability %s: %s", capability, probe)
+		}
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "host-only" {
+		t.Fatalf("guest changed the host path: %s (%v)", data, err)
+	}
+	if _, err := os.Stat(path + ".new"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("guest created an undeclared host path: %v", err)
+	}
+	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(20 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if conn, err := listener.Accept(); err == nil {
+		_ = conn.Close()
+		t.Fatal("guest reached the host network")
+	} else if timeout, ok := err.(net.Error); !ok || !timeout.Timeout() {
+		t.Fatalf("network probe listener failed: %v", err)
+	}
 	change := port.ProposedChange{RequestID: "wasi-test", Principal: model.PrincipalRef{Kind: "user", ID: "test"}, BaseRevision: model.Natural64(1), Changes: []port.Change{{
 		Resource: model.ResourceRef{Kind: "bead", Ref: model.RefByID("wasi-1", "")},
 		Op:       model.Op{Kind: model.OpCreate, Create: &model.CreateOp{Kind: model.OpCreate, Type: "issue", Fields: map[string]any{"title": "hello"}}},
@@ -215,6 +260,11 @@ func TestWASIPluginBuildRestoreAndAsyncRebuild(t *testing.T) {
 	change.Changes[0].After = []byte(`{"type":"issue","fields":{"title":"private"}}`)
 	if _, err := mutators[0].Mutator.Mutate(ctx, change, &wasiSnapshot{revision: model.Natural64(1)}); !hasPluginHostCode(err, pluginhost.ErrPatch) {
 		t.Fatalf("undeclared WASI patch was admitted: %v", err)
+	}
+	change.Changes[0].After = []byte(`{"type":"issue","fields":{"title":"reject"}}`)
+	verdict, err := host.Validators()[0].Validator.Validate(ctx, change, &wasiSnapshot{revision: model.Natural64(1)})
+	if err != nil || verdict.Allow || len(verdict.Violations) != 1 {
+		t.Fatalf("WASI validator did not reject the change: %+v (%v)", verdict, err)
 	}
 	lockStore := pluginbuild.NewArtifactStore()
 	lock, err := lockStore.Put(ctx, artifact)
@@ -262,7 +312,35 @@ func TestWASIPluginBuildRestoreAndAsyncRebuild(t *testing.T) {
 		t.Fatalf("rebuild check did not match lock: %+v", check)
 	}
 	_ = restored.Close()
-	t.Log("real GOOS=wasip1 build -> wazero host callbacks -> digest restore before asynchronous rebuild; undeclared patch refused")
+	// A rebuilt source revision with different bytes must remain a mismatch;
+	// it cannot replace the digest-restored artifact.
+	pluginPath := filepath.Join(source.Root, "plugin.go")
+	plugin, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pluginPath, bytes.Replace(plugin, []byte("strings.ToUpper"), []byte("strings.ToLower"), 1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, source.Root, "add", "plugin.go")
+	git(t, source.Root, "commit", "-q", "-m", "changed WASI fixture")
+	changed := source
+	changed.Commit = git(t, source.Root, "rev-parse", "HEAD")
+	restored, checks, err = lockStore.RestoreAndCheck(ctx, lock, func(ctx context.Context) (*pluginbuild.Artifact, error) {
+		return pluginbuild.Build(ctx, pluginbuild.Request{Source: changed, GoBinary: goPath(t)})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	check = <-checks
+	if check.Err != nil || check.Match || check.Actual.ArtifactDigest == lock.ArtifactDigest {
+		t.Fatalf("changed source was not reported as a rebuild mismatch: %+v", check)
+	}
+	if restored.ArtifactDigest() != lock.ArtifactDigest || restored.Verify(ctx) != nil {
+		t.Fatal("rebuild mismatch changed the restored artifact")
+	}
+	t.Log("real GOOS=wasip1 build -> sandboxed wazero callbacks -> digest restore before async rebuild; mismatch, undeclared patch, path and egress refused")
 }
 
 func hasPluginHostCode(err error, want string) bool {

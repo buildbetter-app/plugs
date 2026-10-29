@@ -25,7 +25,8 @@
           "kind": "methods",
           "prefix": "x.wasi",
           "methods": {
-            "echo": {"permission": "read", "resource": "params.id"}
+            "echo": {"permission": "read", "resource": "params.id"},
+            "probe": {"permission": "read", "resource": "params.id"}
           }
         }
       ]

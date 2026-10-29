@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"net"
+	"os"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 )
 
@@ -64,10 +67,35 @@ func plugHandle(ptr, size uint32) uint64 {
 	case "validate":
 		return validate(call.Payload)
 	case "method":
+		if call.Name == "x.wasi.probe" {
+			return probe(call.Payload)
+		}
 		return response(map[string]any{"result": json.RawMessage(call.Payload)})
 	default:
 		return response(map[string]any{"error": "unsupported operation"})
 	}
+}
+
+func probe(raw json.RawMessage) uint64 {
+	var params struct {
+		Path    string `json:"path"`
+		Address string `json:"address"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return response(map[string]any{"error": "invalid probe"})
+	}
+	_, readErr := os.ReadFile(params.Path)
+	writeErr := os.WriteFile(params.Path, []byte("guest wrote here"), 0o600)
+	createErr := os.WriteFile(params.Path+".new", []byte("guest wrote here"), 0o600)
+	conn, dialErr := net.DialTimeout("tcp", params.Address, 100*time.Millisecond)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	return response(map[string]any{"result": map[string]any{
+		"read_denied": readErr != nil, "write_denied": writeErr != nil,
+		"create_denied": createErr != nil, "dial_denied": dialErr != nil,
+		"environment_empty": os.Getenv("PLUG_WASI_PROBE") == "",
+	}})
 }
 
 func mutate(raw json.RawMessage) uint64 {

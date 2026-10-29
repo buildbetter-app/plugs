@@ -5,9 +5,11 @@ result through the existing SDK and host. A `native` manifest requires
 `Request.TrustedNative` and runs with process privileges. A `wasip1` manifest
 builds a c-shared WASI module and runs in wazero's interpreter through the
 fixed `plug_alloc`/`plug_handle` JSON ABI. The WASI host allows only
-`wasi_snapshot_preview1` and the inert `plug.call` import, provides no
+`wasi_snapshot_preview1` and the reserved `env.plug.call` import, provides no
 preopened filesystem, environment, or network capability, and caps guest
-memory at 64 MiB.
+memory at 64 MiB. Initialization has a one-second deadline. Outbound calls
+through `env.plug.call` are explicitly refused in this bounded adapter; the
+guest cannot use it as an alternate filesystem, egress, or write path.
 
 `Build(ctx, Request)` uses the real `pluginmanifest.Load` to require a full
 commit pin, matching HEAD and committed bytes/modes, a complete source
@@ -72,7 +74,8 @@ into a process. The caller owns the lifetime of hosts already created.
 Linux behavior tests cover compiled native and WASI method/mutator/validator
 execution, callback restrictions, isolated host state, reproducible artifact
 bytes, real compilation failure and cancellation, explicit trust and
-containment, static WASI import/export/memory checks, wrong source digest,
+containment, real guest filesystem/network/environment refusals, initialization
+cancellation, static WASI import/export/memory checks, wrong source digest,
 changed source/HEAD/output, closed output, digest restore, and asynchronous
-rebuild comparison. Remote resolution, installation/approval, durable
+rebuild match/mismatch comparison. Remote resolution, installation/approval, durable
 external artifact storage, build quotas, and UI bundles remain separate work.

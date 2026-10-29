@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/buildbetter-app/plugs/pluginapi"
 	sdk "github.com/buildbetter-app/plugs/sdk/go"
@@ -23,8 +24,9 @@ import (
 )
 
 const (
-	maxWASMMessage = 1 << 20
-	maxWASMPages   = 1024 // 64 MiB per guest, including any memory growth.
+	maxWASMMessage  = 1 << 20
+	maxWASMPages    = 1024 // 64 MiB per guest, including any memory growth.
+	wasmInitTimeout = time.Second
 	// The E5 ABI names the single host import env.plug.call. Keep the
 	// dotted function name intact so static admission and wazero instantiation
 	// enforce the same import contract.
@@ -77,11 +79,13 @@ func newWASMRuntime(wasm []byte, host pluginapi.Host) (*wasmRuntime, error) {
 		_ = runtime.Close(ctx)
 		return nil, failure(ErrManifest, "WASI runtime setup failed: %v", err)
 	}
-	// The import is intentionally narrow. It is currently a JSON-RPC escape
-	// hatch for future host calls; the guest cannot obtain a socket, file or
-	// environment capability by importing another module.
+	// The ABI import is reserved, but outbound host calls are unsupported in
+	// this adapter. Fail the call explicitly rather than report a successful
+	// empty response or provide an ambient socket/file/environment capability.
 	if _, err := runtime.NewHostModuleBuilder(wasmModuleName).
-		NewFunctionBuilder().WithFunc(func(context.Context, api.Module, uint32, uint32) uint64 { return 0 }).
+		NewFunctionBuilder().WithFunc(func(context.Context, api.Module, uint32, uint32) uint64 {
+		panic("WASM outbound host calls are unsupported")
+	}).
 		Export(wasmImportName).Instantiate(ctx); err != nil {
 		_ = runtime.Close(ctx)
 		return nil, failure(ErrManifest, "WASM host import setup failed: %v", err)
@@ -95,6 +99,11 @@ func newWASMRuntime(wasm []byte, host pluginapi.Host) (*wasmRuntime, error) {
 		_ = runtime.Close(ctx)
 		return nil, err
 	}
+	// A core start section can run during instantiation even when the named
+	// start functions are disabled. Bound that work and _initialize as well as
+	// the later host-driven calls, which have the existing host deadlines.
+	ctx, cancel := context.WithTimeout(ctx, wasmInitTimeout)
+	defer cancel()
 	module, err := runtime.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithStartFunctions())
 	if err != nil {
 		_ = runtime.Close(ctx)
@@ -119,12 +128,15 @@ func newWASMRuntime(wasm []byte, host pluginapi.Host) (*wasmRuntime, error) {
 
 func (r *wasmRuntime) close() {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closeLocked()
+}
+
+func (r *wasmRuntime) closeLocked() {
 	if r.closed {
-		r.mu.Unlock()
 		return
 	}
 	r.closed = true
-	r.mu.Unlock()
 	_ = r.module.Close(context.Background())
 	_ = r.runtime.Close(context.Background())
 }
@@ -156,6 +168,9 @@ func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest) (wasmResp
 		return wasmResponse{}, failure(ErrMethod, "WASM request exceeds the message limit")
 	}
 	ptr, err := r.alloc.Call(ctx, uint64(len(data)))
+	if err != nil {
+		r.closeLocked()
+	}
 	if err != nil || len(ptr) != 1 || ptr[0] == 0 || ptr[0] > uint64(^uint32(0)) {
 		return wasmResponse{}, failure(ErrMethod, "WASM allocation failed: %v", err)
 	}
@@ -164,6 +179,9 @@ func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest) (wasmResp
 		return wasmResponse{}, failure(ErrMethod, "WASM input is outside guest memory")
 	}
 	packed, err := r.handle.Call(ctx, uint64(input), uint64(len(data)))
+	if err != nil {
+		r.closeLocked()
+	}
 	if err != nil || len(packed) != 1 {
 		return wasmResponse{}, failure(ErrMethod, "WASM handler failed: %v", err)
 	}
@@ -427,7 +445,7 @@ func parseWASM(data []byte) (wasmImage, error) {
 func parseWASMTypes(payload []byte, image *wasmImage) error {
 	pos := 0
 	count, err := readWASMUint(payload, &pos)
-	if err != nil {
+	if err != nil || count > uint32(len(payload)-pos) {
 		return fmt.Errorf("invalid type section")
 	}
 	image.types = make([]wasmFuncType, 0, count)
