@@ -21,7 +21,8 @@ in-memory implementation. The first member is `manifest.json`; all subsequent
 paths sort lexicographically. Regular files have mode `0600`, zero uid/gid,
 and Unix-epoch mtime; there are no directories, symlinks, PAX entries or
 timestamps derived from the export clock. JSON uses compact `encoding/json`
-output with sorted object keys and a final newline. Integers retain their full
+output with sorted map keys, typed fields in declaration order (`types.go`),
+and a final newline. Integers retain their full
 64-bit values. SQL NULL remains JSON null; BLOBs use `{"$bytes":"<base64>"}`.
 
 The versioned manifest is described by [manifest.schema.json](manifest.schema.json).
