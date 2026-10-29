@@ -1,5 +1,7 @@
 # History and transaction behavior cards
 
+Source pin and evidence limits: [behavior catalog](../behaviors.md).
+
 ## B18 — versions, revisions, and as-of reads
 
 **Behavior.** When versioned history is enabled, each accepted durable mutation
@@ -46,15 +48,18 @@ permission even for old versions (D26/P57).
 
 ## B19 — revert, redact, dump, and restore
 
-**Behavior.** A revert changes only paths whose current head still equals the
-chosen base, refusing conflicts and protected records; redaction is the sole
-removal and reaches every stored copy/blob/audit payload it can, reporting
-external copies as warnings. Full-history dumps restore only into an empty
-store, continue under a new incarnation, and refuse stale checksums or unknown
-record kinds.
+**Behavior.** Beads as-of reads distinguish removed versions from unknown
+addresses and preserve the recorded removal reason. The retention/epoch
+contracts specify address stability, retained bounds, holds, and epoch changes;
+their presence is not proof of a complete production redaction path.
+`MarkLatestVersionRemovedInTx` is explicitly a test-support seam, not a
+production removal operation. Beads `restore` reverses compaction (B12), and
+its JSONL interchange preserves issue state (B27); neither implements the
+Plug dump/restore format.
 
 **Beads implementation.** `internal/storage/issueops/asof_read.go:
-MarkLatestVersionRemovedInTx`; history/revert and export/restore operations;
+MarkLatestVersionRemovedInTx` (test support); `internal/storage/issueops/compaction.go:
+RestoreFromSnapshotInTx`; `cmd/bd/export.go` and `cmd/bd/import.go`;
 `internal/storage/issueops/version_history.go` canonical state and participation.
 
 **Pinning tests.** conformance `RunAsOfReadRefusesAsGoneOrUnknownNeverSubstitutingAnotherVersion`,
@@ -80,16 +85,19 @@ TestAsOfReadMapsAnyStoredRestrictionOutsideTheVocabularyToUnknown`,
 TestCheckSchemaSkew_EqualVersion_NoError`, `TestCheckSchemaSkew_OneAhead_ReturnsSchemaSkewError`,
 `TestCheckSchemaSkew_EscapeHatch_ReturnsNilAndWarns`.
 
-**Edge cases.** Redaction can affect old diffs, bases, blobs, dead letters,
+**Edge cases.** Plug redaction can affect old diffs, bases, blobs, dead letters,
 checkpoints, and audit rows but not already-created backups or external plugin
 destinations. Head-only restore establishes a store-wide history floor;
 old incarnation tokens fail after restore.
 
-**Plug disposition.** **Keep with new format**: `history.redact` is the only
-removal (P45), dumps default to full history with a head-only option (P20),
+**Plug disposition.** **Deviate**: path-scoped revert refuses a head/base
+conflict or a protected record (A6); `history.redact` is the only removal
+(P45) and reports unreachable external copies as warnings. Dumps default to
+full history with a head-only option (P20),
 restore is empty-store-only (P44), and restore loads plugin artifacts only
 after lock-digest verification (P75). Tracker `sync.import` is an ordinary
-head-state write that mints new IDs (P77), not a restore.
+head-state write that mints new IDs (P77), not a restore. Plug restore starts a
+new incarnation and refuses bad checksums and unknown record kinds (A6).
 
 ## B20 — events journal and delivery order
 
@@ -136,8 +144,9 @@ metadata-reference exceptions), enforces expected version/status/assignee
 preconditions against in-request state, and rolls back every item if any item
 refuses. The separate `BatchCloser` reports indexed per-item refusals while
 surviving closes commit; both preserve caller request values, and a landed
-`ApplyBatch` is bounded at 1,000 items with one durable history entry only when
-durable work landed.
+`ApplyBatch` is bounded at 1,000 items with one durable history entry when the
+transaction changes a durable row, even if an item reports `Changed=false`;
+history cardinality follows the durable row delta, not item landing flags.
 
 **Beads implementation.** `internal/storage/issueops/batch_apply.go:ApplyBatchInTx`
 and `applyRun.applyItem`, `spliceMetadataRefs`, `runEndGate`; public
@@ -147,7 +156,9 @@ and `applyRun.applyItem`, `spliceMetadataRefs`, `runEndGate`; public
 `RunBatchApplyBindsEachNamedKeyToItsMintedID`,
 `RunBatchApplyResolvesABackwardKeyRef`, `RunBatchApplyRefusesAKeyDeclaredLater`,
 `RunBatchApplyRollsBackEverythingWhenTheLastItemRefuses`,
-`RunBatchApplyRecordsExactlyOneHistoryEntry`, `RunBatchApplyBoundsTheItemCount`,
+`RunBatchApplyRecordsExactlyOneHistoryEntry`,
+`RunBatchApplyRecordsOneEntryForAWriteThatLandedNothing`,
+`RunBatchApplyBoundsTheItemCount`,
 `RunBatchCloserPerItemRefusalIsAResultAndSurvivorsCommit`,
 `RunBatchCloserAllIdempotentBatchLandsNothing`; `internal/storage/batch_apply_test.go:
 TestPlanApplyBatchRefusesAnUnusableRequest`, `TestPlanApplyBatchAcceptsTheBoundary`,
@@ -168,9 +179,13 @@ TestPlanApplyBatchRefusesAnUnusableRequest`, `TestPlanApplyBatchAcceptsTheBounda
 created earlier may be updated/closed in the same batch; self-dependencies and
 cross-plane new edges are refused; external targets and metadata forward/self
 references follow their documented exceptions. An all-idempotent or no-op
-`ApplyBatch` has no history; a batch containing only wisps has no durable
-history. `BatchCloser` preserves item indexes, commits survivors, and records
-no history when every item is refused or already idempotent.
+`ApplyBatch` has no history when it produces no durable row delta; a batch
+containing only wisps has no durable history. A same-type dependency re-add
+that rewrites durable waits-for metadata is the counterexample: its item may
+report `Changed=false`, but the stored row changes and exactly one history entry
+named `bd: apply batch` is required. `BatchCloser` preserves item indexes,
+commits survivors, and records no history when every item is refused or already
+idempotent.
 
 **Plug disposition.** **Deviate** retain `ApplyBatch` item semantics and the
 1,000 cap, but `tx.apply` is one A4 typed ChangeSet and one atomic revision
