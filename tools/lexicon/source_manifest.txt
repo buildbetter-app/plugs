@@ -154,6 +154,7 @@ internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
+internal/storage/driver/receipt_contract_test.go
 pluginapi/BUILD.bazel
 pluginapi/doc.go
 sdk/go/BUILD.bazel
