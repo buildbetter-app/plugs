@@ -186,6 +186,7 @@ func TestStrictParameters(t *testing.T) {
 		{"rpc.methods", `{"_meta":{"return":"brief"}}`, false},
 		{"rpc.methods", `{"_meta":{"principal":{"kind":"user","id":"admin"}}}`, false},
 		{"rpc.methods", `{"_meta":{"replayed":false}}`, false},
+		{"bead.claim", `{"id":{"id":"p-1"},"_meta":{"sameClaim":true,"idempotencyKey":"550e8400-e29b-41d4-a716-446655440000"}}`, false},
 		{"rpc.methods", `{"_meta":{"agent":"a","agent":"b"}}`, false},
 		{"rpc.methods", `null`, false},
 		{"rpc.methods", `[]`, false},

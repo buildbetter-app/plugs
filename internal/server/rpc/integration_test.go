@@ -186,3 +186,45 @@ func TestRealServiceSignedPagingAcrossWrites(t *testing.T) {
 		t.Fatal("real history repeated, skipped or included a later item", historyIDs, ids)
 	}
 }
+
+func TestRealServiceNoopReceiptsPreserveWireRevisionsAndLease(t *testing.T) {
+	s, post, _, _ := realServiceServer(t)
+	ctx := context.Background()
+	head := func() any {
+		return result(t, call(t, s, ctx, "bead.ready", `{}`))["asOf"].(map[string]any)["revision"]
+	}
+	created := result(t, call(t, s, ctx, "bead.create", paramsJSON(t, writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "Original"}}))))
+	ref := createdRef(t, created)
+	claim := result(t, call(t, s, ctx, "bead.claim", paramsJSON(t, writeParams(t, map[string]any{"id": ref}))))
+	lease := result(t, call(t, s, ctx, "bead.get", paramsJSON(t, map[string]any{"id": ref})))["lease"]
+	postCalls := post.calls
+	sameClaimParams := writeParams(t, map[string]any{"id": ref})
+	sameClaimParams["_meta"].(map[string]any)["return"] = "minimal"
+	sameClaim := result(t, call(t, s, ctx, "bead.claim", paramsJSON(t, sameClaimParams)))
+	if sameClaim["revision"] != claim["revision"] || sameClaim["leaseTtlMs"] != claim["leaseTtlMs"] || sameClaim["leaseExpiresAt"] != claim["leaseExpiresAt"] || head() != claim["revision"] || post.calls != postCalls {
+		t.Fatal("fresh-key same-owner claim changed head, lease or subscriber effects", sameClaim)
+	}
+	if got := result(t, call(t, s, ctx, "bead.get", paramsJSON(t, map[string]any{"id": ref})))["lease"]; !reflect.DeepEqual(got, lease) {
+		t.Fatal("same-owner claim changed the stored lease", got, lease)
+	}
+	// A no-op receipt reports current head while retaining the older record's
+	// own revision. Wire conversion must preserve both independently.
+	other := result(t, call(t, s, ctx, "bead.create", paramsJSON(t, writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "Other"}}))))
+	postCalls = post.calls
+	noopParams := writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "Original"}})
+	noop := result(t, call(t, s, ctx, "bead.update", paramsJSON(t, noopParams)))
+	rows := noop["results"].([]any)
+	if noop["revision"] != other["revision"] || len(rows) != 1 || rows[0].(map[string]any)["revision"] != claim["revision"] || head() != other["revision"] || post.calls != postCalls {
+		t.Fatal("no-op changed head or narrowed record/receipt revisions", noop)
+	}
+	updated := result(t, call(t, s, ctx, "bead.update", paramsJSON(t, writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "Changed"}}))))
+	postCalls = post.calls
+	replay := result(t, call(t, s, ctx, "bead.update", paramsJSON(t, noopParams)))
+	if !reflect.DeepEqual(replay, noop) || head() != updated["revision"] || post.calls != postCalls {
+		t.Fatal("no-op replay lost its exact stored response or advanced head", replay)
+	}
+	replay = result(t, call(t, s, ctx, "bead.claim", paramsJSON(t, sameClaimParams)))
+	if !reflect.DeepEqual(replay, sameClaim) || head() != updated["revision"] || post.calls != postCalls {
+		t.Fatal("same-owner claim replay changed its receipt or current head", replay)
+	}
+}
