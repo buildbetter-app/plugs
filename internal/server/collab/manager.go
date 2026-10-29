@@ -276,8 +276,14 @@ func (m *Manager) CloseSession(ctx context.Context, caller Caller, id string) er
 	if err := m.checkLocked(ctx); err != nil {
 		return err
 	}
-	if m.sessions[id] != e {
-		return failure("not_found", "live session was not found")
+	current, err := m.ownedLocked(caller, id)
+	if err != nil {
+		return err
+	}
+	// Set replaces an entry while preserving the session's lifetime. Retry
+	// admission against its current project before closing an updated entry.
+	if current != e {
+		return failure("busy", "session changed during close admission")
 	}
 	e.cancel()
 	delete(m.sessions, id)
@@ -313,8 +319,12 @@ func (m *Manager) SessionContext(ctx context.Context, caller Caller, id string) 
 	if err := m.checkLocked(ctx); err != nil {
 		return nil, err
 	}
-	if m.sessions[id] != e {
-		return nil, failure("not_found", "live session was not found")
+	current, err := m.ownedLocked(caller, id)
+	if err != nil {
+		return nil, err
+	}
+	if current != e {
+		return nil, failure("busy", "session changed during context admission")
 	}
 	return e.ctx, nil
 }

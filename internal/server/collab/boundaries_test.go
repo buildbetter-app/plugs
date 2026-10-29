@@ -372,3 +372,116 @@ func TestReadPolicyPortRevokedSessionIsNotFoundAndCannotMoveProjects(t *testing.
 		t.Fatal("denied session operations changed durable state")
 	}
 }
+
+type sessionAdmissionBarrierKey struct{}
+
+func TestSessionAdmissionConcurrentSetPreservesLifecycleAndAdmission(t *testing.T) {
+	for _, operation := range []string{"close", "context"} {
+		for _, scenario := range []struct {
+			name, project, want string
+			deny                bool
+		}{
+			{"same-project", "project-a", "busy", false},
+			{"moved-project-denied", "project-b", "busy", true},
+			{"revoked-project", "project-a", "not_found", true},
+		} {
+			t.Run(operation+"/"+scenario.name, func(t *testing.T) {
+				entered, release := make(chan struct{}), make(chan struct{})
+				var once sync.Once
+				unblock := func() { once.Do(func() { close(release) }) }
+				defer unblock()
+				var denied atomic.Bool
+				f := newFixture(t, func(c *collab.Config) {
+					c.Limits.PerPrincipal = 1
+					c.AuthorizationInstalled = func() bool { return true }
+					c.Policy = controlledPolicy{admit: func(ctx context.Context, by model.PrincipalRef, project string) (bool, error) {
+						if ctx.Value(sessionAdmissionBarrierKey{}) == true {
+							close(entered)
+							select {
+							case <-release:
+							case <-ctx.Done():
+								return false, ctx.Err()
+							}
+						}
+						return !(denied.Load() && by.ID == alice.ID && project == scenario.project), nil
+					}}
+				})
+				id := f.open(t, alice, map[string]any{})
+				caller := collab.Caller{Principal: alice}
+				existing, err := f.manager.SessionContext(context.Background(), caller, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				before := durableState(t, f)
+				run := func(ctx context.Context) (context.Context, error) {
+					if operation == "close" {
+						return nil, f.manager.CloseSession(ctx, caller, id)
+					}
+					return f.manager.SessionContext(ctx, caller, id)
+				}
+				type outcome struct {
+					ctx context.Context
+					err error
+				}
+				done := make(chan outcome, 1)
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				go func() {
+					lifetime, err := run(context.WithValue(ctx, sessionAdmissionBarrierKey{}, true))
+					done <- outcome{lifetime, err}
+				}()
+				select {
+				case <-entered:
+				case <-time.After(5 * time.Second):
+					t.Fatal("session operation did not reach the admission barrier")
+				}
+				// The real RPC update completes after the operation captured its
+				// entry and before its final lock. No scheduling sleep is involved.
+				result(t, f.call(t, alice, "presence.set", map[string]any{"sessionId": id, "_meta": map[string]any{"project": scenario.project}}))
+				denied.Store(scenario.deny)
+				unblock()
+				select {
+				case got := <-done:
+					domainCode(t, got.err, scenario.want)
+					var e *model.Error
+					if !errors.As(got.err, &e) || e.Data.Retryable != (scenario.want == "busy") || got.ctx != nil {
+						t.Fatalf("wrong retry/cancellation result: %+v", got)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("session operation did not leave the admission barrier")
+				}
+				if existing.Err() != nil || len(f.rows(t, bob, scenario.project)) != 1 {
+					t.Fatal("refused operation canceled or deleted the live session")
+				}
+				if scenario.deny {
+					lifetime, err := run(context.Background())
+					domainCode(t, err, "not_found")
+					if lifetime != nil || existing.Err() != nil || len(f.rows(t, bob, scenario.project)) != 1 {
+						t.Fatal("retry bypassed current project denial")
+					}
+					denied.Store(false)
+				}
+				retried, err := run(context.Background())
+				if err != nil {
+					t.Fatal("authorized retry failed", err)
+				}
+				if operation == "context" {
+					if retried != existing || retried.Err() != nil {
+						t.Fatal("retry did not return the original live session context")
+					}
+					result(t, f.call(t, alice, "session.close", map[string]any{"sessionId": id}))
+				}
+				if existing.Err() == nil || len(f.rows(t, bob, scenario.project)) != 0 {
+					t.Fatal("successful close did not cancel and delete the session")
+				}
+				code(t, f.call(t, alice, "session.close", map[string]any{"sessionId": id}), "not_found")
+				_, err = f.manager.SessionContext(context.Background(), caller, id)
+				domainCode(t, err, "not_found")
+				f.open(t, alice, map[string]any{}) // Closed session released its quota.
+				if string(before) != string(durableState(t, f)) {
+					t.Fatal("session overlap changed durable state")
+				}
+			})
+		}
+	}
+}
