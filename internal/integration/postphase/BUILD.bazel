@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "postphase_test",
+    srcs = ["postphase_test.go"],
+    deps = [
+        "//internal/core/events",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/server/events",
+        "//internal/server/pluginhost",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//pluginapi",
+        "//sdk/go:sdk_go",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
