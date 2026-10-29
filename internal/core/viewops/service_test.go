@@ -151,3 +151,11 @@ func TestRunCountsUnreadableBlockersWithoutLeakingRows(t *testing.T) {
 		t.Fatalf("unexpected authorized dependent result: %+v", result)
 	}
 }
+
+func TestParseQueryRefusesSymbolicAndAlias(t *testing.T) {
+	_, err := parseQuery("id=a&&type=issue")
+	var typed *model.Error
+	if !errors.As(err, &typed) || typed.Data.Code != "invalid_params" {
+		t.Fatalf("got %T %v, want invalid_params", err, err)
+	}
+}

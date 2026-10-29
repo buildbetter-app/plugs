@@ -22,7 +22,6 @@ func parseQuery(query string) ([]queryTerm, error) {
 	}
 	// The admitted slice is deliberately small and closed: equality clauses
 	// joined by AND. No unknown operator is ignored or treated as a match-all.
-	query = strings.ReplaceAll(query, "&&", " and ")
 	parts := strings.Fields(query)
 	terms := make([]queryTerm, 0, len(parts))
 	wantTerm := true
@@ -39,7 +38,7 @@ func parseQuery(query string) ([]queryTerm, error) {
 		}
 		key, value, ok := strings.Cut(part, "=")
 		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
-		if !ok || key == "" || value == "" || strings.ContainsAny(value, " \t\r\n") {
+		if !ok || key == "" || value == "" || strings.ContainsAny(value, " \t\r\n") || strings.Contains(value, "&&") {
 			return nil, failure("invalid_params", "unsupported view query; use equality clauses joined by AND")
 		}
 		switch key {
