@@ -117,6 +117,9 @@ func TestLockKeysRejectMissingAndMixedForms(t *testing.T) {
 		if err := ValidateLockSet(LockSet{{Key: key, Mode: LockUpdate}}); err == nil {
 			t.Errorf("invalid key %d accepted in lock set", i)
 		}
+		if err := ValidateLockKeys([]LockKey{key}); err == nil {
+			t.Errorf("invalid key %d accepted in snapshot/commit keys", i)
+		}
 	}
 }
 
