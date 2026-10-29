@@ -197,6 +197,14 @@ internal/core/ontologymigration/planner.go
 internal/core/ontologymigration/planner_test.go
 internal/core/ontologymigration/types.go
 internal/core/ontologymigration/validation_test.go
+internal/core/ontologyops/BUILD.bazel
+internal/core/ontologyops/README.md
+internal/core/ontologyops/plan.go
+internal/core/ontologyops/reads.go
+internal/core/ontologyops/rows.go
+internal/core/ontologyops/service_test.go
+internal/core/ontologyops/source.go
+internal/core/ontologyops/types.go
 internal/core/pipeline/BUILD.bazel
 internal/core/pipeline/apply.go
 internal/core/pipeline/audit.go
@@ -256,6 +264,10 @@ internal/server/events/dispatcher_test.go
 internal/server/events/integration_test.go
 internal/server/events/service.go
 internal/server/events/storage.go
+internal/server/ontologyrpc/BUILD.bazel
+internal/server/ontologyrpc/README.md
+internal/server/ontologyrpc/bind.go
+internal/server/ontologyrpc/integration_test.go
 internal/server/pluginhost/BUILD.bazel
 internal/server/pluginhost/adapters.go
 internal/server/pluginhost/call.go
