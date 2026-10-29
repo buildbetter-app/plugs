@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "ontology",
+    srcs = ["compile.go", "default.go", "runtime.go", "types.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/core/ontology",
+    deps = ["//internal/core/model"],
+    visibility = ["//internal:__subpackages__"],
+)
+
+go_test(
+    name = "ontology_test",
+    srcs = ["ontology_test.go"],
+    embed = [":ontology"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
