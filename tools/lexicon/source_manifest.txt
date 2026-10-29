@@ -260,6 +260,10 @@ internal/integration/apikey/http_test.go
 internal/integration/audit/BUILD.bazel
 internal/integration/audit/README.md
 internal/integration/audit/integration_test.go
+internal/integration/migrationpre/BUILD.bazel
+internal/integration/migrationpre/README.md
+internal/integration/migrationpre/compose.go
+internal/integration/migrationpre/integration_test.go
 internal/integration/sqliteacceptance/BUILD.bazel
 internal/integration/sqliteacceptance/README.md
 internal/integration/sqliteacceptance/durability_test.go
