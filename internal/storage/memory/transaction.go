@@ -449,7 +449,10 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 			copy.Revision = revision
 			next.records[id] = copy
 			next.kinds[id] = copy.Kind
-			version.Base = len(next.versions[id])%driver.VersionBaseEvery == 0
+			previous := next.versions[id]
+			// A tombstone may occupy a scheduled base slot. Start a new
+			// lifetime with a full image so replay never crosses that gap.
+			version.Base = len(previous)%driver.VersionBaseEvery == 0 || len(previous) > 0 && previous[len(previous)-1].Deleted
 			if version.Base {
 				version.Body = bytes.Clone(copy.Body)
 			} else {
