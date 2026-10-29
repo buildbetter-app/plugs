@@ -26,6 +26,6 @@ The fixture seeds only the protected ontology record. Beads and conditional
 edges are created by the actual service or Writer. This proves the guarded
 conditional notice path through the actual adapter and memory runtime.
 Remaining B02 obligations include ordinary `blocks`, parent-child and
-`waits-for` behavior, transitive/diamond graphs and durable/wisp readiness.
+`waits-for` behavior, transitive/diamond graphs and durable/ephemeral readiness.
 Public RPC/transport wiring, an installed permission chain, SQL persistence,
 process restart and failover are outside this target's acceptance claim.
