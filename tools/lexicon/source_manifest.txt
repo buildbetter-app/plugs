@@ -248,6 +248,13 @@ spec/BUILD.bazel
 spec/README.md
 spec/assertions_test.go
 spec/cli_test.go
+spec/extended/BUILD.bazel
+spec/extended/README.md
+spec/extended/fixture_test.go
+spec/extended/graph_test.go
+spec/extended/lifecycle_test.go
+spec/extended/paging_test.go
+spec/extended/time_test.go
 spec/fixture_test.go
 spec/pipeline_test.go
 spec/rpc_test.go
