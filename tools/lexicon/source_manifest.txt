@@ -333,6 +333,14 @@ internal/integration/ontologysql/README.md
 internal/integration/ontologysql/integration_test.go
 internal/integration/plugingrants/BUILD.bazel
 internal/integration/plugingrants/integration_test.go
+internal/integration/postgresacceptance/BUILD.bazel
+internal/integration/postgresacceptance/README.md
+internal/integration/postgresacceptance/atomic_test.go
+internal/integration/postgresacceptance/engine_test.go
+internal/integration/postgresacceptance/fixture_test.go
+internal/integration/postgresacceptance/history_test.go
+internal/integration/postgresacceptance/receipts_test.go
+internal/integration/postgresacceptance/refusal_test.go
 internal/integration/postphase/BUILD.bazel
 internal/integration/postphase/README.md
 internal/integration/postphase/delivery_test.go
