@@ -1,0 +1,415 @@
+package postgres
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/jackc/pgx/v5/stdlib"
+)
+
+type transaction struct {
+	*reader
+	lease           *activeLease
+	locked, hasHead bool
+	acquired        driver.LockSet
+	records         map[string]*driver.Record
+	identities      map[string]driver.Record
+	derived         map[string]driver.LockState
+	blobs           map[driver.Hash][]byte
+	bumps           map[string]driver.LockKey
+	done            chan struct{}
+}
+
+func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	if err := s.check(ctx); err != nil {
+		return nil, err
+	}
+	l, err := s.checkLease(ctx, s.db, lease, false)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var cleanupDone <-chan struct{}
+	if err = conn.Raw(func(raw any) error {
+		cleanupDone = raw.(*stdlib.Conn).Conn().PgConn().CleanupDone()
+		return nil
+	}); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	tx, err := conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	m, err := readMeta(ctx, tx, "")
+	if err != nil {
+		_ = tx.Rollback()
+		_ = conn.Close()
+		return nil, err
+	}
+	r := &reader{store: s, sql: tx, meta: m, conn: conn, cleanupDone: cleanupDone}
+	r.at, _ = m.Head.Uint64()
+	t := &transaction{reader: r, lease: l, records: make(map[string]*driver.Record), identities: make(map[string]driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), bumps: make(map[string]driver.LockKey), done: make(chan struct{})}
+	r.writer = t
+	if err = s.track(r); err != nil {
+		_ = r.finish()
+		return nil, err
+	}
+	// Loss also releases idle transactions, so an old holder cannot retain the
+	// head/record locks forever while a new server waits to publish.
+	go func() {
+		select {
+		case <-l.Lost():
+			_ = t.Close()
+		case <-t.done:
+		}
+	}()
+	return t, nil
+}
+
+func sqlState(err error) string {
+	var state interface{ SQLState() string }
+	if errors.As(err, &state) {
+		return state.SQLState()
+	}
+	return ""
+}
+func (t *transaction) Rollback(context.Context) error { return t.Close() }
+
+func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (_ []driver.LockState, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	defer func() {
+		if err == nil {
+			return
+		}
+		// pgx can close a timed-out connection before the context's timer has
+		// recorded Err(). Preserve the public deadline result at every SQL
+		// boundary, including lease checks and savepoint release, and release
+		// any acquired prefix before returning a cancelled acquisition.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = ctxErr
+		} else if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			err = context.DeadlineExceeded
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			_ = t.finish()
+		}
+	}()
+	if err := t.check(ctx); err != nil {
+		return nil, err
+	}
+	if t.locked || t.hasHead {
+		return nil, fmt.Errorf("postgres: acquire the complete lock set once")
+	}
+	if err := driver.ValidateLockSet(requests); err != nil {
+		return nil, err
+	}
+	requests, err = copied(requests)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(requests))
+	for i, request := range requests {
+		ids[i], err = keyID(request.Key)
+		if err != nil {
+			return nil, err
+		}
+	}
+	// Placeholder rows carry no graph state. Commit their creation independently
+	// so missing keys can be shared/locked across sessions without hash collisions.
+	for _, id := range ids {
+		if _, err = t.store.db.ExecContext(ctx, `INSERT INTO plug_postgres.locks (key) VALUES ($1) ON CONFLICT DO NOTHING`, []byte(id)); err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, err
+		}
+	}
+	for {
+		if err = t.check(ctx); err != nil {
+			_ = t.finish()
+			return nil, err
+		}
+		if _, err = t.sql.ExecContext(ctx, "SAVEPOINT complete_lock_set"); err != nil {
+			_ = t.finish()
+			return nil, err
+		}
+		selected := make(driver.LockSet, 0, len(requests))
+		busy := false
+		for i, request := range requests {
+			clause := " FOR UPDATE NOWAIT"
+			if request.Mode == driver.LockShare {
+				clause = " FOR SHARE NOWAIT"
+			} else if request.Mode == driver.LockSkipLocked {
+				clause = " FOR UPDATE SKIP LOCKED"
+			}
+			var ignored []byte
+			err = t.sql.QueryRowContext(ctx, `SELECT key FROM plug_postgres.locks WHERE key=$1`+clause, []byte(ids[i])).Scan(&ignored)
+			if errors.Is(err, sql.ErrNoRows) && request.Mode == driver.LockSkipLocked {
+				err = nil
+				continue
+			}
+			if err != nil {
+				busy = sqlState(err) == "55P03"
+				break
+			}
+			selected = append(selected, request)
+		}
+		if err != nil {
+			// NOWAIT avoids holding a prefix while another member is unavailable.
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, rollbackErr := t.sql.ExecContext(cleanup, "ROLLBACK TO SAVEPOINT complete_lock_set")
+			if rollbackErr == nil {
+				_, rollbackErr = t.sql.ExecContext(cleanup, "RELEASE SAVEPOINT complete_lock_set")
+			}
+			cancel()
+			if rollbackErr != nil {
+				_ = t.finish()
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				return nil, err
+			}
+			if ctx.Err() != nil {
+				_ = t.finish()
+				return nil, ctx.Err()
+			}
+			if !busy {
+				_ = t.finish()
+				return nil, err
+			}
+			timer := time.NewTimer(2 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				_ = t.finish()
+				return nil, ctx.Err()
+			case <-t.lease.Lost():
+				timer.Stop()
+				_ = t.finish()
+				return nil, driver.ErrFenced{ExpectedEpoch: t.lease.epoch}
+			case <-timer.C:
+				continue
+			}
+		}
+		if _, err = t.sql.ExecContext(ctx, "RELEASE SAVEPOINT complete_lock_set"); err != nil {
+			_ = t.finish()
+			return nil, err
+		}
+		m, err := readMeta(ctx, t.sql, "")
+		if err != nil {
+			_ = t.finish()
+			return nil, err
+		}
+		t.meta = m
+		t.at, _ = m.Head.Uint64()
+		states := make([]driver.LockState, 0, len(selected))
+		for _, request := range selected {
+			state, err := t.observe(ctx, request.Key)
+			if err != nil {
+				_ = t.finish()
+				return nil, err
+			}
+			states = append(states, state)
+		}
+		t.acquired = selected
+		t.locked = true
+		return states, nil
+	}
+}
+
+func (t *transaction) Head(ctx context.Context) (model.Revision, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return "", err
+	}
+	if !t.locked {
+		return "", fmt.Errorf("postgres: Head requires complete lock set")
+	}
+	if t.hasHead {
+		return model.Natural64(t.at), nil
+	}
+	m, err := readMeta(ctx, t.sql, " FOR UPDATE")
+	if err != nil {
+		return "", err
+	}
+	t.meta = m
+	t.at, _ = m.Head.Uint64()
+	t.hasHead = true
+	return m.Head, nil
+}
+func (t *transaction) writable(key driver.LockKey) error {
+	if !t.locked {
+		return fmt.Errorf("postgres: write requires complete lock set")
+	}
+	want, err := keyID(key)
+	if err != nil {
+		return err
+	}
+	for _, request := range t.acquired {
+		id, _ := keyID(request.Key)
+		if id == want && request.Mode != driver.LockShare {
+			return nil
+		}
+	}
+	return fmt.Errorf("postgres: missing update lock for %s", want)
+}
+func (t *transaction) Put(ctx context.Context, record driver.Record) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return err
+	}
+	key, err := recordKey(record.Ref)
+	if err != nil {
+		return err
+	}
+	if err = t.writable(driver.LockKey{Kind: driver.LockRecord, Ref: &record.Ref}); err != nil {
+		return err
+	}
+	if !canonical(record.Kind) || !json.Valid(record.Body) {
+		return fmt.Errorf("postgres: record requires canonical kind and valid JSON body")
+	}
+	previous, exists, err := t.recordAt(ctx, key)
+	if err != nil {
+		return err
+	}
+	if exists && previous.record.Kind != record.Kind {
+		return fmt.Errorf("%w: postgres cannot change record kind", driver.ErrUnsupported)
+	}
+	if staged, ok := t.records[key]; ok && staged != nil && staged.Kind != record.Kind {
+		return fmt.Errorf("%w: postgres cannot change staged kind", driver.ErrUnsupported)
+	}
+	record.Revision = model.Natural64(0)
+	if exists {
+		record.Revision = previous.record.Revision
+	}
+	if record.Ref.IsID() {
+		record.Ref.Branch = model.Natural64(0)
+	}
+	record.Body = bytes.Clone(record.Body)
+	t.records[key] = &record
+	t.identities[key] = driver.Record{Ref: record.Ref, Kind: record.Kind}
+	return nil
+}
+func (t *transaction) Delete(ctx context.Context, ref driver.Ref) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return err
+	}
+	key, err := recordKey(ref)
+	if err != nil {
+		return err
+	}
+	if err = t.writable(driver.LockKey{Kind: driver.LockRecord, Ref: &ref}); err != nil {
+		return err
+	}
+	if staged, ok := t.records[key]; ok {
+		if staged == nil {
+			return driver.ErrNotFound
+		}
+	} else {
+		value, ok, err := t.recordAt(ctx, key)
+		if err != nil {
+			return err
+		}
+		if !ok || value.deleted {
+			return driver.ErrNotFound
+		}
+		t.identities[key] = driver.Record{Ref: value.record.Ref, Kind: value.record.Kind}
+	}
+	t.records[key] = nil
+	return nil
+}
+func (t *transaction) PutBlob(ctx context.Context, data []byte) (driver.Hash, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return "", err
+	}
+	if !t.locked {
+		return "", fmt.Errorf("postgres: blob requires complete lock set")
+	}
+	hash := sha256.Sum256(data)
+	id := driver.Hash(hex.EncodeToString(hash[:]))
+	t.blobs[id] = append([]byte{}, data...)
+	return id, nil
+}
+func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return err
+	}
+	if err := (driver.DerivedRowKey{Table: table, Key: "validation"}).Validate(); err != nil {
+		return err
+	}
+	for _, rows := range [][]driver.DerivedRow{del, add} {
+		for _, row := range rows {
+			if err := t.writable(driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}); err != nil {
+				return err
+			}
+		}
+	}
+	for _, row := range del {
+		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
+		id, _ := keyID(key)
+		t.derived[id] = driver.LockState{Key: key, Revision: model.Natural64(0)}
+	}
+	for _, row := range add {
+		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
+		id, _ := keyID(key)
+		copy := driver.DerivedRow{Key: row.Key, Value: bytes.Clone(row.Value)}
+		t.derived[id] = driver.LockState{Key: key, Revision: model.Natural64(0), Derived: &copy, Present: true}
+	}
+	return nil
+}
+func (t *transaction) bump(ctx context.Context, keys []driver.LockKey) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if err := t.writable(key); err != nil {
+			return err
+		}
+	}
+	for _, key := range keys {
+		id, _ := keyID(key)
+		t.bumps[id] = key
+	}
+	return nil
+}
+func (t *transaction) BumpSentinels(ctx context.Context, values []driver.Sentinel) error {
+	keys := make([]driver.LockKey, len(values))
+	for i, value := range values {
+		keys[i] = driver.LockKey{Kind: driver.LockSentinel, Sentinel: value}
+	}
+	return t.bump(ctx, keys)
+}
+func (t *transaction) BumpReadFacts(ctx context.Context, values []driver.ReadFact) error {
+	keys := make([]driver.LockKey, len(values))
+	for i, value := range values {
+		keys[i] = driver.LockKey{Kind: driver.LockReadFact, Fact: value}
+	}
+	return t.bump(ctx, keys)
+}
+
+var _ driver.WriteTx = (*transaction)(nil)

@@ -1,0 +1,5921 @@
+{
+  "components": {
+    "schemas": {
+      "Meta": {
+        "type": "object",
+        "description": "Per-call transport metadata. Identity is never accepted here.",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "Project scope; defaults from the principal or server."
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 16,
+            "description": "At least 128 bits of caller or SDK randomness for writes."
+          },
+          "deadlineMs": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "traceparent": {
+            "type": "string"
+          },
+          "dryRun": {
+            "type": "boolean"
+          },
+          "return": {
+            "type": "string",
+            "enum": [
+              "full",
+              "minimal"
+            ]
+          },
+          "agent": {
+            "type": "string",
+            "description": "Unverified client label used only to scope anonymous leases and idempotency."
+          },
+          "replayed": {
+            "type": "boolean",
+            "readOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "Ref": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "branch": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "description": "Canonical wire reference. Exactly one of id or key is present; branch is valid only with id."
+      },
+      "ExpectRevision": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "ref",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "ExpectFieldHash": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "field": {
+            "type": "string"
+          },
+          "hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "field",
+          "hash"
+        ],
+        "additionalProperties": false
+      },
+      "Expect": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ExpectRevision"
+          },
+          {
+            "$ref": "#/components/schemas/ExpectFieldHash"
+          }
+        ]
+      },
+      "Filter": {
+        "type": "object",
+        "description": "The one filter shape shared by list, event, and view methods.",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The query grammar string."
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "viewId": {
+            "type": "string",
+            "description": "View membership for subscriptions and watches."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Principal": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "anonymous",
+              "user",
+              "agent",
+              "service",
+              "plugin",
+              "system"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "sponsor": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Principal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "caveats": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "Lease": {
+        "type": "object",
+        "properties": {
+          "holder": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ttlMs": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "holder",
+          "expiresAt",
+          "ttlMs",
+          "epoch"
+        ],
+        "additionalProperties": false
+      },
+      "Attachment": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "link",
+              "commit",
+              "blob",
+              "log"
+            ]
+          },
+          "uri": {
+            "type": "string"
+          },
+          "contentRef": {
+            "type": "string"
+          },
+          "mediaType": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "mediaType",
+          "summary"
+        ],
+        "additionalProperties": false
+      },
+      "Bead": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "parent": {
+            "type": "string"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "assignee": {
+            "type": "string"
+          },
+          "hiddenBlockers": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "readinessPending": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "revision"
+        ],
+        "additionalProperties": true
+      },
+      "Record": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "ref",
+          "kind",
+          "revision",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "Warning": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/WarningCode"
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "OpResult": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "record": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "setBy": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "ref",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "Violation": {
+        "type": "object",
+        "properties": {
+          "guard": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "guard",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "Commit": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OpResult"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Warning"
+            }
+          },
+          "wouldCommit": {
+            "type": "boolean"
+          },
+          "violations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Violation"
+            }
+          },
+          "leaseExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "leaseTtlMs": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "revision",
+          "results",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "WriteResponse": {
+        "$ref": "#/components/schemas/Commit"
+      },
+      "ChangeSet": {
+        "type": "object",
+        "properties": {
+          "ops": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/CreateOp"
+                },
+                {
+                  "$ref": "#/components/schemas/PatchOp"
+                },
+                {
+                  "$ref": "#/components/schemas/ReparentOp"
+                },
+                {
+                  "$ref": "#/components/schemas/LinkOp"
+                },
+                {
+                  "$ref": "#/components/schemas/CommentOp"
+                },
+                {
+                  "$ref": "#/components/schemas/AttachOp"
+                },
+                {
+                  "$ref": "#/components/schemas/DeleteOp"
+                },
+                {
+                  "$ref": "#/components/schemas/SetMetaOp"
+                }
+              ]
+            },
+            "maxItems": 1000
+          },
+          "expect": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Expect"
+            }
+          }
+        },
+        "required": [
+          "ops"
+        ],
+        "additionalProperties": false
+      },
+      "CreateOp": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "create"
+          },
+          "key": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "parent": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "type",
+          "fields"
+        ],
+        "additionalProperties": false
+      },
+      "PatchOp": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "patch"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "kind",
+          "target",
+          "fields"
+        ],
+        "additionalProperties": false
+      },
+      "ReparentOp": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "reparent"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "parent": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "target"
+        ],
+        "additionalProperties": false
+      },
+      "LinkOp": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": [
+              "link",
+              "unlink"
+            ]
+          },
+          "from": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "to": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "linkKind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "from",
+          "to",
+          "linkKind"
+        ],
+        "additionalProperties": false
+      },
+      "CommentOp": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "comment"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "target",
+          "body"
+        ],
+        "additionalProperties": false
+      },
+      "AttachOp": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "attach"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "attachment": {
+            "$ref": "#/components/schemas/Attachment"
+          }
+        },
+        "required": [
+          "kind",
+          "target",
+          "attachment"
+        ],
+        "additionalProperties": false
+      },
+      "DeleteOp": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "delete"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Ref"
+          }
+        },
+        "required": [
+          "kind",
+          "target"
+        ],
+        "additionalProperties": false
+      },
+      "SetMetaOp": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "const": "setMeta"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "key": {
+            "type": "string"
+          },
+          "value": {}
+        },
+        "required": [
+          "kind",
+          "target",
+          "key",
+          "value"
+        ],
+        "additionalProperties": false
+      },
+      "PageInfo": {
+        "type": "object",
+        "properties": {
+          "nextCursor": {
+            "type": "string"
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/AsOf"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AsOf": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "incarnation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "BeadPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Bead"
+            }
+          },
+          "nextCursor": {
+            "type": "string"
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/AsOf"
+          }
+        },
+        "required": [
+          "items",
+          "asOf"
+        ],
+        "additionalProperties": false
+      },
+      "BeadGetResult": {
+        "type": "object",
+        "properties": {
+          "bead": {
+            "$ref": "#/components/schemas/Bead"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Attachment"
+            }
+          },
+          "lease": {
+            "$ref": "#/components/schemas/Lease"
+          }
+        },
+        "required": [
+          "bead",
+          "attachments"
+        ],
+        "additionalProperties": false
+      },
+      "ClaimResult": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OpResult"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Warning"
+            }
+          },
+          "leaseExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "leaseTtlMs": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "revision",
+          "results",
+          "warnings",
+          "leaseExpiresAt",
+          "leaseTtlMs"
+        ],
+        "additionalProperties": false
+      },
+      "HeartbeatResult": {
+        "type": "object",
+        "properties": {
+          "leaseExpiresAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "leaseExpiresAt"
+        ],
+        "additionalProperties": false
+      },
+      "TransitionsResult": {
+        "type": "object",
+        "properties": {
+          "transitions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string"
+                },
+                "violations": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Violation"
+                  }
+                }
+              },
+              "required": [
+                "status",
+                "violations"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "transitions"
+        ],
+        "additionalProperties": false
+      },
+      "UploadResult": {
+        "type": "object",
+        "properties": {
+          "contentRef": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "contentRef"
+        ],
+        "additionalProperties": false
+      },
+      "WhoAmIResult": {
+        "type": "object",
+        "properties": {
+          "principal": {
+            "$ref": "#/components/schemas/Principal"
+          },
+          "sponsor": {
+            "$ref": "#/components/schemas/Principal"
+          },
+          "caveats": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "defaultProject": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "principal"
+        ],
+        "additionalProperties": false
+      },
+      "BriefResult": {
+        "type": "object",
+        "properties": {
+          "whoami": {
+            "$ref": "#/components/schemas/WhoAmIResult"
+          },
+          "claims": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Bead"
+            }
+          },
+          "readyTop": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Bead"
+            }
+          },
+          "recentChanges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
+          },
+          "ontologySummary": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "conventions": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "whoami",
+          "claims",
+          "readyTop",
+          "recentChanges",
+          "ontologySummary",
+          "conventions"
+        ],
+        "additionalProperties": false
+      },
+      "EventCause": {
+        "type": "object",
+        "properties": {
+          "root": {
+            "type": "string"
+          },
+          "depth": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8
+          },
+          "chain": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "root",
+          "depth",
+          "chain"
+        ],
+        "additionalProperties": false
+      },
+      "Event": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/DurableEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ControlEvent"
+          }
+        ]
+      },
+      "EventPage": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
+          },
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "events",
+          "cursor"
+        ],
+        "additionalProperties": false
+      },
+      "Subscription": {
+        "type": "object",
+        "properties": {
+          "subscriptionId": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "cursor"
+        ],
+        "additionalProperties": false
+      },
+      "EventNotify": {
+        "type": "object",
+        "properties": {
+          "subscriptionId": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
+          },
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "events",
+          "cursor"
+        ],
+        "additionalProperties": false
+      },
+      "ViewDefinition": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "filter": {
+            "$ref": "#/components/schemas/Filter"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "groupBy": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sort": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "budgetTokens": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "filter"
+        ],
+        "additionalProperties": false
+      },
+      "View": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "definition": {
+            "$ref": "#/components/schemas/ViewDefinition"
+          },
+          "createdBy": {
+            "$ref": "#/components/schemas/Principal"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "definition"
+        ],
+        "additionalProperties": false
+      },
+      "ViewGroup": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Bead"
+            }
+          },
+          "elided": {
+            "type": "object",
+            "properties": {
+              "count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "reason": {
+                "type": "string"
+              },
+              "continueWith": {
+                "type": "object",
+                "properties": {
+                  "method": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                "required": [
+                  "method",
+                  "params"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "count",
+              "reason",
+              "continueWith"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "key",
+          "count",
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "ViewResult": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Bead"
+            }
+          },
+          "nextCursor": {
+            "type": "string"
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/AsOf"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ViewGroup"
+            }
+          }
+        },
+        "required": [
+          "items",
+          "asOf"
+        ],
+        "additionalProperties": false
+      },
+      "ViewExplainResult": {
+        "type": "object",
+        "properties": {
+          "viewId": {
+            "type": "string"
+          },
+          "itemId": {
+            "type": "string"
+          },
+          "included": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "hiddenBlockers": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "viewId",
+          "itemId",
+          "included",
+          "reasons"
+        ],
+        "additionalProperties": false
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "principal": {
+            "$ref": "#/components/schemas/Principal"
+          },
+          "openedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "onBehalfOf": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "principal",
+          "openedAt"
+        ],
+        "additionalProperties": false
+      },
+      "Presence": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "principal": {
+            "$ref": "#/components/schemas/Principal"
+          },
+          "focus": {
+            "type": "string"
+          },
+          "workingOn": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "onBehalfOf": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "principal"
+        ],
+        "additionalProperties": false
+      },
+      "Health": {
+        "type": "object",
+        "properties": {
+          "driver": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "active",
+              "standby",
+              "unknown"
+            ]
+          },
+          "replicationLagMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lastBackupCheckpoint": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "leaseEpoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "head": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "incarnation": {
+            "type": "string"
+          },
+          "ontology": {
+            "type": "string"
+          },
+          "pluginSet": {
+            "type": "string"
+          },
+          "authorizationChain": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Warning"
+            }
+          }
+        },
+        "required": [
+          "driver",
+          "role",
+          "leaseEpoch",
+          "head",
+          "incarnation",
+          "ontology",
+          "pluginSet",
+          "authorizationChain"
+        ],
+        "additionalProperties": false
+      },
+      "Plan": {
+        "type": "object",
+        "properties": {
+          "planDigest": {
+            "type": "string"
+          },
+          "baseRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "changes": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "violations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Violation"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Warning"
+            }
+          },
+          "requiresHuman": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "planDigest",
+          "baseRevision",
+          "changes",
+          "violations"
+        ],
+        "additionalProperties": false
+      },
+      "OntologyDocument": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "OntologyProblem": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "path",
+          "code",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "OntologyResult": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "document": {
+            "$ref": "#/components/schemas/OntologyDocument"
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OntologyProblem"
+            }
+          },
+          "drifted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "HistoryVersion": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "base": {
+            "type": "boolean"
+          },
+          "patch": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "principal": {
+            "$ref": "#/components/schemas/Principal"
+          }
+        },
+        "required": [
+          "ref",
+          "revision",
+          "base",
+          "patch",
+          "createdAt"
+        ],
+        "additionalProperties": false
+      },
+      "Changeset": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "branch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "incarnation": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "write",
+              "derived",
+              "revert",
+              "migration",
+              "redact",
+              "restore"
+            ]
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "principal": {
+            "$ref": "#/components/schemas/Principal"
+          },
+          "chain": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "idempotencyKey": {
+            "type": "string"
+          },
+          "mutators": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EventDescriptor"
+            },
+            "maxItems": 1000,
+            "minItems": 1
+          }
+        },
+        "required": [
+          "revision",
+          "branch",
+          "incarnation",
+          "kind",
+          "time",
+          "principal",
+          "chain",
+          "changes"
+        ],
+        "additionalProperties": false,
+        "x-event-order": "Absent events means legacy ChangeRecord indexes. Present events is the complete atomic plan. No partial plans, empty plans, synthetic dependent changes, or truncation. Public resume tuple remains incarnation/revision/index; projections consume the complete revision."
+      },
+      "DumpPage": {
+        "type": "object",
+        "properties": {
+          "dumpId": {
+            "type": "string"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "data": {
+            "type": "string",
+            "description": "Base64-encoded tar page."
+          },
+          "nextPage": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "done": {
+            "type": "boolean"
+          },
+          "sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "dumpId",
+          "page",
+          "data",
+          "done"
+        ],
+        "additionalProperties": false
+      },
+      "RestoreStatus": {
+        "type": "object",
+        "properties": {
+          "restoreId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "receiving",
+              "validating",
+              "applying",
+              "complete",
+              "failed"
+            ]
+          },
+          "receivedPages": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Warning"
+            }
+          },
+          "incarnation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "restoreId",
+          "state",
+          "receivedPages"
+        ],
+        "additionalProperties": false
+      },
+      "GateResult": {
+        "type": "object",
+        "properties": {
+          "commit": {
+            "$ref": "#/components/schemas/Commit"
+          },
+          "state": {
+            "type": "string"
+          },
+          "approvals": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "commit",
+          "state",
+          "approvals"
+        ],
+        "additionalProperties": false
+      },
+      "SyncStatus": {
+        "type": "object",
+        "properties": {
+          "destination": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "paused",
+              "healthy",
+              "degraded"
+            ]
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "lastPushAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastError": {
+            "type": "string"
+          },
+          "drift": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "destination",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "SyncResult": {
+        "type": "object",
+        "properties": {
+          "destination": {
+            "type": "string"
+          },
+          "accepted": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "skipped": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "drift": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Warning"
+            }
+          }
+        },
+        "required": [
+          "destination",
+          "accepted",
+          "skipped",
+          "drift"
+        ],
+        "additionalProperties": false
+      },
+      "Memory": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "key",
+          "content",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "MemoryPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Memory"
+            }
+          },
+          "nextCursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorData": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "retryAfterMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "hint": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "code",
+          "retryable"
+        ],
+        "additionalProperties": false
+      },
+      "EventGapDetails": {
+        "type": "object",
+        "properties": {
+          "fromIncarnation": {
+            "type": "string"
+          },
+          "toIncarnation": {
+            "type": "string"
+          },
+          "floor": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "restore",
+              "failover",
+              "history_floor",
+              "checkpoint"
+            ]
+          }
+        },
+        "required": [
+          "fromIncarnation",
+          "toIncarnation",
+          "floor",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "WatchDeltaDetails": {
+        "type": "object",
+        "properties": {
+          "subscriptionId": {
+            "type": "string"
+          },
+          "fromCursor": {
+            "type": "string"
+          },
+          "toCursor": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "fromCursor",
+          "toCursor",
+          "events"
+        ],
+        "additionalProperties": false
+      },
+      "WatchResetDetails": {
+        "type": "object",
+        "properties": {
+          "subscriptionId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "policy_changed",
+              "ontology_changed",
+              "view_changed",
+              "overflow",
+              "lag",
+              "visibility_changed",
+              "view_deleted"
+            ]
+          },
+          "snapshotCursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "reason",
+          "snapshotCursor"
+        ],
+        "additionalProperties": false
+      },
+      "VisibilityLostDetails": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "authorization_changed",
+              "redacted",
+              "resource_deleted"
+            ]
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "RPCRejectedDetails": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "notification_no_result"
+            ]
+          }
+        },
+        "required": [
+          "requestId",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "DurableEvent": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/OrdinaryDurableEvent"
+          },
+          {
+            "$ref": "#/components/schemas/DependencyConditionUnmetEvent"
+          }
+        ]
+      },
+      "ControlEventBase": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "const": "control"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "incarnation": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "event.gap",
+              "watch.delta",
+              "watch.reset",
+              "visibility.lost",
+              "rpc.rejected"
+            ]
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "derived": {
+            "const": false
+          }
+        },
+        "required": [
+          "category",
+          "cursor",
+          "incarnation",
+          "revision",
+          "index",
+          "type",
+          "details",
+          "derived"
+        ]
+      },
+      "ControlEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "control"
+              },
+              "cursor": {
+                "type": "string"
+              },
+              "incarnation": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": {
+                "const": "event.gap"
+              },
+              "details": {
+                "$ref": "#/components/schemas/EventGapDetails"
+              },
+              "derived": {
+                "const": false
+              }
+            },
+            "required": [
+              "category",
+              "cursor",
+              "incarnation",
+              "revision",
+              "index",
+              "type",
+              "details",
+              "derived"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "control"
+              },
+              "cursor": {
+                "type": "string"
+              },
+              "incarnation": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": {
+                "const": "watch.delta"
+              },
+              "details": {
+                "$ref": "#/components/schemas/WatchDeltaDetails"
+              },
+              "derived": {
+                "const": false
+              }
+            },
+            "required": [
+              "category",
+              "cursor",
+              "incarnation",
+              "revision",
+              "index",
+              "type",
+              "details",
+              "derived"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "control"
+              },
+              "cursor": {
+                "type": "string"
+              },
+              "incarnation": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": {
+                "const": "watch.reset"
+              },
+              "details": {
+                "$ref": "#/components/schemas/WatchResetDetails"
+              },
+              "derived": {
+                "const": false
+              }
+            },
+            "required": [
+              "category",
+              "cursor",
+              "incarnation",
+              "revision",
+              "index",
+              "type",
+              "details",
+              "derived"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "control"
+              },
+              "cursor": {
+                "type": "string"
+              },
+              "incarnation": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": {
+                "const": "visibility.lost"
+              },
+              "details": {
+                "$ref": "#/components/schemas/VisibilityLostDetails"
+              },
+              "derived": {
+                "const": false
+              },
+              "resource": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "category",
+              "cursor",
+              "incarnation",
+              "revision",
+              "index",
+              "type",
+              "details",
+              "derived",
+              "resource"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "control"
+              },
+              "cursor": {
+                "type": "string"
+              },
+              "incarnation": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": {
+                "const": "rpc.rejected"
+              },
+              "details": {
+                "$ref": "#/components/schemas/RPCRejectedDetails"
+              },
+              "derived": {
+                "const": false
+              }
+            },
+            "required": [
+              "category",
+              "cursor",
+              "incarnation",
+              "revision",
+              "index",
+              "type",
+              "details",
+              "derived"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "control"
+              },
+              "cursor": {
+                "type": "string"
+              },
+              "incarnation": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": {
+                "const": "store.restored"
+              },
+              "details": {
+                "$ref": "#/components/schemas/StoreRestoredDetails"
+              },
+              "derived": {
+                "const": false
+              }
+            },
+            "required": [
+              "category",
+              "cursor",
+              "incarnation",
+              "revision",
+              "index",
+              "type",
+              "details",
+              "derived"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "ErrorCode": {
+        "type": "string",
+        "enum": [
+          "parse_error",
+          "invalid_request",
+          "method_not_found",
+          "invalid_params",
+          "internal_error",
+          "not_found",
+          "unauthenticated",
+          "token_expired",
+          "authn_unavailable",
+          "forbidden",
+          "authz_unavailable",
+          "authz_policy_invalid",
+          "authz_postfilter_cap",
+          "authz_link_allow_not_last",
+          "authz_not_installed",
+          "ontology_guard_failed",
+          "closure_too_large",
+          "protected_record",
+          "subscriber_unavailable",
+          "precondition_failed",
+          "write_conflict",
+          "busy",
+          "rate_limited",
+          "cursor_invalid",
+          "cursor_expired",
+          "idempotency_key_reused",
+          "lease_not_held",
+          "lease_expired",
+          "project_required",
+          "incarnation_changed",
+          "field_owned",
+          "ontology_plan_stale",
+          "ontology_migration_too_large",
+          "ontology_drifted",
+          "ontology_unknown_field",
+          "ontology_use_slot_verb",
+          "authz_requires_authn",
+          "lockout_refused",
+          "plugin_busy",
+          "plugin_host_write_in_sync_call",
+          "plugin_egress_in_hot_path",
+          "plugin_reentrant_write",
+          "plugin_patch_out_of_scope",
+          "subscriber_skipped",
+          "post_subscriber_failed",
+          "history_gone",
+          "visibility_lost",
+          "too_many_sessions",
+          "filter_too_broad",
+          "scope_too_large",
+          "destination_paused",
+          "ref_moved",
+          "unknown_field",
+          "restore_requires_empty",
+          "restore_checksum_failed",
+          "restore_violation",
+          "human_presence_required",
+          "authz_verify_failed",
+          "invalid_cursor",
+          "compaction_unavailable",
+          "stale_snapshot"
+        ],
+        "description": "Closed Plug wire error-code registry."
+      },
+      "FencedDetails": {
+        "type": "object",
+        "properties": {
+          "expectedEpoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "observedEpoch": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "expectedEpoch",
+          "observedEpoch"
+        ],
+        "additionalProperties": false
+      },
+      "TruncatedDetails": {
+        "type": "object",
+        "properties": {
+          "floor": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "floor"
+        ],
+        "additionalProperties": false
+      },
+      "IndeterminateDetails": {
+        "type": "object",
+        "properties": {
+          "idempotencyKey": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "unknown"
+            ]
+          }
+        },
+        "required": [
+          "idempotencyKey",
+          "outcome"
+        ],
+        "additionalProperties": false
+      },
+      "IncarnationChangedDetails": {
+        "type": "object",
+        "properties": {
+          "fromIncarnation": {
+            "type": "string"
+          },
+          "toIncarnation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fromIncarnation",
+          "toIncarnation"
+        ],
+        "additionalProperties": false
+      },
+      "HumanPresence": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "interactive_session"
+              },
+              "sessionId": {
+                "type": "string"
+              },
+              "challenge": {
+                "type": "string"
+              },
+              "proof": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode",
+              "sessionId",
+              "challenge",
+              "proof"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "const": "presence_check"
+              },
+              "challenge": {
+                "type": "string"
+              },
+              "proof": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "mode",
+              "challenge",
+              "proof"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "description": "D32 proof bound to the method and plan/archive digest. API keys and iframe or other-origin bearer calls cannot satisfy interactive_session."
+      },
+      "WarningCode": {
+        "type": "string",
+        "enum": [
+          "ontology_drifted",
+          "subscriber_skipped",
+          "post_subscriber_failed",
+          "visibility_lost"
+        ],
+        "description": "Closed subset of error codes permitted in result.warnings."
+      },
+      "StoreRestoredDetails": {
+        "type": "object",
+        "properties": {
+          "fromIncarnation": {
+            "type": "string"
+          },
+          "toIncarnation": {
+            "type": "string"
+          },
+          "reason": {
+            "const": "restore"
+          }
+        },
+        "required": [
+          "fromIncarnation",
+          "toIncarnation",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "description": "Restore crossed the incarnation boundary; the envelope carries the new incarnation."
+      },
+      "AuditRef": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "branch": {
+            "const": 0
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "AuditResource": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "bead",
+              "ontology",
+              "plugin",
+              "view",
+              "memory",
+              "sync",
+              "derived",
+              "project"
+            ]
+          },
+          "ref": {
+            "$ref": "#/components/schemas/AuditRef"
+          }
+        },
+        "required": [
+          "kind",
+          "ref"
+        ],
+        "additionalProperties": false
+      },
+      "EventImage": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/AuditRef"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "ref",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "ConditionalEdge": {
+        "type": "object",
+        "properties": {
+          "dependent": {
+            "$ref": "#/components/schemas/AuditRef"
+          },
+          "blocker": {
+            "$ref": "#/components/schemas/AuditRef"
+          },
+          "kind": {
+            "const": "conditional-blocks"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "dependent",
+          "blocker",
+          "kind",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "OntologyPin": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/AuditRef"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "project": {
+            "$ref": "#/components/schemas/AuditRef"
+          }
+        },
+        "required": [
+          "ref",
+          "revision",
+          "digest"
+        ],
+        "additionalProperties": false
+      },
+      "ConditionDecision": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "category": {
+                "type": "string",
+                "enum": [
+                  "triage",
+                  "backlog",
+                  "unstarted",
+                  "started"
+                ]
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  ""
+                ]
+              },
+              "terminal": {
+                "const": false
+              },
+              "satisfied": {
+                "const": false
+              }
+            },
+            "required": [
+              "status",
+              "category",
+              "outcome",
+              "terminal",
+              "satisfied"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "category": {
+                "type": "string",
+                "enum": [
+                  "completed"
+                ]
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "success"
+                ]
+              },
+              "terminal": {
+                "const": true
+              },
+              "satisfied": {
+                "const": false
+              }
+            },
+            "required": [
+              "status",
+              "category",
+              "outcome",
+              "terminal",
+              "satisfied"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "category": {
+                "type": "string",
+                "enum": [
+                  "completed"
+                ]
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "failure"
+                ]
+              },
+              "terminal": {
+                "const": true
+              },
+              "satisfied": {
+                "const": true
+              }
+            },
+            "required": [
+              "status",
+              "category",
+              "outcome",
+              "terminal",
+              "satisfied"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "category": {
+                "type": "string",
+                "enum": [
+                  "canceled"
+                ]
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  ""
+                ]
+              },
+              "terminal": {
+                "const": true
+              },
+              "satisfied": {
+                "const": false
+              }
+            },
+            "required": [
+              "status",
+              "category",
+              "outcome",
+              "terminal",
+              "satisfied"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "ConditionUnmetDecision": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "category": {
+                "type": "string",
+                "enum": [
+                  "completed"
+                ]
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "success"
+                ]
+              },
+              "terminal": {
+                "const": true
+              },
+              "satisfied": {
+                "const": false
+              }
+            },
+            "required": [
+              "status",
+              "category",
+              "outcome",
+              "terminal",
+              "satisfied"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "category": {
+                "type": "string",
+                "enum": [
+                  "canceled"
+                ]
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  ""
+                ]
+              },
+              "terminal": {
+                "const": true
+              },
+              "satisfied": {
+                "const": false
+              }
+            },
+            "required": [
+              "status",
+              "category",
+              "outcome",
+              "terminal",
+              "satisfied"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "ConditionUnmetDetails": {
+        "type": "object",
+        "properties": {
+          "dependent": {
+            "$ref": "#/components/schemas/EventImage"
+          },
+          "blockerBefore": {
+            "$ref": "#/components/schemas/EventImage"
+          },
+          "blockerAfter": {
+            "$ref": "#/components/schemas/EventImage"
+          },
+          "edge": {
+            "$ref": "#/components/schemas/ConditionalEdge"
+          },
+          "ontology": {
+            "$ref": "#/components/schemas/OntologyPin"
+          },
+          "before": {
+            "$ref": "#/components/schemas/ConditionDecision"
+          },
+          "after": {
+            "$ref": "#/components/schemas/ConditionUnmetDecision"
+          }
+        },
+        "required": [
+          "dependent",
+          "blockerBefore",
+          "blockerAfter",
+          "edge",
+          "ontology",
+          "before",
+          "after"
+        ],
+        "additionalProperties": false,
+        "x-validation": "Refs must match the directed edge; edge revision equals dependent image revision; blocker before/after refs match and revisions differ; status changes. Resolved decisions use the pinned blocker-own-project ontology, never live interpretation. Blocker-after must be strictly later than blocker-before; dependent and ontology source revisions cannot be later than blocker-after."
+      },
+      "AuditEventCause": {
+        "type": "object",
+        "properties": {
+          "root": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "depth": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8
+          },
+          "chain": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "maxItems": 200
+          }
+        },
+        "required": [
+          "root",
+          "depth",
+          "chain"
+        ],
+        "additionalProperties": false
+      },
+      "EventProvenance": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "slot": {
+            "type": "string",
+            "enum": [
+              "",
+              "claim",
+              "close",
+              "reopen",
+              "fail",
+              "cancel",
+              "defer"
+            ]
+          },
+          "setBy": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "maxProperties": 1000
+          },
+          "cause": {
+            "$ref": "#/components/schemas/AuditEventCause"
+          },
+          "chain": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "maxItems": 200
+          }
+        },
+        "required": [
+          "method",
+          "slot",
+          "setBy",
+          "cause",
+          "chain"
+        ],
+        "additionalProperties": false
+      },
+      "OrdinaryDurableEvent": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "const": "durable"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "incarnation": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "bead.created",
+              "bead.updated",
+              "bead.reparented",
+              "bead.linked",
+              "bead.unlinked",
+              "bead.commented",
+              "bead.attached",
+              "bead.deleted",
+              "bead.claimed",
+              "bead.released",
+              "bead.closed",
+              "bead.failed",
+              "bead.canceled",
+              "bead.reopened",
+              "bead.deferred",
+              "bead.lease.reclaimed",
+              "gate.approved",
+              "gate.reported",
+              "gate.escalated",
+              "ontology.applied",
+              "plugin.applied",
+              "view.saved",
+              "view.deleted",
+              "memory.saved",
+              "memory.deleted",
+              "sync.pushed",
+              "sync.imported",
+              "derived.updated"
+            ]
+          },
+          "resource": {
+            "type": "string"
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "before": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "after": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "principal": {
+            "$ref": "#/components/schemas/Principal"
+          },
+          "chain": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "setBy": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "cause": {
+            "$ref": "#/components/schemas/EventCause"
+          },
+          "derived": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "category",
+          "cursor",
+          "incarnation",
+          "revision",
+          "index",
+          "type",
+          "resource",
+          "changed",
+          "principal",
+          "chain",
+          "setBy",
+          "cause",
+          "derived"
+        ],
+        "additionalProperties": false
+      },
+      "DependencyConditionUnmetEvent": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "const": "durable"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "incarnation": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "type": {
+            "const": "dependency.conditionUnmet"
+          },
+          "resource": {
+            "type": "string"
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 0
+          },
+          "principal": {
+            "$ref": "#/components/schemas/Principal"
+          },
+          "chain": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "setBy": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "cause": {
+            "$ref": "#/components/schemas/EventCause"
+          },
+          "derived": {
+            "const": false
+          },
+          "details": {
+            "$ref": "#/components/schemas/ConditionUnmetDetails"
+          }
+        },
+        "required": [
+          "category",
+          "cursor",
+          "incarnation",
+          "revision",
+          "index",
+          "type",
+          "resource",
+          "changed",
+          "principal",
+          "chain",
+          "setBy",
+          "cause",
+          "derived",
+          "details"
+        ],
+        "additionalProperties": false,
+        "x-validation": "resource is bead/\u003cdependent ID\u003e; revision equals blockerAfter.revision. No mutation of the dependent is implied. Current read authorization and redaction cover dependent, blocker, ontology and optional blocker project; suppress the entire notice on any denial."
+      },
+      "OrdinaryEventDescriptor": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999
+          },
+          "changeIndex": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "bead.created",
+              "bead.updated",
+              "bead.reparented",
+              "bead.linked",
+              "bead.unlinked",
+              "bead.commented",
+              "bead.attached",
+              "bead.deleted",
+              "bead.claimed",
+              "bead.released",
+              "bead.closed",
+              "bead.failed",
+              "bead.canceled",
+              "bead.reopened",
+              "bead.deferred",
+              "bead.lease.reclaimed",
+              "gate.approved",
+              "gate.reported",
+              "gate.escalated",
+              "ontology.applied",
+              "plugin.applied",
+              "view.saved",
+              "view.deleted",
+              "memory.saved",
+              "memory.deleted",
+              "sync.pushed",
+              "sync.imported",
+              "derived.updated"
+            ]
+          },
+          "resource": {
+            "$ref": "#/components/schemas/AuditResource"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/EventProvenance"
+          }
+        },
+        "required": [
+          "index",
+          "changeIndex",
+          "type",
+          "resource",
+          "provenance"
+        ],
+        "additionalProperties": false
+      },
+      "ConditionUnmetDescriptor": {
+        "type": "object",
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999
+          },
+          "changeIndex": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999
+          },
+          "type": {
+            "const": "dependency.conditionUnmet"
+          },
+          "resource": {
+            "$ref": "#/components/schemas/AuditResource"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/EventProvenance"
+          },
+          "details": {
+            "$ref": "#/components/schemas/ConditionUnmetDetails"
+          }
+        },
+        "required": [
+          "index",
+          "changeIndex",
+          "type",
+          "resource",
+          "provenance",
+          "details"
+        ],
+        "additionalProperties": false
+      },
+      "EventDescriptor": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/OrdinaryEventDescriptor"
+          },
+          {
+            "$ref": "#/components/schemas/ConditionUnmetDescriptor"
+          }
+        ],
+        "x-validation": "Index equals array position. Exactly one ordinary event for every ChangeRecord in ChangeIndex order, followed immediately by notices sorted uniquely by dependent ID. Notices retain ordinary close/cancel slot event and identical provenance, anchor the changed blocker and from/current revisions. Chain matches the changeset header. Event/resource kind, operation and slot must agree."
+      }
+    },
+    "errors": {
+      "ParseError": {
+        "code": -32700,
+        "message": "parse error",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "parse_error"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "InvalidRequest": {
+        "code": -32600,
+        "message": "invalid request",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "invalid_request"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "MethodNotFound": {
+        "code": -32601,
+        "message": "method not found",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "method_not_found"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "InvalidParams": {
+        "code": -32602,
+        "message": "invalid params",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "invalid_params"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "InternalError": {
+        "code": -32603,
+        "message": "internal error",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "internal_error"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "NotFound": {
+        "code": -32000,
+        "message": "resource not found",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "not_found"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "Unauthenticated": {
+        "code": -32001,
+        "message": "authentication required",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "unauthenticated"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "TokenExpired": {
+        "code": -32002,
+        "message": "token expired",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "token_expired"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "AuthnUnavailable": {
+        "code": -32003,
+        "message": "authentication provider unavailable",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "authn_unavailable"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "Forbidden": {
+        "code": -32004,
+        "message": "forbidden",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "forbidden"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "AuthzUnavailable": {
+        "code": -32005,
+        "message": "authorization unavailable",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "authz_unavailable"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "AuthzPolicyInvalid": {
+        "code": -32006,
+        "message": "authorization policy invalid",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "authz_policy_invalid"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "AuthzPostfilterCap": {
+        "code": -32007,
+        "message": "authorization post-filter cap exceeded",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "authz_postfilter_cap"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "AuthzLinkAllowNotLast": {
+        "code": -32008,
+        "message": "authorization link allowed before the end of the chain",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "authz_link_allow_not_last"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "AuthzNotInstalled": {
+        "code": -32009,
+        "message": "authorization plugin required",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "authz_not_installed"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "OntologyGuardFailed": {
+        "code": -32010,
+        "message": "ontology guard failed",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "ontology_guard_failed"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "ClosureTooLarge": {
+        "code": -32011,
+        "message": "closure rewrite too large",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "closure_too_large"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "ProtectedRecord": {
+        "code": -32012,
+        "message": "protected record",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "protected_record"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "SubscriberUnavailable": {
+        "code": -32013,
+        "message": "pre subscriber unavailable",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "subscriber_unavailable"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "PreconditionFailed": {
+        "code": -32014,
+        "message": "precondition failed",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "precondition_failed"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "WriteConflict": {
+        "code": -32015,
+        "message": "write conflict",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "write_conflict"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "Busy": {
+        "code": -32016,
+        "message": "server or driver busy",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "busy"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "RateLimited": {
+        "code": -32017,
+        "message": "rate limited",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "rate_limited"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "CursorInvalid": {
+        "code": -32018,
+        "message": "cursor invalid",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "cursor_invalid"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "CursorExpired": {
+        "code": -32019,
+        "message": "cursor expired",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "cursor_expired"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "$ref": "#/components/schemas/TruncatedDetails"
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "IdempotencyKeyReused": {
+        "code": -32020,
+        "message": "idempotency key reused with different parameters",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "idempotency_key_reused"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "LeaseNotHeld": {
+        "code": -32021,
+        "message": "lease not held",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "lease_not_held"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "$ref": "#/components/schemas/FencedDetails"
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "LeaseExpired": {
+        "code": -32022,
+        "message": "lease expired",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "lease_expired"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "ProjectRequired": {
+        "code": -32023,
+        "message": "project required",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "project_required"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "IncarnationChanged": {
+        "code": -32024,
+        "message": "store incarnation changed",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "incarnation_changed"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "$ref": "#/components/schemas/IncarnationChangedDetails"
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "FieldOwned": {
+        "code": -32025,
+        "message": "field owned by another plugin",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "field_owned"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "OntologyPlanStale": {
+        "code": -32026,
+        "message": "ontology plan is stale",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "ontology_plan_stale"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "OntologyMigrationTooLarge": {
+        "code": -32027,
+        "message": "ontology migration too large",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "ontology_migration_too_large"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "OntologyDrifted": {
+        "code": -32028,
+        "message": "ontology drifted",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "ontology_drifted"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "OntologyUnknownField": {
+        "code": -32029,
+        "message": "unknown ontology field",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "ontology_unknown_field"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "OntologyUseSlotVerb": {
+        "code": -32030,
+        "message": "status transition requires its slot verb",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "ontology_use_slot_verb"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "AuthzRequiresAuthn": {
+        "code": -32031,
+        "message": "authorization requires authentication",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "authz_requires_authn"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "LockoutRefused": {
+        "code": -32032,
+        "message": "change would lock out the applier",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "lockout_refused"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "PluginBusy": {
+        "code": -32033,
+        "message": "plugin runtime pool busy",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "plugin_busy"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "PluginHostWriteInSyncCall": {
+        "code": -32034,
+        "message": "plugin host write in synchronous call",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "plugin_host_write_in_sync_call"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "PluginEgressInHotPath": {
+        "code": -32035,
+        "message": "plugin egress in hot path",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "plugin_egress_in_hot_path"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "PluginReentrantWrite": {
+        "code": -32036,
+        "message": "plugin reentrant graph write",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "plugin_reentrant_write"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "PluginPatchOutOfScope": {
+        "code": -32037,
+        "message": "plugin patch outside binding scope",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "plugin_patch_out_of_scope"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "SubscriberSkipped": {
+        "code": -32038,
+        "message": "subscriber skipped",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "subscriber_skipped"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "PostSubscriberFailed": {
+        "code": -32039,
+        "message": "post subscriber failed",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "post_subscriber_failed"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "HistoryGone": {
+        "code": -32040,
+        "message": "history is unavailable",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "history_gone"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "VisibilityLost": {
+        "code": -32041,
+        "message": "resource became unreadable",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "visibility_lost"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "TooManySessions": {
+        "code": -32042,
+        "message": "too many sessions",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "too_many_sessions"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "FilterTooBroad": {
+        "code": -32043,
+        "message": "filter is too broad",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "filter_too_broad"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "ScopeTooLarge": {
+        "code": -32044,
+        "message": "scope too large",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "scope_too_large"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "DestinationPaused": {
+        "code": -32045,
+        "message": "sync destination paused",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "destination_paused"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "RefMoved": {
+        "code": -32046,
+        "message": "pinned reference moved",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "ref_moved"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "UnknownField": {
+        "code": -32047,
+        "message": "unknown field",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "unknown_field"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "RestoreRequiresEmpty": {
+        "code": -32048,
+        "message": "restore requires an empty store",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "restore_requires_empty"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "RestoreChecksumFailed": {
+        "code": -32049,
+        "message": "restore checksum failed",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "restore_checksum_failed"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "RestoreViolation": {
+        "code": -32050,
+        "message": "restore contains an unrecorded violation",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "restore_violation"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "HumanPresenceRequired": {
+        "code": -32051,
+        "message": "human presence check required",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "human_presence_required"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "AuthzVerifyFailed": {
+        "code": -32052,
+        "message": "authorization verification failed",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "authz_verify_failed"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "InvalidCursor": {
+        "code": -32053,
+        "message": "cursor does not belong to this request",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "invalid_cursor"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "CompactionUnavailable": {
+        "code": -32054,
+        "message": "compaction unavailable",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "compaction_unavailable"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "StaleSnapshot": {
+        "code": -32055,
+        "message": "stale snapshot (internal)",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "stale_snapshot"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "$ref": "#/components/schemas/IndeterminateDetails"
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "info": {
+    "title": "Plug JSON-RPC contract",
+    "description": "Canonical tagged JSON-RPC v1 contract snapshot for Plug. Go and OpenRPC share the operation, event, cursor, and error encodings; source provenance and an independently checked method registry are recorded in this document.",
+    "version": "0.1.0"
+  },
+  "methods": [
+    {
+      "description": "Return MethodDesc metadata and the closed error catalog.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/MethodNotFound"
+        },
+        {
+          "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/RateLimited"
+        }
+      ],
+      "name": "rpc.describe",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "method",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "_meta",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "summary": "Return MethodDesc metadata and the closed error catalog.",
+      "tags": [
+        {
+          "name": "core"
+        }
+      ],
+      "x-agent-core": false,
+      "x-effect": "read",
+      "x-idempotency": "none",
+      "x-permission": "read",
+      "x-stability": "v1"
+    },
+    {
+      "description": "Unauthenticated discovery endpoint.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/RateLimited"
+        }
+      ],
+      "name": "rpc.discover",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "_meta",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "openrpc": {
+              "type": "string"
+            },
+            "methods": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "methodsHash": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "openrpc",
+            "methods",
+            "methodsHash"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "summary": "Unauthenticated discovery endpoint.",
+      "tags": [
+        {
+          "name": "core"
+        }
+      ],
+      "x-agent-core": false,
+      "x-effect": "read",
+      "x-idempotency": "none",
+      "x-permission": "none",
+      "x-stability": "v1"
+    },
+    {
+      "description": "List methods visible to the calling principal.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/RateLimited"
+        }
+      ],
+      "name": "rpc.methods",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "_meta",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "methods": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "methodsHash": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "methods",
+            "methodsHash"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "summary": "List methods visible to the calling principal.",
+      "tags": [
+        {
+          "name": "core"
+        }
+      ],
+      "x-agent-core": false,
+      "x-effect": "read",
+      "x-idempotency": "none",
+      "x-permission": "read",
+      "x-stability": "v1"
+    },
+    {
+      "description": "Server capabilities and the principal-visible method hash.",
+      "errors": [
+        {
+          "$ref": "#/components/errors/RateLimited"
+        }
+      ],
+      "name": "server.hello",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "clientVersion",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "protocolVersion",
+          "required": false,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "serverVersion": {
+              "type": "string"
+            },
+            "protocolVersion": {
+              "type": "string"
+            },
+            "methodsHash": {
+              "type": "string"
+            },
+            "ontologyRevision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "defaultProject": {
+              "type": "string"
+            },
+            "authMode": {
+              "type": "string",
+              "enum": [
+                "anonymous",
+                "authenticated"
+              ]
+            },
+            "incarnation": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "serverVersion",
+            "protocolVersion",
+            "methodsHash",
+            "ontologyRevision",
+            "authMode",
+            "incarnation"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "summary": "Server capabilities and the principal-visible method hash.",
+      "tags": [
+        {
+          "name": "core"
+        }
+      ],
+      "x-agent-core": false,
+      "x-effect": "read",
+      "x-idempotency": "none",
+      "x-permission": "none",
+      "x-stability": "v1"
+    }
+  ],
+  "openrpc": "1.3.2",
+  "x-error-catalog": [
+    {
+      "code": "parse_error",
+      "jsonRpc": -32700,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "invalid_request",
+      "jsonRpc": -32600,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "method_not_found",
+      "jsonRpc": -32601,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "invalid_params",
+      "jsonRpc": -32602,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "internal_error",
+      "jsonRpc": -32603,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "not_found",
+      "jsonRpc": -32000,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "unauthenticated",
+      "jsonRpc": -32001,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "token_expired",
+      "jsonRpc": -32002,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "authn_unavailable",
+      "jsonRpc": -32003,
+      "retryable": true,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "forbidden",
+      "jsonRpc": -32004,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "authz_unavailable",
+      "jsonRpc": -32005,
+      "retryable": true,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "authz_policy_invalid",
+      "jsonRpc": -32006,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "authz_postfilter_cap",
+      "jsonRpc": -32007,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "authz_link_allow_not_last",
+      "jsonRpc": -32008,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "authz_not_installed",
+      "jsonRpc": -32009,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "ontology_guard_failed",
+      "jsonRpc": -32010,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "closure_too_large",
+      "jsonRpc": -32011,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "protected_record",
+      "jsonRpc": -32012,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "subscriber_unavailable",
+      "jsonRpc": -32013,
+      "retryable": true,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "precondition_failed",
+      "jsonRpc": -32014,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "write_conflict",
+      "jsonRpc": -32015,
+      "retryable": true,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "busy",
+      "jsonRpc": -32016,
+      "retryable": true,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "rate_limited",
+      "jsonRpc": -32017,
+      "retryable": true,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "cursor_invalid",
+      "jsonRpc": -32018,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "cursor_expired",
+      "jsonRpc": -32019,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "idempotency_key_reused",
+      "jsonRpc": -32020,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "lease_not_held",
+      "jsonRpc": -32021,
+      "retryable": true,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "lease_expired",
+      "jsonRpc": -32022,
+      "retryable": true,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "project_required",
+      "jsonRpc": -32023,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "incarnation_changed",
+      "jsonRpc": -32024,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "field_owned",
+      "jsonRpc": -32025,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "ontology_plan_stale",
+      "jsonRpc": -32026,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "ontology_migration_too_large",
+      "jsonRpc": -32027,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "ontology_drifted",
+      "jsonRpc": -32028,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": true
+    },
+    {
+      "code": "ontology_unknown_field",
+      "jsonRpc": -32029,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "ontology_use_slot_verb",
+      "jsonRpc": -32030,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "authz_requires_authn",
+      "jsonRpc": -32031,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "lockout_refused",
+      "jsonRpc": -32032,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "plugin_busy",
+      "jsonRpc": -32033,
+      "retryable": true,
+      "audience": "plugin-host",
+      "warningCapable": false
+    },
+    {
+      "code": "plugin_host_write_in_sync_call",
+      "jsonRpc": -32034,
+      "retryable": false,
+      "audience": "plugin-host",
+      "warningCapable": false
+    },
+    {
+      "code": "plugin_egress_in_hot_path",
+      "jsonRpc": -32035,
+      "retryable": false,
+      "audience": "plugin-host",
+      "warningCapable": false
+    },
+    {
+      "code": "plugin_reentrant_write",
+      "jsonRpc": -32036,
+      "retryable": false,
+      "audience": "plugin-host",
+      "warningCapable": false
+    },
+    {
+      "code": "plugin_patch_out_of_scope",
+      "jsonRpc": -32037,
+      "retryable": false,
+      "audience": "plugin-host",
+      "warningCapable": false
+    },
+    {
+      "code": "subscriber_skipped",
+      "jsonRpc": -32038,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": true
+    },
+    {
+      "code": "post_subscriber_failed",
+      "jsonRpc": -32039,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": true
+    },
+    {
+      "code": "history_gone",
+      "jsonRpc": -32040,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "visibility_lost",
+      "jsonRpc": -32041,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": true
+    },
+    {
+      "code": "too_many_sessions",
+      "jsonRpc": -32042,
+      "retryable": true,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "filter_too_broad",
+      "jsonRpc": -32043,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "scope_too_large",
+      "jsonRpc": -32044,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "destination_paused",
+      "jsonRpc": -32045,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "ref_moved",
+      "jsonRpc": -32046,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "unknown_field",
+      "jsonRpc": -32047,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "restore_requires_empty",
+      "jsonRpc": -32048,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "restore_checksum_failed",
+      "jsonRpc": -32049,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "restore_violation",
+      "jsonRpc": -32050,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "human_presence_required",
+      "jsonRpc": -32051,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "authz_verify_failed",
+      "jsonRpc": -32052,
+      "retryable": false,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "invalid_cursor",
+      "jsonRpc": -32053,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
+    },
+    {
+      "code": "compaction_unavailable",
+      "jsonRpc": -32054,
+      "retryable": true,
+      "audience": "operator",
+      "warningCapable": false
+    },
+    {
+      "code": "stale_snapshot",
+      "jsonRpc": -32055,
+      "retryable": true,
+      "audience": "internal",
+      "warningCapable": false
+    }
+  ]
+}
