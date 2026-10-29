@@ -28,6 +28,7 @@ type prepared struct {
 	snapshot *snapshotReader
 	writes   map[string]*pending
 	proposal port.ProposedChange
+	release  *claimReleaseMode
 	warnings []model.Warning
 	mutators []string
 	refs     []model.Ref
@@ -113,12 +114,12 @@ func (p *prepared) load(ctx context.Context, ref model.Ref) (*pending, error) {
 	return pending, nil
 }
 
-func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (*prepared, error) {
+func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, release *claimReleaseMode) (*prepared, error) {
 	snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}}
 	if _, err := snapshot.observe(ctx, []driver.LockKey{driver.OntologySentinelLock, driver.PluginsSentinelLock}); err != nil {
 		return nil, err
 	}
-	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}}
+	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}}
 	aliases := map[string]model.Ref{}
 	slotRef := ""
 	if isSlot(meta.Method) {
@@ -213,7 +214,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if err != nil {
 				return nil, err
 			}
-			if err = w.checkLease(current.doc, by, meta); err != nil {
+			if release != nil {
+				if err = w.checkClaimRelease(current.doc, by, meta, release); err != nil {
+					return nil, err
+				}
+			} else if err = w.checkLease(current.doc, by, meta); err != nil {
 				return nil, err
 			}
 			if meta.Method == "bead.claim" && current.doc.Lease != nil && w.cfg.now().Before(current.doc.Lease.ExpiresAt) {
@@ -441,7 +446,7 @@ func FieldHash(value any) (string, error) {
 
 func isSlot(method string) bool {
 	switch method {
-	case "bead.claim", "bead.close", "bead.fail", "bead.cancel", "bead.reopen", "bead.defer":
+	case "bead.claim", "bead.close", "bead.fail", "bead.cancel", "bead.reopen", "bead.defer", "bead.release":
 		return true
 	}
 	return false
