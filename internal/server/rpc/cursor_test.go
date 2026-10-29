@@ -56,6 +56,13 @@ func (p *pagedService) page(limit int, at service.AsOf, position *service.PagePo
 		out.Next.AsOf.Revision = model.Natural64(2)
 	case "incarnation":
 		out.Next.AsOf.Incarnation = "other"
+	case "resnapshot":
+		if position != nil {
+			out.AsOf.Revision = model.Natural64(2)
+			if out.Next != nil {
+				out.Next.AsOf = out.AsOf
+			}
+		}
 	}
 	return out
 }
@@ -265,6 +272,16 @@ func TestAnonymousCursorBindsAgentLabel(t *testing.T) {
 	if len(probe.ready) != 1 {
 		t.Fatal("another anonymous agent's cursor reached service")
 	}
+}
+
+func TestCursorRefusesServiceSnapshotChangeOnLastPage(t *testing.T) {
+	probe := &pagedService{badPage: "resnapshot"}
+	s := pagingServer(t, probe, pagingConfig())
+	params := pageParams("bead.ready")
+	first := result(t, call(t, s, context.Background(), "bead.ready", paramsJSON(t, params)))
+	params["cursor"] = first["nextCursor"]
+	params["limit"] = 2
+	requireCode(t, call(t, s, context.Background(), "bead.ready", paramsJSON(t, params)), "internal_error")
 }
 
 func TestCursorConfigurationAndServiceInvariants(t *testing.T) {

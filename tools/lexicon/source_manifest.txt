@@ -160,7 +160,9 @@ internal/core/ontology/types.go
 internal/core/pipeline/BUILD.bazel
 internal/core/pipeline/apply.go
 internal/core/pipeline/callbacks.go
+internal/core/pipeline/callbacks_test.go
 internal/core/pipeline/document.go
+internal/core/pipeline/guard_test.go
 internal/core/pipeline/options.go
 internal/core/pipeline/pipeline_test.go
 internal/core/pipeline/prepare.go
@@ -180,6 +182,7 @@ internal/server/rpc/cmd/openrpcgen/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/main.go
 internal/server/rpc/cursor.go
 internal/server/rpc/cursor_test.go
+internal/server/rpc/integration_test.go
 internal/server/rpc/openrpc.json
 internal/server/rpc/openrpc_test.go
 internal/server/rpc/registry.go

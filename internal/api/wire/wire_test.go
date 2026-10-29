@@ -121,6 +121,8 @@ func TestStrictParameters(t *testing.T) {
 		{"bead.create", `{"type":"issue","fields":{},"parent":{"id":"","branch":1e1000000000}}`, true},
 		{"bead.get", `{"id":{"key":""},"asOf":{"revision":1.0e1000000000}}`, true},
 		{"bead.ready", `{"limit":1.0e3,"filter":{"types":["issue"]}}`, true},
+		{"history.redact", `{"ref":{"id":"p-1"},"paths":["description"],"humanPresence":{"mode":"presence_check","challenge":"test","proof":"test"}}`, true},
+		{"history.redact", `{"ref":{"id":"p-1"},"paths":[],"humanPresence":{"mode":"presence_check","challenge":"test","proof":"test"}}`, false},
 		{"bead.ready", `{"filter":{"unknown":true}}`, false},
 		{"bead.ready", `{"limit":1001}`, false},
 		{"bead.ready", `{"limit":0}`, false},
