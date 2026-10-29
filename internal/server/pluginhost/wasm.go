@@ -25,8 +25,11 @@ import (
 const (
 	maxWASMMessage = 1 << 20
 	maxWASMPages   = 1024 // 64 MiB per guest, including any memory growth.
-	wasmModuleName = "plug"
-	wasmImportName = "call"
+	// The E5 ABI names the single host import env.plug.call. Keep the
+	// dotted function name intact so static admission and wazero instantiation
+	// enforce the same import contract.
+	wasmModuleName = "env"
+	wasmImportName = "plug.call"
 )
 
 // NewWASMNative adapts a verified wasip1 artifact to the existing pluginhost
