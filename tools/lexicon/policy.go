@@ -33,7 +33,7 @@ const (
 // The protected lists are intentionally exact: adding a retained file requires
 // its owner to update this policy before the blocking gate can pass.
 func DefaultTreePolicy() TreePolicy {
-	return TreePolicy{
+	p := TreePolicy{
 		ProtectedPrefixes:       []string{".github/", "engdocs/design/plug/"},
 		StrictProtectedPrefixes: []string{".github/", "engdocs/design/plug/"},
 		ProtectedPaths: map[string]struct{}{
@@ -152,6 +152,8 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spec/ux-screens/people-50.png":   "1bf5e5823ec5e997eb9ca6829fc5173b179987eec3e213b13916ed38ca9c4a6d",
 		},
 	}
+	p.BinarySHA256["internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar"] = "c510f8e0b301086e1c9fdab6ed3dc60ea8da73597c4058a03d0abc478482ae3c"
+	return p
 }
 
 func (p TreePolicy) disposition(name string, content []byte) (pathDisposition, error) {
