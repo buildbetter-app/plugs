@@ -31,6 +31,9 @@ func (s *Service) Plan(ctx context.Context, by model.PrincipalRef, req PlanReque
 	if err = current.valid(); err != nil {
 		return PlanResult{}, err
 	}
+	if err := s.authorizeSource(ctx, by, current); err != nil {
+		return PlanResult{}, err
+	}
 	if s.cfg.ValidatingPre == nil {
 		return PlanResult{}, failure("invalid_params", "planning requires the actual validating-pre inventory or an explicit no-bindings host declaration")
 	}
@@ -174,6 +177,9 @@ func (s *Service) revalidate(ctx context.Context, by model.PrincipalRef, plan Pl
 	if !sameRef(src.guard.Ref, plan.Source.Ref) || src.guard.Revision.String() != plan.Source.Revision.String() || src.guard.BodyHash != plan.Source.BodyHash || src.guard.Digest != plan.Source.Digest {
 		return failure("ontology_plan_stale", "protected ontology source changed")
 	}
+	if err := s.authorizeSource(ctx, by, src); err != nil {
+		return err
+	}
 	if err := s.checkExpect(ctx, by, r, plan.Expect); err != nil {
 		return err
 	}
@@ -200,15 +206,23 @@ func (s *Service) checkExpect(ctx context.Context, by model.PrincipalRef, r driv
 		if condition.Validate() != nil || !condition.Ref.IsID() || !condition.Ref.Branch.IsZero() {
 			return failure("invalid_params", "ontology plan CAS requires resolved branch-zero references")
 		}
-		if err := s.authorize(ctx, by, condition.Ref, "record", ""); err != nil {
-			return err
-		}
 		rows, err := r.Get(ctx, []model.Ref{condition.Ref})
 		if err != nil {
 			return mapped(err)
 		}
 		if len(rows) != 1 {
 			return failure("ontology_plan_stale", "expected record is absent")
+		}
+		project := ""
+		if rows[0].Kind == "bead" {
+			doc, err := decodeRow(rows[0].Body)
+			if err != nil {
+				return failure("invalid_params", "expected bead image is invalid")
+			}
+			project = doc.Project
+		}
+		if err := s.authorize(ctx, by, condition.Ref, rows[0].Kind, project); err != nil {
+			return err
 		}
 		if condition.Revision != nil {
 			if condition.Revision.String() != rows[0].Revision.String() {

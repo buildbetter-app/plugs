@@ -178,6 +178,9 @@ func (s *Service) History(ctx context.Context, by model.PrincipalRef, project st
 	if err != nil {
 		return HistoryResult{}, err
 	}
+	if err := s.authorizeSource(ctx, by, src); err != nil {
+		return HistoryResult{}, err
+	}
 	a, aerr := after.Uint64()
 	h, herr := r.Snapshot().At.Uint64()
 	if aerr != nil || herr != nil || a > h {

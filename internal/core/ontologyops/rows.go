@@ -183,17 +183,16 @@ func (r rowSource) Observe(ctx context.Context, inventory ontologymigration.Inve
 	if inventory.DataRevision.String() != r.r.Snapshot().At.String() || change.Candidate.Digest != r.candidate.Digest() {
 		return ontologymigration.Observation{}, failure("ontology_plan_stale", "guard observation snapshot or candidate changed")
 	}
-	rows, err := r.read(ctx)
-	if err != nil {
-		return ontologymigration.Observation{}, err
-	}
-	states := map[string]ontology.BeadState{}
-	for _, row := range rows {
-		states[row.State.ID] = row.State
-	}
-	graph, err := r.loadGraph(ctx, rows)
-	if err != nil {
-		return ontologymigration.Observation{}, err
+	graph := r.graph
+	if graph == nil || graph.docs == nil {
+		rows, err := r.read(ctx)
+		if err != nil {
+			return ontologymigration.Observation{}, err
+		}
+		graph, err = r.loadGraph(ctx, rows)
+		if err != nil {
+			return ontologymigration.Observation{}, err
+		}
 	}
 	doc, exists := graph.docs[change.After.State.ID]
 	if !exists {
@@ -225,13 +224,14 @@ func (r rowSource) Observe(ctx context.Context, inventory ontologymigration.Inve
 		switch link.Kind {
 		case "relates-to":
 		case "blocks", "conditional-blocks":
-			blocker, exists := states[link.To.ID]
+			blocker, exists := graph.docs[link.To.ID]
 			satisfied := false
 			if exists && link.To.IsID() && link.To.Branch.IsZero() {
 				e := r.candidate.Effective(blocker.Project)
-				satisfied = e.SatisfiesBlocks(blocker.Status)
+				status, _ := blocker.Fields["status"].(string)
+				satisfied = e.SatisfiesBlocks(status)
 				if link.Kind == "conditional-blocks" {
-					satisfied = e.SatisfiesConditionalBlocks(blocker.Status)
+					satisfied = e.SatisfiesConditionalBlocks(status)
 				}
 			}
 			noBlockers = noBlockers && satisfied

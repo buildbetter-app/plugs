@@ -67,6 +67,17 @@ func (s *Service) authorize(ctx context.Context, by model.PrincipalRef, ref mode
 	return nil
 }
 
+// Reports containing the entire source or its changed paths require current
+// read access to every configured overlay, including projects without beads.
+func (s *Service) authorizeSource(ctx context.Context, by model.PrincipalRef, src source) error {
+	for project := range src.document.Overlays {
+		if err := s.authorize(ctx, by, src.guard.Ref, "ontology", project); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Service) reader(ctx context.Context, by model.PrincipalRef, at *model.Revision) (driver.Meta, driver.Reader, error) {
 	if err := s.admit(ctx, by); err != nil {
 		return driver.Meta{}, nil, err

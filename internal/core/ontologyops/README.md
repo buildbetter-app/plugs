@@ -56,6 +56,8 @@ unsupported. A login predicate alone cannot close those apply requirements.
 With no authorization plugin, omit `AuthorizeRead`. With one installed, the
 host must supply the current read authorizer. Planning requires access to the
 whole inventory and refuses any denied row instead of silently dropping it.
+Plans and source history also require read access to every configured overlay,
+including projects without rows. Projectless rows refuse migration planning.
 
 Run `bazel --ignore_all_rc_files test //internal/core/ontologyops:ontologyops_test
 --jobs=2 --test_output=all --test_timeout=900`.

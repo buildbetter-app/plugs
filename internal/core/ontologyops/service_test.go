@@ -300,3 +300,139 @@ func TestSourceAndBoundaryRefusals(t *testing.T) {
 	_, err = f.svc.Get(context.Background(), caller, "p")
 	wantCode(t, err, "busy")
 }
+
+func TestPlanCASBindingChangesAndBoundedRetention(t *testing.T) {
+	f := newFixture(t)
+	f.seed(t, bead(t, "a", "p", nil))
+	ctx := context.Background()
+	document := withField(t, f.base, ontology.Field{Type: "boolean", Default: false})
+	_, err := f.svc.Plan(ctx, caller, PlanRequest{Project: "p", Document: document, Expect: []model.Precondition{model.PreconditionByRevision(f.ref, model.Natural64(0))}})
+	wantCode(t, err, "ontology_plan_stale")
+	hash, _ := pipeline.FieldHash("a")
+	pre := &validatingPre{}
+	f.svc.cfg.ValidatingPre = pre
+	result, err := f.svc.Plan(ctx, caller, PlanRequest{Project: "p", Document: document, Expect: []model.Precondition{model.PreconditionByHash(model.Ref{ID: "a"}, "fields.title", hash)}})
+	if err != nil || !result.Changes.Ready {
+		t.Fatalf("field CAS plan = %+v, %v", result, err)
+	}
+	pre.version = strings.Repeat("cd", 32)
+	_, err = f.svc.Planned(ctx, caller, result.PlanDigest)
+	wantCode(t, err, "ontology_plan_stale")
+	f.svc.cfg.ValidatingPre = NoValidatingPre()
+	f.svc.cfg.MaxPlans = 1
+	f.svc.plans, f.svc.order = map[string]retainedPlan{}, nil
+	first, err := f.svc.Plan(ctx, caller, PlanRequest{Project: "p", Document: document})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := f.svc.Plan(ctx, caller, PlanRequest{Project: "p", Document: withField(t, f.base, ontology.Field{Type: "boolean", Default: true})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.svc.Planned(ctx, caller, first.PlanDigest)
+	wantCode(t, err, "ontology_plan_stale")
+	retained, err := f.svc.Planned(ctx, caller, second.PlanDigest)
+	if err != nil || retained.Document.Overlays["p"].Types["issue"].Fields["reviewed"].Default != true {
+		t.Fatalf("retained candidate = %+v, %v", retained, err)
+	}
+}
+
+func TestCompleteRowInventoryCrossesStoragePages(t *testing.T) {
+	f := newFixture(t)
+	changes := make([]conformance.FixtureChange, 0, 1003)
+	for i := 0; i < 1003; i++ {
+		id := fmt.Sprintf("page-%04d", i)
+		changes = append(changes, bead(t, id, "p", map[string]any{
+			"status": "todo", "title": id, "priority": ontology.DefaultPriority, "template": false,
+		}))
+	}
+	f.seed(t, changes...)
+	doc := ontology.DefaultDocument()
+	doc.Types["extra"] = ontology.Type{Name: "New type", Workflow: "issue"}
+	raw, _ := json.Marshal(doc)
+	plan, err := f.svc.Plan(context.Background(), caller, PlanRequest{Document: raw})
+	if err != nil || !plan.Changes.Ready || plan.Changes.Migration.Inventory.Count.String() != "1003" || plan.Changes.Migration.ObservedRowCount != 1003 || len(plan.Changes.Migration.Rows) != 1003 || plan.Changes.Migration.Affected != 0 {
+		t.Fatalf("complete inventory: ready=%t count=%s observed=%d rows=%d affected=%d, %v", plan.Changes.Ready, plan.Changes.Migration.Inventory.Count, plan.Changes.Migration.ObservedRowCount, len(plan.Changes.Migration.Rows), plan.Changes.Migration.Affected, err)
+	}
+}
+
+func TestPlansUseStoredGraphEvidenceAndRefuseUnavailableFacts(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ready bool
+	}{
+		{"blocked", false}, {"satisfied", true}, {"missing-gate", false},
+		{"unknown-incoming-relation", false}, {"installed-authorizer", false},
+		{"missing-evidence", false}, {"real-evidence", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			doc := pipeline.Document{ID: "target", Project: "p", Type: "issue", Fields: map[string]any{"status": "done", "title": "Closed target"}}
+			blockerStatus := "failed"
+			if tc.name == "blocked" {
+				blockerStatus = "todo"
+			}
+			doc.Links = []pipeline.Link{{To: model.Ref{ID: "blocker"}, Kind: "blocks"}}
+			if tc.name == "real-evidence" {
+				doc.Attachments = []model.Attachment{{Kind: "link", URI: "https://example.test/review", MediaType: "text/uri-list", Summary: "Actual stored review"}}
+			}
+			raw, _ := json.Marshal(doc)
+			changes := []conformance.FixtureChange{{Ref: model.Ref{ID: doc.ID}, Kind: "bead", Op: model.OpPatch, Body: raw}, bead(t, "blocker", "p", map[string]any{"status": blockerStatus})}
+			if tc.name == "unknown-incoming-relation" {
+				child, _ := json.Marshal(pipeline.Document{ID: "child", Project: "p", Type: "issue", Fields: map[string]any{"status": "todo"}, Links: []pipeline.Link{{To: model.Ref{ID: doc.ID}, Kind: "parent-child"}}})
+				changes = append(changes, conformance.FixtureChange{Ref: model.Ref{ID: "child"}, Kind: "bead", Op: model.OpPatch, Body: child})
+			}
+			f.seed(t, changes...)
+			candidate := ontology.DefaultDocument()
+			workflow := candidate.Workflows["issue"]
+			if tc.name == "missing-gate" {
+				workflow.Transitions = append(workflow.Transitions, ontology.Rule{To: "done", Guards: []ontology.Guard{{Kind: ontology.GatesResolved, Kinds: []string{"manual"}}}})
+			}
+			if strings.Contains(tc.name, "evidence") {
+				workflow.Transitions = append(workflow.Transitions, ontology.Rule{To: "done", Guards: []ontology.Guard{{Kind: ontology.EvidenceRequired, Kinds: []string{"link"}}}})
+			}
+			candidate.Workflows["issue"] = workflow
+			if tc.name == "installed-authorizer" {
+				f.svc.cfg.AuthorizeRead = func(context.Context, model.PrincipalRef, model.ResourceRef, string) error { return nil }
+			}
+			result, err := f.svc.Plan(context.Background(), caller, PlanRequest{Project: "p", Document: withField(t, candidate, ontology.Field{Type: "boolean", Default: false})})
+			if err != nil || result.Changes.Ready != tc.ready || (!tc.ready && len(result.Violations) == 0) {
+				t.Fatalf("stored facts plan: ready=%t violations=%+v, %v", result.Changes.Ready, result.Violations, err)
+			}
+		})
+	}
+}
+
+func TestSourceCompilationAndReadAuthorizationAreNeverSilentlyFiltered(t *testing.T) {
+	f := newFixture(t)
+	f.seed(t, conformance.FixtureChange{Ref: f.ref, Kind: "ontology", Op: model.OpPatch, Body: []byte(`{"base":{}}`)})
+	check, err := f.svc.Check(context.Background(), caller, "p")
+	if err != nil || check.OK || !check.Drifted || len(check.Problems) == 0 {
+		t.Fatalf("compiler problems = %+v, %v", check, err)
+	}
+	overlay := ontology.Document{Types: map[string]ontology.Type{"issue": f.base.Types["issue"]}}
+	f.seed(t, conformance.FixtureChange{Ref: f.ref, Kind: "ontology", Op: model.OpPatch, Body: marshalSource(t, service.OntologySource{Base: f.base, Overlays: map[string]ontology.Document{"private": overlay}})}, bead(t, "a", "p", nil))
+	f.svc.cfg.AuthorizeRead = func(_ context.Context, _ model.PrincipalRef, _ model.ResourceRef, project string) error {
+		if project == "private" {
+			return failure("forbidden", "unreadable project source")
+		}
+		return nil
+	}
+	raw, _ := json.Marshal(f.base)
+	_, err = f.svc.Plan(context.Background(), caller, PlanRequest{Project: "p", Document: raw})
+	wantCode(t, err, "forbidden")
+	_, err = f.svc.History(context.Background(), caller, "p", model.Natural64(0), 100)
+	wantCode(t, err, "forbidden")
+	f.svc.cfg.AuthorizeRead = func(_ context.Context, _ model.PrincipalRef, resource model.ResourceRef, _ string) error {
+		if resource.Kind == "bead" {
+			return failure("forbidden", "unreadable stored row")
+		}
+		return nil
+	}
+	_, err = f.svc.Plan(context.Background(), caller, PlanRequest{Project: "p", Document: raw})
+	wantCode(t, err, "forbidden")
+	f.svc.cfg.AuthorizeRead = nil
+	f.svc.cfg.ValidatingPre = nil
+	_, err = f.svc.Plan(context.Background(), caller, PlanRequest{Project: "p", Document: raw})
+	wantCode(t, err, "invalid_params")
+}
