@@ -83,6 +83,9 @@ func Build(ctx context.Context, req Request, source RowSource, pre ValidatingPre
 	if err != nil {
 		return Plan{}, fmt.Errorf("read migration inventory: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return Plan{}, err
+	}
 	if inventory.DataRevision == "" || inventory.Ontology.Revision == "" || inventory.Count == "" || !validDigest(inventory.RowsDigest) {
 		refuse(Refusal{Code: "missing_facts", Message: "inventory needs explicit snapshot revision, ontology, row count and digest"})
 		return finish(report), nil
@@ -142,6 +145,9 @@ func Build(ctx context.Context, req Request, source RowSource, pre ValidatingPre
 	manifest, err := pre.Inventory(ctx, report.Candidate)
 	if err != nil {
 		return Plan{}, fmt.Errorf("read validating-pre manifest: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return Plan{}, err
 	}
 	manifestDigest, manifestErr := BindingsDigest(manifest.Candidate, manifest.Bindings)
 	if manifestErr != nil {

@@ -54,6 +54,12 @@ func guardFindings(ctx context.Context, req Request, inventory Inventory, source
 			return nil
 		}
 		facts = observed.Facts
+		for _, required := range guards {
+			if required.Kind == ontology.Permission && (observed.AuthzInstalled == nil || *observed.AuthzInstalled != facts.AuthzInstalled) {
+				refuse(Refusal{Code: "missing_facts", Row: rowKey(row.Before), Message: "permission guard requires an explicit consistent authorizer-presence observation"})
+				return nil
+			}
+		}
 		break
 	}
 	for _, guard := range guards {
@@ -64,7 +70,7 @@ func guardFindings(ctx context.Context, req Request, inventory Inventory, source
 		if !observed {
 			refuse(Refusal{Code: "missing_facts", Row: rowKey(row.Before), Message: "required target guard observation missing: " + string(guard.Kind)})
 		} else if !passes {
-			addFinding(row, candidate, ontology.Violation{Code: "ontology_guard_failed", Guard: guard.Kind, Message: "migration target guard failed"}, "")
+			addFinding(row, candidate, ontology.Violation{Code: "ontology_guard_failed", Guard: guard.Kind, Message: "migration target guard failed"}, "", guard)
 		}
 	}
 	return nil
@@ -106,8 +112,11 @@ func evaluateGuard(guard ontology.Guard, row Row, facts ontology.GuardFacts) (ob
 	return observed, passes
 }
 
-func addFinding(row *RowPlan, candidate Reference, violation ontology.Violation, subscriber string) {
+func addFinding(row *RowPlan, candidate Reference, violation ontology.Violation, subscriber string, guards ...ontology.Guard) {
 	finding := Finding{Violation: violation, Subscriber: subscriber}
+	if len(guards) != 0 {
+		finding.GuardDigest = digest(guards[0])
+	}
 	finding.ID = digest(struct {
 		Candidate Reference `json:"candidate"`
 		After     Row       `json:"after"`
@@ -133,7 +142,7 @@ func dispose(row *RowPlan, directives []Directive, used map[string]bool, refuse 
 				continue
 			}
 			v := finding.Violation
-			if v.Code == "field_owned" || v.Code == "subscriber_unavailable" || v.Field == "fields.priority" || v.Field == "fields.template" || v.Field == "id" {
+			if v.Code == "field_owned" || v.Code == "subscriber_unavailable" || v.Field == "fields.priority" || v.Field == "fields.template" || v.Field == "id" || v.Guard == ontology.NotTemplate {
 				refuse(Refusal{Code: "invalid_params", Row: rowKey(row.Before), Directive: d.ID, Message: "fixed rules and missing/owned plugin behavior cannot be grandfathered"})
 				continue
 			}

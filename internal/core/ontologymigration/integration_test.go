@@ -209,3 +209,95 @@ func TestPreCallbacksRunPerAffectedRowAndRejectionsRequireDisposition(t *testing
 		t.Fatal("callback infrastructure failure must not be a grandfatherable rejection")
 	}
 }
+
+func TestWorkflowFieldRequirementsAndDefaultsDoNotCoerceExistingValues(t *testing.T) {
+	current, candidate := ontology.DefaultDocument(), ontology.DefaultDocument()
+	for _, doc := range []ontology.Document{current, candidate} {
+		doc.Types["issue"].Fields["severity"] = ontology.Field{Type: "enum", Values: []string{"low", "high"}, Default: "low"}
+	}
+	w := candidate.Workflows["issue"]
+	w.Transitions = append(w.Transitions, ontology.Rule{To: "todo", Guards: []ontology.Guard{{Kind: ontology.FieldsRequired, Fields: []string{"severity"}}}})
+	candidate.Workflows["issue"] = w
+	req := request(t, current, candidate)
+	for _, value := range []any{nil, "", "unsupported", 3} {
+		source := rowsFor(t, req, bead("P-1", "P", map[string]any{"severity": value}))
+		p := build(t, req, source, noPre())
+		if p.Ready() || !equal(p.Report().Rows[0].After.State.Fields["severity"], value) {
+			t.Fatalf("default silently overwrote invalid existing value: %+v", p.Report())
+		}
+	}
+	source := rowsFor(t, req, bead("P-1", "P", nil))
+	if p := build(t, req, source, noPre()); !p.Ready() || p.Report().Rows[0].After.State.Fields["severity"] != "low" {
+		t.Fatalf("absent schema default did not satisfy workflow field requirement: %+v", p.Report())
+	}
+}
+
+func TestStatusOutcomeIsRecordedFromCompiledProjectSemantics(t *testing.T) {
+	req := request(t, ontology.DefaultDocument(), ontology.DefaultDocument())
+	row := bead("P-1", "P", nil)
+	row.State.Status = "done"
+	req.Directives = []Directive{{ID: "map", Kind: MapStatus, Target: Target{Project: "P", Type: "issue"}, From: "done", To: "failed"}}
+	p := build(t, req, rowsFor(t, req, row), noPre())
+	r := p.Report().Rows[0]
+	if !p.Ready() || r.BeforeStatus.Category != ontology.Completed || r.BeforeStatus.Outcome != ontology.Success || r.AfterStatus.Category != ontology.Completed || r.AfterStatus.Outcome != ontology.Failure {
+		t.Fatalf("compiled global category/outcome semantics lost: %+v", p.Report())
+	}
+}
+
+func TestAffectedLimitDoesNotCountUnchangedEnumeratedRows(t *testing.T) {
+	req := request(t, ontology.DefaultDocument(), ontology.DefaultDocument())
+	rows := make([]Row, 5001)
+	for i := range rows {
+		rows[i] = bead(fmt.Sprintf("P-%05d", i), "P", nil)
+	}
+	req.Directives = []Directive{{ID: "one", Kind: SetField, Target: Target{Project: "P", Type: "issue", ID: rows[0].State.ID}, Field: "title", Value: "changed"}}
+	pre := &fixturePre{bindings: []Binding{{ID: "one", Type: "issue", Digest: strings.Repeat("a", 64)}}}
+	p := build(t, req, rowsFor(t, req, rows...), pre)
+	if !p.Ready() || p.Report().Affected != 1 || len(p.Report().Rows) != 5001 || pre.calls != 1 {
+		t.Fatalf("input count incorrectly used as affected-row cap: ready=%v affected=%d calls=%d", p.Ready(), p.Report().Affected, pre.calls)
+	}
+}
+
+func TestTemplateRulesCannotBeGrandfathered(t *testing.T) {
+	current, candidate := ontology.DefaultDocument(), ontology.DefaultDocument()
+	w := candidate.Workflows["issue"]
+	w.Transitions = append(w.Transitions, ontology.Rule{To: "todo", Guards: []ontology.Guard{{Kind: ontology.NotTemplate}}})
+	candidate.Workflows["issue"] = w
+	req := request(t, current, candidate)
+	row := bead("P-1", "P", nil)
+	row.State.Template, row.State.Fields["template"] = true, true
+	source := rowsFor(t, req, row)
+	p := build(t, req, source, noPre())
+	if p.Ready() || len(p.Report().Rows[0].Findings) != 1 {
+		t.Fatal("template guard did not refuse")
+	}
+	req.Directives = []Directive{{ID: "template", Kind: Grandfather, Target: Target{Project: "P", Type: "issue", ID: "P-1"}, Violation: p.Report().Rows[0].Findings[0].ID, Reason: "attempted template exception"}}
+	if p := build(t, req, source, noPre()); p.Ready() || !hasRefusal(p, "invalid_params") {
+		t.Fatal("fixed template rule was grandfathered")
+	}
+}
+
+func TestDifferentGuardParametersNeedSeparateDispositions(t *testing.T) {
+	current, candidate := ontology.DefaultDocument(), ontology.DefaultDocument()
+	candidate.Types["issue"].Fields["a"] = ontology.Field{Type: "string"}
+	candidate.Types["issue"].Fields["b"] = ontology.Field{Type: "string"}
+	w := candidate.Workflows["issue"]
+	for _, field := range []string{"a", "b"} {
+		w.Transitions = append(w.Transitions, ontology.Rule{To: "todo", Guards: []ontology.Guard{{Kind: ontology.FieldsRequired, Fields: []string{field}}}})
+	}
+	candidate.Workflows["issue"] = w
+	req := request(t, current, candidate)
+	source := rowsFor(t, req, bead("P-1", "P", nil))
+	p := build(t, req, source, noPre())
+	findings := p.Report().Rows[0].Findings
+	if p.Ready() || len(findings) != 2 || findings[0].GuardDigest == findings[1].GuardDigest {
+		t.Fatal("distinct guard violations collapsed")
+	}
+	for i, finding := range findings {
+		req.Directives = append(req.Directives, Directive{ID: fmt.Sprint(i), Kind: Grandfather, Target: Target{Project: "P", Type: "issue", ID: "P-1"}, Violation: finding.ID, Reason: "explicit exception"})
+		p = build(t, req, source, noPre())
+		if p.Ready() != (i == 1) || p.Report().Grandfathered != i+1 {
+			t.Fatal("one directive covered more than its exact violation")
+		}
+	}
+}

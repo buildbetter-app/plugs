@@ -116,6 +116,10 @@ type Observation struct {
 	Candidate Reference           `json:"candidate"`
 	RowDigest string              `json:"rowDigest"`
 	Facts     ontology.GuardFacts `json:"facts"`
+	// Permission guards require an explicitly observed posture, including
+	// an affirmative observation that no authorizer is installed. It must
+	// agree with Facts.AuthzInstalled; a zero-valued Facts cannot allow.
+	AuthzInstalled *bool `json:"authzInstalled,omitempty"`
 }
 
 // Binding identifies an actual bound validating pre callback. Digest identifies
@@ -160,6 +164,7 @@ type Finding struct {
 	ID          string             `json:"id"`
 	Violation   ontology.Violation `json:"violation"`
 	Subscriber  string             `json:"subscriber,omitempty"`
+	GuardDigest string             `json:"guardDigest,omitempty"`
 	Disposition string             `json:"disposition,omitempty"` // grandfather directive ID
 }
 

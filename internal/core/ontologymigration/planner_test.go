@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -34,7 +35,8 @@ func (s *fixtureRows) Observe(ctx context.Context, inventory Inventory, change C
 	}
 	d, err := RowDigest(change.After)
 	observedTrue := true
-	return Observation{Candidate: change.Candidate, RowDigest: d, Facts: ontology.GuardFacts{NoOpenChildren: &observedTrue, NoOpenBlockers: &observedTrue, Evidence: map[string]bool{"link": true}, Gates: map[string]bool{"human": true}}}, err
+	observedFalse := false
+	return Observation{Candidate: change.Candidate, RowDigest: d, AuthzInstalled: &observedFalse, Facts: ontology.GuardFacts{NoOpenChildren: &observedTrue, NoOpenBlockers: &observedTrue, Evidence: map[string]bool{"link": true}, Gates: map[string]bool{"human": true}}}, err
 }
 
 type fixturePre struct {
@@ -136,9 +138,17 @@ func TestExact5000And5001AffectedBoundary(t *testing.T) {
 			for i := range rows {
 				rows[i] = bead(fmt.Sprintf("P-%05d", i), "P", nil)
 			}
-			p := build(t, req, rowsFor(t, req, rows...), noPre())
+			pre := &fixturePre{bindings: []Binding{{ID: "validate-all", Type: "issue", Digest: strings.Repeat("a", 64)}}}
+			p := build(t, req, rowsFor(t, req, rows...), pre)
 			if p.Report().Affected != n || p.Ready() != (n == 5000) || hasRefusal(p, "ontology_migration_too_large") != (n == 5001) {
 				t.Fatalf("wrong affected-row boundary: ready=%v affected=%d refusals=%+v", p.Ready(), p.Report().Affected, p.Report().Refusals)
+			}
+			wantCalls := 0
+			if n == 5000 {
+				wantCalls = n
+			}
+			if pre.calls != wantCalls {
+				t.Fatalf("actual pre callback count %d, want %d", pre.calls, wantCalls)
 			}
 		})
 	}

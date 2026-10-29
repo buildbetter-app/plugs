@@ -142,12 +142,14 @@ internal/core/ontology/types.go
 internal/core/ontologymigration/BUILD.bazel
 internal/core/ontologymigration/README.md
 internal/core/ontologymigration/digest.go
+internal/core/ontologymigration/digest_test.go
 internal/core/ontologymigration/directives.go
 internal/core/ontologymigration/guards.go
 internal/core/ontologymigration/integration_test.go
 internal/core/ontologymigration/planner.go
 internal/core/ontologymigration/planner_test.go
 internal/core/ontologymigration/types.go
+internal/core/ontologymigration/validation_test.go
 internal/doc.go
 internal/plugins/authnapikey/BUILD.bazel
 internal/plugins/authnapikey/apikey.go

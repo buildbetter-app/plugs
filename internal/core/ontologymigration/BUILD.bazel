@@ -10,7 +10,7 @@ go_library(
 
 go_test(
     name = "ontologymigration_test",
-    srcs = ["integration_test.go", "planner_test.go"],
+    srcs = ["digest_test.go", "integration_test.go", "planner_test.go", "validation_test.go"],
     embed = [":ontologymigration"],
 )
 

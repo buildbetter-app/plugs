@@ -42,7 +42,9 @@ plugin-owned defaults are never overwritten. `ontology.Check` validates the
 entire resulting state. Every rule targeting its status is conjoined for an
 affected row. Graph/permission guards require `GuardSource` observations bound
 to that final row and candidate. Missing observations refuse; observed guard
-failures are violations. Fixed rules and unavailable owners cannot be
+failures are violations. Permission guards need an explicit authorizer-presence
+observation, including when no authorizer is installed. Distinct guard parameter
+sets retain distinct violation identities. Fixed rules and unavailable owners cannot be
 grandfathered. Other grandfather directives identify one exact resulting
 violation on one exact row, record a reason and leave that violation visible.
 
