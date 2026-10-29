@@ -47,4 +47,11 @@ CREATE TABLE IF NOT EXISTS plug_postgres.checkpoints (
  key bytea PRIMARY KEY,
  generation numeric(20,0) NOT NULL CHECK (generation BETWEEN 1 AND 18446744073709551615),
  payload bytea NOT NULL
-);`
+);
+CREATE TABLE IF NOT EXISTS plug_postgres.core_sessions (
+ id text PRIMARY KEY CHECK (char_length(id)=32), token_digest bytea NOT NULL,
+ principal_kind text NOT NULL CHECK (principal_kind='user'), principal_id text NOT NULL,
+ expires_at timestamptz NOT NULL, revoked boolean NOT NULL DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS core_sessions_active_expiry
+ ON plug_postgres.core_sessions(revoked, expires_at);`

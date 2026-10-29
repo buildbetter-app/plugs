@@ -18,10 +18,14 @@ independent random 256-bit values. Matching callbacks cannot be replayed.
 Configure `authn.Config{CoreSessions: provider, Provider: optionalAPIKeys}`.
 `plg_s_` credentials go exclusively to the trusted session authority. Ordinary
 providers never confer human proof. Session records hold a digest, User ID and
-expiry. Session authority is process-local, expires after fifteen minutes by
-default (at most one hour, also capped by ID-token expiry), and is invalidated
-by `Revoke(id)` or process restart. There are at most 128 pending flows and
-1024 sessions by default, with explicit hard bounds and no positive cache.
+expiry. Session authority is process-local when no durable store is configured;
+SQLite and PostgreSQL stores can be passed as `Config.SessionStore` to retain
+the digest, unscoped `user` principal, expiry and a revocation bit across
+provider restarts. Lookups remain uncached, so revocation is effective for
+retained proofs as well as new HTTP admissions. Expiry is fifteen minutes by
+default (at most one hour, also capped by ID-token expiry). There are at most
+128 pending flows and 1024 active sessions by default, with explicit hard
+bounds and no positive cache.
 
 `CarryIdentity(authenticator, admittedHTTPHandler)` preserves the admitted
 identity through the existing HTTP/RPC path without changing its admission
@@ -32,8 +36,8 @@ API keys, delegated principals and principal-only contexts convey no proof.
 This slice installs **no public authentication methods or login routes**.
 The host must privately keep the binding and deliver the returned token to
 the same initiating client. There is no device flow, discovery, refresh,
-auto-provisioning, durable/multi-process session storage, external-origin
-token exchange, browser cookie host, CORS or iframe bridge support. Existing
+auto-provisioning, external-origin token exchange, browser cookie host, CORS
+or iframe bridge support. Existing
 HTTP explicitly refuses cookies and foreign origins. No issuer bearer JWT,
 browser transport relaxation or successful placeholder substitutes for these
 boundaries. Collaboration `session.*` is a separate live-client lifecycle.

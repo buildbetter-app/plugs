@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -161,5 +163,48 @@ func TestMetadataAndIndependentHandles(t *testing.T) {
 	}
 	if err = old.Renew(ctx); err == nil {
 		t.Fatal("expired holder renewed")
+	}
+}
+
+func TestCoreSessionPersistenceAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	dsn := freshDSN(t)
+	value, err := Open(ctx, driver.Config{DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := driver.CoreSessionStore(value)
+	now := time.Unix(1_800_000_000, 123)
+	record := driver.CoreSessionRecord{
+		ID: "0123456789abcdef0123456789abcdef", TokenDigest: bytes.Repeat([]byte{0x42}, 32),
+		Principal: model.PrincipalRef{Kind: "user", ID: "user:postgres"}, ExpiresAt: now.Add(time.Hour),
+	}
+	if err := store.PutCoreSession(ctx, record, now, 4); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.LookupCoreSession(ctx, record.ID)
+	if err != nil || active.Revoked || active.Principal.Kind != "user" || active.Principal.ID != record.Principal.ID {
+		t.Fatalf("active core session=%+v err=%v", active, err)
+	}
+	if revoked, err := store.RevokeCoreSession(ctx, record.ID); err != nil || !revoked {
+		t.Fatalf("revoke=%t err=%v", revoked, err)
+	}
+	if err := value.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(ctx, driver.Config{DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	revoked, err := driver.CoreSessionStore(reopened).LookupCoreSession(ctx, record.ID)
+	if err != nil || !revoked.Revoked || revoked.Principal.Kind != "user" {
+		t.Fatalf("reopened revoked core session=%+v err=%v", revoked, err)
+	}
+	bad := record
+	bad.ID = "fedcba9876543210fedcba9876543210"
+	bad.Principal = model.PrincipalRef{Kind: "agent", ID: "agent:must-not-be-human"}
+	if err := driver.CoreSessionStore(reopened).PutCoreSession(ctx, bad, now, 4); err == nil {
+		t.Fatal("non-user core session was accepted")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
 type observedDomain struct {
@@ -56,8 +58,14 @@ type httpFixture struct {
 }
 
 func realHTTP(t *testing.T, idp *mockIDP) *httpFixture {
+	return realHTTPWithSessionStore(t, idp, nil)
+}
+
+func realHTTPWithSessionStore(t *testing.T, idp *mockIDP, sessionStore driver.CoreSessionStore) *httpFixture {
 	t.Helper()
-	p, err := authnoidc.New(idp.config())
+	config := idp.config()
+	config.SessionStore = sessionStore
+	p, err := authnoidc.New(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,6 +129,54 @@ func realHTTP(t *testing.T, idp *mockIDP) *httpFixture {
 		}
 	})
 	return f
+}
+
+func TestRealHTTPSQLiteSessionSurvivesProviderRestartAndRevocation(t *testing.T) {
+	idp := newIDP(t)
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	firstValue, err := (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := firstValue.(driver.CoreSessionStore)
+	f1 := realHTTPWithSessionStore(t, idp, first)
+	session := login(t, idp, f1.provider)
+	if err := firstValue.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	secondValue, err := (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := secondValue.(driver.CoreSessionStore)
+	t.Cleanup(func() {
+		if err := secondValue.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	f2 := realHTTPWithSessionStore(t, idp, second)
+	if _, err := f2.auth.Admit(context.Background(), session.Token); err != nil {
+		t.Fatalf("active session did not survive provider/store restart: %v", err)
+	}
+	result(t, f2.call(t, session.Token, "bead.create", writeParams(t), nil))
+	identity, err := f2.auth.Admit(context.Background(), session.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.RequireInteractiveUser(); err != nil {
+		t.Fatalf("retained proof was not live before revocation: %v", err)
+	}
+	if !f2.provider.Revoke(session.ID) {
+		t.Fatal("durable revocation did not acknowledge the active session")
+	}
+	if !errors.Is(identity.RequireInteractiveUser(), authn.ErrUnauthenticated) {
+		t.Fatal("retained proof survived durable revocation")
+	}
+	expectCode(t, f2.call(t, session.Token, "bead.create", writeParams(t), nil), http.StatusUnauthorized, "unauthenticated")
+	expiring := login(t, idp, f2.provider)
+	idp.now.Store(expiring.ExpiresAt.Unix())
+	expectCode(t, f2.call(t, expiring.Token, "bead.create", writeParams(t), nil), http.StatusUnauthorized, "token_expired")
 }
 
 type reply struct {
