@@ -3,8 +3,9 @@
 # Bazel acceptance wrapper for the nested authz Go module. The runner records
 # git-relative source digests, so lay the declared runfiles out as a tiny
 # throwaway repository before invoking the same contract harness used by
-# contributors. The harness replaces every benchmark invocation with a
-# guarded fake command; only -print-contract is executed by the real module.
+# contributors. Before any invocation the harness installs a guard, then
+# delegates each real -print-contract export to the registered SDK. Benchmark
+# routes use explicit fakes and never execute the real module's benchmark.
 
 set -euo pipefail
 

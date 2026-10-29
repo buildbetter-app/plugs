@@ -39,13 +39,32 @@ needed to attach the run to a result table.
 Before it checks a DSN, creates an artifact directory, or starts the benchmark,
 the runner asks the executable for `-print-contract` and fail-closed compares
 the complete supported matrix, dataset, targets, command templates, Postgres
-provisioning declaration, and artifact names with the manifest. Focused
-mutation coverage is available from
-[`manifest-contract-test.sh`](manifest-contract-test.sh); it rejects altered
-declarations before setup and exercises a valid bounded command path.
-The same executable contract and guarded mutation path run under Bazel with
-`bazel test //spikes/authz:manifest_contract_test --config=ci --test_output=all`;
-the acceptance target replaces benchmark invocations with a fake command.
+provisioning declaration, and artifact names with the manifest. Comparisons
+use parsed JSON values: object order and equivalent numeric spellings such as
+`20` and `20.0` do not change the contract; array order remains meaningful.
+Duplicate object member names are rejected before normalization or export.
+Set `AUTHZ_GO_BIN` to select a Go executable explicitly; the runner uses that
+tool for contract export, version metadata, and benchmark execution. Invalid
+declarations exit 2 with `manifest contract:`; unavailable tools or failed
+exports exit 3 with `manifest exporter:`.
+
+Focused coverage is available from
+[`manifest-contract-test.sh`](manifest-contract-test.sh). It installs a
+benchmark guard before the first invocation, requires an initial successful
+real executable export, and requires each parseable mutation to have its own
+successful real export and the intended rejection reason. It also tests
+exporter failure, object/numeric equivalence, meaningful array order,
+duplicate rejection, and engine routing. Accepted benchmark commands are
+explicit fakes that write only a stub result; they prove no performance or
+database behavior. A separate fake exporter checks matching engine-set drift.
+
+The same executable contract and guarded harness run under Bazel with
+`bazel test //spikes/authz:manifest_contract_test --config=ci --cache_test_results=no --test_output=all`.
+Every real export delegates to the registered Go SDK. The nested module still
+needs a populated module cache or runtime dependency downloads; those modules
+are not yet declared Bazel inputs. Repository inventory/guard integration for
+this package also remains pending. This target alone does not establish
+portable offline acceptance or continuing repository-guard coverage.
 
 The JSON `CandidateRows` field is measured SQL cardinality evidence for the
 rows a plan must qualify or walk: scope-first counts its qualified ready rows,

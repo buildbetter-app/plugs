@@ -22,8 +22,8 @@ artifact_stdout_digest_name="stdout.sha256"
 artifact_exit_status_name="exit-status.txt"
 
 if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 is required to validate benchmark-manifest.json" >&2
-  exit 2
+  echo "manifest exporter: python3 is required to validate benchmark-manifest.json" >&2
+  exit 3
 fi
 
 # jq normalizes duplicate object members to the last value it sees. Reject
@@ -64,8 +64,8 @@ then
 fi
 
 if ! command -v jq >/dev/null 2>&1; then
-  echo "jq is required to validate benchmark-manifest.json" >&2
-  exit 2
+  echo "manifest exporter: jq is required to validate benchmark-manifest.json" >&2
+  exit 3
 fi
 
 if [[ ! -f "$manifest" ]] || ! jq -e . "$manifest" >/dev/null 2>&1; then
@@ -76,24 +76,35 @@ fi
 # Ask the executable for the values it supports before checking the manifest.
 # This contract-only path does not open a database, require a DSN, seed a
 # corpus, or start a container.
+# Use the selected SDK for every Go invocation, including export and version
+# metadata. The acceptance harness supplies a guard that delegates only the
+# exact contract-export command to Bazel's registered SDK.
+go_bin="${AUTHZ_GO_BIN:-go}"
+if [[ "$go_bin" != /* ]]; then
+  go_bin="$(command -v "$go_bin" || true)"
+fi
+if [[ -z "$go_bin" || ! -x "$go_bin" ]]; then
+  echo "manifest exporter: selected Go SDK executable not found" >&2
+  exit 3
+fi
 contract_file="$(mktemp)"
 trap 'rm -f "$contract_file"' EXIT
-if ! (cd "$script_dir" && go run ./cmd/authz-spike -print-contract) >"$contract_file"; then
-  echo "manifest contract: executable contract could not be read" >&2
-  exit 2
+if ! (cd "$script_dir" && "$go_bin" run ./cmd/authz-spike -print-contract) >"$contract_file"; then
+  echo "manifest exporter: executable contract export failed" >&2
+  exit 3
 fi
 if ! jq -e . "$contract_file" >/dev/null 2>&1; then
-  echo "manifest contract: executable returned invalid JSON" >&2
-  exit 2
+  echo "manifest exporter: executable contract export returned invalid JSON" >&2
+  exit 3
 fi
 
 contract_iterations="$(jq -er '.matrix.measured_iterations | select(type == "number" and . >= 1 and floor == .)' "$contract_file")" || {
-  echo "manifest contract: executable has no positive integer measured iteration count" >&2
-  exit 2
+  echo "manifest exporter: executable has no positive integer measured iteration count" >&2
+  exit 3
 }
 contract_warmups="$(jq -er '.matrix.warmups | select(type == "number" and . >= 0 and floor == .)' "$contract_file")" || {
-  echo "manifest contract: executable has no non-negative integer warmup count" >&2
-  exit 2
+  echo "manifest exporter: executable has no non-negative integer warmup count" >&2
+  exit 3
 }
 
 expected_top_level='["artifacts","commands","dataset","matrix","module","postgres_provisioning","schema","targets_ms"]'
@@ -103,11 +114,21 @@ if [[ "$manifest_top_level" != "$expected_top_level" ]]; then
   exit 2
 fi
 
-manifest_matrix_contract="$(jq -cS '{schema,module,matrix,dataset,targets_ms}' "$manifest")"
-executable_matrix_contract="$(jq -cS '{schema,module,matrix,dataset,targets_ms}' "$contract_file")"
-if [[ "$manifest_matrix_contract" != "$executable_matrix_contract" ]]; then
+# Compare parsed JSON values.  jq ignores object member order, treats
+# numerically equivalent spellings (20 and 20.0) as equal, and keeps array
+# order meaningful.
+comparison_status=0
+jq -e --slurpfile executable "$contract_file" '
+  {schema,module,matrix,dataset,targets_ms}
+  == ($executable[0] | {schema,module,matrix,dataset,targets_ms})
+' "$manifest" >/dev/null || comparison_status=$?
+if [[ "$comparison_status" == 1 ]]; then
   echo "manifest contract: matrix, dataset, targets, schema, or module diverges from executable" >&2
   exit 2
+fi
+if [[ "$comparison_status" != 0 ]]; then
+  echo "manifest exporter: parsed contract comparison failed" >&2
+  exit 3
 fi
 
 runner_matrix_engines='["sqlite","postgres"]'
@@ -213,7 +234,7 @@ printf '%s\n' "cd spikes/authz && $display_command" > "$command_file"
   printf 'warmups=%s\n' "$manifest_warmups"
   printf 'git_head=%s\n' "$(git -C "$repo_root" rev-parse HEAD)"
   printf 'git_worktree_status=%s\n' "$(git -C "$repo_root" status --porcelain=v1 | tr '\n' ' ')"
-  printf 'go_version=%s\n' "$(go version)"
+  printf 'go_version=%s\n' "$("$go_bin" version)"
   printf 'module=%s\n' "$(sed -n '1p' "$script_dir/go.mod")"
   printf 'postgres_dsn=captured-from-environment-only\n'
 } > "$environment"
@@ -222,12 +243,12 @@ run_status=0
 (
   cd "$script_dir"
   if [[ "$engine" == sqlite ]]; then
-    go run ./cmd/authz-spike -engine=sqlite -iterations="$iterations" -output="$result"
+    "$go_bin" run ./cmd/authz-spike -engine=sqlite -iterations="$iterations" -output="$result"
   else
     # The binary already reads AUTHZ_POSTGRES_DSN as its default.  Assigning
     # it on this command keeps the value out of the parent shell and logs.
     AUTHZ_POSTGRES_DSN="$AUTHZ_POSTGRES_DSN" \
-      go run ./cmd/authz-spike -engine="$engine" -iterations="$iterations" -output="$result"
+      "$go_bin" run ./cmd/authz-spike -engine="$engine" -iterations="$iterations" -output="$result"
   fi
 ) > "$stdout" 2>&1 || run_status=$?
 printf '%s\n' "$run_status" > "$status_file"
