@@ -35,12 +35,18 @@ type watch struct {
 	session string
 	request Request
 
-	mu       sync.Mutex
-	cursor   string
-	position coreevents.Position
-	binding  Binding
-	closed   bool
-	closeErr error
+	mu            sync.Mutex
+	cursor        string
+	openingCursor string
+	emittedCursor string
+	position      coreevents.Position
+	binding       Binding
+	closed        bool
+	closeErr      error
+	halted        bool
+	replacement   *Frame
+	consumer      *Subscription
+	nextMu        sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -64,7 +70,7 @@ func New(lifetime context.Context, config Config) (*Manager, error) {
 	if lifetime == nil || isNilInterface(config.Events) || config.Events.Reader == nil || config.Events.Cursors == nil {
 		return nil, fmt.Errorf("watch requires a real event service")
 	}
-	if config.Events.Reader.Log == nil || config.Events.Reader.Materializer == nil || config.Events.Reader.Authorization == nil {
+	if isNilInterface(config.Events.Reader.Log) || isNilInterface(config.Events.Reader.Materializer) || isNilInterface(config.Events.Reader.Authorization) {
 		return nil, fmt.Errorf("watch requires the actual event log, materializer and authorization")
 	}
 	if config.QueueSize == 0 {
@@ -114,11 +120,12 @@ func New(lifetime context.Context, config Config) (*Manager, error) {
 	return m, nil
 }
 
-// Open admits and starts one bounded watch. The initial frame is queued before
+// Open takes the trusted connection/session LIFETIME, not an HTTP RPC request
+// context. The initial frame is queued before
 // the worker starts, so a write racing the snapshot is observed after the
 // exact returned cursor rather than being lost.
 func (m *Manager) Open(ctx context.Context, request Request) (*Subscription, error) {
-	if ctx == nil {
+	if ctx == nil || request.SessionID == "" {
 		return nil, ErrInvalidRequest
 	}
 	if !request.Method.valid() {
@@ -130,9 +137,12 @@ func (m *Manager) Open(ctx context.Context, request Request) (*Subscription, err
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if request.Method == MethodViewWatch && request.ViewID == "" {
-		return nil, ErrInvalidRequest
+	if request.Method == MethodViewWatch || request.ViewID != "" {
+		return nil, ErrViewCheckpointRequired
 	}
+	// Own all request maps/slices before the caller can reuse its arguments.
+	frozen := cloneBinding(Binding{Principal: request.Principal, Filter: request.Filter})
+	request.Principal, request.Filter = frozen.Principal, frozen.Filter
 	if request.Method == MethodBeadWatch {
 		if request.Resource == "" {
 			return nil, ErrInvalidRequest
@@ -141,14 +151,9 @@ func (m *Manager) Open(ctx context.Context, request Request) (*Subscription, err
 			return nil, ErrInvalidRequest
 		}
 	}
-	if request.SessionID == "" {
-		// One-shot callers without collab session state share a bounded implicit
-		// session. A transport that has real collab uses its session ID here.
-		request.SessionID = "anonymous-session"
-	}
 
 	m.mu.Lock()
-	if m.closed {
+	if m.closed || m.ctx.Err() != nil {
 		m.mu.Unlock()
 		return nil, ErrClosed
 	}
@@ -235,60 +240,56 @@ func (m *Manager) Cancel(ctx context.Context, id string) error {
 func (m *Manager) cancel(id string, reason error) error {
 	m.mu.Lock()
 	current := m.watches[id]
+	m.mu.Unlock()
+	return m.cancelWatch(current, reason)
+}
+
+func (m *Manager) cancelWatch(current *watch, reason error) error {
 	if current == nil {
-		m.mu.Unlock()
 		return nil
 	}
-	delete(m.watches, id)
-	if sessions := m.session[current.session]; sessions != nil {
-		delete(sessions, id)
-		if len(sessions) == 0 {
-			delete(m.session, current.session)
-		}
-	}
 	current.mu.Lock()
-	current.closeErr = reason
+	if current.closeErr == nil {
+		current.closeErr = reason
+	}
 	current.mu.Unlock()
 	current.cancel()
-	m.mu.Unlock()
 	<-current.done
 	return nil
+}
+
+// CancelOwned checks the authenticated owner without claiming stream delivery.
+func (m *Manager) CancelOwned(ctx context.Context, id string, principal model.PrincipalRef) error {
+	if ctx == nil {
+		return ErrInvalidRequest
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	current := m.watches[id]
+	if current == nil || !samePrincipal(current.request.Principal, principal) {
+		m.mu.Unlock()
+		return ErrSubscriptionClosed
+	}
+	m.mu.Unlock()
+	return m.cancelWatch(current, ErrSubscriptionClosed)
 }
 
 // Close cancels every watch and waits for every delivery loop to release its
 // queue and reader copy. It never closes the caller's event service or store.
 func (m *Manager) Close() error {
 	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		select {
-		case <-m.done:
-			return nil
-		default:
-		}
-	}
 	m.closed = true
-	watches := make([]*watch, 0, len(m.watches))
-	for _, current := range m.watches {
-		watches = append(watches, current)
-		current.cancel()
-	}
 	m.mu.Unlock()
-	for _, current := range watches {
-		<-current.done
-	}
 	m.stopLifetime()
-	select {
-	case <-m.done:
-	case <-time.After(5 * time.Second):
-		return fmt.Errorf("watch manager close timed out")
-	}
+	<-m.done
 	return nil
 }
 
 // CloseSession releases all watches owned by a collab session. The manager
-// does not import collab; the same stable session ID is the seam consumed by
-// the merged PR52 manager.
+// does not close the collab session itself. Passing its real SessionContext
+// to Open also releases all watches when that session ends.
 func (m *Manager) CloseSession(ctx context.Context, sessionID string) error {
 	if ctx == nil || sessionID == "" {
 		return ErrInvalidRequest
@@ -304,7 +305,7 @@ func (m *Manager) CloseSession(ctx context.Context, sessionID string) error {
 	}
 	m.mu.Unlock()
 	for _, current := range watches {
-		_ = m.cancel(current.id, ErrSubscriptionClosed)
+		_ = m.cancelWatch(current, ErrSubscriptionClosed)
 	}
 	return nil
 }
@@ -336,8 +337,18 @@ func (m *Manager) Attach(ctx context.Context, id string, principal model.Princip
 		m.mu.Unlock()
 		return nil, ErrSubscriptionClosed
 	}
-	m.mu.Unlock()
-	return &Subscription{watch: current}, nil
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	defer m.mu.Unlock()
+	if current.ctx.Err() != nil || current.closed {
+		return nil, ErrSubscriptionClosed
+	}
+	if current.consumer != nil {
+		return nil, ErrAlreadyAttached
+	}
+	subscription := &Subscription{watch: current}
+	current.consumer = subscription
+	return subscription, nil
 }
 
 func (current *watch) open() error {
@@ -345,22 +356,20 @@ func (current *watch) open() error {
 	if err != nil {
 		return err
 	}
-	current.mu.Lock()
-	current.binding = binding
-	current.mu.Unlock()
 	page, position, err := current.poll(current.ctx, current.request.From, binding)
 	if err != nil {
 		return err
 	}
-	frame := current.snapshotFrame(page, position)
-	if err := current.enqueue(frame); err != nil {
-		return err
-	}
 	current.mu.Lock()
-	current.cursor = page.Cursor
-	current.position = position
+	current.binding, current.cursor, current.position = binding, page.Cursor, position
+	current.openingCursor = page.Cursor
 	current.mu.Unlock()
-	return nil
+	kind := FrameSnapshot
+	if page.Reset {
+		kind = FrameReset
+	}
+	frame := current.frame(kind, "", page, position, binding)
+	return current.enqueue(frame)
 }
 
 func (current *watch) run() {
@@ -390,299 +399,452 @@ func (current *watch) run() {
 
 func (current *watch) step() error {
 	current.mu.Lock()
-	if current.closed {
-		current.mu.Unlock()
-		return ErrSubscriptionClosed
-	}
-	oldCursor, oldBinding := current.cursor, cloneBinding(current.binding)
-	request := current.request
-	current.mu.Unlock()
-
-	binding, err := current.manager.binding(current.ctx, request)
-	if err != nil {
-		return err
-	}
-	if !sameBindingIdentity(oldBinding, binding) {
-		reason := "visibility_changed"
-		if request.Method == MethodViewWatch {
-			reason = "view_changed"
-		}
-		return current.rebind(binding, reason)
-	}
-	if oldBinding.Ontology.String() != binding.Ontology.String() {
-		return current.rebind(binding, "ontology_changed")
-	}
-	if oldBinding.PolicyVersion != binding.PolicyVersion {
-		return current.rebind(binding, "policy_changed")
-	}
-	if oldBinding.Incarnation != binding.Incarnation {
-		// Keep the old binding for one poll so server/events emits its typed
-		// event.gap; a stale cursor is never decoded as the new incarnation.
-		page, position, pollErr := current.poll(current.ctx, oldCursor, oldBinding)
-		if pollErr != nil {
-			return pollErr
-		}
-		if err := current.emitDelta(oldCursor, page, position); err != nil {
-			return err
-		}
-		current.mu.Lock()
-		current.binding = binding
-		current.cursor = page.Cursor
-		current.position = position
+	if current.halted {
 		current.mu.Unlock()
 		return nil
 	}
-
+	oldCursor, oldBinding := current.cursor, cloneBinding(current.binding)
+	current.mu.Unlock()
+	binding, err := current.manager.binding(current.ctx, current.request)
+	if err != nil {
+		return err
+	}
+	if reason := bindingChange(oldBinding, binding); reason != "" {
+		if reason == "incarnation_changed" {
+			// Let server/events turn the stale old-incarnation cursor into its
+			// mandatory event.gap. Do not manufacture a reset at the old tuple.
+			page, position, err := current.poll(current.ctx, oldCursor, oldBinding)
+			if err != nil {
+				return err
+			}
+			return current.enqueue(current.frame(FrameReset, current.emittedCursor, page, position, oldBinding))
+		}
+		return current.replaceWithReset(reason, binding)
+	}
 	page, position, err := current.poll(current.ctx, oldCursor, oldBinding)
 	if err != nil {
 		return err
 	}
-	if err := current.emitDelta(oldCursor, page, position); err != nil {
-		return err
+	if len(page.Events) == 0 && !page.Reset {
+		current.mu.Lock()
+		if !current.halted {
+			current.cursor, current.position = page.Cursor, position
+		}
+		current.mu.Unlock()
+		return nil
 	}
 	current.mu.Lock()
-	current.cursor = page.Cursor
-	current.position = position
+	from := current.emittedCursor
 	current.mu.Unlock()
+	kind := FrameDelta
 	if page.Reset {
-		reason := pageBoundaryReason(page)
-		return current.rebind(binding, reason)
+		kind = FrameReset
 	}
-	return nil
+	return current.enqueue(current.frame(kind, from, page, position, oldBinding))
 }
 
-func (current *watch) rebind(binding Binding, reason string) error {
-	if reason == "" {
-		reason = "visibility_changed"
+func bindingChange(a, b Binding) string {
+	switch {
+	case !samePrincipal(a.Principal, b.Principal) || !sameFilter(a.Filter, b.Filter):
+		return "visibility_changed"
+	case a.Incarnation != b.Incarnation:
+		return "incarnation_changed"
+	case a.Ontology.String() != b.Ontology.String():
+		return "ontology_changed"
+	case a.PolicyVersion != b.PolicyVersion:
+		return "policy_changed"
+	default:
+		return ""
 	}
-	page, position, err := current.poll(current.ctx, "", binding)
-	if err != nil {
-		return err
-	}
-	reset := Frame{SubscriptionID: current.id, Kind: FrameReset, Cursor: page.Cursor, Reason: reason, position: position, created: current.manager.config.Clock()}
-	if err := current.enqueue(reset); err != nil {
-		return err
-	}
-	snapshot := current.snapshotFrame(page, position)
-	if err := current.enqueue(snapshot); err != nil {
-		return err
-	}
-	current.mu.Lock()
-	current.binding = binding
-	current.cursor = page.Cursor
-	current.position = position
-	current.mu.Unlock()
-	return nil
 }
 
+// The event service owns actual log/materializer/authorization semantics. It
+// uses event.subscribe internally; translate signed tokens at this boundary so
+// a bead.watch token cannot be replayed as event.subscribe (or vice versa).
 func (current *watch) poll(ctx context.Context, after string, binding Binding) (serverevents.Page, coreevents.Position, error) {
 	service := *current.manager.config.Events
 	reader := *service.Reader
 	reader.Authorization = current.auth
 	service.Reader = &reader
-	request := serverevents.Request{Principal: binding.Principal, Filter: cloneFilter(binding.Filter), After: after, Limit: current.manager.config.PageLimit, Ontology: binding.Ontology, PolicyVersion: binding.PolicyVersion, SubscriptionID: current.id}
-	page, err := service.Poll(ctx, request)
+	filter := cloneFilter(binding.Filter)
+	if len(filter.Types) > 0 {
+		filter.Types = append(filter.Types, "watch.reset", "visibility.lost")
+	}
+	inner, err := serverevents.BindingFor("event.subscribe", filter, binding.Principal, binding.Ontology, binding.PolicyVersion)
 	if err != nil {
 		return serverevents.Page{}, coreevents.Position{}, err
 	}
-	position, err := service.Cursors.Decode(page.Cursor, cursorBindingFor(request))
+	outer, err := current.cursorBinding(binding)
 	if err != nil {
 		return serverevents.Page{}, coreevents.Position{}, err
+	}
+	if after != "" {
+		position, err := service.Cursors.Decode(after, outer)
+		if err != nil {
+			return serverevents.Page{}, coreevents.Position{}, err
+		}
+		after, err = service.Cursors.Encode(position, inner)
+		if err != nil {
+			return serverevents.Page{}, coreevents.Position{}, err
+		}
+	}
+	page, err := service.Poll(ctx, serverevents.Request{Principal: binding.Principal, Filter: filter, After: after, Limit: current.manager.config.PageLimit, Ontology: binding.Ontology, PolicyVersion: binding.PolicyVersion, SubscriptionID: current.id})
+	if err != nil {
+		return page, coreevents.Position{}, err
+	}
+	position, err := service.Cursors.Decode(page.Cursor, inner)
+	if err != nil {
+		return page, position, err
+	}
+	page.Cursor, err = service.Cursors.Encode(position, outer)
+	if err != nil {
+		return page, position, err
+	}
+	for i := range page.Events {
+		event := &page.Events[i]
+		token, err := service.Cursors.Encode(coreevents.PositionOf(*event), outer)
+		if err != nil {
+			return page, position, err
+		}
+		if event.Durable != nil {
+			event.Durable.Cursor = token
+		} else {
+			event.Control.Cursor = token
+			if details, ok := event.Control.Details.(model.WatchResetDetails); ok {
+				details.SnapshotCursor = token
+				event.Control.Details = details
+			}
+		}
 	}
 	return page, position, nil
 }
 
-func cursorBindingFor(request serverevents.Request) serverevents.CursorBinding {
-	binding, _ := serverevents.BindingFor("event.subscribe", request.Filter, request.Principal, request.Ontology, request.PolicyVersion)
-	return binding
+func (current *watch) cursorBinding(binding Binding) (serverevents.CursorBinding, error) {
+	return serverevents.BindingFor(string(current.request.Method), binding.Filter, binding.Principal, binding.Ontology, binding.PolicyVersion)
 }
 
-func (current *watch) snapshotFrame(page serverevents.Page, position coreevents.Position) Frame {
-	return Frame{SubscriptionID: current.id, Kind: FrameSnapshot, Cursor: page.Cursor, Events: cloneEvents(page.Events), position: position, created: current.manager.config.Clock()}
-}
-
-func (current *watch) emitDelta(from string, page serverevents.Page, position coreevents.Position) error {
-	if len(page.Events) == 0 && !page.Reset {
-		return nil
+func (current *watch) frame(kind FrameKind, from string, page serverevents.Page, position coreevents.Position, binding Binding) Frame {
+	frame := Frame{SubscriptionID: current.id, Kind: kind, FromCursor: from, Cursor: page.Cursor, position: position, binding: cloneBinding(binding), created: current.manager.config.Clock()}
+	if page.Reset {
+		frame.Reason = pageBoundaryReason(page)
 	}
-	reason := ""
 	for _, event := range page.Events {
-		if event.Control != nil && event.Control.Type == model.EventVisibilityLost {
-			reason = "visibility_changed"
+		// One terminal reset belongs to the frame, not inside watch.delta.
+		if event.Control != nil && event.Control.Type == model.EventWatchReset {
+			continue
 		}
+		frame.Events = append(frame.Events, event)
 	}
-	frame := Frame{SubscriptionID: current.id, Kind: FrameDelta, FromCursor: from, Cursor: page.Cursor, Events: cloneEvents(page.Events), Reason: reason, position: position, created: current.manager.config.Clock()}
-	return current.enqueue(frame)
+	return frame
 }
 
 func (current *watch) enqueue(frame Frame) error {
-	if frame.created.IsZero() {
-		frame.created = current.manager.config.Clock()
-	}
 	if err := frame.validate(); err != nil {
 		return err
 	}
-	select {
-	case <-current.ctx.Done():
-		return current.ctx.Err()
-	default:
-	}
 	current.queueMu.Lock()
 	defer current.queueMu.Unlock()
 	current.mu.Lock()
-	closed := current.closed
-	current.mu.Unlock()
-	if closed {
-		return ErrSubscriptionClosed
+	defer current.mu.Unlock()
+	if err := current.ctx.Err(); err != nil {
+		return err
 	}
+	if current.halted {
+		return nil
+	}
+	current.cursor, current.position = frame.Cursor, frame.position
 	select {
 	case current.queue <- frame:
+		current.emittedCursor = frame.Cursor
+		current.halted = frame.Terminal()
 		return nil
 	default:
-		// The incoming frame is the newest safe checkpoint. Advance the
-		// manager cursor before replacing the queue so the reset token and
-		// decoded position remain one exact pair.
-		current.mu.Lock()
-		current.cursor = frame.Cursor
-		current.position = frame.position
-		current.mu.Unlock()
-		return current.enqueueResetLocked("overflow", frame.Cursor, frame.position)
+		return current.replaceLocked("overflow", current.binding)
 	}
 }
 
-func (current *watch) enqueueReset(reason string, position coreevents.Position) error {
-	current.mu.Lock()
-	cursor := current.cursor
-	current.mu.Unlock()
-	if cursor == "" {
-		return ErrSubscriptionClosed
+// queueMu and mu are held. Replacements discard every undelivered payload,
+// halt polling and retain just one reset until explicit reopen/cancellation.
+func (current *watch) replaceLocked(reason string, binding Binding) error {
+	codecBinding, err := current.cursorBinding(binding)
+	if err != nil {
+		return err
 	}
-	return current.enqueueResetAt(reason, cursor, position)
-}
-
-func (current *watch) enqueueResetAt(reason, cursor string, position coreevents.Position) error {
-	current.queueMu.Lock()
-	defer current.queueMu.Unlock()
-	return current.enqueueResetLocked(reason, cursor, position)
-}
-
-func (current *watch) enqueueResetLocked(reason, cursor string, position coreevents.Position) error {
-	reset := Frame{SubscriptionID: current.id, Kind: FrameReset, Cursor: cursor, Reason: reason, position: position, created: current.manager.config.Clock()}
+	cursor, err := current.manager.config.Events.Cursors.Encode(current.position, codecBinding)
+	if err != nil {
+		return err
+	}
+	reset := Frame{SubscriptionID: current.id, Kind: FrameReset, Cursor: cursor, Reason: reason, position: current.position, binding: cloneBinding(binding), created: current.manager.config.Clock()}
 	if err := reset.validate(); err != nil {
 		return err
 	}
-	current.mu.Lock()
-	closed := current.closed
-	current.mu.Unlock()
-	if closed {
-		return ErrSubscriptionClosed
+	current.halted, current.replacement, current.cursor = true, &reset, cursor
+	for len(current.queue) > 0 {
+		<-current.queue
 	}
-	// Discard stale queued frames. A reset is the only admissible recovery
-	// after overflow/lag; silently dropping a prefix would make the cursor
-	// appear acknowledged while leaving the client with an incomplete stream.
-	for {
-		select {
-		case <-current.queue:
-			continue
-		default:
-		}
-		break
-	}
-	select {
-	case current.queue <- reset:
-		return nil
-	default:
-		return fmt.Errorf("watch reset could not enter bounded queue")
-	}
+	current.queue <- reset
+	return nil
 }
 
-func (current *watch) next(ctx context.Context) (Frame, error) {
-	if ctx == nil {
-		return Frame{}, ErrInvalidRequest
-	}
-	select {
-	case <-ctx.Done():
-		return Frame{}, ctx.Err()
-	case frame, ok := <-current.queue:
-		if !ok {
-			current.mu.Lock()
-			err := current.closeErr
-			current.mu.Unlock()
-			if err == nil {
-				err = ErrSubscriptionClosed
-			}
-			return Frame{}, err
-		}
-		if current.manager.config.MaxLag > 0 && frame.Kind != FrameReset && current.manager.config.Clock().Sub(frame.created) > current.manager.config.MaxLag {
-			return current.lagReset()
-		}
-		return current.revalidate(ctx, frame)
-	}
-}
-
-func (current *watch) lagReset() (Frame, error) {
+func (current *watch) replaceWithReset(reason string, binding Binding) error {
 	current.queueMu.Lock()
 	defer current.queueMu.Unlock()
 	current.mu.Lock()
-	if current.closed {
-		err := current.closeErr
-		current.mu.Unlock()
-		if err == nil {
-			err = ErrSubscriptionClosed
-		}
-		return Frame{}, err
+	defer current.mu.Unlock()
+	if current.ctx.Err() != nil {
+		return current.ctx.Err()
 	}
-	cursor, position := current.cursor, current.position
+	if current.replacement != nil {
+		return nil
+	}
+	return current.replaceLocked(reason, binding)
+}
+
+func (current *watch) next(ctx context.Context, consumer *Subscription) (Frame, error) {
+	if ctx == nil {
+		return Frame{}, ErrInvalidRequest
+	}
+	current.nextMu.Lock()
+	defer current.nextMu.Unlock()
+	current.mu.Lock()
+	if current.consumer == nil {
+		current.consumer = consumer
+	}
+	owned := current.consumer == consumer
 	current.mu.Unlock()
-	for {
-		select {
-		case <-current.queue:
-			continue
-		default:
-		}
-		break
+	if !owned {
+		return Frame{}, ErrAlreadyAttached
 	}
-	reset := Frame{SubscriptionID: current.id, Kind: FrameReset, Cursor: cursor, Reason: "lag", position: position, created: current.manager.config.Clock()}
-	if err := reset.validate(); err != nil {
+	if err := ctx.Err(); err != nil {
 		return Frame{}, err
 	}
-	return reset, nil
+	if err := current.ctx.Err(); err != nil {
+		return Frame{}, current.closedError()
+	}
+	var frame Frame
+	select {
+	case <-ctx.Done():
+		return Frame{}, ctx.Err()
+	case <-current.ctx.Done():
+		return Frame{}, current.closedError()
+	case value, ok := <-current.queue:
+		if !ok {
+			return Frame{}, current.closedError()
+		}
+		frame = value
+	}
+	// Never drain payloads after cancellation, even if select chose a ready
+	// queue at the same time as the lifetime ended.
+	if err := ctx.Err(); err != nil {
+		return Frame{}, err
+	}
+	if current.ctx.Err() != nil {
+		return Frame{}, current.closedError()
+	}
+	checkCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(current.ctx, cancel)
+	defer func() { stop(); cancel() }()
+	if frame.Kind != FrameReset {
+		binding, err := current.manager.binding(checkCtx, current.request)
+		if err != nil {
+			return Frame{}, current.fail(err)
+		}
+		reason := bindingChange(frame.binding, binding)
+		if reason == "" && current.manager.config.Clock().Sub(frame.created) > current.manager.config.MaxLag {
+			reason = "lag"
+		}
+		if reason != "" {
+			if err := current.replaceWithReset(reason, binding); err != nil {
+				return Frame{}, current.fail(err)
+			}
+		} else {
+			frame, err = current.revalidate(checkCtx, frame)
+			if err != nil {
+				return Frame{}, current.fail(err)
+			}
+			latest, err := current.manager.binding(checkCtx, current.request)
+			if err != nil {
+				return Frame{}, current.fail(err)
+			}
+			if reason := bindingChange(binding, latest); reason != "" {
+				if err := current.replaceWithReset(reason, latest); err != nil {
+					return Frame{}, current.fail(err)
+				}
+			}
+		}
+	}
+	current.mu.Lock()
+	if current.replacement != nil {
+		frame = *current.replacement
+	}
+	current.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Frame{}, err
+	}
+	if current.ctx.Err() != nil {
+		return Frame{}, current.closedError()
+	}
+	if err := frame.validate(); err != nil {
+		return Frame{}, current.fail(err)
+	}
+	// Only this handoff updates visibility. Polling and revalidation never do.
+	if !current.recordVisible(frame) {
+		if err := current.replaceWithReset("overflow", frame.binding); err != nil {
+			return Frame{}, current.fail(err)
+		}
+		current.mu.Lock()
+		frame = *current.replacement
+		current.mu.Unlock()
+	}
+	if frame.Terminal() {
+		current.fail(ErrResetRequired)
+	}
+	return frame, nil
+}
+
+func (current *watch) fail(err error) error {
+	current.mu.Lock()
+	if current.closeErr == nil {
+		current.closeErr = err
+	}
+	current.mu.Unlock()
+	current.cancel()
+	return err
+}
+
+func (current *watch) closedError() error {
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	if current.closeErr != nil {
+		return current.closeErr
+	}
+	return ErrSubscriptionClosed
 }
 
 func (current *watch) revalidate(ctx context.Context, frame Frame) (Frame, error) {
-	if frame.Kind == FrameReset || len(frame.Events) == 0 {
-		return frame, nil
-	}
-	current.mu.Lock()
-	binding := cloneBinding(current.binding)
-	current.mu.Unlock()
 	checked := make([]model.Event, 0, len(frame.Events))
-	revoked := false
 	for _, event := range frame.Events {
 		if event.Durable == nil {
+			if event.Control.Type == model.EventVisibilityLost {
+				current.auth.mu.Lock()
+				seen := current.auth.visible[event.Control.Resource]
+				current.auth.mu.Unlock()
+				if !seen {
+					continue
+				}
+				checked = append(checked, event)
+				frame.Reason = "visibility_changed"
+				break
+			}
 			checked = append(checked, event)
 			continue
 		}
 		value := *event.Durable
-		visibility, err := current.auth.Read(ctx, binding.Principal, value)
+		notice := value.Type == model.EventDependencyConditionUnmet
+		if notice {
+			allowed, err := current.noticeReadable(ctx, frame.binding.Principal, value)
+			if err != nil {
+				return Frame{}, err
+			}
+			if !allowed {
+				continue
+			}
+		}
+		// Give callbacks owned maps and principal values, as the Reader does.
+		protected, err := copyEvents([]model.Event{event})
 		if err != nil {
 			return Frame{}, err
+		}
+		principal := cloneBinding(frame.binding).Principal
+		visibility, err := current.auth.Read(ctx, principal, *protected[0].Durable)
+		if err != nil {
+			return Frame{}, err
+		}
+		if notice && (visibility.Redacted || !reflect.DeepEqual(visibility.Before, value.Before) || !reflect.DeepEqual(visibility.After, value.After)) {
+			continue
 		}
 		if visibility.Readable {
 			value.Before, value.After = visibility.Before, visibility.After
 			checked = append(checked, model.Event{Category: model.EventDurable, Durable: &value})
 			continue
 		}
+		// A notice denial cannot reveal even that the notice existed.
+		if notice {
+			continue
+		}
 		if visibility.PreviouslyVisible {
-			revoked = true
 			checked = append(checked, model.Event{Category: model.EventControl, Control: &model.ControlEvent{EventPosition: value.EventPosition, Type: model.EventVisibilityLost, Resource: value.Resource, Details: model.VisibilityLostDetails{Reason: "authorization_changed"}}})
 		}
-	}
-	frame.Events = checked
-	if revoked {
 		frame.Reason = "visibility_changed"
+		break
+	}
+	var err error
+	frame.Events, err = copyEvents(checked)
+	if err != nil {
+		return Frame{}, err
+	}
+	if frame.Terminal() {
+		// Do not leave an in-flight poll able to enqueue later payloads.
+		current.queueMu.Lock()
+		current.mu.Lock()
+		current.halted = true
+		for len(current.queue) > 0 {
+			<-current.queue
+		}
+		current.mu.Unlock()
+		current.queueMu.Unlock()
 	}
 	return frame, nil
+}
+
+// Notices protect the dependent, blocker, pinned ontology and optional
+// project. They receive the same complete current checks at delivery as read.
+func (current *watch) noticeReadable(ctx context.Context, principal model.PrincipalRef, event model.DurableEvent) (bool, error) {
+	if event.Details == nil {
+		return false, ErrInvalidRequest
+	}
+	if err := event.Details.Validate(); err != nil {
+		return false, err
+	}
+	d := event.Details
+	resources := []model.AuditResource{{Kind: "bead", Ref: d.Dependent.Ref}, {Kind: "bead", Ref: d.BlockerAfter.Ref}, {Kind: "ontology", Ref: d.Ontology.Ref}}
+	if d.Ontology.Project != nil {
+		resources = append(resources, model.AuditResource{Kind: "project", Ref: *d.Ontology.Project})
+	}
+	for _, resource := range resources {
+		visibility, err := current.auth.ReadResource(ctx, cloneBinding(Binding{Principal: principal}).Principal, resource)
+		if err != nil {
+			return false, err
+		}
+		if !visibility.Readable || visibility.Redacted {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+const maxVisibleResources = 4096
+
+func (current *watch) recordVisible(frame Frame) bool {
+	current.auth.mu.Lock()
+	defer current.auth.mu.Unlock()
+	visible := make(map[string]bool, len(current.auth.visible))
+	for key := range current.auth.visible {
+		visible[key] = true
+	}
+	for _, event := range frame.Events {
+		if event.Durable != nil {
+			visible[event.Durable.Resource] = true
+		}
+		if event.Control != nil && event.Control.Type == model.EventVisibilityLost {
+			delete(visible, event.Control.Resource)
+		}
+	}
+	if len(visible) > maxVisibleResources {
+		return false
+	}
+	current.auth.visible = visible
+	return true
 }
 
 func (current *watch) closeQueue() {
@@ -694,6 +856,9 @@ func (current *watch) closeQueue() {
 		return
 	}
 	current.closed = true
+	for len(current.queue) > 0 {
+		<-current.queue
+	}
 	close(current.queue)
 	current.mu.Unlock()
 }
@@ -717,19 +882,7 @@ func (m *Manager) binding(ctx context.Context, request Request) (Binding, error)
 	var binding Binding
 	var err error
 	if request.Method == MethodViewWatch || request.ViewID != "" {
-		if m.config.Views == nil {
-			return Binding{}, ErrViewCheckpointRequired
-		}
-		view, resolveErr := m.config.Views.WatchBinding(ctx, request.Principal, request.ViewID)
-		if resolveErr != nil {
-			return Binding{}, resolveErr
-		}
-		binding = Binding{Principal: request.Principal, Filter: cloneFilter(view.Filter), Ontology: view.Ontology, PolicyVersion: view.PolicyVersion, Incarnation: view.Incarnation}
-		if request.Method == MethodViewWatch {
-			request.Filter = binding.Filter
-			request.Ontology = binding.Ontology
-			request.PolicyVersion = binding.PolicyVersion
-		}
+		return Binding{}, ErrViewCheckpointRequired
 	} else if m.config.Bindings != nil {
 		binding, err = m.config.Bindings.Current(ctx, request)
 		if err != nil {
@@ -753,13 +906,11 @@ func (m *Manager) binding(ctx context.Context, request Request) (Binding, error)
 	if binding.Ontology.Validate() != nil {
 		return Binding{}, ErrInvalidRequest
 	}
-	if binding.Incarnation == "" {
-		head, headErr := m.config.Events.Reader.Log.Head(ctx)
-		if headErr != nil {
-			return Binding{}, headErr
-		}
-		binding.Incarnation = head.Incarnation
+	head, headErr := m.config.Events.Reader.Log.Head(ctx)
+	if headErr != nil {
+		return Binding{}, headErr
 	}
+	binding.Incarnation = head.Incarnation
 	if binding.Incarnation == "" {
 		return Binding{}, ErrInvalidRequest
 	}
@@ -805,16 +956,17 @@ func compactStrings(values []string) []string {
 
 func pageBoundaryReason(page serverevents.Page) string {
 	for _, event := range page.Events {
+		if event.Control != nil && event.Control.Type == model.EventGap {
+			if details, ok := event.Control.Details.(model.EventGapDetails); ok && details.Reason != "" {
+				return details.Reason
+			}
+		}
 		if event.Control != nil && event.Control.Type == model.EventWatchReset {
 			if details, ok := event.Control.Details.(model.WatchResetDetails); ok {
 				return details.Reason
 			}
 		}
 	}
-	// server/events exposes boundaries through Page.Reset but omits the marker
-	// when the filter excludes watch.reset. Re-read the event type from the
-	// materialized payload when possible; ontology/policy are the only hidden
-	// boundaries in the admitted slice.
 	for _, event := range page.Events {
 		if event.Durable == nil {
 			continue

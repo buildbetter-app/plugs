@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -12,10 +13,11 @@ import (
 
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	serverevents "github.com/buildbetter-app/plugs/internal/server/events"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/watch"
-	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
@@ -29,6 +31,8 @@ type transportFixture struct {
 	adapter     *Adapter
 	server      *rpc.Server
 	principal   model.PrincipalRef
+	svc         *service.Service
+	key         int
 }
 
 func newTransportFixture(t *testing.T) *transportFixture {
@@ -58,10 +62,13 @@ func newTransportFixture(t *testing.T) *transportFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = manager.Close() })
-	adapter, err := New(manager, Config{})
+	adapter, err := New(manager, Config{Ontology: "1", PolicyVersion: "immutable-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	ontology := service.NewOntology(nil)
+	writer := pipeline.New(store, lease, pipeline.WithOntology(ontology), pipeline.WithIDGenerator(func() (string, error) { return "http-bead", nil }))
+	domain := service.New(store, lease, writer, service.WithOntology(ontology))
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -69,18 +76,21 @@ func newTransportFixture(t *testing.T) *transportFixture {
 	if err := adapter.Register(registry); err != nil {
 		t.Fatal(err)
 	}
+	if err := rpc.BindService(registry, domain); err != nil {
+		t.Fatal(err)
+	}
 	server, err := rpc.New(registry, rpc.Config{Incarnation: meta.Incarnation, OntologyRevision: "1", CursorKey: []byte(strings.Repeat("rpc-cursor-key-", 3))})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &transportFixture{ctx: ctx, store: store, lease: lease, incarnation: meta.Incarnation, manager: manager, adapter: adapter, server: server, principal: model.PrincipalRef{Kind: "user", ID: "http-reader"}}
+	return &transportFixture{svc: domain, ctx: ctx, store: store, lease: lease, incarnation: meta.Incarnation, manager: manager, adapter: adapter, server: server, principal: model.PrincipalRef{Kind: "user", ID: "http-reader"}}
 }
 
 func (f *transportFixture) subscribe(t *testing.T) (string, string) {
 	t.Helper()
-	ctx := WithSessionID(context.Background(), "http-session")
+	ctx := WithSession(context.Background(), "http-session", f.ctx)
 	ctx = rpc.WithPrincipal(ctx, f.principal)
-	response := f.server.Dispatch(ctx, []byte(`{"jsonrpc":"2.0","id":1,"method":"event.subscribe","params":{"filter":{}}}`))
+	response := f.server.Dispatch(ctx, []byte(`{"jsonrpc":"2.0","id":1,"method":"event.subscribe","params":{"filter":{},"_meta":{"project":"local"}}}`))
 	var envelope struct {
 		Result struct {
 			SubscriptionID string `json:"subscriptionId"`
@@ -101,8 +111,8 @@ func (f *transportFixture) subscribe(t *testing.T) (string, string) {
 
 func (f *transportFixture) commit(t *testing.T) {
 	t.Helper()
-	body := []byte(`{"title":"transport-event"}`)
-	_, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{Incarnation: f.incarnation, Kind: model.ChangesetWrite, Principal: model.PrincipalRef{Kind: "user", ID: "http-writer"}}, []conformance.FixtureChange{{Ref: model.RefByID("http-bead", "0"), Kind: "bead", Op: model.OpCreate, Body: body, ChangedPaths: []string{"/title"}}})
+	f.key++
+	_, err := f.svc.Create(f.ctx, model.PrincipalRef{Kind: "user", ID: "http-writer"}, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": "transport-event"}}, model.WriteMeta{Project: "local", IdempotencyKey: fmt.Sprintf("%032x", f.key)})
 	if err != nil {
 		t.Fatal(err)
 	}

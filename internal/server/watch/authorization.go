@@ -24,20 +24,8 @@ func (a *visibilityAuthorization) Read(ctx context.Context, principal model.Prin
 		return coreevents.Visibility{}, err
 	}
 	a.mu.Lock()
-	previous := a.visible[event.Resource]
-	if visibility.PreviouslyVisible {
-		previous = true
-	}
-	if visibility.Readable {
-		a.visible[event.Resource] = true
-	} else if previous {
-		// Keep the resource marked until this delivery turns it into one
-		// visibility.lost marker. The revalidation path removes the marker in
-		// the same call below; a second queued frame then stays hidden.
-		delete(a.visible, event.Resource)
-	}
+	visibility.PreviouslyVisible = a.visible[event.Resource]
 	a.mu.Unlock()
-	visibility.PreviouslyVisible = previous
 	return visibility, nil
 }
 

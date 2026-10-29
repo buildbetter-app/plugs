@@ -2,7 +2,6 @@ package watch
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,8 +11,9 @@ import (
 
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	serverevents "github.com/buildbetter-app/plugs/internal/server/events"
-	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
@@ -25,6 +25,10 @@ type watchFixture struct {
 	incarnation string
 	auth        *toggleAuthorization
 	manager     *Manager
+	svc         *service.Service
+	writer      *pipeline.Writer
+	nextID      string
+	key         int
 }
 
 func newWatchFixture(t *testing.T, queue int, coalesce, maxLag time.Duration) *watchFixture {
@@ -45,18 +49,23 @@ func newWatchFixture(t *testing.T, queue int, coalesce, maxLag time.Duration) *w
 		t.Fatal(err)
 	}
 	auth := &toggleAuthorization{allowed: true}
-	reader := &coreevents.Reader{Log: serverevents.Log{Store: store}, Materializer: serverevents.HistoryMaterializer{Store: store}, Authorization: auth}
+	reader := &coreevents.Reader{Log: serverevents.Log{Store: store}, Materializer: serverevents.HistoryMaterializer{Store: store}, Authorization: coreevents.AllowAll{}}
 	codec, err := serverevents.NewCursorCodec([]byte(strings.Repeat("watch-test-key-", 3)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := &serverevents.Service{Reader: reader, Cursors: codec}
-	manager, err := New(ctx, Config{Events: service, QueueSize: queue, Coalesce: coalesce, MaxLag: maxLag})
+	eventService := &serverevents.Service{Reader: reader, Cursors: codec}
+	manager, err := New(ctx, Config{Events: eventService, QueueSize: queue, Coalesce: coalesce, MaxLag: maxLag})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = manager.Close() })
-	return &watchFixture{ctx: ctx, store: store, lease: lease, incarnation: meta.Incarnation, auth: auth, manager: manager}
+	f := &watchFixture{ctx: ctx, store: store, lease: lease, incarnation: meta.Incarnation, auth: auth, manager: manager}
+	ontology := service.NewOntology(nil)
+	f.writer = pipeline.New(store, lease, pipeline.WithOntology(ontology), pipeline.WithIDGenerator(func() (string, error) { return f.nextID, nil }))
+	f.svc = service.New(store, lease, f.writer, service.WithOntology(ontology))
+	t.Cleanup(func() { _ = lease.Release(context.Background()) })
+	return f
 }
 
 func (f *watchFixture) request(id string) Request {
@@ -72,17 +81,45 @@ func (f *watchFixture) open(t *testing.T, request Request) *Subscription {
 	return subscription
 }
 
-func (f *watchFixture) commit(t *testing.T, id, title string, op model.OpKind) model.Changeset {
+// All graph events in these tests come through the actual domain service and
+// write pipeline. AllowAll is the explicitly selected no-plugin installation.
+func (f *watchFixture) commit(t *testing.T, id, title string, op model.OpKind) model.Commit {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{"title": title})
+	f.key++
+	meta := model.WriteMeta{Project: "local", IdempotencyKey: fmt.Sprintf("%032x", f.key)}
+	principal := model.PrincipalRef{Kind: "user", ID: "writer"}
+	var commit model.Commit
+	var err error
+	if op == model.OpCreate {
+		f.nextID = id
+		commit, err = f.svc.Create(f.ctx, principal, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": title}}, meta)
+	} else {
+		commit, err = f.svc.Update(f.ctx, principal, service.UpdateRequest{ID: model.RefByID(id, "0"), Fields: map[string]any{"title": title}}, meta)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	set, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{Incarnation: f.incarnation, Kind: model.ChangesetWrite, Principal: model.PrincipalRef{Kind: "user", ID: "writer"}}, []conformance.FixtureChange{{Ref: model.RefByID(id, "0"), Kind: "bead", Op: op, Body: body, ChangedPaths: []string{"/title"}}})
-	if err != nil {
-		t.Fatal(err)
+	return commit
+}
+
+// A bounded test-only wait observes a real queued page, without assuming a
+// scheduling delay proves that a poll ran.
+func waitQueued(t *testing.T, sub *Subscription) {
+	t.Helper()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		if len(sub.watch.queue) > 0 {
+			return
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatal("watch did not queue actual service event")
+		}
 	}
-	return set
 }
 
 func nextFrame(t *testing.T, subscription *Subscription, timeout time.Duration) Frame {
@@ -157,13 +194,15 @@ func TestSnapshotWriteRaceIsCoveredByReturnedCursor(t *testing.T) {
 	}
 }
 
-func TestAuthorizationRevokeRevalidatesQueuedDelta(t *testing.T) {
+func TestAuthorizationPortRevokeRevalidatesPreviouslyDeliveredResource(t *testing.T) {
 	f := newWatchFixture(t, 8, 5*time.Millisecond, time.Second)
+	f.manager.config.Events.Reader.Authorization = f.auth
+	f.commit(t, "bead-secret", "initial", model.OpCreate)
 	subscription := f.open(t, f.request("revoke"))
 	_ = nextFrame(t, subscription, time.Second)
-	f.commit(t, "bead-secret", "secret", model.OpCreate)
+	f.commit(t, "bead-secret", "secret", model.OpPatch)
 	// Let the actual reader enqueue the delta, then revoke before delivery.
-	time.Sleep(30 * time.Millisecond)
+	waitQueued(t, subscription)
 	f.auth.SetAllowed(false)
 	frame := nextFrame(t, subscription, time.Second)
 	if frame.Kind != FrameDelta || frame.Reason != "visibility_changed" || len(frame.Events) != 1 || frame.Events[0].Control == nil || frame.Events[0].Control.Type != model.EventVisibilityLost {
@@ -186,8 +225,8 @@ func TestOverflowEmitsResetAtNewestCursor(t *testing.T) {
 	if frame.Kind != FrameReset || frame.Reason != "overflow" || frame.Cursor == "" || frame.position.Validate() != nil {
 		t.Fatalf("overflow frame=%+v", frame)
 	}
-	if frame.Cursor != subscription.Cursor() {
-		t.Fatalf("reset cursor=%q subscription cursor=%q", frame.Cursor, subscription.Cursor())
+	if frame.Cursor == subscription.Cursor() {
+		t.Fatal("overflow reset did not advance beyond the opening cursor")
 	}
 }
 
@@ -199,9 +238,7 @@ func TestLagEmitsBoundedResetAndCancellationReleasesSession(t *testing.T) {
 	if frame.Kind != FrameReset || frame.Reason != "lag" {
 		t.Fatalf("lag frame=%+v", frame)
 	}
-	if got := f.manager.WatchCount("session-1"); got != 1 {
-		t.Fatalf("watch count before close=%d", got)
-	}
+	// A reset ends this stream; CloseSession remains idempotent for watch state.
 	if err := f.manager.CloseSession(context.Background(), "session-1"); err != nil {
 		t.Fatal(err)
 	}
@@ -210,8 +247,8 @@ func TestLagEmitsBoundedResetAndCancellationReleasesSession(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if _, err := subscription.Next(ctx); !errors.Is(err, ErrSubscriptionClosed) {
-		t.Fatalf("closed subscription err=%v", err)
+	if _, err := subscription.Next(ctx); !errors.Is(err, ErrResetRequired) {
+		t.Fatalf("reset subscription err=%v", err)
 	}
 	if err := f.manager.CloseSession(nil, "session-1"); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("nil close context err=%v", err)

@@ -42,12 +42,14 @@ var (
 	ErrUnsupportedMethod      = errors.New("watch method is unsupported")
 	ErrViewCheckpointRequired = errors.New("view.watch requires an actual view checkpoint")
 	ErrInvalidRequest         = errors.New("invalid watch request")
+	ErrAlreadyAttached        = errors.New("watch already has a stream consumer")
+	ErrResetRequired          = errors.New("watch reset requires explicit reopen")
 	ErrBindingChanged         = errors.New("watch binding changed outside a reset boundary")
 )
 
 // Method names are the admitted watch slice. event.subscribe is the generic
-// stream; bead.watch narrows it to one canonical bead resource; view.watch
-// obtains its filter from ViewResolver rather than emulating a view locally.
+// stream; bead.watch narrows it to one canonical bead resource. view.watch
+// refuses until an actual published view checkpoint is adopted.
 type Method string
 
 const (
@@ -98,9 +100,8 @@ type BindingSource interface {
 	Current(context.Context, Request) (Binding, error)
 }
 
-// StaticBinding is useful for an installation whose ontology and policy
-// generations are immutable for the manager lifetime. It still validates the
-// actual event-log incarnation on each call.
+// StaticBinding supplies immutable ontology and policy generations. The
+// manager independently reads the actual log incarnation on every check.
 type StaticBinding struct {
 	Binding Binding
 }
@@ -109,32 +110,12 @@ func (s StaticBinding) Current(_ context.Context, _ Request) (Binding, error) {
 	return cloneBinding(s.Binding), nil
 }
 
-// ViewBinding is the exact checkpoint returned by the view service. The watch
-// manager consumes it but never interprets a view definition or reconstructs
-// membership. A V3-VIEWS-RPC composition can implement ViewResolver without
-// changing this package.
-type ViewBinding struct {
-	Filter        coreevents.Filter
-	Ontology      model.Revision
-	PolicyVersion string
-	Incarnation   string
-}
-
-// ViewResolver is intentionally narrow: view.watch is admitted only when the
-// real view service supplies a checkpoint and compiled filter. Returning a
-// hand-built filter from the watch manager is unsupported.
-type ViewResolver interface {
-	WatchBinding(context.Context, model.PrincipalRef, string) (ViewBinding, error)
-}
-
-// Config wires the actual event service and optional current/view boundaries.
-// Events.Reader.Authorization must be a real authorization implementation; a
-// nil reader or nil authorization is rejected rather than replaced with an
-// allow-all fixture.
+// Config wires an event service and optional authoritative binding source.
+// The host explicitly supplies authorization, including AllowAll only for a
+// no-plugin installation. Constructors can reject nil ports, not certify them.
 type Config struct {
 	Events      *serverevents.Service
 	Bindings    BindingSource
-	Views       ViewResolver
 	QueueSize   int
 	MaxLag      time.Duration
 	Coalesce    time.Duration
@@ -144,7 +125,8 @@ type Config struct {
 }
 
 // FrameKind identifies the explicit snapshot/delta/reset transport phase.
-// Snapshot frames carry the initial/catch-up event union. Delta and reset
+// Snapshot frames carry one bounded initial/catch-up event-log page, not a
+// graph/view materialization. Delta and reset
 // frames are encoded as canonical watch.delta/watch.reset control events by
 // Frame.WireEvents.
 type FrameKind string
@@ -172,6 +154,7 @@ type Frame struct {
 	// acknowledgement token.
 	position coreevents.Position
 	created  time.Time
+	binding  Binding
 }
 
 // WireEvents converts a frame into the closed model.Event union. Snapshot
@@ -182,6 +165,9 @@ func (f Frame) WireEvents() []model.Event {
 	position := model.EventPosition{Cursor: f.Cursor, Incarnation: f.position.Incarnation, Revision: f.position.Revision, Index: f.position.Index}
 	switch f.Kind {
 	case FrameSnapshot:
+		if f.Reason != "" {
+			events = append(events, resetEvent(f.SubscriptionID, f.Reason, f.Cursor, f.position))
+		}
 		return events
 	case FrameDelta:
 		control := model.ControlEvent{
@@ -195,7 +181,8 @@ func (f Frame) WireEvents() []model.Event {
 		}
 		return out
 	case FrameReset:
-		return []model.Event{resetEvent(f.SubscriptionID, f.Reason, f.Cursor, f.position)}
+		out := cloneEvents(f.Events)
+		return append(out, resetEvent(f.SubscriptionID, f.Reason, f.Cursor, f.position))
 	default:
 		return nil
 	}
@@ -227,6 +214,11 @@ func (f Frame) validate() error {
 	if f.Kind == FrameDelta && f.FromCursor == "" {
 		return ErrInvalidRequest
 	}
+	for _, event := range f.Events {
+		if _, err := json.Marshal(event); err != nil {
+			return fmt.Errorf("invalid watch payload: %w", err)
+		}
+	}
 	for _, event := range f.WireEvents() {
 		if _, err := json.Marshal(event); err != nil {
 			return fmt.Errorf("invalid watch event: %w", err)
@@ -244,20 +236,23 @@ func resetEvent(subscriptionID, reason, cursor string, position coreevents.Posit
 }
 
 func cloneEvents(events []model.Event) []model.Event {
+	copied, _ := copyEvents(events)
+	return copied
+}
+
+func copyEvents(events []model.Event) ([]model.Event, error) {
 	if events == nil {
-		return []model.Event{}
+		return []model.Event{}, nil
 	}
-	// Event values contain maps and typed details. JSON is the model's own
-	// closed-union boundary and avoids aliases between a queue and a caller.
 	raw, err := json.Marshal(events)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var copied []model.Event
-	if json.Unmarshal(raw, &copied) != nil {
-		return nil
+	if err := json.Unmarshal(raw, &copied); err != nil {
+		return nil, err
 	}
-	return copied
+	return copied, nil
 }
 
 func cloneBinding(binding Binding) Binding {
@@ -275,9 +270,8 @@ func cloneBinding(binding Binding) Binding {
 	return binding
 }
 
-func sameBindingIdentity(a, b Binding) bool {
-	return reflect.DeepEqual(a.Principal, b.Principal) && reflect.DeepEqual(a.Filter, b.Filter)
-}
+// Terminal reports whether a client must reopen before receiving more data.
+func (f Frame) Terminal() bool { return f.Kind == FrameReset || f.Reason != "" }
 
 // Subscription is a bounded consumer handle. Frames are received through
 // Next, which revalidates queued durable events against current authorization
@@ -294,27 +288,29 @@ func (s *Subscription) ID() string {
 	return s.watch.id
 }
 
+// Cursor returns the immutable opening-page cursor used by the RPC result.
+// Subsequent progress is acknowledged only with each delivered Frame.Cursor.
 func (s *Subscription) Cursor() string {
 	if s == nil || s.watch == nil {
 		return ""
 	}
 	s.watch.mu.Lock()
 	defer s.watch.mu.Unlock()
-	return s.watch.cursor
+	return s.watch.openingCursor
 }
 
 func (s *Subscription) Next(ctx context.Context) (Frame, error) {
 	if s == nil || s.watch == nil {
 		return Frame{}, ErrSubscriptionClosed
 	}
-	return s.watch.next(ctx)
+	return s.watch.next(ctx, s)
 }
 
 func (s *Subscription) Close() error {
 	if s == nil || s.watch == nil {
 		return nil
 	}
-	return s.watch.manager.cancel(s.watch.id, ErrSubscriptionClosed)
+	return s.watch.manager.cancelWatch(s.watch, ErrSubscriptionClosed)
 }
 
 // isNilInterface is used at construction boundaries where a typed nil pointer
