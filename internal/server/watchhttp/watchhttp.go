@@ -226,7 +226,7 @@ func (a *Adapter) unsubscribe(ctx context.Context, call rpc.Call) (any, error) {
 	if params.SubscriptionID == "" {
 		return nil, invalidParams(errors.New("subscriptionId is required"))
 	}
-	if err := a.manager.CancelOwned(ctx, params.SubscriptionID, call.Principal); err != nil {
+	if err := a.manager.CancelOwnedSession(ctx, params.SubscriptionID, SessionID(ctx), call.Principal); err != nil {
 		return nil, mapError(err)
 	}
 	return map[string]any{"unsubscribed": true}, nil
@@ -314,7 +314,7 @@ func (a *Adapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid subscription request", http.StatusBadRequest)
 		return
 	}
-	subscription, err := a.manager.Attach(r.Context(), request.SubscriptionID, principal)
+	subscription, err := a.manager.AttachSession(r.Context(), request.SubscriptionID, SessionID(r.Context()), principal)
 	if err != nil {
 		http.Error(w, "subscription not found", http.StatusNotFound)
 		return

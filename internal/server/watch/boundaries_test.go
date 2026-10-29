@@ -174,7 +174,10 @@ func TestMethodPrincipalAndFilterCursorBindings(t *testing.T) {
 func TestSingleStreamOwnerAndOwnedUnsubscribe(t *testing.T) {
 	f := newWatchFixture(t, 8, 5*time.Millisecond, time.Second)
 	opened := f.open(t, f.request("one-consumer"))
-	attached, err := f.manager.Attach(f.ctx, opened.ID(), f.request("").Principal)
+	if _, err := f.manager.AttachSession(f.ctx, opened.ID(), "other-session", f.request("").Principal); !errors.Is(err, ErrSubscriptionClosed) {
+		t.Fatalf("cross-session attach=%v", err)
+	}
+	attached, err := f.manager.AttachSession(f.ctx, opened.ID(), "session-1", f.request("").Principal)
 	if err != nil {
 		t.Fatal(err)
 	}

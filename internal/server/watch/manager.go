@@ -258,6 +258,25 @@ func (m *Manager) cancelWatch(current *watch, reason error) error {
 	return nil
 }
 
+// CancelOwnedSession checks both the authenticated principal and the trusted
+// collaboration session before releasing a subscription.
+func (m *Manager) CancelOwnedSession(ctx context.Context, id, sessionID string, principal model.PrincipalRef) error {
+	if ctx == nil || sessionID == "" {
+		return ErrInvalidRequest
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	current := m.watches[id]
+	if current == nil || current.session != sessionID || !samePrincipal(current.request.Principal, principal) {
+		m.mu.Unlock()
+		return ErrSubscriptionClosed
+	}
+	m.mu.Unlock()
+	return m.cancelWatch(current, ErrSubscriptionClosed)
+}
+
 // CancelOwned checks the authenticated owner without claiming stream delivery.
 func (m *Manager) CancelOwned(ctx context.Context, id string, principal model.PrincipalRef) error {
 	if ctx == nil {
@@ -314,6 +333,39 @@ func (m *Manager) WatchCount(sessionID string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.session[sessionID])
+}
+
+// AttachSession is the transport handoff with both session and principal
+// ownership. A session cannot claim a subscription opened by another session,
+// even when both sessions authenticate as the same principal.
+func (m *Manager) AttachSession(ctx context.Context, id, sessionID string, principal model.PrincipalRef) (*Subscription, error) {
+	if sessionID == "" {
+		return nil, ErrInvalidRequest
+	}
+	if ctx == nil {
+		return nil, ErrInvalidRequest
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	current := m.watches[id]
+	if current == nil || current.session != sessionID || !samePrincipal(current.request.Principal, principal) {
+		m.mu.Unlock()
+		return nil, ErrSubscriptionClosed
+	}
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	defer m.mu.Unlock()
+	if current.ctx.Err() != nil || current.closed {
+		return nil, ErrSubscriptionClosed
+	}
+	if current.consumer != nil {
+		return nil, ErrAlreadyAttached
+	}
+	subscription := &Subscription{watch: current}
+	current.consumer = subscription
+	return subscription, nil
 }
 
 // Attach returns a live subscription for a transport stream after checking the
