@@ -185,6 +185,23 @@ For example, a restore is a control frame rather than a durable graph event:
 }
 ```
 
+## Session lifecycle (decision #14)
+
+`session.open` creates a caller-owned live session. Its idle expiry is at most
+five minutes after opening or the latest successful `presence.set`; a
+disconnect does not renew it. Expiry reclaims the session's presence, watches
+and watch quota. One-shot CLI calls open no session.
+
+`session.close {sessionId}` explicitly releases those resources and returns
+`{closed: true}`. Unknown, expired, already closed or unreadable sessions
+return `not_found`; authorization refusal returns `forbidden`. Closing a
+session changes ephemeral collaboration state and produces no changeset.
+
+After reconnect or failover, clients call `session.open` for a new session and
+recreate watches with their last acknowledged cursors. They retain the cursor
+expiry, reset and incarnation-gap rules above; reopening a session does not
+make an invalid cursor usable.
+
 ## Delivery classes
 
 | Class | Source and ordering | Failure, retry, and acknowledgement contract |

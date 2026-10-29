@@ -150,6 +150,8 @@ attachment on either side must fail. The separate wire inventory also checks
 the operation/event/error names against the schemas, Go and Markdown. The
 validator rejects duplicate JSON members and checks every named error's code
 and number plus every Markdown row's retryability, audience and warning flag.
+It also requires decision #14's `session.open` and `session.close`, even when
+both inventories and their digests are changed together.
 
 Run from this directory. The optional second argument checks the recorded
 source hashes against a checkout of those historical inputs; the live design
@@ -204,6 +206,7 @@ def check_refs(value):
 entries = registry["methods"]
 names = [entry["name"] for entry in entries]
 methods = {method["name"]: method for method in doc["methods"]}
+require({"session.open", "session.close"} <= set(methods), "decision #14 requires session.open and session.close")
 require(len(names) == len(set(names)) == registry["methodCount"], "registry names/count")
 require(len(doc["methods"]) == len(methods) == len(entries), "method names/count")
 require(set(names) == set(methods), "missing or unexpected method")
