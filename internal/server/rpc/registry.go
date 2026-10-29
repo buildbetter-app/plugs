@@ -18,6 +18,7 @@ type Call struct {
 	Params    json.RawMessage
 	Meta      wire.Meta
 	Principal model.PrincipalRef
+	paging    *pageCodec
 }
 
 type Handler func(context.Context, Call) (any, error)

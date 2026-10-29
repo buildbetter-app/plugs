@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -23,6 +24,26 @@ type Error struct {
 }
 
 func (e *Error) Error() string { return fmt.Sprintf("%s: %s", e.Data.Code, e.Message) }
+
+func (c *Catalog) ValidateError(e *Error) error {
+	ref, ok := c.errorRefs[e.Data.Code]
+	if !ok {
+		return fmt.Errorf("unknown error code")
+	}
+	schema, err := c.resolve(ref)
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(e.Data)
+	if err != nil {
+		return err
+	}
+	value, err := DecodeJSON(raw)
+	if err != nil {
+		return err
+	}
+	return c.validate(schema, value, "error.data", false, 0)
+}
 
 // NewError uses the closed allocation, including canonical message and retry
 // metadata. Host/internal and warning-only codes can never become client errors.

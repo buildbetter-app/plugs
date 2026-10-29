@@ -48,13 +48,15 @@ type ErrorDesc struct {
 }
 
 type Catalog struct {
-	OpenRPC    string
-	Info       json.RawMessage
-	Components json.RawMessage
+	version    string
+	info       json.RawMessage
+	components json.RawMessage
 	methods    map[string]MethodDesc
 	sources    map[string]json.RawMessage
 	errors     map[string]ErrorDesc
 	messages   map[string]string
+	errorRefs  map[string]string
+	errorOrder []string
 	root       map[string]any
 }
 
@@ -87,7 +89,7 @@ func ParseCatalog(data []byte) (*Catalog, error) {
 	if !ok {
 		return nil, fmt.Errorf("catalog must be object")
 	}
-	c := &Catalog{OpenRPC: doc.OpenRPC, Info: doc.Info, Components: doc.Components, methods: map[string]MethodDesc{}, sources: map[string]json.RawMessage{}, errors: map[string]ErrorDesc{}, messages: map[string]string{}, root: root}
+	c := &Catalog{version: doc.OpenRPC, info: doc.Info, components: doc.Components, methods: map[string]MethodDesc{}, sources: map[string]json.RawMessage{}, errors: map[string]ErrorDesc{}, messages: map[string]string{}, errorRefs: map[string]string{}, root: root}
 	var entries []MethodDesc
 	if err = json.Unmarshal(doc.Registry.Methods, &entries); err != nil {
 		return nil, err
@@ -103,7 +105,19 @@ func ParseCatalog(data []byte) (*Catalog, error) {
 		return nil, fmt.Errorf("catalog descriptor digest mismatch")
 	}
 	var names bytes.Buffer
-	for _, d := range entries {
+	var rawEntries []map[string]json.RawMessage
+	if err = json.Unmarshal(doc.Registry.Methods, &rawEntries); err != nil {
+		return nil, err
+	}
+	for i, d := range entries {
+		for _, key := range []string{"name", "effect", "idempotency", "permission", "stability", "agentCore", "params", "resultSchema", "errors"} {
+			if _, present := rawEntries[i][key]; !present {
+				return nil, fmt.Errorf("descriptor %s missing %s", d.Name, key)
+			}
+		}
+		if len(rawEntries[i]) != 9 {
+			return nil, fmt.Errorf("unknown descriptor member: %s", d.Name)
+		}
 		if _, exists := c.methods[d.Name]; exists {
 			return nil, fmt.Errorf("duplicate method %q", d.Name)
 		}
@@ -163,7 +177,7 @@ func ParseCatalog(data []byte) (*Catalog, error) {
 			Data    map[string]any `json:"data"`
 		} `json:"errors"`
 	}
-	if err = json.Unmarshal(c.Components, &components); err != nil {
+	if err = json.Unmarshal(c.components, &components); err != nil {
 		return nil, err
 	}
 	integers := map[int]bool{}
@@ -172,9 +186,10 @@ func ParseCatalog(data []byte) (*Catalog, error) {
 			return nil, fmt.Errorf("duplicate error allocation")
 		}
 		c.errors[d.Code] = d
+		c.errorOrder = append(c.errorOrder, d.Code)
 		integers[d.JSONRPC] = true
 	}
-	for _, e := range components.Errors {
+	for name, e := range components.Errors {
 		properties, _ := e.Data["properties"].(map[string]any)
 		codeSchema, _ := properties["code"].(map[string]any)
 		code, _ := codeSchema["const"].(string)
@@ -183,6 +198,10 @@ func ParseCatalog(data []byte) (*Catalog, error) {
 			return nil, fmt.Errorf("error allocation mismatch %q", code)
 		}
 		c.messages[code] = e.Message
+		c.errorRefs[code] = "#/components/errors/" + name + "/data"
+	}
+	if len(c.messages) != len(c.errors) {
+		return nil, fmt.Errorf("missing error components")
 	}
 	for _, d := range entries {
 		for _, ref := range d.Errors {
@@ -191,7 +210,41 @@ func ParseCatalog(data []byte) (*Catalog, error) {
 			}
 		}
 	}
+	if err := c.checkReferences(root); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+func (c *Catalog) checkReferences(value any) error {
+	switch v := value.(type) {
+	case map[string]any:
+		if r, ok := v["$ref"]; ok {
+			ref, ok := r.(string)
+			if !ok {
+				return fmt.Errorf("non-string reference")
+			}
+			if _, err := c.resolve(ref); err != nil {
+				return err
+			}
+		}
+		for _, child := range v {
+			if err := c.checkReferences(child); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if err := c.checkReferences(child); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (c *Catalog) ComponentsJSON() json.RawMessage {
+	return append(json.RawMessage(nil), c.components...)
 }
 
 func (d MethodDesc) Validate() error {
@@ -241,8 +294,9 @@ func (c *Catalog) Descriptor(name string) (MethodDesc, bool) {
 		return d, false
 	}
 	raw, _ := json.Marshal(d)
-	_ = json.Unmarshal(raw, &d)
-	return d, true
+	var copy MethodDesc
+	_ = json.Unmarshal(raw, &copy)
+	return copy, true
 }
 func (c *Catalog) Descriptors() []MethodDesc {
 	names := make([]string, 0, len(c.methods))
@@ -259,10 +313,9 @@ func (c *Catalog) Descriptors() []MethodDesc {
 }
 func (c *Catalog) ErrorCatalog() []ErrorDesc {
 	out := make([]ErrorDesc, 0, len(c.errors))
-	for _, d := range c.errors {
-		out = append(out, d)
+	for _, code := range c.errorOrder {
+		out = append(out, c.errors[code])
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].JSONRPC > out[j].JSONRPC })
 	return out
 }
 
@@ -300,7 +353,7 @@ func (c *Catalog) GenerateOpenRPC(descriptors []MethodDesc) ([]byte, error) {
 		m["x-agent-core"] = d.AgentCore
 		methods = append(methods, m)
 	}
-	doc := map[string]any{"openrpc": c.OpenRPC, "info": c.Info, "methods": methods, "components": c.Components, "x-error-catalog": c.ErrorCatalog()}
+	doc := map[string]any{"openrpc": c.version, "info": c.info, "methods": methods, "components": c.components, "x-error-catalog": c.ErrorCatalog()}
 	out, err := json.MarshalIndent(doc, "", "  ")
 	return append(out, '\n'), err
 }
