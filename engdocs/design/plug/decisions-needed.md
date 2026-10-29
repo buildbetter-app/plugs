@@ -1,12 +1,17 @@
 # Decisions needed from Nikhil
 
-Decisions 1–15 are accepted. The completed authorization rerun has triggered
-#15's revisit; no replacement model is selected, and affected implementation
-remains blocked pending Nikhil's approval of the revisited design.
+Decisions 1–18 are accepted. #17 fixes the project/team permission vocabulary;
+#18 adopts the reviewed bounded X1–X9 candidate semantics. Affected contract
+integration, implementation and runtime acceptance remain separately gated.
 
 ## Open
 
-No decisions are open.
+| # | Question | Recommendation |
+|---:|---|---|
+| 19 | **Merge on local Bazel CI until hosted CI works?** Hosted CI can't go green yet (inherited workflows, no RunsOn, no Workflows permission), so nothing has merged. Allow merges on Bazel CI run on this host, with evidence recorded, plus the adversarial review | Yes, temporarily; hosted CI becomes required again once RunsOn and the Workflows permission are in place |
+
+#19 is **PENDING**; its recommendation grants no local-CI merge waiver.
+#16's exact-head qualification and reviewed CI cutover remain required.
 
 Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn GitHub App's repositories, and grant the remote-dev GitHub App **Workflows: Read and write** so the swarm can publish CI changes under its own identity.
 
@@ -19,7 +24,26 @@ Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn G
   authorizes no settings change or failure waiver. The [CI gate](clean-room-plan.md#ci-contract-replacement)
   preserves the bounded GitHub-hosted fallback, RunsOn admin dependency and
   existing ownership, merge, review and stop-line rules.
-- **#17 (2026-10-29, in Paseo):** authorization uses fixed project and team permissions, Linear-style, not user-configurable policies. The repaired spike failed its latency gates; a concrete design is in progress, and Cedar in core is not adopted.
+- **#17 — DECIDED (2026-10-29, Paseo):** authorization uses a fixed project
+  and team permission vocabulary, Linear-style, rather than user-configurable
+  policies. This requirement is distinct from #18's concrete semantic choice;
+  Cedar in core is not adopted.
+- **#18 — DECIDED (2026-10-29, Paseo):** Nikhil chose **Adopt reviewed bounded
+  candidate (Recommended)**, the entire X1–X9 package recorded in
+  [A5](design.md#bounded-fixed-permission-candidate-18). Provenance: proposal
+  `c9f5f29d`, independent paper-readiness PASS `c9bb013d`, report `a64fcd3e`.
+  This selects the optional native finite component, direct/one-hop explicit-team
+  involvement, canonical scope/project facts, core-owned authority/context/proof
+  and revocation control, atomic census/bootstrap, five-verb host-controlled
+  management lowering, uniform core ready codec and restricted SQL claim/terminal
+  protocol. Initial positive scope is current User reads, exact CP7, minimal
+  lifecycle/management and Agent claim/update on existing assigned beads.
+  Create/reparent/reassignment, project rename/delete, extra deputy/other
+  permissions, generic metadata/revert, restore/rebuild and unsupported consumers
+  remain denied or gated. Adoption supplies no implementation authorization,
+  measured candidate, runtime acceptance or migration permission; failed historical
+  latency, exact contract/compatibility, executable, real-host/200-agent, C7/R14
+  and hosted CI gates remain open. #19 is not answered by this decision.
 
 Nikhil accepted every recommendation below on 2026-10-29 ([recorded](review-2026-10-27.md#decisions)).
 
@@ -57,13 +81,14 @@ full-transaction closure timing, and independent differential checks pass.
 The unchanged latency gate fails: page p95 `<50 ms` at 100,000 beads with
 100%, 1%, and 0.1% visibility on both SQLite and Postgres, and grouped-count
 p95 `<250 ms`. Under accepted #15 this triggers the authorization revisit.
-No concrete replacement has been selected; Cedar is not adopted. Affected
-authorization implementation remains blocked pending Nikhil's approval of
-the revisited design.
+That revisit led to #17's vocabulary decision and #18's adoption of the
+reviewed bounded X1–X9 semantics. Cedar is not adopted. Affected contract
+integration and implementation remain held for separately scoped authorization;
+candidate compatibility, runtime and performance acceptance remain unproved.
 
 **Evidence status.** Reviewable publication is complete at evidence-only head
 `93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8` ([v6 readout](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/readout.md)).
 The independent R10c review admits the published negative artifact but blocks
 overall merge readiness; executable manifest validation and exact-head hosted
 CI remain separate blocked gates. Closing those gates would not clear the
-failed latency gate or approve the revisited authorization design.
+failed latency gate or supply acceptance evidence for the adopted candidate.

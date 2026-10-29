@@ -1,6 +1,6 @@
 # Plug: clean-room plan
 
-Status: proposal, 2026-10-29, re-planned for an agent swarm. This plan follows [design.md](design.md), the recorded [design review](review-2026-10-27.md), and the [decision ledger](decisions-needed.md). The authorization rerun required by decision #15 has reported: its correctness, corpus, Q5, closure, and independent differential checks pass, but the unchanged latency targets fail. Authorization is reopened toward simple Linear-style team permissions without selecting a replacement model; affected implementation is blocked pending the revisited design. Reviewable publication is complete, while independent review, hosted CI, and executable manifest validation remain separate gates.
+Status: proposal, 2026-10-29, re-planned for an agent swarm. This plan follows [design.md](design.md), the recorded [design review](review-2026-10-27.md), and the [decision ledger](decisions-needed.md). The #15 rerun passed correctness, corpus, Q5, closure and independent differential checks but failed unchanged latency targets. #17 fixed the vocabulary; #18 now adopts the reviewed bounded X1–X9 candidate semantics. Contract integration, implementation authorization and runtime/performance/hosted acceptance remain separate gates. Reviewable historical publication is complete; executable manifest validation, independent evidence review and hosted CI remain separate.
 
 ## Completion contract
 
@@ -31,7 +31,7 @@ The following decisions are carried from `design.md` and [review-2026-10-27.md](
 | D29-D33 | Same-origin UI plugins use session cookies. Other-origin apps use OIDC PKCE and short-lived Plug-audience bearer tokens from an operator CORS allowlist. Bundles are prebuilt and digest checked. Declarative panels sit beside iframes. The nine interpretations in `design.md` are confirmed, including local server UI versus in-process no-UI and the P44 history floor. |
 | P1-P5 | Clean-room rewrite, one typed `ChangeSet`, pre subscribers before the transaction and post subscribers after commit, authorization facts derived in the write when a plugin is installed, and a hard fork. |
 | P6-P11 | Every driver has a Plug change log; drivers are record store plus `sqlkit`; wasm runs in-process on wazero; mutators run in dataflow order with one scalar owner; ontology is stored and versioned on the server; a Go registry generates OpenRPC. |
-| P12-P16 | Many projects share one graph. Manifests set maximum reads and ownership, ontology narrows them. Authorization plugins are compiled in for v1, with storage, secret, and policy-data plugins in mode 1. The follow-up spike has reported: correctness, corpus, Q5, closure, and independent differential checks pass, but the unchanged latency targets fail. Under #15, authorization reopens toward simple Linear-style team permissions without silently selecting a replacement; affected implementation is blocked pending the revisited design. |
+| P12-P16 | Many projects share one graph. Manifests set maximum reads and ownership, ontology narrows them. Authorization plugins are compiled in for v1, with storage, secret, and policy-data plugins in mode 1. The failed follow-up latency gate activated #15’s revisit; #18 now adopts the bounded finite-component semantics, with separate contract, implementation and evidence gates. |
 | P17-P24 | Trackers export plus one-shot import through generic `sync.*` methods; provider-specific tracker commands have no successor. `Ref.Branch` is reserved. Dumps contain secret references and ciphertext only by flag, carry full history by default with head-only by flag, and require ontology directives for violations. Imports accept Plug semantics. Typed fields are separate from metadata. Guards are a fixed catalog, conditional rules are validate subscribers, bindings fail closed by default, and the audited per-binding fail-open and `admin.binding.suspend` controls remain. |
 | P25-P32b | Mode-2 sync phases require operator grants. The plugin set and lock are versioned objects, plugin methods use `x.<alias>.*`, authorization is a chain, unreadable blockers appear as counts, OIDC uses revocable core sessions, lagging listeners and projections stall, script hooks are replaced by listeners, versions are JSON Patch diffs with bases, text uses field-scoped compare-and-set, views are core resources, and UI uses sandboxed iframes with a narrow bridge embedded in the binary. |
 | P35-P40 | HTTP v0 is deleted at cutover. A driver lock and `plug server --local` provide local concurrency. Docs print `plug`. Usage metrics are opt-in to an operator collector, the license is MIT, history is filtered with `git filter-repo` before tags, transcripts are never committed, public release is after the gate at 0.1.0. |
@@ -42,7 +42,7 @@ The following decisions are carried from `design.md` and [review-2026-10-27.md](
 | IDs | Binding decision |
 |---|---|
 | AZ2, AZ5, AZ6, AZ8, AZ9, AZ10 | Adopt the authorization data contract before choosing a language. Any chain link may deny or append context; only the end allows and no decision denies. If a Cedar ruleset is approved, policies are evaluated as one merged set. An erroring forbid denies; an erroring permit is skipped, alerted, and reported. Role-scoped workflow permissions stay out of the ontology. The fixed `permission` guard asks the chain for `transition`. |
-| AZ1, AZ3, AZ4, AZ7 | The repaired rerun passes correctness, corpus, Q5, closure, and independent differential checks but fails the unchanged latency targets. Under #15, authorization reopens toward simple Linear-style team permissions; Nikhil must approve the revisited design before affected implementation resumes. The Cedar-specific choices remain conditional: pinned `cedar-go`, refusal at plan for non-compilable read rules, and plugin-declared grants exposed as principal attributes. No replacement model is selected. |
+| AZ1, AZ3, AZ4, AZ7 | The repaired historical rerun still fails unchanged latency targets. #18 adopts the optional native finite component and complete bounded X1–X9 semantics recorded in A5. Conditional Cedar/`cedar-go`/principal-attribute choices are not selected. Exact contract integration, implementation authorization and all acceptance evidence remain open. |
 | P51-P56 | Schema plugins merge into one schema. `authz.*` has no egress. Policy-data authorization is mode 1 only. Code links have explicit order and the order is shown by `plugin.plan`. v1 has a fixed authorizer view. A closure rewrite over the limit is refused with `closure_too_large` or is one explicit locked migration-class write. |
 | P57-P62 | There is no `authz.explain {asOf}`; history uses current permissions. Authentication refuses scoped agent tokens when no authorization plugin exists. There is no break-glass root list; recovery is through the bootstrap admin or offline repair. Anonymous mode records a client-asserted `_meta.agent` label beside `anonymous` and uses it for lease and idempotency scope. `authn-local` is optional. A boot tier may hold one provider and a bootstrap admin. |
 | P63-P69 | With authentication, `ontology.apply`, `override_guard`, binding suspension, event-subscription skip, restore administration, `history.redact`, ciphertext dumps, protected reverts, and `sync.import` require a `user` principal and the D32 human proof. Anonymous multi-approval gates are refused. Overlay moves need `map_status` and `map_type`. Failed post subscribers return the commit with a warning, dead-letter, and breaker count and make no graph writes. Artifacts are digest locked, reproducibility is checked in CI, local mode begins Linux-only then uses a Linux container, and all warnings reach end users. |
@@ -51,6 +51,55 @@ The following decisions are carried from `design.md` and [review-2026-10-27.md](
 | P5b, P5c, P38d, P39b, P48b, P79-P82 | The new tree is at `main` root, and Beads is read through `bd export --format plug-dump/1` on `beads`; the exporter is standalone for plain Beads users. History filtering runs early while private. Design docs are committed without transcripts. The workflow plugin is compiled in from this repository without Beads formula files. No remote build cache is used at first. P80's accepted batch drops Dolt and merge-conflict plumbing, federation and version-control sync, destructive cleanup, raw SQL and untyped key-value commands, script hooks, orchestration-only helpers, Beads ID rewrites, and legacy migration modes, including the named visible commands. Metrics contain method, result code, latency bucket, principal kind, and client version, never IDs or text. Goldens freeze at `beads-base`, fixes on `beads` re-record through reviewed PRs, and nightly diffs back them. |
 | P76-P78, P83-P85 | Offline multi-store merge remains inside P44. Tracker imports and late data are ordinary head-only writes with new IDs. Synced remote edits are overwritten and counted as drift. The last code link can allow, check-only links have the capped post-filter option, and memories are a core kind. |
 | D32-D33 | For D16, authenticated apply requires an interactive login session rather than an API key; anonymous apply requires a human-presence check such as typing the plan digest. All nine design interpretations are confirmed. |
+
+### Concrete authorization adoption 18
+
+**#18 — DECIDED (2026-10-29, Paseo): Adopt reviewed bounded candidate
+(Recommended).** #17 fixes project/team vocabulary; #18 selects the entire
+bounded X1–X9 semantics in [A5](design.md#bounded-fixed-permission-candidate-18).
+Plain provenance: proposal `c9f5f29d`, independent paper-readiness PASS
+`c9bb013d`, report `a64fcd3e`. The complete package is binding:
+
+- X1–X3: optional native finite Eval/Compile and four-form direct/one-hop
+  explicit-team facts; canonical Ref scope/internal recorded relations; core
+  stored project source, immutable name/Ref registry and declared projections.
+- X4–X6: persistent ACL/context/seed/proof/receipt miss facts and full atomic
+  lock/derived census; core-protected authority/installation, applier/digest-bound
+  seed and lifecycle simulation; authoritative context/revocation and protected
+  five-minute method/digest/key/User-session admission/consumption/replay.
+- X7–X9: restricted SQL positive/current-terminal claim and durable null/K
+  receipt; five exact User-attributed host-controlled protected-source management
+  verbs with ownership/pre/post/proof/deputy boundaries; one initialized core
+  ready codec with all-reader/writer/miss coverage and raw/mixed-state refusal.
+
+The initial positive slice is current User reads, exact CP7, minimal lifecycle
+and grant/team management, and Agent claim/claimNext/update on existing assigned
+beads with fixed project/parent. Create/reparent/reassignment, project rename/
+delete, additional User/service/plugin/deputy permissions, metadata/revert,
+key-arm/nonzero scopes, actual restore/rebuild and unsupported consumers remain
+denied or gated. No nested teams, hidden User membership or writer/editor
+threshold, imported-admin restore permission or generalized policy language is
+introduced. C7 empty-store/archive execution and unsupported lease/heartbeat/
+view/check-only terminal integration remain separate prerequisites.
+
+Done for this adoption record means the chosen semantics and held edges are
+explicit; implementation, a prototype or paper examples do not prove acceptance.
+Frozen C0 `60702e1` is an input, not an implementation of the added APIs/control/
+codec/terminal semantics. C6/I5/authz-dependent I7 need separately scoped exact
+contract/compatibility and implementation assignments. Historical latency stays
+FAIL/BLOCK. Retain the full 100k/depth-10/both-engine Plan A/B Q4/Q5/Q6 matrix,
+exact 100,000/1,000/100 populations at 100%/1%/0.1%, three warmups/20 samples,
+page/full-Q5 `<50 ms` and count `<250 ms` p95, and full Q5 retries/terminal/COMMIT.
+Both reparent and restricted-toggle require 50,000 descendants/50,001 target
+rows, timed from before BEGIN through COMMIT; ordinary over-5,000 closure work
+refuses or needs an explicit locked migration-class operation. Preserve
+independent facts/actual SQL/all pages/counts and later real-host history, authn,
+proof and every dependency/miss race on all drivers. The actual 200-agent queue
+with authz installed and a wasm mutator bound must stay under 1% `write_conflict`.
+No candidate is measured or runtime accepted. Executable manifest validation,
+C7/R14, exact-head hosted CI, reviewed CI cutover and product
+data cutover remain separate gates; no historical rerun follows from validator
+repair alone. #18 authorizes no implementation, execution, migration or widening.
 
 ### Swarm decisions and infrastructure facts
 
@@ -108,6 +157,9 @@ exact-head qualification and a reviewed CI cutover. Current hosted failures
 remain blocking until then. This decision authorizes no settings change or
 failure waiver; existing ownership, merge, review and stop-line rules remain
 in force.
+
+#19's local-Bazel-CI merge recommendation remains **PENDING** and grants no
+waiver of these qualification, review, merge or hosted admission requirements.
 
 RunsOn repository access remains an admin dependency: an administrator must
 add `plugs` to the RunsOn GitHub App's repositories, and the repository's own
@@ -172,7 +224,7 @@ The graph is contract-first. Each row below is one agent-sized task with an expl
 | C3 | A6 driver guarantees, lease, version, dump and history decisions | `Driver`, `Store`, `Reader`, `WriteTx`, lease, version, changeset, blob, and derived-table interfaces | Memory and SQLite doubles pass identical fixtures; stale lease commit returns `ErrFenced`; service code cannot see `WriteTx` |
 | C4 | P2, A1, operation inventory | Closed `ChangeSet` union, preconditions, commit and warning models | Every write lowers to one operation and a generation check fails for an effect without an operation or a union member with extra payload |
 | C5 | A3 ontology, status and type inventory, UX fields | Versioned ontology schema, overlays-by-key, categories, slots, guards, migration directives | Base plus overlay compilation is deterministic; fixed v1 items cannot be redefined; dry-run emits a typed plan digest |
-| C6 | AZ10 and authorization analysis | Indexed bead view, ancestor and cut closures, grant shapes, `FilterExpr` boundary | Policy fixtures request only declared facts; revoke-during-write and list filters record all reads in the commit guard; no plugin creates an allow path |
+| C6 | AZ10, adopted #18 bounded semantics and authorization analysis | Indexed bead view, ancestor/cut closures, canonical scope/grant/project facts and `FilterExpr` boundary | Exact integration remains held for a separately scoped assignment; fixtures request only declared facts, misses/revokes/filter reads join the guard, and no plugin creates an allow path |
 | C7 | Both migration series, config loaders, data inventory, P19/P20/P44 | `plug-dump/1` schema and samples, paired census, archive policy, converter manifest | Unknown main or ignored versions refuse; secrets are references by default; restore accepts only an empty store |
 
 ### Evidence and spikes
@@ -182,7 +234,7 @@ The graph is contract-first. Each row below is one agent-sized task with an expl
 | E1 | `beads-base`, protocol catalog, role cases, Oracle A, regression log | Spec cards, Beads twins, controlled-clock provenance, projection goldens | Re-recording a card twice gives one digest. `keep` has a golden; `deviate` stores both results and a decision |
 | E2 | E1 harness, all tests, both schema series, config sources | Seeded graph traces, test census and store census ratchets | Any undispositioned test, table, column, ignored table, or configuration source fails the target; counts only decrease |
 | E3 | `bd serve`, 20,000-bead disposable corpus, 50 simulated agents | UX decision record for views, home, blocked explanation, history, presence, declarative UI | Five scripted tasks produce observations and timings and name the required view and wire fields |
-| E4 | C6, the three real policies, synthetic 100,000-bead Postgres and SQLite tables | Authorization plan comparison and policy-fit report | The published rerun passes correctness, corpus cardinalities, Q5, closure, and independent differential checks. Its unchanged page p95 `<50 ms` and grouped-count p95 `<250 ms` gates fail, so the measured design gate is blocked and reopens AZ1 toward simple Linear-style team permissions. A 50,000-descendant reparent is measured as a migration-class write, not misclassified as a normal 5,000-row write |
+| E4 | C6, the three real policies, synthetic 100,000-bead Postgres and SQLite tables | Authorization plan comparison and policy-fit report | Published historical correctness/corpus/Q5/closure/independent differential passes remain source-bound. Page/full-Q5 p95 `<50 ms` and counts `<250 ms` still fail; #18’s bounded semantic adoption supplies no candidate measurement. Both reparent and restricted-toggle require 50,000 descendants/50,001 target rows, timed before BEGIN through COMMIT as migration-class evidence, not a normal 5,000-row write |
 | E5 | C2-C4, Linux host, wazero candidate, Postgres | WASI ABI, sandbox, lock-order, lazy-claim, and failover report | Two-export ABI runs; 200 claimers and mutators exercise deadlocks, retries, stale leases; failover choice is recorded before production design freezes |
 
 The authorization spike uses these real policies, exactly as answered today:
@@ -191,7 +243,7 @@ The authorization spike uses these real policies, exactly as answered today:
 2. All users can read all beads.
 3. Agents can modify only projects their sponsoring user is involved in.
 
-The page target remains p95 under 50 ms at 100,000 beads for visible fractions 100%, 1%, and 0.1% on Postgres and SQLite. The accepted grouped-count target remains p95 under 250 ms at 100,000 beads. The repaired rerun passes correctness, corpus, Q5, closure, and independent differential checks but **fails the unchanged latency gate**. Under #15, authorization reopens toward simple Linear-style team permissions; a concrete replacement model requires Nikhil's approval of the revisited design. The data contract, closure, and filter requirements remain, and affected authorization implementation stays blocked.
+The page and full-Q5 target remains p95 under 50 ms at 100,000 beads for visible fractions 100%, 1% and 0.1% on Postgres and SQLite; grouped counts remain p95 under 250 ms. Historical correctness/corpus/Q5/closure/independent differential passes do not change the **failed unchanged latency gate**. #18 selects the bounded concrete semantics after #17’s vocabulary decision; candidate SQL/transaction/performance and all later real-host evidence remain unproved. Affected implementation stays held for separate scoped authorization and exact contracts.
 
 The evidence is published in [PR #10](https://github.com/buildbetter-app/plugs/pull/10) at publication head `93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8`. The measurements bind to source `69f28caaf71a673296abe3120c60be5cb3af5aec` in the [readout](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/readout.md) and [provenance manifest](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/provenance-manifest.json). Reviewable artifact publication is complete. Executable manifest validation remains open: checking warmups and iterations alone does not bind the engines, fractions, plans, queries, dataset, targets, and artifact declarations to the executable matrix. Independent review and hosted CI remain separate pending gates for the publication head; R10b's review and hosted observations were for the measured source. Completing those gates would not change the failed latency result. [A5](design.md#a5-identity-and-authorization) records the outcomes separately.
 
@@ -203,13 +255,13 @@ The evidence is published in [PR #10](https://github.com/buildbetter-app/plugs/p
 | I2 | I1, C1, C2, E3 | In-process `plug` slice for ready, claim, update, comment, close, history, dump, and restore | A fresh restored fixture goes from ready to close. In-process mode has no listener and no `/ui/`; asynchronous work is drained or owned by `plug server --local` |
 | I3 | C1, C3, I1, E5 | HTTP, WebSocket, stdio, MCP, API-key auth, local server, native plugin host | The same JSON-RPC bytes work on each transport. Anonymous mode is loopback-only and rejects hostile `Host` and `Origin`. D16 checks apply |
 | I4 | C4, C5, I1, C2 | Pre, invariant, post, projection, listener, and gate phases | Core invariants run in the transaction; post failure returns a warning and dead-letter; event log and write are atomic; multi-approval gates count sponsor-resolved humans |
-| I5 | C6, E4, I1, I3 | Authorization implementation, filters, chain, and grants after the revisited AZ1 design | **Blocked pending human approval of the revisited authorization design.** Do not silently choose Cedar, a relationship schema, or another replacement. After approval, compiled lists must equal per-item decisions on every driver, with tests for no-plugin allow, forbid precedence, erroring-forbid denial, current-permission history, post-image checks, and revoke-during-write |
+| I5 | C6, E4, I1, I3, adopted #18 semantics | Authorization filters/chain/grants for the bounded slice after separately authorized work | **Design semantics adopted; implementation not authorized by #18 or this record.** Exact reviewed contracts/compatibility and scoped assignments remain required. Compiled lists must equal per-item decisions on every driver, with no-plugin allow, forbid/error rules, current history, post-image and every dependency/miss race; runtime/performance/hosted gates remain open |
 | I6 | C7, E1/E2, the Beads branch, store inventory | `bd export --format plug-dump/1`, converter, restore validator, diff report, reverse converter | Every inventoried store exports and restores to a new store. Counts, IDs, prefixes, counters, dependencies, versions, wisp-plane dispositions, archives, and digests are explained or block the run |
 | I7 | C2, E5, I3/I4, D29-D31 | Sandboxed Go `wasip1` builder, digest lock, static bundle checks, iframe bridge, declarative catalog | Pinned source builds reproduce in CI. Restore loads artifacts by digest before an asynchronous rebuild check. UI tests cover CSP, `event.source`, no credentials, no egress, and CORS without credentials |
 | I8 | I2, I3, I6, agent callers and prompts | `plug` agent plugin, `agent.brief`, caller rewrite, staging shadow harness, backups and rollback images | A sampled factory pool runs against staging with no GitHub writes or production egress. Reverse conversion and full image, prompt, plugin, and data rollback are rehearsed |
 | V1 | Every task diff, contract, evidence, and review finding | Independent review, mutation checks, security and data-loss findings | A clean-worktree verifier finds no weakened test, hidden skip, privilege bypass, secret, layer violation, or unverified claim; findings block merge until fixed or gated |
 
-The critical path is RunsOn smoke and Bazel bootstrap, B0-B3, C1-C7, I1, I2 and I3, I6's first restore, three clean rehearsals, I8's shadow evidence, and the G2 switch decision. E1, E3, E4, and E5 run in parallel after B0. I4 proceeds when its contracts are green. I5 and authorization-dependent work in C6, I7, and other consumers remain blocked pending approval of the revisited design; unaffected contract work can proceed. A failed spike is evidence and a blocked edge, never a passing stub.
+The critical path is RunsOn smoke and Bazel bootstrap, B0-B3, C1-C7, I1, I2 and I3, I6’s first restore, three clean rehearsals, I8’s shadow evidence and the G2 switch decision. E1, E3, E4 and E5 run in parallel after B0. I4 proceeds when its contracts are green. #18 closes the bounded design-adoption dependency only; I5 and authz-dependent C6/I7/consumers remain held for separately scoped contract/implementation assignments and applicable evidence. Unaffected work may proceed. A failed spike remains failed evidence, never a passing stub.
 
 ```mermaid
 flowchart LR
@@ -227,9 +279,9 @@ flowchart LR
   I1 --> I2["Local vertical slice"]
   I1 --> I3["Server, authentication, and native host"]
   C --> I6["Converter and restore"]
-  I3 --> I5["Authorization implementation blocked pending design"]
-  E4 -->|"failed latency gate"| AZ1["Revisit toward Linear-style teams; human decision pending"]
-  AZ1 -->|"approved design required"| I5
+  I3 --> I5["Authorization held: scoped contracts, implementation and evidence"]
+  E4 -->|"failed latency remains"| AZ1["#18 adopted bounded semantics; no runtime or latency pass"]
+  AZ1 -->|"separate scoped authorization, contracts and evidence"| I5
   I2 --> I8["Caller rewrite and staging shadow"]
   I3 --> I8
   I6 --> N["Nightly fresh-store diffs"]
@@ -329,7 +381,7 @@ From 12:00 to midnight, workers implement memory and SQLite contract doubles, th
 
 The target is a thin real vertical slice on memory and SQLite: a fresh restored fixture, `bead.ready`, `bead.claimNext`, update, comment, close guard, history, `tx.apply`, warnings, and the generated registry path. The converter dry run covers every available inventory sample. The first adversarial pass targets test gaming, layer violations, no outbound connections, anonymous isolation, post-image authorization, and projection independence.
 
-Transport, API-key authentication, native host seams, ontology phase ordering, and Postgres conformance proceed in parallel when their contracts are green. Authorization implementation and its final differential acceptance wait for the revisited design, as I5 records. A failed experiment remains a blocked graph edge with its evidence.
+Transport, API-key authentication, native host seams, ontology phase ordering and Postgres conformance proceed when their contracts are green. #18 has selected the bounded authorization semantics; I5 and dependent integration/implementation remain held for separate assignments and exact contracts, with final differential/runtime/performance acceptance still open. The failed experiment remains a blocked evidence edge.
 
 ### 2026-10-31 and the stop line
 
@@ -358,9 +410,9 @@ Keep the same graph, evidence, ownership, and merge rules at normal budget. Redu
 
 ## Decided defaults
 
-These defaults were accepted on 2026-10-29 and remain binding. Decision #15's provisional phase has ended: the repaired rerun reported a failed unchanged latency gate, so authorization is reopened toward simple Linear-style team permissions without selecting a replacement model. The affected implementation remains blocked pending human approval; the swarm model changes staffing and timing only.
+These defaults were accepted on 2026-10-29 and remain binding. #15’s provisional Cedar phase ended with the repaired rerun’s failed unchanged latency gate. #17 fixed the vocabulary and #18 adopted the bounded X1–X9 semantics; exact contract integration, implementation authorization and acceptance remain separate. The swarm model changes staffing/timing only, and #19 remains pending with no CI waiver.
 
-- AZ3's pinned `cedar-go`, AZ4's refusal of non-compilable read rules, and AZ7's plugin-declared grant records remain conditional on the revisited AZ1 design. P51 merges schema plugins into one schema if they are used.
+- Historical Cedar-specific AZ3/AZ4/AZ7 choices are not selected by #18. P51 still merges schema plugins if used.
 - P55 uses a fixed authorizer view in v1. P56 refuses an over-limit closure or runs it only as an explicit locked migration-class write.
 - P58 refuses scoped tokens without an authorization plugin. P62 uses a boot-tier provider and bootstrap admin. P64 refuses anonymous multi-approval gates.
 - P65 archives base elements and requires `map_status` and `map_type` for overlay moves. P66 returns a committed write with a warning, dead-letter, and breaker count. P67 keeps the toolchain in the server image and stores artifacts by digest. P68 starts Linux-only, then a Linux container.
@@ -433,7 +485,7 @@ All 15 plan-level decisions were accepted on 2026-10-29. The entries below are b
 
 **#15 — Decided (2026-10-29):** Run a quick follow-up spike that fixes the SQL plans and reruns the speed gate. Proceed provisionally with Cedar in core until the repaired rerun reports; if it cannot support the path, revisit authorization rather than silently selecting the old relationship-schema fallback.
 
-**Outcome (2026-10-29):** The repaired rerun passes correctness, corpus, Q5, closure, and independent differential checks but fails the unchanged page and grouped-count latency targets. The [published evidence](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/readout.md) is at head `93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8` from measured source `69f28caaf71a673296abe3120c60be5cb3af5aec`. The accepted revisit branch is active toward simple Linear-style team permissions, with no concrete replacement selected. Affected authorization implementation remains blocked pending Nikhil's approval of the revisited design. Publication is complete; executable manifest validation, independent review, and hosted CI remain separate pending gates. Their completion would not change the failed latency result.
+**Outcome (2026-10-29):** The repaired rerun passes correctness/corpus/Q5/closure/independent differential but fails unchanged latency targets. The [published evidence](https://github.com/buildbetter-app/plugs/blob/93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8/spikes/authz/evidence-v6/readout.md) binds publication `93a3cd0cca2579d307fd9a33bd70e2113bf1f6d8` separately from measured source `69f28caaf71a673296abe3120c60be5cb3af5aec`. #18 later adopts the bounded fixed-permission semantics; no historical failure is rewritten or candidate measured. Affected contract/implementation work needs separate scoped authorization. Publication is complete; executable validation, independent review, runtime/compatibility and hosted CI remain separate gates.
 
 ## Risks and containment
 

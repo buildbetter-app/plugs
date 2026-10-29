@@ -10,7 +10,7 @@ Status: proposal, updated 2026-10-29 with Nikhil's decisions from the [design re
 - **Partial failures are warnings.** A committed write with a failed part returns `result.warnings`, never an `error` beside a `result` (D28).
 - **Two plugin modes, one contract.** Plugins are compiled in, or built from Go source at a pinned commit and run as in-process WebAssembly. Only a human applies plugin changes: an interactive session when authenticated, a presence check otherwise ([A2](#a2-plugin-platform); P8, P43, D16, D32).
 - **A customizable ontology.** A server base plus per-project overlays that overwrite it by key: status categories, per-type workflows with slots, typed fields and gates, with a short list fixed in v1 ([A3](#a3-ontology-and-enforcement); P10, P41, D25).
-- **Identity and authorization are optional plugins.** With no authentication provider the server is anonymous and serves only localhost. Authorization is a chain of optional plugins whose rules core evaluates inside the write over a fixed data contract; with none installed, every request is allowed. The repaired rerun passes correctness, corpus, Q5, closure, and independent differential checks but fails the unchanged latency targets. Under accepted #15, authorization reopens toward simple Linear-style team permissions; affected implementation is blocked pending approval of the revisited design, with no replacement model selected ([A5](#a5-identity-and-authorization); AZ1, AZ2, AZ3, AZ4, AZ5, AZ7, AZ10; plan #15).
+- **Identity and authorization are optional plugins.** With no authentication provider the server is anonymous and serves only localhost. Authorization remains an optional plugin chain over a fixed data contract; with none installed, every request is allowed subject to host checks. #17 fixes the project/team vocabulary; #18 adopts the reviewed bounded X1–X9 candidate semantics. Historical latency still fails; exact contract integration, implementation authorization and runtime/performance/hosted acceptance remain separate ([A5](#a5-identity-and-authorization)).
 - **Versioning in every driver.** Each write is one gapless revision and one changeset, with versions stored as diffs and history kept forever. Data enters a server only by restore into an empty store (restores; one-shot imports are P77) ([A6](#a6-storage-and-versioning); P6, P30, P44, P45).
 - **The storage plugin owns topology.** One active server plus a standby, chosen by a storage-plugin lease that fences stale commits ([A6](#a6-storage-and-versioning), [Operations](#operations-observability-and-testing); P49).
 - **Low-noise collaboration.** Presence, budgeted views and delta watches. The embedded web UI is served only by a shared server, plugin UI runs in sandboxed iframes beside declarative additions, and trackers are export plus one-shot import ([A7](#a7-collaboration-and-ui); D1, D29 to D31, P17, P32a).
@@ -20,7 +20,7 @@ Status: proposal, updated 2026-10-29 with Nikhil's decisions from the [design re
 
 ### Open
 
-The prior design rows and all 15 plan decisions remain recorded under [Made](#made) and [Decisions](clean-room-plan.md#decisions). The repaired rerun failed the unchanged latency gate, activating #15's authorization revisit toward simple Linear-style team permissions. The remaining human decision is approval of the revisited authorization design; no concrete replacement model is selected, and affected implementation remains blocked. [A5](#a5-identity-and-authorization) records the evidence and separate review and CI gates. [Decisions needed](decisions-needed.md) remains the ledger of the prior answers.
+The prior design rows and plan decisions remain recorded under [Made](#made) and [Decisions](clean-room-plan.md#decisions). #18 is DECIDED: the reviewed bounded X1–X9 semantics are adopted, distinct from #17’s vocabulary requirement. The local-CI merge recommendation #19 remains PENDING and grants no waiver of #16’s qualified exact-head CI and reviewed cutover. [A5](#bounded-fixed-permission-candidate-18) records the supported slice and unproved contract, implementation and acceptance gates; [Decisions needed](decisions-needed.md) is the answer ledger.
 
 ### Made
 
@@ -74,7 +74,7 @@ Every decision so far. D1 to D13 are Nikhil's answers of 2026-10-27, recorded in
 | [P13](review-2026-10-27.md#decisions) | (a) Manifest sets maximum reads and owns; the ontology narrows them per type |
 | [P14](review-2026-10-27.md#decisions) | (a) Authorization plugins compiled in only, for v1 |
 | [P15](review-2026-10-27.md#decisions) | Storage and secret providers mode 1 only; `authz` mode 1 in v1; wasm sync subscribers by grant |
-| [P16](review-2026-10-27.md#decisions) | The follow-up speed spike was the gate for the core-hosted Cedar path. It has reported and failed the unchanged latency targets, so its contingency is active: authorization reopens toward simple Linear-style team permissions (AZ1, AZ2), without selecting a replacement model |
+| [P16](review-2026-10-27.md#decisions) | The follow-up spike failed the unchanged latency gate and activated the authorization revisit. #18 now adopts bounded candidate semantics; it does not authorize implementation, adopt Cedar or turn historical latency into a pass |
 | [P17](review-2026-10-27.md#decisions) | (b) Trackers: export plus one-shot import |
 | [P18](review-2026-10-27.md#decisions) | (a) Reserve `Ref.Branch`, build nothing |
 | [P19](review-2026-10-27.md#decisions) | Secrets in dumps as references, ciphertext by flag |
@@ -116,17 +116,17 @@ Every decision so far. D1 to D13 are Nikhil's answers of 2026-10-27, recorded in
 | [P48](review-2026-10-27.md#decisions) | (b) Formulas and molecules become a plugin |
 | [P49](review-2026-10-27.md#decisions) | (a) One active server plus a standby; the storage plugin owns replication, failover, backup and the lease |
 | [P50](review-2026-10-27.md#decisions) | (a) Transactional ancestor closure plus a semi-join |
-| [AZ2](review-2026-10-27.md#decisions) | The repaired rerun has reported and failed the unchanged latency gate, activating P16's authorization revisit toward simple Linear-style team permissions rather than the relationship-schema fallback; no replacement model is selected |
+| [AZ2](review-2026-10-27.md#decisions) | The failed rerun activated P16’s revisit rather than the relationship-schema fallback. #17 fixes the vocabulary; #18 adopts the bounded X1–X9 semantics with separate implementation/evidence gates |
 | [AZ5](review-2026-10-27.md#decisions) | Any link may deny or append context; only the end of the chain allows; no decision denies; if a Cedar ruleset is approved, rules from every plugin are one merged set |
 | [AZ6](review-2026-10-27.md#decisions) | An erroring forbid denies; an erroring permit is skipped, alerted and reported by `authz.verify` |
 | [AZ8](review-2026-10-27.md#decisions) | Role-scoped workflow permissions stay out of the ontology in v1 |
 | [AZ9](review-2026-10-27.md#decisions) | The `permission` guard stays in the fixed catalog and asks the chain with a `transition` action |
 | [AZ10](review-2026-10-27.md#decisions) | Adopt the authorization data contract before choosing a policy language |
-| [AZ1](review-2026-10-27.md#decisions) | The (v) core-hosted inert Cedar evaluator was conditional on the speed spike. The repaired rerun failed the unchanged latency gate, so the accepted contingency reopens authorization toward simple Linear-style team permissions; no replacement model is selected. This replaces the (iii) fallback |
-| [AZ3](review-2026-10-27.md#decisions) | Conditional Cedar branch: (a) `cedar-go`, pinned, with Plug's subset compiler; revisit Rust partial evaluation once it is stable. The failed latency gate leaves implementation blocked pending the revisited AZ1 design |
-| [AZ4](review-2026-10-27.md#decisions) | Conditional Cedar branch: (a) read rules that cannot compile to a list filter are refused at plan; subject to the revisited AZ1 design |
-| [AZ7](review-2026-10-27.md#decisions) | Conditional Cedar branch: (a) grants are plugin-declared records, seen by policies as principal attributes; subject to the revisited AZ1 design |
-| [P51](review-2026-10-27.md#decisions) | If schema plugins are used, they merge into one schema at the end of the chain; the repaired spike's failed latency gate has reopened the authorization approach under AZ1 |
+| [AZ1](review-2026-10-27.md#decisions) | The conditional core-hosted Cedar path failed its latency gate. #18 selects the optional native finite component and entire bounded X1–X9 package in A5; generic core machinery supplies no independent policy or new permission |
+| [AZ3](review-2026-10-27.md#decisions) | Historical conditional Cedar branch: pinned `cedar-go` and subset compiler. Not adopted by #18, which selects the finite native component; exact contract integration and implementation remain separately gated |
+| [AZ4](review-2026-10-27.md#decisions) | Historical conditional Cedar planning refusal for non-compilable read rules is not the #18 model. Accepted P84 list/count behavior remains; #18’s terminal claim proof is SQL-only and excludes check-only consumers |
+| [AZ7](review-2026-10-27.md#decisions) | #18 selects four plugin-owned grant forms and declared projections with core-controlled atomic maintenance; the historical Cedar principal-attribute encoding is not adopted |
+| [P51](review-2026-10-27.md#decisions) | Schema plugins merge into one schema if used. #18 adopts no Cedar engine or configurable policy language; the original Cedar-specific branch remains historical conditional material |
 | [P52](review-2026-10-27.md#decisions) | (a) no egress in `authz.*` calls; external engines are mirrored by listeners |
 | [P53](review-2026-10-27.md#decisions) | (a) policy-data-only authorization plugins are mode 1 only in v1 (P14) |
 | [P54](review-2026-10-27.md#decisions) | (b) an explicit code-link order in the plugin set, defaulting to apply order and shown by `plugin.plan` |
@@ -174,6 +174,8 @@ Every decision so far. D1 to D13 are Nikhil's answers of 2026-10-27, recorded in
 | [P17 / #12](review-2026-10-27.md#decisions) | Generic `sync.*` methods replace every provider-specific tracker command |
 | [A7 / #13](review-2026-10-27.md#decisions) | Home is “What changed since I looked”; bounded views say what they hid; deltas stay stable; presence is compact; epic progress is counts; the declarative catalog sits beside custom UI; validate with five people against real view and watch data before the UI milestone |
 | [T4 / #14](review-2026-10-27.md#decisions) | Freeze `admin.restore.begin/chunk/finish`, `memory.*`, `admin.compact`, and gate shapes; use contiguous error numbers; carry incarnation on every cursor; add `session.close` with bounded expiry and reconnect; settle rollback, close, the changeset header, error mapping, and the anonymous agent label in the driver contract |
+| [#17](review-2026-10-27.md#decisions) | Fixed project/team permission vocabulary; no user-configurable policy language |
+| [#18](review-2026-10-27.md#decisions) | **DECIDED:** Adopt reviewed bounded candidate (Recommended), proposal `c9f5f29d`, entire X1–X9 package; design semantics only, with separate contract/implementation/acceptance gates |
 
 ## Target architecture
 
@@ -483,7 +485,7 @@ The ontology revision is in every write's read set. Writes run only the rules th
 
 **Integrity checks** run at plan time, at startup, after a restore and on demand. An unparseable document stops startup, naming the element; data drift does not, and the server reports `ontology: drifted`. The on-demand check asserts the predicate stated by `BlockedStateInvariant` ([blockedstate.go](../../../issueops/blockedstate.go)), a documented statement rather than code, as the conformance case [blocked_state.go](../../../backend/conformance/blocked_state.go) does today.
 
-**Authorization policy validation (AZ1, AZ3).** The repaired rerun failed the unchanged latency gate, so this implementation is blocked pending the revisited authorization design ([A5](#a5-identity-and-authorization)). In the conditional Cedar branch, its schema is generated from the ontology, so a change can invalidate policies ([analysis](authorization-options.md)); `ontology.plan` and `ontology.apply` regenerate it for every project and revalidate every policy, refusing with `authz_policy_invalid`. These details remain design material for the revisit and do not adopt Cedar or prescribe a replacement engine.
+**Authorization policy validation (AZ1, AZ3).** #18 adopts the bounded finite-component semantics in [A5](#bounded-fixed-permission-candidate-18); exact contract/compatibility integration and implementation remain separately gated. Historical conditional Cedar material generated a schema from the ontology and revalidated policies for every project, refusing `authz_policy_invalid`. It is not selected by #18. Existing ontology guard/revalidation obligations remain, and unmapped transition permissions still deny.
 
 ```mermaid
 flowchart TB
@@ -648,7 +650,81 @@ Every request carries one server-stamped principal from an authentication plugin
 | Executable manifest validation | Still open: the runner checks warmups and iterations, but must also validate engines, fractions, plans, queries, dataset, targets, and artifact declarations against the executable matrix |
 | Independent review and hosted CI | Separate pending gates for the publication head. R10b blocked the measured source; that review and its failed/queued/skipped hosted jobs do not certify the later head |
 
-The failed measured gate activates accepted #15's AZ1/AZ2 revisit toward simple Linear-style team permissions. Nikhil must approve the revisited authorization design before affected implementation resumes. No replacement model is selected. The Cedar-specific AZ3/AZ4/AZ7 choices and related sketches below remain conditional design material; publication, review, or CI success alone cannot adopt them or clear the failed latency gate.
+The failed measured gate activated #15’s AZ1/AZ2 revisit. #17 answered the fixed project/team vocabulary; #18 now adopts the reviewed bounded candidate semantics below. This closes the concrete design choice for that slice, not the failed historical latency result or any contract, implementation, runtime or hosted admission gate. Historical Cedar-specific material and old proposal statuses remain historical; they are not part of #18’s chosen finite component.
+
+### Bounded fixed-permission candidate 18
+
+**#18 — DECIDED (2026-10-29, Paseo): Adopt reviewed bounded candidate
+(Recommended).** Nikhil adopted the entire X1–X9 semantic package of proposal
+`c9f5f29d`, independently paper-ready at review `c9bb013d` (report `a64fcd3e`).
+#17 selected the fixed project/team vocabulary; #18 selects this concrete
+bounded design. The frozen proposal/review retain their historical statuses;
+this later decision changes no frozen artifact, contract or implementation.
+
+| Group | Adopted semantics, with exact contract integration still unproved |
+|---|---|
+| X1 | One optional compiled-in native finite `RuleSet.Eval/Compile`; four validated facts `(User,O,admin)`, `(User,P,involved)`, `(User,T,member)`, `(Team,P,involved)` and live activity. Direct User-to-project involvement OR membership in an active team with an explicit team-to-project edge, with an active target project, defines the one-hop encoding of authoritative involvement. No nested teams, teammate/parent inheritance, policy language or Cedar engine. |
+| X2 | Nonempty ID-arm branch-zero canonical authority/team/project Refs and injective length-prefixed grant-scope identity; reconcile public Ref Grants with the internal BeadKey sketch explicitly. Internal recorded Groups/ProjectScope and finite filter/enumeration relations include misses; no public API is supplied by implication. |
+| X3 | Core stored exact `body.project` name/absence, immutable injective name-to-Ref registry, live project activity and declared projections. Registry append/activity changes belong to protected plan/apply; initial positive bead writes keep project and parent fixed. An index cannot invent a source assignment. |
+| X4 | Core-owned persistent A ACL, C context, S seed, P proof and K receipt facts with miss/tombstone lock identities, exact tuple/projection keys and atomic source/derived/control revisions. Declare the full strongest-mode lock set in `record < read_fact < sentinel < derived` order, head last; retain seven Sentinel and nine logical DerivedTable families. |
+| X5 | Core-protected stable authority O/installation, one applier/plan-digest-bound seed, full resulting-chain lifecycle/five-route simulation, atomic install/consumption, current-authority replay and last-eligible-admin refusal. Agent planning with an admin User sponsor gives no apply/management permission; actual apply is an interactive User path. |
+| X6 | Core-authoritative credential/session/sponsor generations, defaults and revocation committed before acknowledgment; capture C with verified context. Five-minute half-open interactive challenge validity capped by credential/session expiry, exact method/sensitive digest/key/User-session binding, guarded commit admission, atomic consumption and reauthorized original-result replay. No provider TTL, stale-context relabeling or delegated human presence. |
+| X7 | Lazy positive claim preparation and ordered locks/rechecks/commit; restricted fully SQL-compilable committed eligibility. PostgreSQL terminal observation is a fresh uncapped non-locking READ COMMITTED query after head acquisition; SQLite uses a fresh IMMEDIATE writer reservation. A present row releases locks/head before retry; errors never become null. Empty outcome and durable zero-graph-change K/null receipt commit at H+1; replay reauthorizes the original result. No ready-query guard. |
+| X8 | Versioned native host-controlled protected-source lowering for exactly five management verbs, with declared kind/schema/field/ownership checks and a new protected-record adapter using existing create/patch/delete operation tags. Executing/root principal stays the top-level interactive User, `setBy=request`; pre/post admin/O checks use pre-existing B facts. A finite seal binds descriptor/method/digest/proof/K/context/B/allocations/source images/derived deltas/full census; one transaction commits source versions, projections, epochs, proof and receipt. No ordinary plugin Host.Call permit, direct storage, transferable capability or source grant attributed to `system:core`. |
+| X9 | One core ready-name/type codec for all ordinary ready readers and all writers that change ready membership, including no-authz operation, registry misses and projectless maintenance. `RP(n)=p1_+E("name",n)`, `RP(absent)=p1_+E("absent","")`, `RT(t)=t1_+E(t)` enter unchanged `NewReadySentinel`; E is lowercase hex of canonical decimal UTF-8 byte lengths followed by `:` and the exact bytes for each part. Initialize immutable per-incarnation `readyCodec="az3-r1"` before requests/data, encode every value once and refuse raw/mixed/missing state. No live conversion or constructor/family extension. |
+
+CP7 remains exactly `User && admin` for `importBulkHistory`/History, `User`
+for `read`/Bead, and `Agent && targetProject in sponsor.involved` for
+`modify`/Project, with an authenticated User sponsor and intersecting caveats.
+Every User can read every Bead, including projectless/unknown-project beads;
+no membership or writer/editor threshold is added. Successful modification
+adds no read permit. Team sharing without the explicit edge confers nothing;
+independently authoritative involvement must agree with the one-hop encoding.
+
+**Initial supported slice:** one installation/authority per store at branch
+zero; current User reads; CP7 decisions; minimal plugin lifecycle and grant/team
+management; Agent `bead.claim`, `bead.claimNext` and `bead.update` on existing
+assigned beads; Q4/Q5/Q6 algorithms. The five exact management methods are
+`x.<alias>.grant.put`, `x.<alias>.grant.delete`, `x.<alias>.team.create`,
+`x.<alias>.team.set-active`, `x.<alias>.team.delete`, all protected admin/O
+User requests with method/digest/key-bound proof. Core protects authority,
+context/proof/revocation/control records and maintains projections atomically;
+plugin-owned grant/team records supply fact meaning. Existing deputy rules
+still apply to actual plugin/mutator writes; this slice grants none of them.
+
+**Initial exclusions:** ordinary create/reparent/project reassignment, project
+rename/delete, key-arm/nonzero scopes, generic metadata/revert/delete, extra
+User/service/plugin-background/transition permissions, arbitrary externally
+mutable providers, actual restore/rebuild/migration execution and unsupported
+consumers remain denied or gated. Project/parent changes and any ontology
+requiring an unmapped transition deny. Terminal proof excludes wall-clock-only
+lease eligibility, revision-free heartbeat eligibility, unguarded named views
+and check-only predicates. Restore authorization uses pre-existing target
+authority/proof; C7 empty-store/archive/typed execution remains a prerequisite.
+Fixture setup is not a product import or migration bypass. No-authz allow,
+P58/P83/P84, authn/error/pre/post-image/deputy/human-proof rules, current history
+permissions, no root bypass and existing recovery/stop lines remain unchanged.
+
+**Separate gates:** #18 authorizes design semantics only, with no prototype,
+implementation, measured candidate, runtime acceptance or production migration.
+Frozen C0 `60702e1` supplies neither the new source/context/codec semantics nor
+the added relations/current-terminal/result primitive. Exact reviewed wire,
+schema, storage/driver compatibility and separately scoped contract/implementation
+assignments remain required; C6/I5/authz-dependent I7 stay held on those edges.
+Historical latency remains **FAIL/BLOCK**. Candidate evidence retains 100,000
+beads/depth 10, exact 100,000/1,000/100 populations at 100%/1%/0.1%, both
+SQLite/PostgreSQL, Plans A/B, Q4/Q5/Q6, three warmups/20 samples, every Q4/full-Q5
+p95 `<50 ms` and Q6 `<250 ms`. Include complete Q5 preparation/locks/rechecks/
+update/retries/terminal/COMMIT and both reparent and restricted-toggle with
+50,000 descendants/50,001 target rows, timed from before BEGIN through COMMIT;
+ordinary over-5,000 closure work refuses or needs explicit locked migration.
+Independent facts/actual SQL/all pages/counts, executable manifest validation,
+real-host history/authn/proof/dependency-miss races on every driver and the
+actual 200-agent queue with authz plus a wasm mutator under 1% `write_conflict`
+remain unproved. C7/R14 and exact-head hosted CI admission remain separate.
+#16 qualified CI is decided; #19 local-CI merge recommendation is **PENDING**
+and supplies no waiver. No historical rerun is required solely for validator
+repair, and no performance or acceptance threshold is reduced.
 
 **Today.** Server auth compares shared token digests, "no token MINTING here and no identity" ([auth.go](../../../internal/httpapi/auth.go)); `--insecure-no-auth` waives the token beyond loopback ([serve.go](../../../cmd/bd/serve.go)). The actor is "caller-ASSERTED" ([close.go](../../../internal/httpapi/close.go)). The `Authorize*` functions ([aggregate.go](../../../internal/storage/issueops/aggregate.go)) are data invariants, not permissions. Identity in core departs from the [charter](../../PROJECT_CHARTER.md).
 
@@ -687,7 +763,7 @@ type Link interface { // core/authz; compiled-in code
     Check(ctx context.Context, s Slice, reqs []CheckRequest) ([]Step, error) // Deny | Append | Pass; Allow from the last link only under P83 (a)
     Filter(ctx context.Context, req ListRequest) (FilterExpr, error)          // ErrCheckOnly if it cannot compile
 }
-type RuleSet interface { // all plugins' rules; concrete policy model pending the revisited AZ1 design
+type RuleSet interface { // finite rules under #18; exact contract integration remains gated
     Eval(ctx context.Context, s Slice, reqs []CheckRequest) ([]Decision, error) // error: the whole evaluation failed; deny with authz_unavailable
     Compile(req ListRequest) (FilterTemplate, error) // principal bound per request
 }
@@ -733,11 +809,11 @@ sequenceDiagram
   S-->>B: forbidden, reason no_decision
 ```
 
-**Reads.** Lists push the compiled `FilterExpr` into storage as a closure semi-join (P50 (a)), filling pages after filtering, p95 under 50 ms at 100,000 beads, depth 10. A code link that cannot emit a filter is check-only; P84 allows it in lists when the operator accepts a capped post-filter, which fails with `authz_postfilter_cap` rather than returning a short page. AZ4 otherwise refuses a non-compilable read rule at plan. Unreadable blockers show as `hiddenBlockers: n` (P28b). An old version is readable only by someone who can read the bead now.
+**Reads.** Lists push the compiled `FilterExpr` into storage before pagination, preserving authorized ordering and unique exact counts (P50 (a)), with p95 under 50 ms at 100,000 beads, depth 10. A code link that cannot emit a filter is check-only; P84 allows it in lists when the operator accepts a capped post-filter that fails with `authz_postfilter_cap`, never a short page or partial count. Historical conditional Cedar AZ4 planning refusal is not the selected finite model and does not replace P84. #18’s terminal claims exclude check-only predicates until separately specified. Unreadable blockers show as `hiddenBlockers: n` (P28b). An old version is readable only by someone who can read the bead now.
 
 **Failure and audit.** A failed derivation fails the write. On closure drift found by `authz.verify`, the chain denies until repair. P59 keeps break-glass `authz.rootPrincipals` out of the boot config; recovery uses P62's bootstrap admin or offline repair. A6's log audits mutations; authentication events and denials go to an append-only `audit` table, throttled under floods.
 
-**Authorization shape and current gate.** The accepted data contract, chain safety rules, closure and filter requirements, and P51 contingency remain recorded. The failed measured gate reopens AZ1/AZ2 toward simple Linear-style team permissions; AZ3/AZ4/AZ7 remain conditional, and affected implementation waits for Nikhil's approval of the revisited design. Chain egress, policy-data runtime, link order, authorizer view, closure limits, history permissions, scoped-token behavior, recovery, anonymous labels, local authentication, bootstrap administration, principal requirements, gate planning, post-subscriber behavior, build handling and warning visibility are P52 through P75, P83 and P84. The [contract catalog](contracts/openrpc.json) retains the corresponding host and wire descriptors for reconciliation with the approved design.
+**Authorization shape and current gate.** #18 selects the bounded X1–X9 semantics above; it grants no implementation authorization or acceptance certificate. The data/chain/closure/filter and P52–P75/P83/P84 safety rules remain binding. Historical latency remains FAIL/BLOCK; exact contracts/compatibility, executable evidence, real-host/race/performance and hosted CI gates remain open. The [contract catalog](contracts/openrpc.json) is a frozen input for later reconciliation, not an implementation of X1–X9. C6/I5/authz-dependent I7 remain held for separately scoped assignments and their applicable evidence; unrelated work may continue.
 
 **Codebase.** Under P1's clean-room rewrite, carry ideas, not code: `auth.go`'s constant-time compare and hitless reload into `authn-apikey`, and `ValidateAuthPosture` as "a network listener needs an authenticator", minus `--insecure-no-auth`. `Authorize*` become A3 guards. Caller-asserted actors and federation credentials ([credentials.go](../../../internal/storage/dolt/credentials.go)) are not carried.
 
@@ -986,7 +1062,7 @@ production-data cutover defined below.
 
 **Observability.** Operational telemetry is always on: OpenTelemetry spans per pipeline phase and plugin call; Prometheus metrics (`lane_ms`, `write_conflict_total`, `plugin_call_ms`, `breaker_state`, `subscription_lag_revisions`, `dlq_depth`, `lease_epoch`, and `authz_*` with an authorization plugin); logs keyed by revision. Halts, breakers, dead letters, lease loss and erroring permits (AZ6) alert through `alert_sink`. Usage metrics are separate and opt-in (P38a), exported only to an operator-configured OpenTelemetry collector, never to upstream's endpoint, today's default in [metrics.go](../../../internal/metrics/metrics.go).
 
-**Testing**, all under `bazel test`. Beads behavior is the clean-room spec (P1): its [conformance contracts](../../../backend/conformance/conformance.go), CLI goldens and [protocol corpus](../../../cmd/bd/protocol/testdata/corpus/manifest.json) become JSON-RPC scenarios, each passing or a recorded deviation (P22, P46); behavior goldens are frozen at `beads-base`, fixes from the `beads` branch are recorded through reviewed PRs, and nightly diffs back the re-recordings (P82). Driver conformance on memory, SQLite and Postgres adds diff replay (P30) and lease fencing across failover. The `pluginapi` kit in `sdk/go` runs pre and post subscribers (P3) on native and source-built wasm artifacts (P43). A differential test on every driver checks that compiled list filters equal per-item decisions, and that no authorization plugin means allow. The repaired authorization evidence passes correctness, corpus, Q5, closure, and independent differential checks but fails the unchanged page and grouped-count latency targets. Under #15, the authorization model is reopened toward simple Linear-style team permissions without selecting a concrete replacement; affected authorization implementation remains blocked pending human approval, and its post-design differential acceptance remains a separate implementation gate. Reviewable publication is complete, while independent review, hosted CI, and executable manifest validation remain separate gates. End-to-end runs drive agents over MCP and the software factory.
+**Testing**, all under `bazel test`. Beads behavior is the clean-room spec (P1): its [conformance contracts](../../../backend/conformance/conformance.go), CLI goldens and [protocol corpus](../../../cmd/bd/protocol/testdata/corpus/manifest.json) become JSON-RPC scenarios, each passing or a recorded deviation (P22, P46); behavior goldens are frozen at `beads-base`, fixes from the `beads` branch are recorded through reviewed PRs, and nightly diffs back the re-recordings (P82). Driver conformance on memory, SQLite and Postgres adds diff replay (P30) and lease fencing across failover. The `pluginapi` kit in `sdk/go` runs pre and post subscribers (P3) on native and source-built wasm artifacts (P43). A differential test on every driver checks that compiled list filters equal per-item decisions, and that no authorization plugin means allow. The repaired authorization evidence passes correctness, corpus, Q5, closure, and independent differential checks but fails the unchanged page and grouped-count latency targets. The #15 revisit led to #17’s fixed vocabulary and #18’s bounded X1–X9 semantic adoption; affected contract integration and implementation still need separate assignments, and post-design differential/runtime/performance acceptance remains unproved. Reviewable publication is complete, while independent review, hosted CI, and executable manifest validation remain separate gates. End-to-end runs drive agents over MCP and the software factory.
 
 ## Clean-room plan
 
