@@ -46,6 +46,7 @@ func TestBeadMutationRequiresExactPredicate(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, _ := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	defer r.Close()
 	records, err := r.Get(ctx, []driver.Ref{ref})
 	if err != nil || len(records) != 0 {
 		t.Fatal("failed predicate validation published")
@@ -81,6 +82,7 @@ func TestHistoricalBoundsAndIsolation(t *testing.T) {
 	}
 	meta, _ := s.Meta(ctx)
 	r, _ := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	defer r.Close()
 	view := r.Snapshot()
 	*view.At = model.Natural64(0)
 	if r.Snapshot().At.String() != "2" {
@@ -97,6 +99,7 @@ func TestHistoricalBoundsAndIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer past.Close()
 	records, err := past.Get(ctx, []driver.Ref{ref})
 	if err != nil || string(records[0].Body) != `{"value":1}` {
 		t.Fatal("version byte alias leaked")
@@ -114,6 +117,7 @@ func TestHistoricalBoundsAndIsolation(t *testing.T) {
 		t.Fatalf("history floor=%v", err)
 	}
 	latest, _ := s.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	defer latest.Close()
 	if _, err := latest.Changesets(ctx, &driver.Cursor{Incarnation: meta.Incarnation, Revision: at}, 100); !errors.As(err, &truncated) {
 		t.Fatalf("log floor=%v", err)
 	}

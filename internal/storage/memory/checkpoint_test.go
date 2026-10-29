@@ -31,6 +31,7 @@ func TestConnectedStorageCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tx.Close()
 	if _, err = tx.Lock(ctx, []driver.LockRequest{{Key: key, Mode: driver.LockUpdate}, {Key: sentinelKey, Mode: driver.LockUpdate}}); err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +55,7 @@ func TestConnectedStorageCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer r.Close()
 	records, err := r.Get(ctx, []driver.Ref{ref})
 	if err != nil || len(records) != 1 {
 		t.Fatalf("Get=%v %v", records, err)

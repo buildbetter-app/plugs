@@ -21,7 +21,7 @@ type testOntology struct{ reject bool }
 func (o testOntology) Normalize(_ context.Context, p port.ProposedChange, _ port.SnapshotReader) ([]port.Patch, error) {
 	patches := []port.Patch{}
 	for _, c := range p.Changes {
-		if len(c.After) == 0 {
+		if len(c.After) == 0 || string(c.After) == "null" {
 			continue
 		}
 		doc, err := DecodeDocument(c.After)
