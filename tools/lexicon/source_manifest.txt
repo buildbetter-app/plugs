@@ -260,6 +260,8 @@ internal/integration/apikey/http_test.go
 internal/integration/audit/BUILD.bazel
 internal/integration/audit/README.md
 internal/integration/audit/integration_test.go
+internal/integration/collabwatch/BUILD.bazel
+internal/integration/collabwatch/integration_test.go
 internal/integration/sqliteacceptance/BUILD.bazel
 internal/integration/sqliteacceptance/README.md
 internal/integration/sqliteacceptance/durability_test.go
