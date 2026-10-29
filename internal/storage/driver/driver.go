@@ -389,9 +389,14 @@ type ChangesetHeader struct {
 	// driver fills its top-level revision from the committed changeset, or
 	// the existing head for CommitNoop; per-result revisions are preserved.
 	Response model.Commit
-	Mutators []string
-	Changes  []model.ChangeRecord
-	LockKeys []LockKey // complete, sorted set acquired before any write
+	// ResponsePending is published atomically with a keyed graph write that
+	// will run post subscribers. Without an IdempotencyKey it is invalid.
+	// False publishes an immutable final response; CommitNoop requires false.
+	// Only ResponseFinalizer may clear a pending receipt, without another write.
+	ResponsePending bool
+	Mutators        []string
+	Changes         []model.ChangeRecord
+	LockKeys        []LockKey // complete, sorted set acquired before any write
 }
 type StoreHealth struct {
 	Driver               string
@@ -421,10 +426,15 @@ type DumpOptions struct {
 // Commit.Revision is authoritative for response lookup and finalization.
 // A repeated key with a different RequestHash is ErrConflict, never permission
 // to execute another graph write. Receipts share the same G4 scope/window.
+// While ResponsePending, Commit is the initial committed response, not a
+// successful result core may return. Its metadata remains available for
+// digest checks, authorization and bounded polling through fresh readers.
+// False means Commit is final and immutable, including all post warnings.
 type IdempotencyRecord struct {
-	RequestHash string
-	Commit      model.Commit
-	Changeset   model.Changeset
+	RequestHash     string
+	Commit          model.Commit
+	Changeset       model.Changeset
+	ResponsePending bool
 }
 
 // NoopCommitter is an optional WriteTx capability; callers must return
@@ -435,7 +445,10 @@ type IdempotencyRecord struct {
 // With an IdempotencyKey, the principal/anonymous-agent scope, Method and
 // RequestHash must be valid and a caller-owned response is saved durably;
 // without a key it may succeed without a receipt. A matching live receipt
-// replays its original Commit, including an ordinary commit's response.
+// replays its final Commit, including an ordinary commit's response. A pending
+// header is invalid; an existing pending receipt returns ErrConflict, never
+// an unfinished successful response. No-op receipts are final immediately and
+// never invoke post subscribers.
 // Otherwise Response.Revision becomes the serialized current head, preserving
 // every per-result revision, result and warning. It publishes no graph data,
 // versions, blobs, derived rows, bumped revisions, log entry or head advance.
@@ -469,12 +482,31 @@ type CheckpointStore interface {
 }
 
 // ResponseFinalizer is an optional capability for durable post-subscriber
-// warnings. FinalizeResponse checks the active lease atomically with a CAS on
-// the committed scope and revision. It appends warnings exactly once to that
-// response, preserving initial results/warnings, and never changes graph data,
-// versions, the log or head. A different second outcome is ErrConflict; an
-// identical replay succeeds. A missing scope is ErrNotFound. The pipeline must
-// finish this before returning a response containing post warnings.
+// outcomes; callers must return ErrUnsupported when absent. FinalizeResponse
+// atomically checks the active lease, full G4 scope and Commit.Revision, appends
+// the post warnings exactly once, and clears ResponsePending. Even an empty
+// post outcome must clear pending. Initial results, per-result revisions,
+// warnings, request hash, receipt age and changeset are preserved; graph data,
+// versions, log and head never change. Warning inputs and receipt reads are
+// caller-owned copies. Nil and empty post-warning lists are the same outcome.
+//
+// False is immutable: repeating the same post outcome succeeds, a different
+// outcome is ErrConflict. An initially final receipt accepts only an empty
+// post outcome. A revision mismatch is ErrConflict; missing/expired scope is
+// ErrNotFound; a stale/foreign lease is ErrFenced. Validation, cancellation,
+// fencing and other errors publish nothing and leave the receipt intact.
+//
+// Core must never return a pending Commit as success or rerun callbacks for
+// it. Pending replay polls fresh pinned readers with a bounded, cancellable
+// context: an existing reader's snapshot does not observe finalization. The
+// original writer retries only its same known post outcome in a bounded
+// detached window, then reloads the final durable receipt before any success.
+// Exhaustion, cancellation, fencing or restart without the post outcome must
+// return a retryable busy error with committed revision, idempotency key and
+// responsePending details, never fabricate success or run posts again. A
+// durable unresolved pending receipt is a recoverable committed outcome, not
+// an indeterminate graph write. It survives finalizer failure/lease takeover
+// for same-outcome retry by an active holder within the unchanged 24h window.
 type ResponseFinalizer interface {
 	FinalizeResponse(ctx context.Context, lease ActiveLease, principal, agent, method, key string, revision model.Revision, warnings []model.Warning) error
 }
@@ -553,6 +585,9 @@ type Reader interface {
 	// IdempotencyByKey returns both ordinary and no-op receipts from this
 	// snapshot under the same scope/window; a miss is (nil, nil). Returned
 	// values are caller-owned. Use Commit.Revision even if Changeset is zero.
+	// Pending receipts are visible but never successful replay responses. A
+	// fresh reader is required to observe a pending-to-final transition; a
+	// missing receipt after observing pending never permits another write.
 	IdempotencyByKey(ctx context.Context, principal, anonymousAgentLabel, method, key string) (*IdempotencyRecord, error)
 	// Close releases this reader's snapshot resources and is idempotent.
 	// For a WriteTx it rolls back an unfinished transaction and is a no-op
