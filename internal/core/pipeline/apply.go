@@ -268,7 +268,7 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 			result.Record = body
 		}
 		commit.Results = append(commit.Results, result)
-		if meta.Method == "bead.claim" && pending.doc.Lease != nil {
+		if isClaim(meta.Method) && pending.doc.Lease != nil {
 			expires, ttl := pending.doc.Lease.ExpiresAt, pending.doc.Lease.TtlMs
 			commit.LeaseExpiresAt, commit.LeaseTtlMs = &expires, &ttl
 		}

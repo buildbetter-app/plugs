@@ -260,12 +260,57 @@ func TestRealHTTPFixedPermissionsFilterListsAndAuthorizeWrites(t *testing.T) {
 	if err := f.facts.Replace(updatedFacts); err != nil {
 		t.Fatal(err)
 	}
+	revoked, err := f.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	wantCode(t, f.call(t, agent.Token, "bead.update", map[string]any{"id": map[string]any{"id": ref}, "fields": map[string]any{"title": "revoked"}, "_meta": writeMeta(101)}), "forbidden")
 	wantCode(t, f.call(t, agent.Token, "bead.update", params), "forbidden")
 	metaAfter, err := f.store.Meta(context.Background())
-	if err != nil || metaAfter.Head.String() != metaBefore.Head.String() {
+	if err != nil || metaAfter.Head.String() != revoked.Head.String() || revoked.Head.String() == metaBefore.Head.String() {
 		t.Fatal("denied/revoked write advanced the real store")
 	}
+}
+
+func TestRealHTTPClaimNextAndPinnedFactsInvalidation(t *testing.T) {
+	f := newFixture(t)
+	agent := f.issue(t, model.PrincipalRef{Kind: "agent", ID: "agent:worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:operator"}, Caveats: map[string]any{"actions": []string{"modify"}, "projects": []model.Ref{model.RefByID("project", model.Natural64(0))}}})
+	claimed := result(t, f.call(t, agent.Token, "bead.claimNext", map[string]any{"_meta": writeMeta(200)}))
+	if claimed["leaseTtlMs"] == nil || claimed["leaseExpiresAt"] == nil || claimed["revision"] == nil {
+		t.Fatalf("claimNext did not return the cataloged claim result: %s", f.call(t, agent.Token, "bead.claimNext", nil).body)
+	}
+	for i := 0; i < 2; i++ {
+		if got := f.call(t, agent.Token, "bead.claimNext", map[string]any{"_meta": writeMeta(202 + i)}); got.status != http.StatusOK || got.value["error"] != nil || got.value["result"] == nil {
+			t.Fatalf("claimNext did not drain candidate %d: %s", i, got.body)
+		}
+	}
+	empty := f.call(t, agent.Token, "bead.claimNext", map[string]any{"_meta": writeMeta(201)})
+	if empty.status != http.StatusOK || empty.value["error"] != nil || empty.value["result"] != nil {
+		t.Fatalf("claimNext returned a non-null result after its candidates were claimed: %s", empty.body)
+	}
+
+	meta, err := f.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := f.store.Read(context.Background(), driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.facts.Load(context.Background(), reader); err != nil {
+		_ = reader.Close()
+		t.Fatal(err)
+	}
+	updated := authzfixed.Facts{Namespace: authz.Namespace{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}, Projects: []authzfixed.Project{{Ref: model.RefByID("project", model.Natural64(0)), InstallationID: "fixed", Name: "project", Active: true}}, Teams: []authzfixed.Team{{Ref: model.RefByID("team", model.Natural64(0)), InstallationID: "fixed", Active: true}}}
+	if err := f.facts.Replace(updated); err != nil {
+		_ = reader.Close()
+		t.Fatal(err)
+	}
+	if _, err := f.facts.Load(context.Background(), reader); err == nil {
+		_ = reader.Close()
+		t.Fatal("pinned authorization snapshot ignored the ACL read-fact bump")
+	}
+	_ = reader.Close()
 }
 
 func TestFixedPermissionCompositionRequiresRealInputs(t *testing.T) {

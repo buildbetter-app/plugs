@@ -103,7 +103,7 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 		// Core proved the same live holder before callbacks. There is no slot
 		// transition, but final schema, ownership and status-touch checks still
 		// apply to every mutator change through the ordinary update rules.
-		if method != "bead.claim" {
+		if method != "bead.claim" && method != "bead.claimNext" {
 			return failure("internal_error", "same-claim marker requires a claim")
 		}
 		method = "bead.update"

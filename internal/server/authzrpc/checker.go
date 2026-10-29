@@ -188,6 +188,10 @@ func (c *Checker) readDecision(ctx context.Context, snapshot Snapshot, p model.P
 	return c.decision(ctx, snapshot, p, action, kind, ref, method)
 }
 
+func (c *Checker) modifyDecision(ctx context.Context, snapshot Snapshot, p model.PrincipalRef, method string, ref model.Ref) (bool, error) {
+	return c.decision(ctx, snapshot, p, authz.Modify, authz.Bead, ref, method)
+}
+
 // Visible keeps discovery from advertising methods that the fixed component
 // can never permit. Resource-level authorization still happens in the service
 // and Writer boundaries, so this is only a non-leaking method inventory.

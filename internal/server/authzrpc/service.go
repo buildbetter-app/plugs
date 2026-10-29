@@ -113,6 +113,97 @@ func (s *GuardedService) UpdateWithOutcome(ctx context.Context, by model.Princip
 func (s *GuardedService) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	return s.delegate.ClaimWithOutcome(ctx, by, req, meta)
 }
+
+// ClaimNextWithOutcome keeps queue candidates visible to an Agent by applying
+// the modify permit to each ready bead. Guarded Ready intentionally uses read
+// authorization and therefore cannot be reused for this write operation.
+func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ClaimNextRequest, meta model.WriteMeta) (*port.WriteOutcome, error) {
+	if s == nil || s.delegate == nil || s.checker == nil {
+		return nil, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+	}
+	if meta.IdempotencyKey != "" {
+		principal, err := driver.PrincipalKey(by)
+		if err != nil {
+			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params"}}
+		}
+		reader, snapshot, closeReader, err := s.current(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		entry, lookupErr := reader.IdempotencyByKey(ctx, principal, meta.AgentLabel, "bead.claimNext", meta.IdempotencyKey)
+		if lookupErr != nil {
+			closeReader()
+			return nil, lookupErr
+		}
+		if entry != nil && len(entry.Commit.Results) > 0 {
+			ref := entry.Commit.Results[0].Ref
+			allowed, decisionErr := s.checker.modifyDecision(ctx, snapshot, by, "bead.claimNext", ref)
+			closeReader()
+			if decisionErr != nil {
+				return nil, decisionErr
+			}
+			if !allowed {
+				return nil, forbidden("claimNext candidate is no longer authorized")
+			}
+			candidateMeta := meta
+			candidateMeta.Method = "bead.claimNext"
+			out, claimErr := s.delegate.ClaimWithOutcome(ctx, by, service.ClaimRequest{ID: ref}, candidateMeta)
+			if claimErr != nil {
+				return nil, claimErr
+			}
+			return &out, nil
+		}
+		closeReader()
+	}
+	position := (*service.PagePosition)(nil)
+	for {
+		page, err := s.delegate.Ready(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position})
+		if err != nil {
+			return nil, err
+		}
+		for _, bead := range page.Items {
+			ref := model.RefByID(bead.ID, model.Natural64(0))
+			_, snapshot, closeReader, err := s.current(ctx, &service.AsOf{Revision: page.AsOf.Revision, Incarnation: page.AsOf.Incarnation})
+			if err != nil {
+				return nil, err
+			}
+			allowed, decisionErr := s.checker.modifyDecision(ctx, snapshot, by, "bead.claimNext", ref)
+			closeReader()
+			if decisionErr != nil {
+				return nil, decisionErr
+			}
+			if !allowed {
+				continue
+			}
+			candidateMeta := meta
+			candidateMeta.Method = "bead.claimNext"
+			out, claimErr := s.delegate.ClaimWithOutcome(ctx, by, service.ClaimRequest{ID: ref}, candidateMeta)
+			if claimErr == nil {
+				return &out, nil
+			}
+			if !claimNextRace(claimErr) {
+				return nil, claimErr
+			}
+		}
+		if page.Next == nil {
+			return nil, nil
+		}
+		position = page.Next
+	}
+}
+
+func claimNextRace(err error) bool {
+	var value *model.Error
+	if !errors.As(err, &value) {
+		return false
+	}
+	switch value.Data.Code {
+	case "forbidden", "not_found", "busy", "write_conflict", "precondition_failed", "ontology_guard_failed", "lease_not_held", "lease_expired":
+		return true
+	default:
+		return false
+	}
+}
 func (s *GuardedService) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CommentRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	return s.delegate.CommentWithOutcome(ctx, by, req, meta)
 }

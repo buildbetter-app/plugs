@@ -268,7 +268,7 @@ func (p *prepared) ordinaryEvent(pending *pending, op model.OpKind) (model.Durab
 		return model.EventBeadReleased, nil
 	}
 	if statusChanged(pending) {
-		if event, ok := map[string]model.DurableEventType{"bead.claim": model.EventBeadClaimed, "bead.close": model.EventBeadClosed, "bead.fail": model.EventBeadFailed, "bead.cancel": model.EventBeadCanceled, "bead.reopen": model.EventBeadReopened, "bead.defer": model.EventBeadDeferred}[p.proposal.Meta.Method]; ok {
+		if event, ok := map[string]model.DurableEventType{"bead.claim": model.EventBeadClaimed, "bead.claimNext": model.EventBeadClaimed, "bead.close": model.EventBeadClosed, "bead.fail": model.EventBeadFailed, "bead.cancel": model.EventBeadCanceled, "bead.reopen": model.EventBeadReopened, "bead.defer": model.EventBeadDeferred}[p.proposal.Meta.Method]; ok {
 			return event, nil
 		}
 	}
