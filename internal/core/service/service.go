@@ -221,6 +221,68 @@ func (s *Service) close(ctx context.Context, by model.PrincipalRef, req CloseReq
 	return s.apply(ctx, by, "bead.close", cs, meta, outcomeRequired)
 }
 
+// ApplyWithOutcome is the generic transaction boundary. It deliberately does
+// no lowering or normalization: the Writer owns ChangeSet validation,
+// authorization, graph guards, atomic publication and idempotent replay.
+func (s *Service) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.apply(ctx, by, "tx.apply", cs, meta, true)
+}
+
+func (s *Service) Apply(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.apply(ctx, by, "tx.apply", cs, meta, false)
+	return v.Commit, err
+}
+
+func linkChangeSet(req LinkRequest, kind model.OpKind) (model.ChangeSet, error) {
+	if err := namedRef(req.From); err != nil {
+		return model.ChangeSet{}, err
+	}
+	if err := namedRef(req.To); err != nil {
+		return model.ChangeSet{}, err
+	}
+	if strings.TrimSpace(req.Kind) == "" {
+		return model.ChangeSet{}, failure("invalid_params", "link kind must not be empty")
+	}
+	return model.ChangeSet{
+		Ops:    []model.Op{{Kind: kind, Link: &model.LinkOp{Kind: kind, From: req.From, To: req.To, LinkKind: req.Kind}}},
+		Expect: req.Expect,
+	}, nil
+}
+
+func (s *Service) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, req LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	cs, err := linkChangeSet(req, model.OpLink)
+	if err != nil {
+		return port.WriteOutcome{}, err
+	}
+	return s.apply(ctx, by, "bead.link", cs, meta, true)
+}
+
+func (s *Service) Link(ctx context.Context, by model.PrincipalRef, req LinkRequest, meta model.WriteMeta) (model.Commit, error) {
+	cs, err := linkChangeSet(req, model.OpLink)
+	if err != nil {
+		return model.Commit{}, err
+	}
+	v, err := s.apply(ctx, by, "bead.link", cs, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, req LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	cs, err := linkChangeSet(req, model.OpUnlink)
+	if err != nil {
+		return port.WriteOutcome{}, err
+	}
+	return s.apply(ctx, by, "bead.unlink", cs, meta, true)
+}
+
+func (s *Service) Unlink(ctx context.Context, by model.PrincipalRef, req LinkRequest, meta model.WriteMeta) (model.Commit, error) {
+	cs, err := linkChangeSet(req, model.OpUnlink)
+	if err != nil {
+		return model.Commit{}, err
+	}
+	v, err := s.apply(ctx, by, "bead.unlink", cs, meta, false)
+	return v.Commit, err
+}
+
 func (s *Service) reader(ctx context.Context, by model.PrincipalRef, asOf *AsOf) (driver.Reader, error) {
 	if err := s.admit(ctx, by); err != nil {
 		return nil, err

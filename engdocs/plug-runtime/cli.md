@@ -36,8 +36,8 @@ creates an empty store, even with the same project and agent label.
 ## Commands and failures
 
 The [parser](../../internal/cli/parse.go) is the complete command reference:
-`ready`, `get`, `create`, `claim`, `update`, `comment`, `close`, `history`,
-and `session`. Global `--memory`, `--project` (default `local`), `--agent`
+`ready`, `get`, `create`, `claim`, `update`, `comment`, `close`, `link`,
+`unlink`, `batch`, `history`, and `session`. Global `--memory`, `--project` (default `local`), `--agent`
 (default `plug-cli`) and `--json` precede the command. Command options may
 precede or follow the bead ID. `--fields` accepts a JSON object; `--title`
 overrides its title. Ready/history page limits are 1–1,000.

@@ -10,8 +10,9 @@ The [registry](../../internal/server/rpc/registry.go) binds handlers before
 `rpc.describe` and `rpc.discover`.
 [BindService](../../internal/server/rpc/service.go) adds exactly `bead.get`,
 `bead.ready`, `bead.create`, `bead.update`, `bead.claim`, `bead.comment`,
-`bead.close` and `history.query`. Discovery reports bound methods, subject to
-its configured visibility policy. It does not grant resource access.
+`bead.close`, `bead.link`, `bead.unlink`, `tx.apply` and `history.query`.
+Discovery reports bound methods, subject to its configured visibility policy.
+It does not grant resource access.
 
 Use named-object params and a request ID. For example, these are request bytes
 for a bound service; the write needs a fresh random key of its own:
@@ -24,8 +25,8 @@ for a bound service; the write needs a fresh random key of its own:
 params and result schemas. Batches contain 1–100 calls, execute sequentially
 and return responses in request order, omitting notification responses. They
 are not atomic. Write notifications are dropped without executing a write.
-Unbound methods return `method_not_found`; `session.close`, `tx.apply`,
-ontology, event, restore and other catalog entries are unbound here.
+Unbound methods return `method_not_found`; `session.close`, ontology, event,
+restore and other catalog entries are unbound here.
 
 Raw writes require `_meta.idempotencyKey` encoding at least 128 bits (UUIDv4,
 ULID, hex or unpadded base64url); callers supply randomness. The

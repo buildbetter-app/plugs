@@ -12,8 +12,8 @@ import (
 )
 
 // Service is the domain-only port implemented by core/service. Core never
-// imports RPC or wire DTOs. Each write remains a named domain verb whose
-// implementation lowers to the one Writer pipeline.
+// imports RPC or wire DTOs. Named writes and tx.apply all lower to the one
+// Writer pipeline.
 type Service interface {
 	Get(context.Context, model.PrincipalRef, service.GetRequest) (service.GetResult, error)
 	Ready(context.Context, model.PrincipalRef, service.ReadyRequest) (service.BeadPage, error)
@@ -22,23 +22,30 @@ type Service interface {
 	ClaimWithOutcome(context.Context, model.PrincipalRef, service.ClaimRequest, model.WriteMeta) (port.WriteOutcome, error)
 	CommentWithOutcome(context.Context, model.PrincipalRef, service.CommentRequest, model.WriteMeta) (port.WriteOutcome, error)
 	CloseWithOutcome(context.Context, model.PrincipalRef, service.CloseRequest, model.WriteMeta) (port.WriteOutcome, error)
+	ApplyWithOutcome(context.Context, model.PrincipalRef, model.ChangeSet, model.WriteMeta) (port.WriteOutcome, error)
+	LinkWithOutcome(context.Context, model.PrincipalRef, service.LinkRequest, model.WriteMeta) (port.WriteOutcome, error)
+	UnlinkWithOutcome(context.Context, model.PrincipalRef, service.LinkRequest, model.WriteMeta) (port.WriteOutcome, error)
 	History(context.Context, model.PrincipalRef, service.HistoryRequest) (service.BeadPage, error)
 }
 
 type serviceParams struct {
-	ID     model.Ref            `json:"id"`
-	AsOf   *asOf                `json:"asOf"`
-	ViewID string               `json:"viewId"`
-	Filter *filter              `json:"filter"`
-	Limit  model.Natural        `json:"limit"`
-	Cursor string               `json:"cursor"`
-	Type   string               `json:"type"`
-	Fields map[string]any       `json:"fields"`
-	Parent *model.Ref           `json:"parent"`
-	Expect []model.Precondition `json:"expect"`
-	Body   string               `json:"body"`
-	Reason string               `json:"reason"`
-	Meta   wire.Meta            `json:"_meta"`
+	ID        model.Ref            `json:"id"`
+	AsOf      *asOf                `json:"asOf"`
+	ViewID    string               `json:"viewId"`
+	Filter    *filter              `json:"filter"`
+	Limit     model.Natural        `json:"limit"`
+	Cursor    string               `json:"cursor"`
+	Type      string               `json:"type"`
+	Fields    map[string]any       `json:"fields"`
+	Parent    *model.Ref           `json:"parent"`
+	Expect    []model.Precondition `json:"expect"`
+	Body      string               `json:"body"`
+	Reason    string               `json:"reason"`
+	ChangeSet model.ChangeSet      `json:"changeSet"`
+	From      model.Ref            `json:"from"`
+	To        model.Ref            `json:"to"`
+	Kind      string               `json:"kind"`
+	Meta      wire.Meta            `json:"_meta"`
 }
 type asOf struct {
 	Revision    model.Revision `json:"revision"`
@@ -71,7 +78,7 @@ func BindService(registry *Registry, svc Service) error {
 	if registry == nil || svc == nil {
 		return fmt.Errorf("nil service or registry")
 	}
-	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.comment", "bead.close", "history.query"}
+	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.comment", "bead.close", "bead.link", "bead.unlink", "tx.apply", "history.query"}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 	for _, name := range names {
@@ -151,6 +158,15 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		return writeOutcome(v), err
 	case "bead.claim":
 		v, err := svc.ClaimWithOutcome(ctx, c.Principal, service.ClaimRequest{ID: p.ID, Expect: p.Expect}, meta)
+		return writeOutcome(v), err
+	case "bead.link":
+		v, err := svc.LinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, Kind: p.Kind, Expect: p.Expect}, meta)
+		return writeOutcome(v), err
+	case "bead.unlink":
+		v, err := svc.UnlinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, Kind: p.Kind, Expect: p.Expect}, meta)
+		return writeOutcome(v), err
+	case "tx.apply":
+		v, err := svc.ApplyWithOutcome(ctx, c.Principal, p.ChangeSet, meta)
 		return writeOutcome(v), err
 	default:
 		return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}

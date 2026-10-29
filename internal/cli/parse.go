@@ -23,6 +23,9 @@ Commands:
   update ID [--title TITLE] [--fields JSON] [--expect REVISION]
   comment ID --body TEXT [--expect REVISION]
   close ID [--reason TEXT] [--expect REVISION]
+  link FROM TO --kind KIND [--expect REVISION]
+  unlink FROM TO --kind KIND [--expect REVISION]
+  batch --changeset JSON
   history --as-of REVISION [--id ID] [--limit N] [--cursor TOKEN]
   session                 Read one JSON argv array per line from stdin.
 
@@ -92,11 +95,11 @@ func ParseCommand(args []string) (Command, error) {
 		return Command{}, fmt.Errorf("command is required")
 	}
 	name := args[0]
-	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "history": true}
+	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "link": true, "unlink": true, "batch": true, "history": true}
 	if !allowed[name] {
 		return Command{}, fmt.Errorf("unsupported command %q", name)
 	}
-	var title, typ, fields, body, reason, asOf, expect, id, key, cursor string
+	var title, typ, fields, body, reason, asOf, expect, id, key, cursor, from, to, kind, changeset string
 	var limit int
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -124,13 +127,18 @@ func ParseCommand(args []string) (Command, error) {
 	case "close":
 		add(&reason, "reason")
 		add(&expect, "expect")
+	case "link", "unlink":
+		add(&kind, "kind")
+		add(&expect, "expect")
+	case "batch":
+		add(&changeset, "changeset")
 	case "history":
 		add(&asOf, "as-of")
 		add(&id, "id")
 		add(&cursor, "cursor")
 		fs.IntVar(&limit, "limit", 1000, "limit")
 	}
-	write := name == "create" || name == "update" || name == "claim" || name == "comment" || name == "close"
+	write := name == "create" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "link" || name == "unlink" || name == "batch"
 	if write {
 		add(&key, "idempotency-key")
 	}
@@ -142,13 +150,28 @@ func ParseCommand(args []string) (Command, error) {
 		return Command{}, err
 	}
 	p := map[string]any{}
-	c := Command{Method: "bead." + name, Params: p, Key: key}
+	method := "bead." + name
+	if name == "batch" {
+		method = "tx.apply"
+	}
+	c := Command{Method: method, Params: p, Key: key}
 	needID := name == "get" || name == "update" || name == "claim" || name == "comment" || name == "close"
 	if needID {
 		if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
 			return c, fmt.Errorf("%s requires exactly one bead ID", name)
 		}
 		p["id"] = map[string]any{"id": fs.Arg(0)}
+	} else if name == "link" || name == "unlink" {
+		if fs.NArg() != 2 || strings.TrimSpace(fs.Arg(0)) == "" || strings.TrimSpace(fs.Arg(1)) == "" {
+			return c, fmt.Errorf("%s requires exactly two bead IDs", name)
+		}
+		from, to = fs.Arg(0), fs.Arg(1)
+		p["from"] = map[string]any{"id": from}
+		p["to"] = map[string]any{"id": to}
+	} else if name == "batch" {
+		if fs.NArg() > 1 {
+			return c, fmt.Errorf("batch accepts one changeset JSON value")
+		}
 	} else if fs.NArg() != 0 {
 		return c, fmt.Errorf("%s takes no positional arguments", name)
 	}
@@ -187,12 +210,36 @@ func ParseCommand(args []string) (Command, error) {
 	if name == "close" && seen["reason"] {
 		p["reason"] = reason
 	}
+	if name == "link" || name == "unlink" {
+		if !seen["kind"] || strings.TrimSpace(kind) == "" {
+			return c, fmt.Errorf("%s requires --kind", name)
+		}
+		p["kind"] = kind
+	}
+	if name == "batch" {
+		if !seen["changeset"] {
+			if fs.NArg() != 1 {
+				return c, fmt.Errorf("batch requires --changeset JSON or one changeset JSON value")
+			}
+			changeset = fs.Arg(0)
+		}
+		value, err := wire.DecodeJSON([]byte(changeset))
+		object, ok := value.(map[string]any)
+		if err != nil || !ok {
+			return c, fmt.Errorf("--changeset must be a JSON object")
+		}
+		p["changeSet"] = object
+	}
 	if seen["expect"] {
 		n, err := revision(expect)
 		if err != nil {
 			return c, err
 		}
-		p["expect"] = []any{map[string]any{"ref": p["id"], "revision": n}}
+		expectRef := p["id"]
+		if name == "link" || name == "unlink" {
+			expectRef = p["from"]
+		}
+		p["expect"] = []any{map[string]any{"ref": expectRef, "revision": n}}
 	}
 	if name == "history" {
 		c.Method = "history.query"
