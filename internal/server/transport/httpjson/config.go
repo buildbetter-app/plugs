@@ -2,8 +2,11 @@
 package httpjson
 
 import (
+	"context"
 	"fmt"
 	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
 const Path = "/rpc/v1"
@@ -22,6 +25,11 @@ type Config struct {
 	ReadTimeout           time.Duration
 	WriteTimeout          time.Duration
 	IdleTimeout           time.Duration
+	// SessionBridge attaches a trusted collaboration session lifetime to an
+	// admitted RPC request. The composition root supplies this seam; the
+	// transport never treats a client principal or session header as proof on
+	// its own.
+	SessionBridge func(context.Context, model.PrincipalRef, string, string) (context.Context, error)
 }
 
 func (c Config) defaults() (Config, error) {
