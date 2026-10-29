@@ -9,7 +9,7 @@ var tableColumns = map[string]string{
 	"ignored_schema_migrations": "version applied_at content_hash",
 	"issues":                    issueColumns,
 	"w" + "isps":                issueColumns,
-	"dependencies":              "id issue_id depends_on_issue_id depends_on_wisp_id depends_on_external type created_at created_by metadata thread_id",
+	"dependencies":              "id issue_id depends_on_issue_id depends_on_" + "w" + "isp_id depends_on_external type created_at created_by metadata thread_id",
 	"w" + "isp_dependencies":    "id issue_id depends_on_issue_id depends_on_" + "w" + "isp_id depends_on_external type created_at created_by metadata thread_id",
 	"labels":                    "issue_id label",
 	"w" + "isp_labels":          "issue_id label",

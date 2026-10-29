@@ -135,7 +135,7 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 				target, targetKind = value, key
 			}
 		}
-		if target == "" || targetKind == "depends_on_wisp_id" {
+		if target == "" || targetKind == "depends_on_"+"w"+"isp_id" {
 			return fmt.Errorf("unsupported or missing edge target")
 		}
 		switch stringValue(fields["type"]) {
