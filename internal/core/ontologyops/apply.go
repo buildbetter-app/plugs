@@ -54,6 +54,10 @@ func (s *Service) Apply(ctx context.Context, by model.PrincipalRef, req ApplyReq
 		if decodeErr := json.Unmarshal(retained.protected, &protected); decodeErr != nil {
 			return port.WriteOutcome{}, err
 		}
+		_, candidate, candidateErr := candidateSnapshot(plan)
+		if candidateErr != nil {
+			return port.WriteOutcome{}, candidateErr
+		}
 		meta.Method = "ontology.apply"
 		meta.Project = plan.Project
 		if meta.Return == "" {
@@ -75,9 +79,10 @@ func (s *Service) Apply(ctx context.Context, by model.PrincipalRef, req ApplyReq
 		if applyErr != nil {
 			return port.WriteOutcome{}, applyErr
 		}
+		s.refreshRuntime(meta, candidate)
 		return outcome, nil
 	}
-	protected, err := s.protectedRequest(ctx, by, plan)
+	protected, candidate, err := s.protectedRequest(ctx, by, plan)
 	if err != nil {
 		return port.WriteOutcome{}, err
 	}
@@ -86,7 +91,18 @@ func (s *Service) Apply(ctx context.Context, by model.PrincipalRef, req ApplyReq
 	if meta.Return == "" {
 		meta.Return = "full"
 	}
-	return s.cfg.ProtectedApplier.ApplyProtected(ctx, by, protected, meta)
+	outcome, err := s.cfg.ProtectedApplier.ApplyProtected(ctx, by, protected, meta)
+	if err == nil {
+		s.refreshRuntime(meta, candidate)
+	}
+	return outcome, err
+}
+
+func (s *Service) refreshRuntime(meta model.WriteMeta, candidate ontology.Snapshot) {
+	if meta.DryRun || s.cfg.OntologyRefresher == nil {
+		return
+	}
+	s.cfg.OntologyRefresher.Refresh(candidate)
 }
 
 func (s *Service) protectedReceiptPresent(ctx context.Context, by model.PrincipalRef, meta model.WriteMeta) (bool, error) {
@@ -168,77 +184,70 @@ type fullBead struct {
 	doc    pipeline.Document
 }
 
-func (s *Service) protectedRequest(ctx context.Context, by model.PrincipalRef, plan PlannedRevision) (pipeline.ProtectedApplyRequest, error) {
+func (s *Service) protectedRequest(ctx context.Context, by model.PrincipalRef, plan PlannedRevision) (pipeline.ProtectedApplyRequest, ontology.Snapshot, error) {
 	meta, r, err := s.reader(ctx, by, nil)
 	if err != nil {
-		return pipeline.ProtectedApplyRequest{}, err
+		return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, err
 	}
 	defer r.Close()
 	if meta.StoreID == "" || r.Snapshot().At == nil || r.Snapshot().At.String() != plan.BaseRevision.String() {
-		return pipeline.ProtectedApplyRequest{}, failure("ontology_plan_stale", "protected apply snapshot changed")
+		return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, failure("ontology_plan_stale", "protected apply snapshot changed")
 	}
 	current, err := s.source(ctx, by, r, plan.Project)
 	if err != nil {
-		return pipeline.ProtectedApplyRequest{}, err
+		return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, err
 	}
 	if !sameRef(current.guard.Ref, plan.Source.Ref) || current.guard.Revision.String() != plan.Source.Revision.String() || current.guard.BodyHash != plan.Source.BodyHash || current.guard.Digest != plan.Source.Digest {
-		return pipeline.ProtectedApplyRequest{}, failure("ontology_plan_stale", "protected ontology source changed")
+		return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, failure("ontology_plan_stale", "protected ontology source changed")
 	}
 	sourceRecords, err := r.Get(ctx, []model.Ref{current.guard.Ref})
 	if err != nil {
-		return pipeline.ProtectedApplyRequest{}, mapped(err)
+		return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, mapped(err)
 	}
 	if len(sourceRecords) != 1 || sourceRecords[0].Kind != "ontology" || sourceRecords[0].Revision.String() != plan.Source.Revision.String() || bytesDigest(sourceRecords[0].Body) != plan.Source.BodyHash {
-		return pipeline.ProtectedApplyRequest{}, failure("ontology_plan_stale", "protected ontology source image changed")
+		return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, failure("ontology_plan_stale", "protected ontology source image changed")
 	}
-	candidateBody, err := service.MarshalOntologySource(plan.Document)
+	candidateBody, candidate, err := candidateSnapshot(plan)
 	if err != nil {
-		return pipeline.ProtectedApplyRequest{}, failure("invalid_params", "retained ontology candidate cannot be encoded")
-	}
-	candidate, err := service.DecodeOntologySource(candidateBody)
-	if err != nil {
-		return pipeline.ProtectedApplyRequest{}, failure("ontology_plan_stale", "retained ontology candidate cannot be decoded")
-	}
-	if _, problems := ontology.Compile(candidate.Base, candidate.Overlays, candidate.Plugins); len(problems) != 0 {
-		return pipeline.ProtectedApplyRequest{}, failure("ontology_plan_stale", "retained ontology candidate no longer compiles")
+		return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, err
 	}
 	beads, err := readFullBeads(ctx, r)
 	if err != nil {
-		return pipeline.ProtectedApplyRequest{}, err
+		return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, err
 	}
 	byID := make(map[string]fullBead, len(beads))
 	for _, bead := range beads {
 		if _, exists := byID[bead.record.Ref.ID]; exists {
-			return pipeline.ProtectedApplyRequest{}, failure("ontology_plan_stale", "complete bead inventory contains duplicate IDs")
+			return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, failure("ontology_plan_stale", "complete bead inventory contains duplicate IDs")
 		}
 		byID[bead.record.Ref.ID] = bead
 	}
 	if len(byID) != len(plan.Migration.Rows) {
-		return pipeline.ProtectedApplyRequest{}, failure("ontology_plan_stale", "complete bead row inventory changed")
+		return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, failure("ontology_plan_stale", "complete bead row inventory changed")
 	}
 	rows := make([]pipeline.ProtectedRecordChange, 0, len(plan.Migration.Rows))
 	for _, row := range plan.Migration.Rows {
 		actual, exists := byID[row.Before.State.ID]
 		if !exists || actual.record.Revision.String() != row.Before.Revision.String() {
-			return pipeline.ProtectedApplyRequest{}, failure("ontology_plan_stale", "planned bead row revision changed")
+			return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, failure("ontology_plan_stale", "planned bead row revision changed")
 		}
 		beforeState := beadState(actual.doc)
 		if !equalJSON(beforeState, row.Before.State) {
-			return pipeline.ProtectedApplyRequest{}, failure("ontology_plan_stale", "planned bead row image changed")
+			return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, failure("ontology_plan_stale", "planned bead row image changed")
 		}
 		desired := actual.doc
 		if row.After.State.ID != actual.doc.ID || row.After.State.Project != actual.doc.Project || row.After.State.Type == "" || row.After.State.Fields == nil {
-			return pipeline.ProtectedApplyRequest{}, failure("ontology_plan_stale", "planned bead after image is incomplete")
+			return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, failure("ontology_plan_stale", "planned bead after image is incomplete")
 		}
 		desired.Type = row.After.State.Type
 		desired.Fields = cloneFields(row.After.State.Fields)
 		if desired.Fields == nil {
-			return pipeline.ProtectedApplyRequest{}, failure("ontology_plan_stale", "planned bead after fields are missing")
+			return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, failure("ontology_plan_stale", "planned bead after fields are missing")
 		}
 		desired.Fields["status"] = row.After.State.Status
 		afterBody, err := json.Marshal(desired)
 		if err != nil {
-			return pipeline.ProtectedApplyRequest{}, err
+			return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, err
 		}
 		// Preserve the exact before bytes for an unchanged row. This keeps the
 		// protected writer from manufacturing a body-only change when only the
@@ -247,7 +256,7 @@ func (s *Service) protectedRequest(ctx context.Context, by model.PrincipalRef, p
 			afterBody = append([]byte(nil), actual.record.Body...)
 		}
 		if _, err := pipeline.DecodeDocument(afterBody); err != nil {
-			return pipeline.ProtectedApplyRequest{}, failure("invalid_params", "planned bead after image cannot be decoded")
+			return pipeline.ProtectedApplyRequest{}, ontology.Snapshot{}, failure("invalid_params", "planned bead after image cannot be decoded")
 		}
 		paths := []string{}
 		if !bytes.Equal(actual.record.Body, afterBody) {
@@ -266,7 +275,23 @@ func (s *Service) protectedRequest(ctx context.Context, by model.PrincipalRef, p
 			ChangedPaths: []string{"/document"}, Operation: model.OpPatch,
 		},
 		Rows: rows,
-	}, nil
+	}, candidate, nil
+}
+
+func candidateSnapshot(plan PlannedRevision) ([]byte, ontology.Snapshot, error) {
+	candidateBody, err := service.MarshalOntologySource(plan.Document)
+	if err != nil {
+		return nil, ontology.Snapshot{}, failure("invalid_params", "retained ontology candidate cannot be encoded")
+	}
+	candidate, err := service.DecodeOntologySource(candidateBody)
+	if err != nil {
+		return nil, ontology.Snapshot{}, failure("ontology_plan_stale", "retained ontology candidate cannot be decoded")
+	}
+	snapshot, problems := ontology.Compile(candidate.Base, candidate.Overlays, candidate.Plugins)
+	if len(problems) != 0 {
+		return nil, ontology.Snapshot{}, failure("ontology_plan_stale", "retained ontology candidate no longer compiles")
+	}
+	return candidateBody, snapshot, nil
 }
 
 func readFullBeads(ctx context.Context, r driver.Reader) ([]fullBead, error) {

@@ -101,7 +101,7 @@ func (s *Service) Plan(ctx context.Context, by model.PrincipalRef, req PlanReque
 	if artifact.Ready {
 		var protectedBytes []byte
 		if s.cfg.ProtectedApplier != nil {
-			protected, protectedErr := s.protectedRequest(ctx, by, artifact)
+			protected, _, protectedErr := s.protectedRequest(ctx, by, artifact)
 			if protectedErr != nil {
 				return PlanResult{}, protectedErr
 			}

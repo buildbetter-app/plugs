@@ -72,7 +72,7 @@ func fixtureWithApply(t *testing.T, withApply bool) *rpcFixture {
 	if withApply {
 		protected = writer
 	}
-	core, err := ontologyops.New(store, lease, ontologyops.Config{Source: service.StaticOntologySource(ref), ValidatingPre: ontologyops.NoValidatingPre(), ProtectedApplier: protected})
+	core, err := ontologyops.New(store, lease, ontologyops.Config{Source: service.StaticOntologySource(ref), ValidatingPre: ontologyops.NoValidatingPre(), ProtectedApplier: protected, OntologyRefresher: workflow})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,12 +264,21 @@ func TestProtectedApplyPersistsCompleteImagesAndReplays(t *testing.T) {
 	if err != nil || got.Fields["reviewed"] != false || len(got.Comments) != 1 || len(got.Links) != 1 || len(got.Attachments) != 1 || len(got.Metadata) != 1 {
 		t.Fatalf("complete row image was not preserved: %+v %v", got, err)
 	}
+	ordinary := f.call(t, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "after ontology apply"}, "_meta": map[string]any{"idempotencyKey": "c33d4848-10c7-40cb-a3d4-49e34b0d02a1"}})
+	var ordinaryCommit model.Commit
+	if err := json.Unmarshal(ordinary, &ordinaryCommit); err != nil || len(ordinaryCommit.Results) != 1 {
+		t.Fatalf("ordinary create after apply: %s %v", ordinary, err)
+	}
+	ordinaryDoc, err := pipeline.DecodeDocument(ordinaryCommit.Results[0].Record)
+	if err != nil || ordinaryDoc.Fields["reviewed"] != false {
+		t.Fatalf("ordinary operation did not observe refreshed ontology: %+v %v", ordinaryDoc, err)
+	}
 	secondRaw, err := f.transport.RoundTrip(context.Background(), mustJSON(t, map[string]any{"jsonrpc": "2.0", "id": "replay", "method": "ontology.apply", "params": request}))
 	if err != nil || !strings.Contains(string(secondRaw), `"replayed":true`) || !strings.Contains(string(secondRaw), `"revision":4`) {
 		t.Fatalf("replay: %s %v", secondRaw, err)
 	}
-	if head := mustMeta(t, f.store).Head.String(); head != "4" {
-		t.Fatalf("replay advanced head: %s", head)
+	if head := mustMeta(t, f.store).Head.String(); head != "5" {
+		t.Fatalf("replay changed head after ordinary create: %s", head)
 	}
 }
 
