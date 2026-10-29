@@ -11,6 +11,8 @@ import (
 
 	core "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
@@ -163,6 +165,80 @@ func TestPullAcrossChangesetScanPageBoundaries(t *testing.T) {
 	}
 }
 
+// This injected test ontology accepts ordinary title writes. The Writer,
+// transaction publication, history, event reader and checkpoints are real.
+type titleOntology struct{}
+
+func (titleOntology) Normalize(context.Context, port.ProposedChange, port.SnapshotReader) ([]port.Patch, error) {
+	return []port.Patch{}, nil
+}
+func (titleOntology) Validate(_ context.Context, proposal port.ProposedChange, _ port.SnapshotReader) error {
+	for _, change := range proposal.Changes {
+		doc, err := pipeline.DecodeDocument(change.After)
+		if err != nil {
+			return err
+		}
+		if title, ok := doc.Fields["title"].(string); !ok || title == "" {
+			return errors.New("test ontology requires a title")
+		}
+	}
+	return nil
+}
+
+func TestWriterToLogDeliveryAndReplay(t *testing.T) {
+	f := newFixture(t)
+	writer := pipeline.New(f.store, f.lease, pipeline.WithOntology(titleOntology{}), pipeline.WithIDGenerator(func() (string, error) { return "pl-connected", nil }))
+	by := model.PrincipalRef{Kind: "user", ID: "author"}
+	create := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Fields: map[string]any{"title": "initial"}}}}}
+	meta := model.WriteMeta{Method: "tx.apply", IdempotencyKey: strings.Repeat("1", 32)}
+	created, err := writer.Apply(f.ctx, by, create, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := writer.Apply(f.ctx, by, create, meta)
+	if err != nil || replayed.Revision.String() != created.Revision.String() {
+		t.Fatalf("replay=%+v err=%v", replayed, err)
+	}
+	first, err := f.service.List(f.ctx, request())
+	if err != nil || len(first.Events) != 1 || first.Events[0].Durable.Type != model.EventBeadCreated {
+		t.Fatalf("create/replay events=%+v err=%v", first, err)
+	}
+	patch := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: created.Results[0].Ref, Fields: map[string]any{"title": "updated"}}}}}
+	meta.IdempotencyKey = strings.Repeat("2", 32)
+	updated, err := writer.Apply(f.ctx, by, patch, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := request()
+	req.After = first.Cursor
+	second, err := f.service.List(f.ctx, req)
+	if err != nil || len(second.Events) != 1 {
+		t.Fatalf("patch events=%+v err=%v", second, err)
+	}
+	event := second.Events[0].Durable
+	if event.Type != model.EventBeadUpdated || event.Revision.String() != updated.Revision.String() || event.Before["fields"].(map[string]any)["title"] != "initial" || event.After["fields"].(map[string]any)["title"] != "updated" {
+		t.Fatalf("writer history=%+v", event)
+	}
+	if len(event.Changed) != 1 || event.Changed[0] != "/fields/title" {
+		t.Fatalf("changed paths must be JSON Pointers: %v", event.Changed)
+	}
+	var delivered []core.DeliveryKey
+	binding := core.Binding{ID: "writer-listener", Class: core.Listener, Principal: req.Principal, Handler: handlerFunc(func(_ context.Context, item core.Delivery) error {
+		delivered = append(delivered, item.Key)
+		return nil
+	})}
+	dispatcher := f.dispatcher(t)
+	for i := 0; i < 3; i++ {
+		if _, err := dispatcher.Step(f.ctx, binding); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, _, err := f.checkpoints(t).Load(f.ctx, binding.ID)
+	if err != nil || len(delivered) != 2 || delivered[0].Revision.String() != created.Revision.String() || delivered[1].Revision.String() != updated.Revision.String() || state.Position.Revision.String() != updated.Revision.String() {
+		t.Fatalf("delivery=%v checkpoint=%+v err=%v", delivered, state, err)
+	}
+}
+
 type authorizationFunc func(context.Context, model.PrincipalRef, model.DurableEvent) (core.Visibility, error)
 
 func (fn authorizationFunc) Read(ctx context.Context, p model.PrincipalRef, e model.DurableEvent) (core.Visibility, error) {
@@ -311,6 +387,18 @@ func TestUnsupportedProvenanceAndFreeFormTypesRefuse(t *testing.T) {
 		t.Fatal("fabricated missing causal provenance")
 	}
 	set.Principal = model.PrincipalRef{Kind: "user", ID: "author"}
+	for _, path := range []string{"fields.title", "title", "/title~", "/title~2"} {
+		set.Changes[0] = model.ChangeRecord{Ref: model.RefByID("pl-a", model.Natural64(0)), Op: model.OpPatch, ChangedPaths: []string{path}}
+		if _, err := (HistoryMaterializer{Store: f.store}).Materialize(f.ctx, set, 0); !errors.Is(err, driver.ErrUnsupported) {
+			t.Fatalf("accepted malformed changed path %s: %v", path, err)
+		}
+	}
+	for _, path := range []string{"/fields", "/fields/status", "/fields/status/label"} {
+		set.Changes[0] = model.ChangeRecord{Op: model.OpPatch, ChangedPaths: []string{path}}
+		if _, err := describeBasic(set, 0, "bead"); !errors.Is(err, driver.ErrUnsupported) {
+			t.Fatalf("fabricated slot provenance for %s", path)
+		}
+	}
 	set.Changes[0].Op = "arbitrary"
 	if _, err := describeBasic(set, 0, "memory"); !errors.Is(err, driver.ErrUnsupported) {
 		t.Fatal("invented event for unknown operation")

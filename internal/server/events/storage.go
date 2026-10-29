@@ -171,6 +171,11 @@ func (m HistoryMaterializer) Materialize(ctx context.Context, set model.Changese
 		return event, core.ErrCursorInvalid
 	}
 	change := set.Changes[index]
+	for _, path := range change.ChangedPaths {
+		if !validJSONPointer(path) {
+			return event, fmt.Errorf("committed changed path is not a JSON Pointer: %w", driver.ErrUnsupported)
+		}
+	}
 	if !change.Ref.Branch.IsZero() {
 		return event, driver.ErrUnsupported
 	}
@@ -219,6 +224,22 @@ func (m HistoryMaterializer) Materialize(ctx context.Context, set model.Changese
 	changed := append([]string{}, change.ChangedPaths...)
 	return model.DurableEvent{Type: description.Type, Resource: kind + "/" + ref, Changed: changed, Before: beforeBody, After: afterBody, Principal: set.Principal, Chain: append([]string{}, set.Chain...), SetBy: description.SetBy, Cause: description.Cause, Derived: set.Kind == model.ChangesetDerived}, nil
 }
+
+func validJSONPointer(path string) bool {
+	if path != "" && path[0] != '/' {
+		return false
+	}
+	for i := 0; i < len(path); i++ {
+		if path[i] == '~' {
+			i++
+			if i == len(path) || (path[i] != '0' && path[i] != '1') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (m HistoryMaterializer) image(ctx context.Context, incarnation string, ref model.Ref, revision model.Revision) (*driver.Record, error) {
 	if revision.IsZero() {
 		return nil, nil
@@ -288,7 +309,7 @@ func describeBasic(set model.Changeset, index int, kind string) (Description, er
 			d.Type = model.EventBeadCreated
 		case model.OpPatch, model.OpSetMeta:
 			for _, path := range change.ChangedPaths {
-				if path == "" || path == "/" || path == "/status" || strings.HasPrefix(path, "/status/") || path == "/lease" || strings.HasPrefix(path, "/lease/") {
+				if path == "" || path == "/" || path == "/status" || strings.HasPrefix(path, "/status/") || path == "/fields" || path == "/fields/status" || strings.HasPrefix(path, "/fields/status/") || path == "/lease" || strings.HasPrefix(path, "/lease/") {
 					return Description{}, fmt.Errorf("committed slot provenance unavailable: %w", driver.ErrUnsupported)
 				}
 			}
