@@ -2641,16 +2641,44 @@ const (
 )
 
 type ChangesetHeader struct {
-	Branch         model.Branch
-	Incarnation    string
-	Kind           model.ChangesetKind
-	Time           time.Time
-	Principal      model.PrincipalRef
-	Chain          []string
-	IdempotencyKey string
-	Mutators       []string
-	Changes        []model.ChangeRecord
-	LockKeys       []LockKey // complete, sorted set acquired before any write
+	Branch          model.Branch
+	Incarnation     string
+	Kind            model.ChangesetKind
+	Time            time.Time
+	Principal       model.PrincipalRef
+	Chain           []string
+	IdempotencyKey  string
+	Method          string // part of the full G4 scope
+	AgentLabel      string // scoped only for anonymous principals
+	RequestHash     string
+	Response        model.Commit // top revision assigned at commit; row revisions preserved
+	ResponsePending bool // keyed graph write with posts; false is immutable final
+	Mutators        []string
+	Changes         []model.ChangeRecord
+	LockKeys        []LockKey // complete, sorted set acquired before any write
+}
+
+// Internal receipt metadata; ResponsePending never enters model.Commit or RPC.
+// For no-op receipts Changeset is zero (Kind == ""); use Commit.Revision.
+type IdempotencyRecord struct {
+	RequestHash     string
+	Commit          model.Commit
+	Changeset       model.Changeset
+	ResponsePending bool
+}
+
+// Optional WriteTx capability; absent capabilities return ErrUnsupported.
+// No graph/log/head mutation; pending header is invalid and an existing
+// pending receipt returns ErrConflict instead of an unfinished success.
+type NoopCommitter interface {
+	CommitNoop(context.Context, ChangesetHeader) (model.Commit, error)
+}
+
+// Optional store capability. Atomically lease/scope/revision-fenced: append
+// the same post outcome once and clear pending, or leave the receipt intact.
+// Nil and empty warning lists are equivalent. See receipt lifecycle below.
+type ResponseFinalizer interface {
+	FinalizeResponse(ctx context.Context, lease ActiveLease, principal, agent, method, key string, revision model.Revision, warnings []model.Warning) error
 }
 type StoreHealth struct {
 	Driver               string
@@ -2705,6 +2733,7 @@ type Reader interface {
 	Versions(context.Context, Ref, PageReq) (Page[Version], error)
 	Changesets(context.Context, *Cursor, int) ([]model.Changeset, error)
 	ChangesetByKey(context.Context, string, string, string, string) (*model.Changeset, error)
+	IdempotencyByKey(context.Context, string, string, string, string) (*IdempotencyRecord, error)
 	Close() error
 }
 type WriteTx interface {
@@ -2750,6 +2779,47 @@ The driver conformance contract is:
   A cursor or `View.Incarnation` that differs from `Meta.Incarnation` is
   rejected before any read with `ErrIncarnationChanged`, never interpreted as
   a revision in the new incarnation. `ErrTruncated` reports the history floor.
+
+**Receipt lifecycle.** Done = core can distinguish a durable committed pending
+response from an immutable final response, proven here by the compiling API
+and signature/response-shape checks; memory and pipeline must separately prove
+overlap, failed finalization and lease/restart behavior against real storage.
+
+- A keyed graph write that will run post subscribers publishes
+  `ResponsePending: true` atomically with its initial response, graph and log.
+  A pending header without an idempotency key is invalid. False means final
+  immediately. Core no-ops never run posts: `CommitNoop` rejects a pending
+  header, writes a final receipt, and returns `ErrConflict` if the matching
+  existing receipt is pending. Ordinary writes never replace a live receipt.
+- Pending lookup exposes the initial response, request hash and committed
+  revision for digest checks and authorization, but core must never return it
+  as success or repeat callbacks. A duplicate polls fresh pinned readers
+  within a bounded, cancellable context; old snapshots remain unchanged.
+  A lookup miss after observing pending never permits a second graph write.
+- `FinalizeResponse` atomically checks the active lease, full G4 scope and
+  `Commit.Revision`, appends post warnings once, and clears pending, including
+  for an empty outcome. Nil and empty post-warning lists are equivalent.
+  Initial warnings/results, per-result revisions, hash, receipt age and
+  changeset are preserved. Inputs and returned receipts are isolated copies;
+  graph rows, versions, log and head never change.
+- A final response is immutable. Identical finalization succeeds without
+  changing it; a different outcome or revision is `ErrConflict`. An initially
+  final receipt accepts only an empty post outcome. Missing/expired scope is
+  `ErrNotFound`; a stale/foreign lease is `ErrFenced`. All validation,
+  cancellation and finalization errors publish nothing and preserve the
+  receipt, including its pending state. Missing optional capabilities fail
+  explicitly with `ErrUnsupported`.
+- The original writer retries only its same known post outcome in a bounded
+  detached finalization window, then reloads the final durable receipt for
+  every success. Exhaustion, cancellation, fencing or restart without that
+  outcome returns retryable `busy` with committed revision, idempotency key
+  and `responsePending` details. It never returns unpersisted warnings as
+  success, reruns posts, or revises the graph/log to resolve the response.
+- Durable unresolved pending is an accepted recoverable committed outcome.
+  Lease takeover preserves it; an active holder with the known outcome can
+  retry finalization. Without that outcome it remains pending. This does not
+  extend or reset G4's 24-hour window, alter digest/scope matching, or convert
+  a committed graph write into an indeterminate graph outcome.
 
 The sentinel catalog and bump rules are fixed for this contract:
 

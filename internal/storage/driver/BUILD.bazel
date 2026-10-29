@@ -17,6 +17,7 @@ go_test(
     srcs = [
         "errors_test.go",
         "keys_test.go",
+        "receipt_contract_test.go",
     ],
     embed = [":driver"],
     deps = ["//internal/core/model"],
