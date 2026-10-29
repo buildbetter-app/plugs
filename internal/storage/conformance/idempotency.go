@@ -28,6 +28,7 @@ func idempotency(t *testing.T, factory Factory) {
 		h.Method = method
 		h.IdempotencyKey = key
 		h.RequestHash = hash
+		h.ResponsePending = true
 		h.Response = model.Commit{Results: []model.OpResult{{Ref: ref(id)}}, Warnings: []model.Warning{}}
 		return tx.Commit(ctx, h)
 	}
@@ -49,7 +50,7 @@ func idempotency(t *testing.T, factory Factory) {
 		t.Fatalf("replayed graph mutation=%v %v", rows, err)
 	}
 	entry, err := r.IdempotencyByKey(ctx, "anonymous:", "a", "bead.create", "key")
-	if err != nil || entry == nil || entry.RequestHash != "request" || entry.Commit.Revision.String() != "1" || len(entry.Commit.Results) != 1 || entry.Commit.Results[0].Ref.ID != "pl-first" {
+	if err != nil || entry == nil || !entry.ResponsePending || entry.RequestHash != "request" || entry.Commit.Revision.String() != "1" || len(entry.Commit.Results) != 1 || entry.Commit.Results[0].Ref.ID != "pl-first" {
 		t.Fatalf("response replay=%+v %v", entry, err)
 	}
 	entry.Commit.Results[0].Ref = ref("corrupted")
@@ -87,11 +88,11 @@ func idempotency(t *testing.T, factory Factory) {
 	}
 	after := read(t, ctx, s, meta, nil)
 	entry, err = after.IdempotencyByKey(ctx, "anonymous:", "a", "bead.create", "key")
-	if err != nil || len(entry.Commit.Warnings) != 1 || entry.Commit.Warnings[0].Details["binding"] != "test" {
+	if err != nil || entry.ResponsePending || len(entry.Commit.Warnings) != 1 || entry.Commit.Warnings[0].Details["binding"] != "test" {
 		t.Fatalf("final warnings=%+v %v", entry, err)
 	}
 	old, err := pinned.IdempotencyByKey(ctx, "anonymous:", "a", "bead.create", "key")
-	if err != nil || len(old.Commit.Warnings) != 0 {
+	if err != nil || !old.ResponsePending || len(old.Commit.Warnings) != 0 {
 		t.Fatal("finalization changed pinned snapshot")
 	}
 	log, err := after.Changesets(ctx, nil, 100)
