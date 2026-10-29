@@ -1,7 +1,9 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -132,7 +134,7 @@ func runProcessChild(t *testing.T, mode, path string) {
 	ctx := testContext(t)
 	s := openStore(t, ctx, path)
 	switch mode {
-	case "takeover":
+	case "takeover", "takeover-check":
 		l := getLease(t, ctx, s, driver.LeaseTTL)
 		entry := seedRecord(t, ctx, s, l, "pl-process", `{"owner":"child"}`)
 		if l.Epoch() != 2 || entry.Revision.String() != "1" {
@@ -143,6 +145,12 @@ func runProcessChild(t *testing.T, mode, path string) {
 		}
 		if err := waitMarker(ctx, path+".finish"); err != nil {
 			t.Fatal(err)
+		}
+		if mode == "takeover-check" {
+			if err := l.Renew(ctx); err != nil {
+				t.Fatalf("child lost its current epoch: %v", err)
+			}
+			t.Logf("child renewed current epoch %d after parent cancellation checks", l.Epoch())
 		}
 		t.Logf("child committed under epoch %d", l.Epoch())
 	case "crash":
@@ -156,4 +164,103 @@ func runProcessChild(t *testing.T, mode, path string) {
 	default:
 		t.Fatalf("unknown child mode %q", mode)
 	}
+}
+
+func TestLeaseCommitContextErrorsPreserveChildEpoch(t *testing.T) {
+	ctx := testContext(t)
+	path := filepath.Join(t.TempDir(), "deadline.db")
+	s := openStore(t, ctx, path)
+	old := getLease(t, ctx, s, 150*time.Millisecond)
+	cmd := childCommand(t, ctx, path, "takeover-check")
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.WriteFile(path+".finish", []byte("done"), 0600); err != nil {
+			t.Error(err)
+		}
+		if err := cmd.Wait(); err != nil {
+			t.Errorf("child=%v\n%s", err, &output)
+		}
+		if !strings.Contains(output.String(), "child renewed current epoch 2 after parent cancellation checks") {
+			t.Errorf("child renewal evidence missing:\n%s", &output)
+		}
+		t.Log(output.String())
+	})
+	if err := waitMarker(ctx, path+".ready"); err != nil {
+		t.Fatal(err)
+	}
+	current, err := readLease(ctx, s.db)
+	if err != nil || current.epoch != 2 || current.token == "" || time.Now().UnixNano() >= current.expires {
+		t.Fatalf("child lease not ready: epoch=%d err=%v", current.epoch, err)
+	}
+	var engine, journal string
+	if err := s.db.QueryRowContext(ctx, `SELECT sqlite_version()`).Scan(&engine); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&journal); err != nil || journal != "wal" {
+		t.Fatalf("journal mode=%q err=%v", journal, err)
+	}
+	if err := old.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertCurrent := func(t *testing.T) {
+		t.Helper()
+		row, err := readLease(ctx, s.db)
+		if err != nil || row != current {
+			t.Fatalf("child lease changed: epoch=%d want=%d err=%v", row.epoch, current.epoch, err)
+		}
+		if head := getMeta(t, ctx, s).Head; head.String() != "1" {
+			t.Fatalf("denied acquisition changed head: %s", head)
+		}
+	}
+	assertCurrent(t)
+	for _, deadline := range []bool{true, false} {
+		name, want := "cancel_at_commit", context.Canceled
+		if deadline {
+			name, want = "deadline_at_commit", context.DeadlineExceeded
+		}
+		t.Run(name, func(t *testing.T) {
+			var opCtx context.Context
+			var cancel context.CancelFunc
+			if deadline {
+				opCtx, cancel = context.WithTimeout(ctx, time.Second)
+			} else {
+				opCtx, cancel = context.WithCancel(ctx)
+			}
+			defer cancel()
+			reachedCommit := false
+			// Lease's occupied-row poll uses this same real SQL transaction and
+			// COMMIT. End the actual context after the read, before COMMIT, to
+			// exercise that boundary without relying on the 25 ms poll race.
+			err := s.immediate(opCtx, nil, func(c *sql.Conn) error {
+				row, err := readLease(opCtx, c)
+				if err != nil {
+					return err
+				}
+				if row != current {
+					return fmt.Errorf("occupied child lease changed: epoch=%d", row.epoch)
+				}
+				if deadline {
+					<-opCtx.Done()
+				} else {
+					cancel()
+				}
+				reachedCommit = true
+				return nil
+			})
+			var uncertain commitError
+			if !reachedCommit || !errors.As(err, &uncertain) {
+				t.Fatalf("expected actual COMMIT failure: reached=%v err=%T %v", reachedCommit, err, err)
+			}
+			t.Logf("actual SQL COMMIT error=%T underlying=%T context=%T underlyingIsContext=%v", err, uncertain.error, opCtx.Err(), errors.Is(uncertain.error, want))
+			if !errors.Is(err, want) {
+				t.Errorf("COMMIT lost context error identity: err=%T %v want=%v", err, err, want)
+			}
+			assertCurrent(t)
+		})
+	}
+	t.Logf("actual SQLite %s/%s file; separate child retains epoch 2, exact lease row and head 1 after stale release and canceled COMMITs", engine, journal)
 }
