@@ -386,7 +386,8 @@ type ChangesetHeader struct {
 	AgentLabel  string
 	RequestHash string
 	// Response is stored with the write for exact idempotent replay. The
-	// driver fills its revision from the actual committed changeset.
+	// driver fills its top-level revision from the committed changeset, or
+	// the existing head for CommitNoop; per-result revisions are preserved.
 	Response model.Commit
 	Mutators []string
 	Changes  []model.ChangeRecord
@@ -415,12 +416,36 @@ type DumpOptions struct {
 }
 
 // IdempotencyRecord retains the committed response and request digest in the
-// same atomic publication as the graph and log. A repeated key with a different
-// RequestHash is a conflict, never permission to execute another graph write.
+// same atomic publication as the graph and log, or as a CommitNoop receipt.
+// For a no-op, Changeset is the zero value (Kind == ""): there is no log entry.
+// Commit.Revision is authoritative for response lookup and finalization.
+// A repeated key with a different RequestHash is ErrConflict, never permission
+// to execute another graph write. Receipts share the same G4 scope/window.
 type IdempotencyRecord struct {
 	RequestHash string
 	Commit      model.Commit
 	Changeset   model.Changeset
+}
+
+// NoopCommitter is an optional WriteTx capability; callers must return
+// ErrUnsupported when absent. CommitNoop requires the complete acquired locks,
+// Head taken last, and exact header LockKeys, just like Commit. It rejects any
+// staged record, tombstone, blob, derived-row or predicate/read-fact mutation,
+// and any header Changes. It atomically checks the active lease (G5) and G4.
+// With an IdempotencyKey, the principal/anonymous-agent scope, Method and
+// RequestHash must be valid and a caller-owned response is saved durably;
+// without a key it may succeed without a receipt. A matching live receipt
+// replays its original Commit, including an ordinary commit's response.
+// Otherwise Response.Revision becomes the serialized current head, preserving
+// every per-result revision, result and warning. It publishes no graph data,
+// versions, blobs, derived rows, bumped revisions, log entry or head advance.
+// Success completes the transaction and releases its locks. Determinate
+// failures publish nothing; uncertain outcomes return ErrIndeterminate with
+// the original key so callers can resolve a possibly published receipt.
+// Ordinary Commit encountering a no-op receipt returns ErrConflict because
+// it cannot return a changeset; callers resolve it with IdempotencyByKey.
+type NoopCommitter interface {
+	CommitNoop(context.Context, ChangesetHeader) (model.Commit, error)
 }
 
 // Checkpoint is unversioned durable delivery metadata. It never advances the
@@ -523,7 +548,11 @@ type Reader interface {
 	// Principal is the canonical scope from PrincipalKey. A miss is (nil,
 	// nil). Lookup honors the snapshot and 24-hour deduplication window;
 	// the idempotency key itself remains in the log forever (G4).
+	// A no-op receipt has no changeset and also returns (nil, nil).
 	ChangesetByKey(ctx context.Context, principal, anonymousAgentLabel, method, key string) (*model.Changeset, error)
+	// IdempotencyByKey returns both ordinary and no-op receipts from this
+	// snapshot under the same scope/window; a miss is (nil, nil). Returned
+	// values are caller-owned. Use Commit.Revision even if Changeset is zero.
 	IdempotencyByKey(ctx context.Context, principal, anonymousAgentLabel, method, key string) (*IdempotencyRecord, error)
 	// Close releases this reader's snapshot resources and is idempotent.
 	// For a WriteTx it rolls back an unfinished transaction and is a no-op
