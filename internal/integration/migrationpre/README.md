@@ -11,4 +11,6 @@ exact grandfather disposition, source/row/binding invalidation, detached
 callback images, the 5,000-row boundary, cancellation and plugin-owned field
 refusal. The 5,001-row case refuses before invoking a callback. The package
 uses the memory driver for connected behavior and does not claim durable
-persistence, apply, RPC transport or production cutover.
+persistence, protected apply or production cutover. The overlay case uses the
+existing in-process JSON-RPC bytes; this package adds no network listener or
+RPC binding.
