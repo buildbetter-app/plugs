@@ -36,6 +36,9 @@ required_workflow = {
     "--lockfile_mode=error",
     "--nocache_test_results",
     "--test_timeout=900",
+    "--nosystem_rc",
+    "--nohome_rc",
+    "--noworkspace_rc",
     "--remote_cache=",
     "--remote_executor=",
     "PLUG_BAZEL_EVIDENCE_DIR=$RUNNER_TEMP/plug-bazel-evidence",
@@ -51,6 +54,9 @@ if missing:
     raise SystemExit("config: workflow is missing: " + ", ".join(missing))
 if ".plug-bazel-evidence" in workflow or ".plug-bazel-targets" in workflow or ".plug-bazel-repository-cache" in workflow:
     raise SystemExit("config: CI runtime paths must stay outside the checked-out source tree")
+for invalid in ("--no_system_rc", "--no_home_rc", "--no_workspace_rc"):
+    if invalid in workflow or invalid in targets:
+        raise SystemExit(f"config: invalid Bazel startup option present: {invalid}")
 
 def encoded(values):
     return "".join(chr(value) for value in values)
