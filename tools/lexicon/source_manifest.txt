@@ -60,6 +60,7 @@ NOTICE.md
 OWNERS.toml
 SKELETON.md
 cmd/plug/BUILD.bazel
+cmd/plug/integration_test.go
 cmd/plug/main.go
 doc.go
 engdocs/adr/0005-plug-design-decisions.md
@@ -118,6 +119,16 @@ internal/api/wire/json.go
 internal/api/wire/meta.go
 internal/api/wire/schema.go
 internal/api/wire/wire_test.go
+internal/cli/BUILD.bazel
+internal/cli/local.go
+internal/cli/local_test.go
+internal/cli/parse.go
+internal/cli/parse_test.go
+internal/cli/run.go
+internal/cli/session.go
+internal/client/BUILD.bazel
+internal/client/client.go
+internal/client/client_test.go
 internal/core/model/BUILD.bazel
 internal/core/model/changes.go
 internal/core/model/changes_test.go
