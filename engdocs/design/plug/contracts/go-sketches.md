@@ -2691,6 +2691,7 @@ type Store interface {
 	// requested branch/as-of view.
 	Read(context.Context, View) (Reader, error)
 	Write(context.Context, ActiveLease) (WriteTx, error)
+	Close() error
 }
 type ActiveLease interface {
 	Epoch() uint64
@@ -2704,6 +2705,7 @@ type Reader interface {
 	Versions(context.Context, Ref, PageReq) (Page[Version], error)
 	Changesets(context.Context, *Cursor, int) ([]model.Changeset, error)
 	ChangesetByKey(context.Context, string, string, string, string) (*model.Changeset, error)
+	Close() error
 }
 type WriteTx interface {
 	Reader
@@ -2721,6 +2723,12 @@ type WriteTx interface {
 
 The driver conformance contract is:
 
+- **Lifetime:** callers close every reader and roll back or commit every
+  transaction before closing the store. `Reader.Close` releases its snapshot
+  resources; `Store.Close` releases the store's handles and active lease.
+  Both are idempotent. `WriteTx.Close` is inherited from `Reader` and rolls
+  back an unfinished transaction; after commit or rollback it is a no-op.
+  No close operation commits staged writes.
 - **G1:** revisions are gapless and commit ordered; the head row is taken last
   in Postgres and `BEGIN IMMEDIATE` provides the SQLite equivalent.
 - **G2:** `Lock` accepts the complete sorted lock set: written refs, recorded
