@@ -15,6 +15,10 @@ import (
 
 const Usage = `Usage: plug [--server URL | --memory] [--project PROJECT] [--agent LABEL] [--json] COMMAND
 
+Shared server:
+  server                 Start the configured shared HTTP server
+  server --local         Start a disposable loopback server with embedded UI
+
 Commands:
   ready [--type TYPE] [--limit N] [--cursor TOKEN]
   get ID [--as-of REVISION]
@@ -30,7 +34,8 @@ Memory storage is disposable and exists only for this process. In a session,
 @last is the ID returned by the last write; @revision is its revision.
 Server selection: --server, then PLUG_SERVER; PLUG_TOKEN supplies the bearer.
 An unreachable configured server is an error. Remote calls use POST /rpc/v1.
-Config-file loading and persistent local storage are not installed in this slice.
+The shared server reads .plug/config.yaml. In-process --memory storage remains
+disposable and never starts a listener or UI.
 Global options precede COMMAND. Command options may precede or follow ID.
 Writes accept --idempotency-key KEY to retry a write whose response was lost.
 `
