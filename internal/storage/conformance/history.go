@@ -112,3 +112,63 @@ func history(t *testing.T, factory Factory) {
 		t.Fatal("cross-filter cursor accepted")
 	}
 }
+
+// Tombstones at scheduled base positions must not extend the replay chain
+// across deleted lifetimes. Exercise two successive boundaries with real log
+// commits, then move head so every checked view uses historical replay.
+func historyRecreation(t *testing.T, factory Factory) {
+	ctx, s, lease, meta := setup(t, factory)
+	const id = "pl-recreated-history"
+	for i := 1; i <= 96; i++ {
+		if i == 33 || i == 65 {
+			entry, err := Seed(ctx, s, lease, driver.ChangesetHeader{}, []FixtureChange{{Ref: ref(id), Kind: "test", Op: model.OpDelete}})
+			if err != nil || entry.Revision.String() != model.Natural64(uint64(i)).String() {
+				t.Fatalf("delete at%d: %+v %v", i, entry, err)
+			}
+			continue
+		}
+		put(t, ctx, s, lease, meta, id, fmt.Sprintf(`{"value":%d}`, i))
+	}
+	put(t, ctx, s, lease, meta, "pl-history-head", `{"value":97}`)
+	r := read(t, ctx, s, meta, nil)
+	page, err := r.Versions(ctx, ref(id), driver.PageReq{Limit: 100})
+	if err != nil || len(page.Items) != 96 || page.NextCursor != nil {
+		t.Fatalf("recreated versions=%+v %v", page, err)
+	}
+	for i, version := range page.Items {
+		if version.Deleted {
+			continue
+		}
+		if i == 0 || page.Items[i-1].Deleted {
+			if !version.Base || !json.Valid(version.Body) || len(version.Patch) != 0 {
+				t.Fatalf("live lifetime at version%d needs full base: %+v", i+1, version)
+			}
+		}
+		patches := 0
+		for j := i; !page.Items[j].Base; j-- {
+			if !page.Items[j].Deleted {
+				patches++
+			}
+			if patches >= driver.VersionBaseEvery || j == 0 {
+				t.Fatalf("version%d requires %d patches without a full base", i+1, patches)
+			}
+		}
+	}
+	for _, revision := range []uint64{0, 1, 32, 33, 34, 64, 65, 66, 96} {
+		at := model.Natural64(revision)
+		historical := read(t, ctx, s, meta, &at)
+		records, err := historical.Get(ctx, []driver.Ref{ref(id)})
+		if err != nil {
+			t.Fatalf("as-of%d: %v", revision, err)
+		}
+		if revision == 0 || revision == 33 || revision == 65 {
+			if len(records) != 0 {
+				t.Fatalf("deleted or unborn as-of%d: %+v", revision, records)
+			}
+			continue
+		}
+		if len(records) != 1 || string(records[0].Body) != fmt.Sprintf(`{"value":%d}`, revision) || records[0].Revision.String() != at.String() {
+			t.Fatalf("historical recreation as-of%d: %+v", revision, records)
+		}
+	}
+}

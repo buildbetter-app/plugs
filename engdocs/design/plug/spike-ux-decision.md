@@ -1,8 +1,8 @@
 # UX spike decision: low-noise views
 
-Date: 2026-10-28  
-Prototype branch: `spike/ux`  
-Prototype path: `spikes/ux/`  
+Date: 2026-10-28\
+Prototype branch: `spike/ux`\
+Prototype path: `spikes/ux/`\
 Evidence: `spec/ux-screens/`
 
 ## Scope and provenance
@@ -14,12 +14,14 @@ visualizations, so the prototype deliberately uses lists, short explanations,
 whitespace, and a small number of semantic status signals. It does not use a
 force-directed graph, a heatmap, or a persistent decoration for every bead.
 
-The fixture is deterministic: `makeCorpus()` creates 20,000 beads and assigns
-work across 50 simulated agents, while five collaborators are shown in the
-presence surface. It is generated in the browser so the spike can compare
-view budgets without writing a large test database. The adapter shape is the
-read surface that a future `view.run`/`view.watch` client will consume; this
-prototype does not claim that today's v0 HTTP API already provides A7 views.
+The fixture is deterministic: `makeCorpus()` creates 20,000 beads, 50 fixture
+agent identities, and dependency relations; five active owners are shown in
+the presence surface. Ready, blocked, human-decision, and epic-health values
+are derived from those fixture relations. It is generated in the browser so
+the spike can compare view budgets without writing a large test database. The
+adapter shape is the read surface that a future `view.run`/`view.watch` client
+will consume; this prototype does not claim that today's v0 HTTP API already
+provides A7 views.
 
 The pinned server was built from Beads commit
 `9d6fff760b7a314b476539198504d77ce0959656` with `bazel build //cmd/bd:bd` in a
@@ -45,9 +47,11 @@ The other views are intentionally single-question surfaces:
 
 Each surface exposes the same 25/50/100 visible-node control. Rows stop at the
 selected budget and end with an explicit count explaining what stayed hidden.
-The footer carries the snapshot size, corpus size, and the 250 ms watch
-coalescing interval. Closed work recedes; blocked work is the only strong red
-signal; ordinary text and descriptions remain plain.
+The footer carries the snapshot size, corpus size, and the explicit
+fixture-only watch boundary. The 250 ms coalescing rule remains a future A7
+transport contract, not a live behavior of this page. Closed work recedes;
+blocked work is the only strong red signal; ordinary text and descriptions
+remain plain.
 
 ## Budget comparison
 
@@ -57,9 +61,11 @@ signal; ordinary text and descriptions remain plain.
 | 50 | More context while keeping one screen readable at the 1440 px capture size. The five-person presence card remains compact. | Offer as the normal working setting. |
 | 100 | Useful for deliberate review, but the list becomes a review surface rather than a glance. The budget remains bounded and stable. | Keep as an opt-in ceiling; do not make it the default. |
 
-The prototype's five collaborators are represented in every budget. The budget
+The prototype's five active owners are represented in every budget. The budget
 applies to bead rows; presence and epic roll-ups remain compact summaries and
-do not silently expand into more bead nodes.
+do not silently expand into more bead nodes. The changes view now renders
+exactly the selected budget, including 25, 50, or 100 rows, and its hidden count
+is calculated from the full 20,000-row fixture.
 
 Representative captures:
 
@@ -106,10 +112,11 @@ quickly.
 
 The prototype is dependency-free and served from `spikes/ux/`; it uses no CDN
 and has no production UI code. `spikes/ux/check.sh` drives all seven views at
-25, 50, and 100 through `/usr/bin/google-chrome --headless`, checks that row
-counts stay within their budgets, and rejects `undefined`, `NaN`, and empty
-render failures. `spikes/ux/capture.sh` produced 19 PNGs (six views × three
-budgets plus the catalog page) under `spec/ux-screens/`.
+25, 50, and 100 through `/usr/bin/google-chrome --headless`, checks exact
+budget counts and positive row content, verifies fixture-only labels and the
+rendered view metadata, and rejects `undefined`, `NaN`, and empty render
+failures. `spikes/ux/capture.sh` produced 19 PNGs (six views × three budgets
+plus the catalog page) under `spec/ux-screens/`.
 
 This is a design spike, not a usability study: the five people are simulated
 presence data, and the fixture stands in for the future A7 view adapter. Before
