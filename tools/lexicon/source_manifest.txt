@@ -300,6 +300,10 @@ internal/integration/graphacceptance/README.md
 internal/integration/graphacceptance/fixture_test.go
 internal/integration/graphacceptance/graph_test.go
 internal/integration/graphacceptance/unsupported_test.go
+internal/integration/historysql/BUILD.bazel
+internal/integration/historysql/README.md
+internal/integration/historysql/fixture_test.go
+internal/integration/historysql/history_test.go
 internal/integration/httpcancel/BUILD.bazel
 internal/integration/httpcancel/httpcancel_test.go
 internal/integration/localclisession/BUILD.bazel
