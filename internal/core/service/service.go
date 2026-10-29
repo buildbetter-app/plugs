@@ -173,6 +173,17 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 	if strings.TrimSpace(req.Project) == "" {
 		return nil, failure("project_required", "supply a project")
 	}
+	identity, err := ClaimNextRequestIdentity(req)
+	if err != nil {
+		return nil, failure("invalid_params", "invalid claimNext selector")
+	}
+	meta.ClaimNextIdentity = identity
+	meta.Method = "bead.claimNext"
+	if by.Kind != "anonymous" {
+		meta.AgentLabel = ""
+	} else if meta.AgentLabel == "" {
+		meta.AgentLabel = meta.Agent
+	}
 
 	// A successful claim has a durable receipt under the claimNext method. On a
 	// retry after the bead is no longer ready, recover its target and re-enter
@@ -199,9 +210,16 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 			}
 			return &out, nil
 		}
+		if entry != nil {
+			if err := s.CommitClaimNextEmpty(ctx, by, req, meta); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		}
 	}
 
 	position := (*PagePosition)(nil)
+	fresh := false
 	for {
 		page, err := s.Ready(ctx, by, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position})
 		if err != nil {
@@ -217,10 +235,46 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 			}
 		}
 		if page.Next == nil {
+			if !fresh {
+				// The queue is live. Re-run the complete selection from a new
+				// snapshot before recording a terminal null, so a bead that became
+				// ready while the first walk was finishing is not missed.
+				fresh = true
+				position = nil
+				continue
+			}
+			if err := s.CommitClaimNextEmpty(ctx, by, req, meta); err != nil {
+				return nil, err
+			}
 			return nil, nil
 		}
 		position = page.Next
 	}
+}
+
+// CommitClaimNextEmpty is the narrow guarded-service seam for a terminal
+// claimNext selection. It records a durable no-op receipt after the guarded
+// candidate walk; it never performs an unguarded ready scan.
+func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta) error {
+	if err := s.admit(ctx, by); err != nil {
+		return err
+	}
+	if strings.TrimSpace(req.Project) == "" {
+		return failure("project_required", "supply a project")
+	}
+	identity, err := ClaimNextRequestIdentity(req)
+	if err != nil {
+		return failure("invalid_params", "invalid claimNext selector")
+	}
+	meta.ClaimNextIdentity = identity
+	meta.Method = "bead.claimNext"
+	if by.Kind != "anonymous" {
+		meta.AgentLabel = ""
+	} else if meta.AgentLabel == "" {
+		meta.AgentLabel = meta.Agent
+	}
+	_, err = s.apply(ctx, by, "bead.claimNext", model.ChangeSet{Ops: []model.Op{}}, meta, true)
+	return err
 }
 
 func claimNextRace(err error) bool {

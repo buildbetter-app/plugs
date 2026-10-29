@@ -122,7 +122,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}}
 	aliases := map[string]model.Ref{}
 	slotRef := ""
-	if isSlot(meta.Method) {
+	if len(cs.Ops) == 0 {
+		if meta.Method != "bead.claimNext" {
+			return nil, failure("invalid_params", "empty change set is only valid for claimNext")
+		}
+	} else if isSlot(meta.Method) {
 		// A method is host-supplied lowering context, not a batch-wide bypass.
 		if len(cs.Ops) < 1 || cs.Ops[0].Kind != model.OpPatch {
 			return nil, failure("invalid_params", "slot method requires a patch first")

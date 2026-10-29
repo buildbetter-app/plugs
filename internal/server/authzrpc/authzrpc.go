@@ -159,7 +159,7 @@ func New(ctx context.Context, config Config) (*Composition, error) {
 	}
 	writer := pipeline.New(config.Store, config.Lease, options...)
 	domain := service.New(config.Store, config.Lease, writer, service.WithOntology(ontology))
-	guarded := &GuardedService{delegate: domain, checker: checker}
+	guarded := &GuardedService{delegate: domain, checker: checker, commitEmpty: domain.CommitClaimNextEmpty}
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		return nil, err

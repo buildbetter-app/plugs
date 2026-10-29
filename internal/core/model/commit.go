@@ -68,8 +68,12 @@ type WriteMeta struct {
 	AgentLabel     string
 	Project        string
 	IdempotencyKey string
-	DryRun         bool
-	Return         string // full or minimal
-	Traceparent    string
-	Agent          string
+	// ClaimNextIdentity is the canonical queue selector identity. It is set
+	// only by the claimNext domain seam and participates in the request hash so
+	// a reused key cannot silently change view or filter parameters.
+	ClaimNextIdentity string
+	DryRun            bool
+	Return            string // full or minimal
+	Traceparent       string
+	Agent             string
 }

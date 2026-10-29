@@ -16,8 +16,9 @@ import (
 // authorization boundary that the generic service intentionally does not own.
 // Writes remain authorized by the same Checker installed in pipeline.Writer.
 type GuardedService struct {
-	delegate rpc.Service
-	checker  *Checker
+	delegate    rpc.Service
+	checker     *Checker
+	commitEmpty func(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta) error
 }
 
 var _ rpc.Service = (*GuardedService)(nil)
@@ -121,12 +122,23 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	if s == nil || s.delegate == nil || s.checker == nil {
 		return nil, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
+	identity, err := service.ClaimNextRequestIdentity(req)
+	if err != nil {
+		return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "invalid claimNext selector"}}
+	}
+	meta.ClaimNextIdentity = identity
+	meta.Method = "bead.claimNext"
+	if by.Kind != "anonymous" {
+		meta.AgentLabel = ""
+	} else if meta.AgentLabel == "" {
+		meta.AgentLabel = meta.Agent
+	}
 	if meta.IdempotencyKey != "" {
 		principal, err := driver.PrincipalKey(by)
 		if err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params"}}
 		}
-		reader, snapshot, closeReader, err := s.current(ctx, nil)
+		reader, _, closeReader, err := s.current(ctx, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -135,27 +147,17 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			closeReader()
 			return nil, lookupErr
 		}
-		if entry != nil && len(entry.Commit.Results) > 0 {
-			ref := entry.Commit.Results[0].Ref
-			allowed, decisionErr := s.checker.modifyDecision(ctx, snapshot, by, "bead.claimNext", ref)
-			closeReader()
-			if decisionErr != nil {
-				return nil, decisionErr
-			}
-			if !allowed {
-				return nil, forbidden("claimNext candidate is no longer authorized")
-			}
-			candidateMeta := meta
-			candidateMeta.Method = "bead.claimNext"
-			out, claimErr := s.delegate.ClaimWithOutcome(ctx, by, service.ClaimRequest{ID: ref}, candidateMeta)
-			if claimErr != nil {
-				return nil, claimErr
-			}
-			return &out, nil
-		}
 		closeReader()
+		if entry != nil {
+			// Let the shared domain replay path perform the request-hash check
+			// before current authorization. A selector change must be reported as
+			// idempotency_key_reused, while an equal receipt is reauthorized by the
+			// installed Writer checker.
+			return s.delegate.ClaimNextWithOutcome(ctx, by, req, meta)
+		}
 	}
 	position := (*service.PagePosition)(nil)
+	fresh := false
 	for {
 		page, err := s.delegate.Ready(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position})
 		if err != nil {
@@ -186,6 +188,17 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			}
 		}
 		if page.Next == nil {
+			if !fresh {
+				fresh = true
+				position = nil
+				continue
+			}
+			if s.commitEmpty == nil {
+				return nil, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+			}
+			if err := s.commitEmpty(ctx, by, req, meta); err != nil {
+				return nil, err
+			}
 			return nil, nil
 		}
 		position = page.Next

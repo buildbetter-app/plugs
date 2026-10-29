@@ -99,7 +99,17 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: change.Resource.Ref}, Method: proposal.Meta.Method})
 	}
 	if len(requests) == 0 {
-		return forbidden("authorization requires a concrete resource")
+		if proposal.Meta.Method != "bead.claimNext" {
+			return forbidden("authorization requires a concrete resource")
+		}
+		project, ok := s.projectByName(proposal.Meta.Project)
+		if !ok {
+			return forbidden("claimNext project is not authorized")
+		}
+		// An empty claimNext is a durable null receipt, not a graph write. It
+		// still needs the requested project permit so an unauthorized caller
+		// cannot mint a replayable receipt for a different queue.
+		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Project, Ref: project}, Method: ""})
 	}
 	decisions, err := c.chain.Check(ctx, s, requests)
 	if err != nil {
@@ -112,7 +122,7 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 		if decision.Effect != authz.Allow {
 			return forbidden(strings.Join(decision.Reasons, ","))
 		}
-		if stage == port.AuthorizeAfter {
+		if stage == port.AuthorizeAfter && len(proposal.Changes) != 0 {
 			if err := c.validateExistingWrite(ctx, reader, proposal, proposal.Changes[i], caller); err != nil {
 				return err
 			}

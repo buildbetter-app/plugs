@@ -102,6 +102,18 @@ func (s *slice) ProjectActive(_ context.Context, ref model.Ref) (bool, error) {
 	return false, nil
 }
 
+func (s *slice) projectByName(name string) (model.Ref, bool) {
+	if s == nil || name == "" {
+		return model.Ref{}, false
+	}
+	for _, project := range s.facts.Projects {
+		if project.Name == name {
+			return project.Ref, true
+		}
+	}
+	return model.Ref{}, false
+}
+
 func (s *slice) ProjectForBead(ctx context.Context, ref model.Ref) (authz.ProjectBinding, error) {
 	rows, err := s.snapshot.Get(ctx, []model.Ref{ref})
 	if err != nil {

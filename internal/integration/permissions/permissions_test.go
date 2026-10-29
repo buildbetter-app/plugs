@@ -30,6 +30,7 @@ import (
 type fixture struct {
 	store  *memory.Store
 	lease  driver.ActiveLease
+	seed   *service.Service
 	keys   *authnapikey.Provider
 	facts  *authzrpc.MutableFacts
 	url    string
@@ -80,6 +81,7 @@ func newFixture(t *testing.T) *fixture {
 		return fmt.Sprintf("00000000-0000-4000-8000-%012d", n), nil
 	}))
 	domain := service.New(f.store, lease, seed, service.WithOntology(o))
+	f.seed = domain
 	for i := 0; i < 3; i++ {
 		_, err := domain.Create(ctx, model.PrincipalRef{Kind: "user", ID: "user:seed"}, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": fmt.Sprintf("seed-%d", i), "priority": i}}, model.WriteMeta{Project: "project", Agent: "seed", AgentLabel: "seed", IdempotencyKey: fmt.Sprintf("%032x", i+1), Method: "bead.create", Return: "full"})
 		if err != nil {
@@ -284,10 +286,27 @@ func TestRealHTTPClaimNextAndPinnedFactsInvalidation(t *testing.T) {
 			t.Fatalf("claimNext did not drain candidate %d: %s", i, got.body)
 		}
 	}
-	empty := f.call(t, agent.Token, "bead.claimNext", map[string]any{"_meta": writeMeta(201)})
+	emptyParams := map[string]any{"filter": map[string]any{"types": []string{"issue"}}, "_meta": writeMeta(201)}
+	empty := f.call(t, agent.Token, "bead.claimNext", emptyParams)
 	if empty.status != http.StatusOK || empty.value["error"] != nil || empty.value["result"] != nil {
 		t.Fatalf("claimNext returned a non-null result after its candidates were claimed: %s", empty.body)
 	}
+	// The null is a durable terminal receipt. It remains null after a later
+	// ready bead appears, while changing either selector component conflicts
+	// with the original request identity.
+	if retry := f.call(t, agent.Token, "bead.claimNext", emptyParams); retry.status != http.StatusOK || retry.value["error"] != nil || retry.value["result"] != nil {
+		t.Fatalf("same empty claimNext key did not replay null: %s", retry.body)
+	}
+	if _, err := f.seed.Create(context.Background(), model.PrincipalRef{Kind: "user", ID: "user:seed"}, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": "appeared-after-empty", "priority": 0}}, model.WriteMeta{Project: "project", Agent: "seed", AgentLabel: "seed", IdempotencyKey: fmt.Sprintf("%032x", 99), Method: "bead.create", Return: "full"}); err != nil {
+		t.Fatal(err)
+	}
+	if retry := f.call(t, agent.Token, "bead.claimNext", emptyParams); retry.status != http.StatusOK || retry.value["error"] != nil || retry.value["result"] != nil {
+		t.Fatalf("durable empty claimNext receipt was not replayed after a new bead: %s", retry.body)
+	}
+	changedFilter := map[string]any{"filter": map[string]any{"resources": []string{"different"}}, "_meta": writeMeta(201)}
+	wantCode(t, f.call(t, agent.Token, "bead.claimNext", changedFilter), "idempotency_key_reused")
+	changedView := map[string]any{"viewId": "different", "_meta": writeMeta(201)}
+	wantCode(t, f.call(t, agent.Token, "bead.claimNext", changedView), "idempotency_key_reused")
 
 	meta, err := f.store.Meta(context.Background())
 	if err != nil {
