@@ -24,6 +24,8 @@ type FixtureChange struct {
 // header supplies time, principal and attribution. The helper owns the complete
 // lock/change declarations and bumps bead predicates, so event tests never
 // receive or import a transaction handle.
+// A supplied header.Events plan passes through unchanged; callers pin its
+// descriptors to the actual changes and the revision allocated by this write.
 func Seed(ctx context.Context, store driver.Store, lease driver.ActiveLease, header driver.ChangesetHeader, changes []FixtureChange) (model.Changeset, error) {
 	return seed(ctx, store, lease, header, changes, false)
 }
