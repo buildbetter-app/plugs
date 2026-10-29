@@ -10,14 +10,17 @@ import (
 	"github.com/buildbetter-app/plugs/internal/client"
 )
 
-// Execute selects an explicit server, then PLUG_SERVER, then local mode. The
-// current tree has no config-file loader: an existing config is refused. Only
-// --memory selects disposable local state. Remote failures never open a store.
+// Execute selects an explicit server, then PLUG_SERVER, then the explicit
+// in-process --memory mode. The shared server command owns config-file loading;
+// client commands never open a configured store implicitly.
 func Execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) int {
 	return execute(ctx, args, in, out, errOut, nil)
 }
 
 func execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer, factory StorageFactory) int {
+	if isServerCommand(args) {
+		return executeServer(ctx, args, out, errOut)
+	}
 	o, command, err := Parse(args)
 	if errors.Is(err, ErrHelp) {
 		fmt.Fprint(out, Usage)
