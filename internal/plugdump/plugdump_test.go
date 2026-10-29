@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/config"
 )
 
 type fixtureSource map[string]Table
@@ -235,6 +237,48 @@ func TestDumpExternalConfigAndLosslessCounters(t *testing.T) {
 	}
 	if _, err := Build(context.Background(), source, inventory); err == nil {
 		t.Fatal("raw external credential accepted")
+	}
+}
+
+func TestDumpSecretClassificationMatchesConfigPredicate(t *testing.T) {
+	keys := []string{"service.api-key", "integrations.apikey", "database.passwd", "signing.privatekey", "tls.private_key", "database.dsn"}
+	for _, key := range keys {
+		if !config.IsSecretKey(key) && !strings.Contains(key, "dsn") {
+			t.Fatalf("test key %q is not recognized by the shared predicate", key)
+		}
+		if !secretKey(key) {
+			t.Fatalf("dump classifier does not reuse the shared predicate for %q", key)
+		}
+	}
+
+	source, inventory := fixture(t)
+	for _, key := range keys {
+		table := source["config"]
+		table.Rows = append(table.Rows, Row{"key": key, "value": "fixture-classified-value"})
+		source["config"] = table
+		inventory.ConfigPolicy["config/"+key] = "secret"
+	}
+	data := buildFixture(t, source, inventory)
+	if bytes.Contains(data, []byte("fixture-classified-value")) {
+		t.Fatal("recognized secret value entered the archive")
+	}
+	for _, key := range keys {
+		if !bytes.Contains(data, []byte(`"$secret":"config/`+key+`"`)) {
+			t.Errorf("missing secret reference for %q", key)
+		}
+	}
+
+	external := &inventory.External[0]
+	external.State = "json-config"
+	if err := os.WriteFile(external.Path, []byte(`{"nested":{"api-key":{"$secret":"fixture/api-key"},"apikey":{"$secret":"fixture/apikey"},"passwd":{"$secret":"fixture/passwd"},"privatekey":{"$secret":"fixture/privatekey"}},"safe":"fixture-public-value"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data = buildFixture(t, source, inventory)
+	if bytes.Contains(data, []byte("fixture-classified-value")) || !bytes.Contains(data, []byte("fixture/api-key")) || !bytes.Contains(data, []byte("fixture/privatekey")) {
+		t.Fatal("nested external secret references were not preserved safely")
+	}
+	if !bytes.Contains(data, []byte("fixture-public-value")) {
+		t.Fatal("nested external public value was lost")
 	}
 }
 

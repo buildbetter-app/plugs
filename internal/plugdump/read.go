@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/steveyegge/beads/internal/config"
 )
 
 // Queryer is satisfied by sql.Tx. The command begins a read-only transaction
@@ -248,16 +250,11 @@ func readExternal(inputs []ExternalInput) ([]byte, []Disposition, error) {
 }
 
 func secretKey(key string) bool {
-	key = strings.ToLower(key)
-	if key == "pat" || strings.HasSuffix(key, ".pat") {
-		return true
-	}
-	for _, part := range []string{"token", "password", "secret", "credential", "private_key", "dsn", "api_key", "access_key"} {
-		if strings.Contains(key, part) {
-			return true
-		}
-	}
-	return false
+	// Keep dump classification aligned with the existing configuration
+	// security predicate. The exporter retains its historical dump-only DSN
+	// classification, while the shared predicate covers api-key/apikey,
+	// passwd/privatekey and equivalent recognized names.
+	return config.IsSecretKey(key) || strings.Contains(strings.ToLower(key), "dsn")
 }
 
 func validateSecretReferences(value any) error {
