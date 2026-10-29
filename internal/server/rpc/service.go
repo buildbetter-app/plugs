@@ -155,8 +155,17 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		return writeOutcome(v), err
 	case "bead.claimNext":
 		v, err := svc.ClaimNextWithOutcome(ctx, c.Principal, service.ClaimNextRequest{Project: c.Meta.Project, ViewID: p.ViewID, Filter: p.Filter.domain()}, meta)
-		if err != nil || v == nil {
+		if err != nil {
 			return nil, err
+		}
+		if v == nil || v.NullResult {
+			// Terminal claimNext is the cataloged JSON null. Keep the outcome
+			// wrapper so a keyed durable replay still emits response-only
+			// _meta.replayed without changing the stored null result.
+			if v == nil {
+				return nil, nil
+			}
+			return Outcome{Result: nil, Replayed: v.Replayed}, nil
 		}
 		return writeOutcome(*v), nil
 	default:

@@ -16,14 +16,19 @@ import (
 // authorization boundary that the generic service intentionally does not own.
 // Writes remain authorized by the same Checker installed in pipeline.Writer.
 type GuardedService struct {
-	delegate    rpc.Service
-	checker     *Checker
-	commitEmpty func(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta) error
+	delegate        rpc.Service
+	checker         *Checker
+	commitEmpty     func(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta, port.ClaimNextReadyProbe) (port.WriteOutcome, error)
+	claimNextPage   func(context.Context, model.PrincipalRef, service.ReadyRequest) (service.BeadPage, error)
+	readyCandidates func(context.Context, service.ReadyRequest, driver.Reader) ([]service.Bead, error)
 }
 
 var _ rpc.Service = (*GuardedService)(nil)
 
-const candidateCap = 20000
+// listPostfilterCap remains the adopted cap for ordinary authorized list
+// post-filtering (P84). ClaimNext never passes through this list path and is
+// intentionally uncapped.
+const listPostfilterCap = 20000
 
 func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req service.GetRequest) (service.GetResult, error) {
 	allowed, err := s.checkRead(ctx, by, "bead.get", req.ID)
@@ -53,7 +58,7 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 	}
 	items := append([]service.Bead(nil), page.Items...)
 	for page.Next != nil {
-		if len(items) >= candidateCap {
+		if len(items) >= listPostfilterCap {
 			return service.BeadPage{}, postfilterCap()
 		}
 		position := *page.Next
@@ -64,7 +69,7 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 		}
 		items = append(items, page.Items...)
 	}
-	if len(items) > candidateCap {
+	if len(items) > listPostfilterCap {
 		return service.BeadPage{}, postfilterCap()
 	}
 	page.Items = items
@@ -86,7 +91,7 @@ func (s *GuardedService) History(ctx context.Context, by model.PrincipalRef, req
 	}
 	items := append([]service.Bead(nil), page.Items...)
 	for page.Next != nil {
-		if len(items) >= candidateCap {
+		if len(items) >= listPostfilterCap {
 			return service.BeadPage{}, postfilterCap()
 		}
 		position := *page.Next
@@ -97,7 +102,7 @@ func (s *GuardedService) History(ctx context.Context, by model.PrincipalRef, req
 		}
 		items = append(items, page.Items...)
 	}
-	if len(items) > candidateCap {
+	if len(items) > listPostfilterCap {
 		return service.BeadPage{}, postfilterCap()
 	}
 	page.Items = items
@@ -159,7 +164,7 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	position := (*service.PagePosition)(nil)
 	fresh := false
 	for {
-		page, err := s.delegate.Ready(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position})
+		page, err := s.claimPage(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position})
 		if err != nil {
 			return nil, err
 		}
@@ -196,12 +201,52 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			if s.commitEmpty == nil {
 				return nil, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 			}
-			if err := s.commitEmpty(ctx, by, req, meta); err != nil {
+			out, err := s.commitEmpty(ctx, by, req, meta, s.claimNextReadyProbe(by, req))
+			if err != nil {
+				if errors.Is(err, port.ErrClaimNextReady) {
+					fresh = false
+					position = nil
+					continue
+				}
 				return nil, err
 			}
-			return nil, nil
+			out.NullResult = true
+			return &out, nil
 		}
 		position = page.Next
+	}
+}
+
+func (s *GuardedService) claimPage(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
+	if s.claimNextPage != nil {
+		return s.claimNextPage(ctx, by, req)
+	}
+	return s.delegate.Ready(ctx, by, req)
+}
+
+// claimNextReadyProbe applies the same per-candidate modify permit as the live
+// walk, but reads through the transaction that already owns the head. An
+// unauthorized ready bead therefore does not keep an otherwise empty queue
+// from publishing its terminal null receipt.
+func (s *GuardedService) claimNextReadyProbe(by model.PrincipalRef, req service.ClaimNextRequest) port.ClaimNextReadyProbe {
+	return func(ctx context.Context, reader driver.Reader) (bool, error) {
+		if s.readyCandidates == nil {
+			return false, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+		}
+		items, err := s.readyCandidates(ctx, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter}, reader)
+		if err != nil {
+			return false, err
+		}
+		for _, bead := range items {
+			allowed, decisionErr := s.checker.modifyDecision(ctx, reader, by, "bead.claimNext", model.RefByID(bead.ID, model.Natural64(0)))
+			if decisionErr != nil {
+				return false, decisionErr
+			}
+			if allowed {
+				return true, nil
+			}
+		}
+		return false, nil
 	}
 }
 
@@ -213,6 +258,11 @@ func claimNextRace(err error) bool {
 	switch value.Data.Code {
 	case "forbidden", "not_found", "precondition_failed", "ontology_guard_failed":
 		return true
+	case "busy":
+		// A live lease on this candidate is an ordinary queue race. Store
+		// admission timeouts, global lease loss and other busy errors must
+		// propagate instead of becoming a false terminal null.
+		return value.Data.Hint == "bead already has a live claim"
 	default:
 		return false
 	}

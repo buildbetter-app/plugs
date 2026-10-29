@@ -327,13 +327,19 @@ func TestRealHTTPClaimNextAndPinnedFactsInvalidation(t *testing.T) {
 	// The null is a durable terminal receipt. It remains null after a later
 	// ready bead appears, while changing either selector component conflicts
 	// with the original request identity.
-	if retry := f.call(t, agent.Token, "bead.claimNext", emptyParams); retry.status != http.StatusOK || retry.value["error"] != nil || retry.value["result"] != nil {
+	if retry := f.call(t, agent.Token, "bead.claimNext", emptyParams); func() bool {
+		meta, ok := retry.value["_meta"].(map[string]any)
+		return retry.status != http.StatusOK || retry.value["error"] != nil || retry.value["result"] != nil || !ok || meta["replayed"] != true
+	}() {
 		t.Fatalf("same empty claimNext key did not replay null: %s", retry.body)
 	}
 	if _, err := f.seed.Create(context.Background(), model.PrincipalRef{Kind: "user", ID: "user:seed"}, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": "appeared-after-empty", "priority": 0}}, model.WriteMeta{Project: "project", Agent: "seed", AgentLabel: "seed", IdempotencyKey: fmt.Sprintf("%032x", 99), Method: "bead.create", Return: "full"}); err != nil {
 		t.Fatal(err)
 	}
-	if retry := f.call(t, agent.Token, "bead.claimNext", emptyParams); retry.status != http.StatusOK || retry.value["error"] != nil || retry.value["result"] != nil {
+	if retry := f.call(t, agent.Token, "bead.claimNext", emptyParams); func() bool {
+		meta, ok := retry.value["_meta"].(map[string]any)
+		return retry.status != http.StatusOK || retry.value["error"] != nil || retry.value["result"] != nil || !ok || meta["replayed"] != true
+	}() {
 		t.Fatalf("durable empty claimNext receipt was not replayed after a new bead: %s", retry.body)
 	}
 	changedFilter := map[string]any{"filter": map[string]any{"resources": []string{"different"}}, "_meta": writeMeta(201)}

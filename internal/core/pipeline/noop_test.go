@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sync/atomic"
 	"testing"
@@ -110,6 +111,42 @@ func TestNoopStillRequiresAdmission(t *testing.T) {
 	log, err := h.read(t).Changesets(context.Background(), nil, 10)
 	if err != nil || len(log) != 1 {
 		t.Fatalf("no-op admission mutated log=%+v err=%v", log, err)
+	}
+}
+
+func TestClaimNextEmptyProbeRunsAfterHeadAndBlocksStaleNull(t *testing.T) {
+	h := setup(t)
+	w := h.writer()
+	meta := meta(30)
+	meta.Method = "bead.claimNext"
+	var observed atomic.Int32
+	probe := func(_ context.Context, reader driver.Reader) (bool, error) {
+		observed.Add(1)
+		if reader.Snapshot().At.String() != "0" {
+			t.Fatalf("terminal probe did not observe the acquired head: %s", reader.Snapshot().At)
+		}
+		return true, nil
+	}
+	_, err := w.ApplyClaimNextEmpty(context.Background(), by, model.ChangeSet{Ops: []model.Op{}}, meta, probe)
+	if !errors.Is(err, port.ErrClaimNextReady) {
+		t.Fatalf("ready terminal probe error=%v", err)
+	}
+	if observed.Load() != 1 {
+		t.Fatalf("terminal probe calls=%d", observed.Load())
+	}
+	if head := h.read(t).Snapshot().At.String(); head != "0" {
+		t.Fatalf("stale null advanced head to %s", head)
+	}
+	// The same key was never committed, so a clean terminal observation can
+	// publish exactly one durable H+1 zero-change receipt.
+	result, err := w.ApplyClaimNextEmpty(context.Background(), by, model.ChangeSet{Ops: []model.Op{}}, meta, func(context.Context, driver.Reader) (bool, error) { return false, nil })
+	if err != nil || result.Commit.Revision.String() != "1" {
+		t.Fatalf("terminal empty result=%+v err=%v", result, err)
+	}
+	principal, _ := driver.PrincipalKey(by)
+	receipt, err := h.read(t).IdempotencyByKey(context.Background(), principal, "", "bead.claimNext", meta.IdempotencyKey)
+	if err != nil || receipt == nil || receipt.Commit.Revision.String() != "1" || len(receipt.Changeset.Changes) != 0 {
+		t.Fatalf("durable terminal receipt=%+v err=%v", receipt, err)
 	}
 }
 

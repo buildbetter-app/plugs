@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -870,6 +871,88 @@ func TestReadyContinuationAllowsListShrinkAndRejectsOtherIncarnation(t *testing.
 	position.AsOf.Incarnation = "another-store"
 	_, err = f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Position: &position})
 	wantCode(t, err, "incarnation_changed")
+}
+
+func TestClaimNextContinuationRestartsAfterFreshSnapshotRevision(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	firstID, _ := create(t, f, "First")
+	secondID, _ := create(t, f, "Second")
+	first, err := f.svc.ClaimNextReadyPage(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1})
+	if err != nil || len(first.Items) != 1 || first.Next == nil {
+		t.Fatalf("first claimNext page: %+v %v", first, err)
+	}
+	claimedFirst := model.RefByID(first.Items[0].ID, model.Natural64(0))
+	remainingID := firstID
+	if claimedFirst.ID == firstID.ID {
+		remainingID = secondID
+	}
+	if _, err := f.svc.Close(ctx, anonymous, CloseRequest{ID: claimedFirst}, meta(t)); err != nil {
+		t.Fatal(err)
+	}
+	second, err := f.svc.ClaimNextReadyPage(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1, Position: first.Next})
+	if err != nil || len(second.Items) != 1 || second.Items[0].ID != remainingID.ID {
+		t.Fatalf("claimNext continuation skipped after revision change: %+v %v", second, err)
+	}
+}
+
+type unboundedQueryReader struct {
+	records []driver.Record
+}
+
+func (r unboundedQueryReader) Query(_ context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	start := 0
+	if q.Cursor != nil {
+		value, err := q.Cursor.Index.Int64()
+		if err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		start = int(value)
+	}
+	end := start + q.Limit
+	if end > len(r.records) {
+		end = len(r.records)
+	}
+	page := driver.Page[driver.Record]{Items: r.records[start:end]}
+	if end < len(r.records) {
+		page.NextCursor = &driver.Cursor{Index: model.Natural64(uint64(end))}
+	}
+	return page, nil
+}
+
+func TestScanBeadsTraversesBeyondTheFormerQueueCap(t *testing.T) {
+	const count = 20001
+	records := make([]driver.Record, 0, count)
+	for i := 0; i < count; i++ {
+		id := fmt.Sprintf("bead-%05d", i)
+		doc := pipeline.Document{ID: id, Type: "issue", Project: "local", Fields: map[string]any{"status": "todo"}}
+		body, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, driver.Record{Ref: model.RefByID(id, model.Natural64(0)), Kind: "bead", Body: body})
+	}
+	graph, err := scanBeads(context.Background(), unboundedQueryReader{records: records})
+	if err != nil || len(graph) != count {
+		t.Fatalf("uncapped graph walk returned %d/%d records: %v", len(graph), count, err)
+	}
+}
+
+func TestClaimNextRaceOnlySkipsCandidateBusy(t *testing.T) {
+	if !claimNextRace(&model.Error{Data: model.ErrorData{Code: "busy", Hint: "bead already has a live claim"}}) {
+		t.Fatal("candidate live-lease race was not skippable")
+	}
+	for _, err := range []error{
+		&model.Error{Data: model.ErrorData{Code: "busy", Hint: "write pre phases exceeded their deadline"}},
+		&model.Error{Data: model.ErrorData{Code: "busy", Hint: "active storage lease was lost"}},
+		&model.Error{Data: model.ErrorData{Code: "write_conflict"}},
+		&model.Error{Data: model.ErrorData{Code: "lease_not_held"}},
+		&model.Error{Data: model.ErrorData{Code: "lease_expired"}},
+	} {
+		if claimNextRace(err) {
+			t.Fatalf("global queue error was incorrectly skippable: %v", err)
+		}
+	}
 }
 
 func TestKernelFieldsAndSameValueStatusRefuseBeforeCommit(t *testing.T) {

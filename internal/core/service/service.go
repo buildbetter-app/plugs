@@ -211,17 +211,21 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 			return &out, nil
 		}
 		if entry != nil {
-			if err := s.CommitClaimNextEmpty(ctx, by, req, meta); err != nil {
+			// A stored null is terminal for this exact selector. Replay must not
+			// probe today's ready set and accidentally claim a later candidate.
+			out, err := s.CommitClaimNextEmpty(ctx, by, req, meta, nil)
+			if err != nil {
 				return nil, err
 			}
-			return nil, nil
+			out.NullResult = true
+			return &out, nil
 		}
 	}
 
 	position := (*PagePosition)(nil)
 	fresh := false
 	for {
-		page, err := s.Ready(ctx, by, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position})
+		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position})
 		if err != nil {
 			return nil, err
 		}
@@ -243,28 +247,46 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 				position = nil
 				continue
 			}
-			if err := s.CommitClaimNextEmpty(ctx, by, req, meta); err != nil {
+			out, err := s.CommitClaimNextEmpty(ctx, by, req, meta, s.claimNextReadyProbe(req))
+			if err != nil {
+				if errors.Is(err, port.ErrClaimNextReady) {
+					fresh = false
+					position = nil
+					continue
+				}
 				return nil, err
 			}
-			return nil, nil
+			out.NullResult = true
+			return &out, nil
 		}
 		position = page.Next
 	}
 }
 
+// claimNextReadyProbe observes the complete ready set on the transaction's
+// post-head snapshot. It is deliberately separate from the live walk so the
+// transaction can release and restart if a candidate appeared in between.
+func (s *Service) claimNextReadyProbe(req ClaimNextRequest) port.ClaimNextReadyProbe {
+	return func(ctx context.Context, reader driver.Reader) (bool, error) {
+		items, err := s.ReadyCandidates(ctx, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter}, reader)
+		return len(items) != 0, err
+	}
+}
+
 // CommitClaimNextEmpty is the narrow guarded-service seam for a terminal
-// claimNext selection. It records a durable no-op receipt after the guarded
-// candidate walk; it never performs an unguarded ready scan.
-func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta) error {
+// claimNext selection. It records a durable H+1 receipt only after the
+// supplied transaction-level probe observes no ready candidate. A nil probe
+// is reserved for replay of an already durable empty receipt.
+func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta, probe port.ClaimNextReadyProbe) (port.WriteOutcome, error) {
 	if err := s.admit(ctx, by); err != nil {
-		return err
+		return port.WriteOutcome{}, err
 	}
 	if strings.TrimSpace(req.Project) == "" {
-		return failure("project_required", "supply a project")
+		return port.WriteOutcome{}, failure("project_required", "supply a project")
 	}
 	identity, err := ClaimNextRequestIdentity(req)
 	if err != nil {
-		return failure("invalid_params", "invalid claimNext selector")
+		return port.WriteOutcome{}, failure("invalid_params", "invalid claimNext selector")
 	}
 	meta.ClaimNextIdentity = identity
 	meta.Method = "bead.claimNext"
@@ -273,8 +295,14 @@ func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRe
 	} else if meta.AgentLabel == "" {
 		meta.AgentLabel = meta.Agent
 	}
-	_, err = s.apply(ctx, by, "bead.claimNext", model.ChangeSet{Ops: []model.Op{}}, meta, true)
-	return err
+	writer, ok := s.writer.(interface {
+		ApplyClaimNextEmpty(context.Context, model.PrincipalRef, model.ChangeSet, model.WriteMeta, port.ClaimNextReadyProbe) (port.WriteOutcome, error)
+	})
+	if !ok {
+		return port.WriteOutcome{}, failure("internal_error", "writer does not support claimNext terminal probes")
+	}
+	out, err := writer.ApplyClaimNextEmpty(ctx, by, model.ChangeSet{Ops: []model.Op{}}, meta, probe)
+	return out, mapped(err)
 }
 
 func claimNextRace(err error) bool {
@@ -285,6 +313,11 @@ func claimNextRace(err error) bool {
 	switch value.Data.Code {
 	case "forbidden", "not_found", "precondition_failed", "ontology_guard_failed":
 		return true
+	case "busy":
+		// Only a candidate's live-lease race is skippable. Pre-phase timeout,
+		// active-store lease loss and every other busy condition remain a wire
+		// error rather than being converted into terminal null.
+		return value.Data.Hint == "bead already has a live claim"
 	default:
 		return false
 	}
