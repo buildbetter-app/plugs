@@ -149,6 +149,8 @@ internal/api/wire/schema.go
 internal/api/wire/wire_test.go
 internal/cli/BUILD.bazel
 internal/cli/README.md
+internal/cli/config.go
+internal/cli/config_test.go
 internal/cli/local.go
 internal/cli/local_test.go
 internal/cli/parse.go
