@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "stdio",
+    srcs = ["config.go", "errors.go", "stdio.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/server/transport/stdio",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/model",
+    ],
+)
+
+go_test(
+    name = "stdio_test",
+    srcs = ["stdio_test.go"],
+    data = ["//internal/server/transport/stdio/fixture:stdio_fixture"],
+    env = {"STDIO_FIXTURE": "$(rootpath //internal/server/transport/stdio/fixture:stdio_fixture)"},
+    deps = [
+        ":stdio",
+        "//internal/api/wire",
+        "//internal/core/model",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

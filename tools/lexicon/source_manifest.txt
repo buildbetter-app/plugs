@@ -491,6 +491,14 @@ internal/server/transport/httpjson/server.go
 internal/server/transport/inprocess/BUILD.bazel
 internal/server/transport/inprocess/inprocess.go
 internal/server/transport/inprocess/inprocess_test.go
+internal/server/transport/stdio/BUILD.bazel
+internal/server/transport/stdio/README.md
+internal/server/transport/stdio/config.go
+internal/server/transport/stdio/errors.go
+internal/server/transport/stdio/fixture/BUILD.bazel
+internal/server/transport/stdio/fixture/main.go
+internal/server/transport/stdio/stdio.go
+internal/server/transport/stdio/stdio_test.go
 internal/server/watch/BUILD.bazel
 internal/server/watch/authorization.go
 internal/server/watch/boundaries_test.go
