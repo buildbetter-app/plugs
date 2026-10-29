@@ -59,7 +59,7 @@ func controlJSON(kind, details, extra string) string {
 
 func TestEveryEventKindAgainstOpenRPC(t *testing.T) {
 	schemas := componentSchemas(t)
-	durable := schemas["DurableEvent"].(map[string]any)["properties"].(map[string]any)["type"].(map[string]any)["enum"].([]any)
+	durable := schemas["OrdinaryDurableEvent"].(map[string]any)["properties"].(map[string]any)["type"].(map[string]any)["enum"].([]any)
 	for _, kind := range durable {
 		raw := durableJSON(kind.(string))
 		roundtripComponent(t, "Event", raw, &Event{})

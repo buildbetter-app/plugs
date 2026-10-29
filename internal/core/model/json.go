@@ -49,8 +49,9 @@ func decodeStrict(data []byte, dst any, required ...string) error {
 
 // encoding/json matches field names without regard to case and treats null
 // as a no-op for scalar fields. Neither behavior matches JSON Schema. Check
-// the exact member names and typed collection elements before decoding. Only
-// sponsor is nullable; RawMessage and any deliberately retain arbitrary JSON.
+// the exact member names and typed collection elements before decoding. Fields
+// tagged nullable preserve explicit nulls (sponsor and legacy history slices);
+// RawMessage and any deliberately retain arbitrary JSON.
 func checkWireFields(fields map[string]json.RawMessage, typ reflect.Type) error {
 	allowed := map[string]reflect.StructField{}
 	var collect func(reflect.Type)
