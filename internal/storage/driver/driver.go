@@ -396,7 +396,13 @@ type ChangesetHeader struct {
 	ResponsePending bool
 	Mutators        []string
 	Changes         []model.ChangeRecord
-	LockKeys        []LockKey // complete, sorted set acquired before any write
+	// Events is the complete ordered durable-event plan for this changeset.
+	// A nil slice preserves the legacy history discriminator; a non-nil slice
+	// is validated as a complete plan by model.Changeset.ValidateEvents. A
+	// driver owns its retained copy through model.CloneEventDescriptors when
+	// it accepts the header; the plan is part of the same atomic commit.
+	Events   []model.EventDescriptor
+	LockKeys []LockKey // complete, sorted set acquired before any write
 }
 type StoreHealth struct {
 	Driver               string
