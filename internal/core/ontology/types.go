@@ -121,13 +121,14 @@ type Violation struct {
 
 // BeadState is an ontology view of a record, not a second storage model.
 // Metadata is deliberately separate and never accepted as a typed field.
+// BeadState is the ontology view of a record. Fields preserves raw priority and
+// template alongside custom typed fields; Status is extracted by the adapter.
 type BeadState struct {
 	ID       string         `json:"id,omitempty"`
 	Project  string         `json:"project,omitempty"`
 	Type     string         `json:"type"`
 	Status   string         `json:"status"`
 	Template bool           `json:"template,omitempty"`
-	Priority *int           `json:"priority,omitempty"` // fixed v1 domain P0 through P4
 	Fields   map[string]any `json:"fields,omitempty"`
 }
 
