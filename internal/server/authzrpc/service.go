@@ -322,10 +322,14 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	if err != nil {
 		return service.BeadPage{}, authzError(err)
 	}
-	facts, err := s.checker.load(ctx, snapshot, caller)
+	authorization, err := s.checker.load(ctx, snapshot, caller)
 	if err != nil {
 		return service.BeadPage{}, &model.Error{Message: "authorization facts unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
+	if position != nil && (!position.AuthorizationBound || !authorization.authorizationBound || position.AuthorizationRevision.String() != authorization.authorizationRevision.String()) {
+		return service.BeadPage{}, &model.Error{Message: "authorization facts changed since cursor issuance", Data: model.ErrorData{Code: "cursor_invalid"}}
+	}
+	facts := authorization
 	// History visibility is current bead read authorization; fixed CP7's
 	// history resource does not create a second permission vocabulary.
 	resourceKind := authz.Bead
@@ -369,7 +373,11 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	}
 	out := service.BeadPage{Items: append([]service.Bead(nil), filtered[offset:end]...), AsOf: page.AsOf}
 	if end < len(filtered) {
-		out.Next = &service.PagePosition{Offset: end, AsOf: page.AsOf}
+		out.Next = &service.PagePosition{
+			Offset: end, AsOf: page.AsOf,
+			AuthorizationRevision: authorization.authorizationRevision,
+			AuthorizationBound:    authorization.authorizationBound,
+		}
 	}
 	return out, nil
 }

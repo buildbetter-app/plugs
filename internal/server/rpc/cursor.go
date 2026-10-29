@@ -23,14 +23,16 @@ type pageCodec struct {
 	incarnation string
 }
 type cursorPayload struct {
-	Version     int            `json:"version"`
-	Method      string         `json:"method"`
-	Principal   string         `json:"principal"`
-	Scope       string         `json:"scope"`
-	Ontology    model.Revision `json:"ontology"`
-	Incarnation string         `json:"incarnation"`
-	Offset      int            `json:"offset"`
-	AsOf        asOf           `json:"asOf"`
+	Version               int            `json:"version"`
+	Method                string         `json:"method"`
+	Principal             string         `json:"principal"`
+	Scope                 string         `json:"scope"`
+	Ontology              model.Revision `json:"ontology"`
+	Incarnation           string         `json:"incarnation"`
+	Offset                int            `json:"offset"`
+	AsOf                  asOf           `json:"asOf"`
+	AuthorizationRevision model.Revision `json:"authorizationRevision,omitempty"`
+	AuthorizationBound    bool           `json:"authorizationBound,omitempty"`
 }
 
 func newPageCodec(config Config) (*pageCodec, error) {
@@ -143,7 +145,15 @@ func (c *pageCodec) decode(call Call, p serviceParams) (*service.PagePosition, e
 	if payload.Method != call.Method || payload.Principal != principal || payload.Scope != scope || !sameRevision(payload.Ontology, c.ontology) || payload.AsOf.Incarnation != c.incarnation {
 		return nil, cursorInvalid()
 	}
-	return &service.PagePosition{Offset: payload.Offset, AsOf: service.AsOf{Revision: payload.AsOf.Revision, Incarnation: payload.AsOf.Incarnation}}, nil
+	if payload.AuthorizationBound && payload.AuthorizationRevision.Validate() != nil {
+		return nil, cursorInvalid()
+	}
+	return &service.PagePosition{
+		Offset:                payload.Offset,
+		AsOf:                  service.AsOf{Revision: payload.AsOf.Revision, Incarnation: payload.AsOf.Incarnation},
+		AuthorizationRevision: payload.AuthorizationRevision,
+		AuthorizationBound:    payload.AuthorizationBound,
+	}, nil
 }
 
 func (c *pageCodec) encode(call Call, p serviceParams, position service.PagePosition) (string, error) {
@@ -156,11 +166,20 @@ func (c *pageCodec) encode(call Call, p serviceParams, position service.PagePosi
 	if position.AsOf.Incarnation != c.incarnation {
 		return "", fmt.Errorf("service returned another incarnation")
 	}
+	if position.AuthorizationBound && position.AuthorizationRevision.Validate() != nil {
+		return "", fmt.Errorf("service returned an invalid authorization revision")
+	}
 	principal, scope, err := c.binding(call, p)
 	if err != nil {
 		return "", err
 	}
-	payload := cursorPayload{Version: 1, Method: call.Method, Principal: principal, Scope: scope, Ontology: c.ontology, Incarnation: c.incarnation, Offset: position.Offset, AsOf: asOf{position.AsOf.Revision, position.AsOf.Incarnation}}
+	payload := cursorPayload{
+		Version: 1, Method: call.Method, Principal: principal, Scope: scope,
+		Ontology: c.ontology, Incarnation: c.incarnation, Offset: position.Offset,
+		AsOf:                  asOf{position.AsOf.Revision, position.AsOf.Incarnation},
+		AuthorizationRevision: position.AuthorizationRevision,
+		AuthorizationBound:    position.AuthorizationBound,
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", err

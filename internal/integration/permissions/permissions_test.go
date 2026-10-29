@@ -371,6 +371,33 @@ func TestRealHTTPClaimNextAndPinnedFactsInvalidation(t *testing.T) {
 	_ = reader.Close()
 }
 
+func TestRealHTTPCursorBindsAuthorizationFacts(t *testing.T) {
+	f := newFixture(t)
+	user := f.issue(t, model.PrincipalRef{Kind: "user", ID: "user:operator"})
+	first := result(t, f.call(t, user.Token, "bead.ready", map[string]any{
+		"limit": 1, "_meta": map[string]any{"project": "project"},
+	}))
+	cursor, ok := first["nextCursor"].(string)
+	if !ok || cursor == "" {
+		t.Fatalf("ready page did not return a continuation cursor: %s", f.call(t, user.Token, "bead.ready", nil).body)
+	}
+	meta, err := f.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := authzfixed.Facts{
+		Namespace: authz.Namespace{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))},
+		Projects:  []authzfixed.Project{{Ref: model.RefByID("project", model.Natural64(0)), InstallationID: "fixed", Name: "project", Active: true}},
+		Teams:     []authzfixed.Team{{Ref: model.RefByID("team", model.Natural64(0)), InstallationID: "fixed", Active: true}},
+	}
+	if err := f.facts.Replace(updated); err != nil {
+		t.Fatal(err)
+	}
+	wantCode(t, f.call(t, user.Token, "bead.ready", map[string]any{
+		"limit": 1, "cursor": cursor, "_meta": map[string]any{"project": "project"},
+	}), "cursor_invalid")
+}
+
 func TestFixedPermissionCompositionRequiresRealInputs(t *testing.T) {
 	store := memory.New()
 	defer store.Close()

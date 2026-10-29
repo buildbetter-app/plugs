@@ -13,9 +13,11 @@ import (
 )
 
 type slice struct {
-	snapshot Snapshot
-	facts    authzfixed.Facts
-	expected authz.Caller
+	snapshot              Snapshot
+	facts                 authzfixed.Facts
+	expected              authz.Caller
+	authorizationRevision model.Revision
+	authorizationBound    bool
 }
 
 var _ authz.Slice = (*slice)(nil)

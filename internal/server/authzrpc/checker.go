@@ -55,7 +55,14 @@ func (c *Checker) load(ctx context.Context, snapshot Snapshot, expected authz.Ca
 	if facts.Namespace != c.chain.Namespace {
 		return nil, fmt.Errorf("authorization facts namespace changed")
 	}
-	return &slice{snapshot: snapshot, facts: facts, expected: expected}, nil
+	state, err := observeACL(ctx, snapshot, facts.Namespace)
+	if err != nil {
+		return nil, err
+	}
+	return &slice{
+		snapshot: snapshot, facts: facts, expected: expected,
+		authorizationRevision: state.Revision, authorizationBound: true,
+	}, nil
 }
 
 func (c *Checker) decision(ctx context.Context, snapshot Snapshot, principal model.PrincipalRef, action authz.Action, kind authz.ResourceKind, ref model.Ref, method string) (bool, error) {
