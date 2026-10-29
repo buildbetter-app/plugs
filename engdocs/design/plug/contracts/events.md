@@ -7,8 +7,9 @@ write, but that write receives its own changeset and causal chain.
 
 The public JSON-RPC methods are `event.list`, `event.subscribe`, and
 `event.unsubscribe`. `event.notify` is a server-to-client push frame. The
-`event.gap`, `watch.reset`, and `visibility.lost` entries below are control
-records or delivery markers, not arbitrary plugin-defined event types.
+`event.gap`, `store.restored`, `watch.reset`, and `visibility.lost` entries
+below are control records or delivery markers, not arbitrary plugin-defined
+event types.
 
 ## Durable event types
 
@@ -49,7 +50,6 @@ camel-case aliases.
 | `sync.pushed` | sync destination | An outbound batch is accepted by a destination. | Destination telemetry is not a substitute for the bead changeset event. |
 | `sync.imported` | sync destination | A one-shot import creates `import` changesets. | Each imported record's actual bead event is emitted in its own changeset. |
 | `derived.updated` | derived record | A follow-up derived changeset updates readiness, closures, indexes, or sort keys. | Projections consume these in total order. `derived=true`. |
-| `store.restored` | store | A dump restore completes and mints a new incarnation. | Sent as a control boundary; cursors from the old incarnation cannot continue. |
 
 A successful `bead.heartbeat` renews an unversioned lease and returns no
 revision, so it does not emit a durable bead event. A failed operation emits no
@@ -63,6 +63,7 @@ boundary, but they do not represent a plugin-created graph mutation.
 | Type | Meaning | Required details |
 | --- | --- | --- |
 | `event.gap` | The stream crosses a restore, failover, or a checkpoint below the available head. | `details.fromIncarnation`, `details.toIncarnation`, `details.floor`, and `details.reason`. The client must reopen/resume from the returned cursor. |
+| `store.restored` | A dump restore completes and mints a new incarnation. | `details.fromIncarnation`, `details.toIncarnation`, and `details.reason: "restore"`; the envelope carries the new incarnation and old cursors cannot continue. |
 | `watch.delta` | A coalesced snapshot-then-delta delivery frame. | `details.subscriptionId`, `details.fromCursor`, `details.toCursor`, and ordered `events`. It never reorders visible rows. |
 | `watch.reset` | A watch must be rebuilt because policy, ontology, view membership, overflow, lag, or visibility changed. | `details.subscriptionId`, `details.reason`, and a new snapshot cursor. |
 | `visibility.lost` | A resource that was previously visible is no longer readable under the current authorization chain. | `resource`, `details.reason`, and no readable `before`/`after` values. |
@@ -79,15 +80,16 @@ Every frame has a `category` tag:
 
 - `category: "durable"` selects a graph event and requires the durable envelope
   fields (`resource`, `changed`, `principal`, `chain`, `setBy`, `cause`).
-- `category: "control"` selects one of the five control types above and
+- `category: "control"` selects one of the six control types above and
   requires its type-specific `details` object. Control frames never carry
   readable `before` or `after` images, and `derived` is always false.
 
 The type/detail pairs are closed: `event.gap` uses `EventGapDetails`,
 `watch.delta` uses `WatchDeltaDetails`, `watch.reset` uses `WatchResetDetails`,
-`visibility.lost` uses `VisibilityLostDetails`, and `rpc.rejected` uses
-`RPCRejectedDetails`. `watch.delta.details.events` contains the same `Event`
-union, so a coalesced frame cannot smuggle an untyped event payload.
+`visibility.lost` uses `VisibilityLostDetails`, `rpc.rejected` uses
+`RPCRejectedDetails`, and `store.restored` uses `StoreRestoredDetails`.
+`watch.delta.details.events` contains the same `Event` union, so a coalesced
+frame cannot smuggle an untyped event payload.
 
 The Go model uses the same `Event` union with `DurableEvent` and
 `ControlEvent` members and custom JSON marshal/unmarshal at the transport
@@ -122,7 +124,7 @@ event may instead be replaced by `visibility.lost`.
 }
 ```
 
-For example, a gap is a control frame rather than a graph event:
+For example, a restore is a control frame rather than a durable graph event:
 
 ```json
 {
@@ -131,11 +133,10 @@ For example, a gap is a control frame rather than a graph event:
   "incarnation": "new-incarnation-ulid",
   "revision": 0,
   "index": 0,
-  "type": "event.gap",
+  "type": "store.restored",
   "details": {
     "fromIncarnation": "old-incarnation-ulid",
     "toIncarnation": "new-incarnation-ulid",
-    "floor": 0,
     "reason": "restore"
   },
   "derived": false

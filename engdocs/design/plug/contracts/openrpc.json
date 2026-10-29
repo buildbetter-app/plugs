@@ -2,7 +2,7 @@
   "openrpc": "1.3.2",
   "info": {
     "title": "Plug JSON-RPC contract",
-    "description": "Canonical tagged JSON-RPC v1 contract snapshot for Plug. Go and OpenRPC share the operation, event, cursor, and error encodings; source provenance is recorded in x-source-evidence until the C1 registry generator lands.",
+    "description": "Canonical tagged JSON-RPC v1 contract snapshot for Plug. Go and OpenRPC share the operation, event, cursor, and error encodings; source provenance and an independently checked method registry are recorded in this document.",
     "version": "0.1.0"
   },
   "servers": [
@@ -433,6 +433,9 @@
         },
         {
           "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -522,6 +525,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -616,6 +625,12 @@
         },
         {
           "$ref": "#/components/errors/FieldOwned"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -797,9 +812,6 @@
         },
         {
           "$ref": "#/components/errors/LeaseExpired"
-        },
-        {
-          "$ref": "#/components/errors/ProjectRequired"
         }
       ],
       "x-effect": "write",
@@ -1040,6 +1052,12 @@
         },
         {
           "$ref": "#/components/errors/OntologyUseSlotVerb"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -1132,6 +1150,12 @@
         },
         {
           "$ref": "#/components/errors/OntologyUseSlotVerb"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -1224,6 +1248,12 @@
         },
         {
           "$ref": "#/components/errors/OntologyUseSlotVerb"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -1316,6 +1346,12 @@
         },
         {
           "$ref": "#/components/errors/OntologyUseSlotVerb"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -1408,6 +1444,12 @@
         },
         {
           "$ref": "#/components/errors/OntologyUseSlotVerb"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -1498,6 +1540,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -1595,6 +1643,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -1692,6 +1746,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -1814,6 +1874,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -1897,6 +1963,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -2030,6 +2102,12 @@
         },
         {
           "$ref": "#/components/errors/ClosureTooLarge"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -2291,6 +2369,9 @@
         },
         {
           "$ref": "#/components/errors/TooManySessions"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -2437,6 +2518,9 @@
         },
         {
           "$ref": "#/components/errors/HistoryGone"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -2521,6 +2605,15 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "write",
@@ -2706,6 +2799,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -3017,7 +3116,10 @@
           "$ref": "#/components/errors/IdempotencyKeyReused"
         },
         {
-          "$ref": "#/components/errors/OntologyGuardFailed"
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -3117,7 +3219,10 @@
           "$ref": "#/components/errors/IdempotencyKeyReused"
         },
         {
-          "$ref": "#/components/errors/OntologyGuardFailed"
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -3461,6 +3566,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -3555,6 +3666,9 @@
         },
         {
           "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -3778,6 +3892,9 @@
         },
         {
           "$ref": "#/components/errors/HistoryGone"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -4055,6 +4172,14 @@
           "required": true
         },
         {
+          "name": "humanPresence",
+          "schema": {
+            "$ref": "#/components/schemas/HumanPresence"
+          },
+          "description": "Required D32 proof. Protected history reverts require an interactive authenticated session or an anonymous presence check bound to the revert digest.",
+          "required": true
+        },
+        {
           "name": "_meta",
           "schema": {
             "$ref": "#/components/schemas/Meta"
@@ -4093,6 +4218,15 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
+        },
+        {
+          "$ref": "#/components/errors/HumanPresenceRequired"
         }
       ],
       "x-effect": "write",
@@ -4195,6 +4329,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -4335,6 +4475,9 @@
         },
         {
           "$ref": "#/components/errors/CursorExpired"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -4425,6 +4568,12 @@
         },
         {
           "$ref": "#/components/errors/RateLimited"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "restore",
@@ -4532,6 +4681,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "restore",
@@ -4627,6 +4782,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "restore",
@@ -4727,6 +4888,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -4801,6 +4968,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -5048,6 +5221,9 @@
         },
         {
           "$ref": "#/components/errors/RateLimited"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -5128,6 +5304,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -5253,6 +5435,9 @@
         },
         {
           "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -5321,6 +5506,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -5409,6 +5600,9 @@
         },
         {
           "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -5535,6 +5729,9 @@
         },
         {
           "$ref": "#/components/errors/TooManySessions"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -5597,6 +5794,9 @@
         },
         {
           "$ref": "#/components/errors/TooManySessions"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -5720,6 +5920,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -5810,6 +6016,15 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "write",
@@ -5942,6 +6157,9 @@
         },
         {
           "$ref": "#/components/errors/RateLimited"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
         }
       ],
       "x-effect": "read",
@@ -6026,6 +6244,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -6095,6 +6319,12 @@
         },
         {
           "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
         }
       ],
       "x-effect": "write",
@@ -8025,8 +8255,7 @@
               "memory.deleted",
               "sync.pushed",
               "sync.imported",
-              "derived.updated",
-              "store.restored"
+              "derived.updated"
             ]
           },
           "resource": {
@@ -8349,6 +8578,48 @@
               "derived"
             ],
             "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "category": {
+                "const": "control"
+              },
+              "cursor": {
+                "type": "string"
+              },
+              "incarnation": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "type": {
+                "const": "store.restored"
+              },
+              "details": {
+                "$ref": "#/components/schemas/StoreRestoredDetails"
+              },
+              "derived": {
+                "const": false
+              }
+            },
+            "required": [
+              "category",
+              "cursor",
+              "incarnation",
+              "revision",
+              "index",
+              "type",
+              "details",
+              "derived"
+            ],
+            "additionalProperties": false
           }
         ]
       },
@@ -8543,6 +8814,27 @@
           "visibility_lost"
         ],
         "description": "Closed subset of error codes permitted in result.warnings."
+      },
+      "StoreRestoredDetails": {
+        "type": "object",
+        "properties": {
+          "fromIncarnation": {
+            "type": "string"
+          },
+          "toIncarnation": {
+            "type": "string"
+          },
+          "reason": {
+            "const": "restore"
+          }
+        },
+        "required": [
+          "fromIncarnation",
+          "toIncarnation",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "description": "Restore crossed the incarnation boundary; the envelope carries the new incarnation."
       }
     },
     "errors": {
@@ -11086,20 +11378,4303 @@
     "rule": "Plugin methods are declared by the manifest under x.<alias>.*; each declares a permission and resource parameter. The dynamic set is not enumerated here."
   },
   "x-contract-gaps": [
-    "The design names admin.restore.* and memory.* without fixing concrete verbs; begin/chunk/finish and get/list/save/delete are provisional entries.",
-    "The design names authn.authenticate and authz.* as plugin-host calls; authn.authenticate and authz.verify are represented, while other hot-path calls remain host-internal."
+    "The design names authn.authenticate and authz.* as plugin-host calls; authn.authenticate and authz.verify are represented, while other hot-path calls remain host-internal.",
+    "Authorization is reopened by accepted decision #15 after the failed repaired latency gate; affected implementation remains blocked pending human approval of the revisited design (D3). Existing descriptors are not a new model selection."
   ],
+  "x-method-registry": {
+    "format": "plug-method-registry/1",
+    "status": "bounded-contract-artifact",
+    "purpose": "Human-maintained bounded contract artifact, read independently of methods at validation time; validates the closed method inventory, descriptor fields and wire inventories before an implementation generator exists.",
+    "methodCount": 80,
+    "nameOrder": "methods are compared in this order; the final item is followed by LF",
+    "nameSha256": "355deea070d9682db79d7993e9f284ac911c0a2a35374cc1d5b60eede071f874",
+    "descriptorSha256": "88d77831d2da23890dd8fd226aaea5b07b812a83baa5c59f67b92ed458a1795e",
+    "requiredDescriptorFields": [
+      "name",
+      "effect",
+      "idempotency",
+      "permission",
+      "stability",
+      "agentCore",
+      "params",
+      "resultSchema",
+      "errors"
+    ],
+    "validation": {
+      "uniqueNames": true,
+      "nonEmptyErrorsForMethods": "effect != event",
+      "closedEffects": [
+        "read",
+        "write",
+        "plan",
+        "restore",
+        "event",
+        "authn"
+      ],
+      "rule": "Compare each registry method by name with exactly one OpenRPC method; reject a missing or duplicate name, descriptor mismatch, absent effect/permission/idempotency/stability/schema, unknown error reference, or duplicate error reference. The registry artifact is independently checked; it is not generated from the methods array at validation time."
+    },
+    "methods": [
+      {
+        "name": "server.hello",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "none",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "clientVersion",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "protocolVersion",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "serverVersion": {
+              "type": "string"
+            },
+            "protocolVersion": {
+              "type": "string"
+            },
+            "methodsHash": {
+              "type": "string"
+            },
+            "ontologyRevision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "defaultProject": {
+              "type": "string"
+            },
+            "authMode": {
+              "type": "string",
+              "enum": [
+                "anonymous",
+                "authenticated"
+              ]
+            },
+            "incarnation": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "serverVersion",
+            "protocolVersion",
+            "methodsHash",
+            "ontologyRevision",
+            "authMode",
+            "incarnation"
+          ],
+          "additionalProperties": false
+        },
+        "errors": [
+          "#/components/errors/RateLimited"
+        ]
+      },
+      {
+        "name": "rpc.methods",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "methods": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "methodsHash": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "methods",
+            "methodsHash"
+          ],
+          "additionalProperties": false
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/RateLimited"
+        ]
+      },
+      {
+        "name": "rpc.describe",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "method",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "errors": [
+          "#/components/errors/MethodNotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/RateLimited"
+        ]
+      },
+      {
+        "name": "rpc.discover",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "none",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "openrpc": {
+              "type": "string"
+            },
+            "methods": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "methodsHash": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "openrpc",
+            "methods",
+            "methodsHash"
+          ],
+          "additionalProperties": false
+        },
+        "errors": [
+          "#/components/errors/RateLimited"
+        ]
+      },
+      {
+        "name": "rpc.rejected",
+        "effect": "event",
+        "idempotency": "none",
+        "permission": "none",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "reason",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "requestId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "null"
+        },
+        "errors": []
+      },
+      {
+        "name": "bead.get",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AsOf"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/BeadGetResult"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/RateLimited",
+          "#/components/errors/Busy",
+          "#/components/errors/CursorExpired"
+        ]
+      },
+      {
+        "name": "bead.ready",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "viewId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Filter"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/BeadPage"
+        },
+        "errors": [
+          "#/components/errors/AuthzPostfilterCap",
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/RateLimited",
+          "#/components/errors/Busy",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/CursorExpired",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "bead.create",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fields",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          {
+            "name": "parent",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.update",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "fields",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/FieldOwned",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.claim",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/ClaimResult"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.claimNext",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "viewId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Filter"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/ClaimResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.heartbeat",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/HeartbeatResult"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused"
+        ]
+      },
+      {
+        "name": "bead.release",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.close",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/OntologyUseSlotVerb",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.fail",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/OntologyUseSlotVerb",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.cancel",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/OntologyUseSlotVerb",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.reopen",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/OntologyUseSlotVerb",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.defer",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/OntologyUseSlotVerb",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.comment",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "body",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.link",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "from",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "to",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.unlink",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "from",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "to",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.attach",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "link",
+                "commit",
+                "blob",
+                "log"
+              ]
+            }
+          },
+          {
+            "name": "uri",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "contentRef",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mediaType",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "summary",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "blob.upload",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "uploadId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "chunk",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "final",
+            "required": true,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "sha256",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/UploadResult"
+        },
+        "errors": [
+          "#/components/errors/InvalidParams",
+          "#/components/errors/Forbidden",
+          "#/components/errors/RateLimited",
+          "#/components/errors/Busy",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.transitions",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/TransitionsResult"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/RateLimited",
+          "#/components/errors/Busy"
+        ]
+      },
+      {
+        "name": "tx.apply",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "changeSet",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ChangeSet"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/ProtectedRecord",
+          "#/components/errors/ClosureTooLarge",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "auth.whoami",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/WhoAmIResult"
+        },
+        "errors": [
+          "#/components/errors/Unauthenticated",
+          "#/components/errors/TokenExpired",
+          "#/components/errors/AuthnUnavailable"
+        ]
+      },
+      {
+        "name": "agent.brief",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "project",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "budgetTokens",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/BriefResult"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/RateLimited",
+          "#/components/errors/Busy",
+          "#/components/errors/ProjectRequired"
+        ]
+      },
+      {
+        "name": "event.list",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "filter",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Filter"
+            }
+          },
+          {
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/EventPage"
+        },
+        "errors": [
+          "#/components/errors/AuthzPostfilterCap",
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/RateLimited",
+          "#/components/errors/Busy",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/CursorExpired",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "event.subscribe",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "filter",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Filter"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "viewId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Subscription"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/RateLimited",
+          "#/components/errors/Busy",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/CursorExpired",
+          "#/components/errors/TooManySessions",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "event.unsubscribe",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "subscriptionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "unsubscribed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "unsubscribed"
+          ],
+          "additionalProperties": false
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden"
+        ]
+      },
+      {
+        "name": "event.notify",
+        "effect": "event",
+        "idempotency": "none",
+        "permission": "none",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "notification",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/EventNotify"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "null"
+        },
+        "errors": []
+      },
+      {
+        "name": "event.explain",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "revision",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/HistoryGone",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "event.subscription.skip",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "admin",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "subscriptionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "reason",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "humanPresence",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/HumanPresence"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/HumanPresenceRequired",
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "plugin.plan",
+        "effect": "plan",
+        "idempotency": "required",
+        "permission": "plan",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "manifest",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Plan"
+        },
+        "errors": [
+          "#/components/errors/AuthzLinkAllowNotLast",
+          "#/components/errors/Forbidden",
+          "#/components/errors/AuthzRequiresAuthn",
+          "#/components/errors/LockoutRefused",
+          "#/components/errors/FieldOwned",
+          "#/components/errors/RefMoved",
+          "#/components/errors/AuthzPolicyInvalid",
+          "#/components/errors/ClosureTooLarge",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired"
+        ]
+      },
+      {
+        "name": "plugin.apply",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "admin",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "planDigest",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "humanPresence",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/HumanPresence"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/HumanPresenceRequired",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/AuthzRequiresAuthn",
+          "#/components/errors/LockoutRefused",
+          "#/components/errors/FieldOwned",
+          "#/components/errors/RefMoved",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "authn.authenticate",
+        "effect": "authn",
+        "idempotency": "none",
+        "permission": "none",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "credential",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/WhoAmIResult"
+        },
+        "errors": [
+          "#/components/errors/Unauthenticated",
+          "#/components/errors/TokenExpired",
+          "#/components/errors/AuthnUnavailable",
+          "#/components/errors/RateLimited"
+        ]
+      },
+      {
+        "name": "authz.verify",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repair",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "violations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Violation"
+              }
+            },
+            "checkedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "ok",
+            "violations",
+            "checkedAt"
+          ],
+          "additionalProperties": false
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/AuthzVerifyFailed",
+          "#/components/errors/AuthzUnavailable"
+        ]
+      },
+      {
+        "name": "x.apikey.token.exchange",
+        "effect": "authn",
+        "idempotency": "none",
+        "permission": "none",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "token": {
+              "type": "string"
+            },
+            "expiresAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "principal": {
+              "$ref": "#/components/schemas/Principal"
+            }
+          },
+          "required": [
+            "token",
+            "expiresAt",
+            "principal"
+          ],
+          "additionalProperties": false
+        },
+        "errors": [
+          "#/components/errors/Unauthenticated",
+          "#/components/errors/AuthzNotInstalled",
+          "#/components/errors/AuthnUnavailable",
+          "#/components/errors/RateLimited"
+        ]
+      },
+      {
+        "name": "gate.approve",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "approve",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/GateResult"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "gate.report",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "state",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "details",
+            "required": false,
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/GateResult"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/SubscriberUnavailable",
+          "#/components/errors/OntologyGuardFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "ontology.get",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "project",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/OntologyResult"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/NotFound",
+          "#/components/errors/ProjectRequired"
+        ]
+      },
+      {
+        "name": "ontology.describe",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "project",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/OntologyResult"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/NotFound",
+          "#/components/errors/ProjectRequired"
+        ]
+      },
+      {
+        "name": "ontology.schema",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "project",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/NotFound",
+          "#/components/errors/UnknownField",
+          "#/components/errors/ProjectRequired"
+        ]
+      },
+      {
+        "name": "ontology.plan",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "document",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/OntologyDocument"
+            }
+          },
+          {
+            "name": "project",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Plan"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/OntologyPlanStale",
+          "#/components/errors/OntologyMigrationTooLarge",
+          "#/components/errors/FieldOwned",
+          "#/components/errors/AuthzPolicyInvalid",
+          "#/components/errors/ClosureTooLarge",
+          "#/components/errors/UnknownField",
+          "#/components/errors/ProjectRequired"
+        ]
+      },
+      {
+        "name": "ontology.apply",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "admin",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "planDigest",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "humanPresence",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/HumanPresence"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/HumanPresenceRequired",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/OntologyPlanStale",
+          "#/components/errors/OntologyMigrationTooLarge",
+          "#/components/errors/FieldOwned",
+          "#/components/errors/AuthzPolicyInvalid",
+          "#/components/errors/ClosureTooLarge",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "ontology.history",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "project",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "revisions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Changeset"
+              }
+            },
+            "nextCursor": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "revisions"
+          ],
+          "additionalProperties": false
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/CursorExpired",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "ontology.diff",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "fromRevision",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "toRevision",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "project",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/NotFound",
+          "#/components/errors/ProjectRequired"
+        ]
+      },
+      {
+        "name": "ontology.check",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "project",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "problems": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/OntologyProblem"
+              }
+            },
+            "drifted": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "problems",
+            "drifted"
+          ],
+          "additionalProperties": false
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/Busy"
+        ]
+      },
+      {
+        "name": "history.versions",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "cursor": {
+                  "type": "string"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "versions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/HistoryVersion"
+              }
+            },
+            "nextCursor": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "versions"
+          ],
+          "additionalProperties": false
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/CursorExpired",
+          "#/components/errors/HistoryGone",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "history.get",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "asOf",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AsOf"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/HistoryVersion"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/HistoryGone",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "history.query",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "asOf",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AsOf"
+            }
+          },
+          {
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Filter"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/BeadPage"
+        },
+        "errors": [
+          "#/components/errors/AuthzPostfilterCap",
+          "#/components/errors/Forbidden",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/CursorExpired",
+          "#/components/errors/HistoryGone",
+          "#/components/errors/IncarnationChanged",
+          "#/components/errors/ProjectRequired"
+        ]
+      },
+      {
+        "name": "history.diff",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "fromRevision",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "toRevision",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "patch": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "changedPaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "patch",
+            "changedPaths"
+          ],
+          "additionalProperties": false
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/HistoryGone",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "history.revert",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "baseRevision",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "expect",
+            "required": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "humanPresence",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/HumanPresence"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/ProtectedRecord",
+          "#/components/errors/HistoryGone",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired",
+          "#/components/errors/HumanPresenceRequired"
+        ]
+      },
+      {
+        "name": "history.redact",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "admin",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "paths",
+            "required": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          },
+          {
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "humanPresence",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/HumanPresence"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/HumanPresenceRequired",
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/ProtectedRecord",
+          "#/components/errors/HistoryGone",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "admin.health",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "admin",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Health"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/Busy"
+        ]
+      },
+      {
+        "name": "admin.dump",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "admin",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "history",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "full",
+                "head"
+              ]
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 67108864
+            }
+          },
+          {
+            "name": "humanPresence",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/HumanPresence"
+            }
+          },
+          {
+            "name": "includeCiphertext",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/DumpPage"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/HumanPresenceRequired",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/CursorExpired",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "admin.restore.begin",
+        "effect": "restore",
+        "idempotency": "required",
+        "permission": "admin",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "manifest",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          {
+            "name": "history",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "full",
+                "head"
+              ]
+            }
+          },
+          {
+            "name": "humanPresence",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/HumanPresence"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/RestoreStatus"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/HumanPresenceRequired",
+          "#/components/errors/RestoreRequiresEmpty",
+          "#/components/errors/RestoreChecksumFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "admin.restore.chunk",
+        "effect": "restore",
+        "idempotency": "required",
+        "permission": "admin",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "restoreId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "data",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sha256",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "humanPresence",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/HumanPresence"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/RestoreStatus"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/HumanPresenceRequired",
+          "#/components/errors/NotFound",
+          "#/components/errors/RestoreChecksumFailed",
+          "#/components/errors/RestoreRequiresEmpty",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "admin.restore.finish",
+        "effect": "restore",
+        "idempotency": "required",
+        "permission": "admin",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "restoreId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "manifestSha256",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "humanPresence",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/HumanPresence"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/RestoreStatus"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/HumanPresenceRequired",
+          "#/components/errors/NotFound",
+          "#/components/errors/RestoreChecksumFailed",
+          "#/components/errors/RestoreViolation",
+          "#/components/errors/RestoreRequiresEmpty",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "admin.binding.suspend",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "admin",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "binding",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mode",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "reject",
+                "bypass"
+              ]
+            }
+          },
+          {
+            "name": "reason",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "humanPresence",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/HumanPresence"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/HumanPresenceRequired",
+          "#/components/errors/NotFound",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "admin.compact",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "admin",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "beforeRevision",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "dryRun",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/CompactionUnavailable",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "session.open",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "onBehalfOf",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Session"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/TooManySessions",
+          "#/components/errors/RateLimited"
+        ]
+      },
+      {
+        "name": "presence.set",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "focus",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "workingOn",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "onBehalfOf",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Presence"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/NotFound",
+          "#/components/errors/TooManySessions",
+          "#/components/errors/RateLimited"
+        ]
+      },
+      {
+        "name": "presence.list",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "project",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "presence": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Presence"
+              }
+            }
+          },
+          "required": [
+            "presence"
+          ],
+          "additionalProperties": false
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/RateLimited"
+        ]
+      },
+      {
+        "name": "presence.watch",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Subscription"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/NotFound",
+          "#/components/errors/TooManySessions",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "view.save",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "definition",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ViewDefinition"
+            }
+          },
+          {
+            "name": "viewId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/View"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/UnknownField",
+          "#/components/errors/FilterTooBroad",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "view.get",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "viewId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/View"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/ProjectRequired"
+        ]
+      },
+      {
+        "name": "view.list",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "type": "object",
+          "properties": {
+            "views": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/View"
+              }
+            },
+            "nextCursor": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "views"
+          ],
+          "additionalProperties": false
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/CursorExpired",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "view.delete",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "viewId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "view.run",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "viewId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "definition",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ViewDefinition"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AsOf"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/ViewResult"
+        },
+        "errors": [
+          "#/components/errors/AuthzPostfilterCap",
+          "#/components/errors/Forbidden",
+          "#/components/errors/NotFound",
+          "#/components/errors/UnknownField",
+          "#/components/errors/FilterTooBroad",
+          "#/components/errors/ScopeTooLarge",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/CursorExpired",
+          "#/components/errors/HistoryGone",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "view.explain",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "viewId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "itemId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/ViewExplainResult"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/UnknownField",
+          "#/components/errors/ProjectRequired"
+        ]
+      },
+      {
+        "name": "view.watch",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "viewId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Subscription"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/ScopeTooLarge",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/CursorExpired",
+          "#/components/errors/TooManySessions",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "bead.watch",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Subscription"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/CursorExpired",
+          "#/components/errors/TooManySessions",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "sync.status",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "destination",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/SyncStatus"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/SyncStatus"
+              }
+            }
+          ]
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/DestinationPaused",
+          "#/components/errors/RateLimited"
+        ]
+      },
+      {
+        "name": "sync.run",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "destination",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/SyncResult"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/DestinationPaused",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "sync.import",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "destination",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "project",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "humanPresence",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/HumanPresence"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/SyncResult"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/HumanPresenceRequired",
+          "#/components/errors/DestinationPaused",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "memory.get",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Memory"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/RateLimited"
+        ]
+      },
+      {
+        "name": "memory.list",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/MemoryPage"
+        },
+        "errors": [
+          "#/components/errors/AuthzPostfilterCap",
+          "#/components/errors/Forbidden",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/CursorExpired",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IncarnationChanged"
+        ]
+      },
+      {
+        "name": "memory.save",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "content",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "metadata",
+            "required": false,
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/Forbidden",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "memory.delete",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "expect",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Expect"
+              }
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/Commit"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/PreconditionFailed",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired"
+        ]
+      }
+    ],
+    "wireInventory": {
+      "operationKinds": [
+        "create",
+        "patch",
+        "reparent",
+        "link",
+        "unlink",
+        "comment",
+        "attach",
+        "delete",
+        "setMeta"
+      ],
+      "durableEventTypes": [
+        "bead.created",
+        "bead.updated",
+        "bead.reparented",
+        "bead.linked",
+        "bead.unlinked",
+        "bead.commented",
+        "bead.attached",
+        "bead.deleted",
+        "bead.claimed",
+        "bead.released",
+        "bead.closed",
+        "bead.failed",
+        "bead.canceled",
+        "bead.reopened",
+        "bead.deferred",
+        "bead.lease.reclaimed",
+        "gate.approved",
+        "gate.reported",
+        "gate.escalated",
+        "ontology.applied",
+        "plugin.applied",
+        "view.saved",
+        "view.deleted",
+        "memory.saved",
+        "memory.deleted",
+        "sync.pushed",
+        "sync.imported",
+        "derived.updated"
+      ],
+      "controlEventTypes": [
+        "event.gap",
+        "watch.delta",
+        "watch.reset",
+        "visibility.lost",
+        "rpc.rejected",
+        "store.restored"
+      ],
+      "errorCodes": [
+        "parse_error",
+        "invalid_request",
+        "method_not_found",
+        "invalid_params",
+        "internal_error",
+        "not_found",
+        "unauthenticated",
+        "token_expired",
+        "authn_unavailable",
+        "forbidden",
+        "authz_unavailable",
+        "authz_policy_invalid",
+        "authz_postfilter_cap",
+        "authz_link_allow_not_last",
+        "authz_not_installed",
+        "ontology_guard_failed",
+        "closure_too_large",
+        "protected_record",
+        "subscriber_unavailable",
+        "precondition_failed",
+        "write_conflict",
+        "busy",
+        "rate_limited",
+        "cursor_invalid",
+        "cursor_expired",
+        "idempotency_key_reused",
+        "lease_not_held",
+        "lease_expired",
+        "project_required",
+        "incarnation_changed",
+        "field_owned",
+        "ontology_plan_stale",
+        "ontology_migration_too_large",
+        "ontology_drifted",
+        "ontology_unknown_field",
+        "ontology_use_slot_verb",
+        "authz_requires_authn",
+        "lockout_refused",
+        "plugin_busy",
+        "plugin_host_write_in_sync_call",
+        "plugin_egress_in_hot_path",
+        "plugin_reentrant_write",
+        "plugin_patch_out_of_scope",
+        "subscriber_skipped",
+        "post_subscriber_failed",
+        "history_gone",
+        "visibility_lost",
+        "too_many_sessions",
+        "filter_too_broad",
+        "scope_too_large",
+        "destination_paused",
+        "ref_moved",
+        "unknown_field",
+        "restore_requires_empty",
+        "restore_checksum_failed",
+        "restore_violation",
+        "human_presence_required",
+        "authz_verify_failed",
+        "invalid_cursor",
+        "compaction_unavailable",
+        "stale_snapshot"
+      ],
+      "warningCodes": [
+        "ontology_drifted",
+        "subscriber_skipped",
+        "post_subscriber_failed",
+        "visibility_lost"
+      ]
+    },
+    "descriptorEncoding": "UTF-8 compact JSON of methods in stored key and array order, ensure_ascii=false, no final newline; names use UTF-8 with LF after every name."
+  },
   "x-source-evidence": {
     "format": "plug-contract-source/1",
-    "status": "provisional-snapshot",
+    "status": "bounded-snapshot",
     "inputs": [
       {
         "path": "design.md",
-        "sha256": "c592f5447b05134f20f9bc5ff447ae5e4a087be76d4ddd61b577abbf0d97e71f"
+        "sha256": "f32f7ae9a224dc20401c143ff36ad5386099a9364a2a8806481ab58fb826a63b"
       },
       {
         "path": "clean-room-plan.md",
-        "sha256": "1adb6b687d9a2593be33be8ae38700ade03a120c25a955f68ba17084a713cc2a"
+        "sha256": "50e22dcc9143e78745668ec157886fdb8bed1d70180a54fbe3cc27e0a490a7eb"
       },
       {
         "path": "review-2026-10-27.md",
@@ -11130,19 +15705,21 @@
       "rule": "Values are append-only and never renumbered once published; the registry is the source of truth for new allocations."
     },
     "reproduce": [
-      "PLUG_DESIGN_ROOT=/home/dev/plugs/engdocs/design/plug; sha256sum \"$PLUG_DESIGN_ROOT/design.md\" \"$PLUG_DESIGN_ROOT/clean-room-plan.md\" \"$PLUG_DESIGN_ROOT/review-2026-10-27.md\"",
+      "python3 -c \"import hashlib,pathlib; r=pathlib.Path('/home/dev/plugs/engdocs/design/plug'); [print(p.name,hashlib.sha256(p.read_bytes()).hexdigest()) for p in (r/'design.md',r/'clean-room-plan.md',r/'review-2026-10-27.md')]\"",
       "jq -e . openrpc.json",
-      "python3 /tmp/plug-swarm/work/validate-contracts.py"
+      "Run the self-contained validator in errors.md#bounded-registry-validation from the contracts directory."
     ],
     "generator": {
-      "status": "deferred-to-C1",
-      "requiredGate": "A registry/generator must replace this provisional snapshot before implementation PRs consume it."
+      "status": "bounded-contract-artifact",
+      "artifact": "#/x-method-registry",
+      "requiredGate": "The registry artifact must validate the exact method inventory and descriptor parity before implementation PRs consume this snapshot; a future generator may replace it only with equivalent checks."
     },
     "sourceRoot": {
       "kind": "external-design-checkout",
       "path": "/home/dev/plugs/engdocs/design/plug",
-      "note": "The design inputs are intentionally untracked outside this contract worktree; C1 must vendor the registry/generator and retain these digests before implementation."
-    }
+      "note": "The design inputs are intentionally untracked outside this contract worktree; this contract retains their digests. An implementation generator may later vendor the registry, but it must preserve this artifact's independent checks."
+    },
+    "authorizationStatus": "D3 completed with correctness passing and unchanged latency targets failing. Affected authorization contract and consumer implementation remains blocked pending approval of a revisited design; this snapshot does not adopt Cedar or choose a replacement model."
   },
   "x-driver-error-mappings": [
     {
@@ -11195,7 +15772,7 @@
       "schema": "#/components/schemas/Event",
       "encoding": "tagged-union",
       "discriminator": "category then type",
-      "rule": "Durable events carry graph envelope fields; control events carry only typed details and never before/after."
+      "rule": "Durable events carry graph envelope fields; control events carry only typed details and never before/after. store.restored is a control boundary that carries fromIncarnation/toIncarnation details."
     },
     "error": {
       "schema": "#/components/schemas/ErrorCode",

@@ -13,9 +13,14 @@ messages.
 package model
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"math"
+	"reflect"
+	"strings"
 	"time"
 )
 
@@ -23,6 +28,227 @@ type Revision int64
 type Branch uint32
 type ErrorCode string   // closed by components.schemas.ErrorCode in OpenRPC
 type WarningCode string // closed by components.schemas.WarningCode in OpenRPC
+
+// decodeStrict is the one JSON boundary used by every custom wire codec in
+// this sketch. OpenRPC closes these objects, so ordinary json.Unmarshal is not
+// sufficient: it silently drops unknown members and accepts a missing object
+// as its zero value. The required list is checked separately because Go's
+// zero-value fields cannot distinguish an omitted member from an explicit
+// zero. Nested values invoke their own strict codecs through json.Decoder.
+func decodeStrict(data []byte, dst any, required ...string) error {
+	var fields map[string]json.RawMessage
+	if err := decodeJSON(data, &fields); err != nil {
+		return err
+	}
+	if fields == nil {
+		return fmt.Errorf("expected JSON object")
+	}
+	for _, name := range required {
+		if _, ok := fields[name]; !ok {
+			return fmt.Errorf("missing required JSON member %q", name)
+		}
+	}
+	if err := checkWireFields(fields, reflect.TypeOf(dst).Elem()); err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	dec.UseNumber()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+// encoding/json matches field names without regard to case and treats null
+// as a no-op for scalar fields. Neither behavior matches JSON Schema. Check
+// the exact member names and typed collection elements before decoding. Only
+// sponsor is nullable; RawMessage and any deliberately retain arbitrary JSON.
+func checkWireFields(fields map[string]json.RawMessage, typ reflect.Type) error {
+	allowed := map[string]reflect.StructField{}
+	var collect func(reflect.Type)
+	collect = func(t reflect.Type) {
+		for i := 0; i < t.NumField(); i++ {
+			field := t.Field(i)
+			if field.Anonymous {
+				collect(field.Type)
+				continue
+			}
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if name != "-" && name != "" {
+				allowed[name] = field
+			}
+		}
+	}
+	collect(typ)
+	for name, raw := range fields {
+		field, ok := allowed[name]
+		if !ok {
+			return fmt.Errorf("unknown JSON member %q", name)
+		}
+		if err := checkWireValue(raw, field.Type, field.Tag.Get("wire") == "nullable"); err != nil {
+			return fmt.Errorf("JSON member %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func checkWireValue(raw json.RawMessage, typ reflect.Type, nullable bool) error {
+	if typ == reflect.TypeFor[json.RawMessage]() || typ.Kind() == reflect.Interface {
+		return nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		if nullable {
+			return nil
+		}
+		return fmt.Errorf("null is not allowed")
+	}
+	if typ.Kind() == reflect.Pointer {
+		return checkWireValue(raw, typ.Elem(), false)
+	}
+	if reflect.PointerTo(typ).Implements(reflect.TypeFor[json.Unmarshaler]()) {
+		// The nested custom codec checks its own tagged schema.
+		return nil
+	}
+	switch typ.Kind() {
+	case reflect.Slice:
+		var values []json.RawMessage
+		if err := decodeJSON(raw, &values); err != nil {
+			return err
+		}
+		for _, value := range values {
+			if err := checkWireValue(value, typ.Elem(), false); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		var values map[string]json.RawMessage
+		if err := decodeJSON(raw, &values); err != nil {
+			return err
+		}
+		for _, value := range values {
+			if err := checkWireValue(value, typ.Elem(), false); err != nil {
+				return err
+			}
+		}
+	case reflect.Struct:
+		var fields map[string]json.RawMessage
+		if err := decodeJSON(raw, &fields); err != nil {
+			return err
+		}
+		return checkWireFields(fields, typ)
+	}
+	return nil
+}
+
+func decodeJSON(data []byte, dst any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func validErrorCode(code ErrorCode) bool {
+	switch code {
+	case "parse_error", "invalid_request", "method_not_found", "invalid_params", "internal_error",
+		"not_found", "unauthenticated", "token_expired", "authn_unavailable", "forbidden",
+		"authz_unavailable", "authz_policy_invalid", "authz_postfilter_cap", "authz_link_allow_not_last",
+		"authz_not_installed", "ontology_guard_failed", "closure_too_large", "protected_record",
+		"subscriber_unavailable", "precondition_failed", "write_conflict", "busy", "rate_limited",
+		"cursor_invalid", "cursor_expired", "idempotency_key_reused", "lease_not_held", "lease_expired",
+		"project_required", "incarnation_changed", "field_owned", "ontology_plan_stale",
+		"ontology_migration_too_large", "ontology_drifted", "ontology_unknown_field", "ontology_use_slot_verb",
+		"authz_requires_authn", "lockout_refused", "plugin_busy", "plugin_host_write_in_sync_call",
+		"plugin_egress_in_hot_path", "plugin_reentrant_write", "plugin_patch_out_of_scope", "subscriber_skipped",
+		"post_subscriber_failed", "history_gone", "visibility_lost", "too_many_sessions", "filter_too_broad",
+		"scope_too_large", "destination_paused", "ref_moved", "unknown_field", "restore_requires_empty",
+		"restore_checksum_failed", "restore_violation", "human_presence_required", "authz_verify_failed",
+		"invalid_cursor", "compaction_unavailable", "stale_snapshot":
+		return true
+	default:
+		return false
+	}
+}
+
+func validWarningCode(code WarningCode) bool {
+	switch code {
+	case "ontology_drifted", "subscriber_skipped", "post_subscriber_failed", "visibility_lost":
+		return true
+	default:
+		return false
+	}
+}
+
+func (code ErrorCode) Validate() error {
+	if !validErrorCode(code) {
+		return fmt.Errorf("unknown error code %q", code)
+	}
+	return nil
+}
+
+func (code ErrorCode) MarshalJSON() ([]byte, error) {
+	if err := code.Validate(); err != nil {
+		return nil, err
+	}
+	return json.Marshal(string(code))
+}
+
+func (code *ErrorCode) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := decodeJSON(data, &value); err != nil {
+		return err
+	}
+	decoded := ErrorCode(value)
+	if err := decoded.Validate(); err != nil {
+		return err
+	}
+	*code = decoded
+	return nil
+}
+
+func (code WarningCode) Validate() error {
+	if !validWarningCode(code) {
+		return fmt.Errorf("unknown warning code %q", code)
+	}
+	return nil
+}
+
+func (code WarningCode) MarshalJSON() ([]byte, error) {
+	if err := code.Validate(); err != nil {
+		return nil, err
+	}
+	return json.Marshal(string(code))
+}
+
+func (code *WarningCode) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := decodeJSON(data, &value); err != nil {
+		return err
+	}
+	decoded := WarningCode(value)
+	if err := decoded.Validate(); err != nil {
+		return err
+	}
+	*code = decoded
+	return nil
+}
+
 type Ref struct {
 	// The JSON representation is always an object. Exactly one of ID or Key is
 	// set; Branch is valid only when ID is set. This is the same oneOf as the
@@ -32,12 +258,19 @@ type Ref struct {
 	Key    string `json:"key,omitempty"`
 }
 
-func (r Ref) MarshalJSON() ([]byte, error) {
+func (r Ref) Validate() error {
 	if (r.ID == "") == (r.Key == "") {
-		return nil, fmt.Errorf("ref must contain exactly one of id or key")
+		return fmt.Errorf("ref must contain exactly one of id or key")
 	}
 	if r.Key != "" && r.Branch != 0 {
-		return nil, fmt.Errorf("ref key cannot carry a branch")
+		return fmt.Errorf("ref key cannot carry a branch")
+	}
+	return nil
+}
+
+func (r Ref) MarshalJSON() ([]byte, error) {
+	if err := r.Validate(); err != nil {
+		return nil, err
 	}
 	type wireRef Ref
 	return json.Marshal(wireRef(r))
@@ -46,15 +279,26 @@ func (r Ref) MarshalJSON() ([]byte, error) {
 func (r *Ref) UnmarshalJSON(data []byte) error {
 	type wireRef Ref
 	var value wireRef
-	if err := json.Unmarshal(data, &value); err != nil {
+	if err := decodeStrict(data, &value); err != nil {
 		return err
 	}
-	decoded := Ref(value)
-	if (decoded.ID == "") == (decoded.Key == "") {
+	var fields map[string]json.RawMessage
+	if err := decodeJSON(data, &fields); err != nil {
+		return err
+	}
+	_, hasID := fields["id"]
+	_, hasKey := fields["key"]
+	if hasID == hasKey {
 		return fmt.Errorf("ref must contain exactly one of id or key")
 	}
-	if decoded.Key != "" && decoded.Branch != 0 {
-		return fmt.Errorf("ref key cannot carry a branch")
+	if hasKey {
+		if _, hasBranch := fields["branch"]; hasBranch {
+			return fmt.Errorf("ref key cannot carry a branch")
+		}
+	}
+	decoded := Ref(value)
+	if err := decoded.Validate(); err != nil {
+		return err
 	}
 	*r = decoded
 	return nil
@@ -157,10 +401,120 @@ type Attachment struct {
 	Summary    string `json:"summary"`
 }
 
+func (a Attachment) MarshalJSON() ([]byte, error) {
+	switch a.Kind {
+	case "link", "commit", "blob", "log":
+	default:
+		return nil, fmt.Errorf("unknown attachment kind %q", a.Kind)
+	}
+	type wireAttachment Attachment
+	return json.Marshal(wireAttachment(a))
+}
+
+func (a *Attachment) UnmarshalJSON(data []byte) error {
+	type wireAttachment Attachment
+	var value wireAttachment
+	if err := decodeStrict(data, &value, "kind", "mediaType", "summary"); err != nil {
+		return err
+	}
+	switch value.Kind {
+	case "link", "commit", "blob", "log":
+	default:
+		return fmt.Errorf("unknown attachment kind %q", value.Kind)
+	}
+	*a = Attachment(value)
+	return nil
+}
+
+func requireNonNilMap(name string, value map[string]any) error {
+	if value == nil {
+		return fmt.Errorf("%s must be a JSON object", name)
+	}
+	return nil
+}
+
+func validateCreate(value CreateOp) error {
+	if value.Kind != OpCreate {
+		return fmt.Errorf("create operation has kind %q", value.Kind)
+	}
+	if value.Type == "" {
+		return fmt.Errorf("create operation requires type")
+	}
+	return requireNonNilMap("fields", value.Fields)
+}
+
+func validatePatch(value PatchOp) error {
+	if value.Kind != OpPatch {
+		return fmt.Errorf("patch operation has kind %q", value.Kind)
+	}
+	return requireNonNilMap("fields", value.Fields)
+}
+
+func validateReparent(value ReparentOp) error {
+	if value.Kind != OpReparent {
+		return fmt.Errorf("reparent operation has kind %q", value.Kind)
+	}
+	return nil
+}
+
+func validateLink(value LinkOp) error {
+	if value.Kind != OpLink && value.Kind != OpUnlink {
+		return fmt.Errorf("link operation has kind %q", value.Kind)
+	}
+	if value.LinkKind == "" {
+		return fmt.Errorf("link operation requires linkKind")
+	}
+	return nil
+}
+
+func validateComment(value CommentOp) error {
+	if value.Kind != OpComment {
+		return fmt.Errorf("comment operation has kind %q", value.Kind)
+	}
+	return nil
+}
+
+func validateAttach(value AttachOp) error {
+	if value.Kind != OpAttach {
+		return fmt.Errorf("attach operation has kind %q", value.Kind)
+	}
+	return nil
+}
+
+func validateDelete(value DeleteOp) error {
+	if value.Kind != OpDelete {
+		return fmt.Errorf("delete operation has kind %q", value.Kind)
+	}
+	return nil
+}
+
+func validateSetMeta(value SetMetaOp) error {
+	if value.Kind != OpSetMeta {
+		return fmt.Errorf("setMeta operation has kind %q", value.Kind)
+	}
+	if value.Key == "" {
+		return fmt.Errorf("setMeta operation requires key")
+	}
+	if len(value.Value) == 0 {
+		return fmt.Errorf("setMeta operation requires a JSON value")
+	}
+	var raw any
+	return decodeJSON(value.Value, &raw)
+}
+
 // MarshalJSON flattens the selected member. The result is exactly one of the
 // OpenRPC ChangeSet.ops oneOf schemas; it is never a {kind, create: {...}}
 // wrapper. UnmarshalJSON performs the inverse discriminator selection.
 func (o Op) MarshalJSON() ([]byte, error) {
+	selected := 0
+	for _, present := range []bool{o.Create != nil, o.Patch != nil, o.Reparent != nil, o.Link != nil, o.Comment != nil, o.Attach != nil, o.Delete != nil, o.SetMeta != nil} {
+		if present {
+			selected++
+		}
+	}
+	if selected != 1 {
+		return nil, fmt.Errorf("operation must select exactly one payload")
+	}
 	switch o.Kind {
 	case OpCreate:
 		if o.Create == nil {
@@ -168,6 +522,9 @@ func (o Op) MarshalJSON() ([]byte, error) {
 		}
 		value := *o.Create
 		value.Kind = OpCreate
+		if err := validateCreate(value); err != nil {
+			return nil, err
+		}
 		return json.Marshal(value)
 	case OpPatch:
 		if o.Patch == nil {
@@ -175,6 +532,9 @@ func (o Op) MarshalJSON() ([]byte, error) {
 		}
 		value := *o.Patch
 		value.Kind = OpPatch
+		if err := validatePatch(value); err != nil {
+			return nil, err
+		}
 		return json.Marshal(value)
 	case OpReparent:
 		if o.Reparent == nil {
@@ -182,6 +542,9 @@ func (o Op) MarshalJSON() ([]byte, error) {
 		}
 		value := *o.Reparent
 		value.Kind = OpReparent
+		if err := validateReparent(value); err != nil {
+			return nil, err
+		}
 		return json.Marshal(value)
 	case OpLink, OpUnlink:
 		if o.Link == nil {
@@ -189,6 +552,9 @@ func (o Op) MarshalJSON() ([]byte, error) {
 		}
 		value := *o.Link
 		value.Kind = o.Kind
+		if err := validateLink(value); err != nil {
+			return nil, err
+		}
 		return json.Marshal(value)
 	case OpComment:
 		if o.Comment == nil {
@@ -196,6 +562,9 @@ func (o Op) MarshalJSON() ([]byte, error) {
 		}
 		value := *o.Comment
 		value.Kind = OpComment
+		if err := validateComment(value); err != nil {
+			return nil, err
+		}
 		return json.Marshal(value)
 	case OpAttach:
 		if o.Attach == nil {
@@ -203,6 +572,9 @@ func (o Op) MarshalJSON() ([]byte, error) {
 		}
 		value := *o.Attach
 		value.Kind = OpAttach
+		if err := validateAttach(value); err != nil {
+			return nil, err
+		}
 		return json.Marshal(value)
 	case OpDelete:
 		if o.Delete == nil {
@@ -210,6 +582,9 @@ func (o Op) MarshalJSON() ([]byte, error) {
 		}
 		value := *o.Delete
 		value.Kind = OpDelete
+		if err := validateDelete(value); err != nil {
+			return nil, err
+		}
 		return json.Marshal(value)
 	case OpSetMeta:
 		if o.SetMeta == nil {
@@ -217,6 +592,9 @@ func (o Op) MarshalJSON() ([]byte, error) {
 		}
 		value := *o.SetMeta
 		value.Kind = OpSetMeta
+		if err := validateSetMeta(value); err != nil {
+			return nil, err
+		}
 		return json.Marshal(value)
 	default:
 		return nil, fmt.Errorf("unknown operation kind %q", o.Kind)
@@ -224,64 +602,97 @@ func (o Op) MarshalJSON() ([]byte, error) {
 }
 
 func (o *Op) UnmarshalJSON(data []byte) error {
-	var tag struct {
-		Kind OpKind `json:"kind"`
-	}
-	if err := json.Unmarshal(data, &tag); err != nil {
+	var fields map[string]json.RawMessage
+	if err := decodeJSON(data, &fields); err != nil {
 		return err
 	}
-	*o = Op{Kind: tag.Kind}
-	switch tag.Kind {
+	if fields == nil {
+		return fmt.Errorf("operation must be a JSON object")
+	}
+	kindRaw, ok := fields["kind"]
+	if !ok {
+		return fmt.Errorf("operation requires kind")
+	}
+	var kind OpKind
+	if err := decodeJSON(kindRaw, &kind); err != nil {
+		return fmt.Errorf("operation kind: %w", err)
+	}
+	*o = Op{Kind: kind}
+	switch kind {
 	case OpCreate:
 		var value CreateOp
-		if err := json.Unmarshal(data, &value); err != nil {
+		if err := decodeStrict(data, &value, "kind", "type", "fields"); err != nil {
+			return err
+		}
+		if err := validateCreate(value); err != nil {
 			return err
 		}
 		o.Create = &value
 	case OpPatch:
 		var value PatchOp
-		if err := json.Unmarshal(data, &value); err != nil {
+		if err := decodeStrict(data, &value, "kind", "target", "fields"); err != nil {
+			return err
+		}
+		if err := validatePatch(value); err != nil {
 			return err
 		}
 		o.Patch = &value
 	case OpReparent:
 		var value ReparentOp
-		if err := json.Unmarshal(data, &value); err != nil {
+		if err := decodeStrict(data, &value, "kind", "target"); err != nil {
+			return err
+		}
+		if err := validateReparent(value); err != nil {
 			return err
 		}
 		o.Reparent = &value
 	case OpLink, OpUnlink:
 		var value LinkOp
-		if err := json.Unmarshal(data, &value); err != nil {
+		if err := decodeStrict(data, &value, "kind", "from", "to", "linkKind"); err != nil {
+			return err
+		}
+		if err := validateLink(value); err != nil {
 			return err
 		}
 		o.Link = &value
 	case OpComment:
 		var value CommentOp
-		if err := json.Unmarshal(data, &value); err != nil {
+		if err := decodeStrict(data, &value, "kind", "target", "body"); err != nil {
+			return err
+		}
+		if err := validateComment(value); err != nil {
 			return err
 		}
 		o.Comment = &value
 	case OpAttach:
 		var value AttachOp
-		if err := json.Unmarshal(data, &value); err != nil {
+		if err := decodeStrict(data, &value, "kind", "target", "attachment"); err != nil {
+			return err
+		}
+		if err := validateAttach(value); err != nil {
 			return err
 		}
 		o.Attach = &value
 	case OpDelete:
 		var value DeleteOp
-		if err := json.Unmarshal(data, &value); err != nil {
+		if err := decodeStrict(data, &value, "kind", "target"); err != nil {
+			return err
+		}
+		if err := validateDelete(value); err != nil {
 			return err
 		}
 		o.Delete = &value
 	case OpSetMeta:
 		var value SetMetaOp
-		if err := json.Unmarshal(data, &value); err != nil {
+		if err := decodeStrict(data, &value, "kind", "target", "key", "value"); err != nil {
+			return err
+		}
+		if err := validateSetMeta(value); err != nil {
 			return err
 		}
 		o.SetMeta = &value
 	default:
-		return fmt.Errorf("unknown operation kind %q", tag.Kind)
+		return fmt.Errorf("unknown operation kind %q", kind)
 	}
 	return nil
 }
@@ -322,13 +733,13 @@ const (
 	EventSyncPushed         DurableEventType = "sync.pushed"
 	EventSyncImported       DurableEventType = "sync.imported"
 	EventDerivedUpdated     DurableEventType = "derived.updated"
-	EventStoreRestored      DurableEventType = "store.restored"
 
 	EventGap            ControlEventType = "event.gap"
 	EventWatchDelta     ControlEventType = "watch.delta"
 	EventWatchReset     ControlEventType = "watch.reset"
 	EventVisibilityLost ControlEventType = "visibility.lost"
 	EventRPCRejected    ControlEventType = "rpc.rejected"
+	EventStoreRestored  ControlEventType = "store.restored"
 )
 
 type EventPosition struct {
@@ -342,6 +753,28 @@ type EventCause struct {
 	Depth uint8    `json:"depth"`
 	Chain []string `json:"chain"`
 }
+
+func (c *EventCause) UnmarshalJSON(data []byte) error {
+	type wireEventCause EventCause
+	var value wireEventCause
+	if err := decodeStrict(data, &value, "root", "depth", "chain"); err != nil {
+		return err
+	}
+	if err := validateEventCause(EventCause(value)); err != nil {
+		return err
+	}
+	*c = EventCause(value)
+	return nil
+}
+
+func (c EventCause) MarshalJSON() ([]byte, error) {
+	if err := validateEventCause(c); err != nil {
+		return nil, err
+	}
+	type wireEventCause EventCause
+	return json.Marshal(wireEventCause(c))
+}
+
 type DurableEvent struct {
 	EventPosition
 	Type      DurableEventType  `json:"type"`
@@ -365,6 +798,58 @@ type EventGapDetails struct {
 
 func (EventGapDetails) controlDetails() {}
 
+func (d EventGapDetails) MarshalJSON() ([]byte, error) {
+	if err := validateControlDetails(EventGap, d); err != nil {
+		return nil, err
+	}
+	type wireDetails EventGapDetails
+	return json.Marshal(wireDetails(d))
+}
+
+func (d *EventGapDetails) UnmarshalJSON(data []byte) error {
+	type wireDetails EventGapDetails
+	var value wireDetails
+	if err := decodeStrict(data, &value, "fromIncarnation", "toIncarnation", "floor", "reason"); err != nil {
+		return err
+	}
+	decoded := EventGapDetails(value)
+	if err := validateControlDetails(EventGap, decoded); err != nil {
+		return err
+	}
+	*d = decoded
+	return nil
+}
+
+type StoreRestoredDetails struct {
+	FromIncarnation string `json:"fromIncarnation"`
+	ToIncarnation   string `json:"toIncarnation"`
+	Reason          string `json:"reason"`
+}
+
+func (StoreRestoredDetails) controlDetails() {}
+
+func (d StoreRestoredDetails) MarshalJSON() ([]byte, error) {
+	if err := validateControlDetails(EventStoreRestored, d); err != nil {
+		return nil, err
+	}
+	type wireDetails StoreRestoredDetails
+	return json.Marshal(wireDetails(d))
+}
+
+func (d *StoreRestoredDetails) UnmarshalJSON(data []byte) error {
+	type wireDetails StoreRestoredDetails
+	var value wireDetails
+	if err := decodeStrict(data, &value, "fromIncarnation", "toIncarnation", "reason"); err != nil {
+		return err
+	}
+	decoded := StoreRestoredDetails(value)
+	if err := validateControlDetails(EventStoreRestored, decoded); err != nil {
+		return err
+	}
+	*d = decoded
+	return nil
+}
+
 type WatchDeltaDetails struct {
 	SubscriptionID string  `json:"subscriptionId"`
 	FromCursor     string  `json:"fromCursor"`
@@ -374,6 +859,28 @@ type WatchDeltaDetails struct {
 
 func (WatchDeltaDetails) controlDetails() {}
 
+func (d WatchDeltaDetails) MarshalJSON() ([]byte, error) {
+	if err := validateControlDetails(EventWatchDelta, d); err != nil {
+		return nil, err
+	}
+	type wireDetails WatchDeltaDetails
+	return json.Marshal(wireDetails(d))
+}
+
+func (d *WatchDeltaDetails) UnmarshalJSON(data []byte) error {
+	type wireDetails WatchDeltaDetails
+	var value wireDetails
+	if err := decodeStrict(data, &value, "subscriptionId", "fromCursor", "toCursor", "events"); err != nil {
+		return err
+	}
+	decoded := WatchDeltaDetails(value)
+	if err := validateControlDetails(EventWatchDelta, decoded); err != nil {
+		return err
+	}
+	*d = decoded
+	return nil
+}
+
 type WatchResetDetails struct {
 	SubscriptionID string `json:"subscriptionId"`
 	Reason         string `json:"reason"`
@@ -382,11 +889,55 @@ type WatchResetDetails struct {
 
 func (WatchResetDetails) controlDetails() {}
 
+func (d WatchResetDetails) MarshalJSON() ([]byte, error) {
+	if err := validateControlDetails(EventWatchReset, d); err != nil {
+		return nil, err
+	}
+	type wireDetails WatchResetDetails
+	return json.Marshal(wireDetails(d))
+}
+
+func (d *WatchResetDetails) UnmarshalJSON(data []byte) error {
+	type wireDetails WatchResetDetails
+	var value wireDetails
+	if err := decodeStrict(data, &value, "subscriptionId", "reason", "snapshotCursor"); err != nil {
+		return err
+	}
+	decoded := WatchResetDetails(value)
+	if err := validateControlDetails(EventWatchReset, decoded); err != nil {
+		return err
+	}
+	*d = decoded
+	return nil
+}
+
 type VisibilityLostDetails struct {
 	Reason string `json:"reason"`
 }
 
 func (VisibilityLostDetails) controlDetails() {}
+
+func (d VisibilityLostDetails) MarshalJSON() ([]byte, error) {
+	if err := validateControlDetails(EventVisibilityLost, d); err != nil {
+		return nil, err
+	}
+	type wireDetails VisibilityLostDetails
+	return json.Marshal(wireDetails(d))
+}
+
+func (d *VisibilityLostDetails) UnmarshalJSON(data []byte) error {
+	type wireDetails VisibilityLostDetails
+	var value wireDetails
+	if err := decodeStrict(data, &value, "reason"); err != nil {
+		return err
+	}
+	decoded := VisibilityLostDetails(value)
+	if err := validateControlDetails(EventVisibilityLost, decoded); err != nil {
+		return err
+	}
+	*d = decoded
+	return nil
+}
 
 type RPCRejectedDetails struct {
 	RequestID any    `json:"requestId"`
@@ -394,6 +945,28 @@ type RPCRejectedDetails struct {
 }
 
 func (RPCRejectedDetails) controlDetails() {}
+
+func (d RPCRejectedDetails) MarshalJSON() ([]byte, error) {
+	if err := validateControlDetails(EventRPCRejected, d); err != nil {
+		return nil, err
+	}
+	type wireDetails RPCRejectedDetails
+	return json.Marshal(wireDetails(d))
+}
+
+func (d *RPCRejectedDetails) UnmarshalJSON(data []byte) error {
+	type wireDetails RPCRejectedDetails
+	var value wireDetails
+	if err := decodeStrict(data, &value, "requestId", "reason"); err != nil {
+		return err
+	}
+	decoded := RPCRejectedDetails(value)
+	if err := validateControlDetails(EventRPCRejected, decoded); err != nil {
+		return err
+	}
+	*d = decoded
+	return nil
+}
 
 type ControlEvent struct {
 	EventPosition
@@ -407,6 +980,163 @@ type Event struct {
 	Control  *ControlEvent `json:"-"`
 }
 
+func validDurableEventType(kind DurableEventType) bool {
+	switch kind {
+	case EventBeadCreated, EventBeadUpdated, EventBeadReparented, EventBeadLinked, EventBeadUnlinked,
+		EventBeadCommented, EventBeadAttached, EventBeadDeleted, EventBeadClaimed, EventBeadReleased,
+		EventBeadClosed, EventBeadFailed, EventBeadCanceled, EventBeadReopened, EventBeadDeferred,
+		EventBeadLeaseReclaimed, EventGateApproved, EventGateReported, EventGateEscalated, EventOntologyApplied,
+		EventPluginApplied, EventViewSaved, EventViewDeleted, EventMemorySaved, EventMemoryDeleted,
+		EventSyncPushed, EventSyncImported, EventDerivedUpdated:
+		return true
+	default:
+		return false
+	}
+}
+
+func validControlEventType(kind ControlEventType) bool {
+	switch kind {
+	case EventGap, EventWatchDelta, EventWatchReset, EventVisibilityLost, EventRPCRejected, EventStoreRestored:
+		return true
+	default:
+		return false
+	}
+}
+
+func validPrincipalKind(kind string) bool {
+	switch kind {
+	case "anonymous", "user", "agent", "service", "plugin", "system":
+		return true
+	default:
+		return false
+	}
+}
+
+func validGapReason(reason string) bool {
+	switch reason {
+	case "restore", "failover", "history_floor", "checkpoint":
+		return true
+	default:
+		return false
+	}
+}
+
+func validResetReason(reason string) bool {
+	switch reason {
+	case "policy_changed", "ontology_changed", "view_changed", "overflow", "lag", "visibility_changed", "view_deleted":
+		return true
+	default:
+		return false
+	}
+}
+
+func validVisibilityReason(reason string) bool {
+	switch reason {
+	case "authorization_changed", "redacted", "resource_deleted":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateEventPosition(position EventPosition) error {
+	if position.Cursor == "" || position.Incarnation == "" || position.Revision < 0 {
+		return fmt.Errorf("event position is incomplete")
+	}
+	return nil
+}
+
+func validateDurableEvent(value DurableEvent) error {
+	if err := validateEventPosition(value.EventPosition); err != nil {
+		return err
+	}
+	if !validDurableEventType(value.Type) {
+		return fmt.Errorf("unknown durable event type %q", value.Type)
+	}
+	if value.Resource == "" || value.Changed == nil || value.Chain == nil || value.SetBy == nil {
+		return fmt.Errorf("durable event has a missing required collection")
+	}
+	if err := validatePrincipal(value.Principal); err != nil {
+		return err
+	}
+	return validateEventCause(value.Cause)
+}
+
+func validatePrincipal(value PrincipalRef) error {
+	if !validPrincipalKind(value.Kind) {
+		return fmt.Errorf("unknown principal kind %q", value.Kind)
+	}
+	if value.ID == "" {
+		return fmt.Errorf("principal requires id")
+	}
+	if value.Sponsor != nil {
+		return validatePrincipal(*value.Sponsor)
+	}
+	return nil
+}
+
+func validateEventCause(value EventCause) error {
+	if value.Root == "" || value.Depth > 8 || value.Chain == nil {
+		return fmt.Errorf("invalid event cause")
+	}
+	return nil
+}
+
+func validateControlDetails(kind ControlEventType, details ControlDetails) error {
+	switch kind {
+	case EventGap:
+		value, ok := details.(EventGapDetails)
+		if !ok || !validGapReason(value.Reason) || value.Floor < 0 || value.FromIncarnation == "" || value.ToIncarnation == "" {
+			return fmt.Errorf("invalid event.gap details")
+		}
+	case EventStoreRestored:
+		value, ok := details.(StoreRestoredDetails)
+		if !ok || value.Reason != "restore" || value.FromIncarnation == "" || value.ToIncarnation == "" {
+			return fmt.Errorf("invalid store.restored details")
+		}
+	case EventWatchDelta:
+		value, ok := details.(WatchDeltaDetails)
+		if !ok || value.SubscriptionID == "" || value.FromCursor == "" || value.ToCursor == "" || value.Events == nil {
+			return fmt.Errorf("invalid watch.delta details")
+		}
+	case EventWatchReset:
+		value, ok := details.(WatchResetDetails)
+		if !ok || value.SubscriptionID == "" || value.SnapshotCursor == "" || !validResetReason(value.Reason) {
+			return fmt.Errorf("invalid watch.reset details")
+		}
+	case EventVisibilityLost:
+		value, ok := details.(VisibilityLostDetails)
+		if !ok || !validVisibilityReason(value.Reason) {
+			return fmt.Errorf("invalid visibility.lost details")
+		}
+	case EventRPCRejected:
+		value, ok := details.(RPCRejectedDetails)
+		if !ok || value.Reason != "notification_no_result" || value.RequestID == nil {
+			return fmt.Errorf("invalid rpc.rejected details")
+		}
+		switch requestID := value.RequestID.(type) {
+		case string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		case float32:
+			if math.IsNaN(float64(requestID)) || math.IsInf(float64(requestID), 0) || math.Trunc(float64(requestID)) != float64(requestID) {
+				return fmt.Errorf("rpc.rejected requestId must be an integer")
+			}
+		case float64:
+			if math.IsNaN(requestID) || math.IsInf(requestID, 0) || math.Trunc(requestID) != requestID {
+				return fmt.Errorf("rpc.rejected requestId must be an integer")
+			}
+		case json.Number:
+			if _, err := requestID.Int64(); err != nil {
+				return fmt.Errorf("rpc.rejected requestId must be an integer")
+			}
+		default:
+			return fmt.Errorf("rpc.rejected requestId must be a string or integer")
+		}
+	default:
+		return fmt.Errorf("unknown control event type %q", kind)
+	}
+	return nil
+}
+
 func (e Event) MarshalJSON() ([]byte, error) {
 	if (e.Durable == nil) == (e.Control == nil) {
 		return nil, fmt.Errorf("event must select exactly one durable or control member")
@@ -415,16 +1145,25 @@ func (e Event) MarshalJSON() ([]byte, error) {
 		if e.Category != "" && e.Category != EventDurable {
 			return nil, fmt.Errorf("durable event has category %q", e.Category)
 		}
-		return json.Marshal(struct {
-			Category EventCategory `json:"category"`
-			DurableEvent
-		}{EventDurable, *e.Durable})
+		if err := validateDurableEvent(*e.Durable); err != nil {
+			return nil, err
+		}
+		return json.Marshal(e.Durable)
 	}
 	if e.Category != "" && e.Category != EventControl {
 		return nil, fmt.Errorf("control event has category %q", e.Category)
 	}
-	if e.Control.Details == nil || !controlDetailsMatch(e.Control.Type, e.Control.Details) {
+	if !validControlEventType(e.Control.Type) || e.Control.Details == nil || !controlDetailsMatch(e.Control.Type, e.Control.Details) {
 		return nil, fmt.Errorf("control event %q has the wrong details type", e.Control.Type)
+	}
+	if err := validateEventPosition(e.Control.EventPosition); err != nil {
+		return nil, err
+	}
+	if err := validateControlDetails(e.Control.Type, e.Control.Details); err != nil {
+		return nil, err
+	}
+	if (e.Control.Type == EventVisibilityLost) != (e.Control.Resource != "") {
+		return nil, fmt.Errorf("only visibility.lost carries a required resource")
 	}
 	details, err := json.Marshal(e.Control.Details)
 	if err != nil {
@@ -460,9 +1199,73 @@ func controlDetailsMatch(kind ControlEventType, details ControlDetails) bool {
 	case EventRPCRejected:
 		_, ok := details.(RPCRejectedDetails)
 		return ok
+	case EventStoreRestored:
+		_, ok := details.(StoreRestoredDetails)
+		return ok
 	default:
 		return false
 	}
+}
+
+func (d *DurableEvent) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Category EventCategory `json:"category"`
+		EventPosition
+		Type      DurableEventType  `json:"type"`
+		Resource  string            `json:"resource"`
+		Changed   []string          `json:"changed"`
+		Before    map[string]any    `json:"before,omitempty"`
+		After     map[string]any    `json:"after,omitempty"`
+		Principal PrincipalRef      `json:"principal"`
+		Chain     []string          `json:"chain"`
+		SetBy     map[string]string `json:"setBy"`
+		Cause     EventCause        `json:"cause"`
+		Derived   bool              `json:"derived"`
+	}
+	if err := decodeStrict(data, &wire, "category", "cursor", "incarnation", "revision", "index", "type", "resource", "changed", "principal", "chain", "setBy", "cause", "derived"); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := decodeJSON(data, &fields); err != nil {
+		return err
+	}
+	for _, name := range []string{"before", "after"} {
+		if raw, ok := fields[name]; ok && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return fmt.Errorf("durable event %s must be an object when present", name)
+		}
+	}
+	if wire.Category != EventDurable {
+		return fmt.Errorf("durable event has category %q", wire.Category)
+	}
+	value := DurableEvent{
+		EventPosition: wire.EventPosition,
+		Type:          wire.Type,
+		Resource:      wire.Resource,
+		Changed:       wire.Changed,
+		Before:        wire.Before,
+		After:         wire.After,
+		Principal:     wire.Principal,
+		Chain:         wire.Chain,
+		SetBy:         wire.SetBy,
+		Cause:         wire.Cause,
+		Derived:       wire.Derived,
+	}
+	if err := validateDurableEvent(value); err != nil {
+		return err
+	}
+	*d = value
+	return nil
+}
+
+func (d DurableEvent) MarshalJSON() ([]byte, error) {
+	if err := validateDurableEvent(d); err != nil {
+		return nil, err
+	}
+	type wireDurableEvent DurableEvent
+	return json.Marshal(struct {
+		Category EventCategory `json:"category"`
+		wireDurableEvent
+	}{EventDurable, wireDurableEvent(d)})
 }
 
 func (e *Event) UnmarshalJSON(data []byte) error {
@@ -470,26 +1273,43 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 		Category EventCategory `json:"category"`
 		Type     string        `json:"type"`
 	}
-	if err := json.Unmarshal(data, &head); err != nil {
+	if err := decodeJSON(data, &head); err != nil {
 		return err
 	}
 	*e = Event{Category: head.Category}
 	switch head.Category {
 	case EventDurable:
 		var value DurableEvent
-		if err := json.Unmarshal(data, &value); err != nil {
+		if err := decodeJSON(data, &value); err != nil {
 			return err
 		}
 		e.Durable = &value
 	case EventControl:
 		var envelope struct {
+			Category EventCategory `json:"category"`
 			EventPosition
 			Type     ControlEventType `json:"type"`
 			Resource string           `json:"resource,omitempty"`
 			Details  json.RawMessage  `json:"details"`
 			Derived  bool             `json:"derived"`
 		}
-		if err := json.Unmarshal(data, &envelope); err != nil {
+		if err := decodeStrict(data, &envelope, "category", "cursor", "incarnation", "revision", "index", "type", "details", "derived"); err != nil {
+			return err
+		}
+		if envelope.Category != EventControl || !validControlEventType(envelope.Type) {
+			return fmt.Errorf("unknown control event type %q", envelope.Type)
+		}
+		if envelope.Type == EventVisibilityLost && envelope.Resource == "" {
+			return fmt.Errorf("visibility.lost requires resource")
+		}
+		var fields map[string]json.RawMessage
+		if err := decodeJSON(data, &fields); err != nil {
+			return err
+		}
+		if _, present := fields["resource"]; present && envelope.Type != EventVisibilityLost {
+			return fmt.Errorf("only visibility.lost carries a resource")
+		}
+		if err := validateEventPosition(envelope.EventPosition); err != nil {
 			return err
 		}
 		if envelope.Derived {
@@ -499,31 +1319,37 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 		switch envelope.Type {
 		case EventGap:
 			var details EventGapDetails
-			if err := json.Unmarshal(envelope.Details, &details); err != nil {
+			if err := decodeStrict(envelope.Details, &details, "fromIncarnation", "toIncarnation", "floor", "reason"); err != nil {
+				return err
+			}
+			value.Details = details
+		case EventStoreRestored:
+			var details StoreRestoredDetails
+			if err := decodeStrict(envelope.Details, &details, "fromIncarnation", "toIncarnation", "reason"); err != nil {
 				return err
 			}
 			value.Details = details
 		case EventWatchDelta:
 			var details WatchDeltaDetails
-			if err := json.Unmarshal(envelope.Details, &details); err != nil {
+			if err := decodeStrict(envelope.Details, &details, "subscriptionId", "fromCursor", "toCursor", "events"); err != nil {
 				return err
 			}
 			value.Details = details
 		case EventWatchReset:
 			var details WatchResetDetails
-			if err := json.Unmarshal(envelope.Details, &details); err != nil {
+			if err := decodeStrict(envelope.Details, &details, "subscriptionId", "reason", "snapshotCursor"); err != nil {
 				return err
 			}
 			value.Details = details
 		case EventVisibilityLost:
 			var details VisibilityLostDetails
-			if err := json.Unmarshal(envelope.Details, &details); err != nil {
+			if err := decodeStrict(envelope.Details, &details, "reason"); err != nil {
 				return err
 			}
 			value.Details = details
 		case EventRPCRejected:
 			var details RPCRejectedDetails
-			if err := json.Unmarshal(envelope.Details, &details); err != nil {
+			if err := decodeStrict(envelope.Details, &details, "requestId", "reason"); err != nil {
 				return err
 			}
 			value.Details = details
@@ -531,6 +1357,9 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("unknown control event type %q", envelope.Type)
 		}
 		e.Control = &value
+		if err := validateControlDetails(value.Type, value.Details); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("unknown event category %q", head.Category)
 	}
@@ -540,9 +1369,31 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 type PrincipalRef struct {
 	Kind    string         `json:"kind"` // anonymous, user, agent, service, plugin, system
 	ID      string         `json:"id"`
-	Sponsor *PrincipalRef  `json:"sponsor,omitempty"`
+	Sponsor *PrincipalRef  `json:"sponsor,omitempty" wire:"nullable"`
 	Caveats map[string]any `json:"caveats,omitempty"`
 }
+
+func (p *PrincipalRef) UnmarshalJSON(data []byte) error {
+	type wirePrincipal PrincipalRef
+	var value wirePrincipal
+	if err := decodeStrict(data, &value, "kind", "id"); err != nil {
+		return err
+	}
+	if err := validatePrincipal(PrincipalRef(value)); err != nil {
+		return err
+	}
+	*p = PrincipalRef(value)
+	return nil
+}
+
+func (p PrincipalRef) MarshalJSON() ([]byte, error) {
+	if err := validatePrincipal(p); err != nil {
+		return nil, err
+	}
+	type wirePrincipal PrincipalRef
+	return json.Marshal(wirePrincipal(p))
+}
+
 type Commit struct {
 	Revision Revision   `json:"revision"`
 	Results  []OpResult `json:"results"`
@@ -563,6 +1414,28 @@ type Warning struct {
 	Message string         `json:"message"`
 	Details map[string]any `json:"details,omitempty"`
 }
+
+func (w Warning) MarshalJSON() ([]byte, error) {
+	if !validWarningCode(w.Code) {
+		return nil, fmt.Errorf("unknown warning code %q", w.Code)
+	}
+	type wireWarning Warning
+	return json.Marshal(wireWarning(w))
+}
+
+func (w *Warning) UnmarshalJSON(data []byte) error {
+	type wireWarning Warning
+	var value wireWarning
+	if err := decodeStrict(data, &value, "code", "message"); err != nil {
+		return err
+	}
+	if !validWarningCode(value.Code) {
+		return fmt.Errorf("unknown warning code %q", value.Code)
+	}
+	*w = Warning(value)
+	return nil
+}
+
 type Violation struct {
 	Guard   string         `json:"guard"`
 	Message string         `json:"message"`
@@ -626,17 +1499,150 @@ not legal targets for `tx.apply`, `setMeta`, or `history.revert`.
 package pluginapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"time"
+	"reflect"
+	"strings"
 )
 
 // These wire-safe types live in pluginapi itself. A public SDK cannot import
 // Plug's internal core/model package; the host converts these values at the
 // boundary.
 type Revision int64
+
+func decodeStrict(data []byte, dst any, required ...string) error {
+	var fields map[string]json.RawMessage
+	if err := decodeJSON(data, &fields); err != nil {
+		return err
+	}
+	if fields == nil {
+		return fmt.Errorf("expected JSON object")
+	}
+	for _, name := range required {
+		if _, ok := fields[name]; !ok {
+			return fmt.Errorf("missing required JSON member %q", name)
+		}
+	}
+	if err := checkWireFields(fields, reflect.TypeOf(dst).Elem()); err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	dec.UseNumber()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+// encoding/json matches field names without regard to case and treats null
+// as a no-op for scalar fields. Neither behavior matches JSON Schema. Check
+// the exact member names and typed collection elements before decoding. Only
+// sponsor is nullable; RawMessage and any deliberately retain arbitrary JSON.
+func checkWireFields(fields map[string]json.RawMessage, typ reflect.Type) error {
+	allowed := map[string]reflect.StructField{}
+	var collect func(reflect.Type)
+	collect = func(t reflect.Type) {
+		for i := 0; i < t.NumField(); i++ {
+			field := t.Field(i)
+			if field.Anonymous {
+				collect(field.Type)
+				continue
+			}
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if name != "-" && name != "" {
+				allowed[name] = field
+			}
+		}
+	}
+	collect(typ)
+	for name, raw := range fields {
+		field, ok := allowed[name]
+		if !ok {
+			return fmt.Errorf("unknown JSON member %q", name)
+		}
+		if err := checkWireValue(raw, field.Type, field.Tag.Get("wire") == "nullable"); err != nil {
+			return fmt.Errorf("JSON member %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func checkWireValue(raw json.RawMessage, typ reflect.Type, nullable bool) error {
+	if typ == reflect.TypeFor[json.RawMessage]() || typ.Kind() == reflect.Interface {
+		return nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		if nullable {
+			return nil
+		}
+		return fmt.Errorf("null is not allowed")
+	}
+	if typ.Kind() == reflect.Pointer {
+		return checkWireValue(raw, typ.Elem(), false)
+	}
+	if reflect.PointerTo(typ).Implements(reflect.TypeFor[json.Unmarshaler]()) {
+		// The nested custom codec checks its own tagged schema.
+		return nil
+	}
+	switch typ.Kind() {
+	case reflect.Slice:
+		var values []json.RawMessage
+		if err := decodeJSON(raw, &values); err != nil {
+			return err
+		}
+		for _, value := range values {
+			if err := checkWireValue(value, typ.Elem(), false); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		var values map[string]json.RawMessage
+		if err := decodeJSON(raw, &values); err != nil {
+			return err
+		}
+		for _, value := range values {
+			if err := checkWireValue(value, typ.Elem(), false); err != nil {
+				return err
+			}
+		}
+	case reflect.Struct:
+		var fields map[string]json.RawMessage
+		if err := decodeJSON(raw, &fields); err != nil {
+			return err
+		}
+		return checkWireFields(fields, typ)
+	}
+	return nil
+}
+
+func decodeJSON(data []byte, dst any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
 type Ref struct {
 	// Host conversion applies the same object-form oneOf as model.Ref; this
 	// public alias never uses the old string shorthand.
@@ -645,12 +1651,19 @@ type Ref struct {
 	Key    string `json:"key,omitempty"`
 }
 
-func (r Ref) MarshalJSON() ([]byte, error) {
+func (r Ref) Validate() error {
 	if (r.ID == "") == (r.Key == "") {
-		return nil, fmt.Errorf("ref must contain exactly one of id or key")
+		return fmt.Errorf("ref must contain exactly one of id or key")
 	}
 	if r.Key != "" && r.Branch != 0 {
-		return nil, fmt.Errorf("ref key cannot carry a branch")
+		return fmt.Errorf("ref key cannot carry a branch")
+	}
+	return nil
+}
+
+func (r Ref) MarshalJSON() ([]byte, error) {
+	if err := r.Validate(); err != nil {
+		return nil, err
 	}
 	type wireRef Ref
 	return json.Marshal(wireRef(r))
@@ -659,15 +1672,26 @@ func (r Ref) MarshalJSON() ([]byte, error) {
 func (r *Ref) UnmarshalJSON(data []byte) error {
 	type wireRef Ref
 	var value wireRef
-	if err := json.Unmarshal(data, &value); err != nil {
+	if err := decodeStrict(data, &value); err != nil {
 		return err
 	}
-	decoded := Ref(value)
-	if (decoded.ID == "") == (decoded.Key == "") {
+	var fields map[string]json.RawMessage
+	if err := decodeJSON(data, &fields); err != nil {
+		return err
+	}
+	_, hasID := fields["id"]
+	_, hasKey := fields["key"]
+	if hasID == hasKey {
 		return fmt.Errorf("ref must contain exactly one of id or key")
 	}
-	if decoded.Key != "" && decoded.Branch != 0 {
-		return fmt.Errorf("ref key cannot carry a branch")
+	if hasKey {
+		if _, hasBranch := fields["branch"]; hasBranch {
+			return fmt.Errorf("ref key cannot carry a branch")
+		}
+	}
+	decoded := Ref(value)
+	if err := decoded.Validate(); err != nil {
+		return err
 	}
 	*r = decoded
 	return nil
@@ -860,6 +1884,8 @@ package driver
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -907,6 +1933,11 @@ type Query struct {
 type PageReq struct {
 	Cursor *Cursor
 	Limit  int
+}
+type Page[T any] struct {
+	Items      []T
+	NextCursor *Cursor
+	AsOf       model.Revision
 }
 type Version struct {
 	Ref       Ref
@@ -961,22 +1992,209 @@ type LockState struct {
 }
 type LockSet []LockRequest
 
-var (
-	SentinelGraphBlocking = LockKey{Kind: LockSentinel, Sentinel: "graph/blocking"}
-	SentinelReadySet      = LockKey{Kind: LockSentinel, Sentinel: "ready-set"}
-	SentinelClosure       = LockKey{Kind: LockSentinel, Sentinel: "closure"}
-	SentinelGrant         = LockKey{Kind: LockSentinel, Sentinel: "grant"}
-	SentinelOntology      = LockKey{Kind: LockSentinel, Sentinel: "ontology"}
-	SentinelPlugin        = LockKey{Kind: LockSentinel, Sentinel: "plugin"}
+const (
+	SentinelGraphBlocking Sentinel = "graph/blocking"
+	SentinelOntology      Sentinel = "ontology"
+	SentinelPlugins       Sentinel = "plugins"
 )
 
 const (
-	DerivedReadyState DerivedTable = "ready_state"
-	DerivedClosure    DerivedTable = "closure"
-	DerivedGrant      DerivedTable = "grant"
-	DerivedOntology   DerivedTable = "ontology"
-	DerivedPlugin     DerivedTable = "plugin"
+	DerivedReadyState      DerivedTable = "ready_state"
+	DerivedAncestorClosure DerivedTable = "ancestor_closure"
+	DerivedCutClosure      DerivedTable = "cut_closure"
+	DerivedAttribute       DerivedTable = "derived_attribute"
+	DerivedSortKey         DerivedTable = "sort_key"
+	DerivedReferenceIndex  DerivedTable = "reference_index"
+	DerivedGrant           DerivedTable = "grant"
+	DerivedOntology        DerivedTable = "ontology"
+	DerivedPlugins         DerivedTable = "plugins"
 )
+
+var (
+	GraphBlockingSentinelLock = LockKey{Kind: LockSentinel, Sentinel: SentinelGraphBlocking}
+	OntologySentinelLock      = LockKey{Kind: LockSentinel, Sentinel: SentinelOntology}
+	PluginsSentinelLock       = LockKey{Kind: LockSentinel, Sentinel: SentinelPlugins}
+)
+
+func validateSentinelPart(name, value string) error {
+	if value == "" || strings.TrimSpace(value) != value || strings.ContainsAny(value, "/\x00") {
+		return fmt.Errorf("sentinel %s component is not canonical", name)
+	}
+	return nil
+}
+
+// NewSentinel is the sole boundary for values entering LockKey.Sentinel. It
+// accepts the complete design census, including its parameterized forms, and
+// refuses old aliases such as ready-set, closure, grant, and plugin.
+func NewSentinel(raw string) (Sentinel, error) {
+	s := Sentinel(raw)
+	if err := ValidateSentinel(s); err != nil {
+		return "", err
+	}
+	return s, nil
+}
+
+func NewBeadSentinel(id string) (Sentinel, error) {
+	if err := validateSentinelPart("id", id); err != nil {
+		return "", err
+	}
+	return NewSentinel("bead/" + id)
+}
+
+func NewReadySentinel(project, typ string) (Sentinel, error) {
+	if err := validateSentinelPart("project", project); err != nil {
+		return "", err
+	}
+	if err := validateSentinelPart("type", typ); err != nil {
+		return "", err
+	}
+	return NewSentinel("ready/" + project + "/" + typ)
+}
+
+func NewClosureSentinel(id string) (Sentinel, error) {
+	if err := validateSentinelPart("id", id); err != nil {
+		return "", err
+	}
+	return NewSentinel("closure/" + id)
+}
+
+func NewGrantSentinel(scope string) (Sentinel, error) {
+	if err := validateSentinelPart("scope", scope); err != nil {
+		return "", err
+	}
+	return NewSentinel("grant/" + scope)
+}
+
+func ValidateSentinel(s Sentinel) error {
+	raw := string(s)
+	switch raw {
+	case string(SentinelGraphBlocking), string(SentinelOntology), string(SentinelPlugins):
+		return nil
+	}
+	if strings.HasPrefix(raw, "bead/") {
+		return validateSentinelPart("id", strings.TrimPrefix(raw, "bead/"))
+	}
+	if strings.HasPrefix(raw, "ready/") {
+		parts := strings.Split(raw, "/")
+		if len(parts) != 3 {
+			return fmt.Errorf("ready sentinel must be ready/<project>/<type>")
+		}
+		if err := validateSentinelPart("project", parts[1]); err != nil {
+			return err
+		}
+		return validateSentinelPart("type", parts[2])
+	}
+	if strings.HasPrefix(raw, "closure/") {
+		return validateSentinelPart("id", strings.TrimPrefix(raw, "closure/"))
+	}
+	if strings.HasPrefix(raw, "grant/") {
+		return validateSentinelPart("scope", strings.TrimPrefix(raw, "grant/"))
+	}
+	return fmt.Errorf("unknown sentinel %q", raw)
+}
+
+func NewReadFact(raw string) (ReadFact, error) {
+	fact := ReadFact(raw)
+	if err := fact.Validate(); err != nil {
+		return "", err
+	}
+	return fact, nil
+}
+
+func (fact ReadFact) Validate() error {
+	if string(fact) == "" || strings.TrimSpace(string(fact)) != string(fact) || strings.ContainsRune(string(fact), '\x00') {
+		return fmt.Errorf("read fact is not canonical")
+	}
+	return nil
+}
+
+func (key DerivedRowKey) Validate() error {
+	switch key.Table {
+	case DerivedReadyState, DerivedAncestorClosure, DerivedCutClosure, DerivedAttribute,
+		DerivedSortKey, DerivedReferenceIndex, DerivedGrant, DerivedOntology, DerivedPlugins:
+	default:
+		return fmt.Errorf("unknown derived table %q", key.Table)
+	}
+	if key.Key == "" || strings.TrimSpace(key.Key) != key.Key || strings.ContainsRune(key.Key, '\x00') {
+		return fmt.Errorf("derived row key is not canonical")
+	}
+	return nil
+}
+
+func (k LockKey) Validate() error {
+	switch k.Kind {
+	case LockRecord:
+		if k.Ref == nil || k.Fact != "" || k.Sentinel != "" || k.Derived != nil {
+			return fmt.Errorf("record lock key has multiple or missing forms")
+		}
+		return k.Ref.Validate()
+	case LockReadFact:
+		if k.Ref != nil || k.Fact == "" || k.Sentinel != "" || k.Derived != nil {
+			return fmt.Errorf("read-fact lock key has multiple or missing forms")
+		}
+		return k.Fact.Validate()
+	case LockSentinel:
+		if k.Ref != nil || k.Fact != "" || k.Sentinel == "" || k.Derived != nil {
+			return fmt.Errorf("sentinel lock key has multiple or missing forms")
+		}
+		return ValidateSentinel(k.Sentinel)
+	case LockDerived:
+		if k.Ref != nil || k.Fact != "" || k.Sentinel != "" || k.Derived == nil {
+			return fmt.Errorf("derived lock key has multiple or missing forms")
+		}
+		return k.Derived.Validate()
+	default:
+		return fmt.Errorf("unknown lock key kind %q", k.Kind)
+	}
+}
+
+func ValidateLockSet(keys LockSet) error {
+	previous := ""
+	for _, request := range keys {
+		if err := request.Key.Validate(); err != nil {
+			return err
+		}
+		if err := validateLockMode(request.Mode); err != nil {
+			return err
+		}
+		current := lockKeySortKey(request.Key)
+		if previous != "" && current <= previous {
+			return fmt.Errorf("lock set is unsorted or contains a duplicate key")
+		}
+		previous = current
+	}
+	return nil
+}
+
+func validateLockMode(mode LockMode) error {
+	switch mode {
+	case LockShare, LockUpdate, LockSkipLocked:
+		return nil
+	default:
+		return fmt.Errorf("unknown lock mode %q", mode)
+	}
+}
+
+func lockKeySortKey(key LockKey) string {
+	var rank string
+	var value string
+	switch key.Kind {
+	case LockRecord:
+		rank = "0"
+		if key.Ref.ID != "" {
+			value = fmt.Sprintf("id:%s:%d", key.Ref.ID, key.Ref.Branch)
+		} else {
+			value = "key:" + key.Ref.Key
+		}
+	case LockReadFact:
+		rank, value = "1", string(key.Fact)
+	case LockSentinel:
+		rank, value = "2", string(key.Sentinel)
+	case LockDerived:
+		rank, value = "3", string(key.Derived.Table)+":"+key.Derived.Key
+	}
+	return rank + ":" + value
+}
 
 // Cursor is the decoded driver form of the opaque RPC cursor. The binding
 // fields prevent a cursor issued for another method, filter, principal, or
@@ -1132,12 +2350,27 @@ The sentinel catalog and bump rules are fixed for this contract:
 
 | Sentinel | Read facts that record it | Operations or derived tables that bump it |
 | --- | --- | --- |
-| `graph/blocking` | cycle and blocking-edge predicates | `link`/`unlink` of a blocking edge |
-| `ready-set` | ready-set membership and claim-next selection | bead status, dependency, lease, and `ready_state` changes |
-| `closure` | ancestor/cut-closure predicates | reparent, restricted-toggle, and `closure` rows |
-| `grant` | authorization grant and compiled-filter reads | grant writes and `grant` rows |
+| `bead/<id>` | point reads and `Slice.Beads` | every op targeting that bead: patch, slot verbs, comment, attach, setMeta, reparent, delete |
+| `graph/blocking` | cycle and blocking-edge predicates, `no_open_blockers` | `link`/`unlink` of a blocking edge; delete of a bead with blocking edges |
+| `ready/<project>/<type>` | a type's ready-set query; `claimNext` does not guard its selection query | status-category changes, blocking-edge changes, and `ready_state` rows in that scope |
+| `closure/<id>` | `Slice.Closure(id, cut)`, for both ancestor and cut closures | create with a parent; reparent or restricted-toggle of the bead or an ancestor; delete; ancestor-closure, cut-closure, and derived-attribute rows touching that bead |
+| `grant/<scope>` | `Slice.Grants`, including misses | `x.<alias>.grant.*` writes in that scope and their indexed grant rows |
 | `ontology` | ontology revision and guard reads | ontology apply and `ontology` rows |
-| `plugin` | plugin-set, lock, and binding reads | plugin apply and `plugin` rows |
+| `plugins` | plugin-set, lock, and binding reads | plugin apply and `plugins` rows |
+
+The `DerivedTable` constants name logical row families for the lock boundary,
+not physical SQL tables. Ancestor/cut closures and derived attributes bump
+`closure/<id>`; `ready_state` rows bump `ready/<project>/<type>`. Sort keys and
+the reference index still require derived-row locks and atomic `PutDerived`,
+but bump no predicate sentinel because no guarded read depends on them.
+
+The constructors `NewBeadSentinel`, `NewReadySentinel`, `NewClosureSentinel`,
+and `NewGrantSentinel` are the only way to create parameterized keys. Every
+sentinel passes `ValidateSentinel` before entering a `LockKey`, and
+`ValidateLockSet` checks that each lock has exactly one typed key form. Empty,
+slash-containing, whitespace-padded values and the old unparameterized aliases
+are rejected before a driver sees them. This is the construction and
+validation boundary for the complete census.
 
 Each lock returns the current committed revision for its key. A bump writes the
 new key revision in the same transaction and changeset as the operation or
