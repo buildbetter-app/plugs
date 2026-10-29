@@ -99,7 +99,7 @@ func (w *Writer) Apply(ctx context.Context, by model.PrincipalRef, cs model.Chan
 		if err != nil {
 			return model.Commit{}, err
 		}
-		if commit, found, err := w.replay(preCtx, reader, principal, by, meta, hash); found || err != nil {
+		if commit, found, err := w.replay(preCtx, reader, principal, by, cs, meta, hash); found || err != nil {
 			return commit, err
 		}
 		p, err := w.prepare(preCtx, reader, by, cs, meta)
@@ -130,7 +130,7 @@ func (w *Writer) Apply(ctx context.Context, by model.PrincipalRef, cs model.Chan
 				// Only a durable receipt can resolve an uncertain outcome. Never
 				// execute another attempt merely because its response was lost.
 				if fresh, e := w.reader(ctx); e == nil {
-					if result, found, e := w.replay(ctx, fresh, principal, by, meta, hash); found || e != nil {
+					if result, found, e := w.replay(ctx, fresh, principal, by, cs, meta, hash); found || e != nil {
 						return result, e
 					}
 				}
@@ -150,7 +150,7 @@ func (w *Writer) Apply(ctx context.Context, by model.PrincipalRef, cs model.Chan
 			}
 		}
 		commit.Warnings = append(commit.Warnings, warnings...)
-		return commit, nil
+		return clone(commit)
 	}
 	return model.Commit{}, failure("write_conflict", "snapshot changed during all four write attempts")
 }
@@ -183,7 +183,7 @@ func requestHash(cs model.ChangeSet, meta model.WriteMeta) (string, error) {
 	return hex.EncodeToString(hash[:]), nil
 }
 
-func (w *Writer) replay(ctx context.Context, reader driver.Reader, principal string, by model.PrincipalRef, meta model.WriteMeta, hash string) (model.Commit, bool, error) {
+func (w *Writer) replay(ctx context.Context, reader driver.Reader, principal string, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, hash string) (model.Commit, bool, error) {
 	entry, err := reader.IdempotencyByKey(ctx, principal, meta.AgentLabel, meta.Method, meta.IdempotencyKey)
 	if err != nil {
 		return model.Commit{}, false, err
@@ -195,8 +195,11 @@ func (w *Writer) replay(ctx context.Context, reader driver.Reader, principal str
 		return model.Commit{}, true, failure("idempotency_key_reused", "idempotency key was used with different parameters")
 	}
 	p := port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, Meta: meta, BaseRevision: *reader.Snapshot().At, Changes: []port.Change{}}
-	for _, result := range entry.Commit.Results {
-		p.Changes = append(p.Changes, port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: result.Ref}, After: result.Record, SetBy: result.SetBy})
+	for i, result := range entry.Commit.Results {
+		if i >= len(cs.Ops) {
+			return model.Commit{}, true, failure("internal_error", "stored response does not match original request")
+		}
+		p.Changes = append(p.Changes, port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: result.Ref}, Op: cs.Ops[i], After: result.Record, SetBy: result.SetBy})
 	}
 	snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}}
 	if err := w.authorize(ctx, port.AuthorizeReplay, p, snapshot); err != nil {
