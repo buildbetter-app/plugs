@@ -7,6 +7,14 @@ storage shape that the standalone `bd export --format plug-dump/1` reader must
 observe. It does not change the Beads tree, and it is not a proposal to keep
 Dolt or the `bd` API in Plug.
 
+The [main migration directory](https://github.com/buildbetter-app/plugs/tree/9d6fff760b7a314b476539198504d77ce0959656/internal/storage/schema/migrations),
+[ignored migration directory](https://github.com/buildbetter-app/plugs/tree/9d6fff760b7a314b476539198504d77ce0959656/internal/storage/schema/migrations/ignored),
+and [schema runner](https://github.com/buildbetter-app/plugs/blob/9d6fff760b7a314b476539198504d77ce0959656/internal/storage/schema/schema.go)
+are pinned references; the paths in this census do not describe the new Plug
+tree. This source-shape inventory is not an executed converter, a per-store
+row census, or behavior-parity evidence; those artifacts remain deferred in
+the [behavior catalog](behaviors.md#deferred-census-and-golden-artifacts).
+
 ## Contract and scope
 
 The converter reads a store with the pinned `bd` build, validates the paired

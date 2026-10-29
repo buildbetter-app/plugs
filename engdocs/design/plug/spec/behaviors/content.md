@@ -1,40 +1,69 @@
 # Identity and content behavior cards
 
+Source pin and evidence limits: [behavior catalog](../behaviors.md).
+
 ## B09 — hash IDs and adaptive collision handling
 
-**Behavior.** Hash-mode issue IDs are `prefix-<base36>` with a requested length
-from 3 through 8; the digest includes title, description, creator, timestamp,
-and a collision nonce. The allocator tries lengths/nonces against existing and
-same-batch IDs and refuses only after the configured collision budget is
-exhausted.
+**Behavior.** The shared hash allocator emits `prefix-<base36>` from the
+SHA-256 input `title|description|creator|timestamp.UnixNano|nonce`.
+`internal/idgen.GenerateHashID` has explicit digest byte widths for requested
+lengths 3 through 8; any other requested length uses its three-byte fallback,
+while `EncodeBase36` still pads or truncates to the exact requested width. The
+allocator contract is path-specific: the legacy `issueops` table allocator
+hard-caps its maximum tried length at 8 (the documented 3-through-8 range),
+while the domain `mintTopLevelID` path reads the configured
+`max_hash_length` and tries through that maximum (default 8;
+`docs/core-concepts/adaptive-ids.md` pins an example of 10).
+`max_collision_prob` chooses the birthday-paradox starting length; it is not a
+retry budget. At each tried
+length, the paths make exactly ten nonce attempts (`0` through `9`) before
+advancing to the next length, and refuse after the final length is exhausted.
+The separate `internal/types.GenerateHashID` helper returns a full hexadecimal
+SHA-256 over title, description, `RFC3339Nano` creation time, and workspace ID;
+it is not the allocator's hash contract.
 
-**Beads implementation.** `internal/idgen/hash.go:EncodeBase36`,
-`GenerateHashID`; `internal/storage/issueops/helpers.go:GenerateIssueIDInTable`,
-`GetAdaptiveIDLengthTx`; `internal/storage/domain/issue.go:mintTopLevelID`.
+**Beads implementation.** Allocator: `internal/idgen/hash.go:EncodeBase36`,
+`GenerateHashID`; legacy path `internal/storage/issueops/helpers.go:
+GenerateIssueIDInTable`, `GetAdaptiveIDLengthTx`, `GetAdaptiveConfigTx`; domain
+path `internal/storage/domain/issue.go:mintTopLevelID`,
+`internal/storage/domain/db/config.go:GetAdaptiveIDConfig`. Separate helper:
+`internal/types/id_generator.go:GenerateHashID`.
 
-**Pinning tests.** `internal/idgen/hash_test.go:TestGenerateHashIDMatchesJiraVector`;
-`internal/types/id_generator_test.go:TestGenerateHashID_Deterministic`,
-`TestGenerateHashID_DifferentInputs`; `internal/storage/dolt/store_unit_test.go:
+**Pinning tests.** Allocator: `internal/idgen/hash_test.go:
+TestGenerateHashIDMatchesJiraVector`; `internal/storage/dolt/store_unit_test.go:
 TestGetAdaptiveIDLength`, `internal/storage/dolt/create_issue_commit_test.go:
 TestCreateIssueCommitsInitialRelationalData`, and
 `internal/storage/issueops/create_batch_cache_test.go:TestFlushAuxEventsMintsThePerRowIDs`.
+Separate helper: `internal/types/id_generator_test.go:
+TestGenerateHashID_Deterministic`, `TestGenerateHashID_DifferentInputs`.
 
-**Edge cases.** Unsupported lengths use the documented fallback; base36 is
-zero-padded/truncated to the exact length. Existing imported IDs, explicit
-prefixes, and collisions between rows in one batch must be considered; a
-creator or timestamp change changes the digest.
+**Edge cases.** For the allocator, unsupported lengths use the three-byte
+fallback but still produce the requested base36 width. Thus the domain path
+can try lengths 9 and 10 when `max_hash_length=10`, with candidates derived
+from only those three digest bytes; the legacy path stops at 8 even when its
+configuration is higher. Existing imported IDs, explicit prefixes, and
+collisions between rows in one batch must be considered; a creator, timestamp,
+or nonce change changes its digest. The separate helper has no creator or nonce
+and is classified independently.
 
-**Plug disposition.** **Keep** byte-identical hash behavior (ported utility
-under P1), preserving prefix, hash/counter mode and adaptive settings across
-restore (A1/P44). A card additionally proves no generated hash collides with a
-restored ID.
+**Plug disposition.** **Deviate from the legacy clamp:** Plug's single
+allocator contract follows the domain path's configured maximum, including the
+pinned `max_hash_length=10` example, and preserves that adaptive setting across
+restore (A1/P44). It does not promise byte-identical behavior with the legacy
+issueops/Dolt allocator above length 8; for lengths 3 through 8 it keeps the
+copied `idgen` encoding and the fixed ten-nonce retry semantics. A card
+additionally proves no generated hash collides with a restored ID. The
+`internal/types.GenerateHashID` helper is a separate legacy utility, not
+allocator evidence; its own golden is deferred until a caller requires that
+helper's behavior.
 
 ## B10 — hierarchical child IDs and counters
 
 **Behavior.** A child ID is `parent.N`; the allocator never reuses a number,
 scans only direct children, repairs stale counters from observed IDs, and
-routes active-wisp parents to the wisp counter/table. Hierarchy depth is capped
-at three levels while breadth is unbounded.
+routes active-wisp parents to the wisp counter/table. Hierarchy depth uses the
+`hierarchy.max-depth` setting: the default maximum is 3, positive configured
+values are honored, and breadth is unbounded.
 
 **Beads implementation.** `internal/types/id_generator.go:GenerateChildID`,
 `ParseHierarchicalID`, `CheckHierarchyDepth`; `internal/storage/issueops/child_id.go:GetNextChildIDTx`;
@@ -42,7 +71,7 @@ at three levels while breadth is unbounded.
 
 **Pinning tests.** `internal/types/id_generator_test.go:TestGenerateChildID`,
 `TestParseHierarchicalID`, `TestCheckHierarchyDepth`; `cmd/bd/protocol/child_id_test.go:
-TestProtocol_ChildIDCounterNeverReusesNumbers; `internal/storage/domain/db/
+TestProtocol_ChildIDCounterNeverReusesNumbers`; `internal/storage/domain/db/
 child_counter_test.go:TestChildCounterSQLRepository` (the FirstChildReturnsDotOne,
 MonotonicallyIncrements, RecoversFromStaleCounter, GrandchildrenDoNotInfluenceCounter,
 and Wisp subtests); `internal/storage/embeddeddolt/child_id_test.go:TestGetNextChildID`;
@@ -50,8 +79,10 @@ conformance `RunIssueOperationsCreateUnderAParentMintsTheNextChildID`.
 
 **Edge cases.** Deleted/closed children do not free a number; explicit `.8`
 advances a stale counter; grandchildren do not influence a parent's next
-number. Missing parents may be skipped during import reconciliation, while an
-empty/missing parent at allocation is an error.
+number. With `maxDepth=5`, depth 4 is accepted and depth 5 is refused;
+nonpositive `hierarchy.max-depth` configuration values are refused, while the
+unset/default path uses 3. Missing parents may be skipped during import
+reconciliation, while an empty/missing parent at allocation is an error.
 
 **Plug disposition.** **Keep** the dotted ID and counter semantics. Restore
 seeds durable, child, and wisp counters from stored counters plus observed IDs;
