@@ -107,13 +107,18 @@ func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]stored
 		switch link.Kind {
 		case "relates-to":
 			continue
-		case "blocks":
+		case "blocks", "conditional-blocks":
 			blocker, exists := graph[link.To.ID]
 			if !exists || !link.To.IsID() || !link.To.Branch.IsZero() {
 				return false, nil
 			}
 			s := state(blocker.doc)
-			if !o.effective(s.Project).SatisfiesBlocks(s.Status) {
+			effective := o.effective(s.Project)
+			satisfied := effective.SatisfiesBlocks(s.Status)
+			if link.Kind == "conditional-blocks" {
+				satisfied = effective.SatisfiesConditionalBlocks(s.Status)
+			}
+			if !satisfied {
 				return false, nil
 			}
 		default:
