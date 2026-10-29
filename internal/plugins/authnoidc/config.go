@@ -60,7 +60,7 @@ func New(config Config) (*Provider, error) {
 	}
 	users := make(map[string]string, len(config.Users))
 	for sub, id := range config.Users {
-		if !boundedText(sub, 255) || authn.ValidatePrincipal(model.PrincipalRef{Kind: "user", ID: id}) != nil {
+		if !boundedText(sub, 255) || !boundedText(id, 256) || authn.ValidatePrincipal(model.PrincipalRef{Kind: "user", ID: id}) != nil {
 			return nil, fmt.Errorf("authnoidc: invalid provisioned subject or User")
 		}
 		users[sub] = id

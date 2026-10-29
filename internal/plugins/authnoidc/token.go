@@ -50,6 +50,9 @@ func (p *Provider) request(req *http.Request) ([]byte, error) {
 		return nil, authn.ErrUnavailable
 	}
 	defer response.Body.Close()
+	if response.StatusCode >= 500 || response.StatusCode == http.StatusTooManyRequests {
+		return nil, authn.ErrUnavailable
+	}
 	if response.StatusCode != http.StatusOK {
 		return nil, authn.ErrUnauthenticated
 	}

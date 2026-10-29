@@ -47,6 +47,9 @@ func (a *Authenticator) admitSession(ctx context.Context, token string) (Identit
 	if err := s.RequireInteractiveUser(); err != nil {
 		return Identity{}, sessionFailure(err)
 	}
+	if ctx.Err() != nil {
+		return Identity{}, ErrUnavailable
+	}
 	p, err = copyPrincipal(p)
 	if err != nil {
 		return Identity{}, ErrUnauthenticated
@@ -87,6 +90,9 @@ func WithIdentity(ctx context.Context, identity Identity) context.Context {
 // RequireInteractiveUser checks both the live proof and the executing User.
 // A deputy or a different principal cannot reuse a transported User proof.
 func RequireInteractiveUser(ctx context.Context, by model.PrincipalRef) error {
+	if ctx.Err() != nil {
+		return ErrUnavailable
+	}
 	identity, ok := ctx.Value(identityKey{}).(Identity)
 	if !ok || by.Kind != "user" || by.Sponsor != nil || len(by.Caveats) != 0 ||
 		identity.principal.Kind != by.Kind || identity.principal.ID != by.ID {

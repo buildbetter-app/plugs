@@ -34,7 +34,11 @@ type mockIDP struct {
 	signKey   *rsa.PrivateKey
 	keySet    func(map[string]any)
 	tokenRaw  string
+	lastJWT   string
 	redirect  string
+	status    int
+	started   chan struct{}
+	resume    chan struct{}
 	tokens    int
 	keys      int
 }
@@ -47,7 +51,27 @@ func newIDP(t *testing.T) *mockIDP {
 	}
 	idp := &mockIDP{t: t, key: key, codes: map[string]url.Values{}}
 	idp.now.Store(time.Now().Unix())
-	idp.server = httptest.NewTLSServer(http.HandlerFunc(idp.serve))
+	idp.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			idp.mu.Lock()
+			started, resume := idp.started, idp.resume
+			idp.mu.Unlock()
+			if started != nil {
+				_ = r.ParseForm()
+				select {
+				case started <- struct{}{}:
+				case <-r.Context().Done():
+					return
+				}
+				select {
+				case <-resume:
+				case <-r.Context().Done():
+					return
+				}
+			}
+		}
+		idp.serve(w, r)
+	}))
 	t.Cleanup(idp.server.Close)
 	return idp
 }
@@ -87,6 +111,11 @@ func (idp *mockIDP) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusFound)
 	case "/token":
 		idp.tokens++
+		if idp.status != 0 {
+			w.WriteHeader(idp.status)
+			_, _ = io.WriteString(w, `{"error":"private-provider-detail"}`)
+			return
+		}
 		if idp.redirect != "" {
 			w.Header().Set("Location", idp.redirect)
 			w.WriteHeader(http.StatusTemporaryRedirect)
@@ -125,6 +154,7 @@ func (idp *mockIDP) serve(w http.ResponseWriter, r *http.Request) {
 			key = idp.key
 		}
 		token := signedJWT(idp.t, key, header, claims)
+		idp.lastJWT = token
 		_ = json.NewEncoder(w).Encode(map[string]any{"id_token": token, "access_token": "unused", "token_type": "Bearer"})
 	case "/jwks":
 		idp.keys++

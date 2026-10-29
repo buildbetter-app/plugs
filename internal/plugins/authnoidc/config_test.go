@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,5 +82,29 @@ func TestAudienceRequiresClientAndAuthorizedParty(t *testing.T) {
 		if validAudience(json.RawMessage(tc.aud), tc.party, "plug") != tc.want {
 			t.Fatal("incorrect audience/authorized party decision")
 		}
+	}
+}
+
+func TestSessionLookupHonorsContextWhileContended(t *testing.T) {
+	p, err := New(validConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.VerifyCoreSession(ctx, "plg_s_"+strings.Repeat("a", 32)+"_"+strings.Repeat("A", 43))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, authn.ErrUnavailable) {
+			t.Fatal("contended session admission did not fail closed on cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session lookup waited for a held lock past its deadline")
 	}
 }

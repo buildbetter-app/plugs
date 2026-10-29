@@ -223,7 +223,9 @@ internal/integration/apikey/BUILD.bazel
 internal/integration/apikey/compose.go
 internal/integration/oidc/BUILD.bazel
 internal/integration/oidc/flow_test.go
+internal/integration/oidc/http_test.go
 internal/integration/oidc/idp_test.go
+internal/integration/oidc/refusal_test.go
 internal/plugins/authnapikey/BUILD.bazel
 internal/plugins/authnapikey/README.md
 internal/plugins/authnapikey/apikey.go
