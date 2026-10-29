@@ -279,6 +279,10 @@ internal/integration/auditsql/audit_sql_test.go
 internal/integration/auditsql/engine_test.go
 internal/integration/auditsql/faults_test.go
 internal/integration/auditsql/fixture_test.go
+internal/integration/batchsql/BUILD.bazel
+internal/integration/batchsql/README.md
+internal/integration/batchsql/batch_test.go
+internal/integration/batchsql/fixture_test.go
 internal/integration/claimsql/BUILD.bazel
 internal/integration/claimsql/README.md
 internal/integration/claimsql/claim_sql_test.go
