@@ -72,6 +72,7 @@ type Writer struct {
 }
 
 var _ model.Writer = (*Writer)(nil)
+var _ port.OutcomeWriter = (*Writer)(nil)
 
 // New uses an already active storage lease. It never creates a second store.
 // Invalid callback configuration is refused by Apply before any storage write.

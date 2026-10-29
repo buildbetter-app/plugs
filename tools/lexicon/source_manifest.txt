@@ -156,6 +156,8 @@ internal/core/pipeline/operations_test.go
 internal/core/pipeline/options.go
 internal/core/pipeline/pipeline_test.go
 internal/core/pipeline/prepare.go
+internal/core/pipeline/response.go
+internal/core/pipeline/response_test.go
 internal/core/pipeline/snapshot.go
 internal/core/port/BUILD.bazel
 internal/core/port/pipeline.go
@@ -201,6 +203,7 @@ internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
+internal/storage/driver/receipt_contract_test.go
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_test.go
