@@ -6,10 +6,11 @@ import (
 )
 
 type Precondition struct {
-	Ref      Ref       `json:"ref"`
-	Revision *Revision `json:"revision,omitempty"`
-	Field    string    `json:"field,omitempty"`
-	Hash     string    `json:"hash,omitempty"`
+	Ref          Ref       `json:"ref"`
+	Revision     *Revision `json:"revision,omitempty"`
+	Field        string    `json:"field,omitempty"`
+	Hash         string    `json:"hash,omitempty"`
+	hashSelected bool
 }
 
 type ChangeSet struct {
@@ -201,6 +202,28 @@ func (o Op) MarshalJSON() ([]byte, error) {
 	if selected != 1 {
 		return nil, fmt.Errorf("operation must select exactly one payload")
 	}
+	var payloadKind OpKind
+	switch {
+	case o.Create != nil:
+		payloadKind = o.Create.Kind
+	case o.Patch != nil:
+		payloadKind = o.Patch.Kind
+	case o.Reparent != nil:
+		payloadKind = o.Reparent.Kind
+	case o.Link != nil:
+		payloadKind = o.Link.Kind
+	case o.Comment != nil:
+		payloadKind = o.Comment.Kind
+	case o.Attach != nil:
+		payloadKind = o.Attach.Kind
+	case o.Delete != nil:
+		payloadKind = o.Delete.Kind
+	case o.SetMeta != nil:
+		payloadKind = o.SetMeta.Kind
+	}
+	if payloadKind != "" && payloadKind != o.Kind {
+		return nil, fmt.Errorf("operation kind %q does not match payload kind %q", o.Kind, payloadKind)
+	}
 	switch o.Kind {
 	case OpCreate:
 		if o.Create == nil {
@@ -303,7 +326,7 @@ func (o *Op) UnmarshalJSON(data []byte) error {
 	if err := decodeJSON(kindRaw, &kind); err != nil {
 		return fmt.Errorf("operation kind: %w", err)
 	}
-	*o = Op{Kind: kind}
+	decoded := Op{Kind: kind}
 	switch kind {
 	case OpCreate:
 		var value CreateOp
@@ -313,7 +336,7 @@ func (o *Op) UnmarshalJSON(data []byte) error {
 		if err := validateCreate(value); err != nil {
 			return err
 		}
-		o.Create = &value
+		decoded.Create = &value
 	case OpPatch:
 		var value PatchOp
 		if err := decodeStrict(data, &value, "kind", "target", "fields"); err != nil {
@@ -322,7 +345,7 @@ func (o *Op) UnmarshalJSON(data []byte) error {
 		if err := validatePatch(value); err != nil {
 			return err
 		}
-		o.Patch = &value
+		decoded.Patch = &value
 	case OpReparent:
 		var value ReparentOp
 		if err := decodeStrict(data, &value, "kind", "target"); err != nil {
@@ -331,7 +354,7 @@ func (o *Op) UnmarshalJSON(data []byte) error {
 		if err := validateReparent(value); err != nil {
 			return err
 		}
-		o.Reparent = &value
+		decoded.Reparent = &value
 	case OpLink, OpUnlink:
 		var value LinkOp
 		if err := decodeStrict(data, &value, "kind", "from", "to", "linkKind"); err != nil {
@@ -340,7 +363,7 @@ func (o *Op) UnmarshalJSON(data []byte) error {
 		if err := validateLink(value); err != nil {
 			return err
 		}
-		o.Link = &value
+		decoded.Link = &value
 	case OpComment:
 		var value CommentOp
 		if err := decodeStrict(data, &value, "kind", "target", "body"); err != nil {
@@ -349,7 +372,7 @@ func (o *Op) UnmarshalJSON(data []byte) error {
 		if err := validateComment(value); err != nil {
 			return err
 		}
-		o.Comment = &value
+		decoded.Comment = &value
 	case OpAttach:
 		var value AttachOp
 		if err := decodeStrict(data, &value, "kind", "target", "attachment"); err != nil {
@@ -358,7 +381,7 @@ func (o *Op) UnmarshalJSON(data []byte) error {
 		if err := validateAttach(value); err != nil {
 			return err
 		}
-		o.Attach = &value
+		decoded.Attach = &value
 	case OpDelete:
 		var value DeleteOp
 		if err := decodeStrict(data, &value, "kind", "target"); err != nil {
@@ -367,7 +390,7 @@ func (o *Op) UnmarshalJSON(data []byte) error {
 		if err := validateDelete(value); err != nil {
 			return err
 		}
-		o.Delete = &value
+		decoded.Delete = &value
 	case OpSetMeta:
 		var value SetMetaOp
 		if err := decodeStrict(data, &value, "kind", "target", "key", "value"); err != nil {
@@ -376,9 +399,10 @@ func (o *Op) UnmarshalJSON(data []byte) error {
 		if err := validateSetMeta(value); err != nil {
 			return err
 		}
-		o.SetMeta = &value
+		decoded.SetMeta = &value
 	default:
 		return fmt.Errorf("unknown operation kind %q", kind)
 	}
+	*o = decoded
 	return nil
 }
