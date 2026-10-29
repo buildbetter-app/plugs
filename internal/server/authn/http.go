@@ -18,10 +18,10 @@ import (
 // Trusted-proxy termination is deliberately unsupported in this slice.
 func (a *Authenticator) Listen(ctx context.Context, address string, tlsConfig *tls.Config) (net.Listener, error) {
 	address, loopback, err := listenAddress(address)
-	if err != nil || (!loopback && (a.provider == nil || tlsConfig == nil)) {
+	if err != nil || (!loopback && (!a.configured() || tlsConfig == nil)) {
 		return nil, ErrForbidden
 	}
-	if a.provider == nil && a.hasAuthorization() {
+	if !a.configured() && a.hasAuthorization() {
 		return nil, ErrAuthzRequiresAuthn
 	}
 	if tlsConfig != nil {
@@ -101,10 +101,10 @@ func (a *Authenticator) admitRequest(r *http.Request) (Identity, error) {
 	if err != nil {
 		return Identity{}, ErrForbidden
 	}
-	loopback := a.provider == nil || isLoopbackHost(host)
+	loopback := !a.configured() || isLoopbackHost(host)
 	if local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
 		localIP, err := peerIP(local.String())
-		if err != nil || (a.provider == nil && !localIP.IsLoopback()) {
+		if err != nil || (!a.configured() && !localIP.IsLoopback()) {
 			return Identity{}, ErrForbidden
 		}
 		loopback = loopback || localIP.IsLoopback()
