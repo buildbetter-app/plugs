@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "pluginbuild",
+    srcs = ["build.go", "process_other.go", "process_unix.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/server/pluginbuild",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/server/pluginhost",
+        "//internal/server/pluginmanifest",
+        "//pluginapi",
+        "//sdk/go:sdk_go",
+    ],
+)
+
+go_test(
+    name = "pluginbuild_test",
+    srcs = ["source_test.go"],
+    embedsrcs = ["//internal/server/pluginbuild/fixture:sources"],
+    embed = [":pluginbuild"],
+    deps = [
+        "//internal/server/pluginhost",
+        "//internal/server/pluginmanifest",
+        "//sdk/go:sdk_go",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
