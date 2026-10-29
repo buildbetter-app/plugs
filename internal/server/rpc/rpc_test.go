@@ -175,6 +175,22 @@ func TestRegistryAndHandlerFailures(t *testing.T) {
 	}
 }
 
+func TestDecidedSessionCloseIsExplicitlyUnbound(t *testing.T) {
+	r := registry(t)
+	d, ok := r.Catalog().Descriptor("session.close")
+	if !ok || d.Effect != "read" || d.Idempotency != "none" || d.Permission != "read" || d.AgentCore {
+		t.Fatalf("decided session.close descriptor missing or changed: %+v", d)
+	}
+	s := server(t, r, rpc.Config{})
+	requireCode(t, call(t, s, context.Background(), "session.close", `{"sessionId":"session-1"}`), "method_not_found")
+	methods := result(t, call(t, s, context.Background(), "rpc.methods", `{}`))
+	for _, method := range methods["methods"].([]any) {
+		if method == "session.close" {
+			t.Fatal("unimplemented session method advertised")
+		}
+	}
+}
+
 func TestDiscoveryVisibilityAndHash(t *testing.T) {
 	r := registry(t)
 	_ = r.Register("bead.get", func(context.Context, rpc.Call) (any, error) { return getResult(), nil })
