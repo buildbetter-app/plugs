@@ -60,6 +60,15 @@ func TestDumpRestoreClaimAndApplyAcrossDrivers(t *testing.T) {
 			}
 			id := commit.Results[0].Ref.ID
 			archiveBytes, archive := captureDump(t, ctx, source.Client)
+			// The offline merger accepts exporter archives, while the live
+			// restore writer accepts native head images. Neither merge API may
+			// reinterpret a native dump; refusal must leave it restorable.
+			if data, err := dumpformat.Merge(bytes.NewReader(archiveBytes)); err == nil || data != nil {
+				t.Fatalf("offline merge accepted a native dump: %d bytes, %v", len(data), err)
+			}
+			if data, err := dumpformat.MergeArchives(archive); err == nil || data != nil {
+				t.Fatalf("offline merge accepted a native archive: %d bytes, %v", len(data), err)
+			}
 
 			var targetStore driver.Store
 			var cleanup func() error

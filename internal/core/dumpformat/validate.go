@@ -37,7 +37,7 @@ var externalFamilies = []string{
 	"project-config", "beads-dir-config", "project-local-config",
 	"environment-and-flags", "metadata-json", "legacy-config-json",
 	"beads-hooks", "legacy-hooks", "git-hooks", "external-hook-managers",
-	"routes-jsonl", "form" + "ulas", "form" + "ula-search-paths", "issues-jsonl",
+	"routes-jsonl", "formulas", "formula-search-paths", "issues-jsonl",
 	"interactions-jsonl", "dolt-ignore", "dolt-nonlocal-tables",
 	"dolt-working-set", "dolt-commit-graph", "dolt-remotes",
 	"dolt-conflicts", "dolt-history-maintenance", "store-files-and-quiescence",

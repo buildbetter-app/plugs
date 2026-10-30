@@ -30,6 +30,19 @@ func TestOfflineConverterArchiveRefusesBeforeMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	merged, err := dumpformat.Merge(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("offline merge of the validated converter fixture: %v", err)
+	}
+	for name, data := range map[string][]byte{"exported": b, "offline-merged": merged} {
+		t.Run(name, func(t *testing.T) {
+			assertConverterArchiveRefusesBeforeMutation(t, data)
+		})
+	}
+}
+
+func assertConverterArchiveRefusesBeforeMutation(t *testing.T, b []byte) {
+	t.Helper()
 	a, err := dumpformat.Read(bytes.NewReader(b))
 	if err != nil {
 		t.Fatal(err)

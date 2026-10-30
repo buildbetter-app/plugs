@@ -78,7 +78,7 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 		switch stringValue(fields["status"]) {
 		case "open":
 			category = "unstarted"
-		case "in_progress", "hook" + "ed":
+		case "in_progress", "hooked":
 			category = "started"
 		case "blocked", "deferred", "pinned", "frozen":
 			category = "backlog"
@@ -127,7 +127,7 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 		}
 	case "edge":
 		target, targetKind := "", ""
-		for _, key := range []string{"depends_on_issue_id", "depends_on_" + "w" + "isp_id", "depends_on_external"} {
+		for _, key := range []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
 			if value := stringValue(fields[key]); value != "" {
 				if target != "" {
 					return fmt.Errorf("multiple typed edge targets")
@@ -135,7 +135,7 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 				target, targetKind = value, key
 			}
 		}
-		if target == "" || targetKind == "depends_on_"+"w"+"isp_id" {
+		if target == "" || targetKind == "depends_on_wisp_id" {
 			return fmt.Errorf("unsupported or missing edge target")
 		}
 		switch stringValue(fields["type"]) {
