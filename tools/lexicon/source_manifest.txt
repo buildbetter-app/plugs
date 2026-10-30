@@ -334,6 +334,12 @@ internal/integration/cursorhttp/cursor_test.go
 internal/integration/cursorhttp/fixture_test.go
 internal/integration/dumpvalidation/BUILD.bazel
 internal/integration/dumpvalidation/dumpvalidation_test.go
+internal/integration/e5acceptance/BUILD.bazel
+internal/integration/e5acceptance/fixture-local-wasi/go.mod.template
+internal/integration/e5acceptance/fixture-local-wasi/plug-plugin.json
+internal/integration/e5acceptance/fixture-local-wasi/plugin.go
+internal/integration/e5acceptance/local_fixture_test.go
+internal/integration/e5acceptance/local_wasi_test.go
 internal/integration/eventsqlpaging/BUILD.bazel
 internal/integration/eventsqlpaging/integration_test.go
 internal/integration/graphacceptance/BUILD.bazel
@@ -462,7 +468,9 @@ internal/server/authn/http_test.go
 internal/server/authn/session.go
 internal/server/authn/session_test.go
 internal/server/authzrpc/BUILD.bazel
+internal/server/authzrpc/README.md
 internal/server/authzrpc/authzrpc.go
+internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go

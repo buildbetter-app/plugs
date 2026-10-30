@@ -97,6 +97,9 @@ type Config struct {
 	// Audit is optional because the protected ontology source is a separate
 	// host seam. When supplied, the trusted event context is installed with it.
 	Audit port.OntologyAudit
+	// Mutators optionally installs trusted host bindings on the same Writer as
+	// the fixed checker and event context. Callback resources remain caller-owned.
+	Mutators []pipeline.MutatorBinding
 }
 
 // Composition owns the installed chain and is useful to hosts that need the
@@ -156,6 +159,9 @@ func New(ctx context.Context, config Config) (*Composition, error) {
 	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithAuthorizer(checker), pipeline.WithEventContext(checker)}
 	if config.Audit != nil {
 		options = append(options, pipeline.WithOntologyAudit(config.Audit))
+	}
+	if len(config.Mutators) != 0 {
+		options = append(options, pipeline.WithMutators(config.Mutators...))
 	}
 	writer := pipeline.New(config.Store, config.Lease, options...)
 	domain := service.New(config.Store, config.Lease, writer, service.WithOntology(ontology))
