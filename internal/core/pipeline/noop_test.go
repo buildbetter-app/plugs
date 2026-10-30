@@ -116,7 +116,11 @@ func TestNoopStillRequiresAdmission(t *testing.T) {
 
 func TestClaimNextEmptyProbeRunsAfterHeadAndBlocksStaleNull(t *testing.T) {
 	h := setup(t)
-	w := h.writer()
+	var posts atomic.Int32
+	w := h.writer(WithPostSubscribers(PostBinding{ID: "not-for-empty-receipts", Subscriber: postFunc(func(context.Context, port.CommittedChange, port.SnapshotReader) error {
+		posts.Add(1)
+		return nil
+	})}))
 	meta := meta(30)
 	meta.Method = "bead.claimNext"
 	var observed atomic.Int32
@@ -145,8 +149,38 @@ func TestClaimNextEmptyProbeRunsAfterHeadAndBlocksStaleNull(t *testing.T) {
 	}
 	principal, _ := driver.PrincipalKey(by)
 	receipt, err := h.read(t).IdempotencyByKey(context.Background(), principal, "", "bead.claimNext", meta.IdempotencyKey)
-	if err != nil || receipt == nil || receipt.Commit.Revision.String() != "1" || len(receipt.Changeset.Changes) != 0 {
+	if err != nil || receipt == nil || receipt.Commit.Revision.String() != "1" || len(receipt.Changeset.Changes) != 0 || receipt.ResponsePending || posts.Load() != 0 {
 		t.Fatalf("durable terminal receipt=%+v err=%v", receipt, err)
+	}
+	replayed, err := h.writer().ApplyClaimNextEmpty(context.Background(), by, model.ChangeSet{Ops: []model.Op{}}, meta, func(context.Context, driver.Reader) (bool, error) {
+		t.Fatal("durable null replay probed today's ready set")
+		return true, nil
+	})
+	if err != nil || !replayed.Replayed || !reflect.DeepEqual(replayed.Commit, result.Commit) || h.read(t).Snapshot().At.String() != "1" {
+		t.Fatalf("terminal receipt replay=%+v err=%v", replayed, err)
+	}
+}
+
+func TestClaimNextTerminalProbeErrorsDoNotCommit(t *testing.T) {
+	for _, name := range []model.ErrorCode{"busy", "write_conflict", "lease_not_held", "lease_expired"} {
+		t.Run(string(name), func(t *testing.T) {
+			h := setup(t)
+			m := meta(31)
+			m.Method = "bead.claimNext"
+			refusal := failure(name, "terminal storage query failed")
+			_, err := h.writer().ApplyClaimNextEmpty(context.Background(), by, model.ChangeSet{Ops: []model.Op{}}, m, func(context.Context, driver.Reader) (bool, error) {
+				return false, refusal
+			})
+			if !errors.Is(err, refusal) {
+				t.Fatalf("terminal error was lost: %v", err)
+			}
+			reader := h.read(t)
+			principal, _ := driver.PrincipalKey(by)
+			receipt, err := reader.IdempotencyByKey(context.Background(), principal, "", m.Method, m.IdempotencyKey)
+			if err != nil || receipt != nil || reader.Snapshot().At.String() != "0" {
+				t.Fatalf("terminal probe error committed a null: receipt=%+v err=%v", receipt, err)
+			}
+		})
 	}
 }
 

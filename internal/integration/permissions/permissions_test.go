@@ -31,6 +31,7 @@ type fixture struct {
 	store  *memory.Store
 	lease  driver.ActiveLease
 	seed   *service.Service
+	guard  *authzrpc.GuardedService
 	keys   *authnapikey.Provider
 	facts  *authzrpc.MutableFacts
 	url    string
@@ -39,6 +40,11 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	return newFixtureWithStore(t, nil)
+}
+
+func newFixtureWithStore(t *testing.T, wrap func(*memory.Store) driver.Store) *fixture {
 	t.Helper()
 	ctx := context.Background()
 	f := &fixture{store: memory.New()}
@@ -90,10 +96,15 @@ func newFixture(t *testing.T) *fixture {
 	}
 
 	f.keys = authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
-	composition, err := permissions.New(ctx, permissions.Config{Store: f.store, Lease: lease, Keys: f.keys, Facts: facts, Namespace: ns, DefaultProject: "project"})
+	var store driver.Store = f.store
+	if wrap != nil {
+		store = wrap(f.store)
+	}
+	composition, err := permissions.New(ctx, permissions.Config{Store: store, Lease: lease, Keys: f.keys, Facts: facts, Namespace: ns, DefaultProject: "project"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.guard = composition.Service
 	server, err := composition.Handler.Listen(ctx, "127.0.0.1:0", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -421,4 +432,115 @@ func TestFactsSourceRejectsNamespaceDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantCode(t, f.call(t, user.Token, "bead.ready", map[string]any{"limit": 1, "_meta": map[string]any{"project": "project"}}), "authz_unavailable")
+}
+
+// The hook makes a real authorized claim after the outer request has selected
+// its candidate, before its transaction starts. The store never fabricates a
+// candidate error or a committed receipt.
+type guardedClaimRaceStore struct {
+	*memory.Store
+	beforeWrite atomic.Pointer[func(context.Context) error]
+	writeError  error
+}
+
+func (s *guardedClaimRaceStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	if hook := s.beforeWrite.Swap(nil); hook != nil {
+		if err := (*hook)(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if s.writeError != nil {
+		return nil, s.writeError
+	}
+	return s.Store.Write(ctx, lease)
+}
+
+func permissionWorker(id string) model.PrincipalRef {
+	return model.PrincipalRef{Kind: "agent", ID: id,
+		Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:operator"},
+		Caveats: map[string]any{"actions": []string{"modify"}, "projects": []model.Ref{model.RefByID("project", model.Natural64(0))}},
+	}
+}
+
+func TestRealHTTPGuardedClaimNextSkipsCompetingClaim(t *testing.T) {
+	var raced *guardedClaimRaceStore
+	f := newFixtureWithStore(t, func(store *memory.Store) driver.Store {
+		raced = &guardedClaimRaceStore{Store: store}
+		return raced
+	})
+	ctx := context.Background()
+	page, err := f.seed.Ready(ctx, model.PrincipalRef{Kind: "user", ID: "user:seed"}, service.ReadyRequest{Project: "project"})
+	if err != nil || len(page.Items) != 3 {
+		t.Fatalf("real ready candidates: %+v %v", page, err)
+	}
+	first := model.RefByID(page.Items[0].ID, model.Natural64(0))
+	competitor := permissionWorker("agent:competitor")
+	var claims atomic.Int32
+	hook := func(ctx context.Context) error {
+		_, err := f.guard.ClaimWithOutcome(ctx, competitor, service.ClaimRequest{ID: first}, model.WriteMeta{
+			Project: "project", IdempotencyKey: fmt.Sprintf("%064x", 901), Return: "full",
+		})
+		if err == nil {
+			claims.Add(1)
+		}
+		return err
+	}
+	raced.beforeWrite.Store(&hook)
+	worker := f.issue(t, permissionWorker("agent:queue-worker"))
+	params := map[string]any{"_meta": writeMeta(900)}
+	response := f.call(t, worker.Token, "bead.claimNext", params)
+	got := result(t, response)
+	results, ok := got["results"].([]any)
+	if !ok || len(results) != 1 || claims.Load() != 1 {
+		t.Fatalf("guarded queue did not commit after the real competing claim: %s claims=%d", response.body, claims.Load())
+	}
+	ref := results[0].(map[string]any)["ref"].(map[string]any)["id"]
+	if ref != page.Items[1].ID || got["leaseTtlMs"] == nil {
+		t.Fatalf("guarded queue did not advance to the next real candidate: %s", response.body)
+	}
+	stored, err := f.seed.Get(ctx, model.PrincipalRef{Kind: "user", ID: "user:seed"}, service.GetRequest{ID: first})
+	if err != nil || stored.Lease == nil || stored.Lease.Principal.ID != competitor.ID {
+		t.Fatalf("competing authorized lease was overwritten: %+v %v", stored, err)
+	}
+	retry := f.call(t, worker.Token, "bead.claimNext", params)
+	if !reflect.DeepEqual(got, result(t, retry)) || retry.value["_meta"].(map[string]any)["replayed"] != true {
+		t.Fatalf("guarded claim replay changed the winning receipt: %s", retry.body)
+	}
+}
+
+func TestRealHTTPGuardedClaimNextPreservesGlobalErrors(t *testing.T) {
+	for _, code := range []model.ErrorCode{"busy", "write_conflict", "lease_not_held", "lease_expired"} {
+		t.Run(string(code), func(t *testing.T) {
+			// Even a candidate-looking Hint cannot replace the actual pipeline
+			// Message discriminator and turn a global storage error into null.
+			refusal := &model.Error{Message: "global storage failure", Data: model.ErrorData{Code: code, Hint: "bead already has a live claim"}}
+			f := newFixtureWithStore(t, func(store *memory.Store) driver.Store {
+				return &guardedClaimRaceStore{Store: store, writeError: refusal}
+			})
+			workerPrincipal := permissionWorker("agent:queue-worker")
+			worker := f.issue(t, workerPrincipal)
+			ctx := context.Background()
+			before, err := f.store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			params := map[string]any{"_meta": writeMeta(902)}
+			wantCode(t, f.call(t, worker.Token, "bead.claimNext", params), string(code))
+			after, err := f.store.Meta(ctx)
+			if err != nil || after.Head.String() != before.Head.String() {
+				t.Fatalf("global refusal advanced head: before=%+v after=%+v err=%v", before, after, err)
+			}
+			reader, err := f.store.Read(ctx, driver.View{Incarnation: after.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			principal, _ := driver.PrincipalKey(workerPrincipal)
+			key := params["_meta"].(map[string]any)["idempotencyKey"].(string)
+			receipt, err := reader.IdempotencyByKey(ctx, principal, "", "bead.claimNext", key)
+			if err != nil || receipt != nil {
+				t.Fatalf("global refusal persisted a terminal receipt: %+v %v", receipt, err)
+			}
+		})
+	}
 }

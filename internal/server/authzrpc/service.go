@@ -262,7 +262,7 @@ func claimNextRace(err error) bool {
 		// A live lease on this candidate is an ordinary queue race. Store
 		// admission timeouts, global lease loss and other busy errors must
 		// propagate instead of becoming a false terminal null.
-		return value.Data.Hint == "bead already has a live claim"
+		return value.Message == "bead already has a live claim"
 	default:
 		return false
 	}

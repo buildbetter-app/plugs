@@ -175,8 +175,8 @@ func (s *Service) claim(ctx context.Context, by model.PrincipalRef, req ClaimReq
 // ClaimNextWithOutcome walks the live ready set and lowers the first candidate
 // through the same claim pipeline as bead.claim. A candidate can disappear or
 // lose its claim race while the queue is being walked; those ordinary races
-// advance to the next candidate. nil is the cataloged JSON-null result when
-// the ready set is empty at commit.
+// advance to the next candidate. NullResult retains the cataloged JSON-null
+// outcome and its replay metadata when the ready set is empty at commit.
 func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta) (*port.WriteOutcome, error) {
 	if err := s.admit(ctx, by); err != nil {
 		return nil, err
@@ -328,7 +328,7 @@ func claimNextRace(err error) bool {
 		// Only a candidate's live-lease race is skippable. Pre-phase timeout,
 		// active-store lease loss and every other busy condition remain a wire
 		// error rather than being converted into terminal null.
-		return value.Data.Hint == "bead already has a live claim"
+		return value.Message == "bead already has a live claim"
 	default:
 		return false
 	}
