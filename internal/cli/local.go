@@ -139,9 +139,6 @@ func OpenLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 	if err := rpc.BindService(registry, svc); err != nil {
 		return fail(err)
 	}
-	if err := rpc.BindTxApply(registry, svc); err != nil {
-		return fail(err)
-	}
 	if err := rpc.BindAdmin(registry, restore.NewManager(store, lease, cfg.PresenceVerifier)); err != nil {
 		return fail(err)
 	}

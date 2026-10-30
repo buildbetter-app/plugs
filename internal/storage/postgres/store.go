@@ -30,6 +30,13 @@ type Store struct {
 	leases    map[*activeLease]struct{}
 }
 
+// SupportsRestore advertises the only restore mode this store can publish
+// through its existing lease-fenced transaction path. Full-history injection
+// requires a separately qualified offline-history port.
+func (*Store) SupportsRestore(mode driver.RestoreMode) bool {
+	return mode == driver.RestoreModeCurrentImage
+}
+
 // Open opens a real database and initializes schema version 1 atomically.
 // Options are deliberately refused until they have specified semantics.
 func Open(ctx context.Context, cfg driver.Config) (*Store, error) {

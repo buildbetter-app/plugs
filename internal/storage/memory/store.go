@@ -18,7 +18,7 @@ import (
 type Driver struct{}
 
 func (Driver) Info() driver.Info {
-	return driver.Info{Name: "memory", Version: "1", Capabilities: []string{"transactions", "history", "leases", "checkpoints", "allocator_continuation"}}
+	return driver.Info{Name: "memory", Version: "1", Capabilities: []string{"transactions", "history", "leases", "checkpoints", "allocator_continuation", driver.CapabilityRestoreCurrentImage}}
 }
 
 func (Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, error) {
@@ -84,6 +84,13 @@ type Store struct {
 	checkpoints  map[string]driver.Checkpoint
 	closed       bool
 	now          func() time.Time
+}
+
+// SupportsRestore advertises the only restore mode this store can publish
+// through its existing atomic WriteTx path. Full-history injection requires a
+// separate offline-history port and therefore remains explicitly unsupported.
+func (*Store) SupportsRestore(mode driver.RestoreMode) bool {
+	return mode == driver.RestoreModeCurrentImage
 }
 
 // Options supplies deterministic dependencies for acceptance fixtures. Empty
@@ -235,5 +242,6 @@ func (s *Store) Close() error {
 
 var _ driver.Driver = Driver{}
 var _ driver.Store = (*Store)(nil)
+var _ driver.RestoreCapabilities = (*Store)(nil)
 var _ driver.ResponseFinalizer = (*Store)(nil)
 var _ driver.CheckpointStore = (*Store)(nil)
