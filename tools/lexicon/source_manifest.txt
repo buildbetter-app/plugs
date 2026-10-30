@@ -9,7 +9,9 @@
 .github/dependabot.yml
 .github/images/agent-using-beads.jpg
 .github/pages-redirect/index.html
+.github/runs-on.yml
 .github/workflows/plug-bazel.yml
+.github/workflows/plug-runs-on-smoke.yml
 .gitignore
 BUILD.bazel
 LICENSE
@@ -81,7 +83,9 @@ engdocs/plug-runtime/cli.md
 engdocs/plug-runtime/events.md
 engdocs/plug-runtime/native-plugins.md
 engdocs/plug-runtime/rpc-http.md
+engdocs/plug-runtime/server.md
 engdocs/plug-runtime/storage.md
+engdocs/plug-runtime/transports.md
 engdocs/style/BUILD.bazel
 engdocs/style/lexicon.toml
 examples/plugins/native-guard/BUILD.bazel
@@ -246,6 +250,7 @@ internal/core/port/pipeline.go
 internal/core/restore/BUILD.bazel
 internal/core/restore/archive.go
 internal/core/restore/fixture_test.go
+internal/core/restore/native_profile_test.go
 internal/core/restore/restore_test.go
 internal/core/reverseconverter/BUILD.bazel
 internal/core/reverseconverter/README.md
@@ -309,6 +314,9 @@ internal/integration/clisql/lifecycle_test.go
 internal/integration/collabwatch/BUILD.bazel
 internal/integration/collabwatch/integration_test.go
 internal/integration/converterroundtrip/BUILD.bazel
+internal/integration/converterroundtrip/image.go
+internal/integration/converterroundtrip/native_restore_test.go
+internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go
 internal/integration/converterroundtrip/roundtrip_test.go
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
@@ -450,6 +458,8 @@ internal/server/events/cursor.go
 internal/server/events/cursor_test.go
 internal/server/events/dispatcher_test.go
 internal/server/events/integration_test.go
+internal/server/events/projection_status.go
+internal/server/events/projection_status_test.go
 internal/server/events/service.go
 internal/server/events/storage.go
 internal/server/ontologyrpc/BUILD.bazel
@@ -611,6 +621,7 @@ internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
+internal/storage/driver/offline_restore.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/allocator.go
@@ -623,6 +634,7 @@ internal/storage/memory/metadata.go
 internal/storage/memory/metadata_test.go
 internal/storage/memory/noop.go
 internal/storage/memory/noop_test.go
+internal/storage/memory/offline_restore.go
 internal/storage/memory/reader.go
 internal/storage/memory/store.go
 internal/storage/memory/transaction.go
@@ -656,6 +668,7 @@ internal/storage/sqlite/lease.go
 internal/storage/sqlite/locks_other.go
 internal/storage/sqlite/locks_unix.go
 internal/storage/sqlite/metadata.go
+internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/pending_test.go
 internal/storage/sqlite/process_test.go
 internal/storage/sqlite/reader.go

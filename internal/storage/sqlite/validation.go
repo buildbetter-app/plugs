@@ -26,7 +26,21 @@ func (t *transaction) validateHeader(ctx context.Context, h driver.ChangesetHead
 	if err := branchZero(h.Branch); err != nil {
 		return err
 	}
-	if h.Incarnation != t.meta.Incarnation {
+	expected := t.meta.Incarnation
+	if h.Kind == model.ChangesetRestore && t.restore == nil {
+		return fmt.Errorf("%w: restore requires the offline capability", driver.ErrUnsupported)
+	}
+	if t.restore != nil {
+		validate := driver.ValidateOfflineRestoreHeader
+		if t.nativeRestore != nil {
+			validate = t.nativeRestore.ValidateHeader
+		}
+		if err := validate(h); err != nil {
+			return err
+		}
+		expected = t.restore.Incarnation
+	}
+	if h.Incarnation != expected {
 		return driver.ErrIncarnationChanged{From: h.Incarnation, To: t.meta.Incarnation}
 	}
 	if _, err := driver.PrincipalKey(h.Principal); err != nil {

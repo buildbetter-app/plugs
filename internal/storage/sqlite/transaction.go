@@ -22,6 +22,8 @@ type transaction struct {
 	*reader
 	lease           *activeLease
 	locked, hasHead bool
+	restore         *driver.Meta
+	nativeRestore   *driver.NativeRestoreProfile
 	acquired        driver.LockSet
 	files           []*os.File
 	done            chan struct{}
@@ -363,6 +365,11 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	}
 	var result model.Changeset
 	err := t.store.immediate(ctx, t.lease, func(c *sql.Conn) error {
+		if t.restore != nil {
+			if err := restoreEmpty(ctx, c); err != nil {
+				return err
+			}
+		}
 		replay, err := t.replay(ctx, c, h)
 		if err != nil {
 			return err
@@ -497,6 +504,11 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		}
 		if _, err = c.ExecContext(ctx, `UPDATE meta SET head=? WHERE singleton=1`, revKey(head+1)); err != nil {
 			return err
+		}
+		if t.restore != nil {
+			if _, err = c.ExecContext(ctx, `UPDATE meta SET store_id=?,incarnation=?,history_floor=? WHERE singleton=1`, string(t.restore.StoreID), t.restore.Incarnation, revKey(1)); err != nil {
+				return err
+			}
 		}
 		return saveReplay(ctx, c, h, revision, data)
 	})
