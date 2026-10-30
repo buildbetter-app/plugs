@@ -710,9 +710,16 @@ spec/fixture_test.go
 spec/pipeline_test.go
 spec/recorded/BUILD.bazel
 spec/recorded/README.md
+spec/recorded/extension/BUILD.bazel
+spec/recorded/extension/README.md
+spec/recorded/extension/build50_record.py
+spec/recorded/extension/extension.json
+spec/recorded/extension/extension_test.go
+spec/recorded/extension/provenance.py
 spec/recorded/goldens.json
 spec/recorded/goldens_test.go
 spec/recorded/provenance.py
+spec/recorded_test.go
 spec/rpc_test.go
 spikes/runtime/BUILD.bazel
 spikes/runtime/README.md
