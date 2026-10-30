@@ -383,8 +383,14 @@ func splitWordsWithOffsets(text string) ([]string, []int) {
 	var words []string
 	var starts []int
 	start := -1
+	startOffset := 0
+	offset := 0
 	runes := []rune(text)
 	for i, r := range runes {
+		// Account for each rune once instead of re-encoding the entire prefix
+		// for every word. Keep rune indices for the existing boundary rules.
+		byteStart := offset
+		offset += utf8.RuneLen(r)
 		boundary := !unicode.IsLetter(r) && !unicode.IsDigit(r)
 		camelBoundary := i > 0 && unicode.IsUpper(r) && (unicode.IsLower(runes[i-1]) ||
 			(unicode.IsUpper(runes[i-1]) && i+1 < len(runes) && unicode.IsLower(runes[i+1])))
@@ -394,7 +400,7 @@ func splitWordsWithOffsets(text string) ([]string, []int) {
 		if boundary {
 			if start >= 0 {
 				words = append(words, strings.ToLower(string(runes[start:i])))
-				starts = append(starts, byteOffset(text, runes, start))
+				starts = append(starts, startOffset)
 				start = -1
 			}
 			if !camelBoundary {
@@ -403,17 +409,14 @@ func splitWordsWithOffsets(text string) ([]string, []int) {
 		}
 		if start < 0 {
 			start = i
+			startOffset = byteStart
 		}
 	}
 	if start >= 0 {
 		words = append(words, strings.ToLower(string(runes[start:])))
-		starts = append(starts, byteOffset(text, runes, start))
+		starts = append(starts, startOffset)
 	}
 	return words, starts
-}
-
-func byteOffset(text string, runes []rune, index int) int {
-	return len(string(runes[:index]))
 }
 
 func lineAt(text string, offset int) int {

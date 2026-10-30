@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/transport/inprocess"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
 type failingPost struct{ calls int }
@@ -28,6 +30,557 @@ type failingPost struct{ calls int }
 func (p *failingPost) After(context.Context, port.CommittedChange, port.SnapshotReader) error {
 	p.calls++
 	return errors.New("test subscriber unavailable")
+}
+
+func openSQLiteMemoryServer(t *testing.T, path string, options ...service.Option) (*rpc.Server, driver.Store, driver.ActiveLease) {
+	return openSQLiteMemoryServerWithReadHook(t, path, nil, options...)
+}
+
+func openSQLiteMemoryServerWithReadHook(t *testing.T, path string, afterHistoryRead func(), options ...service.Option) (*rpc.Server, driver.Store, driver.ActiveLease) {
+	t.Helper()
+	ctx := context.Background()
+	store, err := (sqlite.Driver{}).Open(ctx, driver.Config{DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterHistoryRead != nil {
+		store = &historyRPCStore{Store: store, afterRead: afterHistoryRead}
+	}
+	lease, err := store.Lease(ctx, "rpc-memory", driver.LeaseTTL)
+	if err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		_ = lease.Release(ctx)
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	ontology := service.NewOntology(nil)
+	writer := pipeline.New(store, lease, pipeline.WithOntology(ontology))
+	policy := service.MemoryReadAuthorizerFunc(func(_ context.Context, _ model.PrincipalRef, memory service.Memory) (bool, error) {
+		return memory.Key != "hidden", nil
+	})
+	options = append([]service.Option{
+		service.WithOntology(ontology),
+		service.WithMemoryReadAuthorizer(policy),
+	}, options...)
+	domain := service.New(store, lease, writer, options...)
+	registry, err := rpc.NewRegistry()
+	if err != nil {
+		_ = lease.Release(ctx)
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := rpc.BindService(registry, domain); err != nil {
+		_ = lease.Release(ctx)
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	config := pagingConfig()
+	config.Incarnation = meta.Incarnation
+	server, err := rpc.New(registry, config)
+	if err != nil {
+		_ = lease.Release(ctx)
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	return server, store, lease
+}
+
+type historyRPCStore struct {
+	driver.Store
+	afterRead func()
+}
+
+func (s *historyRPCStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	r, err := s.Store.Read(ctx, view)
+	if err != nil || view.At == nil {
+		return r, err
+	}
+	return historyRPCReader{Reader: r, afterRead: s.afterRead}, nil
+}
+
+type historyRPCReader struct {
+	driver.Reader
+	afterRead func()
+}
+
+func (r historyRPCReader) Get(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
+	rows, err := r.Reader.Get(ctx, refs)
+	if err == nil {
+		r.afterRead()
+	}
+	return rows, err
+}
+
+func (r historyRPCReader) Versions(ctx context.Context, ref driver.Ref, req driver.PageReq) (driver.Page[driver.Version], error) {
+	page, err := r.Reader.Versions(ctx, ref, req)
+	if err == nil {
+		r.afterRead()
+	}
+	return page, err
+}
+
+func memoryIDs(t *testing.T, value map[string]any) []string {
+	t.Helper()
+	items := value["items"].([]any)
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.(map[string]any)["key"].(string))
+	}
+	return ids
+}
+
+func assertMemoryWireRefusal(t *testing.T, response map[string]any, code, number string, retryable bool) {
+	t.Helper()
+	requireCode(t, response, code)
+	if _, present := response["result"]; present {
+		t.Fatalf("refused memory read returned a result: %v", response)
+	}
+	e := response["error"].(map[string]any)
+	data := e["data"].(map[string]any)
+	if e["code"] != json.Number(number) || data["retryable"] != retryable || data["details"] != nil {
+		t.Fatalf("wrong typed refusal or disclosed error details: %v", response)
+	}
+	raw, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"private-memory-body", "changed-private-body", "old-secret", "changed-secret", "current-secret", "hidden-current-secret", "content:hidden"} {
+		if bytes.Contains(raw, []byte(secret)) {
+			t.Fatalf("refused memory read disclosed %q: %s", secret, raw)
+		}
+	}
+}
+
+func TestRealSQLiteMemoryBriefAuthorizationAndRestart(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "brief.db")
+	server, store, lease := openSQLiteMemoryServer(t, path)
+	save := func(key string) map[string]any {
+		t.Helper()
+		return writeResult(t, server, "memory.save", writeParams(t, map[string]any{
+			"key": key, "content": "content:" + key,
+		}), false)
+	}
+	// Insert out of lexical order; the read contract sorts by key, then ID.
+	var hiddenID, replaceID string
+	var hiddenCommit map[string]any
+	for _, key := range []string{"zeta", "hidden", "alpha", "middle", "replace"} {
+		commit := save(key)
+		if key == "hidden" {
+			hiddenID = createdRef(t, commit)["id"].(string)
+			hiddenCommit = commit
+		}
+		if key == "replace" {
+			replaceID = createdRef(t, commit)["id"].(string)
+		}
+	}
+	updated := writeResult(t, server, "memory.save", writeParams(t, map[string]any{
+		"key": "replace", "content": "updated replace",
+	}), false)
+	if got := createdRef(t, updated)["id"].(string); got != replaceID {
+		t.Fatalf("memory replacement minted a new record: got %s want %s", got, replaceID)
+	}
+	replaced := result(t, call(t, server, ctx, "memory.get", paramsJSON(t, map[string]any{"id": replaceID})))
+	if replaced["content"] != "updated replace" {
+		t.Fatalf("memory replacement did not update content: %v", replaced)
+	}
+	hiddenUpdate := writeResult(t, server, "memory.save", writeParams(t, map[string]any{
+		"key": "hidden", "content": "hidden-current-secret",
+	}), false)
+	historyRef := map[string]any{"id": hiddenID}
+	historyCalls := []struct {
+		name   string
+		method string
+		params map[string]any
+	}{
+		{"get", "history.get", map[string]any{"ref": historyRef, "asOf": map[string]any{"revision": hiddenCommit["revision"]}}},
+		{"diff", "history.diff", map[string]any{"ref": historyRef, "fromRevision": hiddenCommit["revision"], "toRevision": hiddenUpdate["revision"]}},
+		{"equal-diff", "history.diff", map[string]any{"ref": historyRef, "fromRevision": hiddenCommit["revision"], "toRevision": hiddenCommit["revision"]}},
+	}
+	for _, historyCall := range historyCalls {
+		response := call(t, server, ctx, historyCall.method, paramsJSON(t, historyCall.params))
+		requireCode(t, response, "not_found")
+		raw, err := json.Marshal(response)
+		if err != nil || bytes.Contains(raw, []byte("hidden-current-secret")) || bytes.Contains(raw, []byte("content:hidden")) {
+			t.Fatalf("%s disclosed hidden history: %s", historyCall.name, raw)
+		}
+		if _, ok := response["result"]; ok {
+			t.Fatalf("%s returned a partial result: %v", historyCall.name, response)
+		}
+	}
+	writeResult(t, server, "memory.delete", writeParams(t, map[string]any{"id": replaceID}), false)
+	brief := result(t, call(t, server, ctx, "agent.brief", `{"budgetTokens":200}`))
+	if got := memoryIDs(t, map[string]any{"items": brief["memories"]}); !reflect.DeepEqual(got, []string{"alpha", "middle", "zeta"}) {
+		t.Fatalf("brief ordering or authorization: %v", got)
+	}
+	list := result(t, call(t, server, ctx, "memory.list", `{"limit":10}`))
+	if got := memoryIDs(t, list); !reflect.DeepEqual(got, []string{"alpha", "middle", "zeta"}) {
+		t.Fatalf("list ordering or authorization: %v", got)
+	}
+	// The hidden ID comes only from its write receipt; current authorization
+	// still maps the point read to not_found.
+	requireCode(t, call(t, server, ctx, "memory.get", paramsJSON(t, map[string]any{"id": hiddenID})), "not_found")
+	query := result(t, call(t, server, ctx, "memory.list", `{"query":"hidden"}`))
+	if items := query["items"].([]any); len(items) != 0 {
+		t.Fatalf("hidden memory leaked through query: %v", items)
+	}
+	if err := lease.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server, store, lease = openSQLiteMemoryServer(t, path)
+	t.Cleanup(func() {
+		_ = lease.Release(context.Background())
+		_ = store.Close()
+	})
+	list = result(t, call(t, server, ctx, "memory.list", `{"limit":10}`))
+	if got := memoryIDs(t, list); !reflect.DeepEqual(got, []string{"alpha", "middle", "zeta"}) {
+		t.Fatalf("reopened ordering or persistence: %v", got)
+	}
+	brief = result(t, call(t, server, ctx, "agent.brief", `{}`))
+	if got := memoryIDs(t, map[string]any{"items": brief["memories"]}); !reflect.DeepEqual(got, []string{"alpha", "middle", "zeta"}) {
+		t.Fatalf("reopened brief ordering: %v", got)
+	}
+}
+
+func TestRealSQLiteMemoryPaginationReadsLiveRows(t *testing.T) {
+	ctx := context.Background()
+	s, store, lease := openSQLiteMemoryServer(t, filepath.Join(t.TempDir(), "paging.db"))
+	t.Cleanup(func() {
+		_ = lease.Release(ctx)
+		_ = store.Close()
+	})
+	save := func(key, content string) map[string]any {
+		t.Helper()
+		return writeResult(t, s, "memory.save", writeParams(t, map[string]any{"key": key, "content": content}), false)
+	}
+	for _, key := range []string{"zeta", "hidden", "alpha", "middle"} {
+		save(key, "original:"+key)
+	}
+	first := result(t, call(t, s, ctx, "memory.list", `{"limit":1}`))
+	if got := memoryIDs(t, first); !reflect.DeepEqual(got, []string{"alpha"}) || first["nextCursor"] == nil {
+		t.Fatal("first authorized page", first)
+	}
+	second := result(t, call(t, s, ctx, "memory.list", paramsJSON(t, map[string]any{"limit": 1, "cursor": first["nextCursor"]})))
+	if got := memoryIDs(t, second); !reflect.DeepEqual(got, []string{"middle"}) || second["nextCursor"] == nil {
+		t.Fatal("unchanged continuation", second)
+	}
+	// A continuation must use current rows, including later inserts and updates.
+	updated := save("zeta", "current:zeta")
+	save("omega", "later:omega")
+	third := result(t, call(t, s, ctx, "memory.list", paramsJSON(t, map[string]any{"limit": 1, "cursor": second["nextCursor"]})))
+	if got := memoryIDs(t, third); !reflect.DeepEqual(got, []string{"omega"}) || third["nextCursor"] == nil {
+		t.Fatal("live insert missing from continuation", third)
+	}
+	last := result(t, call(t, s, ctx, "memory.list", paramsJSON(t, map[string]any{"limit": 1, "cursor": third["nextCursor"]})))
+	if got := memoryIDs(t, last); !reflect.DeepEqual(got, []string{"zeta"}) || last["nextCursor"] != nil {
+		t.Fatal("final live page", last)
+	}
+	row := last["items"].([]any)[0].(map[string]any)
+	if row["content"] != "current:zeta" || row["revision"] != updated["revision"] {
+		t.Fatal("continuation returned a stale row", row)
+	}
+	for _, changed := range []map[string]any{
+		{"query": "hidden"},
+		{"_meta": map[string]any{"project": "other"}},
+		{"_meta": map[string]any{"agent": "other"}},
+		{"cursor": first["nextCursor"].(string) + "tampered"},
+	} {
+		params := map[string]any{"limit": 1, "cursor": first["nextCursor"]}
+		for key, value := range changed {
+			params[key] = value
+		}
+		requireCode(t, call(t, s, ctx, "memory.list", paramsJSON(t, params)), "cursor_invalid")
+	}
+	for _, by := range []model.PrincipalRef{
+		{Kind: "user", ID: "reader"},
+		{Kind: "anonymous", ID: "anonymous", Sponsor: &model.PrincipalRef{Kind: "user", ID: "sponsor"}},
+		{Kind: "anonymous", ID: "anonymous", Caveats: map[string]any{"scope": "other"}},
+	} {
+		params := paramsJSON(t, map[string]any{"limit": 1, "cursor": first["nextCursor"]})
+		requireCode(t, call(t, s, rpc.WithPrincipal(ctx, by), "memory.list", params), "cursor_invalid")
+	}
+}
+
+func TestRealSQLiteMemoryPaginationAllowsShrunkenTail(t *testing.T) {
+	ctx := context.Background()
+	s, store, lease := openSQLiteMemoryServer(t, filepath.Join(t.TempDir(), "shrink.db"))
+	t.Cleanup(func() {
+		_ = lease.Release(ctx)
+		_ = store.Close()
+	})
+	var ids []string
+	for _, key := range []string{"alpha", "middle", "zeta"} {
+		commit := writeResult(t, s, "memory.save", writeParams(t, map[string]any{"key": key, "content": key}), false)
+		ids = append(ids, createdRef(t, commit)["id"].(string))
+	}
+	first := result(t, call(t, s, ctx, "memory.list", `{"limit":2}`))
+	if first["nextCursor"] == nil {
+		t.Fatal("missing continuation", first)
+	}
+	for _, id := range ids {
+		writeResult(t, s, "memory.delete", writeParams(t, map[string]any{"id": id}), false)
+	}
+	last := result(t, call(t, s, ctx, "memory.list", paramsJSON(t, map[string]any{"limit": 2, "cursor": first["nextCursor"]})))
+	if len(last["items"].([]any)) != 0 || last["nextCursor"] != nil {
+		t.Fatal("valid continuation did not terminate after list shrink", last)
+	}
+}
+
+func TestRealSQLiteMemoryAuthorizationInstallationFailsClosed(t *testing.T) {
+	for _, scope := range []struct {
+		name string
+		by   model.PrincipalRef
+	}{
+		{"agent", model.PrincipalRef{Kind: "agent", ID: "worker"}},
+		{"sponsored", model.PrincipalRef{Kind: "user", ID: "reader", Sponsor: &model.PrincipalRef{Kind: "user", ID: "sponsor"}}},
+		{"caveated", model.PrincipalRef{Kind: "user", ID: "reader", Caveats: map[string]any{"project": "local"}}},
+	} {
+		t.Run(scope.name, func(t *testing.T) {
+			installed, changeDuringRead, policyCalls := true, false, 0
+			policy := service.MemoryReadAuthorizerFunc(func(_ context.Context, _ model.PrincipalRef, memory service.Memory) (bool, error) {
+				policyCalls++
+				if changeDuringRead {
+					installed = false
+					return true, nil
+				}
+				return memory.Key != "hidden", nil
+			})
+			s, store, lease := openSQLiteMemoryServer(t, filepath.Join(t.TempDir(), "capability.db"),
+				service.WithAuthorizationInstalled(func() bool { return installed }),
+				service.WithMemoryReadAuthorizer(policy))
+			t.Cleanup(func() {
+				_ = lease.Release(context.Background())
+				_ = store.Close()
+			})
+			commit := writeResult(t, s, "memory.save", writeParams(t, map[string]any{
+				"key": "hidden", "content": "private-memory-body",
+			}), false)
+			hiddenID := createdRef(t, commit)["id"].(string)
+			updated := writeResult(t, s, "memory.save", writeParams(t, map[string]any{"key": "hidden", "content": "changed-private-body"}), false)
+			writeResult(t, s, "memory.save", writeParams(t, map[string]any{"key": "visible", "content": "public-memory-body"}), false)
+			ctx := rpc.WithPrincipal(context.Background(), scope.by)
+			for _, read := range []struct {
+				name, method string
+				params       map[string]any
+				list         bool
+			}{
+				{"memory.get", "memory.get", map[string]any{"id": hiddenID}, false},
+				{"memory.list", "memory.list", map[string]any{}, true},
+				{"agent.brief", "agent.brief", map[string]any{}, true},
+				{"history.get-base", "history.get", map[string]any{"ref": map[string]any{"id": hiddenID}, "asOf": map[string]any{"revision": commit["revision"]}}, false},
+				{"history.get-patch", "history.get", map[string]any{"ref": map[string]any{"id": hiddenID}, "asOf": map[string]any{"revision": updated["revision"]}}, false},
+				{"history.diff", "history.diff", map[string]any{"ref": map[string]any{"id": hiddenID}, "fromRevision": commit["revision"], "toRevision": updated["revision"]}, false},
+				{"history.equal-diff", "history.diff", map[string]any{"ref": map[string]any{"id": hiddenID}, "fromRevision": updated["revision"], "toRevision": updated["revision"]}, false},
+			} {
+				t.Run(read.name, func(t *testing.T) {
+					params := paramsJSON(t, read.params)
+					installed, changeDuringRead = true, false
+					response := call(t, s, ctx, read.method, params)
+					if !read.list {
+						assertMemoryWireRefusal(t, response, "not_found", "-32000", false)
+					} else {
+						value := result(t, response)
+						if read.method == "agent.brief" {
+							value = map[string]any{"items": value["memories"]}
+						}
+						if got := memoryIDs(t, value); !reflect.DeepEqual(got, []string{"visible"}) {
+							t.Fatal("installed policy disclosed a hidden memory", value)
+						}
+					}
+					// Keep the policy pointer, but disable its live installation.
+					installed = false
+					before := policyCalls
+					response = call(t, s, ctx, read.method, params)
+					assertMemoryWireRefusal(t, response, "authz_not_installed", "-32009", false)
+					if policyCalls != before {
+						t.Fatal("disabled capability used a stale policy", response)
+					}
+					// Installation changes inside an allowing policy discard every
+					// output field, including historical bodies and patches.
+					installed, changeDuringRead = true, true
+					response = call(t, s, ctx, read.method, params)
+					assertMemoryWireRefusal(t, response, "authz_unavailable", "-32005", true)
+				})
+			}
+		})
+	}
+}
+
+func TestRealSQLiteHistoryMemoryRevalidatesCurrentRead(t *testing.T) {
+	for _, scenario := range []string{"disable", "install", "policy-denies", "current-value-denied"} {
+		t.Run(scenario, func(t *testing.T) {
+			installed, allowed, calls, scans := true, true, 0, 0
+			var duringRead func()
+			var expectedContent, expectedRevision string
+			policy := service.MemoryReadAuthorizerFunc(func(_ context.Context, _ model.PrincipalRef, memory service.Memory) (bool, error) {
+				calls++
+				if memory.Content != expectedContent || memory.Revision.String() != expectedRevision {
+					t.Fatalf("history authorized a stale value: %+v want content=%s revision=%s", memory, expectedContent, expectedRevision)
+				}
+				return allowed && memory.Metadata["denied"] != true, nil
+			})
+			s, store, lease := openSQLiteMemoryServerWithReadHook(t, filepath.Join(t.TempDir(), "history-revalidation.db"), func() {
+				scans++
+				if change := duringRead; change != nil {
+					duringRead = nil
+					change()
+				}
+			}, service.WithMemoryReadAuthorizer(policy), service.WithAuthorizationInstalled(func() bool { return installed }))
+			t.Cleanup(func() { _ = lease.Release(context.Background()); _ = store.Close() })
+			save := func(content string, denied bool) map[string]any {
+				t.Helper()
+				commit := writeResult(t, s, "memory.save", writeParams(t, map[string]any{
+					"key": "history", "content": content, "metadata": map[string]any{"denied": denied},
+				}), false)
+				expectedContent, expectedRevision = content, commit["revision"].(json.Number).String()
+				return commit
+			}
+			first := save("old-secret", false)
+			second := save("changed-secret", false)
+			ref := createdRef(t, first)
+			for _, read := range []struct {
+				name, method string
+				params       map[string]any
+			}{
+				{"get-base", "history.get", map[string]any{"ref": ref, "asOf": map[string]any{"revision": first["revision"]}}},
+				{"get-patch", "history.get", map[string]any{"ref": ref, "asOf": map[string]any{"revision": second["revision"]}}},
+				{"diff", "history.diff", map[string]any{"ref": ref, "fromRevision": first["revision"], "toRevision": second["revision"]}},
+				{"equal-diff", "history.diff", map[string]any{"ref": ref, "fromRevision": second["revision"], "toRevision": second["revision"]}},
+			} {
+				t.Run(read.name, func(t *testing.T) {
+					save("current-secret", false)
+					installed, allowed, calls, scans = scenario != "install", true, 0, 0
+					ctx := rpc.WithPrincipal(context.Background(), model.PrincipalRef{Kind: "agent", ID: "worker"})
+					if !installed {
+						ctx = context.Background()
+					}
+					duringRead = func() {
+						switch scenario {
+						case "disable", "install":
+							installed = !installed
+						case "policy-denies":
+							allowed = false
+						case "current-value-denied":
+							save("current-secret", true)
+						}
+					}
+					before, err := store.Meta(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					response := call(t, s, ctx, read.method, paramsJSON(t, read.params))
+					if scenario == "disable" || scenario == "install" {
+						assertMemoryWireRefusal(t, response, "authz_unavailable", "-32005", true)
+					} else {
+						assertMemoryWireRefusal(t, response, "not_found", "-32000", false)
+					}
+					if scans == 0 || duringRead != nil || scenario == "disable" && calls != 1 || scenario == "install" && calls != 0 {
+						t.Fatalf("transition not exercised or stale policy used: calls=%d scans=%d", calls, scans)
+					}
+					after, err := store.Meta(context.Background())
+					if err != nil || scenario != "current-value-denied" && !reflect.DeepEqual(before, after) || after.Head.String() != expectedRevision {
+						t.Fatalf("history read mutated storage: before=%+v after=%+v err=%v", before, after, err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestRealSQLiteMemoryHistoryDeletionAndReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "history-lifetime.db")
+	server, store, lease := openSQLiteMemoryServer(t, path)
+	t.Cleanup(func() { _ = lease.Release(ctx); _ = store.Close() })
+	save := func(content string) map[string]any {
+		return writeResult(t, server, "memory.save", writeParams(t, map[string]any{"key": "history", "content": content}), false)
+	}
+	first, second := save("old-secret"), save("changed-secret")
+	save("current-secret")
+	ref := createdRef(t, first)
+	reads := []struct {
+		method string
+		params map[string]any
+	}{
+		{"history.get", map[string]any{"ref": ref, "asOf": map[string]any{"revision": first["revision"]}}},
+		{"history.get", map[string]any{"ref": ref, "asOf": map[string]any{"revision": second["revision"]}}},
+		{"history.diff", map[string]any{"ref": ref, "fromRevision": first["revision"], "toRevision": second["revision"]}},
+		{"history.diff", map[string]any{"ref": ref, "fromRevision": second["revision"], "toRevision": second["revision"]}},
+	}
+	for i, read := range reads {
+		value := result(t, call(t, server, ctx, read.method, paramsJSON(t, read.params)))
+		switch i {
+		case 0, 1:
+			body := value["body"].(map[string]any)
+			want, revision := "old-secret", first["revision"]
+			if i == 1 {
+				want, revision = "changed-secret", second["revision"]
+				patch := value["patch"].([]any)
+				if value["base"] != false || len(patch) != 1 || !reflect.DeepEqual(patch[0].(map[string]any)["value"], body) {
+					t.Fatalf("historical Body/Patch differ: %v", value)
+				}
+			}
+			if body["content"] != want || value["revision"] != revision || value["deleted"] == true {
+				t.Fatalf("historical body or version metadata changed: %v", value)
+			}
+		case 2:
+			if !reflect.DeepEqual(value["changedPaths"], []any{"/content"}) || value["patch"].([]any)[0].(map[string]any)["value"] != "changed-secret" {
+				t.Fatalf("historical diff changed: %v", value)
+			}
+		case 3:
+			if len(value["patch"].([]any))+len(value["changedPaths"].([]any)) != 0 {
+				t.Fatalf("equal diff changed: %v", value)
+			}
+		}
+	}
+	deleted := writeResult(t, server, "memory.delete", writeParams(t, map[string]any{"id": ref["id"]}), false)
+	reads = append(reads, struct {
+		method string
+		params map[string]any
+	}{"history.get", map[string]any{"ref": ref, "asOf": map[string]any{"revision": deleted["revision"]}}})
+	checkDeleted := func() {
+		t.Helper()
+		before, err := store.Meta(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, read := range reads {
+			assertMemoryWireRefusal(t, call(t, server, ctx, read.method, paramsJSON(t, read.params)), "not_found", "-32000", false)
+		}
+		after, err := store.Meta(ctx)
+		if err != nil || !reflect.DeepEqual(before, after) {
+			t.Fatalf("refused history changed storage: before=%+v after=%+v err=%v", before, after, err)
+		}
+	}
+	checkDeleted()
+	// Reusing the logical key allocates another reference. Its readable value
+	// grants no access to the deleted reference's retained history.
+	recreated := save("replacement")
+	if createdRef(t, recreated)["id"] == ref["id"] {
+		t.Fatal("fixture did not allocate a new memory reference")
+	}
+	checkDeleted()
+	if err := lease.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server, store, lease = openSQLiteMemoryServer(t, path)
+	checkDeleted()
+	value := result(t, call(t, server, ctx, "history.get", paramsJSON(t, map[string]any{
+		"ref": createdRef(t, recreated), "asOf": map[string]any{"revision": recreated["revision"]},
+	})))
+	if value["body"].(map[string]any)["content"] != "replacement" {
+		t.Fatalf("current lifetime did not survive reopen: %v", value)
+	}
 }
 
 func realServiceServer(t *testing.T) (*rpc.Server, *failingPost, time.Time, uint64) {
