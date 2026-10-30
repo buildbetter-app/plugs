@@ -279,6 +279,7 @@ internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
 internal/core/service/claim_recovery_test.go
 internal/core/service/graph.go
+internal/core/service/memories.go
 internal/core/service/ontology.go
 internal/core/service/reads.go
 internal/core/service/service.go
