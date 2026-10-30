@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "cardb01_test",
+    srcs = [
+        "b01_test.go",
+        "fixture_test.go",
+        "reference_test.go",
+    ],
+    embedsrcs = [
+        "record_reference.py",
+        "reference-run-1.json",
+        "reference-run-2.json",
+    ],
+    args = ["-test.v"],
+    deps = [
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/sqlite",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

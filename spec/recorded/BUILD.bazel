@@ -1,5 +1,11 @@
 load("@rules_go//go:def.bzl", "go_test")
 
+filegroup(
+    name = "b24_deviation",
+    srcs = ["b24_untimed_defer_deviation.json"],
+    visibility = ["//visibility:public"],
+)
+
 go_test(
     name = "goldens_test",
     srcs = ["goldens_test.go"],

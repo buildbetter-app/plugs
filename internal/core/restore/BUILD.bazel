@@ -24,6 +24,8 @@ go_test(
         "//internal/client",
         "//internal/core/dumpformat",
         "//internal/core/model",
+        "//internal/core/reverseconverter",
+        "//internal/integration/converterroundtrip",
         "//internal/storage/driver",
         "//internal/storage/memory",
         "//internal/storage/sqlite",

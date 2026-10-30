@@ -31,8 +31,10 @@ type AsOf struct {
 // Ready continues at Offset in the live ordered list; AsOf identifies the last
 // observed page and incarnation. History instead pins every page to AsOf.
 type PagePosition struct {
-	Offset int
-	AsOf   AsOf
+	Offset                int
+	AsOf                  AsOf
+	AuthorizationRevision model.Revision
+	AuthorizationBound    bool
 }
 
 type Filter struct {
@@ -212,6 +214,16 @@ type CommentRequest struct {
 type CloseRequest struct {
 	ID     model.Ref
 	Reason string
+	Expect []model.Precondition
+}
+
+// LinkRequest is the named dependency write lowered to the canonical LinkOp
+// in a ChangeSet. Expect applies to the source bead, which is the only record
+// mutated by a dependency operation.
+type LinkRequest struct {
+	From   model.Ref
+	To     model.Ref
+	Kind   string
 	Expect []model.Precondition
 }
 
