@@ -7,10 +7,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 )
 
 func fixtureDump() Dump {
@@ -407,6 +412,180 @@ func TestReadUsesCanonicalArchiveValidator(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReadConvertCanonicalArchiveMapsPinnedNumbers(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  bool
+	}{
+		{name: "numeric zero", value: json.Number("0"), want: false},
+		{name: "numeric one", value: json.Number("1"), want: true},
+		{name: "boolean false", value: false, want: false},
+		{name: "boolean true", value: true, want: true},
+		{name: "explicit null retains omission", value: nil, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data := canonicalPinnedArchive(t, test.value)
+			beforeBytes := append([]byte(nil), data...)
+			dump, err := ReadBytes(data)
+			if err != nil {
+				t.Fatalf("ReadBytes: %v", err)
+			}
+			beforeDigest := digestDump(dump)
+			var sourcePinned any
+			for _, record := range dump.Records["bead"] {
+				if record.ID == "demo-7" {
+					if !reflect.DeepEqual(record.Body["pinned"], test.value) {
+						t.Fatalf("body pinned=%#v, want %#v", record.Body["pinned"], test.value)
+					}
+					sourcePinned = record.Source.Fields["pinned"]
+				}
+			}
+			if !reflect.DeepEqual(sourcePinned, test.value) {
+				t.Fatalf("source pinned=%#v, want %#v", sourcePinned, test.value)
+			}
+
+			result, err := Convert(dump)
+			if err != nil {
+				t.Fatalf("Convert: %v", err)
+			}
+			if result.Report.InputDigest != beforeDigest {
+				t.Fatalf("input digest changed: got %q want %q", result.Report.InputDigest, beforeDigest)
+			}
+			if !bytes.Equal(data, beforeBytes) {
+				t.Fatal("ReadBytes/Convert mutated the archive input")
+			}
+
+			var got issueLine
+			for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+				var candidate issueLine
+				if err := json.Unmarshal(line, &candidate); err == nil && candidate.ID == "demo-7" {
+					got = candidate
+					break
+				}
+			}
+			if got.ID != "demo-7" || got.Pinned != test.want {
+				t.Fatalf("converted pinned=%v, want %v; JSONL=%s", got.Pinned, test.want, result.JSONL)
+			}
+			if test.want && !bytes.Contains(result.JSONL, []byte(`"pinned":true`)) {
+				t.Fatalf("numeric 1 did not emit pinned:true: %s", result.JSONL)
+			}
+		})
+	}
+}
+
+func TestReadConvertCanonicalArchiveRejectsUnsupportedPinnedValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{name: "two", value: json.Number("2")},
+		{name: "negative one", value: json.Number("-1")},
+		{name: "fraction", value: json.Number("0.5")},
+		{name: "long near one", value: json.Number("1.0000000000000000001")},
+		{name: "exponent", value: json.Number("1e0")},
+		{name: "string zero", value: "0"},
+		{name: "string one", value: "1"},
+		{name: "string true", value: "true"},
+		{name: "object", value: map[string]any{"value": 1}},
+		{name: "array", value: []any{1}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data := canonicalPinnedArchive(t, test.value)
+			dump, err := ReadBytes(data)
+			if err != nil {
+				t.Fatalf("ReadBytes should validate source/body equality: %v", err)
+			}
+			result, err := Convert(dump)
+			var refusal *Refusal
+			if !errors.As(err, &refusal) || !strings.Contains(err.Error(), "pinned") || len(result.JSONL) != 0 {
+				t.Fatalf("unsupported pinned value was not refused without output: result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func canonicalPinnedArchive(t *testing.T, pinned any) []byte {
+	t.Helper()
+	original := canonicalFixtureBytes(t)
+	archive, err := dumpformat.Read(bytes.NewReader(original))
+	if err != nil {
+		t.Fatalf("read canonical fixture: %v", err)
+	}
+	manifest := archive.Manifest()
+	beads := archive.Records("bead")
+	var beadData bytes.Buffer
+	for _, record := range beads {
+		if record.ID == "demo-7" {
+			record.Body["pinned"] = pinned
+			record.Source.Fields["pinned"] = pinned
+		}
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			t.Fatalf("marshal bead %s: %v", record.ID, err)
+		}
+		beadData.Write(encoded)
+		beadData.WriteByte('\n')
+	}
+
+	members := make(map[string][]byte, len(manifest.Files))
+	for name := range manifest.Files {
+		member, ok := archive.Member(name)
+		if !ok {
+			t.Fatalf("canonical fixture missing member %q", name)
+		}
+		members[name] = member
+	}
+	members["records/bead.ndjson"] = beadData.Bytes()
+	sum := sha256.Sum256(beadData.Bytes())
+	manifest.Files["records/bead.ndjson"] = dumpformat.File{SHA256: hex.EncodeToString(sum[:]), Size: int64(beadData.Len())}
+	manifestData, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	manifestData = append(manifestData, '\n')
+
+	names := make([]string, 0, len(members))
+	for name := range members {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var output bytes.Buffer
+	tw := tar.NewWriter(&output)
+	writeMember := func(name string, data []byte) {
+		header := &tar.Header{Name: name, Mode: 0o600, Size: int64(len(data)), Uid: 0, Gid: 0, ModTime: time.Unix(0, 0).UTC(), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR}
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatalf("write %s header: %v", name, err)
+		}
+		if _, err := tw.Write(data); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	writeMember("manifest.json", manifestData)
+	for _, name := range names {
+		writeMember(name, members[name])
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close archive: %v", err)
+	}
+	return output.Bytes()
+}
+
+func canonicalFixtureBytes(t *testing.T) []byte {
+	t.Helper()
+	path := filepath.Join("..", "..", "integration", "converterroundtrip", "testdata", "synthetic-plug-dump-1.tar")
+	if root := os.Getenv("TEST_SRCDIR"); root != "" {
+		path = filepath.Join(root, os.Getenv("TEST_WORKSPACE"), "internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read canonical fixture %s: %v", path, err)
+	}
+	return data
 }
 
 func makeArchive(t *testing.T, records []byte, mode int64, typeflag byte, kind string) []byte {

@@ -5732,6 +5732,9 @@
         },
         {
           "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/ClosureTooLarge"
         }
       ],
       "x-effect": "read",
@@ -7589,6 +7592,9 @@
           "hiddenBlockers": {
             "type": "integer",
             "minimum": 0
+          },
+          "directBlockers": {
+            "$ref": "#/components/schemas/DirectBlockerResult"
           }
         },
         "required": [
@@ -7596,6 +7602,61 @@
           "itemId",
           "included",
           "reasons"
+        ],
+        "additionalProperties": false
+      },
+      "DirectBlockerEdge": {
+        "type": "object",
+        "properties": {
+          "blocker": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "blocks",
+              "conditional-blocks"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "satisfied",
+              "unsatisfied",
+              "unknown"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "blocker",
+          "kind",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "DirectBlockerResult": {
+        "type": "object",
+        "properties": {
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DirectBlockerEdge"
+            },
+            "maxItems": 100
+          },
+          "hiddenCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "edges",
+          "hiddenCount"
         ],
         "additionalProperties": false
       },
@@ -12469,7 +12530,7 @@
     "methodCount": 81,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "925afc30e52e4659b24e34f311698c96930f215ba460fee7c1634634d1ff04ff",
-    "descriptorSha256": "68983fe00de5f0466e67c7531a53a6a77cd889cf4f11469048e2a15d1b51beb5",
+    "descriptorSha256": "9284a056a19510723f1fd663aae5b122adcbec60e496cf3b1f08c4d95918cc83",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -16235,7 +16296,8 @@
           "#/components/errors/NotFound",
           "#/components/errors/Forbidden",
           "#/components/errors/UnknownField",
-          "#/components/errors/ProjectRequired"
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/ClosureTooLarge"
         ]
       },
       {

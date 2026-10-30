@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library")
 
+exports_files(["engdocs/design/plug/contracts/openrpc.json"])
+
 go_library(
     name = "plugs",
     srcs = ["doc.go"],

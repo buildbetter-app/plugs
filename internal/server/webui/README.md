@@ -120,6 +120,16 @@ Untrusted titles, IDs, reasons and presence data are rendered as text.
   strings, unreadable-blocker count, and pending-readiness flag. If the server
   returns only the `included` marker or no reason, the UI says that no direct
   reason was supplied instead of guessing a blocker.
+  When optional `directBlockers` is present, each returned canonical reference
+  stays beside its own safe reason and satisfied/unsatisfied/unknown verdict.
+  Current branch-zero IDs link into the existing Explain item selection;
+  unresolved keys, other branches, and IDs that the current form/backend
+  cannot preserve unchanged retain their exact identity as text.
+  Opening a link rereads the current explanation. An absent capability,
+  evaluated empty result, and count-only unreadable result remain distinct.
+  References and reasons use textContent. `TestBrowserDirectBlockerContractFixtures`
+  covers these states and hostile text using explicit response fixtures;
+  it does not qualify the producer, authorization, or full E3 workload.
 - Epic progress remains explicitly unavailable until an admitted parent-aware
   hierarchy and authorized count query exist. Type summaries are never shown
   as epic progress.
@@ -168,10 +178,8 @@ consumer remains a separate prerequisite for real composed qualification.
 Run Go and browser checks through Bazel only:
 
 ```sh
-bazel --ignore_all_rc_files test //internal/server/webui:webui_test \
+/tmp/plug-swarm/bin/remote-bazel "$PWD" HEAD webui -- test //internal/server/webui:webui_test \
   //internal/server/webui:presence_display_test \
-  --disk_cache=/tmp/plug-swarm/bazel-disk-cache \
-  --local_resources=memory=8192 --jobs=2 --test_timeout=900 \
   --cache_test_results=no --test_output=all --test_arg=-test.v
 ```
 
