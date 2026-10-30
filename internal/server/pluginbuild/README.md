@@ -139,3 +139,14 @@ cancellation, static WASI import/export/memory checks, wrong source digest,
 changed source/HEAD/output, closed output, digest restore, and asynchronous
 rebuild match/mismatch comparison. Remote resolution, installation/approval, durable
 external artifact storage, build quotas, and UI bundles remain separate work.
+
+`TestWASIGuestBridgeAcceptance` builds the existing WASI fixture from committed
+source and invokes its callbacks through the real memory Writer. Guest requests
+exercise undeclared query fields, foreign branches/cursors, expired reads and
+invalid ABI buffers after a valid scoped read. Refusals preserve graph, version,
+log and receipt state; traps also prevent module reuse. A controlled concurrent
+Writer changes a separately read record, forcing one ordinary stale-read retry.
+The test checks the read-fact lock, refreshed normalized value, masked validation,
+committed post snapshot, exact log/version counts and durable receipt replay.
+This is local source-built guest coverage on Linux/amd64; it does not qualify
+the public SDK suite, production runtime composition or E5 workloads.

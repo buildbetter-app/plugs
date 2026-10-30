@@ -190,6 +190,26 @@ func TestWASMReadRejectsNullTypedParams(t *testing.T) {
 	}
 }
 
+func TestWASMSnapshotBridgeDisposedInvocationCannotReuseReader(t *testing.T) {
+	runtime, err := newWASMRuntime(e5ABIArtifact(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.close()
+	reader := &wasmBridgeReader{}
+	request := wasmRequest{Op: "read", Method: "get", Params: json.RawMessage(`{"refs":[{"id":"pl-a"}]}`)}
+	if _, err := runtime.invoke(context.Background(), request, reader); err != nil || reader.gets != 1 {
+		t.Fatalf("live callback reader was not invoked: gets=%d err=%v", reader.gets, err)
+	}
+	runtime.close()
+	if response, err := runtime.invoke(context.Background(), request, reader); requireCode(err, ErrInactive) != nil || response.Result != nil {
+		t.Fatalf("disposed invocation accepted its former reader: %+v (%v)", response, err)
+	}
+	if reader.gets != 1 {
+		t.Fatalf("disposed invocation accessed the reader again: %d", reader.gets)
+	}
+}
+
 func TestWASMHostBridgeTrapsMalformedGuestBuffer(t *testing.T) {
 	runtime, err := newWASMRuntime(e5ABIArtifact(), nil)
 	if err != nil {

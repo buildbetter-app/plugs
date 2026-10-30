@@ -475,6 +475,7 @@ internal/server/pluginbuild/containment_other.go
 internal/server/pluginbuild/containment_other_test.go
 internal/server/pluginbuild/durable_test.go
 internal/server/pluginbuild/fixture-wasi/BUILD.bazel
+internal/server/pluginbuild/fixture-wasi/acceptance.go
 internal/server/pluginbuild/fixture-wasi/go.mod.template
 internal/server/pluginbuild/fixture-wasi/plug-plugin.json
 internal/server/pluginbuild/fixture-wasi/plugin.go
