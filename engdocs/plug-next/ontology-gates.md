@@ -2,10 +2,13 @@
 
 The [wire catalog](../../internal/api/wire/catalog.json) is the authority for
 method names, parameter shapes, effects, permissions, idempotency, and error
-codes. The current main composition binds the seven read and plan methods
-described in [Ontology RPC](ontology-rpc.md). A descriptor alone does not make
-a handler available: `ontology.apply` and the gate methods are conditional on
-their composition roots, and an unbound call returns `method_not_found`.
+codes. The optional `ontologyrpc.Bind` adapter binds the seven read and plan
+methods described in [Ontology RPC](ontology-rpc.md) when a composition root
+installs it before constructing the RPC server. The shipped server and local
+CLI currently install only the core binder, so those methods remain unbound
+there and calls return `method_not_found`. A descriptor alone does not make a
+handler available: `ontology.apply` and the gate methods are conditional on
+their composition roots.
 
 ## Check and plan
 
