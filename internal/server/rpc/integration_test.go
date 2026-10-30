@@ -1022,7 +1022,7 @@ func TestRealDryRunDoesNotBecomeReceiptReplay(t *testing.T) {
 
 // This uses the actual fixed-permission GuardedService, not discovery visibility
 // or missing authentication as a substitute for record-policy denial.
-func TestCommentGetThroughGuardedRPCSnapshotsAndRevocation(t *testing.T) {
+func TestCommentGetThroughGuardedRPCSnapshotsAndRefusals(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
 	defer store.Close()
@@ -1102,7 +1102,9 @@ func TestCommentGetThroughGuardedRPCSnapshotsAndRevocation(t *testing.T) {
 	if _, exists := historical["comments"]; exists {
 		t.Fatal("later comments leaked into historical result")
 	}
-	outsider := rpc.WithPrincipal(ctx, model.PrincipalRef{Kind: "user", ID: "outsider"})
+	// Decision #18 permits user reads without involvement grants; an agent
+	// cannot acquire that read permit even with a user sponsor.
+	outsider := rpc.WithPrincipal(ctx, model.PrincipalRef{Kind: "agent", ID: "outsider", Sponsor: &model.PrincipalRef{Kind: "user", ID: "reader"}})
 	for _, at := range []*service.AsOf{nil, {Revision: old.Revision}} {
 		denied := call(t, server, outsider, "bead.get", params(at))
 		requireCode(t, denied, "not_found")
@@ -1114,10 +1116,17 @@ func TestCommentGetThroughGuardedRPCSnapshotsAndRevocation(t *testing.T) {
 	if err := mutable.Replace(facts); err != nil {
 		t.Fatal(err)
 	}
+	// Removing write-involvement grants does not revoke the adopted user read
+	// permit. Preserve that policy instead of inventing a narrower comment rule.
+	result(t, call(t, server, reader, "bead.get", params(nil)))
+	facts.Namespace.InstallationID = "other-installation"
+	if err := mutable.Replace(facts); err != nil {
+		t.Fatal(err)
+	}
 	denied := call(t, server, reader, "bead.get", params(&service.AsOf{Revision: old.Revision}))
-	requireCode(t, denied, "not_found")
+	requireCode(t, denied, "authz_unavailable")
 	if _, exists := denied["result"]; exists {
-		t.Fatal("revoked historical result leaked")
+		t.Fatal("unavailable policy source leaked historical result")
 	}
 	requireCode(t, call(t, server, reader, "bead.comment", `{"id":{"id":"pl-comment-rpc","branch":0},"body":"forged","origin":"import","sourceAuthor":"forged","_meta":{"project":"project"}}`), "invalid_params")
 }

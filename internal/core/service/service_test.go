@@ -1470,7 +1470,7 @@ func TestGetCommentSnapshotsAndDetachedProvenance(t *testing.T) {
 
 func TestGetRefusesMalformedStoredCommentUnion(t *testing.T) {
 	base := map[string]any{"body": "secret", "principal": anonymous, "time": "2026-10-30T10:00:00Z"}
-	cases := []map[string]any{{"origin": ""}, {"sourceAuthor": ""}, {"sourceTime": nil}, {"origin": "import", "sourceTime": "2026-10-29T10:00:00Z", "sourceAuthor": nil}, {"origin": "import"}, {"origin": "import", "sourceTime": nil}, {"origin": "import", "sourceTime": "2026-10-29T10:00:00Z", "sourceAuthor": "bad\nauthor"}, {"unexpected": true}}
+	cases := []map[string]any{{"origin": ""}, {"sourceAuthor": ""}, {"sourceTime": nil}, {"origin": "import", "sourceTime": "2026-10-29T10:00:00Z", "sourceAuthor": nil}, {"origin": "import"}, {"origin": "import", "sourceTime": nil}, {"origin": "import", "sourceTime": "2026-10-29T10:00:00Z", "sourceAuthor": "bad\nauthor"}, {"unexpected": true}, {"Origin": ""}, {"sourceauthor": ""}, {"Time": "2026-10-30T10:00:00Z"}}
 	for i, extra := range cases {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			f := setup(t)

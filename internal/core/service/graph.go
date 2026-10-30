@@ -48,6 +48,13 @@ func decodeDocument(raw []byte) (pipeline.Document, error) {
 			return doc, failure("invalid_params", "invalid stored comments")
 		}
 		for _, comment := range comments {
+			for key := range comment {
+				switch key {
+				case "body", "principal", "time", "origin", "sourceAuthor", "sourceTime":
+				default:
+					return doc, failure("invalid_params", "unsupported stored comment member")
+				}
+			}
 			for _, key := range []string{"body", "principal", "time"} {
 				value, exists := comment[key]
 				if !exists || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
