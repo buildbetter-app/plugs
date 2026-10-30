@@ -299,7 +299,7 @@ func (p *prepared) ordinaryEvent(pending *pending, op model.OpKind) (model.Durab
 	}
 	if statusChanged(pending) {
 		method := gateLifecycleMethod(p.proposal.Meta.Method, pending)
-		if event, ok := map[string]model.DurableEventType{"bead.claim": model.EventBeadClaimed, "bead.close": model.EventBeadClosed, "bead.fail": model.EventBeadFailed, "bead.cancel": model.EventBeadCanceled, "bead.reopen": model.EventBeadReopened, "bead.defer": model.EventBeadDeferred}[method]; ok {
+		if event, ok := map[string]model.DurableEventType{"bead.claim": model.EventBeadClaimed, "bead.claimNext": model.EventBeadClaimed, "bead.close": model.EventBeadClosed, "bead.fail": model.EventBeadFailed, "bead.cancel": model.EventBeadCanceled, "bead.reopen": model.EventBeadReopened, "bead.defer": model.EventBeadDeferred}[method]; ok {
 			return event, nil
 		}
 	}
