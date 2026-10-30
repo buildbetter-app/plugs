@@ -90,8 +90,9 @@ func (c *pageCodec) binding(call Call, p serviceParams) (string, string, error) 
 		Project string  `json:"project"`
 		ViewID  string  `json:"viewId,omitempty"`
 		Filter  *filter `json:"filter"`
+		Query   string  `json:"query,omitempty"`
 		AsOf    *asOf   `json:"asOf,omitempty"`
-	}{call.Meta.Project, p.ViewID, queryFilter, at})
+	}{call.Meta.Project, p.ViewID, queryFilter, p.Query, at})
 	return principal, scope, err
 }
 
@@ -241,6 +242,42 @@ func (c *pageCodec) page(call Call, p serviceParams, previous *service.PagePosit
 	}
 	if position.Offset <= before {
 		return nil, fmt.Errorf("service page does not advance")
+	}
+	token, err := c.encode(call, p, position)
+	if err != nil {
+		return nil, err
+	}
+	out["nextCursor"] = token
+	return out, nil
+}
+
+func (c *pageCodec) memoryPage(call Call, p serviceParams, previous *service.PagePosition, value service.MemoryPage) (map[string]any, error) {
+	pageIncarnation := value.AsOf.Incarnation
+	if pageIncarnation == "" {
+		pageIncarnation = c.incarnation
+	}
+	if pageIncarnation != c.incarnation {
+		return nil, fmt.Errorf("service returned another page incarnation")
+	}
+	// Memory lists are live. The previous revision is an observation, while
+	// the signed incarnation and selector binding still identify the cursor.
+	out := memoryPageJSON(value)
+	if value.Next == nil {
+		return out, nil
+	}
+	position := *value.Next
+	if position.AsOf.Incarnation == "" {
+		position.AsOf.Incarnation = c.incarnation
+	}
+	if position.AsOf.Incarnation != pageIncarnation || !sameRevision(position.AsOf.Revision, value.AsOf.Revision) {
+		return nil, fmt.Errorf("service next position does not match memory page asOf")
+	}
+	before := 0
+	if previous != nil {
+		before = previous.Offset
+	}
+	if position.Offset <= before {
+		return nil, fmt.Errorf("service memory page does not advance")
 	}
 	token, err := c.encode(call, p, position)
 	if err != nil {
