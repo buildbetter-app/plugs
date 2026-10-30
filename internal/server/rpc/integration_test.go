@@ -1120,6 +1120,8 @@ func TestCommentGetThroughGuardedRPCSnapshotsAndRefusals(t *testing.T) {
 	// permit. Preserve that policy instead of inventing a narrower comment rule.
 	result(t, call(t, server, reader, "bead.get", params(nil)))
 	facts.Namespace.InstallationID = "other-installation"
+	facts.Projects[0].InstallationID = "other-installation"
+	facts.Teams[0].InstallationID = "other-installation"
 	if err := mutable.Replace(facts); err != nil {
 		t.Fatal(err)
 	}

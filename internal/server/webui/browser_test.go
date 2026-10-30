@@ -353,7 +353,7 @@ func TestBrowserCommentProvenanceContractFixtures(t *testing.T) {
 		}
 		return v
 	}
-	fixtures := map[string]any{"legacy": []any{legacy}, "import": []any{imported("source-user")}, "hostile": []any{imported(`<script>globalThis.commentExecuted=true</script>`)}, "no-author": []any{imported(nil)}, "empty": []any{}, "absent": nil, "null": json.RawMessage(`null`), "refresh": []any{imported("secret-source")}}
+	fixtures := map[string]any{"legacy": []any{legacy}, "import": []any{imported("source-user")}, "hostile": []any{imported(`<script>globalThis.commentExecuted=true</script>`)}, "no-author": []any{imported(nil)}, "empty": []any{}, "absent": nil, "null": json.RawMessage(`null`), "refresh": []any{imported("secret-source")}, "selection-race": []any{imported("source-user")}}
 	for name, extra := range map[string]map[string]any{"empty-origin": {"origin": ""}, "null-source": {"origin": "import", "sourceTime": nil}, "null-author": {"origin": "import", "sourceTime": "2020-01-01T00:00:00Z", "sourceAuthor": nil}, "empty-author": {"origin": "import", "sourceTime": "2020-01-01T00:00:00Z", "sourceAuthor": ""}, "legacy-source": {"sourceTime": nil}, "control": {"origin": "import", "sourceTime": "2020-01-01T00:00:00Z", "sourceAuthor": "bad\nauthor"}} {
 		v := map[string]any{}
 		for k, x := range legacy {
@@ -368,7 +368,11 @@ func TestBrowserCommentProvenanceContractFixtures(t *testing.T) {
 	for name, comments := range fixtures {
 		mount := "/fixtures/" + name + "/ui/"
 		endpoint := "/fixtures/" + name + "/rpc"
-		ui, err := webui.New(webui.Config{MountPath: mount, RPCPath: endpoint, Project: "web", MaxRows: 5})
+		config := webui.Config{MountPath: mount, RPCPath: endpoint, Project: "web", MaxRows: 5}
+		if name == "selection-race" {
+			config.BlockedViewID = "fixture-view"
+		}
+		ui, err := webui.New(config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -389,7 +393,14 @@ func TestBrowserCommentProvenanceContractFixtures(t *testing.T) {
 			case "server.hello":
 				reply["result"] = map[string]any{"authMode": "anonymous"}
 			case "rpc.methods":
-				reply["result"] = map[string]any{"methods": []string{"bead.get"}}
+				methods := []string{"bead.get"}
+				if name == "selection-race" {
+					methods = append(methods, "view.explain")
+				}
+				reply["result"] = map[string]any{"methods": methods}
+			case "view.explain":
+				time.Sleep(300 * time.Millisecond)
+				reply["result"] = map[string]any{"included": true, "reasons": []string{"Selected " + request.Params["itemId"].(string)}}
 			case "bead.get":
 				v := map[string]any{"bead": map[string]any{"id": "pl-comments", "revision": 1}, "attachments": []any{}}
 				if name != "absent" {

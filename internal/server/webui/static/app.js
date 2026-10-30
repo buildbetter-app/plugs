@@ -518,10 +518,9 @@
     node.appendChild(list);
     const boundary = document.createElement("p"); boundary.className = "muted"; text(boundary, "Verdicts describe the returned snapshot. Opening an item reads its current explanation."); node.appendChild(boundary);
   }
-  async function explainMembership(signal) {
+  async function explainMembership(signal, itemId) {
     const node = $("explain-state");
     if (!state.methods.has("view.explain") || !state.config.blockedViewId) { message(node, "unavailable", "Explanation unavailable.", "A server-backed saved view and its explanation method are not configured."); return; }
-    const itemId = $("explain-id").value.trim();
     if (!itemId) { text(node, "Enter an item ID to request its explanation."); return; }
     const result = await rpc("view.explain", { viewId: state.config.blockedViewId, itemId }, signal);
     const direct = Object.hasOwn(result, "directBlockers") ? directBlockers(result.directBlockers) : null;
@@ -555,8 +554,9 @@
     return value;
   }
   async function explain(signal) {
-    await explainMembership(signal);
     const node = $("comment-state"), id = $("explain-id").value.trim();
+    await explainMembership(signal, id);
+    if (signal.aborted) return;
     if (!id) { text(node, "Select an item to read comments."); return; }
     if (!state.methods.has("bead.get")) { text(node, "Comments unavailable: item reads are not configured."); return; }
     const result = await rpc("bead.get", { id: { id, branch: 0 } }, signal);

@@ -49,13 +49,15 @@ try {
   };
   const settled = () => until(() => evaluate("document.querySelector('#cancel')?.hidden && document.querySelector('#connection-state')?.textContent !== 'Loading'"), "comment read completion");
   const rendered = () => evaluate(`({ state: document.querySelector('#connection-state').textContent, text: document.querySelector('#comment-state').textContent, actors: Array.from(document.querySelectorAll('.comment-actor'), n => n.textContent), sources: Array.from(document.querySelectorAll('.comment-source'), n => n.textContent), rows: document.querySelectorAll('.comment-row').length, injected: !!document.querySelector('#comment-state img, #comment-state script') || globalThis.commentExecuted === true, overflow: document.documentElement.scrollWidth > innerWidth })`);
-  const cases = ["legacy", "import", "hostile", "no-author", "empty", "absent", "null", "empty-origin", "null-source", "null-author", "empty-author", "legacy-source", "control", "refresh"];
+  const cases = ["legacy", "import", "hostile", "no-author", "empty", "absent", "null", "empty-origin", "null-source", "null-author", "empty-author", "legacy-source", "control", "refresh", "selection-race"];
   for (const name of cases) {
     const url = base + "/fixtures/" + name + "/ui/?view=explain";
     await send("Page.navigate", { url });
     await until(() => evaluate(`location.href === ${JSON.stringify(url)} && document.readyState === 'complete' && !!document.querySelector('#refresh')`), "fixture document");
     await settled();
-    await evaluate("document.querySelector('#explain-id').value='pl-comments'; document.querySelector('#explain-form').requestSubmit()"); await settled();
+    await evaluate("document.querySelector('#explain-id').value='pl-comments'; document.querySelector('#explain-form').requestSubmit()");
+    if (name === "selection-race") { await until(() => requests.some(request => request.method === "view.explain"), "delayed explanation request"); await evaluate("document.querySelector('#explain-id').value='pl-other'"); }
+    await settled();
     const value = await rendered(); assert.equal(value.injected, false, name); assert.equal(value.overflow, false, name);
     if (["null", "empty-origin", "null-source", "null-author", "empty-author", "legacy-source", "control"].includes(name)) {
       assert.equal(value.state, "Unavailable", name); assert.equal(value.rows, 0, name);
