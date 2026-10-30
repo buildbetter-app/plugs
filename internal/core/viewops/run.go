@@ -155,6 +155,10 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	}
 	defer reader.Close()
 	asOf := AsOf{Revision: *reader.Snapshot().At, Incarnation: reader.Snapshot().Incarnation}
+	projection, err := s.projectionStatus(ctx)
+	if err != nil {
+		return Result{}, err
+	}
 	if err := s.validateCursor(req.Cursor, by, req.Agent, req.ViewID, definitionDigest, asOf.Incarnation); err != nil {
 		return Result{}, err
 	}
@@ -219,8 +223,17 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	if len(candidates) > cap {
 		return Result{}, &model.Error{Data: model.ErrorData{Code: "scope_too_large", Hint: "authorized view candidates exceed the bounded cap", Details: map[string]any{"cap": cap}}}
 	}
+	pending, err := s.pendingReadiness(ctx, reader, candidates)
+	if err != nil {
+		return Result{}, err
+	}
 	if typeSummary {
-		return s.typeSummaryResult(candidates, rows, authorized, definition, asOf)
+		result, err := s.typeSummaryResult(candidates, rows, authorized, pending, definition, asOf)
+		if err != nil {
+			return Result{}, err
+		}
+		result.Projection = projection
+		return result, nil
 	}
 	budget, err := s.outputBudget(definition)
 	if err != nil {
@@ -234,9 +247,9 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	if end < start || end > len(candidates) {
 		end = len(candidates)
 	}
-	result := Result{Items: make([]Bead, 0, end-start), AsOf: asOf}
+	result := Result{Items: make([]Bead, 0, end-start), AsOf: asOf, Projection: projection}
 	for _, row := range candidates[start:end] {
-		item, err := s.item(row, definition.Fields, rows, authorized)
+		item, err := s.item(row, definition.Fields, rows, authorized, pending)
 		if err != nil {
 			return Result{}, err
 		}
@@ -246,7 +259,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 		result.NextCursor = s.nextCursor(by, req.Agent, req.ViewID, definitionDigest, asOf, uint64(end))
 	}
 	if len(definition.GroupBy) != 0 {
-		result.Groups, err = s.grouped(candidates, start, end, definition.Fields, rows, authorized)
+		result.Groups, err = s.grouped(candidates, start, end, definition.Fields, rows, authorized, pending)
 		if err != nil {
 			return Result{}, err
 		}
@@ -260,6 +273,37 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 		}
 	}
 	return result, nil
+}
+
+func (s *Service) pendingReadiness(ctx context.Context, reader driver.Reader, candidates []stored) (map[string]ReadinessState, error) {
+	if s.cfg.Readiness == nil || len(candidates) == 0 {
+		return nil, nil
+	}
+	refs := make([]model.Ref, 0, len(candidates))
+	for _, row := range candidates {
+		refs = append(refs, row.record.Ref)
+	}
+	states, err := s.cfg.Readiness.Pending(ctx, reader, refs)
+	if err != nil {
+		return nil, mapped(err)
+	}
+	if states == nil {
+		return nil, nil
+	}
+	// A readiness source may know about more rows than this page. Keep only
+	// exact candidate IDs so a stale or broad projection cannot add a hidden
+	// membership trace to a view result.
+	wanted := make(map[string]struct{}, len(candidates))
+	for _, row := range candidates {
+		wanted[row.doc.ID] = struct{}{}
+	}
+	pending := make(map[string]ReadinessState, len(states))
+	for id, state := range states {
+		if _, ok := wanted[id]; ok {
+			pending[id] = state
+		}
+	}
+	return pending, nil
 }
 
 func cursorAsOf(cursor *Cursor, asOf *AsOf) *AsOf {
@@ -284,7 +328,7 @@ func (s *Service) nextCursor(by model.PrincipalRef, agent, viewID, definitionDig
 	return &Cursor{Version: 1, Method: "view.run", PrincipalDigest: principal, DefinitionDigest: definitionDigest, ViewID: viewID, OntologyRevision: s.cfg.OntologyRevision, Incarnation: asOf.Incarnation, Revision: asOf.Revision, Index: index}
 }
 
-func (s *Service) typeSummaryResult(candidates, rows []stored, authorized map[string]bool, definition Definition, asOf AsOf) (Result, error) {
+func (s *Service) typeSummaryResult(candidates, rows []stored, authorized map[string]bool, pending map[string]ReadinessState, definition Definition, asOf AsOf) (Result, error) {
 	groups := map[string][]stored{}
 	for _, row := range candidates {
 		groups[row.doc.Type] = append(groups[row.doc.Type], row)
@@ -302,7 +346,7 @@ func (s *Service) typeSummaryResult(candidates, rows []stored, authorized map[st
 		groupRows := groups[key]
 		items := make([]Bead, 0)
 		for _, row := range groupRows {
-			item, err := s.item(row, definition.Fields, rows, authorized)
+			item, err := s.item(row, definition.Fields, rows, authorized, pending)
 			if err != nil {
 				return Result{}, err
 			}
@@ -316,7 +360,7 @@ func (s *Service) typeSummaryResult(candidates, rows []stored, authorized map[st
 	return result, nil
 }
 
-func (s *Service) grouped(candidates []stored, start, end int, fields []string, rows []stored, authorized map[string]bool) ([]Group, error) {
+func (s *Service) grouped(candidates []stored, start, end int, fields []string, rows []stored, authorized map[string]bool, pending map[string]ReadinessState) ([]Group, error) {
 	groups := map[string][]stored{}
 	for _, row := range candidates {
 		groups[row.doc.Type] = append(groups[row.doc.Type], row)
@@ -339,7 +383,7 @@ func (s *Service) grouped(candidates []stored, start, end int, fields []string, 
 		all := groups[key]
 		group := Group{Key: key, Count: len(all), Items: []Bead{}}
 		for _, row := range pageGroups[key] {
-			item, err := s.item(row, fields, rows, authorized)
+			item, err := s.item(row, fields, rows, authorized, pending)
 			if err != nil {
 				return nil, err
 			}
@@ -353,7 +397,7 @@ func (s *Service) grouped(candidates []stored, start, end int, fields []string, 
 	return result, nil
 }
 
-func (s *Service) item(row stored, fields []string, rows []stored, authorized map[string]bool) (Bead, error) {
+func (s *Service) item(row stored, fields []string, rows []stored, authorized map[string]bool, pending map[string]ReadinessState) (Bead, error) {
 	fieldsMap := cloneMap(row.doc.Fields)
 	metadata := cloneMetadata(row.doc.Metadata)
 	if fields != nil {
@@ -361,6 +405,9 @@ func (s *Service) item(row stored, fields []string, rows []stored, authorized ma
 	}
 	status, _ := row.doc.Fields["status"].(string)
 	item := Bead{ID: row.doc.ID, Type: row.doc.Type, Project: row.doc.Project, Revision: row.record.Revision, Status: status, Fields: fieldsMap, Metadata: metadata}
+	if state, ok := pending[row.doc.ID]; ok {
+		item.ReadinessPending = state.Pending
+	}
 	if fields != nil {
 		if !hasField(fields, "project") {
 			item.Project = ""
@@ -503,13 +550,22 @@ func (s *Service) Explain(ctx context.Context, by model.PrincipalRef, req Explai
 	if err != nil || !ok {
 		return ExplainResult{}, failure("not_found", "bead is not readable")
 	}
-	result := ExplainResult{ViewID: req.ViewID, ItemID: req.ItemID, Included: matches(row, *definition.Filter, project, terms), Reasons: []string{}}
+	projection, err := s.projectionStatus(ctx)
+	if err != nil {
+		return ExplainResult{}, err
+	}
+	result := ExplainResult{ViewID: req.ViewID, ItemID: req.ItemID, Included: matches(row, *definition.Filter, project, terms), Reasons: []string{}, Projection: projection}
 	if result.Included {
 		result.Reasons = append(result.Reasons, "included")
 		result.HiddenBlockers, err = s.hiddenBlockers(ctx, by, reader, row)
 		if err != nil {
 			return ExplainResult{}, err
 		}
+		pending, pendingErr := s.pendingReadiness(ctx, reader, []stored{row})
+		if pendingErr != nil {
+			return ExplainResult{}, pendingErr
+		}
+		result.ReadinessPending = pending[req.ItemID].Pending
 	} else {
 		result.Reasons = append(result.Reasons, filterReason(row, *definition.Filter, project, terms)...)
 	}
