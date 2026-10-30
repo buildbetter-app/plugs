@@ -80,7 +80,22 @@ if [[ -n "${BAZEL_RC:-}" ]]; then
 fi
 
 query() {
-  "$bazel_bin" "${bazel_args[@]}" query "$1" --lockfile_mode=error --output=label
+  local receipt code
+  mkdir -p "$output/queries"
+  receipt="$(mktemp -d "$output/queries/query.XXXXXX")"
+  local command=("$bazel_bin" "${bazel_args[@]}" query "$1" --lockfile_mode=error --output=label)
+  printf '%s\0' "${command[@]}" >"$receipt/argv.nul"
+  printf '%q ' "${command[@]}" >"$receipt/command.txt"
+  printf '\n' >>"$receipt/command.txt"
+  if "${command[@]}" >"$receipt/stdout.log" 2>"$receipt/stderr.log"; then
+    code=0
+  else
+    code=$?
+  fi
+  printf '%s\n' "$code" >"$receipt/exit.txt"
+  cat "$receipt/stdout.log"
+  cat "$receipt/stderr.log" >&2
+  return "$code"
 }
 
 full_graph=0
@@ -135,9 +150,10 @@ if ((full_graph == 0 && ${#resource_paths[@]} > 0)); then
   declare -A source_label_by_path=()
   # //... selects rules, not their source-file inputs. Walk the rule closure
   # to find resources named by embedsrcs, data, filegroups, and other inputs.
-  if ! source_inventory="$(query 'kind("source file", deps(//...))')"; then
+  if source_inventory="$(query 'kind("source file", deps(//...))')"; then :; else
+    code=$?
     echo "targets: cannot query Bazel source-file ownership" >&2
-    exit 1
+    exit "$code"
   fi
   mapfile -t source_labels < <(printf '%s\n' "$source_inventory" | grep -E '^//' | LC_ALL=C sort -u)
   for label in "${source_labels[@]}"; do
@@ -181,9 +197,10 @@ printf '%s\n' "${resource_labels[@]}" | sed '/^$/d' | LC_ALL=C sort -u >"$output
 printf '%s\n' "${unknown_paths[@]}" | sed '/^$/d' | LC_ALL=C sort -u >"$output/unknown-files.txt"
 
 if ((full_graph)); then
-  if ! touched_query="$(query 'kind(".*_test rule", //...)')"; then
+  if touched_query="$(query 'kind(".*_test rule", //...)')"; then :; else
+    code=$?
     echo "targets: cannot query complete Bazel test graph" >&2
-    exit 1
+    exit "$code"
   fi
   mapfile -t touched < <(printf '%s\n' "$touched_query" | grep -E '^//' | LC_ALL=C sort -u)
   reverse=()
@@ -191,9 +208,10 @@ else
   touched=()
   while IFS= read -r package; do
     [[ -n "$package" ]] || continue
-    if ! package_query="$(query "kind(\".*_test rule\", ${package}:all)")"; then
+    if package_query="$(query "kind(\".*_test rule\", ${package}:all)")"; then :; else
+      code=$?
       echo "targets: cannot query tests for $package" >&2
-      exit 1
+      exit "$code"
     fi
     mapfile -t package_tests < <(printf '%s\n' "$package_query" | grep -E '^//' | LC_ALL=C sort -u)
     touched+=("${package_tests[@]}")
@@ -203,9 +221,10 @@ else
   if [[ -s "$output/seeds.txt" ]]; then
     mapfile -t seed_values <"$output/seeds.txt"
     seed_set="set(${seed_values[*]})"
-    if ! reverse_query="$(query "kind(\".*_test rule\", rdeps(//..., ${seed_set}))")"; then
+    if reverse_query="$(query "kind(\".*_test rule\", rdeps(//..., ${seed_set}))")"; then :; else
+      code=$?
       echo "targets: cannot query reverse-dependent tests" >&2
-      exit 1
+      exit "$code"
     fi
     mapfile -t reverse < <(printf '%s\n' "$reverse_query" | grep -E '^//' | LC_ALL=C sort -u)
   fi

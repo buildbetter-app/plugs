@@ -2,6 +2,9 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -17,10 +20,6 @@ import (
 func seedAllocator(t *testing.T, store driver.Store, lease driver.ActiveLease, value driver.OfflineAllocator) {
 	t.Helper()
 	ctx := context.Background()
-	meta, err := store.Meta(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 	key, err := driver.AllocatorLock(value.Prefix)
 	if err != nil {
 		t.Fatal(err)
@@ -36,6 +35,15 @@ func seedAllocator(t *testing.T, store driver.Store, lease driver.ActiveLease, v
 	if _, err = tx.Head(ctx); err != nil {
 		t.Fatal(err)
 	}
+	restore, ok := tx.(driver.OfflineRestoreTx)
+	if !ok {
+		t.Fatal("store does not expose offline restore")
+	}
+	const sourceID driver.StoreID = "allocator-seed-source"
+	meta, err := restore.PrepareOfflineRestore(ctx, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	continuation, ok := tx.(driver.AllocatorContinuation)
 	if !ok {
 		t.Fatal("store does not expose allocator continuation")
@@ -43,7 +51,16 @@ func seedAllocator(t *testing.T, store driver.Store, lease driver.ActiveLease, v
 	if err = continuation.RestoreAllocators(ctx, []driver.OfflineAllocator{value}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Principal: model.PrincipalRef{Kind: "system", ID: "restore"}, LockKeys: []driver.LockKey{key}}); err != nil {
+	payload, err := json.Marshal(struct {
+		Source driver.StoreID
+		Value  driver.OfflineAllocator
+	}{sourceID, value})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	hash := hex.EncodeToString(digest[:])
+	if _, err = tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Principal: model.PrincipalRef{Kind: "system", ID: "plug-converter"}, Method: "offline.restore", IdempotencyKey: "allocator-seed-" + hash, RequestHash: hash, Response: model.Commit{Results: []model.OpResult{}, Warnings: []model.Warning{}}, LockKeys: []driver.LockKey{key}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -246,5 +263,85 @@ func TestSQLiteAllocatorSurvivesRestart(t *testing.T) {
 	commit, err = writer.Apply(ctx, by, model.ChangeSet{Ops: []model.Op{create("sqlite-next-2")}}, request)
 	if err != nil || commit.Results[0].Ref.ID != "demo-10" {
 		t.Fatalf("reopened sqlite create=%+v err=%v", commit, err)
+	}
+}
+
+func TestAllocatorReplacementSeedIdentityAndInitializedRefusal(t *testing.T) {
+	ctx := context.Background()
+	for _, kind := range []string{"memory", "sqlite"} {
+		t.Run(kind, func(t *testing.T) {
+			var store driver.Store = memory.New()
+			if kind == "sqlite" {
+				store.Close()
+				var err error
+				store, err = (sqlite.Driver{}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "seed.db")})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			defer store.Close()
+			lease, err := store.Lease(ctx, "allocator-replacement", driver.LeaseTTL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lease.Release(ctx)
+			before, err := store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seed := driver.OfflineAllocator{Prefix: "demo", Mode: driver.AllocatorSequential, LastID: 8}
+			seedAllocator(t, store, lease, seed)
+			after, err := store.Meta(ctx)
+			if err != nil || after.StoreID != "allocator-seed-source" || after.Incarnation == before.Incarnation || after.Head.String() != "1" || after.HistoryFloor.String() != "1" {
+				t.Fatalf("allocator replacement identity=%+v %v", after, err)
+			}
+			payload, err := json.Marshal(struct {
+				Source driver.StoreID
+				Value  driver.OfflineAllocator
+			}{"allocator-seed-source", seed})
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(payload)
+			hash := hex.EncodeToString(digest[:])
+			reader, err := store.Read(ctx, driver.View{Incarnation: after.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := reader.IdempotencyByKey(ctx, "system:plug-converter", "", "offline.restore", "allocator-seed-"+hash)
+			reader.Close()
+			if err != nil || receipt == nil || receipt.RequestHash != hash || receipt.ResponsePending || receipt.Changeset.Incarnation != after.Incarnation || receipt.Changeset.Kind != model.ChangesetRestore {
+				t.Fatalf("allocator replacement receipt=%+v %v", receipt, err)
+			}
+			key, err := driver.AllocatorLock("other")
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx, err := store.Write(ctx, lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Close()
+			if _, err := tx.Lock(ctx, driver.LockSet{{Key: key, Mode: driver.LockUpdate}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.Head(ctx); err != nil {
+				t.Fatal(err)
+			}
+			_, err = tx.(driver.OfflineRestoreTx).PrepareOfflineRestore(ctx, "new-source")
+			if !errors.Is(err, driver.ErrRestoreTargetNotEmpty) {
+				t.Fatalf("initialized identity-preserving injection=%v", err)
+			}
+			if got, err := tx.(driver.AllocatorReader).LoadAllocator(ctx, "other"); !errors.Is(err, driver.ErrNotFound) {
+				t.Fatalf("initialized refusal staged allocator=%+v %v", got, err)
+			}
+			if err := tx.Close(); err != nil {
+				t.Fatal(err)
+			}
+			got, err := store.Meta(ctx)
+			if err != nil || got != after {
+				t.Fatalf("initialized refusal changed identity/history: %+v %v", got, err)
+			}
+		})
 	}
 }
