@@ -34,6 +34,14 @@ func admittedFixtureBytes(t *testing.T) []byte {
 		project["hash_length"] = 1
 		project["last_id"] = 8
 		project["child_counters"] = map[string]any{"demo-7": 4}
+		projects = append(projects, map[string]any{
+			"prefix":         "empty",
+			"id_mode":        "hash",
+			"hash_length":    1,
+			"last_id":        0,
+			"child_counters": map[string]any{},
+		})
+		manifest["projects"] = projects
 		for _, raw := range manifest["sources"].([]any) {
 			source := raw.(map[string]any)
 			if source["family"] == "issue_versions" {
@@ -130,7 +138,9 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 				t.Fatalf("import recovery=%+v err=%v", recovered, err)
 			}
 			altered := profile
-			altered.Admission.Actor.ID = "restore-admin-altered"
+			// Keep the G4 lookup tuple unchanged so this refusal exercises the
+			// retained full profile hash rather than a principal lookup miss.
+			altered.Admission.AdmissionDigest = strings.Repeat("d", 64)
 			if _, err = RecoverImport(ctx, store, altered, Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}); !errors.Is(err, driver.ErrConflict) {
 				t.Fatalf("altered import profile accepted: %v", err)
 			}
@@ -193,6 +203,94 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 				t.Fatalf("reverse read: %v", err)
 			} else if _, err := reverseconverter.ConvertArchive(data); err != nil {
 				t.Fatalf("reverse convert: %v", err)
+			}
+		})
+	}
+}
+
+type tamperedImportStore struct {
+	driver.Store
+	mode string
+}
+
+func (s tamperedImportStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	reader, err := s.Store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	return tamperedImportReader{Reader: reader, mode: s.mode}, nil
+}
+
+type tamperedImportReader struct {
+	driver.Reader
+	mode string
+}
+
+func (r tamperedImportReader) Get(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
+	rows, err := r.Reader.Get(ctx, refs)
+	if err != nil {
+		return nil, err
+	}
+	if r.mode == "binding" {
+		for i := range rows {
+			if rows[i].Ref.ID == importBindingRecordID {
+				rows[i].Body = []byte(`{"tampered":true}`)
+			}
+		}
+	}
+	if r.mode == "project" {
+		for i := range rows {
+			if strings.HasPrefix(rows[i].Ref.ID, "instance_config/restore-import/project/") {
+				rows[i].Body = []byte(`{"tampered":true}`)
+				break
+			}
+		}
+	}
+	return rows, nil
+}
+
+func (r tamperedImportReader) LoadAllocator(ctx context.Context, prefix string) (driver.OfflineAllocator, error) {
+	allocators, ok := r.Reader.(driver.AllocatorReader)
+	if !ok {
+		return driver.OfflineAllocator{}, driver.ErrUnsupported
+	}
+	value, err := allocators.LoadAllocator(ctx, prefix)
+	if err != nil {
+		return driver.OfflineAllocator{}, err
+	}
+	if r.mode == "allocator" {
+		value.RandomBytes = 15
+	}
+	return value, nil
+}
+
+func TestRecoverImportRefusesDurableBindingDriftReadOnly(t *testing.T) {
+	data := admittedFixtureBytes(t)
+	profile, _ := admittedImportProfile(t, data)
+	check := Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}
+	for _, kind := range []string{"memory", "sqlite"} {
+		t.Run(kind, func(t *testing.T) {
+			store, lease, cleanup := openTarget(t, kind)
+			defer cleanup()
+			ctx := context.Background()
+			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
+				t.Fatalf("import restore: %v", err)
+			}
+			before, err := store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, mode := range []string{"binding", "project", "allocator"} {
+				t.Run(mode, func(t *testing.T) {
+					_, err := RecoverImport(ctx, tamperedImportStore{Store: store, mode: mode}, profile, check)
+					if !errors.Is(err, driver.ErrConflict) {
+						t.Fatalf("tampered %s accepted: %v", mode, err)
+					}
+					after, metaErr := store.Meta(ctx)
+					if metaErr != nil || after.Head != before.Head || after.Incarnation != before.Incarnation {
+						t.Fatalf("read-only recovery changed meta before=%+v after=%+v err=%v", before, after, metaErr)
+					}
+				})
 			}
 		})
 	}
