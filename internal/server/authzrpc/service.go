@@ -30,6 +30,11 @@ var _ rpc.Service = (*GuardedService)(nil)
 // intentionally uncapped.
 const listPostfilterCap = 20000
 
+// Keep the guarded duplicate claimNext walk bounded when the same permitted
+// candidate repeatedly exhausts the Writer's snapshot attempts. The pager
+// still visits every distinct candidate; this only limits extra refetch passes.
+const claimNextConflictRestartBudget = 1
+
 func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req service.GetRequest) (service.GetResult, error) {
 	allowed, err := s.checkRead(ctx, by, "bead.get", req.ID)
 	if err != nil {
@@ -142,6 +147,7 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	}
 	meta.ClaimNextIdentity = identity
 	meta.Method = "bead.claimNext"
+	selectionSeed := service.ClaimNextSelectionSeed(identity, meta.IdempotencyKey)
 	if by.Kind != "anonymous" {
 		meta.AgentLabel = ""
 	} else if meta.AgentLabel == "" {
@@ -172,8 +178,12 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	}
 	position := (*service.PagePosition)(nil)
 	fresh := false
+	exhausted := map[string]error{}
+	var exhaustedConflict error
+	repeatedConflictThisPass := false
+	conflictRestarts := 0
 	for {
-		page, err := s.claimPage(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position})
+		page, err := s.claimPage(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
 		if err != nil {
 			return nil, err
 		}
@@ -200,11 +210,22 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			if !claimNextRace(claimErr) {
 				return nil, claimErr
 			}
+			if claimNextCandidateConflict(claimErr) {
+				if _, seen := exhausted[bead.ID]; seen {
+					repeatedConflictThisPass = true
+				} else {
+					exhausted[bead.ID] = claimErr
+					if exhaustedConflict == nil {
+						exhaustedConflict = claimErr
+					}
+				}
+			}
 		}
 		if page.Next == nil {
 			if !fresh {
 				fresh = true
 				position = nil
+				repeatedConflictThisPass = false
 				continue
 			}
 			if s.commitEmpty == nil {
@@ -213,6 +234,13 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			out, err := s.commitEmpty(ctx, by, req, meta, s.claimNextReadyProbe(by, req))
 			if err != nil {
 				if errors.Is(err, port.ErrClaimNextReady) {
+					if repeatedConflictThisPass {
+						if conflictRestarts >= claimNextConflictRestartBudget {
+							return nil, exhaustedConflict
+						}
+						conflictRestarts++
+					}
+					repeatedConflictThisPass = false
 					fresh = false
 					position = nil
 					continue
@@ -272,9 +300,22 @@ func claimNextRace(err error) bool {
 		// admission timeouts, global lease loss and other busy errors must
 		// propagate instead of becoming a false terminal null.
 		return value.Message == "bead already has a live claim"
+	case "write_conflict":
+		// A selected candidate can exhaust the writer's bounded snapshot
+		// retries while the queue is contended. Advance to the next candidate;
+		// other/global write failures retain their typed error.
+		return claimNextCandidateConflict(value)
 	default:
 		return false
 	}
+}
+
+func claimNextCandidateConflict(err error) bool {
+	var value *model.Error
+	if !errors.As(err, &value) || value.Data.Code != "write_conflict" {
+		return false
+	}
+	return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 }
 func (s *GuardedService) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CommentRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	return s.delegate.CommentWithOutcome(ctx, by, req, meta)

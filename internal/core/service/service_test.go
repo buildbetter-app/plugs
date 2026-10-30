@@ -965,6 +965,47 @@ func TestReadyPriorityThenIDAndPinnedHistoryPages(t *testing.T) {
 	}
 }
 
+func TestClaimNextSelectionSpreadsStablePriorityTies(t *testing.T) {
+	items := []Bead{
+		{ID: "p0-a", Type: "issue", Project: "local", Fields: map[string]any{"priority": 0}},
+		{ID: "p0-b", Type: "issue", Project: "local", Fields: map[string]any{"priority": 0}},
+		{ID: "p0-c", Type: "issue", Project: "local", Fields: map[string]any{"priority": 0}},
+		{ID: "p1-a", Type: "issue", Project: "local", Fields: map[string]any{"priority": 1}},
+		{ID: "p1-b", Type: "issue", Project: "local", Fields: map[string]any{"priority": 1}},
+	}
+	seed := ClaimNextSelectionSeed("selector", "key")
+	first, err := spreadClaimNextItems(items, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := spreadClaimNextItems(items, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := func(rows []Bead) []string {
+		out := make([]string, len(rows))
+		for i, row := range rows {
+			out[i] = row.ID
+		}
+		return out
+	}
+	if !slices.Equal(ids(first), ids(repeated)) {
+		t.Fatalf("same seed changed candidate order: first=%v repeated=%v", ids(first), ids(repeated))
+	}
+	if slices.Equal(ids(first), ids(items)) {
+		t.Fatalf("seed did not spread any equal-priority candidates: %v", ids(first))
+	}
+	for i, row := range first {
+		priority, err := beadPriority(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i < 3 && priority != 0 || i >= 3 && priority != 1 {
+			t.Fatalf("priority groups crossed: rows=%v", ids(first))
+		}
+	}
+}
+
 func TestReadyContinuationReadsLiveRowsWhileHistoryStaysPinned(t *testing.T) {
 	for _, action := range []string{"close", "claim", "update"} {
 		t.Run(action, func(t *testing.T) {
@@ -1212,12 +1253,20 @@ func TestClaimNextRaceOnlySkipsCandidateBusy(t *testing.T) {
 	for _, err := range []error{
 		&model.Error{Data: model.ErrorData{Code: "busy", Hint: "write pre phases exceeded their deadline"}},
 		&model.Error{Data: model.ErrorData{Code: "busy", Hint: "active storage lease was lost"}},
-		&model.Error{Data: model.ErrorData{Code: "write_conflict"}},
+		&model.Error{Message: "global storage failure", Data: model.ErrorData{Code: "write_conflict"}},
 		&model.Error{Data: model.ErrorData{Code: "lease_not_held"}},
 		&model.Error{Data: model.ErrorData{Code: "lease_expired"}},
 	} {
 		if claimNextRace(err) {
 			t.Fatalf("global queue error was incorrectly skippable: %v", err)
+		}
+	}
+	for _, err := range []error{
+		&model.Error{Message: "snapshot changed during all four write attempts", Data: model.ErrorData{Code: "write_conflict"}},
+		&model.Error{Data: model.ErrorData{Code: "write_conflict", Hint: "snapshot changed during all four write attempts"}},
+	} {
+		if !claimNextRace(err) {
+			t.Fatalf("candidate write conflict was not skippable: %v", err)
 		}
 	}
 }
@@ -1228,13 +1277,27 @@ type claimNextRaceStore struct {
 	*memory.Store
 	beforeWrite func()
 	writeError  error
+	writeErrors []error
 	probes      int
+	writes      int
+	writePlan   func(int) error
 }
 
 func (s *claimNextRaceStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
 	if hook := s.beforeWrite; hook != nil {
 		s.beforeWrite = nil
 		hook()
+	}
+	s.writes++
+	if s.writePlan != nil {
+		if err := s.writePlan(s.writes); err != nil {
+			return nil, err
+		}
+	}
+	if len(s.writeErrors) > 0 {
+		err := s.writeErrors[0]
+		s.writeErrors = s.writeErrors[1:]
+		return nil, err
 	}
 	if s.writeError != nil {
 		return nil, s.writeError
@@ -1278,7 +1341,13 @@ func TestClaimNextAdvancesPastRealCandidateLeaseRace(t *testing.T) {
 	ctx := context.Background()
 	create(t, f, "First")
 	create(t, f, "Second")
-	page, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local"})
+	claimMeta := model.WriteMeta{Project: "local", Agent: "test-agent", AgentLabel: "test-agent", IdempotencyKey: "abababababababababababababababababababababababababababababababab"}
+	claimReq := ClaimNextRequest{Project: "local"}
+	identity, err := ClaimNextRequestIdentity(claimReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.svc.ClaimNextReadyPage(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1000, ClaimNextSeed: ClaimNextSelectionSeed(identity, claimMeta.IdempotencyKey)})
 	if err != nil || len(page.Items) != 2 {
 		t.Fatalf("ready candidates=%+v err=%v", page, err)
 	}
@@ -1289,13 +1358,89 @@ func TestClaimNextAdvancesPastRealCandidateLeaseRace(t *testing.T) {
 			t.Fatal(err)
 		}
 	}}
-	out, err := claimNextRaceService(f, store).ClaimNextWithOutcome(ctx, anonymous, ClaimNextRequest{Project: "local"}, meta(t))
+	out, err := claimNextRaceService(f, store).ClaimNextWithOutcome(ctx, anonymous, claimReq, claimMeta)
 	if err != nil || out == nil || out.NullResult || len(out.Commit.Results) != 1 || out.Commit.Results[0].Ref.ID != page.Items[1].ID {
 		t.Fatalf("candidate busy did not advance to the next real claim: out=%+v err=%v", out, err)
 	}
 	got, err := f.svc.Get(ctx, anonymous, GetRequest{ID: first})
 	if err != nil || got.Lease == nil || got.Lease.Principal.Kind != other.Kind || got.Lease.Principal.ID != other.ID {
 		t.Fatalf("competing claim was overwritten: %+v err=%v", got, err)
+	}
+}
+
+func TestClaimNextAdvancesPastCandidateWriteConflict(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	create(t, f, "First")
+	create(t, f, "Second")
+	claimMeta := model.WriteMeta{Project: "local", Agent: "test-agent", AgentLabel: "test-agent", IdempotencyKey: "abababababababababababababababababababababababababababababababab"}
+	claimReq := ClaimNextRequest{Project: "local"}
+	identity, err := ClaimNextRequestIdentity(claimReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.svc.ClaimNextReadyPage(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1000, ClaimNextSeed: ClaimNextSelectionSeed(identity, claimMeta.IdempotencyKey)})
+	if err != nil || len(page.Items) != 2 {
+		t.Fatalf("ready candidates=%+v err=%v", page, err)
+	}
+	store := &claimNextRaceStore{Store: f.store, writeErrors: []error{
+		&model.Error{Message: "snapshot changed during all four write attempts", Data: model.ErrorData{Code: "write_conflict", Retryable: true}},
+	}}
+	out, err := claimNextRaceService(f, store).ClaimNextWithOutcome(ctx, anonymous, claimReq, claimMeta)
+	if err != nil || out == nil || out.NullResult || len(out.Commit.Results) != 1 || out.Commit.Results[0].Ref.ID != page.Items[1].ID {
+		t.Fatalf("candidate write conflict did not advance to the next real claim: out=%+v err=%v", out, err)
+	}
+}
+
+func TestClaimNextBoundsPersistentCandidateWriteConflict(t *testing.T) {
+	f := setup(t)
+	create(t, f, "First")
+	create(t, f, "Second")
+	conflict := &model.Error{Message: "snapshot changed during all four write attempts", Data: model.ErrorData{Code: "write_conflict", Retryable: true}}
+	store := &claimNextRaceStore{Store: f.store, writePlan: func(n int) error {
+		// Two complete walks visit two candidates each. Only the fifth write is
+		// the first terminal probe; the tenth is the probe after the bounded
+		// ready restart. Keep every candidate exhausted while allowing both
+		// probes to observe the still-ready candidates.
+		if n%5 != 0 {
+			return conflict
+		}
+		return nil
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	before, err := f.store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := meta(t)
+	out, err := claimNextRaceService(f, store).ClaimNextWithOutcome(ctx, anonymous, ClaimNextRequest{Project: "local"}, m)
+	if out != nil {
+		t.Fatalf("persistent candidate exhaustion fabricated an outcome: %+v", out)
+	}
+	wantCode(t, err, "write_conflict")
+	if !errors.Is(err, conflict) {
+		t.Fatalf("persistent candidate exhaustion did not return the original conflict: %v", err)
+	}
+	if store.writes != 10 {
+		t.Fatalf("persistent candidate exhaustion was not bounded after two terminal probes: writes=%d probes=%d", store.writes, store.probes)
+	}
+	after, err := f.store.Meta(ctx)
+	if err != nil || after.Head.String() != before.Head.String() {
+		t.Fatalf("persistent candidate exhaustion changed durable state: before=%s after=%s err=%v", before.Head, after.Head, err)
+	}
+	reader, err := f.store.Read(ctx, driver.View{Incarnation: after.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	principal, _ := driver.PrincipalKey(anonymous)
+	receipt, err := reader.IdempotencyByKey(ctx, principal, m.AgentLabel, "bead.claimNext", m.IdempotencyKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt != nil {
+		t.Fatalf("persistent candidate exhaustion persisted a receipt: %+v", receipt)
 	}
 }
 
