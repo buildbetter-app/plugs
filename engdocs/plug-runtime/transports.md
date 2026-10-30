@@ -10,7 +10,7 @@ catalog is not reachable until a composition root binds its adapter.
 | --- | --- | --- |
 | In-process | `internal/server/transport/inprocess`; use it for a local call in the same process. | The caller owns the context and the application store. It opens no listener or UI. |
 | HTTP | `POST /rpc/v1`; see [RPC and HTTP](rpc-http.md). | The HTTP composition owns the listener, store, lease and shutdown. |
-| stdio | `stdio.New(dispatcher, Config{}).Serve(ctx, in, out)`. | The caller supplies the streams, context and any admitted identity. |
+| stdio | Construct with `stdio.New(dispatcher, stdio.Config{})`, then call `Serve(ctx, in, out)` on the returned transport. | The caller supplies the streams, context and any admitted identity. |
 | WebSocket | `GET /rpc/v1/ws` after a composition root mounts `websocket.Handler`. | The handler owns one connection; the composition owns the listener and any watch/session manager. |
 | MCP | `POST /mcp` after a composition root mounts `mcp.Handler`. | The handler owns request framing; the composition owns the listener, store, lease and shutdown. |
 
@@ -21,6 +21,17 @@ route until a host selects the MCP adapter. Do not infer a runnable route or a
 CLI flag from a package, a catalog entry, or a design document. A host that
 exposes one of these adapters must mount exactly the route or stream it intends
 to support.
+
+Because `stdio.New` validates its inputs and returns an error, a caller handles
+construction before serving:
+
+```go
+transport, err := stdio.New(dispatcher, stdio.Config{})
+if err != nil {
+	return err
+}
+return transport.Serve(ctx, in, out)
+```
 
 ## Shared identity and cancellation
 
@@ -55,8 +66,9 @@ Cancellation closes the input when it implements `io.Closer`, which interrupts
 a blocked read. Dispatch is synchronous and receives the caller's context; no
 detached goroutine is started. A read or write failure is a transport failure,
 not an arbitrary peer-visible diagnostic. The adapter creates no listener,
-store, session, authenticator or UI. A composition root must stamp an
-authenticated context before it calls `Serve`; stdio does not read
+store, session, authenticator or UI. The caller supplies the context; a host may
+stamp an authenticated principal when local authentication is configured,
+otherwise the dispatcher uses the anonymous principal. Stdio does not read
 `Authorization`, cookies or a credential field from the JSON frame.
 
 One transport owns one stream. If a host needs multiple callers, it must give
@@ -162,9 +174,11 @@ the outer MCP metadata is preserved when `plug_call` carries nested params.
 normalized for equivalent JSON number forms, and a duplicate active ID in the
 same principal/session/agent scope is refused. Cancellation reaches the
 canonical context and releases its active request slot; it cannot commit work
-after the request is canceled. Closing the composed runtime first closes any
-MCP stream resources, then drains HTTP, cancels the remaining work, releases
-the lease and closes the store.
+after the request is canceled. On current `main`, closing the composed runtime
+drains HTTP first, then closes watches and sessions, cancels remaining work,
+releases the lease and closes the store. A future host that separately mounts an
+MCP stream owns closing that stream before invoking this runtime lifecycle;
+current `main` has no `/mcp` route or continuous MCP stream.
 
 The finite MCP adapter may use an SSE response (`event: message`) to carry a
 tool-list-changed notification before the response that caused discovery. It
