@@ -21,7 +21,8 @@ func restoreEmpty(ctx context.Context, q queryer) error {
 	err = q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM objects) OR EXISTS(SELECT 1 FROM records)
  OR EXISTS(SELECT 1 FROM versions) OR EXISTS(SELECT 1 FROM key_history)
  OR EXISTS(SELECT 1 FROM blobs) OR EXISTS(SELECT 1 FROM changesets)
- OR EXISTS(SELECT 1 FROM replays) OR EXISTS(SELECT 1 FROM checkpoints)`).Scan(&occupied)
+ OR EXISTS(SELECT 1 FROM replays) OR EXISTS(SELECT 1 FROM checkpoints)
+ OR EXISTS(SELECT 1 FROM allocator_states)`).Scan(&occupied)
 	if err == nil && occupied {
 		return driver.ErrRestoreTargetNotEmpty
 	}
@@ -31,10 +32,14 @@ func restoreEmpty(ctx context.Context, q queryer) error {
 func (t *transaction) PrepareOfflineRestore(ctx context.Context, source driver.StoreID) (driver.Meta, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.prepareRestore(ctx, source)
+}
+
+func (t *transaction) prepareRestore(ctx context.Context, source driver.StoreID) (driver.Meta, error) {
 	if err := t.check(ctx); err != nil {
 		return driver.Meta{}, err
 	}
-	if !t.hasHead || t.restore != nil || len(t.records)+len(t.derived)+len(t.bumps)+len(t.blobs) != 0 {
+	if !t.hasHead || t.restore != nil || len(t.records)+len(t.derived)+len(t.bumps)+len(t.blobs)+len(t.allocators) != 0 {
 		return driver.Meta{}, fmt.Errorf("offline restore requires Head before staging")
 	}
 	if err := restoreEmpty(ctx, t.tx); err != nil {
@@ -48,4 +53,19 @@ func (t *transaction) PrepareOfflineRestore(ctx context.Context, source driver.S
 	return m, nil
 }
 
+func (t *transaction) PrepareNativeRestore(ctx context.Context, profile driver.NativeRestoreProfile) (driver.Meta, error) {
+	bound, err := profile.Detached()
+	if err != nil {
+		return driver.Meta{}, err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	meta, err := t.prepareRestore(ctx, bound.StoreID)
+	if err == nil {
+		t.nativeRestore = &bound
+	}
+	return meta, err
+}
+
 var _ driver.OfflineRestoreTx = (*transaction)(nil)
+var _ driver.NativeRestoreTx = (*transaction)(nil)

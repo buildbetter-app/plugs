@@ -25,6 +25,7 @@ type transaction struct {
 	snapshotAt              model.Revision
 	incarnation             string
 	restore                 *driver.Meta
+	nativeRestore           *driver.NativeRestoreProfile
 	closed, locked, hasHead bool
 	acquired                driver.LockSet
 	records                 map[string]*driver.Record
@@ -379,7 +380,11 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 		if err := s.restoreEmpty(); err != nil {
 			return model.Changeset{}, err
 		}
-		if err := driver.ValidateOfflineRestoreHeader(header); err != nil {
+		validate := driver.ValidateOfflineRestoreHeader
+		if t.nativeRestore != nil {
+			validate = t.nativeRestore.ValidateHeader
+		}
+		if err := validate(header); err != nil {
 			return model.Changeset{}, err
 		}
 		expected = t.restore.Incarnation

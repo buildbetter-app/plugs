@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -162,6 +163,15 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 	}
 	var changesets []model.Changeset
 	var changesCursor *driver.Cursor
+	if !meta.HistoryFloor.IsZero() {
+		// A restored lifetime starts at its floor. Do not ask the driver for
+		// history that the restore explicitly discarded. Full-history dumps
+		// cannot truthfully represent that discarded prefix.
+		if history == "full" {
+			return nil, dumpformat.Manifest{}, driver.ErrTruncated{Floor: meta.HistoryFloor}
+		}
+		changesCursor = &driver.Cursor{Incarnation: meta.Incarnation, Revision: meta.HistoryFloor, Method: "changesets"}
+	}
 	for {
 		entries, e := reader.Changesets(ctx, changesCursor, 10000)
 		if e != nil {
@@ -496,7 +506,7 @@ func (m *Manager) emptyTarget(ctx context.Context) (driver.Meta, error) {
 		return driver.Meta{}, err
 	}
 	if !meta.Head.IsZero() || !meta.HistoryFloor.IsZero() {
-		return meta, &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target must have zero committed revisions"}}
+		return meta, &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target is initialized; restore requires zero committed revisions"}}
 	}
 	reader, err := m.store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
 	if err != nil {
@@ -762,6 +772,10 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 		return err
 	}
 	defer tx.Close()
+	capability, ok := tx.(driver.NativeRestoreTx)
+	if !ok {
+		return &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "native restore capability is unsupported"}}
+	}
 	locks, sentinels, err := restoreLocks(records)
 	if err != nil {
 		return &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
@@ -799,6 +813,20 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	if len(changesets) != 0 {
 		return &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target contains history"}}
 	}
+	if meta.Method == "" {
+		meta.Method = "admin.restore.finish"
+	}
+	if meta.IdempotencyKey == "" {
+		meta.IdempotencyKey = memberDigest(archiveBytes)
+	}
+	requestHash := memberDigest(archiveBytes)
+	prepared, err := capability.PrepareNativeRestore(ctx, driver.NativeRestoreProfile{
+		StoreID: driver.StoreID(archive.Manifest().NativeStoreID), Principal: principal,
+		Method: meta.Method, AgentLabel: meta.AgentLabel, IdempotencyKey: meta.IdempotencyKey, RequestHash: requestHash,
+	})
+	if err != nil {
+		return restoreAdmissionError(err)
+	}
 	for _, record := range records {
 		if err := tx.Put(ctx, record); err != nil {
 			return err
@@ -818,20 +846,20 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 		changes = append(changes, model.ChangeRecord{Ref: record.Ref, Op: model.OpCreate, FromRevision: model.Natural64(0)})
 		results = append(results, model.OpResult{Ref: record.Ref, Revision: model.Natural64(nextRevision)})
 	}
-	if meta.Method == "" {
-		meta.Method = "admin.restore.finish"
-	}
-	if meta.IdempotencyKey == "" {
-		meta.IdempotencyKey = memberDigest(archiveBytes)
-	}
-	requestHash := memberDigest(archiveBytes)
 	header := driver.ChangesetHeader{
-		Branch: model.Natural64(0), Incarnation: tx.Snapshot().Incarnation, Kind: model.ChangesetRestore,
+		Branch: model.Natural64(0), Incarnation: prepared.Incarnation, Kind: model.ChangesetRestore,
 		Time: time.Now().UTC(), Principal: principal, IdempotencyKey: meta.IdempotencyKey,
 		Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: requestHash,
 		Response: model.Commit{Results: results, Warnings: []model.Warning{}}, Changes: changes, LockKeys: lockKeysOnly(locks),
 	}
 	_, err = tx.Commit(ctx, header)
+	return restoreAdmissionError(err)
+}
+
+func restoreAdmissionError(err error) error {
+	if errors.Is(err, driver.ErrRestoreTargetNotEmpty) {
+		return &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "native restore target is initialized; restore requires a fully empty store"}}
+	}
 	return err
 }
 
@@ -847,6 +875,9 @@ func validateSupportedArchive(archive *dumpformat.Archive) error {
 	manifest := archive.Manifest()
 	if !archive.Native() {
 		return fmt.Errorf("converter archive restore is unavailable; source disclosures and allocator state must be preserved by the converter boundary")
+	}
+	if manifest.NativeStoreID == "" || strings.TrimSpace(manifest.NativeStoreID) != manifest.NativeStoreID || strings.ContainsRune(manifest.NativeStoreID, '\x00') || manifest.StoreID != manifest.NativeStoreID {
+		return fmt.Errorf("native archive requires canonical matching StoreID and NativeStoreID")
 	}
 	if manifest.History != "head" {
 		return fmt.Errorf("native full-history restore is unavailable; source versions and changesets cannot be replayed by this driver")

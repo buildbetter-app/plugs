@@ -31,7 +31,11 @@ func (t *transaction) validateHeader(ctx context.Context, h driver.ChangesetHead
 		return fmt.Errorf("%w: restore requires the offline capability", driver.ErrUnsupported)
 	}
 	if t.restore != nil {
-		if err := driver.ValidateOfflineRestoreHeader(h); err != nil {
+		validate := driver.ValidateOfflineRestoreHeader
+		if t.nativeRestore != nil {
+			validate = t.nativeRestore.ValidateHeader
+		}
+		if err := validate(h); err != nil {
 			return err
 		}
 		expected = t.restore.Incarnation

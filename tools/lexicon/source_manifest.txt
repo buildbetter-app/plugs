@@ -238,6 +238,7 @@ internal/core/port/pipeline.go
 internal/core/restore/BUILD.bazel
 internal/core/restore/archive.go
 internal/core/restore/fixture_test.go
+internal/core/restore/native_profile_test.go
 internal/core/restore/restore_test.go
 internal/core/service/BUILD.bazel
 internal/core/service/audit.go
@@ -295,6 +296,7 @@ internal/integration/collabwatch/BUILD.bazel
 internal/integration/collabwatch/integration_test.go
 internal/integration/converterroundtrip/BUILD.bazel
 internal/integration/converterroundtrip/image.go
+internal/integration/converterroundtrip/native_restore_test.go
 internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go
 internal/integration/converterroundtrip/roundtrip_test.go

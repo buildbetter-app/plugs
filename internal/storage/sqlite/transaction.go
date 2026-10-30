@@ -23,6 +23,7 @@ type transaction struct {
 	lease           *activeLease
 	locked, hasHead bool
 	restore         *driver.Meta
+	nativeRestore   *driver.NativeRestoreProfile
 	acquired        driver.LockSet
 	files           []*os.File
 	done            chan struct{}
