@@ -133,11 +133,14 @@ authorization claim. The standalone command does not expose a login route,
 cookie session or CORS browser flow.
 
 Bearer API keys and `plg_s_` core-session tokens are accepted only when a host
-has composed the corresponding authentication provider. They identify the
-admitted request but do not prove interactive human presence. A host-composed
-authenticated server must supply its provider and TLS boundary; setting
-`auth.mode: authenticated` in the standalone CLI config cannot create those
-providers.
+has composed the corresponding authentication provider. An ordinary API key
+identifies the admitted request but never proves interactive human presence. A
+valid `plg_s_` token is a live `CoreSession` reference issued after verified
+interactive login. The `RequireInteractiveUser` check uses that session as
+interactive proof and rechecks current revocation and expiry on every call.
+A host-composed authenticated server must supply its provider and TLS boundary;
+setting `auth.mode: authenticated` in the standalone CLI config cannot create
+those providers.
 
 There are two separate uses of “session”:
 

@@ -87,10 +87,17 @@ cancellation failure exits 1.
 With neither `--server` nor `PLUG_SERVER`, the CLI reads the client form of
 `.plug/config.yaml` from the workspace when it exists, then selects persistent
 SQLite by default.
-The supported config forms are `server: URL`, `storage: sqlite`,
-`storage: {driver: sqlite, path: PATH}`, or the equivalent `driver`/`path`
-shorthand. Relative SQLite paths resolve from the workspace. Explicit flags
-and `PLUG_SERVER` take precedence over the config file; an explicit `--memory`
+The supported config forms are `server: URL`, `storage: sqlite`, a nested
+SQLite block, or the equivalent top-level `driver`/`path` shorthand:
+
+```yaml
+storage:
+  driver: sqlite
+  path: PATH
+```
+
+Relative SQLite paths resolve from the workspace. Explicit flags and
+`PLUG_SERVER` take precedence over the config file; an explicit `--memory`
 choice remains ephemeral and conflicts with a configured server.
 
 Unknown, malformed, duplicate, conflicting, URI, memory, and unsupported
