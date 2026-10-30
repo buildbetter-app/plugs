@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/server/watch"
 )
 
 //go:embed e3_browser_check.mjs
@@ -33,6 +34,17 @@ func TestE3ScriptedBrowserTaskReceipts(t *testing.T) {
 	f.receipt.Complete = true
 
 	f.verifyPolicyBoundaries()
+	// Preserve a direct actual-manager error when transport mapping redacts
+	// its internal cause. This diagnostic opens and closes a real subscription;
+	// it never supplies a successful frame or substitutes for browser evidence.
+	diagnostic, diagnosticErr := f.browser.watches.Open(f.ctx, watch.Request{
+		Method: watch.MethodViewWatch, ViewID: e3ID(99), SessionID: f.receipt.Agents[0].SessionID,
+		Principal: f.receipt.Agents[0].Principal, Ontology: model.Natural64(1), PolicyVersion: "e3-stored-policy-v1",
+	})
+	if diagnostic != nil {
+		_ = diagnostic.Close()
+	}
+	t.Logf("E3 actual watch manager opening diagnostic: %v", diagnosticErr)
 	writeE3JSON(t, filepath.Join(f.evidence, "browser-input.json"), map[string]any{
 		"project": e3Project, "storedBeads": f.receipt.StoredBeads, "agents": f.receipt.Agents,
 		"homeViewId": e3ID(99), "blockedViewId": e3ID(98), "grantCarrierId": e3ID(100), "grantKey": e3GrantKey,
@@ -79,7 +91,9 @@ func TestE3ScriptedBrowserTaskReceipts(t *testing.T) {
 		if task.Name == "" || task.Status == "" || task.ElapsedMS == nil {
 			t.Error("E3 task has no name/outcome/timing")
 		}
-		t.Logf("E3 task %s: %s; elapsed=%v ms", task.Name, task.Status, task.ElapsedMS)
+		if task.ElapsedMS != nil {
+			t.Logf("E3 task %s: %s; elapsed=%.3f ms", task.Name, task.Status, *task.ElapsedMS)
+		}
 	}
 	// Recount actual stored bodies after the browser's real RPC update and
 	// stored revocation. Never infer corpus preservation from a seed counter.

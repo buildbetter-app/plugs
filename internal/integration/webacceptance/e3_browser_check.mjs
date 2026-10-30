@@ -165,7 +165,7 @@ try {
     outcome.startedAt = performance.now();
     await select("home");
     assert.equal(await text("#connection-state"), "Connected");
-    await until(async () => /live/i.test(await text("#watch-state")), "real view.watch NDJSON attachment");
+    await until(async () => /connected/i.test(await text("#watch-state")), "real view.watch NDJSON attachment");
     const before = await domRows("#changed-rows .row");
     assert(before.length > 0 && before.length <= 25);
     assert(!before.some((row) => row.text.includes(fixture.deniedId)));
@@ -211,11 +211,11 @@ try {
   // Qualification control: prove a CURRENT stored denial revokes the saved
   // view's reader. Never substitute a permit callback or fake watch success.
   await select("home");
-  await until(async () => /live/i.test(await text("#watch-state")), "real watch for stored revocation");
+  await until(async () => /connected/i.test(await text("#watch-state")), "real watch for stored revocation");
   const revoked = { ...fixture.grant, resources: fixture.grant.resources.filter((id) => id !== fixture.homeViewId) };
   const denial = await direct("tx.apply", { changeSet: { ops: [{ kind: "setMeta", target: { id: fixture.grantCarrierId, branch: 0 }, key: fixture.grantKey, value: revoked }] }, _meta: meta(fixture.revokeKey) });
   assert.equal(denial.error, undefined, JSON.stringify(denial));
-  await until(async () => (await domRows("#changed-rows .row")).length === 0 && !/live/i.test(await text("#watch-state")), "stored grant revocation removes stale browser rows");
+  await until(async () => (await domRows("#changed-rows .row")).length === 0 && !/connected/i.test(await text("#watch-state")), "stored grant revocation removes stale browser rows");
   receipt.infrastructure.storedRevocationDOM = await text("#changed-rows");
   await send("Page.navigate", { url: "about:blank" });
   receipt.infrastructure.cleanup = await until(async () => {

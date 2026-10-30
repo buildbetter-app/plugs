@@ -17,6 +17,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/collab"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -66,6 +67,7 @@ type e3CorpusReceipt struct {
 	SourceHead              string           `json:"sourceHead"`
 	SourceTree              string           `json:"sourceTree"`
 	Engine                  map[string]any   `json:"engine"`
+	Audit                   map[string]any   `json:"audit"`
 	Clock                   string           `json:"workloadClock"`
 	ExpectedBeads           int              `json:"expectedStoredBeads"`
 	StoredBeads             int              `json:"storedBeads"`
@@ -117,7 +119,10 @@ func newE3FixtureMode(t *testing.T, browser bool) *e3Fixture {
 		t.Fatal(err)
 	}
 	nextID := 0
-	base.writerOptions = []pipeline.Option{pipeline.WithIDGenerator(func() (string, error) {
+	// Complete ordinary slot event plans use the admitted audit adapter. This
+	// workload has ordinary blocks edges only; conditional audit is explicitly
+	// unavailable with a nil durable source locator and would refuse if used.
+	base.writerOptions = []pipeline.Option{pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)), pipeline.WithIDGenerator(func() (string, error) {
 		nextID++
 		return e3ID(nextID), nil
 	})}
@@ -168,6 +173,9 @@ func newE3FixtureMode(t *testing.T, browser bool) *e3Fixture {
 		root = t.TempDir()
 	}
 	f.evidence = filepath.Join(root, "e3")
+	if !browser {
+		f.evidence = filepath.Join(root, "e3-population")
+	}
 	if err := os.MkdirAll(f.evidence, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -177,6 +185,7 @@ func newE3FixtureMode(t *testing.T, browser bool) *e3Fixture {
 		Clock: now.Format(time.RFC3339Nano), ExpectedBeads: e3Beads,
 		Authorization:      "real anonymous no-plugin installation; no installed-policy or authorized/denied qualification",
 		StoredStatusCounts: map[string]int{}, Engine: map[string]any{"driver": "sqlite", "disposable": true},
+		Audit: map[string]any{"writerOption": "WithOntologyAudit(service.NewOntologyAudit(nil))", "scope": "complete ordinary Writer event plans; blocks edges only; conditional audit refuses without durable source locator"},
 	}
 	t.Cleanup(func() { writeE3JSON(t, filepath.Join(f.evidence, "corpus-workload.json"), f.receipt) })
 	return f
