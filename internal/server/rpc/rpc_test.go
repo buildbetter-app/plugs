@@ -391,6 +391,22 @@ func (p *serviceProbe) CloseWithOutcome(ctx context.Context, by model.PrincipalR
 	p.record("close", by, r, m)
 	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(13)}}, p.failure
 }
+func (p *serviceProbe) ReopenWithOutcome(ctx context.Context, by model.PrincipalRef, r service.ReopenRequest, m model.WriteMeta) (port.WriteOutcome, error) {
+	p.record("reopen", by, r, m)
+	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(14)}}, p.failure
+}
+func (p *serviceProbe) DeferWithOutcome(ctx context.Context, by model.PrincipalRef, r service.DeferRequest, m model.WriteMeta) (port.WriteOutcome, error) {
+	p.record("defer", by, r, m)
+	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(15)}}, p.failure
+}
+func (p *serviceProbe) CancelWithOutcome(ctx context.Context, by model.PrincipalRef, r service.CancelRequest, m model.WriteMeta) (port.WriteOutcome, error) {
+	p.record("cancel", by, r, m)
+	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(16)}}, p.failure
+}
+func (p *serviceProbe) FailWithOutcome(ctx context.Context, by model.PrincipalRef, r service.FailRequest, m model.WriteMeta) (port.WriteOutcome, error) {
+	p.record("fail", by, r, m)
+	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(17)}}, p.failure
+}
 
 func TestServiceBindingsAtByteBoundary(t *testing.T) {
 	p := &serviceProbe{}

@@ -11,6 +11,11 @@ import (
 
 const APIVersion = "1.0"
 
+const (
+	RuntimeNative = "native"
+	RuntimeWASI   = "wasip1"
+)
+
 type Phase string
 
 const (
@@ -112,8 +117,8 @@ func (p PluginManifest) Validate() error {
 	}
 	// This host currently implements 1.0 only. Refuse newer API requirements
 	// explicitly instead of accepting a manifest the host cannot implement.
-	if p.PluginAPI != APIVersion || p.Runtime != "native" {
-		return fmt.Errorf("unsupported plugin_api or runtime (want 1.0, native)")
+	if p.PluginAPI != APIVersion || p.Runtime != RuntimeNative && p.Runtime != RuntimeWASI {
+		return fmt.Errorf("unsupported plugin_api or runtime (want 1.0, native or wasip1)")
 	}
 	if len(p.Provides) == 0 {
 		return fmt.Errorf("provides must not be empty")
