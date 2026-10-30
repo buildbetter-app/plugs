@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -42,6 +43,77 @@ var localGuest embed.FS
 const targetID = "00000000-0000-4000-8000-000000000001"
 const watchedID = "00000000-0000-4000-8000-000000000002"
 const bindingID = "e5-local-derive"
+
+const e5PostgresImage = "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
+
+var e5PostgresDSN string
+
+func e5Docker(args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", append([]string{"--host=unix:///var/run/docker.sock"}, args...)...)
+	for _, value := range os.Environ() {
+		key, _, _ := strings.Cut(value, "=")
+		switch key {
+		case "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH":
+		default:
+			cmd.Env = append(cmd.Env, value)
+		}
+	}
+	return cmd.CombinedOutput()
+}
+
+// The Postgres E5 run owns a disposable loopback-only engine. The container
+// is started only for the explicit PLUG_E5_STORAGE=postgres gate; memory and
+// SQLite runs never contact Docker or an external service.
+func TestMain(m *testing.M) {
+	if strings.ToLower(strings.TrimSpace(os.Getenv("PLUG_E5_STORAGE"))) != "postgres" {
+		os.Exit(m.Run())
+	}
+	name := fmt.Sprintf("plug-swarm-e5-lease-%d", os.Getpid())
+	if output, err := e5Docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_e5", "-p", "127.0.0.1::5432", e5PostgresImage); err != nil {
+		fmt.Fprintf(os.Stderr, "disposable PostgreSQL start failed: %v %s\n", err, output)
+		os.Exit(1)
+	}
+	cleanup := func() {
+		if output, err := e5Docker("rm", "-f", name); err != nil {
+			fmt.Fprintf(os.Stderr, "disposable PostgreSQL cleanup failed: %v %s\n", err, output)
+		}
+	}
+	output, err := e5Docker("port", name, "5432/tcp")
+	if err != nil {
+		cleanup()
+		fmt.Fprintf(os.Stderr, "disposable PostgreSQL port lookup failed: %v %s\n", err, output)
+		os.Exit(1)
+	}
+	address := strings.TrimSpace(string(output))
+	host, _, err := net.SplitHostPort(address)
+	if err != nil || host != "127.0.0.1" {
+		cleanup()
+		fmt.Fprintf(os.Stderr, "disposable PostgreSQL did not bind loopback: %s\n", address)
+		os.Exit(1)
+	}
+	e5PostgresDSN = "postgres://postgres@" + address + "/plug_e5?sslmode=disable"
+	readyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	for {
+		store, openErr := (postgres.Driver{}).Open(readyCtx, driver.Config{DSN: e5PostgresDSN})
+		if openErr == nil {
+			_ = store.Close()
+			break
+		}
+		if readyCtx.Err() != nil {
+			cancel()
+			cleanup()
+			fmt.Fprintf(os.Stderr, "disposable PostgreSQL did not become ready: %v\n", openErr)
+			os.Exit(1)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	cancel()
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
+}
 
 type localFixture struct {
 	store       driver.Store
@@ -174,7 +246,10 @@ func newLocalFixture(t *testing.T) *localFixture {
 		f.store, err = (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: filepath.Join(t.TempDir(), "e5.db")})
 		demand(t, err == nil, "owned SQLite storage unavailable")
 	case "postgres":
-		dsn := os.Getenv("E5_POSTGRES_DSN")
+		dsn := e5PostgresDSN
+		if dsn == "" {
+			dsn = os.Getenv("E5_POSTGRES_DSN")
+		}
 		demand(t, strings.TrimSpace(dsn) != "", "E5_POSTGRES_DSN is required for PostgreSQL storage")
 		var err error
 		f.store, err = (postgres.Driver{}).Open(context.Background(), driver.Config{DSN: dsn})
