@@ -13,12 +13,14 @@ import (
 )
 
 type Service struct {
-	store    driver.Store
-	lease    driver.ActiveLease
-	writer   model.Writer
-	ontology *Ontology
-	events   EventProvider
-	now      func() time.Time
+	store                  driver.Store
+	lease                  driver.ActiveLease
+	writer                 model.Writer
+	ontology               *Ontology
+	now                    func() time.Time
+	memoryReadAuthorizer   MemoryReadAuthorizer
+	authorizationInstalled func() bool
+	events                 EventProvider
 }
 
 type Option func(*Service)
@@ -26,6 +28,21 @@ type Option func(*Service)
 // WithOntology shares the same project ontology resolver used by the pipeline.
 func WithOntology(o *Ontology) Option       { return func(s *Service) { s.ontology = o } }
 func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = now } }
+
+// WithMemoryReadAuthorizer installs the host's current-read policy for core
+// memories. Denied memories are omitted from lists/briefs and appear as
+// not_found on point reads.
+func WithMemoryReadAuthorizer(authorizer MemoryReadAuthorizer) Option {
+	return func(s *Service) { s.memoryReadAuthorizer = authorizer }
+}
+
+// WithAuthorizationInstalled supplies the host's live authorization
+// installation boundary. Scoped principals fail closed whenever it reports
+// false, even if a stale memory policy remains configured.
+func WithAuthorizationInstalled(installed func() bool) Option {
+	return func(s *Service) { s.authorizationInstalled = installed }
+}
+
 func WithEventProvider(provider EventProvider) Option {
 	return func(s *Service) { s.events = provider }
 }
@@ -96,6 +113,22 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 	}
 	// Legacy methods keep model.Writer compatibility. An outcome-aware caller
 	// must use an actual OutcomeWriter; replay is never inferred from a commit.
+	v, err := s.writer.Apply(ctx, by, cs, meta)
+	return port.WriteOutcome{Commit: v}, mapped(err)
+}
+
+func (s *Service) applyMemory(ctx context.Context, by model.PrincipalRef, method string, cs model.ChangeSet, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	if err := s.admit(ctx, by); err != nil {
+		return port.WriteOutcome{}, err
+	}
+	meta.Method = method
+	if writer, ok := s.writer.(port.OutcomeWriter); ok {
+		v, err := writer.ApplyWithOutcome(ctx, by, cs, meta)
+		return v, mapped(err)
+	}
+	if outcomeRequired {
+		return port.WriteOutcome{}, failure("internal_error", "writer does not supply transient write outcomes")
+	}
 	v, err := s.writer.Apply(ctx, by, cs, meta)
 	return port.WriteOutcome{Commit: v}, mapped(err)
 }
