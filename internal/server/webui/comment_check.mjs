@@ -78,7 +78,10 @@ try {
   assert.equal(errors.length, 0);
   const reads = requests.filter(request => request.method === "bead.get"); assert(reads.length >= cases.length);
   for (const request of reads) { assert.deepEqual(request.params.id, { id: "pl-comments", branch: 0 }); assert.deepEqual(request.params._meta, { project: "web" }); }
-  assert(requests.every(request => ["server.hello", "rpc.methods", "bead.get"].includes(request.method)));
+  const explanations = requests.filter(request => request.method === "view.explain");
+  assert.equal(explanations.length, 1);
+  assert.deepEqual(explanations[0].params, { viewId: "fixture-view", itemId: "pl-comments", _meta: { project: "web" } });
+  assert(requests.every(request => ["server.hello", "rpc.methods", "bead.get", "view.explain"].includes(request.method)));
   console.log("PASS comment_consumer_fixtures=" + cases.length + " qualification=consumer_only");
 } finally {
   if (ws) ws.close();
