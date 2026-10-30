@@ -36,6 +36,7 @@ go_test(
     name = "composition_test",
     srcs = glob(["*_test.go"]),
     embed = [":composition"],
+    data = ["//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar"],
     deps = [
         "//internal/api/wire",
         "//internal/client",
