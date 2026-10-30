@@ -441,11 +441,19 @@ type guardedClaimRaceStore struct {
 	*memory.Store
 	beforeWrite atomic.Pointer[func(context.Context) error]
 	writeError  error
+	writePlan   func(int32) error
+	writes      atomic.Int32
 }
 
 func (s *guardedClaimRaceStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
 	if hook := s.beforeWrite.Swap(nil); hook != nil {
 		if err := (*hook)(ctx); err != nil {
+			return nil, err
+		}
+	}
+	n := s.writes.Add(1)
+	if s.writePlan != nil {
+		if err := s.writePlan(n); err != nil {
 			return nil, err
 		}
 	}
@@ -505,6 +513,57 @@ func TestRealHTTPGuardedClaimNextSkipsCompetingClaim(t *testing.T) {
 	retry := f.call(t, worker.Token, "bead.claimNext", params)
 	if !reflect.DeepEqual(got, result(t, retry)) || retry.value["_meta"].(map[string]any)["replayed"] != true {
 		t.Fatalf("guarded claim replay changed the winning receipt: %s", retry.body)
+	}
+}
+
+func TestRealHTTPGuardedClaimNextBoundsPersistentCandidateWriteConflict(t *testing.T) {
+	var raced *guardedClaimRaceStore
+	conflict := &model.Error{Message: "snapshot changed during all four write attempts", Data: model.ErrorData{Code: "write_conflict", Retryable: true}}
+	f := newFixtureWithStore(t, func(store *memory.Store) driver.Store {
+		raced = &guardedClaimRaceStore{Store: store, writePlan: func(n int32) error {
+			// Two complete walks visit three authorized candidates each. Only the
+			// seventh write is the first terminal probe; the fourteenth is the
+			// probe after the bounded ready restart.
+			if n%7 != 0 {
+				return conflict
+			}
+			return nil
+		}}
+		return raced
+	})
+	worker := f.issue(t, permissionWorker("agent:persistent-conflict"))
+	ctx := context.Background()
+	before, err := f.store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := map[string]any{"_meta": writeMeta(903)}
+	response := f.call(t, worker.Token, "bead.claimNext", params)
+	wantCode(t, response, "write_conflict")
+	if got := raced.writes.Load(); got != 14 {
+		t.Fatalf("persistent guarded candidate exhaustion was not bounded after two terminal probes: writes=%d", got)
+	}
+	after, err := f.store.Meta(ctx)
+	if err != nil || after.Head.String() != before.Head.String() {
+		t.Fatalf("persistent guarded candidate exhaustion changed durable state: before=%s after=%s err=%v", before.Head, after.Head, err)
+	}
+	reader, err := f.store.Read(ctx, driver.View{Incarnation: after.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	principal := permissionWorker("agent:persistent-conflict")
+	principalKey, err := driver.PrincipalKey(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := params["_meta"].(map[string]any)["idempotencyKey"].(string)
+	receipt, err := reader.IdempotencyByKey(ctx, principalKey, "", "bead.claimNext", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt != nil {
+		t.Fatalf("persistent guarded candidate exhaustion persisted a receipt: %+v", receipt)
 	}
 }
 
