@@ -236,11 +236,15 @@ def run(capture):
             "bazel_pin": Path(".bazelversion").read_text().strip(),
             "rc_sha256": digest(Path(os.environ["BAZEL_RC"])) if os.environ.get("BAZEL_RC") else None}
     code, version = capture.command("bazel-version", [*bazel, "version", "--gnu_format"])
-    tool["resolved_bazel"] = version
+    # Bazelisk prepends its own version to the version subcommand's output;
+    # direct Bazel prints only the second line. Retain the entire real report.
+    versions = [line for line in version.splitlines() if re.fullmatch(r"bazel \S+", line)]
+    tool["version_report"] = version
+    tool["resolved_bazel"] = versions[0] if len(versions) == 1 else None
     write_json(capture.output / "toolchain.json", tool)
     if code:
         return
-    if version != "bazel 9.3.0" or tool["bazel_pin"] != "9.3.0":
+    if versions != ["bazel 9.3.0"] or tool["bazel_pin"] != "9.3.0":
         raise ValueError("Bazel pin and resolved binary must be 9.3.0")
     code, root = capture.command("execution-root", [*bazel, "info", "execution_root", "--lockfile_mode=error"])
     if code:

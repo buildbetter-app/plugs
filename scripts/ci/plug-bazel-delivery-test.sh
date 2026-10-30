@@ -59,6 +59,8 @@ command = next(x for x in args if not x.startswith("--"))
 execution = root / "execution"
 if command == "version":
     assert "--gnu_format" in args
+    if not config.get("direct_bazel"):
+        print("Bazelisk v1.29.0")
     print("bazel 9.3.0")
 elif command == "info":
     print(execution)
@@ -160,6 +162,7 @@ else:
     (out / "tests.json").write_text("tampered")
     phase("verify", out, 86)
 
+    exercise("direct-bazel", {"direct_bazel": True})
     out, result = exercise("query-failure", {"query_exit": 37}, 37, 37)
     assert result["first_failure"]["stage"] == "target-resolution"
     assert list((out / "selection/queries").glob("*/exit.txt"))[0].read_text().strip() == "37"
