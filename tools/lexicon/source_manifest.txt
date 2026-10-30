@@ -694,6 +694,17 @@ sdk/go/native.go
 spec/BUILD.bazel
 spec/README.md
 spec/assertions_test.go
+spec/cardb19/BUILD.bazel
+spec/cardb19/README.md
+spec/cardb19/archive_test.go
+spec/cardb19/fixture_test.go
+spec/cardb19/record_reference.py
+spec/cardb19/reference.json
+spec/cardb19/source-binding.json
+spec/cardb19/testdata/recording-1/export.jsonl
+spec/cardb19/testdata/recording-1/imported.json
+spec/cardb19/testdata/recording-2/export.jsonl
+spec/cardb19/testdata/recording-2/imported.json
 spec/cli_test.go
 spec/extended/BUILD.bazel
 spec/extended/README.md
