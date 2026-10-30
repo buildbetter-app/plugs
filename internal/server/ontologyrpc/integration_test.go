@@ -282,6 +282,75 @@ func TestProtectedApplyPersistsCompleteImagesAndReplays(t *testing.T) {
 	}
 }
 
+func TestOlderProtectedApplyReplayKeepsCurrentOntologyForOrdinaryCreate(t *testing.T) {
+	f := applyFixture(t)
+	planAndRequest := func(doc ontology.Document, revision model.Revision, key string) map[string]any {
+		t.Helper()
+		expect := []model.Precondition{model.PreconditionByRevision(f.source, revision)}
+		planned := f.call(t, "ontology.plan", map[string]any{"document": doc, "expect": expect})
+		var plan ontologyops.PlanResult
+		if err := json.Unmarshal(planned, &plan); err != nil || !plan.Changes.Ready || plan.PlanDigest == "" {
+			t.Fatalf("plan: %s %v", planned, err)
+		}
+		return map[string]any{"planDigest": plan.PlanDigest, "expect": expect, "humanPresence": map[string]any{"mode": "presence_check", "challenge": plan.PlanDigest, "proof": plan.PlanDigest}, "_meta": map[string]any{"idempotencyKey": key}}
+	}
+	docA := ontology.DefaultDocument()
+	typA := docA.Types["issue"]
+	typA.Fields["reviewed"] = ontology.Field{Type: "boolean", Default: false}
+	docA.Types["issue"] = typA
+	requestA := planAndRequest(docA, model.Natural64(1), "f33d4848-10c7-40cb-a3d4-49e34b0d02a1")
+	first := f.call(t, "ontology.apply", requestA)
+	var appliedA model.Commit
+	if err := json.Unmarshal(first, &appliedA); err != nil || len(appliedA.Results) != 1 {
+		t.Fatalf("apply A: %s %v", first, err)
+	}
+
+	docB := ontology.DefaultDocument()
+	typB := docB.Types["issue"]
+	typB.Fields["reviewed"] = ontology.Field{Type: "boolean", Default: false}
+	typB.Fields["verified"] = ontology.Field{Type: "boolean", Default: true}
+	docB.Types["issue"] = typB
+	requestB := planAndRequest(docB, appliedA.Revision, "a33d4848-10c7-40cb-a3d4-49e34b0d02a1")
+	f.call(t, "ontology.apply", requestB)
+	storedB := f.call(t, "ontology.get", map[string]any{})
+	var current ontologyops.Result
+	if err := json.Unmarshal(storedB, &current); err != nil || current.Document == nil || current.Document.Types["issue"].Fields["verified"].Default != true {
+		t.Fatalf("stored B: %s %v", storedB, err)
+	}
+	headB := mustMeta(t, f.store).Head
+
+	replayed, err := f.transport.RoundTrip(context.Background(), mustJSON(t, map[string]any{"jsonrpc": "2.0", "id": "older-replay", "method": "ontology.apply", "params": requestA}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replay struct {
+		Result json.RawMessage `json:"result"`
+		Error  *wire.Error     `json:"error"`
+		Meta   struct {
+			Replayed bool `json:"replayed"`
+		} `json:"_meta"`
+	}
+	if err := json.Unmarshal(replayed, &replay); err != nil || replay.Error != nil || !replay.Meta.Replayed || string(replay.Result) != string(first) {
+		t.Fatalf("replay lost A's original receipt: first=%s replay=%s err=%v", first, replayed, err)
+	}
+	if head := mustMeta(t, f.store).Head; head != headB {
+		t.Fatalf("older replay advanced head: before=%s after=%s", headB, head)
+	}
+	if stored := f.call(t, "ontology.get", map[string]any{}); string(stored) != string(storedB) {
+		t.Fatalf("older replay changed durable B: before=%s after=%s", storedB, stored)
+	}
+
+	ordinary := f.call(t, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "after older ontology replay"}, "_meta": map[string]any{"idempotencyKey": "c33d4848-10c7-40cb-a3d4-49e34b0d02a1"}})
+	var created model.Commit
+	if err := json.Unmarshal(ordinary, &created); err != nil || len(created.Results) != 1 {
+		t.Fatalf("ordinary create after replay: %s %v", ordinary, err)
+	}
+	got, err := pipeline.DecodeDocument(created.Results[0].Record)
+	if err != nil || got.Fields["reviewed"] != false || got.Fields["verified"] != true {
+		t.Fatalf("older replay replaced runtime B with A: %+v %v", got, err)
+	}
+}
+
 func TestProtectedApplyProofAndStaleRefusals(t *testing.T) {
 	f := applyFixture(t)
 	doc := ontology.DefaultDocument()

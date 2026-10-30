@@ -28,9 +28,9 @@ type ReadStore interface {
 // inventory. Historical reads use this same current authorization callback.
 type AuthorizeRead func(context.Context, model.PrincipalRef, model.ResourceRef, string) error
 
-// OntologyRefresher receives the detached compiled snapshot that protected
-// ontology.apply just committed. The composition root uses it to atomically
-// publish the same source to the shared ordinary-operation runtime.
+// OntologyRefresher receives the detached compiled snapshot after protected
+// ontology.apply. Receipt replays use the current durable source. The
+// composition root atomically publishes it to the shared ordinary runtime.
 type OntologyRefresher interface {
 	Refresh(ontology.Snapshot)
 }
@@ -44,7 +44,7 @@ type Config struct {
 	ProtectedApplier pipeline.ProtectedApplier
 	// OntologyRefresher is optional for read-only roots. When present, a
 	// successful non-dry-run protected apply atomically publishes its candidate
-	// snapshot before the RPC returns.
+	// (or the current durable snapshot on replay) before the RPC returns.
 	OntologyRefresher OntologyRefresher
 	// MaxPlans bounds retained immutable reports. Evicted plans are stale.
 	MaxPlans int

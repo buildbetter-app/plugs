@@ -79,8 +79,7 @@ func (s *Service) Apply(ctx context.Context, by model.PrincipalRef, req ApplyReq
 		if applyErr != nil {
 			return port.WriteOutcome{}, applyErr
 		}
-		s.refreshRuntime(meta, candidate)
-		return outcome, nil
+		return outcome, s.refreshRuntime(ctx, by, meta, candidate, outcome.Replayed)
 	}
 	protected, candidate, err := s.protectedRequest(ctx, by, plan)
 	if err != nil {
@@ -93,16 +92,35 @@ func (s *Service) Apply(ctx context.Context, by model.PrincipalRef, req ApplyReq
 	}
 	outcome, err := s.cfg.ProtectedApplier.ApplyProtected(ctx, by, protected, meta)
 	if err == nil {
-		s.refreshRuntime(meta, candidate)
+		err = s.refreshRuntime(ctx, by, meta, candidate, outcome.Replayed)
 	}
 	return outcome, err
 }
 
-func (s *Service) refreshRuntime(meta model.WriteMeta, candidate ontology.Snapshot) {
+func (s *Service) refreshRuntime(ctx context.Context, by model.PrincipalRef, meta model.WriteMeta, candidate ontology.Snapshot, replayed bool) error {
 	if meta.DryRun || s.cfg.OntologyRefresher == nil {
-		return
+		return nil
+	}
+	if replayed {
+		// A receipt certifies a historical commit, not the current source.
+		// Another apply may have superseded its candidate, so publish the
+		// latest durable source rather than the retained plan's snapshot.
+		_, reader, err := s.reader(ctx, by, nil)
+		if err != nil {
+			return err
+		}
+		defer reader.Close()
+		current, err := s.source(ctx, by, reader, meta.Project)
+		if err != nil {
+			return err
+		}
+		if err := current.valid(); err != nil {
+			return err
+		}
+		candidate = current.compiled
 	}
 	s.cfg.OntologyRefresher.Refresh(candidate)
+	return nil
 }
 
 func (s *Service) protectedReceiptPresent(ctx context.Context, by model.PrincipalRef, meta model.WriteMeta) (bool, error) {
