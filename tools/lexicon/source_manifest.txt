@@ -340,6 +340,7 @@ internal/integration/e5acceptance/fixture-local-wasi/plug-plugin.json
 internal/integration/e5acceptance/fixture-local-wasi/plugin.go
 internal/integration/e5acceptance/local_fixture_test.go
 internal/integration/e5acceptance/local_wasi_test.go
+internal/integration/e5acceptance/public_contention_test.go
 internal/integration/eventsqlpaging/BUILD.bazel
 internal/integration/eventsqlpaging/integration_test.go
 internal/integration/graphacceptance/BUILD.bazel
