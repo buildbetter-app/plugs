@@ -422,7 +422,11 @@ func TestSeededRandomAllocatorCollisionReplayAndDriverChildren(t *testing.T) {
 			if err = tx.Rollback(ctx); err != nil {
 				t.Fatal(err)
 			}
-			reader, err := store.Read(ctx, driver.View{})
+			current, err := store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader, err := store.Read(ctx, driver.View{Incarnation: current.Incarnation})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -477,7 +481,10 @@ func TestPreparedImportBindsCommentsAndRejectsForgedCommit(t *testing.T) {
 			defer tx.Close()
 			ref := model.Ref{ID: "source-legacy"}
 			key := driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
-			if _, err = tx.Lock(ctx, driver.LockSet{{Key: key, Mode: driver.LockUpdate}}); err != nil {
+			allocatorKey, _ := driver.AllocatorLock("source")
+			sentinel, _ := driver.NewBeadSentinel(ref.ID)
+			sentinelKey := driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}
+			if _, err = tx.Lock(ctx, driver.LockSet{{Key: key, Mode: driver.LockUpdate}, {Key: allocatorKey, Mode: driver.LockUpdate}, {Key: sentinelKey, Mode: driver.LockUpdate}}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err = tx.Head(ctx); err != nil {
@@ -485,6 +492,12 @@ func TestPreparedImportBindsCommentsAndRejectsForgedCommit(t *testing.T) {
 			}
 			meta, err := tx.(driver.RestoreImportTx).PrepareRestoreImport(ctx, profile)
 			if err != nil {
+				t.Fatal(err)
+			}
+			if err = tx.(driver.AllocatorContinuation).RestoreAllocators(ctx, []driver.OfflineAllocator{driver.NewRandomAllocator("source")}); err != nil {
+				t.Fatal(err)
+			}
+			if err = tx.BumpSentinels(ctx, []driver.Sentinel{sentinel}); err != nil {
 				t.Fatal(err)
 			}
 			// Preparation must retain a detached binding even if the caller mutates it.
@@ -497,7 +510,7 @@ func TestPreparedImportBindsCommentsAndRejectsForgedCommit(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			header := driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Time: now, Principal: by, Method: profile.Method, IdempotencyKey: profile.IdempotencyKey, RequestHash: hash, Changes: []model.ChangeRecord{{Ref: ref, Op: model.OpCreate, FromRevision: model.Natural64(0)}}, LockKeys: []driver.LockKey{key}}
+			header := driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Time: now, Principal: by, Method: profile.Method, IdempotencyKey: profile.IdempotencyKey, RequestHash: hash, Changes: []model.ChangeRecord{{Ref: ref, Op: model.OpCreate, FromRevision: model.Natural64(0)}}, LockKeys: []driver.LockKey{key, allocatorKey, sentinelKey}}
 			forged := header
 			forged.Principal = model.PrincipalRef{Kind: "user", ID: "forged"}
 			if _, err = tx.Commit(ctx, forged); err == nil {
@@ -506,11 +519,28 @@ func TestPreparedImportBindsCommentsAndRejectsForgedCommit(t *testing.T) {
 			if got, _ := store.Meta(ctx); !got.Head.IsZero() {
 				t.Fatal("forged commit published")
 			}
+			forgedComment := comment
+			forgedComment.Principal = model.PrincipalRef{Kind: "user", ID: "forged"}
+			document.Comments = []Comment{forgedComment}
+			badBody, _ := json.Marshal(document)
+			if err = tx.Put(ctx, driver.Record{Ref: ref, Kind: "bead", Body: badBody}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = tx.Commit(ctx, header); err == nil {
+				t.Fatal("forged imported comment accepted")
+			}
+			if err = tx.Put(ctx, driver.Record{Ref: ref, Kind: "bead", Body: body}); err != nil {
+				t.Fatal(err)
+			}
 			profile.Admission.Scope = "mutated-after-prepare"
 			if _, err = tx.Commit(ctx, header); err != nil {
 				t.Fatal(err)
 			}
-			reader, err := store.Read(ctx, driver.View{})
+			current, err := store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader, err := store.Read(ctx, driver.View{Incarnation: current.Incarnation})
 			if err != nil {
 				t.Fatal(err)
 			}
