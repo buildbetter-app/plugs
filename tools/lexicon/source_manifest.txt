@@ -350,6 +350,7 @@ internal/integration/migrationpre/README.md
 internal/integration/migrationpre/compose.go
 internal/integration/migrationpre/integration_test.go
 internal/integration/oidc/BUILD.bazel
+internal/integration/oidc/composition_test.go
 internal/integration/oidc/flow_test.go
 internal/integration/oidc/http_test.go
 internal/integration/oidc/idp_test.go
