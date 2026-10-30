@@ -25,7 +25,7 @@
   // primitive source; older ones explicitly refuse an unsafe integer.
   function parseJSON(raw) {
     return JSON.parse(raw, (key, value, context) => {
-      if ((key === "revision" || key === "ontologyRevision") && typeof value === "number") {
+      if ((key === "revision" || key === "ontologyRevision" || key === "branch") && typeof value === "number") {
         if (context && integer(context.source)) return context.source;
         if (!Number.isSafeInteger(value) || value < 0) throw new RPCError("This browser cannot preserve the server revision.", "revision_unavailable");
         return String(value);
@@ -475,23 +475,67 @@
       const remainder = document.createElement("p"); remainder.className = "elision"; text(remainder, (result.presence.length - 5) + " more visible sessions are hidden to keep this view compact."); $("presence-rows").appendChild(remainder);
     }
   }
+  function directBlockers(value) {
+    const invalid = () => { throw new RPCError("The direct blocker response is unreadable.", "invalid_response"); };
+    if (!value || !Array.isArray(value.edges) || value.edges.length > 100 || !Number.isInteger(value.hiddenCount) || value.hiddenCount < 0 || value.hiddenCount > 100) invalid();
+    return { hiddenCount: value.hiddenCount, edges: value.edges.map((edge) => {
+      if (!edge || !["blocks", "conditional-blocks"].includes(edge.kind) || !["satisfied", "unsatisfied", "unknown"].includes(edge.state)) invalid();
+      if (Object.hasOwn(edge, "reason") && (typeof edge.reason !== "string" || Array.from(edge.reason).length > 128)) invalid();
+      const ref = edge.blocker;
+      if (!ref || typeof ref !== "object" || Array.isArray(ref)) invalid();
+      const id = Object.hasOwn(ref, "id"), key = Object.hasOwn(ref, "key");
+      if (id === key || Object.keys(ref).some((field) => !["id", "key", "branch"].includes(field))) invalid();
+      if (id && (typeof ref.id !== "string" || (Object.hasOwn(ref, "branch") && !integer(ref.branch)))) invalid();
+      if (key && (typeof ref.key !== "string" || Object.hasOwn(ref, "branch"))) invalid();
+      const branch = Object.hasOwn(ref, "branch") ? String(ref.branch) : "0";
+      return { ...edge, label: id ? ref.id + (branch !== "0" ? " · branch " + branch : "") : "Key " + ref.key, selectable: id && !!ref.id && branch === "0" };
+    }) };
+  }
+  function renderDirectBlockers(node, result) {
+    const heading = document.createElement("h3"); text(heading, "Direct blocker verdicts"); node.appendChild(heading);
+    if (!result.edges.length) {
+      const empty = document.createElement("p"); text(empty, result.hiddenCount ? "Only unreadable direct blockers were returned." : "No direct blocker edges in this snapshot."); node.appendChild(empty);
+    }
+    const list = document.createElement("ul"); list.className = "explain-direct-blockers";
+    result.edges.forEach((edge) => {
+      const row = document.createElement("li"); row.dataset.state = edge.state;
+      const ref = document.createElement(edge.selectable ? "a" : "span"); ref.className = "blocker-ref"; text(ref, edge.label);
+      if (edge.selectable) {
+        const url = new URL(location.href); url.searchParams.set("view", "explain"); url.searchParams.set("itemId", edge.blocker.id); url.hash = ""; ref.href = url.href;
+        ref.addEventListener("click", (event) => {
+          if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          event.preventDefault(); $("explain-id").value = edge.blocker.id; load(false);
+        });
+      }
+      const verdict = document.createElement("span"); verdict.className = "blocker-verdict";
+      text(verdict, ({ satisfied: "Satisfied", unsatisfied: "Unsatisfied", unknown: "Unknown" })[edge.state] + " · " + edge.kind);
+      const reason = document.createElement("span"); reason.className = "blocker-reason"; text(reason, edge.reason || "No direct reason supplied.");
+      row.append(ref, verdict, reason); list.appendChild(row);
+    });
+    node.appendChild(list);
+    const boundary = document.createElement("p"); boundary.className = "muted"; text(boundary, "Verdicts describe the returned snapshot. Opening an item reads its current explanation."); node.appendChild(boundary);
+  }
   async function explain(signal) {
     const node = $("explain-state");
     if (!state.methods.has("view.explain") || !state.config.blockedViewId) { message(node, "unavailable", "Explanation unavailable.", "A server-backed saved view and its explanation method are not configured."); return; }
     const itemId = $("explain-id").value.trim();
     if (!itemId) { text(node, "Enter an item ID to request its explanation."); return; }
     const result = await rpc("view.explain", { viewId: state.config.blockedViewId, itemId }, signal);
+    const direct = Object.hasOwn(result, "directBlockers") ? directBlockers(result.directBlockers) : null;
     clear(node);
     const summary = document.createElement("p"); text(summary, result.included ? "Included in the view." : "Outside the current view."); node.appendChild(summary);
     const reasons = document.createElement("ul"); reasons.className = "explain-reasons";
     const suppliedReasons = Array.isArray(result.reasons) ? result.reasons.filter((reason) => typeof reason === "string" && reason.trim() && reason !== "included") : [];
     suppliedReasons.forEach((reason) => { const li = document.createElement("li"); text(li, reason); reasons.appendChild(li); });
     if (suppliedReasons.length) node.appendChild(reasons);
-    else {
+    else if (!direct) {
       const unavailable = document.createElement("p"); unavailable.className = "explain-unavailable";
       text(unavailable, result.included ? "No direct blocker reason was supplied by the server for this item." : "No direct exclusion reason was supplied by the server for this item."); node.appendChild(unavailable);
     }
-    if (count(result.hiddenBlockers)) { const copy = document.createElement("p"); text(copy, result.hiddenBlockers + " blockers cannot be read with current permissions."); node.appendChild(copy); }
+    if (!direct) { const unavailable = document.createElement("p"); unavailable.className = "direct-blockers-unavailable"; text(unavailable, "Direct blocker verdicts unavailable on this server."); node.appendChild(unavailable); }
+    if (direct) renderDirectBlockers(node, direct);
+    const hidden = direct ? direct.hiddenCount : count(result.hiddenBlockers);
+    if (hidden) { const copy = document.createElement("p"); copy.className = "explain-hidden-blockers"; text(copy, hidden + " blockers cannot be read with current permissions."); node.appendChild(copy); }
     if (result.readinessPending === true) { const pending = document.createElement("p"); pending.className = "explain-pending"; text(pending, "Readiness is still being evaluated by the server."); node.appendChild(pending); }
   }
   function target(view) { return $({ home: "changed-rows", next: "next-rows", blocked: "blocked-state", presence: "presence-rows", explain: "explain-state" }[view]); }
@@ -543,5 +587,7 @@
   $("explain-form").addEventListener("submit", (event) => { event.preventDefault(); load(false); });
   document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => selectView(tab.dataset.view)));
   const requested = new URLSearchParams(location.search).get("view");
+  const requestedItem = new URLSearchParams(location.search).get("itemId");
+  if (requested === "explain" && requestedItem) $("explain-id").value = requestedItem;
   selectView(["next", "blocked", "explain", "presence"].includes(requested) ? requested : "home");
 }());

@@ -29,6 +29,116 @@ import (
 //go:embed browser_check.mjs
 var browserCheck []byte
 
+//go:embed direct_blocker_check.mjs
+var directBlockerCheck []byte
+
+// Explicit consumer fixtures exercise the embedded page; they do not qualify
+// the direct-blocker producer, current authorization, or the E3 workload.
+func TestBrowserDirectBlockerContractFixtures(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chrome, err := exec.LookPath("google-chrome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	edge := func(ref map[string]any, state, reason string) map[string]any {
+		return map[string]any{"blocker": ref, "kind": "blocks", "state": state, "reason": reason}
+	}
+	verdict := func(hidden int, edges ...map[string]any) map[string]any {
+		if edges == nil {
+			edges = []map[string]any{}
+		}
+		return map[string]any{"edges": edges, "hiddenCount": hidden}
+	}
+	hostile := `<img src=x onerror="globalThis.blockerExecuted=true"> & '`
+	fixtures := []map[string]any{
+		{"name": "absent", "absent": true, "hidden": 2},
+		{"name": "empty", "direct": verdict(0)},
+		{"name": "active", "direct": verdict(0, edge(map[string]any{"id": "pl-blocker"}, "unsatisfied", "blocker status does not satisfy blocks")), "select": "pl-blocker"},
+		{"name": "satisfied", "direct": verdict(0, edge(map[string]any{"id": "pl-done", "branch": 0}, "satisfied", ""))},
+		{"name": "unknown", "direct": verdict(0, edge(map[string]any{"id": "pl-missing"}, "unknown", "blocker is missing from the snapshot"))},
+		{"name": "key", "direct": verdict(0, edge(map[string]any{"key": "unresolved:key"}, "unknown", "blocker reference is unresolved"))},
+		{"name": "branch", "direct": verdict(0, edge(map[string]any{"id": "pl-branch", "branch": json.Number("9007199254740993")}, "unknown", "blocker reference is unresolved"))},
+		{"name": "hidden", "direct": verdict(2), "hidden": 2},
+		{"name": "mixed", "direct": verdict(1, edge(map[string]any{"id": "pl-visible"}, "unsatisfied", "blocker is unsatisfied")), "hidden": 1},
+		{"name": "hostile", "direct": verdict(0, edge(map[string]any{"id": hostile}, "unsatisfied", hostile)), "select": hostile},
+		{"name": "revoked", "direct": verdict(0, edge(map[string]any{"id": "pl-before-revocation"}, "unsatisfied", "blocker is unsatisfied")), "refresh": true},
+		{"name": "bad-state", "direct": verdict(0, edge(map[string]any{"id": "pl-secret"}, "active", "private-reason")), "refused": true},
+		{"name": "bad-ref", "direct": verdict(0, edge(map[string]any{"id": "pl-secret", "key": "also"}, "unknown", "private-reason")), "refused": true},
+		{"name": "bad-count", "direct": verdict(101), "refused": true},
+	}
+	mux := http.NewServeMux()
+	for _, fixture := range fixtures {
+		name := fixture["name"].(string)
+		ui, err := webui.New(webui.Config{MountPath: "/fixtures/" + name + "/ui/", RPCPath: "/fixtures/" + name + "/rpc", Project: "web", MaxRows: 5, BlockedViewID: "view-blocked"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux.Handle("/fixtures/"+name+"/ui/", ui)
+		var reads atomic.Int64
+		mux.HandleFunc("/fixtures/"+name+"/rpc", func(w http.ResponseWriter, r *http.Request) {
+			var request struct {
+				ID     string         `json:"id"`
+				Method string         `json:"method"`
+				Params map[string]any `json:"params"`
+			}
+			if r.Method != http.MethodPost || r.Header.Get("Plug-RPC") != "1" || json.NewDecoder(r.Body).Decode(&request) != nil {
+				t.Error("invalid fixture request")
+				http.Error(w, "invalid", 400)
+				return
+			}
+			response := map[string]any{"jsonrpc": "2.0", "id": request.ID}
+			switch request.Method {
+			case "server.hello":
+				response["result"] = map[string]any{"authMode": "anonymous"}
+			case "rpc.methods":
+				response["result"] = map[string]any{"methods": []string{"view.explain"}}
+			case "view.explain":
+				result := map[string]any{"viewId": "view-blocked", "itemId": request.Params["itemId"], "included": true, "reasons": []string{"included"}, "hiddenBlockers": fixture["hidden"]}
+				if fixture["absent"] != true {
+					result["directBlockers"] = fixture["direct"]
+				}
+				response["result"] = result
+				if reads.Add(1) > 1 && fixture["refresh"] == true {
+					delete(response, "result")
+					response["error"] = map[string]any{"code": -32000, "message": "access revoked", "data": map[string]any{"code": "not_found"}}
+				}
+			default:
+				t.Error("unexpected fixture method")
+				http.Error(w, "unexpected", 400)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(response); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	dir := t.TempDir()
+	script, cases := filepath.Join(dir, "direct-blocker-check.mjs"), filepath.Join(dir, "cases.json")
+	data, err := json.Marshal(fixtures)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string][]byte{script: directBlockerCheck, cases: data} {
+		if err := os.WriteFile(name, body, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, node, script, server.URL, chrome, cases)
+	output, err := command.CombinedOutput()
+	fmt.Print(string(output))
+	if err != nil {
+		t.Fatalf("direct-blocker browser fixtures: %v; output above", err)
+	}
+}
+
 type pausedStore struct {
 	*memory.Store
 	paused    atomic.Bool
