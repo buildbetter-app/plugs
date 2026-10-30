@@ -37,6 +37,12 @@ type core struct {
 }
 
 func newCore(t *testing.T, ids []string, options ...pipeline.Option) *core {
+	return newCoreWithOntology(t, ids, nil, options...)
+}
+
+// newCoreWithOntology keeps the Writer and service on one compiled resolver.
+// A nil resolver preserves the ordinary fixture's built-in ontology.
+func newCoreWithOntology(t *testing.T, ids []string, rules *service.Ontology, options ...pipeline.Option) *core {
 	t.Helper()
 	inputs, err := acceptance.NewInputs(time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC), ids...)
 	if err != nil {
@@ -64,12 +70,14 @@ func newCore(t *testing.T, ids []string, options ...pipeline.Option) *core {
 			t.Error(err)
 		}
 	})
-	o := service.NewOntology(nil)
+	if rules == nil {
+		rules = service.NewOntology(nil)
+	}
 	options = append([]pipeline.Option{
-		pipeline.WithClock(inputs.Now), pipeline.WithIDGenerator(inputs.NextID), pipeline.WithOntology(o),
+		pipeline.WithClock(inputs.Now), pipeline.WithIDGenerator(inputs.NextID), pipeline.WithOntology(rules),
 	}, options...)
 	return &core{ctx: ctx, by: model.PrincipalRef{Kind: "anonymous", ID: "anonymous"},
-		store: store, lease: lease, writer: pipeline.New(store, lease, options...), ontology: o, inputs: inputs}
+		store: store, lease: lease, writer: pipeline.New(store, lease, options...), ontology: rules, inputs: inputs}
 }
 
 func key(label string) string {
@@ -183,8 +191,12 @@ type stack struct {
 }
 
 func newStack(t *testing.T, ids []string, options ...pipeline.Option) *stack {
+	return newStackWithOntology(t, ids, nil, options...)
+}
+
+func newStackWithOntology(t *testing.T, ids []string, rules *service.Ontology, options ...pipeline.Option) *stack {
 	t.Helper()
-	f := newCore(t, ids, options...)
+	f := newCoreWithOntology(t, ids, rules, options...)
 	svc := service.New(f.store, f.lease, f.writer, service.WithOntology(f.ontology), service.WithClock(f.inputs.Now))
 	registry, err := rpc.NewRegistry()
 	if err != nil {

@@ -27,7 +27,7 @@ import (
 type Driver struct{}
 
 func (Driver) Info() driver.Info {
-	return driver.Info{Name: "sqlite", Version: "1", Capabilities: []string{"transactions", "history", "leases", "checkpoints", "allocator_continuation", "core_sessions", "noop", "response_finalization"}}
+	return driver.Info{Name: "sqlite", Version: "1", Capabilities: []string{"transactions", "history", "leases", "checkpoints", "allocator_continuation", "core_sessions", "noop", "response_finalization", driver.CapabilityRestoreCurrentImage}}
 }
 
 type Store struct {
@@ -37,6 +37,12 @@ type Store struct {
 	closed   bool
 	children map[io.Closer]struct{}
 	leases   map[*activeLease]struct{}
+}
+
+// SupportsRestore advertises the only restore mode this store can publish
+// atomically through its existing immediate transaction boundary.
+func (*Store) SupportsRestore(mode driver.RestoreMode) bool {
+	return mode == driver.RestoreModeCurrentImage
 }
 
 func randomID() string {
@@ -384,3 +390,4 @@ func (s *Store) Close() error {
 
 var _ driver.Driver = Driver{}
 var _ driver.Store = (*Store)(nil)
+var _ driver.RestoreCapabilities = (*Store)(nil)
