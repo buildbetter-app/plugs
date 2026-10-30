@@ -69,6 +69,26 @@ Untrusted titles, IDs, reasons and presence data are rendered as text.
   each item's revision with that browser's previous read. Only inspected items
   are remembered; continuing replaces the page and leaves unseen items unread.
   This is a comparison of current stored rows, not a deletion/change-event feed.
+  This legacy path is used only when `view.run` is absent and no `HomeViewID`
+  is configured; it does not qualify view/watch behavior.
+- With advertised `view.run`, Home renders actual stored view rows. Optional
+  `HomeViewID` selects a saved definition whose server-owned `budgetTokens`
+  must be at most `MaxRows`. Without an ID, the browser sends a bounded inline
+  definition with project supplied through the existing RPC metadata. A real
+  view refusal never falls back to ready/history. Continuations carry the
+  signed cursor and exact `asOf`; every page replaces the previous page.
+- Optional `WatchPath` selects the existing same-origin NDJSON endpoint and
+  requires `HomeViewID`. With advertised `view.watch`, `event.unsubscribe`,
+  `session.open` and `session.close`, the browser opens an ephemeral
+  collaboration lifetime, subscribes before its first view read, and attaches
+  using `Plug-Session`. Session IDs stay in memory and never enter frame calls.
+  Canonical snapshot/delta frames trigger bounded `view.run` rereads, preserving
+  the relative order of surviving rows. Event bodies never manufacture rows.
+  The first page remains capped; paging stops the watch and pins the snapshot.
+  Stop, navigation, page exit, cancellation and read failures abort delivery,
+  unsubscribe and close the actual session. Reset, gap, visibility loss,
+  invalid cursor chains or stream failure clear stale rows and continuation;
+  reconnect requires Refresh. A late opening allocation is also released.
 - The local read map is scoped by endpoint, project and snapshot incarnation,
   and retains at most 1,000 items. Eviction or unavailable browser storage can
   show a previously read item again. It never creates a server checkpoint.
@@ -79,16 +99,28 @@ Untrusted titles, IDs, reasons and presence data are rendered as text.
   `BlockedViewID` or canonical `BlockedViewDefinition`. Explanation requires
   advertised `view.explain` and a saved view ID. Grouped view results and
   pages exceeding the row budget explicitly refuse. These optional calls are
-  not runtime-qualified by the bead/history fixture at this base.
+  not runtime-qualified by the legacy bead/history fixture.
 - Presence reads advertised `presence.list`, shows at most five returned
   sessions and states the remainder. Missing methods show unavailable states.
-  The UI opens no session and performs no writes.
+  The UI makes no durable writes. Live view delivery opens only the optional
+  collaboration lifetime described above; this is not a login/auth session UI.
 - Refresh, cancellation, a 15-second read deadline, empty results and RPC
-  refusals have explicit states. Live watches, interactive login, remote/CORS
+  refusals have explicit states. Interactive login, remote/CORS
   composition and epic rollups remain outside this slice. The frame bridge is
   a bounded host seam; plugin installation, digest locks and authorization
   grants remain owned by the plugin-host lane. Five-person UX validation
   against real views/watches remains unqualified.
+
+The executable composition at this change's pinned base still does not bind
+`viewrpc.BindWithConfig`, supply a production `viewops.ViewReader`, or set
+`watchhttp.Config.Views`; it also selects `coreevents.AllowAll` and has no
+installed current read-policy adapter. Its owner must wire those existing
+ports, the actual collaboration `SessionBridge`/stream admission, and the UI's
+`HomeViewID`/`WatchPath` before claiming a connected executable. Watch membership
+currently compiles only id/type/resources, and refuses project/status/grouped
+filters. The project on a view read remains authoritative. Parent/assignee
+projection and parent relations are absent; type counts cannot qualify epic
+progress. No foreign composition/policy implementation is added here.
 
 ## Verification
 
@@ -96,7 +128,9 @@ Run Go and browser checks through Bazel only:
 
 ```sh
 bazel --ignore_all_rc_files test //internal/server/webui:webui_test \
-  --jobs=2 --test_output=all --test_timeout=900 --test_arg=-test.v
+  --disk_cache=/tmp/plug-swarm/bazel-disk-cache \
+  --local_resources=memory=8192 --jobs=2 --test_timeout=900 \
+  --cache_test_results=no --test_output=all --test_arg=-test.v
 ```
 
 The local test inherits PATH and requires Node 24+ (built-in WebSocket) and
@@ -109,6 +143,20 @@ loading, empty states, unavailable methods, cancellation/deadline propagation
 to a held real driver read, and refusal after actual lease release. It checks
 browser RPC methods are reads and the store contains only the four harness
 writes. No product read response is fabricated.
+
+`TestBrowserAdmittedViewWatchStoredRowsAndCleanup` separately drives actual
+`viewops`, `viewrpc`, collaboration and `watchhttp` over the admitted HTTP host.
+Its saved-view port reads Writer-persisted metadata via the real service. Its
+fixture-only current policy checks explicit stored readership grants, denies
+missing grants/other projects, and exercises real grant revocation; it supplies
+no blanket permit and is not a production authorization adapter. Chrome proves
+stored rows, a real delta without manual refresh, pinned paging across a write,
+membership reset, empty results, missing/unsupported/oversized refusals, inline
+reads, text rendering, mobile width and session/subscription/stream cleanup.
+Raw RPC/NDJSON, external-writer receipts and screenshots are retained under
+`test.outputs/view-watch/`. This package fixture is not the independent E3
+20,000-bead/50-agent/five-task workload, installed policy qualification or a
+five-human study; those historical/remaining boundaries stay explicit.
 
 The same browser fixture creates two opaque frames and uses their Chrome
 debugging contexts to send real `postMessage` calls, preserving all CSP and
