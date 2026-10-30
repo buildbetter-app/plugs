@@ -119,7 +119,15 @@ func TestLinuxContainment(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "probe")
 	goBinary, err := exec.LookPath("go")
 	if err != nil {
-		t.Fatal(err)
+		for _, candidate := range []string{filepath.Join(runtime.GOROOT(), "bin", "go"), "/home/dev/.nix-profile/bin/go", "/usr/local/go/bin/go", "/usr/bin/go"} {
+			if info, statErr := os.Stat(candidate); statErr == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0 {
+				goBinary = candidate
+				break
+			}
+		}
+		if goBinary == "" {
+			t.Fatal(err)
+		}
 	}
 	command := exec.Command(goBinary, "build", "-p=2", "-o", binary, source)
 	command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOTOOLCHAIN=local", "GOWORK=off", "GOFLAGS=")
