@@ -21,8 +21,9 @@ func (l *testLease) Lost() <-chan struct{}         { return l.lost }
 func (l *testLease) Release(context.Context) error { return nil }
 
 type syntheticStore struct {
-	rows []driver.Record
-	meta driver.Meta
+	rows       []driver.Record
+	meta       driver.Meta
+	lastReader *syntheticReader
 }
 
 type savedViewMap map[string]Definition
@@ -52,7 +53,9 @@ func (s *syntheticStore) Read(_ context.Context, view driver.View) (driver.Reade
 	if view.Incarnation != s.meta.Incarnation {
 		return nil, driver.ErrIncarnationChanged{From: view.Incarnation, To: s.meta.Incarnation}
 	}
-	return &syntheticReader{rows: s.rows, snapshot: driver.View{At: ptr(model.Natural64(1)), Incarnation: s.meta.Incarnation}}, nil
+	r := &syntheticReader{rows: s.rows, snapshot: driver.View{At: ptr(model.Natural64(1)), Incarnation: s.meta.Incarnation}}
+	s.lastReader = r
+	return r, nil
 }
 
 func ptr(v model.Natural) *model.Natural { return &v }
@@ -63,8 +66,23 @@ type syntheticReader struct {
 }
 
 func (r *syntheticReader) Snapshot() driver.View { return r.snapshot }
-func (r *syntheticReader) Get(context.Context, []driver.Ref) ([]driver.Record, error) {
-	return nil, errors.New("synthetic Get is not used")
+func (r *syntheticReader) Get(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	wanted := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if ref.IsID() && ref.Branch.IsZero() {
+			wanted[ref.ID] = struct{}{}
+		}
+	}
+	rows := make([]driver.Record, 0, len(wanted))
+	for _, row := range r.rows {
+		if _, ok := wanted[row.Ref.ID]; ok {
+			rows = append(rows, row)
+		}
+	}
+	return rows, nil
 }
 func (r *syntheticReader) Blob(context.Context, driver.Hash) ([]byte, error) {
 	return nil, errors.New("synthetic Blob is not used")
@@ -172,6 +190,155 @@ func TestRunCountsUnreadableBlockersWithoutLeakingRows(t *testing.T) {
 	}
 	if len(result.Items) != 1 || result.Items[0].ID != dependent.ID || result.Items[0].HiddenBlockers != 1 {
 		t.Fatalf("unexpected authorized dependent result: %+v", result)
+	}
+}
+
+func explainDocument(t *testing.T, id, project string, links ...pipeline.Link) []byte {
+	t.Helper()
+	body, err := json.Marshal(pipeline.Document{ID: id, Type: "issue", Project: project, Fields: map[string]any{"status": "open"}, Links: links})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func explainService(t *testing.T, store *syntheticStore, source DirectBlockerSource, authorize AuthorizeRead) *Service {
+	t.Helper()
+	svc, err := New(store, &testLease{lost: make(chan struct{})}, Config{
+		Views:            savedViewMap{"issues": {Filter: &Filter{Types: []string{"issue"}}}},
+		AuthorizeRead:    authorize,
+		DirectBlockers:   source,
+		OntologyRevision: model.Natural64(1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
+func TestExplainDirectBlockersOptionalProjectionAndPinnedReader(t *testing.T) {
+	dependent := model.RefByID("dependent", model.Natural64(0))
+	store := &syntheticStore{
+		rows: []driver.Record{{Ref: dependent, Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, dependent.ID, "dependent-project")}},
+		meta: driver.Meta{StoreID: "store", Incarnation: "inc", Head: model.Natural64(1)},
+	}
+	var gotReader driver.Reader
+	var gotDependent model.Ref
+	var gotLimit int
+	svc := explainService(t, store, func(_ context.Context, reader driver.Reader, ref model.Ref, limit int) (DirectBlockerVerdict, error) {
+		gotReader, gotDependent, gotLimit = reader, ref, limit
+		return DirectBlockerVerdict{Edges: []DirectBlockerEdge{}}, nil
+	}, nil)
+	result, err := svc.Explain(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, ExplainRequest{ViewID: "issues", ItemID: dependent.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DirectBlockers == nil || result.DirectBlockers.Edges == nil || result.DirectBlockers.HiddenCount != 0 {
+		t.Fatalf("configured empty direct blocker result=%+v", result.DirectBlockers)
+	}
+	if gotReader != store.lastReader || gotDependent != dependent || gotLimit != DirectBlockerExplainLimit {
+		t.Fatalf("source did not receive the pinned reader/dependent/limit: reader=%p want=%p dependent=%+v limit=%d", gotReader, store.lastReader, gotDependent, gotLimit)
+	}
+	raw, err := json.Marshal(result.DirectBlockers)
+	if err != nil || string(raw) != `{"edges":[],"hiddenCount":0}` {
+		t.Fatalf("explicit empty wire result=%s err=%v", raw, err)
+	}
+
+	withoutSource := explainService(t, store, nil, nil)
+	result, err = withoutSource.Explain(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, ExplainRequest{ViewID: "issues", ItemID: dependent.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DirectBlockers != nil {
+		t.Fatalf("unconfigured source must be omitted: %+v", result.DirectBlockers)
+	}
+}
+
+func TestExplainDirectBlockersUsesCurrentTargetProjectAndRedactsDeniedEdges(t *testing.T) {
+	dependent := model.RefByID("dependent", model.Natural64(0))
+	visible := model.RefByID("visible", model.Natural64(0))
+	hidden := model.RefByID("hidden", model.Natural64(0))
+	missing := model.RefByID("missing", model.Natural64(0))
+	unresolved := model.RefByKey("unresolved")
+	store := &syntheticStore{
+		rows: []driver.Record{
+			{Ref: dependent, Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, dependent.ID, "dependent-project")},
+			{Ref: visible, Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, visible.ID, "target-project")},
+			{Ref: hidden, Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, hidden.ID, "target-project")},
+		},
+		meta: driver.Meta{StoreID: "store", Incarnation: "inc", Head: model.Natural64(1)},
+	}
+	var checkedProjects []string
+	svc := explainService(t, store, func(_ context.Context, _ driver.Reader, _ model.Ref, _ int) (DirectBlockerVerdict, error) {
+		return DirectBlockerVerdict{Edges: []DirectBlockerEdge{
+			{Blocker: visible, Kind: "blocks", State: DirectBlockerSatisfied},
+			{Blocker: hidden, Kind: "blocks", State: DirectBlockerUnsatisfied},
+			{Blocker: missing, Kind: "blocks", State: DirectBlockerUnknown, Reason: "missing"},
+			{Blocker: unresolved, Kind: "blocks", State: DirectBlockerUnknown, Reason: "unresolved"},
+		}}, nil
+	}, nil)
+	// The source above is intentionally independent of authorization and does
+	// not consult the dependent's project. The consumer must authorize each
+	// readable target with its stored project.
+	svc.cfg.AuthorizeRead = func(_ context.Context, _ model.PrincipalRef, resource model.ResourceRef, project string) error {
+		if resource.Ref.ID == visible.ID || resource.Ref.ID == hidden.ID {
+			checkedProjects = append(checkedProjects, project)
+			if project != "target-project" {
+				return fmt.Errorf("target authorization used %q", project)
+			}
+		}
+		if resource.Ref.ID == hidden.ID {
+			return &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "hidden blocker"}}
+		}
+		return nil
+	}
+	result, err := svc.Explain(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, ExplainRequest{ViewID: "issues", ItemID: dependent.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(checkedProjects) != 2 || checkedProjects[0] != "target-project" || checkedProjects[1] != "target-project" {
+		t.Fatalf("target authorization projects=%v", checkedProjects)
+	}
+	if result.DirectBlockers == nil || result.DirectBlockers.HiddenCount != 1 || result.HiddenBlockers != 1 {
+		t.Fatalf("redaction counts=%+v hidden=%d", result.DirectBlockers, result.HiddenBlockers)
+	}
+	if len(result.DirectBlockers.Edges) != 3 || result.DirectBlockers.Edges[0].Blocker.ID != visible.ID || result.DirectBlockers.Edges[1].Blocker.ID != missing.ID || result.DirectBlockers.Edges[2].Blocker.IsID() {
+		t.Fatalf("projected edges=%+v", result.DirectBlockers.Edges)
+	}
+	if result.DirectBlockers.Edges[1].State != DirectBlockerUnknown || result.DirectBlockers.Edges[2].State != DirectBlockerUnknown {
+		t.Fatalf("unknown edges were not preserved=%+v", result.DirectBlockers.Edges)
+	}
+}
+
+func TestExplainDirectBlockersRefusesOverflowAndMapsCancellationWithoutPartial(t *testing.T) {
+	dependent := model.RefByID("dependent", model.Natural64(0))
+	store := &syntheticStore{
+		rows: []driver.Record{{Ref: dependent, Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, dependent.ID, "project")}},
+		meta: driver.Meta{StoreID: "store", Incarnation: "inc", Head: model.Natural64(1)},
+	}
+	mode := "overflow"
+	svc := explainService(t, store, func(context.Context, driver.Reader, model.Ref, int) (DirectBlockerVerdict, error) {
+		if mode == "cancel" {
+			return DirectBlockerVerdict{}, context.Canceled
+		}
+		edges := make([]DirectBlockerEdge, DirectBlockerExplainLimit+1)
+		for i := range edges {
+			edges[i] = DirectBlockerEdge{Blocker: model.RefByID(fmt.Sprintf("b-%d", i), model.Natural64(0)), Kind: "blocks", State: DirectBlockerUnknown}
+		}
+		return DirectBlockerVerdict{Edges: edges}, nil
+	}, nil)
+	result, err := svc.Explain(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, ExplainRequest{ViewID: "issues", ItemID: dependent.ID})
+	if err == nil || result.ViewID != "" || result.DirectBlockers != nil || result.Reasons != nil {
+		t.Fatalf("overflow result=%+v err=%v", result, err)
+	}
+	var typed *model.Error
+	if !errors.As(err, &typed) || typed.Data.Code != "closure_too_large" {
+		t.Fatalf("overflow err=%T %v", err, err)
+	}
+	mode = "cancel"
+	result, err = svc.Explain(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, ExplainRequest{ViewID: "issues", ItemID: dependent.ID})
+	if err == nil || result.ViewID != "" || result.DirectBlockers != nil || result.Reasons != nil || !errors.As(err, &typed) || typed.Data.Code != "busy" {
+		t.Fatalf("cancellation result=%+v err=%T %v", result, err, err)
 	}
 }
 

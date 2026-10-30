@@ -1197,6 +1197,9 @@
           },
           "projection": {
             "$ref": "#/components/schemas/ProjectionStatus"
+          },
+          "directBlockers": {
+            "$ref": "#/components/schemas/DirectBlockerResult"
           }
         },
         "required": [
@@ -1204,6 +1207,61 @@
           "itemId",
           "included",
           "reasons"
+        ],
+        "additionalProperties": false
+      },
+      "DirectBlockerEdge": {
+        "type": "object",
+        "properties": {
+          "blocker": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "blocks",
+              "conditional-blocks"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "satisfied",
+              "unsatisfied",
+              "unknown"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "required": [
+          "blocker",
+          "kind",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "DirectBlockerResult": {
+        "type": "object",
+        "properties": {
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DirectBlockerEdge"
+            },
+            "maxItems": 100
+          },
+          "hiddenCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "edges",
+          "hiddenCount"
         ],
         "additionalProperties": false
       },

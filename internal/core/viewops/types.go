@@ -60,10 +60,42 @@ type ReadinessReader interface {
 // the same pinned-snapshot port under a source-oriented name.
 type ReadinessSource = ReadinessReader
 
+// DirectBlockerState is the producer's three-valued direct-edge verdict.
+// Unknown is deliberately distinct from an active unsatisfied blocker.
+type DirectBlockerState string
+
+const (
+	DirectBlockerSatisfied   DirectBlockerState = "satisfied"
+	DirectBlockerUnsatisfied DirectBlockerState = "unsatisfied"
+	DirectBlockerUnknown     DirectBlockerState = "unknown"
+)
+
+// DirectBlockerEdge is the redacted, consumer-facing projection of one
+// producer edge. Project and raw status are intentionally absent.
+type DirectBlockerEdge struct {
+	Blocker model.Ref          `json:"blocker"`
+	Kind    string             `json:"kind"`
+	State   DirectBlockerState `json:"state"`
+	Reason  string             `json:"reason,omitempty"`
+}
+
+// DirectBlockerVerdict is the bounded verdict returned by a configured host
+// adapter. The adapter never authorizes targets; viewops does that below.
+type DirectBlockerVerdict struct {
+	Edges []DirectBlockerEdge
+}
+
+// DirectBlockerSource evaluates direct edges against the reader already pinned
+// by view.explain. The limit is fixed by the consumer and is not RPC input.
+type DirectBlockerSource func(context.Context, driver.Reader, model.Ref, int) (DirectBlockerVerdict, error)
+
+const DirectBlockerExplainLimit = 100
+
 type Config struct {
 	AuthorizeRead    AuthorizeRead
 	Views            ViewReader
 	Readiness        ReadinessReader
+	DirectBlockers   DirectBlockerSource
 	ProjectionStatus coreevents.ProjectionStatusReader
 	// ProjectionBinding is the durable checkpoint binding whose status is
 	// surfaced with view results and view.watch frames. "core" is the stable
@@ -187,5 +219,14 @@ type ExplainResult struct {
 	Reasons          []string                     `json:"reasons"`
 	HiddenBlockers   int                          `json:"hiddenBlockers,omitempty"`
 	ReadinessPending bool                         `json:"readinessPending,omitempty"`
+	DirectBlockers   *DirectBlockerResult         `json:"directBlockers,omitempty"`
 	Projection       *coreevents.ProjectionStatus `json:"projection,omitempty"`
+}
+
+// DirectBlockerResult is present only when the optional source is configured
+// and the dependent is readable and included. Inner fields stay present for an
+// evaluated empty verdict so unavailable and empty remain distinguishable.
+type DirectBlockerResult struct {
+	Edges       []DirectBlockerEdge `json:"edges"`
+	HiddenCount int                 `json:"hiddenCount"`
 }
