@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
@@ -201,5 +203,115 @@ func TestConcurrentRevisionCASHasOneWinner(t *testing.T) {
 	versions, err := r.Versions(context.Background(), ref, driver.PageReq{})
 	if err != nil || len(versions.Items) != 2 || r.Snapshot().At.String() != "2" {
 		t.Fatalf("versions=%+v head=%s err=%v", versions, r.Snapshot().At, err)
+	}
+}
+
+func TestMetadataCASPreparedWritersHaveOneWinner(t *testing.T) {
+	h := setup(t)
+	ref := apply(t, h.writer(), model.ChangeSet{Ops: []model.Op{create("")}}, meta(1)).Results[0].Ref
+	apply(t, h.writer(), model.ChangeSet{Ops: []model.Op{metadataOp(ref, "compare", `1.0`)}}, meta(2))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan int, 2)
+	release := []chan struct{}{make(chan struct{}), make(chan struct{})}
+	var posts atomic.Int32
+	type outcome struct {
+		index int
+		value port.WriteOutcome
+		err   error
+	}
+	finished := make(chan outcome, 2)
+	for i := range 2 {
+		w := h.writer(WithValidators(ValidatorBinding{ID: "prepared", Validator: validatorFunc(func(ctx context.Context, p port.ProposedChange, r port.SnapshotReader) (port.Verdict, error) {
+			if p.BaseRevision.String() != "2" || r.Snapshot().At.String() != "2" {
+				return port.Verdict{}, errors.New("writers did not prepare on the same pinned pre-image")
+			}
+			ready <- i
+			select {
+			case <-release[i]:
+				return port.Verdict{Allow: true}, nil
+			case <-ctx.Done():
+				return port.Verdict{}, ctx.Err()
+			}
+		})}), WithPostSubscribers(PostBinding{ID: "winner", Subscriber: postFunc(func(context.Context, port.CommittedChange, port.SnapshotReader) error { posts.Add(1); return nil })}))
+		cs := model.ChangeSet{Ops: []model.Op{metadataOp(ref, "compare", fmt.Sprint(i+2)), patch(ref, map[string]any{"title": fmt.Sprint(i)})}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata.compare", metadataDigest(`1`))}}
+		go func() { out, err := w.ApplyWithOutcome(ctx, by, cs, meta(10+i)); finished <- outcome{i, out, err} }()
+	}
+	for range 2 {
+		select {
+		case <-ready:
+		case <-time.After(time.Second):
+			t.Fatal("real writers did not both pass metadata preparation")
+		}
+	}
+	close(release[0])
+	winner := <-finished
+	if winner.index != 0 || winner.err != nil || winner.value.Commit.Revision.String() != "3" {
+		t.Fatalf("first prepared writer=%+v", winner)
+	}
+	winnerState := metadataGraph(t, h)
+	close(release[1])
+	loser := <-finished
+	code(t, loser.err, "precondition_failed")
+	if loser.index != 1 || posts.Load() != 1 || metadataReceipt(t, h, meta(11)) != nil || !reflect.DeepEqual(winnerState, metadataGraph(t, h)) {
+		t.Fatalf("stale metadata writer published after the winner: %+v posts=%d", loser, posts.Load())
+	}
+	if len(winnerState.Log) != 3 || len(winnerState.Versions[ref.ID]) != 3 {
+		t.Fatal("metadata CAS winner did not publish exactly one version/changeset")
+	}
+}
+
+func TestMetadataExpectationReadOnlyDependencyRestartsOnFreshSnapshot(t *testing.T) {
+	for _, selectedValueChanges := range []bool{true, false} {
+		t.Run(fmt.Sprint("selected-value-changes=", selectedValueChanges), func(t *testing.T) {
+			h := setup(t)
+			seed := apply(t, h.writer(), model.ChangeSet{Ops: []model.Op{create("guard"), create("target")}}, meta(1))
+			guard, target := seed.Results[0].Ref, seed.Results[1].Ref
+			apply(t, h.writer(), model.ChangeSet{Ops: []model.Op{metadataOp(guard, "compare", `1.0`)}}, meta(2))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			prepared, resume := make(chan struct{}), make(chan struct{})
+			var calls, posts atomic.Int32
+			w := h.writer(WithValidators(ValidatorBinding{ID: "pause-prepared", Validator: validatorFunc(func(ctx context.Context, p port.ProposedChange, r port.SnapshotReader) (port.Verdict, error) {
+				if calls.Add(1) == 1 {
+					if p.BaseRevision.String() != "2" || r.Snapshot().At.String() != "2" {
+						return port.Verdict{}, errors.New("unexpected preparation snapshot")
+					}
+					close(prepared)
+					select {
+					case <-resume:
+					case <-ctx.Done():
+						return port.Verdict{}, ctx.Err()
+					}
+				} else if r.Snapshot().At.String() != "3" {
+					return port.Verdict{}, errors.New("retry reused the stale snapshot")
+				}
+				return port.Verdict{Allow: true}, nil
+			})}), WithPostSubscribers(PostBinding{ID: "post", Subscriber: postFunc(func(context.Context, port.CommittedChange, port.SnapshotReader) error { posts.Add(1); return nil })}))
+			result := make(chan error, 1)
+			cs := model.ChangeSet{Ops: []model.Op{patch(target, map[string]any{"title": "dependent"})}, Expect: []model.Precondition{model.PreconditionByHash(guard, "metadata.compare", metadataDigest(`1`))}}
+			go func() { _, err := w.Apply(ctx, by, cs, meta(10)); result <- err }()
+			select {
+			case <-prepared:
+			case <-time.After(time.Second):
+				t.Fatal("metadata-dependent writer did not prepare")
+			}
+			change := patch(guard, map[string]any{"title": "disjoint edit"})
+			if selectedValueChanges {
+				change = metadataOp(guard, "compare", `2`)
+			}
+			apply(t, h.writer(), model.ChangeSet{Ops: []model.Op{change}}, meta(11))
+			beforeResume := metadataGraph(t, h)
+			close(resume)
+			err := <-result
+			if selectedValueChanges {
+				code(t, err, "precondition_failed")
+				if !reflect.DeepEqual(beforeResume, metadataGraph(t, h)) || metadataReceipt(t, h, meta(10)) != nil || posts.Load() != 0 {
+					t.Fatal("read-only metadata dependency was absent from the shared commit read set")
+				}
+			} else if err != nil || calls.Load() != 2 || posts.Load() != 1 || metadataReceipt(t, h, meta(10)) == nil || h.read(t).Snapshot().At.String() != "4" {
+				t.Fatalf("equal selected value failed to restart and commit: calls=%d posts=%d err=%v", calls.Load(), posts.Load(), err)
+			}
+		})
 	}
 }

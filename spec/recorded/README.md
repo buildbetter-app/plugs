@@ -75,3 +75,44 @@ The validator binds repeated provenance to all retained evidence and rejects
 missing or mismatched recorder, driver, schema, configuration, clock/ID/graph,
 projection, or disposition fields. Its negative cases remove evidence from
 both cards and attempt to rehash incomplete repeated provenance.
+
+## B24 adopted untimed defer deviation
+
+The orchestrator decision of 2026-10-30 07:45Z adopts **an intentional
+deviation** from the recorded timed-defer behavior. Plug's application request
+is `bead.defer={id, reason?, expect?}`, or
+`plug defer ID [--reason TEXT] [--expect REVISION]`. It selects the ontology's
+defer slot. A nonempty reason becomes a comment in the same ChangeSet, and
+`expect` supplies preconditions. The supported way to make deferred work
+workable again is an explicit `bead.reopen`, subject to the ontology and other
+ready predicates. Status names come from the ontology.
+
+| Retained Beads projection | Adopted Plug projection |
+| --- | --- |
+| An expired dated defer wakes on ready and clears its defer time. | The request has no target time and no automatic expiry wake; an untimed defer needs explicit reopen. |
+| A dateless defer stays deferred. | Untimed defer stays outside ready; an optional reason is a comment. |
+| A future dated defer stays deferred. | There is no future target field or time-based release. |
+| An expired dated ephemeral item wakes on ready and clears its defer time. | No dated ephemeral wake is supported or qualified by this record. |
+| An expired dated item is claimable and becomes in progress. | Expiry does not make deferred work claimable; explicit reopen restores otherwise-ready work. |
+| Reopen makes the reference item open and ready and clears its defer time. | Reopen selects the unstarted slot; there is no target-time field to clear, and existing comments remain. |
+
+[The separate B24 deviation record](b24_untimed_defer_deviation.json) binds
+these projections to Beads source `9d6fff760b7a314b476539198504d77ce0959656`,
+the immutable reference manifest, and Plug source/contract pin
+`db028d2e9369fa0a645c5506507f3774d2a9554c`. It retains exact reference outcome
+keys, digests, recorder commands, and source blob/hash evidence. Consumers can
+use Bazel data target `//spec/recorded:b24_deviation`.
+
+This record does not rerun the recorder. The raw reference, goldens,
+provenance and original tests remain immutable; the older B24 card and its
+catalog `keep` disposition remain historical evidence. Both reference and
+Plug projections stay visible rather than converting a timed expectation
+into an untimed golden. The reference permits an omitted reason but rejects
+an explicitly blank one; that differs from Plug's optional reason/comment
+shape and the older behavior card's reason/notes wording.
+
+The runtime-clock limitation above and all historical failures remain. This
+decision adds no target-time field, wake scheduler or controlled Go/SQL clock
+evidence and certifies no positive timed behavior or full B24 parity. The
+existing category/reopen and claim-lease tests retain their original limits;
+the separate connected acceptance owner verifies the adopted untimed path.

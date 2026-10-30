@@ -1251,6 +1251,9 @@
           },
           "onBehalfOf": {
             "type": "string"
+          },
+          "displayName": {
+            "$ref": "#/components/schemas/DisplayName"
           }
         },
         "required": [
@@ -3309,6 +3312,16 @@
           "checkpoint"
         ],
         "additionalProperties": false
+      },
+      "DisplayNameInput": {
+        "type": "string",
+        "description": "Optional caller-asserted, untrusted display-only label. Trim leading and trailing Unicode White_Space; reject Unicode control (Cc) and format (Cf) characters with typed invalid_params. Allow at most 64 Unicode scalar values after trimming, not bytes or grapheme clusters; empty after trimming means absent. The raw input schema intentionally has no maxLength because padding is removed before applying the bound. Normalization and category rejection require the later consumer; schema validation alone does not perform them. Never use displayName for authorization, attribution, audit actor, idempotency, leases or dedup. Render it next to the authenticated principal (user name, API key name, or anonymous), never instead of or as that principal."
+      },
+      "DisplayName": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "description": "Optional normalized, untrusted display-only label from session.open. Omit when empty after trimming Unicode White_Space; otherwise 1..64 Unicode scalar values, with no control (Cc) or format (Cf) characters. Trimming and category rejection are normative consumer requirements. Never use it for authorization, attribution, audit actor, idempotency, leases or dedup. Always render it next to the authenticated principal (user name, API key name, or anonymous); never replace or impersonate the principal. Keep two sessions of one principal as distinct members by sessionId, each with its own displayName; do not merge their labels into a trusted group identity."
       }
     },
     "errors": {

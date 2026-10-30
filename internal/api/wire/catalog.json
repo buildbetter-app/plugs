@@ -4986,7 +4986,7 @@
     {
       "name": "session.open",
       "summary": "Open a live collaboration session.",
-      "description": "Open a caller-owned live collaboration session. Its idle expiry is bounded to five minutes after opening or the latest successful presence.set. Disconnects are reclaimed by expiry; one-shot CLI calls open no session. After reconnect or failover, open a new session and recreate watches using their last acknowledged cursors. Existing cursor expiry, reset and incarnation-gap rules apply.",
+      "description": "Open a caller-owned live collaboration session. Its idle expiry is bounded to five minutes after opening or the latest successful presence.set. Disconnects are reclaimed by expiry; one-shot CLI calls open no session. After reconnect or failover, open a new session and recreate watches using their last acknowledged cursors. Existing cursor expiry, reset and incarnation-gap rules apply. Optional displayName follows x-display-name-contract; omitting it preserves existing session behavior.",
       "tags": [
         {
           "name": "collab"
@@ -4999,6 +4999,14 @@
           "schema": {
             "type": "string"
           }
+        },
+        {
+          "name": "displayName",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/DisplayNameInput"
+          },
+          "description": "Optional caller-asserted, untrusted display-only label. Trim leading and trailing Unicode White_Space; reject Unicode control (Cc) and format (Cf) characters with typed invalid_params. Allow at most 64 Unicode scalar values after trimming, not bytes or grapheme clusters; empty after trimming means absent. The raw input schema intentionally has no maxLength because padding is removed before applying the bound. Normalization and category rejection require the later consumer; schema validation alone does not perform them. Never use displayName for authorization, attribution, audit actor, idempotency, leases or dedup. Render it next to the authenticated principal (user name, API key name, or anonymous), never instead of or as that principal."
         },
         {
           "name": "_meta",
@@ -5024,6 +5032,9 @@
         },
         {
           "$ref": "#/components/errors/RateLimited"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
         }
       ],
       "x-effect": "read",
@@ -7644,6 +7655,9 @@
           },
           "onBehalfOf": {
             "type": "string"
+          },
+          "displayName": {
+            "$ref": "#/components/schemas/DisplayName"
           }
         },
         "required": [
@@ -9702,6 +9716,16 @@
           "checkpoint"
         ],
         "additionalProperties": false
+      },
+      "DisplayNameInput": {
+        "type": "string",
+        "description": "Optional caller-asserted, untrusted display-only label. Trim leading and trailing Unicode White_Space; reject Unicode control (Cc) and format (Cf) characters with typed invalid_params. Allow at most 64 Unicode scalar values after trimming, not bytes or grapheme clusters; empty after trimming means absent. The raw input schema intentionally has no maxLength because padding is removed before applying the bound. Normalization and category rejection require the later consumer; schema validation alone does not perform them. Never use displayName for authorization, attribution, audit actor, idempotency, leases or dedup. Render it next to the authenticated principal (user name, API key name, or anonymous), never instead of or as that principal."
+      },
+      "DisplayName": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "description": "Optional normalized, untrusted display-only label from session.open. Omit when empty after trimming Unicode White_Space; otherwise 1..64 Unicode scalar values, with no control (Cc) or format (Cf) characters. Trimming and category rejection are normative consumer requirements. Never use it for authorization, attribution, audit actor, idempotency, leases or dedup. Always render it next to the authenticated principal (user name, API key name, or anonymous); never replace or impersonate the principal. Keep two sessions of one principal as distinct members by sessionId, each with its own displayName; do not merge their labels into a trusted group identity."
       }
     },
     "errors": {
@@ -12256,7 +12280,7 @@
     "methodCount": 81,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "925afc30e52e4659b24e34f311698c96930f215ba460fee7c1634634d1ff04ff",
-    "descriptorSha256": "c9660540601a1a646c0e909ef486947a879c18fcfc900b65bad6193a2db59d64",
+    "descriptorSha256": "68983fe00de5f0466e67c7531a53a6a77cd889cf4f11469048e2a15d1b51beb5",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -15523,6 +15547,13 @@
             }
           },
           {
+            "name": "displayName",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/DisplayNameInput"
+            }
+          },
+          {
             "name": "_meta",
             "required": false,
             "schema": {
@@ -15536,7 +15567,8 @@
         "errors": [
           "#/components/errors/Forbidden",
           "#/components/errors/TooManySessions",
-          "#/components/errors/RateLimited"
+          "#/components/errors/RateLimited",
+          "#/components/errors/InvalidParams"
         ]
       },
       {
@@ -16708,5 +16740,31 @@
     "staleIncarnationError": "incarnation_changed",
     "truncatedHistoryError": "cursor_expired",
     "rule": "The driver decodes and checks the tuple before reading; a token from another incarnation is never treated as a revision in the new incarnation."
+  },
+  "x-display-name-contract": {
+    "normalization": {
+      "trim": "Unicode White_Space",
+      "rejectCategories": [
+        "Cc",
+        "Cf"
+      ],
+      "maxUnicodeScalarsAfterTrim": 64,
+      "emptyAfterTrim": "absent",
+      "error": "invalid_params"
+    },
+    "trust": "untrusted display-only",
+    "neverUsedFor": [
+      "authorization",
+      "attribution",
+      "auditActor",
+      "idempotency",
+      "leases",
+      "dedup"
+    ],
+    "render": "next to authenticated principal: user name, API key name, or anonymous; never replaces or impersonates the principal",
+    "members": "two sessions of the same principal remain separate members identified by sessionId; never merge labels into a trusted group identity",
+    "refresh": "There is no session-refresh method in this catalog. presence.set renews idle expiry without changing displayName.",
+    "validation": "The schema validates raw input type and normalized output length only. Trimming, empty-to-absent, rejection of Unicode Cc and Cf, and the input limit after trimming are normative consumer requirements; this contract PR does not implement or qualify them.",
+    "consumerProof": "After this contract lands, separately qualify real bound RPC normalization/refusal, storage/expiry/close/masking, principal and ownership separation, distinct sessions and UI rendering. Then rerun E3 with 50 distinct displayName values."
   }
 }

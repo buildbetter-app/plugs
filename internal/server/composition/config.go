@@ -24,11 +24,13 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
+	"github.com/buildbetter-app/plugs/internal/plugins/authnoidc"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/collab"
 	servertsevents "github.com/buildbetter-app/plugs/internal/server/events"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
+	"github.com/buildbetter-app/plugs/internal/server/transport/mcp"
 	"github.com/buildbetter-app/plugs/internal/server/viewrpc"
 	"github.com/buildbetter-app/plugs/internal/server/watch"
 	"github.com/buildbetter-app/plugs/internal/server/watchhttp"
@@ -51,17 +53,29 @@ const (
 // persistent configuration.
 type StoreFactory func(context.Context, string, driver.Config) (driver.Store, error)
 
+// OIDCFactory constructs the existing OIDC provider from trusted host
+// configuration. Composition supplies the selected store's durable session
+// capability in the copied authnoidc.Config before calling the factory.
+// Production uses authnoidc.New; the seam keeps tests from replacing the
+// provider or its session semantics with a parallel implementation.
+type OIDCFactory func(authnoidc.Config) (*authnoidc.Provider, error)
+
 // Config describes one server composition. Driver and DSN are intentionally
 // separate so an invalid combination can be refused before any listener is
 // opened. UI is enabled for shared servers and disabled by in-process callers.
 type Config struct {
-	Driver       string
-	DSN          string
-	Project      string
-	Address      string
-	UI           bool
-	AuthMode     string
-	Auth         authn.Config
+	Driver   string
+	DSN      string
+	Project  string
+	Address  string
+	UI       bool
+	AuthMode string
+	Auth     authn.Config
+	// OIDC enables the existing OIDC provider. Its SessionStore is owned by
+	// composition and is replaced with the selected SQLite/PostgreSQL store;
+	// the typed config is not parsed from .plug/config.yaml yet.
+	OIDC         *authnoidc.Config
+	OIDCFactory  OIDCFactory
 	HTTP         httpjson.Config
 	CursorKey    []byte
 	LeaseHolder  string
@@ -91,6 +105,7 @@ type Runtime struct {
 	RPC              *rpc.Server
 	Metrics          *pipeline.Collector
 	Authenticator    *authn.Authenticator
+	OIDC             *authnoidc.Provider
 	HTTPHandler      *httpjson.Handler
 	UIHandler        *webui.Handler
 	WatchHTTP        *watchhttp.Adapter
@@ -104,6 +119,7 @@ type Runtime struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	renewDone chan struct{}
+	mcp       http.Handler
 	httpMu    sync.Mutex
 	http      *httpjson.Server
 	closed    bool
@@ -163,15 +179,25 @@ func normalizeConfig(config Config) (Config, error) {
 		return Config{}, err
 	}
 	if config.AuthMode == "" {
-		config.AuthMode = "anonymous"
+		if config.OIDC != nil {
+			config.AuthMode = "authenticated"
+		} else {
+			config.AuthMode = "anonymous"
+		}
 	}
 	if config.AuthMode != "anonymous" && config.AuthMode != "authenticated" {
 		return Config{}, fmt.Errorf("composition: unsupported authentication mode %q", config.AuthMode)
 	}
+	if config.OIDC != nil && config.AuthMode != "authenticated" {
+		return Config{}, errors.New("composition: OIDC authentication requires authenticated mode")
+	}
+	if config.OIDCFactory != nil && config.OIDC == nil {
+		return Config{}, errors.New("composition: OIDC factory requires OIDC configuration")
+	}
 	if config.AuthMode == "anonymous" && !loopbackAddress(config.Address) {
 		return Config{}, errors.New("composition: anonymous server must bind a loopback address")
 	}
-	if config.AuthMode == "authenticated" && config.Auth.Provider == nil && config.Auth.CoreSessions == nil {
+	if config.AuthMode == "authenticated" && config.Auth.Provider == nil && config.Auth.CoreSessions == nil && config.OIDC == nil {
 		return Config{}, errors.New("composition: authenticated mode requires an authentication provider")
 	}
 	if len(config.CursorKey) != 0 && len(config.CursorKey) < 32 {
@@ -228,6 +254,11 @@ func (r *Runtime) bind(config Config) error {
 	if err != nil {
 		return fmt.Errorf("composition: read store metadata: %w", err)
 	}
+	authConfig, oidc, err := composeAuth(config, r.Store)
+	if err != nil {
+		return err
+	}
+	r.OIDC = oidc
 	ontology := service.NewOntology(nil)
 	writer, metrics := newPipelineWriter(r.Store, r.Lease, pipeline.WithOntology(ontology))
 	r.Metrics = metrics
@@ -326,7 +357,7 @@ func (r *Runtime) bind(config Config) error {
 	}
 	r.WatchHTTP = watchAdapter
 
-	r.Authenticator, err = authn.New(config.Auth)
+	r.Authenticator, err = authn.New(authConfig)
 	if err != nil {
 		return fmt.Errorf("composition: create authenticator: %w", err)
 	}
@@ -343,6 +374,10 @@ func (r *Runtime) bind(config Config) error {
 	if err != nil {
 		return fmt.Errorf("composition: create HTTP handler: %w", err)
 	}
+	r.mcp, err = newMCPHandler(r.RPC, r.Authenticator)
+	if err != nil {
+		return fmt.Errorf("composition: create MCP handler: %w", err)
+	}
 	if config.UI {
 		r.UIHandler, err = webui.New(webui.Config{Project: config.Project, RPCPath: httpjson.Path})
 		if err != nil {
@@ -350,6 +385,38 @@ func (r *Runtime) bind(config Config) error {
 		}
 	}
 	return nil
+}
+
+func composeAuth(config Config, store driver.Store) (authn.Config, *authnoidc.Provider, error) {
+	authConfig := config.Auth
+	if config.OIDC == nil {
+		return authConfig, nil, nil
+	}
+	if authConfig.CoreSessions != nil {
+		return authn.Config{}, nil, errors.New("composition: OIDC configuration conflicts with an existing core-session source")
+	}
+	sessionStore, ok := store.(driver.CoreSessionStore)
+	if !ok || sessionStore == nil {
+		return authn.Config{}, nil, errors.New("composition: OIDC authentication requires a durable SQLite or PostgreSQL core-session store")
+	}
+	oidcConfig := *config.OIDC
+	// The selected store is the only durable-session authority for this
+	// composition. Do not retain an independently supplied store from the
+	// caller's copy, which could make restart/revocation use another database.
+	oidcConfig.SessionStore = sessionStore
+	factory := config.OIDCFactory
+	if factory == nil {
+		factory = authnoidc.New
+	}
+	provider, err := factory(oidcConfig)
+	if err != nil {
+		return authn.Config{}, nil, fmt.Errorf("composition: create OIDC provider: %w", err)
+	}
+	if provider == nil {
+		return authn.Config{}, nil, errors.New("composition: OIDC factory returned a nil provider")
+	}
+	authConfig.CoreSessions = provider
+	return authConfig, provider, nil
 }
 
 // bridgeRPCSession preserves a collaboration session beyond the short-lived
@@ -371,7 +438,7 @@ func (r *Runtime) bridgeRPCSession(ctx context.Context, principal model.Principa
 // root handler is deliberately small: every route has an owner and unknown
 // paths return a normal 404 from net/http.
 func (r *Runtime) Listen(ctx context.Context, address string, tlsConfig *tls.Config) (*httpjson.Server, error) {
-	if r == nil || r.HTTPHandler == nil || r.Authenticator == nil {
+	if r == nil || r.HTTPHandler == nil || r.mcp == nil || r.Authenticator == nil {
 		return nil, errors.New("composition: runtime is not initialized")
 	}
 	if ctx == nil {
@@ -385,6 +452,7 @@ func (r *Runtime) Listen(ctx context.Context, address string, tlsConfig *tls.Con
 	}
 	mux := http.NewServeMux()
 	mux.Handle(httpjson.Path, r.HTTPHandler)
+	mux.Handle(mcp.Path, r.mcp)
 	if r.UIHandler != nil {
 		mux.Handle("/ui/", r.UIHandler)
 	}
@@ -472,7 +540,7 @@ func (r *Runtime) renew(holder string) {
 	}
 }
 
-// Close drains HTTP before canceling collaboration/watch work, releases the
+// Close releases MCP streams, drains HTTP, cancels collaboration/watch work,
 // lease, and finally closes the store. Each step is idempotent through the
 // single owner, so failed composition paths cannot leak a lease or store.
 func (r *Runtime) Close(ctx context.Context) error {
@@ -488,6 +556,7 @@ func (r *Runtime) Close(ctx context.Context) error {
 		httpServer := r.http
 		r.http = nil
 		r.httpMu.Unlock()
+		r.closeErr = errors.Join(r.closeErr, closeMCPHandler(r.mcp))
 		if httpServer != nil {
 			r.closeErr = errors.Join(r.closeErr, httpServer.Shutdown(ctx))
 		}
