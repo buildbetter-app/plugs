@@ -2,9 +2,11 @@ package collab
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"sort"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 )
 
@@ -128,4 +130,38 @@ func (m *Manager) List(ctx context.Context, caller Caller, project string) ([]Pr
 		}
 	}
 	return out, nil
+}
+
+// Snapshot is the watch manager's narrow transport port. It reuses List, so
+// every poll applies the same current resource masking and authorization as a
+// direct presence.list call. The trusted session must own the requested
+// project; a caller cannot use a live session to watch another scope.
+func (m *Manager) Snapshot(ctx context.Context, principal model.PrincipalRef, agent, sessionID, project string) ([]byte, error) {
+	if project == "" {
+		return nil, failure("project_required", "supply a project for presence")
+	}
+	caller := Caller{Principal: principal, Agent: agent}
+	lifetime, err := m.SessionContext(ctx, caller, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	e, ownedErr := m.ownedLocked(caller, sessionID)
+	ownedProject := ""
+	if ownedErr == nil {
+		ownedProject = e.project
+	}
+	m.mu.Unlock()
+	if ownedErr != nil || ownedProject != project {
+		return nil, failure("not_found", "live session was not found")
+	}
+	rows, err := m.List(lifetime, caller, project)
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(rows)
+	if err != nil {
+		return nil, failure("internal_error", "presence snapshot encoding failed")
+	}
+	return data, nil
 }

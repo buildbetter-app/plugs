@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -187,6 +188,138 @@ func (s *Service) resolve(ctx context.Context, by model.PrincipalRef, id string,
 		return Definition{}, err
 	}
 	return copy, nil
+}
+
+// WatchBinding compiles a saved definition into the exact filter vocabulary
+// understood by the event reader. A view watch is an event subscription with
+// view membership; it does not reimplement view projection or grouping in the
+// watch manager. Shapes that cannot be represented without changing event
+// membership are refused explicitly instead of being approximated.
+func (s *Service) WatchBinding(ctx context.Context, by model.PrincipalRef, id string) (coreevents.ViewBinding, error) {
+	if err := s.admit(ctx, by); err != nil {
+		return coreevents.ViewBinding{}, err
+	}
+	if strings.TrimSpace(id) == "" || id != strings.TrimSpace(id) {
+		return coreevents.ViewBinding{}, failure("invalid_params", "viewId is required")
+	}
+	definition, err := s.resolve(ctx, by, id, nil)
+	if err != nil {
+		return coreevents.ViewBinding{}, err
+	}
+	if len(definition.GroupBy) != 0 {
+		return coreevents.ViewBinding{}, failure("invalid_params", "view.watch does not support grouped views")
+	}
+	filter := definition.Filter
+	if filter == nil {
+		return coreevents.ViewBinding{}, failure("invalid_params", "view definition filter is required")
+	}
+	if len(filter.Events) != 0 || filter.ViewID != "" {
+		return coreevents.ViewBinding{}, failure("invalid_params", "view.watch filter shape is unsupported")
+	}
+	resources := append([]string(nil), filter.Resources...)
+	beadTypes := append([]string(nil), filter.Types...)
+	terms, err := parseQuery(filter.Query)
+	if err != nil {
+		return coreevents.ViewBinding{}, err
+	}
+	var queryID string
+	for _, term := range terms {
+		switch term.key {
+		case "id":
+			if queryID != "" {
+				return coreevents.ViewBinding{}, failure("invalid_params", "view.watch cannot compile multiple id clauses")
+			}
+			queryID = term.value
+		case "type":
+			if len(beadTypes) != 0 {
+				return coreevents.ViewBinding{}, failure("invalid_params", "view.watch cannot compile multiple type clauses")
+			}
+			beadTypes = []string{term.value}
+		default:
+			return coreevents.ViewBinding{}, failure("invalid_params", "view.watch supports only id and type equality in query filters")
+		}
+	}
+	if queryID != "" {
+		if len(resources) != 0 {
+			return coreevents.ViewBinding{}, failure("invalid_params", "view.watch cannot combine resources with an id query")
+		}
+		resources = []string{queryID}
+	}
+	eventResources := make([]string, 0, len(resources))
+	for _, id := range resources {
+		if strings.TrimSpace(id) == "" || id != strings.TrimSpace(id) || strings.HasPrefix(id, "bead/") {
+			return coreevents.ViewBinding{}, failure("invalid_params", "view.watch resource IDs must be bare bead IDs")
+		}
+		eventResources = append(eventResources, "bead/"+id)
+	}
+	sort.Strings(eventResources)
+	eventResources = compactStrings(eventResources)
+	sort.Strings(beadTypes)
+	beadTypes = compactStrings(beadTypes)
+	if len(eventResources) > OrdinaryCandidateCap {
+		return coreevents.ViewBinding{}, failure("scope_too_large", "view.watch resource membership exceeds the ordinary candidate cap")
+	}
+	meta, err := s.store.Meta(ctx)
+	if err != nil {
+		return coreevents.ViewBinding{}, mapped(err)
+	}
+	if meta.Incarnation == "" {
+		return coreevents.ViewBinding{}, failure("internal_error", "view checkpoint has no store incarnation")
+	}
+	projection, err := s.projectionStatus(ctx)
+	if err != nil {
+		return coreevents.ViewBinding{}, err
+	}
+	return coreevents.ViewBinding{Filter: coreevents.Filter{Resources: eventResources, BeadTypes: beadTypes}, Ontology: s.cfg.OntologyRevision, PolicyVersion: s.cfg.PolicyVersion, Incarnation: meta.Incarnation, Projection: projection}, nil
+}
+
+func (s *Service) projectionStatus(ctx context.Context) (*coreevents.ProjectionStatus, error) {
+	if s.cfg.ProjectionStatus == nil {
+		return nil, nil
+	}
+	binding := s.cfg.ProjectionBinding
+	if binding == "" {
+		binding = "core"
+	}
+	status, err := s.cfg.ProjectionStatus.Status(ctx, binding)
+	if err != nil {
+		return nil, mapped(err)
+	}
+	status = coreevents.NormalizeProjectionStatus(status, binding)
+	if status.Binding != binding {
+		return nil, failure("internal_error", "projection status binding does not match the view checkpoint")
+	}
+	if err := validateProjectionPosition(status.Position); err != nil {
+		return nil, failure("internal_error", "projection status has an invalid checkpoint")
+	}
+	if status.Resume != nil {
+		if err := validateProjectionPosition(status.Resume.Position); err != nil {
+			return nil, failure("internal_error", "projection status has an invalid resume checkpoint")
+		}
+	}
+	return &status, nil
+}
+
+func validateProjectionPosition(position coreevents.Position) error {
+	// A never-run projection has an all-zero checkpoint. Any partially filled
+	// position must satisfy the normal signed cursor tuple invariants.
+	if position.Incarnation == "" && position.Revision.IsZero() && position.Index.IsZero() {
+		return nil
+	}
+	return position.Validate()
+}
+
+func compactStrings(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	out := values[:1]
+	for _, value := range values[1:] {
+		if value != out[len(out)-1] {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func cloneDefinition(in Definition) Definition {
