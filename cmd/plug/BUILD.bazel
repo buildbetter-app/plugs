@@ -28,6 +28,7 @@ go_test(
         "//internal/server/transport/mcp",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "@org_modernc_sqlite//:sqlite",
     ],
 )
 

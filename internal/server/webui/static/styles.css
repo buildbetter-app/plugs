@@ -142,6 +142,7 @@ h3 { margin-top: 5px; font-size: 16px; font-weight: 700; letter-spacing: -.015em
 .presence-row:last-child { border-bottom: 0; }
 .presence-initial { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; color: var(--accent-strong); background: var(--accent-wash); font-size: 13px; font-weight: 700; }
 .presence-name { font-size: 13px; font-weight: 700; }
+.presence-identity { margin-top: 3px; color: var(--ink-faint); font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; }
 .presence-focus { margin-top: 4px; color: var(--ink-soft); font-size: 11px; }
 .presence-scope { color: var(--ink-faint); font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; }
 

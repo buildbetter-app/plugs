@@ -8,16 +8,37 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/client"
+	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/viewops"
+	"github.com/buildbetter-app/plugs/internal/plugins/authnoidc"
+	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/server/transport/mcp"
+	"github.com/buildbetter-app/plugs/internal/server/watch"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
+
+type compositionViews map[string]viewops.Definition
+
+func (v compositionViews) GetView(_ context.Context, _ model.PrincipalRef, id string) (viewops.Definition, error) {
+	definition, ok := v[id]
+	if !ok {
+		return viewops.Definition{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "saved view is absent"}}
+	}
+	return definition, nil
+}
+
+type compositionProjector struct{}
+
+func (compositionProjector) Apply(context.Context, coreevents.ChangeDelivery) error { return nil }
 
 type runtimeFixture struct {
 	r         *Runtime
@@ -25,6 +46,18 @@ type runtimeFixture struct {
 	done      chan error
 	transport *client.HTTPTransport
 	client    *client.Client
+}
+
+func testOIDCConfig() *authnoidc.Config {
+	return &authnoidc.Config{
+		Issuer:                "https://idp.invalid",
+		ClientID:              "plug-test",
+		RedirectURI:           "https://plug.invalid/callback",
+		AuthorizationEndpoint: "https://idp.invalid/authorize",
+		TokenEndpoint:         "https://idp.invalid/token",
+		JWKSURL:               "https://idp.invalid/jwks",
+		Users:                 map[string]string{"subject": "user:test"},
+	}
 }
 
 func startRuntime(t *testing.T, config Config) *runtimeFixture {
@@ -249,6 +282,72 @@ func TestComposedRPCSessionBridgesWatchLifetime(t *testing.T) {
 	}
 }
 
+func TestCompositionUsesDurableProjectionStatusForViewsAndWatches(t *testing.T) {
+	views := compositionViews{"issues": {Filter: &viewops.Filter{Types: []string{"issue"}}}}
+	f := startRuntime(t, Config{
+		Driver:     "memory",
+		Project:    "composition",
+		Address:    DefaultAddress,
+		ViewReader: views,
+		ProjectionBindings: []coreevents.Binding{{
+			ID:        "core",
+			Class:     coreevents.Projection,
+			Projector: compositionProjector{},
+		}},
+	})
+	created, err := f.client.Call(context.Background(), "bead.create", map[string]any{
+		"type": "issue", "fields": map[string]any{"title": "projection"},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewResult, err := f.client.Call(context.Background(), "view.run", map[string]any{
+		"definition": map[string]any{"filter": map[string]any{"types": []string{"issue"}}},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := resultObject(t, viewResult)["projection"].(map[string]any)
+	if projection["binding"] != "core" || projection["checkpoint"].(map[string]any)["revision"].(json.Number).String() != "0" {
+		t.Fatalf("view reported fabricated projection readiness: %v", projection)
+	}
+
+	subscription, err := f.r.Watches.Open(f.r.ctx, watch.Request{
+		SessionID: "projection-session", Method: watch.MethodViewWatch,
+		Principal: model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, ViewID: "issues",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := subscription.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frame.Projection == nil || !frame.Projection.Position.Revision.IsZero() {
+		t.Fatalf("watch omitted durable initial projection status: %+v", frame.Projection)
+	}
+	_ = subscription.Close()
+
+	binding, ok := f.r.Projections.Get("core")
+	if !ok {
+		t.Fatal("composition lost registered projection")
+	}
+	if _, err := f.r.Dispatcher.Step(context.Background(), binding); err != nil {
+		t.Fatal(err)
+	}
+	viewResult, err = f.client.Call(context.Background(), "view.run", map[string]any{
+		"definition": map[string]any{"filter": map[string]any{"types": []string{"issue"}}},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection = resultObject(t, viewResult)["projection"].(map[string]any)
+	if projection["checkpoint"].(map[string]any)["revision"].(json.Number).String() != "1" {
+		t.Fatalf("view did not consume checkpoint-backed adapter after delivery: %v", projection)
+	}
+	_ = created
+}
+
 func TestSQLiteCompositionPersistsAcrossRuntimeRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.db")
 	config := Config{Driver: "sqlite", DSN: path, Project: "durable", Address: DefaultAddress}
@@ -403,6 +502,52 @@ func TestMemoryCompositionIsExplicitlyEphemeral(t *testing.T) {
 	var remote *wire.Error
 	if !errors.As(err, &remote) || remote.Data.Code != "not_found" {
 		t.Fatalf("memory restart error=%v", err)
+	}
+}
+
+func TestOIDCCompositionInjectsSelectedDurableStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	var injected driver.CoreSessionStore
+	r, err := Open(context.Background(), Config{
+		Driver: "sqlite", DSN: path, Address: DefaultAddress, OIDC: testOIDCConfig(),
+		OIDCFactory: func(config authnoidc.Config) (*authnoidc.Provider, error) {
+			injected = config.SessionStore
+			return authnoidc.New(config)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := r.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	selected, ok := r.Store.(driver.CoreSessionStore)
+	if injected == nil || !ok || injected != selected {
+		t.Fatalf("OIDC provider did not receive the selected durable store: injected=%T runtime=%T", injected, r.Store)
+	}
+	if r.OIDC == nil {
+		t.Fatal("composition did not retain the constructed OIDC provider")
+	}
+	if _, err := r.Authenticator.Admit(context.Background(), ""); !errors.Is(err, authn.ErrUnauthenticated) {
+		t.Fatalf("empty credential error=%v, want unauthenticated", err)
+	}
+}
+
+func TestOIDCCompositionRefusesUnsupportedStoreAndClosesIt(t *testing.T) {
+	base := memory.New()
+	_, err := Open(context.Background(), Config{
+		Driver: "memory", Address: DefaultAddress, OIDC: testOIDCConfig(),
+		StoreFactory: func(context.Context, string, driver.Config) (driver.Store, error) {
+			return base, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "durable") {
+		t.Fatalf("unsupported durable store error=%v", err)
+	}
+	if _, metaErr := base.Meta(context.Background()); metaErr == nil {
+		t.Fatal("unsupported OIDC composition left its store open")
 	}
 }
 
