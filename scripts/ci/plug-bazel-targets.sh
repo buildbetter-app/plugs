@@ -14,8 +14,10 @@ usage() {
 usage: scripts/ci/plug-bazel-targets.sh --output DIR [--base SHA] [--head SHA]
 
 Write changed-files.txt, touched-targets.txt, reverse-targets.txt, and
-full-graph.txt to DIR. Bazel queries use BAZEL_BIN (default: bazel) and BAZEL_RC
-when set. Missing revisions fall back to the current checkout's tracked files.
+full-graph.txt to DIR. Resource ownership evidence is written to
+resource-labels.txt and unknown-files.txt. Bazel queries use BAZEL_BIN
+(default: bazel) and BAZEL_RC when set. Missing revisions fall back to the
+current checkout's tracked files.
 EOF
 }
 
@@ -85,6 +87,9 @@ full_graph=0
 ci_contract=0
 packages=()
 seeds=()
+resource_paths=()
+unknown_paths=()
+resource_labels=()
 while IFS= read -r path; do
   [[ -n "$path" ]] || continue
   case "$path" in
@@ -112,20 +117,85 @@ while IFS= read -r path; do
         seeds+=("//:$path")
       fi
       ;;
+    *)
+      if valid_revision "$head" && ! git cat-file -e "$head:$path" 2>/dev/null; then
+        full_graph=1
+        unknown_paths+=("$path")
+        continue
+      fi
+      # Resource labels can live below a package directory (for example,
+      # //internal/server/webui:static/index.html), so infer ownership from
+      # Bazel's source-file labels rather than from the filesystem directory.
+      resource_paths+=("$path")
+      ;;
   esac
 done <"$output/changed-files.txt"
 
+if ((full_graph == 0 && ${#resource_paths[@]} > 0)); then
+  declare -A source_label_by_path=()
+  # //... selects rules, not their source-file inputs. Walk the rule closure
+  # to find resources named by embedsrcs, data, filegroups, and other inputs.
+  if ! source_inventory="$(query 'kind("source file", deps(//...))')"; then
+    echo "targets: cannot query Bazel source-file ownership" >&2
+    exit 1
+  fi
+  mapfile -t source_labels < <(printf '%s\n' "$source_inventory" | grep -E '^//' | LC_ALL=C sort -u)
+  for label in "${source_labels[@]}"; do
+    label_body="${label#//}"
+    [[ "$label_body" == *:* ]] || continue
+    package="${label_body%%:*}"
+    file="${label_body#*:}"
+    if [[ -n "$package" ]]; then
+      source_path="$package/$file"
+    else
+      source_path="$file"
+    fi
+    source_label_by_path["$source_path"]="$label"
+  done
+
+  for path in "${resource_paths[@]}"; do
+    label="${source_label_by_path[$path]:-}"
+    if [[ -n "$label" ]]; then
+      label_body="${label#//}"
+      package="${label_body%%:*}"
+      if [[ -n "$package" ]]; then
+        packages+=("//$package")
+      else
+        packages+=("//")
+      fi
+      seeds+=("$label")
+      resource_labels+=("$path=$label")
+    else
+      # An unowned file may still affect a custom rule, a generated input, or
+      # a package declaration outside this diff. Complete-graph selection is
+      # the safe fail-closed approximation when ownership is unknown.
+      full_graph=1
+      unknown_paths+=("$path")
+    fi
+  done
+fi
+
 printf '%s\n' "${packages[@]}" | sed '/^$/d' | LC_ALL=C sort -u >"$output/packages.txt"
 printf '%s\n' "${seeds[@]}" | sed '/^$/d' | LC_ALL=C sort -u >"$output/seeds.txt"
+printf '%s\n' "${resource_labels[@]}" | sed '/^$/d' | LC_ALL=C sort -u >"$output/resource-labels.txt"
+printf '%s\n' "${unknown_paths[@]}" | sed '/^$/d' | LC_ALL=C sort -u >"$output/unknown-files.txt"
 
 if ((full_graph)); then
-  mapfile -t touched < <(query 'kind(".*_test rule", //...)' | grep -E '^//' | LC_ALL=C sort -u)
+  if ! touched_query="$(query 'kind(".*_test rule", //...)')"; then
+    echo "targets: cannot query complete Bazel test graph" >&2
+    exit 1
+  fi
+  mapfile -t touched < <(printf '%s\n' "$touched_query" | grep -E '^//' | LC_ALL=C sort -u)
   reverse=()
 else
   touched=()
   while IFS= read -r package; do
     [[ -n "$package" ]] || continue
-    mapfile -t package_tests < <(query "kind(\".*_test rule\", ${package}:all)" | grep -E '^//' | LC_ALL=C sort -u)
+    if ! package_query="$(query "kind(\".*_test rule\", ${package}:all)")"; then
+      echo "targets: cannot query tests for $package" >&2
+      exit 1
+    fi
+    mapfile -t package_tests < <(printf '%s\n' "$package_query" | grep -E '^//' | LC_ALL=C sort -u)
     touched+=("${package_tests[@]}")
   done <"$output/packages.txt"
 
@@ -133,7 +203,11 @@ else
   if [[ -s "$output/seeds.txt" ]]; then
     mapfile -t seed_values <"$output/seeds.txt"
     seed_set="set(${seed_values[*]})"
-    mapfile -t reverse < <(query "kind(\".*_test rule\", rdeps(//..., ${seed_set}))" | grep -E '^//' | LC_ALL=C sort -u)
+    if ! reverse_query="$(query "kind(\".*_test rule\", rdeps(//..., ${seed_set}))")"; then
+      echo "targets: cannot query reverse-dependent tests" >&2
+      exit 1
+    fi
+    mapfile -t reverse < <(printf '%s\n' "$reverse_query" | grep -E '^//' | LC_ALL=C sort -u)
   fi
 fi
 
@@ -150,7 +224,7 @@ if [[ ! -s "$output/touched-targets.txt" && ! -s "$output/reverse-targets.txt" ]
   fi
 else
   if ((full_graph)); then
-    printf '%s\n' 'selection=complete Bazel test graph (repository graph change)' >"$output/selection.txt"
+    printf '%s\n' 'selection=complete Bazel test graph (repository graph change or unknown resource ownership)' >"$output/selection.txt"
   else
     printf '%s\n' 'selection=package tests plus transitive reverse-dependent tests' >"$output/selection.txt"
   fi
