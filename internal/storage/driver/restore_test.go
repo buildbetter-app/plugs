@@ -1,0 +1,117 @@
+package driver
+
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+type restoreCapabilityFixture struct {
+	currentImage bool
+	fullHistory  bool
+}
+
+func (f restoreCapabilityFixture) SupportsRestore(mode RestoreMode) bool {
+	switch mode {
+	case RestoreModeCurrentImage:
+		return f.currentImage
+	case RestoreModeFullHistory:
+		return f.fullHistory
+	default:
+		return false
+	}
+}
+
+func TestRestoreModeForHistoryDefaultsToFullHistory(t *testing.T) {
+	tests := []struct {
+		history string
+		want    RestoreMode
+	}{
+		{history: "", want: RestoreModeFullHistory},
+		{history: "full", want: RestoreModeFullHistory},
+		{history: "verified", want: RestoreModeFullHistory},
+		{history: "head", want: RestoreModeCurrentImage},
+		{history: "unavailable", want: RestoreModeCurrentImage},
+	}
+	for _, tt := range tests {
+		got, err := RestoreModeForHistory(tt.history)
+		if err != nil || got != tt.want {
+			t.Fatalf("history %q -> mode %q, err %v; want %q", tt.history, got, err, tt.want)
+		}
+	}
+	for _, history := range []string{"partial", "available-unverified"} {
+		err := func() error {
+			_, err := RestoreModeForHistory(history)
+			return err
+		}()
+		if err == nil {
+			t.Fatalf("unsupported history mode %q was accepted", history)
+		}
+		if history == "partial" {
+			var malformed ErrRestoreHistory
+			if !errors.As(err, &malformed) || malformed.Value != history {
+				t.Fatalf("malformed history error=%T %v", err, err)
+			}
+		} else {
+			var unsupported ErrRestoreUnsupported
+			if !errors.As(err, &unsupported) || unsupported.History != history || unsupported.Mode != RestoreModeFullHistory {
+				t.Fatalf("unverified history error=%T %v", err, err)
+			}
+		}
+	}
+}
+
+func TestRestoreCapabilityDoesNotConflateReadableHistoryWithRestore(t *testing.T) {
+	info := Info{Capabilities: []string{"history", CapabilityRestoreCurrentImage}}
+	if !info.Supports("history") || !info.Supports(CapabilityRestoreCurrentImage) {
+		t.Fatal("advertised capabilities were not reported")
+	}
+	if info.Supports(CapabilityRestoreFullHistory) {
+		t.Fatal("current-image capability implied full-history restore")
+	}
+}
+
+func TestRequireRestoreCapabilityRefusesFullHistoryBeforeMutation(t *testing.T) {
+	fixture := restoreCapabilityFixture{currentImage: true}
+	if err := RequireRestoreCapability(fixture, RestoreModeCurrentImage); err != nil {
+		t.Fatalf("current-image capability refused: %v", err)
+	}
+	err := RequireRestoreCapability(fixture, RestoreModeFullHistory)
+	var typed ErrRestoreUnsupported
+	if err == nil || !errors.As(err, &typed) || !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("full-history refusal lost its typed unsupported contract: %T %v", err, err)
+	}
+	if typed.Mode != RestoreModeFullHistory {
+		t.Fatalf("refusal mode=%q", typed.Mode)
+	}
+	if !strings.Contains(err.Error(), string(RestoreModeFullHistory)) {
+		t.Fatalf("refusal omitted mode: %v", err)
+	}
+	code, details, ok := ErrorMapping(err)
+	if !ok || code != "restore_violation" || details["mode"] != string(RestoreModeFullHistory) {
+		t.Fatalf("refusal mapping=%q %#v ok=%v", code, details, ok)
+	}
+}
+
+func TestRequireRestoreCapabilityRejectsUnknownMode(t *testing.T) {
+	err := RequireRestoreCapability(restoreCapabilityFixture{currentImage: true, fullHistory: true}, RestoreMode("unknown"))
+	var typed ErrRestoreUnsupported
+	if err == nil || !errors.As(err, &typed) || !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("unknown mode did not fail closed: %T %v", err, err)
+	}
+}
+
+func TestRequireRestoreCapabilityRequiresOptionalProvider(t *testing.T) {
+	err := RequireRestoreCapability(struct{}{}, RestoreModeCurrentImage)
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("missing provider error=%v", err)
+	}
+}
+
+func TestMalformedHistoryMapsToRestoreViolation(t *testing.T) {
+	_, err := RestoreModeForHistory("partial")
+	code, details, ok := ErrorMapping(err)
+	if !ok || code != "restore_violation" || details["reason"] != "invalid_restore_history" || details["history"] != "partial" {
+		t.Fatalf("malformed history mapping=%q %#v ok=%v", code, details, ok)
+	}
+}

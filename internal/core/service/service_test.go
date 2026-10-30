@@ -508,6 +508,46 @@ func TestNamedWriteOutcomesUseActualReceipts(t *testing.T) {
 	}
 }
 
+func TestDependencyMethodsLowerToCanonicalGraphOperations(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	from, _ := create(t, f, "Dependent")
+	to, _ := create(t, f, "Blocker")
+	req := LinkRequest{From: from, To: to, Kind: "blocks"}
+	firstKey := meta(t)
+	first, err := f.svc.LinkWithOutcome(ctx, anonymous, req, firstKey)
+	if err != nil || first.Replayed || first.Commit.Revision.String() != "3" {
+		t.Fatalf("link outcome=%+v err=%v", first, err)
+	}
+	doc, err := pipeline.DecodeDocument(first.Commit.Results[0].Record)
+	if err != nil || len(doc.Links) != 1 || doc.Links[0].To.ID != to.ID || doc.Links[0].Kind != "blocks" {
+		t.Fatalf("link did not lower to graph edge: %+v err=%v", doc.Links, err)
+	}
+
+	replay, err := f.svc.LinkWithOutcome(ctx, anonymous, req, firstKey)
+	if err != nil || !replay.Replayed || !bytes.Equal(replay.Commit.Results[0].Record, first.Commit.Results[0].Record) {
+		t.Fatalf("link replay=%+v err=%v", replay, err)
+	}
+	duplicate, err := f.svc.LinkWithOutcome(ctx, anonymous, req, meta(t))
+	if err != nil || duplicate.Replayed || duplicate.Commit.Revision.String() != "3" {
+		t.Fatalf("duplicate link should be a fresh no-op: %+v err=%v", duplicate, err)
+	}
+
+	unlinked, err := f.svc.UnlinkWithOutcome(ctx, anonymous, req, meta(t))
+	if err != nil || unlinked.Replayed || unlinked.Commit.Revision.String() != "4" {
+		t.Fatalf("unlink outcome=%+v err=%v", unlinked, err)
+	}
+	doc, err = pipeline.DecodeDocument(unlinked.Commit.Results[0].Record)
+	if err != nil || len(doc.Links) != 0 {
+		t.Fatalf("unlink did not remove graph edge: %+v err=%v", doc.Links, err)
+	}
+	if _, err := f.svc.LinkWithOutcome(ctx, anonymous, LinkRequest{From: from, To: to}, meta(t)); err == nil {
+		t.Fatal("empty link kind was accepted")
+	} else {
+		wantCode(t, err, "invalid_params")
+	}
+}
+
 func TestFreshNoopAndDryRunOutcomesAreNotReplayed(t *testing.T) {
 	post := &failedPost{}
 	f := setup(t, pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "outcome-post", Subscriber: post}))
@@ -578,6 +618,26 @@ func TestOutcomeMethodsRequireActualOutcomeWriterBeforeWriting(t *testing.T) {
 	}
 	if _, err := f.svc.Create(context.Background(), anonymous, req, meta(t)); err != nil || legacy.calls != 1 {
 		t.Fatalf("legacy writer compatibility: %v calls=%d", err, legacy.calls)
+	}
+}
+
+func TestPlainTransactionAndDependencyMethodsUseLegacyWriter(t *testing.T) {
+	f := setup(t)
+	from, _ := create(t, f, "Dependent")
+	to, _ := create(t, f, "Blocker")
+	legacy := &legacyOnlyWriter{Writer: f.writer}
+	f.svc.writer = legacy
+	if _, err := f.svc.Link(context.Background(), anonymous, LinkRequest{From: from, To: to, Kind: "relates-to"}, meta(t)); err != nil {
+		t.Fatalf("legacy link: %v", err)
+	}
+	if _, err := f.svc.Apply(context.Background(), anonymous, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: from, Fields: map[string]any{"title": "updated"}}}}}, meta(t)); err != nil {
+		t.Fatalf("legacy tx.apply: %v", err)
+	}
+	if _, err := f.svc.Unlink(context.Background(), anonymous, LinkRequest{From: from, To: to, Kind: "relates-to"}, meta(t)); err != nil {
+		t.Fatalf("legacy unlink: %v", err)
+	}
+	if legacy.calls != 3 {
+		t.Fatalf("legacy writer calls=%d, want 3", legacy.calls)
 	}
 }
 
