@@ -1238,6 +1238,7 @@ func mustGetwd() string {
 
 func goPath(t *testing.T) string {
 	t.Helper()
+	pluginbuild.UseBazelSDK(t)
 	if path, err := exec.LookPath("go"); err == nil {
 		return path
 	}
