@@ -51,7 +51,15 @@ errors never become permits. Scoped principals without a plugin are refused.
 No permissive policy adapter is shipped. Positive installed-policy integration
 awaits the host's authoritative context/fact boundary and is not certified here.
 
-`presence.watch` remains unbound (`method_not_found`) and absent from discovery.
-No snapshot/delta stream, watch quota reservation, views, login sessions, or
-interactive-human proofs are implemented. `SessionContext` is only an ownership
-and cancellation seam for the future watch owner; it is not a subscription.
+The composed server binds `presence.watch` through the watch adapter. It takes
+the caller-owned `sessionId` and project from trusted transport metadata, emits
+an initial cursor and an empty `watch.delta` signal when the current
+viewer-filtered snapshot changes, and leaves row reads to `presence.list`.
+Snapshot polls reuse `List`, so focus and claims are masked by current access;
+they write no graph, version, changeset, checkpoint, or dump state. The watch
+manager reserves the shared 32-watch session cap and ties expiry, close, lease
+loss, and shutdown to the session context. A signed cursor is bound to the
+presence method, project filter, principal, policy generation, and store
+incarnation; reconnecting with a changed snapshot advances that cursor.
+The watch adapter remains absent when no real collaboration source is wired.
+Views, login sessions, and interactive-human proofs are outside this slice.
