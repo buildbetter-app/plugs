@@ -81,6 +81,7 @@ engdocs/plug-runtime/cli.md
 engdocs/plug-runtime/events.md
 engdocs/plug-runtime/native-plugins.md
 engdocs/plug-runtime/rpc-http.md
+engdocs/plug-runtime/server.md
 engdocs/plug-runtime/storage.md
 engdocs/style/BUILD.bazel
 engdocs/style/lexicon.toml
@@ -111,6 +112,8 @@ internal/cli/README.md
 internal/cli/archive_test.go
 internal/cli/config.go
 internal/cli/config_test.go
+internal/cli/gate.go
+internal/cli/gate_test.go
 internal/cli/local.go
 internal/cli/local_test.go
 internal/cli/parse.go
@@ -225,6 +228,7 @@ internal/core/pipeline/callbacks.go
 internal/core/pipeline/callbacks_test.go
 internal/core/pipeline/claim_recovery.go
 internal/core/pipeline/document.go
+internal/core/pipeline/gate.go
 internal/core/pipeline/guard_test.go
 internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
@@ -235,6 +239,8 @@ internal/core/pipeline/protected.go
 internal/core/pipeline/response.go
 internal/core/pipeline/response_test.go
 internal/core/pipeline/snapshot.go
+internal/core/pipeline/telemetry.go
+internal/core/pipeline/telemetry_test.go
 internal/core/port/BUILD.bazel
 internal/core/port/gate.go
 internal/core/port/pipeline.go
@@ -242,12 +248,19 @@ internal/core/restore/BUILD.bazel
 internal/core/restore/archive.go
 internal/core/restore/fixture_test.go
 internal/core/restore/restore_test.go
+internal/core/reverseconverter/BUILD.bazel
+internal/core/reverseconverter/README.md
+internal/core/reverseconverter/archive.go
+internal/core/reverseconverter/convert.go
+internal/core/reverseconverter/reverseconverter_test.go
+internal/core/reverseconverter/types.go
 internal/core/service/BUILD.bazel
 internal/core/service/audit.go
 internal/core/service/audit_test.go
 internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
 internal/core/service/claim_recovery_test.go
+internal/core/service/gate.go
 internal/core/service/graph.go
 internal/core/service/history.go
 internal/core/service/history_reads_test.go
@@ -433,6 +446,8 @@ internal/server/composition/composition_test.go
 internal/server/composition/config.go
 internal/server/composition/configfile.go
 internal/server/composition/configfile_test.go
+internal/server/composition/telemetry.go
+internal/server/composition/telemetry_test.go
 internal/server/events/BUILD.bazel
 internal/server/events/audit.go
 internal/server/events/audit_delivery_test.go
@@ -457,6 +472,7 @@ internal/server/pluginbuild/containment_linux_amd64.go
 internal/server/pluginbuild/containment_linux_amd64_test.go
 internal/server/pluginbuild/containment_other.go
 internal/server/pluginbuild/containment_other_test.go
+internal/server/pluginbuild/durable_test.go
 internal/server/pluginbuild/fixture-wasi/BUILD.bazel
 internal/server/pluginbuild/fixture-wasi/go.mod.template
 internal/server/pluginbuild/fixture-wasi/plug-plugin.json
@@ -465,6 +481,7 @@ internal/server/pluginbuild/fixture/BUILD.bazel
 internal/server/pluginbuild/fixture/go.mod.template
 internal/server/pluginbuild/fixture/plug-plugin.json
 internal/server/pluginbuild/fixture/plugin.go
+internal/server/pluginbuild/persistent.go
 internal/server/pluginbuild/process_other.go
 internal/server/pluginbuild/process_unix.go
 internal/server/pluginbuild/source_test.go
@@ -505,6 +522,7 @@ internal/server/rpc/cmd/openrpcgen/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/main.go
 internal/server/rpc/cursor.go
 internal/server/rpc/cursor_test.go
+internal/server/rpc/gate_integration_test.go
 internal/server/rpc/integration_test.go
 internal/server/rpc/openrpc.json
 internal/server/rpc/openrpc_test.go
@@ -619,6 +637,8 @@ internal/storage/memory/transaction.go
 internal/storage/memory/transaction_reader.go
 internal/storage/postgres/BUILD.bazel
 internal/storage/postgres/README.md
+internal/storage/postgres/allocator.go
+internal/storage/postgres/allocator_test.go
 internal/storage/postgres/boundaries_test.go
 internal/storage/postgres/commit.go
 internal/storage/postgres/conformance_test.go

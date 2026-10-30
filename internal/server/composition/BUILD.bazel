@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "composition",
-    srcs = ["config.go", "configfile.go"],
+    srcs = ["config.go", "configfile.go", "telemetry.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/composition",
     visibility = ["//:__subpackages__"],
     deps = [
@@ -33,6 +33,9 @@ go_test(
         "//internal/api/wire",
         "//internal/client",
         "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
         "//internal/server/transport/httpjson",
         "//internal/storage/driver",
         "//internal/storage/memory",

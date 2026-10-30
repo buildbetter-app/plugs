@@ -65,7 +65,17 @@ func (w *Writer) ApplyClaimNextEmpty(ctx context.Context, by model.PrincipalRef,
 	return w.applyWithOutcome(ctx, by, cs, meta, nil, probe)
 }
 
-func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, release *claimReleaseMode, terminalProbe port.ClaimNextReadyProbe) (port.WriteOutcome, error) {
+func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, release *claimReleaseMode, terminalProbe port.ClaimNextReadyProbe) (outcome port.WriteOutcome, retErr error) {
+	started := time.Now()
+	committed := false
+	defer func() {
+		result := classifyOutcome(ctx, outcome, retErr, committed, meta.DryRun)
+		w.observeOutcome(result)
+		w.observePhaseResult(PhaseApply, time.Since(started), result)
+	}()
+	if meta.Method == "bead.release" && release == nil {
+		return port.WriteOutcome{}, failure("invalid_params", "bead.release requires the protected claim release entry point")
+	}
 	if ctx.Value(callbackKey{}) != nil {
 		return port.WriteOutcome{}, failure("plugin_reentrant_write", "graph writes are forbidden in synchronous callbacks")
 	}
@@ -121,29 +131,47 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	preCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	for attempt := 0; attempt <= 3; attempt++ {
+		phaseStarted := time.Now()
 		reader, err := w.reader(preCtx)
+		w.observePhaseSince(preCtx, PhaseAdmission, phaseStarted, err)
 		if err != nil {
 			return port.WriteOutcome{}, err
 		}
 		defer reader.Close()
-		if commit, found, err := w.replay(preCtx, reader, principal, by, cs, meta, hash); found || err != nil {
-			return port.WriteOutcome{Commit: commit, Replayed: found && err == nil}, err
+		phaseStarted = time.Now()
+		if commit, found, replayErr := w.replay(preCtx, reader, principal, by, cs, meta, hash); found || replayErr != nil {
+			w.observePhaseSince(preCtx, PhaseReplay, phaseStarted, replayErr)
+			return port.WriteOutcome{Commit: commit, Replayed: found && replayErr == nil}, replayErr
 		}
+		w.observePhaseSince(preCtx, PhaseReplay, phaseStarted, nil)
+
+		phaseStarted = time.Now()
 		p, err := w.prepare(preCtx, reader, by, cs, meta, release)
+		w.observePhaseSince(preCtx, PhasePrepare, phaseStarted, err)
 		if err == nil {
+			phaseStarted = time.Now()
 			err = w.pre(preCtx, p)
+			w.observePhaseSince(preCtx, PhasePre, phaseStarted, err)
 		}
 		if err == nil {
+			phaseStarted = time.Now()
 			err = p.graph(preCtx)
+			w.observePhaseSince(preCtx, PhaseGraph, phaseStarted, err)
 		}
 		if err == nil {
+			phaseStarted = time.Now()
 			err = w.claims(p, by, meta)
+			w.observePhaseSince(preCtx, PhaseClaims, phaseStarted, err)
 		}
 		if err == nil {
+			phaseStarted = time.Now()
 			err = p.detectChanges()
+			w.observePhaseSince(preCtx, PhaseChanges, phaseStarted, err)
 		}
 		if err == nil {
+			phaseStarted = time.Now()
 			err = w.prepareAudit(preCtx, p)
+			w.observePhaseSince(preCtx, PhaseAudit, phaseStarted, err)
 		}
 		if err == nil && meta.DryRun {
 			if p.audit != nil {
@@ -155,15 +183,27 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 					return port.WriteOutcome{}, e
 				}
 			}
+			phaseStarted = time.Now()
 			commit, err := p.response(*reader.Snapshot().At, meta)
+			w.observePhaseSince(preCtx, PhaseResponse, phaseStarted, err)
 			commit.WouldCommit = err == nil && len(p.changed) > 0
 			return port.WriteOutcome{Commit: commit}, err
 		}
 		var commit model.Commit
 		if err == nil {
+			phaseStarted = time.Now()
 			commit, err = w.transact(preCtx, p, by, meta, principal, hash, terminalProbe)
+			w.observePhaseSince(preCtx, PhaseCommit, phaseStarted, err)
+			if err == nil {
+				committed = true
+			}
 		}
 		if errors.Is(err, errStale) || errors.Is(err, driver.ErrConflict) {
+			if errors.Is(err, errStale) {
+				w.observeConflict(ConflictStaleSnapshot)
+			} else {
+				w.observeConflict(ConflictDriver)
+			}
 			continue
 		}
 		if err != nil {
@@ -171,9 +211,15 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 			if errors.As(err, &unknown) {
 				// Only a durable receipt can resolve an uncertain outcome. Never
 				// execute another attempt merely because its response was lost.
-				if fresh, e := w.reader(ctx); e == nil {
+				phaseStarted = time.Now()
+				fresh, e := w.reader(ctx)
+				w.observePhaseSince(ctx, PhaseAdmission, phaseStarted, e)
+				if e == nil {
 					defer fresh.Close()
-					if result, found, e := w.replay(ctx, fresh, principal, by, cs, meta, hash); found || e != nil {
+					phaseStarted = time.Now()
+					result, found, e := w.replay(ctx, fresh, principal, by, cs, meta, hash)
+					w.observePhaseSince(ctx, PhaseReplay, phaseStarted, e)
+					if found || e != nil {
 						return port.WriteOutcome{Commit: result, Replayed: found && e == nil}, e
 					}
 				}
@@ -184,10 +230,20 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 			return port.WriteOutcome{}, err
 		}
 		if len(p.changed) != 0 && len(w.cfg.posts) > 0 {
+			phaseStarted = time.Now()
 			warnings := w.post(ctx, p, commit)
+			postResult := ResultSuccess
+			if len(warnings) != 0 {
+				postResult = ResultWarning
+			}
+			w.observePhaseResult(PhasePost, time.Since(phaseStarted), postResult)
+			phaseStarted = time.Now()
 			commit, err = w.finalizeResponse(ctx, principal, meta, hash, commit.Revision, warnings)
+			w.observePhaseSince(ctx, PhaseResponse, phaseStarted, err)
 		} else {
+			phaseStarted = time.Now()
 			commit, err = w.durableResponse(ctx, principal, meta, hash, commit.Revision)
+			w.observePhaseSince(ctx, PhaseResponse, phaseStarted, err)
 		}
 		return port.WriteOutcome{Commit: commit}, err
 	}
@@ -211,12 +267,27 @@ func (w *Writer) reader(ctx context.Context) (driver.Reader, error) {
 }
 
 func requestHash(cs model.ChangeSet, meta model.WriteMeta) (string, error) {
-	data, err := json.Marshal(struct {
-		ChangeSet               model.ChangeSet
-		Method, Project, Return string
-		ClaimNextIdentity       string `json:",omitempty"`
-		DryRun                  bool
-	}{cs, meta.Method, meta.Project, meta.Return, meta.ClaimNextIdentity, meta.DryRun})
+	var (
+		data []byte
+		err  error
+	)
+	if meta.GateAction == "" {
+		// Keep the pre-gate request identity byte-for-byte compatible so a
+		// rolling restart can still replay receipts created by an older host.
+		data, err = json.Marshal(struct {
+			ChangeSet               model.ChangeSet
+			Method, Project, Return string
+			ClaimNextIdentity       string `json:",omitempty"`
+			DryRun                  bool
+		}{cs, meta.Method, meta.Project, meta.Return, meta.ClaimNextIdentity, meta.DryRun})
+	} else {
+		data, err = json.Marshal(struct {
+			ChangeSet                                      model.ChangeSet
+			Method, GateAction, GateState, Project, Return string
+			GateDetails                                    map[string]any
+			DryRun                                         bool
+		}{cs, meta.Method, meta.GateAction, meta.GateState, meta.Project, meta.Return, meta.GateDetails, meta.DryRun})
+	}
 	if err != nil {
 		return "", err
 	}
