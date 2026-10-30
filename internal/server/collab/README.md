@@ -16,6 +16,19 @@ and takeover require a new session. A session is owned by the full authenticated
 principal (including sponsor/caveats); anonymous sessions additionally bind the
 unverified `_meta.agent` label, which supplies no authentication or privilege.
 
+`session.open` accepts an optional untrusted `displayName`. It trims Unicode
+`White_Space`, treats an empty normalized name as absent, rejects remaining
+Unicode control (`Cc`) and format (`Cf`) characters with `invalid_params`, and
+allows at most 64 Unicode scalar values after trimming (not bytes or grapheme
+clusters). The closed `Session` result stays unchanged. Presence set/list rows
+return the stored normalized name only when nonempty; a successful set renews
+expiry but cannot change the name. Close, expiry and restart discard it.
+The label is display-only beside the authenticated principal, never a source of
+authentication, sponsorship, authorization, ownership, attribution, audit actor,
+idempotency, leases or deduplication. `_meta.agent` keeps its existing separate
+anonymous ownership/claim role. These RPC tests do not qualify UI rendering or
+50-client E3 browser acceptance.
+
 Defaults and hard ceilings are 1,024 sessions, 64 per principal identity, 256 per
 sponsor identity, 64 selected claims per session/group, 1,024 bytes per resource
 or project, and 16 KiB per principal. Host configuration may lower session quotas
@@ -42,6 +55,10 @@ clients default to their sponsor. Grouped presence uses one actual session and
 principal as its representative, the first visible focus, and the sorted union
 of visible current claims. It adds no hidden-member counts. The public principal
 omits caveats. Grouping conveys no session ownership or delegated authority.
+Members with a nonempty `displayName` retain separate rows identified by their
+own `sessionId`, even when names or trusted sponsors match. Their labels are
+never merged or used as grouping keys. Omitted/trimmed-empty names retain the
+existing compact presentation, without absorbing named members.
 
 `AuthorizationInstalled` is a required current host boundary. The baseline
 service has no current-policy read integration; installed policy therefore

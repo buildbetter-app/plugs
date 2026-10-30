@@ -455,6 +455,7 @@ internal/server/claimrpc/service_test.go
 internal/server/collab/BUILD.bazel
 internal/server/collab/README.md
 internal/server/collab/boundaries_test.go
+internal/server/collab/display_name_test.go
 internal/server/collab/integration_test.go
 internal/server/collab/list.go
 internal/server/collab/manager.go

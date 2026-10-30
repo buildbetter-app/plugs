@@ -67,6 +67,8 @@ type Presence struct {
 	Focus      string             `json:"focus,omitempty"`
 	WorkingOn  []string           `json:"workingOn,omitempty"`
 	OnBehalfOf string             `json:"onBehalfOf,omitempty"`
+	// DisplayName is an untrusted display label, never a principal or owner.
+	DisplayName string `json:"displayName,omitempty"`
 }
 
 // Caller comes only from trusted rpc.Call fields. Agent is an unverified
