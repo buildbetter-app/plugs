@@ -234,6 +234,7 @@ try {
   await delay(500); await Promise.all(responseJobs);
   const allowed = ["server.hello", "rpc.methods", "view.run", "view.watch", "view.explain", "presence.list", "event.unsubscribe", "session.open", "session.close", "bead.ready", "bead.get"];
   const methods = [];
+  let explainedID = null;
   for (const entry of events) {
     const headers = Object.fromEntries(Object.entries(entry.request.headers).map(([key, value]) => [key.toLowerCase(), value]));
     assert.equal(headers.authorization, undefined); assert.equal(headers.cookie, undefined);
@@ -242,8 +243,10 @@ try {
       const request = JSON.parse(entry.request.postData); methods.push(request.method);
       assert(allowed.includes(request.method), JSON.stringify(request));
       if (request.method !== "server.hello") assert.equal(request.params._meta.project, "web");
+      if (request.method === "view.explain") explainedID = request.params.itemId;
       if (request.method === "bead.get") {
-        assert.deepEqual(request.params.id, { id: "pl-browser-a", branch: 0 });
+        assert(explainedID, "comment read requires a selected explanation target");
+        assert.deepEqual(request.params.id, { id: explainedID, branch: 0 });
         assert.deepEqual(Object.keys(request.params).sort(), ["_meta", "id"]);
       }
       if (["view.watch", "event.unsubscribe", "session.close"].includes(request.method)) assert(headers["plug-session"]);
