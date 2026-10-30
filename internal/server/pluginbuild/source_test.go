@@ -536,20 +536,9 @@ func runHelper(t *testing.T, root string, source pluginmanifest.Checkout) map[st
 			moduleCache = candidate
 		}
 	}
-	wazeroRoot := filepath.Join(moduleCache, "github.com", "tetratelabs", "wazero@v1.9.0")
-	if _, err := os.Stat(wazeroRoot); err != nil {
-		for current := mustWorkingDir(t); current != filepath.Dir(current); current = filepath.Dir(current) {
-			candidate := filepath.Join(current, "external", "gazelle++go_deps+com_github_tetratelabs_wazero")
-			if _, statErr := os.Stat(filepath.Join(candidate, "go.mod")); statErr == nil {
-				wazeroRoot = candidate
-				break
-			}
-		}
-	}
-	if _, err := os.Stat(wazeroRoot); err != nil {
-		t.Fatalf("wazero source is not available in the offline module cache: %v", err)
-	}
-	goMod := fmt.Sprintf("module github.com/buildbetter-app/plugs/runner\n\ngo 1.26.5\n\ntoolchain go1.26.10\n\nrequire (\n\tgithub.com/buildbetter-app/plugs v0.0.0\n\tgithub.com/tetratelabs/wazero v1.9.0\n\tgolang.org/x/sys v0.49.0\n)\n\nreplace github.com/buildbetter-app/plugs => %s\nreplace github.com/tetratelabs/wazero => %s\n", root, wazeroRoot)
+	wazeroRoot := offlineModule(t, filepath.Join(moduleCache, "github.com", "tetratelabs", "wazero@v1.9.0"), "com_github_tetratelabs_wazero")
+	sysRoot := offlineModule(t, filepath.Join(moduleCache, "golang.org", "x", "sys@v0.49.0"), "org_golang_x_sys")
+	goMod := fmt.Sprintf("module github.com/buildbetter-app/plugs/runner\n\ngo 1.26.5\n\ntoolchain go1.26.10\n\nrequire (\n\tgithub.com/buildbetter-app/plugs v0.0.0\n\tgithub.com/tetratelabs/wazero v1.9.0\n\tgolang.org/x/sys v0.49.0\n)\n\nreplace github.com/buildbetter-app/plugs => %s\nreplace github.com/tetratelabs/wazero => %s\nreplace golang.org/x/sys => %s\n", root, wazeroRoot, sysRoot)
 	if err := os.WriteFile(filepath.Join(helper, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -581,6 +570,21 @@ func runHelper(t *testing.T, root string, source pluginmanifest.Checkout) map[st
 		t.Fatalf("helper returned non-JSON output: %v\n%s", err, data)
 	}
 	return result
+}
+
+func offlineModule(t *testing.T, cached, bazelRepository string) string {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(cached, "go.mod")); err == nil {
+		return cached
+	}
+	for current := mustWorkingDir(t); current != filepath.Dir(current); current = filepath.Dir(current) {
+		candidate := filepath.Join(current, "external", "gazelle++go_deps+"+bazelRepository)
+		if _, err := os.Stat(filepath.Join(candidate, "go.mod")); err == nil {
+			return candidate
+		}
+	}
+	t.Fatalf("dependency source unavailable in offline cache or Bazel repository: %s", bazelRepository)
+	return ""
 }
 
 func mustWorkingDir(t *testing.T) string {
