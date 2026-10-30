@@ -94,7 +94,17 @@ func TestBrowserActualStoredRowsAndStateTransitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	ontology := service.NewOntology(nil)
-	writer := pipeline.New(store, lease, pipeline.WithOntology(ontology))
+	// The first-created seed sorts onto the last page. Refresh must update a
+	// displayed seed, independent of creation order or random ID allocation.
+	ids := []string{"pl-webui-c", "pl-webui-a", "pl-webui-b"}
+	var allocated atomic.Int64
+	writer := pipeline.New(store, lease, pipeline.WithOntology(ontology), pipeline.WithIDGenerator(func() (string, error) {
+		index := allocated.Add(1) - 1
+		if index >= int64(len(ids)) {
+			return "", fmt.Errorf("unexpected browser fixture create %d", index+1)
+		}
+		return ids[index], nil
+	}))
 	domain := service.New(store, lease, writer, service.WithOntology(ontology))
 	registry, err := rpc.NewRegistry()
 	if err != nil {
