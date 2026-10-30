@@ -436,12 +436,22 @@
     if (!result.presence.length) { message($("presence-rows"), "empty", "No active sessions.", "Presence is ephemeral; no session is visible in this project."); return; }
     result.presence.slice(0, 5).forEach((entry) => {
       const row = document.createElement("div"); row.className = "presence-row";
-      const principal = String(entry.onBehalfOf || entry.principal.id);
+      const principalRef = entry && entry.principal;
+      if (!principalRef || typeof principalRef.kind !== "string" || !principalRef.kind || typeof principalRef.id !== "string" || !principalRef.id) throw new RPCError("The presence principal is unreadable.", "invalid_response");
+      const kind = principalRef.kind, id = principalRef.id;
+      const delegated = typeof entry.onBehalfOf === "string" && entry.onBehalfOf ? entry.onBehalfOf : "";
+      const principal = delegated ? "on behalf of " + delegated : (id && id !== "anonymous" ? kind + ":" + id : kind);
       const initial = document.createElement("span"); initial.className = "presence-initial"; text(initial, principal.slice(0, 1).toUpperCase());
       const content = document.createElement("div");
       const name = document.createElement("div"); name.className = "presence-name"; text(name, principal);
-      const focus = document.createElement("div"); focus.className = "presence-focus"; text(focus, entry.focus || "No focus shared"); content.append(name, focus);
-      const scope = document.createElement("span"); scope.className = "presence-scope"; text(scope, (entry.workingOn || []).length + " claims");
+      const identity = document.createElement("div"); identity.className = "presence-identity";
+      text(identity, kind === "anonymous" && !delegated ? "Anonymous principal · client label unavailable" : kind + ":" + id + " principal");
+      const working = Array.isArray(entry.workingOn) ? entry.workingOn.filter((resource) => typeof resource === "string" && resource) : [];
+      const shown = working.slice(0, 3);
+      const workingLabel = shown.length ? "Working on " + shown.join(", ") : "No claimed work shared";
+      const remainder = working.length - shown.length;
+      const focus = document.createElement("div"); focus.className = "presence-focus"; text(focus, [entry.focus ? "Focus " + entry.focus : "No focus shared", workingLabel + (remainder > 0 ? " + " + remainder + " more" : "")].join(" · ")); content.append(name, identity, focus);
+      const scope = document.createElement("span"); scope.className = "presence-scope"; text(scope, working.length + " working");
       row.append(initial, content, scope); $("presence-rows").appendChild(row);
     });
     if (result.presence.length > 5) {
@@ -457,8 +467,15 @@
     clear(node);
     const summary = document.createElement("p"); text(summary, result.included ? "Included in the view." : "Outside the current view."); node.appendChild(summary);
     const reasons = document.createElement("ul"); reasons.className = "explain-reasons";
-    (result.reasons || []).forEach((reason) => { const li = document.createElement("li"); text(li, reason); reasons.appendChild(li); }); node.appendChild(reasons);
+    const suppliedReasons = Array.isArray(result.reasons) ? result.reasons.filter((reason) => typeof reason === "string" && reason.trim() && reason !== "included") : [];
+    suppliedReasons.forEach((reason) => { const li = document.createElement("li"); text(li, reason); reasons.appendChild(li); });
+    if (suppliedReasons.length) node.appendChild(reasons);
+    else {
+      const unavailable = document.createElement("p"); unavailable.className = "explain-unavailable";
+      text(unavailable, result.included ? "No direct blocker reason was supplied by the server for this item." : "No direct exclusion reason was supplied by the server for this item."); node.appendChild(unavailable);
+    }
     if (count(result.hiddenBlockers)) { const copy = document.createElement("p"); text(copy, result.hiddenBlockers + " blockers cannot be read with current permissions."); node.appendChild(copy); }
+    if (result.readinessPending === true) { const pending = document.createElement("p"); pending.className = "explain-pending"; text(pending, "Readiness is still being evaluated by the server."); node.appendChild(pending); }
   }
   function target(view) { return $({ home: "changed-rows", next: "next-rows", blocked: "blocked-state", presence: "presence-rows", explain: "explain-state" }[view]); }
   async function load(nextPage) {
