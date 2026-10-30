@@ -2,8 +2,11 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -35,6 +38,21 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 		return GetResult{}, err
 	}
 	result := GetResult{Bead: bead, Attachments: doc.Attachments}
+	if len(doc.Comments) != 0 {
+		result.Comments = make([]Comment, len(doc.Comments))
+		for i, comment := range doc.Comments {
+			principal, err := clonePrincipalValue(comment.Principal)
+			if err != nil {
+				return GetResult{}, failure("internal_error", "invalid persisted comment actor")
+			}
+			value := Comment{Body: comment.Body, Principal: principal, Time: comment.Time, Origin: comment.Origin, SourceAuthor: comment.SourceAuthor}
+			if comment.SourceTime != nil {
+				at := *comment.SourceTime
+				value.SourceTime = &at
+			}
+			result.Comments[i] = value
+		}
+	}
 	if doc.Lease != nil {
 		ttl, err := durationMS(doc.Lease.TtlMs)
 		if err != nil {
@@ -173,11 +191,56 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 	if err != nil {
 		return BeadPage{}, err
 	}
+	if restartOnRevision && req.ClaimNextSeed != "" {
+		items, err = spreadClaimNextItems(items, req.ClaimNextSeed)
+		if err != nil {
+			return BeadPage{}, err
+		}
+	}
 	if err := s.admit(ctx, by); err != nil {
 		return BeadPage{}, err
 	}
 	view := r.Snapshot()
 	return pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, false, restartOnRevision)
+}
+
+// spreadClaimNextItems rotates each equal-priority group by a stable offset.
+// Priority groups stay contiguous, so the queue still drains every lower
+// priority before considering a higher one; only ID ties are spread between
+// concurrent request keys. The ordinary bead.ready path never calls this.
+func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
+	if len(items) < 2 || seed == "" {
+		return items, nil
+	}
+	ordered := append([]Bead(nil), items...)
+	for start := 0; start < len(ordered); {
+		groupPriority, err := beadPriority(ordered[start])
+		if err != nil {
+			return nil, err
+		}
+		end := start + 1
+		for end < len(ordered) {
+			priority, err := beadPriority(ordered[end])
+			if err != nil {
+				return nil, err
+			}
+			if priority != groupPriority {
+				break
+			}
+			end++
+		}
+		if end-start > 1 {
+			groupSeed := sha256.Sum256([]byte(seed + "\x00" + strconv.Itoa(groupPriority)))
+			offset := int(binary.BigEndian.Uint64(groupSeed[:8]) % uint64(end-start))
+			if offset != 0 {
+				rotated := append([]Bead(nil), ordered[start+offset:end]...)
+				rotated = append(rotated, ordered[start:start+offset]...)
+				copy(ordered[start:end], rotated)
+			}
+		}
+		start = end
+	}
+	return ordered, nil
 }
 
 func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {

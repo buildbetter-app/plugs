@@ -337,14 +337,34 @@
       if (!session || typeof session.sessionId !== "string" || !session.sessionId) throw new RPCError("No collaboration lifetime was returned.", "invalid_response");
       live.session = session.sessionId;
       if (state.live !== live) { await releaseWatch(live); signal.throwIfAborted(); return; }
-      const opened = await rpc("view.watch", { viewId: state.config.homeViewId }, AbortSignal.timeout(15000), null, live.session);
-      if (!opened || typeof opened.subscriptionId !== "string" || !opened.subscriptionId || typeof opened.cursor !== "string" || !opened.cursor) throw new RPCError("The watch checkpoint is unreadable.", "invalid_response");
-      live.subscription = opened.subscriptionId; live.cursor = opened.cursor;
-      if (state.live !== live) { await releaseWatch(live); signal.throwIfAborted(); return; }
-      // Subscribe before reading the view: a delta racing its snapshot sets
-      // dirty and is drained after the initial read, so no write is lost.
-      live.openTimer = setTimeout(() => liveFailure(live, new RPCError("The live stream did not open before its deadline.", "watch_timeout")), 15000);
-      void streamWatch(live).catch((error) => liveFailure(live, error));
+      let from;
+      // An omitted-from open can encounter the stored ontology seed. Its first
+      // terminal frame supplies the opaque reopen marker; never infer one from
+      // a view revision, and never automatically recover a later boundary.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const params = { viewId: state.config.homeViewId };
+        if (from) params.from = from;
+        const opened = await rpc("view.watch", params, AbortSignal.timeout(15000), null, live.session);
+        if (!opened || typeof opened.subscriptionId !== "string" || !opened.subscriptionId || typeof opened.cursor !== "string" || !opened.cursor) throw new RPCError("The watch checkpoint is unreadable.", "invalid_response");
+        live.subscription = opened.subscriptionId; live.cursor = opened.cursor;
+        if (state.live !== live) { await releaseWatch(live); signal.throwIfAborted(); return; }
+        let received, refused;
+        const firstFrame = new Promise((resolve, reject) => { received = resolve; refused = reject; });
+        live.openTimer = setTimeout(() => liveFailure(live, new RPCError("The live stream did not open before its deadline.", "watch_timeout")), 15000);
+        const streaming = streamWatch(live, received, attempt === 0);
+        void streaming.catch((error) => { refused(error); liveFailure(live, error); });
+        const bootstrap = await firstFrame;
+        if (!bootstrap) break;
+        // Await reader cancellation before releasing only the old subscription.
+        // releaseWatch would also close the session required by the reopen.
+        await streaming;
+        const subscription = live.subscription; live.subscription = null;
+        await Promise.allSettled([rpc("event.unsubscribe", { subscriptionId: subscription }, AbortSignal.timeout(3000), null, live.session)]);
+        if (state.live !== live) { signal.throwIfAborted(); return; }
+        from = bootstrap;
+      }
+      // Streaming is attached before the snapshot. Racing deltas remain dirty
+      // until the normal first read finishes, preserving snapshot continuity.
     } catch (error) {
       if (state.live === live) stopWatch();
       await releaseWatch(live);
@@ -369,7 +389,12 @@
     live.cursor = frame.cursor;
     if (!first) live.dirty = true;
   }
-  async function streamWatch(live) {
+  function bootstrapCursor(live, frame) {
+    if (!frame || frame.subscriptionId !== live.subscription || frame.cursor !== live.cursor || !Array.isArray(frame.events) || frame.events.length !== 1) return null;
+    const event = frame.events[0], details = event && event.details;
+    return event && event.type === "watch.reset" && event.cursor === frame.cursor && details && details.reason === "ontology_changed" && details.subscriptionId === live.subscription && details.snapshotCursor === frame.cursor ? frame.cursor : null;
+  }
+  async function streamWatch(live, received, allowBootstrap) {
     const response = await fetch(state.config.watchPath, {
       method: "POST", mode: "same-origin", credentials: "omit", redirect: "error", cache: "no-store", signal: live.controller.signal,
       headers: { "Content-Type": "application/json", "Accept": "application/x-ndjson", "Plug-RPC": "1", "Plug-Session": live.session },
@@ -388,7 +413,12 @@
         while ((end = buffer.indexOf("\n")) !== -1) {
           if (end > 2 * 1024 * 1024) throw new RPCError("The live frame exceeds the read limit.", "response_too_large");
           const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
-          inspectFrame(live, parseJSON(line), first); first = false; clearTimeout(live.openTimer);
+          const frame = parseJSON(line);
+          const bootstrap = first && allowBootstrap ? bootstrapCursor(live, frame) : null;
+          if (bootstrap) { clearTimeout(live.openTimer); received(bootstrap); return; }
+          inspectFrame(live, frame, first);
+          if (first) received(null);
+          first = false; clearTimeout(live.openTimer);
           if (state.live !== live) return;
           watchStatus("Live changes connected."); void drainWatch(live);
         }
@@ -518,10 +548,9 @@
     node.appendChild(list);
     const boundary = document.createElement("p"); boundary.className = "muted"; text(boundary, "Verdicts describe the returned snapshot. Opening an item reads its current explanation."); node.appendChild(boundary);
   }
-  async function explain(signal) {
+  async function explainMembership(signal, itemId) {
     const node = $("explain-state");
     if (!state.methods.has("view.explain") || !state.config.blockedViewId) { message(node, "unavailable", "Explanation unavailable.", "A server-backed saved view and its explanation method are not configured."); return; }
-    const itemId = $("explain-id").value.trim();
     if (!itemId) { text(node, "Enter an item ID to request its explanation."); return; }
     const result = await rpc("view.explain", { viewId: state.config.blockedViewId, itemId }, signal);
     const direct = Object.hasOwn(result, "directBlockers") ? directBlockers(result.directBlockers) : null;
@@ -541,10 +570,50 @@
     if (hidden) { const copy = document.createElement("p"); copy.className = "explain-hidden-blockers"; text(copy, hidden + " blockers cannot be read with current permissions."); node.appendChild(copy); }
     if (result.readinessPending === true) { const pending = document.createElement("p"); pending.className = "explain-pending"; text(pending, "Readiness is still being evaluated by the server."); node.appendChild(pending); }
   }
+  function commentValue(value) {
+    const bad = () => { throw new RPCError("The comment provenance is unreadable.", "invalid_response"); };
+    if (!value || typeof value !== "object" || Array.isArray(value)) bad();
+    const timestamp = input => typeof input === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(input) && Number.isFinite(Date.parse(input));
+    const imported = Object.hasOwn(value, "origin");
+    const allowed = imported ? ["body", "principal", "time", "origin", "sourceTime", "sourceAuthor"] : ["body", "principal", "time"];
+    if (Object.keys(value).some(key => !allowed.includes(key)) || typeof value.body !== "string" || !value.principal || typeof value.principal.kind !== "string" || !value.principal.kind || typeof value.principal.id !== "string" || !value.principal.id || !timestamp(value.time)) bad();
+    if (imported) {
+      if (value.origin !== "import" || !timestamp(value.sourceTime)) bad();
+      if (Object.hasOwn(value, "sourceAuthor") && (typeof value.sourceAuthor !== "string" || !value.sourceAuthor || value.sourceAuthor.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "") !== value.sourceAuthor || [...value.sourceAuthor].length > 256 || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(value.sourceAuthor))) bad();
+    }
+    return value;
+  }
+  async function explain(signal) {
+    const node = $("comment-state"), id = $("explain-id").value.trim();
+    await explainMembership(signal, id);
+    if (signal.aborted) return;
+    if (!id) { text(node, "Select an item to read comments."); return; }
+    if (!state.methods.has("bead.get")) { text(node, "Comments unavailable: item reads are not configured."); return; }
+    const result = await rpc("bead.get", { id: { id, branch: 0 } }, signal);
+    if (signal.aborted) return;
+    if (!result || !result.bead || result.bead.id !== id) throw new RPCError("The item read does not match this selection.", "invalid_response");
+    if (!Object.hasOwn(result, "comments")) { text(node, "No comments supplied for this item."); return; }
+    if (!Array.isArray(result.comments)) throw new RPCError("The comments are unreadable.", "invalid_response");
+    const comments = result.comments.map(commentValue);
+    if (!comments.length) { text(node, "No comments for this item."); return; }
+    clear(node);
+    comments.forEach(comment => {
+      const row = document.createElement("article"); row.className = "comment-row";
+      const actor = document.createElement("p"); actor.className = "comment-actor"; text(actor, "Verified actor: " + comment.principal.kind + ":" + comment.principal.id);
+      const at = document.createElement("p"); text(at, (comment.origin === "import" ? "Restored at: " : "Comment time: ") + comment.time);
+      const body = document.createElement("p"); body.className = "comment-body"; text(body, comment.body); row.append(actor, at, body);
+      if (comment.origin === "import") {
+        const provenance = document.createElement("p"); provenance.className = "comment-source";
+        text(provenance, "Origin: import · Source author (untrusted): " + (comment.sourceAuthor || "not supplied") + " · Source time (untrusted): " + comment.sourceTime); row.appendChild(provenance);
+      }
+      node.appendChild(row);
+    });
+  }
   function target(view) { return $({ home: "changed-rows", next: "next-rows", blocked: "blocked-state", presence: "presence-rows", explain: "explain-state" }[view]); }
   async function load(nextPage) {
     if (state.work) state.work.controller.abort();
     stopWatch();
+    text($("comment-state"), "Comments await a completed item read.");
     const work = { controller: new AbortController(), timedOut: false };
     const view = state.activeView; state.work = work;
     const timer = setTimeout(() => { work.timedOut = true; work.controller.abort(); }, 15000);
@@ -566,6 +635,7 @@
     } catch (error) {
       if (state.work !== work) return;
       stopWatch();
+      text($("comment-state"), "Comments unavailable: this read did not complete.");
       if (work.liveFailure) return;
       if (view === "home" && state.methods.has("view.run")) watchStatus(work.controller.signal.aborted ? "Live changes cancelled. Refresh to reconnect." : "Live changes refused · refresh required.");
       if (work.controller.signal.aborted) {

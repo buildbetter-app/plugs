@@ -645,12 +645,11 @@ func TestExecutableLocalServerIsDisposableAndWarns(t *testing.T) {
 	if err != nil || out == "" {
 		t.Fatalf("local create: %v stdout=%s stderr=%s", err, out, errOut)
 	}
-	if !strings.Contains(server.stderr.String(), "memory storage is disposable") {
-		// The warning is written during startup and may arrive just after the
-		// endpoint line; give the process a short scheduling window.
-		time.Sleep(20 * time.Millisecond)
-	}
 	server.stop(t)
+	// stop waits for os/exec's stderr copy to finish before reading the buffer.
+	if stderr := server.stderr.String(); !strings.Contains(stderr, "memory storage is disposable") {
+		t.Fatalf("local server omitted disposable-storage warning: stderr=%s", stderr)
+	}
 	server = startPlugServer(t, dir, true)
 	t.Cleanup(func() { server.stop(t) })
 	endpoint = server.endpoint

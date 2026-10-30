@@ -35,6 +35,62 @@ func decodeDocument(raw []byte) (pipeline.Document, error) {
 	if err := dec.Decode(new(any)); err != io.EOF || doc.ID == "" || doc.Type == "" || doc.Fields == nil {
 		return doc, failure("invalid_params", "invalid bead document")
 	}
+	// Preserve member presence before Go zero values erase null/empty provenance.
+	var envelope struct {
+		Comments json.RawMessage `json:"comments"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return doc, failure("invalid_params", "invalid bead document")
+	}
+	if len(envelope.Comments) != 0 {
+		var comments []map[string]json.RawMessage
+		if bytes.Equal(bytes.TrimSpace(envelope.Comments), []byte("null")) || json.Unmarshal(envelope.Comments, &comments) != nil {
+			return doc, failure("invalid_params", "invalid stored comments")
+		}
+		for _, comment := range comments {
+			for key := range comment {
+				switch key {
+				case "body", "principal", "time", "origin", "sourceAuthor", "sourceTime":
+				default:
+					return doc, failure("invalid_params", "unsupported stored comment member")
+				}
+			}
+			for _, key := range []string{"body", "principal", "time"} {
+				value, exists := comment[key]
+				if !exists || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+					return doc, failure("invalid_params", "invalid stored comment member")
+				}
+			}
+			origin, imported := comment["origin"]
+			if !imported {
+				if _, exists := comment["sourceAuthor"]; exists {
+					return doc, failure("invalid_params", "legacy comment has source provenance")
+				}
+				if _, exists := comment["sourceTime"]; exists {
+					return doc, failure("invalid_params", "legacy comment has source provenance")
+				}
+			} else {
+				var value string
+				if json.Unmarshal(origin, &value) != nil || value != "import" {
+					return doc, failure("invalid_params", "invalid comment origin")
+				}
+				if at, exists := comment["sourceTime"]; !exists || bytes.Equal(bytes.TrimSpace(at), []byte("null")) {
+					return doc, failure("invalid_params", "missing comment source time")
+				}
+				if author, exists := comment["sourceAuthor"]; exists {
+					var value string
+					if bytes.Equal(bytes.TrimSpace(author), []byte("null")) || json.Unmarshal(author, &value) != nil || value == "" {
+						return doc, failure("invalid_params", "invalid comment source author")
+					}
+				}
+			}
+		}
+	}
+	for _, comment := range doc.Comments {
+		if err := comment.Validate(); err != nil {
+			return doc, failure("invalid_params", "invalid stored comment provenance")
+		}
+	}
 	if v, exists := doc.Fields["status"]; exists {
 		if _, ok := v.(string); !ok {
 			return doc, failure("invalid_params", "status must be a string")
@@ -137,6 +193,14 @@ func beadValue(row storedBead) (Bead, error) {
 		metadata[k] = v
 	}
 	return Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...)}, nil
+}
+
+func beadPriority(bead Bead) (int, error) {
+	fields := make(map[string]any, len(bead.Fields))
+	for key, value := range bead.Fields {
+		fields[key] = value
+	}
+	return priority(pipeline.Document{ID: bead.ID, Type: bead.Type, Project: bead.Project, Fields: fields})
 }
 
 func sortedIDs(graph map[string]storedBead) []string {

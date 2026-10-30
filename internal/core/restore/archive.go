@@ -776,7 +776,11 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 	}
 	if manifest.Scope == dumpformat.Scope {
 		if importHook == nil {
-			return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "converter archive restore hook is unavailable"}})
+			// Preserve the standalone manager's historical refusal when no
+			// trusted converter boundary is installed. Composition installs the
+			// hook for admitted converter imports; direct/native-only managers
+			// must retain the B17 unsupported-profile contract.
+			return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "converter archive restore is unavailable; source disclosures and allocator state must be preserved by the converter boundary"}})
 		}
 		m.mu.Lock()
 		if current := m.restores[id]; current != nil {

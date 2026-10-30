@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -22,6 +24,13 @@ type Service struct {
 	authorizationInstalled func() bool
 	events                 EventProvider
 }
+
+// claimNextConflictRestartBudget bounds only the extra full-walk restart used
+// after the terminal ready probe observes a candidate that has repeatedly
+// exhausted the Writer's own snapshot attempts. Candidate enumeration itself
+// remains uncapped; the bound prevents one unchanged candidate from spinning a
+// request forever while preserving one restart for a newly ready candidate.
+const claimNextConflictRestartBudget = 1
 
 type Option func(*Service)
 
@@ -59,6 +68,15 @@ func New(store driver.Store, lease driver.ActiveLease, writer model.Writer, opti
 
 func failure(code model.ErrorCode, hint string) error {
 	return &model.Error{Data: model.ErrorData{Code: code, Hint: hint, Retryable: code == "busy" || code == "write_conflict"}}
+}
+
+// ClaimNextSelectionSeed derives the stable internal ordering seed used by
+// claimNext's ready walk. The selector identity keeps equivalent requests
+// aligned, while the idempotency key spreads concurrent requests. Hashing
+// keeps filter values out of the internal pager state and any diagnostics.
+func ClaimNextSelectionSeed(identity, idempotencyKey string) string {
+	digest := sha256.Sum256([]byte(identity + "\x00" + idempotencyKey))
+	return hex.EncodeToString(digest[:])
 }
 
 func mapped(err error) error {
@@ -223,6 +241,7 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 	}
 	meta.ClaimNextIdentity = identity
 	meta.Method = "bead.claimNext"
+	selectionSeed := ClaimNextSelectionSeed(identity, meta.IdempotencyKey)
 	if by.Kind != "anonymous" {
 		meta.AgentLabel = ""
 	} else if meta.AgentLabel == "" {
@@ -268,8 +287,12 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 
 	position := (*PagePosition)(nil)
 	fresh := false
+	exhausted := map[string]error{}
+	var exhaustedConflict error
+	repeatedConflictThisPass := false
+	conflictRestarts := 0
 	for {
-		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position})
+		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
 		if err != nil {
 			return nil, err
 		}
@@ -281,6 +304,16 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 			if !claimNextRace(claimErr) {
 				return nil, claimErr
 			}
+			if claimNextCandidateConflict(claimErr) {
+				if _, seen := exhausted[bead.ID]; seen {
+					repeatedConflictThisPass = true
+				} else {
+					exhausted[bead.ID] = claimErr
+					if exhaustedConflict == nil {
+						exhaustedConflict = claimErr
+					}
+				}
+			}
 		}
 		if page.Next == nil {
 			if !fresh {
@@ -289,11 +322,19 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 				// ready while the first walk was finishing is not missed.
 				fresh = true
 				position = nil
+				repeatedConflictThisPass = false
 				continue
 			}
 			out, err := s.CommitClaimNextEmpty(ctx, by, req, meta, s.claimNextReadyProbe(req))
 			if err != nil {
 				if errors.Is(err, port.ErrClaimNextReady) {
+					if repeatedConflictThisPass {
+						if conflictRestarts >= claimNextConflictRestartBudget {
+							return nil, exhaustedConflict
+						}
+						conflictRestarts++
+					}
+					repeatedConflictThisPass = false
 					fresh = false
 					position = nil
 					continue
@@ -362,9 +403,23 @@ func claimNextRace(err error) bool {
 		// active-store lease loss and every other busy condition remain a wire
 		// error rather than being converted into terminal null.
 		return value.Message == "bead already has a live claim"
+	case "write_conflict":
+		// The shared writer has already exhausted its bounded snapshot retries
+		// for this selected candidate. Advance within the same claimNext walk;
+		// unrelated/global write failures retain their typed error and do not
+		// become a terminal null.
+		return claimNextCandidateConflict(value)
 	default:
 		return false
 	}
+}
+
+func claimNextCandidateConflict(err error) bool {
+	var value *model.Error
+	if !errors.As(err, &value) || value.Data.Code != "write_conflict" {
+		return false
+	}
+	return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 }
 
 func (s *Service) claimWithMethod(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta, outcomeRequired bool, method string) (port.WriteOutcome, error) {
