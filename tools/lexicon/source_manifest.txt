@@ -697,6 +697,7 @@ spec/fixture_test.go
 spec/pipeline_test.go
 spec/recorded/BUILD.bazel
 spec/recorded/README.md
+spec/recorded/b24_untimed_defer_deviation.json
 spec/recorded/goldens.json
 spec/recorded/goldens_test.go
 spec/recorded/provenance.py
