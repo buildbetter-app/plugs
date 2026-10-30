@@ -532,6 +532,52 @@ func TestPreparedImportBindsCommentsAndRejectsForgedCommit(t *testing.T) {
 			if err = tx.Put(ctx, driver.Record{Ref: ref, Kind: "bead", Body: body}); err != nil {
 				t.Fatal(err)
 			}
+			for name, mutate := range map[string]func(*driver.ChangesetHeader){
+				"method": func(h *driver.ChangesetHeader) { h.Method = "offline.restore" },
+				"key":    func(h *driver.ChangesetHeader) { h.IdempotencyKey += "other" },
+				"scope": func(h *driver.ChangesetHeader) {
+					q := profile
+					q.Admission.Scope = "other-scope"
+					h.RequestHash, _ = q.RequestHash()
+				},
+				"archive": func(h *driver.ChangesetHeader) {
+					q := profile
+					q.ArchiveDigest = strings.Repeat("d", 64)
+					h.RequestHash, _ = q.RequestHash()
+				},
+				"derived": func(h *driver.ChangesetHeader) {
+					q := profile
+					q.DerivedDigest = strings.Repeat("d", 64)
+					h.RequestHash, _ = q.RequestHash()
+				},
+				"authorization-context": func(h *driver.ChangesetHeader) { h.Principal.Caveats = map[string]any{"scope": "other"} },
+				"anonymous-label":       func(h *driver.ChangesetHeader) { h.AgentLabel = "forged-label" },
+			} {
+				bad := header
+				mutate(&bad)
+				if _, err = tx.Commit(ctx, bad); err == nil {
+					t.Fatalf("changed %s accepted", name)
+				}
+			}
+			for name, mutate := range map[string]func(*Comment){
+				"origin":       func(c *Comment) { c.Origin = "" },
+				"restore-time": func(c *Comment) { c.Time = c.Time.Add(time.Second) },
+				"source-time":  func(c *Comment) { c.SourceTime = nil },
+			} {
+				bad := comment
+				mutate(&bad)
+				document.Comments = []Comment{bad}
+				badBody, _ := json.Marshal(document)
+				if err = tx.Put(ctx, driver.Record{Ref: ref, Kind: "bead", Body: badBody}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err = tx.Commit(ctx, header); err == nil {
+					t.Fatalf("changed comment %s accepted", name)
+				}
+			}
+			if err = tx.Put(ctx, driver.Record{Ref: ref, Kind: "bead", Body: body}); err != nil {
+				t.Fatal(err)
+			}
 			profile.Admission.Scope = "mutated-after-prepare"
 			if _, err = tx.Commit(ctx, header); err != nil {
 				t.Fatal(err)
