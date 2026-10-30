@@ -33,11 +33,18 @@ func (p *failingPost) After(context.Context, port.CommittedChange, port.Snapshot
 }
 
 func openSQLiteMemoryServer(t *testing.T, path string, options ...service.Option) (*rpc.Server, driver.Store, driver.ActiveLease) {
+	return openSQLiteMemoryServerWithReadHook(t, path, nil, options...)
+}
+
+func openSQLiteMemoryServerWithReadHook(t *testing.T, path string, afterHistoryRead func(), options ...service.Option) (*rpc.Server, driver.Store, driver.ActiveLease) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := (sqlite.Driver{}).Open(ctx, driver.Config{DSN: path})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if afterHistoryRead != nil {
+		store = &historyRPCStore{Store: store, afterRead: afterHistoryRead}
 	}
 	lease, err := store.Lease(ctx, "rpc-memory", driver.LeaseTTL)
 	if err != nil {
@@ -82,6 +89,40 @@ func openSQLiteMemoryServer(t *testing.T, path string, options ...service.Option
 	return server, store, lease
 }
 
+type historyRPCStore struct {
+	driver.Store
+	afterRead func()
+}
+
+func (s *historyRPCStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	r, err := s.Store.Read(ctx, view)
+	if err != nil || view.At == nil {
+		return r, err
+	}
+	return historyRPCReader{Reader: r, afterRead: s.afterRead}, nil
+}
+
+type historyRPCReader struct {
+	driver.Reader
+	afterRead func()
+}
+
+func (r historyRPCReader) Get(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
+	rows, err := r.Reader.Get(ctx, refs)
+	if err == nil {
+		r.afterRead()
+	}
+	return rows, err
+}
+
+func (r historyRPCReader) Versions(ctx context.Context, ref driver.Ref, req driver.PageReq) (driver.Page[driver.Version], error) {
+	page, err := r.Reader.Versions(ctx, ref, req)
+	if err == nil {
+		r.afterRead()
+	}
+	return page, err
+}
+
 func memoryIDs(t *testing.T, value map[string]any) []string {
 	t.Helper()
 	items := value["items"].([]any)
@@ -90,6 +131,28 @@ func memoryIDs(t *testing.T, value map[string]any) []string {
 		ids = append(ids, item.(map[string]any)["key"].(string))
 	}
 	return ids
+}
+
+func assertMemoryWireRefusal(t *testing.T, response map[string]any, code, number string, retryable bool) {
+	t.Helper()
+	requireCode(t, response, code)
+	if _, present := response["result"]; present {
+		t.Fatalf("refused memory read returned a result: %v", response)
+	}
+	e := response["error"].(map[string]any)
+	data := e["data"].(map[string]any)
+	if e["code"] != json.Number(number) || data["retryable"] != retryable || data["details"] != nil {
+		t.Fatalf("wrong typed refusal or disclosed error details: %v", response)
+	}
+	raw, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"private-memory-body", "changed-private-body", "old-secret", "changed-secret", "current-secret", "hidden-current-secret", "content:hidden"} {
+		if bytes.Contains(raw, []byte(secret)) {
+			t.Fatalf("refused memory read disclosed %q: %s", secret, raw)
+		}
+	}
 }
 
 func TestRealSQLiteMemoryBriefAuthorizationAndRestart(t *testing.T) {
@@ -104,10 +167,12 @@ func TestRealSQLiteMemoryBriefAuthorizationAndRestart(t *testing.T) {
 	}
 	// Insert out of lexical order; the read contract sorts by key, then ID.
 	var hiddenID, replaceID string
+	var hiddenCommit map[string]any
 	for _, key := range []string{"zeta", "hidden", "alpha", "middle", "replace"} {
 		commit := save(key)
 		if key == "hidden" {
 			hiddenID = createdRef(t, commit)["id"].(string)
+			hiddenCommit = commit
 		}
 		if key == "replace" {
 			replaceID = createdRef(t, commit)["id"].(string)
@@ -122,6 +187,30 @@ func TestRealSQLiteMemoryBriefAuthorizationAndRestart(t *testing.T) {
 	replaced := result(t, call(t, server, ctx, "memory.get", paramsJSON(t, map[string]any{"id": replaceID})))
 	if replaced["content"] != "updated replace" {
 		t.Fatalf("memory replacement did not update content: %v", replaced)
+	}
+	hiddenUpdate := writeResult(t, server, "memory.save", writeParams(t, map[string]any{
+		"key": "hidden", "content": "hidden-current-secret",
+	}), false)
+	historyRef := map[string]any{"id": hiddenID}
+	historyCalls := []struct {
+		name   string
+		method string
+		params map[string]any
+	}{
+		{"get", "history.get", map[string]any{"ref": historyRef, "asOf": map[string]any{"revision": hiddenCommit["revision"]}}},
+		{"diff", "history.diff", map[string]any{"ref": historyRef, "fromRevision": hiddenCommit["revision"], "toRevision": hiddenUpdate["revision"]}},
+		{"equal-diff", "history.diff", map[string]any{"ref": historyRef, "fromRevision": hiddenCommit["revision"], "toRevision": hiddenCommit["revision"]}},
+	}
+	for _, historyCall := range historyCalls {
+		response := call(t, server, ctx, historyCall.method, paramsJSON(t, historyCall.params))
+		requireCode(t, response, "not_found")
+		raw, err := json.Marshal(response)
+		if err != nil || bytes.Contains(raw, []byte("hidden-current-secret")) || bytes.Contains(raw, []byte("content:hidden")) {
+			t.Fatalf("%s disclosed hidden history: %s", historyCall.name, raw)
+		}
+		if _, ok := response["result"]; ok {
+			t.Fatalf("%s returned a partial result: %v", historyCall.name, response)
+		}
 	}
 	writeResult(t, server, "memory.delete", writeParams(t, map[string]any{"id": replaceID}), false)
 	brief := result(t, call(t, server, ctx, "agent.brief", `{"budgetTokens":200}`))
@@ -274,21 +363,31 @@ func TestRealSQLiteMemoryAuthorizationInstallationFailsClosed(t *testing.T) {
 				"key": "hidden", "content": "private-memory-body",
 			}), false)
 			hiddenID := createdRef(t, commit)["id"].(string)
+			updated := writeResult(t, s, "memory.save", writeParams(t, map[string]any{"key": "hidden", "content": "changed-private-body"}), false)
 			writeResult(t, s, "memory.save", writeParams(t, map[string]any{"key": "visible", "content": "public-memory-body"}), false)
 			ctx := rpc.WithPrincipal(context.Background(), scope.by)
-			for _, method := range []string{"memory.get", "memory.list", "agent.brief"} {
-				t.Run(method, func(t *testing.T) {
-					params := `{}`
-					if method == "memory.get" {
-						params = paramsJSON(t, map[string]any{"id": hiddenID})
-					}
+			for _, read := range []struct {
+				name, method string
+				params       map[string]any
+				list         bool
+			}{
+				{"memory.get", "memory.get", map[string]any{"id": hiddenID}, false},
+				{"memory.list", "memory.list", map[string]any{}, true},
+				{"agent.brief", "agent.brief", map[string]any{}, true},
+				{"history.get-base", "history.get", map[string]any{"ref": map[string]any{"id": hiddenID}, "asOf": map[string]any{"revision": commit["revision"]}}, false},
+				{"history.get-patch", "history.get", map[string]any{"ref": map[string]any{"id": hiddenID}, "asOf": map[string]any{"revision": updated["revision"]}}, false},
+				{"history.diff", "history.diff", map[string]any{"ref": map[string]any{"id": hiddenID}, "fromRevision": commit["revision"], "toRevision": updated["revision"]}, false},
+				{"history.equal-diff", "history.diff", map[string]any{"ref": map[string]any{"id": hiddenID}, "fromRevision": updated["revision"], "toRevision": updated["revision"]}, false},
+			} {
+				t.Run(read.name, func(t *testing.T) {
+					params := paramsJSON(t, read.params)
 					installed, changeDuringRead = true, false
-					response := call(t, s, ctx, method, params)
-					if method == "memory.get" {
-						requireCode(t, response, "not_found")
+					response := call(t, s, ctx, read.method, params)
+					if !read.list {
+						assertMemoryWireRefusal(t, response, "not_found", "-32000", false)
 					} else {
 						value := result(t, response)
-						if method == "agent.brief" {
+						if read.method == "agent.brief" {
 							value = map[string]any{"items": value["memories"]}
 						}
 						if got := memoryIDs(t, value); !reflect.DeepEqual(got, []string{"visible"}) {
@@ -298,23 +397,189 @@ func TestRealSQLiteMemoryAuthorizationInstallationFailsClosed(t *testing.T) {
 					// Keep the policy pointer, but disable its live installation.
 					installed = false
 					before := policyCalls
-					response = call(t, s, ctx, method, params)
-					requireCode(t, response, "authz_not_installed")
-					if _, disclosed := response["result"]; disclosed || policyCalls != before {
-						t.Fatal("disabled capability used a stale policy or returned data", response)
+					response = call(t, s, ctx, read.method, params)
+					assertMemoryWireRefusal(t, response, "authz_not_installed", "-32009", false)
+					if policyCalls != before {
+						t.Fatal("disabled capability used a stale policy", response)
 					}
-					// An installation change inside an otherwise allowing policy
-					// must refuse the whole response, including a point read.
+					// Installation changes inside an allowing policy discard every
+					// output field, including historical bodies and patches.
 					installed, changeDuringRead = true, true
-					response = call(t, s, ctx, method, params)
-					requireCode(t, response, "authz_unavailable")
-					raw, err := json.Marshal(response)
-					if err != nil || bytes.Contains(raw, []byte("private-memory-body")) || response["result"] != nil {
-						t.Fatal("installation transition disclosed memory data", response, err)
+					response = call(t, s, ctx, read.method, params)
+					assertMemoryWireRefusal(t, response, "authz_unavailable", "-32005", true)
+				})
+			}
+		})
+	}
+}
+
+func TestRealSQLiteHistoryMemoryRevalidatesCurrentRead(t *testing.T) {
+	for _, scenario := range []string{"disable", "install", "policy-denies", "current-value-denied"} {
+		t.Run(scenario, func(t *testing.T) {
+			installed, allowed, calls, scans := true, true, 0, 0
+			var duringRead func()
+			var expectedContent, expectedRevision string
+			policy := service.MemoryReadAuthorizerFunc(func(_ context.Context, _ model.PrincipalRef, memory service.Memory) (bool, error) {
+				calls++
+				if memory.Content != expectedContent || memory.Revision.String() != expectedRevision {
+					t.Fatalf("history authorized a stale value: %+v want content=%s revision=%s", memory, expectedContent, expectedRevision)
+				}
+				return allowed && memory.Metadata["denied"] != true, nil
+			})
+			s, store, lease := openSQLiteMemoryServerWithReadHook(t, filepath.Join(t.TempDir(), "history-revalidation.db"), func() {
+				scans++
+				if change := duringRead; change != nil {
+					duringRead = nil
+					change()
+				}
+			}, service.WithMemoryReadAuthorizer(policy), service.WithAuthorizationInstalled(func() bool { return installed }))
+			t.Cleanup(func() { _ = lease.Release(context.Background()); _ = store.Close() })
+			save := func(content string, denied bool) map[string]any {
+				t.Helper()
+				commit := writeResult(t, s, "memory.save", writeParams(t, map[string]any{
+					"key": "history", "content": content, "metadata": map[string]any{"denied": denied},
+				}), false)
+				expectedContent, expectedRevision = content, commit["revision"].(json.Number).String()
+				return commit
+			}
+			first := save("old-secret", false)
+			second := save("changed-secret", false)
+			ref := createdRef(t, first)
+			for _, read := range []struct {
+				name, method string
+				params       map[string]any
+			}{
+				{"get-base", "history.get", map[string]any{"ref": ref, "asOf": map[string]any{"revision": first["revision"]}}},
+				{"get-patch", "history.get", map[string]any{"ref": ref, "asOf": map[string]any{"revision": second["revision"]}}},
+				{"diff", "history.diff", map[string]any{"ref": ref, "fromRevision": first["revision"], "toRevision": second["revision"]}},
+				{"equal-diff", "history.diff", map[string]any{"ref": ref, "fromRevision": second["revision"], "toRevision": second["revision"]}},
+			} {
+				t.Run(read.name, func(t *testing.T) {
+					save("current-secret", false)
+					installed, allowed, calls, scans = scenario != "install", true, 0, 0
+					ctx := rpc.WithPrincipal(context.Background(), model.PrincipalRef{Kind: "agent", ID: "worker"})
+					if !installed {
+						ctx = context.Background()
+					}
+					duringRead = func() {
+						switch scenario {
+						case "disable", "install":
+							installed = !installed
+						case "policy-denies":
+							allowed = false
+						case "current-value-denied":
+							save("current-secret", true)
+						}
+					}
+					before, err := store.Meta(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					response := call(t, s, ctx, read.method, paramsJSON(t, read.params))
+					if scenario == "disable" || scenario == "install" {
+						assertMemoryWireRefusal(t, response, "authz_unavailable", "-32005", true)
+					} else {
+						assertMemoryWireRefusal(t, response, "not_found", "-32000", false)
+					}
+					if scans == 0 || duringRead != nil || scenario == "disable" && calls != 1 || scenario == "install" && calls != 0 {
+						t.Fatalf("transition not exercised or stale policy used: calls=%d scans=%d", calls, scans)
+					}
+					after, err := store.Meta(context.Background())
+					if err != nil || scenario != "current-value-denied" && !reflect.DeepEqual(before, after) || after.Head.String() != expectedRevision {
+						t.Fatalf("history read mutated storage: before=%+v after=%+v err=%v", before, after, err)
 					}
 				})
 			}
 		})
+	}
+}
+
+func TestRealSQLiteMemoryHistoryDeletionAndReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "history-lifetime.db")
+	server, store, lease := openSQLiteMemoryServer(t, path)
+	t.Cleanup(func() { _ = lease.Release(ctx); _ = store.Close() })
+	save := func(content string) map[string]any {
+		return writeResult(t, server, "memory.save", writeParams(t, map[string]any{"key": "history", "content": content}), false)
+	}
+	first, second := save("old-secret"), save("changed-secret")
+	save("current-secret")
+	ref := createdRef(t, first)
+	reads := []struct {
+		method string
+		params map[string]any
+	}{
+		{"history.get", map[string]any{"ref": ref, "asOf": map[string]any{"revision": first["revision"]}}},
+		{"history.get", map[string]any{"ref": ref, "asOf": map[string]any{"revision": second["revision"]}}},
+		{"history.diff", map[string]any{"ref": ref, "fromRevision": first["revision"], "toRevision": second["revision"]}},
+		{"history.diff", map[string]any{"ref": ref, "fromRevision": second["revision"], "toRevision": second["revision"]}},
+	}
+	for i, read := range reads {
+		value := result(t, call(t, server, ctx, read.method, paramsJSON(t, read.params)))
+		switch i {
+		case 0, 1:
+			body := value["body"].(map[string]any)
+			want, revision := "old-secret", first["revision"]
+			if i == 1 {
+				want, revision = "changed-secret", second["revision"]
+				patch := value["patch"].([]any)
+				if value["base"] != false || len(patch) != 1 || !reflect.DeepEqual(patch[0].(map[string]any)["value"], body) {
+					t.Fatalf("historical Body/Patch differ: %v", value)
+				}
+			}
+			if body["content"] != want || value["revision"] != revision || value["deleted"] == true {
+				t.Fatalf("historical body or version metadata changed: %v", value)
+			}
+		case 2:
+			if !reflect.DeepEqual(value["changedPaths"], []any{"/content"}) || value["patch"].([]any)[0].(map[string]any)["value"] != "changed-secret" {
+				t.Fatalf("historical diff changed: %v", value)
+			}
+		case 3:
+			if len(value["patch"].([]any))+len(value["changedPaths"].([]any)) != 0 {
+				t.Fatalf("equal diff changed: %v", value)
+			}
+		}
+	}
+	deleted := writeResult(t, server, "memory.delete", writeParams(t, map[string]any{"id": ref["id"]}), false)
+	reads = append(reads, struct {
+		method string
+		params map[string]any
+	}{"history.get", map[string]any{"ref": ref, "asOf": map[string]any{"revision": deleted["revision"]}}})
+	checkDeleted := func() {
+		t.Helper()
+		before, err := store.Meta(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, read := range reads {
+			assertMemoryWireRefusal(t, call(t, server, ctx, read.method, paramsJSON(t, read.params)), "not_found", "-32000", false)
+		}
+		after, err := store.Meta(ctx)
+		if err != nil || !reflect.DeepEqual(before, after) {
+			t.Fatalf("refused history changed storage: before=%+v after=%+v err=%v", before, after, err)
+		}
+	}
+	checkDeleted()
+	// Reusing the logical key allocates another reference. Its readable value
+	// grants no access to the deleted reference's retained history.
+	recreated := save("replacement")
+	if createdRef(t, recreated)["id"] == ref["id"] {
+		t.Fatal("fixture did not allocate a new memory reference")
+	}
+	checkDeleted()
+	if err := lease.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server, store, lease = openSQLiteMemoryServer(t, path)
+	checkDeleted()
+	value := result(t, call(t, server, ctx, "history.get", paramsJSON(t, map[string]any{
+		"ref": createdRef(t, recreated), "asOf": map[string]any{"revision": recreated["revision"]},
+	})))
+	if value["body"].(map[string]any)["content"] != "replacement" {
+		t.Fatalf("current lifetime did not survive reopen: %v", value)
 	}
 }
 

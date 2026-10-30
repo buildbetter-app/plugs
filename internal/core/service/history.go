@@ -50,6 +50,260 @@ func futureHistoryNotFound(future driver.ErrFutureRevision) error {
 	}}}
 }
 
+// historyMemoryAccess records the current-memory boundary observed before a
+// historical result is assembled. A history reader is pinned to the requested
+// revision, while memory authorization is always evaluated against a fresh
+// head read. Only authoritative record kinds and retained tombstones establish
+// identity; neither historical JSON fields nor a periodic base identify a lifetime.
+type historyMemoryAccess struct {
+	kind        string
+	installed   bool
+	incarnation string
+	revisions   []model.Revision
+}
+
+func historyMemoryNotFound() error {
+	return failure("not_found", "memory was not found")
+}
+
+// Missing retained identity is different from a requested historical revision
+// being unavailable. Do not expose history diagnostics while classifying an
+// absent current record or proving a memory's lifetime.
+func historyIdentityError(err error) error {
+	err = historyGone(err)
+	var typed *model.Error
+	if errors.As(err, &typed) {
+		switch typed.Data.Code {
+		case "history_gone", "cursor_expired", "not_found", "incarnation_changed":
+			return historyMemoryNotFound()
+		}
+	}
+	return err
+}
+
+func historyRecord(ctx context.Context, r driver.Reader, ref model.Ref) (*driver.Record, error) {
+	rows, err := r.Get(ctx, []driver.Ref{ref})
+	if err != nil {
+		return nil, historyGone(err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	if len(rows) != 1 || !historyRefEqual(rows[0].Ref, ref) || rows[0].Revision.Validate() != nil ||
+		compareNatural(rows[0].Revision, *r.Snapshot().At) > 0 {
+		return nil, failure("internal_error", "persisted history record does not match its reference")
+	}
+	return &rows[0], nil
+}
+
+func historyAuthzError(s *Service, before bool, err error) error {
+	if err == nil {
+		return nil
+	}
+	var typed *model.Error
+	if errors.As(err, &typed) && typed.Data.Code == "busy" {
+		return err
+	}
+	if before != s.memoryAuthorizationInstalled() {
+		return failure("authz_unavailable", "authorization installation changed during history read")
+	}
+	return err
+}
+
+func (s *Service) beginHistoryMemoryAccess(ctx context.Context, by model.PrincipalRef, ref model.Ref) (historyMemoryAccess, error) {
+	r, err := s.reader(ctx, by, nil)
+	if err != nil {
+		return historyMemoryAccess{}, err
+	}
+	defer r.Close()
+	record, err := historyRecord(ctx, r, ref)
+	if err != nil {
+		return historyMemoryAccess{}, err
+	}
+	present := record != nil
+	if !present {
+		// Get omits tombstones. Resolve kind from the last retained live record,
+		// at its own revision and this head's incarnation. Drivers preserve kind
+		// for a reference even across deletion; never authorize this old body.
+		versions, err := historyVersions(ctx, r, ref)
+		if err != nil {
+			return historyMemoryAccess{}, historyIdentityError(err)
+		}
+		record, err = s.lastLiveHistoryRecord(ctx, by, ref, r.Snapshot(), versions)
+		if err != nil {
+			return historyMemoryAccess{}, historyIdentityError(err)
+		}
+	}
+	if record == nil || record.Kind == "" || record.Kind == "memory" && !present {
+		return historyMemoryAccess{}, historyMemoryNotFound()
+	}
+	access := historyMemoryAccess{kind: record.Kind, incarnation: r.Snapshot().Incarnation}
+	if access.kind != "memory" {
+		return access, nil
+	}
+	memory, err := decodeMemoryRecord(*record)
+	if err != nil {
+		return historyMemoryAccess{}, err
+	}
+	installed, err := s.memoryAuthorizationState(by)
+	if err != nil {
+		return historyMemoryAccess{}, err
+	}
+	allowed, err := s.authorizeMemory(ctx, by, memory)
+	if err != nil {
+		return historyMemoryAccess{}, historyAuthzError(s, installed, err)
+	}
+	if installed != s.memoryAuthorizationInstalled() {
+		return historyMemoryAccess{}, failure("authz_unavailable", "authorization installation changed during history read")
+	}
+	if !allowed {
+		return historyMemoryAccess{}, historyMemoryNotFound()
+	}
+	access.installed = installed
+	return access, nil
+}
+
+func (s *Service) finishHistoryMemoryAccess(ctx context.Context, by model.PrincipalRef, ref model.Ref, access historyMemoryAccess) error {
+	if access.kind != "memory" {
+		return nil
+	}
+	installed, err := s.memoryAuthorizationState(by)
+	if err != nil {
+		if access.installed != s.memoryAuthorizationInstalled() {
+			return failure("authz_unavailable", "authorization installation changed during history read")
+		}
+		return err
+	}
+	if installed != access.installed {
+		return failure("authz_unavailable", "authorization installation changed during history read")
+	}
+	r, err := s.reader(ctx, by, nil)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	record, err := historyRecord(ctx, r, ref)
+	if err != nil {
+		return err
+	}
+	if record == nil || record.Kind != "memory" || r.Snapshot().Incarnation != access.incarnation {
+		return historyMemoryNotFound()
+	}
+	versions, err := historyVersions(ctx, r, ref)
+	if err != nil {
+		return historyIdentityError(err)
+	}
+	if !sameMemoryLifetime(versions, record.Revision, access.revisions) {
+		return historyMemoryNotFound()
+	}
+	memory, err := decodeMemoryRecord(*record)
+	if err != nil {
+		return err
+	}
+	allowed, err := s.authorizeMemory(ctx, by, memory)
+	if err != nil {
+		return historyAuthzError(s, access.installed, err)
+	}
+	if access.installed != s.memoryAuthorizationInstalled() {
+		return failure("authz_unavailable", "authorization installation changed during history read")
+	}
+	if !allowed {
+		return historyMemoryNotFound()
+	}
+	return nil
+}
+
+func historyVersions(ctx context.Context, r driver.Reader, ref model.Ref) ([]driver.Version, error) {
+	versions := make([]driver.Version, 0, 32)
+	var cursor *driver.Cursor
+	for {
+		page, err := r.Versions(ctx, ref, driver.PageReq{Cursor: cursor, Limit: 1000})
+		if err != nil {
+			return nil, historyGone(err)
+		}
+		if page.AsOf.String() != r.Snapshot().At.String() {
+			return nil, historyMemoryNotFound()
+		}
+		for _, version := range page.Items {
+			if !historyRefEqual(version.Ref, ref) || version.Revision.Validate() != nil ||
+				compareNatural(version.Revision, *r.Snapshot().At) > 0 ||
+				len(versions) != 0 && compareNatural(versions[len(versions)-1].Revision, version.Revision) >= 0 {
+				return nil, historyMemoryNotFound()
+			}
+			versions = append(versions, version)
+		}
+		if len(versions) > maxHistoryVersionScan {
+			return nil, failure("scope_too_large", "history version scan exceeds the bounded read limit")
+		}
+		if page.NextCursor == nil {
+			return versions, nil
+		}
+		if len(page.Items) == 0 {
+			return nil, historyMemoryNotFound()
+		}
+		cursor = page.NextCursor
+	}
+}
+
+func (s *Service) lastLiveHistoryRecord(ctx context.Context, by model.PrincipalRef, ref model.Ref, snapshot driver.View, versions []driver.Version) (*driver.Record, error) {
+	for i := len(versions) - 1; i >= 0; i-- {
+		if versions[i].Deleted {
+			continue
+		}
+		r, err := s.reader(ctx, by, &AsOf{Revision: versions[i].Revision, Incarnation: snapshot.Incarnation})
+		if err != nil {
+			return nil, historyGone(err)
+		}
+		defer r.Close()
+		record, err := historyRecord(ctx, r, ref)
+		if err != nil {
+			return nil, err
+		}
+		if record == nil || record.Revision.String() != versions[i].Revision.String() {
+			return nil, historyMemoryNotFound()
+		}
+		return record, nil
+	}
+	return nil, nil
+}
+
+func sameMemoryLifetime(versions []driver.Version, current model.Revision, requested []model.Revision) bool {
+	if len(versions) == 0 || len(requested) == 0 {
+		return false
+	}
+	last := versions[len(versions)-1]
+	if last.Deleted || last.Revision.String() != current.String() {
+		return false
+	}
+	live := make(map[string]bool)
+	for _, version := range versions {
+		if version.Deleted {
+			clear(live)
+		} else {
+			live[version.Revision.String()] = true
+		}
+	}
+	for _, revision := range requested {
+		if !live[revision.String()] {
+			return false
+		}
+	}
+	return true
+}
+
+func (access *historyMemoryAccess) observeRecord(record *driver.Record, snapshot driver.View) error {
+	if snapshot.Incarnation != access.incarnation || record != nil && (record.Kind == "" || record.Kind != access.kind) {
+		return historyMemoryNotFound()
+	}
+	if access.kind == "memory" {
+		if record == nil {
+			return historyMemoryNotFound()
+		}
+		access.revisions = append(access.revisions, record.Revision)
+	}
+	return nil
+}
+
 func (s *Service) HistoryGet(ctx context.Context, by model.PrincipalRef, req HistoryVersionRequest) (HistoryVersion, error) {
 	if err := req.Ref.Validate(); err != nil {
 		return HistoryVersion{}, failure("invalid_params", "invalid history reference")
@@ -57,32 +311,70 @@ func (s *Service) HistoryGet(ctx context.Context, by model.PrincipalRef, req His
 	if err := req.AsOf.Revision.Validate(); err != nil {
 		return HistoryVersion{}, failure("invalid_params", "invalid history revision")
 	}
+	memoryAccess, err := s.beginHistoryMemoryAccess(ctx, by, req.Ref)
+	if err != nil {
+		return HistoryVersion{}, err
+	}
 	r, err := s.reader(ctx, by, &req.AsOf)
 	if err != nil {
 		return HistoryVersion{}, historyGone(err)
 	}
 	defer r.Close()
 
-	versions := make([]driver.Version, 0, 32)
-	var cursor *driver.Cursor
-	for {
-		page, pageErr := r.Versions(ctx, req.Ref, driver.PageReq{Cursor: cursor, Limit: 1000})
-		if pageErr != nil {
-			return HistoryVersion{}, historyGone(pageErr)
-		}
-		versions = append(versions, page.Items...)
-		if len(versions) > maxHistoryVersionScan {
-			return HistoryVersion{}, failure("scope_too_large", "history version scan exceeds the bounded read limit")
-		}
-		if page.NextCursor == nil {
-			break
-		}
-		cursor = page.NextCursor
+	versions, err := historyVersions(ctx, r, req.Ref)
+	if err != nil {
+		return HistoryVersion{}, err
 	}
 	if len(versions) == 0 {
+		if memoryAccess.kind == "memory" {
+			return HistoryVersion{}, historyMemoryNotFound()
+		}
 		return HistoryVersion{}, failure("not_found", "record has no retained version at the requested revision")
 	}
-	return decodeHistoryVersion(versions[len(versions)-1])
+	version := versions[len(versions)-1]
+	record, err := historyRecord(ctx, r, req.Ref)
+	if err != nil {
+		return HistoryVersion{}, err
+	}
+	if version.Deleted {
+		if memoryAccess.kind == "memory" {
+			return HistoryVersion{}, historyMemoryNotFound()
+		}
+		if record != nil {
+			return HistoryVersion{}, failure("internal_error", "persisted history body does not match its version")
+		}
+		record, err = s.lastLiveHistoryRecord(ctx, by, req.Ref, r.Snapshot(), versions)
+		if err != nil {
+			return HistoryVersion{}, err
+		}
+		if record == nil {
+			return HistoryVersion{}, historyMemoryNotFound()
+		}
+	} else if record == nil || record.Revision.String() != version.Revision.String() {
+		return HistoryVersion{}, failure("internal_error", "persisted history body does not match its version")
+	}
+	if err := memoryAccess.observeRecord(record, r.Snapshot()); err != nil {
+		return HistoryVersion{}, err
+	}
+	if !version.Deleted && len(version.Body) == 0 {
+		// Non-base versions retain their forward patch. Materialize the body
+		// from this same historical snapshot without replacing that patch or
+		// any of the selected version's metadata.
+		version.Body = record.Body
+	}
+	result, err := decodeHistoryVersion(version)
+	if err != nil {
+		return HistoryVersion{}, err
+	}
+	if err := s.finishHistoryMemoryAccess(ctx, by, req.Ref, memoryAccess); err != nil {
+		return HistoryVersion{}, err
+	}
+	return result, nil
+}
+
+func historyRefEqual(a, b model.Ref) bool {
+	return a.Validate() == nil && b.Validate() == nil && a.IsID() == b.IsID() &&
+		a.ID == b.ID && a.Key == b.Key && a.Branch.String() == b.Branch.String()
 }
 
 func decodeHistoryVersion(version driver.Version) (HistoryVersion, error) {
@@ -145,11 +437,15 @@ func (s *Service) HistoryDiff(ctx context.Context, by model.PrincipalRef, req Hi
 	if compareNatural(req.FromRevision, req.ToRevision) > 0 {
 		return HistoryDiff{}, failure("invalid_params", "fromRevision must not be after toRevision")
 	}
-	from, err := s.historyBody(ctx, by, req.Ref, AsOf{Revision: req.FromRevision})
+	memoryAccess, err := s.beginHistoryMemoryAccess(ctx, by, req.Ref)
 	if err != nil {
 		return HistoryDiff{}, err
 	}
-	to, err := s.historyBody(ctx, by, req.Ref, AsOf{Revision: req.ToRevision})
+	from, err := s.historyBody(ctx, by, req.Ref, AsOf{Revision: req.FromRevision}, &memoryAccess)
+	if err != nil {
+		return HistoryDiff{}, err
+	}
+	to, err := s.historyBody(ctx, by, req.Ref, AsOf{Revision: req.ToRevision}, &memoryAccess)
 	if err != nil {
 		return HistoryDiff{}, err
 	}
@@ -158,6 +454,9 @@ func (s *Service) HistoryDiff(ctx context.Context, by model.PrincipalRef, req Hi
 	}
 	result := HistoryDiff{Patch: []JSONPatchOperation{}, ChangedPaths: []string{}}
 	if err := appendDiff(&result, from, to, ""); err != nil {
+		return HistoryDiff{}, err
+	}
+	if err := s.finishHistoryMemoryAccess(ctx, by, req.Ref, memoryAccess); err != nil {
 		return HistoryDiff{}, err
 	}
 	return result, nil
@@ -171,20 +470,23 @@ func compareNatural(a, b model.Natural) int {
 	return value
 }
 
-func (s *Service) historyBody(ctx context.Context, by model.PrincipalRef, ref model.Ref, asOf AsOf) (map[string]any, error) {
+func (s *Service) historyBody(ctx context.Context, by model.PrincipalRef, ref model.Ref, asOf AsOf, access *historyMemoryAccess) (map[string]any, error) {
 	r, err := s.reader(ctx, by, &asOf)
 	if err != nil {
 		return nil, historyGone(err)
 	}
 	defer r.Close()
-	rows, err := r.Get(ctx, []driver.Ref{ref})
+	record, err := historyRecord(ctx, r, ref)
 	if err != nil {
-		return nil, historyGone(err)
+		return nil, err
 	}
-	if len(rows) == 0 {
+	if err := access.observeRecord(record, r.Snapshot()); err != nil {
+		return nil, err
+	}
+	if record == nil {
 		return nil, nil
 	}
-	body, err := decodeJSONObject(rows[0].Body)
+	body, err := decodeJSONObject(record.Body)
 	if err != nil {
 		return nil, failure("internal_error", "persisted history body is invalid")
 	}

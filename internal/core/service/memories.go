@@ -22,14 +22,19 @@ func memoryRef(ref model.Ref) error {
 	return nil
 }
 
-func (s *Service) memoryAuthorizationState(by model.PrincipalRef) (bool, error) {
-	if s == nil {
-		return false, failure("internal_error", "service is not configured")
-	}
+func (s *Service) memoryAuthorizationInstalled() bool {
 	installed := s.memoryReadAuthorizer != nil
 	if s.authorizationInstalled != nil {
 		installed = s.authorizationInstalled()
 	}
+	return installed
+}
+
+func (s *Service) memoryAuthorizationState(by model.PrincipalRef) (bool, error) {
+	if s == nil {
+		return false, failure("internal_error", "service is not configured")
+	}
+	installed := s.memoryAuthorizationInstalled()
 	if installed && s.memoryReadAuthorizer == nil {
 		return false, failure("authz_unavailable", "current memory authorization is unavailable")
 	}
