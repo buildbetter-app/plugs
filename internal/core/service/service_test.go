@@ -1144,7 +1144,7 @@ func TestClaimNextAdvancesPastRealCandidateLeaseRace(t *testing.T) {
 		t.Fatalf("candidate busy did not advance to the next real claim: out=%+v err=%v", out, err)
 	}
 	got, err := f.svc.Get(ctx, anonymous, GetRequest{ID: first})
-	if err != nil || got.Lease == nil || got.Lease.Principal != other {
+	if err != nil || got.Lease == nil || got.Lease.Principal.Kind != other.Kind || got.Lease.Principal.ID != other.ID {
 		t.Fatalf("competing claim was overwritten: %+v err=%v", got, err)
 	}
 }
