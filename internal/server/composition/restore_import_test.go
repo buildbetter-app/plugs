@@ -172,12 +172,12 @@ func compositionSyntheticArchive(t *testing.T) ([]byte, map[string]any, string) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifestBytes, ok := archive.Member("manifest.json")
+	validatedManifestBytes, ok := archive.Member("manifest.json")
 	if !ok {
 		t.Fatal("converter fixture has no manifest")
 	}
 	var manifest map[string]any
-	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+	if err := json.Unmarshal(validatedManifestBytes, &manifest); err != nil {
 		t.Fatal(err)
 	}
 	canonical, err := json.Marshal(archive.Manifest())
