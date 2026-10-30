@@ -14,12 +14,17 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
+	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
+	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
+	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/inprocess"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
@@ -1013,4 +1018,106 @@ func TestRealDryRunDoesNotBecomeReceiptReplay(t *testing.T) {
 	if !reflect.DeepEqual(replayed, committed) || post.calls != postCalls+1 {
 		t.Fatal("real receipt after dry-run did not replay exactly", replayed)
 	}
+}
+
+// This uses the actual fixed-permission GuardedService, not discovery visibility
+// or missing authentication as a substitute for record-policy denial.
+func TestCommentGetThroughGuardedRPCSnapshotsAndRevocation(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	defer store.Close()
+	lease, err := store.Lease(ctx, "comment-rpc", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(ctx)
+	metadata, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := model.RefByID("pl-comment-rpc", model.Natural64(0))
+	doc := pipeline.Document{ID: ref.ID, Type: "issue", Project: "project", Fields: map[string]any{"title": "Comment read", "status": "todo"}}
+	seed := func(op model.OpKind) model.Changeset {
+		t.Helper()
+		body, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, err := conformance.Seed(ctx, store, lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: op, Body: body}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	old := seed(model.OpCreate)
+	source := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	restored := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
+	actor := model.PrincipalRef{Kind: "user", ID: "restore-admin"}
+	doc.Comments = []pipeline.Comment{{Body: "ordinary", Principal: actor, Time: restored}, {Body: "secret imported body", Principal: actor, Time: restored, Origin: "import", SourceAuthor: "source-user", SourceTime: &source}}
+	seed(model.OpUpdate)
+	ns := authz.Namespace{StoreID: string(metadata.StoreID), Incarnation: metadata.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}
+	project := model.RefByID("project", model.Natural64(0))
+	team := model.RefByID("team", model.Natural64(0))
+	facts := authzfixed.Facts{Namespace: ns, Projects: []authzfixed.Project{{Ref: project, InstallationID: "fixed", Name: "project", Active: true}}, Teams: []authzfixed.Team{{Ref: team, InstallationID: "fixed", Active: true}}, Grants: []authz.Grant{{Subject: authz.SubjectRef{Kind: "user", ID: "reader"}, Scope: authz.Scope{Kind: authz.TeamScope, Ref: team}, Role: "member"}, {Subject: authz.SubjectRef{Kind: "team", ID: "team"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: project}, Role: "involved"}}}
+	mutable, err := authzrpc.NewMutableFacts(facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	composition, err := authzrpc.New(ctx, authzrpc.Config{Store: store, Lease: lease, Provider: authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }}), Facts: mutable, Namespace: ns, DefaultProject: "project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := pagingConfig()
+	config.Incarnation = metadata.Incarnation
+	config.DefaultProject = "project"
+	config.AuthMode = "authenticated"
+	config.Visible = composition.Checker.Visible
+	server := pagingServer(t, composition.Service, config)
+	reader := rpc.WithPrincipal(ctx, model.PrincipalRef{Kind: "user", ID: "reader"})
+	params := func(at *service.AsOf) string {
+		v := map[string]any{"id": ref, "_meta": map[string]any{"project": "project"}}
+		if at != nil {
+			v["asOf"] = map[string]any{"revision": at.Revision, "incarnation": metadata.Incarnation}
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	got := result(t, call(t, server, reader, "bead.get", params(nil)))
+	comments := got["comments"].([]any)
+	if len(comments) != 2 {
+		t.Fatalf("comments: %+v", comments)
+	}
+	legacy := comments[0].(map[string]any)
+	imported := comments[1].(map[string]any)
+	if _, exists := legacy["origin"]; exists {
+		t.Fatal("ordinary comment acquired import provenance")
+	}
+	if imported["principal"].(map[string]any)["id"] != "restore-admin" || imported["sourceAuthor"] != "source-user" || imported["sourceTime"] != "2020-01-01T00:00:00Z" {
+		t.Fatalf("actor/source conflated: %+v", imported)
+	}
+	historical := result(t, call(t, server, reader, "bead.get", params(&service.AsOf{Revision: old.Revision})))
+	if _, exists := historical["comments"]; exists {
+		t.Fatal("later comments leaked into historical result")
+	}
+	outsider := rpc.WithPrincipal(ctx, model.PrincipalRef{Kind: "user", ID: "outsider"})
+	for _, at := range []*service.AsOf{nil, {Revision: old.Revision}} {
+		denied := call(t, server, outsider, "bead.get", params(at))
+		requireCode(t, denied, "not_found")
+		if _, exists := denied["result"]; exists {
+			t.Fatal("denied result leaked")
+		}
+	}
+	facts.Grants = nil
+	if err := mutable.Replace(facts); err != nil {
+		t.Fatal(err)
+	}
+	denied := call(t, server, reader, "bead.get", params(&service.AsOf{Revision: old.Revision}))
+	requireCode(t, denied, "not_found")
+	if _, exists := denied["result"]; exists {
+		t.Fatal("revoked historical result leaked")
+	}
+	requireCode(t, call(t, server, reader, "bead.comment", `{"id":{"id":"pl-comment-rpc","branch":0},"body":"forged","origin":"import","sourceAuthor":"forged","_meta":{"project":"project"}}`), "invalid_params")
 }

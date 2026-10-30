@@ -16,6 +16,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
@@ -1429,5 +1430,68 @@ func TestSlotSelectionUsesOntologyKeys(t *testing.T) {
 	got, err := f.svc.Get(context.Background(), anonymous, GetRequest{ID: id})
 	if err != nil || got.Bead.Status != "working" {
 		t.Fatalf("hardcoded claim status: %+v %v", got, err)
+	}
+}
+
+// Storage fixtures exercise the real strict read decoder, not import admission.
+func TestGetCommentSnapshotsAndDetachedProvenance(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	ref, created := create(t, f, "Comments")
+	initial, err := f.svc.Get(ctx, anonymous, GetRequest{ID: ref})
+	if err != nil || initial.Comments != nil {
+		t.Fatalf("old empty read: %+v %v", initial, err)
+	}
+	doc := pipeline.Document{ID: ref.ID, Project: "local", Type: "issue", Fields: map[string]any{"title": "Comments", "status": "todo"}}
+	source := f.now.Add(-time.Hour)
+	doc.Comments = []pipeline.Comment{{Body: "legacy", Principal: anonymous, Time: f.now}, {Body: "imported", Principal: model.PrincipalRef{Kind: "user", ID: "restore-admin", Caveats: map[string]any{"nested": map[string]any{"value": "original"}}}, Time: f.now, Origin: "import", SourceAuthor: "original author", SourceTime: &source}}
+	seeded, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpUpdate, Body: mustJSON(t, doc)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.svc.Get(ctx, anonymous, GetRequest{ID: ref})
+	if err != nil || len(got.Comments) != 2 {
+		t.Fatalf("comments: %+v %v", got, err)
+	}
+	if got.Comments[1].Principal.ID != "restore-admin" || got.Comments[1].SourceAuthor != "original author" || !got.Comments[1].SourceTime.Equal(source) {
+		t.Fatal("actor/source provenance changed")
+	}
+	*got.Comments[1].SourceTime = f.now
+	got.Comments[1].Principal.Caveats["nested"].(map[string]any)["value"] = "mutated"
+	again, err := f.svc.Get(ctx, anonymous, GetRequest{ID: ref, AsOf: &AsOf{Revision: seeded.Revision}})
+	if err != nil || !again.Comments[1].SourceTime.Equal(source) || again.Comments[1].Principal.Caveats["nested"].(map[string]any)["value"] != "original" {
+		t.Fatalf("result alias: %+v %v", again, err)
+	}
+	old, err := f.svc.Get(ctx, anonymous, GetRequest{ID: ref, AsOf: &AsOf{Revision: created.Revision}})
+	if err != nil || old.Comments != nil {
+		t.Fatalf("later comments leaked: %+v %v", old, err)
+	}
+}
+
+func TestGetRefusesMalformedStoredCommentUnion(t *testing.T) {
+	base := map[string]any{"body": "secret", "principal": anonymous, "time": "2026-10-30T10:00:00Z"}
+	cases := []map[string]any{{"origin": ""}, {"sourceAuthor": ""}, {"sourceTime": nil}, {"origin": "import", "sourceTime": "2026-10-29T10:00:00Z", "sourceAuthor": nil}, {"origin": "import"}, {"origin": "import", "sourceTime": nil}, {"origin": "import", "sourceTime": "2026-10-29T10:00:00Z", "sourceAuthor": "bad\nauthor"}, {"unexpected": true}}
+	for i, extra := range cases {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			f := setup(t)
+			ref, _ := create(t, f, "Malformed")
+			comment := map[string]any{}
+			for k, v := range base {
+				comment[k] = v
+			}
+			for k, v := range extra {
+				comment[k] = v
+			}
+			doc := map[string]any{"id": ref.ID, "project": "local", "type": "issue", "fields": map[string]any{"title": "Malformed", "status": "todo"}, "comments": []any{comment}}
+			_, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpUpdate, Body: mustJSON(t, doc)}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := f.svc.Get(context.Background(), anonymous, GetRequest{ID: ref})
+			wantCode(t, err, "internal_error")
+			if got.Comments != nil || got.Bead.ID != "" {
+				t.Fatal("refused document leaked")
+			}
+		})
 	}
 }
