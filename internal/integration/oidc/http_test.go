@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
 type observedDomain struct {
@@ -57,9 +59,14 @@ type httpFixture struct {
 }
 
 func realHTTP(t *testing.T, idp *mockIDP, origins ...string) *httpFixture {
+	return realHTTPWithSessionStore(t, idp, nil, origins...)
+}
+
+func realHTTPWithSessionStore(t *testing.T, idp *mockIDP, sessionStore driver.CoreSessionStore, origins ...string) *httpFixture {
 	t.Helper()
 	config := idp.config()
 	config.AllowedOrigins = append([]string{"https://app.invalid"}, origins...)
+	config.SessionStore = sessionStore
 	p, err := authnoidc.New(config)
 	if err != nil {
 		t.Fatal(err)
@@ -267,6 +274,76 @@ func expectHTTPError(t *testing.T, response *http.Response, status int, code str
 	if err != nil || response.StatusCode != status || json.Unmarshal(data, &value) != nil || value["error"] != code {
 		t.Fatalf("expected HTTP %d/%s, got %d/%s", status, code, response.StatusCode, data)
 	}
+}
+
+func TestRealHTTPSQLiteSessionSurvivesProviderRestartAndRevocation(t *testing.T) {
+	idp := newIDP(t)
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	firstValue, err := (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := firstValue.(driver.CoreSessionStore)
+	f1 := realHTTPWithSessionStore(t, idp, first, "https://other-app.invalid")
+	session := login(t, idp, f1.provider)
+	browser := loginOverHTTP(t, f1, "https://app.invalid")
+	result(t, f1.call(t, browser.AccessToken, "bead.create", writeParams(t), func(r *http.Request) {
+		r.Header.Set("Origin", "https://app.invalid")
+	}))
+	expectCode(t, f1.call(t, browser.AccessToken, "bead.create", writeParams(t), func(r *http.Request) {
+		r.Header.Set("Origin", "https://other-app.invalid")
+	}), http.StatusForbidden, "forbidden")
+	if err := firstValue.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	secondValue, err := (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := secondValue.(driver.CoreSessionStore)
+	t.Cleanup(func() {
+		if err := secondValue.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	f2 := realHTTPWithSessionStore(t, idp, second, "https://other-app.invalid")
+	if _, err := f2.auth.Admit(context.Background(), session.Token); err != nil {
+		t.Fatalf("active session did not survive provider/store restart: %v", err)
+	}
+	result(t, f2.call(t, session.Token, "bead.create", writeParams(t), nil))
+	// Durable identity survives, but the HTTP adapter's provider-local origin
+	// caveat never becomes a general allowlist grant after restart.
+	if _, err := f2.auth.Admit(context.Background(), browser.AccessToken); err != nil {
+		t.Fatalf("browser session lost durable identity: %v", err)
+	}
+	expectCode(t, f2.call(t, browser.AccessToken, "bead.create", writeParams(t), func(r *http.Request) {
+		r.Header.Set("Origin", "https://app.invalid")
+	}), http.StatusForbidden, "forbidden")
+	identity, err := f2.auth.Admit(context.Background(), session.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.RequireInteractiveUser(); err != nil {
+		t.Fatalf("retained proof was not live before revocation: %v", err)
+	}
+	if !f2.provider.Revoke(session.ID) {
+		t.Fatal("durable revocation did not acknowledge the active session")
+	}
+	if !errors.Is(identity.RequireInteractiveUser(), authn.ErrUnauthenticated) {
+		t.Fatal("retained proof survived durable revocation")
+	}
+	expectCode(t, f2.call(t, session.Token, "bead.create", writeParams(t), nil), http.StatusUnauthorized, "unauthenticated")
+	expiring := login(t, idp, f2.provider)
+	expiringBrowser := loginOverHTTP(t, f2, "https://app.invalid")
+	idp.now.Store(expiring.ExpiresAt.Unix())
+	expectCode(t, f2.call(t, expiring.Token, "bead.create", writeParams(t), nil), http.StatusUnauthorized, "token_expired")
+	expectCode(t, f2.call(t, expiringBrowser.AccessToken, "bead.create", writeParams(t), func(r *http.Request) {
+		r.Header.Set("Origin", "https://app.invalid")
+	}), http.StatusUnauthorized, "token_expired")
+	expectCode(t, f2.call(t, expiringBrowser.AccessToken, "bead.create", writeParams(t), func(r *http.Request) {
+		r.Header.Set("Origin", "https://other-app.invalid")
+	}), http.StatusForbidden, "forbidden")
 }
 
 func TestRealHTTPLoginAdapterIssuesBoundSessionAndCORS(t *testing.T) {
