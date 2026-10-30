@@ -358,6 +358,9 @@ func sqliteRestartRPC(t *testing.T, endpoint, session, method string, params map
 	if err := wire.DecodeInto(raw, &value); err != nil || value.JSONRPC != "2.0" || value.ID != 1 {
 		t.Fatalf("%s response=%s err=%v", method, raw, err)
 	}
+	if value.Error != nil {
+		t.Logf("%s RPC error response=%s", method, raw)
+	}
 	return value
 }
 
