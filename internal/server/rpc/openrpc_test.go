@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
@@ -184,6 +185,19 @@ func catalogJSONEqual(t *testing.T, label string, a, b any) {
 	}
 }
 
+func sortedCatalogDescriptors(visible map[string]wire.MethodDesc) []wire.MethodDesc {
+	names := make([]string, 0, len(visible))
+	for name := range visible {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]wire.MethodDesc, 0, len(names))
+	for _, name := range names {
+		out = append(out, visible[name])
+	}
+	return out
+}
+
 func TestComposedOpenRPCMatchesBoundRegistry(t *testing.T) {
 	r := registry(t)
 	if err := rpc.BindService(r, &serviceProbe{}); err != nil {
@@ -267,6 +281,32 @@ func TestComposedOpenRPCMatchesBoundRegistry(t *testing.T) {
 			discovery := result(t, call(t, s, ctx, "rpc.discover", `{}`))
 			catalogJSONEqual(t, "rpc.discover methods", discovery["methods"], raw["methods"])
 			description := result(t, call(t, s, ctx, "rpc.describe", `{}`))
+			descriptionMethods, ok := description["methods"].([]any)
+			if !ok {
+				t.Fatalf("rpc.describe methods has type %T", description["methods"])
+			}
+			if len(descriptionMethods) != len(visible) {
+				t.Fatalf("rpc.describe method count: got %d want %d", len(descriptionMethods), len(visible))
+			}
+			described := map[string]bool{}
+			for _, rawMethod := range descriptionMethods {
+				method, ok := rawMethod.(map[string]any)
+				name, nameOK := method["name"].(string)
+				if !ok || !nameOK {
+					t.Fatalf("rpc.describe returned malformed method: %v", rawMethod)
+				}
+				if described[name] {
+					t.Fatalf("rpc.describe returned duplicate method %s", name)
+				}
+				if _, expected := visible[name]; !expected {
+					t.Fatalf("rpc.describe returned unknown/hidden method %s", name)
+				}
+				described[name] = true
+			}
+			if len(described) != len(visible) {
+				t.Fatalf("rpc.describe dropped methods: got %d want %d", len(described), len(visible))
+			}
+			catalogJSONEqual(t, "rpc.describe methods", descriptionMethods, sortedCatalogDescriptors(visible))
 			catalogJSONEqual(t, "rpc.describe components", description["components"], doc.Components)
 			catalogJSONEqual(t, "rpc.describe errors", description["errors"], doc.Errors)
 		})
