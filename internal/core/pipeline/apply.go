@@ -52,10 +52,20 @@ func (w *Writer) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	if meta.Method == "bead.release" {
 		return port.WriteOutcome{}, failure("invalid_params", "bead.release requires the protected claim release entry point")
 	}
-	return w.applyWithOutcome(ctx, by, cs, meta, nil)
+	return w.applyWithOutcome(ctx, by, cs, meta, nil, nil)
 }
 
-func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, release *claimReleaseMode) (outcome port.WriteOutcome, retErr error) {
+// ApplyClaimNextEmpty is the transaction-level seam for a terminal claimNext
+// null. The probe runs only after the transaction has acquired the head and
+// before it can publish the durable H+1 receipt.
+func (w *Writer) ApplyClaimNextEmpty(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, probe port.ClaimNextReadyProbe) (port.WriteOutcome, error) {
+	if meta.Method == "bead.release" {
+		return port.WriteOutcome{}, failure("invalid_params", "bead.release requires the protected claim release entry point")
+	}
+	return w.applyWithOutcome(ctx, by, cs, meta, nil, probe)
+}
+
+func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, release *claimReleaseMode, terminalProbe port.ClaimNextReadyProbe) (outcome port.WriteOutcome, retErr error) {
 	started := time.Now()
 	committed := false
 	defer func() {
@@ -102,7 +112,7 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	if !validKey(meta.IdempotencyKey) {
 		return port.WriteOutcome{}, failure("invalid_params", "idempotency key must encode at least 128 bits as UUIDv4, ULID, hex or base64url")
 	}
-	if len(cs.Ops) == 0 || len(cs.Ops) > 1000 {
+	if (len(cs.Ops) == 0 && meta.Method != "bead.claimNext") || len(cs.Ops) > 1000 {
 		return port.WriteOutcome{}, failure("invalid_params", "change set requires 1 to 1000 operations")
 	}
 	// Validate the closed tagged unions and detach all caller-owned maps.
@@ -182,7 +192,7 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 		var commit model.Commit
 		if err == nil {
 			phaseStarted = time.Now()
-			commit, err = w.transact(preCtx, p, by, meta, principal, hash)
+			commit, err = w.transact(preCtx, p, by, meta, principal, hash, terminalProbe)
 			w.observePhaseSince(preCtx, PhaseCommit, phaseStarted, err)
 			if err == nil {
 				committed = true
@@ -267,8 +277,9 @@ func requestHash(cs model.ChangeSet, meta model.WriteMeta) (string, error) {
 		data, err = json.Marshal(struct {
 			ChangeSet               model.ChangeSet
 			Method, Project, Return string
+			ClaimNextIdentity       string `json:",omitempty"`
 			DryRun                  bool
-		}{cs, meta.Method, meta.Project, meta.Return, meta.DryRun})
+		}{cs, meta.Method, meta.Project, meta.Return, meta.ClaimNextIdentity, meta.DryRun})
 	} else {
 		data, err = json.Marshal(struct {
 			ChangeSet                                      model.ChangeSet
@@ -339,7 +350,7 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 			result.Record = body
 		}
 		commit.Results = append(commit.Results, result)
-		if meta.Method == "bead.claim" && pending.doc.Lease != nil {
+		if isClaim(meta.Method) && pending.doc.Lease != nil {
 			expires, ttl := pending.doc.Lease.ExpiresAt, pending.doc.Lease.TtlMs
 			commit.LeaseExpiresAt, commit.LeaseTtlMs = &expires, &ttl
 		}
@@ -347,7 +358,7 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 	return clone(commit)
 }
 
-func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRef, meta model.WriteMeta, principal, hash string) (model.Commit, error) {
+func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRef, meta model.WriteMeta, principal, hash string, terminalProbe port.ClaimNextReadyProbe) (model.Commit, error) {
 	sentinels := p.sentinels()
 	writes := map[string]*pending{}
 	for id, pending := range p.writes {
@@ -399,6 +410,19 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	} else if prior != nil {
 		return model.Commit{}, errStale
 	}
+	// The claimNext empty result is special: after the head lock, this probe
+	// observes the latest committed ready set through the write transaction.
+	// A candidate means the earlier live walk became stale, so release the
+	// transaction and let the service restart before publishing a null receipt.
+	if len(writes) == 0 && meta.Method == "bead.claimNext" && terminalProbe != nil {
+		ready, err := terminalProbe(ctx, tx)
+		if err != nil {
+			return model.Commit{}, err
+		}
+		if ready {
+			return model.Commit{}, port.ErrClaimNextReady
+		}
+	}
 	if len(allocatorPrefixes) > 0 {
 		allocator, ok := tx.(driver.AllocatorContinuation)
 		if !ok {
@@ -420,7 +444,11 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	for i, lock := range locks {
 		keys[i] = lock.Key
 	}
-	if len(writes) == 0 {
+	// Legacy no-op receipts keep the existing head-only NoopCommitter
+	// semantics. claimNext's terminal null is different: the contract gives
+	// it a durable H+1 receipt, with no graph changes, so it continues through
+	// the ordinary changeset commit path below.
+	if len(writes) == 0 && meta.Method != "bead.claimNext" {
 		noop, ok := tx.(driver.NoopCommitter)
 		if !ok {
 			return model.Commit{}, driver.ErrUnsupported
@@ -468,7 +496,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		return model.Commit{}, err
 	}
-	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
+	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(p.changed) != 0 && len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
 	if err != nil {
 		return model.Commit{}, err
 	}

@@ -37,7 +37,7 @@ func (t *transaction) CommitNoop(ctx context.Context, header driver.ChangesetHea
 	if err := header.Kind.Validate(); err != nil {
 		return model.Commit{}, err
 	}
-	if header.ResponsePending {
+	if t.restore != nil || header.ResponsePending {
 		return model.Commit{}, fmt.Errorf("memory: no-op response cannot be pending")
 	}
 	if header.Events != nil {
