@@ -29,14 +29,37 @@ mux.Handle("/ui/", ui)
 absolute URL paths; the mount ends in `/` and the RPC path does not.
 `config.json` exposes this explicit composition to the browser.
 
+`Catalog` supplies validated declarative panels, columns, and buttons. The
+default catalog records the chosen "Changes since I looked" home, `blockedBy`
+column, and `bead.claimNext` action as data; it does not execute plugin code in
+the host page. `Frames` optionally supplies prebuilt embedded assets. Each
+frame is served under `frames/<id>/` with a response CSP of `sandbox
+allow-scripts`, no same-origin capability, no forms, and `connect-src 'none'`.
+The host binds its narrow `postMessage` bridge to that frame's
+`WindowProxy` (`event.source`), checks its exact method/project grant, and
+injects project metadata before the existing same-origin RPC read. D16 methods
+and credential/egress fields are refused; `tx.apply` and `plug_call` require an
+explicit grant by exact name. The host caps each frame at 256 KiB per message
+and 20 bridge calls per second.
+
+Before stamping metadata, the live browser bridge checks every explicit
+`project` and `projects` value recursively through objects and arrays. A
+different project or malformed project value returns `scope_denied` without
+sending an RPC request. Omitted project metadata is supplied by the host grant.
+
 The handler reuses anonymous `authn.AdmitHTTP` Host, Origin, peer and listener
 checks for static requests, on a clone with an internal RPC sentinel. Actual
 browser RPC calls carry `Plug-RPC: 1` and pass the normal transport admission.
 Static GET/HEAD require loopback access; cookies, Authorization, remote peers,
-cross-origin requests and other methods are refused. Fetches omit credentials.
+cross-origin requests and other methods are refused. Sandboxed frame assets
+accept only the browser's opaque `Origin: null` request after the same
+loopback/host checks; their CSP still forbids network connections and forms.
+Fetches omit credentials.
 Authenticated hello responses explicitly report that browser sessions are
-unconfigured. CSP permits only local assets and same-origin connections;
-frames, inline scripts/styles, object embedding and forms are disabled.
+unconfigured. The host CSP permits only local assets, same-origin connections,
+and explicitly configured same-origin frames; inline scripts/styles, object
+embedding and forms are disabled. Frame responses add their own opaque-origin
+`sandbox allow-scripts` CSP.
 Untrusted titles, IDs, reasons and presence data are rendered as text.
 
 ## Connected slice and limits
@@ -62,8 +85,10 @@ Untrusted titles, IDs, reasons and presence data are rendered as text.
   The UI opens no session and performs no writes.
 - Refresh, cancellation, a 15-second read deadline, empty results and RPC
   refusals have explicit states. Live watches, interactive login, remote/CORS
-  composition, plugin catalog/iframe bridges and epic rollups are not implemented.
-  Five-person UX validation against real views/watches remains unqualified.
+  composition and epic rollups remain outside this slice. The frame bridge is
+  a bounded host seam; plugin installation, digest locks and authorization
+  grants remain owned by the plugin-host lane. Five-person UX validation
+  against real views/watches remains unqualified.
 
 ## Verification
 
@@ -84,6 +109,13 @@ loading, empty states, unavailable methods, cancellation/deadline propagation
 to a held real driver read, and refusal after actual lease release. It checks
 browser RPC methods are reads and the store contains only the four harness
 writes. No product read response is fabricated.
+
+The same browser fixture creates two opaque frames and uses their Chrome
+debugging contexts to send real `postMessage` calls, preserving all CSP and
+sandbox settings. Cross-project and malformed-scope messages stop at the live
+bridge; calls with matching or omitted metadata reach real RPC and return a
+stored row, while the sibling frame cannot borrow the other frame's method
+grant. Responses and the RPC boundary evidence are recorded in `bridge-scope.json`.
 
 Standalone desktop/mobile/state screenshots and actual request/response logs
 are emitted to the Bazel test's `test.outputs/` directory (or undeclared-output
