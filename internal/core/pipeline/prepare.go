@@ -485,8 +485,12 @@ func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta
 			pending.doc.Lease = &ClaimLease{Principal: by, Agent: meta.AgentLabel, ExpiresAt: w.cfg.now().UTC().Add(w.cfg.claimTTL), TtlMs: ttl, Epoch: model.Natural64(w.lease.Epoch())}
 			pending.setBy["lease"] = "request"
 		}
-	} else if isSlot(meta.Method) && meta.Method != "bead.claim" {
+	} else {
 		for _, pending := range p.writes {
+			method := gateLifecycleMethod(meta.Method, pending)
+			if !isSlot(method) || method == "bead.claim" {
+				continue
+			}
 			pending.doc.Lease = nil
 			pending.setBy["lease"] = "request"
 		}

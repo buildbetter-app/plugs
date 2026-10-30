@@ -13,8 +13,8 @@ import (
 )
 
 // Ontology adapts pure workflow rules to the pipeline's tracked snapshot port.
-// The local slice has no authorization provider or gate engine. Permission is
-// inert without a provider; gates remain unobserved and fail closed if required.
+// Permission is inert without an authorization provider; gate decisions use
+// the canonical pure evaluator and remain within the single Writer proposal.
 type Ontology struct {
 	resolve func(string) ontology.Effective
 }
@@ -63,6 +63,17 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 			}
 			if !hasDocument(change.Before) {
 				return nil, failure("invalid_params", "gate operation requires an existing bead")
+			}
+			before, err := decodeDocument(change.Before)
+			if err != nil {
+				return nil, failure("internal_error", "invalid prior gate bead")
+			}
+			for _, fields := range []map[string]any{before.Fields, doc.Fields} {
+				for name := range fields {
+					if isGateField(name) && (!reflect.DeepEqual(before.Fields[name], doc.Fields[name]) || change.SetBy["fields."+name] != "") {
+						return nil, failure("field_owned", "gate fields are owned by core")
+					}
+				}
 			}
 			patch, err := o.normalizeGate(proposal, change.Resource, doc)
 			if err != nil {
@@ -113,10 +124,11 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 }
 
 const (
-	gateKindField      = "gate_kind"
-	gateStateField     = "gate_state"
-	gateApprovalsField = "gate_approvals"
-	gateDetailsField   = "gate_details"
+	gateKindField          = "gate_kind"
+	gateStateField         = "gate_state"
+	gateApprovalsField     = "gate_approvals"
+	gateApprovalCountField = "gate_approval_count"
+	gateDetailsField       = "gate_details"
 )
 
 func isGateAction(action string) bool {
@@ -129,7 +141,7 @@ func isGateMethod(method string) bool {
 
 func isGateField(name string) bool {
 	switch name {
-	case gateKindField, gateStateField, gateApprovalsField, gateDetailsField:
+	case gateKindField, gateStateField, gateApprovalsField, gateApprovalCountField, gateDetailsField:
 		return true
 	default:
 		return false
@@ -194,7 +206,7 @@ func (o *Ontology) normalizeGate(proposal port.ProposedChange, resource model.Re
 	if err != nil {
 		return port.Patch{}, err
 	}
-	approvals := append([]ontology.GateApproval(nil), state.Approvals...)
+	approvals := append([]ontology.GateApproval{}, state.Approvals...)
 	if decision.Added {
 		if decision.Approval == nil {
 			return port.Patch{}, failure("internal_error", "gate approval decision omitted its approval")
@@ -202,7 +214,7 @@ func (o *Ontology) normalizeGate(proposal port.ProposedChange, resource model.Re
 		approvals = append(approvals, *decision.Approval)
 	}
 	paths := map[string]json.RawMessage{}
-	for name, value := range map[string]any{gateStateField: decision.State, gateApprovalsField: approvals} {
+	for name, value := range map[string]any{gateStateField: decision.State, gateApprovalsField: approvals, gateApprovalCountField: decision.Approvals} {
 		data, marshalErr := json.Marshal(value)
 		if marshalErr != nil {
 			return port.Patch{}, marshalErr

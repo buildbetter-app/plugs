@@ -196,6 +196,62 @@ func TestAuditPlanRetainsOrdinaryAndOrderedNotices(t *testing.T) {
 	}
 }
 
+func TestGateEventPlanRetainsItsSlotEventOnce(t *testing.T) {
+	for _, pair := range []struct {
+		slot DurableEventType
+		gate DurableEventType
+	}{
+		{EventBeadClosed, EventGateApproved},
+		{EventBeadClosed, EventGateReported},
+		{EventBeadFailed, EventGateReported},
+	} {
+		t.Run(string(pair.slot)+"/"+string(pair.gate), func(t *testing.T) {
+			c := auditFixture()
+			c.Events = c.Events[:1]
+			c.Events[0].Type = pair.slot
+			if pair.slot == EventBeadFailed {
+				c.Events[0].Provenance.Slot = "fail"
+			}
+			c.Events[0].Provenance.Method = "gate.report"
+			if pair.gate == EventGateApproved {
+				c.Events[0].Provenance.Method = "gate.approve"
+			}
+			gate := CloneEventDescriptors(c.Events)[0]
+			gate.Index, gate.Type = Natural64(1), pair.gate
+			c.Events = append(c.Events, gate)
+			if err := c.ValidateEvents(); err != nil {
+				t.Fatal(err)
+			}
+			for name, mutate := range map[string]func(*Changeset){
+				"duplicate companion": func(v *Changeset) {
+					duplicate := CloneEventDescriptors(v.Events[1:])[0]
+					duplicate.Index = Natural64(2)
+					v.Events = append(v.Events, duplicate)
+				},
+				"duplicate standalone gate": func(v *Changeset) { v.Events[0].Type = pair.gate },
+				"ordinary update companion": func(v *Changeset) { v.Events[0].Type = EventBeadUpdated },
+				"different resource":        func(v *Changeset) { v.Events[1].Resource.Ref = RefByID("other", Natural64(0)) },
+			} {
+				t.Run(name, func(t *testing.T) {
+					v := c
+					v.Events = CloneEventDescriptors(c.Events)
+					mutate(&v)
+					if v.ValidateEvents() == nil {
+						t.Fatal("invalid gate event plan accepted")
+					}
+				})
+			}
+		})
+	}
+	standalone := auditFixture()
+	standalone.Events = standalone.Events[:1]
+	standalone.Events[0].Type = EventGateApproved
+	standalone.Events[0].Provenance.Method, standalone.Events[0].Provenance.Slot = "gate.approve", ""
+	if err := standalone.ValidateEvents(); err != nil {
+		t.Fatalf("pending approval must have its single gate event: %v", err)
+	}
+}
+
 func TestAuditCopiesAndRequiredResources(t *testing.T) {
 	c := auditFixture()
 	copy := CloneEventDescriptors(c.Events)

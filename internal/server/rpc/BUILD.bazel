@@ -21,6 +21,7 @@ go_test(
         "//internal/core/port",
         "//internal/core/service",
         "//internal/server/transport/inprocess",
+        "//internal/storage/conformance",
         "//internal/storage/driver",
         "//internal/storage/memory",
         "//internal/storage/sqlite",

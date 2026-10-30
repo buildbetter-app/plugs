@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
-	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 )
@@ -106,14 +105,16 @@ func gateResult(commit model.Commit) (GateResult, error) {
 	if !ok || state == "" {
 		return GateResult{}, failure("internal_error", "gate commit is missing gate_state")
 	}
-	approvals := []ontology.GateApproval{}
-	if raw, present := doc.Fields[gateApprovalsField]; present {
-		data, marshalErr := json.Marshal(raw)
-		if marshalErr != nil || json.Unmarshal(data, &approvals) != nil {
-			return GateResult{}, failure("internal_error", "gate commit contains invalid approvals")
-		}
+	// The evaluator's count can differ from the retained observations: it
+	// excludes anonymous observations and collapses sponsor identities. Persist
+	// that count in the same bead image so replay never consults current rules.
+	raw, present := doc.Fields[gateApprovalCountField]
+	data, marshalErr := json.Marshal(raw)
+	var approvals model.Natural
+	if !present || marshalErr != nil || json.Unmarshal(data, &approvals) != nil {
+		return GateResult{}, failure("internal_error", "gate commit is missing its evaluated approval count")
 	}
-	return GateResult{Commit: commit, State: state, Approvals: model.Natural64(uint64(len(approvals)))}, nil
+	return GateResult{Commit: commit, State: state, Approvals: approvals}, nil
 }
 
 var _ port.GateService = (*Service)(nil)

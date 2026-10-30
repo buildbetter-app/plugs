@@ -11,10 +11,11 @@ import (
 )
 
 const (
-	gateKindField      = "gate_kind"
-	gateStateField     = "gate_state"
-	gateApprovalsField = "gate_approvals"
-	gateDetailsField   = "gate_details"
+	gateKindField          = "gate_kind"
+	gateStateField         = "gate_state"
+	gateApprovalsField     = "gate_approvals"
+	gateApprovalCountField = "gate_approval_count"
+	gateDetailsField       = "gate_details"
 )
 
 func isGateMethod(method string) bool {
@@ -23,7 +24,7 @@ func isGateMethod(method string) bool {
 
 func isGateField(name string) bool {
 	switch name {
-	case gateKindField, gateStateField, gateApprovalsField, gateDetailsField:
+	case gateKindField, gateStateField, gateApprovalsField, gateApprovalCountField, gateDetailsField:
 		return true
 	default:
 		return false
@@ -173,6 +174,30 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 		return []Violation{{Code: "ontology_use_slot_verb", Field: "status", Message: "status must be changed through a lifecycle verb"}}
 	}
 	var violations []Violation
+	for _, name := range []string{gateKindField, gateStateField, gateApprovalsField, gateApprovalCountField, gateDetailsField} {
+		value, exists := after.Fields[name]
+		if gateMethod {
+			continue
+		}
+		if before == nil {
+			if !exists {
+				continue
+			}
+			if name == gateKindField {
+				kind, ok := value.(string)
+				if _, active := e.Gate(kind); !ok || !active {
+					violations = append(violations, invalid("fields."+name, "unknown or archived gate kind")...)
+				}
+				continue
+			}
+		} else {
+			old, present := before.Fields[name]
+			if present == exists && sameValue(old, value) && !hasPath(facts.Touched, "fields."+name) {
+				continue
+			}
+		}
+		violations = append(violations, Violation{Code: "ontology_use_slot_verb", Field: "fields." + name, Message: "gate state must be changed through a gate verb"})
+	}
 	_, priorityViolations := Priority(*after)
 	violations = append(violations, priorityViolations...)
 	_, templateViolations := IsTemplate(*after)
@@ -194,15 +219,6 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 			continue
 		} // fixed kernel field, checked above
 		if isGateField(name) {
-			// Gate state is a core-reserved image. The gate service is the only
-			// named writer allowed to change it; ordinary bead updates may carry
-			// the fields on creation but cannot mutate an existing gate.
-			if before != nil && !gateMethod {
-				old, present := before.Fields[name]
-				if present != (after.Fields[name] != nil) || !sameValue(old, after.Fields[name]) || hasPath(facts.Touched, "fields."+name) {
-					violations = append(violations, Violation{Code: "ontology_use_slot_verb", Field: "fields." + name, Message: "gate state must be changed through a gate verb"})
-				}
-			}
 			continue
 		}
 		field, ok := t.Fields[name]

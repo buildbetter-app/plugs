@@ -48,12 +48,11 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 		return nil
 	}
 	coreRecovery := p.release != nil && p.release.reclaim
-	if gate && !w.cfg.auditSet {
-		p.audit = &auditPlan{context: port.EventContext{Cause: model.EventCause{Root: p.proposal.Meta.IdempotencyKey, Depth: model.Natural64(0), Chain: []string{}}, Chain: []string{}}, transitions: map[string]auditTransition{}}
-		return nil
-	}
 	if p.release != nil && !coreRecovery && w.cfg.authorizer != nil && w.cfg.eventContext == nil {
 		return failure("invalid_params", "claim release requires trusted event context for an installed authorizer")
+	}
+	if gate && w.cfg.authorizer != nil && w.cfg.eventContext == nil {
+		return failure("invalid_params", "gate events require trusted event context for an installed authorizer")
 	}
 	p.audit = &auditPlan{context: port.EventContext{Cause: model.EventCause{Root: p.proposal.Meta.IdempotencyKey, Depth: model.Natural64(0), Chain: []string{}}, Chain: []string{}}, transitions: map[string]auditTransition{}}
 	if w.cfg.eventContext != nil && !coreRecovery {
@@ -79,6 +78,9 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 	if p.release != nil {
 		// Release/reclaim is itself the durable audit boundary. It does not run
 		// conditional blocker analysis, but it still gets a complete descriptor.
+		return nil
+	}
+	if !w.cfg.auditSet {
 		return nil
 	}
 	blockers := map[string]bool{}
@@ -251,7 +253,16 @@ func (p *prepared) events(revision model.Revision, changes []model.ChangeRecord)
 		}
 		provenance := model.EventProvenance{Method: p.proposal.Meta.Method, Slot: slot, SetBy: cloneMap(pending.setBy), Cause: p.audit.context.Cause, Chain: p.audit.context.Chain}
 		events = append(events, model.EventDescriptor{Index: model.Natural64(uint64(len(events))), ChangeIndex: model.Natural64(uint64(index)), Type: kind, Resource: model.AuditResource{Kind: "bead", Ref: change.Ref}, Provenance: provenance})
-		if gate := gateEventType(p.proposal.Meta.Method); gate != "" {
+		gate := model.DurableEventType("")
+		switch p.proposal.Meta.Method {
+		case "gate.approve":
+			if gateApprovalAdded(pending) {
+				gate = model.EventGateApproved
+			}
+		case "gate.report":
+			gate = model.EventGateReported
+		}
+		if gate != "" {
 			// A resolved gate produces the workflow slot event first and the
 			// gate event second, both anchored to the same atomic bead image.
 			// A pending approval has no slot transition, so its gate event is

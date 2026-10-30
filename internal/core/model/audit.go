@@ -276,7 +276,9 @@ func (c Changeset) ValidateEvents() error {
 			return fmt.Errorf("event/header authorization chain mismatch")
 		}
 		if isGateEvent(event.Type) && change >= 0 && anchor == uint64(change) {
-			if gateForChange || !sameAuditRef(event.Resource.Ref, ordinary.Resource.Ref) || !sameEventProvenance(event.Provenance, ordinary.Provenance) {
+			ordinaryIndex, _ := ordinary.Index.Uint64()
+			slotEvent := ordinary.Type == EventBeadClosed || ordinary.Type == EventBeadFailed && event.Type == EventGateReported
+			if gateForChange || !slotEvent || i != ordinaryIndex+1 || !sameAuditRef(event.Resource.Ref, ordinary.Resource.Ref) || !sameEventProvenance(event.Provenance, ordinary.Provenance) {
 				return fmt.Errorf("gate event must follow its bead event exactly once")
 			}
 			gateForChange = true
