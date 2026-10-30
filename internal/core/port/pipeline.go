@@ -4,6 +4,7 @@ package port
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -15,6 +16,11 @@ import (
 type WriteOutcome struct {
 	Commit   model.Commit
 	Replayed bool
+	// NullResult marks the cataloged claimNext terminal outcome. Its durable
+	// receipt still carries a commit revision, but the RPC result is JSON null.
+	// Keeping this transient avoids conflating a real empty-result commit from
+	// another named write with a terminal queue response.
+	NullResult bool
 }
 
 // OutcomeWriter is an additive host seam. model.Writer.Apply remains available
@@ -22,6 +28,16 @@ type WriteOutcome struct {
 type OutcomeWriter interface {
 	ApplyWithOutcome(context.Context, model.PrincipalRef, model.ChangeSet, model.WriteMeta) (WriteOutcome, error)
 }
+
+// ClaimNextReadyProbe runs after a claimNext empty outcome has acquired the
+// transaction head. It observes the ready set through that write transaction
+// so a candidate becoming ready between the live walk and receipt commit can
+// force the caller to restart its walk before a durable null is published.
+type ClaimNextReadyProbe func(context.Context, driver.Reader) (bool, error)
+
+// ErrClaimNextReady asks the claimNext service to release the transaction and
+// restart from a fresh ready snapshot. It is never a wire-facing error.
+var ErrClaimNextReady = errors.New("claimNext ready candidate observed")
 
 // SnapshotReader has no write handle. Pre reads are pinned to BaseRevision
 // and recorded in the commit guard, including missing records and queries.

@@ -14,15 +14,20 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/pluginbuild"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/server/pluginmanifest"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/pluginapi"
 	sdk "github.com/buildbetter-app/plugs/sdk/go"
 )
@@ -35,7 +40,7 @@ import (
 //go:embed fixture/go.mod.template fixture/plugin.go fixture/plug-plugin.json
 var sourceFiles embed.FS
 
-//go:embed fixture-wasi/go.mod.template fixture-wasi/plugin.go fixture-wasi/plug-plugin.json
+//go:embed fixture-wasi/acceptance.go fixture-wasi/go.mod.template fixture-wasi/plugin.go fixture-wasi/plug-plugin.json
 var wasiSourceFiles embed.FS
 
 const helperMain = `package main
@@ -204,6 +209,7 @@ func TestWASIPluginBuildRestoreAndAsyncRebuild(t *testing.T) {
 	host, err := artifact.Host(ctx, pluginhost.Config{Bindings: []pluginhost.Binding{
 		{ID: "wasi-normalize", Alias: "wasi", Instance: "default", Subscriber: "normalize", Phase: pluginapi.PhaseMutate, Reads: []string{"fields.title"}, Owns: []string{"fields.normalized"}},
 		{ID: "wasi-check", Alias: "wasi", Instance: "default", Subscriber: "check", Phase: pluginapi.PhaseValidate, Reads: []string{"fields.title"}},
+		{ID: "wasi-observe", Alias: "wasi", Instance: "default", Subscriber: "observe", Phase: pluginapi.PhasePost, Reads: []string{"fields.title"}},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -254,6 +260,39 @@ func TestWASIPluginBuildRestoreAndAsyncRebuild(t *testing.T) {
 		t.Fatal("guest reached the host network")
 	} else if timeout, ok := err.(net.Error); !ok || !timeout.Timeout() {
 		t.Fatalf("network probe listener failed: %v", err)
+	}
+	// Drive the real memory Writer so all three WASI callback phases receive
+	// their per-invocation scoped reader. The second write reads the admitted
+	// first record at base revision 1; post reads the committed revision 2.
+	store := memory.New()
+	defer store.Close()
+	lease, err := store.Lease(ctx, "wasi-pipeline", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(context.Background())
+	doc := ontology.DefaultDocument()
+	doc.Types["issue"].Fields["normalized"] = ontology.Field{Type: "string", Owner: "wasi-normalize"}
+	doc.Types["issue"].Fields["private"] = ontology.Field{Type: "string"}
+	compiled, problems := ontology.Compile(doc, nil, ontology.PluginCatalog{"wasi-normalize": true})
+	if len(problems) != 0 {
+		t.Fatalf("WASI ontology: %v", problems)
+	}
+	hook := service.NewOntology(func(string) ontology.Effective { return compiled.Effective("") })
+	writer := pipeline.New(store, lease, pipeline.WithOntology(hook), pipeline.WithMutators(host.Mutators()...), pipeline.WithValidators(host.Validators()...), pipeline.WithPostSubscribers(host.Posts()...), pipeline.WithIDGenerator(func() (string, error) { return "wasi-pipeline", nil }))
+	first, err := writer.Apply(ctx, model.PrincipalRef{Kind: "user", ID: "wasi-test"}, model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Fields: map[string]any{"title": "seed", "private": "host-only"}}}}}, model.WriteMeta{Method: "tx.apply", IdempotencyKey: "00000000000000000000000000000011"})
+	if err != nil || len(first.Results) != 1 {
+		t.Fatalf("WASI seed pipeline write failed: %+v (%v)", first, err)
+	}
+	second, err := writer.Apply(ctx, model.PrincipalRef{Kind: "user", ID: "wasi-test"}, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: first.Results[0].Ref, Fields: map[string]any{"title": "hello"}}}}}, model.WriteMeta{Method: "tx.apply", IdempotencyKey: "00000000000000000000000000000012"})
+	if err != nil || second.Revision.String() != "2" || len(second.Warnings) != 0 {
+		t.Fatalf("WASI callback read pipeline failed: %+v (%v)", second, err)
+	}
+	var committed struct {
+		Fields map[string]any `json:"fields"`
+	}
+	if err := json.Unmarshal(second.Results[0].Record, &committed); err != nil || committed.Fields["normalized"] != "HELLO" || committed.Fields["private"] != "host-only" {
+		t.Fatalf("WASI scoped mutation was not committed: %s (%v)", second.Results[0].Record, err)
 	}
 	change := port.ProposedChange{RequestID: "wasi-test", Principal: model.PrincipalRef{Kind: "user", ID: "test"}, BaseRevision: model.Natural64(1), Changes: []port.Change{{
 		Resource: model.ResourceRef{Kind: "bead", Ref: model.RefByID("wasi-1", "")},
@@ -367,6 +406,467 @@ func (s *wasiSnapshot) Query(context.Context, driver.Query) (driver.Page[driver.
 }
 func (*wasiSnapshot) Observe(context.Context, []driver.LockKey) ([]driver.LockState, error) {
 	return nil, nil
+}
+
+func TestWASIGuestBridgeAcceptance(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
+	}
+	source := wasiCheckout(t, moduleRoot(t))
+	artifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: source, GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifact.Close()
+	if artifact.Runtime() != pluginapi.RuntimeWASI {
+		t.Fatalf("acceptance did not build WASI: %s", artifact.Runtime())
+	}
+	t.Logf("source-built guest commit=%s artifact=%s", artifact.Commit(), artifact.ArtifactDigest())
+	for _, tc := range []struct {
+		mode, reason string
+		gets         int32
+		trap         bool
+	}{
+		{mode: "undeclared", reason: pluginhost.ErrRead + ": query field fields.private is not declared"},
+		{mode: "foreign-branch", reason: "memory supports branch zero", gets: 1},
+		{mode: "foreign-cursor", reason: pluginhost.ErrRead + ": cursor is not bound to the callback snapshot"},
+		{mode: "bounds", reason: "WASM host request is outside guest memory", gets: 1, trap: true},
+		{mode: "oversized", reason: "WASM host request exceeds the message limit", gets: 1, trap: true},
+		{mode: "expired", gets: 1, trap: true},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			h := newWASIGuestStore(t)
+			timeout := time.Duration(0)
+			if tc.mode == "expired" {
+				timeout = 100 * time.Millisecond
+			}
+			host := wasiGuestHost(t, artifact, timeout)
+			// A working ordinary invocation precedes the callback. The bounds
+			// fixture additionally completes a scoped guest read before trapping.
+			if got, err := host.Invoke(context.Background(), "x.wasi.echo", json.RawMessage(`{"id":"acceptance"}`)); err != nil || string(got) != `{"id":"acceptance"}` {
+				t.Fatalf("guest bootstrap: %s (%v)", got, err)
+			}
+			var gets, queries atomic.Int32
+			readErrors := make(chan error, 2)
+			callbackErrors := make(chan error, 2)
+			binding := host.Mutators()[0]
+			actual := binding.Mutator
+			binding.Mutator = wasiGuestMutatorFunc(func(ctx context.Context, c port.ProposedChange, reader port.SnapshotReader) ([]port.Patch, error) {
+				if view := reader.Snapshot(); view.At == nil || view.At.String() != c.BaseRevision.String() {
+					return nil, fmt.Errorf("acceptance reader is not the actual callback snapshot")
+				}
+				tracked := wasiGuestReader{SnapshotReader: reader,
+					get: func(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
+						gets.Add(1)
+						if tc.mode == "expired" {
+							// The import has actually reached the real reader.
+							// Let its callback expire, then ask that reader using
+							// its expired context; do not manufacture an error.
+							<-ctx.Done()
+						}
+						records, err := reader.Get(ctx, refs)
+						readErrors <- err
+						return records, err
+					},
+					query: func(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+						queries.Add(1)
+						return reader.Query(ctx, q)
+					},
+				}
+				patches, err := actual.Mutate(ctx, c, tracked)
+				callbackErrors <- err
+				return patches, err
+			})
+			writer := pipeline.New(h.store, h.lease, pipeline.WithOntology(h.hook), pipeline.WithMutators(binding), pipeline.WithValidators(host.Validators()...), pipeline.WithPostSubscribers(host.Posts()...))
+			meta := wasiGuestMeta(2)
+			before := h.state(t, meta)
+			if before.Meta.Head.String() != "1" || len(before.Log) != 1 || len(before.Graph.Items) != 2 || before.Receipt != nil || before.ByKey != nil {
+				t.Fatalf("invalid negative baseline: %+v", before)
+			}
+			commit, err := writer.Apply(context.Background(), h.by, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: h.target, Fields: map[string]any{"title": "acceptance:" + tc.mode}}}}}, meta)
+			var coreErr *model.Error
+			if !errors.As(err, &coreErr) || coreErr.Data.Code != "subscriber_unavailable" || !commit.Revision.IsZero() || len(commit.Results) != 0 {
+				t.Fatalf("guest refusal did not fail the ordinary Writer: %+v (%v)", commit, err)
+			}
+			var callbackErr error
+			select {
+			case callbackErr = <-callbackErrors:
+			case <-time.After(2 * time.Second):
+				t.Fatal("actual guest callback did not finish")
+			}
+			if tc.mode == "expired" {
+				if !errors.Is(callbackErr, context.DeadlineExceeded) {
+					t.Fatalf("expired guest callback did not preserve the deadline error: %v", callbackErr)
+				}
+			} else if callbackErr == nil || !strings.Contains(callbackErr.Error(), tc.reason) {
+				t.Fatalf("guest did not issue the expected refused request: %v, want %q", callbackErr, tc.reason)
+			}
+			if tc.trap && tc.mode != "expired" && !hasPluginHostCode(callbackErr, pluginhost.ErrMethod) {
+				t.Fatalf("invalid guest ABI did not return a typed host trap: %v", callbackErr)
+			}
+			if tc.gets != 0 {
+				select {
+				case readErr := <-readErrors:
+					switch tc.mode {
+					case "foreign-branch":
+						if !errors.Is(readErr, driver.ErrUnsupported) {
+							t.Fatalf("foreign branch did not return the real driver's typed refusal: %v", readErr)
+						}
+					case "expired":
+						if !errors.Is(readErr, context.DeadlineExceeded) {
+							t.Fatalf("expired actual snapshot read was not refused: %v", readErr)
+						}
+					default:
+						if readErr != nil {
+							t.Fatalf("bounds test lacked a usable scoped reader: %v", readErr)
+						}
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("actual guest read did not finish")
+				}
+			}
+			if gets.Load() != tc.gets || queries.Load() != 0 {
+				t.Fatalf("unexpected underlying reads: get=%d query=%d want=%d/0", gets.Load(), queries.Load(), tc.gets)
+			}
+			echo, reuseErr := host.Invoke(context.Background(), "x.wasi.echo", json.RawMessage(`{"id":"after-refusal"}`))
+			if tc.trap {
+				if !hasPluginHostCode(reuseErr, pluginhost.ErrInactive) || len(echo) != 0 {
+					t.Fatalf("disposed source-built guest was reused: %s (%v)", echo, reuseErr)
+				}
+			} else if reuseErr != nil || string(echo) != `{"id":"after-refusal"}` {
+				t.Fatalf("typed read refusal unexpectedly disposed the guest: %s (%v)", echo, reuseErr)
+			}
+			after := h.state(t, meta)
+			if !bytes.Equal(wasiGuestJSON(t, before), wasiGuestJSON(t, after)) {
+				t.Fatalf("refused guest changed graph, versions, log, head or receipt: before=%s after=%s", wasiGuestJSON(t, before), wasiGuestJSON(t, after))
+			}
+			t.Logf("actual guest %s: Writer code=%s callback=%v; head=1 graph=2 log=1 failed receipt absent; disposed=%v", tc.mode, coreErr.Data.Code, callbackErr, tc.trap)
+		})
+	}
+	t.Run("stale-read-retry", func(t *testing.T) { testWASIGuestReadFactRetry(t, artifact) })
+}
+
+func testWASIGuestReadFactRetry(t *testing.T, artifact *pluginbuild.Artifact) {
+	h := newWASIGuestStore(t)
+	host := wasiGuestHost(t, artifact, 0)
+	entered, release := make(chan struct{}), make(chan struct{})
+	type readTrace struct{ base, record string }
+	reads := make(chan readTrace, 4)
+	callbacks := make(chan error, 4)
+	var calls atomic.Int32
+	binding := host.Mutators()[0]
+	actual := binding.Mutator
+	binding.Mutator = wasiGuestMutatorFunc(func(ctx context.Context, c port.ProposedChange, reader port.SnapshotReader) ([]port.Patch, error) {
+		tracked := wasiGuestReader{SnapshotReader: reader, get: func(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
+			if len(refs) != 1 || !wasiGuestSameRef(refs[0], h.watched) {
+				return nil, fmt.Errorf("guest must read the separate watched record, got %v", refs)
+			}
+			records, err := reader.Get(ctx, refs)
+			if err != nil || len(records) != 1 {
+				return nil, fmt.Errorf("actual watched read: records=%d err=%v", len(records), err)
+			}
+			reads <- readTrace{base: reader.Snapshot().At.String(), record: records[0].Revision.String()}
+			if calls.Add(1) == 1 {
+				// The actual child reader has already recorded the watched
+				// point fact. Pause its return while a separate Writer commits.
+				close(entered)
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return records, nil
+		}}
+		patches, err := actual.Mutate(ctx, c, tracked)
+		callbacks <- err
+		return patches, err
+	})
+	observed := &wasiGuestCommitObserver{Store: h.store, locks: make(chan wasiGuestLockTrace, 4)}
+	writer, collector := pipeline.NewWithTelemetry(observed, h.lease, pipeline.WithOntology(h.hook), pipeline.WithMutators(binding), pipeline.WithValidators(host.Validators()...), pipeline.WithPostSubscribers(host.Posts()...))
+	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: h.target, Fields: map[string]any{"title": "acceptance:watch:" + h.watched.ID}}}}}
+	meta := wasiGuestMeta(3)
+	type outcome struct {
+		value port.WriteOutcome
+		err   error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		value, err := writer.ApplyWithOutcome(context.Background(), h.by, cs, meta)
+		done <- outcome{value, err}
+	}()
+	select {
+	case <-entered:
+	case result := <-done:
+		t.Fatalf("Writer finished without the actual watched guest read: %+v", result)
+	case <-time.After(3 * time.Second):
+		t.Fatal("guest never reached its watched read")
+	}
+	concurrent, err := h.writer.Apply(context.Background(), h.by, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: h.watched, Fields: map[string]any{"title": "after"}}}}}, wasiGuestMeta(2))
+	close(release)
+	if err != nil || concurrent.Revision.String() != "2" {
+		t.Fatalf("controlled concurrent Writer did not commit: %+v (%v)", concurrent, err)
+	}
+	var result outcome
+	select {
+	case result = <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("guest Writer did not finish after the watched commit")
+	}
+	if result.err != nil || result.value.Replayed || result.value.Commit.Revision.String() != "3" || len(result.value.Commit.Results) != 1 || len(result.value.Commit.Warnings) != 0 {
+		t.Fatalf("guest retry did not make one valid commit with successful post: %+v (%v)", result.value, result.err)
+	}
+	if calls.Load() != 2 || len(reads) != 2 || len(callbacks) != 2 || len(observed.locks) != 2 {
+		t.Fatalf("retry counts: reads=%d traces=%d callbacks=%d locks=%d", calls.Load(), len(reads), len(callbacks), len(observed.locks))
+	}
+	for attempt, want := range []string{"1", "2"} {
+		read, callbackErr, locked := <-reads, <-callbacks, <-observed.locks
+		if read.base != want || read.record != want || callbackErr != nil {
+			t.Fatalf("attempt %d did not execute the pinned guest read: %+v (%v)", attempt, read, callbackErr)
+		}
+		// This separate record is not the proposal's write target. Its shared
+		// lock and 1->2 observation mismatch are supplied by the guest read.
+		found := false
+		for i, request := range locked.requests {
+			if request.Key.Kind == driver.LockRecord && request.Key.Ref != nil && wasiGuestSameRef(*request.Key.Ref, h.watched) {
+				found = request.Mode == driver.LockShare && locked.states[i].Present && locked.states[i].Revision.String() == "2"
+			}
+		}
+		if !found {
+			t.Fatalf("attempt %d omitted the real watched read fact from commit locks: %+v", attempt, locked)
+		}
+	}
+	metrics := collector.Snapshot()
+	if metrics.Conflicts[pipeline.ConflictStaleSnapshot] != 1 || metrics.LaneCount[pipeline.PhaseCommit][pipeline.ResultRetry] != 1 || metrics.Outcomes[pipeline.ResultCommit] != 1 {
+		t.Fatalf("ordinary stale-read retry was not observed: %+v", metrics)
+	}
+	state := h.state(t, meta)
+	if state.Meta.Head.String() != "3" || len(state.Graph.Items) != 2 || len(state.Log) != 3 || state.Receipt == nil || state.Receipt.ResponsePending || state.ByKey == nil {
+		t.Fatalf("retry graph/log/receipt is incomplete: %+v", state)
+	}
+	if !bytes.Equal(wasiGuestJSON(t, state.Receipt.Commit), wasiGuestJSON(t, result.value.Commit)) {
+		t.Fatal("durable receipt differs from the successful guest response")
+	}
+	for i, entry := range state.Log {
+		if entry.Revision.String() != fmt.Sprint(i+1) || entry.IdempotencyKey != wasiGuestMeta(uint64(i+1)).IdempotencyKey {
+			t.Fatalf("unexpected or extra changeset at %d: %+v", i, entry)
+		}
+	}
+	if len(state.Log[1].Changes) != 1 || !wasiGuestSameRef(state.Log[1].Changes[0].Ref, h.watched) || len(state.Log[2].Changes) != 1 || !wasiGuestSameRef(state.Log[2].Changes[0].Ref, h.target) {
+		t.Fatalf("stale attempt published changes or crossed targets: %+v", state.Log)
+	}
+	for _, record := range state.Graph.Items {
+		body, err := pipeline.DecodeDocument(record.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if wasiGuestSameRef(record.Ref, h.target) && (body.Fields["normalized"] != "AFTER" || body.Fields["private"] != "host-only" || record.Revision.String() != "3") {
+			t.Fatalf("guest published a stale or unmasked-derived target: %+v", body)
+		}
+		if wasiGuestSameRef(record.Ref, h.watched) && (body.Fields["title"] != "after" || body.Fields["private"] != "watched-secret" || record.Revision.String() != "2") {
+			t.Fatalf("watched record changed outside its ordinary commit: %+v", body)
+		}
+	}
+	if len(state.Versions[0]) != 2 || len(state.Versions[1]) != 2 {
+		t.Fatalf("stale attempt left extra record versions: %+v", state.Versions)
+	}
+	replay, err := writer.ApplyWithOutcome(context.Background(), h.by, cs, meta)
+	if err != nil || !replay.Replayed || !bytes.Equal(wasiGuestJSON(t, replay.Commit), wasiGuestJSON(t, result.value.Commit)) || calls.Load() != 2 {
+		t.Fatalf("durable replay reran the guest or changed its receipt: %+v (%v)", replay, err)
+	}
+	if after := h.state(t, meta); !bytes.Equal(wasiGuestJSON(t, state), wasiGuestJSON(t, after)) {
+		t.Fatal("receipt replay changed graph, versions, log or head")
+	}
+	t.Log("actual guest watched reads at bases 1/2; first commit lock observed watched revision2 against fact1; stale_snapshot=1 retry=1; normalized=AFTER; successful masked validate/post; head/log=3, two versions each, final receipt and replay unchanged")
+}
+
+// Native references can encode branch zero and their selected oneOf arm in
+// different ways. Compare the same canonical identity used for commit locks.
+func wasiGuestSameRef(a, b model.Ref) bool {
+	x, xerr := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &a})
+	y, yerr := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &b})
+	return xerr == nil && yerr == nil && x == y
+}
+
+type wasiGuestLockTrace struct {
+	requests []driver.LockRequest
+	states   []driver.LockState
+}
+
+// Observe the real memory transactions without injecting a conflict/result.
+// Embedding the concrete store preserves its response-finalization capability.
+type wasiGuestCommitObserver struct {
+	*memory.Store
+	locks chan wasiGuestLockTrace
+}
+
+func (s *wasiGuestCommitObserver) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	tx, err := s.Store.Write(ctx, lease)
+	if err != nil {
+		return nil, err
+	}
+	return &wasiGuestObservedTx{WriteTx: tx, locks: s.locks}, nil
+}
+
+type wasiGuestObservedTx struct {
+	driver.WriteTx
+	locks chan wasiGuestLockTrace
+}
+
+func (tx *wasiGuestObservedTx) Lock(ctx context.Context, requests []driver.LockRequest) ([]driver.LockState, error) {
+	states, err := tx.WriteTx.Lock(ctx, requests)
+	if err == nil {
+		tx.locks <- wasiGuestLockTrace{append([]driver.LockRequest(nil), requests...), append([]driver.LockState(nil), states...)}
+	}
+	return states, err
+}
+
+type wasiGuestMutatorFunc func(context.Context, port.ProposedChange, port.SnapshotReader) ([]port.Patch, error)
+
+func (f wasiGuestMutatorFunc) Mutate(ctx context.Context, c port.ProposedChange, r port.SnapshotReader) ([]port.Patch, error) {
+	return f(ctx, c, r)
+}
+
+// This interposer delegates to the actual Writer child reader. It supplies
+// scheduling/observation only: neither records nor read facts are fabricated.
+type wasiGuestReader struct {
+	port.SnapshotReader
+	get   func(context.Context, []model.Ref) ([]driver.Record, error)
+	query func(context.Context, driver.Query) (driver.Page[driver.Record], error)
+}
+
+func (r wasiGuestReader) Get(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
+	return r.get(ctx, refs)
+}
+
+func (r wasiGuestReader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	if r.query != nil {
+		return r.query(ctx, q)
+	}
+	return r.SnapshotReader.Query(ctx, q)
+}
+
+type wasiGuestStore struct {
+	store   *memory.Store
+	lease   driver.ActiveLease
+	hook    *service.Ontology
+	writer  *pipeline.Writer
+	by      model.PrincipalRef
+	watched model.Ref
+	target  model.Ref
+}
+
+func wasiGuestMeta(slot uint64) model.WriteMeta {
+	return model.WriteMeta{Method: "tx.apply", IdempotencyKey: fmt.Sprintf("%032x", slot)}
+}
+
+func newWASIGuestStore(t *testing.T) *wasiGuestStore {
+	t.Helper()
+	h := &wasiGuestStore{store: memory.New(), by: model.PrincipalRef{Kind: "user", ID: "wasi-guest-acceptance"}}
+	t.Cleanup(func() { _ = h.store.Close() })
+	var err error
+	h.lease, err = h.store.Lease(context.Background(), "wasi-guest-acceptance", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.lease.Release(context.Background()) })
+	doc := ontology.DefaultDocument()
+	doc.Types["issue"].Fields["normalized"] = ontology.Field{Type: "string", Owner: "wasi-normalize"}
+	doc.Types["issue"].Fields["private"] = ontology.Field{Type: "string"}
+	compiled, problems := ontology.Compile(doc, nil, ontology.PluginCatalog{"wasi-normalize": true})
+	if len(problems) != 0 {
+		t.Fatalf("acceptance ontology: %v", problems)
+	}
+	h.hook = service.NewOntology(func(string) ontology.Effective { return compiled.Effective("") })
+	var next int
+	h.writer = pipeline.New(h.store, h.lease, pipeline.WithOntology(h.hook), pipeline.WithIDGenerator(func() (string, error) {
+		next++
+		return fmt.Sprintf("wasi-guest-%d", next), nil
+	}))
+	seed, err := h.writer.Apply(context.Background(), h.by, model.ChangeSet{Ops: []model.Op{
+		{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Fields: map[string]any{"title": "before", "private": "watched-secret"}}},
+		{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Fields: map[string]any{"title": "seed", "private": "host-only"}}},
+	}}, wasiGuestMeta(1))
+	if err != nil || seed.Revision.String() != "1" || len(seed.Results) != 2 {
+		t.Fatalf("acceptance seed: %+v (%v)", seed, err)
+	}
+	h.watched, h.target = seed.Results[0].Ref, seed.Results[1].Ref
+	return h
+}
+
+func wasiGuestHost(t *testing.T, artifact *pluginbuild.Artifact, timeout time.Duration) *pluginhost.Host {
+	t.Helper()
+	host, err := artifact.Host(context.Background(), pluginhost.Config{Bindings: []pluginhost.Binding{
+		{ID: "wasi-normalize", Alias: "wasi", Instance: "default", Subscriber: "normalize", Phase: pluginapi.PhaseMutate, Reads: []string{"fields.title"}, Owns: []string{"fields.normalized"}, Timeout: timeout},
+		{ID: "wasi-check", Alias: "wasi", Instance: "default", Subscriber: "check", Phase: pluginapi.PhaseValidate, Reads: []string{"fields.title"}},
+		{ID: "wasi-observe", Alias: "wasi", Instance: "default", Subscriber: "observe", Phase: pluginapi.PhasePost, Reads: []string{"fields.title"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return host
+}
+
+type wasiGuestDurableState struct {
+	Meta     driver.Meta
+	Graph    driver.Page[driver.Record]
+	Versions [][]driver.Version
+	Log      []model.Changeset
+	Receipt  *driver.IdempotencyRecord
+	ByKey    *model.Changeset
+}
+
+func (h *wasiGuestStore) state(t *testing.T, meta model.WriteMeta) wasiGuestDurableState {
+	t.Helper()
+	ctx := context.Background()
+	var state wasiGuestDurableState
+	var err error
+	state.Meta, err = h.store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := h.store.Read(ctx, driver.View{Incarnation: state.Meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	state.Graph, err = reader.Query(ctx, driver.Query{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []model.Ref{h.watched, h.target} {
+		versions, err := reader.Versions(ctx, ref, driver.PageReq{Limit: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.Versions = append(state.Versions, versions.Items)
+	}
+	state.Log, err = reader.Changesets(ctx, nil, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := driver.PrincipalKey(h.by)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Receipt, err = reader.IdempotencyByKey(ctx, principal, "", meta.Method, meta.IdempotencyKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.ByKey, err = reader.ChangesetByKey(ctx, principal, "", meta.Method, meta.IdempotencyKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+func wasiGuestJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func TestBuildFailureAndCancellationAreRefusals(t *testing.T) {
