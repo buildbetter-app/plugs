@@ -117,7 +117,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	events := &serverevents.Service{Reader: reader, Cursors: codec}
-	f.watch, err = watch.New(ctx, watch.Config{Events: events, Coalesce: 5 * time.Millisecond, MaxLag: time.Second})
+	f.watch, err = watch.New(ctx, watch.Config{Events: events, Presence: f.collab, Coalesce: 5 * time.Millisecond, MaxLag: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,6 +216,32 @@ func (f *fixture) subscribeResponse(t *testing.T, principal model.PrincipalRef, 
 		params["from"] = from
 	}
 	return f.callContext(t, ctx, principal, "event.subscribe", params)
+}
+
+func (f *fixture) presenceWatch(t *testing.T, principal model.PrincipalRef, sessionID, from string) *watch.Subscription {
+	t.Helper()
+	ctx := f.watchContext(t, principal, sessionID)
+	params := map[string]any{"sessionId": sessionID, "_meta": map[string]any{"project": "project-a"}}
+	if from != "" {
+		params["from"] = from
+	}
+	response := f.callContext(t, ctx, principal, "presence.watch", params)
+	id := result(t, response)["subscriptionId"].(string)
+	subscription, err := f.watch.AttachSession(f.ctx, id, sessionID, principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return subscription
+}
+
+func (f *fixture) presenceWatchResponse(t *testing.T, principal model.PrincipalRef, sessionID, from string) map[string]any {
+	t.Helper()
+	ctx := f.watchContext(t, principal, sessionID)
+	params := map[string]any{"sessionId": sessionID, "_meta": map[string]any{"project": "project-a"}}
+	if from != "" {
+		params["from"] = from
+	}
+	return f.callContext(t, ctx, principal, "presence.watch", params)
 }
 
 func (f *fixture) callContext(t *testing.T, ctx context.Context, principal model.PrincipalRef, method string, params map[string]any) map[string]any {
@@ -380,6 +406,11 @@ func TestPresenceAndWatchShareRPCSessionLifetimeAndPreserveDurableState(t *testi
 	if snapshot.Kind != watch.FrameSnapshot || snapshot.Cursor == "" || len(snapshot.Events) != 0 {
 		t.Fatalf("initial watch snapshot=%+v", snapshot)
 	}
+	presenceSubscription := f.presenceWatch(t, alice, sessionID, "")
+	presenceSnapshot := nextFrame(t, presenceSubscription)
+	if presenceSnapshot.Kind != watch.FrameSnapshot || presenceSnapshot.Cursor == "" || len(presenceSnapshot.Events) != 0 {
+		t.Fatalf("initial presence snapshot=%+v", presenceSnapshot)
+	}
 
 	f.create(t, "presence-watch-bead")
 	beforePresence := durableState(t, f)
@@ -399,18 +430,31 @@ func TestPresenceAndWatchShareRPCSessionLifetimeAndPreserveDurableState(t *testi
 	if _, seen := nextUntilResources(t, subscription, "bead/presence-watch-bead"); !seen["bead/presence-watch-bead"] {
 		t.Fatal("watch did not receive the actual service-created bead")
 	}
+	presenceDelta := nextFrame(t, presenceSubscription)
+	if presenceDelta.Kind != watch.FrameDelta || presenceDelta.Cursor == presenceSnapshot.Cursor || len(presenceDelta.Events) != 0 {
+		t.Fatalf("presence delta=%+v", presenceDelta)
+	}
+	wireEvents := presenceDelta.WireEvents()
+	if len(wireEvents) != 1 || wireEvents[0].Control == nil || wireEvents[0].Control.Type != model.EventWatchDelta {
+		t.Fatalf("presence delta wire events=%+v", wireEvents)
+	}
+	details, ok := wireEvents[0].Control.Details.(model.WatchDeltaDetails)
+	if !ok || len(details.Events) != 0 || details.FromCursor != presenceSnapshot.Cursor || details.ToCursor != presenceDelta.Cursor {
+		t.Fatalf("presence delta details=%+v", wireEvents[0].Control.Details)
+	}
 	if afterPresence := durableState(t, f); string(beforePresence) != string(afterPresence) {
 		t.Fatal("presence lifecycle changed durable rows, history, or head")
 	}
 
-	if errorCode(t, f.call(t, alice, "presence.watch", map[string]any{"sessionId": sessionID})) != "method_not_found" {
-		t.Fatal("unsupported presence.watch was not refused")
-	}
 	methods := result(t, f.call(t, alice, "rpc.methods", nil))["methods"].([]any)
+	foundPresenceWatch := false
 	for _, method := range methods {
 		if method == "presence.watch" {
-			t.Fatal("unsupported presence.watch was advertised")
+			foundPresenceWatch = true
 		}
+	}
+	if !foundPresenceWatch {
+		t.Fatal("bound presence.watch was not advertised")
 	}
 
 	if _, err := f.callSessionClose(t, alice, sessionID); err != nil {
@@ -420,6 +464,9 @@ func TestPresenceAndWatchShareRPCSessionLifetimeAndPreserveDurableState(t *testi
 	defer cancel()
 	if _, err := subscription.Next(ctx); !errors.Is(err, watch.ErrSubscriptionClosed) {
 		t.Fatalf("session close did not revoke watch: %v", err)
+	}
+	if _, err := presenceSubscription.Next(ctx); !errors.Is(err, watch.ErrSubscriptionClosed) {
+		t.Fatalf("session close did not revoke presence watch: %v", err)
 	}
 	if rows := presenceRows(t, f.call(t, bob, "presence.list", map[string]any{"project": "project-a"})); len(rows) != 0 {
 		t.Fatalf("closed session remained visible: %v", rows)
@@ -473,6 +520,72 @@ func TestPresenceExpiryRevokesWatchLifetime(t *testing.T) {
 	defer cancel()
 	if _, err := subscription.Next(ctx); !errors.Is(err, watch.ErrSubscriptionClosed) {
 		t.Fatalf("expiry did not revoke watch lifetime: %v", err)
+	}
+}
+
+func TestPresenceWatchReconnectsAndSharesTheSessionWatchCap(t *testing.T) {
+	f := newFixture(t)
+	sessionID := f.session(t, alice)
+	for i := 0; i < watch.MaxWatchesPerSession/2; i++ {
+		if _, ok := f.subscribeResponse(t, alice, sessionID, "")["result"]; !ok {
+			t.Fatalf("event watch %d was refused", i)
+		}
+	}
+	for i := 0; i < watch.MaxWatchesPerSession/2; i++ {
+		if _, ok := f.presenceWatchResponse(t, alice, sessionID, "")["result"]; !ok {
+			t.Fatalf("presence watch %d was refused", i)
+		}
+	}
+	if code := errorCode(t, f.presenceWatchResponse(t, alice, sessionID, "")); code != "too_many_sessions" {
+		t.Fatalf("mixed watch cap code=%s", code)
+	}
+	if _, err := f.callSessionClose(t, alice, sessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	f2 := newFixture(t)
+	firstSession := f2.session(t, alice)
+	subscription := f2.presenceWatch(t, alice, firstSession, "")
+	initial := nextFrame(t, subscription)
+	if initial.Kind != watch.FrameSnapshot || initial.Cursor == "" {
+		t.Fatalf("presence initial snapshot=%+v", initial)
+	}
+	f2.create(t, "presence-reconnect-bead")
+	_ = result(t, f2.call(t, alice, "presence.set", map[string]any{
+		"sessionId": firstSession,
+		"focus":     "bead/presence-reconnect-bead",
+		"_meta":     map[string]any{"project": "project-a"},
+	}))
+	changed := nextFrame(t, subscription)
+	if changed.Kind != watch.FrameDelta || changed.Cursor == initial.Cursor || len(changed.Events) != 0 {
+		t.Fatalf("presence changed delta=%+v", changed)
+	}
+	if _, err := f2.callSessionClose(t, alice, firstSession); err != nil {
+		t.Fatal(err)
+	}
+
+	secondSession := f2.session(t, alice)
+	reconnected := f2.presenceWatch(t, alice, secondSession, changed.Cursor)
+	resume := nextFrame(t, reconnected)
+	if resume.Kind != watch.FrameSnapshot || resume.Cursor == changed.Cursor {
+		t.Fatalf("presence reconnect did not advance cursor: from=%s frame=%+v", changed.Cursor, resume)
+	}
+	_ = result(t, f2.call(t, alice, "presence.set", map[string]any{
+		"sessionId": secondSession,
+		"focus":     "bead/presence-reconnect-bead",
+		"_meta":     map[string]any{"project": "project-a"},
+	}))
+	live := nextFrame(t, reconnected)
+	if live.Kind != watch.FrameDelta || live.Cursor == resume.Cursor || len(live.Events) != 0 {
+		t.Fatalf("reconnected presence delta=%+v", live)
+	}
+	wire := live.WireEvents()
+	if len(wire) != 1 || wire[0].Control == nil || wire[0].Control.Type != model.EventWatchDelta {
+		t.Fatalf("reconnected presence wire delta=%+v", wire)
+	}
+	details, ok := wire[0].Control.Details.(model.WatchDeltaDetails)
+	if !ok || details.FromCursor != resume.Cursor || details.ToCursor != live.Cursor || len(details.Events) != 0 {
+		t.Fatalf("reconnected presence delta details=%+v", wire[0].Control.Details)
 	}
 }
 
