@@ -139,6 +139,14 @@ func beadValue(row storedBead) (Bead, error) {
 	return Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...)}, nil
 }
 
+func beadPriority(bead Bead) (int, error) {
+	fields := make(map[string]any, len(bead.Fields))
+	for key, value := range bead.Fields {
+		fields[key] = value
+	}
+	return priority(pipeline.Document{ID: bead.ID, Type: bead.Type, Project: bead.Project, Fields: fields})
+}
+
 func sortedIDs(graph map[string]storedBead) []string {
 	ids := make([]string, 0, len(graph))
 	for id := range graph {

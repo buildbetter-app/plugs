@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -59,6 +61,15 @@ func New(store driver.Store, lease driver.ActiveLease, writer model.Writer, opti
 
 func failure(code model.ErrorCode, hint string) error {
 	return &model.Error{Data: model.ErrorData{Code: code, Hint: hint, Retryable: code == "busy" || code == "write_conflict"}}
+}
+
+// ClaimNextSelectionSeed derives the stable internal ordering seed used by
+// claimNext's ready walk. The selector identity keeps equivalent requests
+// aligned, while the idempotency key spreads concurrent requests. Hashing
+// keeps filter values out of the internal pager state and any diagnostics.
+func ClaimNextSelectionSeed(identity, idempotencyKey string) string {
+	digest := sha256.Sum256([]byte(identity + "\x00" + idempotencyKey))
+	return hex.EncodeToString(digest[:])
 }
 
 func mapped(err error) error {
@@ -223,6 +234,7 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 	}
 	meta.ClaimNextIdentity = identity
 	meta.Method = "bead.claimNext"
+	selectionSeed := ClaimNextSelectionSeed(identity, meta.IdempotencyKey)
 	if by.Kind != "anonymous" {
 		meta.AgentLabel = ""
 	} else if meta.AgentLabel == "" {
@@ -269,7 +281,7 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 	position := (*PagePosition)(nil)
 	fresh := false
 	for {
-		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position})
+		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
 		if err != nil {
 			return nil, err
 		}

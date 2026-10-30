@@ -964,6 +964,47 @@ func TestReadyPriorityThenIDAndPinnedHistoryPages(t *testing.T) {
 	}
 }
 
+func TestClaimNextSelectionSpreadsStablePriorityTies(t *testing.T) {
+	items := []Bead{
+		{ID: "p0-a", Type: "issue", Project: "local", Fields: map[string]any{"priority": 0}},
+		{ID: "p0-b", Type: "issue", Project: "local", Fields: map[string]any{"priority": 0}},
+		{ID: "p0-c", Type: "issue", Project: "local", Fields: map[string]any{"priority": 0}},
+		{ID: "p1-a", Type: "issue", Project: "local", Fields: map[string]any{"priority": 1}},
+		{ID: "p1-b", Type: "issue", Project: "local", Fields: map[string]any{"priority": 1}},
+	}
+	seed := ClaimNextSelectionSeed("selector", "key")
+	first, err := spreadClaimNextItems(items, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := spreadClaimNextItems(items, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := func(rows []Bead) []string {
+		out := make([]string, len(rows))
+		for i, row := range rows {
+			out[i] = row.ID
+		}
+		return out
+	}
+	if !slices.Equal(ids(first), ids(repeated)) {
+		t.Fatalf("same seed changed candidate order: first=%v repeated=%v", ids(first), ids(repeated))
+	}
+	if slices.Equal(ids(first), ids(items)) {
+		t.Fatalf("seed did not spread any equal-priority candidates: %v", ids(first))
+	}
+	for i, row := range first {
+		priority, err := beadPriority(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i < 3 && priority != 0 || i >= 3 && priority != 1 {
+			t.Fatalf("priority groups crossed: rows=%v", ids(first))
+		}
+	}
+}
+
 func TestReadyContinuationReadsLiveRowsWhileHistoryStaysPinned(t *testing.T) {
 	for _, action := range []string{"close", "claim", "update"} {
 		t.Run(action, func(t *testing.T) {
@@ -1291,7 +1332,13 @@ func TestClaimNextAdvancesPastRealCandidateLeaseRace(t *testing.T) {
 	ctx := context.Background()
 	create(t, f, "First")
 	create(t, f, "Second")
-	page, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local"})
+	claimMeta := model.WriteMeta{Project: "local", Agent: "test-agent", AgentLabel: "test-agent", IdempotencyKey: "abababababababababababababababababababababababababababababababab"}
+	claimReq := ClaimNextRequest{Project: "local"}
+	identity, err := ClaimNextRequestIdentity(claimReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.svc.ClaimNextReadyPage(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1000, ClaimNextSeed: ClaimNextSelectionSeed(identity, claimMeta.IdempotencyKey)})
 	if err != nil || len(page.Items) != 2 {
 		t.Fatalf("ready candidates=%+v err=%v", page, err)
 	}
@@ -1302,7 +1349,7 @@ func TestClaimNextAdvancesPastRealCandidateLeaseRace(t *testing.T) {
 			t.Fatal(err)
 		}
 	}}
-	out, err := claimNextRaceService(f, store).ClaimNextWithOutcome(ctx, anonymous, ClaimNextRequest{Project: "local"}, meta(t))
+	out, err := claimNextRaceService(f, store).ClaimNextWithOutcome(ctx, anonymous, claimReq, claimMeta)
 	if err != nil || out == nil || out.NullResult || len(out.Commit.Results) != 1 || out.Commit.Results[0].Ref.ID != page.Items[1].ID {
 		t.Fatalf("candidate busy did not advance to the next real claim: out=%+v err=%v", out, err)
 	}
@@ -1317,14 +1364,20 @@ func TestClaimNextAdvancesPastCandidateWriteConflict(t *testing.T) {
 	ctx := context.Background()
 	create(t, f, "First")
 	create(t, f, "Second")
-	page, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local"})
+	claimMeta := model.WriteMeta{Project: "local", Agent: "test-agent", AgentLabel: "test-agent", IdempotencyKey: "abababababababababababababababababababababababababababababababab"}
+	claimReq := ClaimNextRequest{Project: "local"}
+	identity, err := ClaimNextRequestIdentity(claimReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.svc.ClaimNextReadyPage(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1000, ClaimNextSeed: ClaimNextSelectionSeed(identity, claimMeta.IdempotencyKey)})
 	if err != nil || len(page.Items) != 2 {
 		t.Fatalf("ready candidates=%+v err=%v", page, err)
 	}
 	store := &claimNextRaceStore{Store: f.store, writeErrors: []error{
 		&model.Error{Message: "snapshot changed during all four write attempts", Data: model.ErrorData{Code: "write_conflict", Retryable: true}},
 	}}
-	out, err := claimNextRaceService(f, store).ClaimNextWithOutcome(ctx, anonymous, ClaimNextRequest{Project: "local"}, meta(t))
+	out, err := claimNextRaceService(f, store).ClaimNextWithOutcome(ctx, anonymous, claimReq, claimMeta)
 	if err != nil || out == nil || out.NullResult || len(out.Commit.Results) != 1 || out.Commit.Results[0].Ref.ID != page.Items[1].ID {
 		t.Fatalf("candidate write conflict did not advance to the next real claim: out=%+v err=%v", out, err)
 	}
