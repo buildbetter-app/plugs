@@ -310,6 +310,41 @@ func TestRegistryAndHandlerFailures(t *testing.T) {
 	}
 }
 
+// The registry is the one shared admission point used by every transport.
+// Keep its bound inventory tied to the authoritative catalog: callable
+// descriptors must be accepted with their catalog metadata, while event-only
+// descriptors must remain uncallable. This catches a transport-specific
+// adapter accidentally inventing a method or exposing a notification as RPC.
+func TestRegistryCoversCatalogCallableInventoryWithoutEvents(t *testing.T) {
+	r := registry(t)
+	for _, want := range r.Catalog().Descriptors() {
+		name := want.Name
+		err := r.Register(name, func(context.Context, rpc.Call) (any, error) {
+			return map[string]any{}, nil
+		})
+		if want.Effect == "event" {
+			if err == nil {
+				t.Fatalf("event descriptor %q became callable", name)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("callable catalog descriptor %q rejected: %v", name, err)
+		}
+	}
+
+	got := r.Descriptors()
+	want := make([]wire.MethodDesc, 0)
+	for _, descriptor := range r.Catalog().Descriptors() {
+		if descriptor.Effect != "event" {
+			want = append(want, descriptor)
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("registry descriptors diverged from catalog callable inventory:\n got=%v\nwant=%v", got, want)
+	}
+}
+
 func TestDecidedSessionCloseIsExplicitlyUnbound(t *testing.T) {
 	r := registry(t)
 	d, ok := r.Catalog().Descriptor("session.close")
