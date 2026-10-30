@@ -28,6 +28,7 @@ import (
 	servertsevents "github.com/buildbetter-app/plugs/internal/server/events"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
+	"github.com/buildbetter-app/plugs/internal/server/transport/mcp"
 	"github.com/buildbetter-app/plugs/internal/server/watch"
 	"github.com/buildbetter-app/plugs/internal/server/watchhttp"
 	"github.com/buildbetter-app/plugs/internal/server/webui"
@@ -318,6 +319,11 @@ func (r *Runtime) Listen(ctx context.Context, address string, tlsConfig *tls.Con
 	}
 	mux := http.NewServeMux()
 	mux.Handle(httpjson.Path, r.HTTPHandler)
+	mcpHandler, err := newMCPHandler(r.RPC, r.Authenticator)
+	if err != nil {
+		return nil, err
+	}
+	mux.Handle(mcp.Path, mcpHandler)
 	if r.UIHandler != nil {
 		mux.Handle("/ui/", r.UIHandler)
 	}

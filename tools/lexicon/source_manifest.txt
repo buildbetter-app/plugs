@@ -424,6 +424,7 @@ internal/server/composition/composition_test.go
 internal/server/composition/config.go
 internal/server/composition/configfile.go
 internal/server/composition/configfile_test.go
+internal/server/composition/mcp.go
 internal/server/events/BUILD.bazel
 internal/server/events/audit.go
 internal/server/events/audit_delivery_test.go
