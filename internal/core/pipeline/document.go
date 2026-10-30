@@ -17,6 +17,7 @@ type Document struct {
 	Project     string                     `json:"project,omitempty"`
 	Fields      map[string]any             `json:"fields"`
 	Metadata    map[string]json.RawMessage `json:"metadata,omitempty"`
+	Labels      []string                   `json:"labels,omitempty"`
 	Comments    []Comment                  `json:"comments,omitempty"`
 	Links       []Link                     `json:"links,omitempty"`
 	Attachments []model.Attachment         `json:"attachments,omitempty"`

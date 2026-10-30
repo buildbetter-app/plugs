@@ -8,7 +8,7 @@ import (
 type Driver struct{}
 
 func (Driver) Info() driver.Info {
-	return driver.Info{Name: "postgres", Version: "1", Capabilities: []string{"transactions", "history", "leases", "checkpoints", "allocator_continuation", "idempotency", "response_finalizer", "noop_receipts"}}
+	return driver.Info{Name: "postgres", Version: "1", Capabilities: []string{"transactions", "history", "leases", "checkpoints", "allocator_continuation", "core_sessions", "idempotency", "response_finalizer", "noop_receipts"}}
 }
 func (Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, error) {
 	return Open(ctx, cfg)
