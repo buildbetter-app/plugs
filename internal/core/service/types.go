@@ -3,10 +3,12 @@
 package service
 
 import (
+	"context"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 // Gate request/result names are re-exported from the core port so domain
@@ -37,6 +39,83 @@ type Filter struct {
 	Types     []string
 	Events    []string
 	ViewID    string
+}
+
+// EventProvider is the transport-neutral seam used by the core service to
+// expose the persisted event reader. The provider owns cursor signing and
+// current read authorization; the service only supplies the authenticated
+// principal and the wire filter values.
+type EventProvider interface {
+	List(context.Context, EventProviderRequest) (EventPage, error)
+}
+
+type EventProviderRequest struct {
+	Principal model.PrincipalRef
+	Filter    EventFilter
+	After     string
+	Limit     int
+}
+
+type EventFilter struct {
+	Types     []string
+	Resources []string
+}
+
+type EventPage struct {
+	Events []model.Event
+	Cursor string
+}
+
+type EventListRequest struct {
+	Filter *Filter
+	After  string
+	Limit  int
+}
+
+type EventReader interface {
+	EventList(context.Context, model.PrincipalRef, EventListRequest) (EventPage, error)
+}
+
+type HistoryReader interface {
+	HistoryGet(context.Context, model.PrincipalRef, HistoryVersionRequest) (HistoryVersion, error)
+	HistoryDiff(context.Context, model.PrincipalRef, HistoryDiffRequest) (HistoryDiff, error)
+}
+
+type HealthReader interface {
+	Health(context.Context, model.PrincipalRef) (driver.StoreHealth, error)
+}
+
+type HistoryVersionRequest struct {
+	Ref  model.Ref
+	AsOf AsOf
+}
+
+type HistoryVersion struct {
+	Ref       model.Ref
+	Revision  model.Revision
+	Base      bool
+	Patch     []map[string]any
+	Body      map[string]any
+	CreatedAt time.Time
+	Principal model.PrincipalRef
+	Deleted   bool
+}
+
+type HistoryDiffRequest struct {
+	Ref          model.Ref
+	FromRevision model.Revision
+	ToRevision   model.Revision
+}
+
+type JSONPatchOperation struct {
+	Op    string
+	Path  string
+	Value any
+}
+
+type HistoryDiff struct {
+	Patch        []JSONPatchOperation
+	ChangedPaths []string
 }
 
 type GetRequest struct {
