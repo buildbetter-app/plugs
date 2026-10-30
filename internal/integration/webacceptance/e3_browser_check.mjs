@@ -6,7 +6,60 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
+// Recorder evidence only. The optional wire shape is owned by the
+// directBlockers transport; this check cannot supply a missing capability.
+export function assessWhyBlockedEvidence({ wire, startedAt, project, viewId, itemId, blockerId, explanation }) {
+  const blocked = (problem) => ({ observed: false, problem });
+  const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const closed = (value, keys) => object(value) && Object.keys(value).every((key) => keys.includes(key));
+  const ref = (value) => closed(value, ["id", "branch", "key"]) && (
+    (typeof value.id === "string" && value.id.length > 0 && !Object.hasOwn(value, "key") &&
+      (!Object.hasOwn(value, "branch") || (Number.isSafeInteger(value.branch) && value.branch >= 0))) ||
+    (typeof value.key === "string" && value.key.length > 0 && !Object.hasOwn(value, "id") && !Object.hasOwn(value, "branch")));
+  const safeReasons = [
+    "blocker reference is unresolved", "blocker is missing from the snapshot",
+    "blocker ontology is unavailable in the snapshot", "blocker status is unknown to its project ontology",
+    "blocker status does not satisfy blocks", "blocker status does not satisfy conditional-blocks",
+  ];
+  let match;
+  for (const [index, entry] of (Array.isArray(wire) ? wire : []).entries()) {
+    let request;
+    try { request = JSON.parse(entry.request?.postData); } catch { continue; }
+    if (entry.at >= startedAt && request.jsonrpc === "2.0" && typeof request.id === "string" && request.id &&
+        request.method === "view.explain" && request.params?.viewId === viewId &&
+        request.params?.itemId === itemId && request.params?._meta?.project === project) match = { index, entry, request };
+  }
+  if (!match) return blocked("no fresh matching browser view.explain request");
+  let response;
+  try { response = JSON.parse(match.entry.rawResponse); } catch { return blocked("matching view.explain response body is absent or malformed"); }
+  if (match.entry.failure || match.entry.response?.status !== 200 || response?.jsonrpc !== "2.0" ||
+      response.id !== match.request.id || Object.hasOwn(response, "error")) return blocked("matching view.explain did not succeed");
+  const result = response.result;
+  if (!object(result) || result.viewId !== viewId || result.itemId !== itemId || result.included !== true) return blocked("view.explain does not include the matching dependent");
+  const verdict = result.directBlockers;
+  if (!closed(verdict, ["edges", "hiddenCount"]) || !Array.isArray(verdict.edges) || verdict.edges.length > 100 ||
+      !Number.isInteger(verdict.hiddenCount) || verdict.hiddenCount < 0 || verdict.hiddenCount > 100) return blocked("directBlockers capability is absent or malformed");
+  for (const edge of verdict.edges) {
+    if (!closed(edge, ["blocker", "kind", "state", "reason"]) || !ref(edge.blocker) ||
+        !["blocks", "conditional-blocks"].includes(edge.kind) || !["satisfied", "unsatisfied", "unknown"].includes(edge.state) ||
+        (Object.hasOwn(edge, "reason") && (typeof edge.reason !== "string" || [...edge.reason].length > 128 || !safeReasons.includes(edge.reason)))) {
+      return blocked("directBlockers edge/reference/reason is malformed or not producer-safe");
+    }
+  }
+  const edge = verdict.edges.find((edge) => edge.blocker.id === blockerId && (edge.blocker.branch ?? 0) === 0 &&
+    edge.state === "unsatisfied" && edge.reason === "blocker status does not satisfy " + edge.kind);
+  if (!edge) return blocked("no server-linked readable unsatisfied fixture blocker with a safe reason");
+  // Text is corroboration only, after the actual linked wire edge is proven.
+  // The caller supplies visible innerText from the existing explanation region.
+  if (typeof explanation !== "string" || !explanation.includes(blockerId) || !explanation.includes(edge.reason)) {
+    return blocked("linked blocker reference and safe reason are not both rendered");
+  }
+  return { observed: true, wireIndex: match.index, blocker: edge.blocker, kind: edge.kind, reason: edge.reason };
+}
+
+async function runBrowser() {
 const [base, evidence, chromePath] = process.argv.slice(2);
 const fixture = JSON.parse(await readFile(path.join(evidence, "browser-input.json"), "utf8"));
 const profile = await mkdtemp(path.join(os.tmpdir(), "plug-e3-browser-"));
@@ -152,12 +205,16 @@ try {
     const blocked = await text("#blocked-state");
     assert(blocked.includes(fixture.blockedId));
     await select("explain");
+    const explanationStartedAt = performance.now();
     await evaluate(`document.querySelector('#explain-id').value=${JSON.stringify(fixture.blockedId)};document.querySelector('#explain-form').requestSubmit()`);
     await settled();
-    const explanation = await text("#explain-state");
-    outcome.observations.push({ blocked, explanation });
-    if (!explanation.includes(fixture.blockerId)) {
-      outcome.missingFields.push("view.explain has membership reasons but no direct readable blocker reference/reason; blocked candidate is explicitly selected by stored ID, not a supported blocked predicate");
+    await Promise.allSettled([...pendingBodies]);
+    const explanation = await evaluate("document.querySelector('#explain-state')?.innerText || ''");
+    const blockerEvidence = assessWhyBlockedEvidence({ wire: browserWire, startedAt: explanationStartedAt,
+      project: fixture.project, viewId: fixture.blockedViewId, itemId: fixture.blockedId, blockerId: fixture.blockerId, explanation });
+    outcome.observations.push({ blocked, explanation, blockerEvidence });
+    if (!blockerEvidence.observed) {
+      outcome.missingFields.push(blockerEvidence.problem + "; blocked candidate is explicitly selected by stored ID, not a supported blocked predicate");
     }
   });
 
@@ -253,3 +310,7 @@ try {
   await rm(profile, { recursive: true, force: true }).catch(() => {});
   if (receipt.infrastructure.error) console.error(receipt.infrastructure.error);
 }
+}
+
+// Importing the real predicate for focused checks must not start the workload.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await runBrowser();
