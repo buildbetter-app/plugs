@@ -15,6 +15,8 @@ go_library(
 go_test(
     name = "reverseconverter_test",
     srcs = ["reverseconverter_test.go"],
+    data = ["//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar"],
+    deps = ["//internal/core/dumpformat"],
     embed = [":reverseconverter"],
     size = "small",
 )
