@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -36,6 +37,20 @@ type changePayload struct {
 	} `json:"changes"`
 }
 
+type committedPayload struct {
+	Revision json.Number `json:"revision"`
+	Changes  []struct {
+		Resource json.RawMessage `json:"resource"`
+	} `json:"changes"`
+}
+
+// The host import is the internal E5 callback bridge. Its request and result
+// are JSON envelopes documented by pluginhost; this fixture deliberately uses
+// only the typed SnapshotReader get operation.
+//
+//go:wasmimport env plug.call
+func snapshotCall(ptr, size uint32) uint64
+
 //go:wasmexport plug_alloc
 func plugAlloc(size uint32) uint32 {
 	mu.Lock()
@@ -66,6 +81,8 @@ func plugHandle(ptr, size uint32) uint64 {
 		return mutate(call.Payload)
 	case "validate":
 		return validate(call.Payload)
+	case "post":
+		return post(call.Payload)
 	case "method":
 		if call.Name == "x.wasi.probe" {
 			return probe(call.Payload)
@@ -110,6 +127,25 @@ func mutate(raw json.RawMessage) uint64 {
 		return response(map[string]any{"error": "invalid after"})
 	}
 	title, _ := after.Fields["title"].(string)
+	if strings.HasPrefix(title, "acceptance:") {
+		return acceptanceMutation(payload, title)
+	}
+	if len(payload.Changes[0].Resource) != 0 {
+		var resource struct {
+			Ref struct {
+				ID string `json:"id"`
+			} `json:"ref"`
+		}
+		if json.Unmarshal(payload.Changes[0].Resource, &resource) == nil && resource.Ref.ID != "" {
+			// A missing record is expected for a create at its pinned base
+			// revision. Existing records must be readable and revision-pinned.
+			if records, err := readRecords(resource.Ref.ID); err != nil {
+				return response(map[string]any{"error": err.Error()})
+			} else if err := validateReadRecords(records); err != nil {
+				return response(map[string]any{"error": err.Error()})
+			}
+		}
+	}
 	value, _ := json.Marshal(strings.ToUpper(title))
 	path := "fields.normalized"
 	if title == "private" {
@@ -128,6 +164,18 @@ func validate(raw json.RawMessage) uint64 {
 		return response(map[string]any{"error": "invalid change"})
 	}
 	for _, item := range payload.Changes {
+		var resource struct {
+			Ref struct {
+				ID string `json:"id"`
+			} `json:"ref"`
+		}
+		if json.Unmarshal(item.Resource, &resource) == nil && resource.Ref.ID != "" {
+			if records, err := readRecords(resource.Ref.ID); err != nil {
+				return response(map[string]any{"error": err.Error()})
+			} else if err := validateReadRecords(records); err != nil {
+				return response(map[string]any{"error": err.Error()})
+			}
+		}
 		var after struct {
 			Fields map[string]any `json:"fields"`
 		}
@@ -138,6 +186,111 @@ func validate(raw json.RawMessage) uint64 {
 		}
 	}
 	return response(map[string]any{"verdict": map[string]any{"allow": true}})
+}
+
+func post(raw json.RawMessage) uint64 {
+	var payload committedPayload
+	if json.Unmarshal(raw, &payload) != nil || len(payload.Changes) == 0 || payload.Revision == "" {
+		return response(map[string]any{"error": "invalid committed change"})
+	}
+	var resource struct {
+		Ref struct {
+			ID string `json:"id"`
+		} `json:"ref"`
+	}
+	if json.Unmarshal(payload.Changes[0].Resource, &resource) != nil || resource.Ref.ID == "" {
+		return response(map[string]any{"error": "invalid committed resource"})
+	}
+	records, err := readRecords(resource.Ref.ID)
+	if err != nil {
+		return response(map[string]any{"error": err.Error()})
+	}
+	if len(records) != 1 || records[0].Revision.String() != payload.Revision.String() {
+		return response(map[string]any{"error": fmt.Sprintf("post read revision=%q want=%q", firstRevision(records), payload.Revision.String())})
+	}
+	if err := checkScopedRecord(records[0]); err != nil {
+		return response(map[string]any{"error": err.Error()})
+	}
+	return response(map[string]any{"result": map[string]any{"observedRevision": records[0].Revision}})
+}
+
+type readRecord struct {
+	Revision json.Number     `json:"revision"`
+	Body     json.RawMessage `json:"body"`
+}
+
+func checkScopedRecord(record readRecord) error {
+	var body struct {
+		Fields map[string]any `json:"fields"`
+	}
+	if err := json.Unmarshal(record.Body, &body); err != nil {
+		return err
+	}
+	if _, hidden := body.Fields["private"]; hidden {
+		return fmt.Errorf("scoped read leaked undeclared private field")
+	}
+	if _, present := body.Fields["title"]; !present {
+		return fmt.Errorf("scoped read omitted declared title field")
+	}
+	return nil
+}
+
+func validateReadRecords(records []readRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	if records[0].Revision == "" {
+		return fmt.Errorf("read record omitted revision")
+	}
+	return checkScopedRecord(records[0])
+}
+
+func firstRevision(records []readRecord) string {
+	if len(records) == 0 {
+		return ""
+	}
+	return records[0].Revision.String()
+}
+
+func readRecords(id string) ([]readRecord, error) {
+	request, err := json.Marshal(map[string]any{
+		"op":     "read",
+		"method": "get",
+		"params": map[string]any{"refs": []map[string]string{{"id": id}}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	ptr := plugAlloc(uint32(len(request)))
+	if ptr < base || uint64(ptr-base) >= uint64(len(arena)) || uint32(len(request)) > uint32(len(arena))-(ptr-base) {
+		return nil, fmt.Errorf("guest request allocation failed")
+	}
+	mu.Lock()
+	copy(arena[ptr-base:ptr-base+uint32(len(request))], request)
+	mu.Unlock()
+	packed := snapshotCall(ptr, uint32(len(request)))
+	resultPtr, resultLen := uint32(packed>>32), uint32(packed)
+	if resultPtr < base || uint64(resultPtr-base) >= uint64(len(arena)) || resultLen > uint32(len(arena))-(resultPtr-base) {
+		return nil, fmt.Errorf("host response is outside guest memory")
+	}
+	mu.Lock()
+	result := append([]byte(nil), arena[resultPtr-base:resultPtr-base+resultLen]...)
+	mu.Unlock()
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+		Error  string          `json:"error"`
+	}
+	if err := json.Unmarshal(result, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.Error != "" {
+		return nil, fmt.Errorf("snapshot read refused: %s", envelope.Error)
+	}
+	var records []readRecord
+	if err := json.Unmarshal(envelope.Result, &records); err != nil {
+		return nil, err
+	}
+	return records, nil
 }
 
 func response(value map[string]any) uint64 {

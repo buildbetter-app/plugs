@@ -9,7 +9,9 @@
 .github/dependabot.yml
 .github/images/agent-using-beads.jpg
 .github/pages-redirect/index.html
+.github/runs-on.yml
 .github/workflows/plug-bazel.yml
+.github/workflows/plug-runs-on-smoke.yml
 .gitignore
 BUILD.bazel
 LICENSE
@@ -81,7 +83,9 @@ engdocs/plug-runtime/cli.md
 engdocs/plug-runtime/events.md
 engdocs/plug-runtime/native-plugins.md
 engdocs/plug-runtime/rpc-http.md
+engdocs/plug-runtime/server.md
 engdocs/plug-runtime/storage.md
+engdocs/plug-runtime/transports.md
 engdocs/style/BUILD.bazel
 engdocs/style/lexicon.toml
 examples/plugins/native-guard/BUILD.bazel
@@ -245,7 +249,9 @@ internal/core/port/gate.go
 internal/core/port/pipeline.go
 internal/core/restore/BUILD.bazel
 internal/core/restore/archive.go
+internal/core/restore/b17_data_test.go
 internal/core/restore/fixture_test.go
+internal/core/restore/native_profile_test.go
 internal/core/restore/restore_test.go
 internal/core/reverseconverter/BUILD.bazel
 internal/core/reverseconverter/README.md
@@ -309,6 +315,9 @@ internal/integration/clisql/lifecycle_test.go
 internal/integration/collabwatch/BUILD.bazel
 internal/integration/collabwatch/integration_test.go
 internal/integration/converterroundtrip/BUILD.bazel
+internal/integration/converterroundtrip/image.go
+internal/integration/converterroundtrip/native_restore_test.go
+internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go
 internal/integration/converterroundtrip/roundtrip_test.go
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
@@ -379,6 +388,8 @@ internal/integration/postsql/receipts_test.go
 internal/integration/receiptconcurrency/BUILD.bazel
 internal/integration/receiptconcurrency/README.md
 internal/integration/receiptconcurrency/receiptconcurrency_test.go
+internal/integration/rpctx/BUILD.bazel
+internal/integration/rpctx/rpc_tx_test.go
 internal/integration/sqliteacceptance/BUILD.bazel
 internal/integration/sqliteacceptance/README.md
 internal/integration/sqliteacceptance/durability_test.go
@@ -451,6 +462,8 @@ internal/server/events/cursor.go
 internal/server/events/cursor_test.go
 internal/server/events/dispatcher_test.go
 internal/server/events/integration_test.go
+internal/server/events/projection_status.go
+internal/server/events/projection_status_test.go
 internal/server/events/service.go
 internal/server/events/storage.go
 internal/server/ontologyrpc/BUILD.bazel
@@ -466,6 +479,7 @@ internal/server/pluginbuild/containment_other.go
 internal/server/pluginbuild/containment_other_test.go
 internal/server/pluginbuild/durable_test.go
 internal/server/pluginbuild/fixture-wasi/BUILD.bazel
+internal/server/pluginbuild/fixture-wasi/acceptance.go
 internal/server/pluginbuild/fixture-wasi/go.mod.template
 internal/server/pluginbuild/fixture-wasi/plug-plugin.json
 internal/server/pluginbuild/fixture-wasi/plugin.go
@@ -582,6 +596,8 @@ internal/server/webui/static/app.js
 internal/server/webui/static/favicon.svg
 internal/server/webui/static/index.html
 internal/server/webui/static/styles.css
+internal/server/webui/view_watch_check.mjs
+internal/server/webui/view_watch_test.go
 internal/server/webui/webui.go
 internal/server/webui/webui_test.go
 internal/storage/conformance/BUILD.bazel
@@ -611,6 +627,7 @@ internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
+internal/storage/driver/offline_restore.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/allocator.go
@@ -623,6 +640,7 @@ internal/storage/memory/metadata.go
 internal/storage/memory/metadata_test.go
 internal/storage/memory/noop.go
 internal/storage/memory/noop_test.go
+internal/storage/memory/offline_restore.go
 internal/storage/memory/reader.go
 internal/storage/memory/store.go
 internal/storage/memory/transaction.go
@@ -656,6 +674,7 @@ internal/storage/sqlite/lease.go
 internal/storage/sqlite/locks_other.go
 internal/storage/sqlite/locks_unix.go
 internal/storage/sqlite/metadata.go
+internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/pending_test.go
 internal/storage/sqlite/process_test.go
 internal/storage/sqlite/reader.go
@@ -682,6 +701,15 @@ sdk/go/native.go
 spec/BUILD.bazel
 spec/README.md
 spec/assertions_test.go
+spec/cardb28/BUILD.bazel
+spec/cardb28/README.md
+spec/cardb28/cardb28_test.go
+spec/cardb28/fixture_test.go
+spec/cardb28/record_reference.py
+spec/cardb28/reference/provenance.json
+spec/cardb28/reference/run-a.json
+spec/cardb28/reference/run-b.json
+spec/cardb28/reference_test.go
 spec/cli_test.go
 spec/extended/BUILD.bazel
 spec/extended/README.md
@@ -694,9 +722,16 @@ spec/fixture_test.go
 spec/pipeline_test.go
 spec/recorded/BUILD.bazel
 spec/recorded/README.md
+spec/recorded/extension/BUILD.bazel
+spec/recorded/extension/README.md
+spec/recorded/extension/build50_record.py
+spec/recorded/extension/extension.json
+spec/recorded/extension/extension_test.go
+spec/recorded/extension/provenance.py
 spec/recorded/goldens.json
 spec/recorded/goldens_test.go
 spec/recorded/provenance.py
+spec/recorded_test.go
 spec/rpc_test.go
 spikes/runtime/BUILD.bazel
 spikes/runtime/README.md

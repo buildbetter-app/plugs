@@ -7,9 +7,19 @@ builds a c-shared WASI module and runs in wazero's interpreter through the
 fixed `plug_alloc`/`plug_handle` JSON ABI. The WASI host allows only
 `wasi_snapshot_preview1` and the reserved `env.plug.call` import, provides no
 preopened filesystem, environment, or network capability, and caps guest
-memory at 64 MiB. Initialization has a one-second deadline. Outbound calls
-through `env.plug.call` are explicitly refused in this bounded adapter; the
-guest cannot use it as an alternate filesystem, egress, or write path.
+memory at 64 MiB. Initialization has a one-second deadline.
+
+During a mutator, validator, or post callback, `env.plug.call` accepts the
+small internal snapshot envelope
+`{"op":"read","method":"get|query|beads|closure|grants","params":...}`.
+`params` and `result` use the canonical JSON forms of the corresponding
+`pluginapi.SnapshotReader` operation. The host invokes the callback's existing
+scoped reader, so manifest and binding field grants, read budgets, pinned
+revisions, principal scope, cancellation, and pipeline read-fact tracking are
+unchanged. It returns `{"result":...}` or an explicit `{"error":...}` refusal.
+Malformed or out-of-bounds guest buffers trap and dispose the module; calls
+outside a callback remain refused. This is an internal ABI envelope, not a new
+public plugin API, and it cannot provide filesystem, egress, or graph writes.
 
 `Build(ctx, Request)` uses the real `pluginmanifest.Load` to require a full
 commit pin, matching HEAD and committed bytes/modes, a complete source
@@ -129,3 +139,14 @@ cancellation, static WASI import/export/memory checks, wrong source digest,
 changed source/HEAD/output, closed output, digest restore, and asynchronous
 rebuild match/mismatch comparison. Remote resolution, installation/approval, durable
 external artifact storage, build quotas, and UI bundles remain separate work.
+
+`TestWASIGuestBridgeAcceptance` builds the existing WASI fixture from committed
+source and invokes its callbacks through the real memory Writer. Guest requests
+exercise undeclared query fields, foreign branches/cursors, expired reads and
+invalid ABI buffers after a valid scoped read. Refusals preserve graph, version,
+log and receipt state; traps also prevent module reuse. A controlled concurrent
+Writer changes a separately read record, forcing one ordinary stale-read retry.
+The test checks the read-fact lock, refreshed normalized value, masked validation,
+committed post snapshot, exact log/version counts and durable receipt replay.
+This is local source-built guest coverage on Linux/amd64; it does not qualify
+the public SDK suite, production runtime composition or E5 workloads.

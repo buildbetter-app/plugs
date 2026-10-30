@@ -15,6 +15,16 @@ The connected scenario expectations are authored Plug contract assertions; the
 separately reviewed Beads-base vectors live in [`spec/recorded/`](recorded/).
 Passing either suite alone does not establish cross-driver reference parity.
 
+The [B07/B25 recorded extension](recorded/extension/) adds independently repeated
+reference vectors to `//spec:acceptance`. B07 covers same-type edge re-add,
+removal, and explicit remove/re-add as `relates-to`; B25 covers preservation of
+labels, dependency endpoints and ordered comment bodies across title, priority
+and description updates. The existing B17/B24 bytes and admission digest stay
+frozen. Only the selected non-temporal memory replay is in this extension;
+timestamps, revisions, complete cards and SQLite/Postgres parity remain open.
+See the extension manifest for source, executable, toolchain, configuration,
+clock/ID/graph inputs, command pairs and raw/semantic/provenance digests.
+
 ## Running the connected scenarios
 
 ```sh

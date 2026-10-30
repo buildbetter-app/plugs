@@ -14,12 +14,30 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/client"
+	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnoidc"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
+	"github.com/buildbetter-app/plugs/internal/server/watch"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
+
+type compositionViews map[string]viewops.Definition
+
+func (v compositionViews) GetView(_ context.Context, _ model.PrincipalRef, id string) (viewops.Definition, error) {
+	definition, ok := v[id]
+	if !ok {
+		return viewops.Definition{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "saved view is absent"}}
+	}
+	return definition, nil
+}
+
+type compositionProjector struct{}
+
+func (compositionProjector) Apply(context.Context, coreevents.ChangeDelivery) error { return nil }
 
 type runtimeFixture struct {
 	r         *Runtime
@@ -203,6 +221,72 @@ func TestComposedRPCSessionBridgesWatchLifetime(t *testing.T) {
 	if got := f.r.Watches.WatchCount(sessionID); got != 0 {
 		t.Fatalf("session close retained watch count=%d", got)
 	}
+}
+
+func TestCompositionUsesDurableProjectionStatusForViewsAndWatches(t *testing.T) {
+	views := compositionViews{"issues": {Filter: &viewops.Filter{Types: []string{"issue"}}}}
+	f := startRuntime(t, Config{
+		Driver:     "memory",
+		Project:    "composition",
+		Address:    DefaultAddress,
+		ViewReader: views,
+		ProjectionBindings: []coreevents.Binding{{
+			ID:        "core",
+			Class:     coreevents.Projection,
+			Projector: compositionProjector{},
+		}},
+	})
+	created, err := f.client.Call(context.Background(), "bead.create", map[string]any{
+		"type": "issue", "fields": map[string]any{"title": "projection"},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewResult, err := f.client.Call(context.Background(), "view.run", map[string]any{
+		"definition": map[string]any{"filter": map[string]any{"types": []string{"issue"}}},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := resultObject(t, viewResult)["projection"].(map[string]any)
+	if projection["binding"] != "core" || projection["checkpoint"].(map[string]any)["revision"].(json.Number).String() != "0" {
+		t.Fatalf("view reported fabricated projection readiness: %v", projection)
+	}
+
+	subscription, err := f.r.Watches.Open(f.r.ctx, watch.Request{
+		SessionID: "projection-session", Method: watch.MethodViewWatch,
+		Principal: model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, ViewID: "issues",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := subscription.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frame.Projection == nil || !frame.Projection.Position.Revision.IsZero() {
+		t.Fatalf("watch omitted durable initial projection status: %+v", frame.Projection)
+	}
+	_ = subscription.Close()
+
+	binding, ok := f.r.Projections.Get("core")
+	if !ok {
+		t.Fatal("composition lost registered projection")
+	}
+	if _, err := f.r.Dispatcher.Step(context.Background(), binding); err != nil {
+		t.Fatal(err)
+	}
+	viewResult, err = f.client.Call(context.Background(), "view.run", map[string]any{
+		"definition": map[string]any{"filter": map[string]any{"types": []string{"issue"}}},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection = resultObject(t, viewResult)["projection"].(map[string]any)
+	if projection["checkpoint"].(map[string]any)["revision"].(json.Number).String() != "1" {
+		t.Fatalf("view did not consume checkpoint-backed adapter after delivery: %v", projection)
+	}
+	_ = created
 }
 
 func TestSQLiteCompositionPersistsAcrossRuntimeRestart(t *testing.T) {
