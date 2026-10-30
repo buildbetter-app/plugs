@@ -10,6 +10,7 @@ go_library(
         "//internal/core/ontology",
         "//internal/core/ontologymigration",
         "//internal/core/pipeline",
+        "//internal/core/port",
         "//internal/core/service",
         "//internal/storage/driver",
     ],

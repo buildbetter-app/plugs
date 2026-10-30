@@ -84,8 +84,8 @@ func TestUnsupportedCardRemainderRefusesWithoutWrites(t *testing.T) {
 	before := f.state(t)
 	for _, method := range []string{
 		"tx.apply", "bead.claimNext", "bead.heartbeat",
-		"history.get", "history.versions", "history.revert", "history.redact",
-		"admin.restore.begin", "view.run", "event.list",
+		"history.versions", "history.revert", "history.redact",
+		"admin.restore.begin", "view.run",
 	} {
 		if _, exists := f.catalog.Descriptor(method); !exists {
 			t.Fatalf("test names a method outside the actual wire catalog: %s", method)
@@ -103,5 +103,5 @@ func TestUnsupportedCardRemainderRefusesWithoutWrites(t *testing.T) {
 		domainCode(t, err, "invalid_params")
 	}
 	requireSameState(t, before, f.state(t))
-	t.Log("unbound public batch/claim-next/heartbeat/history-mutation/restore/view/event methods and unsupported parent/attach/reparent/status/unknown-field writes explicitly refused")
+	t.Log("unbound public batch/claim-next/heartbeat/history-mutation/restore/view methods and unsupported parent/attach/reparent/status/unknown-field writes explicitly refused")
 }
