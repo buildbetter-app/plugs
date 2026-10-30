@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
@@ -124,6 +128,151 @@ func (p NativeRestoreProfile) ValidateHeader(h ChangesetHeader) error {
 	for _, change := range h.Changes {
 		if change.Op != model.OpCreate || !change.FromRevision.IsZero() {
 			return fmt.Errorf("native restore requires only new record bases")
+		}
+	}
+	return nil
+}
+
+// RestoreImportAdmission records a trusted host's prior admission. Structural
+// validation is not authentication: no RPC accepts this binding object. The
+// host must enforce the selected mode's authority and operation-bound presence.
+type RestoreImportAdmission struct {
+	Mode            string             `json:"mode"`
+	Actor           model.PrincipalRef `json:"actor"`
+	Scope           string             `json:"scope"`
+	Authority       string             `json:"authority"`
+	AdmissionDigest string             `json:"admissionDigest"`
+}
+
+// RestoreImportProfile is distinct from both the historical converter receipt
+// and native admin.restore.finish. Its hash binds the complete admitted profile
+// through the durable receipt; lookup by G4 identity alone is insufficient.
+type RestoreImportProfile struct {
+	Admission      RestoreImportAdmission `json:"admission"`
+	SourceStoreID  StoreID                `json:"sourceStoreId"`
+	Method         string                 `json:"method"`
+	IdempotencyKey string                 `json:"idempotencyKey"`
+	ArchiveDigest  string                 `json:"archiveDigest"`
+	DerivedDigest  string                 `json:"derivedDigest"`
+}
+
+type RestoreImportTx interface {
+	PrepareRestoreImport(context.Context, RestoreImportProfile) (Meta, error)
+}
+
+func importDigest(value string) bool {
+	return len(value) == 64 && strings.Trim(value, "0123456789abcdef") == ""
+}
+
+func (p RestoreImportProfile) Detached() (RestoreImportProfile, error) {
+	if p.Method != "offline.restore.import" || len(p.IdempotencyKey) < 16 || ValidateCheckpointKey(p.IdempotencyKey) != nil || ValidateCheckpointKey(string(p.SourceStoreID)) != nil || !importDigest(p.ArchiveDigest) || !importDigest(p.DerivedDigest) || !importDigest(p.Admission.AdmissionDigest) {
+		return RestoreImportProfile{}, fmt.Errorf("invalid prepared import binding")
+	}
+	a := p.Admission
+	if (a.Mode == "authenticated" && a.Scope != "") || (a.Mode == "anonymous-local" && a.Scope != "" && ValidateCheckpointKey(a.Scope) != nil) {
+		return RestoreImportProfile{}, fmt.Errorf("import admission scope is not the normalized G4 agent label")
+	}
+	if !((a.Mode == "authenticated" && a.Authority == "restore-admin" && a.Actor.Kind == "user") || (a.Mode == "anonymous-local" && a.Authority == "trusted-human-presence" && a.Actor.Kind == "anonymous")) {
+		return RestoreImportProfile{}, fmt.Errorf("import admission mode/actor/authority mismatch")
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		return RestoreImportProfile{}, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var detached RestoreImportProfile
+	if err = decoder.Decode(&detached); err != nil {
+		return RestoreImportProfile{}, err
+	}
+	return detached, nil
+}
+
+func (p RestoreImportProfile) RequestHash() (string, error) {
+	detached, err := p.Detached()
+	if err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(detached)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// AgentLabel retains existing G4 normalization; full admission scope remains
+// in RequestHash for both modes and must be compared again on recovery.
+func (p RestoreImportProfile) AgentLabel() string {
+	if p.Admission.Actor.Kind == "anonymous" {
+		return p.Admission.Scope
+	}
+	return ""
+}
+
+func (p RestoreImportProfile) ValidateHeader(h ChangesetHeader) error {
+	hash, err := p.RequestHash()
+	if err != nil {
+		return err
+	}
+	got, err := json.Marshal(h.Principal)
+	if err != nil {
+		return err
+	}
+	want, err := json.Marshal(p.Admission.Actor)
+	if err != nil {
+		return err
+	}
+	if h.Kind != model.ChangesetRestore || h.ResponsePending || h.Time.IsZero() || h.Method != p.Method || h.AgentLabel != p.AgentLabel() || h.IdempotencyKey != p.IdempotencyKey || h.RequestHash != hash || !bytes.Equal(got, want) {
+		return fmt.Errorf("import header differs from its prepared profile")
+	}
+	for _, change := range h.Changes {
+		if change.Op != model.OpCreate || !change.FromRevision.IsZero() {
+			return fmt.Errorf("import requires only new record bases")
+		}
+	}
+	return nil
+}
+
+// ValidateRecord binds imported comments to the admitted actor and the exact
+// commit time. It is called only for the distinct prepared import capability.
+func (p RestoreImportProfile) ValidateRecord(record Record, commitTime time.Time) error {
+	if record.Kind != "bead" {
+		return nil
+	}
+	var document struct {
+		Comments []struct {
+			Body         string             `json:"body"`
+			Principal    model.PrincipalRef `json:"principal"`
+			Time         time.Time          `json:"time"`
+			Origin       string             `json:"origin"`
+			SourceAuthor string             `json:"sourceAuthor"`
+			SourceTime   *time.Time         `json:"sourceTime"`
+		} `json:"comments"`
+	}
+	if err := json.Unmarshal(record.Body, &document); err != nil {
+		return err
+	}
+	want, err := json.Marshal(p.Admission.Actor)
+	if err != nil {
+		return err
+	}
+	for _, comment := range document.Comments {
+		actor, err := json.Marshal(comment.Principal)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(actor, want) || comment.Origin != "import" || !comment.Time.Equal(commitTime) || comment.SourceTime == nil || comment.SourceTime.IsZero() {
+			return fmt.Errorf("imported comment differs from admitted actor/time/provenance")
+		}
+		author := comment.SourceAuthor
+		if !utf8.ValidString(author) || strings.TrimSpace(author) != author || utf8.RuneCountInString(author) > 256 {
+			return fmt.Errorf("invalid imported source author")
+		}
+		for _, r := range author {
+			if unicode.IsControl(r) || unicode.In(r, unicode.Cf) {
+				return fmt.Errorf("invalid imported source author")
+			}
 		}
 	}
 	return nil

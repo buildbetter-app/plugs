@@ -743,6 +743,13 @@
           },
           "lease": {
             "$ref": "#/components/schemas/Lease"
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Comment"
+            },
+            "description": "Optional imported or legacy comments. Existing bead.get authorization and as-of semantics apply."
           }
         },
         "required": [
@@ -3380,6 +3387,333 @@
         "minLength": 1,
         "maxLength": 64,
         "description": "Optional normalized, untrusted display-only label from session.open. Omit when empty after trimming Unicode White_Space; otherwise 1..64 Unicode scalar values, with no control (Cc) or format (Cf) characters. Trimming and category rejection are normative consumer requirements. Never use it for authorization, attribution, audit actor, idempotency, leases or dedup. Always render it next to the authenticated principal (user name, API key name, or anonymous); never replace or impersonate the principal. Keep two sessions of one principal as distinct members by sessionId, each with its own displayName; do not merge their labels into a trusted group identity."
+      },
+      "Comment": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/LegacyComment"
+          },
+          {
+            "$ref": "#/components/schemas/ImportedComment"
+          }
+        ],
+        "description": "Stored comment. Legacy comments retain body, principal and time. Imported comments add a verified restoring principal, fixed import origin, restore commit time and separate source provenance."
+      },
+      "LegacyComment": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "principal": {
+            "$ref": "#/components/schemas/Principal"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "body",
+          "principal",
+          "time"
+        ],
+        "additionalProperties": false,
+        "description": "Pre-import stored comment shape. It is decoded unchanged for backward compatibility."
+      },
+      "ImportedComment": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "principal": {
+            "$ref": "#/components/schemas/Principal",
+            "description": "Verified restoring actor supplied by the trusted import admission; never sourceAuthor."
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Restore commit time, not the source comment time."
+          },
+          "origin": {
+            "$ref": "#/components/schemas/CommentOrigin"
+          },
+          "sourceAuthor": {
+            "$ref": "#/components/schemas/SourceAuthor"
+          },
+          "sourceTime": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Original source timestamp retained as untrusted provenance."
+          }
+        },
+        "required": [
+          "body",
+          "principal",
+          "time",
+          "origin",
+          "sourceTime"
+        ],
+        "additionalProperties": false,
+        "description": "Verified imported comment. origin is fixed to import; sourceAuthor is optional untrusted provenance and cannot identify an actor."
+      },
+      "CommentOrigin": {
+        "type": "string",
+        "const": "import",
+        "description": "The only trusted origin for the imported comment shape."
+      },
+      "SourceAuthor": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "description": "Normalized untrusted source author provenance: trim Unicode White_Space, reject Unicode Cc and Cf controls, and count at most 256 Unicode scalar values. Empty after trimming is omitted."
+      },
+      "SourceAllocatorProvenance": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "prefix": {
+                "type": "string",
+                "minLength": 1
+              },
+              "id_mode": {
+                "type": "string",
+                "const": "sequential"
+              },
+              "hash_length": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 64
+              },
+              "last_id": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "child_counters": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "required": [
+              "prefix",
+              "id_mode",
+              "hash_length",
+              "last_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "prefix": {
+                "type": "string",
+                "minLength": 1
+              },
+              "id_mode": {
+                "type": "string",
+                "const": "hash"
+              },
+              "hash_length": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 64
+              },
+              "last_id": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "child_counters": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "required": [
+              "prefix",
+              "id_mode",
+              "hash_length",
+              "last_id"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "description": "Immutable source allocator declaration retained exactly as provenance in the restore receipt and project metadata key plug.restore.sourceAllocator. Hash declarations accept hash_length 1..64; sequential declarations preserve hash_length 0..64. It is never interpreted as the live target allocator."
+      },
+      "TargetRandomAllocator": {
+        "type": "object",
+        "properties": {
+          "prefix": {
+            "type": "string",
+            "minLength": 1
+          },
+          "id_mode": {
+            "type": "string",
+            "const": "random"
+          },
+          "random_bytes": {
+            "type": "integer",
+            "const": 16
+          },
+          "suffix_encoding": {
+            "type": "string",
+            "const": "lower-hex"
+          },
+          "top_level_shape": {
+            "type": "string",
+            "const": "prefix-random"
+          },
+          "child_shape": {
+            "type": "string",
+            "const": "parent-random"
+          }
+        },
+        "required": [
+          "prefix",
+          "id_mode",
+          "random_bytes",
+          "suffix_encoding",
+          "top_level_shape",
+          "child_shape"
+        ],
+        "additionalProperties": false,
+        "description": "Explicit live Plug allocator. A 16-byte candidate is rendered as 32 lowercase hexadecimal characters; top-level IDs are prefix-random and direct child IDs are parent-random."
+      },
+      "RestoreAllocatorProfile": {
+        "type": "object",
+        "properties": {
+          "sourceAllocator": {
+            "$ref": "#/components/schemas/SourceAllocatorProvenance"
+          },
+          "targetAllocator": {
+            "$ref": "#/components/schemas/TargetRandomAllocator"
+          }
+        },
+        "required": [
+          "sourceAllocator",
+          "targetAllocator"
+        ],
+        "additionalProperties": false,
+        "description": "The source provenance and live target allocator are separate values and are persisted/recovered together. targetAllocator.prefix must equal sourceAllocator.prefix; a mismatch refuses before staging."
+      },
+      "RestoreImportAdmission": {
+        "type": "object",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "const": "authenticated"
+              },
+              "actor": {
+                "$ref": "#/components/schemas/Principal"
+              },
+              "scope": {
+                "type": "string",
+                "const": "",
+                "description": "Normalized G4 AgentLabel is empty for authenticated actors."
+              },
+              "authority": {
+                "type": "string",
+                "const": "restore-admin"
+              },
+              "admissionDigest": {
+                "type": "string",
+                "minLength": 64,
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "mode",
+              "actor",
+              "scope",
+              "authority",
+              "admissionDigest"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "const": "anonymous-local"
+              },
+              "actor": {
+                "$ref": "#/components/schemas/Principal"
+              },
+              "scope": {
+                "type": "string",
+                "description": "Normalized G4 AgentLabel for anonymous-local mode; empty is allowed."
+              },
+              "authority": {
+                "type": "string",
+                "const": "trusted-human-presence"
+              },
+              "admissionDigest": {
+                "type": "string",
+                "minLength": 64,
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "mode",
+              "actor",
+              "scope",
+              "authority",
+              "admissionDigest"
+            ],
+            "additionalProperties": false
+          }
+        ],
+        "description": "Host-private trusted admission. Authenticated mode binds an interactive user, restore-admin authorization and operation/archive D32; anonymous-local mode records trusted human presence and an honest anonymous actor/agent scope. A JSON principal, archive field, lease or digest cannot mint this admission."
+      },
+      "RestoreImportProfile": {
+        "type": "object",
+        "properties": {
+          "admission": {
+            "$ref": "#/components/schemas/RestoreImportAdmission"
+          },
+          "sourceStoreId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "method": {
+            "type": "string",
+            "const": "offline.restore.import"
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 16
+          },
+          "archiveDigest": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64
+          },
+          "derivedDigest": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "admission",
+          "sourceStoreId",
+          "method",
+          "idempotencyKey",
+          "archiveDigest",
+          "derivedDigest"
+        ],
+        "additionalProperties": false,
+        "description": "Transaction-local prepared import profile. The trusted host creates it after admission; ordinary JSON-RPC callers cannot submit or forge it."
       }
     },
     "errors": {

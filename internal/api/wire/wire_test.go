@@ -24,7 +24,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if got := len(c.ErrorCatalog()); got != 61 {
 		t.Fatalf("error inventory = %d", got)
 	}
-	if digest(catalogJSON) != "95be13e2da1e04c61bee100b200b6cdfaa82fe222380f7349479e549c22060ee" {
+	if digest(catalogJSON) != "b999526e5e0a93b351a39b10a404d8d21b8248e7e57836cb378a507eee14e08e" {
 		t.Fatal("bounded source snapshot changed; reconcile approved contract")
 	}
 	// These changes affect one of two independent descriptor representations.
@@ -239,6 +239,8 @@ func TestStrictParameters(t *testing.T) {
 		{"bead.ready", `{"limit":1e1000000000}`, false},
 		{"bead.create", `{"type":"issue"}`, false},
 		{"bead.create", `{"type":null,"fields":{}}`, false},
+		{"bead.comment", `{"id":{"id":"p-1"},"body":"ok","principal":{"kind":"user","id":"attacker"}}`, false},
+		{"bead.comment", `{"id":{"id":"p-1"},"body":"ok","origin":"import"}`, false},
 		{"bead.get", `{"id":"pl-1"}`, false},
 		{"bead.get", `{"id":{"id":"pl-1","key":"k"}}`, false},
 		{"bead.get", `{"id":{"key":"k","branch":0}}`, false},
@@ -347,6 +349,113 @@ func TestDisplayNameContract(t *testing.T) {
 	}
 	if contract["render"] != "next to authenticated principal: user name, API key name, or anonymous; never replaces or impersonates the principal" || contract["members"] != "two sessions of the same principal remain separate members identified by sessionId; never merge labels into a trusted group identity" {
 		t.Fatal("displayName principal rendering or per-session identity contract drift")
+	}
+}
+
+func TestRestoreImportCommentContract(t *testing.T) {
+	c, err := DefaultCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	comment, err := c.resolve("#/components/schemas/Comment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(name, raw string, valid bool) {
+		t.Run(name, func(t *testing.T) {
+			value, err := DecodeJSON([]byte(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = c.validate(comment, value, "comment", false, 0)
+			if (err == nil) != valid {
+				t.Fatalf("valid=%v: %v", valid, err)
+			}
+		})
+	}
+	principal := `"principal":{"kind":"user","id":"restore-admin"}`
+	check("legacy shape remains valid", `{"body":"old",`+principal+`,"time":"2026-10-30T19:05:00Z"}`, true)
+	check("imported shape", `{"body":"imported",`+principal+`,"time":"2026-10-30T19:06:00Z","origin":"import","sourceAuthor":"Ada","sourceTime":"2024-01-02T03:04:05Z"}`, true)
+	check("imported source author omitted", `{"body":"imported",`+principal+`,"time":"2026-10-30T19:06:00Z","origin":"import","sourceTime":"2024-01-02T03:04:05Z"}`, true)
+	check("import origin requires source time", `{"body":"imported",`+principal+`,"time":"2026-10-30T19:06:00Z","origin":"import"}`, false)
+	check("wrong origin refused", `{"body":"imported",`+principal+`,"time":"2026-10-30T19:06:00Z","origin":"manual","sourceTime":"2024-01-02T03:04:05Z"}`, false)
+	check("unknown trusted field refused", `{"body":"imported",`+principal+`,"time":"2026-10-30T19:06:00Z","origin":"import","sourceTime":"2024-01-02T03:04:05Z","actor":"forged"}`, false)
+	check("source author max scalar bound", `{"body":"imported",`+principal+`,"time":"2026-10-30T19:06:00Z","origin":"import","sourceAuthor":"`+strings.Repeat("a", 257)+`","sourceTime":"2024-01-02T03:04:05Z"}`, false)
+	check("source author 256 scalars", `{"body":"imported",`+principal+`,"time":"2026-10-30T19:06:00Z","origin":"import","sourceAuthor":"`+strings.Repeat("a", 256)+`","sourceTime":"2024-01-02T03:04:05Z"}`, true)
+
+	result, _ := c.Descriptor("bead.get")
+	if err = c.ValidateResult(result, []byte(`{"bead":{"id":"pl-1","type":"issue","revision":1},"attachments":[],"comments":[{"body":"imported",`+principal+`,"time":"2026-10-30T19:06:00Z","origin":"import","sourceAuthor":"Ada","sourceTime":"2024-01-02T03:04:05Z"}]}`)); err != nil {
+		t.Fatalf("bead.get must expose optional typed comments: %v", err)
+	}
+	if err = c.ValidateResult(result, []byte(`{"bead":{"id":"pl-1","type":"issue","revision":1},"attachments":[],"comments":[{"body":"old",`+principal+`,"time":"2026-10-30T19:05:00Z"}]}`)); err != nil {
+		t.Fatalf("bead.get must retain legacy comments: %v", err)
+	}
+	if err = c.ValidateResult(result, []byte(`{"bead":{"id":"pl-1","type":"issue","revision":1},"attachments":[],"comments":[{"body":"x",`+principal+`,"time":"2026-10-30T19:05:00Z","origin":"import","sourceTime":"2024-01-02T03:04:05Z","principalOverride":"attacker"}]}`)); err == nil {
+		t.Fatal("bead.get accepted an unknown imported-comment field")
+	}
+
+	contract, ok := c.root["x-restore-import-contract"].(map[string]any)
+	if !ok {
+		t.Fatal("missing restore-import contract extension")
+	}
+	ordinary, ok := contract["ordinaryInputs"].(map[string]any)
+	if !ok || ordinary["commentOp"] != "closed to kind, target and body" {
+		t.Fatal("ordinary comment input boundary is not pinned")
+	}
+	trusted, ok := contract["trustedAdmission"].(map[string]any)
+	if !ok || trusted["hostPrivate"] != true {
+		t.Fatal("prepared import profile must remain host-private")
+	}
+	allocatorContract, ok := contract["allocator"].(map[string]any)
+	if !ok || allocatorContract["prefixBinding"] != "targetAllocator.prefix must equal sourceAllocator.prefix; mismatch refuses before staging." || allocatorContract["sourcePersistence"] != "Persist sourceAllocator unchanged in the restore receipt and project metadata key plug.restore.sourceAllocator." {
+		t.Fatal("allocator provenance/prefix binding contract drift")
+	}
+}
+
+func TestRestoreImportAllocatorAndProfileContract(t *testing.T) {
+	c, err := DefaultCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	validate := func(ref, raw string, valid bool) {
+		t.Helper()
+		schema, err := c.resolve(ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value, err := DecodeJSON([]byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = c.validate(schema, value, ref, false, 0)
+		if (err == nil) != valid {
+			t.Fatalf("%s valid=%v: %v", ref, valid, err)
+		}
+	}
+	source := `{"prefix":"pl","id_mode":"hash","hash_length":32,"last_id":0,"child_counters":{"pl-a":2}}`
+	target := `{"prefix":"pl","id_mode":"random","random_bytes":16,"suffix_encoding":"lower-hex","top_level_shape":"prefix-random","child_shape":"parent-random"}`
+	validate("#/components/schemas/SourceAllocatorProvenance", source, true)
+	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"hash","hash_length":1,"last_id":0}`, true)
+	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"hash","hash_length":64,"last_id":0}`, true)
+	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"hash","hash_length":65,"last_id":0}`, false)
+	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"sequential","hash_length":0,"last_id":0}`, true)
+	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"sequential","hash_length":64,"last_id":0}`, true)
+	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"sequential","hash_length":65,"last_id":0}`, false)
+	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"hash","last_id":0}`, false)
+	validate("#/components/schemas/TargetRandomAllocator", target, true)
+	validate("#/components/schemas/TargetRandomAllocator", `{"prefix":"pl","id_mode":"hash","random_bytes":16,"suffix_encoding":"lower-hex","top_level_shape":"prefix-random","child_shape":"parent-random"}`, false)
+	validate("#/components/schemas/RestoreAllocatorProfile", `{"sourceAllocator":`+source+`,"targetAllocator":`+target+`}`, true)
+
+	admission := `{"mode":"authenticated","actor":{"kind":"user","id":"admin"},"scope":"","authority":"restore-admin","admissionDigest":"` + strings.Repeat("a", 64) + `"}`
+	profile := `{"admission":` + admission + `,"sourceStoreId":"store-1","method":"offline.restore.import","idempotencyKey":"0123456789abcdef","archiveDigest":"` + strings.Repeat("b", 64) + `","derivedDigest":"` + strings.Repeat("c", 64) + `"}`
+	validate("#/components/schemas/RestoreImportAdmission", admission, true)
+	validate("#/components/schemas/RestoreImportProfile", profile, true)
+	validate("#/components/schemas/RestoreImportProfile", `{"admission":`+admission+`,"sourceStoreId":"store-1","method":"admin.restore.finish","idempotencyKey":"0123456789abcdef","archiveDigest":"`+strings.Repeat("b", 64)+`","derivedDigest":"`+strings.Repeat("c", 64)+`"}`, false)
+	validate("#/components/schemas/RestoreImportAdmission", `{"mode":"authenticated","actor":{"kind":"user","id":"admin"},"scope":"","authority":"trusted-human-presence","admissionDigest":"`+strings.Repeat("a", 64)+`"}`, false)
+
+	beadGet, _ := c.Descriptor("bead.get")
+	if err = c.ValidateResult(beadGet, []byte(`{"bead":{"id":"pl-1","type":"issue","revision":1},"attachments":[],"comments":[]}`)); err != nil {
+		t.Fatal("optional comments array must be valid", err)
 	}
 }
 
