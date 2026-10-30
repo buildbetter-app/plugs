@@ -248,7 +248,7 @@ func (r *Runtime) bind(config Config) error {
 		Authorization: coreevents.AllowAll{},
 	}
 	eventService := &servertsevents.Service{Reader: eventReader, Cursors: cursors}
-	r.Watches, err = watch.New(r.ctx, watch.Config{Events: eventService})
+	r.Watches, err = watch.New(r.ctx, watch.Config{Events: eventService, Presence: r.Sessions})
 	if err != nil {
 		return fmt.Errorf("composition: create watch manager: %w", err)
 	}

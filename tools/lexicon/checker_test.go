@@ -138,6 +138,50 @@ func TestPolicyProtectsDeclaredPathsAndRejectsUnknownProtectedBinary(t *testing.
 	}
 }
 
+func TestPolicyAdmitsOnlyTheDeclaredImmutableReferenceBytes(t *testing.T) {
+	content := []byte("reference " + string([]byte{119, 105, 115, 112}) + " " + string([]byte{115, 116, 101, 118, 101, 121, 101, 103, 103, 101, 47, 98, 101, 97, 100, 115}))
+	digest := sha256.Sum256(content)
+	policy := TreePolicy{
+		ReferencePrefixes: []string{"spec/recorded/"},
+		ReferenceSHA256: map[string]string{
+			"spec/recorded/goldens.json": hex.EncodeToString(digest[:]),
+		},
+	}
+	findings, err := CheckFilesWithPolicy(map[string][]byte{
+		"spec/recorded/goldens.json": content,
+	}, testConfig(), policy)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("declared immutable reference was not admitted: findings=%#v err=%v", findings, err)
+	}
+	if _, err := CheckFilesWithPolicy(map[string][]byte{
+		"spec/recorded/goldens.json": append(append([]byte(nil), content...), '\n'),
+	}, testConfig(), policy); err == nil || !strings.Contains(err.Error(), "immutable reference") {
+		t.Fatalf("changed immutable reference was accepted: %v", err)
+	}
+	if _, err := CheckFilesWithPolicy(map[string][]byte{
+		"spec/recorded/other.json": content,
+	}, testConfig(), policy); err == nil || !strings.Contains(err.Error(), "unlisted immutable reference path") {
+		t.Fatalf("unlisted immutable reference path was accepted: %v", err)
+	}
+}
+
+func TestPolicyStillRejectsProductTermsOutsideImmutableReferences(t *testing.T) {
+	content := []byte("ordinary " + string([]byte{119, 105, 115, 112}) + " vocabulary")
+	policy := TreePolicy{
+		ReferencePrefixes: []string{"spec/recorded/"},
+		ReferenceSHA256:   map[string]string{"spec/recorded/goldens.json": ""},
+	}
+	findings, err := CheckFilesWithPolicy(map[string][]byte{
+		"README.md": content,
+	}, testConfig(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 || findings[0].Path != "README.md" || findings[0].Class != "product-term" {
+		t.Fatalf("ordinary product term was not rejected: %#v", findings)
+	}
+}
+
 func TestPolicyAcceptsOnlyDeclaredBinaryBytes(t *testing.T) {
 	content := []byte("legacy vocabulary")
 	digest := sha256.Sum256(content)
