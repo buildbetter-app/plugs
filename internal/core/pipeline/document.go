@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 // Document is the stored bead body. Fields are ontology data; Metadata is
@@ -51,13 +51,12 @@ func DecodeMemoryDocument(body []byte) (MemoryDocument, error) {
 }
 
 type Comment struct {
-	Body      string             `json:"body"`
-	Principal model.PrincipalRef `json:"principal"`
-	Time      time.Time          `json:"time"
-"strings"
-"unicode"
-"unicode/utf8"
-"github.com/buildbetter-app/plugs/internal/storage/driver"`
+	Body         string             `json:"body"`
+	Principal    model.PrincipalRef `json:"principal"`
+	Time         time.Time          `json:"time"`
+	Origin       string             `json:"origin,omitempty"`
+	SourceAuthor string             `json:"sourceAuthor,omitempty"`
+	SourceTime   *time.Time         `json:"sourceTime,omitempty"`
 }
 
 type Link struct {
