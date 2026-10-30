@@ -337,14 +337,34 @@
       if (!session || typeof session.sessionId !== "string" || !session.sessionId) throw new RPCError("No collaboration lifetime was returned.", "invalid_response");
       live.session = session.sessionId;
       if (state.live !== live) { await releaseWatch(live); signal.throwIfAborted(); return; }
-      const opened = await rpc("view.watch", { viewId: state.config.homeViewId }, AbortSignal.timeout(15000), null, live.session);
-      if (!opened || typeof opened.subscriptionId !== "string" || !opened.subscriptionId || typeof opened.cursor !== "string" || !opened.cursor) throw new RPCError("The watch checkpoint is unreadable.", "invalid_response");
-      live.subscription = opened.subscriptionId; live.cursor = opened.cursor;
-      if (state.live !== live) { await releaseWatch(live); signal.throwIfAborted(); return; }
-      // Subscribe before reading the view: a delta racing its snapshot sets
-      // dirty and is drained after the initial read, so no write is lost.
-      live.openTimer = setTimeout(() => liveFailure(live, new RPCError("The live stream did not open before its deadline.", "watch_timeout")), 15000);
-      void streamWatch(live).catch((error) => liveFailure(live, error));
+      let from;
+      // An omitted-from open can encounter the stored ontology seed. Its first
+      // terminal frame supplies the opaque reopen marker; never infer one from
+      // a view revision, and never automatically recover a later boundary.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const params = { viewId: state.config.homeViewId };
+        if (from) params.from = from;
+        const opened = await rpc("view.watch", params, AbortSignal.timeout(15000), null, live.session);
+        if (!opened || typeof opened.subscriptionId !== "string" || !opened.subscriptionId || typeof opened.cursor !== "string" || !opened.cursor) throw new RPCError("The watch checkpoint is unreadable.", "invalid_response");
+        live.subscription = opened.subscriptionId; live.cursor = opened.cursor;
+        if (state.live !== live) { await releaseWatch(live); signal.throwIfAborted(); return; }
+        let received, refused;
+        const firstFrame = new Promise((resolve, reject) => { received = resolve; refused = reject; });
+        live.openTimer = setTimeout(() => liveFailure(live, new RPCError("The live stream did not open before its deadline.", "watch_timeout")), 15000);
+        const streaming = streamWatch(live, received, attempt === 0);
+        void streaming.catch((error) => { refused(error); liveFailure(live, error); });
+        const bootstrap = await firstFrame;
+        if (!bootstrap) break;
+        // Await reader cancellation before releasing only the old subscription.
+        // releaseWatch would also close the session required by the reopen.
+        await streaming;
+        const subscription = live.subscription; live.subscription = null;
+        await Promise.allSettled([rpc("event.unsubscribe", { subscriptionId: subscription }, AbortSignal.timeout(3000), null, live.session)]);
+        if (state.live !== live) { signal.throwIfAborted(); return; }
+        from = bootstrap;
+      }
+      // Streaming is attached before the snapshot. Racing deltas remain dirty
+      // until the normal first read finishes, preserving snapshot continuity.
     } catch (error) {
       if (state.live === live) stopWatch();
       await releaseWatch(live);
@@ -369,7 +389,12 @@
     live.cursor = frame.cursor;
     if (!first) live.dirty = true;
   }
-  async function streamWatch(live) {
+  function bootstrapCursor(live, frame) {
+    if (!frame || frame.subscriptionId !== live.subscription || frame.cursor !== live.cursor || !Array.isArray(frame.events) || frame.events.length !== 1) return null;
+    const event = frame.events[0], details = event && event.details;
+    return event && event.type === "watch.reset" && event.cursor === frame.cursor && details && details.reason === "ontology_changed" && details.subscriptionId === live.subscription && details.snapshotCursor === frame.cursor ? frame.cursor : null;
+  }
+  async function streamWatch(live, received, allowBootstrap) {
     const response = await fetch(state.config.watchPath, {
       method: "POST", mode: "same-origin", credentials: "omit", redirect: "error", cache: "no-store", signal: live.controller.signal,
       headers: { "Content-Type": "application/json", "Accept": "application/x-ndjson", "Plug-RPC": "1", "Plug-Session": live.session },
@@ -388,7 +413,12 @@
         while ((end = buffer.indexOf("\n")) !== -1) {
           if (end > 2 * 1024 * 1024) throw new RPCError("The live frame exceeds the read limit.", "response_too_large");
           const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
-          inspectFrame(live, parseJSON(line), first); first = false; clearTimeout(live.openTimer);
+          const frame = parseJSON(line);
+          const bootstrap = first && allowBootstrap ? bootstrapCursor(live, frame) : null;
+          if (bootstrap) { clearTimeout(live.openTimer); received(bootstrap); return; }
+          inspectFrame(live, frame, first);
+          if (first) received(null);
+          first = false; clearTimeout(live.openTimer);
           if (state.live !== live) return;
           watchStatus("Live changes connected."); void drainWatch(live);
         }
