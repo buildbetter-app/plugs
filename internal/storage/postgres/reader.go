@@ -49,8 +49,10 @@ func (s *Store) Read(ctx context.Context, view driver.View) (driver.Reader, erro
 	if err != nil {
 		return fail(err)
 	}
+	requested := m.Head
 	if view.At != nil {
-		at, err = view.At.Uint64()
+		requested = *view.At
+		at, err = requested.Uint64()
 		if err != nil {
 			return fail(fmt.Errorf("%w: postgres as-of revision exceeds uint64", driver.ErrUnsupported))
 		}
@@ -67,7 +69,7 @@ func (s *Store) Read(ctx context.Context, view driver.View) (driver.Reader, erro
 		return fail(driver.ErrTruncated{Floor: m.HistoryFloor})
 	}
 	if at > head {
-		return fail(fmt.Errorf("postgres: requested revision beyond head"))
+		return fail(driver.ErrFutureRevision{Requested: requested, Head: m.Head})
 	}
 	r := &reader{store: s, sql: tx, meta: m, at: at}
 	if err = s.track(r); err != nil {
