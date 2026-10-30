@@ -456,7 +456,8 @@
       const content = document.createElement("div");
       const name = document.createElement("div"); name.className = "presence-name"; text(name, principal);
       const identity = document.createElement("div"); identity.className = "presence-identity";
-      text(identity, kind === "anonymous" && !delegated ? "Anonymous principal" + (displayName ? "" : " · client label unavailable") : kind + ":" + id + " principal");
+      const anonymousUnavailable = "Anonymous principal · client label unavailable";
+      text(identity, kind === "anonymous" && !delegated ? (displayName ? "Anonymous principal" : anonymousUnavailable) : kind + ":" + id + " principal");
       content.append(name, identity);
       if (displayName) {
         const label = document.createElement("div"); label.className = "presence-display-name";
