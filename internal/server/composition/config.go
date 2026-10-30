@@ -86,6 +86,7 @@ type Runtime struct {
 	Lease         driver.ActiveLease
 	Service       *service.Service
 	RPC           *rpc.Server
+	Metrics       *pipeline.Collector
 	Authenticator *authn.Authenticator
 	OIDC          *authnoidc.Provider
 	HTTPHandler   *httpjson.Handler
@@ -237,7 +238,8 @@ func (r *Runtime) bind(config Config) error {
 	}
 	r.OIDC = oidc
 	ontology := service.NewOntology(nil)
-	writer := pipeline.New(r.Store, r.Lease, pipeline.WithOntology(ontology))
+	writer, metrics := newPipelineWriter(r.Store, r.Lease, pipeline.WithOntology(ontology))
+	r.Metrics = metrics
 	r.Service = service.New(r.Store, r.Lease, writer, service.WithOntology(ontology))
 	registry, err := rpc.NewRegistry()
 	if err != nil {
@@ -275,7 +277,7 @@ func (r *Runtime) bind(config Config) error {
 		Authorization: coreevents.AllowAll{},
 	}
 	eventService := &servertsevents.Service{Reader: eventReader, Cursors: cursors}
-	r.Watches, err = watch.New(r.ctx, watch.Config{Events: eventService})
+	r.Watches, err = watch.New(r.ctx, watch.Config{Events: eventService, Presence: r.Sessions})
 	if err != nil {
 		return fmt.Errorf("composition: create watch manager: %w", err)
 	}

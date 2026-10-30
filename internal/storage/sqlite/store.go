@@ -27,7 +27,7 @@ import (
 type Driver struct{}
 
 func (Driver) Info() driver.Info {
-	return driver.Info{Name: "sqlite", Version: "1", Capabilities: []string{"transactions", "history", "leases", "checkpoints", "core_sessions", "noop", "response_finalization"}}
+	return driver.Info{Name: "sqlite", Version: "1", Capabilities: []string{"transactions", "history", "leases", "checkpoints", "allocator_continuation", "core_sessions", "noop", "response_finalization"}}
 }
 
 type Store struct {

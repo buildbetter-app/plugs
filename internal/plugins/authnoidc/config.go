@@ -1,12 +1,16 @@
 // Package authnoidc verifies a bounded public-client OIDC code flow and issues
 // revocable, opaque Plug core sessions. It never admits issuer JWTs as bearer
-// credentials. Browser endpoints, cookies, CORS and device grants are not bound.
+// credentials. HTTPHandler adds explicit login/callback routes and
+// non-credentialed CORS for configured browser origins; cookies and device
+// grants remain unsupported.
 package authnoidc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"reflect"
 	"strings"
@@ -30,6 +34,11 @@ type Config struct {
 	// Users maps this issuer's exact subject to a provisioned Plug User ID.
 	// Unknown subjects are refused; email, roles and claims never provision users.
 	Users map[string]string
+	// AllowedOrigins is the operator-owned browser allowlist for all HTTP
+	// login/callback and other-origin bearer requests. Origins are exact HTTPS
+	// origins; loopback HTTP origins are accepted only for local development
+	// fixtures. Credentials and cookies never use this list.
+	AllowedOrigins []string
 	// HTTPClient is copied; redirects are disabled and timeout is bounded. A
 	// private trust transport permits disposable local TLS IdPs in tests.
 	HTTPClient  *http.Client
@@ -53,6 +62,7 @@ type Provider struct {
 	flows    map[[32]byte]flow
 	sessions map[string]sessionRecord
 	store    driver.CoreSessionStore
+	origins  map[string]struct{}
 }
 
 var _ authn.CoreSessionSource = (*Provider)(nil)
@@ -83,6 +93,11 @@ func New(config Config) (*Provider, error) {
 		users[sub] = id
 	}
 	config.Users = users
+	origins, err := normalizeOrigins(config.AllowedOrigins)
+	if err != nil {
+		return nil, err
+	}
+	config.AllowedOrigins = append([]string(nil), origins...)
 	if config.FlowTTL == 0 {
 		config.FlowTTL = 5 * time.Minute
 	}
@@ -113,8 +128,139 @@ func New(config Config) (*Provider, error) {
 	if now == nil {
 		now = time.Now
 	}
+	allowed := make(map[string]struct{}, len(origins))
+	for _, origin := range origins {
+		allowed[origin] = struct{}{}
+	}
 	return &Provider{config: config, client: &client, now: now, store: config.SessionStore,
-		flows: make(map[[32]byte]flow), sessions: make(map[string]sessionRecord)}, nil
+		flows: make(map[[32]byte]flow), sessions: make(map[string]sessionRecord), origins: allowed}, nil
+}
+
+func normalizeOrigins(values []string) ([]string, error) {
+	if len(values) > 64 {
+		return nil, fmt.Errorf("authnoidc: origin allowlist is too large")
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, raw := range values {
+		origin, ok := normalizeOrigin(raw)
+		if !ok {
+			return nil, fmt.Errorf("authnoidc: invalid allowed origin")
+		}
+		if _, exists := seen[origin]; exists {
+			return nil, fmt.Errorf("authnoidc: duplicate allowed origin")
+		}
+		seen[origin] = struct{}{}
+		result = append(result, origin)
+	}
+	return result, nil
+}
+
+func normalizeOrigin(raw string) (string, bool) {
+	if raw == "" || len(raw) > 2048 || strings.ContainsAny(raw, "?#\\\r\n\t ") {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.User != nil || u.Host == "" || u.Path != "" || u.RawQuery != "" ||
+		u.ForceQuery || u.Fragment != "" || u.Opaque != "" || strings.HasSuffix(u.Host, ":") ||
+		(u.Scheme != "https" && u.Scheme != "http") {
+		return "", false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" || strings.ContainsAny(host, "[]%") || strings.HasSuffix(host, ".") {
+		return "", false
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		host = ip.String()
+	}
+	port := u.Port()
+	if port != "" {
+		for _, digit := range port {
+			if digit < '0' || digit > '9' {
+				return "", false
+			}
+		}
+		number := 0
+		for _, digit := range port {
+			number = number*10 + int(digit-'0')
+			if number > 65535 {
+				return "", false
+			}
+		}
+		if number == 0 {
+			return "", false
+		}
+		if (u.Scheme == "https" && number == 443) || (u.Scheme == "http" && number == 80) {
+			port = ""
+		}
+	}
+	if u.Scheme == "http" && !isLoopbackOriginHost(host) {
+		return "", false
+	}
+	if port != "" {
+		if strings.Contains(host, ":") {
+			return u.Scheme + "://[" + host + "]:" + port, true
+		}
+		return u.Scheme + "://" + host + ":" + port, true
+	}
+	return u.Scheme + "://" + host, true
+}
+
+func isLoopbackOriginHost(host string) bool {
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+// OriginAllowed reports whether an origin is present in the immutable operator
+// allowlist. It is suitable for CORS response headers and login route checks;
+// bearer admission additionally calls AllowOrigin below.
+func (p *Provider) OriginAllowed(origin string) bool {
+	canonical, ok := normalizeOrigin(origin)
+	if !ok {
+		return false
+	}
+	p.mu.RLock()
+	_, allowed := p.origins[canonical]
+	p.mu.RUnlock()
+	return allowed
+}
+
+// AllowOrigin is the authn.CrossOriginAuthorizer composition seam. It admits
+// only a currently live Plug core session from a configured origin. A session
+// started by the HTTP login adapter is bound to that origin. Private flows
+// without an origin are never admitted as other-origin browser bearers.
+func (p *Provider) AllowOrigin(ctx context.Context, origin, token string) error {
+	if p == nil || canceled(ctx) {
+		return authn.ErrUnavailable
+	}
+	canonical, ok := normalizeOrigin(origin)
+	if !ok {
+		return authn.ErrForbidden
+	}
+	p.mu.RLock()
+	_, allowed := p.origins[canonical]
+	p.mu.RUnlock()
+	if !allowed {
+		return authn.ErrForbidden
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	record, err := p.sessionForToken(lookupCtx, token)
+	// A verified expired token retains its record only for checking its origin
+	// caveat. Private or differently bound sessions still fail as forbidden.
+	if (err == nil || errors.Is(err, authn.ErrTokenExpired)) && record.origin != canonical {
+		return authn.ErrForbidden
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, authn.ErrTokenExpired):
+			return authn.ErrTokenExpired
+		case errors.Is(err, authn.ErrUnavailable):
+			return authn.ErrUnavailable
+		default:
+			return authn.ErrForbidden
+		}
+	}
+	return nil
 }
 
 func httpsURL(raw string) bool {
@@ -122,8 +268,27 @@ func httpsURL(raw string) bool {
 		return false
 	}
 	u, err := url.Parse(raw)
-	return err == nil && u.Scheme == "https" && u.Host != "" && u.Hostname() != "" && u.User == nil &&
-		u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && u.Opaque == ""
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.Hostname() == "" || u.User != nil ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || strings.HasSuffix(u.Host, ":") {
+		return false
+	}
+	port := u.Port()
+	if port == "" {
+		return true
+	}
+	for _, digit := range port {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	number := 0
+	for _, digit := range port {
+		number = number*10 + int(digit-'0')
+		if number > 65535 {
+			return false
+		}
+	}
+	return number > 0
 }
 
 func boundedText(value string, max int) bool {

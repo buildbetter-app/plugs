@@ -8,8 +8,9 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 )
 
-// Bind registers actual canonical handlers before rpc.New snapshots the
-// registry. presence.watch stays unbound, undiscoverable and method_not_found.
+// Bind registers the collaboration state handlers before rpc.New snapshots the
+// registry. The watch adapter binds presence.watch after it has a real watch
+// manager and collaboration snapshot source.
 func Bind(registry *rpc.Registry, manager *Manager) error {
 	if registry == nil || manager == nil {
 		return fmt.Errorf("nil collaboration manager or registry")

@@ -54,4 +54,11 @@ CREATE TABLE IF NOT EXISTS plug_postgres.core_sessions (
  expires_at timestamptz NOT NULL, revoked boolean NOT NULL DEFAULT false
 );
 CREATE INDEX IF NOT EXISTS core_sessions_active_expiry
- ON plug_postgres.core_sessions(revoked, expires_at);`
+ ON plug_postgres.core_sessions(revoked, expires_at);
+CREATE TABLE IF NOT EXISTS plug_postgres.allocator_states (
+ prefix text PRIMARY KEY, data bytea NOT NULL
+);`
+
+// allocator_states is intentionally additive to schema version 1. initialize
+// executes schemaDDL for every open, so an existing version-1 database gains
+// the durable allocator table without rewriting any existing data.
