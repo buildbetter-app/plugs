@@ -619,11 +619,11 @@ func (m *Manager) ChunkAs(ctx context.Context, principal model.PrincipalRef, id 
 	if session == nil {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "restore session not found"}}
 	}
-	if session.state != "receiving" {
-		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "restore session is no longer receiving"}}
-	}
 	if !samePrincipal(session.principal, principal) {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "restore session caller changed"}}
+	}
+	if session.state != "receiving" {
+		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "restore session is no longer receiving"}}
 	}
 	if err := m.verifyPresence(ctx, "admin.restore.chunk", session.hash, presence); err != nil {
 		return RestoreStatus{}, err
@@ -661,14 +661,14 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 		m.mu.Unlock()
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "restore session not found"}}
 	}
+	if !samePrincipal(session.principal, principal) {
+		m.mu.Unlock()
+		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "restore session caller changed"}}
+	}
 	if session.state != "receiving" {
 		status := restoreStatus(session)
 		m.mu.Unlock()
 		return status, nil
-	}
-	if !samePrincipal(session.principal, principal) {
-		m.mu.Unlock()
-		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "restore session caller changed"}}
 	}
 	if manifestHash == "" {
 		m.mu.Unlock()
@@ -684,6 +684,10 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 	if session == nil {
 		m.mu.Unlock()
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "restore session not found"}}
+	}
+	if !samePrincipal(session.principal, principal) {
+		m.mu.Unlock()
+		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "restore session caller changed"}}
 	}
 	if session.state != "receiving" {
 		status := restoreStatus(session)

@@ -149,6 +149,33 @@ func TestDumpRestoreClaimAndApplyAcrossDrivers(t *testing.T) {
 	}
 }
 
+func TestRestoreTerminalStatusStillRequiresInitiatingPrincipal(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	defer store.Close()
+	lease, err := store.Lease(ctx, "restore-principal", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(ctx)
+	mgr := restore.NewManager(store, lease, trustedPresenceVerifier())
+	manifest := map[string]any{"format": dumpformat.Format, "schema": 1, "scope": dumpformat.Scope}
+	canonical, err := json.Marshal(dumpformat.Manifest{Format: dumpformat.Format, Schema: 1, Scope: dumpformat.Scope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := mgr.BeginAs(ctx, model.PrincipalRef{Kind: "user", ID: "restore-owner"}, manifest, "head", restore.Presence(presence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Finish(ctx, status.RestoreID, sha(canonical), model.PrincipalRef{Kind: "user", ID: "restore-owner"}, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "restore-principal"}, restore.Presence(presence)); err == nil {
+		t.Fatal("invalid empty archive unexpectedly committed")
+	}
+	if _, err := mgr.Finish(ctx, status.RestoreID, sha(canonical), model.PrincipalRef{Kind: "user", ID: "other-user"}, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "restore-principal-other"}, restore.Presence(presence)); err == nil || !strings.Contains(err.Error(), "restore session caller changed") {
+		t.Fatalf("terminal session disclosed to a different principal: %v", err)
+	}
+}
+
 func TestDumpCursorBindsHistoryAndPageSize(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
