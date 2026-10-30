@@ -460,6 +460,8 @@ internal/server/events/cursor.go
 internal/server/events/cursor_test.go
 internal/server/events/dispatcher_test.go
 internal/server/events/integration_test.go
+internal/server/events/projection_status.go
+internal/server/events/projection_status_test.go
 internal/server/events/service.go
 internal/server/events/storage.go
 internal/server/ontologyrpc/BUILD.bazel
@@ -475,6 +477,7 @@ internal/server/pluginbuild/containment_other.go
 internal/server/pluginbuild/containment_other_test.go
 internal/server/pluginbuild/durable_test.go
 internal/server/pluginbuild/fixture-wasi/BUILD.bazel
+internal/server/pluginbuild/fixture-wasi/acceptance.go
 internal/server/pluginbuild/fixture-wasi/go.mod.template
 internal/server/pluginbuild/fixture-wasi/plug-plugin.json
 internal/server/pluginbuild/fixture-wasi/plugin.go
