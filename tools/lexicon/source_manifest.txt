@@ -703,6 +703,8 @@ pluginapi/op.go
 pluginapi/types.go
 pluginapi/types_test.go
 scripts/ci/plug-bazel-config-test.sh
+scripts/ci/plug-bazel-delivery-test.sh
+scripts/ci/plug-bazel-delivery.py
 scripts/ci/plug-bazel-targets-test.sh
 scripts/ci/plug-bazel-targets.sh
 sdk/go/BUILD.bazel
