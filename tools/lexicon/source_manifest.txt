@@ -324,6 +324,8 @@ internal/integration/clisql/lifecycle_test.go
 internal/integration/collabwatch/BUILD.bazel
 internal/integration/collabwatch/integration_test.go
 internal/integration/converterroundtrip/BUILD.bazel
+internal/integration/converterroundtrip/image.go
+internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go
 internal/integration/converterroundtrip/roundtrip_test.go
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
@@ -608,6 +610,7 @@ internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
+internal/storage/driver/offline_restore.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/audit_test.go
@@ -619,6 +622,7 @@ internal/storage/memory/metadata.go
 internal/storage/memory/metadata_test.go
 internal/storage/memory/noop.go
 internal/storage/memory/noop_test.go
+internal/storage/memory/offline_restore.go
 internal/storage/memory/reader.go
 internal/storage/memory/store.go
 internal/storage/memory/transaction.go
@@ -649,6 +653,7 @@ internal/storage/sqlite/lease.go
 internal/storage/sqlite/locks_other.go
 internal/storage/sqlite/locks_unix.go
 internal/storage/sqlite/metadata.go
+internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/pending_test.go
 internal/storage/sqlite/process_test.go
 internal/storage/sqlite/reader.go

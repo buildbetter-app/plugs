@@ -5,11 +5,13 @@ package converterroundtrip
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
@@ -20,23 +22,37 @@ import (
 
 var (
 	// ErrRestoreUnavailable is retained for source compatibility with the
-	// parser-only checkpoint. Valid archives now use the atomic restore seam.
+	// parser-only checkpoint. Unsupported semantics and absent verification
+	// refuse before opening a write transaction.
 	ErrRestoreUnavailable = errors.New("trusted offline restore seam unavailable")
-	ErrTargetNotEmpty     = errors.New("restore target is not empty")
+	ErrTargetNotEmpty     = driver.ErrRestoreTargetNotEmpty
 )
 
 // Report retains the complete parsed source evidence and the target metadata
 // observed before the restore transaction. Target is intentionally the
 // pre-restore snapshot so refusal reports cannot be mistaken for a commit.
 type Report struct {
-	Archive *dumpformat.Archive
-	Target  driver.Meta
+	Archive        *dumpformat.Archive
+	Target         driver.Meta
+	Restored       driver.Meta
+	IdempotencyKey string
+	RequestHash    string
+	Recovered      bool
+}
+
+// Verification is a trusted offline comparison, bound to the exact tar bytes.
+// The Beads exporter has no derived certificate. Callers must independently
+// verify this bounded profile's derived digest; omission fails before writes.
+// This does not assert source history, A3, authorization or migration parity.
+type Verification struct {
+	ArchiveSHA256 string
+	DerivedSHA256 string
 }
 
 // Restore validates the complete archive and restores it into an empty store.
 // The wrapper obtains the store lease itself; callers that already own the
 // lease (including integration tests) can use RestoreWithLease.
-func Restore(ctx context.Context, input io.Reader, target driver.Store) (Report, error) {
+func Restore(ctx context.Context, input io.Reader, target driver.Store, verification ...Verification) (Report, error) {
 	if err := ctx.Err(); err != nil {
 		return Report{}, err
 	}
@@ -44,13 +60,13 @@ func Restore(ctx context.Context, input io.Reader, target driver.Store) (Report,
 	if err != nil {
 		return Report{}, err
 	}
-	return restoreArchive(ctx, archive, target, nil)
+	return restoreArchive(ctx, archive, target, nil, verification)
 }
 
 // RestoreWithLease is the same restore operation for a caller that already
 // holds the target's active lease. It is deliberately not a second restore
 // implementation: both entry points run the same bounded transaction.
-func RestoreWithLease(ctx context.Context, input io.Reader, target driver.Store, lease driver.ActiveLease) (Report, error) {
+func RestoreWithLease(ctx context.Context, input io.Reader, target driver.Store, lease driver.ActiveLease, verification ...Verification) (Report, error) {
 	if err := ctx.Err(); err != nil {
 		return Report{}, err
 	}
@@ -58,10 +74,10 @@ func RestoreWithLease(ctx context.Context, input io.Reader, target driver.Store,
 	if err != nil {
 		return Report{}, err
 	}
-	return restoreArchive(ctx, archive, target, lease)
+	return restoreArchive(ctx, archive, target, lease, verification)
 }
 
-func restoreArchive(ctx context.Context, archive *dumpformat.Archive, target driver.Store, supplied driver.ActiveLease) (Report, error) {
+func restoreArchive(ctx context.Context, archive *dumpformat.Archive, target driver.Store, supplied driver.ActiveLease, checks []Verification) (Report, error) {
 	if archive == nil || target == nil {
 		return Report{Archive: archive}, fmt.Errorf("restore requires an archive and target store")
 	}
@@ -74,124 +90,144 @@ func restoreArchive(ctx context.Context, archive *dumpformat.Archive, target dri
 		return report, ErrTargetNotEmpty
 	}
 
+	// Complete semantic validation and digest comparison precede lease/write
+	// acquisition. A source archive alone is never proof of usable live state.
 	plan, err := buildPlan(archive)
 	if err != nil {
 		return report, err
 	}
+	if len(checks) != 1 || checks[0].ArchiveSHA256 != archive.SHA256() || checks[0].DerivedSHA256 != plan.derivedDigest {
+		return report, fmt.Errorf("%w: exact archive and rebuilt derived digest verification required", ErrRestoreUnavailable)
+	}
+	report.IdempotencyKey, report.RequestHash = recoveryScope(checks[0])
 
 	lease := supplied
-	owned := false
 	if lease == nil {
 		lease, err = target.Lease(ctx, "plug-converter-restore", driver.LeaseTTL)
 		if err != nil {
 			return report, err
 		}
-		owned = true
-	}
-	if owned {
 		defer func() { _ = lease.Release(context.WithoutCancel(ctx)) }()
 	}
-
-	// A lease serializes all writers. Re-read metadata after acquiring it so a
-	// restore cannot use an empty pre-lease observation after another writer
-	// committed before the lease boundary.
-	meta, err = target.Meta(ctx)
-	if err != nil {
-		return report, err
-	}
-	if !meta.Head.IsZero() {
-		return report, ErrTargetNotEmpty
-	}
-
-	reader, err := target.Read(ctx, driver.View{Incarnation: meta.Incarnation})
-	if err != nil {
-		return report, err
-	}
-	existing, err := allRecords(ctx, reader)
-	_ = reader.Close()
-	if err != nil {
-		return report, err
-	}
-
-	requests := lockRequests(existing, plan)
+	requests := lockRequests(plan)
 	tx, err := target.Write(ctx, lease)
 	if err != nil {
 		return report, err
 	}
 	defer tx.Close()
-	if _, err := tx.Lock(ctx, requests); err != nil {
+	capability, ok := tx.(driver.OfflineRestoreTx)
+	if !ok {
+		return report, driver.ErrUnsupported
+	}
+	if _, err = tx.Lock(ctx, requests); err != nil {
 		return report, err
 	}
-
-	// The target must be empty while the complete lock set is held. The lease
-	// is the store-wide writer fence; this second read makes the invariant
-	// explicit and protects drivers with a wider read surface.
-	recheck, err := allRecords(ctx, tx)
+	// Head is the global writer fence, acquired last. Empty-target validation
+	// happens AFTER it; same-lease writers cannot slip a write between the check
+	// and publication. The driver repeats the full check at atomic commit.
+	if _, err = tx.Head(ctx); err != nil {
+		return report, err
+	}
+	restored, err := capability.PrepareOfflineRestore(ctx, driver.StoreID(archive.Manifest().StoreID))
 	if err != nil {
 		return report, err
-	}
-	if len(recheck) != 0 {
-		return report, ErrTargetNotEmpty
-	}
-
-	if _, err := tx.Head(ctx); err != nil {
-		return report, err
-	}
-	previous := map[string]model.Revision{}
-	states, err := tx.Observe(ctx, lockKeys(requests))
-	if err != nil {
-		return report, err
-	}
-	for _, state := range states {
-		if state.Key.Kind != driver.LockRecord || state.Key.Ref == nil {
-			continue
-		}
-		key, err := driver.EncodeLockKey(state.Key)
-		if err != nil {
-			return report, err
-		}
-		previous[key] = state.Revision
 	}
 
 	changes := make([]model.ChangeRecord, 0, len(plan.records))
 	results := make([]model.OpResult, 0, len(plan.records))
 	for _, record := range plan.records {
-		if err := tx.Put(ctx, driver.Record{Ref: record.ref, Kind: record.kind, Body: record.body}); err != nil {
+		if err = tx.Put(ctx, driver.Record{Ref: record.ref, Kind: record.kind, Body: record.body}); err != nil {
 			return report, err
 		}
-		key, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &record.ref})
-		if err != nil {
-			return report, err
-		}
-		changes = append(changes, model.ChangeRecord{Ref: record.ref, Op: model.OpCreate, FromRevision: previous[key], ChangedPaths: []string{"/"}})
+		changes = append(changes, model.ChangeRecord{Ref: record.ref, Op: model.OpCreate, FromRevision: model.Natural64(0), ChangedPaths: []string{"/"}})
 		results = append(results, model.OpResult{Ref: record.ref, Revision: model.Natural64(1), Record: append([]byte(nil), record.body...)})
 	}
-	if err := tx.BumpSentinels(ctx, plan.sentinels); err != nil {
-		return report, err
+	for _, item := range plan.derived {
+		if err = tx.PutDerived(ctx, item.Table, nil, []driver.DerivedRow{{Key: item.Key, Value: item.Value}}); err != nil {
+			return report, err
+		}
 	}
-
-	head, err := meta.Head.Uint64()
-	if err != nil || head == ^uint64(0) {
-		return report, fmt.Errorf("restore revision space is exhausted")
+	for hash, data := range plan.blobs {
+		actual, putErr := tx.PutBlob(ctx, data)
+		if putErr != nil {
+			return report, putErr
+		}
+		if string(actual) != hash {
+			return report, fmt.Errorf("restore blob digest mismatch")
+		}
+	}
+	if err = tx.BumpSentinels(ctx, plan.sentinels); err != nil {
+		return report, err
 	}
 	commit, err := tx.Commit(ctx, driver.ChangesetHeader{
-		Incarnation: meta.Incarnation,
-		Kind:        model.ChangesetRestore,
-		Time:        time.Now().UTC(),
-		Principal:   model.PrincipalRef{Kind: "system", ID: "plug-converter"},
-		Chain:       []string{},
-		Method:      "admin.restore",
-		Response:    model.Commit{Revision: model.Natural64(head + 1), Results: results, Warnings: []model.Warning{}},
-		Changes:     changes,
-		LockKeys:    lockKeys(requests),
+		Incarnation: restored.Incarnation, Kind: model.ChangesetRestore,
+		Time: time.Now().UTC(), Principal: restorePrincipal, Chain: []string{},
+		Method: "offline.restore", IdempotencyKey: report.IdempotencyKey, RequestHash: report.RequestHash,
+		Response: model.Commit{Revision: model.Natural64(1), Results: results, Warnings: []model.Warning{}},
+		Changes:  changes, LockKeys: lockKeys(requests),
 	})
 	if err != nil {
-		return report, err
+		var uncertain driver.ErrIndeterminate
+		if !errors.As(err, &uncertain) || uncertain.IdempotencyKey != report.IdempotencyKey {
+			return report, err
+		}
+		// Resolve only a matching committed receipt, never replay the restore.
+		recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		recovered, lookupErr := Recover(recoveryCtx, target, checks[0])
+		cancel()
+		if lookupErr != nil {
+			return report, err
+		}
+		report.Restored, report.Recovered = recovered.Restored, true
+		return report, nil
 	}
-	if commit.Kind != model.ChangesetRestore || len(commit.Changes) != len(plan.records) {
+	if commit.Kind != model.ChangesetRestore || commit.Incarnation != restored.Incarnation || len(commit.Changes) != len(plan.records) {
 		return report, fmt.Errorf("restore commit did not retain its complete changeset")
 	}
+	report.Restored = restored
 	return report, nil
+}
+
+var restorePrincipal = model.PrincipalRef{Kind: "system", ID: "plug-converter"}
+
+func recoveryScope(check Verification) (string, string) {
+	return "restore/" + check.ArchiveSHA256, hashBytes([]byte("beads-head/1\x00" + check.ArchiveSHA256 + "\x00" + check.DerivedSHA256))
+}
+
+// Recover is read-only and can run after restart or lease takeover. A normal
+// Restore retry still refuses a populated target, including a prior restore.
+func Recover(ctx context.Context, target driver.Store, check Verification) (Report, error) {
+	if !validDigest(check.ArchiveSHA256) || !validDigest(check.DerivedSHA256) {
+		return Report{}, driver.ErrConflict
+	}
+	key, request := recoveryScope(check)
+	meta, err := target.Meta(ctx)
+	if err != nil {
+		return Report{}, err
+	}
+	r, err := target.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		return Report{}, err
+	}
+	defer r.Close()
+	principal, _ := driver.PrincipalKey(restorePrincipal)
+	receipt, err := r.IdempotencyByKey(ctx, principal, "", "offline.restore", key)
+	if err != nil {
+		return Report{}, err
+	}
+	if receipt == nil || receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Incarnation != meta.Incarnation || receipt.Changeset.Revision.String() != "1" || receipt.Commit.Revision.String() != "1" || receipt.Changeset.IdempotencyKey != key {
+		return Report{}, driver.ErrConflict
+	}
+	// Bind recovery to the durable archive marker as well as the receipt.
+	rows, err := r.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
+	if err != nil || len(rows) != 1 {
+		return Report{}, driver.ErrConflict
+	}
+	var evidence archiveEvidence
+	if err = json.Unmarshal(rows[0].Body, &evidence); err != nil || evidence.ArchiveSHA256 != check.ArchiveSHA256 || evidence.DerivedSHA256 != check.DerivedSHA256 {
+		return Report{}, driver.ErrConflict
+	}
+	return Report{Restored: meta, IdempotencyKey: key, RequestHash: request, Recovered: true}, nil
 }
 
 type restoreRecord struct {
@@ -201,20 +237,43 @@ type restoreRecord struct {
 }
 
 type restorePlan struct {
-	records   []restoreRecord
-	sentinels []driver.Sentinel
+	records       []restoreRecord
+	sentinels     []driver.Sentinel
+	derived       []derivedImage
+	derivedDigest string
+	blobs         map[string][]byte
 }
 
 func buildPlan(archive *dumpformat.Archive) (restorePlan, error) {
 	manifest := archive.Manifest()
+	if manifest.History != "unavailable" {
+		return restorePlan{}, fmt.Errorf("%w: unverified source history cannot be restored", ErrRestoreUnavailable)
+	}
+	if len(archive.Records("comment")) != 0 {
+		return restorePlan{}, fmt.Errorf("%w: unverified comment attribution", ErrRestoreUnavailable)
+	}
 	projects := map[string]dumpformat.Project{}
 	for _, project := range manifest.Projects {
+		if project.IDMode != "hash" || project.Prefix != "pl" || project.HashLength != 32 || project.LastID != 0 || len(project.ChildCounters) != 0 {
+			return restorePlan{}, fmt.Errorf("%w: allocator continuation is unsupported for %s", ErrRestoreUnavailable, project.Prefix)
+		}
 		projects[project.Prefix] = project
 	}
 
 	beads := archive.Records("bead")
 	docs := map[string]pipeline.Document{}
+	if len(beads) > 20000 {
+		return restorePlan{}, fmt.Errorf("restore graph exceeds local service limit")
+	}
 	for _, source := range beads {
+		if strings.Contains(source.ID, ".") {
+			return restorePlan{}, fmt.Errorf("%w: child allocator", ErrRestoreUnavailable)
+		}
+		suffix := strings.TrimPrefix(source.ID, "pl-")
+		identity, err := hex.DecodeString(suffix)
+		if err != nil || len(identity) != 16 || hex.EncodeToString(identity) != suffix {
+			return restorePlan{}, fmt.Errorf("%w: source ID does not match the live hash allocator", ErrRestoreUnavailable)
+		}
 		status, ok := targetStatus(stringValue(source.Source.Fields["status"]))
 		if !ok {
 			return restorePlan{}, fmt.Errorf("unsupported source status for %s", source.ID)
@@ -232,6 +291,9 @@ func buildPlan(archive *dumpformat.Archive) (restorePlan, error) {
 		}
 		if raw, ok := source.Body["metadata"].(map[string]any); ok {
 			for key, value := range raw {
+				if strings.HasPrefix(key, "beads.") || strings.HasPrefix(key, "plug.restore.") {
+					return restorePlan{}, fmt.Errorf("reserved restore metadata key %q", key)
+				}
 				encoded, err := json.Marshal(value)
 				if err != nil {
 					return restorePlan{}, fmt.Errorf("bead %s metadata: %w", source.ID, err)
@@ -241,7 +303,7 @@ func buildPlan(archive *dumpformat.Archive) (restorePlan, error) {
 		}
 		for key, value := range source.Body {
 			switch key {
-			case "title", "description", "priority", "metadata":
+			case "title", "description", "priority", "metadata", "labels":
 				continue
 			}
 			encoded, err := json.Marshal(value)
@@ -267,47 +329,32 @@ func buildPlan(archive *dumpformat.Archive) (restorePlan, error) {
 			}
 			metadata["plug.restore.allocator"] = encoded
 		}
-		docs[source.ID] = pipeline.Document{ID: source.ID, Type: stringValue(source.Body["type"]), Project: source.Project, Fields: fields, Metadata: metadata}
+		labels := []string{}
+		for _, value := range source.Body["labels"].([]any) {
+			labels = append(labels, value.(string))
+		}
+		docs[source.ID] = pipeline.Document{Labels: labels, ID: source.ID, Type: stringValue(source.Body["type"]), Project: source.Project, Fields: fields, Metadata: metadata}
 	}
 
-	// Relations that the current bounded service understands become live links;
-	// parent-child and other source-only relations remain evidence records.
 	for _, source := range archive.Records("edge") {
+		if stringValue(source.Body["target_kind"]) != "depends_on_issue_id" {
+			return restorePlan{}, fmt.Errorf("%w: external relation %s", ErrRestoreUnavailable, source.ID)
+		}
 		from, to := stringValue(source.Body["from"]), stringValue(source.Body["to"])
 		doc, ok := docs[from]
-		if !ok {
-			return restorePlan{}, fmt.Errorf("edge %s has no restored owner", source.ID)
+		if _, targetExists := docs[to]; !ok || !targetExists {
+			return restorePlan{}, fmt.Errorf("edge %s has no restored endpoint", source.ID)
 		}
 		kind := stringValue(source.Body["type"])
-		linkKind := ""
 		switch kind {
 		case "blocks":
-			linkKind = "blocks"
-		case "related", "discovered-from":
-			linkKind = "relates-to"
+		case "related":
+			kind = "relates-to"
+		default:
+			return restorePlan{}, fmt.Errorf("%w: relation type %s", ErrRestoreUnavailable, kind)
 		}
-		if linkKind != "" {
-			doc.Links = append(doc.Links, pipeline.Link{To: model.RefByID(to, model.Natural64(0)), Kind: linkKind})
-			docs[from] = doc
-		}
-	}
-
-	for _, source := range archive.Records("comment") {
-		owner := stringValue(source.Source.Fields["issue_id"])
-		doc, ok := docs[owner]
-		if !ok {
-			return restorePlan{}, fmt.Errorf("comment %s has no restored owner", source.ID)
-		}
-		stamp, err := sourceTime(source.Source.Fields["created_at"])
-		if err != nil {
-			return restorePlan{}, fmt.Errorf("comment %s: %w", source.ID, err)
-		}
-		doc.Comments = append(doc.Comments, pipeline.Comment{
-			Body:      stringValue(source.Body["text"]),
-			Principal: model.PrincipalRef{Kind: "system", ID: "beads/" + stringValue(source.Body["author"])},
-			Time:      stamp,
-		})
-		docs[owner] = doc
+		doc.Links = append(doc.Links, pipeline.Link{To: model.RefByID(to, model.Natural64(0)), Kind: kind})
+		docs[from] = doc
 	}
 
 	plan := restorePlan{}
@@ -354,6 +401,13 @@ func buildPlan(archive *dumpformat.Archive) (restorePlan, error) {
 		}
 	}
 
+	if err := rebuildDerived(&plan, docs); err != nil {
+		return restorePlan{}, err
+	}
+	if err := retainArchive(&plan, archive, add); err != nil {
+		return restorePlan{}, err
+	}
+
 	// Every bead write needs its exact predicate bump. The graph sentinel is
 	// always included so the restore transaction is serialized with blocking
 	// relation maintenance, even when this particular archive has no block edge.
@@ -372,17 +426,16 @@ func buildPlan(archive *dumpformat.Archive) (restorePlan, error) {
 	return plan, nil
 }
 
-func lockRequests(existing []driver.Record, plan restorePlan) []driver.LockRequest {
+func lockRequests(plan restorePlan) []driver.LockRequest {
 	keys := map[string]driver.LockKey{}
-	for _, record := range existing {
-		ref := record.Ref
+	for _, record := range plan.records {
+		ref := record.ref
 		key := driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
 		encoded, _ := driver.EncodeLockKey(key)
 		keys[encoded] = key
 	}
-	for _, record := range plan.records {
-		ref := record.ref
-		key := driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
+	for _, item := range plan.derived {
+		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: item.Table, Key: item.Key}}
 		encoded, _ := driver.EncodeLockKey(key)
 		keys[encoded] = key
 	}
@@ -411,25 +464,6 @@ func lockKeys(requests []driver.LockRequest) []driver.LockKey {
 	return keys
 }
 
-func allRecords(ctx context.Context, reader driver.Reader) ([]driver.Record, error) {
-	var records []driver.Record
-	var cursor *driver.Cursor
-	for {
-		page, err := reader.Query(ctx, driver.Query{Cursor: cursor, Limit: 1000})
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, page.Items...)
-		if page.NextCursor == nil {
-			return records, nil
-		}
-		if len(page.Items) == 0 {
-			return nil, fmt.Errorf("target query did not advance")
-		}
-		cursor = page.NextCursor
-	}
-}
-
 func targetStatus(source string) (string, bool) {
 	switch source {
 	case "open":
@@ -443,18 +477,6 @@ func targetStatus(source string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-func sourceTime(value any) (time.Time, error) {
-	text, _ := value.(string)
-	if text == "" {
-		return time.Time{}, nil
-	}
-	stamp, err := time.Parse(time.RFC3339Nano, text)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid source timestamp %q", text)
-	}
-	return stamp.UTC(), nil
 }
 
 func stringValue(value any) string {

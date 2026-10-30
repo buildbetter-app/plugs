@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//internal/core/dumpformat",
         "//internal/core/model",
+        "//internal/core/ontology",
         "//internal/core/pipeline",
         "//internal/storage/driver",
     ],
@@ -15,7 +16,7 @@ go_library(
 
 go_test(
     name = "converterroundtrip_test",
-    srcs = ["roundtrip_test.go"],
+    srcs = glob(["*_test.go"]),
     data = ["testdata/synthetic-plug-dump-1.tar"],
     embed = [":converterroundtrip"],
     deps = [

@@ -140,7 +140,7 @@ func beadValue(row storedBead) (Bead, error) {
 		}
 		metadata[k] = v
 	}
-	return Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata}, nil
+	return Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...)}, nil
 }
 
 func sortedIDs(graph map[string]storedBead) []string {

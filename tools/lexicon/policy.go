@@ -13,6 +13,9 @@ import (
 // Protected paths are explicit so a new protected file fails closed. Binary
 // files are accepted only when their exact SHA-256 is listed below.
 type TreePolicy struct {
+	// ReferencePrefixes contain immutable, retained reference inputs. Every
+	// path below one of these prefixes must have an exact content hash in
+	// ReferenceSHA256 before its bytes may bypass the vocabulary scan.
 	ReferencePrefixes []string
 	ReferenceSHA256   map[string]string
 	ProtectedPrefixes []string
@@ -36,7 +39,7 @@ const (
 // The protected lists are intentionally exact: adding a retained file requires
 // its owner to update this policy before the blocking gate can pass.
 func DefaultTreePolicy() TreePolicy {
-	p := TreePolicy{
+	return TreePolicy{
 		ReferencePrefixes: []string{"spec/recorded/goldens.json"},
 		ReferenceSHA256: map[string]string{
 			"spec/recorded/goldens.json": "26a086334357d55ea847daa301f45c9435a71bba75fb6c324456aebf459fbf32",
@@ -157,14 +160,17 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spec/ux-screens/people-100.png":  "e4d184895fd5f75eec8ad795e77719bbd7f3a70e7c611ce7349a1ed8107bc959",
 			"engdocs/design/plug/spec/ux-screens/people-25.png":   "0ea11b85ea18550898688e3ed96f32d79596525be2fd68c35bc0aa069c007d89",
 			"engdocs/design/plug/spec/ux-screens/people-50.png":   "1bf5e5823ec5e997eb9ca6829fc5173b179987eec3e213b13916ed38ca9c4a6d",
+
+			"internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar": "c510f8e0b301086e1c9fdab6ed3dc60ea8da73597c4058a03d0abc478482ae3c",
 		},
 	}
-	p.BinarySHA256["internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar"] = "c510f8e0b301086e1c9fdab6ed3dc60ea8da73597c4058a03d0abc478482ae3c"
-	return p
 }
 
 func (p TreePolicy) disposition(name string, content []byte) (pathDisposition, error) {
 	name = path.Clean(strings.ReplaceAll(name, "\\", "/"))
+	if name == "." || strings.HasPrefix(name, "/") || name == ".." || strings.HasPrefix(name, "../") {
+		return dispositionScan, fmt.Errorf("invalid repository path %q", name)
+	}
 	for _, prefix := range p.ReferencePrefixes {
 		if !strings.HasPrefix(name, prefix) {
 			continue
@@ -178,9 +184,6 @@ func (p TreePolicy) disposition(name string, content []byte) (pathDisposition, e
 			return dispositionScan, fmt.Errorf("immutable reference %q does not match its declared SHA-256", name)
 		}
 		return dispositionReference, nil
-	}
-	if name == "." || strings.HasPrefix(name, "/") || name == ".." || strings.HasPrefix(name, "../") {
-		return dispositionScan, fmt.Errorf("invalid repository path %q", name)
 	}
 	for _, prefix := range p.ProtectedPrefixes {
 		if !strings.HasPrefix(name, prefix) {

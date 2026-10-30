@@ -74,7 +74,7 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 	if err := t.validateHeader(ctx, h); err != nil {
 		return model.Commit{}, err
 	}
-	if h.ResponsePending || len(h.Changes) != 0 || len(t.records) != 0 || len(t.derived) != 0 || len(t.bumps) != 0 || len(t.blobs) != 0 {
+	if t.restore != nil || h.ResponsePending || len(h.Changes) != 0 || len(t.records) != 0 || len(t.derived) != 0 || len(t.bumps) != 0 || len(t.blobs) != 0 {
 		return model.Commit{}, fmt.Errorf("sqlite: no-op cannot publish staged mutations")
 	}
 	if h.Events != nil {
