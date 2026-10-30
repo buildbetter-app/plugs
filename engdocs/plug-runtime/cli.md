@@ -1,6 +1,6 @@
 # Plug CLI sessions
 
-Source: **`127ac22e1d003cce4babe6cbcbc8367ad264e649`**;
+Source: **`463881cec205e6cd3e5b85d1bac7d4018a153d5f`**;
 [guide scope](README.md#snapshot-and-package-boundaries).
 
 ## Run a persistent local session
@@ -32,8 +32,9 @@ The real executable returns nine JSON result lines. Writes advance revisions
 1 through 5; history at the final revision contains `Updated`, the historical
 read returns `Original`, and the final ready page is empty. IDs and generated
 keys are runtime values. The persistent invocation has no storage warning. A
-`--memory` invocation prints a disposable-storage warning to stderr and a new
-process starts with an empty store even when the project and agent label match.
+`--memory` invocation prints `warning: memory storage is disposable; all data
+is discarded when this process exits` to stderr, and a new process starts with
+an empty store even when the project and agent label match.
 
 ## Select the remote path
 
@@ -81,14 +82,22 @@ cancels the context, and the local owner releases its lease and closes the store
 exactly once. Exit 2 is an argument/configuration refusal; execution or
 cancellation failure exits 1.
 
-## Local storage and configuration
+## Local storage and client configuration
 
-With neither `--server` nor `PLUG_SERVER`, the CLI reads `.plug/config.yaml`
-from the workspace when it exists, then selects persistent SQLite by default.
-The supported config forms are `server: URL`, `storage: sqlite`,
-`storage: {driver: sqlite, path: PATH}`, or the equivalent `driver`/`path`
-shorthand. Relative SQLite paths resolve from the workspace. Explicit flags
-and `PLUG_SERVER` take precedence over the config file; an explicit `--memory`
+With neither `--server` nor `PLUG_SERVER`, the CLI reads the client form of
+`.plug/config.yaml` from the workspace when it exists, then selects persistent
+SQLite by default.
+The supported config forms are `server: URL`, `storage: sqlite`, a nested
+SQLite block, or the equivalent top-level `driver`/`path` shorthand:
+
+```yaml
+storage:
+  driver: sqlite
+  path: PATH
+```
+
+Relative SQLite paths resolve from the workspace. Explicit flags and
+`PLUG_SERVER` take precedence over the config file; an explicit `--memory`
 choice remains ephemeral and conflicts with a configured server.
 
 Unknown, malformed, duplicate, conflicting, URI, memory, and unsupported
@@ -96,9 +105,12 @@ driver settings fail closed. A configured server never falls back to local
 storage after a remote failure. The same service, Writer, lease, RPC registry
 and in-process client path is used for memory and SQLite.
 
-`plug server`, `plug call`, `plug describe`, dump/restore, plugin installation
-and selecting PostgreSQL from the executable remain unsupported. Those
-boundaries refuse explicitly; they are not silent local fallbacks.
+The shared server command has its own configuration form and lifecycle; see
+the [server guide](server.md). The ordinary CLI does not open PostgreSQL
+directly: point it at a PostgreSQL-backed server with `--server` or
+`PLUG_SERVER`. `plug call`, `plug describe`, dump/restore and plugin
+installation remain unsupported. These boundaries refuse explicitly; they are
+not silent local fallbacks.
 
 [Executable tests](../../cmd/plug/integration_test.go) cover local lifecycle,
 fresh-process disposal, no-op/replay behavior, stop-on-refusal and

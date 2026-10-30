@@ -12,12 +12,14 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 type Config struct {
@@ -45,6 +47,11 @@ type Config struct {
 	SessionTTL  time.Duration // default: fifteen minutes; maximum: one hour
 	MaxFlows    int           // default: 128; maximum: 4096
 	MaxSessions int           // default: 1024; maximum: 65536
+	// SessionStore is an optional durable capability. When nil, sessions are
+	// process-local for disposable/in-process compositions. SQLite and
+	// PostgreSQL stores implement the capability; ordinary API-key providers
+	// and principal maps are never accepted as session stores.
+	SessionStore driver.CoreSessionStore
 }
 
 type Provider struct {
@@ -54,12 +61,22 @@ type Provider struct {
 	now      func() time.Time
 	flows    map[[32]byte]flow
 	sessions map[string]sessionRecord
+	store    driver.CoreSessionStore
 	origins  map[string]struct{}
 }
 
 var _ authn.CoreSessionSource = (*Provider)(nil)
 
 func New(config Config) (*Provider, error) {
+	if config.SessionStore != nil {
+		value := reflect.ValueOf(config.SessionStore)
+		switch value.Kind() {
+		case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+			if value.IsNil() {
+				return nil, authn.ErrUnavailable
+			}
+		}
+	}
 	for _, raw := range []string{config.Issuer, config.RedirectURI, config.AuthorizationEndpoint, config.TokenEndpoint, config.JWKSURL} {
 		if !httpsURL(raw) {
 			return nil, fmt.Errorf("authnoidc: explicit HTTPS issuer, redirect and endpoints are required")
@@ -115,7 +132,7 @@ func New(config Config) (*Provider, error) {
 	for _, origin := range origins {
 		allowed[origin] = struct{}{}
 	}
-	return &Provider{config: config, client: &client, now: now,
+	return &Provider{config: config, client: &client, now: now, store: config.SessionStore,
 		flows: make(map[[32]byte]flow), sessions: make(map[string]sessionRecord), origins: allowed}, nil
 }
 
