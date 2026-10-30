@@ -352,6 +352,16 @@ type ErrTruncated struct {
 
 func (e ErrTruncated) Error() string { return "history is truncated" }
 
+// ErrFutureRevision identifies an as-of address that is newer than the
+// reader's pinned head. The service turns this storage boundary into the
+// catalog's typed not_found outcome for history reads.
+type ErrFutureRevision struct {
+	Requested model.Revision
+	Head      model.Revision
+}
+
+func (e ErrFutureRevision) Error() string { return "requested revision is beyond head" }
+
 type ErrIndeterminate struct {
 	IdempotencyKey string
 }

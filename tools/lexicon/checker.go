@@ -180,6 +180,11 @@ func checkFiles(files map[string][]byte, cfg Config, policy *TreePolicy) ([]Find
 				return nil, err
 			}
 			switch disposition {
+			case dispositionReference:
+				if !utf8.Valid(content) {
+					return nil, fmt.Errorf("%s: immutable reference is not valid UTF-8", path)
+				}
+				continue
 			case dispositionBinary:
 				continue
 			case dispositionProtected:
