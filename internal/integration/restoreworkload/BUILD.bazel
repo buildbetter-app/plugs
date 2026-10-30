@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "restoreworkload_test",
+    size = "medium",
+    srcs = ["restore_workload_test.go"],
+    args = ["-test.v"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/cli",
+        "//internal/client",
+        "//internal/core/dumpformat",
+        "//internal/core/model",
+        "//internal/core/restore",
+        "//internal/storage/driver",
+        "//internal/storage/sqlite",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
