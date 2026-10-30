@@ -2,7 +2,11 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "webui",
-    srcs = ["webui.go"],
+    srcs = [
+        "bridge.go",
+        "catalog.go",
+        "webui.go",
+    ],
     embedsrcs = [
         "static/app.js",
         "static/favicon.svg",
@@ -16,7 +20,11 @@ go_library(
 
 go_test(
     name = "webui_test",
-    srcs = ["browser_test.go", "webui_test.go"],
+    srcs = [
+        "bridge_test.go",
+        "browser_test.go",
+        "webui_test.go",
+    ],
     embedsrcs = ["browser_check.mjs"],
     env_inherit = ["PATH"],
     tags = ["local"],
