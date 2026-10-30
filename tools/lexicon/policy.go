@@ -1,0 +1,222 @@
+package lexicon
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"path"
+	"strings"
+)
+
+// TreePolicy defines which retained paths are scanned and which provenance
+// paths are protected until their owning migration tasks replace them.
+// Protected paths are explicit so a new protected file fails closed. Binary
+// files are accepted only when their exact SHA-256 is listed below.
+type TreePolicy struct {
+	// ReferencePrefixes contain immutable, retained reference inputs. Every
+	// path below one of these prefixes must have an exact content hash in
+	// ReferenceSHA256 before its bytes may bypass the vocabulary scan.
+	ReferencePrefixes []string
+	ReferenceSHA256   map[string]string
+	ProtectedPrefixes []string
+	// StrictProtectedPrefixes require every path to appear in ProtectedPaths or
+	// BinarySHA256. This keeps retained CI and design trees explicit.
+	StrictProtectedPrefixes []string
+	ProtectedPaths          map[string]struct{}
+	BinarySHA256            map[string]string
+}
+
+type pathDisposition uint8
+
+const (
+	dispositionScan pathDisposition = iota
+	dispositionReference
+	dispositionProtected
+	dispositionBinary
+)
+
+// DefaultTreePolicy is the B1 policy for the inherited CI and design assets.
+// The protected lists are intentionally exact: adding a retained file requires
+// its owner to update this policy before the blocking gate can pass.
+func DefaultTreePolicy() TreePolicy {
+	return TreePolicy{
+		ReferencePrefixes: []string{"spec/recorded/goldens.json"},
+		ReferenceSHA256: map[string]string{
+			"spec/recorded/goldens.json": "26a086334357d55ea847daa301f45c9435a71bba75fb6c324456aebf459fbf32",
+		},
+		ProtectedPrefixes:       []string{".github/", "engdocs/design/plug/"},
+		StrictProtectedPrefixes: []string{".github/", "engdocs/design/plug/"},
+		ProtectedPaths: map[string]struct{}{
+			".github/CODEOWNERS":                                   {},
+			".github/ISSUE_TEMPLATE/bug_report.yml":                {},
+			".github/ISSUE_TEMPLATE/config.yml":                    {},
+			".github/ISSUE_TEMPLATE/feature_request.yml":           {},
+			".github/PULL_REQUEST_TEMPLATE.md":                     {},
+			".github/actions/setup-bazel/action.yml":               {},
+			".github/actions/setup-bazel/cache-rrc-probe.sh":       {},
+			".github/actions/setup-bazel/cache-zstd-probe.sh":      {},
+			".github/actions/setup-bazel/fork-credential.sh":       {},
+			".github/actions/setup-bazel/write-bazelrc.sh":         {},
+			".github/allowed-actions.json":                         {},
+			".github/bazel-farm-allowlist.txt":                     {},
+			".github/copilot-instructions.md":                      {},
+			".github/dependabot.yml":                               {},
+			".github/images/agent-using-beads.jpg":                 {},
+			".github/pages-redirect/index.html":                    {},
+			".github/scripts/bazel-farm-authorize.sh":              {},
+			".github/scripts/bazel-gate.sh":                        {},
+			".github/scripts/ci-gate.sh":                           {},
+			".github/scripts/docs-render-check.sh":                 {},
+			".github/scripts/embedded-cmd-test-shards.txt":         {},
+			".github/scripts/embedded-storage-test-shard.sh":       {},
+			".github/scripts/embedded-storage-test-shards.txt":     {},
+			".github/scripts/embedded-test-shard.sh":               {},
+			".github/scripts/proxied-cmd-test-shards.txt":          {},
+			".github/scripts/proxied-test-shard.sh":                {},
+			".github/scripts/rrc-lane-commands.txt":                {},
+			".github/scripts/rrc-run-lanes.sh":                     {},
+			".github/scripts/rrc-writer-credential.sh":             {},
+			".github/scripts/server-storage-test-shard.sh":         {},
+			".github/scripts/server-storage-test-shards.txt":       {},
+			".github/workflows/bazel-autofix.yml":                  {},
+			".github/workflows/bazel-farm.yml":                     {},
+			".github/workflows/bazel.yml":                          {},
+			".github/workflows/close-stale-needs.yml":              {},
+			".github/workflows/deploy-pages-redirect.yml":          {},
+			".github/workflows/docs-autofix.yml":                   {},
+			".github/workflows/docs-mintlify.yml":                  {},
+			".github/workflows/main.yml":                           {},
+			".github/workflows/nightly.yml":                        {},
+			".github/workflows/nix-build.yml":                      {},
+			".github/workflows/pr-risk.yml":                        {},
+			".github/workflows/pr.yml":                             {},
+			".github/workflows/release.yml":                        {},
+			".github/workflows/remove-needs-info.yml":              {},
+			".github/workflows/remove-needs-triage.yml":            {},
+			".github/workflows/request-needs-info.yml":             {},
+			".github/workflows/test-pypi.yml":                      {},
+			".github/workflows/triage-label.yml":                   {},
+			".github/workflows/update-flake-lock.yml":              {},
+			".github/workflows/update-vendor-hash.yml":             {},
+			".github/workflows/worker-env-autosync.yml":            {},
+			"engdocs/design/plug/adversarial-review-2026-10-28.md": {},
+			"engdocs/design/plug/authorization-options.md":         {},
+			"engdocs/design/plug/clean-room-plan.md":               {},
+			"engdocs/design/plug/contracts/errors.md":              {},
+			"engdocs/design/plug/contracts/events.md":              {},
+			"engdocs/design/plug/contracts/go-sketches.md":         {},
+			"engdocs/design/plug/contracts/openrpc.json":           {},
+			"engdocs/design/plug/current-and-desired-state.md":     {},
+			"engdocs/design/plug/decisions-needed.md":              {},
+			"engdocs/design/plug/design.md":                        {},
+			"engdocs/design/plug/review-2026-10-27.md":             {},
+			"engdocs/design/plug/spec/behaviors.md":                {},
+			"engdocs/design/plug/spec/behaviors/content.md":        {},
+			"engdocs/design/plug/spec/behaviors/history.md":        {},
+			"engdocs/design/plug/spec/behaviors/surfaces.md":       {},
+			"engdocs/design/plug/spec/behaviors/work.md":           {},
+			"engdocs/design/plug/spec/census.md":                   {},
+			"engdocs/design/plug/spec/commands.md":                 {},
+			"engdocs/design/plug/spec/ux-screens/blocked-100.png":  {},
+			"engdocs/design/plug/spec/ux-screens/blocked-25.png":   {},
+			"engdocs/design/plug/spec/ux-screens/blocked-50.png":   {},
+			"engdocs/design/plug/spec/ux-screens/catalog.png":      {},
+			"engdocs/design/plug/spec/ux-screens/changes-100.png":  {},
+			"engdocs/design/plug/spec/ux-screens/changes-25.png":   {},
+			"engdocs/design/plug/spec/ux-screens/changes-50.png":   {},
+			"engdocs/design/plug/spec/ux-screens/epic-100.png":     {},
+			"engdocs/design/plug/spec/ux-screens/epic-25.png":      {},
+			"engdocs/design/plug/spec/ux-screens/epic-50.png":      {},
+			"engdocs/design/plug/spec/ux-screens/home-100.png":     {},
+			"engdocs/design/plug/spec/ux-screens/home-25.png":      {},
+			"engdocs/design/plug/spec/ux-screens/home-50.png":      {},
+			"engdocs/design/plug/spec/ux-screens/next-100.png":     {},
+			"engdocs/design/plug/spec/ux-screens/next-25.png":      {},
+			"engdocs/design/plug/spec/ux-screens/next-50.png":      {},
+			"engdocs/design/plug/spec/ux-screens/people-100.png":   {},
+			"engdocs/design/plug/spec/ux-screens/people-25.png":    {},
+			"engdocs/design/plug/spec/ux-screens/people-50.png":    {},
+			"engdocs/design/plug/spike-authz-results.md":           {},
+			"engdocs/design/plug/spike-ux-decision.md":             {},
+		},
+		BinarySHA256: map[string]string{
+			".github/images/agent-using-beads.jpg":                "92f98f20c17f2ebb0c75815da94cc8a6fce98bb6d10b2bbf3555b706414ee778",
+			"tools/census/testdata/census.json":                   "d005db62a2110979e7b3884a37fdb9c8b410a964184582776f0987457a85080f",
+			"engdocs/design/plug/spec/ux-screens/blocked-100.png": "80c8143cc8b8949ba95a8bd9ce047e2ff1b54a61e739ed194c8c225f87bf9c9b",
+			"engdocs/design/plug/spec/ux-screens/blocked-25.png":  "08ba6926aaf2949a8cbbf54911fd0dd23a13509817b135fe924e0c67ac421ed8",
+			"engdocs/design/plug/spec/ux-screens/blocked-50.png":  "a94f3bde0a221afe96cbfae7c53d259e4e24c094b95d5b649e49017068ffcf48",
+			"engdocs/design/plug/spec/ux-screens/catalog.png":     "7aea347fff607ee6561f7c992668777cc735b0579ea6a8dc18d0c35aada6cfb5",
+			"engdocs/design/plug/spec/ux-screens/changes-100.png": "9f4403ef5bf29879f8d851c2c4b16e527d6a3eedb7a23919c7be26eeca426d0a",
+			"engdocs/design/plug/spec/ux-screens/changes-25.png":  "e8cc4c249912fbe9ccf39807b3ce5e87bf3486831f2a54da636d009d62802242",
+			"engdocs/design/plug/spec/ux-screens/changes-50.png":  "eb4650cecc922a448cf9d42e856f6938c4af619cc0455e92b7c62e76c2bb6ac7",
+			"engdocs/design/plug/spec/ux-screens/epic-100.png":    "386584834339d9a4cf93a99d7347375576d8694ebb53b4781b074f4b8fe69ade",
+			"engdocs/design/plug/spec/ux-screens/epic-25.png":     "4885dcfd10f168f7a8073524299fdeda27f344289887777e9cbf4af6ed0c64f6",
+			"engdocs/design/plug/spec/ux-screens/epic-50.png":     "20835e013ffa87b51626955fad38435d7a7e82d43da8458e8c9a3192da67b630",
+			"engdocs/design/plug/spec/ux-screens/home-100.png":    "05d313e72611f537e61d6e44f94a178a80b43cba9bfbba5fbba417991052ac9a",
+			"engdocs/design/plug/spec/ux-screens/home-25.png":     "72ef28bd87a4927cb10c0fac152bc7942bce374541b04537238cf4ecc8da53bf",
+			"engdocs/design/plug/spec/ux-screens/home-50.png":     "761e08767810c2a8fd5ee02e8a241a59a3690a9affcd46336284916c8f893c84",
+			"engdocs/design/plug/spec/ux-screens/next-100.png":    "ec593cb97865ad53f71f52439db092752b073081a4aa75e05f48680fda3ba704",
+			"engdocs/design/plug/spec/ux-screens/next-25.png":     "2d0bdcc176729186ffcf501bcc7aca4291b9fa10761fda4cabd370d9a5db3e2f",
+			"engdocs/design/plug/spec/ux-screens/next-50.png":     "8b3f7faa870f147023e4d8bdf2a9ba7de99bfe3673f083b3b4091bd536b0a1fe",
+			"engdocs/design/plug/spec/ux-screens/people-100.png":  "f5af9f447f6e60fe644e1496807e163958b9b9057dedfe29b179075a42285b4c",
+			"engdocs/design/plug/spec/ux-screens/people-25.png":   "0473d7c5ff19c91a59c579bc4ce74d7d408eb84620300d56d2395e2a94d4cff3",
+			"engdocs/design/plug/spec/ux-screens/people-50.png":   "f620d28fba6d16c9e104b351d61915f5ecd913f42e8ca3f8d14a8e8c066cc4cd",
+		},
+	}
+}
+
+func (p TreePolicy) disposition(name string, content []byte) (pathDisposition, error) {
+	name = path.Clean(strings.ReplaceAll(name, "\\", "/"))
+	if name == "." || strings.HasPrefix(name, "/") || name == ".." || strings.HasPrefix(name, "../") {
+		return dispositionScan, fmt.Errorf("invalid repository path %q", name)
+	}
+	for _, prefix := range p.ReferencePrefixes {
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		expected, ok := p.ReferenceSHA256[name]
+		if !ok {
+			return dispositionScan, fmt.Errorf("unlisted immutable reference path %q", name)
+		}
+		actual := sha256.Sum256(content)
+		if hex.EncodeToString(actual[:]) != expected {
+			return dispositionScan, fmt.Errorf("immutable reference %q does not match its declared SHA-256", name)
+		}
+		return dispositionReference, nil
+	}
+	for _, prefix := range p.ProtectedPrefixes {
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		strict := false
+		for _, strictPrefix := range p.StrictProtectedPrefixes {
+			if prefix == strictPrefix {
+				strict = true
+				break
+			}
+		}
+		if strict {
+			_, pathListed := p.ProtectedPaths[name]
+			_, binaryListed := p.BinarySHA256[name]
+			if !pathListed && !binaryListed {
+				return dispositionScan, fmt.Errorf("unlisted protected path %q", name)
+			}
+		}
+		if expected, ok := p.BinarySHA256[name]; ok {
+			actual := sha256.Sum256(content)
+			if hex.EncodeToString(actual[:]) != expected {
+				return dispositionScan, fmt.Errorf("protected binary %q does not match its declared SHA-256", name)
+			}
+			return dispositionBinary, nil
+		}
+		return dispositionProtected, nil
+	}
+	if expected, ok := p.BinarySHA256[name]; ok {
+		actual := sha256.Sum256(content)
+		if hex.EncodeToString(actual[:]) != expected {
+			return dispositionScan, fmt.Errorf("binary %q does not match its declared SHA-256", name)
+		}
+		return dispositionBinary, nil
+	}
+	return dispositionScan, nil
+}

@@ -1,0 +1,43 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "acceptance",
+    srcs = [
+        "assertions_test.go",
+        "fixture_test.go",
+        "pipeline_test.go",
+        "rpc_test.go",
+    ],
+    args = ["-test.v"],
+    deps = [
+        "//internal/acceptance",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
+)
+
+go_test(
+    name = "cli_acceptance",
+    srcs = [
+        "assertions_test.go",
+        "cli_test.go",
+    ],
+    args = [
+        "-plug-binary=$(rlocationpath //cmd/plug:plug)",
+        "-test.v",
+    ],
+    data = ["//cmd/plug:plug"],
+    deps = ["//internal/acceptance"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

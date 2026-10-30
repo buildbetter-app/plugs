@@ -1,0 +1,372 @@
+// Package cli implements the local and remote Plug command line.
+package cli
+
+import (
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"math/big"
+	"strings"
+
+	"github.com/buildbetter-app/plugs/internal/api/wire"
+)
+
+const Usage = `Usage: plug [--server URL | --memory] [--project PROJECT] [--agent LABEL] [--json] COMMAND
+
+Shared server:
+  server                 Start the configured shared HTTP server
+  server --local         Start a disposable loopback server with embedded UI
+
+Commands:
+  ready [--type TYPE] [--limit N] [--cursor TOKEN]
+  get ID [--as-of REVISION]
+  create --title TITLE [--type issue] [--fields JSON]
+  claim ID [--expect REVISION]
+  update ID [--title TITLE] [--fields JSON] [--expect REVISION]
+  comment ID --body TEXT [--expect REVISION]
+  close ID [--reason TEXT] [--expect REVISION]
+  reopen ID [--reason TEXT] [--expect REVISION]
+  defer ID [--reason TEXT] [--expect REVISION]
+  cancel ID [--reason TEXT] [--expect REVISION]
+  fail ID [--reason TEXT] [--expect REVISION]
+  history --as-of REVISION [--id ID] [--limit N] [--cursor TOKEN]
+  history get ID --as-of REVISION
+  history diff ID --from REVISION --to REVISION
+  events [--event TYPE] [--resource REF] [--limit N] [--after TOKEN]
+  health
+  session                 Read one JSON argv array per line from stdin.
+
+Without a selected server, local storage is persistent SQLite at .plug/plug.db.
+Memory storage is disposable and exists only for this process when --memory is
+explicitly selected. In a session, @last is the ID returned by the last write;
+@revision is its revision. Server selection is --server, then PLUG_SERVER, then
+.plug/config.yaml; PLUG_TOKEN supplies the bearer. An unreachable configured
+server is an error. Remote calls use POST /rpc/v1. A local config may select a
+server or SQLite storage (driver: sqlite, path: PATH). The shared server also
+reads .plug/config.yaml. In-process --memory storage remains disposable and
+never starts a listener or UI.
+Global options precede COMMAND. Command options may precede or follow ID.
+Writes accept --idempotency-key KEY to retry a write whose response was lost.
+`
+
+var ErrHelp = errors.New("help requested")
+
+type Options struct {
+	Memory    bool
+	Server    string
+	Project   string
+	Agent     string
+	JSON      bool
+	serverSet bool
+}
+
+type Command struct {
+	Method string
+	Params map[string]any
+	Key    string
+}
+
+// Parse separates the connection/session configuration from one named command.
+func Parse(args []string) (Options, []string, error) {
+	var o Options
+	fs := flag.NewFlagSet("plug", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.BoolVar(&o.Memory, "memory", false, "disposable memory storage")
+	fs.StringVar(&o.Server, "server", "", "server origin or /rpc/v1 URL")
+	fs.StringVar(&o.Project, "project", "local", "project")
+	fs.StringVar(&o.Agent, "agent", "plug-cli", "unverified anonymous agent label")
+	fs.BoolVar(&o.JSON, "json", false, "JSON output")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return o, nil, ErrHelp
+		}
+		return o, nil, err
+	}
+	if len(fs.Args()) == 0 {
+		return o, nil, ErrHelp
+	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "server" {
+			o.serverSet = true
+		}
+	})
+	if o.serverSet && strings.TrimSpace(o.Server) == "" {
+		return o, nil, fmt.Errorf("--server must not be empty")
+	}
+	if strings.TrimSpace(o.Project) == "" {
+		return o, nil, fmt.Errorf("--project must not be empty")
+	}
+	return o, fs.Args(), nil
+}
+
+// ParseCommand builds canonical named parameters; validation at the registry
+// remains authoritative. Both transports expose the same named command slice.
+func ParseCommand(args []string) (Command, error) {
+	if len(args) == 0 {
+		return Command{}, fmt.Errorf("command is required")
+	}
+	name := args[0]
+	commandArgs := args[1:]
+	if name == "history" && len(commandArgs) > 0 && (commandArgs[0] == "get" || commandArgs[0] == "diff") {
+		name = "history." + commandArgs[0]
+		commandArgs = commandArgs[1:]
+	} else if name == "history-get" {
+		name = "history.get"
+	} else if name == "history-diff" {
+		name = "history.diff"
+	} else if name == "events" && len(commandArgs) > 0 && commandArgs[0] == "tail" {
+		commandArgs = commandArgs[1:]
+	}
+	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "reopen": true, "defer": true, "cancel": true, "fail": true, "history": true, "history.get": true, "history.diff": true, "events": true, "health": true}
+	if !allowed[name] {
+		return Command{}, fmt.Errorf("unsupported command %q", name)
+	}
+	var title, typ, fields, body, reason, asOf, expect, id, key, cursor, after, eventType, resource, from, to string
+	var limit int
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	add := func(p *string, key string) { fs.StringVar(p, key, "", key) }
+	switch name {
+	case "ready":
+		add(&typ, "type")
+		add(&cursor, "cursor")
+		fs.IntVar(&limit, "limit", 1000, "limit")
+	case "get":
+		add(&asOf, "as-of")
+	case "create":
+		add(&title, "title")
+		fs.StringVar(&typ, "type", "issue", "type")
+		add(&fields, "fields")
+	case "update":
+		add(&title, "title")
+		add(&fields, "fields")
+		add(&expect, "expect")
+	case "claim":
+		add(&expect, "expect")
+	case "comment":
+		add(&body, "body")
+		add(&expect, "expect")
+	case "close":
+		add(&reason, "reason")
+		add(&expect, "expect")
+	case "reopen", "defer", "cancel", "fail":
+		add(&reason, "reason")
+		add(&expect, "expect")
+	case "history":
+		add(&asOf, "as-of")
+		add(&id, "id")
+		add(&cursor, "cursor")
+		fs.IntVar(&limit, "limit", 1000, "limit")
+	case "history.get":
+		add(&asOf, "as-of")
+	case "history.diff":
+		add(&from, "from")
+		add(&to, "to")
+		fs.StringVar(&from, "from-revision", "", "from revision")
+		fs.StringVar(&to, "to-revision", "", "to revision")
+	case "events":
+		add(&eventType, "event")
+		add(&resource, "resource")
+		add(&after, "after")
+		add(&cursor, "cursor")
+		fs.IntVar(&limit, "limit", 1000, "limit")
+	case "health":
+	}
+	write := name == "create" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail"
+	if write {
+		add(&key, "idempotency-key")
+	}
+	ordered, err := interspersed(fs, commandArgs)
+	if err != nil {
+		return Command{}, err
+	}
+	if err := fs.Parse(ordered); err != nil {
+		return Command{}, err
+	}
+	p := map[string]any{}
+	c := Command{Method: "bead." + name, Params: p, Key: key}
+	needID := name == "get" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail" || name == "history.get" || name == "history.diff"
+	if needID {
+		if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+			return c, fmt.Errorf("%s requires exactly one bead ID", name)
+		}
+		if name == "history.get" || name == "history.diff" {
+			p["ref"] = map[string]any{"id": fs.Arg(0)}
+		} else {
+			p["id"] = map[string]any{"id": fs.Arg(0)}
+		}
+	} else if fs.NArg() != 0 {
+		return c, fmt.Errorf("%s takes no positional arguments", name)
+	}
+	seen := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+	if name == "create" || name == "update" {
+		f := map[string]any{}
+		if seen["fields"] {
+			value, err := wire.DecodeJSON([]byte(fields))
+			object, ok := value.(map[string]any)
+			if err != nil || !ok {
+				return c, fmt.Errorf("--fields must be a JSON object")
+			}
+			f = object
+		}
+		if seen["title"] {
+			f["title"] = title
+		}
+		if len(f) == 0 {
+			return c, fmt.Errorf("%s requires --title or nonempty --fields", name)
+		}
+		p["fields"] = f
+		if name == "create" {
+			if strings.TrimSpace(typ) == "" {
+				return c, fmt.Errorf("--type must not be empty")
+			}
+			p["type"] = typ
+		}
+	}
+	if name == "comment" {
+		if strings.TrimSpace(body) == "" {
+			return c, fmt.Errorf("comment requires --body")
+		}
+		p["body"] = body
+	}
+	if (name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail") && seen["reason"] {
+		p["reason"] = reason
+	}
+	if seen["expect"] {
+		n, err := revision(expect)
+		if err != nil {
+			return c, err
+		}
+		p["expect"] = []any{map[string]any{"ref": p["id"], "revision": n}}
+	}
+	if name == "history" {
+		c.Method = "history.query"
+		if !seen["as-of"] {
+			return c, fmt.Errorf("history requires --as-of REVISION")
+		}
+	}
+	if name == "history.get" {
+		c.Method = "history.get"
+		if !seen["as-of"] {
+			return c, fmt.Errorf("history get requires --as-of REVISION")
+		}
+	}
+	if name == "history.diff" {
+		c.Method = "history.diff"
+		if !seen["from"] && !seen["from-revision"] || !seen["to"] && !seen["to-revision"] {
+			return c, fmt.Errorf("history diff requires --from REVISION and --to REVISION")
+		}
+		fromValue, err := revision(from)
+		if err != nil {
+			return c, fmt.Errorf("--from: %w", err)
+		}
+		toValue, err := revision(to)
+		if err != nil {
+			return c, fmt.Errorf("--to: %w", err)
+		}
+		p["fromRevision"], p["toRevision"] = fromValue, toValue
+	}
+	if name == "events" {
+		c.Method = "event.list"
+		if after == "" && cursor != "" {
+			after = cursor
+		}
+		if after != "" {
+			p["after"] = after
+		}
+		if limit < 1 || limit > 1000 {
+			return c, fmt.Errorf("--limit must be between 1 and 1000")
+		}
+		p["limit"] = limit
+		f := map[string]any{}
+		if eventType != "" {
+			f["events"] = []string{eventType}
+		}
+		if resource != "" {
+			f["resources"] = []string{resource}
+		}
+		p["filter"] = f
+	}
+	if name == "health" {
+		c.Method = "admin.health"
+	}
+	if seen["as-of"] {
+		n, err := revision(asOf)
+		if err != nil {
+			return c, err
+		}
+		p["asOf"] = map[string]any{"revision": n}
+	}
+	if name == "ready" || name == "history" {
+		if seen["cursor"] {
+			if cursor == "" {
+				return c, fmt.Errorf("--cursor must not be empty")
+			}
+			p["cursor"] = cursor
+		}
+		if limit < 1 || limit > 1000 {
+			return c, fmt.Errorf("--limit must be between 1 and 1000")
+		}
+		p["limit"] = limit
+		filter := map[string]any{}
+		if seen["type"] {
+			if typ == "" {
+				return c, fmt.Errorf("--type must not be empty")
+			}
+			filter["types"] = []string{typ}
+		}
+		if seen["id"] {
+			if id == "" {
+				return c, fmt.Errorf("--id must not be empty")
+			}
+			filter["resources"] = []string{id}
+		}
+		if len(filter) > 0 {
+			p["filter"] = filter
+		}
+	}
+	return c, nil
+}
+
+func revision(s string) (json.Number, error) {
+	if s == "" || strings.IndexFunc(s, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+		return "", fmt.Errorf("revision must be a nonnegative integer")
+	}
+	n, ok := new(big.Int).SetString(s, 10)
+	if !ok {
+		return "", fmt.Errorf("invalid revision")
+	}
+	return json.Number(n.String()), nil
+}
+
+func interspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var flags, positionals []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			positionals = append(positionals, args[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			positionals = append(positionals, a)
+			continue
+		}
+		key := strings.TrimLeft(a, "-")
+		key, _, hasValue := strings.Cut(key, "=")
+		if fs.Lookup(key) == nil {
+			return nil, fmt.Errorf("unknown option %s", a)
+		}
+		flags = append(flags, a)
+		if !hasValue {
+			if i+1 == len(args) {
+				return nil, fmt.Errorf("%s requires a value", a)
+			}
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(append(flags, "--"), positionals...), nil
+}

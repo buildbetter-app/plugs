@@ -1,0 +1,1908 @@
+{
+  "source": "contracts/openrpc.json",
+  "sourceSHA256": "a02eb474d11c48a03be45fbfe0be55f336a36991bfc562d0a22f6804bebb7263",
+  "schemas": {
+    "ChangeSet": {
+      "type": "object",
+      "properties": {
+        "ops": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CreateOp"
+              },
+              {
+                "$ref": "#/components/schemas/PatchOp"
+              },
+              {
+                "$ref": "#/components/schemas/ReparentOp"
+              },
+              {
+                "$ref": "#/components/schemas/LinkOp"
+              },
+              {
+                "$ref": "#/components/schemas/CommentOp"
+              },
+              {
+                "$ref": "#/components/schemas/AttachOp"
+              },
+              {
+                "$ref": "#/components/schemas/DeleteOp"
+              },
+              {
+                "$ref": "#/components/schemas/SetMetaOp"
+              }
+            ]
+          },
+          "maxItems": 1000
+        },
+        "expect": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/Expect"
+          }
+        }
+      },
+      "required": [
+        "ops"
+      ],
+      "additionalProperties": false
+    },
+    "CreateOp": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "create"
+        },
+        "key": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "parent": {
+          "$ref": "#/components/schemas/Ref"
+        },
+        "project": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "type",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "Ref": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "key"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "description": "Canonical wire reference. Exactly one of id or key is present; branch is valid only with id."
+    },
+    "PatchOp": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "patch"
+        },
+        "target": {
+          "$ref": "#/components/schemas/Ref"
+        },
+        "fields": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "kind",
+        "target",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "ReparentOp": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "reparent"
+        },
+        "target": {
+          "$ref": "#/components/schemas/Ref"
+        },
+        "parent": {
+          "$ref": "#/components/schemas/Ref"
+        },
+        "project": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "LinkOp": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "link",
+            "unlink"
+          ]
+        },
+        "from": {
+          "$ref": "#/components/schemas/Ref"
+        },
+        "to": {
+          "$ref": "#/components/schemas/Ref"
+        },
+        "linkKind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "from",
+        "to",
+        "linkKind"
+      ],
+      "additionalProperties": false
+    },
+    "CommentOp": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "comment"
+        },
+        "target": {
+          "$ref": "#/components/schemas/Ref"
+        },
+        "body": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "target",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "AttachOp": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "attach"
+        },
+        "target": {
+          "$ref": "#/components/schemas/Ref"
+        },
+        "attachment": {
+          "$ref": "#/components/schemas/Attachment"
+        }
+      },
+      "required": [
+        "kind",
+        "target",
+        "attachment"
+      ],
+      "additionalProperties": false
+    },
+    "Attachment": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "link",
+            "commit",
+            "blob",
+            "log"
+          ]
+        },
+        "uri": {
+          "type": "string"
+        },
+        "contentRef": {
+          "type": "string"
+        },
+        "mediaType": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "mediaType",
+        "summary"
+      ],
+      "additionalProperties": false
+    },
+    "DeleteOp": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "delete"
+        },
+        "target": {
+          "$ref": "#/components/schemas/Ref"
+        }
+      },
+      "required": [
+        "kind",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "SetMetaOp": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "setMeta"
+        },
+        "target": {
+          "$ref": "#/components/schemas/Ref"
+        },
+        "key": {
+          "type": "string"
+        },
+        "value": {}
+      },
+      "required": [
+        "kind",
+        "target",
+        "key",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "Expect": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/ExpectRevision"
+        },
+        {
+          "$ref": "#/components/schemas/ExpectFieldHash"
+        }
+      ]
+    },
+    "ExpectRevision": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/components/schemas/Ref"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "ref",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "ExpectFieldHash": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/components/schemas/Ref"
+        },
+        "field": {
+          "type": "string"
+        },
+        "hash": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ref",
+        "field",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "Record": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/components/schemas/Ref"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "body": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "ref",
+        "kind",
+        "revision",
+        "body"
+      ],
+      "additionalProperties": false
+    },
+    "Commit": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/OpResult"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/Warning"
+          }
+        },
+        "wouldCommit": {
+          "type": "boolean"
+        },
+        "violations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/Violation"
+          }
+        },
+        "leaseExpiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "leaseTtlMs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "revision",
+        "results",
+        "warnings"
+      ],
+      "additionalProperties": false
+    },
+    "OpResult": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/components/schemas/Ref"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "record": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "setBy": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "ref",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "Warning": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/components/schemas/WarningCode"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "WarningCode": {
+      "type": "string",
+      "enum": [
+        "ontology_drifted",
+        "subscriber_skipped",
+        "post_subscriber_failed",
+        "visibility_lost"
+      ],
+      "description": "Closed subset of error codes permitted in result.warnings."
+    },
+    "Violation": {
+      "type": "object",
+      "properties": {
+        "guard": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "guard",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "ErrorData": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/components/schemas/ErrorCode"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "retryAfterMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hint": {
+          "type": "string"
+        },
+        "traceId": {
+          "type": "string"
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "code",
+        "retryable"
+      ],
+      "additionalProperties": false
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "parse_error",
+        "invalid_request",
+        "method_not_found",
+        "invalid_params",
+        "internal_error",
+        "not_found",
+        "unauthenticated",
+        "token_expired",
+        "authn_unavailable",
+        "forbidden",
+        "authz_unavailable",
+        "authz_policy_invalid",
+        "authz_postfilter_cap",
+        "authz_link_allow_not_last",
+        "authz_not_installed",
+        "ontology_guard_failed",
+        "closure_too_large",
+        "protected_record",
+        "subscriber_unavailable",
+        "precondition_failed",
+        "write_conflict",
+        "busy",
+        "rate_limited",
+        "cursor_invalid",
+        "cursor_expired",
+        "idempotency_key_reused",
+        "lease_not_held",
+        "lease_expired",
+        "project_required",
+        "incarnation_changed",
+        "field_owned",
+        "ontology_plan_stale",
+        "ontology_migration_too_large",
+        "ontology_drifted",
+        "ontology_unknown_field",
+        "ontology_use_slot_verb",
+        "authz_requires_authn",
+        "lockout_refused",
+        "plugin_busy",
+        "plugin_host_write_in_sync_call",
+        "plugin_egress_in_hot_path",
+        "plugin_reentrant_write",
+        "plugin_patch_out_of_scope",
+        "subscriber_skipped",
+        "post_subscriber_failed",
+        "history_gone",
+        "visibility_lost",
+        "too_many_sessions",
+        "filter_too_broad",
+        "scope_too_large",
+        "destination_paused",
+        "ref_moved",
+        "unknown_field",
+        "restore_requires_empty",
+        "restore_checksum_failed",
+        "restore_violation",
+        "human_presence_required",
+        "authz_verify_failed",
+        "invalid_cursor",
+        "compaction_unavailable",
+        "stale_snapshot"
+      ],
+      "description": "Closed Plug wire error-code registry."
+    },
+    "Principal": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "anonymous",
+            "user",
+            "agent",
+            "service",
+            "plugin",
+            "system"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "sponsor": {
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/Principal"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "caveats": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "Changeset": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "branch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "incarnation": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "write",
+            "derived",
+            "revert",
+            "migration",
+            "redact",
+            "restore"
+          ]
+        },
+        "time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "principal": {
+          "$ref": "#/components/schemas/Principal"
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "idempotencyKey": {
+          "type": "string"
+        },
+        "mutators": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/EventDescriptor"
+          },
+          "maxItems": 1000,
+          "minItems": 1
+        }
+      },
+      "required": [
+        "revision",
+        "branch",
+        "incarnation",
+        "kind",
+        "time",
+        "principal",
+        "chain",
+        "changes"
+      ],
+      "additionalProperties": false,
+      "x-event-order": "Absent events means legacy ChangeRecord indexes. Present events is the complete atomic plan. No partial plans, empty plans, synthetic dependent changes, or truncation. Public resume tuple remains incarnation/revision/index; projections consume the complete revision."
+    },
+    "Event": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/DurableEvent"
+        },
+        {
+          "$ref": "#/components/schemas/ControlEvent"
+        }
+      ]
+    },
+    "DurableEvent": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OrdinaryDurableEvent"
+        },
+        {
+          "$ref": "#/components/schemas/DependencyConditionUnmetEvent"
+        }
+      ]
+    },
+    "EventCause": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string"
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "root",
+        "depth",
+        "chain"
+      ],
+      "additionalProperties": false
+    },
+    "ControlEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "category": {
+              "const": "control"
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "incarnation": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "type": {
+              "const": "event.gap"
+            },
+            "details": {
+              "$ref": "#/components/schemas/EventGapDetails"
+            },
+            "derived": {
+              "const": false
+            }
+          },
+          "required": [
+            "category",
+            "cursor",
+            "incarnation",
+            "revision",
+            "index",
+            "type",
+            "details",
+            "derived"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "category": {
+              "const": "control"
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "incarnation": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "type": {
+              "const": "watch.delta"
+            },
+            "details": {
+              "$ref": "#/components/schemas/WatchDeltaDetails"
+            },
+            "derived": {
+              "const": false
+            }
+          },
+          "required": [
+            "category",
+            "cursor",
+            "incarnation",
+            "revision",
+            "index",
+            "type",
+            "details",
+            "derived"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "category": {
+              "const": "control"
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "incarnation": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "type": {
+              "const": "watch.reset"
+            },
+            "details": {
+              "$ref": "#/components/schemas/WatchResetDetails"
+            },
+            "derived": {
+              "const": false
+            }
+          },
+          "required": [
+            "category",
+            "cursor",
+            "incarnation",
+            "revision",
+            "index",
+            "type",
+            "details",
+            "derived"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "category": {
+              "const": "control"
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "incarnation": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "type": {
+              "const": "visibility.lost"
+            },
+            "details": {
+              "$ref": "#/components/schemas/VisibilityLostDetails"
+            },
+            "derived": {
+              "const": false
+            },
+            "resource": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "category",
+            "cursor",
+            "incarnation",
+            "revision",
+            "index",
+            "type",
+            "details",
+            "derived",
+            "resource"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "category": {
+              "const": "control"
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "incarnation": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "type": {
+              "const": "rpc.rejected"
+            },
+            "details": {
+              "$ref": "#/components/schemas/RPCRejectedDetails"
+            },
+            "derived": {
+              "const": false
+            }
+          },
+          "required": [
+            "category",
+            "cursor",
+            "incarnation",
+            "revision",
+            "index",
+            "type",
+            "details",
+            "derived"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "category": {
+              "const": "control"
+            },
+            "cursor": {
+              "type": "string"
+            },
+            "incarnation": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "type": {
+              "const": "store.restored"
+            },
+            "details": {
+              "$ref": "#/components/schemas/StoreRestoredDetails"
+            },
+            "derived": {
+              "const": false
+            }
+          },
+          "required": [
+            "category",
+            "cursor",
+            "incarnation",
+            "revision",
+            "index",
+            "type",
+            "details",
+            "derived"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "EventGapDetails": {
+      "type": "object",
+      "properties": {
+        "fromIncarnation": {
+          "type": "string"
+        },
+        "toIncarnation": {
+          "type": "string"
+        },
+        "floor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "restore",
+            "failover",
+            "history_floor",
+            "checkpoint"
+          ]
+        }
+      },
+      "required": [
+        "fromIncarnation",
+        "toIncarnation",
+        "floor",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "WatchDeltaDetails": {
+      "type": "object",
+      "properties": {
+        "subscriptionId": {
+          "type": "string"
+        },
+        "fromCursor": {
+          "type": "string"
+        },
+        "toCursor": {
+          "type": "string"
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/Event"
+          }
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "fromCursor",
+        "toCursor",
+        "events"
+      ],
+      "additionalProperties": false
+    },
+    "WatchResetDetails": {
+      "type": "object",
+      "properties": {
+        "subscriptionId": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "policy_changed",
+            "ontology_changed",
+            "view_changed",
+            "overflow",
+            "lag",
+            "visibility_changed",
+            "view_deleted"
+          ]
+        },
+        "snapshotCursor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "reason",
+        "snapshotCursor"
+      ],
+      "additionalProperties": false
+    },
+    "VisibilityLostDetails": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "authorization_changed",
+            "redacted",
+            "resource_deleted"
+          ]
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "RPCRejectedDetails": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "notification_no_result"
+          ]
+        }
+      },
+      "required": [
+        "requestId",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "StoreRestoredDetails": {
+      "type": "object",
+      "properties": {
+        "fromIncarnation": {
+          "type": "string"
+        },
+        "toIncarnation": {
+          "type": "string"
+        },
+        "reason": {
+          "const": "restore"
+        }
+      },
+      "required": [
+        "fromIncarnation",
+        "toIncarnation",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "description": "Restore crossed the incarnation boundary; the envelope carries the new incarnation."
+    },
+    "AuditRef": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "branch": {
+          "const": 0
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "AuditResource": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "bead",
+            "ontology",
+            "plugin",
+            "view",
+            "memory",
+            "sync",
+            "derived",
+            "project"
+          ]
+        },
+        "ref": {
+          "$ref": "#/components/schemas/AuditRef"
+        }
+      },
+      "required": [
+        "kind",
+        "ref"
+      ],
+      "additionalProperties": false
+    },
+    "EventImage": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/components/schemas/AuditRef"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "ref",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "ConditionalEdge": {
+      "type": "object",
+      "properties": {
+        "dependent": {
+          "$ref": "#/components/schemas/AuditRef"
+        },
+        "blocker": {
+          "$ref": "#/components/schemas/AuditRef"
+        },
+        "kind": {
+          "const": "conditional-blocks"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "dependent",
+        "blocker",
+        "kind",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "OntologyPin": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/components/schemas/AuditRef"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "project": {
+          "$ref": "#/components/schemas/AuditRef"
+        }
+      },
+      "required": [
+        "ref",
+        "revision",
+        "digest"
+      ],
+      "additionalProperties": false
+    },
+    "ConditionDecision": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "triage",
+                "backlog",
+                "unstarted",
+                "started"
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                ""
+              ]
+            },
+            "terminal": {
+              "const": false
+            },
+            "satisfied": {
+              "const": false
+            }
+          },
+          "required": [
+            "status",
+            "category",
+            "outcome",
+            "terminal",
+            "satisfied"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "completed"
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "success"
+              ]
+            },
+            "terminal": {
+              "const": true
+            },
+            "satisfied": {
+              "const": false
+            }
+          },
+          "required": [
+            "status",
+            "category",
+            "outcome",
+            "terminal",
+            "satisfied"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "completed"
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "failure"
+              ]
+            },
+            "terminal": {
+              "const": true
+            },
+            "satisfied": {
+              "const": true
+            }
+          },
+          "required": [
+            "status",
+            "category",
+            "outcome",
+            "terminal",
+            "satisfied"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "canceled"
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                ""
+              ]
+            },
+            "terminal": {
+              "const": true
+            },
+            "satisfied": {
+              "const": false
+            }
+          },
+          "required": [
+            "status",
+            "category",
+            "outcome",
+            "terminal",
+            "satisfied"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ConditionUnmetDecision": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "completed"
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "success"
+              ]
+            },
+            "terminal": {
+              "const": true
+            },
+            "satisfied": {
+              "const": false
+            }
+          },
+          "required": [
+            "status",
+            "category",
+            "outcome",
+            "terminal",
+            "satisfied"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "category": {
+              "type": "string",
+              "enum": [
+                "canceled"
+              ]
+            },
+            "outcome": {
+              "type": "string",
+              "enum": [
+                ""
+              ]
+            },
+            "terminal": {
+              "const": true
+            },
+            "satisfied": {
+              "const": false
+            }
+          },
+          "required": [
+            "status",
+            "category",
+            "outcome",
+            "terminal",
+            "satisfied"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ConditionUnmetDetails": {
+      "type": "object",
+      "properties": {
+        "dependent": {
+          "$ref": "#/components/schemas/EventImage"
+        },
+        "blockerBefore": {
+          "$ref": "#/components/schemas/EventImage"
+        },
+        "blockerAfter": {
+          "$ref": "#/components/schemas/EventImage"
+        },
+        "edge": {
+          "$ref": "#/components/schemas/ConditionalEdge"
+        },
+        "ontology": {
+          "$ref": "#/components/schemas/OntologyPin"
+        },
+        "before": {
+          "$ref": "#/components/schemas/ConditionDecision"
+        },
+        "after": {
+          "$ref": "#/components/schemas/ConditionUnmetDecision"
+        }
+      },
+      "required": [
+        "dependent",
+        "blockerBefore",
+        "blockerAfter",
+        "edge",
+        "ontology",
+        "before",
+        "after"
+      ],
+      "additionalProperties": false,
+      "x-validation": "Refs must match the directed edge; edge revision equals dependent image revision; blocker before/after refs match and revisions differ; status changes. Resolved decisions use the pinned blocker-own-project ontology, never live interpretation. Blocker-after must be strictly later than blocker-before; dependent and ontology source revisions cannot be later than blocker-after."
+    },
+    "AuditEventCause": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "maxItems": 200
+        }
+      },
+      "required": [
+        "root",
+        "depth",
+        "chain"
+      ],
+      "additionalProperties": false
+    },
+    "EventProvenance": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "slot": {
+          "type": "string",
+          "enum": [
+            "",
+            "claim",
+            "close",
+            "reopen",
+            "fail",
+            "cancel",
+            "defer"
+          ]
+        },
+        "setBy": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "maxProperties": 1000
+        },
+        "cause": {
+          "$ref": "#/components/schemas/AuditEventCause"
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "maxItems": 200
+        }
+      },
+      "required": [
+        "method",
+        "slot",
+        "setBy",
+        "cause",
+        "chain"
+      ],
+      "additionalProperties": false
+    },
+    "OrdinaryDurableEvent": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "const": "durable"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "incarnation": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "bead.created",
+            "bead.updated",
+            "bead.reparented",
+            "bead.linked",
+            "bead.unlinked",
+            "bead.commented",
+            "bead.attached",
+            "bead.deleted",
+            "bead.claimed",
+            "bead.released",
+            "bead.closed",
+            "bead.failed",
+            "bead.canceled",
+            "bead.reopened",
+            "bead.deferred",
+            "bead.lease.reclaimed",
+            "gate.approved",
+            "gate.reported",
+            "gate.escalated",
+            "ontology.applied",
+            "plugin.applied",
+            "view.saved",
+            "view.deleted",
+            "memory.saved",
+            "memory.deleted",
+            "sync.pushed",
+            "sync.imported",
+            "derived.updated"
+          ]
+        },
+        "resource": {
+          "type": "string"
+        },
+        "changed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "before": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "after": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "principal": {
+          "$ref": "#/components/schemas/Principal"
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "setBy": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "cause": {
+          "$ref": "#/components/schemas/EventCause"
+        },
+        "derived": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "category",
+        "cursor",
+        "incarnation",
+        "revision",
+        "index",
+        "type",
+        "resource",
+        "changed",
+        "principal",
+        "chain",
+        "setBy",
+        "cause",
+        "derived"
+      ],
+      "additionalProperties": false
+    },
+    "DependencyConditionUnmetEvent": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "const": "durable"
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "incarnation": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "type": {
+          "const": "dependency.conditionUnmet"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "changed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 0
+        },
+        "principal": {
+          "$ref": "#/components/schemas/Principal"
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "setBy": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "cause": {
+          "$ref": "#/components/schemas/EventCause"
+        },
+        "derived": {
+          "const": false
+        },
+        "details": {
+          "$ref": "#/components/schemas/ConditionUnmetDetails"
+        }
+      },
+      "required": [
+        "category",
+        "cursor",
+        "incarnation",
+        "revision",
+        "index",
+        "type",
+        "resource",
+        "changed",
+        "principal",
+        "chain",
+        "setBy",
+        "cause",
+        "derived",
+        "details"
+      ],
+      "additionalProperties": false,
+      "x-validation": "resource is bead/<dependent ID>; revision equals blockerAfter.revision. No mutation of the dependent is implied. Current read authorization and redaction cover dependent, blocker, ontology and optional blocker project; suppress the entire notice on any denial."
+    },
+    "OrdinaryEventDescriptor": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "changeIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "bead.created",
+            "bead.updated",
+            "bead.reparented",
+            "bead.linked",
+            "bead.unlinked",
+            "bead.commented",
+            "bead.attached",
+            "bead.deleted",
+            "bead.claimed",
+            "bead.released",
+            "bead.closed",
+            "bead.failed",
+            "bead.canceled",
+            "bead.reopened",
+            "bead.deferred",
+            "bead.lease.reclaimed",
+            "gate.approved",
+            "gate.reported",
+            "gate.escalated",
+            "ontology.applied",
+            "plugin.applied",
+            "view.saved",
+            "view.deleted",
+            "memory.saved",
+            "memory.deleted",
+            "sync.pushed",
+            "sync.imported",
+            "derived.updated"
+          ]
+        },
+        "resource": {
+          "$ref": "#/components/schemas/AuditResource"
+        },
+        "provenance": {
+          "$ref": "#/components/schemas/EventProvenance"
+        }
+      },
+      "required": [
+        "index",
+        "changeIndex",
+        "type",
+        "resource",
+        "provenance"
+      ],
+      "additionalProperties": false
+    },
+    "ConditionUnmetDescriptor": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "changeIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 999
+        },
+        "type": {
+          "const": "dependency.conditionUnmet"
+        },
+        "resource": {
+          "$ref": "#/components/schemas/AuditResource"
+        },
+        "provenance": {
+          "$ref": "#/components/schemas/EventProvenance"
+        },
+        "details": {
+          "$ref": "#/components/schemas/ConditionUnmetDetails"
+        }
+      },
+      "required": [
+        "index",
+        "changeIndex",
+        "type",
+        "resource",
+        "provenance",
+        "details"
+      ],
+      "additionalProperties": false
+    },
+    "EventDescriptor": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/OrdinaryEventDescriptor"
+        },
+        {
+          "$ref": "#/components/schemas/ConditionUnmetDescriptor"
+        }
+      ],
+      "x-validation": "Index equals array position. Exactly one ordinary event for every ChangeRecord in ChangeIndex order, followed immediately by notices sorted uniquely by dependent ID. Notices retain ordinary close/cancel slot event and identical provenance, anchor the changed blocker and from/current revisions. Chain matches the changeset header. Event/resource kind, operation and slot must agree."
+    }
+  }
+}

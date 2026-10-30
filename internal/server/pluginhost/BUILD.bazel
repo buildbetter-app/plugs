@@ -1,0 +1,41 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "pluginhost",
+    srcs = glob(["*.go"], exclude = ["*_test.go"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/server/pluginhost",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/storage/driver",
+        "//pluginapi",
+        "//sdk/go:sdk_go",
+        "@com_github_tetratelabs_wazero//:wazero",
+        "@com_github_tetratelabs_wazero//api",
+        "@com_github_tetratelabs_wazero//imports/wasi_snapshot_preview1",
+    ],
+)
+
+go_test(
+    name = "pluginhost_test",
+    srcs = glob(["*_test.go"]),
+    embed = [":pluginhost"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//pluginapi",
+        "//sdk/go:sdk_go",
+        "//sdk/go/conformance",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
