@@ -548,10 +548,9 @@
     node.appendChild(list);
     const boundary = document.createElement("p"); boundary.className = "muted"; text(boundary, "Verdicts describe the returned snapshot. Opening an item reads its current explanation."); node.appendChild(boundary);
   }
-  async function explain(signal) {
+  async function explainMembership(signal, itemId) {
     const node = $("explain-state");
     if (!state.methods.has("view.explain") || !state.config.blockedViewId) { message(node, "unavailable", "Explanation unavailable.", "A server-backed saved view and its explanation method are not configured."); return; }
-    const itemId = $("explain-id").value.trim();
     if (!itemId) { text(node, "Enter an item ID to request its explanation."); return; }
     const result = await rpc("view.explain", { viewId: state.config.blockedViewId, itemId }, signal);
     const direct = Object.hasOwn(result, "directBlockers") ? directBlockers(result.directBlockers) : null;
@@ -571,10 +570,50 @@
     if (hidden) { const copy = document.createElement("p"); copy.className = "explain-hidden-blockers"; text(copy, hidden + " blockers cannot be read with current permissions."); node.appendChild(copy); }
     if (result.readinessPending === true) { const pending = document.createElement("p"); pending.className = "explain-pending"; text(pending, "Readiness is still being evaluated by the server."); node.appendChild(pending); }
   }
+  function commentValue(value) {
+    const bad = () => { throw new RPCError("The comment provenance is unreadable.", "invalid_response"); };
+    if (!value || typeof value !== "object" || Array.isArray(value)) bad();
+    const timestamp = input => typeof input === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(input) && Number.isFinite(Date.parse(input));
+    const imported = Object.hasOwn(value, "origin");
+    const allowed = imported ? ["body", "principal", "time", "origin", "sourceTime", "sourceAuthor"] : ["body", "principal", "time"];
+    if (Object.keys(value).some(key => !allowed.includes(key)) || typeof value.body !== "string" || !value.principal || typeof value.principal.kind !== "string" || !value.principal.kind || typeof value.principal.id !== "string" || !value.principal.id || !timestamp(value.time)) bad();
+    if (imported) {
+      if (value.origin !== "import" || !timestamp(value.sourceTime)) bad();
+      if (Object.hasOwn(value, "sourceAuthor") && (typeof value.sourceAuthor !== "string" || !value.sourceAuthor || value.sourceAuthor.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "") !== value.sourceAuthor || [...value.sourceAuthor].length > 256 || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(value.sourceAuthor))) bad();
+    }
+    return value;
+  }
+  async function explain(signal) {
+    const node = $("comment-state"), id = $("explain-id").value.trim();
+    await explainMembership(signal, id);
+    if (signal.aborted) return;
+    if (!id) { text(node, "Select an item to read comments."); return; }
+    if (!state.methods.has("bead.get")) { text(node, "Comments unavailable: item reads are not configured."); return; }
+    const result = await rpc("bead.get", { id: { id, branch: 0 } }, signal);
+    if (signal.aborted) return;
+    if (!result || !result.bead || result.bead.id !== id) throw new RPCError("The item read does not match this selection.", "invalid_response");
+    if (!Object.hasOwn(result, "comments")) { text(node, "No comments supplied for this item."); return; }
+    if (!Array.isArray(result.comments)) throw new RPCError("The comments are unreadable.", "invalid_response");
+    const comments = result.comments.map(commentValue);
+    if (!comments.length) { text(node, "No comments for this item."); return; }
+    clear(node);
+    comments.forEach(comment => {
+      const row = document.createElement("article"); row.className = "comment-row";
+      const actor = document.createElement("p"); actor.className = "comment-actor"; text(actor, "Verified actor: " + comment.principal.kind + ":" + comment.principal.id);
+      const at = document.createElement("p"); text(at, (comment.origin === "import" ? "Restored at: " : "Comment time: ") + comment.time);
+      const body = document.createElement("p"); body.className = "comment-body"; text(body, comment.body); row.append(actor, at, body);
+      if (comment.origin === "import") {
+        const provenance = document.createElement("p"); provenance.className = "comment-source";
+        text(provenance, "Origin: import · Source author (untrusted): " + (comment.sourceAuthor || "not supplied") + " · Source time (untrusted): " + comment.sourceTime); row.appendChild(provenance);
+      }
+      node.appendChild(row);
+    });
+  }
   function target(view) { return $({ home: "changed-rows", next: "next-rows", blocked: "blocked-state", presence: "presence-rows", explain: "explain-state" }[view]); }
   async function load(nextPage) {
     if (state.work) state.work.controller.abort();
     stopWatch();
+    text($("comment-state"), "Comments await a completed item read.");
     const work = { controller: new AbortController(), timedOut: false };
     const view = state.activeView; state.work = work;
     const timer = setTimeout(() => { work.timedOut = true; work.controller.abort(); }, 15000);
@@ -596,6 +635,7 @@
     } catch (error) {
       if (state.work !== work) return;
       stopWatch();
+      text($("comment-state"), "Comments unavailable: this read did not complete.");
       if (work.liveFailure) return;
       if (view === "home" && state.methods.has("view.run")) watchStatus(work.controller.signal.aborted ? "Live changes cancelled. Refresh to reconnect." : "Live changes refused · refresh required.");
       if (work.controller.signal.aborted) {

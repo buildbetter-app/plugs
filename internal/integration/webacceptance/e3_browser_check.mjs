@@ -8,6 +8,31 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Comment reads may follow the submitted Explain selection, never another ID.
+export function assertBrowserRPCSurface(wire, project) {
+  const allowed = ["server.hello", "rpc.methods", "session.open", "session.close", "view.run", "view.explain", "view.watch", "event.unsubscribe", "bead.ready", "presence.list"];
+  const methods = [];
+  let explainedID;
+  for (const entry of wire) {
+    if (!entry.request.url.endsWith("/rpc/v1")) continue;
+    const request = JSON.parse(entry.request.postData || "{}");
+    methods.push(request.method);
+    if (request.method === "bead.get") {
+      assert(explainedID, "comment read requires a preceding Explain selection");
+      assert.deepEqual(request.params, { id: { id: explainedID, branch: 0 }, _meta: { project } });
+    } else {
+      assert(allowed.includes(request.method), "unexpected browser RPC: " + request.method);
+    }
+    if (request.method === "view.explain") {
+      assert.equal(request.params?._meta?.project, project);
+      assert.equal(typeof request.params.itemId, "string");
+      assert(request.params.itemId.length > 0);
+      explainedID = request.params.itemId;
+    }
+  }
+  return methods;
+}
+
 // Recorder evidence only. The optional wire shape is owned by the
 // directBlockers transport; this check cannot supply a missing capability.
 export function assessWhyBlockedEvidence({ wire, startedAt, project, viewId, itemId, blockerId, explanation }) {
@@ -285,9 +310,8 @@ try {
     return stats.sessions === 50 && stats.streams === 0 && stats.watches === 0 && stats.policyAllows > 0 && stats.policyDenials > 0 ? stats : false;
   }, "actual session/watch/stream cleanup");
   await Promise.allSettled([...pendingBodies]);
-  const productMethods = browserWire.filter((entry) => entry.request.url.endsWith("/rpc/v1")).map((entry) => JSON.parse(entry.request.postData || "{}").method);
+  const productMethods = assertBrowserRPCSurface(browserWire, fixture.project);
   assert(productMethods.includes("view.run") && productMethods.includes("view.watch"));
-  assert(productMethods.every((method) => ["server.hello", "rpc.methods", "session.open", "session.close", "view.run", "view.explain", "view.watch", "event.unsubscribe", "bead.ready", "presence.list"].includes(method)), productMethods.join(","));
   for (const entry of browserWire) {
     const headers = Object.keys(entry.request.headers).map((name) => name.toLowerCase());
     assert(!headers.includes("authorization") && !headers.includes("cookie"));

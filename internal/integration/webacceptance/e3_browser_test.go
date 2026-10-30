@@ -19,6 +19,52 @@ import (
 //go:embed e3_browser_check.mjs
 var e3BrowserCheck []byte
 
+func TestE3BrowserRPCSurface(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "e3-browser.mjs"), e3BrowserCheck, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, node, "--input-type=module", "-")
+	command.Dir = dir
+	command.Stdin = strings.NewReader(`
+import assert from "node:assert/strict";
+import { assertBrowserRPCSurface as check } from "./e3-browser.mjs";
+const entry = (method, params) => ({request:{url:"http://fixture/rpc/v1",postData:JSON.stringify({method,params})}});
+const explain = (itemId="submitted") => entry("view.explain",{viewId:"blocked-view",itemId,_meta:{project:"fixture"}});
+const read = (id="submitted") => entry("bead.get",{id:{id,branch:0},_meta:{project:"fixture"}});
+let checks=0;
+assert.deepEqual(check([explain(),read()],"fixture"),["view.explain","bead.get"]); checks++;
+assert.deepEqual(check([explain(),explain("second"),read("second")],"fixture"),["view.explain","view.explain","bead.get"]); checks++;
+const rejects = (wire) => { assert.throws(()=>check(wire,"fixture")); checks++; };
+rejects([read()]);
+rejects([read(),explain()]);
+rejects([explain(),read("another")]);
+rejects([explain(),explain("second"),read()]);
+for (const params of [
+  {id:{id:"submitted",branch:1},_meta:{project:"fixture"}},
+  {id:{id:"submitted",branch:0,key:"other"},_meta:{project:"fixture"}},
+  {id:{id:"submitted",branch:0},_meta:{project:"other"}},
+  {id:{id:"submitted",branch:0},_meta:{project:"fixture"},fields:["title"]},
+]) rejects([explain(),entry("bead.get",params)]);
+rejects([entry("view.explain",{itemId:"submitted",_meta:{project:"other"}}),read()]);
+rejects([explain(""),read("")]);
+rejects([explain(),entry("bead.delete",{id:{id:"submitted"}})]);
+rejects([explain(),entry("unrecognized.read",{})]);
+console.log(checks+" browser RPC surface checks passed; artificial inputs only");
+`)
+	output, err := command.CombinedOutput()
+	t.Log(string(output))
+	if err != nil {
+		t.Fatal("browser RPC surface checks:", err)
+	}
+}
+
 // Pure recorder checks execute the same exported predicate as the browser
 // script. Artificial evidence here cannot qualify a transport or E3 workload.
 func TestE3WhyBlockedRecorderEvidence(t *testing.T) {

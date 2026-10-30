@@ -310,6 +310,78 @@ func TestRegistryAndHandlerFailures(t *testing.T) {
 	}
 }
 
+// The registry is the one shared admission point used by every transport.
+// Keep its bound inventory tied to the authoritative catalog: callable
+// descriptors must be accepted with their catalog metadata, while event-only
+// descriptors must remain uncallable. This catches a transport-specific
+// adapter accidentally inventing a method or exposing a notification as RPC.
+func TestRegistryCoversCatalogCallableInventoryWithoutEvents(t *testing.T) {
+	r := registry(t)
+	for _, want := range r.Catalog().Descriptors() {
+		name := want.Name
+		err := r.Register(name, func(context.Context, rpc.Call) (any, error) {
+			return map[string]any{}, nil
+		})
+		if want.Effect == "event" {
+			if err == nil {
+				t.Fatalf("event descriptor %q became callable", name)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("callable catalog descriptor %q rejected: %v", name, err)
+		}
+	}
+
+	got := r.Descriptors()
+	want := make([]wire.MethodDesc, 0)
+	for _, descriptor := range r.Catalog().Descriptors() {
+		if descriptor.Effect != "event" {
+			want = append(want, descriptor)
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("registry descriptors diverged from catalog callable inventory:\n got=%v\nwant=%v", got, want)
+	}
+
+	// The catalog comparison above must be paired with the shared dispatcher
+	// admission check: a transport may bind a catalog method, but an
+	// authenticated server must not reach its handler until the transport has
+	// stamped a principal. Use valid read and write envelopes (including the
+	// write idempotency key) so schema validation cannot mask that invariant.
+	dispatchRegistry := registry(t)
+	seen := map[string]int{}
+	if err := dispatchRegistry.Register("bead.get", func(context.Context, rpc.Call) (any, error) {
+		seen["bead.get"]++
+		return getResult(), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dispatchRegistry.Register("bead.create", func(context.Context, rpc.Call) (any, error) {
+		seen["bead.create"]++
+		return commitResult(), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	authenticated := server(t, dispatchRegistry, rpc.Config{AuthMode: "authenticated"})
+	requireCode(t, call(t, authenticated, context.Background(), "bead.get", `{"id":{"id":"p-1"}}`), "unauthenticated")
+	requireCode(t, call(t, authenticated, context.Background(), "bead.create", `{"type":"task","fields":{},"_meta":{"idempotencyKey":"11111111111111111111111111111111"}}`), "unauthenticated")
+	if seen["bead.get"] != 0 || seen["bead.create"] != 0 {
+		t.Fatalf("unstamped protected calls reached handlers: %v", seen)
+	}
+	principal := model.PrincipalRef{Kind: "user", ID: "user:registry-guard"}
+	result(t, call(t, authenticated, rpc.WithPrincipal(context.Background(), principal), "bead.get", `{"id":{"id":"p-1"}}`))
+	result(t, call(t, authenticated, rpc.WithPrincipal(context.Background(), principal), "bead.create", `{"type":"task","fields":{},"_meta":{"idempotencyKey":"11111111111111111111111111111111"}}`))
+	if seen["bead.get"] != 1 || seen["bead.create"] != 1 {
+		t.Fatalf("stamped protected calls did not reach handlers: %v", seen)
+	}
+	result(t, call(t, authenticated, context.Background(), "server.hello", `{}`))
+	discover := call(t, authenticated, context.Background(), "rpc.discover", `{}`)
+	if _, ok := discover["result"]; !ok {
+		t.Fatalf("public discovery exception was not available without a principal: %v", discover)
+	}
+}
+
 func TestDecidedSessionCloseIsExplicitlyUnbound(t *testing.T) {
 	r := registry(t)
 	d, ok := r.Catalog().Descriptor("session.close")

@@ -677,3 +677,110 @@ func runBrowserWatchBootstrap(t *testing.T, mode string) {
 	}
 	fmt.Printf("PASS actual_ontology_watch_bootstrap cleanup_no_sessions_or_streams current_policy_checks=%d\n", policy.checks.Load())
 }
+
+//go:embed comment_check.mjs
+var commentCheck []byte
+
+// Explicit consumer fixtures do not qualify restore admission or record policy.
+func TestBrowserCommentProvenanceContractFixtures(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chrome, err := exec.LookPath("google-chrome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := map[string]any{"kind": "user", "id": "restore-admin"}
+	legacy := map[string]any{"body": "old body", "principal": actor, "time": "2026-10-30T10:00:00Z"}
+	imported := func(author any) map[string]any {
+		v := map[string]any{"body": `<img src=x onerror="globalThis.commentExecuted=true">`, "principal": actor, "time": "2026-10-30T10:00:00Z", "origin": "import", "sourceTime": "2020-01-01T00:00:00Z"}
+		if author != nil {
+			v["sourceAuthor"] = author
+		}
+		return v
+	}
+	fixtures := map[string]any{"legacy": []any{legacy}, "import": []any{imported("source-user")}, "hostile": []any{imported(`<script>globalThis.commentExecuted=true</script>`)}, "no-author": []any{imported(nil)}, "empty": []any{}, "absent": nil, "null": json.RawMessage(`null`), "refresh": []any{imported("secret-source")}, "selection-race": []any{imported("source-user")}}
+	for name, extra := range map[string]map[string]any{"empty-origin": {"origin": ""}, "null-source": {"origin": "import", "sourceTime": nil}, "null-author": {"origin": "import", "sourceTime": "2020-01-01T00:00:00Z", "sourceAuthor": nil}, "empty-author": {"origin": "import", "sourceTime": "2020-01-01T00:00:00Z", "sourceAuthor": ""}, "legacy-source": {"sourceTime": nil}, "control": {"origin": "import", "sourceTime": "2020-01-01T00:00:00Z", "sourceAuthor": "bad\nauthor"}} {
+		v := map[string]any{}
+		for k, x := range legacy {
+			v[k] = x
+		}
+		for k, x := range extra {
+			v[k] = x
+		}
+		fixtures[name] = []any{v}
+	}
+	mux := http.NewServeMux()
+	for name, comments := range fixtures {
+		mount := "/fixtures/" + name + "/ui/"
+		endpoint := "/fixtures/" + name + "/rpc"
+		config := webui.Config{MountPath: mount, RPCPath: endpoint, Project: "web", MaxRows: 5}
+		if name == "selection-race" {
+			config.BlockedViewID = "fixture-view"
+		}
+		ui, err := webui.New(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux.Handle(mount, ui)
+		var reads atomic.Int64
+		mux.HandleFunc(endpoint, func(w http.ResponseWriter, r *http.Request) {
+			var request struct {
+				ID     string         `json:"id"`
+				Method string         `json:"method"`
+				Params map[string]any `json:"params"`
+			}
+			if json.NewDecoder(r.Body).Decode(&request) != nil {
+				t.Error("invalid fixture request")
+				return
+			}
+			reply := map[string]any{"jsonrpc": "2.0", "id": request.ID}
+			switch request.Method {
+			case "server.hello":
+				reply["result"] = map[string]any{"authMode": "anonymous"}
+			case "rpc.methods":
+				methods := []string{"bead.get"}
+				if name == "selection-race" {
+					methods = append(methods, "view.explain")
+				}
+				reply["result"] = map[string]any{"methods": methods}
+			case "view.explain":
+				time.Sleep(300 * time.Millisecond)
+				reply["result"] = map[string]any{"included": true, "reasons": []string{"Selected " + request.Params["itemId"].(string)}}
+			case "bead.get":
+				v := map[string]any{"bead": map[string]any{"id": "pl-comments", "revision": 1}, "attachments": []any{}}
+				if name != "absent" {
+					v["comments"] = comments
+				}
+				reply["result"] = v
+				if name == "refresh" && reads.Add(1) > 1 {
+					delete(reply, "result")
+					reply["error"] = map[string]any{"code": -32000, "message": "fixture access revoked", "data": map[string]any{"code": "forbidden"}}
+				}
+			default:
+				t.Errorf("unexpected fixture method %s", request.Method)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(reply); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "comment-check.mjs")
+	if err := os.WriteFile(script, commentCheck, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, node, script, server.URL, chrome)
+	out, err := cmd.CombinedOutput()
+	fmt.Print(string(out))
+	if err != nil {
+		t.Fatalf("comment browser fixtures: %v", err)
+	}
+}

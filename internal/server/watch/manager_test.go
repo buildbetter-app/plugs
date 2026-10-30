@@ -356,8 +356,10 @@ func TestViewWatchCarriesProjectionStatusWithoutResettingCursor(t *testing.T) {
 			LagAcceptedThrough: "1",
 		},
 	}
+	// Keep the resolver snapshot immutable while the manager polls it.
+	published := cloneProjectionStatus(status)
 	var statuses atomic.Value
-	statuses.Store(status)
+	statuses.Store(published)
 	f.manager.config.Views = viewBindingFunc(func(_ context.Context, _ model.PrincipalRef, _ string) (ViewBinding, error) {
 		return ViewBinding{Filter: coreevents.Filter{Resources: []string{"bead/bead-view-projection"}}, Ontology: "1", PolicyVersion: "policy-1", Projection: statuses.Load().(*coreevents.ProjectionStatus)}, nil
 	})
@@ -370,7 +372,10 @@ func TestViewWatchCarriesProjectionStatusWithoutResettingCursor(t *testing.T) {
 	if snapshot.Projection == nil || !snapshot.Projection.Stalled || snapshot.Projection.Failure == nil || snapshot.Projection.Resume == nil {
 		t.Fatalf("projection status missing from snapshot=%+v", snapshot.Projection)
 	}
-	// The resolver's pointer is mutable; the queued snapshot must not alias it.
+	if snapshot.Projection == published || snapshot.Projection.Failure == published.Failure || snapshot.Projection.Resume == published.Resume {
+		t.Fatalf("snapshot projection metadata aliases resolver status: %+v", snapshot.Projection)
+	}
+	// The private source remains mutable; neither publication nor frame aliases it.
 	status.Failure.Reason = "mutated-after-open"
 	if snapshot.Projection.Failure.Reason != "projection_failed" {
 		t.Fatalf("snapshot projection metadata was not copied: %+v", snapshot.Projection)
