@@ -72,6 +72,25 @@ func TestHistoricalReplayAcrossScheduledTombstones(t *testing.T) {
 	t.Log("real historical replay crossed three scheduled tombstones/recreations with at most 31 forward diffs")
 }
 
+func TestRestoreHistoryCapabilityRefusesBeforeMutation(t *testing.T) {
+	ctx := testContext(t)
+	s := openStore(t, ctx, filepath.Join(t.TempDir(), "restore-history.db"))
+	before := getMeta(t, ctx, s)
+	if err := driver.RequireRestoreCapability(s, driver.RestoreModeCurrentImage); err != nil {
+		t.Fatalf("current-image restore was refused: %v", err)
+	}
+	if err := driver.RequireRestoreCapability(s, driver.RestoreModeFullHistory); !errors.Is(err, driver.ErrUnsupported) {
+		t.Fatalf("full-history restore error=%v", err)
+	}
+	if _, err := driver.RestoreModeForHistory("partial"); err == nil {
+		t.Fatal("malformed history was accepted")
+	}
+	after := getMeta(t, ctx, s)
+	if before != after {
+		t.Fatalf("restore capability validation mutated sqlite metadata: before=%+v after=%+v", before, after)
+	}
+}
+
 func TestIndependentEpochRacesCheckpointFinalizerAndRenewal(t *testing.T) {
 	for iteration := 0; iteration < 4; iteration++ {
 		t.Run(fmt.Sprint(iteration), func(t *testing.T) {

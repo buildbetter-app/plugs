@@ -55,7 +55,7 @@
 
           <div class="content-grid">
             <section class="panel panel-focal">
-              <div class="panel-heading"><div><div class="section-kicker">THIS PAGE</div><h3>Moved since your last look</h3></div><span class="panel-mark" aria-hidden="true">↗</span></div>
+              <div class="panel-heading"><div><div class="section-kicker">THIS PAGE</div><h3 id="home-rows-heading">Moved since your last look</h3></div><span class="panel-mark" aria-hidden="true">↗</span></div>
               <div id="changed-rows" class="row-list" aria-live="polite"><div class="state state-loading"><span class="spinner" aria-hidden="true"></span>Reading the stored snapshot…</div></div>
               <div id="changed-more" class="elision" hidden></div>
             </section>
@@ -68,6 +68,13 @@
               <section class="panel panel-note panel-quiet">
                 <div class="section-kicker">BOUNDARY</div>
                 <p id="home-boundary">A live watch is not assumed. This view is a pinned, bounded snapshot until the server advertises one.</p>
+                <p id="watch-state" role="status" aria-live="polite">Live changes unavailable.</p>
+                <button id="stop-watch" class="button button-quiet" type="button" hidden>Stop live changes</button>
+              </section>
+              <section class="panel panel-note panel-quiet" aria-labelledby="epic-progress-heading">
+                <div class="section-kicker">EPIC PROGRESS / COUNTS</div>
+                <h3 id="epic-progress-heading">Epic progress unavailable.</h3>
+                <p id="epic-progress-state" class="muted">Epic child counts are unavailable on this server.</p>
               </section>
             </aside>
           </div>

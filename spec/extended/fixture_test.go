@@ -149,8 +149,9 @@ func (f *fixture) apply(t *testing.T, label string, ops ...model.Op) model.Commi
 	return commit
 }
 
-// These lifecycle methods are not RPC-bound. The method here is trusted host
-// lowering context passed directly to the actual Writer, never a new handler.
+// Retained scenarios use this trusted-host lowering helper to exercise the
+// actual Writer directly. Connected lifecycle scenarios use the bound RPC
+// methods instead; this helper never replaces a service or RPC handler.
 func (f *fixture) slot(t *testing.T, label, method, id string, fields map[string]any) model.Commit {
 	t.Helper()
 	if fields == nil {

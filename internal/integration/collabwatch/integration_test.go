@@ -144,6 +144,15 @@ func newPolicyFixture(t *testing.T) (*fixture, *serviceBackedPolicy) {
 }
 
 func newConfiguredFixture(t *testing.T, policy *serviceBackedPolicy) *fixture {
+	return newConfiguredFixtureWithLog(t, policy, nil)
+}
+
+// newConfiguredFixtureWithLog keeps the acceptance harness on the real
+// memory/service/RPC path while allowing a test to present one authoritative
+// log-head boundary (for example, a takeover incarnation) to the watch
+// manager. The wrapper still delegates scans and materialization to the real
+// store.
+func newConfiguredFixtureWithLog(t *testing.T, policy *serviceBackedPolicy, wrapLog func(coreevents.Log) coreevents.Log) *fixture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	f := &fixture{ctx: ctx, cancel: cancel, store: memory.New(), clock: &testClock{t: time.Date(2026, 10, 29, 15, 0, 0, 0, time.UTC)}}
@@ -194,8 +203,12 @@ func newConfiguredFixture(t *testing.T, policy *serviceBackedPolicy) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var eventLog coreevents.Log = serverevents.Log{Store: f.store}
+	if wrapLog != nil {
+		eventLog = wrapLog(eventLog)
+	}
 	reader := &coreevents.Reader{
-		Log:           serverevents.Log{Store: f.store},
+		Log:           eventLog,
 		Materializer:  serverevents.HistoryMaterializer{Store: f.store},
 		Authorization: coreevents.AllowAll{},
 	}

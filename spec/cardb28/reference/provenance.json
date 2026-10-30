@@ -1,0 +1,22 @@
+{
+  "schema": "plug.cardb28.reference-provenance.v1",
+  "source": {
+    "commit": "9d6fff760b7a314b476539198504d77ce0959656",
+    "tree": "cde121d6e4119e454857ad1c3ca293e2791be840",
+    "files": [
+      {"path":"internal/hooks/hooks.go","gitBlob":"aacf51bfb57214dadc0770342af68d6945f533c5","sha256":"18981969daed35bcf2c2704cdbe5a67e0b85b04f1e7672b87919874f7b3d04df"},
+      {"path":"internal/hooks/hooks_unix.go","gitBlob":"9de2d79ecdcfbabfb788163137aecc8fb3804c8b","sha256":"756d9282efe5b58ccec86d5c80692ba90d7d42dd7c92f3dd11fa8b430cdb1908"},
+      {"path":"internal/storage/hook_decorator.go","gitBlob":"4a352736a63d0dc7ec7dd63aedd11704f33f1d72","sha256":"8aaebabc1b1355be3017db4df9dbbc153c0964c561ddb9b2a0c56ea0a7575033"},
+      {"path":"internal/storage/hook_decorator_internal_test.go","gitBlob":"1a8fc2fc0a25f60e3650f63b273c748337b77d73","sha256":"149c37e7e210308a2a29ecc2f1104886b9087c9e01a21474e4d2c924a1245015"},
+      {"path":"internal/storage/uow/notifying.go","gitBlob":"a2148502d014136013716c9d7c83c8a57280dc47","sha256":"ba4668bd54204fc7c625b4b2d3515dcfd6197563b82c8ee44df01b385fe86a2d"},
+      {"path":"internal/storage/uow/notifying_test.go","gitBlob":"6bed851363da885533f2820462d05c61306af8c2","sha256":"ac14d3c5d83dfd4495ed1d67ded9b3c961b89ed76e001c131a697bee31f1e76c"}
+    ]
+  },
+  "binarySha256": "174083f0816e08f94e65c05362d713b913dac036e7a6c0cea2ab0b054f3ee083",
+  "recorder": {"path":"spec/cardb28/record_reference.py","sha256":"ba4baade4519860246ea40b59b038a03ac711fa6688ffbe076a7fdc4bb6150d2"},
+  "recordings": [
+    {"path":"reference/run-a.json","fileSha256":"5951b5abcfb9397dca4201c58044002ada70b2a2284371b7ef2fc6508a15fcab","projectionSha256":"871feb4e7bb6718bcee86c3461f7cdccc002d224bd84a784635b161e86360756"},
+    {"path":"reference/run-b.json","fileSha256":"35723e13dcd6e0beaeebf1386814726295752777c111fa84ecc973cf459decd5","projectionSha256":"871feb4e7bb6718bcee86c3461f7cdccc002d224bd84a784635b161e86360756"}
+  ],
+  "retainedSelection": "Stable create, update, close callback order and guarded-refusal suppression only; temporal command output is retained by digest, not treated as expected output."
+}
