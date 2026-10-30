@@ -52,8 +52,12 @@ storage:
 `server: URL` is an alternative to `storage`. Unknown, malformed, duplicate,
 or conflicting settings fail closed. `--memory` is the explicit disposable
 choice and emits its lifetime warning; it does not reuse the persistent file.
-Unsupported commands, including login, server startup, watches and generic RPC
-calls, continue to fail explicitly. The read surfaces are available as `events`
+`plug server` is a separate shared-server command with its own configuration
+and lifecycle; the [runtime server guide](../../engdocs/plug-runtime/server.md)
+covers it. The ordinary CLI does not open PostgreSQL directly. Login, watches
+and generic RPC calls continue to fail explicitly.
+
+The read surfaces are available as `events`
 (or `events tail`), `history get`, `history diff`, and `health`; they use the
 same opaque cursors, pinned revisions, bounded JSON Patch results, and
 read-only health response as their JSON-RPC methods. This slice makes no full
