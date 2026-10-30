@@ -12,7 +12,7 @@ catalog is not reachable until a composition root binds its adapter.
 | HTTP | `POST /rpc/v1`; see [RPC and HTTP](rpc-http.md). | The HTTP composition owns the listener, store, lease and shutdown. |
 | stdio | Construct with `stdio.New(dispatcher, stdio.Config{})`, then call `Serve(ctx, in, out)` on the returned transport. | The caller supplies the streams, context and any admitted identity. |
 | WebSocket | `GET /rpc/v1/ws` after a composition root mounts `websocket.Handler`. | The handler owns one connection; the composition owns the listener and any watch/session manager. |
-| MCP | `POST /mcp` after a composition root mounts `mcp.Handler`. | The handler owns request framing; the composition owns the listener, store, lease and shutdown. |
+| MCP | `POST /mcp` for requests and authenticated `GET /mcp` for notifications after a composition root mounts `mcp.Handler`. | The handler owns request framing and notification streams; the composition owns the listener, store, lease and shutdown. |
 
 The current server composition mounts HTTP (and its explicitly enabled UI and
 watch handlers). The stdio, WebSocket and MCP packages are composition seams;
@@ -116,16 +116,16 @@ write failure or cancellation. Opening and authorizing a watch remain owned by
 the watch/session composition. The current server composition does not mount
 this route automatically.
 
-## MCP: streamable HTTP request/response
+## MCP: streamable HTTP
 
 The [MCP adapter](../../internal/server/transport/mcp/README.md) is a separate
-HTTP composition seam. A host mounts its handler at exactly `POST /mcp`; the
-handler does not create a listener, store, lease,
-UI, session store or authorization policy. HTTP admission still requires
-`Plug-RPC: 1`, `Content-Type: application/json` (optionally
-`charset=utf-8`), and the existing Host, peer, Origin, TLS and bearer rules.
-Cookies and `Content-Encoding` are refused. The adapter does not accept an
-MCP credential as a substitute for the shared authenticator.
+HTTP composition seam. A host mounts its handler at `/mcp` for POST requests
+and GET notifications; the handler does not create a listener, store, lease,
+UI, session store or authorization policy. Shared HTTP admission requires
+`Plug-RPC: 1` and the existing Host, peer, Origin, TLS and bearer rules.
+POST additionally requires `Content-Type: application/json` (optionally
+`charset=utf-8`). Cookies and `Content-Encoding` are refused. The adapter does
+not accept an MCP credential as a substitute for the shared authenticator.
 
 The zero-value request bounds are a 1 MiB body, 64 concurrent requests and a
 30-second request/read deadline. A body may contain one request or a sequential
@@ -156,9 +156,25 @@ tools. Dotted names use the exact underscore mapping (`bead.ready` becomes
 `plug_call` and `plug_describe`, which reach already visible canonical methods;
 they do not add a second method registry. Input schemas come from the
 canonical catalog. Tool pagination is unsupported, so a non-empty `cursor` is
-refused. A changed visible-method hash produces
-`notifications/tools/list_changed` before the next finite response, or is
-passed to the composition's notification sink when one is installed.
+refused. When a request discovers a changed visible-method hash, the adapter
+sends `notifications/tools/list_changed` to the connected session's GET stream
+and to `Config.OnNotification` when that sink is installed. Without stream
+delivery or a sink, it uses a finite SSE response (`event: message`) containing
+the notification before that request's response.
+
+### Receive notifications
+
+`GET /mcp` requires `Plug-RPC: 1`, `Accept: text/event-stream` and exactly one
+authenticated `MCP-Session-Id` returned by this handler for the same admitted
+principal. It applies the shared network, Origin and bearer admission above;
+the JSON content type is a POST requirement. JSON-RPC notifications arrive as
+SSE `event: message` frames.
+
+The handler keeps one stream per principal/session pair, with a fixed cap of
+64 streams and a 16-frame queue per stream. Reconnecting replaces the prior
+stream for that pair. A full queue closes the slow stream without replay;
+stream state is neither persisted nor replayed after disconnect or restart.
+Request cancellation, a write failure or `Handler.Close` closes the stream.
 
 ### Call, cancel and close
 
@@ -176,13 +192,10 @@ same principal/session/agent scope is refused. Cancellation reaches the
 canonical context and releases its active request slot; it cannot commit work
 after the request is canceled. On current `main`, closing the composed runtime
 drains HTTP first, then closes watches and sessions, cancels remaining work,
-releases the lease and closes the store. A future host that separately mounts an
-MCP stream owns closing that stream before invoking this runtime lifecycle;
-current `main` has no `/mcp` route or continuous MCP stream.
+releases the lease and closes the store. A host that separately mounts the MCP
+handler owns calling `Handler.Close` before draining its HTTP listener so an
+idle GET stream cannot hold shutdown open. Current `Runtime.Listen` still does
+not mount `/mcp`; the adapter's GET support does not install that route.
 
-The finite MCP adapter may use an SSE response (`event: message`) to carry a
-tool-list-changed notification before the response that caused discovery. It
-does not provide a continuous `GET /mcp` notification stream on current main;
-that is a separate bounded stream/composition feature and must not be assumed
-from `tools/list` or `capabilities.tools.listChanged`. MCP, WebSocket and
-stdio are independent adapters: one is never implicitly stacked on another.
+MCP, WebSocket and stdio are independent adapters: one is never implicitly
+stacked on another.
