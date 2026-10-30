@@ -117,6 +117,34 @@ func RestoreImportWithLease(ctx context.Context, input io.Reader, target driver.
 	return restoreArchiveWithProfile(ctx, archive, target, lease, &bound, verification)
 }
 
+// ImportInspection is the read-only source binding needed by a trusted host
+// before it admits an import. It contains no actor, authority, or credential
+// and never opens or writes a target store.
+type ImportInspection struct {
+	SourceStoreID driver.StoreID
+	ArchiveSHA256 string
+	DerivedSHA256 string
+}
+
+// InspectImport validates a plug-dump/1 archive and computes the exact
+// deterministic derived image digest used by RestoreImport. Callers must still
+// perform the mode-specific host admission and construct the complete profile;
+// this helper is not an authority check.
+func InspectImport(ctx context.Context, input io.Reader) (ImportInspection, error) {
+	if err := ctx.Err(); err != nil {
+		return ImportInspection{}, err
+	}
+	archive, err := dumpformat.Read(input)
+	if err != nil {
+		return ImportInspection{}, err
+	}
+	plan, err := buildPlanForInspection(archive)
+	if err != nil {
+		return ImportInspection{}, err
+	}
+	return ImportInspection{SourceStoreID: driver.StoreID(archive.Manifest().StoreID), ArchiveSHA256: archive.SHA256(), DerivedSHA256: plan.derivedDigest}, nil
+}
+
 func restoreArchive(ctx context.Context, archive *dumpformat.Archive, target driver.Store, supplied driver.ActiveLease, checks []Verification) (Report, error) {
 	return restoreArchiveWithProfile(ctx, archive, target, supplied, nil, checks)
 }
@@ -504,16 +532,36 @@ func compareImportBinding(ctx context.Context, r driver.Reader, evidence archive
 	return nil
 }
 
+type planMode uint8
+
+const (
+	planLegacy planMode = iota
+	planImport
+	planInspection
+)
+
 func buildPlan(archive *dumpformat.Archive) (restorePlan, error) {
-	return buildPlanWithProfile(archive, nil, time.Time{})
+	return buildPlanMode(archive, nil, time.Time{}, planLegacy)
 }
 
 func buildPlanWithProfile(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time) (restorePlan, error) {
+	mode := planLegacy
+	if profile != nil {
+		mode = planImport
+	}
+	return buildPlanMode(archive, profile, restoreTime, mode)
+}
+
+func buildPlanForInspection(archive *dumpformat.Archive) (restorePlan, error) {
+	return buildPlanMode(archive, nil, time.Time{}, planInspection)
+}
+
+func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time, mode planMode) (restorePlan, error) {
 	manifest := archive.Manifest()
 	if manifest.History != "unavailable" {
 		return restorePlan{}, fmt.Errorf("%w: unverified source history cannot be restored", ErrRestoreUnavailable)
 	}
-	if profile == nil && len(archive.Records("comment")) != 0 {
+	if mode == planLegacy && len(archive.Records("comment")) != 0 {
 		return restorePlan{}, fmt.Errorf("%w: unverified comment attribution", ErrRestoreUnavailable)
 	}
 	projects := map[string]dumpformat.Project{}
@@ -525,7 +573,7 @@ func buildPlanWithProfile(archive *dumpformat.Archive, profile *driver.RestoreIm
 		if project.IDMode != "hash" || project.Prefix == "" || project.HashLength < 1 {
 			return restorePlan{}, fmt.Errorf("%w: allocator continuation is unsupported for %s", ErrRestoreUnavailable, project.Prefix)
 		}
-		if profile == nil && (project.Prefix != "pl" || project.HashLength != 32 || project.LastID != 0 || len(project.ChildCounters) != 0) {
+		if mode == planLegacy && (project.Prefix != "pl" || project.HashLength != 32 || project.LastID != 0 || len(project.ChildCounters) != 0) {
 			return restorePlan{}, fmt.Errorf("%w: allocator continuation is unsupported for %s", ErrRestoreUnavailable, project.Prefix)
 		}
 		projects[project.Prefix] = project
@@ -541,7 +589,7 @@ func buildPlanWithProfile(archive *dumpformat.Archive, profile *driver.RestoreIm
 	}
 	for _, source := range beads {
 		project, knownProject := projects[source.Project]
-		if !knownProject || !validSourceID(source.ID, project, profile != nil) {
+		if !knownProject || !validSourceID(source.ID, project, mode != planLegacy) {
 			return restorePlan{}, fmt.Errorf("%w: source ID does not match the declared allocator", ErrRestoreUnavailable)
 		}
 		status, ok := targetStatus(stringValue(source.Source.Fields["status"]))
