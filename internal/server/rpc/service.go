@@ -13,8 +13,8 @@ import (
 )
 
 // Service is the domain-only port implemented by core/service. Core never
-// imports RPC or wire DTOs. Each write remains a named domain verb whose
-// implementation lowers to the one Writer pipeline.
+// imports RPC or wire DTOs. Named writes and tx.apply all lower to the one
+// Writer pipeline.
 type Service interface {
 	Get(context.Context, model.PrincipalRef, service.GetRequest) (service.GetResult, error)
 	Ready(context.Context, model.PrincipalRef, service.ReadyRequest) (service.BeadPage, error)
@@ -24,6 +24,9 @@ type Service interface {
 	ClaimNextWithOutcome(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta) (*port.WriteOutcome, error)
 	CommentWithOutcome(context.Context, model.PrincipalRef, service.CommentRequest, model.WriteMeta) (port.WriteOutcome, error)
 	CloseWithOutcome(context.Context, model.PrincipalRef, service.CloseRequest, model.WriteMeta) (port.WriteOutcome, error)
+	ApplyWithOutcome(context.Context, model.PrincipalRef, model.ChangeSet, model.WriteMeta) (port.WriteOutcome, error)
+	LinkWithOutcome(context.Context, model.PrincipalRef, service.LinkRequest, model.WriteMeta) (port.WriteOutcome, error)
+	UnlinkWithOutcome(context.Context, model.PrincipalRef, service.LinkRequest, model.WriteMeta) (port.WriteOutcome, error)
 	ReopenWithOutcome(context.Context, model.PrincipalRef, service.ReopenRequest, model.WriteMeta) (port.WriteOutcome, error)
 	DeferWithOutcome(context.Context, model.PrincipalRef, service.DeferRequest, model.WriteMeta) (port.WriteOutcome, error)
 	CancelWithOutcome(context.Context, model.PrincipalRef, service.CancelRequest, model.WriteMeta) (port.WriteOutcome, error)
@@ -48,6 +51,10 @@ type serviceParams struct {
 	Expect       []model.Precondition `json:"expect"`
 	Body         string               `json:"body"`
 	Reason       string               `json:"reason"`
+	ChangeSet    model.ChangeSet      `json:"changeSet"`
+	From         model.Ref            `json:"from"`
+	To           model.Ref            `json:"to"`
+	Kind         string               `json:"kind"`
 	State        string               `json:"state"`
 	Details      map[string]any       `json:"details"`
 	Meta         wire.Meta            `json:"_meta"`
@@ -83,7 +90,7 @@ func BindService(registry *Registry, svc Service) error {
 	if registry == nil || svc == nil {
 		return fmt.Errorf("nil service or registry")
 	}
-	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.claimNext", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "history.query"}
+	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.claimNext", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "bead.link", "bead.unlink", "tx.apply", "history.query"}
 	if _, ok := svc.(port.GateService); ok {
 		names = append(names, "gate.approve", "gate.report")
 	}
@@ -232,6 +239,15 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		return writeOutcome(v), err
 	case "bead.claim":
 		v, err := svc.ClaimWithOutcome(ctx, c.Principal, service.ClaimRequest{ID: p.ID, Expect: p.Expect}, meta)
+		return writeOutcome(v), err
+	case "bead.link":
+		v, err := svc.LinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, Kind: p.Kind, Expect: p.Expect}, meta)
+		return writeOutcome(v), err
+	case "bead.unlink":
+		v, err := svc.UnlinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, Kind: p.Kind, Expect: p.Expect}, meta)
+		return writeOutcome(v), err
+	case "tx.apply":
+		v, err := svc.ApplyWithOutcome(ctx, c.Principal, p.ChangeSet, meta)
 		return writeOutcome(v), err
 	case "bead.claimNext":
 		v, err := svc.ClaimNextWithOutcome(ctx, c.Principal, service.ClaimNextRequest{Project: c.Meta.Project, ViewID: p.ViewID, Filter: p.Filter.domain()}, meta)

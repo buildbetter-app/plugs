@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
+	"github.com/buildbetter-app/plugs/internal/plugins/authnoidc"
+	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/server/watch"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -42,6 +45,18 @@ type runtimeFixture struct {
 	done      chan error
 	transport *client.HTTPTransport
 	client    *client.Client
+}
+
+func testOIDCConfig() *authnoidc.Config {
+	return &authnoidc.Config{
+		Issuer:                "https://idp.invalid",
+		ClientID:              "plug-test",
+		RedirectURI:           "https://plug.invalid/callback",
+		AuthorizationEndpoint: "https://idp.invalid/authorize",
+		TokenEndpoint:         "https://idp.invalid/token",
+		JWKSURL:               "https://idp.invalid/jwks",
+		Users:                 map[string]string{"subject": "user:test"},
+	}
 }
 
 func startRuntime(t *testing.T, config Config) *runtimeFixture {
@@ -325,6 +340,52 @@ func TestMemoryCompositionIsExplicitlyEphemeral(t *testing.T) {
 	var remote *wire.Error
 	if !errors.As(err, &remote) || remote.Data.Code != "not_found" {
 		t.Fatalf("memory restart error=%v", err)
+	}
+}
+
+func TestOIDCCompositionInjectsSelectedDurableStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	var injected driver.CoreSessionStore
+	r, err := Open(context.Background(), Config{
+		Driver: "sqlite", DSN: path, Address: DefaultAddress, OIDC: testOIDCConfig(),
+		OIDCFactory: func(config authnoidc.Config) (*authnoidc.Provider, error) {
+			injected = config.SessionStore
+			return authnoidc.New(config)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := r.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	selected, ok := r.Store.(driver.CoreSessionStore)
+	if injected == nil || !ok || injected != selected {
+		t.Fatalf("OIDC provider did not receive the selected durable store: injected=%T runtime=%T", injected, r.Store)
+	}
+	if r.OIDC == nil {
+		t.Fatal("composition did not retain the constructed OIDC provider")
+	}
+	if _, err := r.Authenticator.Admit(context.Background(), ""); !errors.Is(err, authn.ErrUnauthenticated) {
+		t.Fatalf("empty credential error=%v, want unauthenticated", err)
+	}
+}
+
+func TestOIDCCompositionRefusesUnsupportedStoreAndClosesIt(t *testing.T) {
+	base := memory.New()
+	_, err := Open(context.Background(), Config{
+		Driver: "memory", Address: DefaultAddress, OIDC: testOIDCConfig(),
+		StoreFactory: func(context.Context, string, driver.Config) (driver.Store, error) {
+			return base, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "durable") {
+		t.Fatalf("unsupported durable store error=%v", err)
+	}
+	if _, metaErr := base.Meta(context.Background()); metaErr == nil {
+		t.Fatal("unsupported OIDC composition left its store open")
 	}
 }
 
