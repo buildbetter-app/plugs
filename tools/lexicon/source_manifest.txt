@@ -694,6 +694,15 @@ sdk/go/native.go
 spec/BUILD.bazel
 spec/README.md
 spec/assertions_test.go
+spec/cardb28/BUILD.bazel
+spec/cardb28/README.md
+spec/cardb28/cardb28_test.go
+spec/cardb28/fixture_test.go
+spec/cardb28/record_reference.py
+spec/cardb28/reference/provenance.json
+spec/cardb28/reference/run-a.json
+spec/cardb28/reference/run-b.json
+spec/cardb28/reference_test.go
 spec/cli_test.go
 spec/extended/BUILD.bazel
 spec/extended/README.md
