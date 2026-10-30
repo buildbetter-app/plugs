@@ -56,7 +56,9 @@ cached dependency reads; writes stay in disposable staging/output directories,
 including a private home, temporary directory and Go build cache. The module
 cache and explicit Plug SDK replacement are read-only. Only the trusted Go
 binary and its tool directory can execute. No server environment, open server
-descriptors or shared writable build cache reaches the compiler. `/dev/null`
+descriptors or shared writable build cache reaches the compiler. Checked
+`close_range(CLOSE_RANGE_CLOEXEC)` removes inherited descriptors on exec;
+failure refuses admission. `/dev/null`
 and read-only `/dev/urandom` are the only device paths granted.
 
 The syscall profile denies networking, namespace changes, process-group escape,
