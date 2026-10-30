@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/collab"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
@@ -151,6 +152,121 @@ func TestActualHTTPRPCWriteNDJSONAndRepairedCollabSessionLifetime(t *testing.T) 
 	}
 	waitCount(t, f, session.SessionID, 0)
 	t.Log("actual HTTP RPC request ended; stream delivered actual core write; real collab close canceled stream and released watch slot")
+}
+
+func TestActualHTTPViewWatchSnapshotDeltaUsesSavedViewResolver(t *testing.T) {
+	f := newTransportFixture(t)
+	f.principal = model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	f.views["resource"] = viewops.Definition{Filter: &viewops.Filter{Resources: []string{"http-bead"}}}
+	sessions, err := collab.New(f.ctx, collab.Config{Service: f.svc, Lease: f.lease, AuthorizationInstalled: func() bool { return false }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sessions.Close() })
+	caller := collab.Caller{Principal: f.principal, Agent: "view-watch-http-test"}
+	session, err := sessions.Open(f.ctx, caller, "local", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifetime, err := sessions.SessionContext(f.ctx, caller, session.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission, err := authn.New(authn.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := httpjson.New(f.server, admission, httpjson.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle(httpjson.Path, handler)
+	mux.Handle(DefaultPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, err := admission.AdmitHTTP(r)
+		if err != nil {
+			http.Error(w, "unauthenticated", http.StatusUnauthorized)
+			return
+		}
+		f.adapter.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), identity.Principal())))
+	}))
+	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r.WithContext(WithSession(r.Context(), session.SessionID, lifetime)))
+	}))
+	t.Cleanup(host.Close)
+	client := host.Client()
+	client.Timeout = 3 * time.Second
+	call := func(method string, params any) json.RawMessage {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request, err := http.NewRequest(http.MethodPost, host.URL+httpjson.Path, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Plug-RPC", "1")
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		raw, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var envelope struct {
+			Result json.RawMessage `json:"result"`
+			Error  json.RawMessage `json:"error"`
+		}
+		if err = json.Unmarshal(raw, &envelope); err != nil || response.StatusCode != http.StatusOK || len(envelope.Error) != 0 {
+			t.Fatalf("HTTP RPC %s status=%d body=%s err=%v", method, response.StatusCode, raw, err)
+		}
+		return envelope.Result
+	}
+	raw := call("view.watch", map[string]any{"viewId": "resource", "_meta": map[string]any{"project": "local"}})
+	var opened struct {
+		ID string `json:"subscriptionId"`
+	}
+	if err := json.Unmarshal(raw, &opened); err != nil || opened.ID == "" {
+		t.Fatalf("view.watch=%s err=%v", raw, err)
+	}
+	request, err := http.NewRequest(http.MethodPost, host.URL+DefaultPath, strings.NewReader(fmt.Sprintf(`{"subscriptionId":%q}`, opened.ID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Plug-RPC", "1")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("view stream status=%d", response.StatusCode)
+	}
+	decoder := json.NewDecoder(response.Body)
+	var snapshot, delta eventNotify
+	if err := decoder.Decode(&snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.SubscriptionID != opened.ID || len(snapshot.Events) != 0 || snapshot.Projection == nil || snapshot.Projection.Binding != "core" {
+		t.Fatalf("view HTTP snapshot=%+v", snapshot)
+	}
+	f.commit(t)
+	if err := decoder.Decode(&delta); err != nil {
+		t.Fatal(err)
+	}
+	if delta.SubscriptionID != opened.ID || len(delta.Events) != 1 || delta.Events[0].Control == nil || delta.Events[0].Control.Type != model.EventWatchDelta || delta.Projection == nil || delta.Projection.Binding != "core" {
+		t.Fatalf("view HTTP delta=%+v", delta)
+	}
+	details := delta.Events[0].Control.Details.(model.WatchDeltaDetails)
+	if len(details.Events) != 1 || details.Events[0].Durable == nil || details.Events[0].Durable.Resource != "bead/http-bead" {
+		t.Fatalf("view HTTP delta details=%+v", details)
+	}
+	_ = sessions.CloseSession(f.ctx, caller, session.SessionID)
 }
 
 func waitCount(t *testing.T, f *transportFixture, id string, want int) {
