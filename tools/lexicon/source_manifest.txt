@@ -111,6 +111,8 @@ internal/cli/README.md
 internal/cli/archive_test.go
 internal/cli/config.go
 internal/cli/config_test.go
+internal/cli/gate.go
+internal/cli/gate_test.go
 internal/cli/local.go
 internal/cli/local_test.go
 internal/cli/parse.go
