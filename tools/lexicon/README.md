@@ -57,3 +57,11 @@ For an intentional addition, removal, or new package:
 The standalone `lexicon_check` command checks the Git-tracked inventory and
 the same manifest/policy. The required Bazel target also sees untracked source
 paths and checks package-independent completeness.
+
+Immutable recorded reference inputs have a narrower admission boundary than
+the ordinary provenance prose zones. `TreePolicy` lists their exact path and
+SHA-256 under `ReferencePrefixes`; the checker skips vocabulary scanning only
+when both the path and bytes match. A changed reference or an additional path
+under that prefix fails closed. The current recorded package admits only the
+exact `spec/recorded/goldens.json` path; its validator source remains an
+ordinary scanned file, so new product vocabulary there is still rejected.
