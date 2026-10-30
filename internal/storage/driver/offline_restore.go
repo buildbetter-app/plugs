@@ -165,10 +165,13 @@ func importDigest(value string) bool {
 }
 
 func (p RestoreImportProfile) Detached() (RestoreImportProfile, error) {
-	if p.Method != "offline.restore.import" || len(p.IdempotencyKey) < 16 || ValidateCheckpointKey(p.IdempotencyKey) != nil || ValidateCheckpointKey(string(p.SourceStoreID)) != nil || ValidateCheckpointKey(p.Admission.Scope) != nil || !importDigest(p.ArchiveDigest) || !importDigest(p.DerivedDigest) || !importDigest(p.Admission.AdmissionDigest) {
+	if p.Method != "offline.restore.import" || len(p.IdempotencyKey) < 16 || ValidateCheckpointKey(p.IdempotencyKey) != nil || ValidateCheckpointKey(string(p.SourceStoreID)) != nil || !importDigest(p.ArchiveDigest) || !importDigest(p.DerivedDigest) || !importDigest(p.Admission.AdmissionDigest) {
 		return RestoreImportProfile{}, fmt.Errorf("invalid prepared import binding")
 	}
 	a := p.Admission
+	if (a.Mode == "authenticated" && a.Scope != "") || (a.Mode == "anonymous-local" && a.Scope != "" && ValidateCheckpointKey(a.Scope) != nil) {
+		return RestoreImportProfile{}, fmt.Errorf("import admission scope is not the normalized G4 agent label")
+	}
 	if !((a.Mode == "authenticated" && a.Authority == "restore-admin" && a.Actor.Kind == "user") || (a.Mode == "anonymous-local" && a.Authority == "trusted-human-presence" && a.Actor.Kind == "anonymous")) {
 		return RestoreImportProfile{}, fmt.Errorf("import admission mode/actor/authority mismatch")
 	}
