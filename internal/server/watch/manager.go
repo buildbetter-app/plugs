@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -155,7 +156,11 @@ func (m *Manager) Open(ctx context.Context, request Request) (*Subscription, err
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if request.Method == MethodViewWatch || request.ViewID != "" {
+	if request.Method == MethodViewWatch {
+		if request.ViewID == "" {
+			return nil, ErrInvalidRequest
+		}
+	} else if request.ViewID != "" {
 		return nil, ErrViewCheckpointRequired
 	}
 	// Own all request maps/slices before the caller can reuse its arguments.
@@ -241,6 +246,25 @@ func (m *Manager) newID() (string, error) {
 		return "", fmt.Errorf("watch subscription ID generation failed: %w", err)
 	}
 	return "sub-" + hex.EncodeToString(random[:]), nil
+}
+
+// SetViewResolver installs the real saved-view checkpoint compiler before a
+// host begins opening subscriptions. The manager refuses replacement while a
+// watch is live so an existing cursor cannot silently change meaning.
+func (m *Manager) SetViewResolver(resolver ViewResolver) error {
+	if m == nil || resolver == nil {
+		return ErrInvalidRequest
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || m.ctx.Err() != nil {
+		return ErrClosed
+	}
+	if len(m.watches) != 0 {
+		return ErrInvalidRequest
+	}
+	m.config.Views = resolver
+	return nil
 }
 
 // Cancel releases a watch by its subscription ID. It is safe to call more
@@ -481,9 +505,17 @@ func (current *watch) step() error {
 	current.mu.Unlock()
 	binding, err := current.manager.binding(current.ctx, current.request)
 	if err != nil {
+		if current.request.Method == MethodViewWatch && isViewDeleted(err) {
+			if polled, pollErr := current.poll(current.ctx, oldCursor, oldBinding); pollErr == nil {
+				if polled.page.Reset || len(polled.page.Events) != 0 {
+					return current.enqueue(current.frame(FrameReset, current.emittedCursor, polled.page, polled.position, oldBinding))
+				}
+			}
+			return current.replaceWithReset("view_deleted", oldBinding)
+		}
 		return err
 	}
-	if reason := bindingChange(oldBinding, binding); reason != "" {
+	if reason := watchBindingChange(current.request.Method, bindingChange(oldBinding, binding)); reason != "" {
 		if reason == "incarnation_changed" {
 			// Let server/events turn the stale old-incarnation cursor into its
 			// mandatory event.gap. Do not manufacture a reset at the old tuple.
@@ -502,7 +534,7 @@ func (current *watch) step() error {
 	if !polled.changed {
 		current.mu.Lock()
 		if !current.halted {
-			current.cursor, current.position = polled.page.Cursor, polled.position
+			current.cursor, current.position, current.binding = polled.page.Cursor, polled.position, cloneBinding(binding)
 		}
 		current.mu.Unlock()
 		return nil
@@ -514,7 +546,7 @@ func (current *watch) step() error {
 	if polled.page.Reset {
 		kind = FrameReset
 	}
-	return current.enqueue(current.frame(kind, from, polled.page, polled.position, oldBinding))
+	return current.enqueue(current.frame(kind, from, polled.page, polled.position, binding))
 }
 
 func bindingChange(a, b Binding) string {
@@ -530,6 +562,18 @@ func bindingChange(a, b Binding) string {
 	default:
 		return ""
 	}
+}
+
+func watchBindingChange(method Method, reason string) string {
+	if method == MethodViewWatch && reason == "visibility_changed" {
+		return "view_changed"
+	}
+	return reason
+}
+
+func isViewDeleted(err error) bool {
+	var typed *model.Error
+	return errors.As(err, &typed) && typed.Data.Code == "not_found"
 }
 
 // The event service owns actual log/materializer/authorization semantics. It
@@ -696,7 +740,7 @@ func (current *watch) cursorBinding(binding Binding) (serverevents.CursorBinding
 }
 
 func (current *watch) frame(kind FrameKind, from string, page serverevents.Page, position coreevents.Position, binding Binding) Frame {
-	frame := Frame{SubscriptionID: current.id, Kind: kind, FromCursor: from, Cursor: page.Cursor, position: position, binding: cloneBinding(binding), created: current.manager.config.Clock()}
+	frame := Frame{SubscriptionID: current.id, Kind: kind, FromCursor: from, Cursor: page.Cursor, position: position, binding: cloneBinding(binding), Projection: cloneProjectionStatus(binding.Projection), created: current.manager.config.Clock()}
 	if page.Reset {
 		frame.Reason = pageBoundaryReason(page)
 	}
@@ -731,7 +775,7 @@ func (current *watch) enqueue(frame Frame) error {
 	if current.halted {
 		return nil
 	}
-	current.cursor, current.position = frame.Cursor, frame.position
+	current.cursor, current.position, current.binding = frame.Cursor, frame.position, cloneBinding(frame.binding)
 	select {
 	case current.queue <- frame:
 		current.emittedCursor = frame.Cursor
@@ -753,7 +797,7 @@ func (current *watch) replaceLocked(reason string, binding Binding) error {
 	if err != nil {
 		return err
 	}
-	reset := Frame{SubscriptionID: current.id, Kind: FrameReset, Cursor: cursor, Reason: reason, position: current.position, binding: cloneBinding(binding), created: current.manager.config.Clock()}
+	reset := Frame{SubscriptionID: current.id, Kind: FrameReset, Cursor: cursor, Reason: reason, position: current.position, binding: cloneBinding(binding), Projection: cloneProjectionStatus(binding.Projection), created: current.manager.config.Clock()}
 	if err := reset.validate(); err != nil {
 		return err
 	}
@@ -826,28 +870,48 @@ func (current *watch) next(ctx context.Context, consumer *Subscription) (Frame, 
 	if frame.Kind != FrameReset {
 		binding, err := current.manager.binding(checkCtx, current.request)
 		if err != nil {
-			return Frame{}, current.fail(err)
+			if current.request.Method == MethodViewWatch && isViewDeleted(err) {
+				if resetErr := current.replaceWithReset("view_deleted", frame.binding); resetErr != nil {
+					return Frame{}, current.fail(resetErr)
+				}
+			} else {
+				return Frame{}, current.fail(err)
+			}
 		}
-		reason := bindingChange(frame.binding, binding)
-		if reason == "" && current.manager.config.Clock().Sub(frame.created) > current.manager.config.MaxLag {
-			reason = "lag"
-		}
-		if reason != "" {
-			if err := current.replaceWithReset(reason, binding); err != nil {
-				return Frame{}, current.fail(err)
+		if err == nil {
+			reason := watchBindingChange(current.request.Method, bindingChange(frame.binding, binding))
+			if reason == "" && current.manager.config.Clock().Sub(frame.created) > current.manager.config.MaxLag {
+				reason = "lag"
 			}
-		} else {
-			frame, err = current.revalidate(checkCtx, frame)
-			if err != nil {
-				return Frame{}, current.fail(err)
-			}
-			latest, err := current.manager.binding(checkCtx, current.request)
-			if err != nil {
-				return Frame{}, current.fail(err)
-			}
-			if reason := bindingChange(binding, latest); reason != "" {
-				if err := current.replaceWithReset(reason, latest); err != nil {
+			if reason != "" {
+				if err := current.replaceWithReset(reason, binding); err != nil {
 					return Frame{}, current.fail(err)
+				}
+			} else {
+				frame, err = current.revalidate(checkCtx, frame)
+				if err != nil {
+					return Frame{}, current.fail(err)
+				}
+				latest, latestErr := current.manager.binding(checkCtx, current.request)
+				if latestErr != nil {
+					if current.request.Method == MethodViewWatch && isViewDeleted(latestErr) {
+						if err := current.replaceWithReset("view_deleted", frame.binding); err != nil {
+							return Frame{}, current.fail(err)
+						}
+					} else {
+						return Frame{}, current.fail(latestErr)
+					}
+				} else if reason := watchBindingChange(current.request.Method, bindingChange(binding, latest)); reason != "" {
+					if err := current.replaceWithReset(reason, latest); err != nil {
+						return Frame{}, current.fail(err)
+					}
+				} else {
+					// Projection status is intentionally not part of
+					// bindingChange. Refresh the envelope metadata at the
+					// delivery boundary while retaining the exact cursor and
+					// payload binding that was polled.
+					frame.binding = cloneBinding(latest)
+					frame.Projection = cloneProjectionStatus(latest.Projection)
 				}
 			}
 		}
@@ -1081,7 +1145,14 @@ func (m *Manager) binding(ctx context.Context, request Request) (Binding, error)
 	var binding Binding
 	var err error
 	if request.Method == MethodViewWatch || request.ViewID != "" {
-		return Binding{}, ErrViewCheckpointRequired
+		if request.Method != MethodViewWatch || request.ViewID == "" || m.config.Views == nil {
+			return Binding{}, ErrViewCheckpointRequired
+		}
+		view, resolveErr := m.config.Views.WatchBinding(ctx, request.Principal, request.ViewID)
+		if resolveErr != nil {
+			return Binding{}, resolveErr
+		}
+		binding = Binding{Principal: request.Principal, Filter: cloneFilter(view.Filter), Ontology: view.Ontology, PolicyVersion: view.PolicyVersion, Incarnation: view.Incarnation, Projection: cloneProjectionStatus(view.Projection)}
 	} else if m.config.Bindings != nil {
 		binding, err = m.config.Bindings.Current(ctx, request)
 		if err != nil {
@@ -1103,6 +1174,12 @@ func (m *Manager) binding(ctx context.Context, request Request) (Binding, error)
 	}
 	if request.Method != MethodViewWatch && request.Method != MethodBeadWatch && request.Method != MethodPresenceWatch && !sameFilter(binding.Filter, request.Filter) {
 		return Binding{}, ErrBindingChanged
+	}
+	if binding.Ontology.IsZero() {
+		binding.Ontology = request.Ontology
+	}
+	if binding.PolicyVersion == "" {
+		binding.PolicyVersion = request.PolicyVersion
 	}
 	if binding.Ontology.Validate() != nil {
 		return Binding{}, ErrInvalidRequest
@@ -1130,6 +1207,7 @@ func sameFilter(a, b coreevents.Filter) bool {
 func cloneFilter(filter coreevents.Filter) coreevents.Filter {
 	filter.Types = append([]string(nil), filter.Types...)
 	filter.Resources = append([]string(nil), filter.Resources...)
+	filter.BeadTypes = append([]string(nil), filter.BeadTypes...)
 	return filter
 }
 
@@ -1137,8 +1215,10 @@ func normalizeFilter(filter coreevents.Filter) coreevents.Filter {
 	filter = cloneFilter(filter)
 	sort.Strings(filter.Types)
 	sort.Strings(filter.Resources)
+	sort.Strings(filter.BeadTypes)
 	filter.Types = compactStrings(filter.Types)
 	filter.Resources = compactStrings(filter.Resources)
+	filter.BeadTypes = compactStrings(filter.BeadTypes)
 	return filter
 }
 

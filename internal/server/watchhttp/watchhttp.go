@@ -85,6 +85,7 @@ type Adapter struct {
 type Config struct {
 	Ontology      model.Revision
 	PolicyVersion string
+	Views         watch.ViewResolver
 	Path          string
 	MaxBody       int64
 }
@@ -112,10 +113,15 @@ func New(manager *watch.Manager, config Config) (*Adapter, error) {
 			return nil, err
 		}
 	}
+	if config.Views != nil {
+		if err := manager.SetViewResolver(config.Views); err != nil {
+			return nil, fmt.Errorf("watchhttp: install view resolver: %w", err)
+		}
+	}
 	return &Adapter{manager: manager, path: config.Path, maxBody: config.MaxBody, ontology: config.Ontology, policyVersion: config.PolicyVersion}, nil
 }
 
-// Register installs subscription/unsubscription and explicit view refusal. Registration is kept in
+// Register installs subscription/unsubscription and view subscriptions. Registration is kept in
 // this package so the shared RPC transport and catalog remain untouched; the
 // registry still validates each handler against its existing OpenRPC schema.
 func (a *Adapter) Register(registry *rpc.Registry) error {
@@ -198,7 +204,7 @@ func (a *Adapter) viewWatch(ctx context.Context, call rpc.Call) (any, error) {
 	if params.ViewID == "" {
 		return nil, invalidParams(errors.New("viewId is required"))
 	}
-	return nil, mapError(watch.ErrViewCheckpointRequired)
+	return a.open(ctx, call.Principal, watch.Request{Method: watch.MethodViewWatch, ViewID: params.ViewID, From: params.From})
 }
 
 func (a *Adapter) beadWatch(ctx context.Context, call rpc.Call) (any, error) {

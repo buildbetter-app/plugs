@@ -332,6 +332,8 @@ internal/integration/cursorhttp/cursor_test.go
 internal/integration/cursorhttp/fixture_test.go
 internal/integration/dumpvalidation/BUILD.bazel
 internal/integration/dumpvalidation/dumpvalidation_test.go
+internal/integration/eventsqlpaging/BUILD.bazel
+internal/integration/eventsqlpaging/integration_test.go
 internal/integration/graphacceptance/BUILD.bazel
 internal/integration/graphacceptance/README.md
 internal/integration/graphacceptance/fixture_test.go
@@ -348,6 +350,10 @@ internal/integration/httpconformance/fixture_test.go
 internal/integration/httpconformance/protocol_test.go
 internal/integration/localclisession/BUILD.bazel
 internal/integration/localclisession/session_test.go
+internal/integration/migrationpre/BUILD.bazel
+internal/integration/migrationpre/README.md
+internal/integration/migrationpre/compose.go
+internal/integration/migrationpre/integration_test.go
 internal/integration/oidc/BUILD.bazel
 internal/integration/oidc/flow_test.go
 internal/integration/oidc/http_test.go
@@ -542,6 +548,9 @@ internal/server/transport/mcp/config.go
 internal/server/transport/mcp/errors.go
 internal/server/transport/mcp/handler.go
 internal/server/transport/mcp/handler_test.go
+internal/server/transport/mcp/notification_stream_test.go
+internal/server/transport/mcp/notifications.go
+internal/server/transport/mcp/notifications_test.go
 internal/server/transport/stdio/BUILD.bazel
 internal/server/transport/stdio/README.md
 internal/server/transport/stdio/config.go
@@ -701,6 +710,12 @@ spikes/runtime/concurrency.go
 spikes/runtime/concurrency_test.go
 spikes/runtime/sandbox.go
 spikes/runtime/sandbox_test.go
+tools/census/BUILD.bazel
+tools/census/README.md
+tools/census/census.go
+tools/census/cmd/census_check/main.go
+tools/census/gate_test.go
+tools/census/testdata/census.json
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
 tools/lexicon/checker.go

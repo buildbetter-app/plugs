@@ -8,6 +8,7 @@ package viewops
 import (
 	"context"
 
+	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -44,11 +45,40 @@ type ViewReader interface {
 	GetView(context.Context, model.PrincipalRef, string) (Definition, error)
 }
 
+// ReadinessState is the small derived-row projection consumed by a view. The
+// reader receives the same pinned snapshot used for the view scan, so a
+// pending fan-out can never make membership stale or reorder a page.
+type ReadinessState struct {
+	Pending bool
+}
+
+type ReadinessReader interface {
+	Pending(context.Context, driver.Reader, []model.Ref) (map[string]ReadinessState, error)
+}
+
+// ReadinessSource is an expressive alias for composition roots that expose
+// the same pinned-snapshot port under a source-oriented name.
+type ReadinessSource = ReadinessReader
+
 type Config struct {
 	AuthorizeRead    AuthorizeRead
 	Views            ViewReader
-	OntologyRevision model.Revision
+	Readiness        ReadinessReader
+	ProjectionStatus coreevents.ProjectionStatusReader
+	// ProjectionBinding is the durable checkpoint binding whose status is
+	// surfaced with view results and view.watch frames. "core" is the stable
+	// default used by the projection composition root.
+	ProjectionBinding string
+	OntologyRevision  model.Revision
+	// PolicyVersion is the host's current authorization generation. It is
+	// carried into watch cursors; an empty value is valid for an immutable
+	// no-plugin installation.
+	PolicyVersion string
 }
+
+// Keep the resolver contract visible from the view package while the shared
+// event/watch layer owns the transport-neutral binding type.
+type WatchBinding = coreevents.ViewBinding
 
 type Service struct {
 	store ReadStore
@@ -136,10 +166,11 @@ type Group struct {
 }
 
 type Result struct {
-	Items      []Bead
-	NextCursor *Cursor
-	AsOf       AsOf
-	Groups     []Group
+	Items      []Bead                       `json:"items"`
+	NextCursor *Cursor                      `json:"nextCursor,omitempty"`
+	AsOf       AsOf                         `json:"asOf"`
+	Groups     []Group                      `json:"groups,omitempty"`
+	Projection *coreevents.ProjectionStatus `json:"projection,omitempty"`
 }
 
 type ExplainRequest struct {
@@ -150,9 +181,11 @@ type ExplainRequest struct {
 }
 
 type ExplainResult struct {
-	ViewID         string   `json:"viewId"`
-	ItemID         string   `json:"itemId"`
-	Included       bool     `json:"included"`
-	Reasons        []string `json:"reasons"`
-	HiddenBlockers int      `json:"hiddenBlockers,omitempty"`
+	ViewID           string                       `json:"viewId"`
+	ItemID           string                       `json:"itemId"`
+	Included         bool                         `json:"included"`
+	Reasons          []string                     `json:"reasons"`
+	HiddenBlockers   int                          `json:"hiddenBlockers,omitempty"`
+	ReadinessPending bool                         `json:"readinessPending,omitempty"`
+	Projection       *coreevents.ProjectionStatus `json:"projection,omitempty"`
 }
