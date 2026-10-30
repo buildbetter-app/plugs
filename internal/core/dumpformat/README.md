@@ -1,9 +1,10 @@
-# Offline converter reader
+# Dump archive reader and offline merger
 
 `Read` validates the `plug-dump/1` archive emitted by exporter
 `10953a8536c3a90b7cf54896d2ed5513b48a8e99`. It accepts the producer's
-`offline-head-and-source-archives` scope only. This is not the full A6 dump
-schema or a restore certificate.
+`offline-head-and-source-archives` scope and the native `plug-native-store`
+envelope emitted by `admin.dump`. This is not the full A6 dump schema or a
+restore certificate.
 
 The reader checks the bounded tar, member registry and checksums, exact typed
 JSON members, source census and column schema, source/body projections,
@@ -11,6 +12,16 @@ credential references, relation targets, allocator bounds, and paired migration
 fingerprints. It retains original member bytes and all source archives.
 `Archive.Manifest`, `Archive.Records`, and `Archive.Member` return detached
 copies. Source nulls and JSON numbers retain their values.
+
+`internal/core/restore` supplies the callable empty-store writer for supported
+native head images on memory and SQLite. It validates the complete archive and
+binds uploaded bytes to the admitted manifest before opening the publication
+transaction. Native full-history archives, allocator/project metadata, required
+disclosures, and converter archives are explicitly refused before mutation
+until their history and allocator invariants can be preserved. The native admin
+path does not dispatch converter archives to the separate offline seam described
+below. Admin operations require a host-injected, method-and-digest-bound human-presence
+verifier and fail closed when that verifier is unavailable.
 
 `internal/integration/converterroundtrip` supplies a trusted offline restore
 seam. It refuses unsupported semantics before acquiring a write transaction:

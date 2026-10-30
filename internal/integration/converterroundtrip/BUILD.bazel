@@ -35,3 +35,5 @@ filegroup(
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
 )
+
+exports_files(["testdata/synthetic-plug-dump-1.tar"], visibility = ["//visibility:public"])

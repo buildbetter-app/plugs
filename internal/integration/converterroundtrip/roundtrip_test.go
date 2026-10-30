@@ -655,6 +655,56 @@ func snapshot(t *testing.T, store driver.Store) storeState {
 	return result
 }
 
+func TestActualFixtureRefusesWithoutChangingMemoryOrSQLite(t *testing.T) {
+	for _, kind := range []string{"memory", "sqlite"} {
+		t.Run(kind, func(t *testing.T) {
+			store, lease, cleanup := openTarget(t, kind)
+			defer cleanup()
+			before := snapshot(t, store)
+			if !before.Meta.Head.IsZero() || len(before.Records) != 0 || len(before.Changesets) != 0 {
+				t.Fatal("target not empty")
+			}
+			report, err := Restore(context.Background(), bytes.NewReader(fixtureBytes(t)), store)
+			if !errors.Is(err, ErrRestoreUnavailable) {
+				t.Fatalf("restore error=%v", err)
+			}
+			if report.Archive == nil || len(report.Archive.Records("beads-archive")) != 105 || !reflect.DeepEqual(report.Target, before.Meta) {
+				t.Fatal("refusal lost source evidence or target metadata")
+			}
+			if !reflect.DeepEqual(before, snapshot(t, store)) {
+				t.Fatal("empty-target refusal changed records/history/metadata")
+			}
+			// Existing ordinary service/Writer still functions after refusal. This is
+			// a current write, with current attribution, not a source restore.
+			ontology := service.NewOntology(nil)
+			writer := pipeline.New(store, lease, pipeline.WithOntology(ontology))
+			svc := service.New(store, lease, writer, service.WithOntology(ontology))
+			principal := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+			meta := model.WriteMeta{Project: "demo", Agent: "converter-test", AgentLabel: "converter-test", IdempotencyKey: strings.Repeat("ab", 16)}
+			committed, err := svc.Create(context.Background(), principal, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": "Existing target record"}}, meta)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref := committed.Results[0].Ref
+			if _, err := svc.Comment(context.Background(), principal, service.CommentRequest{ID: ref, Body: "Existing target comment"}, meta); err != nil {
+				t.Fatal(err)
+			}
+			populated := snapshot(t, store)
+			if len(populated.Records) != 1 || len(populated.Changesets) != 2 || len(populated.Versions[ref.ID]) != 2 {
+				t.Fatalf("ordinary write boundary=%+v", populated)
+			}
+			report, err = Restore(context.Background(), bytes.NewReader(fixtureBytes(t)), store)
+			if !errors.Is(err, ErrTargetNotEmpty) || report.Archive == nil {
+				t.Fatalf("populated target=%v", err)
+			}
+			if !reflect.DeepEqual(populated, snapshot(t, store)) {
+				t.Fatal("populated-target refusal changed records/history/metadata")
+			}
+			t.Log("real " + kind + ": empty and populated restore refusals preserve records, versions, changesets, head, history floor and incarnation")
+		})
+	}
+}
+
 func TestVerifiedBoundedHeadSupportsReadyClaimAndTxApply(t *testing.T) {
 	for _, kind := range []string{"memory", "sqlite"} {
 		t.Run(kind, func(t *testing.T) {

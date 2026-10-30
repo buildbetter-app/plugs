@@ -31,6 +31,7 @@ type transaction struct {
 	derived                 map[string]driver.LockState
 	blobs                   map[driver.Hash][]byte
 	bumps                   map[string]driver.LockKey
+	allocators              map[string]driver.OfflineAllocator
 }
 
 func (t *transaction) check(ctx context.Context) error {
@@ -79,6 +80,7 @@ func (t *transaction) finish() {
 	t.derived = nil
 	t.blobs = nil
 	t.bumps = nil
+	t.allocators = nil
 	s.signal()
 }
 
@@ -466,6 +468,9 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 		return model.Changeset{}, err
 	}
 	next := s.state.fork()
+	for prefix, allocator := range t.allocators {
+		next.allocators[prefix] = allocator.Clone()
+	}
 	for id, record := range t.records {
 		ref := t.recordRef(id)
 		version := driver.Version{Ref: ref, Revision: revision, CreatedAt: when, Principal: entry.Principal, Deleted: record == nil}

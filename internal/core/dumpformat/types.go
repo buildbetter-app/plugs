@@ -58,6 +58,16 @@ type Manifest struct {
 	Sources        []Disposition     `json:"sources"`
 	Warnings       []string          `json:"warnings"`
 	Verification   map[string]string `json:"verification"`
+	// Native store fields are present only for archives produced by Plug's
+	// engine-neutral admin.dump path. The offline Beads exporter leaves these
+	// fields absent and continues to use the source census above.
+	NativeStoreID     string `json:"native_store_id,omitempty"`
+	NativeIncarnation string `json:"native_incarnation,omitempty"`
+	NativeHead        string `json:"native_head,omitempty"`
+	NativeDigest      string `json:"native_digest,omitempty"`
+	RecordCount       int    `json:"record_count,omitempty"`
+	VersionCount      int    `json:"version_count,omitempty"`
+	ChangesetCount    int    `json:"changeset_count,omitempty"`
 }
 
 type Provenance struct {
@@ -80,6 +90,23 @@ type Archive struct {
 	manifest Manifest
 	members  map[string][]byte
 	byKind   map[string][]Record
+	native   bool
+}
+
+// Native reports whether this is an archive emitted by Plug's admin.dump
+// implementation rather than the Beads-side offline exporter.
+func (a *Archive) Native() bool { return a != nil && a.native }
+
+// NativeMember returns a detached member from a native archive. Native
+// records, versions, and changesets are newline-delimited JSON members; the
+// restore seam owns their typed decoding so the dumpformat package stays
+// engine-neutral.
+func (a *Archive) NativeMember(path string) ([]byte, bool) {
+	if a == nil || !a.native {
+		return nil, false
+	}
+	data, ok := a.members[path]
+	return append([]byte(nil), data...), ok
 }
 
 // SHA256 binds the exact validated tar bytes, including its manifest.
@@ -87,7 +114,10 @@ func (a *Archive) SHA256() string { return a.sha256 }
 
 func (a *Archive) Manifest() Manifest {
 	m := a.manifest
-	m.Projects = append([]Project(nil), m.Projects...)
+	// Preserve empty arrays as empty arrays. Manifest digests bind the exact
+	// canonical JSON shape, so turning an exported [] into null would make a
+	// readback hash differ from the admitted manifest.
+	m.Projects = append([]Project{}, m.Projects...)
 	for i := range m.Projects {
 		c := make(map[string]uint64, len(m.Projects[i].ChildCounters))
 		for key, value := range m.Projects[i].ChildCounters {
@@ -95,9 +125,9 @@ func (a *Archive) Manifest() Manifest {
 		}
 		m.Projects[i].ChildCounters = c
 	}
-	m.Kinds = append([]Kind(nil), m.Kinds...)
-	m.Sources = append([]Disposition(nil), m.Sources...)
-	m.Warnings = append([]string(nil), m.Warnings...)
+	m.Kinds = append([]Kind{}, m.Kinds...)
+	m.Sources = append([]Disposition{}, m.Sources...)
+	m.Warnings = append([]string{}, m.Warnings...)
 	m.Files = make(map[string]File, len(a.manifest.Files))
 	for key, value := range a.manifest.Files {
 		m.Files[key] = value
