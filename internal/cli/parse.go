@@ -32,6 +32,10 @@ Commands:
   cancel ID [--reason TEXT] [--expect REVISION]
   fail ID [--reason TEXT] [--expect REVISION]
   history --as-of REVISION [--id ID] [--limit N] [--cursor TOKEN]
+  history get ID --as-of REVISION
+  history diff ID --from REVISION --to REVISION
+  events [--event TYPE] [--resource REF] [--limit N] [--after TOKEN]
+  health
   dump --output FILE [--history full|head] [--page-size N]
   restore FILE [--history full|head]
   session                 Read one JSON argv array per line from stdin.
@@ -106,11 +110,22 @@ func ParseCommand(args []string) (Command, error) {
 		return Command{}, fmt.Errorf("command is required")
 	}
 	name := args[0]
-	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "reopen": true, "defer": true, "cancel": true, "fail": true, "history": true, "dump": true, "restore": true}
+	commandArgs := args[1:]
+	if name == "history" && len(commandArgs) > 0 && (commandArgs[0] == "get" || commandArgs[0] == "diff") {
+		name = "history." + commandArgs[0]
+		commandArgs = commandArgs[1:]
+	} else if name == "history-get" {
+		name = "history.get"
+	} else if name == "history-diff" {
+		name = "history.diff"
+	} else if name == "events" && len(commandArgs) > 0 && commandArgs[0] == "tail" {
+		commandArgs = commandArgs[1:]
+	}
+	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "reopen": true, "defer": true, "cancel": true, "fail": true, "history": true, "history.get": true, "history.diff": true, "events": true, "health": true, "dump": true, "restore": true}
 	if !allowed[name] {
 		return Command{}, fmt.Errorf("unsupported command %q", name)
 	}
-	var title, typ, fields, body, reason, asOf, expect, id, key, cursor, output, history string
+	var title, typ, fields, body, reason, asOf, expect, id, key, cursor, after, eventType, resource, from, to, output, history string
 	var limit int
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -153,12 +168,26 @@ func ParseCommand(args []string) (Command, error) {
 		fs.IntVar(&limit, "page-size", 1<<20, "page size")
 	case "restore":
 		fs.StringVar(&history, "history", "full", "history")
+	case "history.get":
+		add(&asOf, "as-of")
+	case "history.diff":
+		add(&from, "from")
+		add(&to, "to")
+		fs.StringVar(&from, "from-revision", "", "from revision")
+		fs.StringVar(&to, "to-revision", "", "to revision")
+	case "events":
+		add(&eventType, "event")
+		add(&resource, "resource")
+		add(&after, "after")
+		add(&cursor, "cursor")
+		fs.IntVar(&limit, "limit", 1000, "limit")
+	case "health":
 	}
 	write := name == "create" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail"
 	if write {
 		add(&key, "idempotency-key")
 	}
-	ordered, err := interspersed(fs, args[1:])
+	ordered, err := interspersed(fs, commandArgs)
 	if err != nil {
 		return Command{}, err
 	}
@@ -167,7 +196,7 @@ func ParseCommand(args []string) (Command, error) {
 	}
 	p := map[string]any{}
 	c := Command{Method: "bead." + name, Params: p, Key: key}
-	needID := name == "get" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail"
+	needID := name == "get" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail" || name == "history.get" || name == "history.diff"
 	if name == "restore" {
 		if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
 			return c, fmt.Errorf("restore requires exactly one archive path")
@@ -203,7 +232,11 @@ func ParseCommand(args []string) (Command, error) {
 		if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
 			return c, fmt.Errorf("%s requires exactly one bead ID", name)
 		}
-		p["id"] = map[string]any{"id": fs.Arg(0)}
+		if name == "history.get" || name == "history.diff" {
+			p["ref"] = map[string]any{"id": fs.Arg(0)}
+		} else {
+			p["id"] = map[string]any{"id": fs.Arg(0)}
+		}
 	} else if fs.NArg() != 0 {
 		return c, fmt.Errorf("%s takes no positional arguments", name)
 	}
@@ -254,6 +287,51 @@ func ParseCommand(args []string) (Command, error) {
 		if !seen["as-of"] {
 			return c, fmt.Errorf("history requires --as-of REVISION")
 		}
+	}
+	if name == "history.get" {
+		c.Method = "history.get"
+		if !seen["as-of"] {
+			return c, fmt.Errorf("history get requires --as-of REVISION")
+		}
+	}
+	if name == "history.diff" {
+		c.Method = "history.diff"
+		if !seen["from"] && !seen["from-revision"] || !seen["to"] && !seen["to-revision"] {
+			return c, fmt.Errorf("history diff requires --from REVISION and --to REVISION")
+		}
+		fromValue, err := revision(from)
+		if err != nil {
+			return c, fmt.Errorf("--from: %w", err)
+		}
+		toValue, err := revision(to)
+		if err != nil {
+			return c, fmt.Errorf("--to: %w", err)
+		}
+		p["fromRevision"], p["toRevision"] = fromValue, toValue
+	}
+	if name == "events" {
+		c.Method = "event.list"
+		if after == "" && cursor != "" {
+			after = cursor
+		}
+		if after != "" {
+			p["after"] = after
+		}
+		if limit < 1 || limit > 1000 {
+			return c, fmt.Errorf("--limit must be between 1 and 1000")
+		}
+		p["limit"] = limit
+		f := map[string]any{}
+		if eventType != "" {
+			f["events"] = []string{eventType}
+		}
+		if resource != "" {
+			f["resources"] = []string{resource}
+		}
+		p["filter"] = f
+	}
+	if name == "health" {
+		c.Method = "admin.health"
 	}
 	if seen["as-of"] {
 		n, err := revision(asOf)

@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/client"
+	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	serverevents "github.com/buildbetter-app/plugs/internal/server/events"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/inprocess"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -25,6 +27,18 @@ type StorageConfig struct{ Driver, DSN string }
 // StorageFactory is the seam for a persistent SQLite driver. It returns one
 // real Store and its cleanup, without selecting a different service or Writer.
 type StorageFactory func(context.Context, StorageConfig) (driver.Store, func() error, error)
+
+type localEventProvider struct{ service serverevents.Service }
+
+func (p localEventProvider) List(ctx context.Context, req service.EventProviderRequest) (service.EventPage, error) {
+	page, err := p.service.List(ctx, serverevents.Request{
+		Principal: req.Principal,
+		Filter:    coreevents.Filter{Types: req.Filter.Types, Resources: req.Filter.Resources},
+		After:     req.After,
+		Limit:     req.Limit,
+	})
+	return service.EventPage{Events: page.Events, Cursor: page.Cursor}, err
+}
 
 func MemoryFactory(ctx context.Context, cfg StorageConfig) (driver.Store, func() error, error) {
 	if cfg.Driver != "memory" {
@@ -102,7 +116,21 @@ func OpenLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 	opts := append([]pipeline.Option(nil), cfg.PipelineOptions...)
 	opts = append(opts, pipeline.WithOntology(cfg.Ontology))
 	writer := pipeline.New(store, lease, opts...)
-	svc := service.New(store, lease, writer, service.WithOntology(cfg.Ontology))
+	var eventKey [32]byte
+	if _, err := rand.Read(eventKey[:]); err != nil {
+		return fail(err)
+	}
+	eventCursors, err := serverevents.NewCursorCodec(eventKey[:])
+	if err != nil {
+		return fail(err)
+	}
+	eventReader := &coreevents.Reader{
+		Log:           serverevents.Log{Store: store},
+		Materializer:  serverevents.HistoryMaterializer{Store: store},
+		Authorization: coreevents.AllowAll{},
+	}
+	eventService := serverevents.Service{Reader: eventReader, Cursors: eventCursors}
+	svc := service.New(store, lease, writer, service.WithOntology(cfg.Ontology), service.WithEventProvider(localEventProvider{service: eventService}))
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		return fail(err)
