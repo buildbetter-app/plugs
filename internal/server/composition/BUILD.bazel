@@ -2,15 +2,18 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "composition",
-    srcs = ["config.go", "configfile.go", "mcp.go", "telemetry.go"],
+    srcs = ["config.go", "configfile.go", "mcp.go", "restore_import.go", "telemetry.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/composition",
     visibility = ["//:__subpackages__"],
     deps = [
         "//internal/core/events",
+        "//internal/core/dumpformat",
         "//internal/core/model",
         "//internal/core/pipeline",
+        "//internal/core/restore",
         "//internal/core/service",
         "//internal/core/viewops",
+        "//internal/integration/converterroundtrip",
         "//internal/plugins/authnoidc",
         "//internal/server/authn",
         "//internal/server/collab",
@@ -42,6 +45,7 @@ go_test(
         "//internal/core/port",
         "//internal/core/service",
         "//internal/core/viewops",
+        "//internal/integration/converterroundtrip",
         "//internal/plugins/authnoidc",
         "//internal/server/authn",
         "//internal/server/transport/httpjson",

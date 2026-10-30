@@ -22,6 +22,7 @@ import (
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnoidc"
@@ -80,6 +81,12 @@ type Config struct {
 	CursorKey    []byte
 	LeaseHolder  string
 	StoreFactory StoreFactory
+	// RestorePresence is the trusted D32 verifier for existing admin.restore.*
+	// and the host-private converter import. Nil deliberately fails closed.
+	RestorePresence restore.PresenceVerifier
+	// RestoreImportPlanner is converter-owned inspection of the exact archive;
+	// composition never derives or accepts a caller-supplied derived digest.
+	RestoreImportPlanner RestoreImportPlanner
 
 	// ViewReader and Readiness are optional host-owned read projections. When
 	// ViewReader is present, view.run/view.explain and view.watch are composed
@@ -119,6 +126,7 @@ type Runtime struct {
 	Projections      *coreevents.ProjectionRegistry
 	Dispatcher       *coreevents.Dispatcher
 	ProjectionStatus coreevents.ProjectionStatusReader
+	restoreImport    *restoreImportAdapter
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -274,6 +282,10 @@ func (r *Runtime) bind(config Config) error {
 	if err := rpc.BindService(registry, r.Service); err != nil {
 		return fmt.Errorf("composition: bind service: %w", err)
 	}
+	if err := rpc.BindAdmin(registry, restore.NewManager(r.Store, r.Lease, config.RestorePresence)); err != nil {
+		return fmt.Errorf("composition: bind admin: %w", err)
+	}
+	r.restoreImport = newRestoreImportAdapter(r.Store, r.Lease, config.AuthMode, config.RestorePresence, config.RestoreImportPlanner)
 
 	// Collaboration and watches share the same lease and lifetime as the core.
 	r.Sessions, err = collab.New(r.ctx, collab.Config{

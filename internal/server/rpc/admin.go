@@ -10,6 +10,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
+	"github.com/buildbetter-app/plugs/internal/server/authn"
 )
 
 // TxApplyService is intentionally separate from Service. Existing service
@@ -51,6 +52,9 @@ func BindAdmin(registry *Registry, manager *restore.Manager) error {
 		}
 	}
 	if err := registry.Register("admin.dump", func(ctx context.Context, c Call) (any, error) {
+		if err := requireAdminCaller(ctx, c.Principal); err != nil {
+			return nil, err
+		}
 		var params struct {
 			History           string         `json:"history"`
 			Cursor            string         `json:"cursor"`
@@ -75,6 +79,9 @@ func BindAdmin(registry *Registry, manager *restore.Manager) error {
 		return err
 	}
 	if err := registry.Register("admin.restore.begin", func(ctx context.Context, c Call) (any, error) {
+		if err := requireAdminCaller(ctx, c.Principal); err != nil {
+			return nil, err
+		}
 		var params struct {
 			Manifest      map[string]any `json:"manifest"`
 			History       string         `json:"history"`
@@ -84,12 +91,15 @@ func BindAdmin(registry *Registry, manager *restore.Manager) error {
 		if err := wire.DecodeInto(c.Params, &params); err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 		}
-		status, err := manager.Begin(ctx, params.Manifest, params.History, restore.Presence(params.HumanPresence))
+		status, err := manager.BeginAs(ctx, c.Principal, params.Manifest, params.History, restore.Presence(params.HumanPresence))
 		return restoreStatusJSON(status), err
 	}); err != nil {
 		return err
 	}
 	if err := registry.Register("admin.restore.chunk", func(ctx context.Context, c Call) (any, error) {
+		if err := requireAdminCaller(ctx, c.Principal); err != nil {
+			return nil, err
+		}
 		var params struct {
 			RestoreID     string         `json:"restoreId"`
 			Page          model.Natural  `json:"page"`
@@ -109,12 +119,15 @@ func BindAdmin(registry *Registry, manager *restore.Manager) error {
 		if err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: "restore page data is not base64"}}
 		}
-		status, err := manager.Chunk(ctx, params.RestoreID, page, data, params.SHA256, restore.Presence(params.HumanPresence))
+		status, err := manager.ChunkAs(ctx, c.Principal, params.RestoreID, page, data, params.SHA256, restore.Presence(params.HumanPresence))
 		return restoreStatusJSON(status), err
 	}); err != nil {
 		return err
 	}
 	return registry.Register("admin.restore.finish", func(ctx context.Context, c Call) (any, error) {
+		if err := requireAdminCaller(ctx, c.Principal); err != nil {
+			return nil, err
+		}
 		var params struct {
 			RestoreID      string         `json:"restoreId"`
 			ManifestSHA256 string         `json:"manifestSha256"`
@@ -127,6 +140,23 @@ func BindAdmin(registry *Registry, manager *restore.Manager) error {
 		status, err := manager.Finish(ctx, params.RestoreID, params.ManifestSHA256, c.Principal, writeMeta(c), restore.Presence(params.HumanPresence))
 		return restoreStatusJSON(status), err
 	})
+}
+
+// requireAdminCaller keeps the existing anonymous-local route while ensuring
+// every authenticated admin call is backed by a live interactive User proof.
+// A provider/API-key User, service, agent, or caller-shaped principal cannot
+// inherit an admin restore session.
+func requireAdminCaller(ctx context.Context, principal model.PrincipalRef) error {
+	if principal.Kind == "anonymous" && principal.ID == "anonymous" && principal.Sponsor == nil && len(principal.Caveats) == 0 {
+		return nil
+	}
+	if principal.Kind != "user" || principal.Sponsor != nil || len(principal.Caveats) != 0 {
+		return authn.ErrHumanPresenceRequired
+	}
+	if err := authn.ValidatePrincipal(principal); err != nil {
+		return authn.ErrUnauthenticated
+	}
+	return authn.RequireInteractiveUser(ctx, principal)
 }
 
 func writeMeta(c Call) model.WriteMeta {

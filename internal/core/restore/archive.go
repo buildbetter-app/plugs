@@ -338,6 +338,7 @@ type restoreSession struct {
 	manifest    map[string]any
 	history     string
 	hash        string
+	principal   model.PrincipalRef
 	pages       map[uint64][]byte
 	state       string
 	warnings    []model.Warning
@@ -541,6 +542,13 @@ type RestoreStatus struct {
 }
 
 func (m *Manager) Begin(ctx context.Context, manifest map[string]any, history string, presence Presence) (RestoreStatus, error) {
+	return m.BeginAs(ctx, model.PrincipalRef{}, manifest, history, presence)
+}
+
+// BeginAs binds the admitted caller to the paged restore session. Presence is
+// still checked by the injected verifier; the principal binding prevents a
+// different user from inheriting a session between begin and finish.
+func (m *Manager) BeginAs(ctx context.Context, principal model.PrincipalRef, manifest map[string]any, history string, presence Presence) (RestoreStatus, error) {
 	if err := m.requirePresence(presence); err != nil {
 		return RestoreStatus{}, err
 	}
@@ -577,12 +585,19 @@ func (m *Manager) Begin(ctx context.Context, manifest map[string]any, history st
 	}
 	id := newID("restore")
 	m.mu.Lock()
-	m.restores[id] = &restoreSession{id: id, manifest: cloneMap(manifest), history: history, hash: hash, pages: map[uint64][]byte{}, state: "receiving"}
+	m.restores[id] = &restoreSession{id: id, manifest: cloneMap(manifest), history: history, hash: hash, principal: principal, pages: map[uint64][]byte{}, state: "receiving"}
 	m.mu.Unlock()
 	return RestoreStatus{RestoreID: id, State: "receiving", ReceivedPages: 0, Warnings: []model.Warning{}}, nil
 }
 
 func (m *Manager) Chunk(ctx context.Context, id string, page uint64, data []byte, checksum string, presence Presence) (RestoreStatus, error) {
+	return m.ChunkAs(ctx, model.PrincipalRef{}, id, page, data, checksum, presence)
+}
+
+// ChunkAs rechecks the caller binding and operation-bound presence for every
+// uploaded page. It intentionally retains the old Chunk wrapper for local
+// fixtures that use the anonymous in-process API.
+func (m *Manager) ChunkAs(ctx context.Context, principal model.PrincipalRef, id string, page uint64, data []byte, checksum string, presence Presence) (RestoreStatus, error) {
 	if err := m.requirePresence(presence); err != nil {
 		return RestoreStatus{}, err
 	}
@@ -606,6 +621,9 @@ func (m *Manager) Chunk(ctx context.Context, id string, page uint64, data []byte
 	}
 	if session.state != "receiving" {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "restore session is no longer receiving"}}
+	}
+	if !samePrincipal(session.principal, principal) {
+		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "restore session caller changed"}}
 	}
 	if err := m.verifyPresence(ctx, "admin.restore.chunk", session.hash, presence); err != nil {
 		return RestoreStatus{}, err
@@ -647,6 +665,10 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 		status := restoreStatus(session)
 		m.mu.Unlock()
 		return status, nil
+	}
+	if !samePrincipal(session.principal, principal) {
+		m.mu.Unlock()
+		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "restore session caller changed"}}
 	}
 	if manifestHash == "" {
 		m.mu.Unlock()
@@ -733,6 +755,15 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 	status := restoreStatus(m.restores[id])
 	m.mu.Unlock()
 	return status, nil
+}
+
+func samePrincipal(left, right model.PrincipalRef) bool {
+	if left.Kind == "" && left.ID == "" {
+		return true
+	}
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
 func (m *Manager) fail(id string, err error) (RestoreStatus, error) {
