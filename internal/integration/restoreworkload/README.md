@@ -1,11 +1,11 @@
 # Restored SQLite workload acceptance
 
-This package proves the admitted native head-image restore can carry real
-work after a process boundary. The fixture creates records through the bound
-local RPC client, dumps them through `admin.dump`, restores the archive into an
-empty SQLite file through `admin.restore.*`, closes that runtime, and opens a
-new local service/RPC composition over the same file. No test writes through a
-driver after restore.
+This package proves the admitted native head-image restore can carry real work
+after a same-process SQLite close/reopen. The fixture creates records through
+the bound local RPC client, dumps them through `admin.dump`, restores the
+archive into an empty SQLite file through `admin.restore.*`, closes that
+runtime, and opens a fresh bound local service/RPC composition over the same
+file. No test writes through a driver after restore.
 
 The reopened runtime must preserve the source store identity and record IDs,
 publish a new incarnation at restore revision 1, and expose the restored head

@@ -108,8 +108,9 @@ func prepareRestoredRuntime(t *testing.T) restoredRuntime {
 		t.Fatal(err)
 	}
 
-	// This is the required process boundary. From here onward the test uses
-	// only the client exposed by a new service/RPC composition over the file.
+	// This is a same-process SQLite close/reopen. From here onward, the test uses
+	// only the client exposed by a fresh bound service/RPC composition over the
+	// file.
 	reopened := openSQLiteLocal(t, targetPath, "restore", "worker")
 	t.Cleanup(func() { _ = reopened.Close() })
 	return restoredRuntime{local: reopened, archive: archive, sourceIDs: ids, restoreIncarnation: restoredIncarnation}
