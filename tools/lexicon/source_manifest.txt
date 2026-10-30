@@ -19,6 +19,7 @@ MODULE.bazel
 MODULE.bazel.lock
 NOTICE.md
 OWNERS.toml
+README.md
 SKELETON.md
 cmd/plug/BUILD.bazel
 cmd/plug/integration_test.go
@@ -630,8 +631,8 @@ internal/server/webui/bridge.go
 internal/server/webui/bridge_test.go
 internal/server/webui/browser_check.mjs
 internal/server/webui/browser_test.go
-internal/server/webui/direct_blocker_check.mjs
 internal/server/webui/catalog.go
+internal/server/webui/direct_blocker_check.mjs
 internal/server/webui/presence_display_check.mjs
 internal/server/webui/presence_display_test.go
 internal/server/webui/static/app.js
@@ -739,6 +740,7 @@ scripts/ci/plug-bazel-delivery-test.sh
 scripts/ci/plug-bazel-delivery.py
 scripts/ci/plug-bazel-targets-test.sh
 scripts/ci/plug-bazel-targets.sh
+scripts/demo.sh
 sdk/go/BUILD.bazel
 sdk/go/conformance/BUILD.bazel
 sdk/go/conformance/fixture.go
