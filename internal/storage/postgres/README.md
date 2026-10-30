@@ -52,6 +52,15 @@ checkpoint generations cover uint64, including values above MaxInt64, with
 checked conversion and overflow refusal. Indexed opaque keys/scopes are limited
 to 2048 bytes explicitly. Blob writes are content addressed and transactional.
 
+Allocator continuation is durable in `allocator_states` and participates in
+the existing complete lock set, read-fact history and fenced SQL publication.
+Sequential top-level and direct-child counters continue across reconnects.
+The table is an additive schema-1 initialization step, so reopening an older
+schema-1 database creates it without changing existing records or identity.
+Hash-mode evidence is retained, but hash allocation remains fail-closed until
+a collision/nonce contract is admitted; this driver never falls back to a
+random ID. Duplicate or non-canonical restore prefixes refuse before staging.
+
 Replication, physical backups, HA promotion and uncertain-recovery incarnation
 rotation require the deployment's managed PostgreSQL recovery integration; this
 package does not orchestrate them. The managed-HA design targets RPO 5 minutes
