@@ -15,6 +15,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
+const scanLimit = 20000
+
 func memoryRef(ref model.Ref) error {
 	if err := ref.Validate(); err != nil || !ref.IsID() || ref.ID == "" || !ref.Branch.IsZero() {
 		return failure("invalid_params", "memory methods require a nonempty ID on the main branch")
