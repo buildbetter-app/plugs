@@ -4,11 +4,22 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"sort"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+// Gate request/result names are re-exported from the core port so domain
+// services and RPC adapters share one canonical shape.
+type GateApproveRequest = port.GateApproveRequest
+type GateReportRequest = port.GateReportRequest
+type GateResult = port.GateResult
+type GateOutcome = port.GateOutcome
+type GateService = port.GateService
 
 type AsOf struct {
 	Revision    model.Revision
@@ -138,6 +149,58 @@ type UpdateRequest struct {
 type ClaimRequest struct {
 	ID     model.Ref
 	Expect []model.Precondition
+}
+
+// ClaimNextRequest describes the ready-set selection for the atomic queue
+// claim. The RPC layer supplies the project and filter after schema/cursor
+// validation; the service keeps the same bounded ready vocabulary as Ready.
+type ClaimNextRequest struct {
+	Project string
+	ViewID  string
+	Filter  *Filter
+}
+
+// ClaimNextRequestIdentity returns a canonical, selector-only identity for a
+// claimNext request. Filter lists are sets in the ready query, so ordering and
+// duplicate values do not change the identity. A nil filter and an empty
+// filter are equivalent.
+func ClaimNextRequestIdentity(req ClaimNextRequest) (string, error) {
+	type normalizedFilter struct {
+		Query     string   `json:"query"`
+		Resources []string `json:"resources"`
+		Types     []string `json:"types"`
+		Events    []string `json:"events"`
+		ViewID    string   `json:"viewId"`
+	}
+	normalize := func(values []string) []string {
+		if len(values) == 0 {
+			return nil
+		}
+		seen := make(map[string]struct{}, len(values))
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+		sort.Strings(out)
+		return out
+	}
+	value := normalizedFilter{}
+	if req.Filter != nil {
+		value = normalizedFilter{
+			Query: req.Filter.Query, Resources: normalize(req.Filter.Resources),
+			Types: normalize(req.Filter.Types), Events: normalize(req.Filter.Events),
+			ViewID: req.Filter.ViewID,
+		}
+	}
+	data, err := json.Marshal(struct {
+		ViewID string           `json:"viewId"`
+		Filter normalizedFilter `json:"filter"`
+	}{ViewID: req.ViewID, Filter: value})
+	return string(data), err
 }
 
 type CommentRequest struct {

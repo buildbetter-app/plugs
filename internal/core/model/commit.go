@@ -64,12 +64,22 @@ type Writer interface {
 }
 type WriteMeta struct {
 	// Method is the named operation that produced this write.
-	Method         string
+	Method string
+	// GateAction and GateState/Details are trusted lowering context for the
+	// canonical gate service. They are carried through the existing Writer
+	// pipeline so idempotency lookup happens before the gate is evaluated.
+	GateAction     string
+	GateState      string
+	GateDetails    map[string]any
 	AgentLabel     string
 	Project        string
 	IdempotencyKey string
-	DryRun         bool
-	Return         string // full or minimal
-	Traceparent    string
-	Agent          string
+	// ClaimNextIdentity is the canonical queue selector identity. It is set
+	// only by the claimNext domain seam and participates in the request hash so
+	// a reused key cannot silently change view or filter parameters.
+	ClaimNextIdentity string
+	DryRun            bool
+	Return            string // full or minimal
+	Traceparent       string
+	Agent             string
 }

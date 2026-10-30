@@ -440,6 +440,11 @@ func (p *serviceProbe) ClaimWithOutcome(ctx context.Context, by model.PrincipalR
 	expires, ttl := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC), model.Natural64(30000)
 	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(11), LeaseExpiresAt: &expires, LeaseTtlMs: &ttl}}, p.failure
 }
+func (p *serviceProbe) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRef, r service.ClaimNextRequest, m model.WriteMeta) (*port.WriteOutcome, error) {
+	p.record("claimNext", by, r, m)
+	expires, ttl := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC), model.Natural64(30000)
+	return &port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(14), LeaseExpiresAt: &expires, LeaseTtlMs: &ttl}}, p.failure
+}
 func (p *serviceProbe) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, r service.CommentRequest, m model.WriteMeta) (port.WriteOutcome, error) {
 	p.record("comment", by, r, m)
 	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(12)}}, p.failure
@@ -523,6 +528,67 @@ func TestServiceBindingsAtByteBoundary(t *testing.T) {
 			}
 		}
 	}
+	claimNext := result(t, call(t, s, ctx, "bead.claimNext", `{"filter":{"types":["task"]},`+meta+`}`))
+	if p.method != "claimNext" || p.meta.Method != "bead.claimNext" || p.request.(service.ClaimNextRequest).Project != "default" || claimNext["leaseTtlMs"] != json.Number("30000") || claimNext["leaseExpiresAt"] != "2026-10-29T12:00:00Z" {
+		t.Fatalf("claimNext mapping or flattened lease result changed: request=%+v result=%v", p.request, claimNext)
+	}
 	p.failure = &model.Error{Data: model.ErrorData{Code: "precondition_failed", Details: map[string]any{"reason": "revision"}}}
 	requireCode(t, call(t, s, ctx, "bead.close", `{"id":{"id":"p-1"},`+meta+`}`), "precondition_failed")
+}
+
+func TestRealClaimNextTerminalReceiptReplayAtByteBoundary(t *testing.T) {
+	s, post, _, _ := realServiceServer(t)
+	ctx := context.Background()
+	head := func() any {
+		return result(t, call(t, s, ctx, "bead.ready", `{}`))["asOf"].(map[string]any)["revision"]
+	}
+	if head() != json.Number("0") {
+		t.Fatal("fixture is not empty")
+	}
+	params := writeParams(t, map[string]any{"filter": map[string]any{"types": []string{"issue", "issue"}}})
+	checkNull := func(replayed bool) {
+		t.Helper()
+		reply := call(t, s, ctx, "bead.claimNext", paramsJSON(t, params))
+		if value, ok := reply["result"]; !ok || value != nil || reply["error"] != nil {
+			t.Fatalf("expected terminal JSON null: %v", reply)
+		}
+		meta, present := reply["_meta"].(map[string]any)
+		if replayed && (!present || meta["replayed"] != true) || !replayed && present {
+			t.Fatalf("terminal null replay metadata (want %t): %v", replayed, reply)
+		}
+	}
+	checkNull(false)
+	if head() != json.Number("1") || post.calls != 0 {
+		t.Fatal("empty receipt must advance H+1 without graph/post effects")
+	}
+	// The normalized selector replays the same durable receipt.
+	params["filter"] = map[string]any{"types": []string{"issue"}}
+	checkNull(true)
+	if head() != json.Number("1") {
+		t.Fatal("empty replay advanced head")
+	}
+	created := writeResult(t, s, "bead.create", writeParams(t, map[string]any{
+		"type": "issue", "fields": map[string]any{"title": "Ready after the terminal receipt"},
+	}), false)
+	ref := createdRef(t, created)
+	before, calls := head(), post.calls
+	checkNull(true)
+	ready := result(t, call(t, s, ctx, "bead.ready", `{}`))["items"].([]any)
+	if head() != before || post.calls != calls || len(ready) != 1 || ready[0].(map[string]any)["id"] != ref["id"] {
+		t.Fatal("empty replay claimed a later-ready bead or changed durable state")
+	}
+	params["filter"] = map[string]any{"types": []string{"task"}}
+	requireCode(t, call(t, s, ctx, "bead.claimNext", paramsJSON(t, params)), "idempotency_key_reused")
+	params["filter"] = map[string]any{"types": []string{"issue"}}
+	params["viewId"] = "different-view"
+	requireCode(t, call(t, s, ctx, "bead.claimNext", paramsJSON(t, params)), "idempotency_key_reused")
+	delete(params, "viewId")
+	if head() != before {
+		t.Fatal("changed selector mutated the queue")
+	}
+	// A new key can claim the row that the earlier durable null must ignore.
+	claimed := writeResult(t, s, "bead.claimNext", writeParams(t, map[string]any{"filter": map[string]any{"types": []string{"issue"}}}), false)
+	if claimed["results"].([]any)[0].(map[string]any)["ref"].(map[string]any)["id"] != ref["id"] || claimed["leaseTtlMs"] != json.Number("300000") {
+		t.Fatalf("real claimNext did not dispatch to the shared writer: %v", claimed)
+	}
 }

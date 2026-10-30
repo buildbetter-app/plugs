@@ -21,6 +21,7 @@ type Service interface {
 	CreateWithOutcome(context.Context, model.PrincipalRef, service.CreateRequest, model.WriteMeta) (port.WriteOutcome, error)
 	UpdateWithOutcome(context.Context, model.PrincipalRef, service.UpdateRequest, model.WriteMeta) (port.WriteOutcome, error)
 	ClaimWithOutcome(context.Context, model.PrincipalRef, service.ClaimRequest, model.WriteMeta) (port.WriteOutcome, error)
+	ClaimNextWithOutcome(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta) (*port.WriteOutcome, error)
 	CommentWithOutcome(context.Context, model.PrincipalRef, service.CommentRequest, model.WriteMeta) (port.WriteOutcome, error)
 	CloseWithOutcome(context.Context, model.PrincipalRef, service.CloseRequest, model.WriteMeta) (port.WriteOutcome, error)
 	ReopenWithOutcome(context.Context, model.PrincipalRef, service.ReopenRequest, model.WriteMeta) (port.WriteOutcome, error)
@@ -47,6 +48,8 @@ type serviceParams struct {
 	Expect       []model.Precondition `json:"expect"`
 	Body         string               `json:"body"`
 	Reason       string               `json:"reason"`
+	State        string               `json:"state"`
+	Details      map[string]any       `json:"details"`
 	Meta         wire.Meta            `json:"_meta"`
 }
 type asOf struct {
@@ -80,7 +83,10 @@ func BindService(registry *Registry, svc Service) error {
 	if registry == nil || svc == nil {
 		return fmt.Errorf("nil service or registry")
 	}
-	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "history.query"}
+	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.claimNext", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "history.query"}
+	if _, ok := svc.(port.GateService); ok {
+		names = append(names, "gate.approve", "gate.report")
+	}
 	if capability, ok := any(svc).(interface{ EventListConfigured() bool }); !ok || capability.EventListConfigured() {
 		if _, ok := any(svc).(service.EventReader); ok {
 			names = append(names, "event.list")
@@ -227,9 +233,42 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 	case "bead.claim":
 		v, err := svc.ClaimWithOutcome(ctx, c.Principal, service.ClaimRequest{ID: p.ID, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
+	case "bead.claimNext":
+		v, err := svc.ClaimNextWithOutcome(ctx, c.Principal, service.ClaimNextRequest{Project: c.Meta.Project, ViewID: p.ViewID, Filter: p.Filter.domain()}, meta)
+		if err != nil {
+			return nil, err
+		}
+		if v == nil || v.NullResult {
+			// Terminal claimNext is the cataloged JSON null. Keep the outcome
+			// wrapper so a keyed durable replay still emits response-only
+			// _meta.replayed without changing the stored null result.
+			if v == nil {
+				return nil, nil
+			}
+			return Outcome{Result: nil, Replayed: v.Replayed}, nil
+		}
+		return writeOutcome(*v), nil
+	case "gate.approve":
+		gate, ok := svc.(port.GateService)
+		if !ok {
+			return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
+		}
+		v, err := gate.ApproveGate(ctx, c.Principal, service.GateApproveRequest{ID: p.ID, Expect: p.Expect}, meta)
+		return Outcome{Result: gateJSON(v.Result), Replayed: v.Replayed}, err
+	case "gate.report":
+		gate, ok := svc.(port.GateService)
+		if !ok {
+			return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
+		}
+		v, err := gate.ReportGate(ctx, c.Principal, service.GateReportRequest{ID: p.ID, State: p.State, Details: p.Details, Expect: p.Expect}, meta)
+		return Outcome{Result: gateJSON(v.Result), Replayed: v.Replayed}, err
 	default:
 		return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
 	}
+}
+
+func gateJSON(v port.GateResult) map[string]any {
+	return map[string]any{"commit": commitJSON(v.Commit), "state": v.State, "approvals": v.Approvals}
 }
 
 func writeOutcome(v port.WriteOutcome) Outcome {
