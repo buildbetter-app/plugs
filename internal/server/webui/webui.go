@@ -33,6 +33,15 @@ type Config struct {
 	Catalog   Catalog
 	Frames    []FrameBundle
 
+	// HomeViewID selects an admitted saved view. Its server-owned definition
+	// must supply a row budget no larger than MaxRows. Without an ID, view.run
+	// uses a bounded inline definition and cannot open a saved-view watch.
+	HomeViewID string
+	// WatchPath is optional and must name the existing same-origin NDJSON
+	// adapter. The host still owns view resolution, read policy and the trusted
+	// collaboration-session bridge; this handler supplies none of them.
+	WatchPath string
+
 	// BlockedViewID and BlockedViewDefinition are optional. They are used only
 	// when the server advertises view.run/view.explain. The server remains the
 	// authority for validating the definition and its authorization.
@@ -44,6 +53,8 @@ type browserConfig struct {
 	RPCPath               string            `json:"rpcPath"`
 	Project               string            `json:"project"`
 	MaxRows               int               `json:"maxRows"`
+	HomeViewID            string            `json:"homeViewId,omitempty"`
+	WatchPath             string            `json:"watchPath,omitempty"`
 	BlockedViewID         string            `json:"blockedViewId,omitempty"`
 	BlockedViewDefinition json.RawMessage   `json:"blockedViewDefinition,omitempty"`
 	Catalog               Catalog           `json:"catalog"`
@@ -101,6 +112,17 @@ func New(config Config) (*Handler, error) {
 	if err := validText(config.BlockedViewID, "blocked view id", 200); err != nil {
 		return nil, err
 	}
+	if err := validText(config.HomeViewID, "home view id", 200); err != nil {
+		return nil, err
+	}
+	if config.WatchPath != "" {
+		if config.WatchPath, err = rpcPath(config.WatchPath); err != nil {
+			return nil, fmt.Errorf("webui: watch path: %w", err)
+		}
+		if config.HomeViewID == "" {
+			return nil, fmt.Errorf("webui: watch path requires a saved home view")
+		}
+	}
 	if len(config.BlockedViewDefinition) > 16<<10 {
 		return nil, fmt.Errorf("webui: blocked view definition exceeds 16 KiB")
 	}
@@ -142,6 +164,8 @@ func New(config Config) (*Handler, error) {
 		RPCPath:               config.RPCPath,
 		Project:               config.Project,
 		MaxRows:               config.MaxRows,
+		HomeViewID:            config.HomeViewID,
+		WatchPath:             config.WatchPath,
 		BlockedViewID:         config.BlockedViewID,
 		BlockedViewDefinition: config.BlockedViewDefinition,
 		Catalog:               config.Catalog.clone(),
