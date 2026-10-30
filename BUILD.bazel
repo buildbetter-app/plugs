@@ -23,3 +23,9 @@ test_suite(
     tests = ["//tools/lexicon:lexicon_gate"],
     visibility = ["//visibility:public"],
 )
+
+test_suite(
+    name = "census_gate",
+    tests = ["//tools/census:census_gate"],
+    visibility = ["//visibility:public"],
+)
