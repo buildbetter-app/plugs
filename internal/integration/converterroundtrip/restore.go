@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,7 +78,48 @@ func RestoreWithLease(ctx context.Context, input io.Reader, target driver.Store,
 	return restoreArchive(ctx, archive, target, lease, verification)
 }
 
+// RestoreImport is the trusted-host entry point for a Beads plug-dump/1
+// import. The caller must obtain RestoreImportProfile from the host admission
+// seam; a PrincipalRef copied from the archive is not an admission. The
+// profile binds the exact archive and derived image digests before this
+// function opens a write transaction.
+func RestoreImport(ctx context.Context, input io.Reader, target driver.Store, profile driver.RestoreImportProfile, verification ...Verification) (Report, error) {
+	if err := ctx.Err(); err != nil {
+		return Report{}, err
+	}
+	bound, err := profile.Detached()
+	if err != nil {
+		return Report{}, err
+	}
+	archive, err := dumpformat.Read(input)
+	if err != nil {
+		return Report{}, err
+	}
+	return restoreArchiveWithProfile(ctx, archive, target, nil, &bound, verification)
+}
+
+// RestoreImportWithLease is RestoreImport for a caller that already owns the
+// target lease. It shares the same preparation, allocator and commit path.
+func RestoreImportWithLease(ctx context.Context, input io.Reader, target driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile, verification ...Verification) (Report, error) {
+	if err := ctx.Err(); err != nil {
+		return Report{}, err
+	}
+	bound, err := profile.Detached()
+	if err != nil {
+		return Report{}, err
+	}
+	archive, err := dumpformat.Read(input)
+	if err != nil {
+		return Report{}, err
+	}
+	return restoreArchiveWithProfile(ctx, archive, target, lease, &bound, verification)
+}
+
 func restoreArchive(ctx context.Context, archive *dumpformat.Archive, target driver.Store, supplied driver.ActiveLease, checks []Verification) (Report, error) {
+	return restoreArchiveWithProfile(ctx, archive, target, supplied, nil, checks)
+}
+
+func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive, target driver.Store, supplied driver.ActiveLease, profile *driver.RestoreImportProfile, checks []Verification) (Report, error) {
 	if archive == nil || target == nil {
 		return Report{Archive: archive}, fmt.Errorf("restore requires an archive and target store")
 	}
@@ -92,14 +134,32 @@ func restoreArchive(ctx context.Context, archive *dumpformat.Archive, target dri
 
 	// Complete semantic validation and digest comparison precede lease/write
 	// acquisition. A source archive alone is never proof of usable live state.
-	plan, err := buildPlan(archive)
+	var restoreTime time.Time
+	if profile != nil {
+		if profile.SourceStoreID != driver.StoreID(archive.Manifest().StoreID) {
+			return report, fmt.Errorf("%w: import source store does not match archive", ErrRestoreUnavailable)
+		}
+		restoreTime = time.Now().UTC()
+	}
+	plan, err := buildPlanWithProfile(archive, profile, restoreTime)
 	if err != nil {
 		return report, err
 	}
-	if len(checks) != 1 || checks[0].ArchiveSHA256 != archive.SHA256() || checks[0].DerivedSHA256 != plan.derivedDigest {
+	if profile != nil && len(checks) == 0 {
+		checks = []Verification{{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}}
+	}
+	if len(checks) != 1 || checks[0].ArchiveSHA256 != archive.SHA256() || checks[0].DerivedSHA256 != plan.derivedDigest || profile != nil && (checks[0].ArchiveSHA256 != profile.ArchiveDigest || checks[0].DerivedSHA256 != profile.DerivedDigest) {
 		return report, fmt.Errorf("%w: exact archive and rebuilt derived digest verification required", ErrRestoreUnavailable)
 	}
-	report.IdempotencyKey, report.RequestHash = recoveryScope(checks[0])
+	if profile != nil {
+		report.IdempotencyKey = profile.IdempotencyKey
+		report.RequestHash, err = profile.RequestHash()
+		if err != nil {
+			return report, err
+		}
+	} else {
+		report.IdempotencyKey, report.RequestHash = recoveryScope(checks[0])
+	}
 
 	lease := supplied
 	if lease == nil {
@@ -128,7 +188,23 @@ func restoreArchive(ctx context.Context, archive *dumpformat.Archive, target dri
 	if _, err = tx.Head(ctx); err != nil {
 		return report, err
 	}
-	restored, err := capability.PrepareOfflineRestore(ctx, driver.StoreID(archive.Manifest().StoreID))
+	var restored driver.Meta
+	if profile == nil {
+		restored, err = capability.PrepareOfflineRestore(ctx, driver.StoreID(archive.Manifest().StoreID))
+	} else {
+		importCapability, importOK := tx.(driver.RestoreImportTx)
+		if !importOK {
+			return report, driver.ErrUnsupported
+		}
+		restored, err = importCapability.PrepareRestoreImport(ctx, *profile)
+		if err == nil {
+			continuation, continuationOK := tx.(driver.AllocatorContinuation)
+			if !continuationOK {
+				return report, driver.ErrUnsupported
+			}
+			err = continuation.RestoreAllocators(ctx, plan.allocators)
+		}
+	}
 	if err != nil {
 		return report, err
 	}
@@ -159,10 +235,20 @@ func restoreArchive(ctx context.Context, archive *dumpformat.Archive, target dri
 	if err = tx.BumpSentinels(ctx, plan.sentinels); err != nil {
 		return report, err
 	}
+	principal := restorePrincipal
+	method := "offline.restore"
+	agentLabel := ""
+	commitTime := time.Now().UTC()
+	if profile != nil {
+		principal = profile.Admission.Actor
+		method = profile.Method
+		agentLabel = profile.AgentLabel()
+		commitTime = restoreTime
+	}
 	commit, err := tx.Commit(ctx, driver.ChangesetHeader{
 		Incarnation: restored.Incarnation, Kind: model.ChangesetRestore,
-		Time: time.Now().UTC(), Principal: restorePrincipal, Chain: []string{},
-		Method: "offline.restore", IdempotencyKey: report.IdempotencyKey, RequestHash: report.RequestHash,
+		Time: commitTime, Principal: principal, Chain: []string{},
+		Method: method, AgentLabel: agentLabel, IdempotencyKey: report.IdempotencyKey, RequestHash: report.RequestHash,
 		Response: model.Commit{Revision: model.Natural64(1), Results: results, Warnings: []model.Warning{}},
 		Changes:  changes, LockKeys: lockKeys(requests),
 	})
@@ -173,7 +259,13 @@ func restoreArchive(ctx context.Context, archive *dumpformat.Archive, target dri
 		}
 		// Resolve only a matching committed receipt, never replay the restore.
 		recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		recovered, lookupErr := Recover(recoveryCtx, target, checks[0])
+		var recovered Report
+		var lookupErr error
+		if profile != nil {
+			recovered, lookupErr = RecoverImport(recoveryCtx, target, *profile, checks[0])
+		} else {
+			recovered, lookupErr = Recover(recoveryCtx, target, checks[0])
+		}
 		cancel()
 		if lookupErr != nil {
 			return report, err
@@ -230,6 +322,49 @@ func Recover(ctx context.Context, target driver.Store, check Verification) (Repo
 	return Report{Restored: meta, IdempotencyKey: key, RequestHash: request, Recovered: true}, nil
 }
 
+// RecoverImport is the read-only uncertainty path for an admitted import. It
+// looks up the exact actor/scope/method/key binding and verifies the retained
+// archive marker; it never replays records or reseeds an allocator.
+func RecoverImport(ctx context.Context, target driver.Store, profile driver.RestoreImportProfile, check Verification) (Report, error) {
+	bound, err := profile.Detached()
+	if err != nil || !validDigest(check.ArchiveSHA256) || !validDigest(check.DerivedSHA256) || check.ArchiveSHA256 != bound.ArchiveDigest || check.DerivedSHA256 != bound.DerivedDigest {
+		return Report{}, driver.ErrConflict
+	}
+	request, err := bound.RequestHash()
+	if err != nil {
+		return Report{}, err
+	}
+	meta, err := target.Meta(ctx)
+	if err != nil {
+		return Report{}, err
+	}
+	r, err := target.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		return Report{}, err
+	}
+	defer r.Close()
+	principal, err := driver.PrincipalKey(bound.Admission.Actor)
+	if err != nil {
+		return Report{}, err
+	}
+	receipt, err := r.IdempotencyByKey(ctx, principal, bound.AgentLabel(), bound.Method, bound.IdempotencyKey)
+	if err != nil {
+		return Report{}, err
+	}
+	if receipt == nil || receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Incarnation != meta.Incarnation || receipt.Changeset.Revision.String() != "1" || receipt.Commit.Revision.String() != "1" || receipt.Changeset.IdempotencyKey != bound.IdempotencyKey {
+		return Report{}, driver.ErrConflict
+	}
+	rows, err := r.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
+	if err != nil || len(rows) != 1 {
+		return Report{}, driver.ErrConflict
+	}
+	var evidence archiveEvidence
+	if err = json.Unmarshal(rows[0].Body, &evidence); err != nil || evidence.ArchiveSHA256 != check.ArchiveSHA256 || evidence.DerivedSHA256 != check.DerivedSHA256 {
+		return Report{}, driver.ErrConflict
+	}
+	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true}, nil
+}
+
 type restoreRecord struct {
 	ref  model.Ref
 	kind string
@@ -242,22 +377,37 @@ type restorePlan struct {
 	derived       []derivedImage
 	derivedDigest string
 	blobs         map[string][]byte
+	allocators    []driver.OfflineAllocator
 }
 
 func buildPlan(archive *dumpformat.Archive) (restorePlan, error) {
+	return buildPlanWithProfile(archive, nil, time.Time{})
+}
+
+func buildPlanWithProfile(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time) (restorePlan, error) {
 	manifest := archive.Manifest()
 	if manifest.History != "unavailable" {
 		return restorePlan{}, fmt.Errorf("%w: unverified source history cannot be restored", ErrRestoreUnavailable)
 	}
-	if len(archive.Records("comment")) != 0 {
+	if profile == nil && len(archive.Records("comment")) != 0 {
 		return restorePlan{}, fmt.Errorf("%w: unverified comment attribution", ErrRestoreUnavailable)
 	}
 	projects := map[string]dumpformat.Project{}
 	for _, project := range manifest.Projects {
-		if project.IDMode != "hash" || project.Prefix != "pl" || project.HashLength != 32 || project.LastID != 0 || len(project.ChildCounters) != 0 {
+		// Imported archives preserve the source allocator's declared hash
+		// width (the canonical contract admits 1..64). The live target
+		// allocator is seeded separately below, so this lower bound must not
+		// inherit the legacy restore profile's hash32 compatibility guard.
+		if project.IDMode != "hash" || project.Prefix == "" || project.HashLength < 1 {
+			return restorePlan{}, fmt.Errorf("%w: allocator continuation is unsupported for %s", ErrRestoreUnavailable, project.Prefix)
+		}
+		if profile == nil && (project.Prefix != "pl" || project.HashLength != 32 || project.LastID != 0 || len(project.ChildCounters) != 0) {
 			return restorePlan{}, fmt.Errorf("%w: allocator continuation is unsupported for %s", ErrRestoreUnavailable, project.Prefix)
 		}
 		projects[project.Prefix] = project
+	}
+	if profile != nil && restoreTime.IsZero() {
+		return restorePlan{}, fmt.Errorf("%w: import restore time is required", ErrRestoreUnavailable)
 	}
 
 	beads := archive.Records("bead")
@@ -266,13 +416,9 @@ func buildPlan(archive *dumpformat.Archive) (restorePlan, error) {
 		return restorePlan{}, fmt.Errorf("restore graph exceeds local service limit")
 	}
 	for _, source := range beads {
-		if strings.Contains(source.ID, ".") {
-			return restorePlan{}, fmt.Errorf("%w: child allocator", ErrRestoreUnavailable)
-		}
-		suffix := strings.TrimPrefix(source.ID, "pl-")
-		identity, err := hex.DecodeString(suffix)
-		if err != nil || len(identity) != 16 || hex.EncodeToString(identity) != suffix {
-			return restorePlan{}, fmt.Errorf("%w: source ID does not match the live hash allocator", ErrRestoreUnavailable)
+		project, knownProject := projects[source.Project]
+		if !knownProject || !validSourceID(source.ID, project, profile != nil) {
+			return restorePlan{}, fmt.Errorf("%w: source ID does not match the declared allocator", ErrRestoreUnavailable)
 		}
 		status, ok := targetStatus(stringValue(source.Source.Fields["status"]))
 		if !ok {
@@ -328,12 +474,46 @@ func buildPlan(archive *dumpformat.Archive) (restorePlan, error) {
 				return restorePlan{}, err
 			}
 			metadata["plug.restore.allocator"] = encoded
+			if profile != nil {
+				metadata["plug.restore.sourceAllocator"] = encoded
+				targetAllocator := driver.NewRandomAllocator(project.Prefix)
+				targetEncoded, err := json.Marshal(targetAllocator)
+				if err != nil {
+					return restorePlan{}, err
+				}
+				metadata["plug.restore.targetAllocator"] = targetEncoded
+			}
 		}
 		labels := []string{}
 		for _, value := range source.Body["labels"].([]any) {
 			labels = append(labels, value.(string))
 		}
 		docs[source.ID] = pipeline.Document{Labels: labels, ID: source.ID, Type: stringValue(source.Body["type"]), Project: source.Project, Fields: fields, Metadata: metadata}
+	}
+
+	if profile != nil {
+		for _, source := range archive.Records("comment") {
+			issueID := stringValue(source.Body["issue_id"])
+			doc, ok := docs[issueID]
+			if !ok {
+				return restorePlan{}, fmt.Errorf("comment %s has no restored bead", source.ID)
+			}
+			author, ok := source.Body["author"].(string)
+			if !ok {
+				return restorePlan{}, fmt.Errorf("comment %s author is not text", source.ID)
+			}
+			createdAt := stringValue(source.Body["created_at"])
+			sourceTime, err := time.Parse(time.RFC3339Nano, createdAt)
+			if err != nil {
+				return restorePlan{}, fmt.Errorf("comment %s timestamp: %w", source.ID, err)
+			}
+			comment, err := pipeline.NewImportedComment(*profile, stringValue(source.Body["text"]), author, sourceTime, restoreTime)
+			if err != nil {
+				return restorePlan{}, fmt.Errorf("comment %s: %w", source.ID, err)
+			}
+			doc.Comments = append(doc.Comments, comment)
+			docs[issueID] = doc
+		}
 	}
 
 	for _, source := range archive.Records("edge") {
@@ -358,6 +538,11 @@ func buildPlan(archive *dumpformat.Archive) (restorePlan, error) {
 	}
 
 	plan := restorePlan{}
+	if profile != nil {
+		for _, project := range manifest.Projects {
+			plan.allocators = append(plan.allocators, driver.NewRandomAllocator(project.Prefix))
+		}
+	}
 	seen := map[string]bool{}
 	add := func(ref model.Ref, kind string, body any) error {
 		if err := ref.Validate(); err != nil || !ref.IsID() || ref.ID == "" || !ref.Branch.IsZero() {
@@ -428,6 +613,14 @@ func buildPlan(archive *dumpformat.Archive) (restorePlan, error) {
 
 func lockRequests(plan restorePlan) []driver.LockRequest {
 	keys := map[string]driver.LockKey{}
+	for _, allocator := range plan.allocators {
+		key, err := driver.AllocatorLock(allocator.Prefix)
+		if err != nil {
+			continue
+		}
+		encoded, _ := driver.EncodeLockKey(key)
+		keys[encoded] = key
+	}
 	for _, record := range plan.records {
 		ref := record.ref
 		key := driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
@@ -477,6 +670,34 @@ func targetStatus(source string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func validSourceID(id string, project dumpformat.Project, imported bool) bool {
+	prefix := project.Prefix + "-"
+	if !strings.HasPrefix(id, prefix) || strings.ContainsRune(id, '\x00') {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(id, prefix), ".")
+	if len(parts) == 0 || parts[0] == "" || len(parts[0]) < project.HashLength {
+		return false
+	}
+	if imported {
+		if strings.Trim(parts[0], "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
+			return false
+		}
+		for _, child := range parts[1:] {
+			n, err := strconv.ParseUint(child, 10, 64)
+			if err != nil || n == 0 {
+				return false
+			}
+		}
+		return true
+	}
+	if len(parts) != 1 {
+		return false
+	}
+	identity, err := hex.DecodeString(parts[0])
+	return err == nil && len(identity) == 16 && hex.EncodeToString(identity) == parts[0]
 }
 
 func stringValue(value any) string {
