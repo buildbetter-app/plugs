@@ -253,6 +253,7 @@ internal/core/ontologyops/service_test.go
 internal/core/ontologyops/source.go
 internal/core/ontologyops/types.go
 internal/core/pipeline/BUILD.bazel
+internal/core/pipeline/allocator_test.go
 internal/core/pipeline/apply.go
 internal/core/pipeline/audit.go
 internal/core/pipeline/audit_guard_test.go
@@ -610,6 +611,8 @@ internal/storage/conformance/locks.go
 internal/storage/conformance/noops.go
 internal/storage/conformance/responses.go
 internal/storage/driver/BUILD.bazel
+internal/storage/driver/allocator.go
+internal/storage/driver/allocator_contract_test.go
 internal/storage/driver/audit_contract_test.go
 internal/storage/driver/driver.go
 internal/storage/driver/errors.go
@@ -618,6 +621,7 @@ internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/memory/BUILD.bazel
+internal/storage/memory/allocator.go
 internal/storage/memory/audit_test.go
 internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_test.go
@@ -651,6 +655,7 @@ internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
 internal/storage/sqlite/BUILD.bazel
 internal/storage/sqlite/README.md
+internal/storage/sqlite/allocator.go
 internal/storage/sqlite/boundaries_test.go
 internal/storage/sqlite/engine_test.go
 internal/storage/sqlite/lease.go
