@@ -279,8 +279,11 @@ internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
 internal/core/service/claim_recovery_test.go
 internal/core/service/graph.go
+internal/core/service/history.go
+internal/core/service/history_reads_test.go
 internal/core/service/ontology.go
 internal/core/service/reads.go
+internal/core/service/rpc_reads.go
 internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
@@ -696,6 +699,12 @@ spikes/runtime/concurrency.go
 spikes/runtime/concurrency_test.go
 spikes/runtime/sandbox.go
 spikes/runtime/sandbox_test.go
+tools/census/BUILD.bazel
+tools/census/README.md
+tools/census/census.go
+tools/census/cmd/census_check/main.go
+tools/census/gate_test.go
+tools/census/testdata/census.json
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
 tools/lexicon/checker.go
