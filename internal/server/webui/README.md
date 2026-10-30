@@ -88,7 +88,12 @@ Untrusted titles, IDs, reasons and presence data are rendered as text.
   Stop, navigation, page exit, cancellation and read failures abort delivery,
   unsubscribe and close the actual session. Reset, gap, visibility loss,
   invalid cursor chains or stream failure clear stale rows and continuation;
-  reconnect requires Refresh. A late opening allocation is also released.
+  reconnect requires Refresh. The initial omitted-cursor open has one narrow
+  bootstrap: a first terminal `ontology_changed` frame with matching opaque
+  cursor/subscription fields closes that stream and reopens once from its
+  supplied cursor, retaining the session before the normal current snapshot.
+  Later ontology changes and all other reset reasons still require Refresh.
+  A late opening allocation is also released.
 - The local read map is scoped by endpoint, project and snapshot incarnation,
   and retains at most 1,000 items. Eviction or unavailable browser storage can
   show a previously read item again. It never creates a server checkpoint.

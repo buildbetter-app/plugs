@@ -641,6 +641,7 @@ internal/server/webui/static/index.html
 internal/server/webui/static/styles.css
 internal/server/webui/view_watch_check.mjs
 internal/server/webui/view_watch_test.go
+internal/server/webui/watch_bootstrap_check.mjs
 internal/server/webui/webui.go
 internal/server/webui/webui_test.go
 internal/storage/conformance/BUILD.bazel
