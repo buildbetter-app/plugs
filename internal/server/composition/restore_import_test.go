@@ -54,6 +54,10 @@ func TestRestoreImportAdmissionDigestIsBoundAndOpaque(t *testing.T) {
 	if err != nil || one == two || one == strings.Repeat("a", 64) {
 		t.Fatalf("binding digest was not complete/opaque: one=%q two=%q", one, two)
 	}
+	three, err := importAdmissionDigest("authenticated", actor, "", "restore-admin", "pl", strings.Repeat("e", 64), strings.Repeat("b", 64), strings.Repeat("c", 32))
+	if err != nil || one == three {
+		t.Fatalf("changed archive with the same derived digest reused admission binding: one=%q three=%q", one, three)
+	}
 }
 
 func TestRestoreImportAdapterFailsClosedWithoutTrustedHostPieces(t *testing.T) {

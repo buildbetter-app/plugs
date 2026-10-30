@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -97,18 +98,18 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 	if verification.ArchiveSHA256 != archiveDigest || !validImportDigest(verification.DerivedSHA256) {
 		return converterroundtrip.Report{}, fmt.Errorf("%w: converter inspection did not return the exact archive and derived digests", converterroundtrip.ErrRestoreUnavailable)
 	}
-	// D32 binds the existing admin.restore.begin operation to the exact
-	// converter plan digest. Archive and derived identities are retained in the
-	// profile binding below; neither digest is an authority by itself.
-	if err := a.admit(ctx, principal, request.AgentLabel, verification.DerivedSHA256, request.Presence); err != nil {
-		return converterroundtrip.Report{}, err
-	}
 	mode, actor, scope, authority, err := a.binding(ctx, principal, request.AgentLabel)
 	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
 	admissionDigest, err := importAdmissionDigest(mode, actor, scope, authority, archive.Manifest().StoreID, archiveDigest, verification.DerivedSHA256, request.IdempotencyKey)
 	if err != nil {
+		return converterroundtrip.Report{}, err
+	}
+	// D32 binds the operation to the complete non-secret import binding. The
+	// derived image digest alone is insufficient: distinct archives can rebuild
+	// the same graph while differing in comments, provenance or source files.
+	if err := a.admit(ctx, principal, request.AgentLabel, admissionDigest, request.Presence); err != nil {
 		return converterroundtrip.Report{}, err
 	}
 	profile := driver.RestoreImportProfile{
@@ -123,10 +124,42 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 	}
 	// Recheck both live identity and operation-bound presence after planning,
 	// immediately before the converter opens its guarded write transaction.
-	if err := a.admit(ctx, principal, request.AgentLabel, verification.DerivedSHA256, request.Presence); err != nil {
+	mode, actor, scope, authority, err = a.binding(ctx, principal, request.AgentLabel)
+	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
-	return converterroundtrip.RestoreImportWithLease(ctx, bytes.NewReader(data), a.store, a.lease, profile)
+	currentDigest, err := importAdmissionDigest(mode, actor, scope, authority, archive.Manifest().StoreID, archiveDigest, verification.DerivedSHA256, request.IdempotencyKey)
+	if err != nil {
+		return converterroundtrip.Report{}, err
+	}
+	if currentDigest != admissionDigest {
+		return converterroundtrip.Report{}, fmt.Errorf("%w: restore import admission changed during planning", converterroundtrip.ErrRestoreUnavailable)
+	}
+	if err := a.admit(ctx, principal, request.AgentLabel, currentDigest, request.Presence); err != nil {
+		return converterroundtrip.Report{}, err
+	}
+	report, err := converterroundtrip.RestoreImportWithLease(ctx, bytes.NewReader(data), a.store, a.lease, profile)
+	if err == nil {
+		return report, nil
+	}
+	// A prior attempt may have published durably before the caller observed its
+	// result. RecoverImport verifies the full profile, receipt and retained
+	// archive marker without replaying records. A populated unrelated target
+	// still returns the original target-not-empty error when recovery conflicts.
+	recoverable := errors.Is(err, driver.ErrRestoreTargetNotEmpty)
+	var uncertain driver.ErrIndeterminate
+	recoverable = recoverable || errors.As(err, &uncertain)
+	if !recoverable {
+		return report, err
+	}
+	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	recovered, recoveryErr := converterroundtrip.RecoverImport(recoveryCtx, a.store, profile, converterroundtrip.Verification{ArchiveSHA256: archiveDigest, DerivedSHA256: verification.DerivedSHA256})
+	cancel()
+	if recoveryErr != nil {
+		return report, err
+	}
+	recovered.Archive = report.Archive
+	return recovered, nil
 }
 
 func (a *restoreImportAdapter) binding(ctx context.Context, principal model.PrincipalRef, agent string) (string, model.PrincipalRef, string, string, error) {
@@ -152,11 +185,11 @@ func (a *restoreImportAdapter) binding(ctx context.Context, principal model.Prin
 	}
 }
 
-func (a *restoreImportAdapter) admit(ctx context.Context, principal model.PrincipalRef, agent, archiveDigest string, presence restore.Presence) error {
+func (a *restoreImportAdapter) admit(ctx context.Context, principal model.PrincipalRef, agent, operationDigest string, presence restore.Presence) error {
 	if _, _, _, _, err := a.binding(ctx, principal, agent); err != nil {
 		return err
 	}
-	if err := a.presence.Verify(ctx, "admin.restore.begin", archiveDigest, presence); err != nil {
+	if err := a.presence.Verify(ctx, "admin.restore.begin", operationDigest, presence); err != nil {
 		return &model.Error{Data: model.ErrorData{Code: "human_presence_required", Hint: err.Error()}}
 	}
 	return nil
