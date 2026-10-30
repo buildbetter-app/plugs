@@ -134,7 +134,7 @@ func Read(reader io.Reader) (*Archive, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Archive{manifest: manifest, members: members, byKind: byKind}, nil
+	return &Archive{sha256: digest(data), manifest: manifest, members: members, byKind: byKind}, nil
 }
 
 func Validate(reader io.Reader) (Manifest, error) {
