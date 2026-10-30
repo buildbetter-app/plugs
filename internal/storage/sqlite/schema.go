@@ -32,5 +32,11 @@ CREATE TABLE IF NOT EXISTS replays (
  pending INTEGER NOT NULL DEFAULT 0 CHECK(pending IN (0,1))
 );
 CREATE TABLE IF NOT EXISTS checkpoints (key TEXT PRIMARY KEY, generation TEXT NOT NULL, payload BLOB);
+CREATE TABLE IF NOT EXISTS core_sessions (
+ id TEXT PRIMARY KEY CHECK(length(id)=32), token_digest BLOB NOT NULL,
+ principal_kind TEXT NOT NULL CHECK(principal_kind='user'), principal_id TEXT NOT NULL,
+ expires_at INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1))
+);
+CREATE INDEX IF NOT EXISTS core_sessions_active_expiry ON core_sessions(revoked, expires_at);
 CREATE TABLE IF NOT EXISTS allocator_states (prefix TEXT PRIMARY KEY, data BLOB NOT NULL);
 `

@@ -155,7 +155,7 @@ func (p *Provider) complete(ctx context.Context, origin, state, binding, code st
 	if !p.now().Before(f.expiresAt) {
 		return IssuedSession{}, authn.ErrTokenExpired
 	}
-	return p.issue(user, expires, f.origin)
+	return p.issue(ctx, user, expires, f.origin)
 }
 
 func randomSecret() (string, error) {
