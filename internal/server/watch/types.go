@@ -48,18 +48,28 @@ var (
 )
 
 // Method names are the admitted watch slice. event.subscribe is the generic
-// stream; bead.watch narrows it to one canonical bead resource. view.watch
-// refuses until an actual published view checkpoint is adopted.
+// stream; bead.watch narrows it to one canonical bead resource; view.watch
+// refuses until an actual published view checkpoint is adopted. presence.watch
+// is a signal stream backed by the live collaboration manager.
 type Method string
 
 const (
 	MethodEventSubscribe Method = "event.subscribe"
 	MethodBeadWatch      Method = "bead.watch"
 	MethodViewWatch      Method = "view.watch"
+	MethodPresenceWatch  Method = "presence.watch"
 )
 
 func (m Method) valid() bool {
-	return m == MethodEventSubscribe || m == MethodBeadWatch || m == MethodViewWatch
+	return m == MethodEventSubscribe || m == MethodBeadWatch || m == MethodViewWatch || m == MethodPresenceWatch
+}
+
+// PresenceSource is the narrow port from the watch manager to the live
+// collaboration manager. Snapshot must return canonical, viewer-filtered bytes
+// for the supplied session and project. The watch manager hashes those bytes
+// into its signed cursor; it never reconstructs presence or grants access.
+type PresenceSource interface {
+	Snapshot(context.Context, model.PrincipalRef, string, string, string) ([]byte, error)
 }
 
 // Request is the trusted, domain-level input to Manager.Open. Principal is
@@ -71,6 +81,8 @@ type Request struct {
 	SubscriptionID string
 	Method         Method
 	Principal      model.PrincipalRef
+	Agent          string
+	Project        string
 	Filter         coreevents.Filter
 	Resource       string
 	ViewID         string
@@ -116,6 +128,7 @@ func (s StaticBinding) Current(_ context.Context, _ Request) (Binding, error) {
 type Config struct {
 	Events      *serverevents.Service
 	Bindings    BindingSource
+	Presence    PresenceSource
 	QueueSize   int
 	MaxLag      time.Duration
 	Coalesce    time.Duration

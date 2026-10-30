@@ -140,6 +140,7 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spike-ux-decision.md":             {},
 		},
 		BinarySHA256: map[string]string{
+			"tools/census/testdata/census.json":                                          "d005db62a2110979e7b3884a37fdb9c8b410a964184582776f0987457a85080f",
 			".github/images/agent-using-beads.jpg":                                       "92f98f20c17f2ebb0c75815da94cc8a6fce98bb6d10b2bbf3555b706414ee778",
 			"internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar": "c510f8e0b301086e1c9fdab6ed3dc60ea8da73597c4058a03d0abc478482ae3c",
 			"engdocs/design/plug/spec/ux-screens/blocked-100.png":                        "62b21ea8dca4b02230c4cc008e662fdd88fd6602735d8885b486c456580c31a7",
