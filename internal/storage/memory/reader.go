@@ -37,8 +37,10 @@ func newReader(s *state, v driver.View, now func() time.Time) (*reader, error) {
 		return nil, err
 	}
 	at := head
+	requested := s.meta.Head
 	if v.At != nil {
-		at, err = v.At.Uint64()
+		requested = *v.At
+		at, err = requested.Uint64()
 		if err != nil {
 			return nil, err
 		}
@@ -51,7 +53,7 @@ func newReader(s *state, v driver.View, now func() time.Time) (*reader, error) {
 		return nil, driver.ErrTruncated{Floor: s.meta.HistoryFloor}
 	}
 	if at > head {
-		return nil, fmt.Errorf("memory: requested revision is beyond head")
+		return nil, driver.ErrFutureRevision{Requested: requested, Head: s.meta.Head}
 	}
 	return &reader{state: s, at: at, incarnation: s.meta.Incarnation, now: now}, nil
 }
