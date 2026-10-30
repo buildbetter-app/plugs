@@ -357,6 +357,9 @@ func (s *Service) HistoryGet(ctx context.Context, by model.PrincipalRef, req His
 		return HistoryVersion{}, err
 	}
 	if !version.Deleted && len(version.Body) == 0 {
+		if version.Base || len(version.Patch) == 0 {
+			return HistoryVersion{}, failure("internal_error", "live history version has no body or forward patch")
+		}
 		// Non-base versions retain their forward patch. Materialize the body
 		// from this same historical snapshot without replacing that patch or
 		// any of the selected version's metadata.

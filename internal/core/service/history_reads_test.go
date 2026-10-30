@@ -717,3 +717,110 @@ func TestHistoryReadsMapFutureRevisionToNotFound(t *testing.T) {
 	})
 	assertFutureHistoryNotFound("history.diff", err)
 }
+
+// Keep the real reader and its historical snapshot, but expose incomplete or
+// inconsistent driver evidence to verify typed refusal without a partial body.
+type historyMaterializationStore struct {
+	driver.Store
+	scenario string
+}
+
+func (s historyMaterializationStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	r, err := s.Store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	return historyMaterializationReader{Reader: r, scenario: s.scenario, historical: view.At != nil}, nil
+}
+
+type historyMaterializationReader struct {
+	driver.Reader
+	scenario   string
+	historical bool
+}
+
+func (r historyMaterializationReader) Versions(ctx context.Context, ref driver.Ref, req driver.PageReq) (driver.Page[driver.Version], error) {
+	page, err := r.Reader.Versions(ctx, ref, req)
+	if err != nil || len(page.Items) == 0 {
+		return page, err
+	}
+	page.Items = append([]driver.Version(nil), page.Items...)
+	v := &page.Items[len(page.Items)-1]
+	v.Patch = []byte(`[{"op":"replace","path":"","value":` + string(v.Body) + `}]`)
+	v.Body = nil
+	switch r.scenario {
+	case "missing-patch":
+		v.Patch = nil
+	case "malformed-patch":
+		v.Patch = []byte(`[{`)
+	case "non-array-patch":
+		v.Patch = []byte(`{}`)
+	case "missing-base-body":
+		v.Base = true
+	case "wrong-version-ref":
+		v.Ref = model.RefByID("other", model.Natural64(0))
+	}
+	return page, nil
+}
+
+func (r historyMaterializationReader) Get(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
+	rows, err := r.Reader.Get(ctx, refs)
+	if !r.historical {
+		return rows, err
+	}
+	switch r.scenario {
+	case "missing-record":
+		return nil, nil
+	case "truncated-materialization":
+		return nil, driver.ErrTruncated{Floor: model.Natural64(2)}
+	case "changed-incarnation":
+		return nil, driver.ErrIncarnationChanged{From: "old", To: "new"}
+	}
+	if err != nil || len(rows) == 0 {
+		return rows, err
+	}
+	switch r.scenario {
+	case "wrong-record-ref":
+		rows[0].Ref = model.RefByID("other", model.Natural64(0))
+	case "wrong-record-revision":
+		rows[0].Revision = model.Natural64(0)
+	case "missing-body":
+		rows[0].Body = nil
+	case "malformed-body":
+		rows[0].Body = []byte(`[]`)
+	case "duplicate-record":
+		rows = append(rows, rows[0])
+	}
+	return rows, nil
+}
+
+func TestHistoryPatchMaterializationRefusesInconsistentEvidence(t *testing.T) {
+	f := setup(t)
+	ref, _ := create(t, f, "base")
+	updated, err := f.svc.Update(context.Background(), anonymous, UpdateRequest{ID: ref, Fields: map[string]any{"title": "historical"}}, meta(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []string{"missing-patch", "malformed-patch", "non-array-patch", "missing-base-body", "wrong-version-ref", "missing-record", "wrong-record-ref", "wrong-record-revision", "missing-body", "malformed-body", "duplicate-record", "truncated-materialization", "changed-incarnation"} {
+		t.Run(scenario, func(t *testing.T) {
+			svc := New(historyMaterializationStore{Store: f.store, scenario: scenario}, f.lease, f.writer)
+			value, err := svc.HistoryGet(context.Background(), anonymous, HistoryVersionRequest{Ref: ref, AsOf: AsOf{Revision: updated.Revision}})
+			code := model.ErrorCode("internal_error")
+			if scenario == "wrong-version-ref" {
+				// #117 validates every version page before materialization and
+				// hides identity uncertainty as not_found.
+				code = "not_found"
+			}
+			if scenario == "truncated-materialization" {
+				code = "history_gone"
+			}
+			if scenario == "changed-incarnation" {
+				code = "incarnation_changed"
+			}
+			wantCode(t, err, code)
+			if !reflect.DeepEqual(value, HistoryVersion{}) {
+				t.Fatalf("refusal returned a partial history value: %+v", value)
+			}
+		})
+	}
+}
