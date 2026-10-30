@@ -108,7 +108,7 @@ if missing:
     raise SystemExit("config: target resolver is missing: " + ", ".join(missing))
 
 workflow_files = sorted(Path(".github/workflows").glob("*.yml"))
-if [path.name for path in workflow_files] != ["plug-bazel.yml"]:
+if [path.name for path in workflow_files] != ["plug-bazel.yml", "plug-runs-on-smoke.yml"]:
     raise SystemExit("config: inherited workflow files remain: " + ", ".join(str(path) for path in workflow_files))
 print("plug-ci-config: workflow, permissions, cache, lock, targets, and retirement checks passed")
 PYTHON

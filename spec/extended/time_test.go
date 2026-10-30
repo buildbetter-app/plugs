@@ -5,7 +5,108 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 )
+
+func TestB24UntimedDeferAndExplicitReopenOverRPC(t *testing.T) {
+	f := newFixture(t, []string{"pl-reasoned", "pl-optional"}, compile(t, customDocument(), nil))
+	f.success(t, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "reasoned defer"}})
+	f.success(t, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "optional reason"}})
+	pageIDs(t, f.success(t, "bead.ready", nil), "pl-optional", "pl-reasoned")
+
+	// Plug intentionally has no defer target instant. The strict RPC envelope
+	// refuses the Beads-shaped field without publishing a write or receipt.
+	before := f.image(t)
+	data := f.call(t, "timed-defer-refused", "bead.defer", map[string]any{
+		"id": wireRef("pl-reasoned"), "until": "2026-10-30T12:00:00Z"})
+	if at[string](t, data, "/error/data/code") != "invalid_params" {
+		t.Fatalf("timed defer input entered the untimed Plug slot: %s", data)
+	}
+	f.unchanged(t, before)
+	f.noReceipt(t, "timed-defer-refused", "bead.defer")
+
+	reasoned := f.success(t, "bead.defer", map[string]any{
+		"id": wireRef("pl-reasoned"), "reason": "waiting for upstream",
+		"expect": []any{map[string]any{"ref": wireRef("pl-reasoned"), "revision": 1}},
+	})
+	if at[int](t, reasoned, "/result/revision") != 3 ||
+		at[int](t, reasoned, "/result/results/0/revision") != 3 ||
+		at[int](t, reasoned, "/result/results/1/revision") != 3 {
+		t.Fatalf("reasoned defer was not one atomic RPC commit: %s", reasoned)
+	}
+	optional := f.success(t, "bead.defer", map[string]any{
+		"id":     wireRef("pl-optional"),
+		"expect": []any{map[string]any{"ref": wireRef("pl-optional"), "revision": 2}},
+	})
+	if at[int](t, optional, "/result/revision") != 4 ||
+		at[int](t, optional, "/result/results/0/revision") != 4 {
+		t.Fatalf("reason-optional defer did not commit through RPC: %s", optional)
+	}
+
+	deferred := f.image(t)
+	reasonedDoc := deferred.document(t, "pl-reasoned")
+	if reasonedDoc.Fields["status"] != "parked" || len(reasonedDoc.Comments) != 1 ||
+		reasonedDoc.Comments[0].Body != "waiting for upstream" ||
+		!reasonedDoc.Comments[0].Time.Equal(f.inputs.Now()) || reasonedDoc.Lease != nil {
+		t.Fatalf("reasoned defer lost category/comment semantics: %+v", reasonedDoc)
+	}
+	optionalDoc := deferred.document(t, "pl-optional")
+	if optionalDoc.Fields["status"] != "parked" || len(optionalDoc.Comments) != 0 || optionalDoc.Lease != nil {
+		t.Fatalf("reason-optional defer invented a comment or lease: %+v", optionalDoc)
+	}
+	pageIDs(t, f.success(t, "bead.ready", nil))
+
+	f.advance(t, 30*time.Minute)
+	pageIDs(t, f.success(t, "bead.ready", nil))
+	f.unchanged(t, deferred)
+
+	// An explicit stale expectation must refuse the reopen without history,
+	// revision, comment, receipt, or derived-state publication.
+	data = f.call(t, "stale-reopen-refused", "bead.reopen", map[string]any{
+		"id": wireRef("pl-reasoned"), "reason": "must not append",
+		"expect": []any{map[string]any{"ref": wireRef("pl-reasoned"), "revision": 1}},
+	})
+	if at[string](t, data, "/error/data/code") != "precondition_failed" {
+		t.Fatalf("stale reopen expectation was admitted: %s", data)
+	}
+	f.unchanged(t, deferred)
+	f.noReceipt(t, "stale-reopen-refused", "bead.reopen")
+
+	optionalReopen := f.success(t, "bead.reopen", map[string]any{
+		"id":     wireRef("pl-optional"),
+		"expect": []any{map[string]any{"ref": wireRef("pl-optional"), "revision": 4}},
+	})
+	if at[int](t, optionalReopen, "/result/revision") != 5 ||
+		at[int](t, optionalReopen, "/result/results/0/revision") != 5 {
+		t.Fatalf("reason-optional reopen did not commit through RPC: %s", optionalReopen)
+	}
+	pageIDs(t, f.success(t, "bead.ready", nil), "pl-optional")
+
+	reasonedReopen := f.success(t, "bead.reopen", map[string]any{
+		"id": wireRef("pl-reasoned"), "reason": "upstream ready",
+		"expect": []any{map[string]any{"ref": wireRef("pl-reasoned"), "revision": 3}},
+	})
+	if at[int](t, reasonedReopen, "/result/revision") != 6 ||
+		at[int](t, reasonedReopen, "/result/results/0/revision") != 6 ||
+		at[int](t, reasonedReopen, "/result/results/1/revision") != 6 {
+		t.Fatalf("reasoned reopen was not one atomic RPC commit: %s", reasonedReopen)
+	}
+	pageIDs(t, f.success(t, "bead.ready", nil), "pl-optional", "pl-reasoned")
+
+	after := f.image(t)
+	if after.row(t, "pl-reasoned").Revision.String() != "6" ||
+		after.row(t, "pl-optional").Revision.String() != "5" ||
+		len(after.Versions["pl-reasoned"]) != 3 || len(after.Versions["pl-optional"]) != 3 || len(after.Log) != 6 {
+		t.Fatalf("defer/reopen history or revision sequence drifted: %+v", after)
+	}
+	wantReasoned := reasonedDoc
+	wantReasoned.Fields["status"] = "queued"
+	wantReasoned.Comments = append(wantReasoned.Comments, pipeline.Comment{Body: "upstream ready", Time: f.inputs.Now(), Principal: f.by})
+	sameJSON(t, after.document(t, "pl-reasoned"), wantReasoned)
+	wantOptional := optionalDoc
+	wantOptional.Fields["status"] = "queued"
+	sameJSON(t, after.document(t, "pl-optional"), wantOptional)
+}
 
 func TestB24DeferCategoryAndExplicitReopenAtControlledTime(t *testing.T) {
 	f := newFixture(t, []string{"pl-deferred"}, compile(t, customDocument(), nil))
