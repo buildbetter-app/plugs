@@ -171,7 +171,9 @@ func TestRestoreTerminalStatusStillRequiresInitiatingPrincipal(t *testing.T) {
 	if _, err := mgr.Finish(ctx, status.RestoreID, sha(canonical), model.PrincipalRef{Kind: "user", ID: "restore-owner"}, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "restore-principal"}, restore.Presence(presence)); err == nil {
 		t.Fatal("invalid empty archive unexpectedly committed")
 	}
-	if _, err := mgr.Finish(ctx, status.RestoreID, sha(canonical), model.PrincipalRef{Kind: "user", ID: "other-user"}, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "restore-principal-other"}, restore.Presence(presence)); err == nil || !strings.Contains(err.Error(), "restore session caller changed") {
+	_, err = mgr.Finish(ctx, status.RestoreID, sha(canonical), model.PrincipalRef{Kind: "user", ID: "other-user"}, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "restore-principal-other"}, restore.Presence(presence))
+	var forbidden *model.Error
+	if err == nil || !errors.As(err, &forbidden) || forbidden.Data.Code != "forbidden" || forbidden.Data.Hint != "restore session caller changed" {
 		t.Fatalf("terminal session disclosed to a different principal: %v", err)
 	}
 }
