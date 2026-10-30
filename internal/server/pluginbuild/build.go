@@ -49,6 +49,7 @@ const (
 	ErrConfig      = "host_config_invalid"
 	ErrClosed      = "artifact_closed"
 	ErrUnsupported = "unsupported_platform"
+	ErrContainment = "containment_unavailable"
 )
 
 // Request selects one already checked-out source revision. No URL, tag,
@@ -57,7 +58,7 @@ const (
 // executed directly, never through a shell.
 type Request struct {
 	// TrustedNative is an explicit opt-in to trusted, unisolated native code.
-	// wasip1 builds are sandboxed at runtime and do not require this flag.
+	// wasip1 builds require Linux build containment and a sandboxed runtime.
 	TrustedNative bool
 	// Runtime is empty for the source manifest's sole runtime. Explicit values
 	// are "native" and "wasip1" and must match every declared plugin.
@@ -100,8 +101,9 @@ type Artifact struct {
 
 // Build verifies the complete local checkout, builds its root Go package with
 // a fixed offline command, and inventories the disposable output. A native
-// build is explicitly trusted; a wasip1 build is admitted only through the
-// sandboxed two-export host. The output directory is removed on every failure.
+// build is explicitly trusted; a wasip1 build requires Linux containment and
+// is admitted only through the sandboxed two-export host. The output directory
+// is removed on every failure.
 func Build(ctx context.Context, request Request) (*Artifact, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -191,7 +193,18 @@ func Build(ctx context.Context, request Request) (*Artifact, error) {
 		cleanup()
 		return nil, refusal(ErrConfig, "package must name a directory in the pinned source")
 	}
-	moduleFile, err := prepareModuleFile(ctx, goBinary, stagingDir, request.ModuleRoot)
+	run := func(ctx context.Context, args ...string) ([]byte, error) {
+		return runGo(ctx, goBinary, stagingDir, args...)
+	}
+	if runtimeMode == pluginapi.RuntimeWASI {
+		run, err = containedGo(goBinary, stagingDir, outputDir, request.ModuleRoot)
+		if err != nil {
+			cleanup()
+			return nil, err
+		}
+		defer os.RemoveAll(filepath.Join(outputDir, ".build"))
+	}
+	moduleFile, err := prepareModuleFile(ctx, run, stagingDir, request.ModuleRoot)
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -207,11 +220,7 @@ func Build(ctx context.Context, request Request) (*Artifact, error) {
 	} else {
 		args = append([]string{"build", "-p=2", "-trimpath", "-buildvcs=false", "-buildmode=c-shared", "-mod=readonly", "-modfile=" + filepath.Base(moduleFile), "-o", outputPath}, "./"+path.Clean(packagePath))
 	}
-	if runtimeMode == pluginapi.RuntimeWASI {
-		_, err = runGoTarget(ctx, goBinary, stagingDir, "wasip1", "wasm", args...)
-	} else {
-		_, err = runGo(ctx, goBinary, stagingDir, args...)
-	}
+	_, err = run(ctx, args...)
 	if err != nil {
 		cleanup()
 		return nil, err
@@ -617,7 +626,9 @@ func within(root, target string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
-func prepareModuleFile(ctx context.Context, goBinary, sourceRoot, moduleRoot string) (string, error) {
+type goRunner func(context.Context, ...string) ([]byte, error)
+
+func prepareModuleFile(ctx context.Context, run goRunner, sourceRoot, moduleRoot string) (string, error) {
 	goMod := filepath.Join(sourceRoot, "go.mod")
 	data, err := os.ReadFile(goMod)
 	if err != nil {
@@ -644,14 +655,14 @@ func prepareModuleFile(ctx context.Context, goBinary, sourceRoot, moduleRoot str
 		if err != nil {
 			return "", err
 		}
-		if _, err := runGo(ctx, goBinary, sourceRoot, "mod", "edit", "-modfile="+moduleFile, "-replace=github.com/buildbetter-app/plugs="+moduleRoot); err != nil {
+		if _, err := run(ctx, "mod", "edit", "-modfile="+moduleFile, "-replace=github.com/buildbetter-app/plugs="+moduleRoot); err != nil {
 			return "", err
 		}
 	}
 	// Parse with the installed Go tool rather than guessing at go.mod syntax.
 	// Offline cached modules are allowed; local replacements must remain in
 	// the frozen source or be the caller's explicit trusted SDK replacement.
-	encoded, err := runGo(ctx, goBinary, sourceRoot, "mod", "edit", "-modfile="+moduleFile, "-json")
+	encoded, err := run(ctx, "mod", "edit", "-modfile="+moduleFile, "-json")
 	if err != nil {
 		return "", err
 	}

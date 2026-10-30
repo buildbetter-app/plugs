@@ -2,12 +2,12 @@
 
 These guides describe the accepted source snapshot
 [`127ac22e1d003cce4babe6cbcbc8367ad264e649`](https://github.com/buildbetter-app/plugs/tree/127ac22e1d003cce4babe6cbcbc8367ad264e649)
-(2026-10-29). They document packages that are actually merged at that SHA;
-the design and OpenRPC catalog describe a wider target surface.
+(2026-10-29) together with the focused persistent-local-CLI addition. The
+design and OpenRPC catalog describe a wider target surface.
 
 | Guide | Use it for |
 | --- | --- |
-| [CLI](cli.md) | Disposable in-process memory sessions and the admitted remote HTTP client. |
+| [CLI](cli.md) | Persistent local SQLite, explicit memory sessions, admitted remote HTTP, commands, retries and cancellation. |
 | [RPC and HTTP](rpc-http.md) | JSON-RPC registry, explicit service bindings, admission and transport limits. |
 | [Native plugins](native-plugins.md) | The public SDK, trusted native host and callback capabilities. |
 | [Events](events.md) | Ordered audit plans, materialization, delivery and fenced checkpoints. |
@@ -23,9 +23,10 @@ root.
 
 At this snapshot:
 
-- `cmd/plug` can run a disposable memory session or send the same JSON-RPC
-  bytes through the admitted HTTP client. Persistent local selection,
-  configuration-file loading and a server command are not installed.
+- `cmd/plug` can run persistent local SQLite at `.plug/plug.db`, an explicit
+  process-lifetime memory session, or the same JSON-RPC bytes through the
+  admitted HTTP client. `.plug/config.yaml` can select a server or a SQLite
+  path; there is no runnable `plug server` command.
 - `server/rpc` owns wire validation and cursors. `BindService` supplies the
   lifecycle surface; `server/ontologyrpc` and `server/collab` are explicit
   adapters that a composition root may bind. `ontology.apply` and
@@ -54,6 +55,6 @@ failover, migration or public-release certification.
 
 Unsupported surfaces must stay explicit: network event watches, persistent
 API-key storage, public login methods, authorization-fact management,
-`ontology.apply`, dump/restore commands, local SQLite/PostgreSQL CLI mode,
+`ontology.apply`, dump/restore commands, local PostgreSQL CLI mode,
 WASM/plugin isolation and production topology are not implied by a catalog
 entry, a package README or an open design item.

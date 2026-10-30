@@ -39,11 +39,44 @@ go build -p=2 -trimpath -buildvcs=false -buildmode=c-shared -mod=readonly \
   -modfile=.plug-pluginbuild.mod -o <disposable>/plugin.wasm ./<package>
 ```
 
-Ambient Go build flags, workspace files, toolchain downloads, module proxies,
-checksum service access and VCS resolution are disabled. This is an offline
-invocation policy, not an OS sandbox. Compiler diagnostics retain at most
-32 KiB. Context cancellation kills the Go compiler process group on supported
-Unix hosts. Staging and failed outputs are removed.
+Local mode-2 builds require the Linux/amd64 containment profile, an
+unprivileged host UID, Landlock ABI 3 or newer (enabled by the kernel), and
+seccomp BPF. The Go SDK must have `bin/go`, `src/runtime` and
+`pkg/tool/linux_amd64`; the qualified SDK uses statically linked Go tools.
+Other operating systems and architectures return typed `unsupported_platform`.
+Missing kernel support, a denied installation operation, or failure to execute
+within the installed profile returns typed `containment_unavailable`. Neither
+case runs an uncontained compiler. The later container mode and explicit
+unsandboxed-build flag from P68 are not implemented.
+
+A private re-exec of the host installs `no_new_privs`, hard resource limits,
+Landlock and a seccomp syscall allowlist before executing any Go command,
+including module-file editing and parsing. Landlock permits source, SDK and
+cached dependency reads; writes stay in disposable staging/output directories,
+including a private home, temporary directory and Go build cache. The module
+cache and explicit Plug SDK replacement are read-only. Only the trusted Go
+binary and its tool directory can execute. No server environment, open server
+descriptors or shared writable build cache reaches the compiler. `/dev/null`
+and read-only `/dev/urandom` are the only device paths granted.
+
+The syscall profile denies networking, namespace changes, process-group escape,
+cross-process signals, tracing, IPC, kernel administration and filesystem
+metadata changes that Landlock ABI 3 does not mediate. Go's optional
+signal-based async preemption is disabled, and toolchain telemetry is off in
+the private home. Ambient Go flags, workspace files, toolchain downloads,
+module proxies, checksum service access and VCS resolution remain disabled.
+This slice consumes already cached dependencies; it does not implement a
+remote repository or checksum-verified dependency-fetch phase.
+
+Each Go command has a three-minute wall deadline. Inherited hard limits can
+only narrow these ceilings: 60 CPU seconds per process, 2 GiB address space per
+process, 64 MiB per file, 256 open descriptors, no core dumps, and 16,384
+processes/threads per real UID. The UID ceiling includes other work sharing
+that account; these are not aggregate memory/disk or per-principal quotas.
+Compiler parallelism remains two. Diagnostics retain at most 32 KiB. A
+cancellation or completion kills remaining compiler process-group members.
+Staging, private build directories and failed outputs are removed. Explicitly
+trusted native builds retain their existing host privileges.
 
 The source must export:
 
@@ -81,12 +114,16 @@ The lock and artifact are copied into detached restore state, and an optional
 asynchronous rebuild remains a comparison only: a mismatch never replaces the
 bytes admitted by digest.
 
-Linux behavior tests cover compiled native and WASI method/mutator/validator
+Linux behavior tests cover the real containment installation and failed
+admission when an outer seccomp filter blocks each required installation
+operation. They exercise filesystem and symlink escapes, socket creation,
+metadata and signal denial, resource ceilings, actual memory/file/descriptor
+exhaustion, denied execution and cancellation. Supported-host tests also cover
+compiled native and WASI method/mutator/validator
 execution, callback restrictions, isolated host state, reproducible artifact
 bytes, real compilation failure and cancellation, explicit trust and
 containment, real guest filesystem/network/environment refusals, initialization
 cancellation, static WASI import/export/memory checks, wrong source digest,
-changed source/HEAD/output, closed output, process-restart durable restore,
-atomic publication refusals, detached reads, tamper/traversal/symlink checks,
-and asynchronous rebuild match/mismatch comparison. Remote resolution,
-installation/approval, build quotas, and UI bundles remain separate work.
+changed source/HEAD/output, closed output, digest restore, and asynchronous
+rebuild match/mismatch comparison. Remote resolution, installation/approval, durable
+external artifact storage, build quotas, and UI bundles remain separate work.
