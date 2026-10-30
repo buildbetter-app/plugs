@@ -230,36 +230,30 @@ func TestExecutableSQLiteServerRemoteLifecycleAndRestart(t *testing.T) {
 		t.Fatalf("new collaboration session was not admitted: %+v", rows)
 	}
 	t.Log("collaboration restart: old presence absent, old session=not_found, new session admitted")
-	resumed := sqliteRestartRPC(t, endpoint, newSession, "event.subscribe", map[string]any{"filter": map[string]any{}, "from": oldCursor})
-	if resumed.Error != nil {
-		// Retain a real acceptance RED without losing the independent live-delta
-		// observation. A typed refusal is not a canonical terminal event.gap.
-		t.Errorf("old cursor neither resumed nor returned a contract-valid terminal gap: %v", resumed.Error)
-		subscription, _ = sqliteRestartSubscribe(t, endpoint, newSession, "")
-	} else {
-		var value struct {
-			SubscriptionID string `json:"subscriptionId"`
-			Cursor         string `json:"cursor"`
-		}
-		if err := json.Unmarshal(resumed.result(t), &value); err != nil || value.SubscriptionID == "" || value.Cursor == "" {
-			t.Fatalf("restart subscription=%s err=%v", resumed.Result, err)
-		}
-		subscription = value.SubscriptionID
+	// The default executable generates its cursor signing key per process.
+	// A cursor from the stopped process must fail authentication, before any
+	// authenticated history boundary could produce a terminal event.gap.
+	oldCursorResponse := sqliteRestartRPC(t, endpoint, newSession, "event.subscribe", map[string]any{"filter": map[string]any{}, "from": oldCursor})
+	if oldCursorResponse.Error == nil || oldCursorResponse.Error.Code != -32018 || oldCursorResponse.Error.Data.Code != "cursor_invalid" || oldCursorResponse.Error.Data.Retryable || len(oldCursorResponse.Result) != 0 {
+		t.Fatalf("old process cursor was not refused with nonretryable cursor_invalid (-32018): %+v", oldCursorResponse)
 	}
+	t.Log("old cursor restart PASS: default per-process signing key returns cursor_invalid (-32018), retryable=false, no result")
+	subscription, freshCursor := sqliteRestartSubscribe(t, endpoint, newSession, "")
 	stream = sqliteRestartAttach(t, endpoint, newSession, subscription)
 	opening = stream.next(t)
-	if len(opening.Events) == 1 && opening.Events[0].Control != nil && opening.Events[0].Control.Type == model.EventGap {
-		gap := opening.Events[0].Control
-		if gap.Cursor != opening.Cursor {
-			t.Fatal("terminal gap cursor does not match its envelope")
-		}
-		stream.eof(t)
-		stream.close()
-		t.Logf("old cursor restart: canonical terminal event.gap=%+v", gap.Details)
-		subscription, _ = sqliteRestartSubscribe(t, endpoint, newSession, "")
-		stream = sqliteRestartAttach(t, endpoint, newSession, subscription)
-		opening = stream.next(t)
+	if opening.SubscriptionID != subscription || opening.Cursor != freshCursor || freshCursor == oldCursor || len(opening.Events) != beforeRestart.Events {
+		t.Fatalf("fresh watch snapshot does not acknowledge the new cursor and retained event history: %+v", opening)
 	}
+	for _, event := range opening.Events {
+		if event.Durable == nil || event.Control != nil {
+			t.Fatalf("fresh watch snapshot contains a control instead of retained durable history: %+v", event)
+		}
+	}
+	last := opening.Events[len(opening.Events)-1].Durable
+	if last.Type != model.EventBeadCreated || last.Resource != "bead/"+keyedID || last.Revision != receipt.Revision || last.Cursor != freshCursor {
+		t.Fatalf("fresh watch snapshot lacks the retained keyed write at its head: %+v", last)
+	}
+	t.Logf("fresh watch snapshot PASS: events=%d retained keyed resource=%s revision=%s; new signed cursor acknowledged", len(opening.Events), last.Resource, last.Revision)
 	defer stream.close()
 	updated := sqliteRestartRPC(t, endpoint, "", "bead.update", map[string]any{
 		"id": map[string]any{"id": keyedID}, "fields": map[string]any{"title": "live after restart"},
@@ -456,14 +450,6 @@ func (s *sqliteRestartStream) next(t *testing.T) sqliteRestartFrame {
 		t.Fatalf("watch frame=%+v err=%v", value, err)
 	}
 	return value
-}
-
-func (s *sqliteRestartStream) eof(t *testing.T) {
-	t.Helper()
-	var extra json.RawMessage
-	if err := s.decoder.Decode(&extra); err != io.EOF {
-		t.Fatalf("terminal gap did not end the actual stream: extra=%s err=%v", extra, err)
-	}
 }
 
 type sqliteRestartState struct {
