@@ -52,9 +52,13 @@ args = sys.argv[1:]
 assert not any(k in os.environ for k in ("GH_TOKEN", "DATABASE_URL", "ACTIONS_RUNTIME_TOKEN"))
 with (root / "calls.jsonl").open("a") as out:
     out.write(json.dumps(args) + "\n")
-command = "--version" if "--version" in args else next(x for x in args if not x.startswith("--"))
+# Bazel accepts the standalone launcher --version form only before startup
+# flags; the collector must use the actual version subcommand after them.
+assert "--version" not in args
+command = next(x for x in args if not x.startswith("--"))
 execution = root / "execution"
-if command == "--version" or "--version" in args:
+if command == "version":
+    assert "--gnu_format" in args
     print("bazel 9.3.0")
 elif command == "info":
     print(execution)

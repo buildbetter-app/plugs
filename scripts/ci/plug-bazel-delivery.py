@@ -235,7 +235,7 @@ def run(capture):
     tool = {"launcher": bazel[0], "launcher_sha256": digest(Path(bazel[0]).resolve()),
             "bazel_pin": Path(".bazelversion").read_text().strip(),
             "rc_sha256": digest(Path(os.environ["BAZEL_RC"])) if os.environ.get("BAZEL_RC") else None}
-    code, version = capture.command("bazel-version", [*bazel, "--version"])
+    code, version = capture.command("bazel-version", [*bazel, "version", "--gnu_format"])
     tool["resolved_bazel"] = version
     write_json(capture.output / "toolchain.json", tool)
     if code:
