@@ -13,7 +13,9 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/acceptance"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 )
 
 var recordedExtension = flag.String("recorded-extension", "", "runfile path of the independently recorded reference extension")
@@ -113,7 +115,17 @@ func observedRelations(t *testing.T, doc pipeline.Document) map[string]any {
 // through the existing RPC trace. No alternate handler or storage is installed.
 func replayRecordedVector(t *testing.T, vector referenceVector) ([]acceptance.Frame, json.RawMessage) {
 	t.Helper()
-	f := newStack(t, vector.Inputs.IDs.Explicit)
+	var rules *service.Ontology
+	if vector.Card == "B25" {
+		doc := ontology.DefaultDocument()
+		doc.Types["issue"].Fields["labels"] = ontology.Field{Type: "strings"}
+		snapshot, problems := ontology.Compile(doc, nil, nil)
+		if len(problems) != 0 {
+			t.Fatalf("B25 fixture ontology: %v", problems)
+		}
+		rules = service.NewOntology(snapshot.Effective)
+	}
+	f := newStackWithOntology(t, vector.Inputs.IDs.Explicit, rules)
 	views := []pipeline.Document{}
 	for step, command := range vector.Commands {
 		args := command.Args
