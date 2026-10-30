@@ -362,6 +362,12 @@ func claimNextRace(err error) bool {
 		// active-store lease loss and every other busy condition remain a wire
 		// error rather than being converted into terminal null.
 		return value.Message == "bead already has a live claim"
+	case "write_conflict":
+		// The shared writer has already exhausted its bounded snapshot retries
+		// for this selected candidate. Advance within the same claimNext walk;
+		// unrelated/global write failures retain their typed error and do not
+		// become a terminal null.
+		return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 	default:
 		return false
 	}

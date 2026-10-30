@@ -272,6 +272,11 @@ func claimNextRace(err error) bool {
 		// admission timeouts, global lease loss and other busy errors must
 		// propagate instead of becoming a false terminal null.
 		return value.Message == "bead already has a live claim"
+	case "write_conflict":
+		// A selected candidate can exhaust the writer's bounded snapshot
+		// retries while the queue is contended. Advance to the next candidate;
+		// other/global write failures retain their typed error.
+		return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 	default:
 		return false
 	}

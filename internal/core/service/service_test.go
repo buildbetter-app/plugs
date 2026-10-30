@@ -1211,12 +1211,20 @@ func TestClaimNextRaceOnlySkipsCandidateBusy(t *testing.T) {
 	for _, err := range []error{
 		&model.Error{Data: model.ErrorData{Code: "busy", Hint: "write pre phases exceeded their deadline"}},
 		&model.Error{Data: model.ErrorData{Code: "busy", Hint: "active storage lease was lost"}},
-		&model.Error{Data: model.ErrorData{Code: "write_conflict"}},
+		&model.Error{Message: "global storage failure", Data: model.ErrorData{Code: "write_conflict"}},
 		&model.Error{Data: model.ErrorData{Code: "lease_not_held"}},
 		&model.Error{Data: model.ErrorData{Code: "lease_expired"}},
 	} {
 		if claimNextRace(err) {
 			t.Fatalf("global queue error was incorrectly skippable: %v", err)
+		}
+	}
+	for _, err := range []error{
+		&model.Error{Message: "snapshot changed during all four write attempts", Data: model.ErrorData{Code: "write_conflict"}},
+		&model.Error{Data: model.ErrorData{Code: "write_conflict", Hint: "snapshot changed during all four write attempts"}},
+	} {
+		if !claimNextRace(err) {
+			t.Fatalf("candidate write conflict was not skippable: %v", err)
 		}
 	}
 }
@@ -1227,6 +1235,7 @@ type claimNextRaceStore struct {
 	*memory.Store
 	beforeWrite func()
 	writeError  error
+	writeErrors []error
 	probes      int
 }
 
@@ -1234,6 +1243,11 @@ func (s *claimNextRaceStore) Write(ctx context.Context, lease driver.ActiveLease
 	if hook := s.beforeWrite; hook != nil {
 		s.beforeWrite = nil
 		hook()
+	}
+	if len(s.writeErrors) > 0 {
+		err := s.writeErrors[0]
+		s.writeErrors = s.writeErrors[1:]
+		return nil, err
 	}
 	if s.writeError != nil {
 		return nil, s.writeError
@@ -1295,6 +1309,24 @@ func TestClaimNextAdvancesPastRealCandidateLeaseRace(t *testing.T) {
 	got, err := f.svc.Get(ctx, anonymous, GetRequest{ID: first})
 	if err != nil || got.Lease == nil || got.Lease.Principal.Kind != other.Kind || got.Lease.Principal.ID != other.ID {
 		t.Fatalf("competing claim was overwritten: %+v err=%v", got, err)
+	}
+}
+
+func TestClaimNextAdvancesPastCandidateWriteConflict(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	create(t, f, "First")
+	create(t, f, "Second")
+	page, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local"})
+	if err != nil || len(page.Items) != 2 {
+		t.Fatalf("ready candidates=%+v err=%v", page, err)
+	}
+	store := &claimNextRaceStore{Store: f.store, writeErrors: []error{
+		&model.Error{Message: "snapshot changed during all four write attempts", Data: model.ErrorData{Code: "write_conflict", Retryable: true}},
+	}}
+	out, err := claimNextRaceService(f, store).ClaimNextWithOutcome(ctx, anonymous, ClaimNextRequest{Project: "local"}, meta(t))
+	if err != nil || out == nil || out.NullResult || len(out.Commit.Results) != 1 || out.Commit.Results[0].Ref.ID != page.Items[1].ID {
+		t.Fatalf("candidate write conflict did not advance to the next real claim: out=%+v err=%v", out, err)
 	}
 }
 
