@@ -373,9 +373,12 @@ func convertBead(record Record, report *Report) (*workingIssue, []string) {
 			}
 		}
 	}
-	if value, present := body["pinned"]; present && value != nil {
-		if _, ok := value.(bool); !ok {
-			reasons = append(reasons, fmt.Sprintf("bead %q field %q is not a boolean", record.ID, "pinned"))
+	pinned := false
+	if value, present := body["pinned"]; present {
+		var ok bool
+		pinned, ok = parsePinned(value)
+		if !ok {
+			reasons = append(reasons, fmt.Sprintf("bead %q field %q is not a boolean or canonical numeric 0/1", record.ID, "pinned"))
 		}
 	}
 	typ := text(body["source_type"])
@@ -523,7 +526,7 @@ func convertBead(record Record, report *Report) (*workingIssue, []string) {
 	line.Description, line.Design, line.AcceptanceCriteria, line.Notes = copyString("description"), copyString("design"), copyString("acceptance_criteria"), copyString("notes")
 	line.SpecID, line.Assignee, line.Owner, line.CreatedBy = copyString("spec_id"), copyString("assignee"), copyString("owner"), copyString("created_by")
 	line.StartedAt, line.ClosedAt, line.DueAt, line.DeferUntil = timestamp(body["started_at"]), timestamp(body["closed_at"]), timestamp(body["due_at"]), timestamp(body["defer_until"])
-	line.ExternalRef, line.Pinned = copyString("external_ref"), boolValue(body["pinned"])
+	line.ExternalRef, line.Pinned = copyString("external_ref"), pinned
 	line.CloseReason, line.ClosedBySession = text(record.Source.Fields["close_reason"]), text(record.Source.Fields["closed_by_session"])
 	line.SourceSystem = text(record.Source.Fields["source_system"])
 	return &workingIssue{Line: line, Category: category, Outcome: outcome, SourceStat: text(record.Source.Fields["status"])}, nil
@@ -1048,9 +1051,28 @@ func integer(value any) (int64, bool) {
 	}
 }
 
-func boolValue(value any) bool {
-	result, _ := value.(bool)
-	return result
+// parsePinned accepts the two representations admitted at the Beads SQL/JSON
+// boundary: a JSON boolean or the exact integer JSON values 0 and 1 emitted by
+// the TINYINT(1) source column. It deliberately rejects numeric spellings such
+// as 1.0/1e0 and all broad truthiness coercions.
+func parsePinned(value any) (bool, bool) {
+	switch value := value.(type) {
+	case nil:
+		// Keep the existing direct-Convert behavior for an explicit null: it
+		// remains the omitted false value in Beads JSONL. The canonical source
+		// exporter emits the SQL default as numeric 0/1 instead.
+		return false, true
+	case bool:
+		return value, true
+	case json.Number:
+		switch value.String() {
+		case "0":
+			return false, true
+		case "1":
+			return true, true
+		}
+	}
+	return false, false
 }
 
 func truthy(value any) bool {

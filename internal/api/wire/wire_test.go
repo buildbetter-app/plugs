@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -22,7 +24,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if got := len(c.ErrorCatalog()); got != 61 {
 		t.Fatalf("error inventory = %d", got)
 	}
-	if digest(catalogJSON) != "eb56bc6b2eab910fe191c9866011885b829f523f105149dd7870ffa22ba64897" {
+	if digest(catalogJSON) != "95be13e2da1e04c61bee100b200b6cdfaa82fe222380f7349479e549c22060ee" {
 		t.Fatal("bounded source snapshot changed; reconcile approved contract")
 	}
 	// These changes affect one of two independent descriptor representations.
@@ -105,6 +107,67 @@ func TestBoundedCatalogParity(t *testing.T) {
 	}
 	if _, err = c.GenerateOpenRPC([]MethodDesc{{Name: "incomplete"}}); err == nil {
 		t.Fatal("generator accepted incomplete descriptor")
+	}
+}
+
+func TestDirectBlockerContractMatchesCanonicalOpenRPC(t *testing.T) {
+	if os.Getenv("TEST_SRCDIR") == "" || os.Getenv("TEST_WORKSPACE") == "" {
+		t.Skip("canonical OpenRPC comparison runs under Bazel with the contract runfile")
+	}
+	canonicalPath := filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), "engdocs/design/plug/contracts/openrpc.json")
+	canonicalBytes, err := os.ReadFile(canonicalPath)
+	if err != nil {
+		t.Fatalf("read canonical OpenRPC runfile %s: %v", canonicalPath, err)
+	}
+	var canonical, embedded map[string]any
+	if err := json.Unmarshal(canonicalBytes, &canonical); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(catalogJSON, &embedded); err != nil {
+		t.Fatal(err)
+	}
+	for name, doc := range map[string]map[string]any{"canonical": canonical, "embedded": embedded} {
+		t.Run(name, func(t *testing.T) {
+			components := doc["components"].(map[string]any)
+			schemas := components["schemas"].(map[string]any)
+			result := schemas["ViewExplainResult"].(map[string]any)
+			properties := result["properties"].(map[string]any)
+			if properties["directBlockers"].(map[string]any)["$ref"] != "#/components/schemas/DirectBlockerResult" {
+				t.Fatal("ViewExplainResult directBlockers reference drift")
+			}
+			edge := schemas["DirectBlockerEdge"].(map[string]any)
+			if !reflect.DeepEqual(edge["required"], []any{"blocker", "kind", "state"}) || edge["additionalProperties"] != false {
+				t.Fatalf("edge schema is not closed/required: %+v", edge)
+			}
+			resultSchema := schemas["DirectBlockerResult"].(map[string]any)
+			if !reflect.DeepEqual(resultSchema["required"], []any{"edges", "hiddenCount"}) || resultSchema["additionalProperties"] != false {
+				t.Fatalf("result schema is not closed/required: %+v", resultSchema)
+			}
+			rp := resultSchema["properties"].(map[string]any)
+			if rp["edges"].(map[string]any)["maxItems"] != float64(100) || rp["hiddenCount"].(map[string]any)["maximum"] != float64(100) {
+				t.Fatalf("direct blocker bounds drift: %+v", rp)
+			}
+			var explain map[string]any
+			for _, raw := range doc["methods"].([]any) {
+				method := raw.(map[string]any)
+				if method["name"] == "view.explain" {
+					explain = method
+					break
+				}
+			}
+			if explain == nil {
+				t.Fatal("view.explain missing")
+			}
+			foundClosure := false
+			for _, raw := range explain["errors"].([]any) {
+				if raw.(map[string]any)["$ref"] == "#/components/errors/ClosureTooLarge" {
+					foundClosure = true
+				}
+			}
+			if !foundClosure {
+				t.Fatal("view.explain missing closure_too_large attachment")
+			}
+		})
 	}
 }
 

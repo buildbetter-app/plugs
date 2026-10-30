@@ -557,9 +557,21 @@ func (s *Service) Explain(ctx context.Context, by model.PrincipalRef, req Explai
 	result := ExplainResult{ViewID: req.ViewID, ItemID: req.ItemID, Included: matches(row, *definition.Filter, project, terms), Reasons: []string{}, Projection: projection}
 	if result.Included {
 		result.Reasons = append(result.Reasons, "included")
-		result.HiddenBlockers, err = s.hiddenBlockers(ctx, by, reader, row)
-		if err != nil {
-			return ExplainResult{}, err
+		if s.cfg.DirectBlockers != nil {
+			verdict, sourceErr := s.cfg.DirectBlockers(ctx, reader, ref, DirectBlockerExplainLimit)
+			if sourceErr != nil {
+				return ExplainResult{}, mapped(sourceErr)
+			}
+			result.DirectBlockers, err = s.projectDirectBlockers(ctx, by, reader, verdict)
+			if err != nil {
+				return ExplainResult{}, err
+			}
+			result.HiddenBlockers = result.DirectBlockers.HiddenCount
+		} else {
+			result.HiddenBlockers, err = s.hiddenBlockers(ctx, by, reader, row)
+			if err != nil {
+				return ExplainResult{}, err
+			}
 		}
 		pending, pendingErr := s.pendingReadiness(ctx, reader, []stored{row})
 		if pendingErr != nil {
@@ -573,6 +585,95 @@ func (s *Service) Explain(ctx context.Context, by model.PrincipalRef, req Explai
 		result.Reasons = []string{"excluded"}
 	}
 	return result, nil
+}
+
+func (s *Service) projectDirectBlockers(ctx context.Context, by model.PrincipalRef, reader driver.Reader, verdict DirectBlockerVerdict) (*DirectBlockerResult, error) {
+	if len(verdict.Edges) > DirectBlockerExplainLimit {
+		return nil, failure("closure_too_large", "direct blocker result exceeds the 100-edge bound")
+	}
+	result := &DirectBlockerResult{Edges: make([]DirectBlockerEdge, 0, len(verdict.Edges))}
+	if len(verdict.Edges) == 0 {
+		return result, nil
+	}
+	refs := make([]model.Ref, 0, len(verdict.Edges))
+	seen := make(map[string]bool, len(verdict.Edges))
+	for _, edge := range verdict.Edges {
+		if !edge.Blocker.IsID() || !edge.Blocker.Branch.IsZero() || seen[edge.Blocker.ID] {
+			continue
+		}
+		seen[edge.Blocker.ID] = true
+		refs = append(refs, edge.Blocker)
+	}
+	rows := []driver.Record{}
+	var err error
+	if len(refs) != 0 {
+		rows, err = reader.Get(ctx, refs)
+		if err != nil {
+			return nil, mapped(err)
+		}
+	}
+	byID := make(map[string]stored, len(rows))
+	for _, record := range rows {
+		if record.Kind != "bead" {
+			continue
+		}
+		doc, decodeErr := decodeDocument(record.Body)
+		if decodeErr != nil || doc.ID != record.Ref.ID {
+			return nil, failure("internal_error", "invalid persisted blocker document")
+		}
+		byID[doc.ID] = stored{record: record, doc: doc}
+	}
+	for _, edge := range verdict.Edges {
+		if edge.Kind != "blocks" && edge.Kind != "conditional-blocks" {
+			return nil, failure("internal_error", "invalid direct blocker kind")
+		}
+		if edge.State != DirectBlockerSatisfied && edge.State != DirectBlockerUnsatisfied && edge.State != DirectBlockerUnknown {
+			return nil, failure("internal_error", "invalid direct blocker state")
+		}
+		edge.State, edge.Reason = safeDirectBlockerVerdict(edge.State, edge.Reason)
+		// An unresolved or missing reference is an unknown link on a readable
+		// dependent. There is no target record/project to authorize.
+		target, exists := byID[edge.Blocker.ID]
+		if !edge.Blocker.IsID() || !edge.Blocker.Branch.IsZero() || !exists {
+			edge.State = DirectBlockerUnknown
+			if edge.Reason == "" {
+				edge.Reason = "blocker reference is unresolved or missing from the snapshot"
+			}
+			result.Edges = append(result.Edges, edge)
+			continue
+		}
+		allowed, authErr := s.authorize(ctx, by, target)
+		if authErr != nil {
+			return nil, mapped(authErr)
+		}
+		if !allowed {
+			result.HiddenCount++
+			continue
+		}
+		result.Edges = append(result.Edges, edge)
+	}
+	return result, nil
+}
+
+func safeDirectBlockerVerdict(state DirectBlockerState, reason string) (DirectBlockerState, string) {
+	switch state {
+	case DirectBlockerSatisfied:
+		return state, ""
+	case DirectBlockerUnsatisfied:
+		if reason == "blocker status does not satisfy blocks" || reason == "blocker status does not satisfy conditional-blocks" {
+			return state, reason
+		}
+		return state, "blocker is unsatisfied"
+	case DirectBlockerUnknown:
+		switch reason {
+		case "blocker reference is unresolved", "blocker is missing from the snapshot", "blocker ontology is unavailable in the snapshot", "blocker status is unknown to its project ontology":
+			return state, reason
+		default:
+			return state, "blocker state is unknown"
+		}
+	default:
+		return DirectBlockerUnknown, "blocker state is unknown"
+	}
 }
 
 func (s *Service) hiddenBlockers(ctx context.Context, by model.PrincipalRef, reader driver.Reader, row stored) (int, error) {

@@ -12,6 +12,7 @@ go_library(
 go_test(
     name = "wire_test",
     srcs = ["wire_test.go"],
+    data = ["//:engdocs/design/plug/contracts/openrpc.json"],
     embed = [":wire"],
     deps = ["//internal/core/model"],
 )
