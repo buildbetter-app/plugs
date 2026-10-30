@@ -218,6 +218,27 @@ func repackTar(t *testing.T, data []byte, mutate func(string, []byte, *tar.Heade
 
 func openTarget(t *testing.T, kind string) (driver.Store, driver.ActiveLease, func()) {
 	t.Helper()
+	store := openStore(t, kind)
+	ctx := context.Background()
+	lease, err := store.Lease(ctx, "converter-"+kind, driver.LeaseTTL)
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	return store, lease, func() {
+		_ = lease.Release(context.Background())
+		_ = store.Close()
+	}
+}
+
+func openTargetWithoutLease(t *testing.T, kind string) (driver.Store, driver.ActiveLease, func()) {
+	t.Helper()
+	store := openStore(t, kind)
+	return store, nil, func() { _ = store.Close() }
+}
+
+func openStore(t *testing.T, kind string) driver.Store {
+	t.Helper()
 	ctx := context.Background()
 	var store driver.Store
 	var err error
@@ -230,15 +251,7 @@ func openTarget(t *testing.T, kind string) (driver.Store, driver.ActiveLease, fu
 			t.Fatal(err)
 		}
 	}
-	lease, err := store.Lease(ctx, "converter-"+kind, driver.LeaseTTL)
-	if err != nil {
-		store.Close()
-		t.Fatal(err)
-	}
-	return store, lease, func() {
-		_ = lease.Release(context.Background())
-		_ = store.Close()
-	}
+	return store
 }
 
 // rewriteData recomputes only the ordinary wire checksums so malformed JSON
@@ -344,6 +357,23 @@ func TestStrictArchiveSemanticRefusals(t *testing.T) {
 		{"unknown scope", func(m map[string][]byte) { changeManifest(t, m, func(x map[string]any) { x["scope"] = "full" }) }},
 		{"unknown schema", func(m map[string][]byte) { changeManifest(t, m, func(x map[string]any) { x["schema"] = 2 }) }},
 		{"unknown migration cursor", func(m map[string][]byte) { changeManifest(t, m, func(x map[string]any) { x["ignored_version"] = 29 }) }},
+		{"unmerged source state", func(m map[string][]byte) {
+			changeManifest(t, m, func(x map[string]any) {
+				for _, value := range x["sources"].([]any) {
+					disposition := value.(map[string]any)
+					if disposition["family"] == "dolt-conflicts" {
+						disposition["rows"] = 1
+					}
+				}
+			})
+		}},
+		{"duplicate project prefix", func(m map[string][]byte) {
+			changeManifest(t, m, func(x map[string]any) {
+				projects := x["projects"].([]any)
+				projects = append(projects, projects[0])
+				x["projects"] = projects
+			})
+		}},
 		{"missing required scalar", func(m map[string][]byte) { changeManifest(t, m, func(x map[string]any) { delete(x, "main_version") }) }},
 		{"null typed scalar", func(m map[string][]byte) { changeManifest(t, m, func(x map[string]any) { x["schema"] = nil }) }},
 		{"case alias", func(m map[string][]byte) {
@@ -597,7 +627,20 @@ func snapshot(t *testing.T, store driver.Store) storeState {
 	if err != nil {
 		t.Fatal(err)
 	}
-	changes, err := r.Changesets(ctx, nil, 1000)
+	var cursor *driver.Cursor
+	var base []model.Changeset
+	if !meta.HistoryFloor.IsZero() {
+		cursor = &driver.Cursor{Incarnation: meta.Incarnation, Revision: meta.HistoryFloor, Index: model.Natural64(0)}
+		principal, _ := driver.PrincipalKey(restorePrincipal)
+		key, _ := recoveryScope(supportedVerification(t))
+		receipt, lookupErr := r.IdempotencyByKey(ctx, principal, "", "offline.restore", key)
+		if lookupErr != nil || receipt == nil {
+			t.Fatalf("restore receipt: %v", lookupErr)
+		}
+		base = append(base, receipt.Changeset)
+	}
+	changes, err := r.Changesets(ctx, cursor, 1000)
+	changes = append(base, changes...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -659,6 +702,108 @@ func TestActualFixtureRefusesWithoutChangingMemoryOrSQLite(t *testing.T) {
 			}
 			t.Log("real " + kind + ": empty and populated restore refusals preserve records, versions, changesets, head, history floor and incarnation")
 		})
+	}
+}
+
+func TestVerifiedBoundedHeadSupportsReadyClaimAndTxApply(t *testing.T) {
+	for _, kind := range []string{"memory", "sqlite"} {
+		t.Run(kind, func(t *testing.T) {
+			store, lease, cleanup := openTarget(t, kind)
+			defer cleanup()
+			before := snapshot(t, store)
+			if !before.Meta.Head.IsZero() || len(before.Records) != 0 || len(before.Changesets) != 0 {
+				t.Fatal("target not empty")
+			}
+			report, err := RestoreWithLease(context.Background(), bytes.NewReader(supportedBytes(t, nil)), store, lease, supportedVerification(t))
+			if err != nil {
+				t.Fatalf("restore error=%v", err)
+			}
+			if report.Archive == nil || len(report.Archive.Records("beads-archive")) != 101 || !reflect.DeepEqual(report.Target, before.Meta) {
+				t.Fatal("restore lost source evidence or target metadata")
+			}
+			restored := snapshot(t, store)
+			if restored.Meta.Incarnation == before.Meta.Incarnation || restored.Meta.HistoryFloor.String() != "1" || restored.Meta.StoreID != driver.StoreID(report.Archive.Manifest().StoreID) || restored.Meta.Head.String() != "1" || len(restored.Records) != 109 || len(restored.Changesets) != 1 {
+				t.Fatalf("restore state=%+v", restored)
+			}
+			if restored.Changesets[0].Kind != model.ChangesetRestore || len(restored.Changesets[0].Changes) != 109 {
+				t.Fatalf("restore changeset=%+v", restored.Changesets[0])
+			}
+			kindCounts := map[string]int{}
+			for _, record := range restored.Records {
+				kindCounts[record.Kind]++
+			}
+			wantKinds := map[string]int{"bead": 3, "edge": 1, "restore-archive": 1, "memory": 1, "config": 2, "beads-archive": 101}
+			if !reflect.DeepEqual(kindCounts, wantKinds) {
+				t.Fatalf("restored kinds=%v", kindCounts)
+			}
+			for _, record := range restored.Records {
+				if record.Kind != "bead" {
+					continue
+				}
+				doc, err := pipeline.DecodeDocument(record.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if doc.ID != record.Ref.ID || doc.Project != "pl" || doc.Lease != nil || doc.Metadata["beads.source.status"] == nil {
+					t.Fatalf("restored bead=%+v", doc)
+				}
+			}
+
+			// The restored open source bead is visible to Ready, can be claimed,
+			// and remains writable through the ordinary tx.apply pipeline.
+			ontology := service.NewOntology(nil)
+			writer := pipeline.New(store, lease, pipeline.WithOntology(ontology))
+			svc := service.New(store, lease, writer, service.WithOntology(ontology))
+			principal := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+			ready, err := svc.Ready(context.Background(), principal, service.ReadyRequest{Project: "pl"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(ready.Items) != 1 || ready.Items[0].ID != idA || ready.Items[0].Status != "todo" {
+				t.Fatalf("ready=%+v", ready)
+			}
+			claimed, err := svc.Claim(context.Background(), principal, service.ClaimRequest{ID: model.RefByID(idA, model.Natural64(0))}, model.WriteMeta{Project: "pl", Agent: "converter-test", AgentLabel: "converter-test", IdempotencyKey: strings.Repeat("ab", 16)})
+			if err != nil || claimed.Commit.Results[0].Ref.ID != idA {
+				t.Fatalf("claim=%+v err=%v", claimed, err)
+			}
+			updated, err := writer.Apply(context.Background(), principal, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: model.RefByID(idA, model.Natural64(0)), Fields: map[string]any{"description": "updated through tx.apply"}}}}}, model.WriteMeta{Method: "tx.apply", Project: "pl", Agent: "converter-test", AgentLabel: "converter-test", IdempotencyKey: strings.Repeat("cd", 16)})
+			if err != nil || updated.Results[0].Ref.ID != idA {
+				t.Fatalf("tx.apply=%+v err=%v", updated, err)
+			}
+			got, err := svc.Get(context.Background(), principal, service.GetRequest{ID: model.RefByID(idA, model.Natural64(0))})
+			if err != nil || got.Bead.Status != "in_progress" || got.Bead.Fields["description"] != "updated through tx.apply" || !reflect.DeepEqual(got.Bead.Labels, []string{"alpha", "zeta"}) {
+				t.Fatalf("get after restore writes=%+v err=%v", got, err)
+			}
+			created, err := writer.Apply(context.Background(), principal, model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Project: "pl", Fields: map[string]any{"title": "next random ID"}}}}}, model.WriteMeta{Method: "tx.apply", Project: "pl", Agent: "converter-test", AgentLabel: "converter-test", IdempotencyKey: strings.Repeat("ef", 16)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			nextID := created.Results[0].Ref.ID
+			if len(nextID) != 35 || !strings.HasPrefix(nextID, "pl-") || nextID == idA || nextID == idB || nextID == idC {
+				t.Fatalf("allocator continuation: %s", nextID)
+			}
+
+			populated := snapshot(t, store)
+			report, err = RestoreWithLease(context.Background(), bytes.NewReader(supportedBytes(t, nil)), store, lease, supportedVerification(t))
+			if !errors.Is(err, ErrTargetNotEmpty) || report.Archive == nil {
+				t.Fatalf("populated target=%v", err)
+			}
+			if !reflect.DeepEqual(populated, snapshot(t, store)) {
+				t.Fatal("populated-target refusal changed records/history/metadata")
+			}
+			t.Log("real " + kind + ": restored 3 beads plus typed/source evidence atomically; Ready, Claim and tx.apply operate on preserved IDs")
+		})
+	}
+}
+
+func TestPublicRestoreOwnsLease(t *testing.T) {
+	store, _, cleanup := openTargetWithoutLease(t, "memory")
+	defer cleanup()
+	if _, err := Restore(context.Background(), bytes.NewReader(supportedBytes(t, nil)), store, supportedVerification(t)); err != nil {
+		t.Fatal(err)
+	}
+	if got := snapshot(t, store); len(got.Records) != 109 || len(got.Changesets) != 1 {
+		t.Fatalf("public restore state=%+v", got)
 	}
 }
 

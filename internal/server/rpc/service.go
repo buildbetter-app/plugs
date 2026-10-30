@@ -21,6 +21,7 @@ type Service interface {
 	CreateWithOutcome(context.Context, model.PrincipalRef, service.CreateRequest, model.WriteMeta) (port.WriteOutcome, error)
 	UpdateWithOutcome(context.Context, model.PrincipalRef, service.UpdateRequest, model.WriteMeta) (port.WriteOutcome, error)
 	ClaimWithOutcome(context.Context, model.PrincipalRef, service.ClaimRequest, model.WriteMeta) (port.WriteOutcome, error)
+	ClaimNextWithOutcome(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta) (*port.WriteOutcome, error)
 	CommentWithOutcome(context.Context, model.PrincipalRef, service.CommentRequest, model.WriteMeta) (port.WriteOutcome, error)
 	CloseWithOutcome(context.Context, model.PrincipalRef, service.CloseRequest, model.WriteMeta) (port.WriteOutcome, error)
 	ReopenWithOutcome(context.Context, model.PrincipalRef, service.ReopenRequest, model.WriteMeta) (port.WriteOutcome, error)
@@ -82,7 +83,7 @@ func BindService(registry *Registry, svc Service) error {
 	if registry == nil || svc == nil {
 		return fmt.Errorf("nil service or registry")
 	}
-	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "history.query"}
+	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.claimNext", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "history.query"}
 	if _, ok := svc.(port.GateService); ok {
 		names = append(names, "gate.approve", "gate.report")
 	}
@@ -232,6 +233,21 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 	case "bead.claim":
 		v, err := svc.ClaimWithOutcome(ctx, c.Principal, service.ClaimRequest{ID: p.ID, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
+	case "bead.claimNext":
+		v, err := svc.ClaimNextWithOutcome(ctx, c.Principal, service.ClaimNextRequest{Project: c.Meta.Project, ViewID: p.ViewID, Filter: p.Filter.domain()}, meta)
+		if err != nil {
+			return nil, err
+		}
+		if v == nil || v.NullResult {
+			// Terminal claimNext is the cataloged JSON null. Keep the outcome
+			// wrapper so a keyed durable replay still emits response-only
+			// _meta.replayed without changing the stored null result.
+			if v == nil {
+				return nil, nil
+			}
+			return Outcome{Result: nil, Replayed: v.Replayed}, nil
+		}
+		return writeOutcome(*v), nil
 	case "gate.approve":
 		gate, ok := svc.(port.GateService)
 		if !ok {

@@ -21,12 +21,16 @@ const MaxBatchCalls = 100
 // Principal through WithPrincipal. Visible is an optional discovery policy;
 // handlers/service remain responsible for authorizing actual resource access.
 type Config struct {
-	ServerVersion       string
-	ProtocolVersion     string
-	OntologyRevision    model.Revision
-	DefaultProject      string
-	AuthMode            string
-	Incarnation         string
+	ServerVersion    string
+	ProtocolVersion  string
+	OntologyRevision model.Revision
+	DefaultProject   string
+	AuthMode         string
+	Incarnation      string
+	// CurrentIncarnation reads committed store metadata for each paging/hello
+	// call. An installed provider must succeed; only an absent provider uses
+	// the startup Incarnation. It must be safe for concurrent requests.
+	CurrentIncarnation  func(context.Context) (string, error)
 	Visible             func(context.Context, model.PrincipalRef, wire.MethodDesc) (bool, error)
 	DroppedNotification func(context.Context, string)
 	// CursorKey is an optional >=32-byte signing secret. Supplying a stable key
@@ -202,7 +206,26 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 	if err = ctx.Err(); err != nil {
 		return respond("busy", "request deadline or cancellation reached", nil)
 	}
-	result, callErr := invoke(ctx, bound.handler, Call{Method: method, Params: params, Meta: meta, Principal: by, paging: s.paging})
+	paging := s.paging
+	if s.config.CurrentIncarnation != nil && (method == "bead.ready" || method == "history.query" || method == "server.hello") {
+		incarnation, lookupErr := s.config.CurrentIncarnation(ctx)
+		if lookupErr == nil && incarnation == "" {
+			lookupErr = fmt.Errorf("current store incarnation is empty")
+		}
+		if lookupErr != nil {
+			if !idPresent {
+				return nil
+			}
+			return s.errorResponse(id, s.registry.catalog.MapError(lookupErr))
+		}
+		// Keep the signing key and ontology, but never mutate shared codec
+		// state. Binding, decoding, service validation and encoding all use
+		// this one request's committed incarnation snapshot.
+		copy := *s.paging
+		copy.incarnation = incarnation
+		paging = &copy
+	}
+	result, callErr := invoke(ctx, bound.handler, Call{Method: method, Params: params, Meta: meta, Principal: by, paging: paging})
 	if !idPresent {
 		return nil
 	}
@@ -301,7 +324,7 @@ func (s *Server) hello(ctx context.Context, c Call) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := map[string]any{"serverVersion": s.config.ServerVersion, "protocolVersion": s.config.ProtocolVersion, "methodsHash": hash, "ontologyRevision": s.config.OntologyRevision, "authMode": s.config.AuthMode, "incarnation": s.config.Incarnation}
+	result := map[string]any{"serverVersion": s.config.ServerVersion, "protocolVersion": s.config.ProtocolVersion, "methodsHash": hash, "ontologyRevision": s.config.OntologyRevision, "authMode": s.config.AuthMode, "incarnation": c.paging.incarnation}
 	if c.Meta.Project != "" {
 		result["defaultProject"] = c.Meta.Project
 	} else if s.config.DefaultProject != "" {
