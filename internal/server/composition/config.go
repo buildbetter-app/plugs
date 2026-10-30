@@ -87,6 +87,10 @@ type Config struct {
 	ViewReader    viewops.ViewReader
 	Readiness     viewops.ReadinessReader
 	AuthorizeRead viewops.AuthorizeRead
+	// DirectBlockerOntology is an optional protected ontology source locator.
+	// When absent, view.explain omits directBlockers rather than guessing an ID
+	// or falling back to the process-local NewOntology resolver.
+	DirectBlockerOntology service.OntologySourceLocator
 
 	// ProjectionBindings are the effective projection bindings owned by this
 	// composition. Their durable state is read through the checkpoint adapter;
@@ -330,10 +334,34 @@ func (r *Runtime) bind(config Config) error {
 	if viewBinding == "" {
 		viewBinding = "core"
 	}
+	var directBlockers viewops.DirectBlockerSource
+	if config.DirectBlockerOntology != nil {
+		directBlockers = func(ctx context.Context, reader driver.Reader, dependent model.Ref, limit int) (viewops.DirectBlockerVerdict, error) {
+			verdict, err := service.ReadDirectBlockers(ctx, reader, service.DirectBlockerRequest{
+				Dependent: dependent,
+				Ontology:  config.DirectBlockerOntology,
+				Limit:     limit,
+			})
+			if err != nil {
+				return viewops.DirectBlockerVerdict{}, err
+			}
+			out := viewops.DirectBlockerVerdict{Edges: make([]viewops.DirectBlockerEdge, 0, len(verdict.Edges))}
+			for _, edge := range verdict.Edges {
+				out.Edges = append(out.Edges, viewops.DirectBlockerEdge{
+					Blocker: edge.Blocker,
+					Kind:    edge.Kind,
+					State:   viewops.DirectBlockerState(edge.State),
+					Reason:  edge.Reason,
+				})
+			}
+			return out, nil
+		}
+	}
 	r.Views, err = viewops.New(r.Store, r.Lease, viewops.Config{
 		Views:             config.ViewReader,
 		Readiness:         config.Readiness,
 		AuthorizeRead:     config.AuthorizeRead,
+		DirectBlockers:    directBlockers,
 		ProjectionStatus:  r.ProjectionStatus,
 		ProjectionBinding: viewBinding,
 		OntologyRevision:  model.Natural64(1),

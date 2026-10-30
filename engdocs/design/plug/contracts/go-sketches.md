@@ -3310,6 +3310,23 @@ The lease policy selected by P71 is a ten-second TTL and three-second renewal.
 must preserve the `ErrIndeterminate` idempotency key so the service can resolve
 the outcome by key before retrying.
 
+### Optional direct blocker explanation
+
+`view.explain` may include the optional `directBlockers` result when a host
+configures a protected ontology source locator. An absent member means the
+capability is unavailable; an included result with `edges: []` and
+`hiddenCount: 0` means the bounded evaluation completed and found no visible
+edges. The consumer evaluates the producer verdict against the one reader
+already pinned for `view.explain`, and applies the current read authorizer to
+each resolved target using that target's stored project. A denied existing
+target contributes only to `hiddenCount`; its identity, project, status and
+reason are omitted. Missing, unresolved, unavailable-ontology and unknown
+status links remain `unknown` and are never authorized as targets. The
+protected locator is opt-in and must not guess an ontology ID or use a live
+resolver. The result is capped at 100 edges; overflow and cancellation refuse
+atomically with the existing `closure_too_large` and `busy` errors, without a
+partial result.
+
 ## Deliberate boundaries
 
 The sketches leave JSON-RPC wire types in `contracts/openrpc.json` and keep
