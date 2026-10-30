@@ -29,6 +29,41 @@ func (h *harness) telemetryWriter(options ...Option) (*Writer, *Collector) {
 	return NewWithTelemetry(h.store, h.lease, append(base, options...)...)
 }
 
+func TestGenericClaimReleaseRefusalPrecedesCancellation(t *testing.T) {
+	for _, entry := range []string{"Apply", "ApplyWithOutcome"} {
+		t.Run(entry, func(t *testing.T) {
+			h := setup(t)
+			writer, collector := h.telemetryWriter()
+			before := collector.Snapshot()
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			m := meta(1)
+			m.Method = "bead.release"
+			cs := model.ChangeSet{Ops: []model.Op{create("generic-release")}}
+			var err error
+			if entry == "Apply" {
+				_, err = writer.Apply(ctx, by, cs, m)
+			} else {
+				_, err = writer.ApplyWithOutcome(ctx, by, cs, m)
+			}
+			code(t, err, "invalid_params")
+			if !reflect.DeepEqual(collector.Snapshot(), before) {
+				t.Fatal("generic release entered pipeline telemetry before its public refusal")
+			}
+
+			// The protected entry point must still honor caller cancellation.
+			_, err = writer.ApplyClaimRelease(ctx, by, model.Ref{ID: "pl-claimed"}, "", m)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("protected release error=%v, want context.Canceled", err)
+			}
+			if got := collector.Snapshot().Outcomes[ResultCanceled]; got != 1 {
+				t.Fatalf("protected cancellation outcomes=%d want 1", got)
+			}
+			assertEmpty(t, h)
+		})
+	}
+}
+
 func TestCollectorObservesSuccessfulCommitAndDeterministicExposition(t *testing.T) {
 	h := setup(t)
 	w, collector := h.telemetryWriter()
