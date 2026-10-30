@@ -164,6 +164,12 @@ func (c *Catalog) validate(schema, value any, path string, request bool, depth i
 				return fmt.Errorf("%s: string too short", path)
 			}
 		}
+		if bound, ok := s["maxLength"].(json.Number); ok {
+			n, _ := bound.Int64()
+			if int64(utf8.RuneCountInString(v)) > n {
+				return fmt.Errorf("%s: string too long", path)
+			}
+		}
 		if s["format"] == "date-time" {
 			if _, err := time.Parse(time.RFC3339Nano, v); err != nil {
 				return fmt.Errorf("%s: invalid date-time", path)

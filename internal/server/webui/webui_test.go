@@ -48,7 +48,7 @@ func TestEmbeddedUIHasExplicitSecurityBoundaryAndStates(t *testing.T) {
 		}
 	}
 	page := string(body)
-	for _, want := range []string{"What changed", "Why blocked", "Explain an item", "Presence", "./app.js", "./styles.css"} {
+	for _, want := range []string{"What changed", "Why blocked", "Explain an item", "Presence", "EPIC PROGRESS / COUNTS", "Epic child counts are unavailable on this server.", "./app.js", "./styles.css"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("embedded page missing %q", want)
 		}
@@ -83,7 +83,7 @@ func TestEmbeddedUIHasExplicitSecurityBoundaryAndStates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"history.query", "bead.ready", "view.run", "presence.list", "Request cancelled; nothing changed.", "credentials: \"omit\"", "textContent", "event.source !== frame.contentWindow", "setAttribute(\"sandbox\", \"allow-scripts\")", "postMessage(response, \"*\")", "callTimes.length >= 20"} {
+	for _, want := range []string{"history.query", "bead.ready", "view.run", "presence.list", "No direct blocker reason was supplied", "Anonymous principal · client label unavailable", "Request cancelled; nothing changed.", "credentials: \"omit\"", "textContent", "event.source !== frame.contentWindow", "setAttribute(\"sandbox\", \"allow-scripts\")", "postMessage(response, \"*\")", "callTimes.length >= 20"} {
 		if !bytes.Contains(js, []byte(want)) {
 			t.Fatalf("UI behavior missing %q", want)
 		}

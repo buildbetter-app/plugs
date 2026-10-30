@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math/big"
 	"sort"
 	"strings"
 	"time"
@@ -131,7 +133,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}, allocatorCursors: map[string]uint64{}, allocatorSeen: map[string]bool{}}
 	aliases := map[string]model.Ref{}
 	slotRef := ""
-	if isSlot(meta.Method) {
+	if len(cs.Ops) == 0 {
+		if meta.Method != "bead.claimNext" {
+			return nil, failure("invalid_params", "empty change set is only valid for claimNext")
+		}
+	} else if isSlot(meta.Method) {
 		// A method is host-supplied lowering context, not a batch-wide bypass.
 		if len(cs.Ops) < 1 || cs.Ops[0].Kind != model.OpPatch {
 			return nil, failure("invalid_params", "slot method requires a patch first")
@@ -230,7 +236,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			} else if err = w.checkLease(current.doc, by, meta); err != nil {
 				return nil, err
 			}
-			if meta.Method == "bead.claim" && current.doc.Lease != nil && w.cfg.now().Before(current.doc.Lease.ExpiresAt) {
+			if isClaim(meta.Method) && current.doc.Lease != nil && w.cfg.now().Before(current.doc.Lease.ExpiresAt) {
 				if len(cs.Ops) != 1 || op.Kind != model.OpPatch || len(op.Patch.Fields) != 0 {
 					return nil, failure("invalid_params", "an already-owned claim requires one empty patch")
 				}
@@ -349,8 +355,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if err != nil {
 				return nil, err
 			}
-			name := strings.TrimPrefix(expect.Field, "fields.")
-			hash, err := FieldHash(doc.Fields[name])
+			hash, err := expectationHash(doc, expect.Field)
 			if err != nil {
 				return nil, err
 			}
@@ -501,13 +506,115 @@ func FieldHash(value any) (string, error) {
 	return hex.EncodeToString(hash[:]), nil
 }
 
+// expectationHash keeps the long-standing bare/fields.<name> hash contract
+// byte-for-byte, while making metadata.<literal-key> an explicit selector for
+// the committed document metadata. Metadata is decoded and canonicalized only
+// for this comparison; the stored RawMessage and exported FieldHash remain
+// untouched.
+func expectationHash(doc Document, selector string) (string, error) {
+	if key, ok := strings.CutPrefix(selector, "metadata."); ok {
+		raw, present := doc.Metadata[key]
+		if !present {
+			// The admitted string hash arm has no absence discriminator. Never
+			// treat a missing metadata key as the digest of JSON null.
+			return "", failure("precondition_failed", "metadata key is absent")
+		}
+		canonical, err := canonicalMetadataJSON(raw)
+		if err != nil {
+			return "", failure("precondition_failed", "metadata value is invalid JSON")
+		}
+		digest := sha256.Sum256(canonical)
+		return hex.EncodeToString(digest[:]), nil
+	}
+	name := strings.TrimPrefix(selector, "fields.")
+	return FieldHash(doc.Fields[name])
+}
+
+// canonicalMetadataJSON is local to metadata expectations. JSON objects are
+// key-sorted by json.Marshal; arrays and types are preserved. Decimal numbers
+// retain every coefficient digit and normalize without float64 rounding.
+func canonicalMetadataJSON(raw []byte) ([]byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return nil, fmt.Errorf("metadata must contain exactly one JSON value")
+	}
+	return json.Marshal(normalizeMetadataNumbers(value))
+}
+
+func normalizeMetadataNumbers(value any) any {
+	switch value := value.(type) {
+	case json.Number:
+		return json.Number(canonicalMetadataNumber(string(value)))
+	case []any:
+		for i, item := range value {
+			value[i] = normalizeMetadataNumbers(item)
+		}
+	case map[string]any:
+		for key, item := range value {
+			value[key] = normalizeMetadataNumbers(item)
+		}
+	}
+	return value
+}
+
+// Numbers come from a UseNumber JSON decoder. Like model.Natural, small
+// decimal powers are expanded and large exponents stay symbolic, so a short
+// input never demands an enormous allocation. This is an exact decimal format,
+// not a conversion to binary floating point or a claim of RFC 8785 support.
+func canonicalMetadataNumber(text string) string {
+	negative := strings.HasPrefix(text, "-")
+	if negative {
+		text = text[1:]
+	}
+	exponent := new(big.Int)
+	if index := strings.IndexAny(text, "eE"); index >= 0 {
+		exponent.SetString(text[index+1:], 10)
+		text = text[:index]
+	}
+	fractionDigits := 0
+	if index := strings.IndexByte(text, '.'); index >= 0 {
+		fractionDigits = len(text) - index - 1
+	}
+	digits := strings.TrimLeft(strings.ReplaceAll(text, ".", ""), "0")
+	if digits == "" {
+		return "0"
+	}
+	coefficient := strings.TrimRight(digits, "0")
+	exponent.Sub(exponent, big.NewInt(int64(fractionDigits-(len(digits)-len(coefficient)))))
+	canonical := coefficient
+	point := new(big.Int).Add(exponent, big.NewInt(int64(len(coefficient))))
+	switch {
+	case exponent.Sign() == 0:
+	case exponent.Sign() > 0 && exponent.IsInt64() && exponent.Int64() <= int64(20-len(coefficient)):
+		canonical += strings.Repeat("0", int(exponent.Int64()))
+	case exponent.Sign() < 0 && point.Sign() > 0:
+		index := int(point.Int64()) // strictly inside the existing coefficient
+		canonical = coefficient[:index] + "." + coefficient[index:]
+	case exponent.Sign() < 0 && exponent.IsInt64() && exponent.Int64() >= -20:
+		canonical = "0." + strings.Repeat("0", -int(point.Int64())) + coefficient
+	default:
+		canonical += "e" + exponent.String()
+	}
+	if negative {
+		canonical = "-" + canonical
+	}
+	return canonical
+}
+
 func isSlot(method string) bool {
 	switch method {
-	case "bead.claim", "bead.close", "bead.fail", "bead.cancel", "bead.reopen", "bead.defer", "bead.release":
+	case "bead.claim", "bead.claimNext", "bead.close", "bead.fail", "bead.cancel", "bead.reopen", "bead.defer", "bead.release":
 		return true
 	}
 	return false
 }
+
+func isClaim(method string) bool { return method == "bead.claim" || method == "bead.claimNext" }
 
 func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.WriteMeta) error {
 	if isGateMethod(meta.Method) && meta.Method == "gate."+meta.GateAction {
@@ -520,7 +627,7 @@ func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.Writ
 	if lease == nil {
 		return nil
 	}
-	if meta.Method == "bead.claim" {
+	if isClaim(meta.Method) {
 		if w.cfg.now().Before(lease.ExpiresAt) {
 			principal, _ := driver.PrincipalKey(by)
 			holder, _ := driver.PrincipalKey(lease.Principal)
@@ -542,7 +649,7 @@ func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.Writ
 }
 
 func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta) error {
-	if meta.Method == "bead.claim" && !p.proposal.SameClaim {
+	if isClaim(meta.Method) && !p.proposal.SameClaim {
 		ttl := model.Natural64(uint64(w.cfg.claimTTL / time.Millisecond))
 		for _, pending := range p.writes {
 			pending.doc.Lease = &ClaimLease{Principal: by, Agent: meta.AgentLabel, ExpiresAt: w.cfg.now().UTC().Add(w.cfg.claimTTL), TtlMs: ttl, Epoch: model.Natural64(w.lease.Epoch())}
@@ -551,7 +658,7 @@ func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta
 	} else {
 		for _, pending := range p.writes {
 			method := gateLifecycleMethod(meta.Method, pending)
-			if !isSlot(method) || method == "bead.claim" {
+			if !isSlot(method) || isClaim(method) {
 				continue
 			}
 			pending.doc.Lease = nil

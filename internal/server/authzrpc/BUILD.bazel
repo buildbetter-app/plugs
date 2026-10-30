@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "authzrpc",
+    srcs = ["authzrpc.go", "checker.go", "service.go", "slice.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/server/authzrpc",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
+        "//internal/plugins/authzfixed",
+        "//internal/server/authn",
+        "//internal/server/rpc",
+        "//internal/server/transport/httpjson",
+        "//internal/storage/driver",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

@@ -6,7 +6,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const [base, evidence, chromePath] = process.argv.slice(2);
+const [base, evidence, chromePath, mode] = process.argv.slice(2);
 const profile = await mkdtemp(path.join(os.tmpdir(), "plug-view-watch-chrome-"));
 const chrome = spawn(chromePath, ["--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
 let stderr = "", ws;
@@ -80,6 +80,12 @@ try {
     assert.equal(response.error, undefined, JSON.stringify(response)); writes.push({ request, response });
     return response.result.revision;
   };
+  const rpc = async (method, params = {}, headers = {}, meta = {}) => {
+    const request = { jsonrpc: "2.0", id: "fixture-" + (++fixtureKey), method, params: { ...params, _meta: { project: "web", ...meta } } };
+    const response = await (await fetch(base + "/rpc/v1", { method: "POST", headers: { "Content-Type": "application/json", "Plug-RPC": "1", ...headers }, body: JSON.stringify(request) })).json();
+    assert.equal(response.error, undefined, JSON.stringify(response));
+    return response.result;
+  };
 
   await navigate("/ui/"); await live();
   assert.deepEqual(await titles(), ["<img src=x onerror=alert(1)>", "Stored B"]);
@@ -105,6 +111,46 @@ try {
   assert.deepEqual(await titles(), ["Stored C"]);
   assert.match(await value("#watch-state"), /Snapshot page/);
   proof("pinned_view_continuation", "2 then 1; no duplicates, background watch/session released; later write excluded");
+
+  if (mode === "ux") {
+    await click('[data-view="blocked"]'); await settled();
+    assert.equal(await evaluate("document.querySelectorAll('#blocked-state .row').length"), 2);
+    await click('[data-view="explain"]');
+    await evaluate("document.querySelector('#explain-id').value = 'pl-browser-a'; document.querySelector('#explain-form').requestSubmit()");
+    await settled();
+    assert.match(await value("#explain-state"), /Included in the view\./);
+    assert.equal(await value("#explain-state .explain-unavailable"), "No direct blocker reason was supplied by the server for this item.");
+    assert.equal(await evaluate("document.querySelectorAll('#explain-state .explain-reasons li').length"), 0);
+    proof("view_explain_included_marker_exposes_missing_direct_reason");
+    await screenshot("explain-missing-direct-reason");
+    await evaluate("document.querySelector('#explain-id').value = 'pl-browser-view'; document.querySelector('#explain-form').requestSubmit()");
+    await settled();
+    assert.match(await value("#explain-state"), /Outside the current view\./);
+    assert.deepEqual(await evaluate("Array.from(document.querySelectorAll('#explain-state .explain-reasons li'), x => x.textContent)"), ["project", "resource"]);
+    assert.equal(await evaluate("document.querySelector('#explain-state .explain-unavailable')"), null);
+    proof("view_explain_renders_actual_filter_reasons");
+
+    await rpc("bead.claim", { id: { id: "pl-browser-c" } }, {}, { agent: "fixture-client", idempotencyKey: fixtureKey.toString(16).padStart(64, "0") });
+    const presenceSession = await rpc("session.open", {}, {}, { agent: "fixture-client" });
+    const presence = await rpc("presence.set", { sessionId: presenceSession.sessionId, focus: "bead/pl-browser-c", workingOn: ["bead/pl-browser-c"] }, { "Plug-Session": presenceSession.sessionId }, { agent: "fixture-client" });
+    assert.equal(presence.principal.kind, "anonymous");
+    assert.equal(presence.principal.id, "anonymous");
+    assert.equal(presence.focus, "bead/pl-browser-c");
+    assert.deepEqual(presence.workingOn, ["bead/pl-browser-c"]);
+    await click('[data-view="presence"]'); await settled();
+    assert.equal(await value("#presence-rows .presence-name"), "anonymous");
+    assert.equal(await value("#presence-rows .presence-identity"), "Anonymous principal · client label unavailable");
+    assert.equal(await value("#presence-rows .presence-focus"), "Focus bead/pl-browser-c · Working on bead/pl-browser-c");
+    assert.equal(await value("#presence-rows .presence-scope"), "1 working");
+    assert.equal(await evaluate("document.querySelectorAll('#presence-rows .presence-row').length"), 1);
+    assert(!(await value("#presence-rows")).includes(presenceSession.sessionId), "session ownership token must not be rendered as identity");
+    proof("presence_renders_real_principal_focus_and_working_rows_without_invented_identity");
+    await screenshot("presence-actual-focus-and-working-on");
+    await rpc("session.close", { sessionId: presenceSession.sessionId }, { "Plug-Session": presenceSession.sessionId }, { agent: "fixture-client" });
+    await click('[data-view="home"]'); await settled(); await live();
+    assert.equal(await value("#epic-progress-state"), "Epic child counts are unavailable on this server.");
+    proof("epic_counts_explicitly_unavailable");
+  }
 
   await click("#refresh"); await settled(); await live();
   await fetch(base + "/fixture/reset", { method: "POST" });
@@ -186,7 +232,7 @@ try {
   proof("pagehide_releases_session_stream_and_subscription");
 
   await delay(500); await Promise.all(responseJobs);
-  const allowed = ["server.hello", "rpc.methods", "view.run", "view.watch", "event.unsubscribe", "session.open", "session.close", "bead.ready"];
+  const allowed = ["server.hello", "rpc.methods", "view.run", "view.watch", "view.explain", "presence.list", "event.unsubscribe", "session.open", "session.close", "bead.ready"];
   const methods = [];
   for (const entry of events) {
     const headers = Object.fromEntries(Object.entries(entry.request.headers).map(([key, value]) => [key.toLowerCase(), value]));

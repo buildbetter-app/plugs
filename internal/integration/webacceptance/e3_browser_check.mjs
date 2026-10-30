@@ -179,7 +179,7 @@ try {
     outcome.answer = newTitle;
   });
 
-  await task(3, ["presence[].sessionId/principal/focus/workingOn", "distinct simulated agent display identity", "compact visible rows and explicit remainder"], async (outcome) => {
+  await task(3, ["presence[].sessionId/principal/displayName/focus/workingOn", "distinct simulated agent displayName identity", "compact visible rows and explicit remainder"], async (outcome) => {
     outcome.startedAt = performance.now();
     await select("presence");
     await until(async () => {
@@ -187,7 +187,7 @@ try {
       return stats.sessions === 50 && stats.streams === 0 && stats.watches === 0;
     }, "browser watch/session release before 50-agent presence observation");
     await click("#refresh"); await settled();
-    const presence = await evaluate("Array.from(document.querySelectorAll('#presence-rows .presence-row')).map(row=>({name:row.querySelector('.presence-name').textContent,focus:row.querySelector('.presence-focus').textContent,load:row.querySelector('.presence-scope').textContent}))");
+    const presence = await evaluate("Array.from(document.querySelectorAll('#presence-rows .presence-row')).map(row=>({name:row.querySelector('.presence-name').textContent,label:row.querySelector('.presence-display-name')?.textContent || '',focus:row.querySelector('.presence-focus').textContent,load:row.querySelector('.presence-scope').textContent}))");
     const all = await direct("presence.list", { project: fixture.project, _meta: meta() });
     assert.equal(all.error, undefined);
     assert.equal(all.result.presence.length, 50);
@@ -196,7 +196,10 @@ try {
     assert.equal(presence.length, 5);
     assert.match(await text("#presence-rows"), /45 more/);
     outcome.observations.push({ visible: presence, text: await text("#presence-rows"), realPresence: all.result });
-    if (new Set(presence.map((row) => row.name)).size === 1) outcome.missingFields.push("anonymous client label is not exposed in presence wire/display; 50 session identities render as the same anonymous principal, so distinct agent identity cannot be answered from the UI");
+    const wireLabels = all.result.presence.map((row) => row.displayName).filter((label) => typeof label === "string" && label);
+    const visibleLabels = presence.map((row) => row.label.replace(/^Client label \(untrusted\):\s*/, "")).filter(Boolean);
+    if (wireLabels.length !== 50 || new Set(wireLabels).size !== 50) outcome.missingFields.push("presence.list does not return 50 distinct displayName values for the simulated agents");
+    if (visibleLabels.length !== 5 || new Set(visibleLabels).size !== 5) outcome.missingFields.push("displayName consumer is not exposed as five distinct visible Client label (untrusted) rows");
   });
 
   await task(4, ["persisted parent relation", "authorized epic child membership", "done/total/active/blocked/ready counts", "bounded scope/trend signal", "epic browser surface"], async (outcome) => {

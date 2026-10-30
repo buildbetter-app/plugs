@@ -34,11 +34,21 @@ Configure `authn.Config{CoreSessions: provider, Provider: optionalAPIKeys,
 CrossOriginAuthorizer: provider.AllowOrigin}` and share that authenticator
 between the login adapter and RPC handler.
 `plg_s_` credentials go exclusively to the trusted session authority. Ordinary
-providers never confer human proof. Session records hold a digest, User ID and
-expiry. Session authority is process-local, expires after fifteen minutes by
-default (at most one hour, also capped by ID-token expiry), and is invalidated
-by `Revoke(id)` or process restart. There are at most 128 pending flows and
-1024 sessions by default, with explicit hard bounds and no positive cache.
+providers never confer human proof. Session authority is process-local when
+no durable store is configured. SQLite and PostgreSQL stores can be passed as
+`Config.SessionStore` to retain the digest, unscoped `user` principal, expiry
+and revocation bit across provider restarts. Lookups remain uncached, so
+revocation is effective for retained proofs as well as new HTTP admissions.
+Expiry is fifteen minutes by default (at most one hour, also capped by
+ID-token expiry). There are at most 128 pending flows and 1024 active sessions
+by default, with explicit hard bounds and no positive cache.
+
+The HTTP adapter's browser-origin caveat remains provider-local. A configured
+durable store does not widen it: a restarted provider admits the durable
+credential through the ordinary same-origin/private path, but foreign-origin
+requests need a fresh browser login to establish the origin binding. While
+the issuing provider is live, origin authorization rechecks durable
+revocation and expiry; the local caveat never supplies session authority.
 
 `CarryIdentity(authenticator, admittedHTTPHandler)` preserves the admitted
 identity through the existing HTTP/RPC path without changing its admission
@@ -48,7 +58,7 @@ API keys, delegated principals and principal-only contexts convey no proof.
 
 The host must privately keep the binding and deliver the returned token to the
 same initiating client. There is no device flow, discovery, refresh,
-auto-provisioning, durable/multi-process session storage, browser cookie host
+auto-provisioning, browser cookie host
 or iframe bridge support. Existing HTTP explicitly refuses cookies. Foreign
 bearer requests are admitted only when the session's origin caveat and the
 operator allowlist both match; API keys and private sessions remain

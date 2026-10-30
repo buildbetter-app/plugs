@@ -44,7 +44,12 @@ func statusChanged(p *pending) bool {
 // callback or live ontology lookup runs after locks are acquired.
 func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 	gate := isGateMethod(p.proposal.Meta.Method)
-	if len(p.changed) == 0 || (!w.cfg.auditSet && p.release == nil && !gate) {
+	// A close's optional reason is the last operation on its coalesced image.
+	// Pin the lifecycle event instead of letting legacy projection classify
+	// that final comment as the whole transition. Same-status comments retain
+	// the legacy path, and conditional notices still require the audit source.
+	ordinaryClose := p.proposal.Meta.Method == "bead.close" && len(p.proposal.Changes) == 2 && statusChanged(p.writes[p.proposal.Changes[0].Resource.Ref.ID])
+	if len(p.changed) == 0 || (!w.cfg.auditSet && p.release == nil && !gate && !ordinaryClose) {
 		return nil
 	}
 	coreRecovery := p.release != nil && p.release.reclaim
@@ -299,7 +304,7 @@ func (p *prepared) ordinaryEvent(pending *pending, op model.OpKind) (model.Durab
 	}
 	if statusChanged(pending) {
 		method := gateLifecycleMethod(p.proposal.Meta.Method, pending)
-		if event, ok := map[string]model.DurableEventType{"bead.claim": model.EventBeadClaimed, "bead.close": model.EventBeadClosed, "bead.fail": model.EventBeadFailed, "bead.cancel": model.EventBeadCanceled, "bead.reopen": model.EventBeadReopened, "bead.defer": model.EventBeadDeferred}[method]; ok {
+		if event, ok := map[string]model.DurableEventType{"bead.claim": model.EventBeadClaimed, "bead.claimNext": model.EventBeadClaimed, "bead.close": model.EventBeadClosed, "bead.fail": model.EventBeadFailed, "bead.cancel": model.EventBeadCanceled, "bead.reopen": model.EventBeadReopened, "bead.defer": model.EventBeadDeferred}[method]; ok {
 			return event, nil
 		}
 	}

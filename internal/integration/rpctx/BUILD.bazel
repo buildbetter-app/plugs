@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "rpctx_test",
+    size = "medium",
+    srcs = ["rpc_tx_test.go"],
+    args = ["-test.v"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/cli",
+        "//internal/client",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/sqlite",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

@@ -1,6 +1,6 @@
 # RPC and admitted HTTP
 
-Source: **`127ac22e1d003cce4babe6cbcbc8367ad264e649`**;
+Source: **`463881cec205e6cd3e5b85d1bac7d4018a153d5f`**;
 [guide scope](README.md#snapshot-and-package-boundaries).
 
 ## Bind the installed surface
@@ -8,7 +8,9 @@ Source: **`127ac22e1d003cce4babe6cbcbc8367ad264e649`**;
 The [registry](../../internal/server/rpc/registry.go) is assembled before
 `rpc.New` snapshots it. `BindService` adds exactly `bead.get`,
 `bead.ready`, `bead.create`, `bead.update`, `bead.claim`,
-`bead.comment`, `bead.close` and `history.query`, alongside the server's
+`bead.comment`, `bead.close`, `bead.reopen`, `bead.defer`, `bead.cancel`,
+`bead.fail`, `bead.link`, `bead.unlink`, `tx.apply` and `history.query`,
+alongside the server's
 `server.hello`, `rpc.methods`, `rpc.describe` and `rpc.discover`.
 Discovery reports bound methods; it does not grant resource access.
 
@@ -76,7 +78,9 @@ construction. Oversize body is 413, bad media/encoding 415, unreadable body
 400, body deadline 408, saturated concurrency 429, bad path 404 and wrong
 method 405. Credential failure is 401, forbidden admission is 403 and an
 unavailable provider is 503. No CORS, preflight, WebSocket, MCP, stdio,
-trusted-proxy TLS or cross-origin browser mode is installed in this handler.
+trusted-proxy TLS or cross-origin browser mode is installed in this handler;
+see [transport selection](transports.md) for the separate adapters and their
+composition boundaries.
 
 Anonymous listeners bind only loopback with no override. Authenticated network
 listeners require a configured provider and directly terminated TLS. Host,

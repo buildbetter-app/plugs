@@ -159,6 +159,15 @@ func (v *storedBrowserViews) GetView(ctx context.Context, by model.PrincipalRef,
 }
 
 func TestBrowserAdmittedViewWatchStoredRowsAndCleanup(t *testing.T) {
+	runBrowserViewWatch(t, false)
+}
+
+func TestBrowserRealExplainAndPresenceUXGaps(t *testing.T) {
+	runBrowserViewWatch(t, true)
+}
+
+func runBrowserViewWatch(t *testing.T, verifyUX bool) {
+	t.Helper()
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Fatal(err)
@@ -193,13 +202,21 @@ func TestBrowserAdmittedViewWatchStoredRowsAndCleanup(t *testing.T) {
 	ids := []string{"pl-browser-c", "pl-browser-a", "pl-browser-b", "pl-browser-secret", "pl-browser-foreign", "pl-browser-view"}
 	var allocated atomic.Int64
 	ontology := service.NewOntology(nil)
-	writer := pipeline.New(store, lease, pipeline.WithOntology(ontology), pipeline.WithIDGenerator(func() (string, error) {
+	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithIDGenerator(func() (string, error) {
 		i := allocated.Add(1) - 1
 		if i >= int64(len(ids)) {
 			return "", fmt.Errorf("unexpected create")
 		}
 		return ids[i], nil
-	}))
+	})}
+	if verifyUX {
+		// Claims require committed slot provenance for actual event replay.
+		// Use the admitted audit implementation; its missing source locator
+		// explicitly refuses conditional-edge decisions, which this fixture
+		// does not create. Keep the original legacy nil-plan journey above.
+		options = append(options, pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)))
+	}
+	writer := pipeline.New(store, lease, options...)
 	domain := service.New(store, lease, writer, service.WithOntology(ontology))
 	policy := &browserReadPolicy{service: domain}
 	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
@@ -392,6 +409,11 @@ func TestBrowserAdmittedViewWatchStoredRowsAndCleanup(t *testing.T) {
 		evidence = t.TempDir()
 	}
 	evidence = filepath.Join(evidence, "view-watch")
+	mode, wantHead := "legacy", "22"
+	if verifyUX {
+		evidence += "-ux"
+		mode, wantHead = "ux", "23"
+	}
 	if err := os.MkdirAll(evidence, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +423,7 @@ func TestBrowserAdmittedViewWatchStoredRowsAndCleanup(t *testing.T) {
 	}
 	commandCtx, stop := context.WithTimeout(ctx, 90*time.Second)
 	defer stop()
-	command := exec.CommandContext(commandCtx, node, script, server.URL, evidence, chrome)
+	command := exec.CommandContext(commandCtx, node, script, server.URL, evidence, chrome, mode)
 	output, err := command.CombinedOutput()
 	fmt.Print(string(output))
 	if err != nil {
@@ -412,7 +434,7 @@ func TestBrowserAdmittedViewWatchStoredRowsAndCleanup(t *testing.T) {
 		t.Fatalf("retained sessions=%d streams=%d checks=%d err=%v", len(rows), attached.Load(), policy.checks.Load(), err)
 	}
 	current, err := store.Meta(ctx)
-	if err != nil || current.Head.String() != "22" {
+	if err != nil || current.Head.String() != wantHead {
 		t.Fatalf("unexpected durable browser writes: head=%s err=%v", current.Head, err)
 	}
 	streamMu.Lock()
@@ -429,5 +451,5 @@ func TestBrowserAdmittedViewWatchStoredRowsAndCleanup(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(evidence, "served-watch-ndjson.json"), raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	fmt.Printf("PASS real_view_watch_browser current_stored_policy_checks=%d head=22 harness_writes=22 no_retained_sessions_or_streams evidence=%s\n", policy.checks.Load(), evidence)
+	fmt.Printf("PASS real_view_watch_browser current_stored_policy_checks=%d head=%s harness_writes=%s mode=%s no_retained_sessions_or_streams evidence=%s\n", policy.checks.Load(), wantHead, wantHead, mode, evidence)
 }

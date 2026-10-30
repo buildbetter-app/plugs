@@ -55,10 +55,11 @@ type e3CallReceipt struct {
 }
 
 type e3AgentReceipt struct {
-	Label     string             `json:"label"`
-	Principal model.PrincipalRef `json:"principal"`
-	SessionID string             `json:"sessionId"`
-	WorkingOn string             `json:"workingOn"`
+	Label       string             `json:"label"`
+	DisplayName string             `json:"displayName"`
+	Principal   model.PrincipalRef `json:"principal"`
+	SessionID   string             `json:"sessionId"`
+	WorkingOn   string             `json:"workingOn"`
 }
 
 type e3CorpusReceipt struct {
@@ -78,6 +79,9 @@ type e3CorpusReceipt struct {
 	ActualLiveSessions      int              `json:"actualLiveSessions"`
 	ActualWorkingRows       int              `json:"actualWorkingRows"`
 	Authorization           string           `json:"authorization"`
+	DisplayNameSupport      string           `json:"displayNameSupport"`
+	DisplayNamesRequested   int              `json:"displayNamesRequested"`
+	DisplayNamesAccepted    int              `json:"displayNamesAccepted"`
 	Agents                  []e3AgentReceipt `json:"agents"`
 	Batches                 []e3BatchReceipt `json:"batches"`
 	Calls                   []e3CallReceipt  `json:"rpcCalls"`
@@ -150,7 +154,9 @@ func newE3FixtureMode(t *testing.T, browser bool) *e3Fixture {
 				return err
 			}
 		}
-		return rpc.BindTxApply(registry, base.writer)
+		// Current main binds tx.apply through BindService; do not register a
+		// second fixture-only handler after the forward merge.
+		return nil
 	}
 	base.start()
 	t.Cleanup(func() {
@@ -250,6 +256,26 @@ func (f *e3Fixture) populate(first, last int) {
 
 func (f *e3Fixture) runAgents() {
 	f.t.Helper()
+	displayNamesSupported := true
+	probeMeta := map[string]any{"project": e3Project, "agent": "e3-displayName-probe", "idempotencyKey": e3Key("displayName-probe")}
+	f.receipt.DisplayNamesRequested++
+	probe := f.invoke("session.open", map[string]any{"displayName": "e3-displayName-probe", "_meta": probeMeta})
+	f.receipt.Calls = append(f.receipt.Calls, e3CallReceipt{Method: "session.open", Params: map[string]any{"displayName": "e3-displayName-probe", "_meta": probeMeta}, Response: probe})
+	if probe.Error != nil {
+		if string(probe.Error.Data.Code) != "invalid_params" {
+			f.t.Fatalf("E3 displayName capability probe failed: %+v", probe.Error)
+		}
+		displayNamesSupported = false
+		f.receipt.DisplayNameSupport = "not-admitted: session.open rejected displayName with invalid_params"
+	} else {
+		var opened collab.Session
+		if err := json.Unmarshal(probe.Result, &opened); err != nil || opened.SessionID == "" {
+			f.t.Fatalf("E3 displayName capability probe returned invalid session: %s", probe.Result)
+		}
+		f.receipt.DisplayNameSupport = "session.open accepted displayName; presence output remains authoritative"
+		f.receipt.DisplayNamesAccepted++
+		f.call("session.close", map[string]any{"sessionId": opened.SessionID, "_meta": map[string]any{"project": e3Project, "agent": "e3-displayName-probe", "idempotencyKey": e3Key("displayName-probe-close")}}, nil)
+	}
 	for index := 1; index <= e3Agents; index++ {
 		label := fmt.Sprintf("e3-agent-%02d", index)
 		ref := model.RefByID(e3ID(index), model.Natural64(0))
@@ -257,7 +283,15 @@ func (f *e3Fixture) runAgents() {
 			return map[string]any{"project": e3Project, "agent": label, "idempotencyKey": e3Key(label + ":" + operation)}
 		}
 		var session collab.Session
-		f.call("session.open", map[string]any{"_meta": meta("open")}, &session)
+		openParams := map[string]any{"_meta": meta("open")}
+		if displayNamesSupported {
+			openParams["displayName"] = label
+			f.receipt.DisplayNamesRequested++
+		}
+		f.call("session.open", openParams, &session)
+		if displayNamesSupported {
+			f.receipt.DisplayNamesAccepted++
+		}
 		if session.SessionID == "" || session.Principal.Kind != "anonymous" {
 			f.t.Fatalf("E3 real collaboration session is invalid: %+v", session)
 		}
@@ -278,7 +312,11 @@ func (f *e3Fixture) runAgents() {
 		if err != nil || lifetime.Err() != nil {
 			f.t.Fatalf("E3 session %s is not live: %v", label, err)
 		}
-		f.receipt.Agents = append(f.receipt.Agents, e3AgentReceipt{Label: label, Principal: session.Principal, SessionID: session.SessionID, WorkingOn: resource})
+		displayName := ""
+		if displayNamesSupported {
+			displayName = label
+		}
+		f.receipt.Agents = append(f.receipt.Agents, e3AgentReceipt{Label: label, DisplayName: displayName, Principal: session.Principal, SessionID: session.SessionID, WorkingOn: resource})
 	}
 	// A real directed dependency provides a stable blocked candidate and an
 	// unclaimed blocker. It is never converted to an invented parent/epic edge.
