@@ -516,6 +516,12 @@ func isSlot(method string) bool {
 func isClaim(method string) bool { return method == "bead.claim" || method == "bead.claimNext" }
 
 func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.WriteMeta) error {
+	if isGateMethod(meta.Method) && meta.Method == "gate."+meta.GateAction {
+		// Approval and resolver authority are independent of claim ownership.
+		// Normalization and authorization still validate the gate operation;
+		// claims preserves a pending lease and clears it on terminal resolution.
+		return nil
+	}
 	lease := doc.Lease
 	if lease == nil {
 		return nil
@@ -548,8 +554,12 @@ func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta
 			pending.doc.Lease = &ClaimLease{Principal: by, Agent: meta.AgentLabel, ExpiresAt: w.cfg.now().UTC().Add(w.cfg.claimTTL), TtlMs: ttl, Epoch: model.Natural64(w.lease.Epoch())}
 			pending.setBy["lease"] = "request"
 		}
-	} else if isSlot(meta.Method) && !isClaim(meta.Method) {
+	} else {
 		for _, pending := range p.writes {
+			method := gateLifecycleMethod(meta.Method, pending)
+			if !isSlot(method) || isClaim(method) {
+				continue
+			}
 			pending.doc.Lease = nil
 			pending.setBy["lease"] = "request"
 		}

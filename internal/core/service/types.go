@@ -9,8 +9,17 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+// Gate request/result names are re-exported from the core port so domain
+// services and RPC adapters share one canonical shape.
+type GateApproveRequest = port.GateApproveRequest
+type GateReportRequest = port.GateReportRequest
+type GateResult = port.GateResult
+type GateOutcome = port.GateOutcome
+type GateService = port.GateService
 
 type AsOf struct {
 	Revision    model.Revision
