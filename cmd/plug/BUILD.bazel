@@ -27,6 +27,7 @@ go_test(
         "//internal/server/transport/httpjson",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "@org_modernc_sqlite//:sqlite",
     ],
 )
 
