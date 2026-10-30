@@ -631,8 +631,8 @@ internal/server/webui/bridge.go
 internal/server/webui/bridge_test.go
 internal/server/webui/browser_check.mjs
 internal/server/webui/browser_test.go
-internal/server/webui/catalog.go
 internal/server/webui/direct_blocker_check.mjs
+internal/server/webui/catalog.go
 internal/server/webui/presence_display_check.mjs
 internal/server/webui/presence_display_test.go
 internal/server/webui/static/app.js
