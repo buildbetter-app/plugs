@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "cursorhttp_test",
+    size = "medium",
+    srcs = glob(["*_test.go"]),
+    args = ["-test.v"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/plugins/authnapikey",
+        "//internal/server/authn",
+        "//internal/server/rpc",
+        "//internal/server/transport/httpjson",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/sqlite",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

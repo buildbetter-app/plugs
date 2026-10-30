@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "acceptance",
+    srcs = ["inputs.go", "projection.go", "trace.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/acceptance",
+    visibility = ["//spec:__pkg__", "//spec/extended:__pkg__"],
+)
+
+go_test(
+    name = "harness_test",
+    srcs = ["harness_test.go"],
+    embed = [":acceptance"],
+)

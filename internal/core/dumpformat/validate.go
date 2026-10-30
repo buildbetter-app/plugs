@@ -1,0 +1,480 @@
+package dumpformat
+
+import (
+	"archive/tar"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"reflect"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+)
+
+var prefixPattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
+
+var knownKinds = map[string]bool{
+	"bead": true, "edge": true, "comment": true, "memory": true,
+	"config": true, "beads-archive": true,
+}
+
+// Native records use the same closed v1 kind registry as the offline
+// converter. Unknown kinds must refuse before a restore can write anything.
+var knownNativeKinds = map[string]bool{
+	"bead": true, "edge": true, "comment": true, "memory": true,
+	"config": true, "beads-archive": true,
+}
+
+var externalFamilies = []string{
+	"user-legacy-config", "user-xdg-config", "user-native-config",
+	"project-config", "beads-dir-config", "project-local-config",
+	"environment-and-flags", "metadata-json", "legacy-config-json",
+	"beads-hooks", "legacy-hooks", "git-hooks", "external-hook-managers",
+	"routes-jsonl", "formulas", "formula-search-paths", "issues-jsonl",
+	"interactions-jsonl", "dolt-ignore", "dolt-nonlocal-tables",
+	"dolt-working-set", "dolt-commit-graph", "dolt-remotes",
+	"dolt-conflicts", "dolt-history-maintenance", "store-files-and-quiescence",
+}
+
+var verificationLimits = map[string]string{
+	"capture":      "operator declarations; freeze/remotes/working-set not independently verified",
+	"schema":       "paired migration hashes and exact column names; SQL types, indexes and constraints not independently verified",
+	"history":      "available source rows archived only; no A6 replay or completeness claim",
+	"a3":           "not-run",
+	"authz.verify": "not-run",
+	"derived":      "not-run",
+	"plugin_lock":  "not-produced",
+	"ontology":     "built-in status mapping only",
+}
+
+// Read opens and validates the complete archive in memory. It retains member
+// bytes so an incomplete restore can hand the original archive to a later,
+// authorized seam without silently dropping source evidence.
+func ReadFile(path string) (*Archive, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return Read(file)
+}
+
+func Read(reader io.Reader) (*Archive, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, MaxArchiveBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read archive: %w", err)
+	}
+	if len(data) > MaxArchiveBytes {
+		return nil, fmt.Errorf("archive exceeds %d bytes", MaxArchiveBytes)
+	}
+	if len(data) < 1024 || len(data)%512 != 0 || !bytes.Equal(data[len(data)-1024:], make([]byte, 1024)) {
+		return nil, fmt.Errorf("invalid tar length or end blocks")
+	}
+
+	members := map[string][]byte{}
+	paths := []string{}
+	input := bytes.NewReader(data)
+	tr := tar.NewReader(input)
+	for {
+		header, nextErr := tr.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			return nil, fmt.Errorf("invalid tar member: %w", nextErr)
+		}
+		if header.Typeflag != tar.TypeReg || header.Size < 0 || header.Size > MaxArchiveBytes ||
+			header.Mode != 0o600 || header.Uid != 0 || header.Gid != 0 || header.Linkname != "" || header.Uname != "" || header.Gname != "" || header.Devmajor != 0 || header.Devminor != 0 ||
+			len(header.PAXRecords) != 0 || header.Format != tar.FormatUSTAR || !header.ModTime.Equal(time.Unix(0, 0)) {
+			return nil, fmt.Errorf("noncanonical tar member %q", header.Name)
+		}
+		if !allowedMember(header.Name) {
+			return nil, fmt.Errorf("unknown archive member %q", header.Name)
+		}
+		if _, exists := members[header.Name]; exists {
+			return nil, fmt.Errorf("duplicate archive member %q", header.Name)
+		}
+		member, readErr := io.ReadAll(tr)
+		if readErr != nil {
+			return nil, fmt.Errorf("read archive member %q: %w", header.Name, readErr)
+		}
+		members[header.Name] = member
+		paths = append(paths, header.Name)
+	}
+	for _, value := range data[len(data)-input.Len():] {
+		if value != 0 {
+			return nil, fmt.Errorf("unaccounted trailing archive data")
+		}
+	}
+	if len(paths) == 0 || paths[0] != "manifest.json" || !sort.StringsAreSorted(paths[1:]) {
+		return nil, fmt.Errorf("manifest must be first and remaining members sorted")
+	}
+
+	var manifest Manifest
+	if err := decodeJSON(members["manifest.json"], &manifest); err != nil {
+		return nil, fmt.Errorf("invalid manifest: %w", err)
+	}
+	if manifest.Scope == "plug-native-store" {
+		if err := validateNativeArchive(manifest, members, paths); err != nil {
+			return nil, err
+		}
+		return &Archive{manifest: manifest, members: members, native: true}, nil
+	}
+	if err := validateManifest(manifest, members); err != nil {
+		return nil, err
+	}
+	byKind, err := validateRecords(manifest, members)
+	if err != nil {
+		return nil, err
+	}
+	return &Archive{manifest: manifest, members: members, byKind: byKind}, nil
+}
+
+func Validate(reader io.Reader) (Manifest, error) {
+	archive, err := Read(reader)
+	if err != nil {
+		return Manifest{}, err
+	}
+	return archive.Manifest(), nil
+}
+
+func allowedMember(name string) bool {
+	if name == "manifest.json" || name == "config/sources.json" {
+		return true
+	}
+	if name == "records/native.ndjson" || name == "versions.ndjson" || name == "changesets.ndjson" {
+		return true
+	}
+	if strings.HasPrefix(name, "blobs/") && len(strings.TrimPrefix(name, "blobs/")) == 64 {
+		return true
+	}
+	if !strings.HasPrefix(name, "records/") || !strings.HasSuffix(name, ".ndjson") {
+		return false
+	}
+	return knownKinds[strings.TrimSuffix(strings.TrimPrefix(name, "records/"), ".ndjson")]
+}
+
+// validateNativeArchive validates the archive written by admin.dump. It is a
+// deliberately small, typed transport envelope: storage drivers remain the
+// authority for applying records and no source migration claims are inferred.
+func validateNativeArchive(manifest Manifest, members map[string][]byte, paths []string) error {
+	if manifest.Format != Format || manifest.Schema != 1 || manifest.Scope != "plug-native-store" ||
+		manifest.NativeStoreID == "" || manifest.NativeIncarnation == "" || manifest.NativeHead == "" ||
+		manifest.NativeDigest == "" || manifest.RecordCount < 0 || manifest.VersionCount < 0 || manifest.ChangesetCount < 0 {
+		return fmt.Errorf("unsupported native archive manifest")
+	}
+	if manifest.History != "full" && manifest.History != "head" {
+		return fmt.Errorf("unsupported native history claim %q", manifest.History)
+	}
+	if _, err := strconv.ParseUint(manifest.NativeHead, 10, 64); err != nil {
+		return fmt.Errorf("invalid native head revision")
+	}
+	if len(paths) < 4 || paths[0] != "manifest.json" || !sort.StringsAreSorted(paths[1:]) {
+		return fmt.Errorf("native archive members are not canonical")
+	}
+	for path, file := range manifest.Files {
+		member, ok := members[path]
+		if !ok || path == "manifest.json" || file.Size != int64(len(member)) || file.SHA256 != digest(member) {
+			return fmt.Errorf("native checksum/size mismatch for %q", path)
+		}
+	}
+	if len(manifest.Files) != len(members)-1 || manifest.Files["records/native.ndjson"].Size < 0 ||
+		manifest.Files["versions.ndjson"].Size < 0 || manifest.Files["changesets.ndjson"].Size < 0 {
+		return fmt.Errorf("native archive file inventory is incomplete")
+	}
+	for _, path := range []string{"config/sources.json", "records/native.ndjson", "versions.ndjson", "changesets.ndjson"} {
+		if _, ok := members[path]; !ok {
+			return fmt.Errorf("native archive is missing %q", path)
+		}
+		if _, ok := manifest.Files[path]; !ok {
+			return fmt.Errorf("native archive does not checksum %q", path)
+		}
+	}
+	for path := range members {
+		if path != "manifest.json" {
+			if _, ok := manifest.Files[path]; !ok {
+				return fmt.Errorf("native archive member %q is not inventoried", path)
+			}
+		}
+	}
+	if err := validateNativeLines(members["records/native.ndjson"], manifest.RecordCount, "record"); err != nil {
+		return err
+	}
+	if err := validateNativeLines(members["versions.ndjson"], manifest.VersionCount, "version"); err != nil {
+		return err
+	}
+	if err := validateNativeLines(members["changesets.ndjson"], manifest.ChangesetCount, "changeset"); err != nil {
+		return err
+	}
+	// NativeDigest binds all non-manifest members in canonical path order. The
+	// manifest itself is intentionally excluded so it can carry the digest.
+	h := sha256.New()
+	for _, path := range append([]string(nil), paths[1:]...) {
+		if path == "manifest.json" {
+			continue
+		}
+		_, _ = io.WriteString(h, path)
+		_, _ = h.Write(members[path])
+	}
+	if hex.EncodeToString(h.Sum(nil)) != manifest.NativeDigest {
+		return fmt.Errorf("native archive digest mismatch")
+	}
+	return nil
+}
+
+func validateNativeLines(data []byte, want int, label string) error {
+	if want == 0 {
+		if len(data) != 0 {
+			return fmt.Errorf("native %s member is not empty", label)
+		}
+		return nil
+	}
+	if len(data) == 0 || data[len(data)-1] != '\n' {
+		return fmt.Errorf("native %s member is unterminated", label)
+	}
+	lines := bytes.Split(data[:len(data)-1], []byte{'\n'})
+	if len(lines) != want {
+		return fmt.Errorf("native %s count mismatch", label)
+	}
+	for _, line := range lines {
+		var value any
+		if err := decodeJSON(line, &value); err != nil {
+			return fmt.Errorf("invalid native %s: %w", label, err)
+		}
+		object, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("native %s must be an object", label)
+		}
+		if label == "record" {
+			kind, ok := object["kind"].(string)
+			if !ok || !knownNativeKinds[kind] {
+				return fmt.Errorf("unknown native record kind %q", kind)
+			}
+			if _, ok := object["ref"].(map[string]any); !ok {
+				return fmt.Errorf("native record ref must be an object")
+			}
+			if _, ok := object["body"]; !ok {
+				return fmt.Errorf("native record body is required")
+			}
+		}
+	}
+	return nil
+}
+
+func validateManifest(manifest Manifest, members map[string][]byte) error {
+	if manifest.Format != Format || manifest.Schema != 1 || manifest.Reference != BeadsReference ||
+		manifest.MainVersion != 72 || manifest.IgnoredVersion != 28 || manifest.StoreID == "" ||
+		manifest.Machine == "" || manifest.Scope != Scope {
+		return fmt.Errorf("unsupported manifest schema, source or scope")
+	}
+	if manifest.History != "unavailable" && manifest.History != "available-unverified" {
+		return fmt.Errorf("unsupported history claim %q", manifest.History)
+	}
+	if len(manifest.Warnings) != 2 || manifest.Warnings[0] != "not a complete store migration or Plug restore certificate" || manifest.Warnings[1] != "source history and attribution are unverified; no Plug versions, changesets or live leases invented" {
+		return fmt.Errorf("missing incomplete-conversion disclosures")
+	}
+	wantVerification, _ := json.Marshal(verificationLimits)
+	gotVerification, _ := json.Marshal(manifest.Verification)
+	if !bytes.Equal(append(wantVerification, '\n'), append(gotVerification, '\n')) {
+		return fmt.Errorf("unsupported verification claim")
+	}
+	if err := validateProjects(manifest.Projects); err != nil {
+		return err
+	}
+	if len(manifest.Files) != len(members)-1 {
+		return fmt.Errorf("unlisted or missing archive member")
+	}
+	for path, file := range manifest.Files {
+		member, ok := members[path]
+		if !ok || path == "manifest.json" || file.Size != int64(len(member)) || file.SHA256 != digest(member) {
+			return fmt.Errorf("checksum/size mismatch or missing member %q", path)
+		}
+	}
+	if _, ok := manifest.Files["config/sources.json"]; !ok {
+		return fmt.Errorf("missing configuration provenance")
+	}
+	if err := validateConfigProvenance(members["config/sources.json"]); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateProjects(input []Project) error {
+	if len(input) == 0 {
+		return fmt.Errorf("project allocator inventory required")
+	}
+	projects := append([]Project(nil), input...)
+	sort.Slice(projects, func(i, j int) bool { return projects[i].Prefix < projects[j].Prefix })
+	for i := range projects {
+		project := projects[i]
+		if !prefixPattern.MatchString(project.Prefix) || (project.IDMode != "hash" && project.IDMode != "sequential") || project.HashLength < 0 || project.HashLength > 64 || (project.IDMode == "hash" && project.HashLength == 0) {
+			return fmt.Errorf("invalid project prefix or unsupported allocator mode")
+		}
+		if i > 0 && (project.Prefix == projects[i-1].Prefix || strings.HasPrefix(project.Prefix, projects[i-1].Prefix+"-")) {
+			return fmt.Errorf("duplicate or ambiguous project prefix")
+		}
+		for parent, counter := range project.ChildCounters {
+			if parent == "" || strings.TrimSpace(parent) != parent {
+				return fmt.Errorf("invalid child counter parent")
+			}
+			_ = counter
+		}
+	}
+	return nil
+}
+
+func validateRecords(manifest Manifest, members map[string][]byte) (map[string][]Record, error) {
+	registry := map[string]bool{}
+	byKind := map[string][]Record{}
+	counts := map[string]int{}
+	lastKind := ""
+	for _, kind := range manifest.Kinds {
+		if !knownKinds[kind.Name] || kind.Version != 1 || kind.Name <= lastKind || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 {
+			return nil, fmt.Errorf("unknown, duplicate or unordered kind registry entry")
+		}
+		lastKind = kind.Name
+		registry[kind.File] = true
+		member, ok := members[kind.File]
+		if !ok || len(member) == 0 || member[len(member)-1] != '\n' {
+			return nil, fmt.Errorf("missing or unterminated kind records for %s", kind.Name)
+		}
+		lines := bytes.Split(member[:len(member)-1], []byte{'\n'})
+		if len(lines) != kind.Count {
+			return nil, fmt.Errorf("record count mismatch for %s", kind.Name)
+		}
+		last := ""
+		rows := make([]Record, 0, len(lines))
+		for _, line := range lines {
+			var record Record
+			if err := decodeJSON(line, &record); err != nil {
+				return nil, fmt.Errorf("invalid %s record: %w", kind.Name, err)
+			}
+			if record.Kind != kind.Name || record.ID == "" || record.Source.Table == "" || record.Source.Fields == nil || record.Body == nil {
+				return nil, fmt.Errorf("invalid typed record in %s", kind.Name)
+			}
+			if key := recordKey(record); key <= last {
+				return nil, fmt.Errorf("duplicate or unordered typed record in %s", kind.Name)
+			}
+			if err := validateRecord(record, manifest.Projects, counts); err != nil {
+				return nil, err
+			}
+			last = recordKey(record)
+			rows = append(rows, record)
+		}
+		byKind[kind.Name] = rows
+	}
+	for path := range members {
+		if strings.HasPrefix(path, "records/") && !registry[path] {
+			return nil, fmt.Errorf("unregistered record kind %q", path)
+		}
+	}
+	if err := validateDispositions(manifest.Sources, counts, members["config/sources.json"]); err != nil {
+		return nil, err
+	}
+	historyRows := counts["issue_versions"] + counts["issue_snapshots"] + counts["compaction_snapshots"]
+	if (historyRows != 0) != (manifest.History == "available-unverified") {
+		return nil, fmt.Errorf("history declaration does not match archived source rows")
+	}
+	if err := validateRelations(manifest.Projects, byKind); err != nil {
+		return nil, err
+	}
+	return byKind, nil
+}
+
+func recordKey(record Record) string { return record.Project + "\x00" + record.ID }
+
+func stringValue(value any) string { result, _ := value.(string); return result }
+
+func digest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func decodeJSON(data []byte, target any) error {
+	if !utf8.Valid(data) {
+		return fmt.Errorf("JSON must be UTF-8")
+	}
+	if err := checkUnicodeEscapes(data); err != nil {
+		return err
+	}
+	check := json.NewDecoder(bytes.NewReader(data))
+	check.UseNumber()
+	if err := checkValue(check, 0); err != nil {
+		return err
+	}
+	if _, err := check.Token(); err != io.EOF {
+		return fmt.Errorf("trailing JSON data")
+	}
+	var shape any
+	shapeDecoder := json.NewDecoder(bytes.NewReader(data))
+	shapeDecoder.UseNumber()
+	if err := shapeDecoder.Decode(&shape); err != nil {
+		return fmt.Errorf("invalid JSON")
+	}
+	if err := checkShape(shape, reflect.TypeOf(target).Elem()); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("trailing JSON data")
+		}
+		return err
+	}
+	return nil
+}
+
+func checkValue(decoder *json.Decoder, depth int) error {
+	if depth > 128 {
+		return fmt.Errorf("JSON nesting exceeds 128")
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("invalid JSON")
+	}
+	if delimiter, ok := token.(json.Delim); ok {
+		switch delimiter {
+		case '{':
+			seen := map[string]bool{}
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return fmt.Errorf("invalid JSON object")
+				}
+				key, ok := keyToken.(string)
+				if !ok || seen[key] {
+					return fmt.Errorf("duplicate or invalid JSON key")
+				}
+				seen[key] = true
+				if err := checkValue(decoder, depth+1); err != nil {
+					return err
+				}
+			}
+		case '[':
+			for decoder.More() {
+				if err := checkValue(decoder, depth+1); err != nil {
+					return err
+				}
+			}
+		default:
+			return fmt.Errorf("invalid JSON delimiter")
+		}
+		if _, err := decoder.Token(); err != nil {
+			return fmt.Errorf("invalid JSON container")
+		}
+	}
+	return nil
+}

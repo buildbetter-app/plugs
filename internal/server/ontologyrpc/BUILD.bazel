@@ -1,0 +1,41 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "ontologyrpc",
+    srcs = ["bind.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/server/ontologyrpc",
+    visibility = ["//internal:__subpackages__"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/model",
+        "//internal/core/ontologyops",
+        "//internal/core/port",
+        "//internal/server/authn",
+        "//internal/server/rpc",
+    ],
+)
+
+go_test(
+    name = "ontologyrpc_test",
+    srcs = glob(["*_test.go"]),
+    embed = [":ontologyrpc"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/ontologyops",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

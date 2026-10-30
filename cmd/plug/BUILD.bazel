@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_test")
+
+go_binary(
+    name = "plug",
+    srcs = ["main.go"],
+    importpath = "github.com/buildbetter-app/plugs/cmd/plug",
+    visibility = ["//visibility:public"],
+    deps = ["//internal/cli"],
+)
+
+go_test(
+    name = "plug_test",
+    srcs = ["integration_test.go", "remote_fixture_test.go", "remote_test.go", "server_integration_test.go"],
+    args = ["-test.v"],
+    data = [":plug"],
+    env = {"PLUG_BINARY": "$(rootpath :plug)"},
+    deps = [
+        "//internal/api/wire",
+        "//internal/client",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
+        "//internal/plugins/authnapikey",
+        "//internal/server/authn",
+        "//internal/server/rpc",
+        "//internal/server/transport/httpjson",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

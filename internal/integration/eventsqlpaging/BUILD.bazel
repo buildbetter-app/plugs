@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "eventsqlpaging_test",
+    srcs = ["integration_test.go"],
+    deps = [
+        "//internal/core/events",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/server/events",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+        "@com_github_jackc_pgx_v5//stdlib:stdlib",
+    ],
+    size = "large",
+    tags = ["local", "requires-network"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

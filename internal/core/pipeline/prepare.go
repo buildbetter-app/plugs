@@ -1,0 +1,682 @@
+package pipeline
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
+)
+
+type pending struct {
+	ref      model.Ref
+	doc      Document
+	before   json.RawMessage
+	revision model.Revision
+	deleted  bool
+	setBy    map[string]string
+	// allocatorPrefix/Expected are set only for IDs previewed from a
+	// transaction-capable restored allocator. The expected value is checked
+	// again after the allocator fact lock is acquired before publication.
+	allocatorPrefix   string
+	allocatorExpected string
+}
+
+type prepared struct {
+	snapshot         *snapshotReader
+	writes           map[string]*pending
+	proposal         port.ProposedChange
+	release          *claimReleaseMode
+	warnings         []model.Warning
+	mutators         []string
+	refs             []model.Ref
+	changed          map[string]bool
+	audit            *auditPlan
+	allocatorCursors map[string]uint64
+	allocatorSeen    map[string]bool
+}
+
+func failure(code model.ErrorCode, message string) error {
+	return &model.Error{Message: message, Data: model.ErrorData{Code: code, Retryable: code == "write_conflict" || code == "subscriber_unavailable" || code == "busy"}}
+}
+
+func fieldName(path string) (string, error) {
+	name, ok := strings.CutPrefix(path, "fields.")
+	if !ok || name == "" || strings.ContainsAny(name, "./\x00") {
+		return "", failure("plugin_patch_out_of_scope", "patch path must be fields.<name>")
+	}
+	return name, nil
+}
+
+func protectedName(name string) bool {
+	switch name {
+	case "ontology", "plugins", "plugin", "plugin_set", "plugin_lock", "plugin_config", "instance_config", "lock":
+		return true
+	}
+	for _, prefix := range []string{"ontology/", "plugins/", "plugin/", "plugin_set/", "plugin_lock/", "plugin_config/", "instance_config/"} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *prepared) resolve(ref model.Ref, aliases map[string]model.Ref) (model.Ref, error) {
+	if err := ref.Validate(); err != nil {
+		return model.Ref{}, failure("invalid_params", err.Error())
+	}
+	if !ref.IsID() {
+		var ok bool
+		ref, ok = aliases[ref.Key]
+		if !ok {
+			return model.Ref{}, failure("invalid_params", "reference key must name an earlier create")
+		}
+	}
+	if ref.ID == "" || !ref.Branch.IsZero() {
+		return model.Ref{}, failure("invalid_params", "only nonempty IDs on branch zero are supported")
+	}
+	if protectedName(ref.ID) {
+		return model.Ref{}, failure("protected_record", "ordinary changes cannot target protected records")
+	}
+	return ref, nil
+}
+
+func (p *prepared) load(ctx context.Context, ref model.Ref) (*pending, error) {
+	if prior, ok := p.writes[ref.ID]; ok {
+		if prior.deleted {
+			return nil, failure("not_found", "record was deleted in this batch")
+		}
+		return prior, nil
+	}
+	records, err := p.snapshot.Get(ctx, []model.Ref{ref})
+	if err != nil {
+		return nil, err
+	}
+	if len(records) != 1 {
+		return nil, failure("not_found", "bead not found")
+	}
+	r := records[0]
+	if protectedName(r.Kind) {
+		return nil, failure("protected_record", "ordinary changes cannot target protected records")
+	}
+	if r.Kind != "bead" {
+		return nil, failure("invalid_params", "unsupported record kind")
+	}
+	doc, err := DecodeDocument(r.Body)
+	if err != nil {
+		return nil, err
+	}
+	if doc.ID != ref.ID {
+		return nil, failure("internal_error", "record identity differs from body")
+	}
+	pending := &pending{ref: ref, doc: doc, before: append(json.RawMessage(nil), r.Body...), revision: r.Revision, setBy: map[string]string{}}
+	p.writes[ref.ID] = pending
+	return pending, nil
+}
+
+func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, release *claimReleaseMode) (*prepared, error) {
+	snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}}
+	if _, err := snapshot.observe(ctx, []driver.LockKey{driver.OntologySentinelLock, driver.PluginsSentinelLock}); err != nil {
+		return nil, err
+	}
+	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}, allocatorCursors: map[string]uint64{}, allocatorSeen: map[string]bool{}}
+	aliases := map[string]model.Ref{}
+	slotRef := ""
+	if isSlot(meta.Method) {
+		// A method is host-supplied lowering context, not a batch-wide bypass.
+		if len(cs.Ops) < 1 || cs.Ops[0].Kind != model.OpPatch {
+			return nil, failure("invalid_params", "slot method requires a patch first")
+		}
+		if len(cs.Ops) > 2 || (len(cs.Ops) == 2 && cs.Ops[1].Kind != model.OpComment) {
+			return nil, failure("invalid_params", "slot method supports one patch and an optional reason comment")
+		}
+	}
+	for _, op := range cs.Ops {
+		var target model.Ref
+		var current *pending
+		var before json.RawMessage
+		var err error
+		if op.Kind == model.OpCreate {
+			c := op.Create
+			if protectedName(c.Type) {
+				return nil, failure("protected_record", "protected resources require their plan/apply path")
+			}
+			if c.Parent != nil {
+				return nil, failure("invalid_params", "parented create is unsupported until closure maintenance is available")
+			}
+			if c.Type == "" {
+				return nil, failure("invalid_params", "create requires a type")
+			}
+			if c.Key != "" {
+				if _, exists := aliases[c.Key]; exists {
+					return nil, failure("invalid_params", "duplicate create key")
+				}
+			}
+			project := c.Project
+			if project == "" {
+				project = meta.Project
+			}
+			id, allocatorPrefix, allocatorExpected, e := p.nextAllocatorID(ctx, project, w.cfg.newID)
+			if e != nil {
+				return nil, e
+			}
+			if _, e := driver.NewBeadSentinel(id); e != nil {
+				return nil, failure("invalid_params", "ID generator returned an invalid bead ID")
+			}
+			target = model.Ref{ID: id}
+			if _, exists := p.writes[id]; exists {
+				return nil, failure("invalid_params", "ID generator returned a duplicate batch ID")
+			}
+			if _, e := snapshot.Get(ctx, []model.Ref{target}); e != nil {
+				return nil, e
+			}
+			// A generated collision is retried from a fresh attempt, never overwritten.
+			key, _ := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &target})
+			if snapshot.reads.states[key].Present {
+				return nil, errStale
+			}
+			current = &pending{ref: target, doc: Document{ID: id, Type: c.Type, Project: project, Fields: map[string]any{}}, setBy: map[string]string{}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected}
+			p.writes[id] = current
+			if err = applyFields(current, c.Fields, "request"); err != nil {
+				return nil, err
+			}
+			if c.Key != "" {
+				aliases[c.Key] = target
+			}
+		} else {
+			switch op.Kind {
+			case model.OpPatch:
+				target = op.Patch.Target
+			case model.OpComment:
+				target = op.Comment.Target
+			case model.OpLink, model.OpUnlink:
+				target = op.Link.From
+			case model.OpDelete:
+				target = op.Delete.Target
+			case model.OpSetMeta:
+				target = op.SetMeta.Target
+			case model.OpAttach:
+				return nil, failure("invalid_params", "attach is unsupported by this pipeline slice")
+			case model.OpReparent:
+				return nil, failure("invalid_params", "reparent is unsupported until closure maintenance is available")
+			default:
+				return nil, failure("invalid_params", "unsupported operation")
+			}
+			target, err = p.resolve(target, aliases)
+			if err != nil {
+				return nil, err
+			}
+			current, err = p.load(ctx, target)
+			if err != nil {
+				return nil, err
+			}
+			before, err = json.Marshal(current.doc)
+			if err != nil {
+				return nil, err
+			}
+			if release != nil {
+				if err = w.checkClaimRelease(current.doc, by, meta, release); err != nil {
+					return nil, err
+				}
+			} else if err = w.checkLease(current.doc, by, meta); err != nil {
+				return nil, err
+			}
+			if meta.Method == "bead.claim" && current.doc.Lease != nil && w.cfg.now().Before(current.doc.Lease.ExpiresAt) {
+				if len(cs.Ops) != 1 || op.Kind != model.OpPatch || len(op.Patch.Fields) != 0 {
+					return nil, failure("invalid_params", "an already-owned claim requires one empty patch")
+				}
+				p.proposal.SameClaim = true
+			}
+			if isSlot(meta.Method) {
+				if slotRef == "" {
+					slotRef = target.ID
+				}
+				if slotRef != target.ID {
+					return nil, failure("invalid_params", "slot reason must target the same bead")
+				}
+			}
+			switch op.Kind {
+			case model.OpPatch:
+				if err = applyFields(current, op.Patch.Fields, "request"); err != nil {
+					return nil, err
+				}
+			case model.OpComment:
+				if strings.TrimSpace(op.Comment.Body) == "" {
+					return nil, failure("invalid_params", "comment body must not be empty")
+				}
+				stamp := w.cfg.now().UTC()
+				for _, comment := range current.doc.Comments {
+					if !stamp.After(comment.Time) {
+						stamp = comment.Time.Add(time.Second)
+					}
+				}
+				current.doc.Comments = append(current.doc.Comments, Comment{Body: op.Comment.Body, Principal: by, Time: stamp})
+				current.setBy["comments"] = "request"
+			case model.OpLink, model.OpUnlink:
+				kind := op.Link.LinkKind
+				if kind != "blocks" && kind != "conditional-blocks" && kind != "relates-to" {
+					return nil, failure("invalid_params", "unsupported link kind")
+				}
+				to, e := p.resolve(op.Link.To, aliases)
+				if e != nil {
+					return nil, e
+				}
+				if to.ID == target.ID {
+					return nil, failure("ontology_guard_failed", "self-links are refused")
+				}
+				if _, e := p.load(ctx, to); e != nil {
+					return nil, e
+				}
+				// The endpoint is read, not written, unless another op targets it.
+				found := -1
+				for i, link := range current.doc.Links {
+					if link.To.ID == to.ID && link.Kind == kind {
+						found = i
+						break
+					}
+				}
+				if op.Kind == model.OpLink && found < 0 {
+					current.doc.Links = append(current.doc.Links, Link{To: to, Kind: kind})
+				}
+				if op.Kind == model.OpUnlink && found >= 0 {
+					current.doc.Links = append(current.doc.Links[:found], current.doc.Links[found+1:]...)
+				}
+				current.setBy["links"] = "request"
+			case model.OpDelete:
+				current.deleted = true
+			case model.OpSetMeta:
+				if op.SetMeta.Key == "" || strings.HasPrefix(op.SetMeta.Key, "_plug") || strings.HasPrefix(op.SetMeta.Key, "core.") {
+					return nil, failure("protected_record", "reserved core metadata cannot be changed")
+				}
+				if current.doc.Metadata == nil {
+					current.doc.Metadata = map[string]json.RawMessage{}
+				}
+				if string(op.SetMeta.Value) == "null" {
+					delete(current.doc.Metadata, op.SetMeta.Key)
+				} else {
+					current.doc.Metadata[op.SetMeta.Key] = append(json.RawMessage(nil), op.SetMeta.Value...)
+				}
+				current.setBy["metadata."+op.SetMeta.Key] = "request"
+			}
+		}
+		p.refs = append(p.refs, target)
+		p.proposal.Changes = append(p.proposal.Changes, port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: target}, Op: op, Before: before})
+	}
+	// Only actual operation targets belong to the write set. Reads of link
+	// endpoints remain guarded but do not gain spurious versions or revisions.
+	targets := map[string]bool{}
+	for _, ref := range p.refs {
+		targets[ref.ID] = true
+	}
+	for id := range p.writes {
+		if !targets[id] {
+			delete(p.writes, id)
+		}
+	}
+	for _, expect := range cs.Expect {
+		ref, err := p.resolve(expect.Ref, aliases)
+		if err != nil {
+			return nil, err
+		}
+		records, err := snapshot.Get(ctx, []model.Ref{ref})
+		if err != nil {
+			return nil, err
+		}
+		if len(records) != 1 {
+			return nil, failure("precondition_failed", "expected record is absent")
+		}
+		if expect.Revision != nil {
+			if expect.Field != "" || expect.Hash != "" {
+				return nil, failure("invalid_params", "precondition must select revision or field hash")
+			}
+			if expect.Revision.String() != records[0].Revision.String() {
+				return nil, failure("precondition_failed", "record revision changed")
+			}
+		} else {
+			if expect.Field == "" || expect.Hash == "" {
+				return nil, failure("invalid_params", "field precondition requires field and hash")
+			}
+			doc, err := DecodeDocument(records[0].Body)
+			if err != nil {
+				return nil, err
+			}
+			name := strings.TrimPrefix(expect.Field, "fields.")
+			hash, err := FieldHash(doc.Fields[name])
+			if err != nil {
+				return nil, err
+			}
+			if hash != expect.Hash {
+				return nil, failure("precondition_failed", "field hash changed")
+			}
+		}
+	}
+	if err := p.refresh(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// nextAllocatorID previews a restored sequential counter on the immutable
+// preparation snapshot. The matching allocator fact is upgraded to an update
+// lock in transact, where the expected ID is consumed atomically with records.
+// An absent capability or absent project state keeps the legacy random path;
+// an admitted but unsupported mode fails closed rather than inventing an ID.
+func (p *prepared) nextAllocatorID(ctx context.Context, project string, fallback func() (string, error)) (string, string, string, error) {
+	if project == "" {
+		id, err := fallback()
+		return id, "", "", err
+	}
+	reader, ok := p.snapshot.reader.(driver.AllocatorReader)
+	if !ok {
+		id, err := fallback()
+		return id, "", "", err
+	}
+	if !p.allocatorSeen[project] {
+		key, err := driver.AllocatorLock(project)
+		if err != nil {
+			return "", "", "", err
+		}
+		if _, err = p.snapshot.observe(ctx, []driver.LockKey{key}); err != nil {
+			return "", "", "", err
+		}
+		p.allocatorSeen[project] = true
+	}
+	state, err := reader.LoadAllocator(ctx, project)
+	if errors.Is(err, driver.ErrNotFound) {
+		id, fallbackErr := fallback()
+		return id, "", "", fallbackErr
+	}
+	if err != nil {
+		return "", "", "", err
+	}
+	if cursor, exists := p.allocatorCursors[project]; exists {
+		state.LastID = cursor
+	}
+	id, err := state.NextID()
+	if err != nil {
+		return "", "", "", err
+	}
+	if state.LastID == ^uint64(0) {
+		return "", "", "", fmt.Errorf("%w: allocator counter exhausted", driver.ErrUnsupported)
+	}
+	next := state.LastID + 1
+	p.allocatorCursors[project] = next
+	return id, project, id, nil
+}
+
+func applyFields(p *pending, fields map[string]any, setter string) error {
+	for name, value := range fields {
+		if name == "" || strings.ContainsAny(name, "./\x00") {
+			return failure("invalid_params", "field names must be nonempty unqualified keys")
+		}
+		if value == nil {
+			delete(p.doc.Fields, name)
+		} else {
+			p.doc.Fields[name] = value
+		}
+		p.setBy["fields."+name] = setter
+	}
+	return nil
+}
+
+func (p *prepared) refresh() error {
+	for i := range p.proposal.Changes {
+		c := &p.proposal.Changes[i]
+		pending := p.writes[c.Resource.Ref.ID]
+		// All operations on a record describe the same atomic transition.
+		// A later patch of a batch-created record therefore still has no
+		// committed pre-image, even after ontology defaults are supplied.
+		c.Before = append(json.RawMessage(nil), pending.before...)
+		if pending.deleted {
+			c.After = nil
+		} else {
+			body, err := json.Marshal(pending.doc)
+			if err != nil {
+				return err
+			}
+			c.After = body
+		}
+		c.SetBy = cloneMap(pending.setBy)
+	}
+	return nil
+}
+
+func (p *prepared) patches(patches []port.Patch, owner string, owns []string) error {
+	allowed := map[string]bool{}
+	for _, path := range owns {
+		allowed[path] = true
+	}
+	for _, patch := range patches {
+		ref := patch.Resource.Ref
+		if patch.Resource.Kind != "bead" || !ref.IsID() || !ref.Branch.IsZero() {
+			return failure("plugin_patch_out_of_scope", "patch resource is outside the proposed beads")
+		}
+		pending := p.writes[ref.ID]
+		if pending == nil || pending.deleted {
+			return failure("plugin_patch_out_of_scope", "patch may only change a proposed live record")
+		}
+		for path, raw := range patch.Paths {
+			name, err := fieldName(path)
+			if err != nil {
+				return err
+			}
+			if owns != nil && !allowed[path] {
+				return failure("plugin_patch_out_of_scope", "mutator wrote outside its owned fields")
+			}
+			var value any
+			if err := decode(raw, &value); err != nil {
+				return failure("invalid_params", "mutator returned invalid JSON")
+			}
+			if err := applyFields(pending, map[string]any{name: value}, owner); err != nil {
+				return err
+			}
+		}
+	}
+	return p.refresh()
+}
+
+func cloneMap(input map[string]string) map[string]string {
+	result := make(map[string]string, len(input))
+	for key, value := range input {
+		result[key] = value
+	}
+	return result
+}
+
+func FieldHash(value any) (string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:]), nil
+}
+
+func isSlot(method string) bool {
+	switch method {
+	case "bead.claim", "bead.close", "bead.fail", "bead.cancel", "bead.reopen", "bead.defer", "bead.release":
+		return true
+	}
+	return false
+}
+
+func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.WriteMeta) error {
+	lease := doc.Lease
+	if lease == nil {
+		return nil
+	}
+	if meta.Method == "bead.claim" {
+		if w.cfg.now().Before(lease.ExpiresAt) {
+			principal, _ := driver.PrincipalKey(by)
+			holder, _ := driver.PrincipalKey(lease.Principal)
+			if principal != holder || by.Kind == "anonymous" && meta.AgentLabel != lease.Agent {
+				return failure("busy", "bead already has a live claim")
+			}
+		}
+		return nil
+	}
+	principal, _ := driver.PrincipalKey(by)
+	holder, _ := driver.PrincipalKey(lease.Principal)
+	if principal != holder || (by.Kind == "anonymous" && meta.AgentLabel != lease.Agent) {
+		return failure("lease_not_held", "bead is claimed by another principal")
+	}
+	if !w.cfg.now().Before(lease.ExpiresAt) {
+		return failure("lease_expired", "bead claim has expired")
+	}
+	return nil
+}
+
+func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta) error {
+	if meta.Method == "bead.claim" && !p.proposal.SameClaim {
+		ttl := model.Natural64(uint64(w.cfg.claimTTL / time.Millisecond))
+		for _, pending := range p.writes {
+			pending.doc.Lease = &ClaimLease{Principal: by, Agent: meta.AgentLabel, ExpiresAt: w.cfg.now().UTC().Add(w.cfg.claimTTL), TtlMs: ttl, Epoch: model.Natural64(w.lease.Epoch())}
+			pending.setBy["lease"] = "request"
+		}
+	} else if isSlot(meta.Method) && meta.Method != "bead.claim" {
+		for _, pending := range p.writes {
+			pending.doc.Lease = nil
+			pending.setBy["lease"] = "request"
+		}
+	}
+	return p.refresh()
+}
+
+func (p *prepared) sentinels() []driver.Sentinel {
+	set := map[driver.Sentinel]bool{}
+	for _, pending := range p.writes {
+		if !p.changed[pending.ref.ID] {
+			continue
+		}
+		set[driver.SentinelGraphBlocking] = true
+		if s, err := driver.NewBeadSentinel(pending.ref.ID); err == nil {
+			set[s] = true
+		}
+	}
+	result := make([]driver.Sentinel, 0, len(set))
+	for s := range set {
+		result = append(result, s)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result
+}
+
+func (p *prepared) detectChanges() error {
+	p.changed = map[string]bool{}
+	for id, pending := range p.writes {
+		if len(pending.before) == 0 {
+			if !pending.deleted {
+				p.changed[id] = true
+			}
+			continue
+		}
+		if pending.deleted {
+			p.changed[id] = true
+			continue
+		}
+		before, err := DecodeDocument(pending.before)
+		if err != nil {
+			return err
+		}
+		oldBody, err := json.Marshal(before)
+		if err != nil {
+			return err
+		}
+		body, err := json.Marshal(pending.doc)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(oldBody, body) {
+			p.changed[id] = true
+		}
+	}
+	return nil
+}
+
+func (p *prepared) graph(ctx context.Context) error {
+	need := false
+	for _, c := range p.proposal.Changes {
+		if c.Op.Kind == model.OpLink || c.Op.Kind == model.OpUnlink || c.Op.Kind == model.OpDelete {
+			need = true
+		}
+	}
+	if !need {
+		return nil
+	}
+	docs := map[string]Document{}
+	var cursor *driver.Cursor
+	for {
+		page, err := p.snapshot.Query(ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 1000, Cursor: cursor})
+		if err != nil {
+			return err
+		}
+		for _, record := range page.Items {
+			d, err := DecodeDocument(record.Body)
+			if err != nil {
+				return err
+			}
+			docs[d.ID] = d
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	for id, pending := range p.writes {
+		if pending.deleted {
+			delete(docs, id)
+		} else {
+			docs[id] = pending.doc
+		}
+	}
+	for _, doc := range docs {
+		for _, link := range doc.Links {
+			if _, ok := docs[link.To.ID]; !ok {
+				return failure("ontology_guard_failed", "unlink all incoming and outgoing edges before deletion")
+			}
+		}
+	}
+	// A deleted bead's outgoing edges would disappear silently; require explicit
+	// unlink operations first so the change log represents each removed edge.
+	for _, pending := range p.writes {
+		if pending.deleted && len(pending.doc.Links) != 0 {
+			return failure("ontology_guard_failed", "unlink outgoing edges before deletion")
+		}
+	}
+	visiting, done := map[string]bool{}, map[string]bool{}
+	var walk func(string) error
+	walk = func(id string) error {
+		if visiting[id] {
+			return failure("ontology_guard_failed", "blocking link would form a cycle")
+		}
+		if done[id] {
+			return nil
+		}
+		visiting[id] = true
+		for _, link := range docs[id].Links {
+			if link.Kind == "blocks" || link.Kind == "conditional-blocks" {
+				if err := walk(link.To.ID); err != nil {
+					return err
+				}
+			}
+		}
+		delete(visiting, id)
+		done[id] = true
+		return nil
+	}
+	for id := range docs {
+		if err := walk(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
