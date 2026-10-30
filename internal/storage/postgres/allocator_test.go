@@ -85,6 +85,98 @@ func pipelineCreate(t *testing.T, w *pipeline.Writer, n int) model.Commit {
 	return commit
 }
 
+func TestPostgresAllocatorHistoricalReadsRefuse(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	key, err := driver.AllocatorLock("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeRestore := testRead(t, s, nil)
+	restoreAllocator(t, s, lease, driver.OfflineAllocator{Prefix: "demo", Mode: driver.AllocatorSequential, LastID: 8, Children: map[string]uint64{"demo-8": 3}})
+
+	assertHistorical := func(name string, at uint64, present bool, factRevision uint64) {
+		t.Run(name, func(t *testing.T) {
+			revision := model.Natural64(at)
+			r := testRead(t, s, &revision)
+			if snapshot := r.Snapshot(); snapshot.At == nil || snapshot.At.String() != revision.String() {
+				t.Fatalf("snapshot=%+v, want revision %s", snapshot, revision)
+			}
+			facts, err := r.Observe(ctx, []driver.LockKey{key})
+			if err != nil || len(facts) != 1 {
+				t.Fatalf("allocator facts=%+v err=%v", facts, err)
+			}
+			if facts[0].Present != present || facts[0].Revision.String() != model.Natural64(factRevision).String() {
+				t.Fatalf("allocator fact=%+v, want present=%t revision=%d", facts[0], present, factRevision)
+			}
+			value, err := r.(driver.AllocatorReader).LoadAllocator(ctx, "demo")
+			if !errors.Is(err, driver.ErrUnsupported) || value.Prefix != "" || value.LastID != 0 || value.Children != nil {
+				t.Fatalf("historical allocator at %s returned %+v err=%v; want empty state and ErrUnsupported", revision, value, err)
+			}
+		})
+	}
+	assertHistorical("before-restore-revision", 0, false, 0)
+
+	one := model.Natural64(1)
+	pinned := []driver.Reader{testRead(t, s, nil), testRead(t, s, &one)}
+	for _, r := range pinned {
+		if value := allocatorValue(t, r, "demo"); value.LastID != 8 {
+			t.Fatalf("initial allocator=%+v", value)
+		}
+	}
+	tx, header := beginTest(t, s, lease, key)
+	if err := tx.(driver.AllocatorContinuation).AllocateTopLevel(ctx, "demo", "demo-9"); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []driver.AllocatorReader{tx.(driver.AllocatorReader), tx.(*transaction).reader} {
+		value, err := r.LoadAllocator(ctx, "demo")
+		if err != nil || value.LastID != 9 || value.Children["demo-8"] != 3 {
+			t.Fatalf("staged allocator=%+v err=%v", value, err)
+		}
+		value.Children["demo-8"] = 99
+	}
+	if _, err := tx.Commit(ctx, header); err != nil {
+		t.Fatal(err)
+	}
+	assertHistorical("before-advance-revision", 1, true, 1)
+
+	if value, err := beforeRestore.(driver.AllocatorReader).LoadAllocator(ctx, "demo"); !errors.Is(err, driver.ErrNotFound) {
+		t.Fatalf("pre-restore snapshot returned %+v err=%v", value, err)
+	}
+	for _, r := range pinned {
+		if value := allocatorValue(t, r, "demo"); value.LastID != 8 || value.Children["demo-8"] != 3 {
+			t.Fatalf("pinned snapshot changed: %+v", value)
+		}
+	}
+	two := model.Natural64(2)
+	for _, at := range []*model.Revision{nil, &two} {
+		r := testRead(t, s, at)
+		value := allocatorValue(t, r, "demo")
+		if value.LastID != 9 || value.Children["demo-8"] != 3 {
+			t.Fatalf("current allocator=%+v", value)
+		}
+		value.Children["demo-8"] = 99
+		if again := allocatorValue(t, r, "demo"); again.Children["demo-8"] != 3 {
+			t.Fatalf("current allocator not detached: %+v", again)
+		}
+	}
+	meta, err := s.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	three := model.Natural64(3)
+	future, err := s.Read(ctx, driver.View{Incarnation: meta.Incarnation, At: &three})
+	if future != nil {
+		_ = future.Close()
+		t.Fatal("future reader unexpectedly opened")
+	}
+	var refusal driver.ErrFutureRevision
+	if !errors.As(err, &refusal) || refusal.Requested != three || refusal.Head != two {
+		t.Fatalf("future revision refusal=%+v err=%v", refusal, err)
+	}
+}
+
 func TestPostgresAllocatorPipelineReconnectAndConcurrentRetry(t *testing.T) {
 	ctx := context.Background()
 	dsn := freshDSN(t)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -52,6 +53,11 @@ func (r *reader) LoadAllocator(ctx context.Context, prefix string) (driver.Offli
 	defer r.mu.Unlock()
 	if err := r.check(ctx); err != nil {
 		return driver.OfflineAllocator{}, err
+	}
+	// Allocator rows hold only the SQL snapshot's current payload, not the
+	// state at an earlier revision requested through View.At.
+	if r.writer == nil && r.meta.Head.String() != model.Natural64(r.at).String() {
+		return driver.OfflineAllocator{}, fmt.Errorf("%w: postgres historical allocator reads", driver.ErrUnsupported)
 	}
 	if r.writer != nil {
 		if value, ok := r.writer.allocators[prefix]; ok {
