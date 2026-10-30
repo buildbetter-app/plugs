@@ -166,6 +166,14 @@ func TestWASIPluginBuildRestoreAndAsyncRebuild(t *testing.T) {
 	// Let Build infer the sandboxed runtime from the pinned manifest. This
 	// protects the admission path from requiring a redundant caller hint.
 	artifact, err := pluginbuild.Build(ctx, pluginbuild.Request{Source: source, GoBinary: goPath(t)})
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		requireBuildCode(t, err, pluginbuild.ErrUnsupported)
+		if artifact != nil {
+			t.Fatal("unsupported local WASI build produced an artifact")
+		}
+		t.Log("local mode-2 build refused on an unsupported host; runtime remains independently supported")
+		return
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,7 +549,7 @@ func runHelper(t *testing.T, root string, source pluginmanifest.Checkout) map[st
 	if _, err := os.Stat(wazeroRoot); err != nil {
 		t.Fatalf("wazero source is not available in the offline module cache: %v", err)
 	}
-	goMod := fmt.Sprintf("module github.com/buildbetter-app/plugs/runner\n\ngo 1.26.5\n\ntoolchain go1.26.10\n\nrequire (\n\tgithub.com/buildbetter-app/plugs v0.0.0\n\tgithub.com/tetratelabs/wazero v1.9.0\n)\n\nreplace github.com/buildbetter-app/plugs => %s\nreplace github.com/tetratelabs/wazero => %s\n", root, wazeroRoot)
+	goMod := fmt.Sprintf("module github.com/buildbetter-app/plugs/runner\n\ngo 1.26.5\n\ntoolchain go1.26.10\n\nrequire (\n\tgithub.com/buildbetter-app/plugs v0.0.0\n\tgithub.com/tetratelabs/wazero v1.9.0\n\tgolang.org/x/sys v0.49.0\n)\n\nreplace github.com/buildbetter-app/plugs => %s\nreplace github.com/tetratelabs/wazero => %s\n", root, wazeroRoot)
 	if err := os.WriteFile(filepath.Join(helper, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +559,7 @@ func runHelper(t *testing.T, root string, source pluginmanifest.Checkout) map[st
 	}
 	var helperSums []byte
 	for _, line := range strings.Split(string(rootSums), "\n") {
-		if strings.HasPrefix(line, "github.com/tetratelabs/wazero ") {
+		if strings.HasPrefix(line, "github.com/tetratelabs/wazero ") || strings.HasPrefix(line, "golang.org/x/sys ") {
 			helperSums = append(helperSums, []byte(line+"\n")...)
 		}
 	}
