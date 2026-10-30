@@ -33,11 +33,19 @@ human and JSON modes. Ready/history cursors stay opaque and are passed back
 unchanged for the server to verify. A `session` is a stream of command arrays,
 not a presence session; it creates no `session.open` resource.
 
-Without a selected server, `--memory` still runs one disposable in-process
-core and emits its lifetime warning. Persistent local storage and config-file
-loading are not installed. If `.plug/config.yaml` exists, this slice refuses
-it explicitly instead of ignoring a possibly configured server. Choose
-`--server` or `PLUG_SERVER` until a config loader is implemented. Unsupported
-commands, including login, server startup, watches and generic RPC calls,
-continue to fail explicitly. This slice makes no full behavior-card or
+Without a selected server, the CLI opens persistent SQLite at
+`.plug/plug.db`, creating `.plug/` with private permissions when needed. A
+workspace `.plug/config.yaml` may select a server or a local SQLite path:
+
+```yaml
+storage:
+  driver: sqlite
+  path: .plug/plug.db
+```
+
+`server: URL` is an alternative to `storage`. Unknown, malformed, duplicate,
+or conflicting settings fail closed. `--memory` is the explicit disposable
+choice and emits its lifetime warning; it does not reuse the persistent file.
+Unsupported commands, including login, server startup, watches and generic RPC
+calls, continue to fail explicitly. This slice makes no full behavior-card or
 performance acceptance claim.

@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_binary")
+
+go_binary(
+    name = "stdio_fixture",
+    srcs = ["main.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/server/transport/stdio/fixture",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//internal/server/rpc",
+        "//internal/server/transport/stdio",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
