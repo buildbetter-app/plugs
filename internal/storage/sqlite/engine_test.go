@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math"
@@ -466,4 +467,48 @@ func TestExpiryAndUnsupportedCapabilities(t *testing.T) {
 		}
 	}
 	t.Log("expired keys can be reused after 24h while log retains originals; unsupported configs/topology/migrations/branches refuse")
+}
+
+func TestCoreSessionPersistenceAcrossRestart(t *testing.T) {
+	ctx := testContext(t)
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	value, err := (Driver{}).Open(ctx, driver.Config{DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := value.(driver.CoreSessionStore)
+	now := time.Unix(1_800_000_000, 123)
+	record := driver.CoreSessionRecord{
+		ID: "0123456789abcdef0123456789abcdef", TokenDigest: bytes.Repeat([]byte{0x42}, 32),
+		Principal: model.PrincipalRef{Kind: "user", ID: "user:sqlite"}, ExpiresAt: now.Add(time.Hour),
+	}
+	if err := store.PutCoreSession(ctx, record, now, 4); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.LookupCoreSession(ctx, record.ID)
+	if err != nil || active.Revoked || active.Principal.Kind != "user" || active.Principal.ID != record.Principal.ID {
+		t.Fatalf("active core session=%+v err=%v", active, err)
+	}
+	if revoked, err := store.RevokeCoreSession(ctx, record.ID); err != nil || !revoked {
+		t.Fatalf("revoke=%t err=%v", revoked, err)
+	}
+	if err := value.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopenedValue, err := (Driver{}).Open(ctx, driver.Config{DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopenedValue.Close() })
+	reopened := reopenedValue.(driver.CoreSessionStore)
+	revoked, err := reopened.LookupCoreSession(ctx, record.ID)
+	if err != nil || !revoked.Revoked || revoked.Principal.Kind != "user" {
+		t.Fatalf("reopened revoked core session=%+v err=%v", revoked, err)
+	}
+	bad := record
+	bad.ID = "fedcba9876543210fedcba9876543210"
+	bad.Principal = model.PrincipalRef{Kind: "agent", ID: "agent:must-not-be-human"}
+	if err := reopened.PutCoreSession(ctx, bad, now, 4); err == nil {
+		t.Fatal("non-user core session was accepted")
+	}
 }

@@ -1,8 +1,10 @@
 # Storage drivers and lifecycle
 
-Source: **127ac22e1d003cce4babe6cbcbc8367ad264e649**;
+Source: **463881cec205e6cd3e5b85d1bac7d4018a153d5f**;
 [guide scope](README.md#snapshot-and-package-boundaries). These are internal
-embedding APIs; the executable does not select a persistent local driver.
+embedding APIs. `plug server` selects one of these drivers from its strict
+`.plug/config.yaml` form; ordinary `plug` local mode uses SQLite by default
+and does not open PostgreSQL directly.
 
 | Driver | Open configuration | Lifetime and limits |
 | --- | --- | --- |
@@ -49,7 +51,8 @@ the caller must not admit traffic after an uncertain restore or promotion
 without a recovery path that rotates the store incarnation. The managed design
 target is a five-minute RPO and one-hour RTO, not a result of these local tests.
 Dump/restore, cutover and production data movement are not installed CLI/RPC
-operations.
+operations. The [shared-server guide](server.md) describes which state survives
+a server restart and which process-local session state does not.
 
 ## Audit-plan and SQL boundaries
 

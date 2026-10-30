@@ -44,6 +44,7 @@ type config struct {
 	now          func() time.Time
 	newID        func() (string, error)
 	claimTTL     time.Duration
+	observer     Observer
 }
 
 type Option func(*config)
@@ -80,6 +81,11 @@ func WithIDGenerator(generate func() (string, error)) Option {
 }
 func WithClaimTTL(ttl time.Duration) Option { return func(c *config) { c.claimTTL = ttl } }
 
+// WithObserver replaces the default bounded in-process collector. Hosts may
+// use this only for another internal observer that obeys the same closed
+// vocabulary; pipeline inputs are never passed to it. Nil retains the default.
+func WithObserver(observer Observer) Option { return func(c *config) { c.observer = observer } }
+
 type Writer struct {
 	store driver.Store
 	lease driver.ActiveLease
@@ -96,6 +102,9 @@ func New(store driver.Store, lease driver.ActiveLease, options ...Option) *Write
 	w := &Writer{store: store, lease: lease, cfg: config{now: time.Now, newID: newID, claimTTL: 5 * time.Minute}}
 	for _, option := range options {
 		option(&w.cfg)
+	}
+	if w.cfg.observer == nil {
+		w.cfg.observer = NewCollector()
 	}
 	w.err = w.configure()
 	return w
