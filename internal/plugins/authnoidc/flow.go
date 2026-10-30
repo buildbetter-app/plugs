@@ -14,6 +14,7 @@ import (
 
 type flow struct {
 	binding   [sha256.Size]byte
+	origin    string
 	nonce     string
 	verifier  string
 	startedAt time.Time
@@ -25,6 +26,7 @@ type flow struct {
 // package does not install a browser cookie/redirect handler on the RPC server.
 type Login struct {
 	AuthorizationURL string
+	State            string `json:"-"`
 	Binding          string `json:"-"`
 	ExpiresAt        time.Time
 }
@@ -35,8 +37,23 @@ func (l Login) GoString() string { return l.String() }
 // Begin starts a fresh interactive public-client login. State, nonce, S256
 // verifier and a separate client binding each have 256 bits of entropy.
 func (p *Provider) Begin(ctx context.Context) (Login, error) {
+	return p.BeginForOrigin(ctx, "")
+}
+
+// BeginForOrigin starts a login for an operator-allowlisted browser origin.
+// The origin is bound into the resulting core session and never sent to the
+// identity provider as an authority claim.
+func (p *Provider) BeginForOrigin(ctx context.Context, origin string) (Login, error) {
 	if canceled(ctx) {
 		return Login{}, authn.ErrUnavailable
+	}
+	canonicalOrigin := ""
+	if origin != "" {
+		var ok bool
+		canonicalOrigin, ok = normalizeOrigin(origin)
+		if !ok || !p.OriginAllowed(canonicalOrigin) {
+			return Login{}, authn.ErrForbidden
+		}
 	}
 	values := make([]string, 4)
 	for i := range values {
@@ -48,7 +65,7 @@ func (p *Provider) Begin(ctx context.Context) (Login, error) {
 	}
 	state, nonce, verifier, binding := values[0], values[1], values[2], values[3]
 	now := p.now()
-	entry := flow{binding: sha256.Sum256([]byte(binding)), nonce: nonce, verifier: verifier,
+	entry := flow{binding: sha256.Sum256([]byte(binding)), origin: canonicalOrigin, nonce: nonce, verifier: verifier,
 		startedAt: now, expiresAt: now.Add(p.config.FlowTTL)}
 	key := sha256.Sum256([]byte(state))
 	p.mu.Lock()
@@ -75,13 +92,32 @@ func (p *Provider) Begin(ctx context.Context) (Login, error) {
 		"code_challenge_method": {"S256"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])},
 		"prompt": {"login"}, "max_age": {"0"},
 	}.Encode()
-	return Login{AuthorizationURL: u.String(), Binding: binding, ExpiresAt: entry.expiresAt}, nil
+	return Login{AuthorizationURL: u.String(), State: state, Binding: binding, ExpiresAt: entry.expiresAt}, nil
 }
 
 // Complete accepts a code only for the initiating client's private Binding.
 // A matching flow is consumed before any egress, including failed exchanges.
 // IdP access/refresh tokens and the verified ID token are never retained.
 func (p *Provider) Complete(ctx context.Context, state, binding, code string) (IssuedSession, error) {
+	return p.complete(ctx, "", state, binding, code)
+}
+
+// CompleteForOrigin consumes a callback delivered by an operator-allowlisted
+// browser origin. It enforces the origin binding created by BeginForOrigin
+// before exchanging the code with the identity provider.
+func (p *Provider) CompleteForOrigin(ctx context.Context, origin, state, binding, code string) (IssuedSession, error) {
+	canonicalOrigin := ""
+	if origin != "" {
+		var ok bool
+		canonicalOrigin, ok = normalizeOrigin(origin)
+		if !ok || !p.OriginAllowed(canonicalOrigin) {
+			return IssuedSession{}, authn.ErrForbidden
+		}
+	}
+	return p.complete(ctx, canonicalOrigin, state, binding, code)
+}
+
+func (p *Provider) complete(ctx context.Context, origin, state, binding, code string) (IssuedSession, error) {
 	if canceled(ctx) {
 		return IssuedSession{}, authn.ErrUnavailable
 	}
@@ -97,6 +133,9 @@ func (p *Provider) Complete(ctx context.Context, state, binding, code string) (I
 	}
 	delete(p.flows, key)
 	p.mu.Unlock()
+	if f.origin != "" && f.origin != origin {
+		return IssuedSession{}, authn.ErrForbidden
+	}
 	if !p.now().Before(f.expiresAt) {
 		return IssuedSession{}, authn.ErrTokenExpired
 	}
@@ -116,7 +155,7 @@ func (p *Provider) Complete(ctx context.Context, state, binding, code string) (I
 	if !p.now().Before(f.expiresAt) {
 		return IssuedSession{}, authn.ErrTokenExpired
 	}
-	return p.issue(user, expires)
+	return p.issue(user, expires, f.origin)
 }
 
 func randomSecret() (string, error) {
