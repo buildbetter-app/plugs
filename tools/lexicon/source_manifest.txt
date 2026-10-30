@@ -360,6 +360,10 @@ internal/integration/oidc/http_test.go
 internal/integration/oidc/idp_test.go
 internal/integration/oidc/mcp_composition_test.go
 internal/integration/oidc/refusal_test.go
+internal/integration/oidcpermissions/BUILD.bazel
+internal/integration/oidcpermissions/README.md
+internal/integration/oidcpermissions/idp_test.go
+internal/integration/oidcpermissions/integration_test.go
 internal/integration/ontologyrefusals/BUILD.bazel
 internal/integration/ontologyrefusals/README.md
 internal/integration/ontologyrefusals/acceptance_test.go
