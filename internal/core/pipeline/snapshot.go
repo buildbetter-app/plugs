@@ -121,7 +121,7 @@ func sortedKeys(keys map[string]driver.LockKey) []driver.LockKey {
 	return result
 }
 
-func (r *snapshotReader) locks(writes map[string]*pending, sentinels []driver.Sentinel) (driver.LockSet, error) {
+func (r *snapshotReader) locks(writes map[string]*pending, sentinels []driver.Sentinel, extra ...driver.LockKey) (driver.LockSet, error) {
 	r.reads.mu.Lock()
 	defer r.reads.mu.Unlock()
 	byKey := map[string]driver.LockRequest{}
@@ -149,6 +149,11 @@ func (r *snapshotReader) locks(writes map[string]*pending, sentinels []driver.Se
 	}
 	for _, s := range sentinels {
 		if err := add(driver.LockKey{Kind: driver.LockSentinel, Sentinel: s}, driver.LockUpdate); err != nil {
+			return nil, err
+		}
+	}
+	for _, key := range extra {
+		if err := add(key, driver.LockUpdate); err != nil {
 			return nil, err
 		}
 	}

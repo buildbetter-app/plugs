@@ -21,6 +21,8 @@ func validConfig() Config {
 func TestConfigurationRefusesUnsupportedTrustAndBounds(t *testing.T) {
 	for _, change := range []func(*Config){
 		func(c *Config) { c.Issuer = "http://127.0.0.1" },
+		func(c *Config) { c.Issuer = "https://idp.invalid:" },
+		func(c *Config) { c.TokenEndpoint = "https://idp.invalid:0/token" },
 		func(c *Config) { c.TokenEndpoint = "https://idp.invalid/token?client=other" },
 		func(c *Config) { c.JWKSURL = "https://user:pass@idp.invalid/keys" },
 		func(c *Config) { c.RedirectURI = "https://plug.invalid/callback#fragment" },
@@ -47,6 +49,38 @@ func TestConfigurationRefusesUnsupportedTrustAndBounds(t *testing.T) {
 	config.Users["subject"] = "user:changed"
 	if p.config.Users["subject"] != "user:one" {
 		t.Fatal("caller mutated provisioned identity map")
+	}
+}
+
+func TestOriginAllowlistCanonicalizesAndRejectsUnsafeValues(t *testing.T) {
+	config := validConfig()
+	config.AllowedOrigins = []string{"HTTPS://APP.INVALID:443", "http://localhost:8080", "https://[::1]:443"}
+	p, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, origin := range []string{"https://app.invalid", "https://app.invalid:443", "http://localhost:8080", "https://[::1]", "https://[0:0:0:0:0:0:0:1]"} {
+		if !p.OriginAllowed(origin) {
+			t.Fatalf("allowlisted origin was not canonicalized: %q", origin)
+		}
+	}
+	for _, origin := range []string{"https://app.invalid:0", "https://app.invalid:", "https://app.invalid.", "http://example.invalid", "https://app.invalid/path", "https://app.invalid?query", "null"} {
+		if p.OriginAllowed(origin) {
+			t.Fatalf("unsafe origin was admitted: %q", origin)
+		}
+	}
+	for _, origins := range [][]string{
+		{"https://app.invalid", "HTTPS://APP.INVALID:443"},
+		{"http://example.invalid"},
+		{"https://app.invalid:0"},
+		{"https://app.invalid:"},
+		{"https://app.invalid."},
+	} {
+		bad := validConfig()
+		bad.AllowedOrigins = origins
+		if _, err := New(bad); err == nil {
+			t.Fatalf("unsafe origin configuration was accepted: %v", origins)
+		}
 	}
 }
 

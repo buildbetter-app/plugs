@@ -1,5 +1,5 @@
 // Package ontologyops connects protected stored ontology sources to the pure
-// compiler and migration planner. It has no write or apply capability.
+// compiler, migration planner and host-controlled protected apply seam.
 package ontologyops
 
 import (
@@ -10,6 +10,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/ontologymigration"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -26,10 +28,24 @@ type ReadStore interface {
 // inventory. Historical reads use this same current authorization callback.
 type AuthorizeRead func(context.Context, model.PrincipalRef, model.ResourceRef, string) error
 
+// OntologyRefresher receives the detached compiled snapshot after protected
+// ontology.apply. Receipt replays use the current durable source. The
+// composition root atomically publishes it to the shared ordinary runtime.
+type OntologyRefresher interface {
+	Refresh(ontology.Snapshot)
+}
+
 type Config struct {
 	Source        service.OntologySourceLocator
 	AuthorizeRead AuthorizeRead
 	ValidatingPre ontologymigration.ValidatingPre
+	// ProtectedApplier is optional so read-only composition roots do not
+	// advertise ontology.apply. It must be the canonical pipeline Writer.
+	ProtectedApplier pipeline.ProtectedApplier
+	// OntologyRefresher is optional for read-only roots. When present, a
+	// successful non-dry-run protected apply atomically publishes its candidate
+	// (or the current durable snapshot on replay) before the RPC returns.
+	OntologyRefresher OntologyRefresher
 	// MaxPlans bounds retained immutable reports. Evicted plans are stale.
 	MaxPlans int
 }
@@ -68,6 +84,14 @@ type PlanRequest struct {
 	Document json.RawMessage
 	Expect   []model.Precondition
 }
+
+type ApplyRequest struct {
+	PlanDigest string
+	Expect     []model.Precondition
+}
+
+// ApplyResult keeps the response-only replay bit out of the durable commit.
+type ApplyResult = port.WriteOutcome
 
 // SourceGuard binds exact stored bytes as well as the compiled interpretation.
 type SourceGuard struct {
@@ -120,5 +144,6 @@ type Patch struct {
 }
 
 type retainedPlan struct {
-	bytes []byte
+	bytes     []byte
+	protected []byte
 }

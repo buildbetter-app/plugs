@@ -237,6 +237,8 @@ func TestRealRPCOnlyBoundMethodsDiscoverAndStrictParamsRejectSubstitution(t *tes
 			t.Fatal("unsupported watch advertised")
 		}
 	}
+	// collab.Bind owns only the state handlers; the composed watch adapter binds
+	// presence.watch after it receives the real session-backed watch manager.
 	code(t, f.call(t, alice, "presence.watch", map[string]any{"sessionId": "none"}), "method_not_found")
 	for _, p := range []map[string]any{{"principal": bob}, {"sponsor": bob}, {"actor": "other"}, {"_meta": map[string]any{"principal": bob}}, {"onBehalfOf": nil}} {
 		code(t, f.call(t, alice, "session.open", p), "invalid_params")
