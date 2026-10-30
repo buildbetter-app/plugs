@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"testing"
 
+	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -22,6 +23,28 @@ func (l *testLease) Release(context.Context) error { return nil }
 type syntheticStore struct {
 	rows []driver.Record
 	meta driver.Meta
+}
+
+type savedViewMap map[string]Definition
+
+func (m savedViewMap) GetView(_ context.Context, _ model.PrincipalRef, id string) (Definition, error) {
+	definition, ok := m[id]
+	if !ok {
+		return Definition{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "saved view is absent"}}
+	}
+	return definition, nil
+}
+
+type readinessFunc func(context.Context, driver.Reader, []model.Ref) (map[string]ReadinessState, error)
+
+func (fn readinessFunc) Pending(ctx context.Context, reader driver.Reader, refs []model.Ref) (map[string]ReadinessState, error) {
+	return fn(ctx, reader, refs)
+}
+
+type projectionStatusFunc func(context.Context, string) (coreevents.ProjectionStatus, error)
+
+func (fn projectionStatusFunc) Status(ctx context.Context, binding string) (coreevents.ProjectionStatus, error) {
+	return fn(ctx, binding)
 }
 
 func (s *syntheticStore) Meta(context.Context) (driver.Meta, error) { return s.meta, nil }
@@ -157,5 +180,124 @@ func TestParseQueryRefusesSymbolicAndAlias(t *testing.T) {
 	var typed *model.Error
 	if !errors.As(err, &typed) || typed.Data.Code != "invalid_params" {
 		t.Fatalf("got %T %v, want invalid_params", err, err)
+	}
+}
+
+func TestWatchBindingCompilesExactResourceCheckpoint(t *testing.T) {
+	store := &syntheticStore{meta: driver.Meta{StoreID: "store", Incarnation: "inc"}}
+	svc, err := New(store, &testLease{lost: make(chan struct{})}, Config{
+		Views:            savedViewMap{"one": {Filter: &Filter{Resources: []string{"bead-one"}}}},
+		OntologyRevision: model.Natural64(7),
+		PolicyVersion:    "policy-3",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := svc.WatchBinding(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.Ontology.String() != "7" || binding.PolicyVersion != "policy-3" || binding.Incarnation != "inc" {
+		t.Fatalf("checkpoint generations=%+v", binding)
+	}
+	if len(binding.Filter.Resources) != 1 || binding.Filter.Resources[0] != "bead/bead-one" {
+		t.Fatalf("compiled event filter=%+v", binding.Filter)
+	}
+}
+
+func TestWatchBindingCompilesBeadTypeMembershipSeparatelyFromEventTypes(t *testing.T) {
+	store := &syntheticStore{meta: driver.Meta{StoreID: "store", Incarnation: "inc"}}
+	svc, err := New(store, &testLease{lost: make(chan struct{})}, Config{
+		Views:            savedViewMap{"issues": {Filter: &Filter{Types: []string{"issue"}}}},
+		OntologyRevision: model.Natural64(1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := svc.WatchBinding(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, "issues")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(binding.Filter.BeadTypes) != 1 || binding.Filter.BeadTypes[0] != "issue" || len(binding.Filter.Types) != 0 {
+		t.Fatalf("bead type membership=%+v", binding.Filter)
+	}
+}
+
+func TestWatchBindingRefusesUnrepresentableMembershipShapes(t *testing.T) {
+	store := &syntheticStore{meta: driver.Meta{StoreID: "store", Incarnation: "inc"}}
+	views := savedViewMap{
+		"query": {Filter: &Filter{Query: "status=open"}},
+		"group": {Filter: &Filter{}, GroupBy: []string{"type"}},
+	}
+	svc, err := New(store, &testLease{lost: make(chan struct{})}, Config{Views: views, OntologyRevision: model.Natural64(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"query", "group"} {
+		t.Run(id, func(t *testing.T) {
+			_, err := svc.WatchBinding(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, id)
+			var typed *model.Error
+			if !errors.As(err, &typed) || typed.Data.Code != "invalid_params" {
+				t.Fatalf("watch binding error=%T %v", err, err)
+			}
+		})
+	}
+	var _ coreevents.ViewResolver = svc
+}
+
+func TestRunConsumesPinnedReadinessAndProjectionStatus(t *testing.T) {
+	ref := model.RefByID("pending", model.Natural64(0))
+	body, err := json.Marshal(pipeline.Document{ID: ref.ID, Type: "issue", Project: "p", Fields: map[string]any{"status": "open"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &syntheticStore{
+		rows: []driver.Record{{Ref: ref, Kind: "bead", Revision: model.Natural64(1), Body: body}},
+		meta: driver.Meta{StoreID: "store", Incarnation: "inc", Head: model.Natural64(1)},
+	}
+	projection := coreevents.ProjectionStatus{
+		Binding:  "core",
+		Position: coreevents.Position{Incarnation: "inc", Revision: "1"},
+		Stalled:  true,
+		Failure:  &coreevents.Failure{Reason: "projection_failed", Attempts: 2},
+	}
+	var gotRefs []model.Ref
+	svc, err := New(store, &testLease{lost: make(chan struct{})}, Config{
+		AuthorizeRead: func(context.Context, model.PrincipalRef, model.ResourceRef, string) error { return nil },
+		Readiness: readinessFunc(func(_ context.Context, reader driver.Reader, refs []model.Ref) (map[string]ReadinessState, error) {
+			if reader.Snapshot().At == nil || len(refs) != 1 || refs[0].ID != ref.ID {
+				return nil, fmt.Errorf("readiness did not receive the pinned candidate snapshot")
+			}
+			gotRefs = append([]model.Ref(nil), refs...)
+			return map[string]ReadinessState{ref.ID: {Pending: true}, "outside": {Pending: true}}, nil
+		}),
+		ProjectionStatus: projectionStatusFunc(func(_ context.Context, binding string) (coreevents.ProjectionStatus, error) {
+			if binding != "core" {
+				return coreevents.ProjectionStatus{}, fmt.Errorf("unexpected projection binding %q", binding)
+			}
+			return projection, nil
+		}),
+		ProjectionBinding: "core",
+		OntologyRevision:  model.Natural64(1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.Run(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, RunRequest{
+		Definition: &Definition{Filter: &Filter{Types: []string{"issue"}}, Fields: []string{"id"}},
+		Project:    "p",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotRefs) != 1 || gotRefs[0].ID != ref.ID || len(result.Items) != 1 || !result.Items[0].ReadinessPending {
+		t.Fatalf("pinned readiness result=%+v refs=%+v", result.Items, gotRefs)
+	}
+	if result.Projection == nil || !result.Projection.Stalled || result.Projection.Failure == nil || result.Projection.Resume == nil || result.Projection.Resume.Position.Revision.String() != "1" {
+		t.Fatalf("projection status result=%+v", result.Projection)
+	}
+	result.Projection.Failure.Reason = "mutated-result"
+	if projection.Failure.Reason != "projection_failed" {
+		t.Fatalf("projection status was not copied: %+v", projection)
 	}
 }

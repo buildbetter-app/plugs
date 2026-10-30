@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -22,18 +24,25 @@ type pending struct {
 	revision model.Revision
 	deleted  bool
 	setBy    map[string]string
+	// allocatorPrefix/Expected are set only for IDs previewed from a
+	// transaction-capable restored allocator. The expected value is checked
+	// again after the allocator fact lock is acquired before publication.
+	allocatorPrefix   string
+	allocatorExpected string
 }
 
 type prepared struct {
-	snapshot *snapshotReader
-	writes   map[string]*pending
-	proposal port.ProposedChange
-	release  *claimReleaseMode
-	warnings []model.Warning
-	mutators []string
-	refs     []model.Ref
-	changed  map[string]bool
-	audit    *auditPlan
+	snapshot         *snapshotReader
+	writes           map[string]*pending
+	proposal         port.ProposedChange
+	release          *claimReleaseMode
+	warnings         []model.Warning
+	mutators         []string
+	refs             []model.Ref
+	changed          map[string]bool
+	audit            *auditPlan
+	allocatorCursors map[string]uint64
+	allocatorSeen    map[string]bool
 }
 
 func failure(code model.ErrorCode, message string) error {
@@ -119,7 +128,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	if _, err := snapshot.observe(ctx, []driver.LockKey{driver.OntologySentinelLock, driver.PluginsSentinelLock}); err != nil {
 		return nil, err
 	}
-	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}}
+	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}, allocatorCursors: map[string]uint64{}, allocatorSeen: map[string]bool{}}
 	aliases := map[string]model.Ref{}
 	slotRef := ""
 	if len(cs.Ops) == 0 {
@@ -156,7 +165,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 					return nil, failure("invalid_params", "duplicate create key")
 				}
 			}
-			id, e := w.cfg.newID()
+			project := c.Project
+			if project == "" {
+				project = meta.Project
+			}
+			id, allocatorPrefix, allocatorExpected, e := p.nextAllocatorID(ctx, project, w.cfg.newID)
 			if e != nil {
 				return nil, e
 			}
@@ -175,11 +188,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if snapshot.reads.states[key].Present {
 				return nil, errStale
 			}
-			project := c.Project
-			if project == "" {
-				project = meta.Project
-			}
-			current = &pending{ref: target, doc: Document{ID: id, Type: c.Type, Project: project, Fields: map[string]any{}}, setBy: map[string]string{}}
+			current = &pending{ref: target, doc: Document{ID: id, Type: c.Type, Project: project, Fields: map[string]any{}}, setBy: map[string]string{}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected}
 			p.writes[id] = current
 			if err = applyFields(current, c.Fields, "request"); err != nil {
 				return nil, err
@@ -358,6 +367,54 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 		return nil, err
 	}
 	return p, nil
+}
+
+// nextAllocatorID previews a restored sequential counter on the immutable
+// preparation snapshot. The matching allocator fact is upgraded to an update
+// lock in transact, where the expected ID is consumed atomically with records.
+// An absent capability or absent project state keeps the legacy random path;
+// an admitted but unsupported mode fails closed rather than inventing an ID.
+func (p *prepared) nextAllocatorID(ctx context.Context, project string, fallback func() (string, error)) (string, string, string, error) {
+	if project == "" {
+		id, err := fallback()
+		return id, "", "", err
+	}
+	reader, ok := p.snapshot.reader.(driver.AllocatorReader)
+	if !ok {
+		id, err := fallback()
+		return id, "", "", err
+	}
+	if !p.allocatorSeen[project] {
+		key, err := driver.AllocatorLock(project)
+		if err != nil {
+			return "", "", "", err
+		}
+		if _, err = p.snapshot.observe(ctx, []driver.LockKey{key}); err != nil {
+			return "", "", "", err
+		}
+		p.allocatorSeen[project] = true
+	}
+	state, err := reader.LoadAllocator(ctx, project)
+	if errors.Is(err, driver.ErrNotFound) {
+		id, fallbackErr := fallback()
+		return id, "", "", fallbackErr
+	}
+	if err != nil {
+		return "", "", "", err
+	}
+	if cursor, exists := p.allocatorCursors[project]; exists {
+		state.LastID = cursor
+	}
+	id, err := state.NextID()
+	if err != nil {
+		return "", "", "", err
+	}
+	if state.LastID == ^uint64(0) {
+		return "", "", "", fmt.Errorf("%w: allocator counter exhausted", driver.ErrUnsupported)
+	}
+	next := state.LastID + 1
+	p.allocatorCursors[project] = next
+	return id, project, id, nil
 }
 
 func applyFields(p *pending, fields map[string]any, setter string) error {
