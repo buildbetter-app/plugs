@@ -904,6 +904,12 @@
           "conventions": {
             "type": "object",
             "additionalProperties": true
+          },
+          "memories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Memory"
+            }
           }
         },
         "required": [
@@ -912,7 +918,8 @@
           "readyTop",
           "recentChanges",
           "ontologySummary",
-          "conventions"
+          "conventions",
+          "memories"
         ],
         "additionalProperties": false
       },

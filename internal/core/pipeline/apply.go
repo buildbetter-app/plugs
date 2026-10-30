@@ -146,22 +146,41 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 		w.observePhaseSince(preCtx, PhaseReplay, phaseStarted, nil)
 
 		phaseStarted = time.Now()
-		p, err := w.prepare(preCtx, reader, by, cs, meta, release)
+		var p *prepared
+		if memoryMethod(meta.Method) {
+			p, err = w.prepareMemory(preCtx, reader, by, cs, meta)
+		} else {
+			p, err = w.prepare(preCtx, reader, by, cs, meta, release)
+		}
 		w.observePhaseSince(preCtx, PhasePrepare, phaseStarted, err)
-		if err == nil {
-			phaseStarted = time.Now()
-			err = w.pre(preCtx, p)
-			w.observePhaseSince(preCtx, PhasePre, phaseStarted, err)
-		}
-		if err == nil {
-			phaseStarted = time.Now()
-			err = p.graph(preCtx)
-			w.observePhaseSince(preCtx, PhaseGraph, phaseStarted, err)
-		}
-		if err == nil {
-			phaseStarted = time.Now()
-			err = w.claims(p, by, meta)
-			w.observePhaseSince(preCtx, PhaseClaims, phaseStarted, err)
+		if memoryMethod(meta.Method) {
+			if err == nil {
+				// Memory records are outside bead ontology, graph and lease
+				// maintenance, but the Writer's authorization boundary still
+				// applies to the exact proposed change.
+				phaseStarted = time.Now()
+				err = w.authorize(preCtx, port.AuthorizeBefore, p.proposal, p.snapshot)
+				if err == nil {
+					err = w.authorize(preCtx, port.AuthorizeAfter, p.proposal, p.snapshot)
+				}
+				w.observePhaseSince(preCtx, PhasePre, phaseStarted, err)
+			}
+		} else {
+			if err == nil {
+				phaseStarted = time.Now()
+				err = w.pre(preCtx, p)
+				w.observePhaseSince(preCtx, PhasePre, phaseStarted, err)
+			}
+			if err == nil {
+				phaseStarted = time.Now()
+				err = p.graph(preCtx)
+				w.observePhaseSince(preCtx, PhaseGraph, phaseStarted, err)
+			}
+			if err == nil {
+				phaseStarted = time.Now()
+				err = w.claims(p, by, meta)
+				w.observePhaseSince(preCtx, PhaseClaims, phaseStarted, err)
+			}
 		}
 		if err == nil {
 			phaseStarted = time.Now()
@@ -325,7 +344,11 @@ func (w *Writer) replayReceipt(ctx context.Context, reader driver.Reader, entry 
 		if i >= len(cs.Ops) {
 			return model.Commit{}, failure("internal_error", "stored response does not match original request")
 		}
-		p.Changes = append(p.Changes, port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: result.Ref}, Op: cs.Ops[i], After: result.Record, SetBy: result.SetBy})
+		kind := "bead"
+		if memoryMethod(meta.Method) {
+			kind = "memory"
+		}
+		p.Changes = append(p.Changes, port.Change{Resource: model.ResourceRef{Kind: kind, Ref: result.Ref}, Op: cs.Ops[i], After: result.Record, SetBy: result.SetBy})
 	}
 	snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}}
 	if err := w.authorize(ctx, port.AuthorizeReplay, p, snapshot); err != nil {
@@ -343,7 +366,7 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 			result.Revision = pending.revision
 		}
 		if !pending.deleted && meta.Return != "minimal" {
-			body, err := json.Marshal(pending.doc)
+			body, err := pending.body()
 			if err != nil {
 				return model.Commit{}, err
 			}
@@ -478,11 +501,11 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		if pending.deleted {
 			err = tx.Delete(ctx, pending.ref)
 		} else {
-			body, e := json.Marshal(pending.doc)
+			body, e := pending.body()
 			if e != nil {
 				return model.Commit{}, e
 			}
-			err = tx.Put(ctx, driver.Record{Ref: pending.ref, Kind: "bead", Body: body})
+			err = tx.Put(ctx, driver.Record{Ref: pending.ref, Kind: pending.kind, Body: body})
 		}
 		if err != nil {
 			return model.Commit{}, err

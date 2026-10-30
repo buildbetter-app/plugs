@@ -274,6 +274,8 @@ internal/core/service/gate.go
 internal/core/service/graph.go
 internal/core/service/history.go
 internal/core/service/history_reads_test.go
+internal/core/service/history_sqlite_rpc_test.go
+internal/core/service/memories.go
 internal/core/service/ontology.go
 internal/core/service/reads.go
 internal/core/service/rpc_reads.go
@@ -416,9 +418,14 @@ internal/integration/viewpermissions/viewpermissions_test.go
 internal/integration/watchsql/BUILD.bazel
 internal/integration/watchsql/integration_test.go
 internal/integration/webacceptance/BUILD.bazel
+internal/integration/webacceptance/E3.md
 internal/integration/webacceptance/README.md
 internal/integration/webacceptance/browser_check.mjs
 internal/integration/webacceptance/browser_test.go
+internal/integration/webacceptance/e3_browser_check.mjs
+internal/integration/webacceptance/e3_browser_test.go
+internal/integration/webacceptance/e3_corpus_test.go
+internal/integration/webacceptance/e3_host_test.go
 internal/integration/webacceptance/fixture_test.go
 internal/integration/webacceptance/web_test.go
 internal/plugins/authnapikey/BUILD.bazel
@@ -779,6 +786,11 @@ spec/recorded/goldens_test.go
 spec/recorded/provenance.py
 spec/recorded_test.go
 spec/rpc_test.go
+spikes/authz/evidence-v6/current-status.md
+spikes/authz/evidence-v6/postgres-result.json
+spikes/authz/evidence-v6/provenance-manifest.json
+spikes/authz/evidence-v6/readout.md
+spikes/authz/evidence-v6/sqlite-result.json
 spikes/runtime/BUILD.bazel
 spikes/runtime/README.md
 spikes/runtime/abi.go
