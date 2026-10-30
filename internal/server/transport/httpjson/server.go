@@ -25,13 +25,25 @@ type Server struct {
 // The caller starts Serve and owns shutdown. ctx is the request lifetime root;
 // canceling it cancels handlers, while Shutdown/Close also release sockets.
 func (h *Handler) Listen(ctx context.Context, address string, tlsConfig *tls.Config) (*Server, error) {
+	return h.ListenHandler(ctx, address, tlsConfig, h)
+}
+
+// ListenHandler is the shared-server composition seam. It keeps the admitted
+// JSON-RPC handler as the authority for /rpc/v1 while allowing a composition
+// root to mount sibling, already-admitted handlers such as the embedded UI or
+// a watch stream on the same listener. The supplied root must route requests
+// deliberately; this method never widens HTTP admission.
+func (h *Handler) ListenHandler(ctx context.Context, address string, tlsConfig *tls.Config, root http.Handler) (*Server, error) {
+	if root == nil {
+		return nil, errors.New("httpjson: root handler is required")
+	}
 	listener, err := h.authn.Listen(ctx, address, tlsConfig)
 	if err != nil {
 		return nil, err
 	}
 	base, cancel := context.WithCancel(ctx)
 	server := &http.Server{
-		Handler:           h,
+		Handler:           root,
 		ReadHeaderTimeout: h.cfg.ReadHeaderTimeout,
 		ReadTimeout:       h.cfg.ReadTimeout,
 		WriteTimeout:      h.cfg.WriteTimeout,
