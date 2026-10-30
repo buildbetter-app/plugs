@@ -63,6 +63,9 @@ jobs:
             (github.event.pull_request.head.repo.full_name == github.repository &&
              github.actor != 'dependabot[bot]') }}
     steps:
+      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+        if: env.RUNSON_TRUSTED == 'true'
+
       - name: Prepare smoke evidence
         env:
           SMOKE_EVIDENCE_DIR: ${{ runner.temp }}/plug-runs-on-evidence
@@ -76,9 +79,6 @@ jobs:
             echo "trusted=${RUNSON_TRUSTED}"
             echo "runner_class=${{ matrix.runner }}"
           } | tee "$SMOKE_EVIDENCE_DIR/run-context.log"
-
-      - uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
-        if: env.RUNSON_TRUSTED == 'true'
 
       - name: Checkout exact revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
