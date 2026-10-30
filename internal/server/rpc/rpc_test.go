@@ -78,6 +78,68 @@ func requireCode(t *testing.T, response map[string]any, code string) {
 	}
 }
 
+func TestCurrentIncarnationResolvesAfterAdmissionForEveryBatchCall(t *testing.T) {
+	current, lookups := "before-restore", 0
+	type requestKey struct{}
+	ctx := context.WithValue(context.Background(), requestKey{}, "same-request")
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	r := registry(t)
+	if err := r.Register("bead.ready", func(context.Context, rpc.Call) (any, error) {
+		t.Fatal("unadmitted request reached handler")
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register("bead.create", func(context.Context, rpc.Call) (any, error) {
+		current = "after-restore"
+		return commitResult(), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := server(t, r, rpc.Config{Incarnation: "startup", AuthMode: "authenticated", CurrentIncarnation: func(ctx context.Context) (string, error) {
+		lookups++
+		if ctx.Value(requestKey{}) != "same-request" {
+			t.Fatal("provider lost request context")
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("provider ran before deadline admission")
+		}
+		return current, nil
+	}})
+	deadline := `{}`
+	batch := []byte(`[` + string(request("server.hello", deadline)) + `,` + string(request("bead.create", `{"type":"task","fields":{},"_meta":{"idempotencyKey":"11111111111111111111111111111111"}}`)) + `,` + string(request("server.hello", deadline)) + `]`)
+	var responses []map[string]any
+	if err := json.Unmarshal(s.Dispatch(rpc.WithPrincipal(ctx, model.PrincipalRef{Kind: "user", ID: "actual"}), batch), &responses); err != nil {
+		t.Fatal(err)
+	}
+	if len(responses) != 3 || result(t, responses[0])["incarnation"] != "before-restore" || result(t, responses[2])["incarnation"] != "after-restore" || lookups != 2 {
+		t.Fatalf("batch retained one generation or unrelated call read metadata: lookups=%d %v", lookups, responses)
+	}
+	// Schema/auth/deadline failures must not invoke the metadata provider.
+	for _, tc := range []struct{ method, params, code string }{
+		{"bead.ready", `{}`, "unauthenticated"},
+		{"bead.ready", `{"limit":"invalid"}`, "invalid_params"},
+	} {
+		requireCode(t, call(t, s, ctx, tc.method, tc.params), tc.code)
+	}
+	cancelled, stop := context.WithCancel(rpc.WithPrincipal(ctx, model.PrincipalRef{Kind: "user", ID: "actual"}))
+	stop()
+	value, err := wire.DecodeJSON(s.Dispatch(cancelled, request("bead.ready", `{}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireCode(t, value.(map[string]any), "busy")
+	if lookups != 2 {
+		t.Fatal("provider ran before request admission")
+	}
+	// With no provider, startup-only compositions retain their existing hello.
+	static := server(t, registry(t), rpc.Config{Incarnation: "static-incarnation"})
+	if result(t, call(t, static, context.Background(), "server.hello", `{}`))["incarnation"] != "static-incarnation" {
+		t.Fatal("static composition changed")
+	}
+}
+
 func TestTransportErrorsUseCanonicalEnvelope(t *testing.T) {
 	r := registry(t)
 	s := server(t, r, rpc.Config{})
@@ -378,6 +440,11 @@ func (p *serviceProbe) ClaimWithOutcome(ctx context.Context, by model.PrincipalR
 	expires, ttl := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC), model.Natural64(30000)
 	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(11), LeaseExpiresAt: &expires, LeaseTtlMs: &ttl}}, p.failure
 }
+func (p *serviceProbe) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRef, r service.ClaimNextRequest, m model.WriteMeta) (*port.WriteOutcome, error) {
+	p.record("claimNext", by, r, m)
+	expires, ttl := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC), model.Natural64(30000)
+	return &port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(14), LeaseExpiresAt: &expires, LeaseTtlMs: &ttl}}, p.failure
+}
 func (p *serviceProbe) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, r service.CommentRequest, m model.WriteMeta) (port.WriteOutcome, error) {
 	p.record("comment", by, r, m)
 	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(12)}}, p.failure
@@ -502,6 +569,10 @@ func TestServiceBindingsAtByteBoundary(t *testing.T) {
 			t.Fatalf("unexpected %s result: %+v", tc.method, got)
 		}
 	}
+	claimNext := result(t, call(t, s, ctx, "bead.claimNext", `{"filter":{"types":["task"]},`+meta+`}`))
+	if p.method != "claimNext" || p.meta.Method != "bead.claimNext" || p.request.(service.ClaimNextRequest).Project != "default" || claimNext["leaseTtlMs"] != json.Number("30000") || claimNext["leaseExpiresAt"] != "2026-10-29T12:00:00Z" {
+		t.Fatalf("claimNext mapping or flattened lease result changed: request=%+v result=%v", p.request, claimNext)
+	}
 	p.failure = &model.Error{Data: model.ErrorData{Code: "precondition_failed", Details: map[string]any{"reason": "revision"}}}
 	requireCode(t, call(t, s, ctx, "bead.close", `{"id":{"id":"p-1"},`+meta+`}`), "precondition_failed")
 }
@@ -544,4 +615,61 @@ func TestTransactionBindingCompositionsRemainExclusive(t *testing.T) {
 			t.Fatalf("failed standalone binding mutated descriptors: before=%v after=%v", before, after)
 		}
 	})
+}
+
+func TestRealClaimNextTerminalReceiptReplayAtByteBoundary(t *testing.T) {
+	s, post, _, _ := realServiceServer(t)
+	ctx := context.Background()
+	head := func() any {
+		return result(t, call(t, s, ctx, "bead.ready", `{}`))["asOf"].(map[string]any)["revision"]
+	}
+	if head() != json.Number("0") {
+		t.Fatal("fixture is not empty")
+	}
+	params := writeParams(t, map[string]any{"filter": map[string]any{"types": []string{"issue", "issue"}}})
+	checkNull := func(replayed bool) {
+		t.Helper()
+		reply := call(t, s, ctx, "bead.claimNext", paramsJSON(t, params))
+		if value, ok := reply["result"]; !ok || value != nil || reply["error"] != nil {
+			t.Fatalf("expected terminal JSON null: %v", reply)
+		}
+		meta, present := reply["_meta"].(map[string]any)
+		if replayed && (!present || meta["replayed"] != true) || !replayed && present {
+			t.Fatalf("terminal null replay metadata (want %t): %v", replayed, reply)
+		}
+	}
+	checkNull(false)
+	if head() != json.Number("1") || post.calls != 0 {
+		t.Fatal("empty receipt must advance H+1 without graph/post effects")
+	}
+	// The normalized selector replays the same durable receipt.
+	params["filter"] = map[string]any{"types": []string{"issue"}}
+	checkNull(true)
+	if head() != json.Number("1") {
+		t.Fatal("empty replay advanced head")
+	}
+	created := writeResult(t, s, "bead.create", writeParams(t, map[string]any{
+		"type": "issue", "fields": map[string]any{"title": "Ready after the terminal receipt"},
+	}), false)
+	ref := createdRef(t, created)
+	before, calls := head(), post.calls
+	checkNull(true)
+	ready := result(t, call(t, s, ctx, "bead.ready", `{}`))["items"].([]any)
+	if head() != before || post.calls != calls || len(ready) != 1 || ready[0].(map[string]any)["id"] != ref["id"] {
+		t.Fatal("empty replay claimed a later-ready bead or changed durable state")
+	}
+	params["filter"] = map[string]any{"types": []string{"task"}}
+	requireCode(t, call(t, s, ctx, "bead.claimNext", paramsJSON(t, params)), "idempotency_key_reused")
+	params["filter"] = map[string]any{"types": []string{"issue"}}
+	params["viewId"] = "different-view"
+	requireCode(t, call(t, s, ctx, "bead.claimNext", paramsJSON(t, params)), "idempotency_key_reused")
+	delete(params, "viewId")
+	if head() != before {
+		t.Fatal("changed selector mutated the queue")
+	}
+	// A new key can claim the row that the earlier durable null must ignore.
+	claimed := writeResult(t, s, "bead.claimNext", writeParams(t, map[string]any{"filter": map[string]any{"types": []string{"issue"}}}), false)
+	if claimed["results"].([]any)[0].(map[string]any)["ref"].(map[string]any)["id"] != ref["id"] || claimed["leaseTtlMs"] != json.Number("300000") {
+		t.Fatalf("real claimNext did not dispatch to the shared writer: %v", claimed)
+	}
 }

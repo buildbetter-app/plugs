@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -1047,6 +1048,229 @@ func TestReadyContinuationAllowsListShrinkAndRejectsOtherIncarnation(t *testing.
 	position.AsOf.Incarnation = "another-store"
 	_, err = f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Position: &position})
 	wantCode(t, err, "incarnation_changed")
+}
+
+func TestClaimNextContinuationRestartsAfterFreshSnapshotRevision(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	firstID, _ := create(t, f, "First")
+	secondID, _ := create(t, f, "Second")
+	first, err := f.svc.ClaimNextReadyPage(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1})
+	if err != nil || len(first.Items) != 1 || first.Next == nil {
+		t.Fatalf("first claimNext page: %+v %v", first, err)
+	}
+	claimedFirst := model.RefByID(first.Items[0].ID, model.Natural64(0))
+	remainingID := firstID
+	if claimedFirst.ID == firstID.ID {
+		remainingID = secondID
+	}
+	if _, err := f.svc.Close(ctx, anonymous, CloseRequest{ID: claimedFirst}, meta(t)); err != nil {
+		t.Fatal(err)
+	}
+	second, err := f.svc.ClaimNextReadyPage(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1, Position: first.Next})
+	if err != nil || len(second.Items) != 1 || second.Items[0].ID != remainingID.ID {
+		t.Fatalf("claimNext continuation skipped after revision change: %+v %v", second, err)
+	}
+}
+
+type unboundedQueryReader struct {
+	records []driver.Record
+}
+
+func (r unboundedQueryReader) Query(_ context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	start := 0
+	if q.Cursor != nil {
+		value, err := q.Cursor.Index.Int64()
+		if err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		start = int(value)
+	}
+	end := start + q.Limit
+	if end > len(r.records) {
+		end = len(r.records)
+	}
+	page := driver.Page[driver.Record]{Items: r.records[start:end]}
+	if end < len(r.records) {
+		page.NextCursor = &driver.Cursor{Index: model.Natural64(uint64(end))}
+	}
+	return page, nil
+}
+
+func TestScanBeadsTraversesBeyondTheFormerQueueCap(t *testing.T) {
+	const count = 20001
+	records := make([]driver.Record, 0, count)
+	for i := 0; i < count; i++ {
+		id := fmt.Sprintf("bead-%05d", i)
+		doc := pipeline.Document{ID: id, Type: "issue", Project: "local", Fields: map[string]any{"status": "todo"}}
+		body, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, driver.Record{Ref: model.RefByID(id, model.Natural64(0)), Kind: "bead", Body: body})
+	}
+	graph, err := scanBeads(context.Background(), unboundedQueryReader{records: records})
+	if err != nil || len(graph) != count {
+		t.Fatalf("uncapped graph walk returned %d/%d records: %v", len(graph), count, err)
+	}
+}
+
+func TestClaimNextRaceOnlySkipsCandidateBusy(t *testing.T) {
+	if !claimNextRace(&model.Error{Message: "bead already has a live claim", Data: model.ErrorData{Code: "busy"}}) {
+		t.Fatal("candidate live-lease race was not skippable")
+	}
+	for _, err := range []error{
+		&model.Error{Data: model.ErrorData{Code: "busy", Hint: "write pre phases exceeded their deadline"}},
+		&model.Error{Data: model.ErrorData{Code: "busy", Hint: "active storage lease was lost"}},
+		&model.Error{Data: model.ErrorData{Code: "write_conflict"}},
+		&model.Error{Data: model.ErrorData{Code: "lease_not_held"}},
+		&model.Error{Data: model.ErrorData{Code: "lease_expired"}},
+	} {
+		if claimNextRace(err) {
+			t.Fatalf("global queue error was incorrectly skippable: %v", err)
+		}
+	}
+}
+
+// The hook commits through the real writer after selection/preparation and
+// before the queue transaction opens. No candidate or receipt is fabricated.
+type claimNextRaceStore struct {
+	*memory.Store
+	beforeWrite func()
+	writeError  error
+	probes      int
+}
+
+func (s *claimNextRaceStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	if hook := s.beforeWrite; hook != nil {
+		s.beforeWrite = nil
+		hook()
+	}
+	if s.writeError != nil {
+		return nil, s.writeError
+	}
+	tx, err := s.Store.Write(ctx, lease)
+	if err != nil {
+		return nil, err
+	}
+	return &claimNextRaceTx{WriteTx: tx, store: s}, nil
+}
+
+type claimNextRaceTx struct {
+	driver.WriteTx
+	store   *claimNextRaceStore
+	hasHead bool
+}
+
+func (tx *claimNextRaceTx) Head(ctx context.Context) (model.Revision, error) {
+	head, err := tx.WriteTx.Head(ctx)
+	tx.hasHead = err == nil
+	return head, err
+}
+
+func (tx *claimNextRaceTx) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	if !tx.hasHead {
+		return driver.Page[driver.Record]{}, errors.New("terminal ready probe ran before Head")
+	}
+	tx.store.probes++
+	return tx.WriteTx.Query(ctx, q)
+}
+
+func claimNextRaceService(f *fixture, store *claimNextRaceStore) *Service {
+	clock := func() time.Time { return f.now }
+	o := f.svc.ontology
+	w := pipeline.New(store, f.lease, pipeline.WithOntology(o), pipeline.WithClock(clock))
+	return New(store, f.lease, w, WithOntology(o), WithClock(clock))
+}
+
+func TestClaimNextAdvancesPastRealCandidateLeaseRace(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	create(t, f, "First")
+	create(t, f, "Second")
+	page, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local"})
+	if err != nil || len(page.Items) != 2 {
+		t.Fatalf("ready candidates=%+v err=%v", page, err)
+	}
+	first := model.RefByID(page.Items[0].ID, model.Natural64(0))
+	other := model.PrincipalRef{Kind: "user", ID: "competing-worker"}
+	store := &claimNextRaceStore{Store: f.store, beforeWrite: func() {
+		if _, err := f.svc.ClaimWithOutcome(ctx, other, ClaimRequest{ID: first}, meta(t)); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	out, err := claimNextRaceService(f, store).ClaimNextWithOutcome(ctx, anonymous, ClaimNextRequest{Project: "local"}, meta(t))
+	if err != nil || out == nil || out.NullResult || len(out.Commit.Results) != 1 || out.Commit.Results[0].Ref.ID != page.Items[1].ID {
+		t.Fatalf("candidate busy did not advance to the next real claim: out=%+v err=%v", out, err)
+	}
+	got, err := f.svc.Get(ctx, anonymous, GetRequest{ID: first})
+	if err != nil || got.Lease == nil || got.Lease.Principal.Kind != other.Kind || got.Lease.Principal.ID != other.ID {
+		t.Fatalf("competing claim was overwritten: %+v err=%v", got, err)
+	}
+}
+
+func TestClaimNextRestartsWhenCandidateAppearsBeforeHead(t *testing.T) {
+	f := setup(t)
+	var created model.Ref
+	store := &claimNextRaceStore{Store: f.store, beforeWrite: func() {
+		created, _ = create(t, f, "Ready after the live walks")
+	}}
+	ctx := context.Background()
+	m := meta(t)
+	out, err := claimNextRaceService(f, store).ClaimNextWithOutcome(ctx, anonymous, ClaimNextRequest{Project: "local"}, m)
+	if err != nil || out == nil || out.NullResult || len(out.Commit.Results) != 1 || out.Commit.Results[0].Ref.ID != created.ID || out.Commit.Revision.String() != "2" {
+		t.Fatalf("post-head terminal probe missed a newly ready candidate: out=%+v err=%v", out, err)
+	}
+	if store.probes == 0 {
+		t.Fatal("terminal path did not query through the acquired transaction head")
+	}
+	state, err := f.store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := f.store.Read(ctx, driver.View{Incarnation: state.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	principal, _ := driver.PrincipalKey(anonymous)
+	receipt, err := reader.IdempotencyByKey(ctx, principal, m.AgentLabel, "bead.claimNext", m.IdempotencyKey)
+	if err != nil || receipt == nil || len(receipt.Changeset.Changes) != 1 || receipt.Commit.Revision.String() != "2" {
+		t.Fatalf("stale empty result was committed: receipt=%+v err=%v", receipt, err)
+	}
+}
+
+func TestClaimNextGlobalErrorsNeverBecomeNullReceipts(t *testing.T) {
+	for _, candidates := range []bool{false, true} {
+		for _, code := range []model.ErrorCode{"busy", "write_conflict", "lease_not_held", "lease_expired"} {
+			t.Run(fmt.Sprintf("candidates=%t/%s", candidates, code), func(t *testing.T) {
+				f := setup(t)
+				if candidates {
+					create(t, f, "Must remain ready")
+				}
+				ctx := context.Background()
+				before, _ := f.store.Meta(ctx)
+				failure := &model.Error{Data: model.ErrorData{Code: code, Hint: "global storage failure"}}
+				store := &claimNextRaceStore{Store: f.store, writeError: failure}
+				m := meta(t)
+				out, err := claimNextRaceService(f, store).ClaimNextWithOutcome(ctx, anonymous, ClaimNextRequest{Project: "local"}, m)
+				if out != nil || !errors.Is(err, failure) {
+					t.Fatalf("global error changed to a terminal outcome: out=%+v err=%v", out, err)
+				}
+				after, _ := f.store.Meta(ctx)
+				reader, err := f.store.Read(ctx, driver.View{Incarnation: after.Incarnation})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer reader.Close()
+				principal, _ := driver.PrincipalKey(anonymous)
+				receipt, err := reader.IdempotencyByKey(ctx, principal, m.AgentLabel, "bead.claimNext", m.IdempotencyKey)
+				if err != nil || receipt != nil || after.Head.String() != before.Head.String() {
+					t.Fatalf("failed queue attempt persisted a receipt/head: receipt=%+v before=%s after=%s err=%v", receipt, before.Head, after.Head, err)
+				}
+			})
+		}
+	}
 }
 
 func TestKernelFieldsAndSameValueStatusRefuseBeforeCommit(t *testing.T) {

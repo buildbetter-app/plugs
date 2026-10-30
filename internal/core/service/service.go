@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -155,7 +156,11 @@ func (s *Service) Claim(ctx context.Context, by model.PrincipalRef, req ClaimReq
 }
 
 func (s *Service) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
-	v, err := s.claim(ctx, by, req, meta, true)
+	method := ""
+	if meta.Method == "bead.claimNext" {
+		method = meta.Method
+	}
+	v, err := s.claimWithMethod(ctx, by, req, meta, true, method)
 	if err != nil {
 		return port.WriteOutcome{}, err
 	}
@@ -164,13 +169,182 @@ func (s *Service) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, r
 }
 
 func (s *Service) claim(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	return s.claimWithMethod(ctx, by, req, meta, outcomeRequired, "")
+}
+
+// ClaimNextWithOutcome walks the live ready set and lowers the first candidate
+// through the same claim pipeline as bead.claim. A candidate can disappear or
+// lose its claim race while the queue is being walked; those ordinary races
+// advance to the next candidate. NullResult retains the cataloged JSON-null
+// outcome and its replay metadata when the ready set is empty at commit.
+func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta) (*port.WriteOutcome, error) {
+	if err := s.admit(ctx, by); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(req.Project) == "" {
+		return nil, failure("project_required", "supply a project")
+	}
+	identity, err := ClaimNextRequestIdentity(req)
+	if err != nil {
+		return nil, failure("invalid_params", "invalid claimNext selector")
+	}
+	meta.ClaimNextIdentity = identity
+	meta.Method = "bead.claimNext"
+	if by.Kind != "anonymous" {
+		meta.AgentLabel = ""
+	} else if meta.AgentLabel == "" {
+		meta.AgentLabel = meta.Agent
+	}
+
+	// A successful claim has a durable receipt under the claimNext method. On a
+	// retry after the bead is no longer ready, recover its target and re-enter
+	// the ordinary pipeline so replay authorization remains current.
+	if meta.IdempotencyKey != "" {
+		principal, err := driver.PrincipalKey(by)
+		if err != nil {
+			return nil, failure("invalid_params", "invalid principal")
+		}
+		reader, err := s.reader(ctx, by, nil)
+		if err != nil {
+			return nil, err
+		}
+		entry, lookupErr := reader.IdempotencyByKey(ctx, principal, meta.AgentLabel, "bead.claimNext", meta.IdempotencyKey)
+		_ = reader.Close()
+		if lookupErr != nil {
+			return nil, mapped(lookupErr)
+		}
+		if entry != nil && len(entry.Commit.Results) > 0 {
+			id := entry.Commit.Results[0].Ref
+			out, claimErr := s.claimWithMethod(ctx, by, ClaimRequest{ID: id}, meta, true, "bead.claimNext")
+			if claimErr != nil {
+				return nil, claimErr
+			}
+			return &out, nil
+		}
+		if entry != nil {
+			// A stored null is terminal for this exact selector. Replay must not
+			// probe today's ready set and accidentally claim a later candidate.
+			out, err := s.CommitClaimNextEmpty(ctx, by, req, meta, nil)
+			if err != nil {
+				return nil, err
+			}
+			out.NullResult = true
+			return &out, nil
+		}
+	}
+
+	position := (*PagePosition)(nil)
+	fresh := false
+	for {
+		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position})
+		if err != nil {
+			return nil, err
+		}
+		for _, bead := range page.Items {
+			out, claimErr := s.claimWithMethod(ctx, by, ClaimRequest{ID: model.RefByID(bead.ID, model.Natural64(0))}, meta, true, "bead.claimNext")
+			if claimErr == nil {
+				return &out, nil
+			}
+			if !claimNextRace(claimErr) {
+				return nil, claimErr
+			}
+		}
+		if page.Next == nil {
+			if !fresh {
+				// The queue is live. Re-run the complete selection from a new
+				// snapshot before recording a terminal null, so a bead that became
+				// ready while the first walk was finishing is not missed.
+				fresh = true
+				position = nil
+				continue
+			}
+			out, err := s.CommitClaimNextEmpty(ctx, by, req, meta, s.claimNextReadyProbe(req))
+			if err != nil {
+				if errors.Is(err, port.ErrClaimNextReady) {
+					fresh = false
+					position = nil
+					continue
+				}
+				return nil, err
+			}
+			out.NullResult = true
+			return &out, nil
+		}
+		position = page.Next
+	}
+}
+
+// claimNextReadyProbe observes the complete ready set on the transaction's
+// post-head snapshot. It is deliberately separate from the live walk so the
+// transaction can release and restart if a candidate appeared in between.
+func (s *Service) claimNextReadyProbe(req ClaimNextRequest) port.ClaimNextReadyProbe {
+	return func(ctx context.Context, reader driver.Reader) (bool, error) {
+		items, err := s.ReadyCandidates(ctx, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter}, reader)
+		return len(items) != 0, err
+	}
+}
+
+// CommitClaimNextEmpty is the narrow guarded-service seam for a terminal
+// claimNext selection. It records a durable H+1 receipt only after the
+// supplied transaction-level probe observes no ready candidate. A nil probe
+// is reserved for replay of an already durable empty receipt.
+func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta, probe port.ClaimNextReadyProbe) (port.WriteOutcome, error) {
+	if err := s.admit(ctx, by); err != nil {
+		return port.WriteOutcome{}, err
+	}
+	if strings.TrimSpace(req.Project) == "" {
+		return port.WriteOutcome{}, failure("project_required", "supply a project")
+	}
+	identity, err := ClaimNextRequestIdentity(req)
+	if err != nil {
+		return port.WriteOutcome{}, failure("invalid_params", "invalid claimNext selector")
+	}
+	meta.ClaimNextIdentity = identity
+	meta.Method = "bead.claimNext"
+	if by.Kind != "anonymous" {
+		meta.AgentLabel = ""
+	} else if meta.AgentLabel == "" {
+		meta.AgentLabel = meta.Agent
+	}
+	writer, ok := s.writer.(interface {
+		ApplyClaimNextEmpty(context.Context, model.PrincipalRef, model.ChangeSet, model.WriteMeta, port.ClaimNextReadyProbe) (port.WriteOutcome, error)
+	})
+	if !ok {
+		return port.WriteOutcome{}, failure("internal_error", "writer does not support claimNext terminal probes")
+	}
+	out, err := writer.ApplyClaimNextEmpty(ctx, by, model.ChangeSet{Ops: []model.Op{}}, meta, probe)
+	return out, mapped(err)
+}
+
+func claimNextRace(err error) bool {
+	var value *model.Error
+	if !errors.As(err, &value) {
+		return false
+	}
+	switch value.Data.Code {
+	case "forbidden", "not_found", "precondition_failed", "ontology_guard_failed":
+		return true
+	case "busy":
+		// Only a candidate's live-lease race is skippable. Pre-phase timeout,
+		// active-store lease loss and every other busy condition remain a wire
+		// error rather than being converted into terminal null.
+		return value.Message == "bead already has a live claim"
+	default:
+		return false
+	}
+}
+
+func (s *Service) claimWithMethod(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta, outcomeRequired bool, method string) (port.WriteOutcome, error) {
 	if err := namedRef(req.ID); err != nil {
 		return port.WriteOutcome{}, err
 	}
 	// Slot normalization belongs after the pipeline's idempotency lookup. This
 	// stable request replays even after the current bead has changed status.
 	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: req.ID, Fields: map[string]any{}}}}, Expect: req.Expect}
-	return s.apply(ctx, by, "bead.claim", cs, meta, outcomeRequired)
+	if method == "" {
+		method = "bead.claim"
+	}
+	return s.apply(ctx, by, method, cs, meta, outcomeRequired)
 }
 
 func claimResult(v model.Commit) (ClaimResult, error) {

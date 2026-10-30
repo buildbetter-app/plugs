@@ -65,6 +65,7 @@ type LocalConfig struct {
 
 type Local struct {
 	Client     *client.Client
+	server     *rpc.Server
 	cancel     context.CancelFunc
 	done       chan struct{}
 	lease      driver.ActiveLease
@@ -145,10 +146,17 @@ func OpenLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 	if err != nil {
 		return fail(err)
 	}
-	server, err := rpc.New(registry, rpc.Config{Incarnation: meta.Incarnation, DefaultProject: cfg.Project})
+	server, err := rpc.New(registry, rpc.Config{
+		Incarnation: meta.Incarnation, DefaultProject: cfg.Project,
+		CurrentIncarnation: func(ctx context.Context) (string, error) {
+			current, err := store.Meta(ctx)
+			return current.Incarnation, err
+		},
+	})
 	if err != nil {
 		return fail(err)
 	}
+	l.server = server
 	l.Client, err = client.New(inprocess.New(server), cfg.Project, cfg.Agent)
 	if err != nil {
 		return fail(err)

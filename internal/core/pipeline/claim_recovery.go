@@ -34,7 +34,7 @@ func (w *Writer) ApplyClaimRelease(ctx context.Context, by model.PrincipalRef, r
 		ops = append(ops, model.Op{Kind: model.OpComment, Comment: &model.CommentOp{Target: ref, Body: reason}})
 	}
 	mode := &claimReleaseMode{reclaim: by.Kind == "system" && by.ID == "core"}
-	return w.applyWithOutcome(ctx, by, model.ChangeSet{Ops: ops}, meta, mode)
+	return w.applyWithOutcome(ctx, by, model.ChangeSet{Ops: ops}, meta, mode, nil)
 }
 
 func (w *Writer) checkClaimRelease(doc Document, by model.PrincipalRef, meta model.WriteMeta, mode *claimReleaseMode) error {
