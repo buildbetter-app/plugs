@@ -263,7 +263,7 @@ func TestExecutableSQLiteServerRemoteLifecycleAndRestart(t *testing.T) {
 	defer stream.close()
 	updated := sqliteRestartRPC(t, endpoint, "", "bead.update", map[string]any{
 		"id": map[string]any{"id": keyedID}, "fields": map[string]any{"title": "live after restart"},
-		"_meta": sqliteRestartMeta("45b44a061aeb4ba6a128fe2e640255b"),
+		"_meta": sqliteRestartMeta("45b44a061aeb4ba6a128fe2e640255b4"),
 	})
 	var live model.Commit
 	if err := json.Unmarshal(updated.result(t), &live); err != nil {
