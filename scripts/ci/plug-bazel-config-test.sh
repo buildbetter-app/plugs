@@ -5,12 +5,14 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 workflow=.github/workflows/plug-bazel.yml
+remote_workflow=.github/workflows/plug-remote-bazel.yml
 targets=scripts/ci/plug-bazel-targets.sh
 target_tests=scripts/ci/plug-bazel-targets-test.sh
 collector=scripts/ci/plug-bazel-delivery.py
 delivery_tests=scripts/ci/plug-bazel-delivery-test.sh
 
 [[ -f "$workflow" ]] || { echo "config: missing $workflow" >&2; exit 1; }
+[[ -f "$remote_workflow" ]] || { echo "config: missing $remote_workflow" >&2; exit 1; }
 [[ -x "$targets" ]] || { echo "config: $targets is not executable" >&2; exit 1; }
 [[ -x "$target_tests" ]] || { echo "config: $target_tests is not executable" >&2; exit 1; }
 [[ -x "$collector" ]] || { echo "config: $collector is not executable" >&2; exit 1; }
@@ -19,13 +21,14 @@ bash -n "$targets"
 bash -n "$target_tests"
 bash -n "$delivery_tests"
 
-python3 - "$workflow" "$targets" "$collector" <<'PYTHON'
+python3 - "$workflow" "$targets" "$collector" "$remote_workflow" <<'PYTHON'
 from pathlib import Path
 import ast
 import re
 import sys
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
+remote_workflow = Path(sys.argv[4]).read_text(encoding="utf-8")
 targets = Path(sys.argv[2]).read_text(encoding="utf-8")
 collector = Path(sys.argv[3]).read_text(encoding="utf-8")
 ast.parse(collector)  # Syntax without writing a cache into the source tree.
@@ -39,7 +42,12 @@ required_workflow = {
     "name: Plug Bazel",
     "pull_request:",
     "workflow_dispatch:",
-    "runs-on: ubuntu-latest",
+    "format('runs-on={0}/runner=bb-x64-16', github.run_id)",
+    "runs-on/action@",
+    "RUNSON_TRUSTED",
+    "actions/setup-node@",
+    "node-version: 24",
+    "command -v google-chrome",
     "timeout-minutes: 45",
     "permissions:\n  contents: read",
     "actions/cache/restore@",
@@ -78,8 +86,8 @@ for name in ("Stop Bazel and finalize delivery bundle", "Upload Plug CI evidence
 if "|| true" in workflow_code or "|| true" in targets or "|| true" in collector:
     raise SystemExit("config: collection/query/shutdown failures must propagate")
 actions = re.findall(r"uses: (\S+)", workflow_code)
-if len(actions) != 4 or any(not re.fullmatch(r"actions/[a-z/-]+@[0-9a-f]{40}", action) for action in actions):
-    raise SystemExit("config: every action must retain its full immutable pin")
+if len(actions) != 6 or any(not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action) for action in actions):
+    raise SystemExit("config: every Plug Bazel action must retain its full immutable pin")
 if ".plug-bazel-evidence" in workflow or ".plug-bazel-targets" in workflow or ".plug-bazel-repository-cache" in workflow:
     raise SystemExit("config: CI runtime paths must stay outside the checked-out source tree")
 for invalid in ("--no_system_rc", "--no_home_rc", "--no_workspace_rc"):
@@ -107,8 +115,29 @@ missing = sorted(fragment for fragment in required_targets if fragment not in ta
 if missing:
     raise SystemExit("config: target resolver is missing: " + ", ".join(missing))
 
+remote_code = "\n".join(line for line in remote_workflow.splitlines() if not line.lstrip().startswith("#"))
+if "workflow_dispatch:" not in remote_code or "  push:" in remote_code or "  pull_request:" in remote_code:
+    raise SystemExit("config: remote Bazel workflow must be dispatch-only")
+for fragment in (
+    "run-name: remote-bazel ${{ inputs.label }} ${{ inputs.sha }}",
+    "sha:", "label:", "args:", "type: string",
+    "ref: ${{ inputs.sha }}", "fetch-depth: 1", "persist-credentials: false",
+    "runs-on=${{ github.run_id }}/runner=bb-x64-16", "timeout-minutes: 180",
+    "actions/cache/restore@", "actions/setup-node@", "node-version: 24",
+    "command -v google-chrome", "read -ra USER_ARGS", "bazel \"${ARGS[@]}\"",
+    "--ignore_all_rc_files", "--output_user_root", "--bazelrc",
+    "remote-bazel-${{ inputs.label }}", "bazel.log", "exit_code",
+    "toolchain.txt", "bazel-testlogs.tgz", "if: always()",
+):
+    if fragment not in remote_code:
+        raise SystemExit("config: remote workflow is missing: " + fragment)
+if "eval " in remote_code or "set -x" in remote_code or "pull_request_target:" in remote_code:
+    raise SystemExit("config: remote workflow contains an unsafe command or trigger")
+remote_actions = re.findall(r"uses: (\S+)", remote_code)
+if len(remote_actions) != 5 or any(not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action) for action in remote_actions):
+    raise SystemExit("config: every remote Bazel action must retain its full immutable pin")
 workflow_files = sorted(Path(".github/workflows").glob("*.yml"))
-if [path.name for path in workflow_files] != ["plug-bazel.yml", "plug-runs-on-smoke.yml"]:
+if [path.name for path in workflow_files] != ["plug-bazel.yml", "plug-remote-bazel.yml", "plug-runs-on-smoke.yml"]:
     raise SystemExit("config: inherited workflow files remain: " + ", ".join(str(path) for path in workflow_files))
 print("plug-ci-config: workflow, permissions, cache, lock, targets, and retirement checks passed")
 PYTHON
