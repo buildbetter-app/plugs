@@ -549,6 +549,9 @@ internal/server/transport/mcp/config.go
 internal/server/transport/mcp/errors.go
 internal/server/transport/mcp/handler.go
 internal/server/transport/mcp/handler_test.go
+internal/server/transport/mcp/notification_stream_test.go
+internal/server/transport/mcp/notifications.go
+internal/server/transport/mcp/notifications_test.go
 internal/server/transport/stdio/BUILD.bazel
 internal/server/transport/stdio/README.md
 internal/server/transport/stdio/config.go
@@ -704,6 +707,12 @@ spikes/runtime/concurrency.go
 spikes/runtime/concurrency_test.go
 spikes/runtime/sandbox.go
 spikes/runtime/sandbox_test.go
+tools/census/BUILD.bazel
+tools/census/README.md
+tools/census/census.go
+tools/census/cmd/census_check/main.go
+tools/census/gate_test.go
+tools/census/testdata/census.json
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
 tools/lexicon/checker.go
