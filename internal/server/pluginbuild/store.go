@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
@@ -51,13 +53,19 @@ func (a *Artifact) Lock(ctx context.Context) (ArtifactLock, error) {
 }
 
 func (l ArtifactLock) validate() error {
-	if l.Version != 1 || !validHexString(l.Commit, 40) && !validHexString(l.Commit, 64) ||
+	if l.Version != 1 || (!validHexString(l.Commit, 40) && !validHexString(l.Commit, 64)) ||
 		!validHexString(l.SourceDigest, 64) || !validHexString(l.ManifestDigest, 64) ||
 		!validHexString(l.ArtifactDigest, 64) {
 		return refusal(ErrArtifact, "artifact lock has invalid digest fields")
 	}
 	if l.Runtime != pluginapi.RuntimeNative && l.Runtime != pluginapi.RuntimeWASI {
 		return refusal(ErrConfig, "artifact lock has unsupported runtime %q", l.Runtime)
+	}
+	if strings.ToLower(l.ArtifactDigest) != l.ArtifactDigest ||
+		strings.ToLower(l.SourceDigest) != l.SourceDigest ||
+		strings.ToLower(l.ManifestDigest) != l.ManifestDigest ||
+		strings.ToLower(l.Commit) != l.Commit {
+		return refusal(ErrArtifact, "artifact lock digests must be lowercase")
 	}
 	if err := l.Manifest.Validate(); err != nil {
 		return refusal(ErrArtifact, "artifact lock manifest is invalid: %v", err)
@@ -79,7 +87,9 @@ func (l ArtifactLock) validate() error {
 	if l.Runtime == pluginapi.RuntimeWASI {
 		expectedPath = "plugin.wasm"
 	}
-	if len(l.Files) != 1 || l.Files[0].Path != expectedPath || l.Files[0].SHA256 != l.ArtifactDigest || l.Files[0].Size < 1 {
+	if len(l.Files) != 1 || l.Files[0].Path != expectedPath ||
+		path.Clean(l.Files[0].Path) != l.Files[0].Path || strings.ContainsAny(l.Files[0].Path, "/\\\x00") ||
+		!validHexString(l.Files[0].SHA256, 64) || l.Files[0].SHA256 != l.ArtifactDigest || l.Files[0].Size < 1 {
 		return refusal(ErrArtifact, "artifact lock has an incomplete output inventory")
 	}
 	return nil
@@ -113,12 +123,14 @@ type storedArtifact struct {
 	data []byte
 }
 
-// ArtifactStore is a process-local immutable content-addressed store used by
-// restore and tests. A production blob store can implement the same lock/data
-// boundary without changing host admission.
+// ArtifactStore is an immutable content-addressed artifact repository. The
+// zero-argument constructor retains the process-local store used by existing
+// callers and host tests; OpenArtifactStore provides the durable file-backed
+// implementation without changing the lock/restore contract.
 type ArtifactStore struct {
 	mu        sync.RWMutex
 	artifacts map[string]storedArtifact
+	root      string
 }
 
 func NewArtifactStore() *ArtifactStore {
@@ -135,6 +147,9 @@ func (s *ArtifactStore) Put(ctx context.Context, artifact *Artifact) (ArtifactLo
 	lock, err := artifact.Lock(ctx)
 	if err != nil {
 		return ArtifactLock{}, err
+	}
+	if s.root != "" {
+		return s.putFile(ctx, lock, artifact.path)
 	}
 	data, err := os.ReadFile(artifact.path)
 	if err != nil {
@@ -177,6 +192,9 @@ func (s *ArtifactStore) Restore(ctx context.Context, lock ArtifactLock) (*Artifa
 	lock = canonicalLock
 	if err := lock.validate(); err != nil {
 		return nil, err
+	}
+	if s.root != "" {
+		return s.restoreFile(ctx, lock)
 	}
 	s.mu.RLock()
 	stored, ok := s.artifacts[lock.ArtifactDigest]

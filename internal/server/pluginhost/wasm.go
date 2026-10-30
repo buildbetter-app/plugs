@@ -8,10 +8,12 @@ package pluginhost
 // environment variables, or a network implementation.
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +74,48 @@ type wasmRuntime struct {
 	closed  bool
 }
 
+// wasmInvocationKey binds the callback's already-scoped reader to the wazero
+// execution context. The import receives that context while the guest is in
+// plug_handle; it never receives a storage handle or a caller-selected
+// revision. A reader is present only for a host-driven callback, so method
+// calls and initialization retain the existing explicit capability refusal.
+type wasmInvocationKey struct{}
+
+type wasmInvocation struct {
+	reader pluginapi.SnapshotReader
+}
+
+// wasmReadRequest is the deliberately small internal E5 envelope. The
+// `params` value is the canonical JSON representation of the corresponding
+// pluginapi.SnapshotReader operation:
+//
+//	{"op":"read","method":"get","params":{"refs":[...]}}
+//	{"op":"read","method":"query","params":{"filter":...,"cursor":...,"limit":...}}
+//
+// The host returns {"result": <canonical value>} or {"error": <refusal>}.
+// This is an internal ABI envelope, not a new public plugin API. The reader
+// itself remains responsible for field grants, budgets, pinned revisions,
+// principal/binding scope and read-fact tracking.
+type wasmReadRequest struct {
+	Op     string          `json:"op"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
+type wasmReadRefs struct {
+	Refs []pluginapi.Ref `json:"refs"`
+}
+
+type wasmReadClosure struct {
+	Ref       pluginapi.Ref `json:"ref"`
+	Ancestors bool          `json:"ancestors"`
+}
+
+type wasmReadGrants struct {
+	Subjects  []pluginapi.SubjectRef `json:"subjects"`
+	Resources []pluginapi.Ref        `json:"resources"`
+}
+
 func newWASMRuntime(wasm []byte, host pluginapi.Host) (*wasmRuntime, error) {
 	ctx := context.Background()
 	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter().WithCloseOnContextDone(true).WithMemoryLimitPages(maxWASMPages))
@@ -79,13 +123,13 @@ func newWASMRuntime(wasm []byte, host pluginapi.Host) (*wasmRuntime, error) {
 		_ = runtime.Close(ctx)
 		return nil, failure(ErrManifest, "WASI runtime setup failed: %v", err)
 	}
-	// The ABI import is reserved, but outbound host calls are unsupported in
-	// this adapter. Fail the call explicitly rather than report a successful
-	// empty response or provide an ambient socket/file/environment capability.
+	// The import is the one E5 bridge. It is linked for every module, but it
+	// only sees a scoped reader while a host-driven callback is executing. Calls
+	// during initialization, extension methods or any other unscoped execution
+	// trap explicitly rather than becoming an ambient capability.
+	result := &wasmRuntime{runtime: runtime, host: host}
 	if _, err := runtime.NewHostModuleBuilder(wasmModuleName).
-		NewFunctionBuilder().WithFunc(func(context.Context, api.Module, uint32, uint32) uint64 {
-		panic("WASM outbound host calls are unsupported")
-	}).
+		NewFunctionBuilder().WithFunc(result.hostCall).
 		Export(wasmImportName).Instantiate(ctx); err != nil {
 		_ = runtime.Close(ctx)
 		return nil, failure(ErrManifest, "WASM host import setup failed: %v", err)
@@ -109,7 +153,10 @@ func newWASMRuntime(wasm []byte, host pluginapi.Host) (*wasmRuntime, error) {
 		_ = runtime.Close(ctx)
 		return nil, failure(ErrManifest, "WASM instantiate failed: %v", err)
 	}
-	result := &wasmRuntime{runtime: runtime, module: module, alloc: module.ExportedFunction("plug_alloc"), handle: module.ExportedFunction("plug_handle"), memory: module.Memory(), host: host}
+	result.module = module
+	result.alloc = module.ExportedFunction("plug_alloc")
+	result.handle = module.ExportedFunction("plug_handle")
+	result.memory = module.Memory()
 	if result.alloc == nil || result.handle == nil || result.memory == nil {
 		result.close()
 		return nil, failure(ErrManifest, "WASM module does not expose the required ABI")
@@ -142,9 +189,11 @@ func (r *wasmRuntime) closeLocked() {
 }
 
 type wasmRequest struct {
-	Op      string `json:"op"`
-	Name    string `json:"name,omitempty"`
-	Payload any    `json:"payload,omitempty"`
+	Op      string          `json:"op"`
+	Name    string          `json:"name,omitempty"`
+	Payload any             `json:"payload,omitempty"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
 }
 
 type wasmResponse struct {
@@ -154,7 +203,194 @@ type wasmResponse struct {
 	Error   string             `json:"error,omitempty"`
 }
 
-func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest) (wasmResponse, error) {
+// hostCall is the env.plug.call implementation. Invalid guest memory or
+// malformed envelopes are traps: the surrounding invoke call disposes of the
+// module, preserving the E5 fail-closed rule. Typed reader refusals are
+// returned as an explicit {"error": ...} envelope so a guest can make a
+// bounded decision without being given an unscoped fallback reader.
+func (r *wasmRuntime) hostCall(ctx context.Context, module api.Module, ptr, length uint32) uint64 {
+	if err := ctx.Err(); err != nil {
+		panic(err)
+	}
+	if length > maxWASMMessage {
+		panic(failure(ErrMethod, "WASM host request exceeds the message limit"))
+	}
+	memory := module.Memory()
+	data, ok := memory.Read(ptr, length)
+	if !ok {
+		panic(failure(ErrMethod, "WASM host request is outside guest memory"))
+	}
+	data = append([]byte(nil), data...)
+	var request wasmInvocation
+	if value, ok := ctx.Value(wasmInvocationKey{}).(wasmInvocation); ok {
+		request = value
+	}
+	if request.reader == nil {
+		panic("WASM outbound host calls are unsupported outside snapshot callbacks")
+	}
+	result, err := r.read(ctx, request.reader, data)
+	if err != nil {
+		if ctx.Err() != nil {
+			panic(ctx.Err())
+		}
+		return r.writeHostResponse(ctx, module, wasmResponse{Error: err.Error()})
+	}
+	// A typed reader is expected to honor its context, but the host must still
+	// revoke the callback capability if an implementation returns late. Never
+	// let a late read publish a response into the guest after its deadline.
+	if err := ctx.Err(); err != nil {
+		panic(err)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		panic(failure(ErrRead, "WASM snapshot result could not be encoded: %v", err))
+	}
+	return r.writeHostResponse(ctx, module, wasmResponse{Result: encoded})
+}
+
+func (r *wasmRuntime) writeHostResponse(ctx context.Context, module api.Module, response wasmResponse) uint64 {
+	if err := ctx.Err(); err != nil {
+		panic(err)
+	}
+	data, err := json.Marshal(response)
+	if err != nil || len(data) > maxWASMMessage {
+		panic(failure(ErrMethod, "WASM host response exceeds the message limit"))
+	}
+	if r.alloc == nil {
+		panic(failure(ErrInactive, "WASM allocator is unavailable"))
+	}
+	ptr, err := r.alloc.Call(ctx, uint64(len(data)))
+	if err != nil || len(ptr) != 1 || ptr[0] == 0 || ptr[0] > uint64(^uint32(0)) {
+		panic(failure(ErrMethod, "WASM host response allocation failed: %v", err))
+	}
+	output := uint32(ptr[0])
+	if !module.Memory().Write(output, data) {
+		panic(failure(ErrMethod, "WASM host response is outside guest memory"))
+	}
+	return uint64(output)<<32 | uint64(len(data))
+}
+
+func (r *wasmRuntime) read(ctx context.Context, reader pluginapi.SnapshotReader, data []byte) (any, error) {
+	request, err := decodeWASMReadRequest(data)
+	if err != nil {
+		panic(failure(ErrRead, "malformed WASM snapshot request: %v", err))
+	}
+	switch request.Method {
+	case "get":
+		var params wasmReadRefs
+		if err := decodeWASMParams(request.Params, &params, "refs"); err != nil {
+			panic(failure(ErrRead, "malformed WASM get request: %v", err))
+		}
+		return reader.Get(ctx, params.Refs)
+	case "query":
+		var params pluginapi.Query
+		if err := decodeWASMObject(request.Params, &params); err != nil {
+			panic(failure(ErrRead, "malformed WASM query request: %v", err))
+		}
+		return reader.Query(ctx, params)
+	case "beads":
+		var params wasmReadRefs
+		if err := decodeWASMParams(request.Params, &params, "refs"); err != nil {
+			panic(failure(ErrRead, "malformed WASM beads request: %v", err))
+		}
+		return reader.Beads(ctx, params.Refs)
+	case "closure":
+		var params wasmReadClosure
+		if err := decodeWASMParams(request.Params, &params, "ref", "ancestors"); err != nil {
+			panic(failure(ErrRead, "malformed WASM closure request: %v", err))
+		}
+		return reader.Closure(ctx, params.Ref, params.Ancestors)
+	case "grants":
+		var params wasmReadGrants
+		if err := decodeWASMParams(request.Params, &params, "subjects", "resources"); err != nil {
+			panic(failure(ErrRead, "malformed WASM grants request: %v", err))
+		}
+		return reader.Grants(ctx, params.Subjects, params.Resources)
+	default:
+		return nil, failure(ErrRead, "unsupported WASM snapshot operation %q", request.Method)
+	}
+}
+
+func decodeWASMReadRequest(data []byte) (wasmReadRequest, error) {
+	var request wasmReadRequest
+	if err := decodeWASMJSON(data, &request); err != nil {
+		return request, err
+	}
+	if request.Op != "read" {
+		return request, fmt.Errorf("operation must be read")
+	}
+	if request.Method == "" {
+		return request, fmt.Errorf("method is required")
+	}
+	if len(request.Params) == 0 || bytes.Equal(bytes.TrimSpace(request.Params), []byte("null")) {
+		return request, fmt.Errorf("params are required")
+	}
+	return request, nil
+}
+
+func decodeWASMParams(data []byte, dst any, required ...string) error {
+	var fields map[string]json.RawMessage
+	if err := decodeWASMJSON(data, &fields); err != nil {
+		return err
+	}
+	if fields == nil {
+		return fmt.Errorf("params must be an object")
+	}
+	for _, name := range required {
+		value, ok := fields[name]
+		if !ok {
+			return fmt.Errorf("missing %q", name)
+		}
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("%q cannot be null", name)
+		}
+	}
+	return decodeWASMJSON(data, dst)
+}
+
+func decodeWASMObject(data []byte, dst any) error {
+	var fields map[string]json.RawMessage
+	if err := decodeWASMJSON(data, &fields); err != nil {
+		return err
+	}
+	if fields == nil {
+		return fmt.Errorf("params must be an object")
+	}
+	for name, value := range fields {
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("%q cannot be null", name)
+		}
+	}
+	return decodeWASMJSON(data, dst)
+}
+
+func decodeWASMJSON(data []byte, dst any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("trailing JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+// readers is variadic to keep the narrow internal test seam source-compatible
+// with the original E5 invocation helper. Production callbacks pass exactly
+// one scoped reader; methods and direct ABI tests pass none.
+func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest, readers ...pluginapi.SnapshotReader) (wasmResponse, error) {
+	if len(readers) > 1 {
+		return wasmResponse{}, failure(ErrRead, "multiple WASM snapshot readers")
+	}
+	if len(readers) == 1 && readers[0] != nil {
+		ctx = context.WithValue(ctx, wasmInvocationKey{}, wasmInvocation{reader: readers[0]})
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -234,8 +470,8 @@ type wasmMutator struct {
 	name    string
 }
 
-func (m wasmMutator) Mutate(ctx context.Context, change pluginapi.ProposedChange, _ pluginapi.SnapshotReader) ([]pluginapi.Patch, error) {
-	response, err := m.runtime.invoke(ctx, wasmRequest{Op: "mutate", Name: m.name, Payload: change})
+func (m wasmMutator) Mutate(ctx context.Context, change pluginapi.ProposedChange, reader pluginapi.SnapshotReader) ([]pluginapi.Patch, error) {
+	response, err := m.runtime.invoke(ctx, wasmRequest{Op: "mutate", Name: m.name, Payload: change}, reader)
 	return response.Patches, err
 }
 
@@ -244,8 +480,8 @@ type wasmValidator struct {
 	name    string
 }
 
-func (v wasmValidator) Validate(ctx context.Context, change pluginapi.ProposedChange, _ pluginapi.SnapshotReader) (pluginapi.Verdict, error) {
-	response, err := v.runtime.invoke(ctx, wasmRequest{Op: "validate", Name: v.name, Payload: change})
+func (v wasmValidator) Validate(ctx context.Context, change pluginapi.ProposedChange, reader pluginapi.SnapshotReader) (pluginapi.Verdict, error) {
+	response, err := v.runtime.invoke(ctx, wasmRequest{Op: "validate", Name: v.name, Payload: change}, reader)
 	if err != nil {
 		return pluginapi.Verdict{}, err
 	}
@@ -260,8 +496,8 @@ type wasmPost struct {
 	name    string
 }
 
-func (p wasmPost) After(ctx context.Context, change pluginapi.CommittedChange, _ pluginapi.SnapshotReader) error {
-	_, err := p.runtime.invoke(ctx, wasmRequest{Op: "post", Name: p.name, Payload: change})
+func (p wasmPost) After(ctx context.Context, change pluginapi.CommittedChange, reader pluginapi.SnapshotReader) error {
+	_, err := p.runtime.invoke(ctx, wasmRequest{Op: "post", Name: p.name, Payload: change}, reader)
 	return err
 }
 

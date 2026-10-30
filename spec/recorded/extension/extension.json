@@ -1,0 +1,285 @@
+{
+  "format": "plug-recorded-goldens-extension/1",
+  "provenance": {
+    "sourceRepository": "beads-base provenance tag in buildbetter-app/plugs",
+    "sourceRef": "refs/tags/beads-base",
+    "sourceCommit": "9d6fff760b7a314b476539198504d77ce0959656",
+    "sourceTree": "cde121d6e4119e454857ad1c3ca293e2791be840",
+    "binary": {
+      "buildCommand": "cd /tmp/plug-swarm/work/build50-beads-base.5aHZvH && go build -tags gms_pure_go -o /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/reference-build/reference-engine ./cmd/bd",
+      "version": "bd version 1.3.0 (dev)",
+      "sha256": "33cdadbe3bd7a82e2c3c40f4b5da4403d822acc00d544a321df24e277c0836a3",
+      "path": "/tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/reference-build/reference-engine"
+    },
+    "toolchain": {
+      "goVersion": "go1.26.10",
+      "pythonVersion": "3.12.3",
+      "buildInfoSHA256": "2edc35ea3a2f0d50f708bda2271742494191f3288466ba246f6a8d0502f64d50",
+      "settings": {
+        "CGO_ENABLED": "1",
+        "GOARCH": "amd64",
+        "GOOS": "linux"
+      }
+    },
+    "runtime": "go1.26.10 linux/amd64; Python 3.12.3",
+    "recordedCards": [
+      "B07",
+      "B25"
+    ],
+    "referenceEngine": "embedded-dolt",
+    "clock": {
+      "mode": "runtime-non-temporal-slice",
+      "fieldsOmitted": [
+        "timestamps",
+        "revision hashes",
+        "generated relation IDs"
+      ],
+      "note": "No time predicates or clock advances in these selected slices; reference Go and SQL stamps remain runtime values and are omitted from the projection. Comment body order is retained."
+    },
+    "recorder": {
+      "identity": "build50-reference-recorder",
+      "version": "1",
+      "source": "spec/recorded/extension/build50_record.py",
+      "sha256": "2925b4746ebde28a0c3d073d59ebfc9154daeb84f58a8f4edb636ac98d3233fb"
+    },
+    "projector": {
+      "identity": "build50-reference-provenance",
+      "version": "1",
+      "source": "spec/recorded/extension/provenance.py",
+      "sha256": "a404d0203f806fcad848d05dcf31757b80c24a275a8ed428d91b8c3b5b5a735b"
+    },
+    "driver": {
+      "name": "embedded-dolt",
+      "version": "github.com/dolthub/dolt/go@v0.40.5-0.20260806213044-796d07497741"
+    },
+    "schema": {
+      "cursorSource": "pinned migration inventory; CLI does not expose embedded SQL",
+      "mainCursor": 72,
+      "mainDigest": "c649854f6d67016df0db1c3b324679a41e090b8fad0ae5ac5d94cf72d5e8f0f2",
+      "ignoredCursor": 28,
+      "ignoredDigest": "31abcfd3374b7e7ae7b95727785a1591107cac63cbf5db59ea6685350c05b470"
+    },
+    "configuration": {
+      "value": {
+        "referenceEngine": "embedded-dolt",
+        "sourceRef": "refs/tags/beads-base",
+        "workspaceRoot": "/tmp/plug-swarm/work",
+        "slices": [
+          "B07.same-type-readd-remove-readd",
+          "B25.scalar-relation-preservation"
+        ],
+        "outputFormat": "plug-recorded-goldens-extension/1"
+      },
+      "digest": "dfeba68ab7a13e91481c014f030eaef84a9aed98f4d30f57df033a9b222ef00b"
+    }
+  },
+  "recorders": {
+    "B07": {
+      "sourceTests": [
+        "cmd/bd/protocol/dep_identity_test.go::TestProtocol_DepReAddSameTypeIsIdempotent"
+      ],
+      "sourceRefs": [
+        {
+          "path": "cmd/bd/protocol/dep_identity_test.go",
+          "sha256": "f6c5cbc1797ba6cf3a036f81b9e9c9ff0c9c54d9dd00ece88415f2e2c57671ea"
+        }
+      ],
+      "commands": [
+        "cd /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030 && env BUILD50_AUDIT_DIR=/tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B07-a-raw LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 TZ=UTC python3 /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030/spec/recorded/extension/build50_record.py B07 /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/reference-build/reference-engine /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B07-a.json",
+        "cd /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030 && env BUILD50_AUDIT_DIR=/tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B07-b-raw LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 TZ=UTC python3 /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030/spec/recorded/extension/build50_record.py B07 /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/reference-build/reference-engine /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B07-b.json"
+      ],
+      "projectionCommands": [
+        "cd /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030 && env BUILD50_AUDIT_DIR=/tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B07-a-raw LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 TZ=UTC python3 /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030/spec/recorded/extension/provenance.py B07 /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B07-a.json /tmp/plug-swarm/work/build50-beads-base.5aHZvH /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/reference-build/reference-engine /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030 /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030/spec/recorded/extension/build50_record.py /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B07-a.provenance.json",
+        "cd /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030 && env BUILD50_AUDIT_DIR=/tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B07-b-raw LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 TZ=UTC python3 /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030/spec/recorded/extension/provenance.py B07 /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B07-b.json /tmp/plug-swarm/work/build50-beads-base.5aHZvH /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/reference-build/reference-engine /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030 /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030/spec/recorded/extension/build50_record.py /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B07-b.provenance.json"
+      ],
+      "rawJSON": "{\"card\":\"B07\",\"commands\":[{\"args\":[\"init\",\"--prefix\",\"b07\",\"--non-interactive\",\"--quiet\",\"--skip-agents\",\"--skip-hooks\"],\"exit\":0},{\"args\":[\"create\",\"--id\",\"b07-source\",\"--type\",\"task\",\"--title\",\"Source\",\"--priority\",\"2\"],\"exit\":0},{\"args\":[\"create\",\"--id\",\"b07-target\",\"--type\",\"task\",\"--title\",\"Target\",\"--priority\",\"2\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b07-source\",\"b07-target\",\"--type\",\"blocks\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b07-source\",\"b07-target\",\"--type\",\"blocks\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b07-source\",\"b07-target\",\"--type\",\"blocks\"],\"exit\":0},{\"args\":[\"show\",\"b07-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"dep\",\"remove\",\"b07-source\",\"b07-target\"],\"exit\":0},{\"args\":[\"show\",\"b07-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b07-source\",\"b07-target\",\"--type\",\"relates-to\"],\"exit\":0},{\"args\":[\"show\",\"b07-source\",\"--include-comments\",\"--json\"],\"exit\":0}],\"configuration\":{\"actor\":\"build50-recorder\",\"ambientEnvironment\":\"PATH only; no inherited application configuration\",\"engine\":\"embedded-dolt\",\"environment\":{\"BEADS_ACTOR\":\"build50-recorder\",\"BEADS_DOLT_AUTO_START\":\"1\",\"CI\":\"1\",\"GIT_AUTHOR_EMAIL\":\"build50@example.invalid\",\"GIT_CONFIG_GLOBAL\":\"/dev/null\",\"GIT_CONFIG_NOSYSTEM\":\"1\",\"LANG\":\"C.UTF-8\",\"TZ\":\"UTC\"},\"history\":\"fresh-store defaults; no history assertion in this slice\",\"initFlags\":[\"--non-interactive\",\"--quiet\",\"--skip-agents\",\"--skip-hooks\"],\"owner\":\"build50@example.invalid\",\"prefix\":\"b07\"},\"engine\":\"embedded-dolt\",\"inputs\":{\"clock\":{\"fieldsOmitted\":[\"timestamps\",\"revision hashes\",\"generated relation IDs\"],\"mode\":\"runtime-non-temporal-slice\",\"schedule\":\"no clock advances or time predicate; runtime Go/SQL stamps excluded\"},\"graph\":{\"edges\":1,\"nodes\":2,\"seed\":\"explicit-pair\"},\"ids\":{\"collisionState\":\"fresh disposable store\",\"counterState\":\"unused; explicit top-level IDs, no child or hash allocation\",\"explicit\":[\"b07-source\",\"b07-target\"],\"prefix\":\"b07\"},\"sequence\":\"create pair; add blocks three times; remove; add relates-to\"},\"observations\":{\"afterExplicitRetype\":[{\"from\":\"b07-source\",\"kind\":\"relates-to\",\"to\":\"b07-target\"}],\"afterRemove\":[],\"afterSameTypeReadds\":[{\"from\":\"b07-source\",\"kind\":\"blocks\",\"to\":\"b07-target\"}]},\"sourceTests\":[\"cmd/bd/protocol/dep_identity_test.go::TestProtocol_DepReAddSameTypeIsIdempotent\"]}",
+      "digest": "70bca82d100411002710230cd289028d2f657617ee52ee35c56edda627d4dc12",
+      "artifactSha256": "93ea20b92e2347d51618a99931c34ba8159899fd76a68da3956ce9614d493ac4",
+      "repeatArtifactSha256": "93ea20b92e2347d51618a99931c34ba8159899fd76a68da3956ce9614d493ac4",
+      "disposition": {
+        "status": "keep",
+        "source": "engdocs/design/plug/spec/behaviors/work.md#B07",
+        "scope": "recorded-reference-vector"
+      },
+      "configuration": {
+        "value": {
+          "actor": "build50-recorder",
+          "ambientEnvironment": "PATH only; no inherited application configuration",
+          "engine": "embedded-dolt",
+          "environment": {
+            "BEADS_ACTOR": "build50-recorder",
+            "BEADS_DOLT_AUTO_START": "1",
+            "CI": "1",
+            "GIT_AUTHOR_EMAIL": "build50@example.invalid",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "LANG": "C.UTF-8",
+            "TZ": "UTC"
+          },
+          "history": "fresh-store defaults; no history assertion in this slice",
+          "initFlags": [
+            "--non-interactive",
+            "--quiet",
+            "--skip-agents",
+            "--skip-hooks"
+          ],
+          "owner": "build50@example.invalid",
+          "prefix": "b07"
+        },
+        "digest": "aaa63abdedd6bdb4b6eb0ab50b3134271fc7e18759459964d699a51ec2ada689"
+      },
+      "inputs": {
+        "value": {
+          "clock": {
+            "fieldsOmitted": [
+              "timestamps",
+              "revision hashes",
+              "generated relation IDs"
+            ],
+            "mode": "runtime-non-temporal-slice",
+            "schedule": "no clock advances or time predicate; runtime Go/SQL stamps excluded"
+          },
+          "graph": {
+            "edges": 1,
+            "nodes": 2,
+            "seed": "explicit-pair"
+          },
+          "ids": {
+            "collisionState": "fresh disposable store",
+            "counterState": "unused; explicit top-level IDs, no child or hash allocation",
+            "explicit": [
+              "b07-source",
+              "b07-target"
+            ],
+            "prefix": "b07"
+          },
+          "sequence": "create pair; add blocks three times; remove; add relates-to"
+        },
+        "digest": "42ba11c383c8e42fa14066342cbf5f2f07bbe3df8a46a02861078f6539a094a1"
+      },
+      "projection": {
+        "format": "plug-recorded-projection/1",
+        "paths": [
+          "card",
+          "engine",
+          "observations"
+        ],
+        "json": "{\"card\":\"B07\",\"engine\":\"embedded-dolt\",\"observations\":{\"afterExplicitRetype\":[{\"from\":\"b07-source\",\"kind\":\"relates-to\",\"to\":\"b07-target\"}],\"afterRemove\":[],\"afterSameTypeReadds\":[{\"from\":\"b07-source\",\"kind\":\"blocks\",\"to\":\"b07-target\"}]}}",
+        "digest": "1aa92a623518d50cf13ccf4c0d08afdf064b3a8ed8f4c42a2ae420f071170b65"
+      },
+      "rawDigest": "70bca82d100411002710230cd289028d2f657617ee52ee35c56edda627d4dc12",
+      "projectionDigest": "1aa92a623518d50cf13ccf4c0d08afdf064b3a8ed8f4c42a2ae420f071170b65",
+      "repeatedProvenance": {
+        "first": "{\"binarySha256\":\"33cdadbe3bd7a82e2c3c40f4b5da4403d822acc00d544a321df24e277c0836a3\",\"card\":\"B07\",\"commands\":[{\"args\":[\"init\",\"--prefix\",\"b07\",\"--non-interactive\",\"--quiet\",\"--skip-agents\",\"--skip-hooks\"],\"exit\":0},{\"args\":[\"create\",\"--id\",\"b07-source\",\"--type\",\"task\",\"--title\",\"Source\",\"--priority\",\"2\"],\"exit\":0},{\"args\":[\"create\",\"--id\",\"b07-target\",\"--type\",\"task\",\"--title\",\"Target\",\"--priority\",\"2\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b07-source\",\"b07-target\",\"--type\",\"blocks\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b07-source\",\"b07-target\",\"--type\",\"blocks\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b07-source\",\"b07-target\",\"--type\",\"blocks\"],\"exit\":0},{\"args\":[\"show\",\"b07-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"dep\",\"remove\",\"b07-source\",\"b07-target\"],\"exit\":0},{\"args\":[\"show\",\"b07-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b07-source\",\"b07-target\",\"--type\",\"relates-to\"],\"exit\":0},{\"args\":[\"show\",\"b07-source\",\"--include-comments\",\"--json\"],\"exit\":0}],\"configurationDigest\":\"aaa63abdedd6bdb4b6eb0ab50b3134271fc7e18759459964d699a51ec2ada689\",\"disposition\":{\"scope\":\"recorded-reference-vector\",\"source\":\"engdocs/design/plug/spec/behaviors/work.md#B07\",\"status\":\"keep\"},\"driver\":{\"name\":\"embedded-dolt\",\"version\":\"github.com/dolthub/dolt/go@v0.40.5-0.20260806213044-796d07497741\"},\"inputDigest\":\"42ba11c383c8e42fa14066342cbf5f2f07bbe3df8a46a02861078f6539a094a1\",\"projectionDigest\":\"1aa92a623518d50cf13ccf4c0d08afdf064b3a8ed8f4c42a2ae420f071170b65\",\"projector\":{\"identity\":\"build50-reference-provenance\",\"sha256\":\"a404d0203f806fcad848d05dcf31757b80c24a275a8ed428d91b8c3b5b5a735b\",\"source\":\"spec/recorded/extension/provenance.py\",\"version\":\"1\"},\"rawDigest\":\"70bca82d100411002710230cd289028d2f657617ee52ee35c56edda627d4dc12\",\"recorder\":{\"identity\":\"build50-reference-recorder\",\"sha256\":\"2925b4746ebde28a0c3d073d59ebfc9154daeb84f58a8f4edb636ac98d3233fb\",\"source\":\"spec/recorded/extension/build50_record.py\",\"version\":\"1\"},\"schema\":{\"cursorSource\":\"pinned migration inventory; CLI does not expose embedded SQL\",\"ignoredCursor\":28,\"ignoredDigest\":\"31abcfd3374b7e7ae7b95727785a1591107cac63cbf5db59ea6685350c05b470\",\"mainCursor\":72,\"mainDigest\":\"c649854f6d67016df0db1c3b324679a41e090b8fad0ae5ac5d94cf72d5e8f0f2\"},\"sourceCommit\":\"9d6fff760b7a314b476539198504d77ce0959656\",\"sourceTests\":[\"cmd/bd/protocol/dep_identity_test.go::TestProtocol_DepReAddSameTypeIsIdempotent\"],\"sourceTree\":\"cde121d6e4119e454857ad1c3ca293e2791be840\",\"sources\":[{\"path\":\"cmd/bd/protocol/dep_identity_test.go\",\"sha256\":\"f6c5cbc1797ba6cf3a036f81b9e9c9ff0c9c54d9dd00ece88415f2e2c57671ea\"}],\"toolchain\":{\"buildInfoSHA256\":\"2edc35ea3a2f0d50f708bda2271742494191f3288466ba246f6a8d0502f64d50\",\"goVersion\":\"go1.26.10\",\"pythonVersion\":\"3.12.3\",\"settings\":{\"CGO_ENABLED\":\"1\",\"GOARCH\":\"amd64\",\"GOOS\":\"linux\"}}}",
+        "repeat": "{\"binarySha256\":\"33cdadbe3bd7a82e2c3c40f4b5da4403d822acc00d544a321df24e277c0836a3\",\"card\":\"B07\",\"commands\":[{\"args\":[\"init\",\"--prefix\",\"b07\",\"--non-interactive\",\"--quiet\",\"--skip-agents\",\"--skip-hooks\"],\"exit\":0},{\"args\":[\"create\",\"--id\",\"b07-source\",\"--type\",\"task\",\"--title\",\"Source\",\"--priority\",\"2\"],\"exit\":0},{\"args\":[\"create\",\"--id\",\"b07-target\",\"--type\",\"task\",\"--title\",\"Target\",\"--priority\",\"2\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b07-source\",\"b07-target\",\"--type\",\"blocks\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b07-source\",\"b07-target\",\"--type\",\"blocks\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b07-source\",\"b07-target\",\"--type\",\"blocks\"],\"exit\":0},{\"args\":[\"show\",\"b07-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"dep\",\"remove\",\"b07-source\",\"b07-target\"],\"exit\":0},{\"args\":[\"show\",\"b07-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b07-source\",\"b07-target\",\"--type\",\"relates-to\"],\"exit\":0},{\"args\":[\"show\",\"b07-source\",\"--include-comments\",\"--json\"],\"exit\":0}],\"configurationDigest\":\"aaa63abdedd6bdb4b6eb0ab50b3134271fc7e18759459964d699a51ec2ada689\",\"disposition\":{\"scope\":\"recorded-reference-vector\",\"source\":\"engdocs/design/plug/spec/behaviors/work.md#B07\",\"status\":\"keep\"},\"driver\":{\"name\":\"embedded-dolt\",\"version\":\"github.com/dolthub/dolt/go@v0.40.5-0.20260806213044-796d07497741\"},\"inputDigest\":\"42ba11c383c8e42fa14066342cbf5f2f07bbe3df8a46a02861078f6539a094a1\",\"projectionDigest\":\"1aa92a623518d50cf13ccf4c0d08afdf064b3a8ed8f4c42a2ae420f071170b65\",\"projector\":{\"identity\":\"build50-reference-provenance\",\"sha256\":\"a404d0203f806fcad848d05dcf31757b80c24a275a8ed428d91b8c3b5b5a735b\",\"source\":\"spec/recorded/extension/provenance.py\",\"version\":\"1\"},\"rawDigest\":\"70bca82d100411002710230cd289028d2f657617ee52ee35c56edda627d4dc12\",\"recorder\":{\"identity\":\"build50-reference-recorder\",\"sha256\":\"2925b4746ebde28a0c3d073d59ebfc9154daeb84f58a8f4edb636ac98d3233fb\",\"source\":\"spec/recorded/extension/build50_record.py\",\"version\":\"1\"},\"schema\":{\"cursorSource\":\"pinned migration inventory; CLI does not expose embedded SQL\",\"ignoredCursor\":28,\"ignoredDigest\":\"31abcfd3374b7e7ae7b95727785a1591107cac63cbf5db59ea6685350c05b470\",\"mainCursor\":72,\"mainDigest\":\"c649854f6d67016df0db1c3b324679a41e090b8fad0ae5ac5d94cf72d5e8f0f2\"},\"sourceCommit\":\"9d6fff760b7a314b476539198504d77ce0959656\",\"sourceTests\":[\"cmd/bd/protocol/dep_identity_test.go::TestProtocol_DepReAddSameTypeIsIdempotent\"],\"sourceTree\":\"cde121d6e4119e454857ad1c3ca293e2791be840\",\"sources\":[{\"path\":\"cmd/bd/protocol/dep_identity_test.go\",\"sha256\":\"f6c5cbc1797ba6cf3a036f81b9e9c9ff0c9c54d9dd00ece88415f2e2c57671ea\"}],\"toolchain\":{\"buildInfoSHA256\":\"2edc35ea3a2f0d50f708bda2271742494191f3288466ba246f6a8d0502f64d50\",\"goVersion\":\"go1.26.10\",\"pythonVersion\":\"3.12.3\",\"settings\":{\"CGO_ENABLED\":\"1\",\"GOARCH\":\"amd64\",\"GOOS\":\"linux\"}}}",
+        "firstDigest": "6d79a864ae6572127478e45b278415677b106aec4f487b11cce9f31191b1a880",
+        "repeatDigest": "6d79a864ae6572127478e45b278415677b106aec4f487b11cce9f31191b1a880"
+      }
+    },
+    "B25": {
+      "sourceTests": [
+        "cmd/bd/protocol/preservation_test.go::TestProtocol_LabelsPreservedAcrossUpdate",
+        "cmd/bd/protocol/preservation_test.go::TestProtocol_DepsPreservedAcrossUpdate",
+        "cmd/bd/protocol/preservation_test.go::TestProtocol_CommentsPreservedAcrossUpdate",
+        "cmd/bd/protocol/preservation_test.go::TestProtocol_ScalarUpdatePreservesRelationalData"
+      ],
+      "sourceRefs": [
+        {
+          "path": "cmd/bd/protocol/preservation_test.go",
+          "sha256": "94b169bc5244427c8b16de80c45f6f9c0a1bdcb9ed4f01789196b17f8d2a9036"
+        }
+      ],
+      "commands": [
+        "cd /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030 && env BUILD50_AUDIT_DIR=/tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B25-a-raw LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 TZ=UTC python3 /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030/spec/recorded/extension/build50_record.py B25 /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/reference-build/reference-engine /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B25-a.json",
+        "cd /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030 && env BUILD50_AUDIT_DIR=/tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B25-b-raw LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 TZ=UTC python3 /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030/spec/recorded/extension/build50_record.py B25 /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/reference-build/reference-engine /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B25-b.json"
+      ],
+      "projectionCommands": [
+        "cd /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030 && env BUILD50_AUDIT_DIR=/tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B25-a-raw LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 TZ=UTC python3 /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030/spec/recorded/extension/provenance.py B25 /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B25-a.json /tmp/plug-swarm/work/build50-beads-base.5aHZvH /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/reference-build/reference-engine /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030 /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030/spec/recorded/extension/build50_record.py /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B25-a.provenance.json",
+        "cd /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030 && env BUILD50_AUDIT_DIR=/tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B25-b-raw LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 TZ=UTC python3 /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030/spec/recorded/extension/provenance.py B25 /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B25-b.json /tmp/plug-swarm/work/build50-beads-base.5aHZvH /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/reference-build/reference-engine /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030 /home/dev/.paseo/worktrees/10mmulyl/swarm-b07-b25-recorded-acceptance-20261030/spec/recorded/extension/build50_record.py /tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/recordings-final/B25-b.provenance.json"
+      ],
+      "rawJSON": "{\"card\":\"B25\",\"commands\":[{\"args\":[\"init\",\"--prefix\",\"b25\",\"--non-interactive\",\"--quiet\",\"--skip-agents\",\"--skip-hooks\"],\"exit\":0},{\"args\":[\"create\",\"--id\",\"b25-source\",\"--type\",\"task\",\"--title\",\"Source\",\"--priority\",\"2\"],\"exit\":0},{\"args\":[\"create\",\"--id\",\"b25-target\",\"--type\",\"task\",\"--title\",\"Target\",\"--priority\",\"2\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b25-source\",\"b25-target\",\"--type\",\"blocks\"],\"exit\":0},{\"args\":[\"label\",\"add\",\"b25-source\",\"alpha\"],\"exit\":0},{\"args\":[\"label\",\"add\",\"b25-source\",\"beta\"],\"exit\":0},{\"args\":[\"comments\",\"add\",\"b25-source\",\"Design review notes\"],\"exit\":0},{\"args\":[\"comments\",\"add\",\"b25-source\",\"Implementation started\"],\"exit\":0},{\"args\":[\"show\",\"b25-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"update\",\"b25-source\",\"--title\",\"Renamed source\"],\"exit\":0},{\"args\":[\"show\",\"b25-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"update\",\"b25-source\",\"--priority\",\"0\"],\"exit\":0},{\"args\":[\"show\",\"b25-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"update\",\"b25-source\",\"--description\",\"Updated description\"],\"exit\":0},{\"args\":[\"show\",\"b25-source\",\"--include-comments\",\"--json\"],\"exit\":0}],\"configuration\":{\"actor\":\"build50-recorder\",\"ambientEnvironment\":\"PATH only; no inherited application configuration\",\"engine\":\"embedded-dolt\",\"environment\":{\"BEADS_ACTOR\":\"build50-recorder\",\"BEADS_DOLT_AUTO_START\":\"1\",\"CI\":\"1\",\"GIT_AUTHOR_EMAIL\":\"build50@example.invalid\",\"GIT_CONFIG_GLOBAL\":\"/dev/null\",\"GIT_CONFIG_NOSYSTEM\":\"1\",\"LANG\":\"C.UTF-8\",\"TZ\":\"UTC\"},\"history\":\"fresh-store defaults; no history assertion in this slice\",\"initFlags\":[\"--non-interactive\",\"--quiet\",\"--skip-agents\",\"--skip-hooks\"],\"owner\":\"build50@example.invalid\",\"prefix\":\"b25\"},\"engine\":\"embedded-dolt\",\"inputs\":{\"clock\":{\"fieldsOmitted\":[\"timestamps\",\"revision hashes\",\"generated relation IDs\"],\"mode\":\"runtime-non-temporal-slice\",\"schedule\":\"no clock advances or time predicate; runtime Go/SQL stamps excluded\"},\"graph\":{\"edges\":1,\"nodes\":2,\"seed\":\"explicit-pair\"},\"ids\":{\"collisionState\":\"fresh disposable store\",\"counterState\":\"unused; explicit top-level IDs, no child or hash allocation\",\"explicit\":[\"b25-source\",\"b25-target\"],\"prefix\":\"b25\"},\"sequence\":\"create pair; add ordered labels, block and two comments; patch title, priority and description\"},\"observations\":{\"afterEachUpdate\":[{\"operation\":\"title\",\"relations\":{\"commentCount\":2,\"comments\":[\"Design review notes\",\"Implementation started\"],\"dependencies\":[{\"from\":\"b25-source\",\"kind\":\"blocks\",\"to\":\"b25-target\"}],\"labels\":[\"alpha\",\"beta\"]}},{\"operation\":\"priority\",\"relations\":{\"commentCount\":2,\"comments\":[\"Design review notes\",\"Implementation started\"],\"dependencies\":[{\"from\":\"b25-source\",\"kind\":\"blocks\",\"to\":\"b25-target\"}],\"labels\":[\"alpha\",\"beta\"]}},{\"operation\":\"description\",\"relations\":{\"commentCount\":2,\"comments\":[\"Design review notes\",\"Implementation started\"],\"dependencies\":[{\"from\":\"b25-source\",\"kind\":\"blocks\",\"to\":\"b25-target\"}],\"labels\":[\"alpha\",\"beta\"]}}],\"before\":{\"commentCount\":2,\"comments\":[\"Design review notes\",\"Implementation started\"],\"dependencies\":[{\"from\":\"b25-source\",\"kind\":\"blocks\",\"to\":\"b25-target\"}],\"labels\":[\"alpha\",\"beta\"]},\"finalFields\":{\"description\":\"Updated description\",\"priority\":0,\"title\":\"Renamed source\"}},\"sourceTests\":[\"cmd/bd/protocol/preservation_test.go::TestProtocol_LabelsPreservedAcrossUpdate\",\"cmd/bd/protocol/preservation_test.go::TestProtocol_DepsPreservedAcrossUpdate\",\"cmd/bd/protocol/preservation_test.go::TestProtocol_CommentsPreservedAcrossUpdate\",\"cmd/bd/protocol/preservation_test.go::TestProtocol_ScalarUpdatePreservesRelationalData\"]}",
+      "digest": "c58567d74e759df673b90e14d04b004ba155bcd24b0ca51959365d6be7fb25ec",
+      "artifactSha256": "05703a0500bec117963b002392e49a1ccf952bd122df39eb82a6c3676043b0f2",
+      "repeatArtifactSha256": "05703a0500bec117963b002392e49a1ccf952bd122df39eb82a6c3676043b0f2",
+      "disposition": {
+        "status": "keep",
+        "source": "engdocs/design/plug/spec/behaviors/surfaces.md#B25",
+        "scope": "recorded-reference-vector"
+      },
+      "configuration": {
+        "value": {
+          "actor": "build50-recorder",
+          "ambientEnvironment": "PATH only; no inherited application configuration",
+          "engine": "embedded-dolt",
+          "environment": {
+            "BEADS_ACTOR": "build50-recorder",
+            "BEADS_DOLT_AUTO_START": "1",
+            "CI": "1",
+            "GIT_AUTHOR_EMAIL": "build50@example.invalid",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "LANG": "C.UTF-8",
+            "TZ": "UTC"
+          },
+          "history": "fresh-store defaults; no history assertion in this slice",
+          "initFlags": [
+            "--non-interactive",
+            "--quiet",
+            "--skip-agents",
+            "--skip-hooks"
+          ],
+          "owner": "build50@example.invalid",
+          "prefix": "b25"
+        },
+        "digest": "90b6fe1223450af776f9a4ebeb274e3de271ad12da5d741fb88fa767901a9db3"
+      },
+      "inputs": {
+        "value": {
+          "clock": {
+            "fieldsOmitted": [
+              "timestamps",
+              "revision hashes",
+              "generated relation IDs"
+            ],
+            "mode": "runtime-non-temporal-slice",
+            "schedule": "no clock advances or time predicate; runtime Go/SQL stamps excluded"
+          },
+          "graph": {
+            "edges": 1,
+            "nodes": 2,
+            "seed": "explicit-pair"
+          },
+          "ids": {
+            "collisionState": "fresh disposable store",
+            "counterState": "unused; explicit top-level IDs, no child or hash allocation",
+            "explicit": [
+              "b25-source",
+              "b25-target"
+            ],
+            "prefix": "b25"
+          },
+          "sequence": "create pair; add ordered labels, block and two comments; patch title, priority and description"
+        },
+        "digest": "23b2909569cba96f801154a436f5dfdd2a8ebb60ba1a782df6fdb3a00e446851"
+      },
+      "projection": {
+        "format": "plug-recorded-projection/1",
+        "paths": [
+          "card",
+          "engine",
+          "observations"
+        ],
+        "json": "{\"card\":\"B25\",\"engine\":\"embedded-dolt\",\"observations\":{\"afterEachUpdate\":[{\"operation\":\"title\",\"relations\":{\"commentCount\":2,\"comments\":[\"Design review notes\",\"Implementation started\"],\"dependencies\":[{\"from\":\"b25-source\",\"kind\":\"blocks\",\"to\":\"b25-target\"}],\"labels\":[\"alpha\",\"beta\"]}},{\"operation\":\"priority\",\"relations\":{\"commentCount\":2,\"comments\":[\"Design review notes\",\"Implementation started\"],\"dependencies\":[{\"from\":\"b25-source\",\"kind\":\"blocks\",\"to\":\"b25-target\"}],\"labels\":[\"alpha\",\"beta\"]}},{\"operation\":\"description\",\"relations\":{\"commentCount\":2,\"comments\":[\"Design review notes\",\"Implementation started\"],\"dependencies\":[{\"from\":\"b25-source\",\"kind\":\"blocks\",\"to\":\"b25-target\"}],\"labels\":[\"alpha\",\"beta\"]}}],\"before\":{\"commentCount\":2,\"comments\":[\"Design review notes\",\"Implementation started\"],\"dependencies\":[{\"from\":\"b25-source\",\"kind\":\"blocks\",\"to\":\"b25-target\"}],\"labels\":[\"alpha\",\"beta\"]},\"finalFields\":{\"description\":\"Updated description\",\"priority\":0,\"title\":\"Renamed source\"}}}",
+        "digest": "40cd56ebfd286a8caecd7a3a93b918254badc3888f3ccd5cb133cf21eaf89ce0"
+      },
+      "rawDigest": "c58567d74e759df673b90e14d04b004ba155bcd24b0ca51959365d6be7fb25ec",
+      "projectionDigest": "40cd56ebfd286a8caecd7a3a93b918254badc3888f3ccd5cb133cf21eaf89ce0",
+      "repeatedProvenance": {
+        "first": "{\"binarySha256\":\"33cdadbe3bd7a82e2c3c40f4b5da4403d822acc00d544a321df24e277c0836a3\",\"card\":\"B25\",\"commands\":[{\"args\":[\"init\",\"--prefix\",\"b25\",\"--non-interactive\",\"--quiet\",\"--skip-agents\",\"--skip-hooks\"],\"exit\":0},{\"args\":[\"create\",\"--id\",\"b25-source\",\"--type\",\"task\",\"--title\",\"Source\",\"--priority\",\"2\"],\"exit\":0},{\"args\":[\"create\",\"--id\",\"b25-target\",\"--type\",\"task\",\"--title\",\"Target\",\"--priority\",\"2\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b25-source\",\"b25-target\",\"--type\",\"blocks\"],\"exit\":0},{\"args\":[\"label\",\"add\",\"b25-source\",\"alpha\"],\"exit\":0},{\"args\":[\"label\",\"add\",\"b25-source\",\"beta\"],\"exit\":0},{\"args\":[\"comments\",\"add\",\"b25-source\",\"Design review notes\"],\"exit\":0},{\"args\":[\"comments\",\"add\",\"b25-source\",\"Implementation started\"],\"exit\":0},{\"args\":[\"show\",\"b25-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"update\",\"b25-source\",\"--title\",\"Renamed source\"],\"exit\":0},{\"args\":[\"show\",\"b25-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"update\",\"b25-source\",\"--priority\",\"0\"],\"exit\":0},{\"args\":[\"show\",\"b25-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"update\",\"b25-source\",\"--description\",\"Updated description\"],\"exit\":0},{\"args\":[\"show\",\"b25-source\",\"--include-comments\",\"--json\"],\"exit\":0}],\"configurationDigest\":\"90b6fe1223450af776f9a4ebeb274e3de271ad12da5d741fb88fa767901a9db3\",\"disposition\":{\"scope\":\"recorded-reference-vector\",\"source\":\"engdocs/design/plug/spec/behaviors/surfaces.md#B25\",\"status\":\"keep\"},\"driver\":{\"name\":\"embedded-dolt\",\"version\":\"github.com/dolthub/dolt/go@v0.40.5-0.20260806213044-796d07497741\"},\"inputDigest\":\"23b2909569cba96f801154a436f5dfdd2a8ebb60ba1a782df6fdb3a00e446851\",\"projectionDigest\":\"40cd56ebfd286a8caecd7a3a93b918254badc3888f3ccd5cb133cf21eaf89ce0\",\"projector\":{\"identity\":\"build50-reference-provenance\",\"sha256\":\"a404d0203f806fcad848d05dcf31757b80c24a275a8ed428d91b8c3b5b5a735b\",\"source\":\"spec/recorded/extension/provenance.py\",\"version\":\"1\"},\"rawDigest\":\"c58567d74e759df673b90e14d04b004ba155bcd24b0ca51959365d6be7fb25ec\",\"recorder\":{\"identity\":\"build50-reference-recorder\",\"sha256\":\"2925b4746ebde28a0c3d073d59ebfc9154daeb84f58a8f4edb636ac98d3233fb\",\"source\":\"spec/recorded/extension/build50_record.py\",\"version\":\"1\"},\"schema\":{\"cursorSource\":\"pinned migration inventory; CLI does not expose embedded SQL\",\"ignoredCursor\":28,\"ignoredDigest\":\"31abcfd3374b7e7ae7b95727785a1591107cac63cbf5db59ea6685350c05b470\",\"mainCursor\":72,\"mainDigest\":\"c649854f6d67016df0db1c3b324679a41e090b8fad0ae5ac5d94cf72d5e8f0f2\"},\"sourceCommit\":\"9d6fff760b7a314b476539198504d77ce0959656\",\"sourceTests\":[\"cmd/bd/protocol/preservation_test.go::TestProtocol_LabelsPreservedAcrossUpdate\",\"cmd/bd/protocol/preservation_test.go::TestProtocol_DepsPreservedAcrossUpdate\",\"cmd/bd/protocol/preservation_test.go::TestProtocol_CommentsPreservedAcrossUpdate\",\"cmd/bd/protocol/preservation_test.go::TestProtocol_ScalarUpdatePreservesRelationalData\"],\"sourceTree\":\"cde121d6e4119e454857ad1c3ca293e2791be840\",\"sources\":[{\"path\":\"cmd/bd/protocol/preservation_test.go\",\"sha256\":\"94b169bc5244427c8b16de80c45f6f9c0a1bdcb9ed4f01789196b17f8d2a9036\"}],\"toolchain\":{\"buildInfoSHA256\":\"2edc35ea3a2f0d50f708bda2271742494191f3288466ba246f6a8d0502f64d50\",\"goVersion\":\"go1.26.10\",\"pythonVersion\":\"3.12.3\",\"settings\":{\"CGO_ENABLED\":\"1\",\"GOARCH\":\"amd64\",\"GOOS\":\"linux\"}}}",
+        "repeat": "{\"binarySha256\":\"33cdadbe3bd7a82e2c3c40f4b5da4403d822acc00d544a321df24e277c0836a3\",\"card\":\"B25\",\"commands\":[{\"args\":[\"init\",\"--prefix\",\"b25\",\"--non-interactive\",\"--quiet\",\"--skip-agents\",\"--skip-hooks\"],\"exit\":0},{\"args\":[\"create\",\"--id\",\"b25-source\",\"--type\",\"task\",\"--title\",\"Source\",\"--priority\",\"2\"],\"exit\":0},{\"args\":[\"create\",\"--id\",\"b25-target\",\"--type\",\"task\",\"--title\",\"Target\",\"--priority\",\"2\"],\"exit\":0},{\"args\":[\"dep\",\"add\",\"b25-source\",\"b25-target\",\"--type\",\"blocks\"],\"exit\":0},{\"args\":[\"label\",\"add\",\"b25-source\",\"alpha\"],\"exit\":0},{\"args\":[\"label\",\"add\",\"b25-source\",\"beta\"],\"exit\":0},{\"args\":[\"comments\",\"add\",\"b25-source\",\"Design review notes\"],\"exit\":0},{\"args\":[\"comments\",\"add\",\"b25-source\",\"Implementation started\"],\"exit\":0},{\"args\":[\"show\",\"b25-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"update\",\"b25-source\",\"--title\",\"Renamed source\"],\"exit\":0},{\"args\":[\"show\",\"b25-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"update\",\"b25-source\",\"--priority\",\"0\"],\"exit\":0},{\"args\":[\"show\",\"b25-source\",\"--include-comments\",\"--json\"],\"exit\":0},{\"args\":[\"update\",\"b25-source\",\"--description\",\"Updated description\"],\"exit\":0},{\"args\":[\"show\",\"b25-source\",\"--include-comments\",\"--json\"],\"exit\":0}],\"configurationDigest\":\"90b6fe1223450af776f9a4ebeb274e3de271ad12da5d741fb88fa767901a9db3\",\"disposition\":{\"scope\":\"recorded-reference-vector\",\"source\":\"engdocs/design/plug/spec/behaviors/surfaces.md#B25\",\"status\":\"keep\"},\"driver\":{\"name\":\"embedded-dolt\",\"version\":\"github.com/dolthub/dolt/go@v0.40.5-0.20260806213044-796d07497741\"},\"inputDigest\":\"23b2909569cba96f801154a436f5dfdd2a8ebb60ba1a782df6fdb3a00e446851\",\"projectionDigest\":\"40cd56ebfd286a8caecd7a3a93b918254badc3888f3ccd5cb133cf21eaf89ce0\",\"projector\":{\"identity\":\"build50-reference-provenance\",\"sha256\":\"a404d0203f806fcad848d05dcf31757b80c24a275a8ed428d91b8c3b5b5a735b\",\"source\":\"spec/recorded/extension/provenance.py\",\"version\":\"1\"},\"rawDigest\":\"c58567d74e759df673b90e14d04b004ba155bcd24b0ca51959365d6be7fb25ec\",\"recorder\":{\"identity\":\"build50-reference-recorder\",\"sha256\":\"2925b4746ebde28a0c3d073d59ebfc9154daeb84f58a8f4edb636ac98d3233fb\",\"source\":\"spec/recorded/extension/build50_record.py\",\"version\":\"1\"},\"schema\":{\"cursorSource\":\"pinned migration inventory; CLI does not expose embedded SQL\",\"ignoredCursor\":28,\"ignoredDigest\":\"31abcfd3374b7e7ae7b95727785a1591107cac63cbf5db59ea6685350c05b470\",\"mainCursor\":72,\"mainDigest\":\"c649854f6d67016df0db1c3b324679a41e090b8fad0ae5ac5d94cf72d5e8f0f2\"},\"sourceCommit\":\"9d6fff760b7a314b476539198504d77ce0959656\",\"sourceTests\":[\"cmd/bd/protocol/preservation_test.go::TestProtocol_LabelsPreservedAcrossUpdate\",\"cmd/bd/protocol/preservation_test.go::TestProtocol_DepsPreservedAcrossUpdate\",\"cmd/bd/protocol/preservation_test.go::TestProtocol_CommentsPreservedAcrossUpdate\",\"cmd/bd/protocol/preservation_test.go::TestProtocol_ScalarUpdatePreservesRelationalData\"],\"sourceTree\":\"cde121d6e4119e454857ad1c3ca293e2791be840\",\"sources\":[{\"path\":\"cmd/bd/protocol/preservation_test.go\",\"sha256\":\"94b169bc5244427c8b16de80c45f6f9c0a1bdcb9ed4f01789196b17f8d2a9036\"}],\"toolchain\":{\"buildInfoSHA256\":\"2edc35ea3a2f0d50f708bda2271742494191f3288466ba246f6a8d0502f64d50\",\"goVersion\":\"go1.26.10\",\"pythonVersion\":\"3.12.3\",\"settings\":{\"CGO_ENABLED\":\"1\",\"GOARCH\":\"amd64\",\"GOOS\":\"linux\"}}}",
+        "firstDigest": "bcecc9ee06511686039aa9ee3f9ee335210bca5dad27ec12ae27d90840197ba3",
+        "repeatDigest": "bcecc9ee06511686039aa9ee3f9ee335210bca5dad27ec12ae27d90840197ba3"
+      }
+    }
+  }
+}
