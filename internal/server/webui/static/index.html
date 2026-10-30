@@ -71,6 +71,12 @@
               </section>
             </aside>
           </div>
+
+          <section id="catalog" class="panel catalog-panel" aria-labelledby="catalog-heading">
+            <div class="panel-heading"><div><div class="section-kicker">DECLARATIVE CATALOG</div><h3 id="catalog-heading">Small additions stay visible</h3></div><span class="panel-mark" aria-hidden="true">+</span></div>
+            <p class="catalog-intro">Panels, columns, and buttons are validated data beside custom UI. They do not execute plugin JavaScript in the host page.</p>
+            <div id="catalog-entries" class="catalog-entries"></div>
+          </section>
         </section>
 
         <section class="view-panel" data-panel="next" role="tabpanel" hidden>
@@ -92,6 +98,8 @@
           <div class="view-heading"><div><div class="section-kicker">COLLABORATION / COMPACT</div><h2>Who is on what?</h2><p>Presence is ephemeral and shown only when the actual method is admitted by this server.</p></div></div>
           <section class="panel panel-focal"><div class="panel-heading"><div><div class="section-kicker">LIVE PRESENCE</div><h3>Small enough to scan</h3></div><span class="panel-mark" aria-hidden="true">•</span></div><div id="presence-rows" class="presence-list"></div></section>
         </section>
+
+        <section id="plugin-frames" class="plugin-frames" hidden aria-label="Sandboxed plugin views"></section>
       </main>
 
       <footer class="footer"><span>PLUG UI · READ ONLY</span><span id="footer-project">Project —</span><span id="footer-auth">Anonymous state is decided by the server</span></footer>
