@@ -22,7 +22,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if got := len(c.ErrorCatalog()); got != 61 {
 		t.Fatalf("error inventory = %d", got)
 	}
-	if digest(catalogJSON) != "df125942276650c878627dc82c21fe2c0721d2740b7a5e4e820fe04251355cbe" {
+	if digest(catalogJSON) != "b2a2885c266763d74ed83bd4a8c826471339dcdb583fa767824a7652bd438e19" {
 		t.Fatal("bounded source snapshot changed; reconcile approved contract")
 	}
 	// These changes affect one of two independent descriptor representations.
@@ -343,6 +343,10 @@ func TestRestoreImportCommentContract(t *testing.T) {
 	if !ok || trusted["hostPrivate"] != true {
 		t.Fatal("prepared import profile must remain host-private")
 	}
+	allocatorContract, ok := contract["allocator"].(map[string]any)
+	if !ok || allocatorContract["prefixBinding"] != "targetAllocator.prefix must equal sourceAllocator.prefix; mismatch refuses before staging." || allocatorContract["sourcePersistence"] != "Persist sourceAllocator unchanged in the restore receipt and project metadata key plug.restore.sourceAllocator." {
+		t.Fatal("allocator provenance/prefix binding contract drift")
+	}
 }
 
 func TestRestoreImportAllocatorAndProfileContract(t *testing.T) {
@@ -368,16 +372,23 @@ func TestRestoreImportAllocatorAndProfileContract(t *testing.T) {
 	source := `{"prefix":"pl","id_mode":"hash","hash_length":32,"last_id":0,"child_counters":{"pl-a":2}}`
 	target := `{"prefix":"pl","id_mode":"random","random_bytes":16,"suffix_encoding":"lower-hex","top_level_shape":"prefix-random","child_shape":"parent-random"}`
 	validate("#/components/schemas/SourceAllocatorProvenance", source, true)
+	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"hash","hash_length":1,"last_id":0}`, true)
+	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"hash","hash_length":64,"last_id":0}`, true)
+	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"hash","hash_length":65,"last_id":0}`, false)
+	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"sequential","hash_length":0,"last_id":0}`, true)
+	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"sequential","hash_length":64,"last_id":0}`, true)
+	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"sequential","hash_length":65,"last_id":0}`, false)
+	validate("#/components/schemas/SourceAllocatorProvenance", `{"prefix":"pl","id_mode":"hash","last_id":0}`, false)
 	validate("#/components/schemas/TargetRandomAllocator", target, true)
 	validate("#/components/schemas/TargetRandomAllocator", `{"prefix":"pl","id_mode":"hash","random_bytes":16,"suffix_encoding":"lower-hex","top_level_shape":"prefix-random","child_shape":"parent-random"}`, false)
 	validate("#/components/schemas/RestoreAllocatorProfile", `{"sourceAllocator":`+source+`,"targetAllocator":`+target+`}`, true)
 
-	admission := `{"mode":"authenticated","actor":{"kind":"user","id":"admin"},"scope":"restore:project:pl","authority":"restore-admin","admissionDigest":"` + strings.Repeat("a", 64) + `"}`
+	admission := `{"mode":"authenticated","actor":{"kind":"user","id":"admin"},"scope":"","authority":"restore-admin","admissionDigest":"` + strings.Repeat("a", 64) + `"}`
 	profile := `{"admission":` + admission + `,"sourceStoreId":"store-1","method":"offline.restore.import","idempotencyKey":"0123456789abcdef","archiveDigest":"` + strings.Repeat("b", 64) + `","derivedDigest":"` + strings.Repeat("c", 64) + `"}`
 	validate("#/components/schemas/RestoreImportAdmission", admission, true)
 	validate("#/components/schemas/RestoreImportProfile", profile, true)
 	validate("#/components/schemas/RestoreImportProfile", `{"admission":`+admission+`,"sourceStoreId":"store-1","method":"admin.restore.finish","idempotencyKey":"0123456789abcdef","archiveDigest":"`+strings.Repeat("b", 64)+`","derivedDigest":"`+strings.Repeat("c", 64)+`"}`, false)
-	validate("#/components/schemas/RestoreImportAdmission", `{"mode":"authenticated","actor":{"kind":"user","id":"admin"},"scope":"restore:project:pl","authority":"trusted-human-presence","admissionDigest":"`+strings.Repeat("a", 64)+`"}`, false)
+	validate("#/components/schemas/RestoreImportAdmission", `{"mode":"authenticated","actor":{"kind":"user","id":"admin"},"scope":"","authority":"trusted-human-presence","admissionDigest":"`+strings.Repeat("a", 64)+`"}`, false)
 
 	beadGet, _ := c.Descriptor("bead.get")
 	if err = c.ValidateResult(beadGet, []byte(`{"bead":{"id":"pl-1","type":"issue","revision":1},"attachments":[],"comments":[]}`)); err != nil {

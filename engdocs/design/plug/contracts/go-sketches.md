@@ -139,12 +139,17 @@ fabricated.
 
 The allocator declaration and target state are deliberately separate:
 
+`hash_length` is retained exactly as emitted by the source archive: hash mode
+accepts 1..64 and sequential mode accepts 0..64. The field is explicit even
+for sequential declarations; these source bounds are independent of the live
+target driver's hash-mode minimum.
+
 ```go
 type SourceAllocatorProvenance struct {
 	Prefix        string            `json:"prefix"`
 	IDMode        string            `json:"id_mode"` // sequential or hash
-	HashLength    uint32            `json:"hash_length,omitempty"`
-	LastID        uint64            `json:"last_id,omitempty"`
+	HashLength    uint32            `json:"hash_length"` // 1..64 for hash, 0..64 for sequential
+	LastID        uint64            `json:"last_id"`
 	ChildCounters map[string]uint64 `json:"child_counters,omitempty"`
 }
 
@@ -194,8 +199,10 @@ type RestoreImportProfile struct {
 ```
 
 Authenticated mode requires a live interactive user, restore-admin authority,
-and operation/archive-bound D32. Anonymous-local mode records trusted human
-presence and an honest anonymous actor/agent scope; it does not promote an
+and operation/archive-bound D32; its normalized G4 agent scope is empty.
+Anonymous-local mode records trusted human
+presence and an honest anonymous actor/agent scope (the normalized G4
+`scope`, including empty); it does not promote an
 operator label into a verified user. The host creates the profile after that
 admission; ordinary JSON-RPC input, `PrincipalRef`, lease, archive field or
 digest cannot mint it. Actor, scope, method, idempotency key, source store,

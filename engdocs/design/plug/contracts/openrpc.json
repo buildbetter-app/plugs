@@ -9671,41 +9671,81 @@
         "description": "Normalized untrusted source author provenance: trim Unicode White_Space, reject Unicode Cc and Cf controls, and count at most 256 Unicode scalar values. Empty after trimming is omitted."
       },
       "SourceAllocatorProvenance": {
-        "type": "object",
-        "properties": {
-          "prefix": {
-            "type": "string",
-            "minLength": 1
-          },
-          "id_mode": {
-            "type": "string",
-            "enum": [
-              "sequential",
-              "hash"
-            ]
-          },
-          "hash_length": {
-            "type": "integer",
-            "minimum": 3
-          },
-          "last_id": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "child_counters": {
+        "oneOf": [
+          {
             "type": "object",
-            "additionalProperties": {
-              "type": "integer",
-              "minimum": 0
-            }
+            "properties": {
+              "prefix": {
+                "type": "string",
+                "minLength": 1
+              },
+              "id_mode": {
+                "type": "string",
+                "const": "sequential"
+              },
+              "hash_length": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 64
+              },
+              "last_id": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "child_counters": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "required": [
+              "prefix",
+              "id_mode",
+              "hash_length",
+              "last_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "prefix": {
+                "type": "string",
+                "minLength": 1
+              },
+              "id_mode": {
+                "type": "string",
+                "const": "hash"
+              },
+              "hash_length": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 64
+              },
+              "last_id": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "child_counters": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "required": [
+              "prefix",
+              "id_mode",
+              "hash_length",
+              "last_id"
+            ],
+            "additionalProperties": false
           }
-        },
-        "required": [
-          "prefix",
-          "id_mode"
         ],
-        "additionalProperties": false,
-        "description": "Immutable source allocator declaration retained as provenance in the restore receipt and project metadata. It is never interpreted as the live target allocator."
+        "description": "Immutable source allocator declaration retained exactly as provenance in the restore receipt and project metadata key plug.restore.sourceAllocator. Hash declarations accept hash_length 1..64; sequential declarations preserve hash_length 0..64. It is never interpreted as the live target allocator."
       },
       "TargetRandomAllocator": {
         "type": "object",
@@ -9761,7 +9801,7 @@
           "targetAllocator"
         ],
         "additionalProperties": false,
-        "description": "The source provenance and live target allocator are separate values and are persisted/recovered together."
+        "description": "The source provenance and live target allocator are separate values and are persisted/recovered together. targetAllocator.prefix must equal sourceAllocator.prefix; a mismatch refuses before staging."
       },
       "RestoreImportAdmission": {
         "type": "object",
@@ -9778,7 +9818,8 @@
               },
               "scope": {
                 "type": "string",
-                "minLength": 1
+                "const": "",
+                "description": "Normalized G4 AgentLabel is empty for authenticated actors."
               },
               "authority": {
                 "type": "string",
@@ -9811,7 +9852,7 @@
               },
               "scope": {
                 "type": "string",
-                "minLength": 1
+                "description": "Normalized G4 AgentLabel for anonymous-local mode; empty is allowed."
               },
               "authority": {
                 "type": "string",
@@ -16988,7 +17029,8 @@
         "receipt",
         "read-only recovery"
       ],
-      "failure": "Missing or mismatched admission/profile refuses before staging and publishes no partial restore state."
+      "failure": "Missing or mismatched admission/profile refuses before staging and publishes no partial restore state.",
+      "scopeMapping": "scope is the normalized G4 AgentLabel: empty for authenticated principals; anonymous-local preserves the admitted canonical anonymous agent label, including empty. Authenticated labels are ignored by G4 and are not a second scope."
     },
     "allocator": {
       "profileSchema": "#/components/schemas/RestoreAllocatorProfile",
@@ -16997,7 +17039,9 @@
       "topLevelId": "{prefix}-{32 lowercase hexadecimal characters from 16 random bytes}",
       "childId": "{parent}.{32 lowercase hexadecimal characters from 16 random bytes}; driver child allocation only where parented creation is already admitted",
       "collision": "Check every generated ID against all existing, source and staged IDs regardless of source width.",
-      "hashContinuation": "Unsupported Beads hash continuation remains refused."
+      "hashContinuation": "Unsupported Beads hash continuation remains refused.",
+      "prefixBinding": "targetAllocator.prefix must equal sourceAllocator.prefix; mismatch refuses before staging.",
+      "sourcePersistence": "Persist sourceAllocator unchanged in the restore receipt and project metadata key plug.restore.sourceAllocator."
     },
     "consumerProof": "Contract/schema checks do not qualify host admission, converter round-trip, storage/recovery, or UI rendering; those owners must supply exact-head runtime evidence."
   }
