@@ -92,6 +92,118 @@ UI must prove display beside the authenticated principal. Only then can E3
 qualify with 50 simulated agents given distinct `displayName` values. This
 contract PR supplies none of those runtime or browser proofs.
 
+## Restore import comments and allocator profile
+
+The restore-import contract adds a typed result shape without changing the
+ordinary `CommentOp`, create, patch, metadata or transport metadata inputs.
+`bead.get` may include an optional `comments` array on its existing
+`BeadGetResult` result. It uses the existing authorization and as-of rules, introduces no RPC,
+and does not claim that the current service or browser already reads comments.
+
+```go
+type Comment struct {
+	Body         string         `json:"body"`
+	Principal    PrincipalRef   `json:"principal"` // verified actor
+	Time         time.Time      `json:"time"`      // restore commit time
+	Origin       *CommentOrigin `json:"origin,omitempty"`
+	SourceAuthor *string        `json:"sourceAuthor,omitempty"`
+	SourceTime   *time.Time     `json:"sourceTime,omitempty"`
+}
+
+type CommentOrigin string
+
+const CommentOriginImport CommentOrigin = "import"
+
+// LegacyComment is the unchanged body/principal/time shape. ImportedComment
+// is the closed shape used when origin is import and sourceTime is present.
+type ImportedComment struct {
+	Body         string        `json:"body"`
+	Principal    PrincipalRef  `json:"principal"` // trusted restoring actor
+	Time         time.Time     `json:"time"`      // restore commit time
+	Origin       CommentOrigin `json:"origin"`    // always import
+	SourceAuthor *string       `json:"sourceAuthor,omitempty"` // untrusted
+	SourceTime   time.Time     `json:"sourceTime"`              // source provenance
+}
+```
+
+An imported comment's `Principal` is the actor admitted by the trusted restore
+host. `sourceAuthor` is provenance only: trim Unicode `White_Space`, reject
+Unicode `Cc` and `Cf`, count at most 256 Unicode scalar values after trimming,
+and omit it when the normalized value is empty. Render it beside the verified
+principal, like `displayName`; never use it for authorization, audit identity,
+or attribution of a new action. `sourceTime` retains the original source
+timestamp, while `time` is the restore commit time. Old comments decode without
+an origin or source fields and remain unchanged. Missing or mismatched trusted
+admission refuses before writes; no source author or typed principal is
+fabricated.
+
+The allocator declaration and target state are deliberately separate:
+
+```go
+type SourceAllocatorProvenance struct {
+	Prefix        string            `json:"prefix"`
+	IDMode        string            `json:"id_mode"` // sequential or hash
+	HashLength    uint32            `json:"hash_length,omitempty"`
+	LastID        uint64            `json:"last_id,omitempty"`
+	ChildCounters map[string]uint64 `json:"child_counters,omitempty"`
+}
+
+type TargetRandomAllocator struct {
+	Prefix         string `json:"prefix"`
+	IDMode         string `json:"id_mode"`         // random
+	RandomBytes    uint32 `json:"random_bytes"`    // 16
+	SuffixEncoding string `json:"suffix_encoding"` // lower-hex
+	TopLevelShape  string `json:"top_level_shape"` // prefix-random
+	ChildShape     string `json:"child_shape"`     // parent-random
+}
+
+type RestoreAllocatorProfile struct {
+	SourceAllocator SourceAllocatorProvenance `json:"sourceAllocator"`
+	TargetAllocator TargetRandomAllocator     `json:"targetAllocator"`
+}
+```
+
+The target emits `${prefix}-${32 lowercase hex}` for top-level IDs and
+`${parent}.${32 lowercase hex}` for direct driver children. A candidate is
+previewed and consumed once, checked against every existing, source and staged
+ID (including 32-wide source IDs), and seeded through `RestoreAllocators` under
+the complete allocator lock set in the guarded restore transaction and replay.
+Source hash continuation remains unsupported; fixed-authz parented create,
+reparent and project moves remain denied.
+
+The prepared import profile is host-private and transaction-local. It binds the
+trusted admission to the restore operation and recovery:
+
+```go
+type RestoreImportAdmission struct {
+	Mode            string       `json:"mode"` // authenticated or anonymous-local
+	Actor           PrincipalRef `json:"actor"`
+	Scope           string       `json:"scope"`
+	Authority       string       `json:"authority"` // restore-admin or trusted-human-presence
+	AdmissionDigest string       `json:"admissionDigest"`
+}
+
+type RestoreImportProfile struct {
+	Admission      RestoreImportAdmission `json:"admission"`
+	SourceStoreID  string                 `json:"sourceStoreId"`
+	Method         string                 `json:"method"` // offline.restore.import
+	IdempotencyKey string                 `json:"idempotencyKey"`
+	ArchiveDigest  string                 `json:"archiveDigest"`
+	DerivedDigest  string                 `json:"derivedDigest"`
+}
+```
+
+Authenticated mode requires a live interactive user, restore-admin authority,
+and operation/archive-bound D32. Anonymous-local mode records trusted human
+presence and an honest anonymous actor/agent scope; it does not promote an
+operator label into a verified user. The host creates the profile after that
+admission; ordinary JSON-RPC input, `PrincipalRef`, lease, archive field or
+digest cannot mint it. Actor, scope, method, idempotency key, source store,
+archive digest and derived digest must match in preparation, header, imported
+comments, receipt and read-only recovery. Recovery must compare the complete
+durable profile and the live target allocator plus immutable source provenance;
+coarse principal-key lookup is insufficient.
+
 ## Shared model and `ChangeSet`
 
 ```go
