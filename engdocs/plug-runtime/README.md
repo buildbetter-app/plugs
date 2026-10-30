@@ -1,12 +1,13 @@
 # Plug runtime guides
 
-These guides describe the accepted source snapshot
-[`127ac22e1d003cce4babe6cbcbc8367ad264e649`](https://github.com/buildbetter-app/plugs/tree/127ac22e1d003cce4babe6cbcbc8367ad264e649)
-(2026-10-29) together with the focused persistent-local-CLI addition. The
-design and OpenRPC catalog describe a wider target surface.
+These guides describe the accepted runtime and CLI behavior at the audited
+source snapshot
+[`463881cec205e6cd3e5b85d1bac7d4018a153d5f`](https://github.com/buildbetter-app/plugs/tree/463881cec205e6cd3e5b85d1bac7d4018a153d5f)
+(2026-10-30). The design and OpenRPC catalog describe a wider target surface.
 
 | Guide | Use it for |
 | --- | --- |
+| [Shared server](server.md) | Starting `plug server` or `plug server --local`, storage selection, configuration, restart persistence and identity boundaries. |
 | [CLI](cli.md) | Persistent local SQLite, explicit memory sessions, admitted remote HTTP, commands, retries and cancellation. |
 | [RPC and HTTP](rpc-http.md) | JSON-RPC registry, explicit service bindings, admission and transport limits. |
 | [Native plugins](native-plugins.md) | The public SDK, trusted native host and callback capabilities. |
@@ -23,17 +24,20 @@ root.
 
 At this snapshot:
 
-- `cmd/plug` can run persistent local SQLite at `.plug/plug.db`, an explicit
-  process-lifetime memory session, or the same JSON-RPC bytes through the
-  admitted HTTP client. `.plug/config.yaml` can select a server or a SQLite
-  path; there is no runnable `plug server` command.
+- `cmd/plug` can run a persistent local SQLite session, an explicit
+  process-lifetime memory session, an admitted remote HTTP client, or the
+  shared HTTP server through `plug server` and `plug server --local`.
+  The server and client read different, deliberately strict `.plug/config.yaml`
+  shapes; use `--server` or `PLUG_SERVER` when a CLI connects to a running
+  server.
 - `server/rpc` owns wire validation and cursors. `BindService` supplies the
   lifecycle surface; `server/ontologyrpc` and `server/collab` are explicit
   adapters that a composition root may bind. `ontology.apply` and
   `presence.watch` remain unbound and refuse with `method_not_found`.
 - `server/authn`, the process-local API-key provider and the bounded OIDC core
-  session provider admit credentials only when a host composes them. The HTTP
-  transport has no login route, cookie mode or authorization policy of its own.
+  session provider admit credentials only when a host composes them. The
+  runnable CLI server is anonymous and loopback-only; the HTTP transport has
+  no login route, cookie mode or authorization policy of its own.
 - The public Go surface is `pluginapi` and `sdk/go`. Native plugins are
   trusted compiled-in code; WASM isolation, artifact builds, durable plugin
   state and automatic extension exposure are follow-ons.
