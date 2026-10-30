@@ -15,6 +15,10 @@ go_test(
     deps = [
         ":rpc",
         "//internal/api/wire",
+        "//internal/core/authz",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/server/authzrpc",
         "//internal/core/model",
         "//internal/core/ontology",
         "//internal/core/pipeline",

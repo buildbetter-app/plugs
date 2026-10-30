@@ -28,8 +28,10 @@ go_test(
     ],
     embedsrcs = [
         "browser_check.mjs",
+        "comment_check.mjs",
         "direct_blocker_check.mjs",
         "view_watch_check.mjs",
+        "watch_bootstrap_check.mjs",
     ],
     env_inherit = ["PATH"],
     tags = ["local"],
@@ -37,6 +39,7 @@ go_test(
     deps = [
         "//internal/core/events",
         "//internal/core/model",
+        "//internal/core/ontology",
         "//internal/core/pipeline",
         "//internal/core/service",
         "//internal/core/viewops",
@@ -48,6 +51,7 @@ go_test(
         "//internal/server/viewrpc",
         "//internal/server/watch",
         "//internal/server/watchhttp",
+        "//internal/storage/conformance",
         "//internal/storage/driver",
         "//internal/storage/memory",
     ],

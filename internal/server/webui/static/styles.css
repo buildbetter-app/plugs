@@ -168,3 +168,7 @@ h3 { margin-top: 5px; font-size: 16px; font-weight: 700; letter-spacing: -.015em
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+.comment-row { border-top: 1px solid var(--border); padding: 12px 0; overflow-wrap: anywhere; min-width: 0; }
+.comment-body { white-space: pre-wrap; }
+.comment-source { font-size: .85rem; }

@@ -630,8 +630,9 @@ internal/server/webui/bridge.go
 internal/server/webui/bridge_test.go
 internal/server/webui/browser_check.mjs
 internal/server/webui/browser_test.go
-internal/server/webui/direct_blocker_check.mjs
 internal/server/webui/catalog.go
+internal/server/webui/comment_check.mjs
+internal/server/webui/direct_blocker_check.mjs
 internal/server/webui/presence_display_check.mjs
 internal/server/webui/presence_display_test.go
 internal/server/webui/static/app.js
@@ -640,6 +641,7 @@ internal/server/webui/static/index.html
 internal/server/webui/static/styles.css
 internal/server/webui/view_watch_check.mjs
 internal/server/webui/view_watch_test.go
+internal/server/webui/watch_bootstrap_check.mjs
 internal/server/webui/webui.go
 internal/server/webui/webui_test.go
 internal/storage/conformance/BUILD.bazel
