@@ -89,6 +89,7 @@ type Runtime struct {
 	Lease            driver.ActiveLease
 	Service          *service.Service
 	RPC              *rpc.Server
+	Metrics          *pipeline.Collector
 	Authenticator    *authn.Authenticator
 	HTTPHandler      *httpjson.Handler
 	UIHandler        *webui.Handler
@@ -228,7 +229,8 @@ func (r *Runtime) bind(config Config) error {
 		return fmt.Errorf("composition: read store metadata: %w", err)
 	}
 	ontology := service.NewOntology(nil)
-	writer := pipeline.New(r.Store, r.Lease, pipeline.WithOntology(ontology))
+	writer, metrics := newPipelineWriter(r.Store, r.Lease, pipeline.WithOntology(ontology))
+	r.Metrics = metrics
 	r.Service = service.New(r.Store, r.Lease, writer, service.WithOntology(ontology))
 	registry, err := rpc.NewRegistry()
 	if err != nil {

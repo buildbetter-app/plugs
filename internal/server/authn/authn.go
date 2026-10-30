@@ -43,6 +43,14 @@ type Provider interface {
 	Authenticate(context.Context, string) (model.PrincipalRef, error)
 }
 
+// CrossOriginAuthorizer is a host-composed browser defense for bearer
+// requests. The authenticator invokes it only for a foreign Origin and only
+// for a core-session-shaped credential; ordinary providers cannot opt into
+// cross-origin admission. A nil error admits the request. ErrTokenExpired
+// must be preserved so HTTP transports can return the user to sign-in. The
+// callback must not log or retain the bearer.
+type CrossOriginAuthorizer func(context.Context, string, string) error
+
 // Admitter is the narrow boundary consumed by RPC/service binding. The token
 // comes from the transport, never from an actor/principal in RPC parameters.
 // Network transports must first use AdmitHTTP and Listen's posture checks.
@@ -59,12 +67,17 @@ type Config struct {
 	// AuthorizationInstalled reads the current installed chain, not a caller
 	// supplied claim. Nil means no authorization plugin is installed.
 	AuthorizationInstalled func() bool
+	// CrossOriginAuthorizer is optional. When configured, a provider may admit
+	// a live core-session bearer from an explicitly allowlisted foreign Origin.
+	// API-key and other ordinary provider credentials remain same-origin only.
+	CrossOriginAuthorizer CrossOriginAuthorizer
 }
 
 type Authenticator struct {
 	provider Provider
 	sessions CoreSessionSource
 	authz    func() bool
+	cross    CrossOriginAuthorizer
 }
 
 func New(config Config) (*Authenticator, error) {
@@ -80,7 +93,7 @@ func New(config Config) (*Authenticator, error) {
 			}
 		}
 	}
-	a := &Authenticator{provider: config.Provider, sessions: config.CoreSessions, authz: config.AuthorizationInstalled}
+	a := &Authenticator{provider: config.Provider, sessions: config.CoreSessions, authz: config.AuthorizationInstalled, cross: config.CrossOriginAuthorizer}
 	if !a.configured() && a.hasAuthorization() {
 		return nil, ErrAuthzRequiresAuthn
 	}

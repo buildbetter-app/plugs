@@ -282,6 +282,21 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			return zero, err
 		}
 	}
+	for prefix, allocator := range t.allocators {
+		if err = allocator.Validate(); err != nil {
+			_ = t.finish()
+			return zero, err
+		}
+		raw, e := encode(allocator)
+		if e != nil {
+			_ = t.finish()
+			return zero, e
+		}
+		if _, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.allocator_states(prefix,data) VALUES ($1,$2) ON CONFLICT (prefix) DO UPDATE SET data=EXCLUDED.data`, prefix, raw); err != nil {
+			_ = t.finish()
+			return zero, err
+		}
+	}
 	for hash, data := range t.blobs {
 		if _, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.blobs VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, string(hash), revision.String(), data); err != nil {
 			_ = t.finish()
