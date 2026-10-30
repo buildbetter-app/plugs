@@ -4,12 +4,14 @@
 package converterroundtrip
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -282,6 +284,8 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 
 var restorePrincipal = model.PrincipalRef{Kind: "system", ID: "plug-converter"}
 
+const importBindingRecordID = "instance_config/restore-import/binding"
+
 func recoveryScope(check Verification) (string, string) {
 	return "restore/" + check.ArchiveSHA256, hashBytes([]byte("beads-head/1\x00" + check.ArchiveSHA256 + "\x00" + check.DerivedSHA256))
 }
@@ -354,12 +358,66 @@ func RecoverImport(ctx context.Context, target driver.Store, profile driver.Rest
 	if receipt == nil || receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Incarnation != meta.Incarnation || receipt.Changeset.Revision.String() != "1" || receipt.Commit.Revision.String() != "1" || receipt.Changeset.IdempotencyKey != bound.IdempotencyKey {
 		return Report{}, driver.ErrConflict
 	}
-	rows, err := r.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
-	if err != nil || len(rows) != 1 {
+	var evidence archiveEvidence
+	var binding importBindingEvidence
+	projectRecords := map[string]importProjectMetadata{}
+	for _, result := range receipt.Commit.Results {
+		if len(result.Record) == 0 {
+			continue
+		}
+		switch {
+		case result.Ref.ID == "restore/archive":
+			if err = json.Unmarshal(result.Record, &evidence); err != nil {
+				return Report{}, driver.ErrConflict
+			}
+		case result.Ref.ID == importBindingRecordID:
+			if err = json.Unmarshal(result.Record, &binding); err != nil {
+				return Report{}, driver.ErrConflict
+			}
+		case strings.HasPrefix(result.Ref.ID, "instance_config/restore-import/project/"):
+			var metadata importProjectMetadata
+			if err = json.Unmarshal(result.Record, &metadata); err != nil {
+				return Report{}, driver.ErrConflict
+			}
+			projectRecords[result.Ref.ID] = metadata
+		}
+	}
+	if evidence.ArchiveSHA256 != check.ArchiveSHA256 || evidence.DerivedSHA256 != check.DerivedSHA256 || !reflect.DeepEqual(binding.Profile, bound) || binding.RequestHash != request || len(projectRecords) != len(binding.Projects) {
 		return Report{}, driver.ErrConflict
 	}
-	var evidence archiveEvidence
-	if err = json.Unmarshal(rows[0].Body, &evidence); err != nil || evidence.ArchiveSHA256 != check.ArchiveSHA256 || evidence.DerivedSHA256 != check.DerivedSHA256 {
+	for _, project := range binding.Projects {
+		metadata, ok := projectRecords[importProjectRecordID(project.SourceAllocator.Prefix)]
+		var source dumpformat.Project
+		rawSource, sourceOK := metadata.Metadata["plug.restore.sourceAllocator"]
+		if sourceOK {
+			sourceOK = json.Unmarshal(rawSource, &source) == nil
+		}
+		if !ok || metadata.Project != project.SourceAllocator.Prefix || !reflect.DeepEqual(metadata.ImportProfile, bound) || !sourceOK || !reflect.DeepEqual(source, project.SourceAllocator) || !reflect.DeepEqual(metadata.TargetAllocator, project.TargetAllocator) {
+			return Report{}, driver.ErrConflict
+		}
+	}
+	projectRefs := make([]model.Ref, 0, len(binding.Projects)+1)
+	projectRefs = append(projectRefs, model.RefByID(importBindingRecordID, model.Natural64(0)))
+	for _, project := range binding.Projects {
+		projectRefs = append(projectRefs, model.RefByID(importProjectRecordID(project.SourceAllocator.Prefix), model.Natural64(0)))
+	}
+	protectedRows, err := r.Get(ctx, projectRefs)
+	if err != nil || len(protectedRows) != len(projectRefs) {
+		return Report{}, driver.ErrConflict
+	}
+	for _, row := range protectedRows {
+		var receiptRecord json.RawMessage
+		for _, result := range receipt.Commit.Results {
+			if result.Ref.ID == row.Ref.ID {
+				receiptRecord = result.Record
+				break
+			}
+		}
+		if len(receiptRecord) == 0 || !bytes.Equal(receiptRecord, row.Body) {
+			return Report{}, driver.ErrConflict
+		}
+	}
+	if err = compareImportBinding(ctx, r, evidence, binding); err != nil {
 		return Report{}, driver.ErrConflict
 	}
 	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true}, nil
@@ -378,6 +436,72 @@ type restorePlan struct {
 	derivedDigest string
 	blobs         map[string][]byte
 	allocators    []driver.OfflineAllocator
+}
+
+// importBindingEvidence is an immutable, transaction-local copy of the full
+// admitted import binding. Source allocator declarations are retained as
+// dumpformat projects, because their widths are provenance (and may be below
+// the live allocator's continuation minimum). Target allocators are the exact
+// seeded Plug random profiles that recovery must observe.
+type importBindingEvidence struct {
+	Profile     driver.RestoreImportProfile `json:"profile"`
+	RequestHash string                      `json:"request_hash"`
+	Projects    []importProjectBinding      `json:"projects"`
+}
+
+type importProjectBinding struct {
+	SourceAllocator dumpformat.Project      `json:"sourceAllocator"`
+	TargetAllocator driver.OfflineAllocator `json:"targetAllocator"`
+}
+
+type importProjectMetadata struct {
+	Project         string                      `json:"project"`
+	ImportProfile   driver.RestoreImportProfile `json:"importProfile"`
+	Metadata        map[string]json.RawMessage  `json:"metadata"`
+	TargetAllocator driver.OfflineAllocator     `json:"targetAllocator"`
+}
+
+func importProjectRecordID(prefix string) string {
+	return "instance_config/restore-import/project/" + prefix
+}
+
+func compareImportBinding(ctx context.Context, r driver.Reader, evidence archiveEvidence, binding importBindingEvidence) error {
+	manifestFile, ok := evidence.Members["manifest.json"]
+	if !ok {
+		return driver.ErrConflict
+	}
+	manifestRaw, err := r.Blob(ctx, driver.Hash(manifestFile.SHA256))
+	if err != nil {
+		return err
+	}
+	var manifest dumpformat.Manifest
+	if err = json.Unmarshal(manifestRaw, &manifest); err != nil {
+		return err
+	}
+	if len(binding.Projects) != len(manifest.Projects) {
+		return driver.ErrConflict
+	}
+	allocators, ok := r.(driver.AllocatorReader)
+	if !ok {
+		return driver.ErrUnsupported
+	}
+	for _, source := range manifest.Projects {
+		var found *importProjectBinding
+		for i := range binding.Projects {
+			if binding.Projects[i].SourceAllocator.Prefix == source.Prefix {
+				found = &binding.Projects[i]
+				break
+			}
+		}
+		if found == nil || !reflect.DeepEqual(found.SourceAllocator, source) || found.TargetAllocator.Prefix != source.Prefix {
+			return driver.ErrConflict
+		}
+		actual, err := allocators.LoadAllocator(ctx, found.TargetAllocator.Prefix)
+		if err != nil || !reflect.DeepEqual(actual, found.TargetAllocator) {
+			return driver.ErrConflict
+		}
+	}
+	return nil
 }
 
 func buildPlan(archive *dumpformat.Archive) (restorePlan, error) {
@@ -473,15 +597,11 @@ func buildPlanWithProfile(archive *dumpformat.Archive, profile *driver.RestoreIm
 			if err != nil {
 				return restorePlan{}, err
 			}
-			metadata["plug.restore.allocator"] = encoded
-			if profile != nil {
-				metadata["plug.restore.sourceAllocator"] = encoded
-				targetAllocator := driver.NewRandomAllocator(project.Prefix)
-				targetEncoded, err := json.Marshal(targetAllocator)
-				if err != nil {
-					return restorePlan{}, err
-				}
-				metadata["plug.restore.targetAllocator"] = targetEncoded
+			if profile == nil {
+				// Legacy restore keeps its historical per-bead mirror. Imported
+				// source/target allocator provenance is authoritative only in the
+				// protected project records below.
+				metadata["plug.restore.allocator"] = encoded
 			}
 		}
 		labels := []string{}
@@ -591,6 +711,38 @@ func buildPlanWithProfile(archive *dumpformat.Archive, profile *driver.RestoreIm
 	}
 	if err := retainArchive(&plan, archive, add); err != nil {
 		return restorePlan{}, err
+	}
+	if profile != nil {
+		requestHash, err := profile.RequestHash()
+		if err != nil {
+			return restorePlan{}, err
+		}
+		binding := importBindingEvidence{Profile: *profile, RequestHash: requestHash}
+		for _, project := range manifest.Projects {
+			sourceRaw, err := json.Marshal(project)
+			if err != nil {
+				return restorePlan{}, err
+			}
+			targetAllocator := driver.NewRandomAllocator(project.Prefix)
+			binding.Projects = append(binding.Projects, importProjectBinding{
+				SourceAllocator: project,
+				TargetAllocator: targetAllocator,
+			})
+			metadata := importProjectMetadata{
+				Project:       project.Prefix,
+				ImportProfile: *profile,
+				Metadata: map[string]json.RawMessage{
+					"plug.restore.sourceAllocator": sourceRaw,
+				},
+				TargetAllocator: targetAllocator,
+			}
+			if err := add(model.RefByID(importProjectRecordID(project.Prefix), model.Natural64(0)), "instance_config", metadata); err != nil {
+				return restorePlan{}, err
+			}
+		}
+		if err := add(model.RefByID(importBindingRecordID, model.Natural64(0)), "instance_config", binding); err != nil {
+			return restorePlan{}, err
+		}
 	}
 
 	// Every bead write needs its exact predicate bump. The graph sentinel is

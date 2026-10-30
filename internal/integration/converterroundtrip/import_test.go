@@ -121,6 +121,15 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 			if report.Archive.SHA256() != archive.SHA256() || report.Restored.Head.String() != "1" || report.IdempotencyKey != profile.IdempotencyKey {
 				t.Fatalf("restore report=%+v", report)
 			}
+			recovered, err := RecoverImport(ctx, store, profile, Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest})
+			if err != nil || !recovered.Recovered || recovered.Restored.Head.String() != "1" {
+				t.Fatalf("import recovery=%+v err=%v", recovered, err)
+			}
+			altered := profile
+			altered.Admission.Actor.ID = "restore-admin-altered"
+			if _, err = RecoverImport(ctx, store, altered, Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}); !errors.Is(err, driver.ErrConflict) {
+				t.Fatalf("altered import profile accepted: %v", err)
+			}
 			after, err := store.Meta(ctx)
 			if err != nil || after.Head.String() != "1" {
 				t.Fatalf("post-call meta=%+v err=%v", after, err)
