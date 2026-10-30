@@ -113,6 +113,7 @@ func (r *reader) finish() error {
 		r.writer.identities = nil
 		r.writer.derived = nil
 		r.writer.blobs = nil
+		r.writer.allocators = nil
 		r.writer.bumps = nil
 		r.writer.acquired = nil
 		close(r.writer.done)
