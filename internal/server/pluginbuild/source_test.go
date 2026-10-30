@@ -18,11 +18,15 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/pluginbuild"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/server/pluginmanifest"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/pluginapi"
 	sdk "github.com/buildbetter-app/plugs/sdk/go"
 )
@@ -204,6 +208,7 @@ func TestWASIPluginBuildRestoreAndAsyncRebuild(t *testing.T) {
 	host, err := artifact.Host(ctx, pluginhost.Config{Bindings: []pluginhost.Binding{
 		{ID: "wasi-normalize", Alias: "wasi", Instance: "default", Subscriber: "normalize", Phase: pluginapi.PhaseMutate, Reads: []string{"fields.title"}, Owns: []string{"fields.normalized"}},
 		{ID: "wasi-check", Alias: "wasi", Instance: "default", Subscriber: "check", Phase: pluginapi.PhaseValidate, Reads: []string{"fields.title"}},
+		{ID: "wasi-observe", Alias: "wasi", Instance: "default", Subscriber: "observe", Phase: pluginapi.PhasePost, Reads: []string{"fields.title"}},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -254,6 +259,39 @@ func TestWASIPluginBuildRestoreAndAsyncRebuild(t *testing.T) {
 		t.Fatal("guest reached the host network")
 	} else if timeout, ok := err.(net.Error); !ok || !timeout.Timeout() {
 		t.Fatalf("network probe listener failed: %v", err)
+	}
+	// Drive the real memory Writer so all three WASI callback phases receive
+	// their per-invocation scoped reader. The second write reads the admitted
+	// first record at base revision 1; post reads the committed revision 2.
+	store := memory.New()
+	defer store.Close()
+	lease, err := store.Lease(ctx, "wasi-pipeline", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(context.Background())
+	doc := ontology.DefaultDocument()
+	doc.Types["issue"].Fields["normalized"] = ontology.Field{Type: "string", Owner: "wasi-normalize"}
+	doc.Types["issue"].Fields["private"] = ontology.Field{Type: "string"}
+	compiled, problems := ontology.Compile(doc, nil, ontology.PluginCatalog{"wasi-normalize": true})
+	if len(problems) != 0 {
+		t.Fatalf("WASI ontology: %v", problems)
+	}
+	hook := service.NewOntology(func(string) ontology.Effective { return compiled.Effective("") })
+	writer := pipeline.New(store, lease, pipeline.WithOntology(hook), pipeline.WithMutators(host.Mutators()...), pipeline.WithValidators(host.Validators()...), pipeline.WithPostSubscribers(host.Posts()...), pipeline.WithIDGenerator(func() (string, error) { return "wasi-pipeline", nil }))
+	first, err := writer.Apply(ctx, model.PrincipalRef{Kind: "user", ID: "wasi-test"}, model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Fields: map[string]any{"title": "seed", "private": "host-only"}}}}}, model.WriteMeta{Method: "tx.apply", IdempotencyKey: "00000000000000000000000000000011"})
+	if err != nil || len(first.Results) != 1 {
+		t.Fatalf("WASI seed pipeline write failed: %+v (%v)", first, err)
+	}
+	second, err := writer.Apply(ctx, model.PrincipalRef{Kind: "user", ID: "wasi-test"}, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: first.Results[0].Ref, Fields: map[string]any{"title": "hello"}}}}}, model.WriteMeta{Method: "tx.apply", IdempotencyKey: "00000000000000000000000000000012"})
+	if err != nil || second.Revision.String() != "2" || len(second.Warnings) != 0 {
+		t.Fatalf("WASI callback read pipeline failed: %+v (%v)", second, err)
+	}
+	var committed struct {
+		Fields map[string]any `json:"fields"`
+	}
+	if err := json.Unmarshal(second.Results[0].Record, &committed); err != nil || committed.Fields["normalized"] != "HELLO" || committed.Fields["private"] != "host-only" {
+		t.Fatalf("WASI scoped mutation was not committed: %s (%v)", second.Results[0].Record, err)
 	}
 	change := port.ProposedChange{RequestID: "wasi-test", Principal: model.PrincipalRef{Kind: "user", ID: "test"}, BaseRevision: model.Natural64(1), Changes: []port.Change{{
 		Resource: model.ResourceRef{Kind: "bead", Ref: model.RefByID("wasi-1", "")},
