@@ -68,14 +68,9 @@ type WriteMeta struct {
 	// GateAction and GateState/Details are trusted lowering context for the
 	// canonical gate service. They are carried through the existing Writer
 	// pipeline so idempotency lookup happens before the gate is evaluated.
-	GateAction  string
-	GateState   string
-	GateDetails map[string]any
-	// GateAutoCAS marks the transient snapshot expectation that the gate
-	// service appended for stale-read protection. It is excluded from the
-	// request identity so replay after the gate advances still finds its
-	// original receipt; caller-supplied expectations remain part of the hash.
-	GateAutoCAS    bool `json:"-"`
+	GateAction     string
+	GateState      string
+	GateDetails    map[string]any
 	AgentLabel     string
 	Project        string
 	IdempotencyKey string

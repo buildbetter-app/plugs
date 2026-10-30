@@ -25,6 +25,7 @@ import (
 type gateRuntime struct {
 	store    driver.Store
 	lease    driver.ActiveLease
+	writer   *pipeline.Writer
 	server   *rpc.Server
 	dsn      string
 	ontology *service.Ontology
@@ -96,7 +97,7 @@ func newGateRuntime(t *testing.T, engine, dsn string, o *service.Ontology, clock
 		_ = store.Close()
 		t.Fatalf("new RPC server: %v", err)
 	}
-	runtime := &gateRuntime{store: store, lease: lease, server: server, dsn: dsn, ontology: o, clock: clock, options: options}
+	runtime := &gateRuntime{store: store, lease: lease, writer: writer, server: server, dsn: dsn, ontology: o, clock: clock, options: options}
 	t.Cleanup(func() { runtime.close() })
 	return runtime
 }
@@ -112,6 +113,7 @@ func (r *gateRuntime) close() {
 		r.store = nil
 	}
 	r.server = nil
+	r.writer = nil
 }
 
 func (r *gateRuntime) restart(t *testing.T, engine string) {
@@ -154,7 +156,7 @@ func (r *gateRuntime) restart(t *testing.T, engine string) {
 		_ = opened.Close()
 		t.Fatal(err)
 	}
-	r.store, r.lease, r.server = opened, lease, server
+	r.store, r.lease, r.writer, r.server = opened, lease, writer, server
 }
 
 func gateAgent(id, sponsor string) model.PrincipalRef {
@@ -225,6 +227,121 @@ func gateEventTypes(t *testing.T, changes model.Changeset) []model.DurableEventT
 		out[i] = event.Type
 	}
 	return out
+}
+
+func gateRecords(t *testing.T, store driver.Store, ref model.Ref) []driver.Record {
+	t.Helper()
+	meta, err := store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := store.Read(context.Background(), driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	records, err := reader.Get(context.Background(), []model.Ref{ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return records
+}
+
+type gateReplayAuthorizer struct {
+	deny   bool
+	stages []port.AuthorizationStage
+}
+
+func (a *gateReplayAuthorizer) Authorize(_ context.Context, stage port.AuthorizationStage, _ port.ProposedChange, _ port.SnapshotReader) error {
+	a.stages = append(a.stages, stage)
+	if a.deny {
+		return &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+	}
+	return nil
+}
+
+func TestGateRPCReplaysReceiptWithoutCurrentBead(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite"} {
+		for _, method := range []string{"gate.approve", "gate.report"} {
+			t.Run(engine+"/"+method, func(t *testing.T) {
+				authorizer := &gateReplayAuthorizer{}
+				trusted := port.EventContext{Cause: model.EventCause{Root: "gate-replay-root", Depth: model.Natural64(0), Chain: []string{}}, Chain: []string{}}
+				runtime := newGateRuntime(t, engine, filepath.Join(t.TempDir(), "replay.db"), gateOntology(t), time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC),
+					pipeline.WithAuthorizer(authorizer), pipeline.WithEventContext(gateTrustedContext{value: trusted}))
+				principal := gateAgent("agent:alice", "user:alice")
+				ctx := rpc.WithPrincipal(context.Background(), principal)
+				kind := "single_approval"
+				if method == "gate.report" {
+					kind = "external"
+				}
+				created := result(t, gateCall(t, runtime.server, ctx, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "durable gate", "gate_kind": kind}})))
+				ref := createdRef(t, created)
+				params := map[string]any{"id": ref}
+				if method == "gate.approve" {
+					// Explicit caller expectations are part of request identity, but
+					// must not be rechecked against a later or absent live image.
+					params["expect"] = []any{map[string]any{"ref": ref, "revision": created["revision"]}}
+				} else {
+					params["state"] = "success"
+					params["details"] = map[string]any{"provider": "fixture"}
+				}
+				params = writeParams(t, params)
+				first, firstRaw := gateRoundTrip(t, runtime.server, ctx, method, params)
+				gateCommit(t, first)
+				target := model.Ref{ID: ref["id"].(string)}
+				_, err := runtime.writer.ApplyWithOutcome(ctx, principal, model.ChangeSet{Ops: []model.Op{{Kind: model.OpDelete, Delete: &model.DeleteOp{Target: target}}}}, model.WriteMeta{
+					Method: "tx.apply", Project: "local", IdempotencyKey: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Return: "full",
+				})
+				if err != nil {
+					t.Fatalf("delete resolved gate through shared Writer: %v", err)
+				}
+				if engine == "sqlite" {
+					runtime.restart(t, engine)
+				}
+				if len(gateRecords(t, runtime.store, target)) != 0 {
+					t.Fatal("gate image survived deletion/restart")
+				}
+				before, err := runtime.store.Meta(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				history := len(gateChangesets(t, runtime.store))
+				authorizer.stages = nil
+				replay, replayRaw := gateRoundTrip(t, runtime.server, ctx, method, params)
+				result(t, replay)
+				if !bytes.Equal(firstRawResult(t, firstRaw), firstRawResult(t, replayRaw)) || replay["_meta"].(map[string]any)["replayed"] != true {
+					t.Fatalf("absent-image replay lost its original result: %s", replayRaw)
+				}
+				if len(authorizer.stages) != 1 || authorizer.stages[0] != port.AuthorizeReplay {
+					t.Fatalf("receipt was not reauthorized: %v", authorizer.stages)
+				}
+				authorizer.deny, authorizer.stages = true, nil
+				requireCode(t, gateCall(t, runtime.server, ctx, method, params), "forbidden")
+				if len(authorizer.stages) != 1 || authorizer.stages[0] != port.AuthorizeReplay {
+					t.Fatalf("revocation bypassed replay authorization: %v", authorizer.stages)
+				}
+				authorizer.deny = false
+				changed := map[string]any{}
+				for key, value := range params {
+					changed[key] = value
+				}
+				changed["expect"] = []any{map[string]any{"ref": ref, "revision": gateCommit(t, first)["revision"]}}
+				requireCode(t, gateCall(t, runtime.server, ctx, method, changed), "idempotency_key_reused")
+				fresh := map[string]any{"id": ref}
+				if method == "gate.report" {
+					fresh["state"] = "success"
+				}
+				requireCode(t, gateCall(t, runtime.server, ctx, method, writeParams(t, fresh)), "not_found")
+				after, err := runtime.store.Meta(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if before.Head.String() != after.Head.String() || len(gateChangesets(t, runtime.store)) != history || len(gateRecords(t, runtime.store, target)) != 0 {
+					t.Fatal("replay/refusals changed storage head, history or deleted image")
+				}
+			})
+		}
+	}
 }
 
 func TestGateRPCMemoryAndSQLiteAtomicPersistenceReplayAndHistory(t *testing.T) {
@@ -474,6 +591,116 @@ func TestGateRPCResolutionSettlesTheClaimAtomically(t *testing.T) {
 	record := gateCommit(t, approved)["results"].([]any)[0].(map[string]any)["record"].(map[string]any)
 	if record["lease"] != nil || record["fields"].(map[string]any)["status"] != "done" {
 		t.Fatalf("gate resolution retained the live claim: %v", record)
+	}
+}
+
+func TestGateRPCForeignResolutionSettlesTheClaimAtomically(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite"} {
+		for _, scenario := range []struct {
+			name, method, kind, reportState, gateState, status string
+			slotEvent                                          model.DurableEventType
+		}{
+			{"manual", "gate.approve", "single_approval", "", "resolved", "done", model.EventBeadClosed},
+			{"external-success", "gate.report", "external", "success", "resolved", "done", model.EventBeadClosed},
+			{"external-failure", "gate.report", "external", "failure", "failed", "failed", model.EventBeadFailed},
+		} {
+			t.Run(engine+"/"+scenario.name, func(t *testing.T) {
+				runtime := newGateRuntime(t, engine, filepath.Join(t.TempDir(), "foreign.db"), gateOntology(t), time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC))
+				alice := rpc.WithPrincipal(context.Background(), gateAgent("agent:alice", "user:alice"))
+				actor := gateAgent("agent:bob", "user:bob")
+				if scenario.method == "gate.report" {
+					actor = model.PrincipalRef{Kind: "service", ID: "service:resolver"}
+				}
+				foreign := rpc.WithPrincipal(context.Background(), actor)
+				created := result(t, gateCall(t, runtime.server, alice, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "claimed gate", "gate_kind": scenario.kind}})))
+				ref := createdRef(t, created)
+				result(t, gateCall(t, runtime.server, alice, "bead.claim", writeParams(t, map[string]any{"id": ref})))
+				if engine == "sqlite" {
+					runtime.restart(t, engine)
+				}
+				target := model.Ref{ID: ref["id"].(string)}
+				claimed := gateRecords(t, runtime.store, target)[0]
+				before := len(gateChangesets(t, runtime.store))
+				requireCode(t, gateCall(t, runtime.server, foreign, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "foreign update"}})), "lease_not_held")
+				params := map[string]any{"id": ref, "expect": []any{map[string]any{"ref": ref, "revision": created["revision"]}}}
+				if scenario.method == "gate.report" {
+					params["state"] = scenario.reportState
+				}
+				requireCode(t, gateCall(t, runtime.server, foreign, scenario.method, writeParams(t, params)), "precondition_failed")
+				afterRefusal := gateRecords(t, runtime.store, target)[0]
+				if before != len(gateChangesets(t, runtime.store)) || claimed.Revision.String() != afterRefusal.Revision.String() || !bytes.Equal(claimed.Body, afterRefusal.Body) {
+					t.Fatal("foreign/stale refusal changed claim, image or history")
+				}
+				params["expect"] = []any{map[string]any{"ref": ref, "revision": claimed.Revision}}
+				resolved := gateCall(t, runtime.server, foreign, scenario.method, writeParams(t, params))
+				if state, _ := gateState(t, resolved); state != scenario.gateState {
+					t.Fatalf("foreign resolution state=%s", state)
+				}
+				commit := gateCommit(t, resolved)
+				record := commit["results"].([]any)[0].(map[string]any)["record"].(map[string]any)
+				if record["lease"] != nil || record["fields"].(map[string]any)["status"] != scenario.status {
+					t.Fatalf("foreign gate resolution was not atomic: %v", record)
+				}
+				changes := gateChangesets(t, runtime.store)
+				last := changes[len(changes)-1]
+				if len(changes) != before+1 || len(last.Changes) != 1 || last.Changes[0].Ref.ID != target.ID || last.Principal.ID != actor.ID || last.Revision.String() != commit["revision"].(json.Number).String() {
+					t.Fatalf("resolution did not record one atomic actor/image: %+v", last)
+				}
+				gateEvent := model.EventGateApproved
+				if scenario.method == "gate.report" {
+					gateEvent = model.EventGateReported
+				}
+				if events := gateEventTypes(t, last); len(events) != 2 || events[0] != scenario.slotEvent || events[1] != gateEvent {
+					t.Fatalf("resolution event plan=%v", events)
+				}
+				persisted, err := pipeline.DecodeDocument(gateRecords(t, runtime.store, target)[0].Body)
+				if err != nil || persisted.Lease != nil || persisted.Fields["status"] != scenario.status || persisted.Fields["gate_state"] != scenario.gateState {
+					t.Fatalf("settled claim/image was not persisted: %+v, %v", persisted, err)
+				}
+			})
+		}
+	}
+}
+
+func TestGateRPCPendingForeignApprovalPreservesClaim(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite"} {
+		t.Run(engine, func(t *testing.T) {
+			runtime := newGateRuntime(t, engine, filepath.Join(t.TempDir(), "pending.db"), gateOntology(t), time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC))
+			alice := rpc.WithPrincipal(context.Background(), gateAgent("agent:alice", "user:alice"))
+			bob := rpc.WithPrincipal(context.Background(), gateAgent("agent:bob", "user:bob"))
+			carol := rpc.WithPrincipal(context.Background(), gateAgent("agent:carol", "user:carol"))
+			created := result(t, gateCall(t, runtime.server, alice, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "claimed multi-human gate", "gate_kind": "human_approval"}})))
+			ref := createdRef(t, created)
+			claimed := result(t, gateCall(t, runtime.server, alice, "bead.claim", writeParams(t, map[string]any{"id": ref})))
+			requireCode(t, gateCall(t, runtime.server, bob, "gate.report", writeParams(t, map[string]any{"id": ref, "state": "success"})), "forbidden")
+			pending := gateCall(t, runtime.server, bob, "gate.approve", writeParams(t, map[string]any{"id": ref}))
+			if state, approvals := gateState(t, pending); state != "pending" || approvals != "1" {
+				t.Fatalf("foreign first approval bypassed threshold: %v", pending)
+			}
+			pendingRecord := gateCommit(t, pending)["results"].([]any)[0].(map[string]any)["record"].(map[string]any)
+			claimedRecord := claimed["results"].([]any)[0].(map[string]any)["record"].(map[string]any)
+			pendingLease, _ := json.Marshal(pendingRecord["lease"])
+			claimedLease, _ := json.Marshal(claimedRecord["lease"])
+			if pendingRecord["lease"] == nil || !bytes.Equal(pendingLease, claimedLease) || pendingRecord["fields"].(map[string]any)["status"] != "in_progress" {
+				t.Fatalf("pending foreign approval changed claim/workflow: %v", pendingRecord)
+			}
+			if engine == "sqlite" {
+				runtime.restart(t, engine)
+			}
+			before := len(gateChangesets(t, runtime.store))
+			duplicate := gateCall(t, runtime.server, bob, "gate.approve", writeParams(t, map[string]any{"id": ref}))
+			if state, approvals := gateState(t, duplicate); state != "pending" || approvals != "1" || len(gateChangesets(t, runtime.store)) != before {
+				t.Fatalf("duplicate foreign approval changed count/history: %v", duplicate)
+			}
+			resolved := gateCall(t, runtime.server, carol, "gate.approve", writeParams(t, map[string]any{"id": ref}))
+			if state, approvals := gateState(t, resolved); state != "resolved" || approvals != "2" {
+				t.Fatalf("second distinct human did not resolve: %v", resolved)
+			}
+			record := gateCommit(t, resolved)["results"].([]any)[0].(map[string]any)["record"].(map[string]any)
+			if record["lease"] != nil || record["fields"].(map[string]any)["status"] != "done" || len(gateChangesets(t, runtime.store)) != before+1 {
+				t.Fatalf("second foreign approval did not atomically settle claim: %v", record)
+			}
+		})
 	}
 }
 

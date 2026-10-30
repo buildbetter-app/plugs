@@ -16,11 +16,10 @@ func (s *Service) ApproveGate(ctx context.Context, by model.PrincipalRef, req Ga
 	meta.GateAction = "approve"
 	meta.GateState = ""
 	meta.GateDetails = nil
-	cs, autoCAS, err := s.gateChangeSet(ctx, by, req.ID, req.Expect)
+	cs, err := gateChangeSet(req.ID, req.Expect)
 	if err != nil {
 		return GateOutcome{}, err
 	}
-	meta.GateAutoCAS = autoCAS
 	// GateResult must be recoverable from the durable receipt even when the
 	// caller asks for a minimal ordinary commit, so retain the full record in
 	// the canonical nested commit.
@@ -42,11 +41,10 @@ func (s *Service) ReportGate(ctx context.Context, by model.PrincipalRef, req Gat
 	meta.GateAction = "report"
 	meta.GateState = req.State
 	meta.GateDetails = req.Details
-	cs, autoCAS, err := s.gateChangeSet(ctx, by, req.ID, req.Expect)
+	cs, err := gateChangeSet(req.ID, req.Expect)
 	if err != nil {
 		return GateOutcome{}, err
 	}
-	meta.GateAutoCAS = autoCAS
 	meta.Return = "full"
 	v, err := s.apply(ctx, by, "gate.report", cs, meta, true)
 	if err != nil {
@@ -59,38 +57,14 @@ func (s *Service) ReportGate(ctx context.Context, by model.PrincipalRef, req Gat
 	return GateOutcome{Result: result, Replayed: v.Replayed}, nil
 }
 
-func (s *Service) gateChangeSet(ctx context.Context, by model.PrincipalRef, id model.Ref, expect []model.Precondition) (model.ChangeSet, bool, error) {
+func gateChangeSet(id model.Ref, expect []model.Precondition) (model.ChangeSet, error) {
 	if err := namedRef(id); err != nil {
-		return model.ChangeSet{}, false, err
+		return model.ChangeSet{}, err
 	}
-	r, err := s.reader(ctx, by, nil)
-	if err != nil {
-		return model.ChangeSet{}, false, err
-	}
-	defer r.Close()
-	records, err := r.Get(ctx, []model.Ref{id})
-	if err != nil {
-		return model.ChangeSet{}, false, mapped(err)
-	}
-	if len(records) != 1 || records[0].Kind != "bead" {
-		return model.ChangeSet{}, false, failure("not_found", "gate bead not found")
-	}
-	if _, err := pipeline.DecodeDocument(records[0].Body); err != nil {
-		return model.ChangeSet{}, false, failure("internal_error", "invalid persisted gate bead")
-	}
-	revision := records[0].Revision
-	hasRead := false
-	for _, precondition := range expect {
-		if precondition.Ref.ID == id.ID && precondition.Ref.Branch.IsZero() && precondition.Revision != nil && precondition.Revision.String() == revision.String() && precondition.Field == "" && precondition.Hash == "" {
-			hasRead = true
-			break
-		}
-	}
-	autoCAS := !hasRead
-	if autoCAS {
-		expect = append(append([]model.Precondition(nil), expect...), model.Precondition{Ref: id, Revision: &revision})
-	}
-	return model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: id, Fields: map[string]any{}}}}, Expect: expect}, autoCAS, nil
+	// The Writer looks up and reauthorizes a durable receipt before requiring
+	// the live bead. For fresh writes its tracked read is checked under the
+	// transaction's record lock, alongside the caller's explicit expectations.
+	return model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: id, Fields: map[string]any{}}}}, Expect: expect}, nil
 }
 
 func gateResult(commit model.Commit) (GateResult, error) {

@@ -453,6 +453,12 @@ func isSlot(method string) bool {
 }
 
 func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.WriteMeta) error {
+	if isGateMethod(meta.Method) && meta.Method == "gate."+meta.GateAction {
+		// Approval and resolver authority are independent of claim ownership.
+		// Normalization and authorization still validate the gate operation;
+		// claims preserves a pending lease and clears it on terminal resolution.
+		return nil
+	}
 	lease := doc.Lease
 	if lease == nil {
 		return nil

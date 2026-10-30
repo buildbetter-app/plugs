@@ -201,12 +201,6 @@ func (w *Writer) reader(ctx context.Context) (driver.Reader, error) {
 }
 
 func requestHash(cs model.ChangeSet, meta model.WriteMeta) (string, error) {
-	if meta.GateAutoCAS && len(cs.Expect) != 0 {
-		// GateService appends its current bead revision after the caller's
-		// expectations. That value changes after the first approval/report, so
-		// keep it in the transaction CAS but out of the durable request hash.
-		cs.Expect = append([]model.Precondition(nil), cs.Expect[:len(cs.Expect)-1]...)
-	}
 	var (
 		data []byte
 		err  error
