@@ -417,6 +417,9 @@ internal/integration/webacceptance/README.md
 internal/integration/webacceptance/browser_check.mjs
 internal/integration/webacceptance/browser_test.go
 internal/integration/webacceptance/fixture_test.go
+internal/integration/webacceptance/presence_adapter_check.mjs
+internal/integration/webacceptance/presence_adapter_test.go
+internal/integration/webacceptance/presence_dom_adapter.mjs
 internal/integration/webacceptance/web_test.go
 internal/plugins/authnapikey/BUILD.bazel
 internal/plugins/authnapikey/README.md
