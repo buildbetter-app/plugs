@@ -389,6 +389,9 @@ func claimNext(ctx context.Context, store driver.Store, lease driver.ActiveLease
 			doc.Fields["status"] = "in_progress"
 			doc.Fields["claimer"] = "e5"
 			body, _ := json.Marshal(doc)
+			// Count the selected write operation before its first write so
+			// pre-commit and commit failures share the same denominator.
+			c.attempts.Add(1)
 			if err := tx.Put(ctx, driver.Record{Ref: ref, Kind: "bead", Body: body}); err != nil {
 				_ = tx.Rollback(context.Background())
 				return model.Ref{}, false, countError(c, err)
@@ -407,7 +410,6 @@ func claimNext(ctx context.Context, store driver.Store, lease driver.ActiveLease
 				_ = tx.Rollback(context.Background())
 				return model.Ref{}, false, countError(c, err)
 			}
-			c.attempts.Add(1)
 			header := changeHeader(tx.Snapshot().Incarnation, "e5.claim", fmt.Sprintf("e5-claim-%s-%d", ref.ID, time.Now().UnixNano()), state.Revision, ref, keys)
 			if _, err := tx.Commit(ctx, header); err != nil {
 				_ = tx.Rollback(context.Background())
@@ -490,17 +492,19 @@ func mutateOne(ctx context.Context, store driver.Store, lease driver.ActiveLease
 func retry(ctx context.Context, c *counters, operation func() error) error {
 	for attempt := 0; attempt < 3; attempt++ {
 		c.attempts.Add(1)
+		// Retries count additional operation executions, rather than
+		// retryable errors. An exhausted three-attempt budget therefore has
+		// three attempts and only two retries.
+		if attempt > 0 {
+			c.retries.Add(1)
+		}
 		err := operation()
 		if err == nil {
-			if attempt > 0 {
-				c.retries.Add(int64(attempt))
-			}
 			c.mutations.Add(1)
 			return nil
 		}
-		if errors.Is(err, driver.ErrConflict) || strings.Contains(strings.ToLower(err.Error()), "serialization") {
+		if isRetryableConflict(err) {
 			c.conflicts.Add(1)
-			c.retries.Add(1)
 			continue
 		}
 		return countError(c, err)
@@ -531,6 +535,9 @@ func injectConflict(ctx context.Context, store driver.Store, lease driver.Active
 	}
 	doc.Fields["conflictProbe"] = true
 	body, _ := json.Marshal(doc)
+	// Count this selected write before its first write, including any
+	// pre-commit failure, as well as the deliberately stale commit below.
+	c.attempts.Add(1)
 	if err := tx.Put(ctx, driver.Record{Ref: ref, Kind: "bead", Body: body}); err != nil {
 		_ = tx.Rollback(context.Background())
 		return err
@@ -546,6 +553,8 @@ func injectConflict(ctx context.Context, store driver.Store, lease driver.Active
 		return err
 	}
 	header := changeHeader(tx.Snapshot().Incarnation, "e5.conflict", "e5-conflict-"+runID, model.Natural64(0), ref, keys)
+	// This deliberately stale commit is an executed operation. The following
+	// mutateOne call is its retry.
 	_, err = tx.Commit(ctx, header)
 	_ = tx.Rollback(context.Background())
 	if !errors.Is(err, driver.ErrConflict) {
@@ -761,6 +770,11 @@ func changeHeader(incarnation string, method, key string, from model.Revision, r
 }
 
 func countError(c *counters, err error) error {
+	// claimNext and other one-shot commit paths use countError directly. Keep
+	// their failed conflict commits in the same conflict metric as retry().
+	if isRetryableConflict(err) {
+		c.conflicts.Add(1)
+	}
 	if strings.Contains(strings.ToLower(err.Error()), "deadlock") {
 		c.deadlocks.Add(1)
 	}
@@ -769,6 +783,10 @@ func countError(c *counters, err error) error {
 		c.fenced.Add(1)
 	}
 	return err
+}
+
+func isRetryableConflict(err error) bool {
+	return errors.Is(err, driver.ErrConflict) || strings.Contains(strings.ToLower(err.Error()), "serialization")
 }
 
 // Keep the deterministic seed available to callers that want to build a
