@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,6 +21,13 @@ import (
 var prefixPattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
 
 var knownKinds = map[string]bool{
+	"bead": true, "edge": true, "comment": true, "memory": true,
+	"config": true, "beads-archive": true,
+}
+
+// Native records use the same closed v1 kind registry as the offline
+// converter. Unknown kinds must refuse before a restore can write anything.
+var knownNativeKinds = map[string]bool{
 	"bead": true, "edge": true, "comment": true, "memory": true,
 	"config": true, "beads-archive": true,
 }
@@ -113,6 +121,12 @@ func Read(reader io.Reader) (*Archive, error) {
 	if err := decodeJSON(members["manifest.json"], &manifest); err != nil {
 		return nil, fmt.Errorf("invalid manifest: %w", err)
 	}
+	if manifest.Scope == "plug-native-store" {
+		if err := validateNativeArchive(manifest, members, paths); err != nil {
+			return nil, err
+		}
+		return &Archive{manifest: manifest, members: members, native: true}, nil
+	}
 	if err := validateManifest(manifest, members); err != nil {
 		return nil, err
 	}
@@ -135,10 +149,123 @@ func allowedMember(name string) bool {
 	if name == "manifest.json" || name == "config/sources.json" {
 		return true
 	}
+	if name == "records/native.ndjson" || name == "versions.ndjson" || name == "changesets.ndjson" {
+		return true
+	}
+	if strings.HasPrefix(name, "blobs/") && len(strings.TrimPrefix(name, "blobs/")) == 64 {
+		return true
+	}
 	if !strings.HasPrefix(name, "records/") || !strings.HasSuffix(name, ".ndjson") {
 		return false
 	}
 	return knownKinds[strings.TrimSuffix(strings.TrimPrefix(name, "records/"), ".ndjson")]
+}
+
+// validateNativeArchive validates the archive written by admin.dump. It is a
+// deliberately small, typed transport envelope: storage drivers remain the
+// authority for applying records and no source migration claims are inferred.
+func validateNativeArchive(manifest Manifest, members map[string][]byte, paths []string) error {
+	if manifest.Format != Format || manifest.Schema != 1 || manifest.Scope != "plug-native-store" ||
+		manifest.NativeStoreID == "" || manifest.NativeIncarnation == "" || manifest.NativeHead == "" ||
+		manifest.NativeDigest == "" || manifest.RecordCount < 0 || manifest.VersionCount < 0 || manifest.ChangesetCount < 0 {
+		return fmt.Errorf("unsupported native archive manifest")
+	}
+	if manifest.History != "full" && manifest.History != "head" {
+		return fmt.Errorf("unsupported native history claim %q", manifest.History)
+	}
+	if _, err := strconv.ParseUint(manifest.NativeHead, 10, 64); err != nil {
+		return fmt.Errorf("invalid native head revision")
+	}
+	if len(paths) < 4 || paths[0] != "manifest.json" || !sort.StringsAreSorted(paths[1:]) {
+		return fmt.Errorf("native archive members are not canonical")
+	}
+	for path, file := range manifest.Files {
+		member, ok := members[path]
+		if !ok || path == "manifest.json" || file.Size != int64(len(member)) || file.SHA256 != digest(member) {
+			return fmt.Errorf("native checksum/size mismatch for %q", path)
+		}
+	}
+	if len(manifest.Files) != len(members)-1 || manifest.Files["records/native.ndjson"].Size < 0 ||
+		manifest.Files["versions.ndjson"].Size < 0 || manifest.Files["changesets.ndjson"].Size < 0 {
+		return fmt.Errorf("native archive file inventory is incomplete")
+	}
+	for _, path := range []string{"config/sources.json", "records/native.ndjson", "versions.ndjson", "changesets.ndjson"} {
+		if _, ok := members[path]; !ok {
+			return fmt.Errorf("native archive is missing %q", path)
+		}
+		if _, ok := manifest.Files[path]; !ok {
+			return fmt.Errorf("native archive does not checksum %q", path)
+		}
+	}
+	for path := range members {
+		if path != "manifest.json" {
+			if _, ok := manifest.Files[path]; !ok {
+				return fmt.Errorf("native archive member %q is not inventoried", path)
+			}
+		}
+	}
+	if err := validateNativeLines(members["records/native.ndjson"], manifest.RecordCount, "record"); err != nil {
+		return err
+	}
+	if err := validateNativeLines(members["versions.ndjson"], manifest.VersionCount, "version"); err != nil {
+		return err
+	}
+	if err := validateNativeLines(members["changesets.ndjson"], manifest.ChangesetCount, "changeset"); err != nil {
+		return err
+	}
+	// NativeDigest binds all non-manifest members in canonical path order. The
+	// manifest itself is intentionally excluded so it can carry the digest.
+	h := sha256.New()
+	for _, path := range append([]string(nil), paths[1:]...) {
+		if path == "manifest.json" {
+			continue
+		}
+		_, _ = io.WriteString(h, path)
+		_, _ = h.Write(members[path])
+	}
+	if hex.EncodeToString(h.Sum(nil)) != manifest.NativeDigest {
+		return fmt.Errorf("native archive digest mismatch")
+	}
+	return nil
+}
+
+func validateNativeLines(data []byte, want int, label string) error {
+	if want == 0 {
+		if len(data) != 0 {
+			return fmt.Errorf("native %s member is not empty", label)
+		}
+		return nil
+	}
+	if len(data) == 0 || data[len(data)-1] != '\n' {
+		return fmt.Errorf("native %s member is unterminated", label)
+	}
+	lines := bytes.Split(data[:len(data)-1], []byte{'\n'})
+	if len(lines) != want {
+		return fmt.Errorf("native %s count mismatch", label)
+	}
+	for _, line := range lines {
+		var value any
+		if err := decodeJSON(line, &value); err != nil {
+			return fmt.Errorf("invalid native %s: %w", label, err)
+		}
+		object, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("native %s must be an object", label)
+		}
+		if label == "record" {
+			kind, ok := object["kind"].(string)
+			if !ok || !knownNativeKinds[kind] {
+				return fmt.Errorf("unknown native record kind %q", kind)
+			}
+			if _, ok := object["ref"].(map[string]any); !ok {
+				return fmt.Errorf("native record ref must be an object")
+			}
+			if _, ok := object["body"]; !ok {
+				return fmt.Errorf("native record body is required")
+			}
+		}
+	}
+	return nil
 }
 
 func validateManifest(manifest Manifest, members map[string][]byte) error {

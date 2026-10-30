@@ -99,6 +99,13 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 	return port.WriteOutcome{Commit: v}, mapped(err)
 }
 
+// ApplyWithOutcome is the optional direct transaction binding. Named service
+// verbs continue to lower through the same method; the RPC layer binds this
+// entry point only in compositions that explicitly install tx.apply.
+func (s *Service) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.apply(ctx, by, "tx.apply", cs, meta, true)
+}
+
 func (s *Service) Create(ctx context.Context, by model.PrincipalRef, req CreateRequest, meta model.WriteMeta) (model.Commit, error) {
 	v, err := s.create(ctx, by, req, meta, false)
 	return v.Commit, err
@@ -285,13 +292,6 @@ func (s *Service) lifecycle(ctx context.Context, by model.PrincipalRef, method s
 		cs.Ops = append(cs.Ops, model.Op{Kind: model.OpComment, Comment: &model.CommentOp{Target: id, Body: reason}})
 	}
 	return s.apply(ctx, by, method, cs, meta, outcomeRequired)
-}
-
-// ApplyWithOutcome is the generic transaction boundary. It deliberately does
-// no lowering or normalization: the Writer owns ChangeSet validation,
-// authorization, graph guards, atomic publication and idempotent replay.
-func (s *Service) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
-	return s.apply(ctx, by, "tx.apply", cs, meta, true)
 }
 
 func (s *Service) Apply(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (model.Commit, error) {

@@ -1000,6 +1000,9 @@
           },
           "cursor": {
             "type": "string"
+          },
+          "projection": {
+            "$ref": "#/components/schemas/ProjectionStatus"
           }
         },
         "required": [
@@ -1149,6 +1152,9 @@
             "items": {
               "$ref": "#/components/schemas/ViewGroup"
             }
+          },
+          "projection": {
+            "$ref": "#/components/schemas/ProjectionStatus"
           }
         },
         "required": [
@@ -1178,6 +1184,12 @@
           "hiddenBlockers": {
             "type": "integer",
             "minimum": 0
+          },
+          "readinessPending": {
+            "type": "boolean"
+          },
+          "projection": {
+            "$ref": "#/components/schemas/ProjectionStatus"
           }
         },
         "required": [
@@ -3164,6 +3176,132 @@
           }
         ],
         "x-validation": "Index equals array position. Exactly one ordinary event for every ChangeRecord in ChangeIndex order, followed immediately by notices sorted uniquely by dependent ID. Notices retain ordinary close/cancel slot event and identical provenance, anchor the changed blocker and from/current revisions. Chain matches the changeset header. Event/resource kind, operation and slot must agree."
+      },
+      "ProjectionPosition": {
+        "type": "object",
+        "properties": {
+          "incarnation": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "incarnation",
+          "revision",
+          "index"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectionDeliveryKey": {
+        "type": "object",
+        "properties": {
+          "incarnation": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "binding": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "incarnation",
+          "revision",
+          "index",
+          "binding"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectionFailure": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/ProjectionDeliveryKey"
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "firstAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deadLetter": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "attempts",
+          "firstAt",
+          "deadLetter",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectionResume": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "$ref": "#/components/schemas/ProjectionPosition"
+          },
+          "lagAcceptedThrough": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "position"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectionStatus": {
+        "type": "object",
+        "properties": {
+          "binding": {
+            "type": "string"
+          },
+          "checkpoint": {
+            "$ref": "#/components/schemas/ProjectionPosition"
+          },
+          "failure": {
+            "$ref": "#/components/schemas/ProjectionFailure"
+          },
+          "halted": {
+            "type": "boolean"
+          },
+          "stalled": {
+            "type": "boolean"
+          },
+          "lagAcceptedThrough": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "resume": {
+            "$ref": "#/components/schemas/ProjectionResume"
+          }
+        },
+        "required": [
+          "binding",
+          "checkpoint"
+        ],
+        "additionalProperties": false
       }
     },
     "errors": {

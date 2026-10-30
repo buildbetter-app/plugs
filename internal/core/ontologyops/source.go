@@ -28,6 +28,11 @@ func New(store ReadStore, lease driver.ActiveLease, cfg Config) (*Service, error
 	return &Service{store: store, lease: lease, cfg: cfg, plans: map[string]retainedPlan{}}, nil
 }
 
+// ProtectedApplyEnabled is consumed by the RPC composition root to decide
+// whether ontology.apply belongs in runtime discovery. A read-only service
+// never advertises a handler that would only fail at invocation time.
+func (s *Service) ProtectedApplyEnabled() bool { return s != nil && s.cfg.ProtectedApplier != nil }
+
 func failure(code model.ErrorCode, hint string) error {
 	return &model.Error{Data: model.ErrorData{Code: code, Hint: hint, Retryable: code == "busy"}}
 }

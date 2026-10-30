@@ -32,4 +32,5 @@ CREATE TABLE IF NOT EXISTS replays (
  pending INTEGER NOT NULL DEFAULT 0 CHECK(pending IN (0,1))
 );
 CREATE TABLE IF NOT EXISTS checkpoints (key TEXT PRIMARY KEY, generation TEXT NOT NULL, payload BLOB);
+CREATE TABLE IF NOT EXISTS allocator_states (prefix TEXT PRIMARY KEY, data BLOB NOT NULL);
 `
