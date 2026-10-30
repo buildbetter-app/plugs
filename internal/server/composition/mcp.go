@@ -1,7 +1,7 @@
 package composition
 
 import (
-	"errors"
+	"io"
 	"net/http"
 
 	"github.com/buildbetter-app/plugs/internal/server/authn"
@@ -17,8 +17,15 @@ import (
 // Keep this helper narrow so the continuous notification stream can provide a
 // sink here without adding a second registry, authenticator or session store.
 func newMCPHandler(server *rpc.Server, authenticator *authn.Authenticator) (http.Handler, error) {
-	if server == nil || authenticator == nil {
-		return nil, errors.New("composition: MCP requires the composed RPC server and authenticator")
-	}
 	return mcp.New(server, authenticator, mcp.Config{})
+}
+
+// closeMCPHandler consumes the notification adapter's optional Close seam.
+// The finite adapter has no resources to close. The streaming adapter closes
+// its hub before HTTP drain so a connected GET cannot hold shutdown open.
+func closeMCPHandler(handler http.Handler) error {
+	if closer, ok := handler.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
