@@ -9,7 +9,9 @@
 .github/dependabot.yml
 .github/images/agent-using-beads.jpg
 .github/pages-redirect/index.html
+.github/runs-on.yml
 .github/workflows/plug-bazel.yml
+.github/workflows/plug-runs-on-smoke.yml
 .gitignore
 BUILD.bazel
 LICENSE
@@ -651,8 +653,8 @@ pluginapi/op.go
 pluginapi/types.go
 pluginapi/types_test.go
 scripts/ci/plug-bazel-config-test.sh
-scripts/ci/plug-bazel-targets.sh
 scripts/ci/plug-bazel-targets-test.sh
+scripts/ci/plug-bazel-targets.sh
 sdk/go/BUILD.bazel
 sdk/go/conformance/BUILD.bazel
 sdk/go/conformance/fixture.go
