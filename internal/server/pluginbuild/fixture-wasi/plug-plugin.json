@@ -22,6 +22,12 @@
           "reads": ["fields.title"]
         },
         {
+          "kind": "subscriber",
+          "name": "observe",
+          "phases": ["post"],
+          "reads": ["fields.title"]
+        },
+        {
           "kind": "methods",
           "prefix": "x.wasi",
           "methods": {
