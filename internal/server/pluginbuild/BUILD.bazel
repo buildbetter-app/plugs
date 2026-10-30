@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "pluginbuild",
-    srcs = ["build.go", "process_other.go", "process_unix.go", "store.go"],
+    srcs = ["build.go", "persistent.go", "process_other.go", "process_unix.go", "store.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/pluginbuild",
     visibility = ["//:__subpackages__"],
     deps = [
@@ -15,7 +15,7 @@ go_library(
 
 go_test(
     name = "pluginbuild_test",
-    srcs = ["source_test.go"],
+    srcs = ["durable_test.go", "source_test.go"],
     embedsrcs = [
         "//internal/server/pluginbuild/fixture:sources",
         "//internal/server/pluginbuild/fixture-wasi:sources",

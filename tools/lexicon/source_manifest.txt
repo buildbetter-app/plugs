@@ -442,6 +442,7 @@ internal/server/ontologyrpc/integration_test.go
 internal/server/pluginbuild/BUILD.bazel
 internal/server/pluginbuild/README.md
 internal/server/pluginbuild/build.go
+internal/server/pluginbuild/durable_test.go
 internal/server/pluginbuild/fixture/BUILD.bazel
 internal/server/pluginbuild/fixture/go.mod.template
 internal/server/pluginbuild/fixture/plug-plugin.json
@@ -450,6 +451,7 @@ internal/server/pluginbuild/fixture-wasi/BUILD.bazel
 internal/server/pluginbuild/fixture-wasi/go.mod.template
 internal/server/pluginbuild/fixture-wasi/plug-plugin.json
 internal/server/pluginbuild/fixture-wasi/plugin.go
+internal/server/pluginbuild/persistent.go
 internal/server/pluginbuild/process_other.go
 internal/server/pluginbuild/process_unix.go
 internal/server/pluginbuild/source_test.go
