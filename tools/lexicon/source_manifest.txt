@@ -527,6 +527,12 @@ internal/server/transport/httpjson/server.go
 internal/server/transport/inprocess/BUILD.bazel
 internal/server/transport/inprocess/inprocess.go
 internal/server/transport/inprocess/inprocess_test.go
+internal/server/transport/mcp/BUILD.bazel
+internal/server/transport/mcp/README.md
+internal/server/transport/mcp/config.go
+internal/server/transport/mcp/errors.go
+internal/server/transport/mcp/handler.go
+internal/server/transport/mcp/handler_test.go
 internal/server/transport/stdio/BUILD.bazel
 internal/server/transport/stdio/README.md
 internal/server/transport/stdio/config.go
@@ -667,6 +673,11 @@ spec/extended/paging_test.go
 spec/extended/time_test.go
 spec/fixture_test.go
 spec/pipeline_test.go
+spec/recorded/BUILD.bazel
+spec/recorded/README.md
+spec/recorded/goldens.json
+spec/recorded/goldens_test.go
+spec/recorded/provenance.py
 spec/rpc_test.go
 spikes/runtime/BUILD.bazel
 spikes/runtime/README.md
