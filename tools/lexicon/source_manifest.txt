@@ -727,6 +727,17 @@ spec/cardb01/record_reference.py
 spec/cardb01/reference-run-1.json
 spec/cardb01/reference-run-2.json
 spec/cardb01/reference_test.go
+spec/cardb19/BUILD.bazel
+spec/cardb19/README.md
+spec/cardb19/archive_test.go
+spec/cardb19/fixture_test.go
+spec/cardb19/record_reference.py
+spec/cardb19/reference.json
+spec/cardb19/source-binding.json
+spec/cardb19/testdata/recording-1/export.jsonl
+spec/cardb19/testdata/recording-1/imported.json
+spec/cardb19/testdata/recording-2/export.jsonl
+spec/cardb19/testdata/recording-2/imported.json
 spec/cardb28/BUILD.bazel
 spec/cardb28/README.md
 spec/cardb28/cardb28_test.go
