@@ -16,6 +16,7 @@ import (
 type sessionRecord struct {
 	digest    [sha256.Size]byte
 	user      string
+	origin    string
 	expiresAt time.Time
 }
 
@@ -33,7 +34,7 @@ func (s IssuedSession) GoString() string { return s.String() }
 // issue is intentionally private: only the completed, cryptographically
 // verified flow can mint an interactive session. No principal/interactive
 // flag, ID token or arbitrary credential exchange is a public issuance API.
-func (p *Provider) issue(user string, idExpiry time.Time) (IssuedSession, error) {
+func (p *Provider) issue(user string, idExpiry time.Time, origin string) (IssuedSession, error) {
 	var idBytes [16]byte
 	if _, err := rand.Read(idBytes[:]); err != nil {
 		return IssuedSession{}, authn.ErrUnavailable
@@ -65,7 +66,7 @@ func (p *Provider) issue(user string, idExpiry time.Time) (IssuedSession, error)
 	if _, exists := p.sessions[id]; exists {
 		return IssuedSession{}, authn.ErrUnavailable
 	}
-	p.sessions[id] = sessionRecord{digest: sha256.Sum256([]byte(token)), user: user, expiresAt: expires}
+	p.sessions[id] = sessionRecord{digest: sha256.Sum256([]byte(token)), user: user, origin: origin, expiresAt: expires}
 	return IssuedSession{ID: id, Token: token, ExpiresAt: expires}, nil
 }
 
@@ -105,14 +106,10 @@ func (p *Provider) VerifyCoreSession(ctx context.Context, token string) (authn.C
 	if canceled(ctx) {
 		return nil, authn.ErrUnavailable
 	}
-	id, secret, ok := strings.Cut(strings.TrimPrefix(token, authn.CoreSessionPrefix), "_")
-	if !strings.HasPrefix(token, authn.CoreSessionPrefix) || len(id) != 32 || !secretShape(secret) || !ok {
-		return nil, authn.ErrUnauthenticated
+	id, digest, err := parseSessionToken(token)
+	if err != nil {
+		return nil, err
 	}
-	if bytes, err := hex.DecodeString(id); err != nil || hex.EncodeToString(bytes) != id {
-		return nil, authn.ErrUnauthenticated
-	}
-	digest := sha256.Sum256([]byte(token))
 	record, err := p.lookup(ctx, id, digest)
 	if err != nil {
 		return nil, err
@@ -121,6 +118,25 @@ func (p *Provider) VerifyCoreSession(ctx context.Context, token string) (authn.C
 		return nil, authn.ErrUnavailable
 	}
 	return liveSession{owner: p, id: id, digest: digest, user: record.user}, nil
+}
+
+func (p *Provider) sessionForToken(ctx context.Context, token string) (sessionRecord, error) {
+	id, digest, err := parseSessionToken(token)
+	if err != nil {
+		return sessionRecord{}, err
+	}
+	return p.lookup(ctx, id, digest)
+}
+
+func parseSessionToken(token string) (string, [sha256.Size]byte, error) {
+	id, secret, ok := strings.Cut(strings.TrimPrefix(token, authn.CoreSessionPrefix), "_")
+	if !strings.HasPrefix(token, authn.CoreSessionPrefix) || len(id) != 32 || !secretShape(secret) || !ok {
+		return "", [sha256.Size]byte{}, authn.ErrUnauthenticated
+	}
+	if bytes, err := hex.DecodeString(id); err != nil || hex.EncodeToString(bytes) != id {
+		return "", [sha256.Size]byte{}, authn.ErrUnauthenticated
+	}
+	return id, sha256.Sum256([]byte(token)), nil
 }
 
 func (p *Provider) lookup(ctx context.Context, id string, digest [sha256.Size]byte) (sessionRecord, error) {
@@ -144,7 +160,9 @@ func (p *Provider) lookup(ctx context.Context, id string, digest [sha256.Size]by
 		return sessionRecord{}, authn.ErrUnauthenticated
 	}
 	if !p.now().Before(record.expiresAt) {
-		return sessionRecord{}, authn.ErrTokenExpired
+		// Preserve the authenticated record so cross-origin admission can check
+		// its origin caveat before reporting expiry. The error still denies it.
+		return record, authn.ErrTokenExpired
 	}
 	return record, nil
 }
