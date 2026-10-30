@@ -30,6 +30,7 @@ import (
 	servertsevents "github.com/buildbetter-app/plugs/internal/server/events"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
+	"github.com/buildbetter-app/plugs/internal/server/transport/mcp"
 	"github.com/buildbetter-app/plugs/internal/server/viewrpc"
 	"github.com/buildbetter-app/plugs/internal/server/watch"
 	"github.com/buildbetter-app/plugs/internal/server/watchhttp"
@@ -118,6 +119,7 @@ type Runtime struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	renewDone chan struct{}
+	mcp       http.Handler
 	httpMu    sync.Mutex
 	http      *httpjson.Server
 	closed    bool
@@ -372,6 +374,10 @@ func (r *Runtime) bind(config Config) error {
 	if err != nil {
 		return fmt.Errorf("composition: create HTTP handler: %w", err)
 	}
+	r.mcp, err = newMCPHandler(r.RPC, r.Authenticator)
+	if err != nil {
+		return fmt.Errorf("composition: create MCP handler: %w", err)
+	}
 	if config.UI {
 		r.UIHandler, err = webui.New(webui.Config{Project: config.Project, RPCPath: httpjson.Path})
 		if err != nil {
@@ -432,7 +438,7 @@ func (r *Runtime) bridgeRPCSession(ctx context.Context, principal model.Principa
 // root handler is deliberately small: every route has an owner and unknown
 // paths return a normal 404 from net/http.
 func (r *Runtime) Listen(ctx context.Context, address string, tlsConfig *tls.Config) (*httpjson.Server, error) {
-	if r == nil || r.HTTPHandler == nil || r.Authenticator == nil {
+	if r == nil || r.HTTPHandler == nil || r.mcp == nil || r.Authenticator == nil {
 		return nil, errors.New("composition: runtime is not initialized")
 	}
 	if ctx == nil {
@@ -446,6 +452,7 @@ func (r *Runtime) Listen(ctx context.Context, address string, tlsConfig *tls.Con
 	}
 	mux := http.NewServeMux()
 	mux.Handle(httpjson.Path, r.HTTPHandler)
+	mux.Handle(mcp.Path, r.mcp)
 	if r.UIHandler != nil {
 		mux.Handle("/ui/", r.UIHandler)
 	}
@@ -533,7 +540,7 @@ func (r *Runtime) renew(holder string) {
 	}
 }
 
-// Close drains HTTP before canceling collaboration/watch work, releases the
+// Close releases MCP streams, drains HTTP, cancels collaboration/watch work,
 // lease, and finally closes the store. Each step is idempotent through the
 // single owner, so failed composition paths cannot leak a lease or store.
 func (r *Runtime) Close(ctx context.Context) error {
@@ -549,6 +556,7 @@ func (r *Runtime) Close(ctx context.Context) error {
 		httpServer := r.http
 		r.http = nil
 		r.httpMu.Unlock()
+		r.closeErr = errors.Join(r.closeErr, closeMCPHandler(r.mcp))
 		if httpServer != nil {
 			r.closeErr = errors.Join(r.closeErr, httpServer.Shutdown(ctx))
 		}

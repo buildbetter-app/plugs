@@ -23,6 +23,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/server/transport/mcp"
 	_ "modernc.org/sqlite"
 )
 
@@ -96,6 +97,46 @@ func remoteCommand(t *testing.T, input string, endpoint string, args ...string) 
 	t.Helper()
 	args = append([]string{"--server", endpoint, "--project", "acceptance", "--agent", "acceptance", "--json"}, args...)
 	return runPlug(t, input, args...)
+}
+
+func executableMCPCall(t *testing.T, endpoint, body string, headers map[string]string) (int, http.Header, []byte) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, endpoint+mcp.Path, bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Plug-RPC", "1")
+	request.Header.Set("Content-Type", "application/json")
+	for key, value := range headers {
+		if value == "" {
+			request.Header.Del(key)
+			continue
+		}
+		request.Header.Set(key, value)
+	}
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response.StatusCode, response.Header, data
+}
+
+func executableMCPObject(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	value, err := wire.DecodeJSON(body)
+	if err != nil {
+		t.Fatalf("MCP response is not JSON: %v: %s", err, body)
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("MCP response=%T: %s", value, body)
+	}
+	return object
 }
 
 func TestExecutableSQLiteServerRemoteLifecycleAndRestart(t *testing.T) {
@@ -537,6 +578,62 @@ func sqliteRestartSnapshot(t *testing.T, path string) sqliteRestartState {
 		state.Counts[table], state.Digests[table] = len(values), fmt.Sprintf("%x", sha256.Sum256(raw))
 	}
 	return state
+}
+
+func TestExecutableSQLiteServerMCPRouteAndRPCRestart(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".plug"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".plug", "config.yaml"), []byte("driver: sqlite\ndsn: mcp.db\nlisten: 127.0.0.1:0\nproject: acceptance\nui: false\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := startPlugServer(t, dir, false)
+	t.Cleanup(func() { server.stop(t) })
+
+	status, responseHeaders, body := executableMCPCall(t, server.endpoint, `{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"binary-test","version":"1"}}}`, nil)
+	if status != http.StatusOK {
+		t.Fatalf("MCP initialize status=%d body=%s", status, body)
+	}
+	sessionID := responseHeaders.Get("MCP-Session-Id")
+	if sessionID == "" {
+		t.Fatalf("MCP initialize did not issue a session: %s", body)
+	}
+	status, _, body = executableMCPCall(t, server.endpoint, `{"jsonrpc":"2.0","id":"list","method":"tools/list","params":{}}`, map[string]string{"MCP-Session-Id": sessionID})
+	if status != http.StatusOK {
+		t.Fatalf("MCP tools/list status=%d body=%s", status, body)
+	}
+	create := `{"jsonrpc":"2.0","id":"create","method":"tools/call","params":{"name":"bead_create","arguments":{"type":"issue","fields":{"title":"binary MCP"},"_meta":{"idempotencyKey":"550e8400-e29b-41d4-a716-446655440001"}}}}`
+	status, _, body = executableMCPCall(t, server.endpoint, create, map[string]string{"MCP-Session-Id": sessionID})
+	if status != http.StatusOK {
+		t.Fatalf("MCP bead_create status=%d body=%s", status, body)
+	}
+	createResult := executableMCPObject(t, body)["result"].(map[string]any)
+	if createResult["isError"] == true {
+		t.Fatalf("MCP bead_create returned an error: %s", body)
+	}
+	content := createResult["content"].([]any)
+	canonical, err := wire.DecodeJSON([]byte(content[0].(map[string]any)["text"].(string)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beadID := canonical.(map[string]any)["results"].([]any)[0].(map[string]any)["ref"].(map[string]any)["id"].(string)
+
+	server.stop(t)
+	server = startPlugServer(t, dir, false)
+	t.Cleanup(func() { server.stop(t) })
+	out, errOut, err := remoteCommand(t, "", server.endpoint, "get", beadID)
+	if err != nil {
+		t.Fatalf("RPC restart read after MCP create: %v stdout=%s stderr=%s", err, out, errOut)
+	}
+	value, err := wire.DecodeJSON([]byte(strings.TrimSpace(out)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bead := value.(map[string]any)["bead"].(map[string]any)
+	if bead["fields"].(map[string]any)["title"] != "binary MCP" {
+		t.Fatalf("RPC restart did not read MCP data: %s", out)
+	}
 }
 
 func TestExecutableLocalServerIsDisposableAndWarns(t *testing.T) {
