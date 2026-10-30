@@ -325,6 +325,7 @@ internal/integration/collabwatch/integration_test.go
 internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
 internal/integration/converterroundtrip/image.go
+internal/integration/converterroundtrip/import_test.go
 internal/integration/converterroundtrip/native_restore_test.go
 internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go
@@ -631,8 +632,9 @@ internal/server/webui/bridge.go
 internal/server/webui/bridge_test.go
 internal/server/webui/browser_check.mjs
 internal/server/webui/browser_test.go
-internal/server/webui/direct_blocker_check.mjs
 internal/server/webui/catalog.go
+internal/server/webui/comment_check.mjs
+internal/server/webui/direct_blocker_check.mjs
 internal/server/webui/presence_display_check.mjs
 internal/server/webui/presence_display_test.go
 internal/server/webui/static/app.js
