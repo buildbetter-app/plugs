@@ -122,7 +122,14 @@ func TestBrowserActualStoredRowsAndStateTransitions(t *testing.T) {
 		if project == "empty" {
 			mount = "/empty/ui/"
 		}
-		ui, err := webui.New(webui.Config{MountPath: mount, RPCPath: httpjson.Path, Project: project, MaxRows: 2})
+		config := webui.Config{MountPath: mount, RPCPath: httpjson.Path, Project: project, MaxRows: 2}
+		if project == "web" {
+			config.Frames = []webui.FrameBundle{
+				{ID: "scope-probe", Grant: webui.BridgeGrant{Project: "web", Methods: []string{"bead.ready"}}, Assets: map[string][]byte{"index.html": []byte(`<!doctype html><title>Scope probe</title>`)}},
+				{ID: "sibling-probe", Grant: webui.BridgeGrant{Project: "sibling"}, Assets: map[string][]byte{"index.html": []byte(`<!doctype html><title>Sibling probe</title>`)}},
+			}
+		}
+		ui, err := webui.New(config)
 		if err != nil {
 			t.Fatal(err)
 		}
