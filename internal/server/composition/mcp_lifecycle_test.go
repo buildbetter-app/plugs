@@ -25,6 +25,7 @@ type mcpReadGate struct {
 // cancellation. The ordinary writer must close it on every exit path.
 type mcpLifecycleStore struct {
 	driver.Store
+	driver.CheckpointStore
 	gate    atomic.Pointer[mcpReadGate]
 	readers atomic.Int64
 }
@@ -89,7 +90,7 @@ func TestComposedMCPCancellationAndCloseReleaseCanonicalWork(t *testing.T) {
 					if err != nil {
 						return nil, err
 					}
-					observed = &mcpLifecycleStore{Store: store}
+					observed = &mcpLifecycleStore{Store: store, CheckpointStore: store.(driver.CheckpointStore)}
 					return observed, nil
 				},
 			}

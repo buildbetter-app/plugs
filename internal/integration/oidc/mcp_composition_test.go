@@ -25,6 +25,7 @@ import (
 // any canonical RPC method, service, writer or identity provider.
 type mcpSessionProofStore struct {
 	driver.Store
+	driver.CheckpointStore
 	interactiveReads atomic.Int64
 }
 
@@ -112,7 +113,7 @@ func TestComposedMCPAndRPCShareOIDCProofPrincipalAndRefusalRules(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			observed = &mcpSessionProofStore{Store: store}
+			observed = &mcpSessionProofStore{Store: store, CheckpointStore: store.(driver.CheckpointStore)}
 			return observed, nil
 		},
 	})
