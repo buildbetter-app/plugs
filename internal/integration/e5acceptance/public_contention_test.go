@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,7 @@ type publicClaimReply struct {
 	result         json.RawMessage
 	resultPresent  bool
 	errorCode      string
+	errorHint      string
 	errorRetryable bool
 	body           []byte
 	winnerID       string
@@ -216,6 +218,9 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 	expectedWinners := seededWinnerIDs(sessions)
 	reader := f.reader(t)
 	winnerEvidence := map[string]publicWinnerEvidence{}
+	errorCodes := map[string]int{}
+	errorHints := map[string]int{}
+	receipts := 0
 	for outcome := range results {
 		metrics.Received++
 		metrics.Attempts += outcome.attempts
@@ -235,6 +240,7 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 				t.Fatalf("bulk worker %d returned duplicate winner %s", outcome.index, outcome.final.winnerID)
 			}
 			metrics.Successes++
+			receipts++
 			metrics.Winners[outcome.final.winnerID]++
 			winnerEvidence[outcome.final.winnerID] = publicWinnerEvidence{principal: outcome.agent, result: outcome.final.commit.Results[0]}
 		case publicNull:
@@ -242,10 +248,35 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 		case publicWriteConflict, publicBusy, publicRateLimited:
 			demand(t, outcome.finalRetryable, fmt.Sprintf("worker %d returned a retryable class without exhausting the budget", outcome.index))
 			metrics.TerminalRetryable++
+			errorCodes[outcome.final.errorCode]++
+			errorHints[sanitizePublicHint(outcome.final.errorHint)]++
 		default:
 			metrics.Errors++
+			code := outcome.final.errorCode
+			if code == "" {
+				if outcome.final.protocolError != "" {
+					code = "protocol_error"
+				} else {
+					code = "other_error"
+				}
+			}
+			errorCodes[code]++
+			errorHints[sanitizePublicHint(outcome.final.errorHint)]++
 		}
 	}
+	persistedChecks := 0
+	persistedErrors := 0
+	for winnerID, evidence := range winnerEvidence {
+		persistedChecks++
+		if err := validatePersistedClaim(reader, winnerID, evidence.principal, &evidence.result, true, model.Natural64(2)); err != nil {
+			persistedErrors++
+		}
+	}
+	observerRevision := "<unread>"
+	if observerRows, err := reader.Get(context.Background(), []model.Ref{model.RefByID(bulkObserverID, model.Natural64(0))}); err == nil && len(observerRows) == 1 {
+		observerRevision = observerRows[0].Revision.String()
+	}
+	t.Logf("public authenticated 200-agent claimNext partial/final: launched=%d received=%d A=%d C=%d B=%d L=%d S=%d N=%d E=%d X=%d retry_starts=%d distinct_principals=%d distinct_tokens=%d distinct_keys=%d distinct_winners=%d receipts=%d persisted_checks=%d persisted_errors=%d observer_revision=%s error_codes=%s error_hints=%s cap=8 retry_budget=64; source-built WASI/public fixture only", metrics.Launched, metrics.Received, metrics.Attempts, metrics.Conflicts, metrics.Busy, metrics.RateLimited, metrics.Successes, metrics.Nulls, metrics.Errors, metrics.TerminalRetryable, metrics.Attempts-sessions, len(principalKeys), len(tokenSet), len(workerKeys), len(metrics.Winners), receipts, persistedChecks, persistedErrors, observerRevision, formatPublicCounters(errorCodes), formatPublicCounters(errorHints))
 	if err := metrics.validateAccounting(true); err != nil {
 		t.Fatal(err)
 	}
@@ -367,6 +398,35 @@ func (r publicClaimReply) retryable() bool {
 	}
 }
 
+func sanitizePublicHint(hint string) string {
+	hint = strings.TrimSpace(hint)
+	switch hint {
+	case "", "snapshot changed during all four write attempts", "bead already has a live claim", "write pre phases exceeded their deadline", "active storage lease was lost":
+		if hint == "" {
+			return "<empty>"
+		}
+		return hint
+	default:
+		return "<other>"
+	}
+}
+
+func formatPublicCounters(counts map[string]int) string {
+	if len(counts) == 0 {
+		return "{}"
+	}
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", key, counts[key]))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
 func decodeJSONObject(data []byte) (map[string]json.RawMessage, error) {
 	dec := json.NewDecoder(bytes.NewReader(bytes.TrimSpace(data)))
 	var object map[string]json.RawMessage
@@ -475,6 +535,12 @@ func parsePublicClaimReply(key string, status int, body []byte) publicClaimReply
 	}
 	reply.errorCode = typedCode
 	reply.errorRetryable = retryable
+	if rawHint, ok := dataObject["hint"]; ok {
+		var hint string
+		if json.Unmarshal(rawHint, &hint) == nil {
+			reply.errorHint = sanitizePublicHint(hint)
+		}
+	}
 	if status != http.StatusOK && !(status == http.StatusTooManyRequests && typedCode == "rate_limited" && retryable) {
 		return protocolReply(key, status, body, fmt.Errorf("typed error used unexpected HTTP status %d", status))
 	}
