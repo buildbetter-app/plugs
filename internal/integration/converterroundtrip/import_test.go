@@ -153,6 +153,7 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 				t.Fatal(err)
 			}
 			rows, err := reader.Query(ctx, driver.Query{Filter: map[string]any{"project": "demo"}, Limit: 100})
+			protected, protectedErr := reader.Query(ctx, driver.Query{Filter: map[string]any{"kind": "instance_config"}, Limit: 100})
 			_ = reader.Close()
 			beadRows := 0
 			for _, row := range rows.Items {
@@ -160,8 +161,12 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 					beadRows++
 				}
 			}
-			if err != nil || beadRows != 3 {
-				t.Fatalf("restored bead rows=%d total=%d err=%v", beadRows, len(rows.Items), err)
+			projectRecords := map[string]bool{}
+			for _, row := range protected.Items {
+				projectRecords[row.Ref.ID] = true
+			}
+			if err != nil || protectedErr != nil || beadRows != 3 || len(rows.Items) != 4 || len(projectRecords) != 3 || !projectRecords[importBindingRecordID] || !projectRecords[importProjectRecordID("demo")] || !projectRecords[importProjectRecordID("empty")] {
+				t.Fatalf("restored census beads=%d projectRows=%d total=%d protected=%v err=%v protectedErr=%v", beadRows, len(projectRecords), len(rows.Items), projectRecords, err, protectedErr)
 			}
 			var imported pipeline.Comment
 			foundComment := false
