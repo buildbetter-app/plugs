@@ -340,7 +340,20 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			writes[id] = pending
 		}
 	}
-	locks, err := p.snapshot.locks(writes, sentinels)
+	allocatorKeys := make([]driver.LockKey, 0)
+	allocatorPrefixes := map[string]bool{}
+	for _, pending := range writes {
+		if pending.allocatorPrefix == "" || allocatorPrefixes[pending.allocatorPrefix] {
+			continue
+		}
+		key, e := driver.AllocatorLock(pending.allocatorPrefix)
+		if e != nil {
+			return model.Commit{}, e
+		}
+		allocatorKeys = append(allocatorKeys, key)
+		allocatorPrefixes[pending.allocatorPrefix] = true
+	}
+	locks, err := p.snapshot.locks(writes, sentinels, allocatorKeys...)
 	if err != nil {
 		return model.Commit{}, err
 	}
@@ -370,6 +383,23 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		return model.Commit{}, err
 	} else if prior != nil {
 		return model.Commit{}, errStale
+	}
+	if len(allocatorPrefixes) > 0 {
+		allocator, ok := tx.(driver.AllocatorContinuation)
+		if !ok {
+			return model.Commit{}, driver.ErrUnsupported
+		}
+		consumed := map[string]bool{}
+		for _, ref := range p.refs {
+			pending := p.writes[ref.ID]
+			if pending == nil || pending.allocatorPrefix == "" || consumed[ref.ID] {
+				continue
+			}
+			if err := allocator.AllocateTopLevel(ctx, pending.allocatorPrefix, pending.allocatorExpected); err != nil {
+				return model.Commit{}, err
+			}
+			consumed[ref.ID] = true
+		}
 	}
 	keys := make([]driver.LockKey, len(locks))
 	for i, lock := range locks {

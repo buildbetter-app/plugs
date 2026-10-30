@@ -253,6 +253,7 @@ internal/core/ontologyops/service_test.go
 internal/core/ontologyops/source.go
 internal/core/ontologyops/types.go
 internal/core/pipeline/BUILD.bazel
+internal/core/pipeline/allocator_test.go
 internal/core/pipeline/apply.go
 internal/core/pipeline/audit.go
 internal/core/pipeline/audit_guard_test.go
@@ -333,6 +334,8 @@ internal/integration/cursorhttp/cursor_test.go
 internal/integration/cursorhttp/fixture_test.go
 internal/integration/dumpvalidation/BUILD.bazel
 internal/integration/dumpvalidation/dumpvalidation_test.go
+internal/integration/eventsqlpaging/BUILD.bazel
+internal/integration/eventsqlpaging/integration_test.go
 internal/integration/graphacceptance/BUILD.bazel
 internal/integration/graphacceptance/README.md
 internal/integration/graphacceptance/fixture_test.go
@@ -349,6 +352,10 @@ internal/integration/httpconformance/fixture_test.go
 internal/integration/httpconformance/protocol_test.go
 internal/integration/localclisession/BUILD.bazel
 internal/integration/localclisession/session_test.go
+internal/integration/migrationpre/BUILD.bazel
+internal/integration/migrationpre/README.md
+internal/integration/migrationpre/compose.go
+internal/integration/migrationpre/integration_test.go
 internal/integration/oidc/BUILD.bazel
 internal/integration/oidc/flow_test.go
 internal/integration/oidc/http_test.go
@@ -545,6 +552,9 @@ internal/server/transport/mcp/config.go
 internal/server/transport/mcp/errors.go
 internal/server/transport/mcp/handler.go
 internal/server/transport/mcp/handler_test.go
+internal/server/transport/mcp/notification_stream_test.go
+internal/server/transport/mcp/notifications.go
+internal/server/transport/mcp/notifications_test.go
 internal/server/transport/stdio/BUILD.bazel
 internal/server/transport/stdio/README.md
 internal/server/transport/stdio/config.go
@@ -605,6 +615,8 @@ internal/storage/conformance/locks.go
 internal/storage/conformance/noops.go
 internal/storage/conformance/responses.go
 internal/storage/driver/BUILD.bazel
+internal/storage/driver/allocator.go
+internal/storage/driver/allocator_contract_test.go
 internal/storage/driver/audit_contract_test.go
 internal/storage/driver/driver.go
 internal/storage/driver/errors.go
@@ -613,6 +625,7 @@ internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/memory/BUILD.bazel
+internal/storage/memory/allocator.go
 internal/storage/memory/audit_test.go
 internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_test.go
@@ -646,6 +659,7 @@ internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
 internal/storage/sqlite/BUILD.bazel
 internal/storage/sqlite/README.md
+internal/storage/sqlite/allocator.go
 internal/storage/sqlite/boundaries_test.go
 internal/storage/sqlite/engine_test.go
 internal/storage/sqlite/lease.go
