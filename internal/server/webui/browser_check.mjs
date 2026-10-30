@@ -30,8 +30,9 @@ try {
   const requests = new Map();
   const responseJobs = [];
   const errors = [];
-  const send = (method, params = {}) => new Promise((resolve, reject) => {
-    const id = ++sequence; pending.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params }));
+  const frameSessions = new Map();
+  const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
+    const id = ++sequence; pending.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params, sessionId }));
   });
   ws.addEventListener("message", ({ data }) => {
     const event = JSON.parse(data.toString());
@@ -43,6 +44,9 @@ try {
     if (event.method === "Runtime.exceptionThrown") errors.push(event.params.exceptionDetails);
     if (event.method === "Runtime.consoleAPICalled" && event.params.type === "error") errors.push(event.params);
     if (event.method === "Log.entryAdded" && event.params.entry.level === "error") errors.push(event.params.entry);
+    if (event.method === "Target.attachedToTarget" && event.params.targetInfo.type === "iframe") {
+      frameSessions.set(event.params.targetInfo.targetId, event.params.sessionId);
+    }
     if (event.method === "Network.requestWillBeSent" && event.params.request.url === base + "/rpc/v1") {
       const entry = { request: event.params.request }; requests.set(event.params.requestId, entry); events.push(entry);
     }
@@ -52,6 +56,7 @@ try {
       responseJobs.push(send("Network.getResponseBody", { requestId: event.params.requestId }).then((body) => { entry.body = body.body; }).catch(() => {}));
     }
   });
+  await send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
   await send("Page.enable"); await send("Runtime.enable"); await send("Log.enable"); await send("Network.enable");
   await send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1100, deviceScaleFactor: 1, mobile: false });
   const evaluate = async (expression) => {
@@ -73,6 +78,70 @@ try {
   assert.equal(await value("#connection-state"), "Connected");
   assert.equal(await evaluate("document.querySelectorAll('#changed-rows .row').length"), 2);
   assert.equal(await value("#revision-count"), "3");
+  // Chrome runs opaque sandbox frames in separate processes. Execute only the
+  // test sender in their default contexts; keep every product CSP/header and
+  // the browser's real event.source/origin/structured-clone behavior intact.
+  const frameSession = async (name) => until(async () => {
+    const { targetInfos } = await send("Target.getTargets");
+    const target = targetInfos.find((info) => info.type === "iframe" && info.url === base + "/ui/frames/" + name + "/index.html");
+    return target && frameSessions.get(target.targetId);
+  }, name + " frame session");
+  const scopeSession = await frameSession("scope-probe");
+  const siblingSession = await frameSession("sibling-probe");
+  const frameRPCStart = events.length;
+  const frameEvaluate = async (sessionId, expression) => {
+    const result = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, sessionId);
+    if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
+    return result.result.value;
+  };
+  const scopeResponses = await frameEvaluate(scopeSession, `(async () => {
+    const requests = [
+      { id: "scope-top", params: {project: "other"} },
+      { id: "scope-nested", params: {selector: {project: "other"}} },
+      { id: "scope-ops", params: {ops: [{kind: "create", project: "other"}]} },
+      { id: "scope-projects", params: {projects: ["web", "other"]} },
+      { id: "scope-deep-array", params: {ops: [[{project: "other"}]]} },
+      { id: "scope-null-project", params: {project: null} },
+      { id: "scope-number-project", params: {project: 7} },
+      { id: "scope-empty-project", params: {project: ""} },
+      { id: "scope-meta", params: {_meta: {project: "other"}} },
+      { id: "scope-null-list", params: {projects: null} },
+      { id: "scope-bad-list", params: {projects: "web"} },
+      { id: "scope-sparse-list", params: {projects: Array(1)} },
+      { id: "scope-safe", params: {limit: 1, _meta: {project: "web"}} },
+      { id: "scope-default", params: {limit: 1} },
+    ];
+    const responses = [];
+    const done = new Promise((resolve) => window.addEventListener("message", (event) => {
+      if (event.source === window.parent && event.data?.jsonrpc === "2.0" && requests.some((request) => request.id === event.data.id)) {
+        responses.push(event.data);
+        if (responses.length === requests.length) resolve(responses);
+      }
+    }));
+    requests.forEach((request) => window.parent.postMessage({jsonrpc: "2.0", method: "bead.ready", ...request}, "*"));
+    return done;
+  })()`);
+  for (const response of scopeResponses) {
+    if (response.id === "scope-safe" || response.id === "scope-default") {
+      assert.equal(response.error, undefined, JSON.stringify(response));
+      assert.equal(response.result.items.length, 1);
+    } else assert.equal(response.error?.data?.code, "scope_denied", JSON.stringify(response));
+  }
+  const siblingResponse = await frameEvaluate(siblingSession, `new Promise((resolve) => {
+    window.addEventListener("message", (event) => { if (event.source === window.parent && event.data?.id === "sibling-call") resolve(event.data); });
+    window.parent.postMessage({jsonrpc: "2.0", id: "sibling-call", method: "bead.ready", params: {project: "web", limit: 1}}, "*");
+  })`);
+  assert.equal(siblingResponse.error?.data?.code, "method_not_granted", JSON.stringify(siblingResponse));
+  const frameRequests = events.slice(frameRPCStart).map((entry) => JSON.parse(entry.request.postData));
+  assert.equal(frameRequests.length, 2, JSON.stringify(frameRequests));
+  for (const request of frameRequests) {
+    assert.equal(request.method, "bead.ready");
+    assert.equal(request.params.project, undefined);
+    assert.equal(request.params._meta.project, "web");
+  }
+  await writeFile(path.join(evidence, "bridge-scope.json"), JSON.stringify({scopeResponses, siblingResponse, frameRequests}, null, 2));
+  proof("browser_bridge_project_scope", "top-level/nested/operation/list project escapes refused");
+  proof("browser_bridge_sibling_identity", "sibling frame cannot borrow the granted frame identity");
   const initialRows = await evaluate("Array.from(document.querySelectorAll('#changed-rows .row-title'), x => x.textContent)");
   assert.equal(await evaluate("document.querySelector('#changed-more').hidden"), false);
   assert.match(await value("#changed-more"), /count is not supplied/);
@@ -97,7 +166,11 @@ try {
   // The harness acts as a separate writer through the same real RPC endpoint.
   // No browser request writes, and the subsequent refresh must notice rev 4.
   const seeds = JSON.parse(await readFile(path.join(evidence, "seed-rpc.json"), "utf8"));
-  const updateRequest = { jsonrpc: "2.0", id: "fixture-update", method: "bead.update", params: { id: seeds[0].response.result.results[0].ref, fields: { title: "A stored update since the last look" }, _meta: { project: "web", idempotencyKey: "4".repeat(64) } } };
+  assert.equal(finalRow, seeds[0].params.fields.title, "the first-created seed must sort onto the final page");
+  assert(!initialRows.includes(finalRow), "the update must exercise a seed on the refreshed first page");
+  const visibleSeed = seeds.find((seed) => seed.params?.fields?.title === initialRows[0]);
+  assert(visibleSeed, "the first bounded page must identify one seeded row");
+  const updateRequest = { jsonrpc: "2.0", id: "fixture-update", method: "bead.update", params: { id: visibleSeed.response.result.results[0].ref, fields: { title: "A stored update since the last look" }, _meta: { project: "web", idempotencyKey: "4".repeat(64) } } };
   const updateResponse = await (await fetch(base + "/rpc/v1", { method: "POST", headers: { "Content-Type": "application/json", "Plug-RPC": "1" }, body: JSON.stringify(updateRequest) })).json();
   assert.equal(updateResponse.error, undefined, JSON.stringify(updateResponse));
   assert.equal(updateResponse.result.revision, 4);

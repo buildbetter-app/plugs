@@ -3,6 +3,8 @@ package watch
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -28,6 +30,13 @@ type Manager struct {
 	closed       bool
 	watches      map[string]*watch
 	session      map[string]map[string]*watch
+}
+
+// PresenceEnabled reports whether this manager has the real collaboration
+// source needed to bind presence.watch. It is intentionally read-only so the
+// registry cannot advertise a handler that would later lack its source.
+func (m *Manager) PresenceEnabled() bool {
+	return m != nil && !isNilInterface(m.config.Presence)
 }
 
 type watch struct {
@@ -63,6 +72,12 @@ type watch struct {
 	// currently visible resources so a queued frame can become visibility.lost
 	// without exposing a stale before/after image.
 	auth *visibilityAuthorization
+}
+
+type pollResult struct {
+	page     serverevents.Page
+	position coreevents.Position
+	changed  bool
 }
 
 // New validates the actual event reader and starts the manager lifetime. The
@@ -131,6 +146,9 @@ func (m *Manager) Open(ctx context.Context, request Request) (*Subscription, err
 	}
 	if !request.Method.valid() {
 		return nil, ErrUnsupportedMethod
+	}
+	if request.Method == MethodPresenceWatch && (isNilInterface(m.config.Presence) || request.Project == "") {
+		return nil, ErrInvalidRequest
 	}
 	if request.Principal.Kind == "" || request.Principal.ID == "" {
 		return nil, ErrInvalidRequest
@@ -432,19 +450,19 @@ func (current *watch) open() error {
 	if err != nil {
 		return err
 	}
-	page, position, err := current.poll(current.ctx, current.request.From, binding)
+	polled, err := current.poll(current.ctx, current.request.From, binding)
 	if err != nil {
 		return err
 	}
 	current.mu.Lock()
-	current.binding, current.cursor, current.position = binding, page.Cursor, position
-	current.openingCursor = page.Cursor
+	current.binding, current.cursor, current.position = binding, polled.page.Cursor, polled.position
+	current.openingCursor = polled.page.Cursor
 	current.mu.Unlock()
 	kind := FrameSnapshot
-	if page.Reset {
+	if polled.page.Reset {
 		kind = FrameReset
 	}
-	frame := current.frame(kind, "", page, position, binding)
+	frame := current.frame(kind, "", polled.page, polled.position, binding)
 	return current.enqueue(frame)
 }
 
@@ -464,7 +482,11 @@ func (current *watch) run() {
 			if err := current.step(); err != nil {
 				current.mu.Lock()
 				if current.closeErr == nil {
-					current.closeErr = err
+					if current.ctx.Err() != nil {
+						current.closeErr = ErrSubscriptionClosed
+					} else {
+						current.closeErr = err
+					}
 				}
 				current.mu.Unlock()
 				current.cancel()
@@ -484,9 +506,9 @@ func (current *watch) step() error {
 	binding, err := current.manager.binding(current.ctx, current.request)
 	if err != nil {
 		if current.request.Method == MethodViewWatch && isViewDeleted(err) {
-			if page, position, pollErr := current.poll(current.ctx, oldCursor, oldBinding); pollErr == nil {
-				if page.Reset || len(page.Events) != 0 {
-					return current.enqueue(current.frame(FrameReset, current.emittedCursor, page, position, oldBinding))
+			if polled, pollErr := current.poll(current.ctx, oldCursor, oldBinding); pollErr == nil {
+				if polled.page.Reset || len(polled.page.Events) != 0 {
+					return current.enqueue(current.frame(FrameReset, current.emittedCursor, polled.page, polled.position, oldBinding))
 				}
 			}
 			return current.replaceWithReset("view_deleted", oldBinding)
@@ -497,22 +519,22 @@ func (current *watch) step() error {
 		if reason == "incarnation_changed" {
 			// Let server/events turn the stale old-incarnation cursor into its
 			// mandatory event.gap. Do not manufacture a reset at the old tuple.
-			page, position, err := current.poll(current.ctx, oldCursor, oldBinding)
+			polled, err := current.incarnationPoll(current.ctx, oldCursor, oldBinding)
 			if err != nil {
 				return err
 			}
-			return current.enqueue(current.frame(FrameReset, current.emittedCursor, page, position, oldBinding))
+			return current.enqueue(current.frame(FrameReset, current.emittedCursor, polled.page, polled.position, oldBinding))
 		}
 		return current.replaceWithReset(reason, binding)
 	}
-	page, position, err := current.poll(current.ctx, oldCursor, oldBinding)
+	polled, err := current.poll(current.ctx, oldCursor, oldBinding)
 	if err != nil {
 		return err
 	}
-	if len(page.Events) == 0 && !page.Reset {
+	if !polled.changed {
 		current.mu.Lock()
 		if !current.halted {
-			current.cursor, current.position, current.binding = page.Cursor, position, cloneBinding(binding)
+			current.cursor, current.position, current.binding = polled.page.Cursor, polled.position, cloneBinding(binding)
 		}
 		current.mu.Unlock()
 		return nil
@@ -521,10 +543,10 @@ func (current *watch) step() error {
 	from := current.emittedCursor
 	current.mu.Unlock()
 	kind := FrameDelta
-	if page.Reset {
+	if polled.page.Reset {
 		kind = FrameReset
 	}
-	return current.enqueue(current.frame(kind, from, page, position, binding))
+	return current.enqueue(current.frame(kind, from, polled.page, polled.position, binding))
 }
 
 func bindingChange(a, b Binding) string {
@@ -557,7 +579,10 @@ func isViewDeleted(err error) bool {
 // The event service owns actual log/materializer/authorization semantics. It
 // uses event.subscribe internally; translate signed tokens at this boundary so
 // a bead.watch token cannot be replayed as event.subscribe (or vice versa).
-func (current *watch) poll(ctx context.Context, after string, binding Binding) (serverevents.Page, coreevents.Position, error) {
+func (current *watch) poll(ctx context.Context, after string, binding Binding) (pollResult, error) {
+	if current.request.Method == MethodPresenceWatch {
+		return current.presencePoll(ctx, after, binding)
+	}
 	service := *current.manager.config.Events
 	reader := *service.Reader
 	reader.Authorization = current.auth
@@ -568,39 +593,39 @@ func (current *watch) poll(ctx context.Context, after string, binding Binding) (
 	}
 	inner, err := serverevents.BindingFor("event.subscribe", filter, binding.Principal, binding.Ontology, binding.PolicyVersion)
 	if err != nil {
-		return serverevents.Page{}, coreevents.Position{}, err
+		return pollResult{}, err
 	}
 	outer, err := current.cursorBinding(binding)
 	if err != nil {
-		return serverevents.Page{}, coreevents.Position{}, err
+		return pollResult{}, err
 	}
 	if after != "" {
 		position, err := service.Cursors.Decode(after, outer)
 		if err != nil {
-			return serverevents.Page{}, coreevents.Position{}, err
+			return pollResult{}, err
 		}
 		after, err = service.Cursors.Encode(position, inner)
 		if err != nil {
-			return serverevents.Page{}, coreevents.Position{}, err
+			return pollResult{}, err
 		}
 	}
 	page, err := service.Poll(ctx, serverevents.Request{Principal: binding.Principal, Filter: filter, After: after, Limit: current.manager.config.PageLimit, Ontology: binding.Ontology, PolicyVersion: binding.PolicyVersion, SubscriptionID: current.id})
 	if err != nil {
-		return page, coreevents.Position{}, err
+		return pollResult{}, err
 	}
 	position, err := service.Cursors.Decode(page.Cursor, inner)
 	if err != nil {
-		return page, position, err
+		return pollResult{}, err
 	}
 	page.Cursor, err = service.Cursors.Encode(position, outer)
 	if err != nil {
-		return page, position, err
+		return pollResult{}, err
 	}
 	for i := range page.Events {
 		event := &page.Events[i]
 		token, err := service.Cursors.Encode(coreevents.PositionOf(*event), outer)
 		if err != nil {
-			return page, position, err
+			return pollResult{}, err
 		}
 		if event.Durable != nil {
 			event.Durable.Cursor = token
@@ -612,7 +637,102 @@ func (current *watch) poll(ctx context.Context, after string, binding Binding) (
 			}
 		}
 	}
-	return page, position, nil
+	return pollResult{page: page, position: position, changed: len(page.Events) > 0 || page.Reset}, nil
+}
+
+// presencePoll turns the current, viewer-filtered collaboration snapshot into
+// a signed opaque cursor. Presence is intentionally not written to the event
+// log; a changed snapshot produces an empty watch.delta signal and the client
+// reads the current rows through presence.list. The hash is deterministic, so
+// a reconnect from an older cursor advances when the live snapshot changed.
+func (current *watch) presencePoll(ctx context.Context, after string, binding Binding) (pollResult, error) {
+	if isNilInterface(current.manager.config.Presence) {
+		return pollResult{}, ErrInvalidRequest
+	}
+	outer, err := current.cursorBinding(binding)
+	if err != nil {
+		return pollResult{}, err
+	}
+	var previous coreevents.Position
+	if after != "" {
+		previous, err = current.manager.config.Events.Cursors.Decode(after, outer)
+		if err != nil {
+			return pollResult{}, err
+		}
+		if previous.Incarnation != binding.Incarnation {
+			return current.presenceGapPoll(ctx, after, binding)
+		}
+	}
+	data, err := current.manager.config.Presence.Snapshot(ctx, binding.Principal, current.request.Agent, current.request.SessionID, current.request.Project)
+	if err != nil {
+		return pollResult{}, err
+	}
+	sum := sha256.Sum256(data)
+	position := coreevents.Position{Incarnation: binding.Incarnation, Revision: model.Natural64(binary.BigEndian.Uint64(sum[:8]))}
+	cursor, err := current.manager.config.Events.Cursors.Encode(position, outer)
+	if err != nil {
+		return pollResult{}, err
+	}
+	return pollResult{page: serverevents.Page{Events: []model.Event{}, Cursor: cursor}, position: position, changed: after != "" && (previous.Incarnation != position.Incarnation || previous.Revision.String() != position.Revision.String())}, nil
+}
+
+// incarnationPoll keeps the mandatory event.gap boundary for presence cursors
+// even though presence revisions are snapshot hashes rather than log heads.
+func (current *watch) incarnationPoll(ctx context.Context, after string, binding Binding) (pollResult, error) {
+	if current.request.Method != MethodPresenceWatch {
+		return current.poll(ctx, after, binding)
+	}
+	return current.presenceGapPoll(ctx, after, binding)
+}
+
+func (current *watch) presenceGapPoll(ctx context.Context, after string, binding Binding) (pollResult, error) {
+	service := *current.manager.config.Events
+	filter := cloneFilter(binding.Filter)
+	inner, err := serverevents.BindingFor("event.subscribe", filter, binding.Principal, binding.Ontology, binding.PolicyVersion)
+	if err != nil {
+		return pollResult{}, err
+	}
+	outer, err := current.cursorBinding(binding)
+	if err != nil {
+		return pollResult{}, err
+	}
+	position, err := service.Cursors.Decode(after, outer)
+	if err != nil {
+		return pollResult{}, err
+	}
+	encoded, err := service.Cursors.Encode(position, inner)
+	if err != nil {
+		return pollResult{}, err
+	}
+	page, err := service.Poll(ctx, serverevents.Request{
+		Principal: binding.Principal, Filter: filter, After: encoded,
+		Limit: current.manager.config.PageLimit, Ontology: binding.Ontology,
+		PolicyVersion: binding.PolicyVersion, SubscriptionID: current.id,
+	})
+	if err != nil {
+		return pollResult{}, err
+	}
+	position, err = service.Cursors.Decode(page.Cursor, inner)
+	if err != nil {
+		return pollResult{}, err
+	}
+	page.Cursor, err = service.Cursors.Encode(position, outer)
+	if err != nil {
+		return pollResult{}, err
+	}
+	for i := range page.Events {
+		event := &page.Events[i]
+		token, err := service.Cursors.Encode(coreevents.PositionOf(*event), outer)
+		if err != nil {
+			return pollResult{}, err
+		}
+		if event.Durable != nil {
+			event.Durable.Cursor = token
+		} else {
+			event.Control.Cursor = token
+		}
+	}
+	return pollResult{page: page, position: position, changed: true}, nil
 }
 
 func (current *watch) cursorBinding(binding Binding) (serverevents.CursorBinding, error) {
@@ -1046,11 +1166,13 @@ func (m *Manager) binding(ctx context.Context, request Request) (Binding, error)
 	}
 	if request.Method == MethodBeadWatch {
 		binding.Filter = coreevents.Filter{Resources: []string{request.Resource}}
+	} else if request.Method == MethodPresenceWatch {
+		binding.Filter = coreevents.Filter{Resources: []string{"presence/" + request.Project}}
 	}
 	if !samePrincipal(binding.Principal, request.Principal) {
 		return Binding{}, ErrBindingChanged
 	}
-	if request.Method != MethodViewWatch && request.Method != MethodBeadWatch && !sameFilter(binding.Filter, request.Filter) {
+	if request.Method != MethodViewWatch && request.Method != MethodBeadWatch && request.Method != MethodPresenceWatch && !sameFilter(binding.Filter, request.Filter) {
 		return Binding{}, ErrBindingChanged
 	}
 	if binding.Ontology.IsZero() {

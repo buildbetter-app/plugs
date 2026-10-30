@@ -311,7 +311,7 @@ func (r *Runtime) bind(config Config) error {
 	if err := viewrpc.BindWithConfig(registry, r.Views, viewrpc.Config{CursorKey: key}); err != nil {
 		return fmt.Errorf("composition: bind views: %w", err)
 	}
-	r.Watches, err = watch.New(r.ctx, watch.Config{Events: eventService, Views: r.Views})
+	r.Watches, err = watch.New(r.ctx, watch.Config{Events: eventService, Views: r.Views, Presence: r.Sessions})
 	if err != nil {
 		return fmt.Errorf("composition: create watch manager: %w", err)
 	}

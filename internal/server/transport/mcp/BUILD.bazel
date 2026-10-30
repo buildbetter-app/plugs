@@ -1,0 +1,46 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "mcp",
+    srcs = ["config.go", "errors.go", "handler.go", "notifications.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/server/transport/mcp",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/model",
+        "//internal/server/authn",
+        "//internal/server/rpc",
+    ],
+)
+
+go_test(
+    name = "mcp_test",
+    srcs = ["handler_test.go", "notification_stream_test.go"],
+    deps = [
+        ":mcp",
+        "//internal/api/wire",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
+        "//internal/plugins/authnapikey",
+        "//internal/server/authn",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
+)
+
+go_test(
+    name = "mcp_internal_test",
+    srcs = ["notifications_test.go"],
+    embed = [":mcp"],
+    deps = ["//internal/core/model"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

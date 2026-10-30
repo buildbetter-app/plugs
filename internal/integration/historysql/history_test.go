@@ -64,6 +64,21 @@ func TestHistorySQLPinnedPagesAcrossWritesAndReopen(t *testing.T) {
 				t.Fatalf("history rows missing after reopen: ids=%v missing=%v", ids, want)
 			}
 			f.expectCode("bead.get", map[string]any{"id": late, "asOf": at}, "not_found")
+			current := f.meta()
+			head, err := current.Head.Uint64()
+			if err != nil {
+				t.Fatal(err)
+			}
+			future := model.Natural64(head + 1)
+			f.expectCode("history.get", map[string]any{
+				"ref":  late,
+				"asOf": asOf{Revision: future, Incarnation: current.Incarnation},
+			}, "not_found")
+			f.expectCode("history.diff", map[string]any{
+				"ref":          late,
+				"fromRevision": at.Revision,
+				"toRevision":   future,
+			}, "not_found")
 
 			// The signed cursor binds every caller-visible selector. These calls
 			// must fail before a second page can read or mutate the SQL store.

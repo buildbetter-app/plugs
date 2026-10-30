@@ -2,7 +2,14 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "pluginbuild",
-    srcs = ["build.go", "process_other.go", "process_unix.go"],
+    srcs = [
+        "build.go",
+        "containment_linux_amd64.go",
+        "containment_other.go",
+        "process_other.go",
+        "process_unix.go",
+        "store.go",
+    ],
     importpath = "github.com/buildbetter-app/plugs/internal/server/pluginbuild",
     visibility = ["//:__subpackages__"],
     deps = [
@@ -10,18 +17,31 @@ go_library(
         "//internal/server/pluginmanifest",
         "//pluginapi",
         "//sdk/go:sdk_go",
+        "@org_golang_x_sys//unix",
     ],
 )
 
 go_test(
     name = "pluginbuild_test",
-    srcs = ["source_test.go"],
-    embedsrcs = ["//internal/server/pluginbuild/fixture:sources"],
+    srcs = [
+        "containment_linux_amd64_test.go",
+        "containment_other_test.go",
+        "source_test.go",
+    ],
+    embedsrcs = [
+        "//internal/server/pluginbuild/fixture:sources",
+        "//internal/server/pluginbuild/fixture-wasi:sources",
+    ],
     embed = [":pluginbuild"],
     deps = [
+        "//internal/core/model",
+        "//internal/core/port",
         "//internal/server/pluginhost",
         "//internal/server/pluginmanifest",
+        "//internal/storage/driver",
+        "//pluginapi",
         "//sdk/go:sdk_go",
+        "@org_golang_x_sys//unix",
     ],
 )
 
