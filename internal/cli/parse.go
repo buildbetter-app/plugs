@@ -32,6 +32,8 @@ Commands:
   cancel ID [--reason TEXT] [--expect REVISION]
   fail ID [--reason TEXT] [--expect REVISION]
   history --as-of REVISION [--id ID] [--limit N] [--cursor TOKEN]
+  gate approve ID [--expect REVISION]
+  gate report ID --state STATE [--details JSON] [--expect REVISION]
   ontology get [--project PROJECT]
   ontology describe [--project PROJECT] [--type TYPE]
   ontology schema --project PROJECT --type TYPE [--status STATUS]
@@ -118,6 +120,9 @@ func ParseCommand(args []string) (Command, error) {
 		return Command{}, fmt.Errorf("command is required")
 	}
 	name := args[0]
+	if name == "gate" {
+		return parseGateCommand(args[1:])
+	}
 	if name == "ontology" {
 		return parseOntologyCommand(args[1:])
 	}
