@@ -22,6 +22,7 @@ go_test(
         "//internal/storage/conformance",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "//internal/storage/sqlite",
     ],
 )
 

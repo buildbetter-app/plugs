@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
@@ -27,6 +28,12 @@ func (v savedViews) GetView(_ context.Context, _ model.PrincipalRef, id string) 
 		return viewops.Definition{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "saved view is absent"}}
 	}
 	return definition, nil
+}
+
+type projectionStatusFunc func(context.Context, string) (coreevents.ProjectionStatus, error)
+
+func (fn projectionStatusFunc) Status(ctx context.Context, binding string) (coreevents.ProjectionStatus, error) {
+	return fn(ctx, binding)
 }
 
 type fixture struct {
@@ -68,7 +75,15 @@ func newFixture(t *testing.T) *fixture {
 			}
 			return nil
 		},
-		OntologyRevision: model.Natural64(1),
+		OntologyRevision:  model.Natural64(1),
+		ProjectionBinding: "core",
+		ProjectionStatus: projectionStatusFunc(func(_ context.Context, binding string) (coreevents.ProjectionStatus, error) {
+			meta, err := store.Meta(context.Background())
+			if err != nil {
+				return coreevents.ProjectionStatus{}, err
+			}
+			return coreevents.ProjectionStatus{Binding: binding, Position: coreevents.Position{Incarnation: meta.Incarnation}}, nil
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -156,6 +171,9 @@ func TestByteRPCViewRunAuthorizationGroupingAndExplain(t *testing.T) {
 
 	definition := map[string]any{"filter": map[string]any{"types": []string{"issue"}}, "fields": []string{"id"}, "groupBy": []string{"type"}, "budgetTokens": 1}
 	run := resultMap(t, f.call(t, context.Background(), "view.run", map[string]any{"definition": definition, "_meta": map[string]any{"project": "p", "agent": "grouped"}}))
+	if projection, ok := run["projection"].(map[string]any); !ok || projection["binding"] != "core" {
+		t.Fatalf("view.run omitted projection metadata: %v", run)
+	}
 	if len(run["items"].([]any)) != 0 {
 		t.Fatal("grouped result leaked top-level items")
 	}
