@@ -389,12 +389,52 @@ func TestMCPInitializeValidatesRequiredParameters(t *testing.T) {
 	for _, body := range []string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"only"}}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"future","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":1,"capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"initialize","params":{"protocolVersion":"2099-01-01","capabilities":{}}}`,
 	} {
 		status, response := call(t, f, body)
 		if status != http.StatusOK || errorCode(t, response) != "invalid_params" {
 			t.Fatalf("invalid initialize status=%d body=%s", status, response)
 		}
+	}
+}
+
+func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
+	for _, configured := range []string{mcp.DefaultProtocolVersion, "2025-06-18"} {
+		t.Run(configured, func(t *testing.T) {
+			f := newFixture(t)
+			authenticator, err := authn.New(authn.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler, err := mcp.New(f.rpc, authenticator, mcp.Config{ProtocolVersion: configured})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, offered := range []string{"2025-03-26", "2025-06-18", "2025-11-25", "2099-01-01"} {
+				t.Run(offered, func(t *testing.T) {
+					want := offered
+					if offered == "2099-01-01" {
+						want = configured
+					}
+					status, body := callHandler(t, handler, `{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"`+offered+`","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}`)
+					result, ok := decode(t, body)["result"].(map[string]any)
+					if status != http.StatusOK || !ok || result["protocolVersion"] != want {
+						t.Fatalf("offered=%s want=%s status=%d body=%s", offered, want, status, body)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestMCPRejectsUnsupportedProtocolHeader(t *testing.T) {
+	f := newFixture(t)
+	session := initializeSession(t, f.handler)
+	status, body := callHandlerWithHeaders(t, f.handler, `{"jsonrpc":"2.0","id":1,"method":"ping"}`, map[string]string{"MCP-Session-Id": session, "MCP-Protocol-Version": "2099-01-01"})
+	if status != http.StatusBadRequest || errorCode(t, body) != "invalid_request" {
+		t.Fatalf("unsupported HTTP protocol version status=%d body=%s", status, body)
 	}
 }
 
