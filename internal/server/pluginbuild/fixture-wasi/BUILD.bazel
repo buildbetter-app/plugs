@@ -1,0 +1,5 @@
+filegroup(
+    name = "sources",
+    srcs = ["go.mod.template", "plug-plugin.json", "plugin.go"],
+    visibility = ["//internal/server/pluginbuild:__pkg__"],
+)

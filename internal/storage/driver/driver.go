@@ -5,6 +5,7 @@ package driver
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -351,6 +352,16 @@ type ErrTruncated struct {
 
 func (e ErrTruncated) Error() string { return "history is truncated" }
 
+// ErrFutureRevision identifies an as-of address that is newer than the
+// reader's pinned head. The service turns this storage boundary into the
+// catalog's typed not_found outcome for history reads.
+type ErrFutureRevision struct {
+	Requested model.Revision
+	Head      model.Revision
+}
+
+func (e ErrFutureRevision) Error() string { return "requested revision is beyond head" }
+
 type ErrIndeterminate struct {
 	IdempotencyKey string
 }
@@ -416,6 +427,52 @@ type StoreHealth struct {
 	PluginSet            string
 	AuthorizationChain   []string
 }
+
+// CoreSessionRecord is the durable, non-graph state for an interactive Plug
+// login. TokenDigest is the SHA-256 digest of the opaque bearer token; the
+// bearer itself is never handed to a driver. Principal is deliberately kept
+// as a typed value so a session store cannot silently turn an API key or
+// another principal kind into interactive human proof.
+type CoreSessionRecord struct {
+	ID          string
+	TokenDigest []byte
+	Principal   model.PrincipalRef
+	ExpiresAt   time.Time
+	Revoked     bool
+}
+
+func (r CoreSessionRecord) Validate() error {
+	if len(r.ID) != 32 || r.ID != strings.ToLower(r.ID) {
+		return fmt.Errorf("core session id is not canonical")
+	}
+	if _, err := hex.DecodeString(r.ID); err != nil {
+		return fmt.Errorf("core session id is not hexadecimal")
+	}
+	if len(r.TokenDigest) != 32 {
+		return fmt.Errorf("core session digest has the wrong length")
+	}
+	if r.Principal.Kind != "user" || !strings.HasPrefix(r.Principal.ID, "user:") ||
+		len(r.Principal.ID) <= len("user:") || strings.ContainsAny(r.Principal.ID, " \t\r\n\x00") ||
+		r.Principal.Sponsor != nil || len(r.Principal.Caveats) != 0 {
+		return fmt.Errorf("core session principal is not an unscoped user")
+	}
+	if r.ExpiresAt.IsZero() {
+		return fmt.Errorf("core session expiry is required")
+	}
+	return nil
+}
+
+// CoreSessionStore is an optional durable capability implemented by storage
+// drivers that can retain revocable core sessions. It is intentionally
+// separate from Store so the memory driver and existing storage fakes do not
+// acquire a false durability contract. Implementations must make Put atomic
+// with their active-session capacity check and must preserve revoked rows.
+type CoreSessionStore interface {
+	PutCoreSession(context.Context, CoreSessionRecord, time.Time, int) error
+	LookupCoreSession(context.Context, string) (CoreSessionRecord, error)
+	RevokeCoreSession(context.Context, string) (bool, error)
+}
+
 type MigrationReport struct {
 	From, To SchemaVersion
 	Applied  []string

@@ -18,6 +18,8 @@ go_test(
     embed = [":postgres"],
     deps = [
         "//internal/core/model",
+        "//internal/core/pipeline:pipeline",
+        "//internal/core/port",
         "//internal/storage/driver",
         "//internal/storage/conformance",
     ],

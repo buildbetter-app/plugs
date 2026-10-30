@@ -1,8 +1,8 @@
 # Current Plug guides
 
-These pages describe the admitted source snapshot
-**[`9d03323f423cf28d202b328ed7c116e45db8406f`](https://github.com/buildbetter-app/plugs/tree/9d03323f423cf28d202b328ed7c116e45db8406f)**
-(2026-10-29). The earlier
+These pages describe the admitted source snapshot based on
+**[`9d1845ceef104e8847f2f45cfc7ef6b16072837f`](https://github.com/buildbetter-app/plugs/tree/9d1845ceef104e8847f2f45cfc7ef6b16072837f)**
+(2026-10-29) plus the current implementation. The earlier
 [runtime guides](../plug-runtime/README.md) remain an intentionally immutable
 snapshot at `471d0199c89acf9e242f44978f2824120726de32`; they are useful for the
 baseline lifecycle and storage model, but their statements about the then
@@ -12,7 +12,7 @@ unbound remote CLI and ontology RPC do not describe this page set.
 | --- | --- |
 | [Conditional audit](audit.md) | Tracked ontology decisions, ordered notices, delivery, and refusal boundaries. |
 | [SQL persistence](sql.md) | Current SQLite and PostgreSQL event-plan durability and engine limits. |
-| [Ontology RPC](ontology-rpc.md) | Stored reads, checks, history, diffs, plans, and explicit apply refusal over JSON-RPC. |
+| [Ontology RPC](ontology-rpc.md) | Stored reads, checks, history, diffs, plans, and the conditional protected apply over JSON-RPC. |
 | [Ontology and gates](ontology-gates.md) | Conditional protected apply, gate approval/reporting, durable projection status, and migration/history refusal boundaries. |
 | [Authentication](authn.md) | Loopback admission, bearer identities, process-local API keys, and proof limits. |
 | [Remote CLI](remote-cli.md) | The current HTTP client and an actual disposable CLI/RPC trace. |
@@ -23,16 +23,17 @@ The current tree connects the conditional audit producer to the tracked
 protected-ontology service adapter and the event reader. Memory, SQLite and
 PostgreSQL all validate and retain a complete ordered event plan in their
 changeset record; only the connected end-to-end audit fixture is qualified
-against memory at this pin. Stored ontology reads and read-only migration
-planning are bound to seven `ontology.*` JSON-RPC methods. The CLI can send its
-existing commands through the admitted HTTP endpoint, and the HTTP fixture
+against memory at this pin. Stored ontology reads and migration planning are
+bound to seven `ontology.*` JSON-RPC methods, and a composition root with the
+canonical protected Writer can add `ontology.apply`. The CLI can send its
+ontology commands through the admitted HTTP endpoint, and the HTTP fixture
 uses the same RPC bytes and authentication boundary as the executable.
 
-The current tree still has no `ontology.apply` handler, durable API-key store,
-OIDC/login session provider, watch registration, or production recovery
-integration. A branch, design entry, or catalog descriptor does not make one
-of those surfaces available. The guides call out each refusal where it
-matters.
+The current tree still has no durable API-key store, OIDC/login session
+provider, watch registration, or production recovery integration. A catalog
+descriptor does not install a handler: read-only roots keep `ontology.apply`
+unbound, while protected roots must explicitly supply the Writer and live
+human-proof path. The guides call out each refusal where it matters.
 
 ## Run the examples
 

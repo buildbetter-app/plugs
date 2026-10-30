@@ -16,6 +16,7 @@ type Service struct {
 	lease    driver.ActiveLease
 	writer   model.Writer
 	ontology *Ontology
+	events   EventProvider
 	now      func() time.Time
 }
 
@@ -24,6 +25,9 @@ type Option func(*Service)
 // WithOntology shares the same project ontology resolver used by the pipeline.
 func WithOntology(o *Ontology) Option       { return func(s *Service) { s.ontology = o } }
 func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = now } }
+func WithEventProvider(provider EventProvider) Option {
+	return func(s *Service) { s.events = provider }
+}
 
 // New never opens a transaction or storage driver. The composition root owns
 // the store, active lease and the single Writer, and closes their lifetime.
@@ -93,6 +97,13 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 	// must use an actual OutcomeWriter; replay is never inferred from a commit.
 	v, err := s.writer.Apply(ctx, by, cs, meta)
 	return port.WriteOutcome{Commit: v}, mapped(err)
+}
+
+// ApplyWithOutcome is the optional direct transaction binding. Named service
+// verbs continue to lower through the same method; the RPC layer binds this
+// entry point only in compositions that explicitly install tx.apply.
+func (s *Service) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.apply(ctx, by, "tx.apply", cs, meta, true)
 }
 
 func (s *Service) Create(ctx context.Context, by model.PrincipalRef, req CreateRequest, meta model.WriteMeta) (model.Commit, error) {

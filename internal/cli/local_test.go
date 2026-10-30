@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -14,7 +15,129 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
+
+func decodeReadResult(t *testing.T, raw []byte) map[string]any {
+	t.Helper()
+	value, err := wire.DecodeJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("result is not an object: %v", value)
+	}
+	return result
+}
+
+func TestLocalReadRPCsAndCLICommandsUseRealByteTransport(t *testing.T) {
+	l, err := OpenLocal(context.Background(), LocalConfig{Project: "local", Agent: "cli-read-test", Storage: StorageConfig{Driver: "memory"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	ctx := context.Background()
+	created, err := l.Client.Call(ctx, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "first"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	createResult := decodeReadResult(t, created.JSON)
+	ref := createResult["results"].([]any)[0].(map[string]any)["ref"]
+	createdRevision := createResult["revision"].(json.Number)
+	updated, err := l.Client.Call(ctx, "bead.update", map[string]any{"id": ref, "fields": map[string]any{"title": "second"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateResult := decodeReadResult(t, updated.JSON)
+	updatedRevision := updateResult["revision"].(json.Number)
+
+	eventsPage, err := l.Client.Call(ctx, "event.list", map[string]any{"filter": map[string]any{}, "limit": 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsResult := decodeReadResult(t, eventsPage.JSON)
+	if len(eventsResult["events"].([]any)) != 1 || eventsResult["cursor"].(string) == "" {
+		t.Fatalf("event page=%s", eventsPage.JSON)
+	}
+	resumed, err := l.Client.Call(ctx, "event.list", map[string]any{"filter": map[string]any{}, "after": eventsResult["cursor"], "limit": 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedResult := decodeReadResult(t, resumed.JSON)
+	if len(resumedResult["events"].([]any)) != 1 {
+		t.Fatalf("resumed event page=%s", resumed.JSON)
+	}
+
+	history, err := l.Client.Call(ctx, "history.get", map[string]any{"ref": ref, "asOf": map[string]any{"revision": createdRevision}}, "")
+	if err != nil || !bytes.Contains(history.JSON, []byte(`"title":"first"`)) {
+		t.Fatalf("history.get=%s err=%v", history.JSON, err)
+	}
+	diff, err := l.Client.Call(ctx, "history.diff", map[string]any{"ref": ref, "fromRevision": createdRevision, "toRevision": updatedRevision}, "")
+	if err != nil || !bytes.Contains(diff.JSON, []byte(`"/fields/title"`)) || !bytes.Contains(diff.JSON, []byte(`"second"`)) {
+		t.Fatalf("history.diff=%s err=%v", diff.JSON, err)
+	}
+	healthBefore, err := l.Client.Call(ctx, "admin.health", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	health := decodeReadResult(t, healthBefore.JSON)
+	if health["head"] != updatedRevision {
+		t.Fatalf("admin.health=%s err=%v", healthBefore.JSON, err)
+	}
+
+	var out, errOut bytes.Buffer
+	s := &Session{Client: l.Client, Out: &out, Err: &errOut, JSON: true}
+	if err := s.Run(ctx, []string{"health"}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"driver":"memory"`)) {
+		t.Fatalf("CLI health output=%s", out.String())
+	}
+}
+
+func TestSQLiteHistoryReadsSurviveStoreReopen(t *testing.T) {
+	path := t.TempDir() + "/history.db"
+	ctx := context.Background()
+	open := func() *Local {
+		l, err := OpenLocal(ctx, LocalConfig{Project: "local", Agent: "sqlite-read-test", Storage: StorageConfig{Driver: "sqlite", DSN: path}, Factory: func(ctx context.Context, cfg StorageConfig) (driver.Store, func() error, error) {
+			store, err := (sqlite.Driver{}).Open(ctx, driver.Config{DSN: cfg.DSN})
+			if err != nil {
+				return nil, nil, err
+			}
+			return store, store.Close, nil
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+	first := open()
+	created, err := first.Client.Call(ctx, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "persisted"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := decodeReadResult(t, created.JSON)
+	ref := result["results"].([]any)[0].(map[string]any)["ref"]
+	revision := result["revision"]
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second := open()
+	t.Cleanup(func() { _ = second.Close() })
+	history, err := second.Client.Call(ctx, "history.get", map[string]any{"ref": ref, "asOf": map[string]any{"revision": revision}}, "")
+	if err != nil || !bytes.Contains(history.JSON, []byte(`"title":"persisted"`)) {
+		t.Fatalf("reopened history=%s err=%v", history.JSON, err)
+	}
+	health, err := second.Client.Call(ctx, "admin.health", nil, "")
+	if err != nil || !bytes.Contains(health.JSON, []byte(`"driver":"sqlite"`)) {
+		t.Fatalf("reopened health=%s err=%v", health.JSON, err)
+	}
+	events, err := second.Client.Call(ctx, "event.list", map[string]any{"filter": map[string]any{}, "limit": 1}, "")
+	if err != nil || !bytes.Contains(events.JSON, []byte(`"type":"bead.created"`)) {
+		t.Fatalf("reopened events=%s err=%v", events.JSON, err)
+	}
+}
 
 type observedLeaseStore struct {
 	driver.Store

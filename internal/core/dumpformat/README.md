@@ -1,9 +1,10 @@
-# Offline converter reader
+# Dump archive reader and offline merger
 
 `Read` validates the `plug-dump/1` archive emitted by exporter
 `10953a8536c3a90b7cf54896d2ed5513b48a8e99`. It accepts the producer's
-`offline-head-and-source-archives` scope only. This is not the full A6 dump
-schema or a restore certificate.
+`offline-head-and-source-archives` scope and the native `plug-native-store`
+envelope emitted by `admin.dump`. This is not the full A6 dump schema or a
+restore certificate.
 
 The reader checks the bounded tar, member registry and checksums, exact typed
 JSON members, source census and column schema, source/body projections,
@@ -12,15 +13,16 @@ fingerprints. It retains original member bytes and all source archives.
 `Archive.Manifest`, `Archive.Records`, and `Archive.Member` return detached
 copies. Source nulls and JSON numbers retain their values.
 
-`internal/integration/converterroundtrip` supplies the bounded restore seam for
-this initial format. It admits only an empty memory or SQLite target, validates
-the complete archive before opening a write transaction, and commits all beads
-and typed/source evidence in one `ChangesetRestore`. Bead IDs and source status
-are preserved through a `pipeline.Document`; unsupported source columns remain
-namespaced metadata, while edge, comment, config, memory, archive, and
-allocator evidence remain queryable records. The ordinary read/write services
-can operate on the restored IDs; derived-table rebuild and complete A6 parity
-remain out of scope, as does a restore certificate.
+`internal/core/restore` supplies the callable empty-store writer for supported
+native head images on memory and SQLite. It validates the complete archive and
+binds uploaded bytes to the admitted manifest before opening the publication
+transaction. Native full-history archives, allocator/project metadata, required
+disclosures, and converter archives are explicitly refused before mutation
+until their history and allocator invariants can be preserved. The
+`internal/integration/converterroundtrip` checkpoint retains converter evidence
+and verifies this refusal; it does not certify a converter roundtrip. Admin
+operations require a host-injected, method-and-digest-bound human-presence
+verifier and fail closed when that verifier is unavailable.
 
 `Merge(readers ...io.Reader)` validates every input and returns a canonical
 merged archive as bytes. `MergeArchives(archives ...*Archive)` accepts retained
