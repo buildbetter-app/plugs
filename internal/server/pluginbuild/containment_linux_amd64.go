@@ -38,10 +38,12 @@ func init() {
 	}
 	runtime.LockOSThread()
 	admission := os.NewFile(3, "build-admission")
-	unix.CloseOnExec(3)
 	fail := func(step string, err error) {
 		_, _ = fmt.Fprintf(admission, "%s: %v\n", step, err)
 		os.Exit(125)
+	}
+	if _, err := unix.FcntlInt(admission.Fd(), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
+		fail("close admission descriptor on exec", err)
 	}
 	var spec containedSpec
 	if err := json.NewDecoder(io.LimitReader(os.Stdin, 64<<10)).Decode(&spec); err != nil {
@@ -194,6 +196,13 @@ func installContainment(spec containedSpec) error {
 	}
 	if err := os.Chdir(spec.Directory); err != nil {
 		return fmt.Errorf("build directory: %w", err)
+	}
+	// Landlock cannot revoke access through already-open files or sockets.
+	// os/exec preserves non-CLOEXEC server descriptors, so explicitly close
+	// every descriptor beyond stdio/admission at the compiler exec. Marking
+	// rather than closing here preserves the launcher's Go runtime handles.
+	if err := unix.CloseRange(4, ^uint(0), unix.CLOSE_RANGE_CLOEXEC); err != nil {
+		return fmt.Errorf("isolate server descriptors: %w", err)
 	}
 	for _, limit := range []struct {
 		resource int

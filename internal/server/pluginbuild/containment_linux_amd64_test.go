@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ import (
  "encoding/json"
  "os"
  "path/filepath"
+ "strconv"
  "syscall"
  "time"
 )
@@ -57,6 +59,9 @@ func main() {
  result["outside_signal_denied"] = syscall.Kill(os.Getppid(), 0) == syscall.EPERM
  _, _, errno := syscall.RawSyscall(syscall.SYS_FCNTL, 3, syscall.F_GETFD, 0)
  result["admission_fd_closed"] = errno == syscall.EBADF
+ inherited, _ := strconv.Atoi(os.Args[4])
+ _, _, errno = syscall.RawSyscall(syscall.SYS_FCNTL, uintptr(inherited), syscall.F_GETFD, 0)
+ result["server_fd_closed"] = errno == syscall.EBADF
  limits := []struct{resource int; max uint64; name string}{
   {syscall.RLIMIT_CPU, 60, "cpu"}, {syscall.RLIMIT_AS, 2<<30, "address_space"},
   {syscall.RLIMIT_FSIZE, 64<<20, "file_size"}, {syscall.RLIMIT_NOFILE, 256, "open_files"},
@@ -144,8 +149,20 @@ func TestLinuxContainment(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = unix.Close(fd)
+	// A server descriptor without CLOEXEC must not survive either exec. Use
+	// a high descriptor so the probe's own runtime cannot reuse its number.
+	opened, err := unix.Open(outside, unix.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inherited, err := unix.FcntlInt(uintptr(opened), unix.F_DUPFD, 512)
+	_ = unix.Close(opened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(inherited)
 	spec := containedSpec{
-		Binary: binary, Directory: workspace, Args: []string{workspace, outside, readonly},
+		Binary: binary, Directory: workspace, Args: []string{workspace, outside, readonly, strconv.Itoa(inherited)},
 		Env:  []string{"GOMAXPROCS=2", "GODEBUG=asyncpreemptoff=1"},
 		Read: []string{binary, readonly, "/dev/null"}, Execute: []string{binary}, Write: []string{workspace, "/dev/null"},
 	}
@@ -158,7 +175,7 @@ func TestLinuxContainment(t *testing.T) {
 		if err := json.Unmarshal(data, &results); err != nil {
 			t.Fatalf("decode probes: %v\n%s", err, data)
 		}
-		if len(results) != 23 {
+		if len(results) != 24 {
 			t.Fatalf("incomplete containment probes (%d): %s", len(results), data)
 		}
 		for name, passed := range results {
@@ -227,7 +244,7 @@ func TestContainmentKernelRefusal(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, mode := range []string{"landlock", "seccomp", "no_new_privs", "resource_limits"} {
+		for _, mode := range []string{"landlock", "seccomp", "no_new_privs", "resource_limits", "descriptors"} {
 			t.Run(mode, func(t *testing.T) {
 				command := exec.Command(self, "-test.run=^TestContainmentKernelRefusal$", "-test.v")
 				command.Env = append(os.Environ(), "PLUG_TEST_CONTAINMENT_UNAVAILABLE="+mode)
@@ -253,6 +270,7 @@ func TestContainmentKernelRefusal(t *testing.T) {
 		"seccomp":         {unix.SYS_SECCOMP},
 		"no_new_privs":    {unix.SYS_PRCTL},
 		"resource_limits": {unix.SYS_PRLIMIT64, unix.SYS_SETRLIMIT},
+		"descriptors":     {unix.SYS_CLOSE_RANGE},
 	}
 	filter := []unix.SockFilter{{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: 0}}
 	for _, number := range operations[mode] {
@@ -268,7 +286,7 @@ func TestContainmentKernelRefusal(t *testing.T) {
 	}
 	_, err := runContained(context.Background(), containedSpec{Binary: "/unreachable", Directory: t.TempDir(), Read: []string{"/dev/null"}})
 	var typed *Error
-	want := map[string]string{"landlock": "Landlock ABI 3 required", "seccomp": "seccomp:", "no_new_privs": "no_new_privs:", "resource_limits": "resource limit"}[mode]
+	want := map[string]string{"landlock": "Landlock ABI 3 required", "seccomp": "seccomp:", "no_new_privs": "no_new_privs:", "resource_limits": "resource limit", "descriptors": "isolate server descriptors"}[mode]
 	if !errors.As(err, &typed) || typed.Code != ErrContainment || !strings.Contains(typed.Detail, want) {
 		t.Fatalf("unsupported kernel did not fail closed: %v", err)
 	}
