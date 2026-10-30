@@ -20,7 +20,8 @@ unverified `_meta.agent` label, which supplies no authentication or privilege.
 `White_Space`, treats an empty normalized name as absent, rejects remaining
 Unicode control (`Cc`) and format (`Cf`) characters with `invalid_params`, and
 allows at most 64 Unicode scalar values after trimming (not bytes or grapheme
-clusters). The closed `Session` result stays unchanged. Presence set/list rows
+clusters). Only a bounded copy of the normalized name is retained, not its raw
+padded input buffer. The closed `Session` result stays unchanged. Presence set/list rows
 return the stored normalized name only when nonempty; a successful set renews
 expiry but cannot change the name. Close, expiry and restart discard it.
 The label is display-only beside the authenticated principal, never a source of

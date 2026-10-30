@@ -95,5 +95,6 @@ func normalizeDisplayName(input *string) (string, error) {
 			return "", failure("invalid_params", "displayName contains a control or format character")
 		}
 	}
-	return name, nil
+	// Do not retain an arbitrarily padded raw input buffer in a live entry.
+	return strings.Clone(name), nil
 }
