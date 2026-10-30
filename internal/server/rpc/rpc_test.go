@@ -453,6 +453,18 @@ func (p *serviceProbe) CloseWithOutcome(ctx context.Context, by model.PrincipalR
 	p.record("close", by, r, m)
 	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(13)}}, p.failure
 }
+func (p *serviceProbe) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, r model.ChangeSet, m model.WriteMeta) (port.WriteOutcome, error) {
+	p.record("apply", by, r, m)
+	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(14)}}, p.failure
+}
+func (p *serviceProbe) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, r service.LinkRequest, m model.WriteMeta) (port.WriteOutcome, error) {
+	p.record("link", by, r, m)
+	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(15)}}, p.failure
+}
+func (p *serviceProbe) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, r service.LinkRequest, m model.WriteMeta) (port.WriteOutcome, error) {
+	p.record("unlink", by, r, m)
+	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(16)}}, p.failure
+}
 func (p *serviceProbe) ReopenWithOutcome(ctx context.Context, by model.PrincipalRef, r service.ReopenRequest, m model.WriteMeta) (port.WriteOutcome, error) {
 	p.record("reopen", by, r, m)
 	return port.WriteOutcome{Commit: model.Commit{Revision: model.Natural64(14)}}, p.failure
@@ -528,12 +540,81 @@ func TestServiceBindingsAtByteBoundary(t *testing.T) {
 			}
 		}
 	}
+	for _, tc := range []struct {
+		method string
+		params string
+		domain string
+	}{
+		{"bead.link", `{"from":{"id":"p-1"},"to":{"id":"p-2"},"kind":"blocks","expect":[{"ref":{"id":"p-1"},"revision":4}],` + meta + `}`, "link"},
+		{"bead.unlink", `{"from":{"id":"p-1"},"to":{"id":"p-2"},"kind":"blocks",` + meta + `}`, "unlink"},
+		{"tx.apply", `{"changeSet":{"ops":[{"kind":"link","from":{"id":"p-1"},"to":{"id":"p-2"},"linkKind":"relates-to"}]},` + meta + `}`, "apply"},
+	} {
+		got = result(t, call(t, s, ctx, tc.method, tc.params))
+		if p.method != tc.domain || p.meta.Method != tc.method || p.meta.Project != "default" || p.by.ID != "u-1" {
+			t.Fatalf("lost dependency/transaction mapping for %s: %+v", tc.method, p)
+		}
+		switch tc.domain {
+		case "link", "unlink":
+			request := p.request.(service.LinkRequest)
+			if request.From.ID != "p-1" || request.To.ID != "p-2" || request.Kind != "blocks" || (tc.domain == "link" && len(request.Expect) != 1) || (tc.domain == "unlink" && len(request.Expect) != 0) {
+				t.Fatalf("%s request mapping: %+v", tc.method, request)
+			}
+		case "apply":
+			changeSet := p.request.(model.ChangeSet)
+			if len(changeSet.Ops) != 1 || changeSet.Ops[0].Kind != model.OpLink || changeSet.Ops[0].Link == nil || changeSet.Ops[0].Link.LinkKind != "relates-to" {
+				t.Fatalf("tx.apply request mapping: %+v", changeSet)
+			}
+		}
+		if got["revision"] != json.Number(map[string]string{"link": "15", "unlink": "16", "apply": "14"}[tc.domain]) {
+			t.Fatalf("unexpected %s result: %+v", tc.method, got)
+		}
+	}
 	claimNext := result(t, call(t, s, ctx, "bead.claimNext", `{"filter":{"types":["task"]},`+meta+`}`))
 	if p.method != "claimNext" || p.meta.Method != "bead.claimNext" || p.request.(service.ClaimNextRequest).Project != "default" || claimNext["leaseTtlMs"] != json.Number("30000") || claimNext["leaseExpiresAt"] != "2026-10-29T12:00:00Z" {
 		t.Fatalf("claimNext mapping or flattened lease result changed: request=%+v result=%v", p.request, claimNext)
 	}
 	p.failure = &model.Error{Data: model.ErrorData{Code: "precondition_failed", Details: map[string]any{"reason": "revision"}}}
 	requireCode(t, call(t, s, ctx, "bead.close", `{"id":{"id":"p-1"},`+meta+`}`), "precondition_failed")
+}
+
+func TestTransactionBindingCompositionsRemainExclusive(t *testing.T) {
+	ctx := rpc.WithPrincipal(context.Background(), model.PrincipalRef{Kind: "user", ID: "u-1"})
+	params := `{"changeSet":{"ops":[{"kind":"link","from":{"id":"p-1"},"to":{"id":"p-2"},"linkKind":"relates-to"}]},"_meta":{"idempotencyKey":"550e8400-e29b-41d4-a716-446655440000"}}`
+
+	t.Run("standalone binding serves and full binding is atomic", func(t *testing.T) {
+		probe := &serviceProbe{}
+		registry := registry(t)
+		if err := rpc.BindTxApply(registry, probe); err != nil {
+			t.Fatal(err)
+		}
+		server := server(t, registry, rpc.Config{DefaultProject: "default", Incarnation: "inc"})
+		got := result(t, call(t, server, ctx, "tx.apply", params))
+		if probe.method != "apply" || got["revision"] != json.Number("14") {
+			t.Fatalf("standalone tx.apply was not served: method=%q result=%v", probe.method, got)
+		}
+		before := registry.Descriptors()
+		if err := rpc.BindService(registry, probe); err == nil {
+			t.Fatal("full binding after standalone tx.apply was accepted")
+		}
+		if after := registry.Descriptors(); !reflect.DeepEqual(after, before) {
+			t.Fatalf("failed full binding mutated descriptors: before=%v after=%v", before, after)
+		}
+	})
+
+	t.Run("full binding rejects standalone duplicate atomically", func(t *testing.T) {
+		probe := &serviceProbe{}
+		registry := registry(t)
+		if err := rpc.BindService(registry, probe); err != nil {
+			t.Fatal(err)
+		}
+		before := registry.Descriptors()
+		if err := rpc.BindTxApply(registry, probe); err == nil {
+			t.Fatal("standalone tx.apply after full binding was accepted")
+		}
+		if after := registry.Descriptors(); !reflect.DeepEqual(after, before) {
+			t.Fatalf("failed standalone binding mutated descriptors: before=%v after=%v", before, after)
+		}
+	})
 }
 
 func TestRealClaimNextTerminalReceiptReplayAtByteBoundary(t *testing.T) {

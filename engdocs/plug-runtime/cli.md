@@ -63,7 +63,8 @@ remote error and does not expose peer response text.
 ## Commands, ownership and refusal
 
 The [parser](../../internal/cli/parse.go) accepts `ready`, `get`, `create`,
-`claim`, `update`, `comment`, `close`, `history` and `session`.
+`claim`, `update`, `comment`, `close`, `reopen`, `defer`, `cancel`, `fail`,
+`link`, `unlink`, `batch`, `history` and `session`.
 Global `--memory`, `--server`, `--project` (default `local`), `--agent`
 (default `plug-cli`) and `--json` precede the command. Command options may
 precede or follow a bead ID. `--fields` accepts a JSON object and `--title`

@@ -127,6 +127,9 @@ func mutate(raw json.RawMessage) uint64 {
 		return response(map[string]any{"error": "invalid after"})
 	}
 	title, _ := after.Fields["title"].(string)
+	if strings.HasPrefix(title, "acceptance:") {
+		return acceptanceMutation(payload, title)
+	}
 	if len(payload.Changes[0].Resource) != 0 {
 		var resource struct {
 			Ref struct {
