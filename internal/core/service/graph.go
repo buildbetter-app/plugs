@@ -35,6 +35,11 @@ func decodeDocument(raw []byte) (pipeline.Document, error) {
 	if err := dec.Decode(new(any)); err != io.EOF || doc.ID == "" || doc.Type == "" || doc.Fields == nil {
 		return doc, failure("invalid_params", "invalid bead document")
 	}
+	for _, comment := range doc.Comments {
+		if err := comment.Validate(); err != nil {
+			return doc, failure("invalid_params", "invalid stored comment provenance")
+		}
+	}
 	if v, exists := doc.Fields["status"]; exists {
 		if _, ok := v.(string); !ok {
 			return doc, failure("invalid_params", "status must be a string")
