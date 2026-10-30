@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "mcp",
-    srcs = ["config.go", "errors.go", "handler.go"],
+    srcs = ["config.go", "errors.go", "handler.go", "notifications.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/transport/mcp",
     visibility = ["//:__subpackages__"],
     deps = [
@@ -15,7 +15,7 @@ go_library(
 
 go_test(
     name = "mcp_test",
-    srcs = ["handler_test.go"],
+    srcs = ["handler_test.go", "notification_stream_test.go"],
     deps = [
         ":mcp",
         "//internal/api/wire",
@@ -30,6 +30,13 @@ go_test(
         "//internal/storage/driver",
         "//internal/storage/memory",
     ],
+)
+
+go_test(
+    name = "mcp_internal_test",
+    srcs = ["notifications_test.go"],
+    embed = [":mcp"],
+    deps = ["//internal/core/model"],
 )
 
 filegroup(
