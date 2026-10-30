@@ -304,6 +304,9 @@ def run(capture):
     capture.state["test_started"] = True
     capture.save()
     args = [*bazel, "test", *selected, "--lockfile_mode=error", "--nocache_test_results",
+            # rules_go needs verbose wrapper events to emit passing/skipped
+            # test cases in XML rather than an empty <testsuites> stub.
+            "--test_env=GO_TEST_WRAP_TESTV=1",
             "--test_output=all", "--test_timeout=900", "--jobs=2", "--local_resources=memory=8192",
             "--remote_cache=", "--remote_executor=", "--repo_contents_cache=",
             "--build_event_publish_all_actions", "--build_event_json_file=" + str(capture.output / "raw.bep.json")]
@@ -368,6 +371,8 @@ def collect_tests(capture):
                           "errors": sum(x.find("error") is not None for x in cases)}
                 if not cases:
                     suites = list(root.iter("testsuite"))
+                    if not suites or any("tests" not in x.attrib for x in suites):
+                        raise ValueError("XML lacks test-case or explicit suite accounting for " + identity["label"])
                     counts = {key: sum(int(x.get(attr, 0)) for x in suites) for key, attr in
                               (("cases", "tests"), ("skipped", "skipped"), ("failures", "failures"), ("errors", "errors"))}
         cached = bool(result.get("cachedLocally") or result.get("executionInfo", {}).get("cachedRemotely"))

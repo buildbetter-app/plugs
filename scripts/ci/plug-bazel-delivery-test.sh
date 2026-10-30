@@ -82,6 +82,7 @@ elif command == "query":
     else:
         print("//pkg:pkg_test")
 elif command == "test":
+    assert "--test_env=GO_TEST_WRAP_TESTV=1" in args
     labels = ("//pkg:pkg_test", "//consumer:consumer_test", "//libraryconsumer:library_test", "//tools/lexicon:lexicon_gate")
     events = [{"id": {"configuration": {"id": "fixture"}}, "configuration": {"cpu": "k8", "platformName": "host"}}]
     for i, label in enumerate(labels):
@@ -91,7 +92,10 @@ elif command == "test":
         case = '<testcase name="skip"><skipped/></testcase>' if i == 0 else '<testcase name="pass"/>'
         if config.get("test_exit") and i == 1:
             case = '<testcase name="fail"><failure message="expected fixture failure"/></testcase>'
-        (logs / "test.xml").write_text('<testsuite tests="1">' + case + '</testsuite>')
+        xml = '<testsuite tests="1">' + case + '</testsuite>'
+        if config.get("empty_xml") and i == 0:
+            xml = '<testsuites></testsuites>'
+        (logs / "test.xml").write_text(xml)
         outputs = [{"name": name, "uri": (logs / name).as_uri()} for name in ("test.log", "test.xml")]
         if config.get("missing_xml") and i == 0:
             outputs.pop()
@@ -158,7 +162,7 @@ else:
     assert len(list((out / "tests").glob("*/test.xml"))) == 4
     args = json.loads((out / "commands/tests/argv.json").read_text())
     assert all(flag in args for flag in ("--nocache_test_results", "--lockfile_mode=error",
-               "--jobs=2", "--test_timeout=900", "--local_resources=memory=8192"))
+               "--jobs=2", "--test_timeout=900", "--local_resources=memory=8192", "--test_env=GO_TEST_WRAP_TESTV=1"))
     (out / "tests.json").write_text("tampered")
     phase("verify", out, 86)
 
@@ -173,6 +177,7 @@ else:
     assert tests["accounting"]["target_status_counts"]["FAILED"] == 1
     assert sum(x["xml"]["failures"] for x in tests["attempts"]) == 1
     exercise("collector-failure", {"missing_xml": True}, 0, 86)
+    exercise("empty-xml", {"empty_xml": True}, 0, 86)
     exercise("malformed-bep", {"malformed_bep": True}, 0, 86)
     exercise("incomplete-bep", {"incomplete_bep": True}, 0, 86)
     exercise("escaped-log", {"escape": True}, 0, 86)
