@@ -24,12 +24,15 @@ type transaction struct {
 	base                    *state
 	snapshotAt              model.Revision
 	incarnation             string
+	restore                 *driver.Meta
+	nativeRestore           *driver.NativeRestoreProfile
 	closed, locked, hasHead bool
 	acquired                driver.LockSet
 	records                 map[string]*driver.Record
 	derived                 map[string]driver.LockState
 	blobs                   map[driver.Hash][]byte
 	bumps                   map[string]driver.LockKey
+	allocators              map[string]driver.OfflineAllocator
 }
 
 func (t *transaction) check(ctx context.Context) error {
@@ -41,6 +44,9 @@ func (t *transaction) check(ctx context.Context) error {
 	}
 	if t.closed {
 		return driver.ErrTxClosed
+	}
+	if t.incarnation != t.store.state.meta.Incarnation {
+		return driver.ErrIncarnationChanged{From: t.incarnation, To: t.store.state.meta.Incarnation}
 	}
 	return nil
 }
@@ -75,6 +81,7 @@ func (t *transaction) finish() {
 	t.derived = nil
 	t.blobs = nil
 	t.bumps = nil
+	t.allocators = nil
 	s.signal()
 }
 
@@ -365,7 +372,24 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	if err := branchZero(header.Branch); err != nil {
 		return model.Changeset{}, err
 	}
-	if header.Incarnation != s.state.meta.Incarnation {
+	expected := s.state.meta.Incarnation
+	if header.Kind == model.ChangesetRestore && t.restore == nil {
+		return model.Changeset{}, fmt.Errorf("%w: restore requires the offline capability", driver.ErrUnsupported)
+	}
+	if t.restore != nil {
+		if err := s.restoreEmpty(); err != nil {
+			return model.Changeset{}, err
+		}
+		validate := driver.ValidateOfflineRestoreHeader
+		if t.nativeRestore != nil {
+			validate = t.nativeRestore.ValidateHeader
+		}
+		if err := validate(header); err != nil {
+			return model.Changeset{}, err
+		}
+		expected = t.restore.Incarnation
+	}
+	if header.Incarnation != expected {
 		return model.Changeset{}, driver.ErrIncarnationChanged{From: header.Incarnation, To: s.state.meta.Incarnation}
 	}
 	principal, err := driver.PrincipalKey(header.Principal)
@@ -449,6 +473,9 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 		return model.Changeset{}, err
 	}
 	next := s.state.fork()
+	for prefix, allocator := range t.allocators {
+		next.allocators[prefix] = allocator.Clone()
+	}
 	for id, record := range t.records {
 		ref := t.recordRef(id)
 		version := driver.Version{Ref: ref, Revision: revision, CreatedAt: when, Principal: entry.Principal, Deleted: record == nil}
@@ -493,6 +520,9 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 		}
 	}
 	next.meta.Head = revision
+	if t.restore != nil {
+		next.meta = *t.restore
+	}
 	next.log = append(append([]model.Changeset(nil), next.log...), entry)
 	if header.IdempotencyKey != "" {
 		next.replays[key] = replay{value: driver.IdempotencyRecord{RequestHash: header.RequestHash, Commit: response, Changeset: entry, ResponsePending: header.ResponsePending}, at: s.now()}

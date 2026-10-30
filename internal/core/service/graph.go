@@ -12,8 +12,6 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-const scanLimit = 20000
-
 type queryReader interface {
 	Query(context.Context, driver.Query) (driver.Page[driver.Record], error)
 }
@@ -57,7 +55,8 @@ func priority(doc pipeline.Document) (int, error) {
 }
 
 // scanBeads reads one pinned snapshot, including every page, and never reports
-// a partial graph as complete. This bounded slice has no projection dependency.
+// a partial graph as complete. ClaimNext relies on this uncapped lazy walk so
+// large ready sets remain traversable without a hidden terminal null.
 func scanBeads(ctx context.Context, r queryReader) (map[string]storedBead, error) {
 	graph := map[string]storedBead{}
 	var cursor *driver.Cursor
@@ -75,9 +74,6 @@ func scanBeads(ctx context.Context, r queryReader) (map[string]storedBead, error
 				return nil, failure("internal_error", "duplicate bead in snapshot")
 			}
 			graph[doc.ID] = storedBead{record, doc}
-			if len(graph) > scanLimit {
-				return nil, failure("scope_too_large", "local graph scan exceeds 20000 beads")
-			}
 		}
 		if page.NextCursor == nil {
 			break
@@ -140,7 +136,7 @@ func beadValue(row storedBead) (Bead, error) {
 		}
 		metadata[k] = v
 	}
-	return Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata}, nil
+	return Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...)}, nil
 }
 
 func sortedIDs(graph map[string]storedBead) []string {

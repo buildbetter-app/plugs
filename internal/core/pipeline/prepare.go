@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -22,18 +24,25 @@ type pending struct {
 	revision model.Revision
 	deleted  bool
 	setBy    map[string]string
+	// allocatorPrefix/Expected are set only for IDs previewed from a
+	// transaction-capable restored allocator. The expected value is checked
+	// again after the allocator fact lock is acquired before publication.
+	allocatorPrefix   string
+	allocatorExpected string
 }
 
 type prepared struct {
-	snapshot *snapshotReader
-	writes   map[string]*pending
-	proposal port.ProposedChange
-	release  *claimReleaseMode
-	warnings []model.Warning
-	mutators []string
-	refs     []model.Ref
-	changed  map[string]bool
-	audit    *auditPlan
+	snapshot         *snapshotReader
+	writes           map[string]*pending
+	proposal         port.ProposedChange
+	release          *claimReleaseMode
+	warnings         []model.Warning
+	mutators         []string
+	refs             []model.Ref
+	changed          map[string]bool
+	audit            *auditPlan
+	allocatorCursors map[string]uint64
+	allocatorSeen    map[string]bool
 }
 
 func failure(code model.ErrorCode, message string) error {
@@ -119,10 +128,14 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	if _, err := snapshot.observe(ctx, []driver.LockKey{driver.OntologySentinelLock, driver.PluginsSentinelLock}); err != nil {
 		return nil, err
 	}
-	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}}
+	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}, allocatorCursors: map[string]uint64{}, allocatorSeen: map[string]bool{}}
 	aliases := map[string]model.Ref{}
 	slotRef := ""
-	if isSlot(meta.Method) {
+	if len(cs.Ops) == 0 {
+		if meta.Method != "bead.claimNext" {
+			return nil, failure("invalid_params", "empty change set is only valid for claimNext")
+		}
+	} else if isSlot(meta.Method) {
 		// A method is host-supplied lowering context, not a batch-wide bypass.
 		if len(cs.Ops) < 1 || cs.Ops[0].Kind != model.OpPatch {
 			return nil, failure("invalid_params", "slot method requires a patch first")
@@ -152,7 +165,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 					return nil, failure("invalid_params", "duplicate create key")
 				}
 			}
-			id, e := w.cfg.newID()
+			project := c.Project
+			if project == "" {
+				project = meta.Project
+			}
+			id, allocatorPrefix, allocatorExpected, e := p.nextAllocatorID(ctx, project, w.cfg.newID)
 			if e != nil {
 				return nil, e
 			}
@@ -171,11 +188,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if snapshot.reads.states[key].Present {
 				return nil, errStale
 			}
-			project := c.Project
-			if project == "" {
-				project = meta.Project
-			}
-			current = &pending{ref: target, doc: Document{ID: id, Type: c.Type, Project: project, Fields: map[string]any{}}, setBy: map[string]string{}}
+			current = &pending{ref: target, doc: Document{ID: id, Type: c.Type, Project: project, Fields: map[string]any{}}, setBy: map[string]string{}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected}
 			p.writes[id] = current
 			if err = applyFields(current, c.Fields, "request"); err != nil {
 				return nil, err
@@ -221,7 +234,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			} else if err = w.checkLease(current.doc, by, meta); err != nil {
 				return nil, err
 			}
-			if meta.Method == "bead.claim" && current.doc.Lease != nil && w.cfg.now().Before(current.doc.Lease.ExpiresAt) {
+			if isClaim(meta.Method) && current.doc.Lease != nil && w.cfg.now().Before(current.doc.Lease.ExpiresAt) {
 				if len(cs.Ops) != 1 || op.Kind != model.OpPatch || len(op.Patch.Fields) != 0 {
 					return nil, failure("invalid_params", "an already-owned claim requires one empty patch")
 				}
@@ -356,6 +369,54 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	return p, nil
 }
 
+// nextAllocatorID previews a restored sequential counter on the immutable
+// preparation snapshot. The matching allocator fact is upgraded to an update
+// lock in transact, where the expected ID is consumed atomically with records.
+// An absent capability or absent project state keeps the legacy random path;
+// an admitted but unsupported mode fails closed rather than inventing an ID.
+func (p *prepared) nextAllocatorID(ctx context.Context, project string, fallback func() (string, error)) (string, string, string, error) {
+	if project == "" {
+		id, err := fallback()
+		return id, "", "", err
+	}
+	reader, ok := p.snapshot.reader.(driver.AllocatorReader)
+	if !ok {
+		id, err := fallback()
+		return id, "", "", err
+	}
+	if !p.allocatorSeen[project] {
+		key, err := driver.AllocatorLock(project)
+		if err != nil {
+			return "", "", "", err
+		}
+		if _, err = p.snapshot.observe(ctx, []driver.LockKey{key}); err != nil {
+			return "", "", "", err
+		}
+		p.allocatorSeen[project] = true
+	}
+	state, err := reader.LoadAllocator(ctx, project)
+	if errors.Is(err, driver.ErrNotFound) {
+		id, fallbackErr := fallback()
+		return id, "", "", fallbackErr
+	}
+	if err != nil {
+		return "", "", "", err
+	}
+	if cursor, exists := p.allocatorCursors[project]; exists {
+		state.LastID = cursor
+	}
+	id, err := state.NextID()
+	if err != nil {
+		return "", "", "", err
+	}
+	if state.LastID == ^uint64(0) {
+		return "", "", "", fmt.Errorf("%w: allocator counter exhausted", driver.ErrUnsupported)
+	}
+	next := state.LastID + 1
+	p.allocatorCursors[project] = next
+	return id, project, id, nil
+}
+
 func applyFields(p *pending, fields map[string]any, setter string) error {
 	for name, value := range fields {
 		if name == "" || strings.ContainsAny(name, "./\x00") {
@@ -446,18 +507,26 @@ func FieldHash(value any) (string, error) {
 
 func isSlot(method string) bool {
 	switch method {
-	case "bead.claim", "bead.close", "bead.fail", "bead.cancel", "bead.reopen", "bead.defer", "bead.release":
+	case "bead.claim", "bead.claimNext", "bead.close", "bead.fail", "bead.cancel", "bead.reopen", "bead.defer", "bead.release":
 		return true
 	}
 	return false
 }
 
+func isClaim(method string) bool { return method == "bead.claim" || method == "bead.claimNext" }
+
 func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.WriteMeta) error {
+	if isGateMethod(meta.Method) && meta.Method == "gate."+meta.GateAction {
+		// Approval and resolver authority are independent of claim ownership.
+		// Normalization and authorization still validate the gate operation;
+		// claims preserves a pending lease and clears it on terminal resolution.
+		return nil
+	}
 	lease := doc.Lease
 	if lease == nil {
 		return nil
 	}
-	if meta.Method == "bead.claim" {
+	if isClaim(meta.Method) {
 		if w.cfg.now().Before(lease.ExpiresAt) {
 			principal, _ := driver.PrincipalKey(by)
 			holder, _ := driver.PrincipalKey(lease.Principal)
@@ -479,14 +548,18 @@ func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.Writ
 }
 
 func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta) error {
-	if meta.Method == "bead.claim" && !p.proposal.SameClaim {
+	if isClaim(meta.Method) && !p.proposal.SameClaim {
 		ttl := model.Natural64(uint64(w.cfg.claimTTL / time.Millisecond))
 		for _, pending := range p.writes {
 			pending.doc.Lease = &ClaimLease{Principal: by, Agent: meta.AgentLabel, ExpiresAt: w.cfg.now().UTC().Add(w.cfg.claimTTL), TtlMs: ttl, Epoch: model.Natural64(w.lease.Epoch())}
 			pending.setBy["lease"] = "request"
 		}
-	} else if isSlot(meta.Method) && meta.Method != "bead.claim" {
+	} else {
 		for _, pending := range p.writes {
+			method := gateLifecycleMethod(meta.Method, pending)
+			if !isSlot(method) || isClaim(method) {
+				continue
+			}
 			pending.doc.Lease = nil
 			pending.setBy["lease"] = "request"
 		}

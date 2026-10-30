@@ -74,7 +74,7 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 	if err := t.validateHeader(ctx, h); err != nil {
 		return model.Commit{}, err
 	}
-	if h.ResponsePending || len(h.Changes) != 0 || len(t.records) != 0 || len(t.derived) != 0 || len(t.bumps) != 0 || len(t.blobs) != 0 {
+	if t.restore != nil || h.ResponsePending || len(h.Changes) != 0 || len(t.records) != 0 || len(t.derived) != 0 || len(t.bumps) != 0 || len(t.blobs) != 0 {
 		return model.Commit{}, fmt.Errorf("sqlite: no-op cannot publish staged mutations")
 	}
 	if h.Events != nil {
@@ -220,6 +220,83 @@ func (s *Store) FinalizeResponse(ctx context.Context, value driver.ActiveLease, 
 	})
 }
 
+func (s *Store) PutCoreSession(ctx context.Context, value driver.CoreSessionRecord, now time.Time, max int) error {
+	if err := s.check(ctx); err != nil {
+		return err
+	}
+	if err := value.Validate(); err != nil {
+		return err
+	}
+	if now.IsZero() || max <= 0 {
+		return fmt.Errorf("sqlite: invalid core session bounds")
+	}
+	digest := bytes.Clone(value.TokenDigest)
+	return s.immediate(ctx, nil, func(c *sql.Conn) error {
+		nowNS := now.UnixNano()
+		if _, err := c.ExecContext(ctx, `DELETE FROM core_sessions WHERE revoked=0 AND expires_at<=?`, nowNS); err != nil {
+			return err
+		}
+		var active int
+		if err := c.QueryRowContext(ctx, `SELECT COUNT(*) FROM core_sessions WHERE revoked=0 AND expires_at>?`, nowNS).Scan(&active); err != nil {
+			return err
+		}
+		if active >= max {
+			return driver.ErrConflict
+		}
+		var exists int
+		if err := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM core_sessions WHERE id=?)`, value.ID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists != 0 {
+			return driver.ErrConflict
+		}
+		_, err := c.ExecContext(ctx, `INSERT INTO core_sessions(id,token_digest,principal_kind,principal_id,expires_at,revoked) VALUES(?,?,?,?,?,?)`, value.ID, digest, value.Principal.Kind, value.Principal.ID, value.ExpiresAt.UnixNano(), value.Revoked)
+		return err
+	})
+}
+
+func (s *Store) LookupCoreSession(ctx context.Context, id string) (driver.CoreSessionRecord, error) {
+	if err := s.check(ctx); err != nil {
+		return driver.CoreSessionRecord{}, err
+	}
+	var value driver.CoreSessionRecord
+	var digest []byte
+	var expires int64
+	var revoked int
+	err := s.db.QueryRowContext(ctx, `SELECT token_digest,principal_kind,principal_id,expires_at,revoked FROM core_sessions WHERE id=?`, id).Scan(&digest, &value.Principal.Kind, &value.Principal.ID, &expires, &revoked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return driver.CoreSessionRecord{}, driver.ErrNotFound
+	}
+	if err != nil {
+		return driver.CoreSessionRecord{}, err
+	}
+	if len(digest) != 32 || (revoked != 0 && revoked != 1) {
+		return driver.CoreSessionRecord{}, fmt.Errorf("sqlite: malformed core session record")
+	}
+	value.ID = id
+	value.TokenDigest = bytes.Clone(digest)
+	value.ExpiresAt = time.Unix(0, expires)
+	value.Revoked = revoked != 0
+	return value, nil
+}
+
+func (s *Store) RevokeCoreSession(ctx context.Context, id string) (bool, error) {
+	if err := s.check(ctx); err != nil {
+		return false, err
+	}
+	var changed int64
+	err := s.immediate(ctx, nil, func(c *sql.Conn) error {
+		result, err := c.ExecContext(ctx, `UPDATE core_sessions SET revoked=1 WHERE id=? AND revoked=0`, id)
+		if err != nil {
+			return err
+		}
+		changed, err = result.RowsAffected()
+		return err
+	})
+	return changed == 1, err
+}
+
 var _ driver.NoopCommitter = (*transaction)(nil)
 var _ driver.CheckpointStore = (*Store)(nil)
 var _ driver.ResponseFinalizer = (*Store)(nil)
+var _ driver.CoreSessionStore = (*Store)(nil)

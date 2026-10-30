@@ -13,6 +13,7 @@ import (
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	serverevents "github.com/buildbetter-app/plugs/internal/server/events"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
@@ -57,10 +58,14 @@ type LocalConfig struct {
 	Factory         StorageFactory
 	Ontology        *service.Ontology
 	PipelineOptions []pipeline.Option
+	// PresenceVerifier is host-owned D32 admission for admin dump/restore.
+	// Leaving it nil deliberately refuses those sensitive methods.
+	PresenceVerifier restore.PresenceVerifier
 }
 
 type Local struct {
 	Client     *client.Client
+	server     *rpc.Server
 	cancel     context.CancelFunc
 	done       chan struct{}
 	lease      driver.ActiveLease
@@ -134,14 +139,24 @@ func OpenLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 	if err := rpc.BindService(registry, svc); err != nil {
 		return fail(err)
 	}
+	if err := rpc.BindAdmin(registry, restore.NewManager(store, lease, cfg.PresenceVerifier)); err != nil {
+		return fail(err)
+	}
 	meta, err := store.Meta(localCtx)
 	if err != nil {
 		return fail(err)
 	}
-	server, err := rpc.New(registry, rpc.Config{Incarnation: meta.Incarnation, DefaultProject: cfg.Project})
+	server, err := rpc.New(registry, rpc.Config{
+		Incarnation: meta.Incarnation, DefaultProject: cfg.Project,
+		CurrentIncarnation: func(ctx context.Context) (string, error) {
+			current, err := store.Meta(ctx)
+			return current.Incarnation, err
+		},
+	})
 	if err != nil {
 		return fail(err)
 	}
+	l.server = server
 	l.Client, err = client.New(inprocess.New(server), cfg.Project, cfg.Agent)
 	if err != nil {
 		return fail(err)

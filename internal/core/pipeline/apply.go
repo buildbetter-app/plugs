@@ -52,10 +52,30 @@ func (w *Writer) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	if meta.Method == "bead.release" {
 		return port.WriteOutcome{}, failure("invalid_params", "bead.release requires the protected claim release entry point")
 	}
-	return w.applyWithOutcome(ctx, by, cs, meta, nil)
+	return w.applyWithOutcome(ctx, by, cs, meta, nil, nil)
 }
 
-func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, release *claimReleaseMode) (port.WriteOutcome, error) {
+// ApplyClaimNextEmpty is the transaction-level seam for a terminal claimNext
+// null. The probe runs only after the transaction has acquired the head and
+// before it can publish the durable H+1 receipt.
+func (w *Writer) ApplyClaimNextEmpty(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, probe port.ClaimNextReadyProbe) (port.WriteOutcome, error) {
+	if meta.Method == "bead.release" {
+		return port.WriteOutcome{}, failure("invalid_params", "bead.release requires the protected claim release entry point")
+	}
+	return w.applyWithOutcome(ctx, by, cs, meta, nil, probe)
+}
+
+func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, release *claimReleaseMode, terminalProbe port.ClaimNextReadyProbe) (outcome port.WriteOutcome, retErr error) {
+	started := time.Now()
+	committed := false
+	defer func() {
+		result := classifyOutcome(ctx, outcome, retErr, committed, meta.DryRun)
+		w.observeOutcome(result)
+		w.observePhaseResult(PhaseApply, time.Since(started), result)
+	}()
+	if meta.Method == "bead.release" && release == nil {
+		return port.WriteOutcome{}, failure("invalid_params", "bead.release requires the protected claim release entry point")
+	}
 	if ctx.Value(callbackKey{}) != nil {
 		return port.WriteOutcome{}, failure("plugin_reentrant_write", "graph writes are forbidden in synchronous callbacks")
 	}
@@ -92,7 +112,7 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	if !validKey(meta.IdempotencyKey) {
 		return port.WriteOutcome{}, failure("invalid_params", "idempotency key must encode at least 128 bits as UUIDv4, ULID, hex or base64url")
 	}
-	if len(cs.Ops) == 0 || len(cs.Ops) > 1000 {
+	if (len(cs.Ops) == 0 && meta.Method != "bead.claimNext") || len(cs.Ops) > 1000 {
 		return port.WriteOutcome{}, failure("invalid_params", "change set requires 1 to 1000 operations")
 	}
 	// Validate the closed tagged unions and detach all caller-owned maps.
@@ -111,29 +131,47 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	preCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	for attempt := 0; attempt <= 3; attempt++ {
+		phaseStarted := time.Now()
 		reader, err := w.reader(preCtx)
+		w.observePhaseSince(preCtx, PhaseAdmission, phaseStarted, err)
 		if err != nil {
 			return port.WriteOutcome{}, err
 		}
 		defer reader.Close()
-		if commit, found, err := w.replay(preCtx, reader, principal, by, cs, meta, hash); found || err != nil {
-			return port.WriteOutcome{Commit: commit, Replayed: found && err == nil}, err
+		phaseStarted = time.Now()
+		if commit, found, replayErr := w.replay(preCtx, reader, principal, by, cs, meta, hash); found || replayErr != nil {
+			w.observePhaseSince(preCtx, PhaseReplay, phaseStarted, replayErr)
+			return port.WriteOutcome{Commit: commit, Replayed: found && replayErr == nil}, replayErr
 		}
+		w.observePhaseSince(preCtx, PhaseReplay, phaseStarted, nil)
+
+		phaseStarted = time.Now()
 		p, err := w.prepare(preCtx, reader, by, cs, meta, release)
+		w.observePhaseSince(preCtx, PhasePrepare, phaseStarted, err)
 		if err == nil {
+			phaseStarted = time.Now()
 			err = w.pre(preCtx, p)
+			w.observePhaseSince(preCtx, PhasePre, phaseStarted, err)
 		}
 		if err == nil {
+			phaseStarted = time.Now()
 			err = p.graph(preCtx)
+			w.observePhaseSince(preCtx, PhaseGraph, phaseStarted, err)
 		}
 		if err == nil {
+			phaseStarted = time.Now()
 			err = w.claims(p, by, meta)
+			w.observePhaseSince(preCtx, PhaseClaims, phaseStarted, err)
 		}
 		if err == nil {
+			phaseStarted = time.Now()
 			err = p.detectChanges()
+			w.observePhaseSince(preCtx, PhaseChanges, phaseStarted, err)
 		}
 		if err == nil {
+			phaseStarted = time.Now()
 			err = w.prepareAudit(preCtx, p)
+			w.observePhaseSince(preCtx, PhaseAudit, phaseStarted, err)
 		}
 		if err == nil && meta.DryRun {
 			if p.audit != nil {
@@ -145,15 +183,27 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 					return port.WriteOutcome{}, e
 				}
 			}
+			phaseStarted = time.Now()
 			commit, err := p.response(*reader.Snapshot().At, meta)
+			w.observePhaseSince(preCtx, PhaseResponse, phaseStarted, err)
 			commit.WouldCommit = err == nil && len(p.changed) > 0
 			return port.WriteOutcome{Commit: commit}, err
 		}
 		var commit model.Commit
 		if err == nil {
-			commit, err = w.transact(preCtx, p, by, meta, principal, hash)
+			phaseStarted = time.Now()
+			commit, err = w.transact(preCtx, p, by, meta, principal, hash, terminalProbe)
+			w.observePhaseSince(preCtx, PhaseCommit, phaseStarted, err)
+			if err == nil {
+				committed = true
+			}
 		}
 		if errors.Is(err, errStale) || errors.Is(err, driver.ErrConflict) {
+			if errors.Is(err, errStale) {
+				w.observeConflict(ConflictStaleSnapshot)
+			} else {
+				w.observeConflict(ConflictDriver)
+			}
 			continue
 		}
 		if err != nil {
@@ -161,9 +211,15 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 			if errors.As(err, &unknown) {
 				// Only a durable receipt can resolve an uncertain outcome. Never
 				// execute another attempt merely because its response was lost.
-				if fresh, e := w.reader(ctx); e == nil {
+				phaseStarted = time.Now()
+				fresh, e := w.reader(ctx)
+				w.observePhaseSince(ctx, PhaseAdmission, phaseStarted, e)
+				if e == nil {
 					defer fresh.Close()
-					if result, found, e := w.replay(ctx, fresh, principal, by, cs, meta, hash); found || e != nil {
+					phaseStarted = time.Now()
+					result, found, e := w.replay(ctx, fresh, principal, by, cs, meta, hash)
+					w.observePhaseSince(ctx, PhaseReplay, phaseStarted, e)
+					if found || e != nil {
 						return port.WriteOutcome{Commit: result, Replayed: found && e == nil}, e
 					}
 				}
@@ -174,10 +230,20 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 			return port.WriteOutcome{}, err
 		}
 		if len(p.changed) != 0 && len(w.cfg.posts) > 0 {
+			phaseStarted = time.Now()
 			warnings := w.post(ctx, p, commit)
+			postResult := ResultSuccess
+			if len(warnings) != 0 {
+				postResult = ResultWarning
+			}
+			w.observePhaseResult(PhasePost, time.Since(phaseStarted), postResult)
+			phaseStarted = time.Now()
 			commit, err = w.finalizeResponse(ctx, principal, meta, hash, commit.Revision, warnings)
+			w.observePhaseSince(ctx, PhaseResponse, phaseStarted, err)
 		} else {
+			phaseStarted = time.Now()
 			commit, err = w.durableResponse(ctx, principal, meta, hash, commit.Revision)
+			w.observePhaseSince(ctx, PhaseResponse, phaseStarted, err)
 		}
 		return port.WriteOutcome{Commit: commit}, err
 	}
@@ -201,11 +267,27 @@ func (w *Writer) reader(ctx context.Context) (driver.Reader, error) {
 }
 
 func requestHash(cs model.ChangeSet, meta model.WriteMeta) (string, error) {
-	data, err := json.Marshal(struct {
-		ChangeSet               model.ChangeSet
-		Method, Project, Return string
-		DryRun                  bool
-	}{cs, meta.Method, meta.Project, meta.Return, meta.DryRun})
+	var (
+		data []byte
+		err  error
+	)
+	if meta.GateAction == "" {
+		// Keep the pre-gate request identity byte-for-byte compatible so a
+		// rolling restart can still replay receipts created by an older host.
+		data, err = json.Marshal(struct {
+			ChangeSet               model.ChangeSet
+			Method, Project, Return string
+			ClaimNextIdentity       string `json:",omitempty"`
+			DryRun                  bool
+		}{cs, meta.Method, meta.Project, meta.Return, meta.ClaimNextIdentity, meta.DryRun})
+	} else {
+		data, err = json.Marshal(struct {
+			ChangeSet                                      model.ChangeSet
+			Method, GateAction, GateState, Project, Return string
+			GateDetails                                    map[string]any
+			DryRun                                         bool
+		}{cs, meta.Method, meta.GateAction, meta.GateState, meta.Project, meta.Return, meta.GateDetails, meta.DryRun})
+	}
 	if err != nil {
 		return "", err
 	}
@@ -268,7 +350,7 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 			result.Record = body
 		}
 		commit.Results = append(commit.Results, result)
-		if meta.Method == "bead.claim" && pending.doc.Lease != nil {
+		if isClaim(meta.Method) && pending.doc.Lease != nil {
 			expires, ttl := pending.doc.Lease.ExpiresAt, pending.doc.Lease.TtlMs
 			commit.LeaseExpiresAt, commit.LeaseTtlMs = &expires, &ttl
 		}
@@ -276,7 +358,7 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 	return clone(commit)
 }
 
-func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRef, meta model.WriteMeta, principal, hash string) (model.Commit, error) {
+func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRef, meta model.WriteMeta, principal, hash string, terminalProbe port.ClaimNextReadyProbe) (model.Commit, error) {
 	sentinels := p.sentinels()
 	writes := map[string]*pending{}
 	for id, pending := range p.writes {
@@ -284,7 +366,20 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			writes[id] = pending
 		}
 	}
-	locks, err := p.snapshot.locks(writes, sentinels)
+	allocatorKeys := make([]driver.LockKey, 0)
+	allocatorPrefixes := map[string]bool{}
+	for _, pending := range writes {
+		if pending.allocatorPrefix == "" || allocatorPrefixes[pending.allocatorPrefix] {
+			continue
+		}
+		key, e := driver.AllocatorLock(pending.allocatorPrefix)
+		if e != nil {
+			return model.Commit{}, e
+		}
+		allocatorKeys = append(allocatorKeys, key)
+		allocatorPrefixes[pending.allocatorPrefix] = true
+	}
+	locks, err := p.snapshot.locks(writes, sentinels, allocatorKeys...)
 	if err != nil {
 		return model.Commit{}, err
 	}
@@ -315,11 +410,45 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	} else if prior != nil {
 		return model.Commit{}, errStale
 	}
+	// The claimNext empty result is special: after the head lock, this probe
+	// observes the latest committed ready set through the write transaction.
+	// A candidate means the earlier live walk became stale, so release the
+	// transaction and let the service restart before publishing a null receipt.
+	if len(writes) == 0 && meta.Method == "bead.claimNext" && terminalProbe != nil {
+		ready, err := terminalProbe(ctx, tx)
+		if err != nil {
+			return model.Commit{}, err
+		}
+		if ready {
+			return model.Commit{}, port.ErrClaimNextReady
+		}
+	}
+	if len(allocatorPrefixes) > 0 {
+		allocator, ok := tx.(driver.AllocatorContinuation)
+		if !ok {
+			return model.Commit{}, driver.ErrUnsupported
+		}
+		consumed := map[string]bool{}
+		for _, ref := range p.refs {
+			pending := p.writes[ref.ID]
+			if pending == nil || pending.allocatorPrefix == "" || consumed[ref.ID] {
+				continue
+			}
+			if err := allocator.AllocateTopLevel(ctx, pending.allocatorPrefix, pending.allocatorExpected); err != nil {
+				return model.Commit{}, err
+			}
+			consumed[ref.ID] = true
+		}
+	}
 	keys := make([]driver.LockKey, len(locks))
 	for i, lock := range locks {
 		keys[i] = lock.Key
 	}
-	if len(writes) == 0 {
+	// Legacy no-op receipts keep the existing head-only NoopCommitter
+	// semantics. claimNext's terminal null is different: the contract gives
+	// it a durable H+1 receipt, with no graph changes, so it continues through
+	// the ordinary changeset commit path below.
+	if len(writes) == 0 && meta.Method != "bead.claimNext" {
 		noop, ok := tx.(driver.NoopCommitter)
 		if !ok {
 			return model.Commit{}, driver.ErrUnsupported
@@ -367,7 +496,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		return model.Commit{}, err
 	}
-	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
+	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(p.changed) != 0 && len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
 	if err != nil {
 		return model.Commit{}, err
 	}

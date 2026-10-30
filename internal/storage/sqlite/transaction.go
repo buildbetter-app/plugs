@@ -22,6 +22,8 @@ type transaction struct {
 	*reader
 	lease           *activeLease
 	locked, hasHead bool
+	restore         *driver.Meta
+	nativeRestore   *driver.NativeRestoreProfile
 	acquired        driver.LockSet
 	files           []*os.File
 	done            chan struct{}
@@ -29,6 +31,7 @@ type transaction struct {
 	derived         map[string]driver.LockState
 	blobs           map[driver.Hash][]byte
 	bumps           map[string]driver.LockKey
+	allocators      map[string]driver.OfflineAllocator
 }
 
 func (s *Store) Write(ctx context.Context, l driver.ActiveLease) (driver.WriteTx, error) {
@@ -40,7 +43,7 @@ func (s *Store) Write(ctx context.Context, l driver.ActiveLease) (driver.WriteTx
 	if err != nil {
 		return nil, err
 	}
-	t := &transaction{reader: &reader{store: s}, lease: lease, done: make(chan struct{}), records: make(map[string]*driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), bumps: make(map[string]driver.LockKey)}
+	t := &transaction{reader: &reader{store: s}, lease: lease, done: make(chan struct{}), records: make(map[string]*driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), bumps: make(map[string]driver.LockKey), allocators: make(map[string]driver.OfflineAllocator)}
 	t.reader.owner = t
 	if err = t.pin(ctx, driver.View{Incarnation: m.Incarnation}); err != nil {
 		return nil, err
@@ -75,6 +78,7 @@ func (t *transaction) finish() {
 	t.derived = nil
 	t.blobs = nil
 	t.bumps = nil
+	t.allocators = nil
 	t.store.untrack(t)
 	close(t.done)
 }
@@ -361,6 +365,11 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	}
 	var result model.Changeset
 	err := t.store.immediate(ctx, t.lease, func(c *sql.Conn) error {
+		if t.restore != nil {
+			if err := restoreEmpty(ctx, c); err != nil {
+				return err
+			}
+		}
 		replay, err := t.replay(ctx, c, h)
 		if err != nil {
 			return err
@@ -473,6 +482,15 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 				return err
 			}
 		}
+		for prefix, allocator := range t.allocators {
+			allocatorData, marshalErr := json.Marshal(allocator)
+			if marshalErr != nil {
+				return marshalErr
+			}
+			if _, err = c.ExecContext(ctx, `INSERT INTO allocator_states(prefix,data) VALUES(?,?) ON CONFLICT(prefix) DO UPDATE SET data=excluded.data`, prefix, allocatorData); err != nil {
+				return err
+			}
+		}
 		for hash, blob := range t.blobs {
 			if blob == nil {
 				blob = []byte{}
@@ -486,6 +504,11 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		}
 		if _, err = c.ExecContext(ctx, `UPDATE meta SET head=? WHERE singleton=1`, revKey(head+1)); err != nil {
 			return err
+		}
+		if t.restore != nil {
+			if _, err = c.ExecContext(ctx, `UPDATE meta SET store_id=?,incarnation=?,history_floor=? WHERE singleton=1`, string(t.restore.StoreID), t.restore.Incarnation, revKey(1)); err != nil {
+				return err
+			}
 		}
 		return saveReplay(ctx, c, h, revision, data)
 	})
