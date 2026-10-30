@@ -91,7 +91,7 @@ func BindAdmin(registry *Registry, manager *restore.Manager) error {
 		if err := wire.DecodeInto(c.Params, &params); err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 		}
-		status, err := manager.BeginAs(ctx, c.Principal, params.Manifest, params.History, restore.Presence(params.HumanPresence))
+		status, err := manager.BeginAsWithMeta(ctx, c.Principal, params.Manifest, params.History, writeMeta(c), restore.Presence(params.HumanPresence))
 		return restoreStatusJSON(status), err
 	}); err != nil {
 		return err

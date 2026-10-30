@@ -22,10 +22,10 @@ import (
 
 // RestoreImportPlanner is a trusted converter-owned inspection seam. It must
 // parse and validate the supplied archive with the same deterministic planner
-// used by RestoreImport and return its rebuilt derived digest. The composition
-// layer never accepts a caller-supplied derived digest as authority; a wrong
-// value is rechecked and refused by RestoreImport before any write.
-type RestoreImportPlanner func(context.Context, []byte) (converterroundtrip.Verification, error)
+// used by RestoreImport and return the exact source/archive/derived binding.
+// The composition layer never accepts a caller-supplied digest as authority;
+// the consumer rechecks the inspection before any write.
+type RestoreImportPlanner func(context.Context, io.Reader) (converterroundtrip.ImportInspection, error)
 
 // RestoreImportRequest contains transport metadata for a host-private import.
 // Actor, source store and archive digest are deliberately absent: the adapter
@@ -34,6 +34,22 @@ type RestoreImportRequest struct {
 	IdempotencyKey string
 	AgentLabel     string
 	Presence       restore.Presence
+}
+
+// Import is the existing restore.Manager finish hook. The manager has already
+// checked the paged archive, canonical manifest hash and initiating principal;
+// this hook performs the trusted converter inspection/admission and returns a
+// normal restore status for the same session.
+func (a *restoreImportAdapter) Import(ctx context.Context, restoreID string, principal model.PrincipalRef, archive []byte, manifestHash string, meta model.WriteMeta, presence restore.Presence) (restore.RestoreStatus, error) {
+	if strings.TrimSpace(manifestHash) == "" {
+		return restore.RestoreStatus{}, fmt.Errorf("restore import manifest hash is required")
+	}
+	request := RestoreImportRequest{IdempotencyKey: meta.IdempotencyKey, AgentLabel: meta.AgentLabel, Presence: presence}
+	report, err := a.importArchive(ctx, principal, bytes.NewReader(archive), request)
+	if err != nil {
+		return restore.RestoreStatus{}, err
+	}
+	return restore.RestoreStatus{RestoreID: restoreID, State: "complete", Warnings: []model.Warning{}, Incarnation: report.Restored.Incarnation}, nil
 }
 
 type restoreImportAdapter struct {
@@ -91,18 +107,18 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 	if _, _, _, _, err := a.binding(ctx, principal, request.AgentLabel); err != nil {
 		return converterroundtrip.Report{}, err
 	}
-	verification, err := a.planner(ctx, append([]byte(nil), data...))
+	inspection, err := a.planner(ctx, bytes.NewReader(data))
 	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
-	if verification.ArchiveSHA256 != archiveDigest || !validImportDigest(verification.DerivedSHA256) {
+	if inspection.SourceStoreID != driver.StoreID(archive.Manifest().StoreID) || inspection.ArchiveSHA256 != archiveDigest || !validImportDigest(inspection.DerivedSHA256) {
 		return converterroundtrip.Report{}, fmt.Errorf("%w: converter inspection did not return the exact archive and derived digests", converterroundtrip.ErrRestoreUnavailable)
 	}
 	mode, actor, scope, authority, err := a.binding(ctx, principal, request.AgentLabel)
 	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
-	admissionDigest, err := importAdmissionDigest(mode, actor, scope, authority, archive.Manifest().StoreID, archiveDigest, verification.DerivedSHA256, request.IdempotencyKey)
+	admissionDigest, err := importAdmissionDigest(mode, actor, scope, authority, archive.Manifest().StoreID, archiveDigest, inspection.DerivedSHA256, request.IdempotencyKey)
 	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
@@ -117,7 +133,7 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 			Mode: mode, Actor: actor, Scope: scope, Authority: authority, AdmissionDigest: admissionDigest,
 		},
 		SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import",
-		IdempotencyKey: request.IdempotencyKey, ArchiveDigest: archiveDigest, DerivedDigest: verification.DerivedSHA256,
+		IdempotencyKey: request.IdempotencyKey, ArchiveDigest: archiveDigest, DerivedDigest: inspection.DerivedSHA256,
 	}
 	if _, err := profile.Detached(); err != nil {
 		return converterroundtrip.Report{}, err
@@ -128,7 +144,7 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
-	currentDigest, err := importAdmissionDigest(mode, actor, scope, authority, archive.Manifest().StoreID, archiveDigest, verification.DerivedSHA256, request.IdempotencyKey)
+	currentDigest, err := importAdmissionDigest(mode, actor, scope, authority, archive.Manifest().StoreID, archiveDigest, inspection.DerivedSHA256, request.IdempotencyKey)
 	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
@@ -153,7 +169,7 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 		return report, err
 	}
 	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	recovered, recoveryErr := converterroundtrip.RecoverImport(recoveryCtx, a.store, profile, converterroundtrip.Verification{ArchiveSHA256: archiveDigest, DerivedSHA256: verification.DerivedSHA256})
+	recovered, recoveryErr := converterroundtrip.RecoverImport(recoveryCtx, a.store, profile, converterroundtrip.Verification{ArchiveSHA256: archiveDigest, DerivedSHA256: inspection.DerivedSHA256})
 	cancel()
 	if recoveryErr != nil {
 		return report, err

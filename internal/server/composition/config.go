@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -25,6 +26,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
+	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnoidc"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/collab"
@@ -282,10 +284,20 @@ func (r *Runtime) bind(config Config) error {
 	if err := rpc.BindService(registry, r.Service); err != nil {
 		return fmt.Errorf("composition: bind service: %w", err)
 	}
-	if err := rpc.BindAdmin(registry, restore.NewManager(r.Store, r.Lease, config.RestorePresence)); err != nil {
+	planner := config.RestoreImportPlanner
+	if planner == nil {
+		// The production default is the converter owner's read-only exact
+		// inspection helper. It supplies no authority and opens no target.
+		planner = func(ctx context.Context, input io.Reader) (converterroundtrip.ImportInspection, error) {
+			return converterroundtrip.InspectImport(ctx, input)
+		}
+	}
+	r.restoreImport = newRestoreImportAdapter(r.Store, r.Lease, config.AuthMode, config.RestorePresence, planner)
+	manager := restore.NewManager(r.Store, r.Lease, config.RestorePresence)
+	manager.SetImportHook(r.restoreImport.Import)
+	if err := rpc.BindAdmin(registry, manager); err != nil {
 		return fmt.Errorf("composition: bind admin: %w", err)
 	}
-	r.restoreImport = newRestoreImportAdapter(r.Store, r.Lease, config.AuthMode, config.RestorePresence, config.RestoreImportPlanner)
 
 	// Collaboration and watches share the same lease and lifetime as the core.
 	r.Sessions, err = collab.New(r.ctx, collab.Config{
