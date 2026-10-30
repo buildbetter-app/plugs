@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,15 +32,16 @@ import (
 // Handler is a bounded MCP streamable HTTP adapter over one canonical RPC
 // server. It owns no store, lease, listener, or authorization policy.
 type Handler struct {
-	rpc        *rpc.Server
-	authn      *authn.Authenticator
-	cfg        Config
-	slots      chan struct{}
-	activeMu   sync.Mutex
-	active     map[string]activeCall
-	methodMu   sync.Mutex
-	methods    map[string]string
-	sessionKey [32]byte
+	rpc           *rpc.Server
+	authn         *authn.Authenticator
+	cfg           Config
+	notifications *notificationHub
+	slots         chan struct{}
+	activeMu      sync.Mutex
+	active        map[string]activeCall
+	methodMu      sync.Mutex
+	methods       map[string]string
+	sessionKey    [32]byte
 }
 
 // New constructs an MCP adapter over an existing canonical dispatcher.
@@ -55,14 +57,16 @@ func New(server *rpc.Server, authenticator *authn.Authenticator, config Config) 
 	if err != nil {
 		return nil, err
 	}
-	h := &Handler{rpc: server, authn: authenticator, cfg: config, slots: make(chan struct{}, config.MaxConcurrentRequests), active: make(map[string]activeCall), methods: make(map[string]string)}
+	h := &Handler{rpc: server, authn: authenticator, cfg: config, notifications: newNotificationHub(), slots: make(chan struct{}, config.MaxConcurrentRequests), active: make(map[string]activeCall), methods: make(map[string]string)}
 	if _, err := rand.Read(h.sessionKey[:]); err != nil {
 		return nil, fmt.Errorf("mcp: session key unavailable: %w", err)
 	}
 	return h, nil
 }
 
-// ServeHTTP serves exactly POST /mcp. MCP protocol failures use JSON-RPC
+// ServeHTTP serves the MCP streamable HTTP endpoint at /mcp. POST keeps the
+// finite request/response behavior; GET attaches one authenticated session to
+// the bounded notification stream. MCP protocol failures use JSON-RPC
 // envelopes; HTTP admission/framing failures use the shared RPC transport
 // error port with a null ID. Dispatch is synchronous and receives the live
 // admitted identity plus the request context, so cancellation cannot leave a
@@ -75,9 +79,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusNotFound, "not_found", "unknown MCP endpoint")
 		return
 	}
+	if r.Method == http.MethodGet {
+		h.serveNotificationStream(w, r)
+		return
+	}
 	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		h.fail(w, http.StatusMethodNotAllowed, "invalid_request", "use POST /mcp")
+		w.Header().Set("Allow", "GET, POST")
+		h.fail(w, http.StatusMethodNotAllowed, "invalid_request", "use GET or POST /mcp")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), h.cfg.RequestTimeout)
@@ -187,8 +195,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// learn that it must refresh its tools from its next call or ping.
 	if !isInitialize(data) {
 		if _, hash, err := h.visibleMethods(ctx, identity.Principal()); err == nil {
-			changed := h.observeMethods(ctx, identity.Principal(), hash)
-			if len(changed) != 0 && h.cfg.OnNotification == nil {
+			changed, streamed := h.observeMethods(ctx, identity.Principal(), hash)
+			if len(changed) != 0 && h.cfg.OnNotification == nil && !streamed {
 				frames := [][]byte{changed}
 				appendResponses(&frames, response)
 				response = joinResponses(frames)
@@ -218,6 +226,118 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// the transport; no arbitrary writer diagnostic is sent to the peer.
 		return
 	}
+}
+
+// Close releases every connected notification stream. It is safe to call
+// more than once and is intended for the composition owner during shutdown.
+func (h *Handler) Close() error {
+	if h != nil && h.notifications != nil {
+		h.notifications.close()
+	}
+	return nil
+}
+
+func (h *Handler) serveNotificationStream(w http.ResponseWriter, r *http.Request) {
+	identity, err := h.authn.AdmitHTTP(r)
+	if err != nil {
+		h.writeAdmissionFailure(w, err)
+		return
+	}
+	if len(r.Header.Values("Cookie")) != 0 {
+		h.fail(w, http.StatusForbidden, "forbidden", "cookie credentials are unsupported")
+		return
+	}
+	if len(r.Header.Values("Content-Encoding")) != 0 {
+		h.fail(w, http.StatusUnsupportedMediaType, "invalid_request", "content encodings are unsupported")
+		return
+	}
+	if version := r.Header.Get("MCP-Protocol-Version"); version != "" && !h.supportedProtocol(version) {
+		h.fail(w, http.StatusBadRequest, "invalid_request", "unsupported MCP protocol version")
+		return
+	}
+	if !acceptsEventStream(r.Header.Values("Accept")) {
+		h.fail(w, http.StatusNotAcceptable, "invalid_request", "MCP GET requires Accept: text/event-stream")
+		return
+	}
+	sessionValues := r.Header.Values("MCP-Session-Id")
+	if len(sessionValues) != 1 || sessionValues[0] == "" {
+		h.fail(w, http.StatusBadRequest, "invalid_request", "MCP GET requires one MCP session id")
+		return
+	}
+	sessionID := sessionValues[0]
+	principal := identity.Principal()
+	if !h.validSessionID(principal, sessionID) {
+		h.fail(w, http.StatusNotFound, "not_found", "unknown MCP session")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		h.fail(w, http.StatusNotImplemented, "busy", "MCP notification streaming is unavailable")
+		return
+	}
+	key, stream, err := h.notifications.open(principal, sessionID)
+	if err != nil {
+		status, code, hint := http.StatusServiceUnavailable, "busy", "MCP notification stream unavailable"
+		if errors.Is(err, errNotificationStreamCap) {
+			status, code, hint = http.StatusTooManyRequests, "rate_limited", "MCP notification stream limit reached"
+		}
+		h.fail(w, status, code, hint)
+		return
+	}
+	defer h.notifications.remove(key, stream)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case frame, ok := <-stream.queue:
+			if !ok {
+				return
+			}
+			if err := writeNotificationFrame(w, frame); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func (h *Handler) writeAdmissionFailure(w http.ResponseWriter, err error) {
+	status := http.StatusForbidden
+	switch {
+	case errors.Is(err, authn.ErrUnauthenticated), errors.Is(err, authn.ErrTokenExpired), errors.Is(err, authn.ErrHumanPresenceRequired):
+		status = http.StatusUnauthorized
+		w.Header().Set("WWW-Authenticate", "Bearer")
+	case errors.Is(err, authn.ErrUnavailable):
+		status = http.StatusServiceUnavailable
+	}
+	h.fail(w, status, failureCode(err), "MCP authentication failed")
+}
+
+func acceptsEventStream(values []string) bool {
+	for _, value := range values {
+		for _, candidate := range strings.Split(value, ",") {
+			mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(candidate))
+			if err != nil || mediaType != "text/event-stream" {
+				continue
+			}
+			if quality, ok := params["q"]; ok {
+				if parsed, err := strconv.ParseFloat(quality, 64); err == nil && parsed <= 0 {
+					continue
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func writeNotificationFrame(w io.Writer, frame []byte) error {
+	_, err := fmt.Fprintf(w, "event: message\ndata: %s\n\n", frame)
+	return err
 }
 
 func (h *Handler) fail(w http.ResponseWriter, status int, code, hint string) {
@@ -644,7 +764,7 @@ func (h *Handler) visibleMethods(ctx context.Context, principal model.PrincipalR
 	return out, hex.EncodeToString(hash[:]), nil
 }
 
-func (h *Handler) observeMethods(ctx context.Context, principal model.PrincipalRef, hash string) []byte {
+func (h *Handler) observeMethods(ctx context.Context, principal model.PrincipalRef, hash string) ([]byte, bool) {
 	keyBytes, _ := json.Marshal(principal)
 	key := string(keyBytes) + "\x00" + sessionIDFromContext(ctx) + "\x00" + callerAgentFromContext(ctx)
 	h.methodMu.Lock()
@@ -652,13 +772,14 @@ func (h *Handler) observeMethods(ctx context.Context, principal model.PrincipalR
 	h.methods[key] = hash
 	h.methodMu.Unlock()
 	if !seen || previous == hash {
-		return nil
+		return nil, false
 	}
 	notification := toolsListChangedNotification()
+	streamed := h.notifications.publish(ctx, principal, sessionIDFromContext(ctx), notification)
 	if h.cfg.OnNotification != nil {
 		h.cfg.OnNotification(ctx, principal, sessionIDFromContext(ctx), append([]byte(nil), notification...))
 	}
-	return notification
+	return notification, streamed
 }
 
 func toolsListChangedNotification() []byte {
@@ -681,7 +802,7 @@ func (h *Handler) toolsList(ctx context.Context, id json.RawMessage, params map[
 	if err != nil {
 		return h.syntheticError(ctx, id, "internal_error", "unable to discover MCP tools")
 	}
-	changed := h.observeMethods(ctx, principal, hash)
+	changed, streamed := h.observeMethods(ctx, principal, hash)
 	tools := make([]map[string]any, 0, len(methods)+2)
 	names := make([]string, 0, len(methods))
 	for name, method := range methods {
@@ -704,7 +825,7 @@ func (h *Handler) toolsList(ctx context.Context, id json.RawMessage, params map[
 	tools = append(tools, plugCallDefinition(), plugDescribeDefinition())
 	sort.Slice(tools, func(i, j int) bool { return tools[i]["name"].(string) < tools[j]["name"].(string) })
 	response := mcpResponse(id, map[string]any{"tools": tools})
-	if len(changed) != 0 && h.cfg.OnNotification == nil {
+	if len(changed) != 0 && h.cfg.OnNotification == nil && !streamed {
 		return joinResponses([][]byte{changed, response})
 	}
 	return response

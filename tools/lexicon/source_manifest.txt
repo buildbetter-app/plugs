@@ -509,6 +509,9 @@ internal/server/transport/mcp/config.go
 internal/server/transport/mcp/errors.go
 internal/server/transport/mcp/handler.go
 internal/server/transport/mcp/handler_test.go
+internal/server/transport/mcp/notification_stream_test.go
+internal/server/transport/mcp/notifications.go
+internal/server/transport/mcp/notifications_test.go
 internal/server/transport/websocket/BUILD.bazel
 internal/server/transport/websocket/backpressure_test.go
 internal/server/transport/websocket/config.go
