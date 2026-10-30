@@ -3,12 +3,58 @@ package sqliteacceptance_test
 import (
 	"bytes"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 )
+
+func TestB20CloseReasonEventAcrossReopen(t *testing.T) {
+	f := newFixture(t)
+	ref, _, _ := f.create(t, "close reason event")
+	f.commit(t, "bead.claim", writeParams(t, map[string]any{"id": ref}))
+	params := writeParams(t, map[string]any{"id": ref, "reason": "complete"})
+	closed, original := f.commit(t, "bead.close", params)
+	if closed.Revision.String() != "3" || len(closed.Results) != 2 || original.Meta != nil {
+		t.Fatalf("close did not commit patch and reason together: %+v", closed)
+	}
+	for _, result := range closed.Results {
+		doc, err := pipeline.DecodeDocument(result.Record)
+		if err != nil || doc.Fields["status"] != "done" || doc.Lease != nil || len(doc.Comments) != 1 || doc.Comments[0].Body != "complete" || !reflect.DeepEqual(doc.Comments[0].Principal, anonymous) || !doc.Comments[0].Time.Equal(f.now()) {
+			t.Fatalf("close lost status, reason or claim settlement: %+v %v", doc, err)
+		}
+	}
+	before := f.state(t)
+	if len(before.Log) != 3 || len(before.Versions[ref.ID]) != 3 {
+		t.Fatalf("close split the atomic transition: %+v", before)
+	}
+	entry := before.Log[2]
+	if err := entry.ValidateEvents(); err != nil {
+		t.Fatal(err)
+	}
+	if len(entry.Changes) != 1 || entry.Changes[0].Op != model.OpPatch || !slices.Contains(entry.Changes[0].ChangedPaths, "/fields/status") || !slices.Contains(entry.Changes[0].ChangedPaths, "/comments") || len(entry.Events) != 1 || entry.Events[0].Type != model.EventBeadClosed {
+		t.Fatalf("byte-RPC close with a reason must persist bead.closed at revision 3/index 0: %+v", entry)
+	}
+	event := entry.Events[0]
+	if event.Index.String() != "0" || event.ChangeIndex.String() != "0" || event.Resource.Ref.ID != ref.ID || event.Provenance.Method != "bead.close" || event.Provenance.Slot != "close" || event.Provenance.SetBy["comments"] != "request" || event.Details != nil {
+		t.Fatalf("close event lost provenance or order: %+v", event)
+	}
+	f.reopen(t)
+	requireSameState(t, before, f.state(t))
+	_, replay := f.commit(t, "bead.close", params)
+	if replay.Meta == nil || !replay.Meta.Replayed || !bytes.Equal(original.Result, replay.Result) {
+		t.Fatal("close replay changed committed response bytes after SQLite reopen")
+	}
+	noop, _ := f.commit(t, "bead.close", writeParams(t, map[string]any{"id": ref}))
+	if noop.Revision.String() != "3" {
+		t.Fatalf("repeat close minted a revision: %+v", noop)
+	}
+	requireSameState(t, before, f.state(t))
+	t.Log("B20 ordinary close-with-reason: one durable bead.closed at revision 3/index 0, atomic reason and claim settlement, exact replay and no-op across real SQLite reopen")
+}
 
 func TestB04B05LiveClaimOwnershipAcrossReopen(t *testing.T) {
 	f := newFixture(t)
@@ -83,7 +129,7 @@ func TestUnsupportedCardRemainderRefusesWithoutWrites(t *testing.T) {
 	ref, _, _ := f.create(t, "unsupported controls")
 	before := f.state(t)
 	for _, method := range []string{
-		"tx.apply", "bead.heartbeat",
+		"bead.heartbeat",
 		"history.versions", "history.revert", "history.redact",
 		"admin.restore.begin", "view.run",
 	} {
@@ -103,5 +149,5 @@ func TestUnsupportedCardRemainderRefusesWithoutWrites(t *testing.T) {
 		domainCode(t, err, "invalid_params")
 	}
 	requireSameState(t, before, f.state(t))
-	t.Log("unbound public batch/heartbeat/history-mutation/restore/view methods and unsupported parent/attach/reparent/status/unknown-field writes explicitly refused")
+	t.Log("unbound public heartbeat/history-mutation/restore/view methods and unsupported parent/attach/reparent/status/unknown-field writes explicitly refused")
 }

@@ -1,0 +1,182 @@
+{
+  "format": "plug-b24-untimed-defer-deviation/1",
+  "card": "B24",
+  "disposition": "intentional-deviation",
+  "decision": {
+    "authority": "orchestrator",
+    "decidedAt": "2026-10-30T07:45:00Z",
+    "record": "Orchestrator decision: B24 timed defer and wake",
+    "adoptedBehavior": "No timed defer in this burst. Plug defer is untimed; explicit bead.reopen makes deferred work workable again.",
+    "scope": "defer and explicit reopen only; not the entire B24 card"
+  },
+  "reference": {
+    "sourceCommit": "9d6fff760b7a314b476539198504d77ce0959656",
+    "sourceRef": "refs/tags/beads-base",
+    "engine": "embedded-dolt",
+    "manifest": {
+      "path": "spec/recorded/goldens.json",
+      "gitBlob": "0206f6ddb2ea93244a67d0d120071bf14e1f1330",
+      "sha256": "26a086334357d55ea847daa301f45c9435a71bba75fb6c324456aebf459fbf32",
+      "sourceCommit": "db028d2e9369fa0a645c5506507f3774d2a9554c"
+    },
+    "recorder": "recorders.B24",
+    "rawDigest": "9fddd7a374875eeff92502f26114386b34c78e121f970a506cf32d54e9bea1b4",
+    "projectionDigest": "ccb04e27ec44c9c7a32b4bbb8be959f85d14dcebf272d0b5c95bf5310ca3a956",
+    "artifactSha256": "70ac84166752614db8d449690b6c7f093bc860f2b50682d4151b2ccd155024f1",
+    "repeatArtifactSha256": "70ac84166752614db8d449690b6c7f093bc860f2b50682d4151b2ccd155024f1",
+    "inputsDigest": "5ee49df6ad5c7442241cd716824b3a5fd311ed238a3d670011a69f7fa2720abd",
+    "clock": {
+      "mode": "runtime",
+      "schedule": "fixed past/future defer inputs",
+      "fieldsOmitted": [
+        "timestamps"
+      ]
+    },
+    "commands": [
+      "BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b24-repair-a.json python3 /tmp/plug-swarm/work/build09_record_b24.py /tmp/plug-swarm/work/build09-bd-9d6fff760",
+      "BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b24-repair-b.json python3 /tmp/plug-swarm/work/build09_record_b24.py /tmp/plug-swarm/work/build09-bd-9d6fff760"
+    ],
+    "sourceTests": [
+      "cmd/bd/defer_wake_embedded_test.go::TestEmbeddedDeferAutoWake",
+      "cmd/bd/reopen_defer_test.go::TestCLI_ReopenClearsDeferUntil"
+    ],
+    "sources": [
+      {
+        "path": "cmd/bd/defer_wake_embedded_test.go",
+        "gitBlob": "a5b95a8096a57eb23a5b63f716e824287a39f310",
+        "sha256": "414de0aa518937d5dd540b3883939824345fb2b16102395e82548d2db6219c7f"
+      },
+      {
+        "path": "cmd/bd/reopen_defer_test.go",
+        "gitBlob": "fa056e97a470dd68d5ee26201097c801bb0dd171",
+        "sha256": "ecf9285068ee480c7208c126df8db33addf80242076d052e80e21518ad4bdd42"
+      },
+      {
+        "path": "cmd/bd/defer.go",
+        "gitBlob": "762e02ccd46ede3a2634e65e6781cd714ab4b7b3",
+        "sha256": "de4e0dee53d8c605dc14d6a55fa06f14d8821860c34bf76304f655afb242af2d"
+      },
+      {
+        "path": "internal/storage/issueops/wake_defers.go",
+        "gitBlob": "2ea34a3913c5a7473b28329eae4a8fc7d0e2deaf",
+        "sha256": "949c15ef89112253cc0613620b5371e925e6544879173b43d82af72523b1e8a4"
+      }
+    ],
+    "recordingStatus": "retained independent reference; no recorder rerun or new reference recording"
+  },
+  "plug": {
+    "sourceCommit": "db028d2e9369fa0a645c5506507f3774d2a9554c",
+    "defer": {
+      "method": "bead.defer",
+      "required": [
+        "id"
+      ],
+      "optional": [
+        "reason",
+        "expect"
+      ],
+      "transportMetadata": "_meta is separate from application parameters",
+      "cli": "plug defer ID [--reason TEXT] [--expect REVISION]",
+      "slot": "defer",
+      "reasonProjection": "A nonempty supplied reason appends a comment in the same ChangeSet; it does not append to a notes field.",
+      "expectProjection": "Supplied preconditions pass into the ChangeSet.",
+      "targetTime": "unavailable"
+    },
+    "reopen": {
+      "method": "bead.reopen",
+      "slot": "unstarted",
+      "effect": "Explicit transition out of defer; ready when the ontology and other ready predicates permit it."
+    },
+    "automaticTimedWake": "unavailable",
+    "readAfterClockAdvance": "Reading ready does not synthesize a wake or a write.",
+    "statusVocabulary": "Ontology-defined; do not require the reference status strings.",
+    "sources": [
+      {
+        "path": "engdocs/design/plug/design.md",
+        "gitBlob": "2bcad8885fb5e0c61ac63327c4628612c0654997",
+        "sha256": "c1af1aa9497c998251c847e3f9478a1d19f49c8f822dabb645b7b5c4e3fa9dc9"
+      },
+      {
+        "path": "engdocs/design/plug/contracts/openrpc.json",
+        "gitBlob": "944390807bbeb5414a3480775fbca2b843f7d6c9",
+        "sha256": "a02eb474d11c48a03be45fbfe0be55f336a36991bfc562d0a22f6804bebb7263"
+      },
+      {
+        "path": "engdocs/design/plug/spec/commands.md",
+        "gitBlob": "2521a00fca0322d32d2d42d7613ed850fb593a49",
+        "sha256": "6af85dcc77a88f4d7b0eeb02d683b9198a3dc875cfbe840db4845166939e393e"
+      },
+      {
+        "path": "engdocs/design/plug/spec/behaviors/surfaces.md",
+        "gitBlob": "16f9afb51cbd408add4439b863eb2920f85a4920",
+        "sha256": "e6898271d92c3b19ef9824e9725fd77db1fa7729200258f73f7b2799fd700b18"
+      },
+      {
+        "path": "internal/core/service/types.go",
+        "gitBlob": "4747c5ef7bd504512955b197913ca20d41073732",
+        "sha256": "d0776ff13dd193494dd9c2c741fe4b9b7e4d5899aec363b1924985e7eb471a1a"
+      },
+      {
+        "path": "internal/core/service/service.go",
+        "gitBlob": "04d29fea3c588e63067fc75a4569f117200d9db0",
+        "sha256": "b7f61ccbd04853d7d27854f0bf015a3a0fbe0bae10e4f1e005309a4ee88fe4d0"
+      },
+      {
+        "path": "internal/server/rpc/service.go",
+        "gitBlob": "c492741c5c1563e1304bfe764b34d9c8b87eba34",
+        "sha256": "24cb2ea737aac2dffd5410a08f35bba05bb7e0f6c6c6f1ec20e361d2999fb8de"
+      },
+      {
+        "path": "internal/cli/parse.go",
+        "gitBlob": "bf71c9b597bca2b4484b683dd9fe804ff9d8031a",
+        "sha256": "bd542309a30866a3f6f9a89c9e154de9ef08d56b2f764c06a563fd83ca7576c9"
+      },
+      {
+        "path": "spec/extended/time_test.go",
+        "gitBlob": "3f21c6a29b1600d0c16425d9d0dd4327c755d595",
+        "sha256": "e518eff36ed9f0ea771fbf6a4ac5b6a9bb598c4e0985386b00647a22411c82a7"
+      }
+    ],
+    "evidenceScope": "Pinned contract and source projection, with the existing controlled category/reopen fixture; no new connected runtime qualification in this record."
+  },
+  "cases": [
+    {
+      "outcome": "datelessDefer",
+      "recordedReference": "stays-deferred",
+      "plugProjection": "Untimed defer selects the defer slot and excludes otherwise-ready work. An optional reason becomes a comment; explicit bead.reopen restores the unstarted slot."
+    },
+    {
+      "outcome": "expiredDatedClaim",
+      "recordedReference": "claimable-and-in-progress",
+      "plugProjection": "No expiry wake makes the deferred item automatically claimable. Explicit bead.reopen is the supported path back to otherwise-ready work."
+    },
+    {
+      "outcome": "expiredDatedDefer",
+      "recordedReference": "auto-wakes-on-ready-and-clears-defer",
+      "plugProjection": "There is no dated defer request or automatic expiry wake. An untimed defer remains deferred until an explicit bead.reopen."
+    },
+    {
+      "outcome": "expiredDatedEphemeral",
+      "recordedReference": "auto-wakes-on-ready-and-clears-defer",
+      "plugProjection": "No dated ephemeral wake is supported by the admitted contract; this record supplies no positive plane-specific timed qualification."
+    },
+    {
+      "outcome": "futureDatedDefer",
+      "recordedReference": "stays-deferred",
+      "plugProjection": "There is no future target field. Untimed defer has no time-based release."
+    },
+    {
+      "outcome": "reopenClearsDefer",
+      "recordedReference": "open-ready-and-clears-defer",
+      "plugProjection": "Explicit bead.reopen selects the unstarted slot; otherwise-ready work becomes ready. There is no target-time field to clear, and existing comments remain."
+    }
+  ],
+  "limits": [
+    "The retained reference uses the runtime clock and omits timestamps. Fixed past/future inputs and matching repeated digests are outcome evidence, not a controlled-time certificate.",
+    "No positive timed-defer, timed-wake, exact-boundary, Go/SQL clock-twin, or full B24 qualification is claimed.",
+    "The older B24 behavior card and recorded keep disposition remain historical catalog evidence; they do not expand this adopted untimed contract.",
+    "Reason semantics differ: the reference permits an omitted reason but rejects an explicitly blank one; Plug has an optional reason represented as a comment.",
+    "Historical failures and missing controlled reference input remain unresolved by this decision record. No golden, raw reference, provenance, or original test is rewritten.",
+    "Stale/due behavior, other drivers, and the separate connected deviation acceptance are outside this record."
+  ]
+}

@@ -146,6 +146,61 @@ func slotMeta(n int, method string) model.WriteMeta {
 	return m
 }
 
+func TestOrdinaryCloseReasonEvent(t *testing.T) {
+	h := setup(t)
+	w := h.writer()
+	created := apply(t, w, model.ChangeSet{Ops: []model.Op{create("target")}}, meta(1))
+	ref := created.Results[0].Ref
+	apply(t, w, model.ChangeSet{Ops: []model.Op{patch(ref, map[string]any{})}}, slotMeta(2, "bead.claim"))
+	var posts atomic.Int32
+	w = h.writer(WithPostSubscribers(PostBinding{ID: "close-observer", Subscriber: postFunc(func(_ context.Context, c port.CommittedChange, _ port.SnapshotReader) error {
+		posts.Add(1)
+		if len(c.Changes) != 2 || c.Changes[0].Op.Kind != model.OpPatch || c.Changes[1].Op.Kind != model.OpComment {
+			return fmt.Errorf("close operation order changed: %+v", c.Changes)
+		}
+		return nil
+	})}))
+	cs := model.ChangeSet{Ops: []model.Op{patch(ref, map[string]any{}), {Kind: model.OpComment, Comment: &model.CommentOp{Target: ref, Body: "complete"}}}}
+	m := slotMeta(3, "bead.close")
+	first, err := w.ApplyWithOutcome(context.Background(), by, cs, m)
+	if err != nil || first.Replayed || first.Commit.Revision.String() != "3" || len(first.Commit.Results) != 2 || len(first.Commit.Warnings) != 0 {
+		t.Fatalf("close outcome=%+v %v", first, err)
+	}
+	for _, result := range first.Commit.Results {
+		doc, err := DecodeDocument(result.Record)
+		if err != nil || result.Ref.ID != ref.ID || result.Revision.String() != "3" || doc.Fields["status"] != "done" || doc.Lease != nil || len(doc.Comments) != 1 || doc.Comments[0].Body != "complete" || !reflect.DeepEqual(doc.Comments[0].Principal, by) || !doc.Comments[0].Time.Equal(h.now) {
+			t.Fatalf("close lost final status, reason, lease settlement or result order: %+v %+v %v", result, doc, err)
+		}
+	}
+	again, err := w.ApplyWithOutcome(context.Background(), by, cs, m)
+	want, _ := json.Marshal(first.Commit)
+	got, _ := json.Marshal(again.Commit)
+	stored := receipt(t, h, m)
+	durable, _ := json.Marshal(stored.Commit)
+	if err != nil || !again.Replayed || string(want) != string(got) || string(want) != string(durable) || stored.ResponsePending || posts.Load() != 1 || h.read(t).Snapshot().At.String() != "3" {
+		t.Fatalf("close replay changed receipt or reran post: %+v %v posts=%d", again, err, posts.Load())
+	}
+	entry := auditEntry(t, h, first.Commit.Revision)
+	if len(entry.Changes) != 1 || entry.Changes[0].Op != model.OpPatch || len(entry.Events) != 1 || entry.Events[0].Type != model.EventBeadClosed {
+		t.Fatalf("ordinary close with a reason must publish one bead.closed transition: %+v", entry)
+	}
+	event := entry.Events[0]
+	if event.Index.String() != "0" || event.ChangeIndex.String() != "0" || event.Resource.Ref.ID != ref.ID || event.Provenance.Method != "bead.close" || event.Provenance.Slot != "close" || event.Provenance.SetBy["fields.status"] != "request" || event.Provenance.SetBy["comments"] != "request" || event.Details != nil {
+		t.Fatalf("ordinary close provenance/order=%+v", event)
+	}
+	// A repeated close without a reason is a no-op. A fresh reason on an
+	// already-closed bead is a comment, not another status transition.
+	noop := apply(t, w, model.ChangeSet{Ops: []model.Op{patch(ref, map[string]any{})}}, slotMeta(4, "bead.close"))
+	if noop.Revision.String() != "3" || posts.Load() != 1 {
+		t.Fatalf("repeat close minted a change or post: %+v posts=%d", noop, posts.Load())
+	}
+	commented := apply(t, h.writer(), cs, slotMeta(5, "bead.close"))
+	commentEntry := auditEntry(t, h, commented.Revision)
+	if commented.Revision.String() != "4" || len(commentEntry.Changes) != 1 || commentEntry.Changes[0].Op != model.OpComment || commentEntry.Events != nil {
+		t.Fatalf("same-status close changed legacy comment semantics: %+v", commentEntry)
+	}
+}
+
 func TestAuditWriterTerminalOutcomeAndOwnProject(t *testing.T) {
 	for _, tc := range []struct {
 		method, project string

@@ -23,7 +23,7 @@ import (
 )
 
 func TestEmbeddedUIHasExplicitSecurityBoundaryAndStates(t *testing.T) {
-	h, err := webui.New(webui.Config{Project: "web", MaxRows: 25})
+	h, err := webui.New(webui.Config{Project: "web", MaxRows: 25, HomeViewID: "stored-home", WatchPath: "/watch/v1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestEmbeddedUIHasExplicitSecurityBoundaryAndStates(t *testing.T) {
 		}
 	}
 	page := string(body)
-	for _, want := range []string{"What changed", "Why blocked", "Explain an item", "Presence", "./app.js", "./styles.css"} {
+	for _, want := range []string{"What changed", "Why blocked", "Explain an item", "Presence", "EPIC PROGRESS / COUNTS", "Epic child counts are unavailable on this server.", "./app.js", "./styles.css"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("embedded page missing %q", want)
 		}
@@ -70,7 +70,7 @@ func TestEmbeddedUIHasExplicitSecurityBoundaryAndStates(t *testing.T) {
 	if err := json.Unmarshal(configBody, &config); err != nil {
 		t.Fatal(err)
 	}
-	if config["rpcPath"] != "/rpc/v1" || config["project"] != "web" || config["maxRows"] != float64(25) {
+	if config["rpcPath"] != "/rpc/v1" || config["project"] != "web" || config["maxRows"] != float64(25) || config["homeViewId"] != "stored-home" || config["watchPath"] != "/watch/v1" {
 		t.Fatalf("unexpected browser composition: %v", config)
 	}
 
@@ -83,7 +83,7 @@ func TestEmbeddedUIHasExplicitSecurityBoundaryAndStates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"history.query", "bead.ready", "view.run", "presence.list", "Request cancelled; nothing changed.", "credentials: \"omit\"", "textContent", "event.source !== frame.contentWindow", "setAttribute(\"sandbox\", \"allow-scripts\")", "postMessage(response, \"*\")", "callTimes.length >= 20"} {
+	for _, want := range []string{"history.query", "bead.ready", "view.run", "presence.list", "No direct blocker reason was supplied", "Anonymous principal · client label unavailable", "Request cancelled; nothing changed.", "credentials: \"omit\"", "textContent", "event.source !== frame.contentWindow", "setAttribute(\"sandbox\", \"allow-scripts\")", "postMessage(response, \"*\")", "callTimes.length >= 20"} {
 		if !bytes.Contains(js, []byte(want)) {
 			t.Fatalf("UI behavior missing %q", want)
 		}
@@ -127,6 +127,11 @@ func TestHandlerRejectsWritesAndTraversal(t *testing.T) {
 		{MaxRows: -1}, {MaxRows: 101}, {BlockedViewID: "bad\n"},
 		{BlockedViewDefinition: json.RawMessage(`[]`)},
 		{BlockedViewDefinition: json.RawMessage(`null`)},
+		{HomeViewID: "bad\n"}, {WatchPath: "/watch/v1"},
+		{HomeViewID: "home", WatchPath: "https://other.test/watch"},
+		{HomeViewID: "home", WatchPath: "//other.test/watch"},
+		{HomeViewID: "home", WatchPath: "/watch/../v1"},
+		{HomeViewID: "home", WatchPath: "/watch/%76"},
 	} {
 		if _, err := webui.New(config); err == nil {
 			t.Fatalf("invalid composition accepted: %+v", config)
