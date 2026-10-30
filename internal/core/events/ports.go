@@ -112,6 +112,30 @@ func (AllowAll) ReadResource(context.Context, model.PrincipalRef, model.AuditRes
 type Filter struct {
 	Types     []string `json:"types,omitempty"`
 	Resources []string `json:"resources,omitempty"`
+	// BeadTypes is an internal view-membership predicate. Types remains the
+	// event-type filter used by event.subscribe; keeping the vocabularies
+	// separate prevents a view's "issue" type from being mistaken for an
+	// event named "issue".
+	BeadTypes []string `json:"beadTypes,omitempty"`
+}
+
+// ViewBinding is the checkpoint compiled by the real view service for a
+// view.watch subscription. The event/watch layer consumes only this bounded
+// membership filter and its cursor generations; it never reconstructs a view
+// definition or invents an authorization decision.
+type ViewBinding struct {
+	Filter        Filter
+	Ontology      model.Revision
+	PolicyVersion string
+	Incarnation   string
+	Projection    *ProjectionStatus
+}
+
+// ViewResolver is the narrow seam between the view service and the watch
+// manager. A resolver must authorize the saved view and return an exact
+// event-reader membership filter or an explicit refusal.
+type ViewResolver interface {
+	WatchBinding(context.Context, model.PrincipalRef, string) (ViewBinding, error)
 }
 
 func contains(values []string, value string) bool {
@@ -126,7 +150,23 @@ func (f Filter) accepts(e model.Event) bool {
 	if e.Control != nil {
 		return e.Control.Type == model.EventGap || len(f.Types) == 0 || contains(f.Types, string(e.Control.Type))
 	}
-	return (len(f.Types) == 0 || contains(f.Types, string(e.Durable.Type))) && (len(f.Resources) == 0 || contains(f.Resources, e.Durable.Resource))
+	if len(f.Types) != 0 && !contains(f.Types, string(e.Durable.Type)) {
+		return false
+	}
+	if len(f.Resources) != 0 && !contains(f.Resources, e.Durable.Resource) {
+		return false
+	}
+	if len(f.BeadTypes) != 0 {
+		image := e.Durable.After
+		if image == nil {
+			image = e.Durable.Before
+		}
+		typ, _ := image["type"].(string)
+		if !contains(f.BeadTypes, typ) {
+			return false
+		}
+	}
+	return true
 }
 
 type Class string
@@ -173,6 +213,67 @@ type State struct {
 	Stalled            bool           `json:"stalled,omitempty"`
 	Skips              []SkipAudit    `json:"skips,omitempty"`
 	LagAcceptedThrough model.Revision `json:"lagAcceptedThrough,omitempty"`
+}
+
+// ProjectionResume is the operator-facing continuation point for a failed
+// or stalled projection. It is deliberately a tuple rather than a signed
+// event cursor: projection repair/replay is owned by the dispatcher, while
+// views and watches only report the durable checkpoint they observed.
+type ProjectionResume struct {
+	Position           Position       `json:"position"`
+	LagAcceptedThrough model.Revision `json:"lagAcceptedThrough,omitempty"`
+}
+
+// ProjectionStatus is the read-only projection metadata consumed by views and
+// watches. BUILD-15's durable checkpoint adapter implements the reader below;
+// this package does not own registration, replay, stall transitions, or
+// resume writes.
+type ProjectionStatus struct {
+	Binding            string            `json:"binding"`
+	Position           Position          `json:"checkpoint"`
+	Failure            *Failure          `json:"failure,omitempty"`
+	Halted             bool              `json:"halted,omitempty"`
+	Stalled            bool              `json:"stalled,omitempty"`
+	LagAcceptedThrough model.Revision    `json:"lagAcceptedThrough,omitempty"`
+	Resume             *ProjectionResume `json:"resume,omitempty"`
+}
+
+// ProjectionStatusReader is a narrow, durable status port. Implementations
+// must read persisted checkpoint state, never a process-local dispatcher map.
+type ProjectionStatusReader interface {
+	Status(context.Context, string) (ProjectionStatus, error)
+}
+
+// ProjectionStatusSource is an expressive alias for composition roots that
+// expose the same checkpoint-backed port under a source-oriented name.
+type ProjectionStatusSource = ProjectionStatusReader
+
+// NormalizeProjectionStatus copies a status and makes the repair checkpoint
+// explicit whenever a projection is halted, stalled, or has a recorded
+// failure. An empty checkpoint is valid for a projection that has not run.
+func NormalizeProjectionStatus(status ProjectionStatus, binding string) ProjectionStatus {
+	if status.Binding == "" {
+		status.Binding = binding
+	}
+	if status.Binding == "" {
+		status.Binding = "core"
+	}
+	status.Failure = cloneFailure(status.Failure)
+	if status.Resume == nil && (status.Halted || status.Stalled || status.Failure != nil) {
+		status.Resume = &ProjectionResume{Position: status.Position, LagAcceptedThrough: status.LagAcceptedThrough}
+	} else if status.Resume != nil {
+		resume := *status.Resume
+		status.Resume = &resume
+	}
+	return status
+}
+
+func cloneFailure(failure *Failure) *Failure {
+	if failure == nil {
+		return nil
+	}
+	copy := *failure
+	return &copy
 }
 
 // Checkpoints must be backed by driver metadata. Missing capability is an

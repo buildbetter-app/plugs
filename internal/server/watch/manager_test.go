@@ -2,10 +2,12 @@ package watch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +31,12 @@ type watchFixture struct {
 	writer      *pipeline.Writer
 	nextID      string
 	key         int
+}
+
+type viewBindingFunc func(context.Context, model.PrincipalRef, string) (ViewBinding, error)
+
+func (fn viewBindingFunc) WatchBinding(ctx context.Context, principal model.PrincipalRef, id string) (ViewBinding, error) {
+	return fn(ctx, principal, id)
 }
 
 func newWatchFixture(t *testing.T, queue int, coalesce, maxLag time.Duration) *watchFixture {
@@ -281,6 +289,114 @@ func TestSessionBoundAndViewCheckpointRefusal(t *testing.T) {
 	}
 	if got := f.manager.WatchCount("session-1"); got != 0 {
 		t.Fatalf("view refusal leaked watch=%d", got)
+	}
+}
+
+func TestViewWatchUsesResolverAndResetsOnDefinitionChange(t *testing.T) {
+	f := newWatchFixture(t, 8, 5*time.Millisecond, time.Second)
+	var resource atomic.Value
+	resource.Store("bead-view")
+	f.manager.config.Views = viewBindingFunc(func(_ context.Context, principal model.PrincipalRef, _ string) (ViewBinding, error) {
+		return ViewBinding{Filter: coreevents.Filter{Resources: []string{"bead/" + resource.Load().(string)}}, Ontology: "1", PolicyVersion: "policy-1"}, nil
+	})
+	f.commit(t, "bead-view", "before", model.OpCreate)
+	request := f.request("view")
+	request.Method = MethodViewWatch
+	request.ViewID = "saved"
+	sub := f.open(t, request)
+	snapshot := nextFrame(t, sub, time.Second)
+	if snapshot.Kind != FrameSnapshot || len(snapshot.Events) != 1 || snapshot.Events[0].Durable == nil || snapshot.Events[0].Durable.Resource != "bead/bead-view" {
+		t.Fatalf("view snapshot=%+v", snapshot)
+	}
+	resource.Store("bead-other")
+	reset := nextFrame(t, sub, time.Second)
+	if reset.Kind != FrameReset || reset.Reason != "view_changed" || len(reset.Events) != 0 {
+		t.Fatalf("view definition reset=%+v", reset)
+	}
+	if _, err := sub.Next(f.ctx); !errors.Is(err, ErrResetRequired) {
+		t.Fatalf("view reset stream resumed: %v", err)
+	}
+}
+
+func TestViewWatchAuthorizationChangeProducesVisibilityLost(t *testing.T) {
+	f := newWatchFixture(t, 8, 5*time.Millisecond, time.Second)
+	f.manager.config.Events.Reader.Authorization = f.auth
+	f.manager.config.Views = viewBindingFunc(func(_ context.Context, _ model.PrincipalRef, _ string) (ViewBinding, error) {
+		return ViewBinding{Filter: coreevents.Filter{Resources: []string{"bead/bead-view-auth"}}, Ontology: "1", PolicyVersion: "policy-1"}, nil
+	})
+	f.commit(t, "bead-view-auth", "before", model.OpCreate)
+	request := f.request("view-auth")
+	request.Method = MethodViewWatch
+	request.ViewID = "saved"
+	sub := f.open(t, request)
+	_ = nextFrame(t, sub, time.Second)
+	f.commit(t, "bead-view-auth", "after", model.OpPatch)
+	waitQueued(t, sub)
+	f.auth.SetAllowed(false)
+	frame := nextFrame(t, sub, time.Second)
+	if frame.Kind != FrameDelta || frame.Reason != "visibility_changed" || len(frame.Events) != 1 || frame.Events[0].Control == nil || frame.Events[0].Control.Type != model.EventVisibilityLost || frame.Events[0].Control.Resource != "bead/bead-view-auth" {
+		t.Fatalf("view authorization invalidation=%+v", frame)
+	}
+}
+
+func TestViewWatchCarriesProjectionStatusWithoutResettingCursor(t *testing.T) {
+	f := newWatchFixture(t, 8, 5*time.Millisecond, time.Second)
+	checkpoint := coreevents.Position{Incarnation: f.incarnation, Revision: "2"}
+	status := &coreevents.ProjectionStatus{
+		Binding:  "core",
+		Position: checkpoint,
+		Failure: &coreevents.Failure{
+			Key:      coreevents.DeliveryKey{Position: checkpoint, Binding: "core"},
+			Attempts: 2,
+			Reason:   "projection_failed",
+		},
+		Stalled: true,
+		Resume: &coreevents.ProjectionResume{
+			Position:           coreevents.Position{Incarnation: f.incarnation, Revision: "1"},
+			LagAcceptedThrough: "1",
+		},
+	}
+	var statuses atomic.Value
+	statuses.Store(status)
+	f.manager.config.Views = viewBindingFunc(func(_ context.Context, _ model.PrincipalRef, _ string) (ViewBinding, error) {
+		return ViewBinding{Filter: coreevents.Filter{Resources: []string{"bead/bead-view-projection"}}, Ontology: "1", PolicyVersion: "policy-1", Projection: statuses.Load().(*coreevents.ProjectionStatus)}, nil
+	})
+	f.commit(t, "bead-view-projection", "before", model.OpCreate)
+	request := f.request("view-projection")
+	request.Method = MethodViewWatch
+	request.ViewID = "saved"
+	sub := f.open(t, request)
+	snapshot := nextFrame(t, sub, time.Second)
+	if snapshot.Projection == nil || !snapshot.Projection.Stalled || snapshot.Projection.Failure == nil || snapshot.Projection.Resume == nil {
+		t.Fatalf("projection status missing from snapshot=%+v", snapshot.Projection)
+	}
+	// The resolver's pointer is mutable; the queued snapshot must not alias it.
+	status.Failure.Reason = "mutated-after-open"
+	if snapshot.Projection.Failure.Reason != "projection_failed" {
+		t.Fatalf("snapshot projection metadata was not copied: %+v", snapshot.Projection)
+	}
+	wire, err := json.Marshal(snapshot)
+	if err != nil || !strings.Contains(string(wire), `"projection"`) || !strings.Contains(string(wire), `"stalled":true`) {
+		t.Fatalf("projection metadata missing from stream envelope: %s err=%v", wire, err)
+	}
+
+	statuses.Store(&coreevents.ProjectionStatus{Binding: "core", Position: coreevents.Position{Incarnation: f.incarnation, Revision: "3"}})
+	// A status-only poll must not enqueue a reset or change the signed cursor.
+	time.Sleep(2 * f.manager.config.Coalesce)
+	f.commit(t, "bead-view-projection", "after", model.OpPatch)
+	waitQueued(t, sub)
+	delta := nextFrame(t, sub, time.Second)
+	if delta.Kind != FrameDelta || delta.Reason != "" || delta.FromCursor != snapshot.Cursor || delta.Projection == nil || delta.Projection.Stalled || delta.Projection.Position.Revision.String() != "3" {
+		t.Fatalf("projection status update frame=%+v", delta)
+	}
+}
+
+func TestBindingChangeIgnoresProjectionStatus(t *testing.T) {
+	a := Binding{Principal: model.PrincipalRef{Kind: "user", ID: "reader"}, Ontology: "1", PolicyVersion: "p1", Incarnation: "inc", Projection: &coreevents.ProjectionStatus{Binding: "core", Stalled: true}}
+	b := cloneBinding(a)
+	b.Projection = &coreevents.ProjectionStatus{Binding: "core", Position: coreevents.Position{Incarnation: "inc", Revision: "9"}}
+	if got := bindingChange(a, b); got != "" {
+		t.Fatalf("projection status changed watch binding: %q", got)
 	}
 }
 
