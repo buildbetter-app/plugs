@@ -159,7 +159,13 @@ func metadataGraph(t *testing.T, h *harness) metadataState {
 		t.Fatalf("incomplete metadata graph: %+v %v", page, err)
 	}
 	state.Records = page.Items
-	state.Log, err = r.Changesets(ctx, nil, 1000)
+	var after *driver.Cursor
+	if !state.Meta.HistoryFloor.IsZero() {
+		// Offline allocator initialization starts a new lifetime. Its
+		// discarded prefix remains unavailable; compare all readable history.
+		after = &driver.Cursor{Incarnation: state.Meta.Incarnation, Revision: state.Meta.HistoryFloor, Method: "changesets"}
+	}
+	state.Log, err = r.Changesets(ctx, after, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,6 +278,13 @@ func TestMetadataFieldHashCASUsesCanonicalCommittedValue(t *testing.T) {
 func TestMetadataFieldHashRefusalsPublishNothing(t *testing.T) {
 	h := setup(t)
 	seedAllocator(t, h.store, h.lease, driver.OfflineAllocator{Prefix: "test", Mode: driver.AllocatorSequential, LastID: 8})
+	r := h.read(t)
+	_, err := r.Changesets(context.Background(), nil, 1000)
+	_ = r.Close()
+	var truncated driver.ErrTruncated
+	if !errors.As(err, &truncated) || truncated.Floor.String() != "1" {
+		t.Fatalf("restored allocator history must reject the discarded prefix: %v", err)
+	}
 	w := h.writer()
 	ref := apply(t, w, model.ChangeSet{Ops: []model.Op{create("")}}, meta(1)).Results[0].Ref
 	apply(t, w, model.ChangeSet{Ops: []model.Op{metadataOp(ref, "compare", `{"b":2,"a":1}`), metadataOp(ref, "sibling", `true`), patch(ref, map[string]any{"compare": "field"})}}, meta(2))

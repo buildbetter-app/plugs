@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"reflect"
@@ -291,12 +292,77 @@ func seedMetadataAllocator(t *testing.T, f *fixture) {
 	if _, err = tx.Head(f.ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err = tx.(driver.AllocatorContinuation).RestoreAllocators(f.ctx, []driver.OfflineAllocator{{Prefix: project, Mode: driver.AllocatorSequential, LastID: 8}}); err != nil {
+	const source driver.StoreID = "b17-metadata-allocator-source"
+	restored, err := tx.(driver.OfflineRestoreTx).PrepareOfflineRestore(f.ctx, source)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = tx.Commit(f.ctx, driver.ChangesetHeader{Incarnation: f.meta(t).Incarnation, Kind: model.ChangesetRestore, Principal: anonymous, LockKeys: []driver.LockKey{lock}}); err != nil {
+	value := driver.OfflineAllocator{Prefix: project, Mode: driver.AllocatorSequential, LastID: 8}
+	if err = tx.(driver.AllocatorContinuation).RestoreAllocators(f.ctx, []driver.OfflineAllocator{value}); err != nil {
 		t.Fatal(err)
 	}
+	payload, err := json.Marshal(struct {
+		Source driver.StoreID
+		Value  driver.OfflineAllocator
+	}{source, value})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := metadataSHA(string(payload))
+	principal := model.PrincipalRef{Kind: "system", ID: "plug-converter"}
+	key := "b17-metadata-allocator-" + hash
+	if _, err = tx.Commit(f.ctx, driver.ChangesetHeader{Incarnation: restored.Incarnation, Kind: model.ChangesetRestore, Principal: principal, Method: "offline.restore", IdempotencyKey: key, RequestHash: hash, Response: model.Commit{Results: []model.OpResult{}, Warnings: []model.Warning{}}, LockKeys: []driver.LockKey{lock}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.meta(t); !reflect.DeepEqual(got, restored) || got.StoreID != source || got.Head.String() != "1" || got.HistoryFloor.String() != "1" {
+		t.Fatalf("allocator seed did not publish the prepared offline lifetime: %+v", got)
+	}
+	r := f.reader(t)
+	defer r.Close()
+	stored, err := r.(driver.AllocatorReader).LoadAllocator(f.ctx, project)
+	if err != nil || !reflect.DeepEqual(stored, value) {
+		t.Fatalf("allocator seed was not durable: %+v %v", stored, err)
+	}
+	principalKey, err := driver.PrincipalKey(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := r.IdempotencyByKey(f.ctx, principalKey, "", "offline.restore", key)
+	if err != nil || receipt == nil || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Commit.Revision.String() != "1" {
+		t.Fatalf("allocator seed lacks its final offline receipt: %+v %v", receipt, err)
+	}
+}
+
+// The generic fixture predates offline initialization and asks for history
+// from zero. Keep this metadata fixture on the public current-floor read path,
+// retaining all record/version/log comparisons and the strict truncation guard.
+func metadataSQLiteGraph(t *testing.T, f *fixture) durableState {
+	t.Helper()
+	state := durableState{Meta: f.meta(t), Versions: map[string][]driver.Version{}}
+	r := f.reader(t)
+	defer r.Close()
+	page, err := r.Query(f.ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 1000})
+	if err != nil || page.NextCursor != nil {
+		t.Fatalf("record query incomplete: %+v %v", page, err)
+	}
+	state.Records = page.Items
+	for _, record := range state.Records {
+		versions, err := r.Versions(f.ctx, record.Ref, driver.PageReq{Limit: 1000})
+		if err != nil || versions.NextCursor != nil {
+			t.Fatalf("version query incomplete: %+v %v", versions, err)
+		}
+		state.Versions[record.Ref.ID] = versions.Items
+	}
+	_, err = r.Changesets(f.ctx, nil, 1000)
+	var truncated driver.ErrTruncated
+	if !errors.As(err, &truncated) || truncated.Floor.String() != state.Meta.HistoryFloor.String() {
+		t.Fatalf("restored metadata history must reject the discarded prefix: %v", err)
+	}
+	state.Log, err = r.Changesets(f.ctx, &driver.Cursor{Incarnation: state.Meta.Incarnation, Revision: state.Meta.HistoryFloor, Method: "changesets"}, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
 }
 
 // Inspect every persistent graph, predicate, allocator and receipt row through
@@ -343,6 +409,9 @@ func TestB17MetadataCASRealSQLiteReceiptsAndReopen(t *testing.T) {
 	// This seeds only the allocator to measure aborted-batch consumption. It
 	// does not bypass or qualify archive restoration.
 	seedMetadataAllocator(t, f)
+	// The prepared restore changed incarnation; bind the real HTTP service to
+	// that committed lifetime before issuing its first application request.
+	f.reopen(t)
 	ref, _, _ := f.create(t, "metadata")
 	const literal = "plugin.literal.dot/~key"
 	seed := model.ChangeSet{Ops: []model.Op{
@@ -359,7 +428,7 @@ func TestB17MetadataCASRealSQLiteReceiptsAndReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	before, sqlBefore := f.state(t), metadataSQLState(t, db)
+	before, sqlBefore := metadataSQLiteGraph(t, f), metadataSQLState(t, db)
 	var refusedKeys []string
 	for _, miss := range []struct{ field, canonical string }{
 		{"metadata." + literal, `null`}, {"metadata." + literal, `{"a":1,"b":3}`},
@@ -377,17 +446,17 @@ func TestB17MetadataCASRealSQLiteReceiptsAndReopen(t *testing.T) {
 		if f.receipt(t, "bead.update", "owner", requestKey) != nil || !reflect.DeepEqual(sqlBefore, metadataSQLState(t, db)) {
 			t.Fatal("HTTP metadata refusal changed durable SQL rows or stored a receipt")
 		}
-		requireSameState(t, before, f.state(t))
+		requireSameState(t, before, metadataSQLiteGraph(t, f))
 	}
 	// Real HTTP service lowering uses the fixed metadata expectation seam.
 	f.commit(t, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"description": "object matched"}, "expect": []model.Precondition{model.PreconditionByHash(ref, "metadata."+literal, "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777")}}))
 	f.commit(t, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "number matched"}, "expect": []model.Precondition{model.PreconditionByHash(ref, "metadata.number", "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b")}}))
-	before = f.state(t)
+	before = metadataSQLiteGraph(t, f)
 	swap := model.ChangeSet{Ops: []model.Op{metadataSet(ref, literal, `{"next":true}`)}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata."+literal, metadataSHA(`{"a":1,"b":2}`))}}
 	if _, err := f.writer.ApplyWithOutcome(f.ctx, anonymous, swap, writeMeta(t)); err != nil {
 		t.Fatal(err)
 	}
-	after := f.state(t)
+	after := metadataSQLiteGraph(t, f)
 	doc, err := pipeline.DecodeDocument(after.Records[0].Body)
 	if err != nil || string(doc.Metadata[literal]) != `{"next":true}` || string(doc.Metadata["sibling"]) != `{"kept":true}` || string(doc.Metadata["number"]) != `1.0` || len(after.Log) != len(before.Log)+1 || len(after.Versions[ref.ID]) != len(before.Versions[ref.ID])+1 {
 		t.Fatalf("SQLite metadata swap/history/sibling/pre-image=%+v %v", doc, err)
@@ -397,7 +466,7 @@ func TestB17MetadataCASRealSQLiteReceiptsAndReopen(t *testing.T) {
 	failedBatch := model.ChangeSet{Ops: []model.Op{patchOp(ref, map[string]any{"title": "staged"}), createOp("discard", "discard"), metadataSet(ref, literal, `"post-image"`)}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata."+literal, metadataSHA(`"post-image"`))}}
 	_, err = f.writer.ApplyWithOutcome(f.ctx, anonymous, failedBatch, failedMeta)
 	domainCode(t, err, "precondition_failed")
-	requireSameState(t, before, f.state(t))
+	requireSameState(t, before, metadataSQLiteGraph(t, f))
 	if !reflect.DeepEqual(sqlBefore, metadataSQLState(t, db)) || f.receipt(t, "tx.apply", "owner", failedMeta.IdempotencyKey) != nil {
 		t.Fatal("late metadata pre-image miss consumed graph/allocator/receipt state")
 	}
@@ -407,7 +476,7 @@ func TestB17MetadataCASRealSQLiteReceiptsAndReopen(t *testing.T) {
 	if err != nil || out.Replayed || out.Commit.Revision.String() != before.Meta.Head.String() {
 		t.Fatalf("SQLite metadata no-op=%+v %v", out, err)
 	}
-	requireSameState(t, before, f.state(t))
+	requireSameState(t, before, metadataSQLiteGraph(t, f))
 	receipt := f.receipt(t, "tx.apply", "owner", noopMeta.IdempotencyKey)
 	if receipt == nil || receipt.ResponsePending || receipt.Changeset.Kind != "" || !reflect.DeepEqual(receipt.Commit, out.Commit) {
 		t.Fatalf("metadata no-op receipt=%+v", receipt)
@@ -419,12 +488,12 @@ func TestB17MetadataCASRealSQLiteReceiptsAndReopen(t *testing.T) {
 	if firstHTTP.Meta != nil {
 		t.Fatal("first metadata-guarded HTTP no-op was labeled replay")
 	}
-	requireSameState(t, before, f.state(t))
+	requireSameState(t, before, metadataSQLiteGraph(t, f))
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
 	f.reopen(t)
-	requireSameState(t, before, f.state(t))
+	requireSameState(t, before, metadataSQLiteGraph(t, f))
 	again, err := f.writer.ApplyWithOutcome(f.ctx, anonymous, noop, noopMeta)
 	if err != nil || !again.Replayed || !reflect.DeepEqual(again.Commit, out.Commit) || !reflect.DeepEqual(receipt, f.receipt(t, "tx.apply", "owner", noopMeta.IdempotencyKey)) {
 		t.Fatalf("SQLite metadata no-op lost durable replay: %+v %v", again, err)
@@ -441,6 +510,6 @@ func TestB17MetadataCASRealSQLiteReceiptsAndReopen(t *testing.T) {
 	if f.receipt(t, "tx.apply", "owner", failedMeta.IdempotencyKey) != nil {
 		t.Fatal("failed batch receipt appeared after reopen")
 	}
-	requireSameState(t, before, f.state(t))
+	requireSameState(t, before, metadataSQLiteGraph(t, f))
 	t.Log("B17: real SQLite/HTTP canonical metadata CAS, exact null/type/order/large-number refusals, atomic allocator rollback and durable no-op replay survive close/reopen")
 }
