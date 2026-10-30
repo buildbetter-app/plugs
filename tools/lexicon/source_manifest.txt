@@ -356,6 +356,7 @@ internal/integration/oidc/composition_test.go
 internal/integration/oidc/flow_test.go
 internal/integration/oidc/http_test.go
 internal/integration/oidc/idp_test.go
+internal/integration/oidc/mcp_composition_test.go
 internal/integration/oidc/refusal_test.go
 internal/integration/ontologyrefusals/BUILD.bazel
 internal/integration/ontologyrefusals/README.md
@@ -463,6 +464,8 @@ internal/server/composition/composition_test.go
 internal/server/composition/config.go
 internal/server/composition/configfile.go
 internal/server/composition/configfile_test.go
+internal/server/composition/mcp.go
+internal/server/composition/mcp_lifecycle_test.go
 internal/server/composition/telemetry.go
 internal/server/composition/telemetry_test.go
 internal/server/events/BUILD.bazel

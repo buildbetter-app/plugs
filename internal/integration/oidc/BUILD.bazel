@@ -14,6 +14,7 @@ go_test(
         "//internal/server/composition",
         "//internal/server/rpc",
         "//internal/server/transport/httpjson",
+        "//internal/server/transport/mcp",
         "//internal/storage/driver",
         "//internal/storage/memory",
         "//internal/storage/sqlite",
