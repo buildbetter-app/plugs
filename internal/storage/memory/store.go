@@ -18,7 +18,7 @@ import (
 type Driver struct{}
 
 func (Driver) Info() driver.Info {
-	return driver.Info{Name: "memory", Version: "1", Capabilities: []string{"transactions", "history", "leases", "checkpoints", driver.CapabilityRestoreCurrentImage}}
+	return driver.Info{Name: "memory", Version: "1", Capabilities: []string{"transactions", "history", "leases", "checkpoints", "allocator_continuation", driver.CapabilityRestoreCurrentImage}}
 }
 
 func (Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, error) {
@@ -51,6 +51,7 @@ type state struct {
 	blobs      map[driver.Hash]blob
 	log        []model.Changeset
 	replays    map[scope]replay
+	allocators map[string]driver.OfflineAllocator
 }
 
 func (s *state) fork() *state {
@@ -62,6 +63,10 @@ func (s *state) fork() *state {
 	n.keyHistory = maps.Clone(s.keyHistory)
 	n.blobs = maps.Clone(s.blobs)
 	n.replays = maps.Clone(s.replays)
+	n.allocators = make(map[string]driver.OfflineAllocator, len(s.allocators))
+	for prefix, allocator := range s.allocators {
+		n.allocators[prefix] = allocator.Clone()
+	}
 	return &n
 }
 
@@ -138,7 +143,7 @@ func NewWithOptions(options Options) (*Store, error) {
 	s.state = &state{
 		meta:    driver.Meta{StoreID: options.StoreID, Incarnation: options.Incarnation, SchemaVersion: 1, State: "ready", Head: model.Natural64(0), HistoryFloor: model.Natural64(0)},
 		records: make(map[string]driver.Record), kinds: make(map[string]string), versions: make(map[string][]driver.Version),
-		keys: make(map[string]driver.LockState), keyHistory: make(map[string][]driver.LockState), blobs: make(map[driver.Hash]blob), replays: make(map[scope]replay),
+		keys: make(map[string]driver.LockState), keyHistory: make(map[string][]driver.LockState), blobs: make(map[driver.Hash]blob), replays: make(map[scope]replay), allocators: make(map[string]driver.OfflineAllocator),
 	}
 	return s, nil
 }
@@ -209,7 +214,7 @@ func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.Wri
 	if err := s.checkLease(lease); err != nil {
 		return nil, err
 	}
-	t := &transaction{store: s, lease: lease, base: s.state, snapshotAt: s.state.meta.Head, incarnation: s.state.meta.Incarnation, records: make(map[string]*driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), bumps: make(map[string]driver.LockKey)}
+	t := &transaction{store: s, lease: lease, base: s.state, snapshotAt: s.state.meta.Head, incarnation: s.state.meta.Incarnation, records: make(map[string]*driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), bumps: make(map[string]driver.LockKey), allocators: make(map[string]driver.OfflineAllocator)}
 	s.transactions[t] = true
 	return t, nil
 }
