@@ -42,12 +42,15 @@ Commands:
   ontology diff --from REVISION --to REVISION [--project PROJECT]
   session                 Read one JSON argv array per line from stdin.
 
-Memory storage is disposable and exists only for this process. In a session,
-@last is the ID returned by the last write; @revision is its revision.
-Server selection: --server, then PLUG_SERVER; PLUG_TOKEN supplies the bearer.
-An unreachable configured server is an error. Remote calls use POST /rpc/v1.
-The shared server reads .plug/config.yaml. In-process --memory storage remains
-disposable and never starts a listener or UI.
+Without a selected server, local storage is persistent SQLite at .plug/plug.db.
+Memory storage is disposable and exists only for this process when --memory is
+explicitly selected. In a session, @last is the ID returned by the last write;
+@revision is its revision. Server selection is --server, then PLUG_SERVER, then
+.plug/config.yaml; PLUG_TOKEN supplies the bearer. An unreachable configured
+server is an error. Remote calls use POST /rpc/v1. A local config may select a
+server or SQLite storage (driver: sqlite, path: PATH). The shared server also
+reads .plug/config.yaml. In-process --memory storage remains disposable and
+never starts a listener or UI.
 Global options precede COMMAND. Command options may precede or follow ID.
 Writes accept --idempotency-key KEY to retry a write whose response was lost.
 `

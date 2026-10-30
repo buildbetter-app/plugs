@@ -99,6 +99,11 @@ func TestManifestValidation(t *testing.T) {
 	if _, err := DecodeManifest(data); err != nil {
 		t.Fatal(err)
 	}
+	wasi := fixtureManifest()
+	wasi.Runtime = RuntimeWASI
+	if err := wasi.Validate(); err != nil {
+		t.Fatalf("wasip1 manifest rejected: %v", err)
+	}
 	if _, err := DecodeManifest([]byte(strings.Replace(string(data), `"runtime":"native"`, `"runtime":"native","shell":"bad"`, 1))); err == nil {
 		t.Fatal("unknown manifest field accepted")
 	}
