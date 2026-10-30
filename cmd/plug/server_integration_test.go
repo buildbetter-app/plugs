@@ -130,7 +130,7 @@ func TestExecutableSQLiteServerRemoteLifecycleAndRestart(t *testing.T) {
 	beforeCreate := sqliteRestartSnapshot(t, dbPath)
 	params := map[string]any{
 		"type": "issue", "fields": map[string]any{"title": "restart receipt"},
-		"_meta": sqliteRestartMeta("e53f53fd768849b298b6d743b8b6f2112"),
+		"_meta": sqliteRestartMeta("e53f53fd768849b298b6d743b8b6f211"),
 	}
 	first := sqliteRestartRPC(t, endpoint, "", "bead.create", params)
 	originalResult := first.result(t)
@@ -263,7 +263,7 @@ func TestExecutableSQLiteServerRemoteLifecycleAndRestart(t *testing.T) {
 	defer stream.close()
 	updated := sqliteRestartRPC(t, endpoint, "", "bead.update", map[string]any{
 		"id": map[string]any{"id": keyedID}, "fields": map[string]any{"title": "live after restart"},
-		"_meta": sqliteRestartMeta("45b44a061aeb4ba6a128fe2e640255b4"),
+		"_meta": sqliteRestartMeta("45b44a061aeb4ba6a128fe2e640255b"),
 	})
 	var live model.Commit
 	if err := json.Unmarshal(updated.result(t), &live); err != nil {
