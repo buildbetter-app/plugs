@@ -1,15 +1,20 @@
 package composition
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -44,11 +49,126 @@ func compositionSyntheticArchive(t *testing.T) ([]byte, map[string]any, string) 
 	if root := os.Getenv("TEST_SRCDIR"); root != "" {
 		path = filepath.Join(root, os.Getenv("TEST_WORKSPACE"), "internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar")
 	}
-	data, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	archive, err := dumpformat.Read(strings.NewReader(string(data)))
+	members := map[string][]byte{}
+	reader := tar.NewReader(bytes.NewReader(raw))
+	for {
+		header, readErr := reader.Next()
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		member, readErr := io.ReadAll(reader)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		members[header.Name] = member
+	}
+	var sourceManifest map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(members["manifest.json"]))
+	decoder.UseNumber()
+	if err := decoder.Decode(&sourceManifest); err != nil {
+		t.Fatal(err)
+	}
+	sourceManifest["history"] = "unavailable"
+	projects, ok := sourceManifest["projects"].([]any)
+	if !ok {
+		t.Fatal("converter fixture projects are not an array")
+	}
+	for _, value := range projects {
+		project, ok := value.(map[string]any)
+		if !ok {
+			t.Fatal("converter fixture project is not an object")
+		}
+		project["id_mode"] = "hash"
+		project["hash_length"] = json.Number("1")
+	}
+	projects = append(projects, map[string]any{"prefix": "empty", "id_mode": "hash", "hash_length": json.Number("1"), "last_id": json.Number("0"), "child_counters": map[string]any{}})
+	sourceManifest["projects"] = projects
+	archiveLines := bytes.Split(bytes.TrimSuffix(members["records/beads-archive.ndjson"], []byte{'\n'}), []byte{'\n'})
+	kept := archiveLines[:0]
+	for _, line := range archiveLines {
+		var row map[string]any
+		rowDecoder := json.NewDecoder(bytes.NewReader(line))
+		rowDecoder.UseNumber()
+		if err := rowDecoder.Decode(&row); err != nil {
+			t.Fatal(err)
+		}
+		source, ok := row["source"].(map[string]any)
+		if !ok || source["table"] != "issue_versions" {
+			kept = append(kept, line)
+		}
+	}
+	members["records/beads-archive.ndjson"] = append(bytes.Join(kept, []byte{'\n'}), '\n')
+	for _, value := range sourceManifest["sources"].([]any) {
+		source := value.(map[string]any)
+		if source["family"] == "issue_versions" {
+			source["rows"] = json.Number("0")
+		}
+	}
+	for _, value := range sourceManifest["kind_registry"].([]any) {
+		kind := value.(map[string]any)
+		if kind["name"] == "beads-archive" {
+			kind["count"] = json.Number(strconv.Itoa(len(kept)))
+		}
+	}
+	var edge map[string]any
+	edgeDecoder := json.NewDecoder(bytes.NewReader(bytes.TrimSuffix(members["records/edge.ndjson"], []byte{'\n'})))
+	edgeDecoder.UseNumber()
+	if err := edgeDecoder.Decode(&edge); err != nil {
+		t.Fatal(err)
+	}
+	edge["body"].(map[string]any)["type"] = "blocks"
+	edge["source"].(map[string]any)["fields"].(map[string]any)["type"] = "blocks"
+	edgeBytes, err := json.Marshal(edge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members["records/edge.ndjson"] = append(edgeBytes, '\n')
+	files := sourceManifest["files"].(map[string]any)
+	for name, member := range members {
+		if name == "manifest.json" {
+			continue
+		}
+		if _, ok := files[name]; ok {
+			digest := sha256.Sum256(member)
+			files[name] = map[string]any{"sha256": hex.EncodeToString(digest[:]), "size": json.Number(strconv.Itoa(len(member)))}
+		}
+	}
+	manifestBytes, err := json.Marshal(sourceManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members["manifest.json"] = append(manifestBytes, '\n')
+	var out bytes.Buffer
+	writer := tar.NewWriter(&out)
+	names := make([]string, 0, len(members)-1)
+	for name := range members {
+		if name != "manifest.json" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	names = append([]string{"manifest.json"}, names...)
+	for _, name := range names {
+		member := members[name]
+		if err := writer.WriteHeader(&tar.Header{Name: name, Mode: 0600, Size: int64(len(member)), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(member); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data := out.Bytes()
+	archive, err := dumpformat.Read(bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
