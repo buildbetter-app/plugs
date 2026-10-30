@@ -166,6 +166,8 @@ try {
   // The harness acts as a separate writer through the same real RPC endpoint.
   // No browser request writes, and the subsequent refresh must notice rev 4.
   const seeds = JSON.parse(await readFile(path.join(evidence, "seed-rpc.json"), "utf8"));
+  assert.equal(finalRow, seeds[0].params.fields.title, "the first-created seed must sort onto the final page");
+  assert(!initialRows.includes(finalRow), "the update must exercise a seed on the refreshed first page");
   const visibleSeed = seeds.find((seed) => seed.params?.fields?.title === initialRows[0]);
   assert(visibleSeed, "the first bounded page must identify one seeded row");
   const updateRequest = { jsonrpc: "2.0", id: "fixture-update", method: "bead.update", params: { id: visibleSeed.response.result.results[0].ref, fields: { title: "A stored update since the last look" }, _meta: { project: "web", idempotencyKey: "4".repeat(64) } } };
