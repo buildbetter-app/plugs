@@ -78,18 +78,26 @@ func matchesFilter(row storedBead, project string, filter *Filter) bool {
 		(len(filter.Resources) == 0 || slices.Contains(filter.Resources, row.doc.ID))
 }
 
-func pageResult(items []Bead, limit int, position *PagePosition, asOf AsOf, pinned bool) (BeadPage, error) {
+func pageResult(items []Bead, limit int, position *PagePosition, asOf AsOf, pinned, restartOnRevision bool) (BeadPage, error) {
 	offset := 0
 	if position != nil {
 		if position.AsOf.Incarnation != asOf.Incarnation {
 			return BeadPage{}, mapped(driver.ErrIncarnationChanged{From: position.AsOf.Incarnation, To: asOf.Incarnation})
 		}
-		if position.Offset < 0 || position.Offset > scanLimit || (pinned && (position.Offset > len(items) || position.AsOf.Revision.String() != asOf.Revision.String())) {
+		if position.Offset < 0 || (pinned && (position.Offset > len(items) || position.AsOf.Revision.String() != asOf.Revision.String())) {
 			return BeadPage{}, failure("cursor_invalid", "page position does not match the snapshot")
 		}
-		offset = position.Offset
+		// ClaimNext pages are ordered candidates from a live snapshot. If a
+		// fresh snapshot changed the revision, restart at the beginning rather
+		// than applying an offset from the old candidate ordering.
+		if !restartOnRevision || pinned || position.AsOf.Revision.String() == asOf.Revision.String() {
+			offset = position.Offset
+		}
 	}
-	end := min(offset+limit, len(items))
+	end := offset + limit
+	if end < offset || end > len(items) {
+		end = len(items)
+	}
 	// A live list may shrink below its previous cutoff. Its tail is then an
 	// empty page, while snapshot history retains strict position validation.
 	page := BeadPage{Items: items[min(offset, len(items)):end], AsOf: asOf}
@@ -100,28 +108,16 @@ func pageResult(items []Bead, limit int, position *PagePosition, asOf AsOf, pinn
 }
 
 func validatePosition(position *PagePosition) error {
-	if position != nil && (position.Offset < 0 || position.Offset > scanLimit || position.AsOf.Incarnation == "" || position.AsOf.Revision.Validate() != nil) {
+	if position != nil && (position.Offset < 0 || position.AsOf.Incarnation == "" || position.AsOf.Revision.Validate() != nil) {
 		return failure("cursor_invalid", "invalid domain page position")
 	}
 	return nil
 }
 
-func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
-	limit, err := pageOptions(req.Project, req.ViewID, req.Cursor, req.Filter, req.Limit)
-	if err != nil {
-		return BeadPage{}, err
-	}
-	if err := validatePosition(req.Position); err != nil {
-		return BeadPage{}, err
-	}
-	r, err := s.reader(ctx, by, nil)
-	if err != nil {
-		return BeadPage{}, err
-	}
-	defer r.Close()
+func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r queryReader) ([]Bead, error) {
 	graph, err := scanBeads(ctx, r)
 	if err != nil {
-		return BeadPage{}, err
+		return nil, err
 	}
 	items := []Bead{}
 	now := s.now()
@@ -130,7 +126,7 @@ func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyReq
 	for _, id := range ids {
 		p, err := priority(graph[id].doc)
 		if err != nil {
-			return BeadPage{}, err
+			return nil, err
 		}
 		priorities[id] = p
 	}
@@ -146,22 +142,65 @@ func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyReq
 		}
 		unblocked, err := s.ontology.noOpenBlockers(row.doc, graph)
 		if err != nil {
-			return BeadPage{}, err
+			return nil, err
 		}
 		if !unblocked {
 			continue
 		}
 		bead, err := beadValue(row)
 		if err != nil {
-			return BeadPage{}, err
+			return nil, err
 		}
 		items = append(items, bead)
+	}
+	return items, nil
+}
+
+func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (BeadPage, error) {
+	limit, err := pageOptions(req.Project, req.ViewID, req.Cursor, req.Filter, req.Limit)
+	if err != nil {
+		return BeadPage{}, err
+	}
+	if err := validatePosition(req.Position); err != nil {
+		return BeadPage{}, err
+	}
+	r, err := s.reader(ctx, by, nil)
+	if err != nil {
+		return BeadPage{}, err
+	}
+	defer r.Close()
+	items, err := s.readyItems(ctx, req, r)
+	if err != nil {
+		return BeadPage{}, err
 	}
 	if err := s.admit(ctx, by); err != nil {
 		return BeadPage{}, err
 	}
 	view := r.Snapshot()
-	return pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, false)
+	return pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, false, restartOnRevision)
+}
+
+func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
+	return s.readyPage(ctx, by, req, false)
+}
+
+// ClaimNextReadyPage is the queue-specific live pager. A revision change
+// restarts its offset from the beginning of the newly observed ready set.
+func (s *Service) ClaimNextReadyPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
+	return s.readyPage(ctx, by, req, true)
+}
+
+// ReadyCandidates evaluates the complete ready set on a supplied snapshot.
+// ClaimNext's terminal transaction probe uses this to inspect the same fresh
+// write snapshot after head acquisition without opening a second reader.
+func (s *Service) ReadyCandidates(ctx context.Context, req ReadyRequest, reader driver.Reader) ([]Bead, error) {
+	if _, err := pageOptions(req.Project, req.ViewID, req.Cursor, req.Filter, 1000); err != nil {
+		return nil, err
+	}
+	if reader == nil {
+		return nil, failure("internal_error", "ready probe reader is unavailable")
+	}
+	return s.readyItems(ctx, req, reader)
 }
 
 func (s *Service) History(ctx context.Context, by model.PrincipalRef, req HistoryRequest) (BeadPage, error) {
@@ -203,5 +242,5 @@ func (s *Service) History(ctx context.Context, by model.PrincipalRef, req Histor
 		return BeadPage{}, err
 	}
 	view := r.Snapshot()
-	return pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, true)
+	return pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, true, false)
 }

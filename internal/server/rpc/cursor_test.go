@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -22,6 +23,169 @@ type pagedService struct {
 	ready   []service.ReadyRequest
 	history []service.HistoryRequest
 	badPage string
+}
+
+type incarnationService struct {
+	serviceProbe
+	readyPage   func(context.Context, service.ReadyRequest) (service.BeadPage, error)
+	historyPage func(context.Context, service.HistoryRequest) (service.BeadPage, error)
+}
+
+func (p *incarnationService) Ready(ctx context.Context, _ model.PrincipalRef, r service.ReadyRequest) (service.BeadPage, error) {
+	return p.readyPage(ctx, r)
+}
+
+func (p *incarnationService) History(ctx context.Context, _ model.PrincipalRef, r service.HistoryRequest) (service.BeadPage, error) {
+	return p.historyPage(ctx, r)
+}
+
+func TestCurrentIncarnationPagesAndOldCursorsOnSameServer(t *testing.T) {
+	for _, method := range []string{"bead.ready", "history.query"} {
+		for _, omitted := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/omitted=%v", method, omitted), func(t *testing.T) {
+				current, lookups, calls := "inc", 0, 0
+				probe := &incarnationService{}
+				probe.readyPage = func(_ context.Context, r service.ReadyRequest) (service.BeadPage, error) {
+					calls++
+					return (&pagedService{}).page(r.Limit, service.AsOf{Revision: model.Natural("9007199254740993"), Incarnation: current}, r.Position), nil
+				}
+				probe.historyPage = func(_ context.Context, r service.HistoryRequest) (service.BeadPage, error) {
+					calls++
+					if r.AsOf.Incarnation == "" {
+						t.Fatal("history service did not receive the request's incarnation snapshot")
+					}
+					return (&pagedService{}).page(r.Limit, r.AsOf, r.Position), nil
+				}
+				config := pagingConfig()
+				config.CurrentIncarnation = func(context.Context) (string, error) { lookups++; return current, nil }
+				s := pagingServer(t, probe, config)
+				params := pageParams(method)
+				if method == "history.query" && omitted {
+					delete(params["asOf"].(map[string]any), "incarnation")
+				}
+				old := result(t, call(t, s, context.Background(), method, paramsJSON(t, params)))["nextCursor"].(string)
+				current = "restored"
+				params["cursor"] = old
+				got := call(t, s, context.Background(), method, paramsJSON(t, params))
+				requireCode(t, got, "incarnation_changed")
+				details := got["error"].(map[string]any)["data"].(map[string]any)["details"].(map[string]any)
+				if details["fromIncarnation"] != "inc" || details["toIncarnation"] != current || calls != 1 {
+					t.Fatalf("old token reached service/lost generations: calls=%d %v", calls, got)
+				}
+				params["filter"].(map[string]any)["query"] = "status:closed"
+				requireCode(t, call(t, s, context.Background(), method, paramsJSON(t, params)), "cursor_invalid")
+				delete(params["filter"].(map[string]any), "query")
+				params["cursor"] = strings.Split(old, ".")[0] + ".AA"
+				requireCode(t, call(t, s, context.Background(), method, paramsJSON(t, params)), "cursor_invalid")
+				if calls != 1 {
+					t.Fatal("invalid old token reached the service")
+				}
+				delete(params, "cursor")
+				if method == "history.query" && !omitted {
+					// An explicit old request is preserved, not rewritten to I1.
+					requireCode(t, call(t, s, context.Background(), method, paramsJSON(t, params)), "internal_error")
+					params["asOf"].(map[string]any)["incarnation"] = current
+				}
+				for i := 0; i < 3; i++ {
+					before := lookups
+					page := result(t, call(t, s, context.Background(), method, paramsJSON(t, params)))
+					if lookups != before+1 || page["asOf"].(map[string]any)["incarnation"] != current || page["items"].([]any)[0].(map[string]any)["id"] != fmt.Sprintf("p-%d", i+1) {
+						t.Fatalf("fresh page lost request snapshot: lookups=%d %v", lookups-before, page)
+					}
+					if i < 2 {
+						params["cursor"] = page["nextCursor"]
+					} else if page["nextCursor"] != nil {
+						t.Fatal("unexpected final cursor")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCurrentIncarnationProviderFailsClosedAndRejectsMismatchedPages(t *testing.T) {
+	for _, value := range []string{"", "error"} {
+		t.Run(value, func(t *testing.T) {
+			probe := &pagedService{}
+			config := pagingConfig()
+			config.CurrentIncarnation = func(context.Context) (string, error) {
+				if value == "error" {
+					return "inc", fmt.Errorf("metadata unavailable")
+				}
+				return value, nil
+			}
+			s := pagingServer(t, probe, config)
+			for _, method := range []string{"bead.ready", "history.query", "server.hello"} {
+				params := map[string]any{}
+				if method != "server.hello" {
+					params = pageParams(method)
+				}
+				requireCode(t, call(t, s, context.Background(), method, paramsJSON(t, params)), "internal_error")
+			}
+			if len(probe.ready)+len(probe.history) != 0 {
+				t.Fatal("provider failure reached service")
+			}
+			result(t, call(t, s, context.Background(), "bead.get", `{"id":{"id":"p-1"}}`))
+			result(t, call(t, s, context.Background(), "rpc.methods", `{}`))
+		})
+	}
+	for _, bad := range []string{"stale-page", "incarnation"} {
+		t.Run(bad, func(t *testing.T) {
+			config := pagingConfig()
+			config.CurrentIncarnation = func(context.Context) (string, error) {
+				if bad == "stale-page" {
+					return "restored", nil
+				}
+				return "inc", nil
+			}
+			s := pagingServer(t, &pagedService{badPage: bad}, config)
+			reply := call(t, s, context.Background(), "bead.ready", paramsJSON(t, pageParams("bead.ready")))
+			requireCode(t, reply, "internal_error")
+			if reply["result"] != nil {
+				t.Fatal("mismatched service page was relabeled")
+			}
+		})
+	}
+}
+
+func TestCurrentIncarnationSnapshotIsLocalToEachConcurrentCall(t *testing.T) {
+	type generationKey struct{}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var lookups atomic.Int64
+	probe := &incarnationService{readyPage: func(ctx context.Context, r service.ReadyRequest) (service.BeadPage, error) {
+		generation := ctx.Value(generationKey{}).(string)
+		if generation == "inc" {
+			close(entered)
+			<-release
+		}
+		return (&pagedService{}).page(r.Limit, service.AsOf{Revision: model.Natural64(1), Incarnation: generation}, r.Position), nil
+	}}
+	config := pagingConfig()
+	config.CurrentIncarnation = func(ctx context.Context) (string, error) {
+		lookups.Add(1)
+		return ctx.Value(generationKey{}).(string), nil
+	}
+	s := pagingServer(t, probe, config)
+	oldResponse := make(chan []byte, 1)
+	go func() {
+		oldResponse <- s.Dispatch(context.WithValue(context.Background(), generationKey{}, "inc"), request("bead.ready", `{"limit":1}`))
+	}()
+	<-entered
+	defer close(release)
+	newPage := result(t, call(t, s, context.WithValue(context.Background(), generationKey{}, "restored"), "bead.ready", `{"limit":1}`))
+	if newPage["asOf"].(map[string]any)["incarnation"] != "restored" {
+		t.Fatal("concurrent new call lost snapshot", newPage)
+	}
+	// Let the earlier request finish while the later request's codec exists.
+	release <- struct{}{}
+	var old map[string]any
+	if err := json.Unmarshal(<-oldResponse, &old); err != nil {
+		t.Fatal(err)
+	}
+	oldPage := result(t, old)
+	if oldPage["asOf"].(map[string]any)["incarnation"] != "inc" || lookups.Load() != 2 {
+		t.Fatalf("shared codec mutated or provider reread: lookups=%d %v", lookups.Load(), oldPage)
+	}
 }
 
 func (p *pagedService) page(limit int, at service.AsOf, position *service.PagePosition) service.BeadPage {
