@@ -15,11 +15,12 @@ catalog is not reachable until a composition root binds its adapter.
 | MCP | `POST /mcp` after a composition root mounts `mcp.Handler`. | The handler owns request framing; the composition owns the listener, store, lease and shutdown. |
 
 The current server composition mounts HTTP (and its explicitly enabled UI and
-watch handlers). It does not implicitly mount stdio or WebSocket, and it has no
-`/mcp` route until the MCP adapter and its composition seam are selected. Do
-not infer a runnable route or a CLI flag from a package, a catalog entry, or a
-design document. A host that exposes one of these adapters must mount exactly
-the route or stream it intends to support.
+watch handlers). The stdio, WebSocket and MCP packages are composition seams;
+they are not implicitly mounted, and current `Runtime.Listen` has no `/mcp`
+route until a host selects the MCP adapter. Do not infer a runnable route or a
+CLI flag from a package, a catalog entry, or a design document. A host that
+exposes one of these adapters must mount exactly the route or stream it intends
+to support.
 
 ## Shared identity and cancellation
 
@@ -105,8 +106,9 @@ this route automatically.
 
 ## MCP: streamable HTTP request/response
 
-The MCP adapter is a separate HTTP composition seam. A host mounts its handler
-at exactly `POST /mcp`; the handler does not create a listener, store, lease,
+The [MCP adapter](../../internal/server/transport/mcp/README.md) is a separate
+HTTP composition seam. A host mounts its handler at exactly `POST /mcp`; the
+handler does not create a listener, store, lease,
 UI, session store or authorization policy. HTTP admission still requires
 `Plug-RPC: 1`, `Content-Type: application/json` (optionally
 `charset=utf-8`), and the existing Host, peer, Origin, TLS and bearer rules.
