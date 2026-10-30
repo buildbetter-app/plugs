@@ -19,6 +19,7 @@ go_test(
     embed = [":viewrpc"],
     deps = [
         "//internal/api/wire",
+        "//internal/core/events",
         "//internal/core/model",
         "//internal/core/ontology",
         "//internal/core/pipeline",
