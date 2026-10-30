@@ -32,7 +32,7 @@ func (p *failingPost) After(context.Context, port.CommittedChange, port.Snapshot
 	return errors.New("test subscriber unavailable")
 }
 
-func openSQLiteMemoryServer(t *testing.T, path string) (*rpc.Server, driver.Store, driver.ActiveLease) {
+func openSQLiteMemoryServer(t *testing.T, path string, options ...service.Option) (*rpc.Server, driver.Store, driver.ActiveLease) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := (sqlite.Driver{}).Open(ctx, driver.Config{DSN: path})
@@ -55,10 +55,11 @@ func openSQLiteMemoryServer(t *testing.T, path string) (*rpc.Server, driver.Stor
 	policy := service.MemoryReadAuthorizerFunc(func(_ context.Context, _ model.PrincipalRef, memory service.Memory) (bool, error) {
 		return memory.Key != "hidden", nil
 	})
-	domain := service.New(store, lease, writer,
+	options = append([]service.Option{
 		service.WithOntology(ontology),
 		service.WithMemoryReadAuthorizer(policy),
-	)
+	}, options...)
+	domain := service.New(store, lease, writer, options...)
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		_ = lease.Release(ctx)
@@ -156,6 +157,164 @@ func TestRealSQLiteMemoryBriefAuthorizationAndRestart(t *testing.T) {
 	brief = result(t, call(t, server, ctx, "agent.brief", `{}`))
 	if got := memoryIDs(t, map[string]any{"items": brief["memories"]}); !reflect.DeepEqual(got, []string{"alpha", "middle", "zeta"}) {
 		t.Fatalf("reopened brief ordering: %v", got)
+	}
+}
+
+func TestRealSQLiteMemoryPaginationReadsLiveRows(t *testing.T) {
+	ctx := context.Background()
+	s, store, lease := openSQLiteMemoryServer(t, filepath.Join(t.TempDir(), "paging.db"))
+	t.Cleanup(func() {
+		_ = lease.Release(ctx)
+		_ = store.Close()
+	})
+	save := func(key, content string) map[string]any {
+		t.Helper()
+		return writeResult(t, s, "memory.save", writeParams(t, map[string]any{"key": key, "content": content}), false)
+	}
+	for _, key := range []string{"zeta", "hidden", "alpha", "middle"} {
+		save(key, "original:"+key)
+	}
+	first := result(t, call(t, s, ctx, "memory.list", `{"limit":1}`))
+	if got := memoryIDs(t, first); !reflect.DeepEqual(got, []string{"alpha"}) || first["nextCursor"] == nil {
+		t.Fatal("first authorized page", first)
+	}
+	second := result(t, call(t, s, ctx, "memory.list", paramsJSON(t, map[string]any{"limit": 1, "cursor": first["nextCursor"]})))
+	if got := memoryIDs(t, second); !reflect.DeepEqual(got, []string{"middle"}) || second["nextCursor"] == nil {
+		t.Fatal("unchanged continuation", second)
+	}
+	// A continuation must use current rows, including later inserts and updates.
+	updated := save("zeta", "current:zeta")
+	save("omega", "later:omega")
+	third := result(t, call(t, s, ctx, "memory.list", paramsJSON(t, map[string]any{"limit": 1, "cursor": second["nextCursor"]})))
+	if got := memoryIDs(t, third); !reflect.DeepEqual(got, []string{"omega"}) || third["nextCursor"] == nil {
+		t.Fatal("live insert missing from continuation", third)
+	}
+	last := result(t, call(t, s, ctx, "memory.list", paramsJSON(t, map[string]any{"limit": 1, "cursor": third["nextCursor"]})))
+	if got := memoryIDs(t, last); !reflect.DeepEqual(got, []string{"zeta"}) || last["nextCursor"] != nil {
+		t.Fatal("final live page", last)
+	}
+	row := last["items"].([]any)[0].(map[string]any)
+	if row["content"] != "current:zeta" || row["revision"] != updated["revision"] {
+		t.Fatal("continuation returned a stale row", row)
+	}
+	for _, changed := range []map[string]any{
+		{"query": "hidden"},
+		{"_meta": map[string]any{"project": "other"}},
+		{"_meta": map[string]any{"agent": "other"}},
+		{"cursor": first["nextCursor"].(string) + "tampered"},
+	} {
+		params := map[string]any{"limit": 1, "cursor": first["nextCursor"]}
+		for key, value := range changed {
+			params[key] = value
+		}
+		requireCode(t, call(t, s, ctx, "memory.list", paramsJSON(t, params)), "cursor_invalid")
+	}
+	for _, by := range []model.PrincipalRef{
+		{Kind: "user", ID: "reader"},
+		{Kind: "anonymous", ID: "anonymous", Sponsor: &model.PrincipalRef{Kind: "user", ID: "sponsor"}},
+		{Kind: "anonymous", ID: "anonymous", Caveats: map[string]any{"scope": "other"}},
+	} {
+		params := paramsJSON(t, map[string]any{"limit": 1, "cursor": first["nextCursor"]})
+		requireCode(t, call(t, s, rpc.WithPrincipal(ctx, by), "memory.list", params), "cursor_invalid")
+	}
+}
+
+func TestRealSQLiteMemoryPaginationAllowsShrunkenTail(t *testing.T) {
+	ctx := context.Background()
+	s, store, lease := openSQLiteMemoryServer(t, filepath.Join(t.TempDir(), "shrink.db"))
+	t.Cleanup(func() {
+		_ = lease.Release(ctx)
+		_ = store.Close()
+	})
+	var ids []string
+	for _, key := range []string{"alpha", "middle", "zeta"} {
+		commit := writeResult(t, s, "memory.save", writeParams(t, map[string]any{"key": key, "content": key}), false)
+		ids = append(ids, createdRef(t, commit)["id"].(string))
+	}
+	first := result(t, call(t, s, ctx, "memory.list", `{"limit":2}`))
+	if first["nextCursor"] == nil {
+		t.Fatal("missing continuation", first)
+	}
+	for _, id := range ids {
+		writeResult(t, s, "memory.delete", writeParams(t, map[string]any{"id": id}), false)
+	}
+	last := result(t, call(t, s, ctx, "memory.list", paramsJSON(t, map[string]any{"limit": 2, "cursor": first["nextCursor"]})))
+	if len(last["items"].([]any)) != 0 || last["nextCursor"] != nil {
+		t.Fatal("valid continuation did not terminate after list shrink", last)
+	}
+}
+
+func TestRealSQLiteMemoryAuthorizationInstallationFailsClosed(t *testing.T) {
+	for _, scope := range []struct {
+		name string
+		by   model.PrincipalRef
+	}{
+		{"agent", model.PrincipalRef{Kind: "agent", ID: "worker"}},
+		{"sponsored", model.PrincipalRef{Kind: "user", ID: "reader", Sponsor: &model.PrincipalRef{Kind: "user", ID: "sponsor"}}},
+		{"caveated", model.PrincipalRef{Kind: "user", ID: "reader", Caveats: map[string]any{"project": "local"}}},
+	} {
+		t.Run(scope.name, func(t *testing.T) {
+			installed, changeDuringRead, policyCalls := true, false, 0
+			policy := service.MemoryReadAuthorizerFunc(func(_ context.Context, _ model.PrincipalRef, memory service.Memory) (bool, error) {
+				policyCalls++
+				if changeDuringRead {
+					installed = false
+					return true, nil
+				}
+				return memory.Key != "hidden", nil
+			})
+			s, store, lease := openSQLiteMemoryServer(t, filepath.Join(t.TempDir(), "capability.db"),
+				service.WithAuthorizationInstalled(func() bool { return installed }),
+				service.WithMemoryReadAuthorizer(policy))
+			t.Cleanup(func() {
+				_ = lease.Release(context.Background())
+				_ = store.Close()
+			})
+			commit := writeResult(t, s, "memory.save", writeParams(t, map[string]any{
+				"key": "hidden", "content": "private-memory-body",
+			}), false)
+			hiddenID := createdRef(t, commit)["id"].(string)
+			writeResult(t, s, "memory.save", writeParams(t, map[string]any{"key": "visible", "content": "public-memory-body"}), false)
+			ctx := rpc.WithPrincipal(context.Background(), scope.by)
+			for _, method := range []string{"memory.get", "memory.list", "agent.brief"} {
+				t.Run(method, func(t *testing.T) {
+					params := `{}`
+					if method == "memory.get" {
+						params = paramsJSON(t, map[string]any{"id": hiddenID})
+					}
+					installed, changeDuringRead = true, false
+					response := call(t, s, ctx, method, params)
+					if method == "memory.get" {
+						requireCode(t, response, "not_found")
+					} else {
+						value := result(t, response)
+						if method == "agent.brief" {
+							value = map[string]any{"items": value["memories"]}
+						}
+						if got := memoryIDs(t, value); !reflect.DeepEqual(got, []string{"visible"}) {
+							t.Fatal("installed policy disclosed a hidden memory", value)
+						}
+					}
+					// Keep the policy pointer, but disable its live installation.
+					installed = false
+					before := policyCalls
+					response = call(t, s, ctx, method, params)
+					requireCode(t, response, "authz_not_installed")
+					if _, disclosed := response["result"]; disclosed || policyCalls != before {
+						t.Fatal("disabled capability used a stale policy or returned data", response)
+					}
+					// An installation change inside an otherwise allowing policy
+					// must refuse the whole response, including a point read.
+					installed, changeDuringRead = true, true
+					response = call(t, s, ctx, method, params)
+					requireCode(t, response, "authz_unavailable")
+					raw, err := json.Marshal(response)
+					if err != nil || bytes.Contains(raw, []byte("private-memory-body")) || response["result"] != nil {
+						t.Fatal("installation transition disclosed memory data", response, err)
+					}
+				})
+			}
+		})
 	}
 }
 

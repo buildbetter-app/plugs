@@ -227,7 +227,7 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		v, err := memory.MemoryList(ctx, c.Principal, service.MemoryListRequest{Query: p.Query, Limit: int(limit), Cursor: p.Cursor, Position: position})
+		v, err := memory.MemoryList(ctx, c.Principal, service.MemoryListRequest{Query: p.Query, Limit: int(limit), Position: position})
 		if err != nil {
 			return nil, err
 		}

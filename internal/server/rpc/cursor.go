@@ -225,9 +225,8 @@ func (c *pageCodec) memoryPage(call Call, p serviceParams, previous *service.Pag
 	if pageIncarnation != c.incarnation {
 		return nil, fmt.Errorf("service returned another page incarnation")
 	}
-	if previous != nil && !sameRevision(value.AsOf.Revision, previous.AsOf.Revision) {
-		return nil, fmt.Errorf("service changed the memory snapshot")
-	}
+	// Memory lists are live. The previous revision is an observation, while
+	// the signed incarnation and selector binding still identify the cursor.
 	out := memoryPageJSON(value)
 	if value.Next == nil {
 		return out, nil

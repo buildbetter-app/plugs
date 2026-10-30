@@ -33,7 +33,7 @@ func (s *Service) memoryAuthorizationState(by model.PrincipalRef) (bool, error) 
 	if installed && s.memoryReadAuthorizer == nil {
 		return false, failure("authz_unavailable", "current memory authorization is unavailable")
 	}
-	if !installed && s.memoryReadAuthorizer == nil && (by.Kind == "agent" || by.Sponsor != nil || len(by.Caveats) != 0) {
+	if !installed && (by.Kind == "agent" || by.Sponsor != nil || len(by.Caveats) != 0) {
 		return false, failure("authz_not_installed", "scoped principals require an authorization plugin")
 	}
 	return installed, nil
@@ -84,7 +84,7 @@ func (s *Service) authorizeMemory(ctx context.Context, by model.PrincipalRef, me
 	if err != nil {
 		return false, err
 	}
-	if !installed || s.memoryReadAuthorizer == nil {
+	if !installed {
 		return true, nil
 	}
 	principal, err := clonePrincipalValue(by)
@@ -155,19 +155,18 @@ func memoryPageResult(items []Memory, limit int, position *PagePosition, asOf As
 		if position.AsOf.Incarnation != asOf.Incarnation {
 			return MemoryPage{}, mapped(driver.ErrIncarnationChanged{From: position.AsOf.Incarnation, To: asOf.Incarnation})
 		}
-		if position.Offset < 0 || position.Offset > scanLimit || position.AsOf.Revision.String() != asOf.Revision.String() {
-			return MemoryPage{}, failure("cursor_invalid", "page position does not match the memory snapshot")
+		if position.Offset < 0 || position.Offset > scanLimit {
+			return MemoryPage{}, failure("cursor_invalid", "invalid memory page position")
 		}
 	}
 	offset := 0
 	if position != nil {
 		offset = position.Offset
 	}
-	if offset > len(items) {
-		return MemoryPage{}, failure("cursor_invalid", "page position exceeds the memory list")
-	}
 	end := min(offset+limit, len(items))
-	page := MemoryPage{Items: items[offset:end], AsOf: asOf}
+	// Memory lists continue at the signed offset in current data. A list that
+	// shrinks below that cutoff ends with an empty page, as other live lists do.
+	page := MemoryPage{Items: items[min(offset, len(items)):end], AsOf: asOf}
 	if end < len(items) {
 		page.Next = &PagePosition{Offset: end, AsOf: asOf}
 	}

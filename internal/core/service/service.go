@@ -35,8 +35,8 @@ func WithMemoryReadAuthorizer(authorizer MemoryReadAuthorizer) Option {
 }
 
 // WithAuthorizationInstalled supplies the host's live authorization
-// installation boundary. Scoped principals fail closed when it reports false
-// and no memory policy is available.
+// installation boundary. Scoped principals fail closed whenever it reports
+// false, even if a stale memory policy remains configured.
 func WithAuthorizationInstalled(installed func() bool) Option {
 	return func(s *Service) { s.authorizationInstalled = installed }
 }

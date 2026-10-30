@@ -989,6 +989,95 @@ func TestReadyContinuationAllowsListShrinkAndRejectsOtherIncarnation(t *testing.
 	wantCode(t, err, "incarnation_changed")
 }
 
+func TestMemoryContinuationUsesLiveRevisionAndValidatesPosition(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	var ids []model.Ref
+	for _, key := range []string{"alpha", "middle", "zeta"} {
+		commit, err := f.svc.MemorySave(ctx, anonymous, MemorySaveRequest{Key: key, Content: key}, meta(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, commit.Results[0].Ref)
+	}
+	first, err := f.svc.MemoryList(ctx, anonymous, MemoryListRequest{Limit: 1})
+	if err != nil || first.Next == nil || first.Items[0].Key != "alpha" {
+		t.Fatalf("first page: %+v %v", first, err)
+	}
+	updated, err := f.svc.MemorySave(ctx, anonymous, MemorySaveRequest{Key: "middle", Content: "updated"}, meta(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := f.svc.MemoryList(ctx, anonymous, MemoryListRequest{Limit: 1, Position: first.Next})
+	if err != nil || len(second.Items) != 1 || second.Items[0].Key != "middle" || second.Items[0].Content != "updated" || second.AsOf.Revision.String() != updated.Revision.String() || second.Next == nil || second.Next.AsOf.Revision.String() != second.AsOf.Revision.String() {
+		t.Fatalf("live page: %+v %v", second, err)
+	}
+	_, err = f.svc.MemoryList(ctx, anonymous, MemoryListRequest{Cursor: "unvalidated"})
+	wantCode(t, err, "cursor_invalid")
+	for _, offset := range []int{-1, scanLimit + 1} {
+		_, err = f.svc.MemoryList(ctx, anonymous, MemoryListRequest{Position: &PagePosition{Offset: offset, AsOf: first.AsOf}})
+		wantCode(t, err, "cursor_invalid")
+	}
+	position := *first.Next
+	position.AsOf.Incarnation = "another-store"
+	_, err = f.svc.MemoryList(ctx, anonymous, MemoryListRequest{Position: &position})
+	wantCode(t, err, "incarnation_changed")
+	for _, id := range ids {
+		if _, err := f.svc.MemoryDelete(ctx, anonymous, MemoryDeleteRequest{ID: id}, meta(t)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	last, err := f.svc.MemoryList(ctx, anonymous, MemoryListRequest{Position: second.Next})
+	if err != nil || len(last.Items) != 0 || last.Next != nil || last.AsOf.Revision.String() == second.AsOf.Revision.String() {
+		t.Fatalf("shrunk live page: %+v %v", last, err)
+	}
+}
+
+func TestMemoryAuthorizationCapabilityConsistency(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	commit, err := f.svc.MemorySave(ctx, anonymous, MemorySaveRequest{Key: "private", Content: "private-memory-body"}, meta(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, installed := range []bool{false, true} {
+		for _, hasPolicy := range []bool{false, true} {
+			for _, by := range []model.PrincipalRef{anonymous, {Kind: "agent", ID: "worker"}} {
+				var policy MemoryReadAuthorizer
+				if hasPolicy {
+					policy = MemoryReadAuthorizerFunc(func(context.Context, model.PrincipalRef, Memory) (bool, error) { return false, nil })
+				}
+				svc := New(f.store, f.lease, f.writer, WithMemoryReadAuthorizer(policy), WithAuthorizationInstalled(func() bool { return installed }))
+				var code model.ErrorCode
+				switch {
+				case installed && !hasPolicy:
+					code = "authz_unavailable"
+				case !installed && by.Kind == "agent":
+					code = "authz_not_installed"
+				}
+				got, getErr := svc.MemoryGet(ctx, by, MemoryGetRequest{ID: commit.Results[0].Ref})
+				page, listErr := svc.MemoryList(ctx, by, MemoryListRequest{})
+				brief, briefErr := svc.Brief(ctx, by, BriefRequest{})
+				if code != "" {
+					for _, err := range []error{getErr, listErr, briefErr} {
+						wantCode(t, err, code)
+					}
+					if got.ID != "" || len(page.Items) != 0 || len(brief.Memories) != 0 {
+						t.Fatal("inconsistent authorization returned memory data", got, page, brief)
+					}
+				} else if installed {
+					wantCode(t, getErr, "not_found")
+					if listErr != nil || briefErr != nil || len(page.Items) != 0 || len(brief.Memories) != 0 {
+						t.Fatal("installed policy did not hide memory", page, brief, listErr, briefErr)
+					}
+				} else if getErr != nil || listErr != nil || briefErr != nil || got.Content != "private-memory-body" || len(page.Items) != 1 || len(brief.Memories) != 1 {
+					t.Fatal("anonymous no-plugin behavior changed", got, page, brief, getErr, listErr, briefErr)
+				}
+			}
+		}
+	}
+}
+
 func TestKernelFieldsAndSameValueStatusRefuseBeforeCommit(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
