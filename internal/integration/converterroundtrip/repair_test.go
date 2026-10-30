@@ -20,10 +20,12 @@ import (
 )
 
 const (
-	idA              = "pl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	idB              = "pl-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	idC              = "pl-cccccccccccccccccccccccccccccccc"
-	supportedDerived = "76f2bbff964bca8043b9952adeb69583432b567d622a9dbca2d541cf816229eb"
+	idA = "pl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	idB = "pl-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	idC = "pl-cccccccccccccccccccccccccccccccc"
+	// Fixed digest of an independently constructed builtin-head/1 image with
+	// each bead's required self ancestor at depth zero.
+	supportedDerived = "9611fb51234ff87fd0cbb76772c77ebe7bd975db8444894d95a43652901f8492"
 )
 
 // This is a separately constructed head-only input, NOT the pinned exporter
@@ -277,7 +279,14 @@ func TestRestoreRequiresMatchingIndependentComparison(t *testing.T) {
 			defer cleanup()
 			target := &observedTarget{Store: store}
 			before := snapshot(t, store)
-			for _, checks := range [][]Verification{nil, {{ArchiveSHA256: check.ArchiveSHA256, DerivedSHA256: strings.Repeat("0", 64)}}, {{ArchiveSHA256: strings.Repeat("0", 64), DerivedSHA256: check.DerivedSHA256}}} {
+			for _, checks := range [][]Verification{
+				nil,
+				{{ArchiveSHA256: check.ArchiveSHA256, DerivedSHA256: strings.Repeat("0", 64)}},
+				{{ArchiveSHA256: strings.Repeat("0", 64), DerivedSHA256: check.DerivedSHA256}},
+				// The previous image omitted mandatory self ancestors. Its
+				// comparison must refuse before any write, even on an empty store.
+				{{ArchiveSHA256: check.ArchiveSHA256, DerivedSHA256: "76f2bbff964bca8043b9952adeb69583432b567d622a9dbca2d541cf816229eb"}},
+			} {
 				if _, err := RestoreWithLease(context.Background(), bytes.NewReader(data), target, lease, checks...); !errors.Is(err, ErrRestoreUnavailable) {
 					t.Fatalf("mismatch: %v", err)
 				}
@@ -286,6 +295,43 @@ func TestRestoreRequiresMatchingIndependentComparison(t *testing.T) {
 				t.Fatal("comparison refusal mutated target")
 			}
 		})
+	}
+}
+
+func assertRestoreSelfAncestors(t *testing.T, store driver.Store) {
+	t.Helper()
+	ctx := context.Background()
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	ids := []string{idA, idB, idC}
+	keys := make([]driver.LockKey, len(ids))
+	for i, id := range ids {
+		keys[i] = driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: id}}
+	}
+	states, err := r.Observe(ctx, keys)
+	if err != nil || len(states) != len(ids) {
+		t.Fatalf("ancestor rows: %+v %v", states, err)
+	}
+	for i, id := range ids {
+		state := states[i]
+		// The descendant is the row key. Parent links refuse, so each closure
+		// must contain exactly its self membership at depth zero, regardless
+		// of workflow status or blocking links. This expectation uses no plan.
+		want := `[{"ancestor":"` + id + `","depth":0}]`
+		var got string
+		if state.Derived != nil {
+			got = string(state.Derived.Value)
+		}
+		if !state.Present || state.Derived == nil || state.Derived.Key != id || state.Revision.String() != "1" || string(state.Derived.Value) != want {
+			t.Errorf("ancestor closure %s: got revision %s, value %q; want revision 1, value %s", id, state.Revision, got, want)
+		}
 	}
 }
 
@@ -325,6 +371,7 @@ func TestRestoreDurableImageHistoryFloorAndRecovery(t *testing.T) {
 			if report.Restored.Incarnation == before.Incarnation || report.Restored.HistoryFloor.String() != "1" {
 				t.Fatal("incarnation/floor not restored")
 			}
+			assertRestoreSelfAncestors(t, store)
 			oldPage, err := oldReader.Query(ctx, driver.Query{Limit: 1000})
 			if err != nil || len(oldPage.Items) != 0 {
 				t.Fatalf("old pinned reader lost snapshot: %v", err)
@@ -337,6 +384,7 @@ func TestRestoreDurableImageHistoryFloorAndRecovery(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				assertRestoreSelfAncestors(t, store)
 			}
 			recovered, err := Recover(ctx, store, check)
 			if err != nil || recovered.Restored.Incarnation != report.Restored.Incarnation {

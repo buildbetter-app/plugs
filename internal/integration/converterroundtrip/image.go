@@ -20,6 +20,13 @@ type derivedImage struct {
 	Value json.RawMessage     `json:"value"`
 }
 
+// The derived row key is the descendant ID; each entry identifies an ancestor
+// and its distance. The parent-free restore profile still requires self.
+type ancestorMembership struct {
+	Ancestor string `json:"ancestor"`
+	Depth    uint64 `json:"depth"`
+}
+
 // This profile is deliberately restricted to the built-in ontology, no
 // authorization/plugin provider, no parents/cuts, no templates and no leases.
 // Every table participates in the digest, including empty tables. Its rows
@@ -89,7 +96,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 			value any
 		}{
 			{driver.DerivedReadyState, map[string]bool{"blocked": blocked, "ready": effective.ReadyEligible(doc.Type, stringValue(doc.Fields["status"])) && !blocked}},
-			{driver.DerivedAncestorClosure, []string{}},
+			{driver.DerivedAncestorClosure, []ancestorMembership{{Ancestor: id, Depth: 0}}},
 			{driver.DerivedCutClosure, []string{}},
 			{driver.DerivedAttribute, map[string]any{}},
 			{driver.DerivedSortKey, map[string]any{"priority": priority, "id": id}},

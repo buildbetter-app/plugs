@@ -29,9 +29,13 @@ or mismatched comparisons refuse before lease/write acquisition.
 The `builtin-head/1` comparison hashes compact JSON with fields `profile`,
 `tables`, `rows`, in that order. `tables` contains all nine driver derived table
 names in lexical order; `rows` contains `{table,key,value}` objects sorted by
-table then key. Each bead has ready state `{blocked,ready}`, empty ancestor/cut
-arrays, empty derived attributes, a sort value `{id,priority}`, and outgoing
-references sorted by link kind then target ID. Readiness uses the built-in
+table then key. An `ancestor_closure` row uses the descendant ID as its key and
+an array of `{ancestor,depth}` objects as its value. Since parents are refused,
+each bead's value is exactly `[{"ancestor":"<its ID>","depth":0}]`. These self
+memberships exist even without an authorization provider. Each bead also has
+ready state `{blocked,ready}`, an empty cut array, empty derived attributes,
+a sort value `{id,priority}`, and outgoing references sorted by link kind then
+target ID. Readiness uses the built-in
 ontology's status and blocker rules. The `ontology/builtin` row contains the
 built-in ontology document; `plugins/builtin` contains an empty array; grants
 are empty. This profile admits no parents, cuts, templates, active leases,
