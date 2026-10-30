@@ -17,17 +17,55 @@ concurrency:
 jobs:
   bazel:
     name: Plug Bazel lanes
-    runs-on: ubuntu-latest
+    # Fork and Dependabot pull requests execute PR code only on GitHub-hosted
+    # infrastructure. Same-repository non-Dependabot PRs and pushes or manual
+    # runs may use the trusted RunsOn runner.
+    runs-on: >-
+      ${{
+        (
+          github.event_name != 'pull_request' ||
+          (
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]'
+          )
+        ) &&
+        format('runs-on={0}/runner=bb-x64-16', github.run_id) ||
+        'ubuntu-latest'
+      }}
     timeout-minutes: 45
     permissions:
       contents: read
+    env:
+      RUNSON_TRUSTED: >-
+        ${{ github.event_name != 'pull_request' ||
+            (github.event.pull_request.head.repo.full_name == github.repository &&
+             github.actor != 'dependabot[bot]') }}
     steps:
+      - name: Set up RunsOn
+        uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+        if: env.RUNSON_TRUSTED == 'true'
+
       - name: Checkout exact revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          check-latest: false
+
+      - name: Verify Google Chrome is on PATH
+        run: |
+          set -euo pipefail
+          if ! command -v google-chrome >/dev/null 2>&1; then
+            echo "::error::google-chrome is missing from PATH on the Plug CI runner" >&2
+            exit 1
+          fi
+          google-chrome --version
 
       - name: Validate Plug CI contract
         env:

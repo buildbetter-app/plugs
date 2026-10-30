@@ -11,6 +11,7 @@
 .github/pages-redirect/index.html
 .github/runs-on.yml
 .github/workflows/plug-bazel.yml
+.github/workflows/plug-remote-bazel.yml
 .github/workflows/plug-runs-on-smoke.yml
 .gitignore
 BUILD.bazel
