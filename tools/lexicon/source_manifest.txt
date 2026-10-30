@@ -696,6 +696,12 @@ spikes/runtime/concurrency.go
 spikes/runtime/concurrency_test.go
 spikes/runtime/sandbox.go
 spikes/runtime/sandbox_test.go
+tools/census/BUILD.bazel
+tools/census/README.md
+tools/census/census.go
+tools/census/cmd/census_check/main.go
+tools/census/gate_test.go
+tools/census/testdata/census.json
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
 tools/lexicon/checker.go
