@@ -19,6 +19,8 @@ func TestSplitWordsWithOffsetsPreservesBoundaries(t *testing.T) {
 	}{
 		{"", nil, nil},
 		{"HTTPServer fooBar2_ABC", []string{"http", "server", "foo", "bar2", "abc"}, []int{0, 4, 11, 14, 19}},
+		{"fooBARBaz", []string{"foo", "bar", "baz"}, []int{0, 3, 6}},
+		{"v2Token", []string{"v2token"}, []int{0}},
 		{"éÉlan\n世界!尾", []string{"é", "élan", "世界", "尾"}, []int{0, 2, 8, 15}},
 		{"İFoo caféHTTPServer123", []string{"i", "foo", "café", "http", "server123"}, []int{0, 2, 6, 11, 15}},
 		{"... one\ttwo\n", []string{"one", "two"}, []int{4, 8}},
