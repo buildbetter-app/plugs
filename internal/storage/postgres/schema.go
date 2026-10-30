@@ -47,4 +47,11 @@ CREATE TABLE IF NOT EXISTS plug_postgres.checkpoints (
  key bytea PRIMARY KEY,
  generation numeric(20,0) NOT NULL CHECK (generation BETWEEN 1 AND 18446744073709551615),
  payload bytea NOT NULL
+);
+CREATE TABLE IF NOT EXISTS plug_postgres.allocator_states (
+ prefix text PRIMARY KEY, data bytea NOT NULL
 );`
+
+// allocator_states is intentionally additive to schema version 1. initialize
+// executes schemaDDL for every open, so an existing version-1 database gains
+// the durable allocator table without rewriting any existing data.
