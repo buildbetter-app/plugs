@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -42,6 +43,44 @@ func TestCanonicalCensus(t *testing.T) {
 	}
 	if digest != ExpectedFixtureDigest {
 		t.Fatalf("fixture digest = %s, want %s", digest, ExpectedFixtureDigest)
+	}
+}
+
+func TestLoadRejectsDuplicateJSONMembers(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "same top-level member",
+			raw:  `{"format":"plug-source-census/1","format":"plug-source-census/1"}`,
+		},
+		{
+			name: "conflicting top-level member",
+			raw:  `{"format":"plug-source-census/1","format":"other"}`,
+		},
+		{
+			name: "same nested member",
+			raw:  `{"source":{"repository":"buildbetter-app/plugs","repository":"buildbetter-app/plugs"}}`,
+		},
+		{
+			name: "conflicting nested member",
+			raw:  `{"source":{"repository":"buildbetter-app/plugs","repository":"other"}}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "duplicate.json")
+			if err := os.WriteFile(file, []byte(test.raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := Load(file); err == nil {
+				t.Fatal("duplicate JSON member was accepted")
+			} else if !strings.Contains(err.Error(), "duplicate JSON member") {
+				t.Fatalf("Load error = %q, want duplicate-member error", err)
+			}
+		})
 	}
 }
 

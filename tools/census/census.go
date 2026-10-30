@@ -141,6 +141,9 @@ func Load(file string) (Census, []byte, error) {
 	if err != nil {
 		return Census{}, nil, fmt.Errorf("read census fixture: %w", err)
 	}
+	if err := rejectDuplicateMembers(raw); err != nil {
+		return Census{}, nil, fmt.Errorf("scan census fixture: %w", err)
+	}
 	var census Census
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -155,6 +158,78 @@ func Load(file string) (Census, []byte, error) {
 		return Census{}, nil, fmt.Errorf("decode census trailing data: %w", err)
 	}
 	return census, raw, nil
+}
+
+// rejectDuplicateMembers scans the JSON token stream before decoding into Go
+// structs. encoding/json keeps the last value for a duplicate object member,
+// which would let an unreviewed second representation alter the decoded
+// census while leaving the canonical digest bound only to that last value.
+// Each object gets its own name set, so the check is recursive without
+// treating equal names in separate objects as duplicates.
+func rejectDuplicateMembers(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	first, err := decoder.Token()
+	if err != nil {
+		if err == io.EOF {
+			return nil
+		}
+		return err
+	}
+	return scanJSONValue(decoder, first, "$")
+}
+
+func scanJSONValue(decoder *json.Decoder, token json.Token, location string) error {
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for {
+			member, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if member == json.Delim('}') {
+				return nil
+			}
+			name, ok := member.(string)
+			if !ok {
+				return fmt.Errorf("object member at %s is not a string", location)
+			}
+			if _, duplicate := seen[name]; duplicate {
+				return fmt.Errorf("duplicate JSON member %q at %s", name, location)
+			}
+			seen[name] = struct{}{}
+
+			value, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if err := scanJSONValue(decoder, value, location+"."+name); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for index := 0; ; index++ {
+			value, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if value == json.Delim(']') {
+				return nil
+			}
+			if err := scanJSONValue(decoder, value, fmt.Sprintf("%s[%d]", location, index)); err != nil {
+				return err
+			}
+		}
+	case '}', ']':
+		return fmt.Errorf("unexpected closing delimiter %q at %s", delimiter, location)
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q at %s", delimiter, location)
+	}
 }
 
 // Validate checks the complete pinned census.  It intentionally validates
