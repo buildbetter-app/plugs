@@ -189,7 +189,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if project == "" {
 				project = meta.Project
 			}
-			id, allocatorPrefix, allocatorExpected, e := p.nextAllocatorID(ctx, project, w.cfg.newID)
+			id, allocatorPrefix, allocatorExpected, e := p.nextAllocatorID(ctx, project, w.cfg.newID, w.cfg.newAllocatorID)
 			if e != nil {
 				return nil, e
 			}
@@ -590,7 +590,7 @@ func cloneAnyMap(value map[string]any) map[string]any {
 // lock in transact, where the expected ID is consumed atomically with records.
 // An absent capability or absent project state keeps the legacy random path;
 // an admitted but unsupported mode fails closed rather than inventing an ID.
-func (p *prepared) nextAllocatorID(ctx context.Context, project string, fallback func() (string, error)) (string, string, string, error) {
+func (p *prepared) nextAllocatorID(ctx context.Context, project string, fallback func() (string, error), mint func(driver.OfflineAllocator) (string, error)) (string, string, string, error) {
 	if project == "" {
 		id, err := fallback()
 		return id, "", "", err
@@ -617,6 +617,16 @@ func (p *prepared) nextAllocatorID(ctx context.Context, project string, fallback
 	}
 	if err != nil {
 		return "", "", "", err
+	}
+	if state.Mode == driver.AllocatorRandom {
+		id, err := mint(state)
+		if err != nil {
+			return "", "", "", err
+		}
+		if err := state.ValidateCandidate("", id); err != nil {
+			return "", "", "", err
+		}
+		return id, project, id, nil
 	}
 	if cursor, exists := p.allocatorCursors[project]; exists {
 		state.LastID = cursor

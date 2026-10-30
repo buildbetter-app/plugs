@@ -69,3 +69,19 @@ func (t *transaction) PrepareNativeRestore(ctx context.Context, profile driver.N
 
 var _ driver.OfflineRestoreTx = (*transaction)(nil)
 var _ driver.NativeRestoreTx = (*transaction)(nil)
+
+func (t *transaction) PrepareRestoreImport(ctx context.Context, profile driver.RestoreImportProfile) (driver.Meta, error) {
+	bound, err := profile.Detached()
+	if err != nil {
+		return driver.Meta{}, err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	meta, err := t.prepareRestore(ctx, bound.SourceStoreID)
+	if err == nil {
+		t.importRestore = &bound
+	}
+	return meta, err
+}
+
+var _ driver.RestoreImportTx = (*transaction)(nil)

@@ -26,6 +26,7 @@ type transaction struct {
 	incarnation             string
 	restore                 *driver.Meta
 	nativeRestore           *driver.NativeRestoreProfile
+	importRestore           *driver.RestoreImportProfile
 	closed, locked, hasHead bool
 	acquired                driver.LockSet
 	records                 map[string]*driver.Record
@@ -33,6 +34,7 @@ type transaction struct {
 	blobs                   map[driver.Hash][]byte
 	bumps                   map[string]driver.LockKey
 	allocators              map[string]driver.OfflineAllocator
+	allocated               map[string]bool
 }
 
 func (t *transaction) check(ctx context.Context) error {
@@ -82,6 +84,7 @@ func (t *transaction) finish() {
 	t.blobs = nil
 	t.bumps = nil
 	t.allocators = nil
+	t.allocated = nil
 	s.signal()
 }
 
@@ -384,8 +387,20 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 		if t.nativeRestore != nil {
 			validate = t.nativeRestore.ValidateHeader
 		}
+		if t.importRestore != nil {
+			validate = t.importRestore.ValidateHeader
+		}
 		if err := validate(header); err != nil {
 			return model.Changeset{}, err
+		}
+		if t.importRestore != nil {
+			for _, record := range t.records {
+				if record != nil {
+					if err := t.importRestore.ValidateRecord(*record, header.Time); err != nil {
+						return model.Changeset{}, err
+					}
+				}
+			}
 		}
 		expected = t.restore.Incarnation
 	}

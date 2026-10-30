@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -123,12 +124,11 @@ func (t *transaction) AllocateTopLevel(ctx context.Context, prefix, expected str
 	if !ok {
 		return driver.ErrNotFound
 	}
-	next, err := value.NextID()
-	if err != nil {
-		return err
+	if value.Mode == driver.AllocatorRandom {
+		return t.consumeRandom(ctx, value, "", expected)
 	}
-	if expected != next {
-		return fmt.Errorf("%w: allocator next ID is %s, expected %s", driver.ErrConflict, next, expected)
+	if err := value.ValidateCandidate("", expected); err != nil {
+		return err
 	}
 	if value.LastID == ^uint64(0) {
 		return fmt.Errorf("%w: allocator counter exhausted", driver.ErrUnsupported)
@@ -152,12 +152,11 @@ func (t *transaction) AllocateChild(ctx context.Context, parent, expected string
 	if !ok {
 		return driver.ErrNotFound
 	}
-	next, err := value.NextChildID(parent)
-	if err != nil {
-		return err
+	if value.Mode == driver.AllocatorRandom {
+		return t.consumeRandom(ctx, value, parent, expected)
 	}
-	if expected != next {
-		return fmt.Errorf("%w: allocator next child ID is %s, expected %s", driver.ErrConflict, next, expected)
+	if err := value.ValidateCandidate(parent, expected); err != nil {
+		return err
 	}
 	current := value.Children[parent]
 	if current == ^uint64(0) {
@@ -189,4 +188,37 @@ func allocatorPrefix(staged, base map[string]driver.OfflineAllocator, parent str
 		prefix = parent
 	}
 	return prefix
+}
+
+// consumeRandom validates an already-previewed ID under complete locks. It
+// reserves IDs even before Put, and never advances source counters or remints.
+func (t *transaction) consumeRandom(ctx context.Context, value driver.OfflineAllocator, parent, expected string) error {
+	if err := value.ValidateCandidate(parent, expected); err != nil {
+		return err
+	}
+	if _, _, err := t.allocatorWritable(value.Prefix); err != nil {
+		return err
+	}
+	ref := model.Ref{ID: expected}
+	if err := t.writable(driver.LockKey{Kind: driver.LockRecord, Ref: &ref}); err != nil {
+		return err
+	}
+	id, err := recordKey(ref)
+	if err != nil {
+		return err
+	}
+	if _, staged := t.records[id]; staged || t.allocated[id] {
+		return fmt.Errorf("%w: allocator candidate already staged or reserved", driver.ErrConflict)
+	}
+	if _, exists := t.base.kinds[id]; exists {
+		return fmt.Errorf("%w: allocator candidate already exists", driver.ErrConflict)
+	}
+	if err := t.stageAllocator(value.Prefix, value); err != nil {
+		return err
+	}
+	if t.allocated == nil {
+		t.allocated = make(map[string]bool)
+	}
+	t.allocated[id] = true
+	return nil
 }

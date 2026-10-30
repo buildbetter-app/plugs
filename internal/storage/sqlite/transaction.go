@@ -24,6 +24,7 @@ type transaction struct {
 	locked, hasHead bool
 	restore         *driver.Meta
 	nativeRestore   *driver.NativeRestoreProfile
+	importRestore   *driver.RestoreImportProfile
 	acquired        driver.LockSet
 	files           []*os.File
 	done            chan struct{}
@@ -32,6 +33,7 @@ type transaction struct {
 	blobs           map[driver.Hash][]byte
 	bumps           map[string]driver.LockKey
 	allocators      map[string]driver.OfflineAllocator
+	allocated       map[string]bool
 }
 
 func (s *Store) Write(ctx context.Context, l driver.ActiveLease) (driver.WriteTx, error) {
@@ -79,6 +81,7 @@ func (t *transaction) finish() {
 	t.blobs = nil
 	t.bumps = nil
 	t.allocators = nil
+	t.allocated = nil
 	t.store.untrack(t)
 	close(t.done)
 }
