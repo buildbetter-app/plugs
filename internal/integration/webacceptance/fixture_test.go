@@ -158,6 +158,14 @@ type fixture struct {
 	cursorKey  []byte
 	renewStop  context.CancelFunc
 	renewed    chan error
+	// Optional fixture-only composition inputs. Existing regression fixtures
+	// retain the default clock, ID generator and method surface.
+	clock         func() time.Time
+	writerOptions []pipeline.Option
+	bind          func(*rpc.Registry) error
+	httpConfig    httpjson.Config
+	uiConfig      *webui.Config
+	mount         func(*http.ServeMux)
 }
 
 func newFixture(t *testing.T, b backend) *fixture {
@@ -236,14 +244,25 @@ func (f *fixture) start() {
 		f.t.Fatal(err)
 	}
 	ontology := service.NewOntology(nil)
-	f.writer = pipeline.New(f.store, f.lease, pipeline.WithOntology(ontology))
-	f.domain = service.New(f.store, f.lease, f.writer, service.WithOntology(ontology))
+	writerOptions := append([]pipeline.Option{pipeline.WithOntology(ontology)}, f.writerOptions...)
+	serviceOptions := []service.Option{service.WithOntology(ontology)}
+	if f.clock != nil {
+		writerOptions = append(writerOptions, pipeline.WithClock(f.clock))
+		serviceOptions = append(serviceOptions, service.WithClock(f.clock))
+	}
+	f.writer = pipeline.New(f.store, f.lease, writerOptions...)
+	f.domain = service.New(f.store, f.lease, f.writer, serviceOptions...)
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	if err = rpc.BindService(registry, f.domain); err != nil {
 		f.t.Fatal(err)
+	}
+	if f.bind != nil {
+		if err := f.bind(registry); err != nil {
+			f.t.Fatal(err)
+		}
 	}
 	f.rpc, err = rpc.New(registry, rpc.Config{
 		DefaultProject: project, Incarnation: meta.Incarnation,
@@ -256,11 +275,15 @@ func (f *fixture) start() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	handler, err := httpjson.New(f.rpc, authenticator, httpjson.Config{})
+	handler, err := httpjson.New(f.rpc, authenticator, f.httpConfig)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	ui, err := webui.New(webui.Config{Project: project, RPCPath: httpjson.Path, MaxRows: 2})
+	uiConfig := webui.Config{Project: project, RPCPath: httpjson.Path, MaxRows: 2}
+	if f.uiConfig != nil {
+		uiConfig = *f.uiConfig
+	}
+	ui, err := webui.New(uiConfig)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -272,6 +295,9 @@ func (f *fixture) start() {
 	mux.Handle(httpjson.Path, handler)
 	mux.Handle("/ui/", ui)
 	mux.Handle("/empty/ui/", empty)
+	if f.mount != nil {
+		f.mount(mux)
+	}
 	mux.HandleFunc("/fixture/fence", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
