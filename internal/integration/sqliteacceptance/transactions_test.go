@@ -2,12 +2,18 @@ package sqliteacceptance_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -257,4 +263,184 @@ func TestB20ChangesetPagesAreOrderedAndSinceExclusive(t *testing.T) {
 		t.Fatalf("ordered since-exclusive pages=%v", revisions)
 	}
 	t.Log("B20 changeset projection only: actual HTTP writes yielded complete ordered since-exclusive 2/2/1 pages after SQL reopen; durable event delivery is outside this slice")
+}
+
+func metadataSet(ref model.Ref, key, raw string) model.Op {
+	return model.Op{Kind: model.OpSetMeta, SetMeta: &model.SetMetaOp{Target: ref, Key: key, Value: json.RawMessage(raw)}}
+}
+
+func metadataSHA(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+func seedMetadataAllocator(t *testing.T, f *fixture) {
+	t.Helper()
+	lock, err := driver.AllocatorLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.store.Write(f.ctx, f.lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	if _, err = tx.Lock(f.ctx, driver.LockSet{{Key: lock, Mode: driver.LockUpdate}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Head(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.(driver.AllocatorContinuation).RestoreAllocators(f.ctx, []driver.OfflineAllocator{{Prefix: project, Mode: driver.AllocatorSequential, LastID: 8}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Commit(f.ctx, driver.ChangesetHeader{Incarnation: f.meta(t).Incarnation, Kind: model.ChangesetRestore, Principal: anonymous, LockKeys: []driver.LockKey{lock}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Inspect every persistent graph, predicate, allocator and receipt row through
+// an independent SQL connection. Lease heartbeats are intentionally excluded.
+func metadataSQLState(t *testing.T, db *sql.DB) map[string][][]string {
+	t.Helper()
+	state := map[string][][]string{}
+	for _, table := range []string{"meta", "objects", "records", "versions", "key_history", "blobs", "changesets", "replays", "checkpoints", "core_sessions", "allocator_states"} {
+		rows, err := db.Query("SELECT * FROM " + table + " ORDER BY 1, 2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		columns, err := rows.Columns()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			values := make([]any, len(columns))
+			pointers := make([]any, len(columns))
+			for i := range values {
+				pointers[i] = &values[i]
+			}
+			if err := rows.Scan(pointers...); err != nil {
+				t.Fatal(err)
+			}
+			row := make([]string, len(values))
+			for i, value := range values {
+				row[i] = fmt.Sprintf("%T:%v", value, value)
+			}
+			state[table] = append(state[table], row)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return state
+}
+
+func TestB17MetadataCASRealSQLiteReceiptsAndReopen(t *testing.T) {
+	f := newFixture(t)
+	// This seeds only the allocator to measure aborted-batch consumption. It
+	// does not bypass or qualify archive restoration.
+	seedMetadataAllocator(t, f)
+	ref, _, _ := f.create(t, "metadata")
+	const literal = "plugin.literal.dot/~key"
+	seed := model.ChangeSet{Ops: []model.Op{
+		metadataSet(ref, literal, `{"b":2,"a":1}`), metadataSet(ref, "number", `1.0`),
+		metadataSet(ref, "large", `9007199254740993`), metadataSet(ref, "array", `[1,2]`),
+		metadataSet(ref, "string", `"1"`), metadataSet(ref, "sibling", `{"kept":true}`),
+	}}
+	if _, err := f.writer.ApplyWithOutcome(f.ctx, anonymous, seed, writeMeta(t)); err != nil {
+		t.Fatal(err)
+	}
+	u := url.URL{Scheme: "file", Path: f.path, RawQuery: "mode=ro"}
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	before, sqlBefore := f.state(t), metadataSQLState(t, db)
+	var refusedKeys []string
+	for _, miss := range []struct{ field, canonical string }{
+		{"metadata." + literal, `null`}, {"metadata." + literal, `{"a":1,"b":3}`},
+		{"metadata.number", `"1"`}, {"metadata.large", `9007199254740992`},
+		{"metadata.array", `[2,1]`}, {"metadata.string", `1`}, {"metadata.missing", `null`},
+	} {
+		params := writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "must not publish"}, "expect": []model.Precondition{model.PreconditionByHash(ref, miss.field, metadataSHA(miss.canonical))}})
+		r := f.call(t, "bead.update", params)
+		f.code(t, r, "precondition_failed")
+		if r.Error.Data.Retryable {
+			t.Fatal("metadata hash miss was retryable")
+		}
+		requestKey := params["_meta"].(map[string]any)["idempotencyKey"].(string)
+		refusedKeys = append(refusedKeys, requestKey)
+		if f.receipt(t, "bead.update", "owner", requestKey) != nil || !reflect.DeepEqual(sqlBefore, metadataSQLState(t, db)) {
+			t.Fatal("HTTP metadata refusal changed durable SQL rows or stored a receipt")
+		}
+		requireSameState(t, before, f.state(t))
+	}
+	// Real HTTP service lowering uses the fixed metadata expectation seam.
+	f.commit(t, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"description": "object matched"}, "expect": []model.Precondition{model.PreconditionByHash(ref, "metadata."+literal, "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777")}}))
+	f.commit(t, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "number matched"}, "expect": []model.Precondition{model.PreconditionByHash(ref, "metadata.number", "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b")}}))
+	before = f.state(t)
+	swap := model.ChangeSet{Ops: []model.Op{metadataSet(ref, literal, `{"next":true}`)}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata."+literal, metadataSHA(`{"a":1,"b":2}`))}}
+	if _, err := f.writer.ApplyWithOutcome(f.ctx, anonymous, swap, writeMeta(t)); err != nil {
+		t.Fatal(err)
+	}
+	after := f.state(t)
+	doc, err := pipeline.DecodeDocument(after.Records[0].Body)
+	if err != nil || string(doc.Metadata[literal]) != `{"next":true}` || string(doc.Metadata["sibling"]) != `{"kept":true}` || string(doc.Metadata["number"]) != `1.0` || len(after.Log) != len(before.Log)+1 || len(after.Versions[ref.ID]) != len(before.Versions[ref.ID])+1 {
+		t.Fatalf("SQLite metadata swap/history/sibling/pre-image=%+v %v", doc, err)
+	}
+	before, sqlBefore = after, metadataSQLState(t, db)
+	failedMeta := writeMeta(t)
+	failedBatch := model.ChangeSet{Ops: []model.Op{patchOp(ref, map[string]any{"title": "staged"}), createOp("discard", "discard"), metadataSet(ref, literal, `"post-image"`)}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata."+literal, metadataSHA(`"post-image"`))}}
+	_, err = f.writer.ApplyWithOutcome(f.ctx, anonymous, failedBatch, failedMeta)
+	domainCode(t, err, "precondition_failed")
+	requireSameState(t, before, f.state(t))
+	if !reflect.DeepEqual(sqlBefore, metadataSQLState(t, db)) || f.receipt(t, "tx.apply", "owner", failedMeta.IdempotencyKey) != nil {
+		t.Fatal("late metadata pre-image miss consumed graph/allocator/receipt state")
+	}
+	noopMeta := writeMeta(t)
+	noop := model.ChangeSet{Ops: []model.Op{metadataSet(ref, literal, `{"next":true}`)}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata."+literal, metadataSHA(`{"next":true}`))}}
+	out, err := f.writer.ApplyWithOutcome(f.ctx, anonymous, noop, noopMeta)
+	if err != nil || out.Replayed || out.Commit.Revision.String() != before.Meta.Head.String() {
+		t.Fatalf("SQLite metadata no-op=%+v %v", out, err)
+	}
+	requireSameState(t, before, f.state(t))
+	receipt := f.receipt(t, "tx.apply", "owner", noopMeta.IdempotencyKey)
+	if receipt == nil || receipt.ResponsePending || receipt.Changeset.Kind != "" || !reflect.DeepEqual(receipt.Commit, out.Commit) {
+		t.Fatalf("metadata no-op receipt=%+v", receipt)
+	}
+	// The admitted HTTP update path also exposes transient replay metadata for
+	// a metadata-guarded no-op; no additional binder is introduced here.
+	httpNoop := writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "number matched"}, "expect": noop.Expect})
+	_, firstHTTP := f.commit(t, "bead.update", httpNoop)
+	if firstHTTP.Meta != nil {
+		t.Fatal("first metadata-guarded HTTP no-op was labeled replay")
+	}
+	requireSameState(t, before, f.state(t))
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.reopen(t)
+	requireSameState(t, before, f.state(t))
+	again, err := f.writer.ApplyWithOutcome(f.ctx, anonymous, noop, noopMeta)
+	if err != nil || !again.Replayed || !reflect.DeepEqual(again.Commit, out.Commit) || !reflect.DeepEqual(receipt, f.receipt(t, "tx.apply", "owner", noopMeta.IdempotencyKey)) {
+		t.Fatalf("SQLite metadata no-op lost durable replay: %+v %v", again, err)
+	}
+	_, replayHTTP := f.commit(t, "bead.update", httpNoop)
+	if replayHTTP.Meta == nil || !replayHTTP.Meta.Replayed || !bytes.Equal(firstHTTP.Result, replayHTTP.Result) {
+		t.Fatal("metadata-guarded HTTP no-op lost wire replay metadata after reopen")
+	}
+	for _, requestKey := range refusedKeys {
+		if f.receipt(t, "bead.update", "owner", requestKey) != nil {
+			t.Fatal("refused metadata key appeared after real reopen")
+		}
+	}
+	if f.receipt(t, "tx.apply", "owner", failedMeta.IdempotencyKey) != nil {
+		t.Fatal("failed batch receipt appeared after reopen")
+	}
+	requireSameState(t, before, f.state(t))
+	t.Log("B17: real SQLite/HTTP canonical metadata CAS, exact null/type/order/large-number refusals, atomic allocator rollback and durable no-op replay survive close/reopen")
 }
