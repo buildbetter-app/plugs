@@ -70,6 +70,9 @@ rejects("out-of-bound count",f=>change(f,r=>{r.result.directBlockers.hiddenCount
 rejects("out-of-bound edges",f=>change(f,r=>{r.result.directBlockers.edges=Array(101).fill(r.result.directBlockers.edges[0]);}));
 rejects("wire edge without DOM reason",f=>{f.explanation="readable-blocker";});
 rejects("wire edge without DOM reference",f=>{f.explanation=reason;});
+rejects("unavailable placeholder cannot qualify with appended safe reason",f=>{f.explanation="No direct blocker reason was supplied by the server for readable-blocker. "+reason;});
+rejects("longer rendered ID is not the expected reference",f=>{f.explanation="readable-blocker-other: "+reason;});
+rejects("child rendered ID is not the expected branch-zero blocker",f=>{f.explanation="readable-blocker.1: "+reason;});
 rejects("stale request",f=>{f.wire[0].at=9;});
 rejects("request ID absent",f=>{const r=JSON.parse(f.wire[0].request.postData);delete r.id;f.wire[0].request.postData=JSON.stringify(r);});
 rejects("wrong project",f=>{f.project="other";});

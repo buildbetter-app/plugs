@@ -53,7 +53,9 @@ export function assessWhyBlockedEvidence({ wire, startedAt, project, viewId, ite
   if (!edge) return blocked("no server-linked readable unsatisfied fixture blocker with a safe reason");
   // Text is corroboration only, after the actual linked wire edge is proven.
   // The caller supplies visible innerText from the existing explanation region.
-  if (typeof explanation !== "string" || !explanation.includes(blockerId) || !explanation.includes(edge.reason)) {
+  const renderedRefs = typeof explanation === "string" ? explanation.match(/[\p{L}\p{N}_./-]+/gu) || [] : [];
+  const unavailable = typeof explanation === "string" && /No direct (?:blocker|exclusion) reason was supplied by the server|Explanation unavailable\./.test(explanation);
+  if (typeof explanation !== "string" || unavailable || !renderedRefs.includes(blockerId) || !explanation.includes(edge.reason)) {
     return blocked("linked blocker reference and safe reason are not both rendered");
   }
   return { observed: true, wireIndex: match.index, blocker: edge.blocker, kind: edge.kind, reason: edge.reason };
