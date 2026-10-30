@@ -8,6 +8,12 @@ snapshot at `471d0199c89acf9e242f44978f2824120726de32`; they are useful for the
 baseline lifecycle and storage model, but their statements about the then
 unbound remote CLI and ontology RPC do not describe this page set.
 
+The [portability guide](dump-restore.md) separately records the audited
+historical snapshot
+**[`5402faf12a21bbefa325a276ecce69f90fdd6b4e`](https://github.com/buildbetter-app/plugs/tree/5402faf12a21bbefa325a276ecce69f90fdd6b4e)**
+(2026-10-30). Its availability statements and reviewed-contract limits apply
+to that snapshot.
+
 | Guide | Use it for |
 | --- | --- |
 | [Conditional audit](audit.md) | Tracked ontology decisions, ordered notices, delivery, and refusal boundaries. |
@@ -15,6 +21,7 @@ unbound remote CLI and ontology RPC do not describe this page set.
 | [Ontology RPC](ontology-rpc.md) | Stored reads, checks, history, diffs, plans, and the conditional protected apply over JSON-RPC. |
 | [Authentication](authn.md) | Loopback admission, bearer identities, process-local API keys, and proof limits. |
 | [Remote CLI](remote-cli.md) | The current HTTP client and an actual disposable CLI/RPC trace. |
+| [Dump, restore, and portability](dump-restore.md) | Bounded `plug-dump/1` validation and offline merge, plus the explicit restore and rollback refusal boundaries. |
 
 ## What this pin admits
 
@@ -33,6 +40,14 @@ provider, watch registration, or production recovery integration. A catalog
 descriptor does not install a handler: read-only roots keep `ontology.apply`
 unbound, while protected roots must explicitly supply the Writer and live
 human-proof path. The guides call out each refusal where it matters.
+
+At the portability guide's historical snapshot, the tree has a read-only
+`plug-dump/1` Beads archive validator and an offline merger. That snapshot
+does not bind `plug dump`, `plug restore`, native `admin.dump` or
+`admin.restore.*`, and has no reverse converter. Later main includes the
+native restore and reverse-converter packages; their presence does not
+establish runtime or production qualification. The guide retains the
+historical archive surface and reviewed contracts within its stated limits.
 
 ## Run the examples
 
