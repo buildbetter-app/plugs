@@ -64,7 +64,7 @@ func (m *Manager) List(ctx context.Context, caller Caller, project string) ([]Pr
 	}
 	rows := make([]Presence, len(entries))
 	for i, e := range entries {
-		row := Presence{SessionID: e.session.SessionID, Principal: displayPrincipal(e.caller.Principal), OnBehalfOf: e.session.OnBehalfOf}
+		row := Presence{SessionID: e.session.SessionID, Principal: displayPrincipal(e.caller.Principal), OnBehalfOf: e.session.OnBehalfOf, DisplayName: e.displayName}
 		if e.focus != "" {
 			v, err := read(e.focus)
 			if err != nil {
@@ -108,7 +108,10 @@ func (m *Manager) List(ctx context.Context, caller Caller, project string) ([]Pr
 			continue
 		}
 		row := rows[i]
-		if e.group == "" {
+		// Named members keep their own session identity even in a compact
+		// sponsor group. Never merge labels or use their value as a group key.
+		// An absent name retains the existing compact presentation.
+		if e.group == "" || e.displayName != "" {
 			out = append(out, row)
 			continue
 		}

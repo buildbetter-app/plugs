@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "webacceptance_test",
     size = "large",
-    srcs = glob(["*_test.go"]),
+    srcs = glob(["*_test.go"], exclude = ["presence_adapter_test.go"]),
     embedsrcs = ["browser_check.mjs", "e3_browser_check.mjs"],
     env_inherit = ["PATH"],
     args = ["-test.v"],
@@ -27,6 +27,20 @@ go_test(
         "//internal/storage/postgres",
         "//internal/storage/sqlite",
     ],
+)
+
+# Pure acceptance adapter: no real server/database/browser TestMain.
+filegroup(
+    name = "presence_adapter",
+    srcs = ["presence_dom_adapter.mjs"],
+)
+
+go_test(
+    name = "presence_adapter_test",
+    srcs = ["presence_adapter_test.go"],
+    embedsrcs = [":presence_adapter", "presence_adapter_check.mjs"],
+    env_inherit = ["PATH"],
+    args = ["-test.v"],
 )
 
 filegroup(
