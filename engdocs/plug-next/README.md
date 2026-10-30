@@ -19,6 +19,7 @@ to that snapshot.
 | [Conditional audit](audit.md) | Tracked ontology decisions, ordered notices, delivery, and refusal boundaries. |
 | [SQL persistence](sql.md) | Current SQLite and PostgreSQL event-plan durability and engine limits. |
 | [Ontology RPC](ontology-rpc.md) | Stored reads, checks, history, diffs, plans, and the conditional protected apply over JSON-RPC. |
+| [Ontology and gates](ontology-gates.md) | Conditional protected apply, gate approval/reporting, durable projection status, and migration/history refusal boundaries. |
 | [Authentication](authn.md) | Loopback admission, bearer identities, process-local API keys, and proof limits. |
 | [Remote CLI](remote-cli.md) | The current HTTP client and an actual disposable CLI/RPC trace. |
 | [Dump, restore, and portability](dump-restore.md) | Bounded `plug-dump/1` validation and offline merge, plus the explicit restore and rollback refusal boundaries. |
