@@ -103,9 +103,12 @@ func TestCrossOriginAdmissionUsesOnlyTrustedCoreSessions(t *testing.T) {
 		CoreSessions: sessionSourceFunc(func(context.Context, string) (CoreSession, error) {
 			return &testSession{user: model.PrincipalRef{Kind: "user", ID: "user:session"}}, nil
 		}),
-		CrossOriginAuthorizer: func(_ context.Context, origin, token string) bool {
+		CrossOriginAuthorizer: func(_ context.Context, origin, token string) error {
 			crossCalls++
-			return origin == "https://app.invalid" && token == "plg_s_test"
+			if origin == "https://app.invalid" && token == "plg_s_test" {
+				return nil
+			}
+			return ErrForbidden
 		},
 	})
 
@@ -124,6 +127,61 @@ func TestCrossOriginAdmissionUsesOnlyTrustedCoreSessions(t *testing.T) {
 	assertDenied(t, identity, err, ErrForbidden)
 	if crossCalls != 1 {
 		t.Fatal("ordinary provider credential reached the cross-origin authorizer")
+	}
+}
+
+func TestHTTPTransportAdmissionChecksPostureWithoutAuthenticating(t *testing.T) {
+	a := newAuthenticator(t, Config{Provider: providerFunc(func(context.Context, string) (model.PrincipalRef, error) {
+		t.Fatal("public transport admission attempted bearer authentication")
+		return model.PrincipalRef{}, ErrUnauthenticated
+	})})
+	for _, tc := range []struct {
+		name   string
+		change func(*http.Request)
+		want   error
+	}{
+		{name: "marked loopback", change: func(*http.Request) {}},
+		{name: "missing marker", change: func(r *http.Request) { r.Header.Del("Plug-RPC") }, want: ErrForbidden},
+		{name: "duplicate marker", change: func(r *http.Request) { r.Header.Add("Plug-RPC", "1") }, want: ErrForbidden},
+		{name: "rebound host", change: func(r *http.Request) {
+			r.Host = "rebound.invalid"
+			*r = *r.WithContext(context.WithValue(r.Context(), http.LocalAddrContextKey, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8888}))
+			r.TLS = &tls.ConnectionState{}
+		}, want: ErrForbidden},
+		{name: "nonloopback peer", change: func(r *http.Request) { r.RemoteAddr = "192.0.2.2:41000" }, want: ErrForbidden},
+		{name: "plaintext network", change: func(r *http.Request) {
+			r.Host = "plug.invalid"
+			r.RemoteAddr = "192.0.2.2:41000"
+		}, want: ErrForbidden},
+		{name: "TLS network", change: func(r *http.Request) {
+			r.Host = "plug.invalid"
+			r.RemoteAddr = "192.0.2.2:41000"
+			r.TLS = &tls.ConnectionState{}
+		}},
+		{name: "preflight requests marker", change: func(r *http.Request) {
+			r.Method = http.MethodOptions
+			r.Header.Del("Plug-RPC")
+			r.Header.Set("Access-Control-Request-Method", http.MethodPost)
+			r.Header.Set("Access-Control-Request-Headers", "Content-Type, Plug-RPC")
+		}},
+		{name: "preflight omits marker", change: func(r *http.Request) {
+			r.Method = http.MethodOptions
+			r.Header.Del("Plug-RPC")
+			r.Header.Set("Access-Control-Request-Method", http.MethodPost)
+			r.Header.Set("Access-Control-Request-Headers", "Content-Type")
+		}, want: ErrForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := localRequest()
+			tc.change(r)
+			if err := a.AdmitHTTPTransport(r); !errors.Is(err, tc.want) {
+				t.Fatalf("transport admission error=%v, want %v", err, tc.want)
+			}
+			if tc.name == "preflight requests marker" {
+				identity, err := a.AdmitHTTP(r)
+				assertDenied(t, identity, err, ErrForbidden)
+			}
+		})
 	}
 }
 

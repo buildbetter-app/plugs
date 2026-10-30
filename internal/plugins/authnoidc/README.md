@@ -17,15 +17,22 @@ code with S256 PKCE. It returns an opaque Plug token once; IdP tokens are not
 accepted as Plug credentials or retained. State/nonce/verifier/binding are
 independent random 256-bit values. Matching callbacks cannot be replayed.
 
-`HTTPHandler(next)` composes the public-client adapter with an existing HTTP
-handler. `GET /auth/oidc/login` returns the authorization URL, state and
-private binding; `POST /auth/oidc/callback` accepts one strict JSON callback and
-returns a short-lived Plug core-session bearer. The callback flow is bound to
-the initiating allowlisted Origin. Responses use `Cache-Control: no-store` and
-allowlisted origins receive an explicit, non-credentialed CORS header. Cookies,
-redirect handlers and ambient credentials are not installed.
+`HTTPHandler(authenticator, next)` composes the public-client adapter with an
+existing HTTP handler. Login and callback requests must carry the
+`Plug-RPC: 1` marker and pass the authenticator's Host, peer and TLS
+admission before route handling. `GET /auth/oidc/login` returns the
+authorization URL, state and private binding; `POST /auth/oidc/callback` accepts
+one strict JSON callback and returns a short-lived Plug core-session bearer.
+Both browser legs require the same operator-allowlisted Origin, and the
+callback flow is bound to that origin. Browser preflights validate the origin
+and requested method/headers; the subsequent request carries the marker.
+Responses use `Cache-Control: no-store`, and allowlisted origins receive an
+explicit, non-credentialed CORS header.
+Cookies, redirect handlers and ambient credentials are not installed.
 
-Configure `authn.Config{CoreSessions: provider, Provider: optionalAPIKeys}`.
+Configure `authn.Config{CoreSessions: provider, Provider: optionalAPIKeys,
+CrossOriginAuthorizer: provider.AllowOrigin}` and share that authenticator
+between the login adapter and RPC handler.
 `plg_s_` credentials go exclusively to the trusted session authority. Ordinary
 providers never confer human proof. Session records hold a digest, User ID and
 expiry. Session authority is process-local, expires after fifteen minutes by

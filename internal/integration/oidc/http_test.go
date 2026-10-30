@@ -56,10 +56,10 @@ type httpFixture struct {
 	client   *http.Client
 }
 
-func realHTTP(t *testing.T, idp *mockIDP) *httpFixture {
+func realHTTP(t *testing.T, idp *mockIDP, origins ...string) *httpFixture {
 	t.Helper()
 	config := idp.config()
-	config.AllowedOrigins = []string{"https://app.invalid"}
+	config.AllowedOrigins = append([]string{"https://app.invalid"}, origins...)
 	p, err := authnoidc.New(config)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func realHTTP(t *testing.T, idp *mockIDP) *httpFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := p.HTTPHandler(rpcHandler)
+	handler, err := p.HTTPHandler(f.auth, rpcHandler)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,6 +149,7 @@ func loginOverHTTP(t *testing.T, f *httpFixture, origin string) sessionEnvelope 
 		t.Fatal(err)
 	}
 	request.Header.Set("Origin", origin)
+	request.Header.Set("Plug-RPC", "1")
 	response, err := f.client.Do(request)
 	if err != nil {
 		t.Fatal("HTTP login start failed")
@@ -169,6 +170,7 @@ func loginOverHTTP(t *testing.T, f *httpFixture, origin string) sessionEnvelope 
 		t.Fatal(err)
 	}
 	callback.Header.Set("Origin", origin)
+	callback.Header.Set("Plug-RPC", "1")
 	callback.Header.Set("Content-Type", "application/json")
 	response, err = f.client.Do(callback)
 	if err != nil {
@@ -292,36 +294,119 @@ func TestRealHTTPLoginAdapterIssuesBoundSessionAndCORS(t *testing.T) {
 func TestRealHTTPLoginAdapterPreflightUsesOriginAllowlist(t *testing.T) {
 	idp := newIDP(t)
 	f := realHTTP(t, idp)
-	request, err := http.NewRequest(http.MethodOptions, f.url+httpjson.Path, nil)
-	if err != nil {
-		t.Fatal(err)
+	for _, path := range []string{authnoidc.LoginPath, authnoidc.CallbackPath, httpjson.Path} {
+		t.Run(path, func(t *testing.T) {
+			request, err := http.NewRequest(http.MethodOptions, f.url+path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Origin", "https://app.invalid")
+			request.Header.Set("Access-Control-Request-Method", http.MethodPost)
+			request.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type, Plug-RPC")
+			response, err := f.client.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusNoContent || response.Header.Get("Access-Control-Allow-Origin") != "https://app.invalid" || response.Header.Get("Access-Control-Allow-Credentials") != "" {
+				data, _ := io.ReadAll(response.Body)
+				t.Fatalf("allowlisted preflight was not admitted: status=%d body=%s", response.StatusCode, data)
+			}
+		})
 	}
-	request.Header.Set("Origin", "https://app.invalid")
-	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
-	request.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type, Plug-RPC")
-	response, err := f.client.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response.StatusCode != http.StatusNoContent || response.Header.Get("Access-Control-Allow-Origin") != "https://app.invalid" || response.Header.Get("Access-Control-Allow-Credentials") != "" {
-		data, _ := io.ReadAll(response.Body)
-		response.Body.Close()
-		t.Fatalf("allowlisted preflight was not admitted: status=%d body=%s", response.StatusCode, data)
-	}
-	response.Body.Close()
 
-	request, err = http.NewRequest(http.MethodOptions, f.url+httpjson.Path, nil)
+	request, err := http.NewRequest(http.MethodOptions, f.url+httpjson.Path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Origin", "https://evil.invalid")
 	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
-	request.Header.Set("Access-Control-Request-Headers", "Authorization")
-	response, err = f.client.Do(request)
+	request.Header.Set("Access-Control-Request-Headers", "Authorization, Plug-RPC")
+	response, err := f.client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	expectHTTPError(t, response, http.StatusForbidden, "forbidden")
+}
+
+func TestRealHTTPLoginAdapterRequiresCanonicalRoutes(t *testing.T) {
+	idp := newIDP(t)
+	f := realHTTP(t, idp)
+	for _, tc := range []struct {
+		name string
+		url  string
+		body io.Reader
+	}{
+		{name: "escaped login", url: f.url + "/auth/oidc/%6cogin"},
+		{name: "bare query login", url: f.url + authnoidc.LoginPath + "?"},
+		{name: "escaped callback", url: f.url + "/auth/oidc/%63allback", body: strings.NewReader(`{"state":"invalid","binding":"invalid","code":"invalid"}`)},
+		{name: "bare query callback", url: f.url + authnoidc.CallbackPath + "?", body: strings.NewReader(`{"state":"invalid","binding":"invalid","code":"invalid"}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			method := http.MethodGet
+			if tc.body != nil {
+				method = http.MethodPost
+			}
+			request, err := http.NewRequest(method, tc.url, tc.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Origin", "https://app.invalid")
+			request.Header.Set("Plug-RPC", "1")
+			if tc.body != nil {
+				request.Header.Set("Content-Type", "application/json")
+			}
+			response, err := f.client.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, readErr := io.ReadAll(response.Body)
+			response.Body.Close()
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if response.StatusCode != http.StatusNotFound {
+				t.Fatalf("non-canonical route was dispatched: status=%d body=%s", response.StatusCode, data)
+			}
+		})
+	}
+}
+
+func TestRealHTTPLoginAdapterAdmitsOnlyMarkedAllowlistedBrowserLegs(t *testing.T) {
+	idp := newIDP(t)
+	f := realHTTP(t, idp)
+	for _, tc := range []struct {
+		name   string
+		change func(*http.Request)
+	}{
+		{name: "same-origin but not allowlisted", change: func(r *http.Request) { r.Header.Set("Origin", f.url) }},
+		{name: "no origin", change: func(r *http.Request) { r.Header.Del("Origin") }},
+		{name: "missing transport marker", change: func(r *http.Request) { r.Header.Del("Plug-RPC") }},
+		{name: "duplicate transport marker", change: func(r *http.Request) { r.Header.Add("Plug-RPC", "1") }},
+		{name: "rebound Host", change: func(r *http.Request) { r.Host = "rebound.invalid" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, path := range []string{authnoidc.LoginPath, authnoidc.CallbackPath} {
+				method := http.MethodGet
+				if path == authnoidc.CallbackPath {
+					method = http.MethodPost
+				}
+				request, err := http.NewRequest(method, f.url+path, strings.NewReader(`{"state":"invalid","binding":"invalid","code":"invalid"}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.Header.Set("Origin", "https://app.invalid")
+				request.Header.Set("Content-Type", "application/json")
+				request.Header.Set("Plug-RPC", "1")
+				tc.change(request)
+				response, err := f.client.Do(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				expectHTTPError(t, response, http.StatusForbidden, "forbidden")
+			}
+		})
+	}
 }
 
 func TestRealHTTPLoginAdapterRefusesWrongStateNonceAudienceAndExpiry(t *testing.T) {
@@ -355,6 +440,7 @@ func TestRealHTTPLoginAdapterRefusesWrongStateNonceAudienceAndExpiry(t *testing.
 				t.Fatal(err)
 			}
 			request.Header.Set("Origin", "https://app.invalid")
+			request.Header.Set("Plug-RPC", "1")
 			response, err := f.client.Do(request)
 			if err != nil {
 				t.Fatal(err)
@@ -378,6 +464,7 @@ func TestRealHTTPLoginAdapterRefusesWrongStateNonceAudienceAndExpiry(t *testing.
 				t.Fatal(err)
 			}
 			callback.Header.Set("Origin", "https://app.invalid")
+			callback.Header.Set("Plug-RPC", "1")
 			callback.Header.Set("Content-Type", "application/json")
 			response, err = f.client.Do(callback)
 			if err != nil {
@@ -396,6 +483,7 @@ func TestRealHTTPLoginAdapterRefusesDisallowedOriginsAndAPIKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Header.Set("Origin", "https://evil.invalid")
+	request.Header.Set("Plug-RPC", "1")
 	response, err := f.client.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -415,6 +503,40 @@ func TestRealHTTPLoginAdapterRefusesDisallowedOriginsAndAPIKeys(t *testing.T) {
 		r.Header.Set("Origin", "https://app.invalid")
 	})
 	expectCode(t, apiKey, http.StatusForbidden, "forbidden")
+}
+
+func TestRealHTTPAllowlistedExpiredSessionKeepsTokenExpired(t *testing.T) {
+	idp := newIDP(t)
+	f := realHTTP(t, idp, "https://other-app.invalid")
+	private := login(t, idp, f.provider)
+	session := loginOverHTTP(t, f, "https://app.invalid")
+	idp.now.Store(session.ExpiresAt.Unix())
+	expired := f.call(t, session.AccessToken, "bead.create", writeParams(t), func(r *http.Request) {
+		r.Header.Set("Origin", "https://app.invalid")
+	})
+	expectCode(t, expired, http.StatusUnauthorized, "token_expired")
+	if expired.headers.Get("WWW-Authenticate") != "Bearer" || expired.headers.Get("Access-Control-Allow-Origin") != "https://app.invalid" {
+		t.Fatal("expired browser session lost bearer challenge or allowlisted CORS")
+	}
+	for _, tc := range []struct {
+		name   string
+		origin string
+		token  string
+	}{
+		{name: "private session", origin: "https://app.invalid", token: private.Token},
+		{name: "different bound origin", origin: "https://other-app.invalid", token: session.AccessToken},
+		{name: "disallowed origin", origin: "https://evil.invalid", token: session.AccessToken},
+		{name: "invalid session", origin: "https://app.invalid", token: "plg_s_invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refused := f.call(t, tc.token, "bead.create", writeParams(t), func(r *http.Request) { r.Header.Set("Origin", tc.origin) })
+			expectCode(t, refused, http.StatusForbidden, "forbidden")
+		})
+	}
+	meta, err := f.store.Meta(context.Background())
+	if err != nil || !meta.Head.IsZero() || f.domain.sessionCreates.Load() != 0 || f.domain.keyCreates.Load() != 0 {
+		t.Fatal("refused cross-origin sessions reached core storage")
+	}
 }
 
 func TestRealHTTPPlugSessionAndAPIKeyStampCoreWithoutSharingHumanProof(t *testing.T) {

@@ -7,6 +7,7 @@ package authnoidc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -31,10 +32,10 @@ type Config struct {
 	// Users maps this issuer's exact subject to a provisioned Plug User ID.
 	// Unknown subjects are refused; email, roles and claims never provision users.
 	Users map[string]string
-	// AllowedOrigins is the operator-owned browser allowlist for other-origin
-	// login and bearer requests. Origins are exact HTTPS origins; loopback HTTP
-	// origins are accepted only for local development fixtures. Credentials and
-	// cookies never use this list.
+	// AllowedOrigins is the operator-owned browser allowlist for all HTTP
+	// login/callback and other-origin bearer requests. Origins are exact HTTPS
+	// origins; loopback HTTP origins are accepted only for local development
+	// fixtures. Credentials and cookies never use this list.
 	AllowedOrigins []string
 	// HTTPClient is copied; redirects are disabled and timeout is bounded. A
 	// private trust transport permits disposable local TLS IdPs in tests.
@@ -210,24 +211,39 @@ func (p *Provider) OriginAllowed(origin string) bool {
 // only a currently live Plug core session from a configured origin. A session
 // started by the HTTP login adapter is bound to that origin. Private flows
 // without an origin are never admitted as other-origin browser bearers.
-func (p *Provider) AllowOrigin(ctx context.Context, origin, token string) bool {
-	if ctx == nil {
-		return false
+func (p *Provider) AllowOrigin(ctx context.Context, origin, token string) error {
+	if p == nil || canceled(ctx) {
+		return authn.ErrUnavailable
 	}
 	canonical, ok := normalizeOrigin(origin)
 	if !ok {
-		return false
+		return authn.ErrForbidden
 	}
 	p.mu.RLock()
 	_, allowed := p.origins[canonical]
 	p.mu.RUnlock()
 	if !allowed {
-		return false
+		return authn.ErrForbidden
 	}
 	lookupCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
 	record, err := p.sessionForToken(lookupCtx, token)
-	return err == nil && record.origin == canonical
+	// A verified expired token retains its record only for checking its origin
+	// caveat. Private or differently bound sessions still fail as forbidden.
+	if (err == nil || errors.Is(err, authn.ErrTokenExpired)) && record.origin != canonical {
+		return authn.ErrForbidden
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, authn.ErrTokenExpired):
+			return authn.ErrTokenExpired
+		case errors.Is(err, authn.ErrUnavailable):
+			return authn.ErrUnavailable
+		default:
+			return authn.ErrForbidden
+		}
+	}
+	return nil
 }
 
 func httpsURL(raw string) bool {

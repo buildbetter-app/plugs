@@ -41,17 +41,26 @@ type sessionResponse struct {
 // HTTPHandler composes the bounded login/callback adapter with the existing
 // RPC handler. It owns no cookies or credentials; the initiating public client
 // keeps Binding and receives the opaque core-session bearer after callback.
-// Foreign origins are admitted only when the provider's operator allowlist
-// contains the exact origin. The wrapped RPC authenticator must also be built
-// with authn.Config{CrossOriginAuthorizer: p.AllowOrigin}.
-func (p *Provider) HTTPHandler(next http.Handler) (http.Handler, error) {
-	if p == nil || next == nil {
-		return nil, fmt.Errorf("authnoidc: provider and next HTTP handler are required")
+// Both browser legs require an operator-allowlisted Origin and the supplied
+// authenticator's network/marker admission. Use the same authenticator for the
+// wrapped RPC handler, with authn.Config{CrossOriginAuthorizer: p.AllowOrigin}.
+func (p *Provider) HTTPHandler(admission *authn.Authenticator, next http.Handler) (http.Handler, error) {
+	if p == nil || admission == nil || next == nil {
+		return nil, fmt.Errorf("authnoidc: provider, authenticator and next HTTP handler are required")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		loginRoute := exactRoute(r, LoginPath)
+		callbackRoute := exactRoute(r, CallbackPath)
+		rpcPreflight := r != nil && r.Method == http.MethodOptions && exactRoute(r, "/rpc/v1")
+		if loginRoute || callbackRoute || rpcPreflight {
+			if err := admission.AdmitHTTPTransport(r); err != nil {
+				writeHTTPError(w, statusForAuthn(err), err)
+				return
+			}
+		}
 		origin, ok := requestOrigin(r)
 		if !ok {
-			if isLoginPath(r.URL.Path) || (r.Method == http.MethodOptions && isAuthPath(r.URL.Path)) {
+			if loginRoute || callbackRoute || rpcPreflight {
 				writeHTTPError(w, http.StatusForbidden, authn.ErrForbidden)
 				return
 			}
@@ -63,14 +72,14 @@ func (p *Provider) HTTPHandler(next http.Handler) (http.Handler, error) {
 		// Keep browser login/callback failures as ordinary HTTP errors, while
 		// allowing the wrapped RPC adapter to produce its normal JSON-RPC
 		// envelope for a disallowed foreign Origin.
-		if isLoginPath(r.URL.Path) && origin != "" && !p.OriginAllowed(origin) && !sameRequestOrigin(r, origin) {
+		if (loginRoute || callbackRoute) && (origin == "" || !p.OriginAllowed(origin)) {
 			writeHTTPError(w, http.StatusForbidden, authn.ErrForbidden)
 			return
 		}
 		if origin != "" && p.OriginAllowed(origin) {
 			setCORS(w, origin)
 		}
-		if r.Method == http.MethodOptions && isAuthPath(r.URL.Path) {
+		if r.Method == http.MethodOptions && (loginRoute || callbackRoute || rpcPreflight) {
 			if origin == "" || !p.OriginAllowed(origin) {
 				writeHTTPError(w, http.StatusForbidden, authn.ErrForbidden)
 				return
@@ -78,10 +87,10 @@ func (p *Provider) HTTPHandler(next http.Handler) (http.Handler, error) {
 			handlePreflight(w, r)
 			return
 		}
-		switch r.URL.Path {
-		case LoginPath:
+		switch {
+		case loginRoute:
 			p.handleLogin(w, r, origin)
-		case CallbackPath:
+		case callbackRoute:
 			p.handleCallback(w, r, origin)
 		default:
 			next.ServeHTTP(w, r)
@@ -90,15 +99,11 @@ func (p *Provider) HTTPHandler(next http.Handler) (http.Handler, error) {
 }
 
 func (p *Provider) handleLogin(w http.ResponseWriter, r *http.Request, origin string) {
-	if r.Method != http.MethodGet || r.URL.RawQuery != "" || hasCredentialHeaders(r) {
+	if r.Method != http.MethodGet || hasCredentialHeaders(r) {
 		writeHTTPError(w, http.StatusForbidden, authn.ErrForbidden)
 		return
 	}
-	boundOrigin := ""
-	if origin != "" && p.OriginAllowed(origin) {
-		boundOrigin = origin
-	}
-	login, err := p.BeginForOrigin(r.Context(), boundOrigin)
+	login, err := p.BeginForOrigin(r.Context(), origin)
 	if err != nil {
 		writeHTTPError(w, statusForAuthn(err), err)
 		return
@@ -107,7 +112,7 @@ func (p *Provider) handleLogin(w http.ResponseWriter, r *http.Request, origin st
 }
 
 func (p *Provider) handleCallback(w http.ResponseWriter, r *http.Request, origin string) {
-	if r.Method != http.MethodPost || r.URL.RawQuery != "" || hasCredentialHeaders(r) {
+	if r.Method != http.MethodPost || hasCredentialHeaders(r) {
 		writeHTTPError(w, http.StatusForbidden, authn.ErrForbidden)
 		return
 	}
@@ -158,21 +163,9 @@ func requestOrigin(r *http.Request) (string, bool) {
 	return origin, ok
 }
 
-func sameRequestOrigin(r *http.Request, origin string) bool {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	expected, ok := normalizeOrigin(scheme + "://" + r.Host)
-	return ok && expected == origin
-}
-
-func isAuthPath(path string) bool {
-	return path == LoginPath || path == CallbackPath || path == "/rpc/v1"
-}
-
-func isLoginPath(path string) bool {
-	return path == LoginPath || path == CallbackPath
+func exactRoute(r *http.Request, path string) bool {
+	return r != nil && r.URL != nil && r.URL.Path == path && r.URL.EscapedPath() == path &&
+		r.URL.RawQuery == "" && !r.URL.ForceQuery
 }
 
 func handlePreflight(w http.ResponseWriter, r *http.Request) {

@@ -46,8 +46,10 @@ type Provider interface {
 // CrossOriginAuthorizer is a host-composed browser defense for bearer
 // requests. The authenticator invokes it only for a foreign Origin and only
 // for a core-session-shaped credential; ordinary providers cannot opt into
-// cross-origin admission. The callback must not log or retain the bearer.
-type CrossOriginAuthorizer func(context.Context, string, string) bool
+// cross-origin admission. A nil error admits the request. ErrTokenExpired
+// must be preserved so HTTP transports can return the user to sign-in. The
+// callback must not log or retain the bearer.
+type CrossOriginAuthorizer func(context.Context, string, string) error
 
 // Admitter is the narrow boundary consumed by RPC/service binding. The token
 // comes from the transport, never from an actor/principal in RPC parameters.

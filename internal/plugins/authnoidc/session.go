@@ -160,7 +160,9 @@ func (p *Provider) lookup(ctx context.Context, id string, digest [sha256.Size]by
 		return sessionRecord{}, authn.ErrUnauthenticated
 	}
 	if !p.now().Before(record.expiresAt) {
-		return sessionRecord{}, authn.ErrTokenExpired
+		// Preserve the authenticated record so cross-origin admission can check
+		// its origin caveat before reporting expiry. The error still denies it.
+		return record, authn.ErrTokenExpired
 	}
 	return record, nil
 }
