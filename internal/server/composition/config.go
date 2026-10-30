@@ -23,11 +23,13 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/collab"
 	servertsevents "github.com/buildbetter-app/plugs/internal/server/events"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
+	"github.com/buildbetter-app/plugs/internal/server/viewrpc"
 	"github.com/buildbetter-app/plugs/internal/server/watch"
 	"github.com/buildbetter-app/plugs/internal/server/watchhttp"
 	"github.com/buildbetter-app/plugs/internal/server/webui"
@@ -64,21 +66,40 @@ type Config struct {
 	CursorKey    []byte
 	LeaseHolder  string
 	StoreFactory StoreFactory
+
+	// ViewReader and Readiness are optional host-owned read projections. When
+	// ViewReader is present, view.run/view.explain and view.watch are composed
+	// over the same store, lease and projection status source.
+	ViewReader    viewops.ViewReader
+	Readiness     viewops.ReadinessReader
+	AuthorizeRead viewops.AuthorizeRead
+
+	// ProjectionBindings are the effective projection bindings owned by this
+	// composition. Their durable state is read through the checkpoint adapter;
+	// no process-local status is inferred when the list is empty.
+	ProjectionBindings []coreevents.Binding
+	ProjectionRegistry *coreevents.ProjectionRegistry
+	ProjectionBinding  string
 }
 
 // Runtime is the composition owner. HTTP, sessions and watches are optional
 // handles into the same lifetime; callers must close Runtime exactly once.
 type Runtime struct {
-	Store         driver.Store
-	Lease         driver.ActiveLease
-	Service       *service.Service
-	RPC           *rpc.Server
-	Authenticator *authn.Authenticator
-	HTTPHandler   *httpjson.Handler
-	UIHandler     *webui.Handler
-	WatchHTTP     *watchhttp.Adapter
-	Sessions      *collab.Manager
-	Watches       *watch.Manager
+	Store            driver.Store
+	Lease            driver.ActiveLease
+	Service          *service.Service
+	RPC              *rpc.Server
+	Metrics          *pipeline.Collector
+	Authenticator    *authn.Authenticator
+	HTTPHandler      *httpjson.Handler
+	UIHandler        *webui.Handler
+	WatchHTTP        *watchhttp.Adapter
+	Sessions         *collab.Manager
+	Watches          *watch.Manager
+	Views            *viewops.Service
+	Projections      *coreevents.ProjectionRegistry
+	Dispatcher       *coreevents.Dispatcher
+	ProjectionStatus coreevents.ProjectionStatusReader
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -208,7 +229,8 @@ func (r *Runtime) bind(config Config) error {
 		return fmt.Errorf("composition: read store metadata: %w", err)
 	}
 	ontology := service.NewOntology(nil)
-	writer := pipeline.New(r.Store, r.Lease, pipeline.WithOntology(ontology))
+	writer, metrics := newPipelineWriter(r.Store, r.Lease, pipeline.WithOntology(ontology))
+	r.Metrics = metrics
 	r.Service = service.New(r.Store, r.Lease, writer, service.WithOntology(ontology))
 	registry, err := rpc.NewRegistry()
 	if err != nil {
@@ -246,11 +268,56 @@ func (r *Runtime) bind(config Config) error {
 		Authorization: coreevents.AllowAll{},
 	}
 	eventService := &servertsevents.Service{Reader: eventReader, Cursors: cursors}
-	r.Watches, err = watch.New(r.ctx, watch.Config{Events: eventService, Presence: r.Sessions})
+	checkpoints, err := servertsevents.NewCheckpoints(r.Store, r.Lease)
+	if err != nil {
+		return fmt.Errorf("composition: create durable checkpoints: %w", err)
+	}
+	projectionRegistry := config.ProjectionRegistry
+	if projectionRegistry == nil {
+		projectionRegistry = coreevents.NewProjectionRegistry()
+	}
+	for _, binding := range config.ProjectionBindings {
+		if err := projectionRegistry.RegisterProjection(binding); err != nil {
+			return fmt.Errorf("composition: register projection %q: %w", binding.ID, err)
+		}
+	}
+	r.Projections = projectionRegistry
+	r.Dispatcher = &coreevents.Dispatcher{Reader: eventReader, Checkpoints: checkpoints, Active: r.Lease}
+	if len(projectionRegistry.Bindings()) != 0 {
+		status, statusErr := servertsevents.NewProjectionStatusReader(servertsevents.ProjectionStatusConfig{
+			Checkpoints: checkpoints,
+			Log:         servertsevents.Log{Store: r.Store},
+			Lease:       r.Lease,
+			Registry:    projectionRegistry,
+		})
+		if statusErr != nil {
+			return fmt.Errorf("composition: create projection status: %w", statusErr)
+		}
+		r.ProjectionStatus = status
+	}
+	viewBinding := config.ProjectionBinding
+	if viewBinding == "" {
+		viewBinding = "core"
+	}
+	r.Views, err = viewops.New(r.Store, r.Lease, viewops.Config{
+		Views:             config.ViewReader,
+		Readiness:         config.Readiness,
+		AuthorizeRead:     config.AuthorizeRead,
+		ProjectionStatus:  r.ProjectionStatus,
+		ProjectionBinding: viewBinding,
+		OntologyRevision:  model.Natural64(1),
+	})
+	if err != nil {
+		return fmt.Errorf("composition: create view service: %w", err)
+	}
+	if err := viewrpc.BindWithConfig(registry, r.Views, viewrpc.Config{CursorKey: key}); err != nil {
+		return fmt.Errorf("composition: bind views: %w", err)
+	}
+	r.Watches, err = watch.New(r.ctx, watch.Config{Events: eventService, Views: r.Views, Presence: r.Sessions})
 	if err != nil {
 		return fmt.Errorf("composition: create watch manager: %w", err)
 	}
-	watchAdapter, err := watchhttp.New(r.Watches, watchhttp.Config{Ontology: model.Natural64(1)})
+	watchAdapter, err := watchhttp.New(r.Watches, watchhttp.Config{Ontology: model.Natural64(1), Views: r.Views})
 	if err != nil {
 		return fmt.Errorf("composition: create watch adapter: %w", err)
 	}

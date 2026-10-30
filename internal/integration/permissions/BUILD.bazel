@@ -1,0 +1,40 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "permissions",
+    srcs = ["compose.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/integration/permissions",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/core/authz",
+        "//internal/core/port",
+        "//internal/plugins/authnapikey",
+        "//internal/server/authzrpc",
+        "//internal/server/transport/httpjson",
+        "//internal/storage/driver",
+    ],
+)
+
+go_test(
+    name = "permissions_test",
+    srcs = ["permissions_test.go"],
+    embed = [":permissions"],
+    deps = [
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/server/authzrpc",
+        "//internal/server/transport/httpjson",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

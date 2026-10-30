@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -150,5 +151,80 @@ func (s *Store) FinalizeResponse(ctx context.Context, lease driver.ActiveLease, 
 	return tx.Commit()
 }
 
+func (s *Store) PutCoreSession(ctx context.Context, value driver.CoreSessionRecord, now time.Time, max int) error {
+	if err := s.check(ctx); err != nil {
+		return err
+	}
+	if err := value.Validate(); err != nil {
+		return err
+	}
+	if now.IsZero() || max <= 0 {
+		return fmt.Errorf("postgres: invalid core session bounds")
+	}
+	digest := bytes.Clone(value.TokenDigest)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// Capacity is a provider bound, so serialize it across independent
+	// processes rather than allowing two issuers to pass the same count.
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(58193481276902)`); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM plug_postgres.core_sessions WHERE revoked=false AND expires_at<= $1`, now.UTC()); err != nil {
+		return err
+	}
+	var active int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM plug_postgres.core_sessions WHERE revoked=false AND expires_at>$1`, now.UTC()).Scan(&active); err != nil {
+		return err
+	}
+	if active >= max {
+		return driver.ErrConflict
+	}
+	var id string
+	err = tx.QueryRowContext(ctx, `INSERT INTO plug_postgres.core_sessions(id,token_digest,principal_kind,principal_id,expires_at,revoked) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING RETURNING id`, value.ID, digest, value.Principal.Kind, value.Principal.ID, value.ExpiresAt.UTC(), value.Revoked).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return driver.ErrConflict
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) LookupCoreSession(ctx context.Context, id string) (driver.CoreSessionRecord, error) {
+	if err := s.check(ctx); err != nil {
+		return driver.CoreSessionRecord{}, err
+	}
+	var value driver.CoreSessionRecord
+	err := s.db.QueryRowContext(ctx, `SELECT token_digest,principal_kind,principal_id,expires_at,revoked FROM plug_postgres.core_sessions WHERE id=$1`, id).Scan(&value.TokenDigest, &value.Principal.Kind, &value.Principal.ID, &value.ExpiresAt, &value.Revoked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return driver.CoreSessionRecord{}, driver.ErrNotFound
+	}
+	if err != nil {
+		return driver.CoreSessionRecord{}, err
+	}
+	if len(value.TokenDigest) != 32 {
+		return driver.CoreSessionRecord{}, fmt.Errorf("postgres: malformed core session record")
+	}
+	value.ID = id
+	value.TokenDigest = bytes.Clone(value.TokenDigest)
+	return value, nil
+}
+
+func (s *Store) RevokeCoreSession(ctx context.Context, id string) (bool, error) {
+	if err := s.check(ctx); err != nil {
+		return false, err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE plug_postgres.core_sessions SET revoked=true WHERE id=$1 AND revoked=false`, id)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	return changed == 1, err
+}
+
 var _ driver.CheckpointStore = (*Store)(nil)
 var _ driver.ResponseFinalizer = (*Store)(nil)
+var _ driver.CoreSessionStore = (*Store)(nil)
