@@ -657,7 +657,7 @@ func (h *Handler) initialize(ctx context.Context, id json.RawMessage, params map
 		return h.syntheticError(ctx, id, "invalid_params", "initialize requires protocolVersion")
 	}
 	if !h.supportedProtocol(protocol) {
-		return h.syntheticError(ctx, id, "invalid_params", "unsupported protocolVersion")
+		protocol = h.cfg.ProtocolVersion
 	}
 	capabilities, ok := params["capabilities"]
 	if !ok {
