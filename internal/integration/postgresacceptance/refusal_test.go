@@ -10,7 +10,7 @@ func TestUnsupportedCardRemainderRefusesExplicitly(t *testing.T) {
 		name, method, code string
 		params             map[string]any
 	}{
-		{"B21-wire-batch", "tx.apply", "method_not_found", map[string]any{"ops": []any{}}},
+		{"B21-wire-batch", "tx.apply", "invalid_params", map[string]any{"ops": []any{}}},
 		{"B08-wire-reopen", "bead.reopen", "invalid_params", map[string]any{"id": ref("pl-a")}},
 		{"B18-wire-versions", "history.versions", "method_not_found", map[string]any{"ref": ref("pl-a")}},
 		{"B01-saved-view", "bead.ready", "invalid_params", map[string]any{"viewId": "not-installed"}},

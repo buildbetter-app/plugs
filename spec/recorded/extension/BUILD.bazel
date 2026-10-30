@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+exports_files(["extension.json"])
+
+go_test(
+    name = "extension_test",
+    srcs = ["extension_test.go"],
+    embedsrcs = [
+        "build50_record.py",
+        "extension.json",
+        "provenance.py",
+    ],
+    args = ["-test.v"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
