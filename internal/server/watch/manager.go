@@ -3,7 +3,10 @@ package watch
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -27,6 +30,13 @@ type Manager struct {
 	closed       bool
 	watches      map[string]*watch
 	session      map[string]map[string]*watch
+}
+
+// PresenceEnabled reports whether this manager has the real collaboration
+// source needed to bind presence.watch. It is intentionally read-only so the
+// registry cannot advertise a handler that would later lack its source.
+func (m *Manager) PresenceEnabled() bool {
+	return m != nil && !isNilInterface(m.config.Presence)
 }
 
 type watch struct {
@@ -62,6 +72,12 @@ type watch struct {
 	// currently visible resources so a queued frame can become visibility.lost
 	// without exposing a stale before/after image.
 	auth *visibilityAuthorization
+}
+
+type pollResult struct {
+	page     serverevents.Page
+	position coreevents.Position
+	changed  bool
 }
 
 // New validates the actual event reader and starts the manager lifetime. The
@@ -131,13 +147,20 @@ func (m *Manager) Open(ctx context.Context, request Request) (*Subscription, err
 	if !request.Method.valid() {
 		return nil, ErrUnsupportedMethod
 	}
+	if request.Method == MethodPresenceWatch && (isNilInterface(m.config.Presence) || request.Project == "") {
+		return nil, ErrInvalidRequest
+	}
 	if request.Principal.Kind == "" || request.Principal.ID == "" {
 		return nil, ErrInvalidRequest
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if request.Method == MethodViewWatch || request.ViewID != "" {
+	if request.Method == MethodViewWatch {
+		if request.ViewID == "" {
+			return nil, ErrInvalidRequest
+		}
+	} else if request.ViewID != "" {
 		return nil, ErrViewCheckpointRequired
 	}
 	// Own all request maps/slices before the caller can reuse its arguments.
@@ -223,6 +246,25 @@ func (m *Manager) newID() (string, error) {
 		return "", fmt.Errorf("watch subscription ID generation failed: %w", err)
 	}
 	return "sub-" + hex.EncodeToString(random[:]), nil
+}
+
+// SetViewResolver installs the real saved-view checkpoint compiler before a
+// host begins opening subscriptions. The manager refuses replacement while a
+// watch is live so an existing cursor cannot silently change meaning.
+func (m *Manager) SetViewResolver(resolver ViewResolver) error {
+	if m == nil || resolver == nil {
+		return ErrInvalidRequest
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || m.ctx.Err() != nil {
+		return ErrClosed
+	}
+	if len(m.watches) != 0 {
+		return ErrInvalidRequest
+	}
+	m.config.Views = resolver
+	return nil
 }
 
 // Cancel releases a watch by its subscription ID. It is safe to call more
@@ -408,19 +450,19 @@ func (current *watch) open() error {
 	if err != nil {
 		return err
 	}
-	page, position, err := current.poll(current.ctx, current.request.From, binding)
+	polled, err := current.poll(current.ctx, current.request.From, binding)
 	if err != nil {
 		return err
 	}
 	current.mu.Lock()
-	current.binding, current.cursor, current.position = binding, page.Cursor, position
-	current.openingCursor = page.Cursor
+	current.binding, current.cursor, current.position = binding, polled.page.Cursor, polled.position
+	current.openingCursor = polled.page.Cursor
 	current.mu.Unlock()
 	kind := FrameSnapshot
-	if page.Reset {
+	if polled.page.Reset {
 		kind = FrameReset
 	}
-	frame := current.frame(kind, "", page, position, binding)
+	frame := current.frame(kind, "", polled.page, polled.position, binding)
 	return current.enqueue(frame)
 }
 
@@ -440,7 +482,11 @@ func (current *watch) run() {
 			if err := current.step(); err != nil {
 				current.mu.Lock()
 				if current.closeErr == nil {
-					current.closeErr = err
+					if current.ctx.Err() != nil {
+						current.closeErr = ErrSubscriptionClosed
+					} else {
+						current.closeErr = err
+					}
 				}
 				current.mu.Unlock()
 				current.cancel()
@@ -459,28 +505,36 @@ func (current *watch) step() error {
 	current.mu.Unlock()
 	binding, err := current.manager.binding(current.ctx, current.request)
 	if err != nil {
+		if current.request.Method == MethodViewWatch && isViewDeleted(err) {
+			if polled, pollErr := current.poll(current.ctx, oldCursor, oldBinding); pollErr == nil {
+				if polled.page.Reset || len(polled.page.Events) != 0 {
+					return current.enqueue(current.frame(FrameReset, current.emittedCursor, polled.page, polled.position, oldBinding))
+				}
+			}
+			return current.replaceWithReset("view_deleted", oldBinding)
+		}
 		return err
 	}
-	if reason := bindingChange(oldBinding, binding); reason != "" {
+	if reason := watchBindingChange(current.request.Method, bindingChange(oldBinding, binding)); reason != "" {
 		if reason == "incarnation_changed" {
 			// Let server/events turn the stale old-incarnation cursor into its
 			// mandatory event.gap. Do not manufacture a reset at the old tuple.
-			page, position, err := current.poll(current.ctx, oldCursor, oldBinding)
+			polled, err := current.incarnationPoll(current.ctx, oldCursor, oldBinding)
 			if err != nil {
 				return err
 			}
-			return current.enqueue(current.frame(FrameReset, current.emittedCursor, page, position, oldBinding))
+			return current.enqueue(current.frame(FrameReset, current.emittedCursor, polled.page, polled.position, oldBinding))
 		}
 		return current.replaceWithReset(reason, binding)
 	}
-	page, position, err := current.poll(current.ctx, oldCursor, oldBinding)
+	polled, err := current.poll(current.ctx, oldCursor, oldBinding)
 	if err != nil {
 		return err
 	}
-	if len(page.Events) == 0 && !page.Reset {
+	if !polled.changed {
 		current.mu.Lock()
 		if !current.halted {
-			current.cursor, current.position = page.Cursor, position
+			current.cursor, current.position, current.binding = polled.page.Cursor, polled.position, cloneBinding(binding)
 		}
 		current.mu.Unlock()
 		return nil
@@ -489,10 +543,10 @@ func (current *watch) step() error {
 	from := current.emittedCursor
 	current.mu.Unlock()
 	kind := FrameDelta
-	if page.Reset {
+	if polled.page.Reset {
 		kind = FrameReset
 	}
-	return current.enqueue(current.frame(kind, from, page, position, oldBinding))
+	return current.enqueue(current.frame(kind, from, polled.page, polled.position, binding))
 }
 
 func bindingChange(a, b Binding) string {
@@ -510,10 +564,25 @@ func bindingChange(a, b Binding) string {
 	}
 }
 
+func watchBindingChange(method Method, reason string) string {
+	if method == MethodViewWatch && reason == "visibility_changed" {
+		return "view_changed"
+	}
+	return reason
+}
+
+func isViewDeleted(err error) bool {
+	var typed *model.Error
+	return errors.As(err, &typed) && typed.Data.Code == "not_found"
+}
+
 // The event service owns actual log/materializer/authorization semantics. It
 // uses event.subscribe internally; translate signed tokens at this boundary so
 // a bead.watch token cannot be replayed as event.subscribe (or vice versa).
-func (current *watch) poll(ctx context.Context, after string, binding Binding) (serverevents.Page, coreevents.Position, error) {
+func (current *watch) poll(ctx context.Context, after string, binding Binding) (pollResult, error) {
+	if current.request.Method == MethodPresenceWatch {
+		return current.presencePoll(ctx, after, binding)
+	}
 	service := *current.manager.config.Events
 	reader := *service.Reader
 	reader.Authorization = current.auth
@@ -524,39 +593,39 @@ func (current *watch) poll(ctx context.Context, after string, binding Binding) (
 	}
 	inner, err := serverevents.BindingFor("event.subscribe", filter, binding.Principal, binding.Ontology, binding.PolicyVersion)
 	if err != nil {
-		return serverevents.Page{}, coreevents.Position{}, err
+		return pollResult{}, err
 	}
 	outer, err := current.cursorBinding(binding)
 	if err != nil {
-		return serverevents.Page{}, coreevents.Position{}, err
+		return pollResult{}, err
 	}
 	if after != "" {
 		position, err := service.Cursors.Decode(after, outer)
 		if err != nil {
-			return serverevents.Page{}, coreevents.Position{}, err
+			return pollResult{}, err
 		}
 		after, err = service.Cursors.Encode(position, inner)
 		if err != nil {
-			return serverevents.Page{}, coreevents.Position{}, err
+			return pollResult{}, err
 		}
 	}
 	page, err := service.Poll(ctx, serverevents.Request{Principal: binding.Principal, Filter: filter, After: after, Limit: current.manager.config.PageLimit, Ontology: binding.Ontology, PolicyVersion: binding.PolicyVersion, SubscriptionID: current.id})
 	if err != nil {
-		return page, coreevents.Position{}, err
+		return pollResult{}, err
 	}
 	position, err := service.Cursors.Decode(page.Cursor, inner)
 	if err != nil {
-		return page, position, err
+		return pollResult{}, err
 	}
 	page.Cursor, err = service.Cursors.Encode(position, outer)
 	if err != nil {
-		return page, position, err
+		return pollResult{}, err
 	}
 	for i := range page.Events {
 		event := &page.Events[i]
 		token, err := service.Cursors.Encode(coreevents.PositionOf(*event), outer)
 		if err != nil {
-			return page, position, err
+			return pollResult{}, err
 		}
 		if event.Durable != nil {
 			event.Durable.Cursor = token
@@ -568,7 +637,102 @@ func (current *watch) poll(ctx context.Context, after string, binding Binding) (
 			}
 		}
 	}
-	return page, position, nil
+	return pollResult{page: page, position: position, changed: len(page.Events) > 0 || page.Reset}, nil
+}
+
+// presencePoll turns the current, viewer-filtered collaboration snapshot into
+// a signed opaque cursor. Presence is intentionally not written to the event
+// log; a changed snapshot produces an empty watch.delta signal and the client
+// reads the current rows through presence.list. The hash is deterministic, so
+// a reconnect from an older cursor advances when the live snapshot changed.
+func (current *watch) presencePoll(ctx context.Context, after string, binding Binding) (pollResult, error) {
+	if isNilInterface(current.manager.config.Presence) {
+		return pollResult{}, ErrInvalidRequest
+	}
+	outer, err := current.cursorBinding(binding)
+	if err != nil {
+		return pollResult{}, err
+	}
+	var previous coreevents.Position
+	if after != "" {
+		previous, err = current.manager.config.Events.Cursors.Decode(after, outer)
+		if err != nil {
+			return pollResult{}, err
+		}
+		if previous.Incarnation != binding.Incarnation {
+			return current.presenceGapPoll(ctx, after, binding)
+		}
+	}
+	data, err := current.manager.config.Presence.Snapshot(ctx, binding.Principal, current.request.Agent, current.request.SessionID, current.request.Project)
+	if err != nil {
+		return pollResult{}, err
+	}
+	sum := sha256.Sum256(data)
+	position := coreevents.Position{Incarnation: binding.Incarnation, Revision: model.Natural64(binary.BigEndian.Uint64(sum[:8]))}
+	cursor, err := current.manager.config.Events.Cursors.Encode(position, outer)
+	if err != nil {
+		return pollResult{}, err
+	}
+	return pollResult{page: serverevents.Page{Events: []model.Event{}, Cursor: cursor}, position: position, changed: after != "" && (previous.Incarnation != position.Incarnation || previous.Revision.String() != position.Revision.String())}, nil
+}
+
+// incarnationPoll keeps the mandatory event.gap boundary for presence cursors
+// even though presence revisions are snapshot hashes rather than log heads.
+func (current *watch) incarnationPoll(ctx context.Context, after string, binding Binding) (pollResult, error) {
+	if current.request.Method != MethodPresenceWatch {
+		return current.poll(ctx, after, binding)
+	}
+	return current.presenceGapPoll(ctx, after, binding)
+}
+
+func (current *watch) presenceGapPoll(ctx context.Context, after string, binding Binding) (pollResult, error) {
+	service := *current.manager.config.Events
+	filter := cloneFilter(binding.Filter)
+	inner, err := serverevents.BindingFor("event.subscribe", filter, binding.Principal, binding.Ontology, binding.PolicyVersion)
+	if err != nil {
+		return pollResult{}, err
+	}
+	outer, err := current.cursorBinding(binding)
+	if err != nil {
+		return pollResult{}, err
+	}
+	position, err := service.Cursors.Decode(after, outer)
+	if err != nil {
+		return pollResult{}, err
+	}
+	encoded, err := service.Cursors.Encode(position, inner)
+	if err != nil {
+		return pollResult{}, err
+	}
+	page, err := service.Poll(ctx, serverevents.Request{
+		Principal: binding.Principal, Filter: filter, After: encoded,
+		Limit: current.manager.config.PageLimit, Ontology: binding.Ontology,
+		PolicyVersion: binding.PolicyVersion, SubscriptionID: current.id,
+	})
+	if err != nil {
+		return pollResult{}, err
+	}
+	position, err = service.Cursors.Decode(page.Cursor, inner)
+	if err != nil {
+		return pollResult{}, err
+	}
+	page.Cursor, err = service.Cursors.Encode(position, outer)
+	if err != nil {
+		return pollResult{}, err
+	}
+	for i := range page.Events {
+		event := &page.Events[i]
+		token, err := service.Cursors.Encode(coreevents.PositionOf(*event), outer)
+		if err != nil {
+			return pollResult{}, err
+		}
+		if event.Durable != nil {
+			event.Durable.Cursor = token
+		} else {
+			event.Control.Cursor = token
+		}
+	}
+	return pollResult{page: page, position: position, changed: true}, nil
 }
 
 func (current *watch) cursorBinding(binding Binding) (serverevents.CursorBinding, error) {
@@ -576,7 +740,7 @@ func (current *watch) cursorBinding(binding Binding) (serverevents.CursorBinding
 }
 
 func (current *watch) frame(kind FrameKind, from string, page serverevents.Page, position coreevents.Position, binding Binding) Frame {
-	frame := Frame{SubscriptionID: current.id, Kind: kind, FromCursor: from, Cursor: page.Cursor, position: position, binding: cloneBinding(binding), created: current.manager.config.Clock()}
+	frame := Frame{SubscriptionID: current.id, Kind: kind, FromCursor: from, Cursor: page.Cursor, position: position, binding: cloneBinding(binding), Projection: cloneProjectionStatus(binding.Projection), created: current.manager.config.Clock()}
 	if page.Reset {
 		frame.Reason = pageBoundaryReason(page)
 	}
@@ -611,7 +775,7 @@ func (current *watch) enqueue(frame Frame) error {
 	if current.halted {
 		return nil
 	}
-	current.cursor, current.position = frame.Cursor, frame.position
+	current.cursor, current.position, current.binding = frame.Cursor, frame.position, cloneBinding(frame.binding)
 	select {
 	case current.queue <- frame:
 		current.emittedCursor = frame.Cursor
@@ -633,7 +797,7 @@ func (current *watch) replaceLocked(reason string, binding Binding) error {
 	if err != nil {
 		return err
 	}
-	reset := Frame{SubscriptionID: current.id, Kind: FrameReset, Cursor: cursor, Reason: reason, position: current.position, binding: cloneBinding(binding), created: current.manager.config.Clock()}
+	reset := Frame{SubscriptionID: current.id, Kind: FrameReset, Cursor: cursor, Reason: reason, position: current.position, binding: cloneBinding(binding), Projection: cloneProjectionStatus(binding.Projection), created: current.manager.config.Clock()}
 	if err := reset.validate(); err != nil {
 		return err
 	}
@@ -706,28 +870,48 @@ func (current *watch) next(ctx context.Context, consumer *Subscription) (Frame, 
 	if frame.Kind != FrameReset {
 		binding, err := current.manager.binding(checkCtx, current.request)
 		if err != nil {
-			return Frame{}, current.fail(err)
+			if current.request.Method == MethodViewWatch && isViewDeleted(err) {
+				if resetErr := current.replaceWithReset("view_deleted", frame.binding); resetErr != nil {
+					return Frame{}, current.fail(resetErr)
+				}
+			} else {
+				return Frame{}, current.fail(err)
+			}
 		}
-		reason := bindingChange(frame.binding, binding)
-		if reason == "" && current.manager.config.Clock().Sub(frame.created) > current.manager.config.MaxLag {
-			reason = "lag"
-		}
-		if reason != "" {
-			if err := current.replaceWithReset(reason, binding); err != nil {
-				return Frame{}, current.fail(err)
+		if err == nil {
+			reason := watchBindingChange(current.request.Method, bindingChange(frame.binding, binding))
+			if reason == "" && current.manager.config.Clock().Sub(frame.created) > current.manager.config.MaxLag {
+				reason = "lag"
 			}
-		} else {
-			frame, err = current.revalidate(checkCtx, frame)
-			if err != nil {
-				return Frame{}, current.fail(err)
-			}
-			latest, err := current.manager.binding(checkCtx, current.request)
-			if err != nil {
-				return Frame{}, current.fail(err)
-			}
-			if reason := bindingChange(binding, latest); reason != "" {
-				if err := current.replaceWithReset(reason, latest); err != nil {
+			if reason != "" {
+				if err := current.replaceWithReset(reason, binding); err != nil {
 					return Frame{}, current.fail(err)
+				}
+			} else {
+				frame, err = current.revalidate(checkCtx, frame)
+				if err != nil {
+					return Frame{}, current.fail(err)
+				}
+				latest, latestErr := current.manager.binding(checkCtx, current.request)
+				if latestErr != nil {
+					if current.request.Method == MethodViewWatch && isViewDeleted(latestErr) {
+						if err := current.replaceWithReset("view_deleted", frame.binding); err != nil {
+							return Frame{}, current.fail(err)
+						}
+					} else {
+						return Frame{}, current.fail(latestErr)
+					}
+				} else if reason := watchBindingChange(current.request.Method, bindingChange(binding, latest)); reason != "" {
+					if err := current.replaceWithReset(reason, latest); err != nil {
+						return Frame{}, current.fail(err)
+					}
+				} else {
+					// Projection status is intentionally not part of
+					// bindingChange. Refresh the envelope metadata at the
+					// delivery boundary while retaining the exact cursor and
+					// payload binding that was polled.
+					frame.binding = cloneBinding(latest)
+					frame.Projection = cloneProjectionStatus(latest.Projection)
 				}
 			}
 		}
@@ -961,7 +1145,14 @@ func (m *Manager) binding(ctx context.Context, request Request) (Binding, error)
 	var binding Binding
 	var err error
 	if request.Method == MethodViewWatch || request.ViewID != "" {
-		return Binding{}, ErrViewCheckpointRequired
+		if request.Method != MethodViewWatch || request.ViewID == "" || m.config.Views == nil {
+			return Binding{}, ErrViewCheckpointRequired
+		}
+		view, resolveErr := m.config.Views.WatchBinding(ctx, request.Principal, request.ViewID)
+		if resolveErr != nil {
+			return Binding{}, resolveErr
+		}
+		binding = Binding{Principal: request.Principal, Filter: cloneFilter(view.Filter), Ontology: view.Ontology, PolicyVersion: view.PolicyVersion, Incarnation: view.Incarnation, Projection: cloneProjectionStatus(view.Projection)}
 	} else if m.config.Bindings != nil {
 		binding, err = m.config.Bindings.Current(ctx, request)
 		if err != nil {
@@ -975,12 +1166,20 @@ func (m *Manager) binding(ctx context.Context, request Request) (Binding, error)
 	}
 	if request.Method == MethodBeadWatch {
 		binding.Filter = coreevents.Filter{Resources: []string{request.Resource}}
+	} else if request.Method == MethodPresenceWatch {
+		binding.Filter = coreevents.Filter{Resources: []string{"presence/" + request.Project}}
 	}
 	if !samePrincipal(binding.Principal, request.Principal) {
 		return Binding{}, ErrBindingChanged
 	}
-	if request.Method != MethodViewWatch && request.Method != MethodBeadWatch && !sameFilter(binding.Filter, request.Filter) {
+	if request.Method != MethodViewWatch && request.Method != MethodBeadWatch && request.Method != MethodPresenceWatch && !sameFilter(binding.Filter, request.Filter) {
 		return Binding{}, ErrBindingChanged
+	}
+	if binding.Ontology.IsZero() {
+		binding.Ontology = request.Ontology
+	}
+	if binding.PolicyVersion == "" {
+		binding.PolicyVersion = request.PolicyVersion
 	}
 	if binding.Ontology.Validate() != nil {
 		return Binding{}, ErrInvalidRequest
@@ -1008,6 +1207,7 @@ func sameFilter(a, b coreevents.Filter) bool {
 func cloneFilter(filter coreevents.Filter) coreevents.Filter {
 	filter.Types = append([]string(nil), filter.Types...)
 	filter.Resources = append([]string(nil), filter.Resources...)
+	filter.BeadTypes = append([]string(nil), filter.BeadTypes...)
 	return filter
 }
 
@@ -1015,8 +1215,10 @@ func normalizeFilter(filter coreevents.Filter) coreevents.Filter {
 	filter = cloneFilter(filter)
 	sort.Strings(filter.Types)
 	sort.Strings(filter.Resources)
+	sort.Strings(filter.BeadTypes)
 	filter.Types = compactStrings(filter.Types)
 	filter.Resources = compactStrings(filter.Resources)
+	filter.BeadTypes = compactStrings(filter.BeadTypes)
 	return filter
 }
 

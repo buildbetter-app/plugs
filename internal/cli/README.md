@@ -33,6 +33,12 @@ human and JSON modes. Ready/history cursors stay opaque and are passed back
 unchanged for the server to verify. A `session` is a stream of command arrays,
 not a presence session; it creates no `session.open` resource.
 
+Ontology commands use the same client and registry. `ontology plan` accepts a
+JSON document with `--document` and optional CAS JSON with `--expect`; `ontology
+apply PLAN_DIGEST` requires `--expect` and an explicit `--proof DIGEST` (or
+`--session-id ID` for an interactive session). `ontology schema` requires an
+explicit `--project` and `--type`; history and diff use integer revisions.
+
 Without a selected server, the CLI opens persistent SQLite at
 `.plug/plug.db`, creating `.plug/` with private permissions when needed. A
 workspace `.plug/config.yaml` may select a server or a local SQLite path:
@@ -47,5 +53,8 @@ storage:
 or conflicting settings fail closed. `--memory` is the explicit disposable
 choice and emits its lifetime warning; it does not reuse the persistent file.
 Unsupported commands, including login, server startup, watches and generic RPC
-calls, continue to fail explicitly. This slice makes no full behavior-card or
-performance acceptance claim.
+calls, continue to fail explicitly. The read surfaces are available as `events`
+(or `events tail`), `history get`, `history diff`, and `health`; they use the
+same opaque cursors, pinned revisions, bounded JSON Patch results, and
+read-only health response as their JSON-RPC methods. This slice makes no full
+behavior-card or performance acceptance claim.

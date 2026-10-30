@@ -48,18 +48,28 @@ var (
 )
 
 // Method names are the admitted watch slice. event.subscribe is the generic
-// stream; bead.watch narrows it to one canonical bead resource. view.watch
-// refuses until an actual published view checkpoint is adopted.
+// stream; bead.watch narrows it to one canonical bead resource; view.watch
+// obtains its membership from the real view resolver. presence.watch is a
+// signal stream backed by the live collaboration manager.
 type Method string
 
 const (
 	MethodEventSubscribe Method = "event.subscribe"
 	MethodBeadWatch      Method = "bead.watch"
 	MethodViewWatch      Method = "view.watch"
+	MethodPresenceWatch  Method = "presence.watch"
 )
 
 func (m Method) valid() bool {
-	return m == MethodEventSubscribe || m == MethodBeadWatch || m == MethodViewWatch
+	return m == MethodEventSubscribe || m == MethodBeadWatch || m == MethodViewWatch || m == MethodPresenceWatch
+}
+
+// PresenceSource is the narrow port from the watch manager to the live
+// collaboration manager. Snapshot must return canonical, viewer-filtered bytes
+// for the supplied session and project. The watch manager hashes those bytes
+// into its signed cursor; it never reconstructs presence or grants access.
+type PresenceSource interface {
+	Snapshot(context.Context, model.PrincipalRef, string, string, string) ([]byte, error)
 }
 
 // Request is the trusted, domain-level input to Manager.Open. Principal is
@@ -71,6 +81,8 @@ type Request struct {
 	SubscriptionID string
 	Method         Method
 	Principal      model.PrincipalRef
+	Agent          string
+	Project        string
 	Filter         coreevents.Filter
 	Resource       string
 	ViewID         string
@@ -89,6 +101,11 @@ type Binding struct {
 	Ontology      model.Revision
 	PolicyVersion string
 	Incarnation   string
+	// Projection is read-only checkpoint metadata for a view.watch. It is
+	// carried in the stream envelope, but deliberately excluded from cursor
+	// bindings: a stalled or repaired projection must not invalidate a client
+	// resume token or force a view reset.
+	Projection *coreevents.ProjectionStatus
 }
 
 // BindingSource supplies authoritative current binding state. A nil source
@@ -110,12 +127,20 @@ func (s StaticBinding) Current(_ context.Context, _ Request) (Binding, error) {
 	return cloneBinding(s.Binding), nil
 }
 
+// ViewBinding and ViewResolver are aliases to the neutral core event seam.
+// Keeping the aliases here preserves the watch package API while allowing the
+// core view service to implement the resolver without a package cycle.
+type ViewBinding = coreevents.ViewBinding
+type ViewResolver = coreevents.ViewResolver
+
 // Config wires an event service and optional authoritative binding source.
 // The host explicitly supplies authorization, including AllowAll only for a
 // no-plugin installation. Constructors can reject nil ports, not certify them.
 type Config struct {
 	Events      *serverevents.Service
 	Bindings    BindingSource
+	Views       ViewResolver
+	Presence    PresenceSource
 	QueueSize   int
 	MaxLag      time.Duration
 	Coalesce    time.Duration
@@ -148,6 +173,10 @@ type Frame struct {
 	Cursor         string
 	Events         []model.Event
 	Reason         string
+	// Projection is optional metadata for view.watch frames. It is kept out of
+	// the event control union so existing event cursors and watch.delta details
+	// remain byte-compatible.
+	Projection *coreevents.ProjectionStatus
 
 	// position is the decoded cursor tuple used to form the canonical control
 	// envelope. It is intentionally private; callers use Cursor as the opaque
@@ -204,11 +233,12 @@ func (f Frame) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	type wire struct {
-		SubscriptionID string        `json:"subscriptionId"`
-		Events         []model.Event `json:"events"`
-		Cursor         string        `json:"cursor"`
+		SubscriptionID string                       `json:"subscriptionId"`
+		Events         []model.Event                `json:"events"`
+		Cursor         string                       `json:"cursor"`
+		Projection     *coreevents.ProjectionStatus `json:"projection,omitempty"`
 	}
-	return json.Marshal(wire{SubscriptionID: f.SubscriptionID, Events: f.WireEvents(), Cursor: f.Cursor})
+	return json.Marshal(wire{SubscriptionID: f.SubscriptionID, Events: f.WireEvents(), Cursor: f.Cursor, Projection: cloneProjectionStatus(f.Projection)})
 }
 
 func (f Frame) validate() error {
@@ -265,6 +295,8 @@ func copyEvents(events []model.Event) ([]model.Event, error) {
 func cloneBinding(binding Binding) Binding {
 	binding.Filter.Types = append([]string(nil), binding.Filter.Types...)
 	binding.Filter.Resources = append([]string(nil), binding.Filter.Resources...)
+	binding.Filter.BeadTypes = append([]string(nil), binding.Filter.BeadTypes...)
+	binding.Projection = cloneProjectionStatus(binding.Projection)
 	if binding.Principal.Sponsor != nil || binding.Principal.Caveats != nil {
 		raw, err := json.Marshal(binding.Principal)
 		if err == nil {
@@ -275,6 +307,26 @@ func cloneBinding(binding Binding) Binding {
 		}
 	}
 	return binding
+}
+
+// cloneProjectionStatus owns every pointer in the status metadata before it
+// crosses a watch queue or transport boundary. The reader may reuse its
+// failure/resume values on the next status poll; a queued frame must remain a
+// stable snapshot for its consumer.
+func cloneProjectionStatus(status *coreevents.ProjectionStatus) *coreevents.ProjectionStatus {
+	if status == nil {
+		return nil
+	}
+	copy := *status
+	if status.Failure != nil {
+		failure := *status.Failure
+		copy.Failure = &failure
+	}
+	if status.Resume != nil {
+		resume := *status.Resume
+		copy.Resume = &resume
+	}
+	return &copy
 }
 
 // Terminal reports whether a client must reopen before receiving more data.
