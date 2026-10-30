@@ -72,6 +72,7 @@ engdocs/plug-next/README.md
 engdocs/plug-next/audit.md
 engdocs/plug-next/authn.md
 engdocs/plug-next/cli-rpc-trace.json
+engdocs/plug-next/dump-restore.md
 engdocs/plug-next/ontology-rpc.md
 engdocs/plug-next/remote-cli.md
 engdocs/plug-next/sql.md
@@ -361,6 +362,9 @@ internal/integration/ontologyrefusals/fixture_test.go
 internal/integration/ontologysql/BUILD.bazel
 internal/integration/ontologysql/README.md
 internal/integration/ontologysql/integration_test.go
+internal/integration/permissions/BUILD.bazel
+internal/integration/permissions/compose.go
+internal/integration/permissions/permissions_test.go
 internal/integration/plugingrants/BUILD.bazel
 internal/integration/plugingrants/integration_test.go
 internal/integration/postgresacceptance/BUILD.bazel
@@ -432,6 +436,11 @@ internal/server/authn/http.go
 internal/server/authn/http_test.go
 internal/server/authn/session.go
 internal/server/authn/session_test.go
+internal/server/authzrpc/BUILD.bazel
+internal/server/authzrpc/authzrpc.go
+internal/server/authzrpc/checker.go
+internal/server/authzrpc/service.go
+internal/server/authzrpc/slice.go
 internal/server/claimrpc/BUILD.bazel
 internal/server/claimrpc/service.go
 internal/server/claimrpc/service_test.go

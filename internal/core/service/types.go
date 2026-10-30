@@ -31,8 +31,10 @@ type AsOf struct {
 // Ready continues at Offset in the live ordered list; AsOf identifies the last
 // observed page and incarnation. History instead pins every page to AsOf.
 type PagePosition struct {
-	Offset int
-	AsOf   AsOf
+	Offset                int
+	AsOf                  AsOf
+	AuthorizationRevision model.Revision
+	AuthorizationBound    bool
 }
 
 type Filter struct {
