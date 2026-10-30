@@ -399,3 +399,111 @@ func TestNativeRestoreFailureCleanupAndReadOnlyUncertainLookup(t *testing.T) {
 		}
 	}
 }
+
+type nativeCompletionStore struct {
+	driver.Store
+	mode         string
+	committed    model.Changeset
+	commits      int
+	observations int
+	cancel       context.CancelFunc
+}
+
+func (s *nativeCompletionStore) Meta(ctx context.Context) (driver.Meta, error) {
+	meta, err := s.Store.Meta(ctx)
+	if s.committed.Incarnation == "" {
+		return meta, err
+	}
+	s.observations++
+	if ctx.Err() != nil {
+		return driver.Meta{}, fmt.Errorf("completion observation retained cancelled context")
+	}
+	if s.mode == "unavailable" {
+		return driver.Meta{}, fmt.Errorf("injected post-commit metadata failure")
+	}
+	if s.mode == "later-incarnation" {
+		meta.Incarnation = "later-observed-incarnation"
+	}
+	return meta, err
+}
+
+func (s *nativeCompletionStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	tx, err := s.Store.Write(ctx, lease)
+	if err != nil {
+		return nil, err
+	}
+	return &nativeCompletionTx{WriteTx: tx, owner: s}, nil
+}
+
+type nativeCompletionTx struct {
+	driver.WriteTx
+	owner *nativeCompletionStore
+}
+
+func (t *nativeCompletionTx) PrepareNativeRestore(ctx context.Context, p driver.NativeRestoreProfile) (driver.Meta, error) {
+	return t.WriteTx.(driver.NativeRestoreTx).PrepareNativeRestore(ctx, p)
+}
+
+func (t *nativeCompletionTx) Commit(ctx context.Context, h driver.ChangesetHeader) (model.Changeset, error) {
+	t.owner.commits++
+	entry, err := t.WriteTx.Commit(ctx, h)
+	if err == nil {
+		t.owner.committed = entry
+		if t.owner.mode == "cancelled" {
+			t.owner.cancel()
+		}
+	}
+	return entry, err
+}
+
+func TestNativeRestoreCompletionRetainsAcknowledgedIncarnation(t *testing.T) {
+	data, archive := nativeProfileArchive(t)
+	manifest, hash := manifestForRestore(t, archive)
+	for _, kind := range []string{"memory", "sqlite"} {
+		for _, mode := range []string{"unavailable", "later-incarnation", "cancelled"} {
+			t.Run(kind+"/"+mode, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				var store driver.Store = memory.New()
+				if kind == "sqlite" {
+					store.Close()
+					var err error
+					store, err = (sqlite.Driver{}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "completion.db")})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				defer store.Close()
+				lease, err := store.Lease(ctx, "native-completion", driver.LeaseTTL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer lease.Release(context.Background())
+				target := &nativeCompletionStore{Store: store, mode: mode, cancel: cancel}
+				manager := restore.NewManager(target, lease, trustedPresenceVerifier())
+				status, err := manager.Begin(ctx, manifest, "head", restore.Presence(presence))
+				if err != nil {
+					t.Fatal(err)
+				}
+				uploadManagerArchive(t, ctx, manager, status.RestoreID, data, restore.Presence(presence))
+				by := model.PrincipalRef{Kind: "user", ID: "completion-owner"}
+				meta := model.WriteMeta{Method: "admin.restore.finish", AgentLabel: "completion-agent", IdempotencyKey: "completion-key"}
+				status, err = manager.Finish(ctx, status.RestoreID, hash, by, meta, restore.Presence(presence))
+				if err != nil || status.State != "complete" || status.Incarnation == "" || status.Incarnation != target.committed.Incarnation || target.observations != 1 || target.commits != 1 {
+					t.Fatalf("acknowledged completion=%+v commit=%+v observations=%d commits=%d err=%v", status, target.committed, target.observations, target.commits, err)
+				}
+				if len(status.Warnings) != 0 {
+					t.Fatal("completion invented a new wire warning", status)
+				}
+				repeated, err := manager.Finish(context.Background(), status.RestoreID, hash, by, meta, restore.Presence(presence))
+				if err != nil || !reflect.DeepEqual(repeated, status) || target.commits != 1 || target.observations != 1 {
+					t.Fatalf("repeated completion lost immutable status or retried: %+v %v", repeated, err)
+				}
+				actual, err := store.Meta(context.Background())
+				if err != nil || actual.Incarnation != status.Incarnation || actual.Head.String() != "1" || actual.HistoryFloor.String() != "1" {
+					t.Fatalf("acknowledgment differed from durable publication: %+v %v", actual, err)
+				}
+			})
+		}
+	}
+}

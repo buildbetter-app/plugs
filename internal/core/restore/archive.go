@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"sort"
 	"strconv"
@@ -333,13 +334,14 @@ func writeTar(paths []string, members map[string][]byte) ([]byte, error) {
 }
 
 type restoreSession struct {
-	id       string
-	manifest map[string]any
-	history  string
-	hash     string
-	pages    map[uint64][]byte
-	state    string
-	warnings []model.Warning
+	id          string
+	manifest    map[string]any
+	history     string
+	hash        string
+	pages       map[uint64][]byte
+	state       string
+	warnings    []model.Warning
+	incarnation string
 }
 
 // Manager is safe for concurrent RPC calls. A restore session is in-memory
@@ -710,22 +712,25 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 	}
 	m.mu.Unlock()
 
-	if err := m.apply(ctx, archive, principal, meta, archiveBytes); err != nil {
+	committed, err := m.apply(ctx, archive, principal, meta, archiveBytes)
+	if err != nil {
 		return m.fail(id, err)
 	}
 	// The commit is already durable at this point. Use a detached read for the
-	// completion marker so caller cancellation cannot turn a successful restore
-	// into a misleading failed status.
-	finalMeta, err := m.store.Meta(context.Background())
-	if err != nil {
-		return m.fail(id, err)
+	// observation so caller cancellation cannot turn a successful restore
+	// into a misleading failed status. The acknowledged changeset identifies
+	// this operation even if a later operation changes current metadata.
+	_, observationErr := m.store.Meta(context.Background())
+	if observationErr != nil {
+		// Observation failure does not undo an acknowledged durable commit.
+		slog.WarnContext(context.Background(), "restore committed; current store metadata observation unavailable", "restoreId", id)
 	}
 	m.mu.Lock()
 	if current := m.restores[id]; current != nil {
 		current.state = "complete"
+		current.incarnation = committed.Incarnation
 	}
 	status := restoreStatus(m.restores[id])
-	status.Incarnation = finalMeta.Incarnation
 	m.mu.Unlock()
 	return status, nil
 }
@@ -744,7 +749,7 @@ func restoreStatus(s *restoreSession) RestoreStatus {
 	if s == nil {
 		return RestoreStatus{}
 	}
-	return RestoreStatus{RestoreID: s.id, State: s.state, ReceivedPages: uint64(len(s.pages)), Warnings: append([]model.Warning(nil), s.warnings...)}
+	return RestoreStatus{RestoreID: s.id, State: s.state, ReceivedPages: uint64(len(s.pages)), Warnings: append([]model.Warning(nil), s.warnings...), Incarnation: s.incarnation}
 }
 
 func cloneMap(input map[string]any) map[string]any {
@@ -759,59 +764,59 @@ func newID(prefix string) string {
 	return prefix + "-" + strconv.FormatInt(value, 10)
 }
 
-func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, principal model.PrincipalRef, meta model.WriteMeta, archiveBytes []byte) error {
+func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, principal model.PrincipalRef, meta model.WriteMeta, archiveBytes []byte) (model.Changeset, error) {
 	records, err := restoreRecords(archive)
 	if err != nil {
-		return &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
+		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 	}
 	if m.lease == nil {
-		return &model.Error{Data: model.ErrorData{Code: "lease_not_held", Hint: "restore requires an active storage lease"}}
+		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "lease_not_held", Hint: "restore requires an active storage lease"}}
 	}
 	tx, err := m.store.Write(ctx, m.lease)
 	if err != nil {
-		return err
+		return model.Changeset{}, err
 	}
 	defer tx.Close()
 	capability, ok := tx.(driver.NativeRestoreTx)
 	if !ok {
-		return &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "native restore capability is unsupported"}}
+		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "native restore capability is unsupported"}}
 	}
 	locks, sentinels, err := restoreLocks(records)
 	if err != nil {
-		return &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
+		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 	}
 	states, err := tx.Lock(ctx, locks)
 	if err != nil {
-		return err
+		return model.Changeset{}, err
 	}
 	if len(states) != len(locks) {
-		return &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "driver acquired an incomplete restore lock set"}}
+		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "driver acquired an incomplete restore lock set"}}
 	}
 	for _, state := range states {
 		if state.Key.Kind == driver.LockRecord && state.Present {
-			return &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target contains records"}}
+			return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target contains records"}}
 		}
 	}
 	head, err := tx.Head(ctx)
 	if err != nil {
-		return err
+		return model.Changeset{}, err
 	}
 	if !head.IsZero() {
-		return &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target changed during restore"}}
+		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target changed during restore"}}
 	}
 	page, err := tx.Query(ctx, driver.Query{Limit: 1})
 	if err != nil {
-		return err
+		return model.Changeset{}, err
 	}
 	if len(page.Items) != 0 {
-		return &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target contains records"}}
+		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target contains records"}}
 	}
 	changesets, err := tx.Changesets(ctx, nil, 1)
 	if err != nil {
-		return err
+		return model.Changeset{}, err
 	}
 	if len(changesets) != 0 {
-		return &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target contains history"}}
+		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target contains history"}}
 	}
 	if meta.Method == "" {
 		meta.Method = "admin.restore.finish"
@@ -825,21 +830,21 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 		Method: meta.Method, AgentLabel: meta.AgentLabel, IdempotencyKey: meta.IdempotencyKey, RequestHash: requestHash,
 	})
 	if err != nil {
-		return restoreAdmissionError(err)
+		return model.Changeset{}, restoreAdmissionError(err)
 	}
 	for _, record := range records {
 		if err := tx.Put(ctx, record); err != nil {
-			return err
+			return model.Changeset{}, err
 		}
 	}
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
-		return err
+		return model.Changeset{}, err
 	}
 	changes := make([]model.ChangeRecord, 0, len(records))
 	results := make([]model.OpResult, 0, len(records))
 	nextRevision, err := head.Uint64()
 	if err != nil || nextRevision == ^uint64(0) {
-		return fmt.Errorf("restore revision space is exhausted")
+		return model.Changeset{}, fmt.Errorf("restore revision space is exhausted")
 	}
 	nextRevision++
 	for _, record := range records {
@@ -852,8 +857,8 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 		Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: requestHash,
 		Response: model.Commit{Results: results, Warnings: []model.Warning{}}, Changes: changes, LockKeys: lockKeysOnly(locks),
 	}
-	_, err = tx.Commit(ctx, header)
-	return restoreAdmissionError(err)
+	committed, err := tx.Commit(ctx, header)
+	return committed, restoreAdmissionError(err)
 }
 
 func restoreAdmissionError(err error) error {

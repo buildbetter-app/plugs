@@ -78,6 +78,68 @@ func requireCode(t *testing.T, response map[string]any, code string) {
 	}
 }
 
+func TestCurrentIncarnationResolvesAfterAdmissionForEveryBatchCall(t *testing.T) {
+	current, lookups := "before-restore", 0
+	type requestKey struct{}
+	ctx := context.WithValue(context.Background(), requestKey{}, "same-request")
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	r := registry(t)
+	if err := r.Register("bead.ready", func(context.Context, rpc.Call) (any, error) {
+		t.Fatal("unadmitted request reached handler")
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register("bead.create", func(context.Context, rpc.Call) (any, error) {
+		current = "after-restore"
+		return commitResult(), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := server(t, r, rpc.Config{Incarnation: "startup", AuthMode: "authenticated", CurrentIncarnation: func(ctx context.Context) (string, error) {
+		lookups++
+		if ctx.Value(requestKey{}) != "same-request" {
+			t.Fatal("provider lost request context")
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("provider ran before deadline admission")
+		}
+		return current, nil
+	}})
+	deadline := `{}`
+	batch := []byte(`[` + string(request("server.hello", deadline)) + `,` + string(request("bead.create", `{"type":"task","fields":{},"_meta":{"idempotencyKey":"11111111111111111111111111111111"}}`)) + `,` + string(request("server.hello", deadline)) + `]`)
+	var responses []map[string]any
+	if err := json.Unmarshal(s.Dispatch(rpc.WithPrincipal(ctx, model.PrincipalRef{Kind: "user", ID: "actual"}), batch), &responses); err != nil {
+		t.Fatal(err)
+	}
+	if len(responses) != 3 || result(t, responses[0])["incarnation"] != "before-restore" || result(t, responses[2])["incarnation"] != "after-restore" || lookups != 2 {
+		t.Fatalf("batch retained one generation or unrelated call read metadata: lookups=%d %v", lookups, responses)
+	}
+	// Schema/auth/deadline failures must not invoke the metadata provider.
+	for _, tc := range []struct{ method, params, code string }{
+		{"bead.ready", `{}`, "unauthenticated"},
+		{"bead.ready", `{"limit":"invalid"}`, "invalid_params"},
+	} {
+		requireCode(t, call(t, s, ctx, tc.method, tc.params), tc.code)
+	}
+	cancelled, stop := context.WithCancel(rpc.WithPrincipal(ctx, model.PrincipalRef{Kind: "user", ID: "actual"}))
+	stop()
+	value, err := wire.DecodeJSON(s.Dispatch(cancelled, request("bead.ready", `{}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireCode(t, value.(map[string]any), "busy")
+	if lookups != 2 {
+		t.Fatal("provider ran before request admission")
+	}
+	// With no provider, startup-only compositions retain their existing hello.
+	static := server(t, registry(t), rpc.Config{Incarnation: "static-incarnation"})
+	if result(t, call(t, static, context.Background(), "server.hello", `{}`))["incarnation"] != "static-incarnation" {
+		t.Fatal("static composition changed")
+	}
+}
+
 func TestTransportErrorsUseCanonicalEnvelope(t *testing.T) {
 	r := registry(t)
 	s := server(t, r, rpc.Config{})
