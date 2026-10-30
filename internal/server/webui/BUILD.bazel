@@ -28,6 +28,7 @@ go_test(
     ],
     embedsrcs = [
         "browser_check.mjs",
+        "comment_check.mjs",
         "direct_blocker_check.mjs",
         "view_watch_check.mjs",
         "watch_bootstrap_check.mjs",
