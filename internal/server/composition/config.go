@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -22,8 +23,10 @@ import (
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
+	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnoidc"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/collab"
@@ -80,6 +83,12 @@ type Config struct {
 	CursorKey    []byte
 	LeaseHolder  string
 	StoreFactory StoreFactory
+	// RestorePresence is the trusted D32 verifier for existing admin.restore.*
+	// and the host-private converter import. Nil deliberately fails closed.
+	RestorePresence restore.PresenceVerifier
+	// RestoreImportPlanner is converter-owned inspection of the exact archive;
+	// composition never derives or accepts a caller-supplied derived digest.
+	RestoreImportPlanner RestoreImportPlanner
 
 	// ViewReader and Readiness are optional host-owned read projections. When
 	// ViewReader is present, view.run/view.explain and view.watch are composed
@@ -119,6 +128,7 @@ type Runtime struct {
 	Projections      *coreevents.ProjectionRegistry
 	Dispatcher       *coreevents.Dispatcher
 	ProjectionStatus coreevents.ProjectionStatusReader
+	restoreImport    *restoreImportAdapter
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -273,6 +283,20 @@ func (r *Runtime) bind(config Config) error {
 	}
 	if err := rpc.BindService(registry, r.Service); err != nil {
 		return fmt.Errorf("composition: bind service: %w", err)
+	}
+	planner := config.RestoreImportPlanner
+	if planner == nil {
+		// The production default is the converter owner's read-only exact
+		// inspection helper. It supplies no authority and opens no target.
+		planner = func(ctx context.Context, input io.Reader) (converterroundtrip.ImportInspection, error) {
+			return converterroundtrip.InspectImport(ctx, input)
+		}
+	}
+	r.restoreImport = newRestoreImportAdapter(r.Store, r.Lease, config.AuthMode, config.RestorePresence, planner)
+	manager := restore.NewManager(r.Store, r.Lease, config.RestorePresence)
+	manager.SetImportHook(r.restoreImport.Import)
+	if err := rpc.BindAdmin(registry, manager); err != nil {
+		return fmt.Errorf("composition: bind admin: %w", err)
 	}
 
 	// Collaboration and watches share the same lease and lifetime as the core.
