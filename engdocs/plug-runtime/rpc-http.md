@@ -21,9 +21,11 @@ The optional bindings are explicit composition seams:
   `method_not_found`.
 - [`collab.Bind`](../../internal/server/collab/rpc.go) adds
   `session.open`, `session.close`, `presence.set` and
-  `presence.list`. `presence.watch` is absent and returns
-  `method_not_found`. One-shot CLI commands do not open a collaboration
-  session.
+  `presence.list`. The composed runtime's watch adapter additionally binds
+  `presence.watch` when it has the real collaboration snapshot source. It
+  emits a signed snapshot cursor and empty `watch.delta` signals for changed
+  current `presence.list` rows; clients read the masked rows through
+  `presence.list`. One-shot CLI commands do not open a collaboration session.
 - The event reader and authentication providers are embeddable packages;
   this baseline registry does not silently bind event watches or login routes.
 
