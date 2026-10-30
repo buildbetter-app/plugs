@@ -1445,7 +1445,7 @@ func TestGetCommentSnapshotsAndDetachedProvenance(t *testing.T) {
 	doc := pipeline.Document{ID: ref.ID, Project: "local", Type: "issue", Fields: map[string]any{"title": "Comments", "status": "todo"}}
 	source := f.now.Add(-time.Hour)
 	doc.Comments = []pipeline.Comment{{Body: "legacy", Principal: anonymous, Time: f.now}, {Body: "imported", Principal: model.PrincipalRef{Kind: "user", ID: "restore-admin", Caveats: map[string]any{"nested": map[string]any{"value": "original"}}}, Time: f.now, Origin: "import", SourceAuthor: "original author", SourceTime: &source}}
-	seeded, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpUpdate, Body: mustJSON(t, doc)}})
+	seeded, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: mustJSON(t, doc)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1483,7 +1483,7 @@ func TestGetRefusesMalformedStoredCommentUnion(t *testing.T) {
 				comment[k] = v
 			}
 			doc := map[string]any{"id": ref.ID, "project": "local", "type": "issue", "fields": map[string]any{"title": "Malformed", "status": "todo"}, "comments": []any{comment}}
-			_, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpUpdate, Body: mustJSON(t, doc)}})
+			_, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: mustJSON(t, doc)}})
 			if err != nil {
 				t.Fatal(err)
 			}

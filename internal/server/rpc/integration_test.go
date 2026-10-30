@@ -1054,7 +1054,7 @@ func TestCommentGetThroughGuardedRPCSnapshotsAndRevocation(t *testing.T) {
 	restored := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
 	actor := model.PrincipalRef{Kind: "user", ID: "restore-admin"}
 	doc.Comments = []pipeline.Comment{{Body: "ordinary", Principal: actor, Time: restored}, {Body: "secret imported body", Principal: actor, Time: restored, Origin: "import", SourceAuthor: "source-user", SourceTime: &source}}
-	seed(model.OpUpdate)
+	seed(model.OpPatch)
 	ns := authz.Namespace{StoreID: string(metadata.StoreID), Incarnation: metadata.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}
 	project := model.RefByID("project", model.Natural64(0))
 	team := model.RefByID("team", model.Natural64(0))
