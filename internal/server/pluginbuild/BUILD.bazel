@@ -1,4 +1,10 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
+load(":test_sdk.bzl", "test_go_sdk")
+
+test_go_sdk(
+    name = "test_go_sdk",
+    testonly = True,
+)
 
 go_library(
     name = "pluginbuild",
@@ -28,13 +34,16 @@ go_test(
         "containment_linux_amd64_test.go",
         "containment_other_test.go",
         "durable_test.go",
+        "sdk_test.go",
         "source_test.go",
     ],
+    data = [":test_go_sdk"],
     embedsrcs = [
         "//internal/server/pluginbuild/fixture:sources",
         "//internal/server/pluginbuild/fixture-wasi:sources",
     ],
     embed = [":pluginbuild"],
+    env = {"PLUG_TEST_GO_BINARY": "$(rlocationpath :test_go_sdk)"},
     deps = [
         "//internal/core/model",
         "//internal/core/ontology",

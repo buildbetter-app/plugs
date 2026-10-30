@@ -122,6 +122,7 @@ func TestLinuxContainment(t *testing.T) {
 		t.Fatal(err)
 	}
 	binary := filepath.Join(t.TempDir(), "probe")
+	UseBazelSDK(t)
 	goBinary, err := exec.LookPath("go")
 	if err != nil {
 		for _, candidate := range []string{filepath.Join(runtime.GOROOT(), "bin", "go"), "/home/dev/.nix-profile/bin/go", "/usr/local/go/bin/go", "/usr/bin/go"} {
