@@ -8,7 +8,9 @@ Source: **`463881cec205e6cd3e5b85d1bac7d4018a153d5f`**;
 The [registry](../../internal/server/rpc/registry.go) is assembled before
 `rpc.New` snapshots it. `BindService` adds exactly `bead.get`,
 `bead.ready`, `bead.create`, `bead.update`, `bead.claim`,
-`bead.comment`, `bead.close` and `history.query`, alongside the server's
+`bead.comment`, `bead.close`, `bead.reopen`, `bead.defer`, `bead.cancel`,
+`bead.fail`, `bead.link`, `bead.unlink`, `tx.apply` and `history.query`,
+alongside the server's
 `server.hello`, `rpc.methods`, `rpc.describe` and `rpc.discover`.
 Discovery reports bound methods; it does not grant resource access.
 
