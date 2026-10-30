@@ -505,3 +505,43 @@ func TestServiceBindingsAtByteBoundary(t *testing.T) {
 	p.failure = &model.Error{Data: model.ErrorData{Code: "precondition_failed", Details: map[string]any{"reason": "revision"}}}
 	requireCode(t, call(t, s, ctx, "bead.close", `{"id":{"id":"p-1"},`+meta+`}`), "precondition_failed")
 }
+
+func TestTransactionBindingCompositionsRemainExclusive(t *testing.T) {
+	ctx := rpc.WithPrincipal(context.Background(), model.PrincipalRef{Kind: "user", ID: "u-1"})
+	params := `{"changeSet":{"ops":[{"kind":"link","from":{"id":"p-1"},"to":{"id":"p-2"},"linkKind":"relates-to"}]},"_meta":{"idempotencyKey":"550e8400-e29b-41d4-a716-446655440000"}}`
+
+	t.Run("standalone binding serves and full binding is atomic", func(t *testing.T) {
+		probe := &serviceProbe{}
+		registry := registry(t)
+		if err := rpc.BindTxApply(registry, probe); err != nil {
+			t.Fatal(err)
+		}
+		server := server(t, registry, rpc.Config{DefaultProject: "default", Incarnation: "inc"})
+		got := result(t, call(t, server, ctx, "tx.apply", params))
+		if probe.method != "apply" || got["revision"] != json.Number("14") {
+			t.Fatalf("standalone tx.apply was not served: method=%q result=%v", probe.method, got)
+		}
+		before := registry.Descriptors()
+		if err := rpc.BindService(registry, probe); err == nil {
+			t.Fatal("full binding after standalone tx.apply was accepted")
+		}
+		if after := registry.Descriptors(); !reflect.DeepEqual(after, before) {
+			t.Fatalf("failed full binding mutated descriptors: before=%v after=%v", before, after)
+		}
+	})
+
+	t.Run("full binding rejects standalone duplicate atomically", func(t *testing.T) {
+		probe := &serviceProbe{}
+		registry := registry(t)
+		if err := rpc.BindService(registry, probe); err != nil {
+			t.Fatal(err)
+		}
+		before := registry.Descriptors()
+		if err := rpc.BindTxApply(registry, probe); err == nil {
+			t.Fatal("standalone tx.apply after full binding was accepted")
+		}
+		if after := registry.Descriptors(); !reflect.DeepEqual(after, before) {
+			t.Fatalf("failed standalone binding mutated descriptors: before=%v after=%v", before, after)
+		}
+	})
+}
