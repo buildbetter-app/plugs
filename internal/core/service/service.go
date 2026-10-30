@@ -16,6 +16,7 @@ type Service struct {
 	lease    driver.ActiveLease
 	writer   model.Writer
 	ontology *Ontology
+	events   EventProvider
 	now      func() time.Time
 }
 
@@ -24,6 +25,9 @@ type Option func(*Service)
 // WithOntology shares the same project ontology resolver used by the pipeline.
 func WithOntology(o *Ontology) Option       { return func(s *Service) { s.ontology = o } }
 func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = now } }
+func WithEventProvider(provider EventProvider) Option {
+	return func(s *Service) { s.events = provider }
+}
 
 // New never opens a transaction or storage driver. The composition root owns
 // the store, active lease and the single Writer, and closes their lifetime.

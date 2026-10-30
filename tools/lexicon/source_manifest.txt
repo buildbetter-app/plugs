@@ -279,8 +279,11 @@ internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
 internal/core/service/claim_recovery_test.go
 internal/core/service/graph.go
+internal/core/service/history.go
+internal/core/service/history_reads_test.go
 internal/core/service/ontology.go
 internal/core/service/reads.go
+internal/core/service/rpc_reads.go
 internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
@@ -346,6 +349,10 @@ internal/integration/httpconformance/fixture_test.go
 internal/integration/httpconformance/protocol_test.go
 internal/integration/localclisession/BUILD.bazel
 internal/integration/localclisession/session_test.go
+internal/integration/migrationpre/BUILD.bazel
+internal/integration/migrationpre/README.md
+internal/integration/migrationpre/compose.go
+internal/integration/migrationpre/integration_test.go
 internal/integration/oidc/BUILD.bazel
 internal/integration/oidc/flow_test.go
 internal/integration/oidc/http_test.go
@@ -540,6 +547,9 @@ internal/server/transport/mcp/config.go
 internal/server/transport/mcp/errors.go
 internal/server/transport/mcp/handler.go
 internal/server/transport/mcp/handler_test.go
+internal/server/transport/mcp/notification_stream_test.go
+internal/server/transport/mcp/notifications.go
+internal/server/transport/mcp/notifications_test.go
 internal/server/transport/stdio/BUILD.bazel
 internal/server/transport/stdio/README.md
 internal/server/transport/stdio/config.go
@@ -695,6 +705,12 @@ spikes/runtime/concurrency.go
 spikes/runtime/concurrency_test.go
 spikes/runtime/sandbox.go
 spikes/runtime/sandbox_test.go
+tools/census/BUILD.bazel
+tools/census/README.md
+tools/census/census.go
+tools/census/cmd/census_check/main.go
+tools/census/gate_test.go
+tools/census/testdata/census.json
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
 tools/lexicon/checker.go
