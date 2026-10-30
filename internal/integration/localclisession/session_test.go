@@ -244,7 +244,7 @@ func TestRealBuiltMemorySessionLifecycleAndDisposableLifetime(t *testing.T) {
 	}
 }
 
-func TestLocalCLIRefusesUnknownCommandsPersistentStorageAndConfig(t *testing.T) {
+func TestLocalCLIRefusesUnknownCommands(t *testing.T) {
 	stdout, stderr, err := runPlug(t, "", "", "--memory", "--json", "unknown")
 	if exitCode(err) != 2 || stdout != "" || !strings.Contains(stderr, `unsupported command "unknown"`) || strings.Contains(stderr, "disposable") {
 		t.Fatalf("unknown command was not refused before opening local storage: exit=%d stdout=%q stderr=%q", exitCode(err), stdout, stderr)
@@ -254,21 +254,115 @@ func TestLocalCLIRefusesUnknownCommandsPersistentStorageAndConfig(t *testing.T) 
 	if exitCode(err) != 1 || len(decodeLines(t, stdout)) != 1 || !strings.Contains(stderr, "session line 2") || !strings.Contains(stderr, `unsupported command "unknown"`) || strings.Count(stderr, "disposable") != 1 {
 		t.Fatalf("session did not stop at strict unknown-command refusal: exit=%d stdout=%q stderr=%q", exitCode(err), stdout, stderr)
 	}
+}
 
-	stdout, stderr, err = runPlug(t, "", "", "--json", "ready")
-	if exitCode(err) != 2 || stdout != "" || stderr != "persistent storage is not installed; use --memory for an explicit disposable session\n" {
-		t.Fatalf("implicit persistent local storage was claimed: exit=%d stdout=%q stderr=%q", exitCode(err), stdout, stderr)
+func TestLocalCLIPersistsSQLiteAcrossProcessesAndHonorsMemoryOptIn(t *testing.T) {
+	dir := t.TempDir()
+	project := "persistent"
+	createOut, createErr, err := runPlug(t, dir, "", "--project", project, "--json", "create", "--title", "Original", "--idempotency-key", strings.Repeat("a", 64))
+	if err != nil || createErr != "" {
+		t.Fatalf("persistent create failed: exit=%d stdout=%s stderr=%s", exitCode(err), createOut, createErr)
+	}
+	created := decodeLines(t, createOut)
+	if len(created) != 1 {
+		t.Fatalf("persistent create returned %d results", len(created))
+	}
+	createRows := arrayAt(t, created[0], "results")
+	if len(createRows) != 1 {
+		t.Fatalf("persistent create returned %d rows", len(createRows))
+	}
+	id := stringAt(t, objectAt(t, objectAt(t, createRows[0], "create result")["ref"], "create ref"), "id")
+	requireRevision(t, created[0], "1")
+
+	readyOut, readyErr, err := runPlug(t, dir, "", "--project", project, "--json", "ready")
+	if err != nil || readyErr != "" {
+		t.Fatalf("persistent list failed after restart: exit=%d stdout=%s stderr=%s", exitCode(err), readyOut, readyErr)
+	}
+	ready := decodeLines(t, readyOut)
+	if len(ready) != 1 || len(arrayAt(t, ready[0], "items")) != 1 {
+		t.Fatalf("persistent list lost created bead: %s", readyOut)
+	}
+	readyItem := objectAt(t, arrayAt(t, ready[0], "items")[0], "ready item")
+	if stringAt(t, readyItem, "id") != id || stringAt(t, objectAt(t, readyItem["fields"], "ready fields"), "title") != "Original" {
+		t.Fatalf("persistent list returned wrong bead: %s", readyOut)
 	}
 
+	updateOut, updateErr, err := runPlug(t, dir, "", "--project", project, "--json", "update", id, "--title", "Updated", "--expect", "1")
+	if err != nil || updateErr != "" {
+		t.Fatalf("persistent update failed: exit=%d stdout=%s stderr=%s", exitCode(err), updateOut, updateErr)
+	}
+	updated := decodeLines(t, updateOut)
+	if len(updated) != 1 {
+		t.Fatalf("persistent update returned %d results", len(updated))
+	}
+	requireRevision(t, updated[0], "2")
+
+	closeOut, closeErr, err := runPlug(t, dir, "", "--project", project, "--json", "close", id, "--reason", "Done", "--expect", "2")
+	if err != nil || closeErr != "" {
+		t.Fatalf("persistent close failed: exit=%d stdout=%s stderr=%s", exitCode(err), closeOut, closeErr)
+	}
+	closed := decodeLines(t, closeOut)
+	if len(closed) != 1 {
+		t.Fatalf("persistent close returned %d results", len(closed))
+	}
+	requireRevision(t, closed[0], "3")
+
+	historyOut, historyErr, err := runPlug(t, dir, "", "--project", project, "--json", "history", "--as-of", "3", "--id", id)
+	if err != nil || historyErr != "" {
+		t.Fatalf("persistent history failed after restart: exit=%d stdout=%s stderr=%s", exitCode(err), historyOut, historyErr)
+	}
+	history := decodeLines(t, historyOut)
+	if len(history) != 1 || len(arrayAt(t, history[0], "items")) != 1 {
+		t.Fatalf("persistent history was not retained: %s", historyOut)
+	}
+	historyItem := objectAt(t, arrayAt(t, history[0], "items")[0], "history item")
+	if stringAt(t, historyItem, "id") != id || stringAt(t, historyItem, "status") != "done" || stringAt(t, objectAt(t, historyItem["fields"], "history fields"), "title") != "Updated" {
+		t.Fatalf("persistent history returned wrong state: %s", historyOut)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".plug", "plug.db")); err != nil {
+		t.Fatalf("default SQLite file was not created: %v", err)
+	}
+	configuredDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(configuredDir, ".plug"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configuredDir, ".plug", "config.yaml"), []byte("storage:\n  driver: sqlite\n  path: .plug/custom/state.db\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configuredOut, configuredErr, err := runPlug(t, configuredDir, "", "--json", "create", "--title", "Configured")
+	if err != nil || configuredErr != "" || len(decodeLines(t, configuredOut)) != 1 {
+		t.Fatalf("configured SQLite path failed: exit=%d stdout=%s stderr=%s", exitCode(err), configuredOut, configuredErr)
+	}
+	if _, err := os.Stat(filepath.Join(configuredDir, ".plug", "custom", "state.db")); err != nil {
+		t.Fatalf("configured SQLite parent was not created: %v", err)
+	}
+
+	memoryDir := t.TempDir()
+	memoryCreate, memoryErr, err := runPlug(t, memoryDir, "", "--memory", "--json", "create", "--title", "Ephemeral")
+	if err != nil || memoryErr != disposableWarning {
+		t.Fatalf("explicit memory create failed: exit=%d stdout=%s stderr=%s", exitCode(err), memoryCreate, memoryErr)
+	}
+	memoryReady, memoryReadyErr, err := runPlug(t, memoryDir, "", "--memory", "--json", "ready")
+	if err != nil || memoryReadyErr != disposableWarning || len(decodeLines(t, memoryReady)) != 1 || len(arrayAt(t, decodeLines(t, memoryReady)[0], "items")) != 0 {
+		t.Fatalf("explicit memory mode retained state across processes: exit=%d stdout=%s stderr=%s", exitCode(err), memoryReady, memoryReadyErr)
+	}
+}
+
+func TestLocalCLIRejectsMalformedConfig(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, ".plug"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".plug", "config.yaml"), []byte("server: https://example.invalid\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".plug", "config.yaml"), []byte("storage:\n  driver: sqlite\n  unknown: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	stdout, stderr, err := runPlug(t, dir, "", "--json", "ready")
+	if exitCode(err) != 2 || stdout != "" || !strings.Contains(stderr, "unsupported storage key") || strings.Contains(stderr, "memory storage is disposable") {
+		t.Fatalf("malformed config did not fail closed: exit=%d stdout=%q stderr=%q", exitCode(err), stdout, stderr)
+	}
+
 	stdout, stderr, err = runPlug(t, dir, "", "--memory", "--json", "ready")
-	if exitCode(err) != 2 || stdout != "" || !strings.Contains(stderr, ".plug/config.yaml loading is not installed") || strings.Contains(stderr, "disposable") {
-		t.Fatalf("local config was not explicitly refused: exit=%d stdout=%q stderr=%q", exitCode(err), stdout, stderr)
+	if exitCode(err) != 2 || stdout != "" || !strings.Contains(stderr, "unsupported storage key") || strings.Contains(stderr, "disposable") {
+		t.Fatalf("malformed config was not rejected in explicit memory mode: exit=%d stdout=%q stderr=%q", exitCode(err), stdout, stderr)
 	}
 }

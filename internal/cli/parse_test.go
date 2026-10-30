@@ -48,3 +48,25 @@ func TestHistoryUsesCanonicalResourceFilter(t *testing.T) {
 		t.Fatalf("unexpected history: %+v %s", c, b)
 	}
 }
+
+func TestParseNamedLifecycleCommands(t *testing.T) {
+	for _, name := range []string{"close", "reopen", "defer", "cancel", "fail"} {
+		t.Run(name, func(t *testing.T) {
+			command, err := ParseCommand([]string{name, "pl-1", "--reason", "evidence", "--expect", "7", "--idempotency-key", "00000000000000000000000000000001"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if command.Method != "bead."+name || command.Key == "" {
+				t.Fatalf("command=%+v", command)
+			}
+			params, ok := command.Params["id"].(map[string]any)
+			if !ok || params["id"] != "pl-1" || command.Params["reason"] != "evidence" {
+				t.Fatalf("lifecycle parameters were not preserved: %+v", command.Params)
+			}
+			expect, ok := command.Params["expect"].([]any)
+			if !ok || len(expect) != 1 || expect[0].(map[string]any)["revision"] != json.Number("7") {
+				t.Fatalf("lifecycle CAS was not parsed: %+v", command.Params)
+			}
+		})
+	}
+}
