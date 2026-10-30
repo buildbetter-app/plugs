@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "pluginapi",
+    srcs = ["doc.go", "manifest.go", "op.go", "types.go"],
+    importpath = "github.com/buildbetter-app/plugs/pluginapi",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "pluginapi_test",
+    srcs = ["types_test.go"],
+    embed = [":pluginapi"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

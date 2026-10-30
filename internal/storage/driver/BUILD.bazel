@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "driver",
+    srcs = [
+        "allocator.go",
+        "driver.go",
+        "errors.go",
+        "keys.go",
+    ],
+    importpath = "github.com/buildbetter-app/plugs/internal/storage/driver",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/core/model"],
+)
+
+go_test(
+    name = "driver_test",
+    srcs = [
+        "allocator_contract_test.go",
+        "audit_contract_test.go",
+        "errors_test.go",
+        "keys_test.go",
+        "receipt_contract_test.go",
+    ],
+    embed = [":driver"],
+    deps = ["//internal/core/model"],
+)

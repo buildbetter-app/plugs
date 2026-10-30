@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "wire",
+    srcs = ["catalog.go", "error.go", "json.go", "meta.go", "schema.go"],
+    embedsrcs = ["catalog.json"],
+    importpath = "github.com/buildbetter-app/plugs/internal/api/wire",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/core/model"],
+)
+
+go_test(
+    name = "wire_test",
+    srcs = ["wire_test.go"],
+    embed = [":wire"],
+    deps = ["//internal/core/model"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
