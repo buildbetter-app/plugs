@@ -35,8 +35,20 @@ func (t *transaction) validateHeader(ctx context.Context, h driver.ChangesetHead
 		if t.nativeRestore != nil {
 			validate = t.nativeRestore.ValidateHeader
 		}
+		if t.importRestore != nil {
+			validate = t.importRestore.ValidateHeader
+		}
 		if err := validate(h); err != nil {
 			return err
+		}
+		if t.importRestore != nil {
+			for _, record := range t.records {
+				if record != nil {
+					if err := t.importRestore.ValidateRecord(*record, h.Time); err != nil {
+						return err
+					}
+				}
+			}
 		}
 		expected = t.restore.Incarnation
 	}

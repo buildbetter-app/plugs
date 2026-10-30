@@ -4,7 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
@@ -49,7 +53,11 @@ func DecodeMemoryDocument(body []byte) (MemoryDocument, error) {
 type Comment struct {
 	Body      string             `json:"body"`
 	Principal model.PrincipalRef `json:"principal"`
-	Time      time.Time          `json:"time"`
+	Time      time.Time          `json:"time"
+"strings"
+"unicode"
+"unicode/utf8"
+"github.com/buildbetter-app/plugs/internal/storage/driver"`
 }
 
 type Link struct {
@@ -76,5 +84,61 @@ func DecodeDocument(body []byte) (Document, error) {
 	if d.ID == "" || d.Type == "" || d.Fields == nil {
 		return d, fmt.Errorf("invalid bead document")
 	}
+	for _, comment := range d.Comments {
+		if err := comment.Validate(); err != nil {
+			return d, err
+		}
+	}
 	return d, nil
+}
+
+// NewImportedComment accepts only the binding of a previously admitted host
+// restore. It does not authenticate a caller or accept ordinary RPC input.
+func NewImportedComment(profile driver.RestoreImportProfile, body, sourceAuthor string, sourceTime, restoreTime time.Time) (Comment, error) {
+	bound, err := profile.Detached()
+	if err != nil {
+		return Comment{}, err
+	}
+	author, err := NormalizeSourceAuthor(sourceAuthor)
+	if err != nil {
+		return Comment{}, err
+	}
+	if sourceTime.IsZero() || restoreTime.IsZero() {
+		return Comment{}, fmt.Errorf("imported comment requires source and restore times")
+	}
+	return Comment{Body: body, Principal: bound.Admission.Actor, Time: restoreTime, Origin: "import", SourceAuthor: author, SourceTime: &sourceTime}, nil
+}
+
+func NormalizeSourceAuthor(author string) (string, error) {
+	if !utf8.ValidString(author) {
+		return "", fmt.Errorf("source author must be valid Unicode")
+	}
+	author = strings.TrimSpace(author)
+	if utf8.RuneCountInString(author) > 256 {
+		return "", fmt.Errorf("source author exceeds 256 Unicode scalars")
+	}
+	for _, r := range author {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf) {
+			return "", fmt.Errorf("source author contains a control or format character")
+		}
+	}
+	return author, nil
+}
+
+func (c Comment) Validate() error {
+	if c.Origin == "" {
+		if c.SourceAuthor != "" || c.SourceTime != nil {
+			return fmt.Errorf("legacy comment cannot carry import provenance")
+		}
+		return nil
+	}
+	author, err := NormalizeSourceAuthor(c.SourceAuthor)
+	if err != nil {
+		return err
+	}
+	if c.Origin != "import" || c.SourceTime == nil || c.SourceTime.IsZero() || c.Time.IsZero() || author != c.SourceAuthor {
+		return fmt.Errorf("invalid imported comment provenance")
+	}
+	_, err = json.Marshal(c.Principal)
+	return err
 }

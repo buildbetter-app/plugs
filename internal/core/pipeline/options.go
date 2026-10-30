@@ -33,18 +33,19 @@ type PostBinding struct {
 }
 
 type config struct {
-	ontology     port.Ontology
-	audit        port.OntologyAudit
-	auditSet     bool
-	eventContext port.EventContextSource
-	authorizer   port.Authorizer
-	mutators     []MutatorBinding
-	validators   []ValidatorBinding
-	posts        []PostBinding
-	now          func() time.Time
-	newID        func() (string, error)
-	claimTTL     time.Duration
-	observer     Observer
+	ontology       port.Ontology
+	audit          port.OntologyAudit
+	auditSet       bool
+	eventContext   port.EventContextSource
+	authorizer     port.Authorizer
+	mutators       []MutatorBinding
+	validators     []ValidatorBinding
+	posts          []PostBinding
+	now            func() time.Time
+	newID          func() (string, error)
+	newAllocatorID func(driver.OfflineAllocator) (string, error)
+	claimTTL       time.Duration
+	observer       Observer
 }
 
 type Option func(*config)
@@ -99,7 +100,7 @@ var _ port.OutcomeWriter = (*Writer)(nil)
 // New uses an already active storage lease. It never creates a second store.
 // Invalid callback configuration is refused by Apply before any storage write.
 func New(store driver.Store, lease driver.ActiveLease, options ...Option) *Writer {
-	w := &Writer{store: store, lease: lease, cfg: config{now: time.Now, newID: newID, claimTTL: 5 * time.Minute}}
+	w := &Writer{store: store, lease: lease, cfg: config{now: time.Now, newID: newID, newAllocatorID: func(a driver.OfflineAllocator) (string, error) { return a.NextID() }, claimTTL: 5 * time.Minute}}
 	for _, option := range options {
 		option(&w.cfg)
 	}

@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -342,6 +344,182 @@ func TestAllocatorReplacementSeedIdentityAndInitializedRefusal(t *testing.T) {
 			if err != nil || got != after {
 				t.Fatalf("initialized refusal changed identity/history: %+v %v", got, err)
 			}
+		})
+	}
+}
+
+func TestSeededRandomAllocatorCollisionReplayAndDriverChildren(t *testing.T) {
+	ctx := context.Background()
+	for _, kind := range []string{"memory", "sqlite"} {
+		t.Run(kind, func(t *testing.T) {
+			var store driver.Store = memory.New()
+			if kind == "sqlite" {
+				store.Close()
+				var err error
+				store, err = (sqlite.Driver{}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "random.db")})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			defer store.Close()
+			lease, err := store.Lease(ctx, "random-allocator", driver.LeaseTTL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lease.Release(ctx)
+			seed := driver.NewRandomAllocator("demo")
+			seedAllocator(t, store, lease, seed)
+			s := "demo-" + strings.Repeat("a", 32)
+			f := "demo-" + strings.Repeat("1", 32)
+			ids := []string{s, s, f}
+			calls := 0
+			w := New(store, lease, WithOntology(testOntology{}), func(c *config) {
+				c.newAllocatorID = func(a driver.OfflineAllocator) (string, error) {
+					if a.Mode != driver.AllocatorRandom || a.Prefix != "demo" {
+						t.Fatalf("fallback instead of live seed: %+v", a)
+					}
+					if calls >= len(ids) {
+						return "", fmt.Errorf("unexpected entropy draw")
+					}
+					id := ids[calls]
+					calls++
+					return id, nil
+				}
+			})
+			first := pipelineCreate(t, w, "source32", 501)
+			if first.Results[0].Ref.ID != s {
+				t.Fatal(first)
+			}
+			second := pipelineCreate(t, w, "collision", 502)
+			if second.Results[0].Ref.ID != f || calls != 3 {
+				t.Fatalf("collision retry %v calls%d", second, calls)
+			}
+			replay := pipelineCreate(t, w, "collision", 502)
+			if replay.Revision != second.Revision || calls != 3 {
+				t.Fatalf("replay reminted: %v calls%d", replay, calls)
+			}
+			child := s + "." + strings.Repeat("2", 32)
+			ref := model.Ref{ID: child}
+			key, _ := driver.AllocatorLock("demo")
+			tx, err := store.Write(ctx, lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Close()
+			if _, err = tx.Lock(ctx, driver.LockSet{{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Mode: driver.LockUpdate}, {Key: key, Mode: driver.LockUpdate}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = tx.Head(ctx); err != nil {
+				t.Fatal(err)
+			}
+			allocator := tx.(driver.AllocatorContinuation)
+			if err = allocator.AllocateChild(ctx, s, child); err != nil {
+				t.Fatal(err)
+			}
+			if err = allocator.AllocateChild(ctx, s, child); !errors.Is(err, driver.ErrConflict) {
+				t.Fatalf("reserved collision accepted: %v", err)
+			}
+			if err = tx.Rollback(ctx); err != nil {
+				t.Fatal(err)
+			}
+			reader, err := store.Read(ctx, driver.View{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			got, err := reader.(driver.AllocatorReader).LoadAllocator(ctx, "demo")
+			if err != nil || got.Mode != driver.AllocatorRandom || got.LastID != 0 || len(got.Children) != 0 {
+				t.Fatalf("random seed mutated: %+v %v", got, err)
+			}
+		})
+	}
+}
+
+func TestPreparedImportBindsCommentsAndRejectsForgedCommit(t *testing.T) {
+	ctx := context.Background()
+	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: by, Scope: "restore-target", Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: "import-source", Method: "offline.restore.import", IdempotencyKey: "prepared-import-key", ArchiveDigest: strings.Repeat("b", 64), DerivedDigest: strings.Repeat("c", 64)}
+	now := time.Date(2026, 10, 30, 19, 30, 0, 0, time.UTC)
+	comment, err := NewImportedComment(profile, "old body", "  source user  ", now.Add(-time.Hour), now)
+	if err != nil || comment.SourceAuthor != "source user" || comment.Principal.ID != by.ID {
+		t.Fatalf("import comment: %+v %v", comment, err)
+	}
+	for _, author := range []string{"a\u200db", "a\x00b", strings.Repeat("界", 257)} {
+		if _, err := NewImportedComment(profile, "", author, now, now); err == nil {
+			t.Fatalf("invalid author accepted: %q", author)
+		}
+	}
+	legacy := Document{ID: "old", Type: "task", Fields: map[string]any{}, Comments: []Comment{{Body: "legacy", Principal: by, Time: now}}}
+	body, _ := json.Marshal(legacy)
+	if _, err := DecodeDocument(body); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"memory", "sqlite"} {
+		t.Run(kind, func(t *testing.T) {
+			var store driver.Store = memory.New()
+			if kind == "sqlite" {
+				store.Close()
+				var err error
+				store, err = (sqlite.Driver{}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "profile.db")})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			defer store.Close()
+			lease, err := store.Lease(ctx, "prepared-import", driver.LeaseTTL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lease.Release(ctx)
+			tx, err := store.Write(ctx, lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Close()
+			ref := model.Ref{ID: "source-legacy"}
+			key := driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
+			if _, err = tx.Lock(ctx, driver.LockSet{{Key: key, Mode: driver.LockUpdate}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = tx.Head(ctx); err != nil {
+				t.Fatal(err)
+			}
+			meta, err := tx.(driver.RestoreImportTx).PrepareRestoreImport(ctx, profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Preparation must retain a detached binding even if the caller mutates it.
+			document := Document{ID: ref.ID, Type: "task", Fields: map[string]any{}, Comments: []Comment{comment}}
+			body, _ := json.Marshal(document)
+			if err = tx.Put(ctx, driver.Record{Ref: ref, Kind: "bead", Body: body}); err != nil {
+				t.Fatal(err)
+			}
+			hash, err := profile.RequestHash()
+			if err != nil {
+				t.Fatal(err)
+			}
+			header := driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Time: now, Principal: by, Method: profile.Method, IdempotencyKey: profile.IdempotencyKey, RequestHash: hash, Changes: []model.ChangeRecord{{Ref: ref, Op: model.OpCreate, FromRevision: model.Natural64(0)}}, LockKeys: []driver.LockKey{key}}
+			forged := header
+			forged.Principal = model.PrincipalRef{Kind: "user", ID: "forged"}
+			if _, err = tx.Commit(ctx, forged); err == nil {
+				t.Fatal("forged actor accepted")
+			}
+			if got, _ := store.Meta(ctx); !got.Head.IsZero() {
+				t.Fatal("forged commit published")
+			}
+			profile.Admission.Scope = "mutated-after-prepare"
+			if _, err = tx.Commit(ctx, header); err != nil {
+				t.Fatal(err)
+			}
+			reader, err := store.Read(ctx, driver.View{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			receipt, err := reader.IdempotencyByKey(ctx, "user:"+by.ID, "", header.Method, header.IdempotencyKey)
+			if err != nil || receipt == nil || receipt.RequestHash != hash || receipt.Changeset.Principal.ID != by.ID {
+				t.Fatalf("receipt binding: %+v %v", receipt, err)
+			}
+			profile.Admission.Scope = "restore-target"
 		})
 	}
 }
