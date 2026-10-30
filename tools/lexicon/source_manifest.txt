@@ -111,6 +111,7 @@ engdocs/plug-next/README.md
 engdocs/plug-next/audit.md
 engdocs/plug-next/authn.md
 engdocs/plug-next/cli-rpc-trace.json
+engdocs/plug-next/dump-restore.md
 engdocs/plug-next/ontology-rpc.md
 engdocs/plug-next/remote-cli.md
 engdocs/plug-next/sql.md

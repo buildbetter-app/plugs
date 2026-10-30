@@ -1,8 +1,8 @@
 # Current Plug guides
 
 These pages describe the admitted source snapshot
-**[`9d03323f423cf28d202b328ed7c116e45db8406f`](https://github.com/buildbetter-app/plugs/tree/9d03323f423cf28d202b328ed7c116e45db8406f)**
-(2026-10-29). The earlier
+**[`a5118ecc74af1e1e0c0f578af2a4dca80a043ccc`](https://github.com/buildbetter-app/plugs/tree/a5118ecc74af1e1e0c0f578af2a4dca80a043ccc)**
+(2026-10-30). The earlier
 [runtime guides](../plug-runtime/README.md) remain an intentionally immutable
 snapshot at `471d0199c89acf9e242f44978f2824120726de32`; they are useful for the
 baseline lifecycle and storage model, but their statements about the then
@@ -15,6 +15,7 @@ unbound remote CLI and ontology RPC do not describe this page set.
 | [Ontology RPC](ontology-rpc.md) | Stored reads, checks, history, diffs, plans, and explicit apply refusal over JSON-RPC. |
 | [Authentication](authn.md) | Loopback admission, bearer identities, process-local API keys, and proof limits. |
 | [Remote CLI](remote-cli.md) | The current HTTP client and an actual disposable CLI/RPC trace. |
+| [Dump, restore, and portability](dump-restore.md) | Bounded `plug-dump/1` validation and offline merge, plus the explicit restore and rollback refusal boundaries. |
 
 ## What this pin admits
 
@@ -32,6 +33,12 @@ OIDC/login session provider, watch registration, or production recovery
 integration. A branch, design entry, or catalog descriptor does not make one
 of those surfaces available. The guides call out each refusal where it
 matters.
+
+The tree also has a read-only `plug-dump/1` Beads archive validator and an
+offline merger. It does not bind `plug dump`, `plug restore`, native
+`admin.dump` or `admin.restore.*`, or a reverse converter. The [portability
+guide](dump-restore.md) documents the archive surface and the reviewed
+contracts without presenting those unbound commands as available.
 
 ## Run the examples
 
