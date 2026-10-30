@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"sync"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
@@ -16,6 +17,7 @@ import (
 // Permission is inert without an authorization provider; gate decisions use
 // the canonical pure evaluator and remain within the single Writer proposal.
 type Ontology struct {
+	mu      sync.RWMutex
 	resolve func(string) ontology.Effective
 }
 
@@ -27,7 +29,22 @@ func NewOntology(resolve func(string) ontology.Effective) *Ontology {
 	return &Ontology{resolve: resolve}
 }
 
-func (o *Ontology) effective(project string) ontology.Effective { return o.resolve(project) }
+// Refresh atomically replaces the compiled ontology used by all subsequent
+// pipeline and domain decisions. A compiled snapshot owns detached immutable
+// maps, so swapping the resolver is sufficient to publish the new runtime
+// view without exposing a partially updated ontology.
+func (o *Ontology) Refresh(snapshot ontology.Snapshot) {
+	o.mu.Lock()
+	o.resolve = snapshot.Effective
+	o.mu.Unlock()
+}
+
+func (o *Ontology) effective(project string) ontology.Effective {
+	o.mu.RLock()
+	resolve := o.resolve
+	o.mu.RUnlock()
+	return resolve(project)
+}
 
 // A detached JSON proposal represents a missing raw-message image as null.
 func hasDocument(raw []byte) bool {

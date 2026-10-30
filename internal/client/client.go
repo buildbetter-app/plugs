@@ -35,6 +35,10 @@ func New(transport Transport, project, agent string) (*Client, error) {
 	return &Client{transport: transport, catalog: catalog, project: project, agent: agent}, nil
 }
 
+// Project returns the client's default project for commands whose wire
+// descriptor requires an explicit project parameter.
+func (c *Client) Project() string { return c.project }
+
 // Result retains the complete result, including every warning. IdempotencyKey
 // is supplied even after a lost response so a caller can explicitly retry the
 // same operation. Replayed is response metadata, separate from the stored result.
