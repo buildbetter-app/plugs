@@ -124,3 +124,61 @@ M7, repeat the tasks with real `view.run`/`view.watch` responses, authorized
 and denied records, a populated server, and five human users. Measure time to
 answer, wrong clicks, visible-node count, hidden-reason comprehension, and a
 subjective noise score before freezing the final catalog schema.
+
+## Archival refresh provenance (2026-10-30)
+
+[Original PR #8](https://github.com/buildbetter-app/plugs/pull/8) remains the
+source of this research. Its original commits and attribution are preserved:
+`e0d66eb19525044d18f4470a8ca316dec06464e0` (initial prototype),
+`4548bbd586095ca168da38d7e09ac80352a4475d` (fixture relations, budget accounting
+and honest labels), `620243ca414ccaa952ebced929f74b513b8ce526` (independent
+oracle and browser-console evidence), and
+`a67fbb8900910d216311fbc3f8dede60098a1293` (delayed-error observation).
+The first three credit Cody (`codex@buildbetter.dev`); the last credits
+Nikhil Shinday. Each carries the original Codex agent-signature trailer.
+
+The 19 images in this document's existing `spec/ux-screens/` archive now use
+the exact final reviewed PNG blobs and file modes from
+[`620243ca`](https://github.com/buildbetter-app/plugs/tree/620243ca414ccaa952ebced929f74b513b8ce526/spec/ux-screens)
+and [`a67fbb890`](https://github.com/buildbetter-app/plugs/tree/a67fbb8900910d216311fbc3f8dede60098a1293/spec/ux-screens).
+Both commits contain the same 19 blobs. The skeleton's earlier archive had
+retained the initial prototype's images. This correction copies the final
+artifacts into those canonical paths; it performs no new capture and changes
+no runtime or test fixture. The corresponding 19 protected binary SHA-256
+entries are updated without changing the archive policy's other rules.
+
+The runnable eight-file harness remains available through its
+[immutable original tree](https://github.com/buildbetter-app/plugs/tree/a67fbb8900910d216311fbc3f8dede60098a1293/spikes/ux),
+including the [independent deterministic oracle](https://github.com/buildbetter-app/plugs/blob/a67fbb8900910d216311fbc3f8dede60098a1293/spikes/ux/fixture-oracle.py),
+[row checker](https://github.com/buildbetter-app/plugs/blob/a67fbb8900910d216311fbc3f8dede60098a1293/spikes/ux/check.sh),
+[CDP observer](https://github.com/buildbetter-app/plugs/blob/a67fbb8900910d216311fbc3f8dede60098a1293/spikes/ux/browser-check.mjs)
+and [capture helper](https://github.com/buildbetter-app/plugs/blob/a67fbb8900910d216311fbc3f8dede60098a1293/spikes/ux/capture.sh).
+They are historical evidence, not an installed prototype on current Plug main.
+The historical checker bound exact ordered, unique rendered IDs, statuses and
+dependency markers to a separate 20,000-row oracle. Its final CDP observer
+used a fixed 500 ms post-load window to catch 250 ms delayed console errors
+and uncaught exceptions. The historical repair3 and R8d records report a
+21-case browser matrix, rejection of seven adversarial mutations, and 19
+recaptures matching the committed image hashes; this archive refresh does not
+rerun or extend those browser claims.
+
+Earlier evidence failures remain part of that history: weak positive checks,
+a hidden 16-row changes cap, missing independent row identity binding, and the
+75 ms observer's missed 250 ms delayed console error required successive
+repairs. R8d still blocked the final original head on the then-queued hosted
+PR run `40793212881`, including its failed docs-freshness job `123183337881`
+(`refs/tags/v1.2.2` was missing); the successful PR Risk run did not clear that
+blocker. No historical failure is erased or waived by this refresh, and no
+historical or hosted PASS is inferred from its new local archival gate.
+
+The page modeled 50 fixture agent identities and displayed five fixture
+people. Its bead counts, dependency reasons, presence and epic roll-ups were
+local deterministic data. It had no live server adapter or watch transport;
+the pinned Beads server probe was separate and did not connect the page to
+A7 `view.run`/`view.watch`. The root prototype and capture paths above are
+historical locations. The adopted decisions in this record remain unchanged.
+This refresh makes no production UI, live behavior, performance or human
+usability claim. The outstanding work remains five-human validation with
+populated real view/watch data, including authorized and denied records, and
+the answer-time, wrong-click, node-count, hidden-reason and noise measurements
+already required above.
