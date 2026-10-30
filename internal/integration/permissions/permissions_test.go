@@ -544,3 +544,88 @@ func TestRealHTTPGuardedClaimNextPreservesGlobalErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestRealHTTPGuardedOutcomeAdaptersPreserveFixedPolicy(t *testing.T) {
+	for _, method := range []string{"tx.apply", "bead.link", "bead.unlink"} {
+		t.Run(method, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := context.Background()
+			workerPrincipal := permissionWorker("agent:worker")
+			worker := f.issue(t, workerPrincipal)
+			page, err := f.seed.Ready(ctx, model.PrincipalRef{Kind: "user", ID: "user:seed"}, service.ReadyRequest{Project: "project"})
+			if err != nil || len(page.Items) != 3 {
+				t.Fatalf("ready fixture: %+v %v", page, err)
+			}
+			first := model.RefByID(page.Items[0].ID, model.Natural64(0))
+			second := model.RefByID(page.Items[1].ID, model.Natural64(0))
+			allowed := map[string]any{"id": first, "fields": map[string]any{"title": "permitted named update"}, "_meta": writeMeta(910)}
+			committed := result(t, f.call(t, worker.Token, "bead.update", allowed))
+			before, err := f.store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader, err := f.store.Read(ctx, driver.View{Incarnation: before.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			rows, err := reader.Get(ctx, []model.Ref{first, second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			changes, err := reader.Changesets(ctx, nil, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			versions, err := reader.Versions(ctx, first, driver.PageReq{Limit: 100})
+			if err != nil {
+				t.Fatal(err)
+			}
+			params := map[string]any{"from": first, "to": second, "kind": "relates-to", "_meta": writeMeta(911)}
+			if method == "tx.apply" {
+				// Both patches would be permitted as named updates. The batch
+				// adapter must retain tx.apply's unsupported fixed-policy identity.
+				params = map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
+					{Kind: model.OpPatch, Patch: &model.PatchOp{Target: first, Fields: map[string]any{"title": "denied first"}}},
+					{Kind: model.OpPatch, Patch: &model.PatchOp{Target: second, Fields: map[string]any{"title": "denied second"}}},
+				}}, "_meta": writeMeta(911)}
+			}
+			wantCode(t, f.call(t, worker.Token, method, params), "forbidden")
+			wantCode(t, f.call(t, worker.Token, method, params), "forbidden")
+			after, err := f.store.Meta(ctx)
+			if err != nil || after.Head.String() != before.Head.String() {
+				t.Fatalf("denied %s advanced head: before=%+v after=%+v err=%v", method, before, after, err)
+			}
+			current, err := f.store.Read(ctx, driver.View{Incarnation: after.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer current.Close()
+			gotRows, err := current.Get(ctx, []model.Ref{first, second})
+			if err != nil || !reflect.DeepEqual(rows, gotRows) {
+				t.Fatalf("denied %s changed records: %+v %v", method, gotRows, err)
+			}
+			gotChanges, err := current.Changesets(ctx, nil, 100)
+			if err != nil || !reflect.DeepEqual(changes, gotChanges) {
+				t.Fatalf("denied %s changed the journal: %+v %v", method, gotChanges, err)
+			}
+			gotVersions, err := current.Versions(ctx, first, driver.PageReq{Limit: 100})
+			if err != nil || !reflect.DeepEqual(versions, gotVersions) {
+				t.Fatalf("denied %s changed versions: %+v %v", method, gotVersions, err)
+			}
+			principal, err := driver.PrincipalKey(workerPrincipal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := params["_meta"].(map[string]any)["idempotencyKey"].(string)
+			receipt, err := current.IdempotencyByKey(ctx, principal, "", method, key)
+			if err != nil || receipt != nil {
+				t.Fatalf("denied %s persisted a receipt: %+v %v", method, receipt, err)
+			}
+			retry := f.call(t, worker.Token, "bead.update", allowed)
+			if !reflect.DeepEqual(committed, result(t, retry)) || retry.value["_meta"].(map[string]any)["replayed"] != true {
+				t.Fatalf("guarded adapter changed permitted outcome/replay: %s", retry.body)
+			}
+		})
+	}
+}
