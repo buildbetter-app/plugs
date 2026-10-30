@@ -20,6 +20,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/plugins/authnoidc"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
+	"github.com/buildbetter-app/plugs/internal/server/transport/mcp"
 	"github.com/buildbetter-app/plugs/internal/server/watch"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
@@ -121,6 +122,64 @@ func resultObject(t *testing.T, result client.Result) map[string]any {
 		t.Fatalf("result=%T", value)
 	}
 	return object
+}
+
+func mcpRequest(t *testing.T, f *runtimeFixture, body string, headers map[string]string) (int, http.Header, []byte) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, "http://"+f.server.Addr().String()+mcp.Path, bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Plug-RPC", "1")
+	request.Header.Set("Content-Type", "application/json")
+	for key, value := range headers {
+		if value == "" {
+			request.Header.Del(key)
+			continue
+		}
+		request.Header.Set(key, value)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response.StatusCode, response.Header, data
+}
+
+func mcpObject(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	value, err := wire.DecodeJSON(body)
+	if err != nil {
+		t.Fatalf("MCP response is not JSON: %v: %s", err, body)
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("MCP response=%T: %s", value, body)
+	}
+	return object
+}
+
+func mcpErrorCode(t *testing.T, body []byte) string {
+	t.Helper()
+	object := mcpObject(t, body)
+	errorValue, ok := object["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("MCP response has no error: %s", body)
+	}
+	data, ok := errorValue["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("MCP error has no data: %s", body)
+	}
+	code, ok := data["code"].(string)
+	if !ok {
+		t.Fatalf("MCP error has no code: %s", body)
+	}
+	return code
 }
 
 func TestComposedSharedServerServesRPCAndEmbeddedUI(t *testing.T) {
@@ -321,6 +380,109 @@ func TestSQLiteCompositionPersistsAcrossRuntimeRestart(t *testing.T) {
 	beadValue := value["bead"].(map[string]any)
 	if beadValue["status"] != "done" || beadValue["fields"].(map[string]any)["title"] != "survives" {
 		t.Fatalf("restart lost durable state: %+v", value)
+	}
+}
+
+func TestSQLiteCompositionMCPSharesRPCStoreAndAuthentication(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp-composition.db")
+	config := Config{Driver: "sqlite", DSN: path, Project: "mcp", Address: DefaultAddress}
+	first := startRuntime(t, config)
+
+	status, responseHeaders, body := mcpRequest(t, first, `{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"composition-test","version":"1"}}}`, nil)
+	if status != http.StatusOK {
+		t.Fatalf("MCP initialize status=%d body=%s", status, body)
+	}
+	sessionID := responseHeaders.Get("MCP-Session-Id")
+	if sessionID == "" {
+		t.Fatalf("MCP initialize did not issue a session: %s", body)
+	}
+
+	status, _, body = mcpRequest(t, first, `{"jsonrpc":"2.0","id":"list","method":"tools/list","params":{}}`, map[string]string{"MCP-Session-Id": sessionID})
+	if status != http.StatusOK {
+		t.Fatalf("MCP tools/list status=%d body=%s", status, body)
+	}
+	listResult, ok := mcpObject(t, body)["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("MCP tools/list result=%s", body)
+	}
+	tools, ok := listResult["tools"].([]any)
+	if !ok {
+		t.Fatalf("MCP tools/list tools=%s", body)
+	}
+	seenCreate := false
+	seenCall := false
+	for _, raw := range tools {
+		name, _ := raw.(map[string]any)["name"].(string)
+		seenCreate = seenCreate || name == "bead_create"
+		seenCall = seenCall || name == "plug_call"
+	}
+	if !seenCreate || !seenCall {
+		t.Fatalf("MCP tool projection omitted create/call: %s", body)
+	}
+
+	create := `{"jsonrpc":"2.0","id":"create","method":"tools/call","params":{"name":"bead_create","arguments":{"type":"issue","fields":{"title":"composed MCP"},"_meta":{"idempotencyKey":"550e8400-e29b-41d4-a716-446655440000"}}}}`
+	status, _, body = mcpRequest(t, first, create, map[string]string{"MCP-Session-Id": sessionID})
+	if status != http.StatusOK {
+		t.Fatalf("MCP bead_create status=%d body=%s", status, body)
+	}
+	createResult, ok := mcpObject(t, body)["result"].(map[string]any)
+	if !ok || createResult["isError"] == true {
+		t.Fatalf("MCP bead_create result=%s", body)
+	}
+	content := createResult["content"].([]any)
+	canonicalCreate, err := wire.DecodeJSON([]byte(content[0].(map[string]any)["text"].(string)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := canonicalCreate.(map[string]any)
+	beadID := created["results"].([]any)[0].(map[string]any)["ref"].(map[string]any)["id"].(string)
+
+	read := `{"jsonrpc":"2.0","id":"read","method":"tools/call","params":{"name":"plug_call","arguments":{"method":"bead.get","params":{"id":{"id":"` + beadID + `"}}}}}`
+	status, _, body = mcpRequest(t, first, read, map[string]string{"MCP-Session-Id": sessionID})
+	if status != http.StatusOK {
+		t.Fatalf("MCP bead.get status=%d body=%s", status, body)
+	}
+	readResult := mcpObject(t, body)["result"].(map[string]any)
+	readText := readResult["content"].([]any)[0].(map[string]any)["text"].(string)
+	canonicalRead, err := wire.DecodeJSON([]byte(readText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonicalRead.(map[string]any)["bead"].(map[string]any)["fields"].(map[string]any)["title"] != "composed MCP" {
+		t.Fatalf("MCP read returned the wrong bead: %s", readText)
+	}
+
+	// Framing and admission refusals happen before the canonical write and do
+	// not create another bead.
+	status, _, body = mcpRequest(t, first, `{`, map[string]string{"MCP-Session-Id": sessionID})
+	if status != http.StatusOK || mcpErrorCode(t, body) != "parse_error" {
+		t.Fatalf("MCP malformed request status=%d body=%s", status, body)
+	}
+	status, _, body = mcpRequest(t, first, create, map[string]string{"Plug-RPC": ""})
+	if status != http.StatusForbidden || mcpErrorCode(t, body) != "forbidden" {
+		t.Fatalf("MCP auth refusal status=%d body=%s", status, body)
+	}
+	ready, err := first.client.Call(context.Background(), "bead.ready", map[string]any{"limit": 10}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items := resultObject(t, ready)["items"].([]any); len(items) != 1 {
+		t.Fatalf("refused/malformed MCP calls changed the store: %s", ready.JSON)
+	}
+
+	first.stop(t)
+	second := startRuntime(t, config)
+	status, _, body = mcpRequest(t, second, `{"jsonrpc":"2.0","id":"old","method":"ping","params":{}}`, map[string]string{"MCP-Session-Id": sessionID})
+	if status != http.StatusNotFound || mcpErrorCode(t, body) != "not_found" {
+		t.Fatalf("MCP session survived handler shutdown: status=%d body=%s", status, body)
+	}
+	got, err := second.client.Call(context.Background(), "bead.get", map[string]any{"id": map[string]any{"id": beadID}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bead := resultObject(t, got)["bead"].(map[string]any)
+	if bead["fields"].(map[string]any)["title"] != "composed MCP" {
+		t.Fatalf("RPC restart read did not see MCP write: %s", got.JSON)
 	}
 }
 

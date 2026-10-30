@@ -21,6 +21,77 @@ still has the schema's maximum of 8. The public principal codec validates the
 same shape and closed kinds as the model; transport authentication still
 stamps the effective principal.
 
+## Session display names
+
+The adopted E3 decision (2026-10-30 08:30Z) adds optional `displayName` to
+`session.open` input and each `Presence` member. The `Session` result, principal,
+`onBehalfOf`, `_meta.agent` and all existing session ownership and expiry rules
+stay as defined. There is no session-refresh method in this catalog;
+`presence.set` renews idle expiry without changing the display name. No new
+method is introduced.
+
+**Completion Contract.** Done = the canonical OpenRPC and embedded catalog
+describe the same optional display field, normalization and trust rules,
+proven by schema/catalog conformance and the complete owning-library reverse
+and full lexicon gates; these checks do not count as runtime or UI acceptance.
+Scope = this contract and its wire schema validation; collab and UI consumers
+follow only after the contract lands.
+
+The field additions have these Go wire shapes. `Meta` and `PrincipalRef`
+retain their existing closed OpenRPC schemas; `json.RawMessage` below is a
+placeholder for the existing `Meta` codec, not permission for extra members.
+These are shape sketches, with no new normalization or storage implementation.
+
+```go
+type SessionOpenParams struct {
+	OnBehalfOf  *string         `json:"onBehalfOf,omitempty"`
+	DisplayName *string         `json:"displayName,omitempty"`
+	Meta        json.RawMessage `json:"_meta,omitempty"`
+}
+
+type Presence struct {
+	SessionID   string       `json:"sessionId"`
+	Principal   PrincipalRef `json:"principal"`
+	Focus       *string      `json:"focus,omitempty"`
+	WorkingOn   []string     `json:"workingOn,omitempty"`
+	OnBehalfOf  *string      `json:"onBehalfOf,omitempty"`
+	DisplayName *string      `json:"displayName,omitempty"`
+}
+```
+
+Normative normalization: trim leading and trailing Unicode `White_Space`.
+Reject Unicode control (`Cc`) **and** format (`Cf`) characters with typed
+`invalid_params`. Permit at most **64 Unicode scalar values after trimming**,
+not 64 bytes or grapheme clusters. Empty after trimming means absent, including
+when returning a Presence member; it is never a JSON `null` or an empty result
+string. Omitting the input preserves existing behavior.
+
+`DisplayNameInput` accepts a raw string, including empty or padded input; it
+deliberately has no `maxLength` before normalization. `DisplayName` describes
+the normalized output with `minLength: 1` and `maxLength: 64`. JSON Schema does
+not transform the input. Trimming, empty-to-absent, category rejection and the
+input bound after trimming remain normative consumer requirements in
+`x-display-name-contract`, not behavior established by schema validation.
+
+`displayName` is caller-asserted, **untrusted display-only data**. It never
+participates in authorization, attribution, audit actor, idempotency, leases or
+dedup. Clients and the web UI always render it next to the authenticated
+principal: the user name, API key name or "anonymous". It never replaces or
+impersonates that principal. Two sessions of the same principal remain two
+members identified by `sessionId`, each with its own `displayName`. Compact
+`onBehalfOf` presentation must preserve those member identities; it may not
+merge their labels or synthesize a trusted group identity. Existing sponsorship,
+resource masking, session expiry/close and no graph/log-write rules still apply.
+
+After the contract lands, the collab consumer must prove normalization and
+typed refusals through real bound RPCs, including both `Cc` and `Cf`, Unicode
+whitespace, empty/omitted input, 64/65 scalar boundaries and padded 64-scalar
+input. It must also prove unchanged masking, expiry/close, ownership and trusted
+identity behavior, with two sessions of the same principal kept separate. The
+UI must prove display beside the authenticated principal. Only then can E3
+qualify with 50 simulated agents given distinct `displayName` values. This
+contract PR supplies none of those runtime or browser proofs.
+
 ## Shared model and `ChangeSet`
 
 ```go
