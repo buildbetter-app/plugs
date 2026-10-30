@@ -116,6 +116,16 @@ inventories. `Verify` refuses source/HEAD/output drift. `Close` removes the
 output and prevents later admission; Go cannot unload code already loaded
 into a process. The caller owns the lifetime of hosts already created.
 
+`NewArtifactStore` preserves the process-local store used by existing callers.
+`OpenArtifactStore(path)` opens a private file-backed repository with
+`objects/<artifact-sha256>/{lock.json,artifact}` entries. A complete lock and
+its bytes are staged, synced and published with one directory rename. Reopen
+validates every digest, canonical lock, regular-file mode and expected entry;
+missing, partial, corrupt, conflicting, traversal or symlink state refuses.
+The lock and artifact are copied into detached restore state, and an optional
+asynchronous rebuild remains a comparison only: a mismatch never replaces the
+bytes admitted by digest.
+
 Linux behavior tests cover the real containment installation and failed
 admission when an outer seccomp filter blocks each required installation
 operation. They exercise filesystem and symlink escapes, socket creation,

@@ -56,6 +56,7 @@ type Document struct {
 	Statuses  map[string]Status   `json:"statuses,omitempty"`
 	Workflows map[string]Workflow `json:"workflows,omitempty"`
 	Types     map[string]Type     `json:"types,omitempty"`
+	GateKinds map[string]GateKind `json:"gate_kinds,omitempty"`
 }
 
 type Status struct {
@@ -91,6 +92,20 @@ type Type struct {
 	Fields        map[string]Field `json:"fields,omitempty"`
 	ReadyEligible *bool            `json:"ready_eligible,omitempty"` // nil infers eligibility from category
 	Archived      bool             `json:"archived,omitempty"`
+}
+
+// GateKind describes the resolver and counting policy for a graph gate. The
+// resolver is intentionally an opaque plugin identity except for the built-in
+// manual resolver, whose approval semantics are implemented by core. Params
+// is open so a resolver can retain its own configuration; core consumes only
+// min_approvals for manual gates.
+type GateKind struct {
+	Resolver  string         `json:"resolver"`
+	Params    map[string]any `json:"params,omitempty"`
+	Count     string         `json:"count,omitempty"` // humans or principals
+	Timeout   string         `json:"timeout,omitempty"`
+	OnTimeout string         `json:"on_timeout,omitempty"`
+	Archived  bool           `json:"archived,omitempty"`
 }
 
 // Field is a deliberately small typed schema, not an executable expression.
