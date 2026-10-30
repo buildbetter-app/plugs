@@ -149,7 +149,6 @@ internal/api/wire/schema.go
 internal/api/wire/wire_test.go
 internal/cli/BUILD.bazel
 internal/cli/README.md
-internal/cli/archive_test.go
 internal/cli/config.go
 internal/cli/config_test.go
 internal/cli/local.go
@@ -274,10 +273,6 @@ internal/core/pipeline/response_test.go
 internal/core/pipeline/snapshot.go
 internal/core/port/BUILD.bazel
 internal/core/port/pipeline.go
-internal/core/restore/BUILD.bazel
-internal/core/restore/archive.go
-internal/core/restore/fixture_test.go
-internal/core/restore/restore_test.go
 internal/core/service/BUILD.bazel
 internal/core/service/audit.go
 internal/core/service/audit_test.go
@@ -332,10 +327,6 @@ internal/integration/clisql/fixture_test.go
 internal/integration/clisql/lifecycle_test.go
 internal/integration/collabwatch/BUILD.bazel
 internal/integration/collabwatch/integration_test.go
-internal/integration/converterroundtrip/BUILD.bazel
-internal/integration/converterroundtrip/restore.go
-internal/integration/converterroundtrip/roundtrip_test.go
-internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
 internal/integration/cursorhttp/BUILD.bazel
 internal/integration/cursorhttp/cursor_test.go
 internal/integration/cursorhttp/fixture_test.go
@@ -528,7 +519,6 @@ internal/server/pluginmanifest/native.go
 internal/server/pluginmanifest/native_test.go
 internal/server/pluginmanifest/source_test.go
 internal/server/rpc/BUILD.bazel
-internal/server/rpc/admin.go
 internal/server/rpc/cmd/openrpcgen/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/main.go
 internal/server/rpc/cursor.go

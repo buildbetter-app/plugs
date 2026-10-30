@@ -13,7 +13,6 @@ import (
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
-	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	serverevents "github.com/buildbetter-app/plugs/internal/server/events"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
@@ -58,9 +57,6 @@ type LocalConfig struct {
 	Factory         StorageFactory
 	Ontology        *service.Ontology
 	PipelineOptions []pipeline.Option
-	// PresenceVerifier is host-owned D32 admission for admin dump/restore.
-	// Leaving it nil deliberately refuses those sensitive methods.
-	PresenceVerifier restore.PresenceVerifier
 }
 
 type Local struct {
@@ -136,12 +132,6 @@ func OpenLocal(ctx context.Context, cfg LocalConfig) (*Local, error) {
 		return fail(err)
 	}
 	if err := rpc.BindService(registry, svc); err != nil {
-		return fail(err)
-	}
-	if err := rpc.BindTxApply(registry, svc); err != nil {
-		return fail(err)
-	}
-	if err := rpc.BindAdmin(registry, restore.NewManager(store, lease, cfg.PresenceVerifier)); err != nil {
 		return fail(err)
 	}
 	meta, err := store.Meta(localCtx)
