@@ -25,6 +25,13 @@ type Service struct {
 	events                 EventProvider
 }
 
+// claimNextConflictRestartBudget bounds only the extra full-walk restart used
+// after the terminal ready probe observes a candidate that has repeatedly
+// exhausted the Writer's own snapshot attempts. Candidate enumeration itself
+// remains uncapped; the bound prevents one unchanged candidate from spinning a
+// request forever while preserving one restart for a newly ready candidate.
+const claimNextConflictRestartBudget = 1
+
 type Option func(*Service)
 
 // WithOntology shares the same project ontology resolver used by the pipeline.
@@ -280,6 +287,10 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 
 	position := (*PagePosition)(nil)
 	fresh := false
+	exhausted := map[string]error{}
+	var exhaustedConflict error
+	repeatedConflictThisPass := false
+	conflictRestarts := 0
 	for {
 		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
 		if err != nil {
@@ -293,6 +304,16 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 			if !claimNextRace(claimErr) {
 				return nil, claimErr
 			}
+			if claimNextCandidateConflict(claimErr) {
+				if _, seen := exhausted[bead.ID]; seen {
+					repeatedConflictThisPass = true
+				} else {
+					exhausted[bead.ID] = claimErr
+					if exhaustedConflict == nil {
+						exhaustedConflict = claimErr
+					}
+				}
+			}
 		}
 		if page.Next == nil {
 			if !fresh {
@@ -301,11 +322,19 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 				// ready while the first walk was finishing is not missed.
 				fresh = true
 				position = nil
+				repeatedConflictThisPass = false
 				continue
 			}
 			out, err := s.CommitClaimNextEmpty(ctx, by, req, meta, s.claimNextReadyProbe(req))
 			if err != nil {
 				if errors.Is(err, port.ErrClaimNextReady) {
+					if repeatedConflictThisPass {
+						if conflictRestarts >= claimNextConflictRestartBudget {
+							return nil, exhaustedConflict
+						}
+						conflictRestarts++
+					}
+					repeatedConflictThisPass = false
 					fresh = false
 					position = nil
 					continue
@@ -379,10 +408,18 @@ func claimNextRace(err error) bool {
 		// for this selected candidate. Advance within the same claimNext walk;
 		// unrelated/global write failures retain their typed error and do not
 		// become a terminal null.
-		return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
+		return claimNextCandidateConflict(value)
 	default:
 		return false
 	}
+}
+
+func claimNextCandidateConflict(err error) bool {
+	var value *model.Error
+	if !errors.As(err, &value) || value.Data.Code != "write_conflict" {
+		return false
+	}
+	return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 }
 
 func (s *Service) claimWithMethod(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta, outcomeRequired bool, method string) (port.WriteOutcome, error) {

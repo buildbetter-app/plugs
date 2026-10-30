@@ -1278,12 +1278,20 @@ type claimNextRaceStore struct {
 	writeError  error
 	writeErrors []error
 	probes      int
+	writes      int
+	writePlan   func(int) error
 }
 
 func (s *claimNextRaceStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
 	if hook := s.beforeWrite; hook != nil {
 		s.beforeWrite = nil
 		hook()
+	}
+	s.writes++
+	if s.writePlan != nil {
+		if err := s.writePlan(s.writes); err != nil {
+			return nil, err
+		}
 	}
 	if len(s.writeErrors) > 0 {
 		err := s.writeErrors[0]
@@ -1380,6 +1388,58 @@ func TestClaimNextAdvancesPastCandidateWriteConflict(t *testing.T) {
 	out, err := claimNextRaceService(f, store).ClaimNextWithOutcome(ctx, anonymous, claimReq, claimMeta)
 	if err != nil || out == nil || out.NullResult || len(out.Commit.Results) != 1 || out.Commit.Results[0].Ref.ID != page.Items[1].ID {
 		t.Fatalf("candidate write conflict did not advance to the next real claim: out=%+v err=%v", out, err)
+	}
+}
+
+func TestClaimNextBoundsPersistentCandidateWriteConflict(t *testing.T) {
+	f := setup(t)
+	create(t, f, "First")
+	create(t, f, "Second")
+	conflict := &model.Error{Message: "snapshot changed during all four write attempts", Data: model.ErrorData{Code: "write_conflict", Retryable: true}}
+	store := &claimNextRaceStore{Store: f.store, writePlan: func(n int) error {
+		// Two complete walks visit two candidates each. Only the fifth write is
+		// the first terminal probe; the tenth is the probe after the bounded
+		// ready restart. Keep every candidate exhausted while allowing both
+		// probes to observe the still-ready candidates.
+		if n%5 != 0 {
+			return conflict
+		}
+		return nil
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	before, err := f.store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := meta(t)
+	out, err := claimNextRaceService(f, store).ClaimNextWithOutcome(ctx, anonymous, ClaimNextRequest{Project: "local"}, m)
+	if out != nil {
+		t.Fatalf("persistent candidate exhaustion fabricated an outcome: %+v", out)
+	}
+	wantCode(t, err, "write_conflict")
+	if !errors.Is(err, conflict) {
+		t.Fatalf("persistent candidate exhaustion did not return the original conflict: %v", err)
+	}
+	if store.writes != 10 {
+		t.Fatalf("persistent candidate exhaustion was not bounded after two terminal probes: writes=%d probes=%d", store.writes, store.probes)
+	}
+	after, err := f.store.Meta(ctx)
+	if err != nil || after.Head.String() != before.Head.String() {
+		t.Fatalf("persistent candidate exhaustion changed durable state: before=%s after=%s err=%v", before.Head, after.Head, err)
+	}
+	reader, err := f.store.Read(ctx, driver.View{Incarnation: after.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	principal, _ := driver.PrincipalKey(anonymous)
+	receipt, err := reader.IdempotencyByKey(ctx, principal, m.AgentLabel, "bead.claimNext", m.IdempotencyKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt != nil {
+		t.Fatalf("persistent candidate exhaustion persisted a receipt: %+v", receipt)
 	}
 }
 
