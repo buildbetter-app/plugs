@@ -29,8 +29,10 @@ At this snapshot:
   path; there is no runnable `plug server` command.
 - `server/rpc` owns wire validation and cursors. `BindService` supplies the
   lifecycle surface; `server/ontologyrpc` and `server/collab` are explicit
-  adapters that a composition root may bind. `ontology.apply` and
-  `presence.watch` remain unbound and refuse with `method_not_found`.
+  adapters that a composition root may bind. `ontology.apply` remains
+  unbound and refuses with `method_not_found`; the composed runtime's watch
+  adapter binds `presence.watch` when its real collaboration snapshot source
+  is available.
 - `server/authn`, the process-local API-key provider and the bounded OIDC core
   session provider admit credentials only when a host composes them. The HTTP
   transport has no login route, cookie mode or authorization policy of its own.

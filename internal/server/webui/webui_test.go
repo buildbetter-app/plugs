@@ -39,7 +39,7 @@ func TestEmbeddedUIHasExplicitSecurityBoundaryAndStates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusOK || !strings.Contains(response.Header.Get("Content-Security-Policy"), "default-src 'self'") {
+	if response.StatusCode != http.StatusOK || !strings.Contains(response.Header.Get("Content-Security-Policy"), "default-src 'self'") || !strings.Contains(response.Header.Get("Content-Security-Policy"), "frame-src 'self'") {
 		t.Fatalf("status=%d CSP=%q", response.StatusCode, response.Header.Get("Content-Security-Policy"))
 	}
 	for _, header := range []string{"Cross-Origin-Resource-Policy", "X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy"} {
@@ -83,12 +83,12 @@ func TestEmbeddedUIHasExplicitSecurityBoundaryAndStates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"history.query", "bead.ready", "view.run", "presence.list", "Request cancelled; nothing changed.", "credentials: \"omit\"", "textContent"} {
+	for _, want := range []string{"history.query", "bead.ready", "view.run", "presence.list", "Request cancelled; nothing changed.", "credentials: \"omit\"", "textContent", "event.source !== frame.contentWindow", "setAttribute(\"sandbox\", \"allow-scripts\")", "postMessage(response, \"*\")", "callTimes.length >= 20"} {
 		if !bytes.Contains(js, []byte(want)) {
 			t.Fatalf("UI behavior missing %q", want)
 		}
 	}
-	if bytes.Contains(js, []byte("innerHTML")) || bytes.Contains(js, []byte("makeCorpus")) || bytes.Contains(js, []byte("cdn")) {
+	if bytes.Contains(js, []byte("innerHTML")) || bytes.Contains(js, []byte("makeCorpus")) || bytes.Contains(js, []byte("cdn")) || bytes.Contains(js, []byte("allow-same-origin")) {
 		t.Fatal("UI uses unsafe HTML injection or fixture/CDN data")
 	}
 }
