@@ -4,7 +4,8 @@
 the protected branch-zero `ontology` or `ontology/...` record. The package
 checks the actual reference, kind and revision, calls the service-owned strict
 `DecodeOntologySource`, and compiles the decoded base, overlays and plugin
-availability with the pure ontology engine. It never opens a write transaction.
+availability with the pure ontology engine. Apply is only available when the
+host also supplies the canonical protected Writer seam.
 
 `Get` returns the effective project document; `Describe` can narrow it to one
 type and its workflow/status definitions. `Schema` uses the real effective
@@ -45,13 +46,15 @@ caller context refuse reuse. Retention is bounded and process-local; restart
 or eviction requires replanning. Planner candidate revisions are consecutive
 logical planning references, not a claim that a storage commit was published.
 
-`Ready` means only that the read-only planner found no undispositioned problem.
-Apply is unsupported. Remaining work is a pipeline-owned atomic publication
-seam with locked source/row/predicate rechecks, projections, event publication,
-durable idempotency, and method/digest/key-bound live human proof and replay
-guards. Policy revalidation, configured-authorizer transition decisions, gate
-resolver facts, directive wire admission and multi-source planning remain
-unsupported. A login predicate alone cannot close those apply requirements.
+`Ready` means only that the planner found no undispositioned problem. A host
+that supplies the canonical `pipeline.ProtectedApplier` may also expose
+`Service.Apply`: it reloads the retained digest-bound plan, requires exact CAS
+equality, rebuilds complete stored document images, and delegates one atomic
+source/row/predicate transaction to the Writer. A read-only host leaves that
+capability nil and does not advertise `ontology.apply`. Durable replay is
+resolved by the Writer's receipt before stale source/row guards are retried.
+Policy revalidation, configured-authorizer transition decisions, gate resolver
+facts, directive wire admission and multi-source planning remain unsupported.
 
 With no authorization plugin, omit `AuthorizeRead`. With one installed, the
 host must supply the current read authorizer. Planning requires access to the
