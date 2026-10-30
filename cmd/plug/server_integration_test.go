@@ -341,6 +341,7 @@ func sqliteRestartRPC(t *testing.T, endpoint, session, method string, params map
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Plug-RPC", "1")
 	if session != "" {
 		req.Header.Set("Plug-Session", session)
 	}
@@ -428,6 +429,7 @@ func sqliteRestartAttach(t *testing.T, endpoint, session, subscription string) *
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Plug-RPC", "1")
 	req.Header.Set("Plug-Session", session)
 	req.Header.Set("Plug-Agent", "acceptance")
 	response, err := http.DefaultClient.Do(req)
