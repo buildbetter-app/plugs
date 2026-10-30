@@ -62,8 +62,10 @@ func (r *reader) pin(ctx context.Context, v driver.View) error {
 	}
 	head, _ := m.Head.Uint64()
 	at := head
+	requested := m.Head
 	if v.At != nil {
-		at, err = v.At.Uint64()
+		requested = *v.At
+		at, err = requested.Uint64()
 	}
 	if err == nil {
 		floor, _ := m.HistoryFloor.Uint64()
@@ -71,7 +73,7 @@ func (r *reader) pin(ctx context.Context, v driver.View) error {
 			err = driver.ErrTruncated{Floor: m.HistoryFloor}
 		}
 		if at > head {
-			err = fmt.Errorf("sqlite: requested revision exceeds head")
+			err = driver.ErrFutureRevision{Requested: requested, Head: m.Head}
 		}
 	}
 	if err != nil {
