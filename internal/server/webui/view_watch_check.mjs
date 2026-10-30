@@ -232,7 +232,7 @@ try {
   proof("pagehide_releases_session_stream_and_subscription");
 
   await delay(500); await Promise.all(responseJobs);
-  const allowed = ["server.hello", "rpc.methods", "view.run", "view.watch", "view.explain", "presence.list", "event.unsubscribe", "session.open", "session.close", "bead.ready"];
+  const allowed = ["server.hello", "rpc.methods", "view.run", "view.watch", "view.explain", "presence.list", "event.unsubscribe", "session.open", "session.close", "bead.ready", "bead.get"];
   const methods = [];
   for (const entry of events) {
     const headers = Object.fromEntries(Object.entries(entry.request.headers).map(([key, value]) => [key.toLowerCase(), value]));
@@ -242,6 +242,10 @@ try {
       const request = JSON.parse(entry.request.postData); methods.push(request.method);
       assert(allowed.includes(request.method), JSON.stringify(request));
       if (request.method !== "server.hello") assert.equal(request.params._meta.project, "web");
+      if (request.method === "bead.get") {
+        assert.deepEqual(request.params.id, { id: "pl-browser-a", branch: 0 });
+        assert.deepEqual(Object.keys(request.params).sort(), ["_meta", "id"]);
+      }
       if (["view.watch", "event.unsubscribe", "session.close"].includes(request.method)) assert(headers["plug-session"]);
     } else {
       assert(headers["plug-session"]); assert.equal(headers["plug-rpc"], "1");
