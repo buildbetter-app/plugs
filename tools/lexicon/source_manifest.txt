@@ -19,6 +19,7 @@ MODULE.bazel
 MODULE.bazel.lock
 NOTICE.md
 OWNERS.toml
+README.md
 SKELETON.md
 cmd/plug/BUILD.bazel
 cmd/plug/integration_test.go
@@ -741,6 +742,7 @@ scripts/ci/plug-bazel-delivery-test.sh
 scripts/ci/plug-bazel-delivery.py
 scripts/ci/plug-bazel-targets-test.sh
 scripts/ci/plug-bazel-targets.sh
+scripts/demo.sh
 sdk/go/BUILD.bazel
 sdk/go/conformance/BUILD.bazel
 sdk/go/conformance/fixture.go
