@@ -65,6 +65,8 @@ type serviceParams struct {
 	Metadata     map[string]any       `json:"metadata"`
 	Query        string               `json:"query"`
 	BudgetTokens model.Natural        `json:"budgetTokens"`
+	State        string               `json:"state"`
+	Details      map[string]any       `json:"details"`
 	Meta         wire.Meta            `json:"_meta"`
 }
 type asOf struct {
@@ -120,6 +122,9 @@ func BindService(registry *Registry, svc Service) error {
 	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "history.query"}
 	if _, ok := svc.(MemoryService); ok {
 		names = append(names, "agent.brief", "memory.get", "memory.list", "memory.save", "memory.delete")
+	}
+	if _, ok := svc.(port.GateService); ok {
+		names = append(names, "gate.approve", "gate.report")
 	}
 	if capability, ok := any(svc).(interface{ EventListConfigured() bool }); !ok || capability.EventListConfigured() {
 		if _, ok := any(svc).(service.EventReader); ok {
@@ -366,9 +371,35 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		}
 		v, err := svc.ClaimWithOutcome(ctx, c.Principal, service.ClaimRequest{ID: id, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
+	case "gate.approve":
+		gate, ok := svc.(port.GateService)
+		if !ok {
+			return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
+		}
+		id, err := p.refID()
+		if err != nil {
+			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
+		}
+		v, err := gate.ApproveGate(ctx, c.Principal, service.GateApproveRequest{ID: id, Expect: p.Expect}, meta)
+		return Outcome{Result: gateJSON(v.Result), Replayed: v.Replayed}, err
+	case "gate.report":
+		gate, ok := svc.(port.GateService)
+		if !ok {
+			return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
+		}
+		id, err := p.refID()
+		if err != nil {
+			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
+		}
+		v, err := gate.ReportGate(ctx, c.Principal, service.GateReportRequest{ID: id, State: p.State, Details: p.Details, Expect: p.Expect}, meta)
+		return Outcome{Result: gateJSON(v.Result), Replayed: v.Replayed}, err
 	default:
 		return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
 	}
+}
+
+func gateJSON(v port.GateResult) map[string]any {
+	return map[string]any{"commit": commitJSON(v.Commit), "state": v.State, "approvals": v.Approvals}
 }
 
 func writeOutcome(v port.WriteOutcome) Outcome {

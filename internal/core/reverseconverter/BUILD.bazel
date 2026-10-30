@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "reverseconverter",
+    srcs = [
+        "archive.go",
+        "convert.go",
+        "types.go",
+    ],
+    importpath = "github.com/buildbetter-app/plugs/internal/core/reverseconverter",
+    visibility = ["//visibility:public"],
+    deps = ["//internal/core/dumpformat"],
+)
+
+go_test(
+    name = "reverseconverter_test",
+    srcs = ["reverseconverter_test.go"],
+    embed = [":reverseconverter"],
+    size = "small",
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

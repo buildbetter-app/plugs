@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/buildbetter-app/plugs/internal/core/viewops",
     visibility = ["//internal:__subpackages__"],
     deps = [
+        "//internal/core/events",
         "//internal/core/model",
         "//internal/core/pipeline",
         "//internal/storage/driver",
@@ -17,6 +18,7 @@ go_test(
     srcs = glob(["*_test.go"]),
     embed = [":viewops"],
     deps = [
+        "//internal/core/events",
         "//internal/core/model",
         "//internal/core/ontology",
         "//internal/core/pipeline",
