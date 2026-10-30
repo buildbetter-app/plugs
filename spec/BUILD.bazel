@@ -6,9 +6,14 @@ go_test(
         "assertions_test.go",
         "fixture_test.go",
         "pipeline_test.go",
+        "recorded_test.go",
         "rpc_test.go",
     ],
-    args = ["-test.v"],
+    args = [
+        "-recorded-extension=$(rlocationpath //spec/recorded/extension:extension.json)",
+        "-test.v",
+    ],
+    data = ["//spec/recorded/extension:extension.json"],
     deps = [
         "//internal/acceptance",
         "//internal/core/model",
