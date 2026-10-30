@@ -9,6 +9,7 @@ design and OpenRPC catalog describe a wider target surface.
 | --- | --- |
 | [CLI](cli.md) | Persistent local SQLite, explicit memory sessions, admitted remote HTTP, commands, retries and cancellation. |
 | [RPC and HTTP](rpc-http.md) | JSON-RPC registry, explicit service bindings, admission and transport limits. |
+| [Transports](transports.md) | Selecting and operating stdio, WebSocket and MCP adapters, including bounds, identity and unsupported composition boundaries. |
 | [Native plugins](native-plugins.md) | The public SDK, trusted native host and callback capabilities. |
 | [Events](events.md) | Ordered audit plans, materialization, delivery and fenced checkpoints. |
 | [Storage](storage.md) | Memory, SQLite and PostgreSQL ownership, persistence and fencing. |
