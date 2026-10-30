@@ -316,6 +316,7 @@ internal/integration/clisql/fixture_test.go
 internal/integration/clisql/lifecycle_test.go
 internal/integration/collabwatch/BUILD.bazel
 internal/integration/collabwatch/integration_test.go
+internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/native_restore_test.go
