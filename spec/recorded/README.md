@@ -44,6 +44,15 @@ card or cross-driver parity. The recorded census remains two cards (B17/B24);
 the other 26 cards, complete store/configuration census, controlled-clock B24,
 and connected replay remain outside this package.
 
+`goldens.json` is an immutable reference input because it retains the exact
+recorder source bytes, source-test names, commands, and legacy output values.
+The lexicon policy admits only `spec/recorded/goldens.json` at its pinned
+SHA-256 `26a086334357d55ea847daa301f45c9435a71bba75fb6c324456aebf459fbf32`;
+changed bytes and any unlisted path under the immutable reference prefix fail
+closed. The validator source is still scanned as ordinary Plug test code. Its source-test
+and command evidence is bound by a digest over the manifest arrays, preserving
+their exact bytes without duplicating reference identifiers in validator code.
+
 `provenance.py` independently projects each fresh raw artifact and emits its
 provenance. It checks every reference source blob against the local pinned tag,
 the executable and recorder hashes, driver version, paired schema inventory,

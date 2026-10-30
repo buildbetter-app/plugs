@@ -27,6 +27,7 @@ var provenanceSource []byte
 const pinnedCommit = "9d6fff760b7a314b476539198504d77ce0959656"
 const pinnedBinarySHA256 = "e7a70432e3137161c8d8a7530e1db4236bb5ac8a36d7de41f5b831fdbde2f776"
 const pinnedDriverVersion = "github.com/dolthub/dolt/go@v0.40.5-0.20260806213044-796d07497741"
+const pinnedGoldenSHA256 = "26a086334357d55ea847daa301f45c9435a71bba75fb6c324456aebf459fbf32"
 
 var expectedRecordings = map[string]struct {
 	digest              string
@@ -34,8 +35,7 @@ var expectedRecordings = map[string]struct {
 	sourceSHA           string
 	sourcePath          string
 	sourceCount         int
-	sourceTests         []string
-	commands            []string
+	sourceEvidenceSHA   string
 	projectionDigest    string
 	configurationDigest string
 	inputDigest         string
@@ -43,30 +43,12 @@ var expectedRecordings = map[string]struct {
 	projectionPaths     []string
 }{
 	"B17": {
-		digest:      "e91e136dd7fd0455a8c7416d9fd37ac252574ec9b7752934233b098e406d653b",
-		artifactSHA: "fff0ec437df90cef03a0937786ea4e2326d28ffd8171fcbf56131ae69644480e",
-		sourceSHA:   "82041707d89878b8dd48cc7478af368038672605432394024cdb8658dbc875aa",
-		sourcePath:  "internal/storage/embeddeddolt/build09_record_test.go",
-		sourceCount: 13,
-		sourceTests: []string{
-			"backend/conformance/metadata_cas_contract.go::RunMetadataCASCreatesAKeyThatWasAbsent",
-			"backend/conformance/metadata_cas_contract.go::RunMetadataCASRefusesASecondCreateAndReportsTheHolder",
-			"backend/conformance/metadata_cas_contract.go::RunMetadataCASSwapsOnAMatchAndReportsTheNewValue",
-			"backend/conformance/metadata_cas_contract.go::RunMetadataCASRefusalReportsTheCurrentValueAndWritesNothing",
-			"backend/conformance/metadata_cas_contract.go::RunMetadataCASComparesCanonically",
-			"backend/conformance/metadata_cas_contract.go::RunMetadataCASReportsTheValueTheRowHolds",
-			"backend/conformance/metadata_cas_contract.go::RunMetadataCASDistinguishesAnAbsentKeyFromAStoredNull",
-			"backend/conformance/metadata_cas_contract.go::RunMetadataCASRemovesTheKeyWhenTheValueIsAbsent",
-			"backend/conformance/metadata_cas_contract.go::RunMetadataCASPreservesSiblingKeys",
-			"backend/conformance/metadata_cas_contract.go::RunMetadataCASNoOpSwapWritesNothing",
-			"backend/conformance/metadata_cas_contract.go::RunMetadataCASRefusesAnIDOnNeitherPlane",
-			"backend/conformance/metadata_cas_contract.go::RunMetadataCASAWispSwapRecordsNoDurableHistory",
-			"backend/conformance/metadata_cas_contract.go::RunMetadataCASRecordsExactlyOneHistoryEntry",
-		},
-		commands: []string{
-			"cd /tmp/plug-swarm/work/build09-beads-base.LYTBwF && TMPDIR=/tmp/plug-swarm/work/build09-recorder-tmp BEADS_TEST_EMBEDDED_DOLT=1 BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b17-repair-a.json go test -tags gms_pure_go ./internal/storage/embeddeddolt -run '^TestBuild09RecordB17$' -count=1 -v",
-			"cd /tmp/plug-swarm/work/build09-beads-base.LYTBwF && TMPDIR=/tmp/plug-swarm/work/build09-recorder-tmp BEADS_TEST_EMBEDDED_DOLT=1 BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b17-repair-b.json go test -tags gms_pure_go ./internal/storage/embeddeddolt -run '^TestBuild09RecordB17$' -count=1 -v",
-		},
+		digest:              "e91e136dd7fd0455a8c7416d9fd37ac252574ec9b7752934233b098e406d653b",
+		artifactSHA:         "fff0ec437df90cef03a0937786ea4e2326d28ffd8171fcbf56131ae69644480e",
+		sourceSHA:           "82041707d89878b8dd48cc7478af368038672605432394024cdb8658dbc875aa",
+		sourcePath:          "internal/storage/embeddeddolt/build09_record_test.go",
+		sourceCount:         13,
+		sourceEvidenceSHA:   "31f38457d6d1572294ca7d7183d656bcf1d1b646ad348df26440ede0cb72c6eb",
 		projectionDigest:    "4ad0342c3d500df6e0fa41a95e377af04a30aee66a4f7aa17d9f0e161bcfc3bd",
 		configurationDigest: "ab7f7941c4ff04ab93c76c331aa77612df1b3559243699e9a7cdc1b0056f45f3",
 		inputDigest:         "cf7583f5f30291e29f36433a2e4dfab3958f7d48bb9ece90436b3d98b6182ea1",
@@ -74,19 +56,12 @@ var expectedRecordings = map[string]struct {
 		projectionPaths:     []string{"card", "engine", "outcomes", "observations"},
 	},
 	"B24": {
-		digest:      "9fddd7a374875eeff92502f26114386b34c78e121f970a506cf32d54e9bea1b4",
-		artifactSHA: "70ac84166752614db8d449690b6c7f093bc860f2b50682d4151b2ccd155024f1",
-		sourceSHA:   "4ad3e54d67eefe5b610099257f1a662ed6b57628eb403e16eff13c4311d5ce31",
-		sourcePath:  "build09_record_b24.py",
-		sourceCount: 2,
-		sourceTests: []string{
-			"cmd/bd/defer_wake_embedded_test.go::TestEmbeddedDeferAutoWake",
-			"cmd/bd/reopen_defer_test.go::TestCLI_ReopenClearsDeferUntil",
-		},
-		commands: []string{
-			"BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b24-repair-a.json python3 /tmp/plug-swarm/work/build09_record_b24.py /tmp/plug-swarm/work/build09-bd-9d6fff760",
-			"BUILD09_RECORDER_OUTPUT=/tmp/plug-swarm/work/build09-b24-repair-b.json python3 /tmp/plug-swarm/work/build09_record_b24.py /tmp/plug-swarm/work/build09-bd-9d6fff760",
-		},
+		digest:              "9fddd7a374875eeff92502f26114386b34c78e121f970a506cf32d54e9bea1b4",
+		artifactSHA:         "70ac84166752614db8d449690b6c7f093bc860f2b50682d4151b2ccd155024f1",
+		sourceSHA:           "4ad3e54d67eefe5b610099257f1a662ed6b57628eb403e16eff13c4311d5ce31",
+		sourcePath:          "build09_record_b24.py",
+		sourceCount:         2,
+		sourceEvidenceSHA:   "45825590fe8e58241eecf6ca77ba56d74881dd8a77018c3830309cd37de4a525",
 		projectionDigest:    "ccb04e27ec44c9c7a32b4bbb8be959f85d14dcebf272d0b5c95bf5310ca3a956",
 		configurationDigest: "aa3f41cebf0780d64902811ef701013419aeee2112ff789d43879b9e7c45351a",
 		inputDigest:         "5ee49df6ad5c7442241cd716824b3a5fd311ed238a3d670011a69f7fa2720abd",
@@ -221,6 +196,9 @@ func decodeGoldenManifest(t *testing.T) manifest {
 
 func readManifest(t *testing.T) (manifest, []byte) {
 	t.Helper()
+	if digest(goldenFile) != pinnedGoldenSHA256 {
+		t.Fatalf("recorded golden bytes drifted: %s", digest(goldenFile))
+	}
 	got := decodeGoldenManifest(t)
 	if err := validateManifest(got); err != nil {
 		t.Fatalf("validate recorded golden manifest: %v", err)
@@ -238,6 +216,18 @@ func requireDigest(t *testing.T, label, value string) {
 func digest(raw []byte) string {
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
+}
+
+func sourceEvidenceDigest(sourceTests, commands []string) string {
+	value := struct {
+		SourceTests []string `json:"sourceTests"`
+		Commands    []string `json:"commands"`
+	}{sourceTests, commands}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return digest(raw)
 }
 
 func canonicalJSON(raw []byte) ([]byte, error) {
@@ -321,7 +311,7 @@ func validateManifest(got manifest) error {
 		if recorder.Disposition != (dispositionEvidence{Status: "keep", Source: source, Scope: "recorded-reference-vector"}) {
 			return fmt.Errorf("%s disposition is missing or mismatched", card)
 		}
-		if !equalStrings(recorder.SourceTests, want.sourceTests) || !equalStrings(recorder.Commands, want.commands) || len(recorder.SourceFiles) != 1 {
+		if len(recorder.SourceTests) != want.sourceCount || len(recorder.Commands) != 2 || sourceEvidenceDigest(recorder.SourceTests, recorder.Commands) != want.sourceEvidenceSHA || len(recorder.SourceFiles) != 1 {
 			return fmt.Errorf("%s source tests, commands or sources are missing or mismatched", card)
 		}
 		file := recorder.SourceFiles[0]
@@ -436,11 +426,8 @@ func TestRecordedVectorsReplayTheirIndependentDigests(t *testing.T) {
 			if len(recorder.SourceTests) != want.sourceCount || len(recorder.SourceFiles) != 1 || len(recorder.Commands) != 2 {
 				t.Fatalf("incomplete recorder provenance: %+v", recorder)
 			}
-			if !equalStrings(recorder.SourceTests, want.sourceTests) {
-				t.Fatalf("recorder source tests drifted: %v, want %v", recorder.SourceTests, want.sourceTests)
-			}
-			if !equalStrings(recorder.Commands, want.commands) {
-				t.Fatalf("recorder commands drifted: %v, want %v", recorder.Commands, want.commands)
+			if sourceEvidenceDigest(recorder.SourceTests, recorder.Commands) != want.sourceEvidenceSHA {
+				t.Fatalf("recorder source evidence drifted: %s, want %s", sourceEvidenceDigest(recorder.SourceTests, recorder.Commands), want.sourceEvidenceSHA)
 			}
 			for i, command := range recorder.Commands {
 				if strings.TrimSpace(command) == "" || !strings.Contains(command, "build09-") {
