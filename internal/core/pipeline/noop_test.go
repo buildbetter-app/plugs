@@ -116,7 +116,11 @@ func TestNoopStillRequiresAdmission(t *testing.T) {
 
 func TestClaimNextEmptyProbeRunsAfterHeadAndBlocksStaleNull(t *testing.T) {
 	h := setup(t)
-	w := h.writer()
+	var posts atomic.Int32
+	w := h.writer(WithPostSubscribers(PostBinding{ID: "not-for-empty-receipts", Subscriber: postFunc(func(context.Context, port.CommittedChange, port.SnapshotReader) error {
+		posts.Add(1)
+		return nil
+	})}))
 	meta := meta(30)
 	meta.Method = "bead.claimNext"
 	var observed atomic.Int32
@@ -145,7 +149,7 @@ func TestClaimNextEmptyProbeRunsAfterHeadAndBlocksStaleNull(t *testing.T) {
 	}
 	principal, _ := driver.PrincipalKey(by)
 	receipt, err := h.read(t).IdempotencyByKey(context.Background(), principal, "", "bead.claimNext", meta.IdempotencyKey)
-	if err != nil || receipt == nil || receipt.Commit.Revision.String() != "1" || len(receipt.Changeset.Changes) != 0 {
+	if err != nil || receipt == nil || receipt.Commit.Revision.String() != "1" || len(receipt.Changeset.Changes) != 0 || receipt.ResponsePending || posts.Load() != 0 {
 		t.Fatalf("durable terminal receipt=%+v err=%v", receipt, err)
 	}
 	replayed, err := h.writer().ApplyClaimNextEmpty(context.Background(), by, model.ChangeSet{Ops: []model.Op{}}, meta, func(context.Context, driver.Reader) (bool, error) {

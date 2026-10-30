@@ -1056,7 +1056,7 @@ func TestScanBeadsTraversesBeyondTheFormerQueueCap(t *testing.T) {
 }
 
 func TestClaimNextRaceOnlySkipsCandidateBusy(t *testing.T) {
-	if !claimNextRace(&model.Error{Data: model.ErrorData{Code: "busy", Hint: "bead already has a live claim"}}) {
+	if !claimNextRace(&model.Error{Message: "bead already has a live claim", Data: model.ErrorData{Code: "busy"}}) {
 		t.Fatal("candidate live-lease race was not skippable")
 	}
 	for _, err := range []error{

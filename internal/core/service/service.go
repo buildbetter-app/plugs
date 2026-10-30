@@ -321,7 +321,7 @@ func claimNextRace(err error) bool {
 		// Only a candidate's live-lease race is skippable. Pre-phase timeout,
 		// active-store lease loss and every other busy condition remain a wire
 		// error rather than being converted into terminal null.
-		return value.Data.Hint == "bead already has a live claim"
+		return value.Message == "bead already has a live claim"
 	default:
 		return false
 	}
