@@ -116,6 +116,15 @@ func (s *GuardedService) CreateWithOutcome(ctx context.Context, by model.Princip
 func (s *GuardedService) UpdateWithOutcome(ctx context.Context, by model.PrincipalRef, req service.UpdateRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	return s.delegate.UpdateWithOutcome(ctx, by, req, meta)
 }
+func (s *GuardedService) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.delegate.ApplyWithOutcome(ctx, by, cs, meta)
+}
+func (s *GuardedService) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, req service.LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.delegate.LinkWithOutcome(ctx, by, req, meta)
+}
+func (s *GuardedService) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, req service.LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.delegate.UnlinkWithOutcome(ctx, by, req, meta)
+}
 func (s *GuardedService) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	return s.delegate.ClaimWithOutcome(ctx, by, req, meta)
 }
