@@ -1,9 +1,10 @@
 # Offline reverse converter
 
 `reverseconverter` is the rollback-side boundary for a validated
-`plug-dump/1` head-state archive. It is detached and offline: `Read` validates
-the bounded canonical USTAR archive, and `Convert` emits deterministic
-`beads-jsonl/1` bytes for the pinned Beads importer. The package never opens a
+`plug-dump/1` head-state archive. It is detached and offline: `Read` delegates
+to the canonical `internal/core/dumpformat` validator for the bounded archive,
+and `Convert` emits deterministic `beads-jsonl/1` bytes for the pinned Beads
+importer. The package never opens a
 Plug store, starts `bd`, resolves a secret, or writes a target database.
 
 ```go
@@ -36,6 +37,15 @@ example, a `config/github.token` record becomes
 `plug.config/github.token`. Secret values remain canonical JSON references such
 as `{"$secret":"config/github.token"}`. No secret provider is contacted and
 no credential bytes are written to JSONL or reports.
+
+Known source fields without a Beads JSONL column, such as `no_history`,
+`estimated_minutes`, and compaction/revision fields, are retained under the
+reserved issue metadata key `_plug_source_fields` as a canonical JSON string.
+This preserves large integers through the pinned importer's metadata
+normalization. `Report.ArchivedSourceFields` names every archived field.
+Fields describing workflows and unknown source fields fail closed. Empty
+string memory values refuse because the pinned Beads importer omits memories
+whose key or value is empty.
 
 `Result.Projection` is the declared semantic readback projection: issue IDs,
 kinds, statuses, categories and outcomes; edge IDs/endpoints/types; comment

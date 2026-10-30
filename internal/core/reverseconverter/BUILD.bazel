@@ -9,6 +9,7 @@ go_library(
     ],
     importpath = "github.com/buildbetter-app/plugs/internal/core/reverseconverter",
     visibility = ["//visibility:public"],
+    deps = ["//internal/core/dumpformat"],
 )
 
 go_test(

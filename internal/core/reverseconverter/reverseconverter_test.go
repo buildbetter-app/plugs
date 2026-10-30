@@ -150,6 +150,101 @@ func TestConvertIsDeterministicAndReportsLoss(t *testing.T) {
 	}
 }
 
+func TestConvertArchivesUnsupportedSourceFields(t *testing.T) {
+	dump := cloneDump(fixtureDump())
+	archived := map[string]any{
+		"estimated_minutes": json.Number("30"), "no_history": true,
+		"compaction_level": json.Number("2"), "compacted_at": "2026-01-01T00:00:00Z",
+		"compacted_at_commit": "synthetic-commit", "original_size": json.Number("0"),
+		"current_revision": json.Number("9007199254740993"), "content_hash": "synthetic-content-hash",
+		"source_repo": "", "storage_class": "versioned",
+	}
+	for key, value := range archived {
+		dump.Records["bead"][0].Source.Fields[key] = value
+	}
+	before := cloneDump(dump)
+	result, err := Convert(dump)
+	if err != nil {
+		t.Fatalf("archivable source field refused: %v", err)
+	}
+	if !reflect.DeepEqual(dump, before) {
+		t.Fatal("conversion changed the source dump")
+	}
+	for key := range archived {
+		if !containsString(result.Report.ArchivedSourceFields, "bead/demo-3/source/"+key) {
+			t.Fatalf("archived source field %s missing from report: %+v", key, result.Report)
+		}
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+		var issue issueLine
+		decoder := json.NewDecoder(bytes.NewReader(line))
+		decoder.UseNumber()
+		if err := decoder.Decode(&issue); err != nil || issue.ID != "demo-3" {
+			continue
+		}
+		encoded, ok := issue.Metadata["_plug_source_fields"].(string)
+		if !ok {
+			t.Fatalf("source archive must be a lossless JSON string: %#v", issue.Metadata)
+		}
+		var fields map[string]any
+		decoder = json.NewDecoder(strings.NewReader(encoded))
+		decoder.UseNumber()
+		if err := decoder.Decode(&fields); err != nil || !reflect.DeepEqual(fields, archived) {
+			t.Fatalf("archived source field missing from issue metadata: %#v", issue.Metadata)
+		}
+		return
+	}
+	t.Fatal("archived issue was not emitted")
+}
+
+func TestConvertRefusesWorkflowAndUnknownSourceFields(t *testing.T) {
+	for field, value := range map[string]any{
+		"payload": map[string]any{"state": "running"}, "wi" + "sp_type": "run",
+		"work_type": "workflow", "role_type": "agent", "ephemeral": true,
+		"is_template": true, "target": "demo-1", "unknown_column": "unaccounted",
+	} {
+		t.Run(field, func(t *testing.T) {
+			dump := cloneDump(fixtureDump())
+			dump.Records["bead"][0].Source.Fields[field] = value
+			result, err := Convert(dump)
+			var refusal *Refusal
+			if !errors.As(err, &refusal) || !strings.Contains(strings.Join(refusal.Reasons, "\n"), field) || len(result.JSONL) != 0 || len(refusal.Report.UnsupportedFields) == 0 {
+				t.Fatalf("source field was not refused without output: result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestConvertRefusesSourceArchiveMetadataCollision(t *testing.T) {
+	dump := cloneDump(fixtureDump())
+	dump.Records["bead"][0].Source.Fields["no_history"] = true
+	dump.Records["bead"][0].Body["metadata"].(map[string]any)["_plug_source_fields"] = "existing"
+	result, err := Convert(dump)
+	if err == nil || !strings.Contains(err.Error(), "reserves _plug_source_fields") || len(result.JSONL) != 0 {
+		t.Fatalf("reserved metadata was overwritten: result=%+v err=%v", result, err)
+	}
+}
+
+func TestConvertRefusesEmptyMemoryAndConfigValues(t *testing.T) {
+	for _, kind := range []string{"memory", "config"} {
+		t.Run(kind, func(t *testing.T) {
+			dump := cloneDump(fixtureDump())
+			record := &dump.Records[kind][0]
+			if kind == "config" {
+				record.ID = "config/display.theme"
+				record.Body["key"], record.Body["classification"] = record.ID, "public"
+				record.Source.Fields["key"] = "display.theme"
+			}
+			record.Body["value"], record.Source.Fields["value"] = "", ""
+			result, err := Convert(dump)
+			var refusal *Refusal
+			if !errors.As(err, &refusal) || !strings.Contains(err.Error(), "empty memory value") || len(result.JSONL) != 0 || !containsString(refusal.Report.UnsupportedFields, kind+"/"+record.ID+"/value") {
+				t.Fatalf("empty value was not refused with a report: result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestConvertRefusesUnsupportedAndDuplicateInputs(t *testing.T) {
 	tests := []struct {
 		name string
@@ -280,28 +375,41 @@ func TestConvertCarriesEdgeIdentityEnvelope(t *testing.T) {
 	}
 }
 
-func TestReadValidatesCanonicalArchive(t *testing.T) {
+func TestReadUsesCanonicalArchiveValidator(t *testing.T) {
 	records := []byte(`{"kind":"bead","id":"demo-1","project":"demo","body":{"type":"issue","source_type":"task","title":"one","status_category":"unstarted","priority":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"},"source":{"table":"issues","fields":{"status":"open"}}}` + "\n")
-	archive := makeArchive(t, records, 0o600, tar.TypeReg)
-	dump, err := ReadBytes(archive)
-	if err != nil {
-		t.Fatalf("Read valid archive: %v", err)
-	}
-	if len(dump.Records["bead"]) != 1 || dump.Records["bead"][0].ID != "demo-1" {
-		t.Fatalf("read records=%+v", dump.Records)
-	}
-	if _, err := Convert(dump); err != nil {
-		t.Fatalf("Convert read archive: %v", err)
-	}
-	if _, err := ReadBytes(makeArchive(t, records, 0o644, tar.TypeReg)); err == nil {
-		t.Fatal("noncanonical archive mode accepted")
-	}
-	if _, err := ReadBytes(makeArchive(t, records, 0o600, tar.TypeSymlink)); err == nil {
-		t.Fatal("nonregular archive member accepted")
+	// The old reader accepted this shallow fixture despite its missing
+	// canonical disclosures, allocator inventory, source census and schema.
+	archive := makeArchive(t, records, 0o600, tar.TypeReg, "bead")
+	trailing := append(append([]byte(nil), archive...), make([]byte, 1536)...)
+	trailing[len(archive)] = 1 // keep two zero end blocks after the hidden data
+	for _, test := range []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{"shallow archive", archive, "missing incomplete-conversion disclosures"},
+		{"mode", makeArchive(t, records, 0o644, tar.TypeReg, "bead"), "noncanonical tar member"},
+		{"symlink", makeArchive(t, records, 0o600, tar.TypeSymlink, "bead"), "noncanonical tar member"},
+		{"unknown kind member", makeArchive(t, records, 0o600, tar.TypeReg, "unknown"), "unknown archive member"},
+		{"truncated end blocks", archive[:len(archive)-512], "invalid tar length or end blocks"},
+		{"partial block", archive[:len(archive)-1], "invalid tar length or end blocks"},
+		{"hidden trailing data", trailing, "unaccounted trailing archive data"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ReadBytes(test.data)
+			if err == nil || !strings.Contains(err.Error(), "canonical plug-dump/1 validation failed: "+test.want) {
+				t.Fatalf("Read error=%v, want canonical refusal %q", err, test.want)
+			}
+			result, err := ConvertArchive(test.data)
+			var refusal *Refusal
+			if !errors.As(err, &refusal) || len(result.JSONL) != 0 {
+				t.Fatalf("ConvertArchive produced output for invalid input: result=%+v err=%v", result, err)
+			}
+		})
 	}
 }
 
-func makeArchive(t *testing.T, records []byte, mode int64, typeflag byte) []byte {
+func makeArchive(t *testing.T, records []byte, mode int64, typeflag byte, kind string) []byte {
 	t.Helper()
 	fileDigest := sha256.Sum256(records)
 	configData := []byte("[]\n")
@@ -310,9 +418,10 @@ func makeArchive(t *testing.T, records []byte, mode int64, typeflag byte) []byte
 		Format: PlugDumpFormat, Schema: 1, Reference: BeadsReference,
 		StoreID: "archive-fixture", Machine: "test-machine", MainVersion: 72, IgnoredVersion: 28,
 		Scope: "offline-head-and-source-archives", History: "unavailable",
+		Projects: []Project{}, Sources: []json.RawMessage{},
 		Warnings: []string{"fixture warning"}, Verification: map[string]string{"capture": "fixture"},
-		Kinds: []Kind{{Name: "bead", Version: 1, File: "records/bead.ndjson", Count: 1}},
-		Files: map[string]File{"config/sources.json": {SHA256: hex.EncodeToString(configDigest[:]), Size: int64(len(configData))}, "records/bead.ndjson": {SHA256: hex.EncodeToString(fileDigest[:]), Size: int64(len(records))}},
+		Kinds: []Kind{{Name: kind, Version: 1, File: "records/" + kind + ".ndjson", Count: 1}},
+		Files: map[string]File{"config/sources.json": {SHA256: hex.EncodeToString(configDigest[:]), Size: int64(len(configData))}, "records/" + kind + ".ndjson": {SHA256: hex.EncodeToString(fileDigest[:]), Size: int64(len(records))}},
 	}
 	manifestBytes, err := json.Marshal(manifest)
 	if err != nil {
@@ -337,11 +446,20 @@ func makeArchive(t *testing.T, records []byte, mode int64, typeflag byte) []byte
 	}
 	writeMember("manifest.json", manifestBytes, 0o600, tar.TypeReg)
 	writeMember("config/sources.json", configData, 0o600, tar.TypeReg)
-	writeMember("records/bead.ndjson", records, mode, typeflag)
+	writeMember("records/"+kind+".ndjson", records, mode, typeflag)
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return output.Bytes()
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestProjectionIsJSONStable(t *testing.T) {

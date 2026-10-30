@@ -1,10 +1,9 @@
 // Package reverseconverter converts a validated Plug head-state dump into the
 // Beads JSONL interchange accepted by the pinned bd importer.
 //
-// The package owns only the rollback direction. It deliberately does not
-// import the forward dump reader or restore implementation: callers may pass
-// the structurally equivalent result of a validated plug-dump/1 reader, or
-// use Read to validate an archive before conversion.
+// The package owns only the rollback direction. Read uses the canonical,
+// read-only dumpformat validator; it has no restore or storage dependency.
+// Callers may also pass detached, already validated records to Convert.
 package reverseconverter
 
 import (
@@ -136,6 +135,7 @@ type Report struct {
 	Principals            []string `json:"principals,omitempty"`
 	Warnings              []string `json:"warnings,omitempty"`
 	UnsupportedFields     []string `json:"unsupported_fields,omitempty"`
+	ArchivedSourceFields  []string `json:"archived_source_fields,omitempty"`
 	ConfigReferences      []string `json:"config_references,omitempty"`
 	ArchiveRows           int      `json:"archive_rows,omitempty"`
 	ConfigAsMemories      int      `json:"config_as_memories,omitempty"`
@@ -164,6 +164,10 @@ func (e *Refusal) Error() string {
 	return "reverse conversion refused: " + e.Reasons[0]
 }
 
+func refusal(format string, args ...any) *Refusal {
+	return &Refusal{Reasons: []string{fmt.Sprintf(format, args...)}}
+}
+
 func addUnique(values *[]string, value string) {
 	if value == "" {
 		return
@@ -183,6 +187,7 @@ func normalizeReport(report *Report) {
 	sort.Strings(report.Principals)
 	sort.Strings(report.Warnings)
 	sort.Strings(report.UnsupportedFields)
+	sort.Strings(report.ArchivedSourceFields)
 	sort.Strings(report.ConfigReferences)
 }
 

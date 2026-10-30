@@ -352,6 +352,7 @@ func convertBead(record Record, report *Report) (*workingIssue, []string) {
 	body := record.Body
 	var reasons []string
 	reasons = append(reasons, unsupportedSourceFields(record, report)...)
+	archivedSource := archivedSourceFields(record, report)
 	if record.Source.Table != "issues" {
 		reasons = append(reasons, fmt.Sprintf("bead %q has source table %q, want issues", record.ID, record.Source.Table))
 	}
@@ -473,6 +474,20 @@ func convertBead(record Record, report *Report) (*workingIssue, []string) {
 	metadata = cloneMap(metadata)
 	if metadata == nil {
 		metadata = map[string]any{}
+	}
+	if len(archivedSource) > 0 {
+		if _, exists := metadata["_plug_source_fields"]; exists {
+			reasons = append(reasons, fmt.Sprintf("bead %q metadata reserves _plug_source_fields", record.ID))
+		} else {
+			// Beads normalizes metadata through float64. Preserve lossless
+			// source numbers inside a canonical JSON string across readback.
+			encoded, err := canonicalJSON(archivedSource)
+			if err != nil {
+				reasons = append(reasons, fmt.Sprintf("bead %q source archive: %v", record.ID, err))
+			} else {
+				metadata["_plug_source_fields"] = encoded
+			}
+		}
 	}
 	if !statusFieldPresent {
 		if _, exists := metadata["_plug_status_category"]; exists {
@@ -716,6 +731,9 @@ func convertMemory(record Record, config bool, report *Report) (memoryLine, erro
 	}
 	if value, present := record.Body["value"]; !present || value == nil {
 		return memoryLine{}, fmt.Errorf("%s %q has null value", record.Kind, record.ID)
+	} else if stringValue, ok := value.(string); ok && stringValue == "" {
+		addUnique(&report.UnsupportedFields, fmt.Sprintf("%s/%s/value", record.Kind, record.ID))
+		return memoryLine{}, fmt.Errorf("%s %q has an empty memory value; pinned Beads import would omit it", record.Kind, record.ID)
 	} else if _, err := canonicalJSON(value); err != nil {
 		return memoryLine{}, fmt.Errorf("%s %q value: %w", record.Kind, record.ID, err)
 	}
@@ -781,47 +799,76 @@ func convertMemory(record Record, config bool, report *Report) (memoryLine, erro
 }
 
 func unsupportedSourceFields(record Record, report *Report) []string {
-	allowed := map[string]bool{}
-	switch record.Kind {
-	case "bead":
-		for _, name := range []string{
-			"acceptance_criteria", "actor", "agent_state", "assignee", "await_id", "await_type",
-			"close_reason", "closed_at", "closed_by_session", "compacted_at", "compacted_at_commit",
-			"compaction_level", "content_hash", "created_at", "created_by", "current_revision",
-			"defer_until", "description", "design", "due_at", "ephemeral", "estimated_minutes",
-			"event_kind", "external_ref", "hook_bead", "id", "is_template", "issue_type",
-			"last_activity", "metadata", "mol_type", "no_history", "notes", "original_size",
-			"owner", "participation_generation", "payload", "pinned", "priority", "ri" + "g",
-			"role_bead", "role_type", "sender", "source_repo", "source_system", "spec_id",
-			"started_at", "status", "storage_class", "target", "timeout_ns", "title", "updated_at",
-			"waiters", "work_type",
-		} {
-			allowed[name] = true
-		}
-		allowed["wi"+"sp_type"] = true
-	case "edge":
-		for _, name := range []string{"created_at", "created_by", "depends_on_external", "depends_on_issue_id", "id", "issue_id", "metadata", "thread_id", "type"} {
-			allowed[name] = true
-		}
-		allowed["depends_on_"+"wi"+"sp_id"] = true
-	case "comment":
-		for _, name := range []string{"author", "created_at", "id", "issue_id", "text"} {
-			allowed[name] = true
-		}
-	case "memory", "config":
-		allowed["key"], allowed["value"] = true, true
-	default:
-		return nil
-	}
+	allowed := representedSourceFields(record.Kind)
 	var reasons []string
 	for name, value := range record.Source.Fields {
-		if !allowed[name] && nonEmpty(value) {
-			field := fmt.Sprintf("%s/%s/source/%s", record.Kind, record.ID, name)
-			addUnique(&report.UnsupportedFields, field)
-			reasons = append(reasons, fmt.Sprintf("%s %q has unsupported source field %q", record.Kind, record.ID, name))
+		if value == nil || allowed[name] {
+			continue
 		}
+		if record.Kind == "bead" && archivableBeadSourceFields[name] {
+			continue
+		}
+		field := fmt.Sprintf("%s/%s/source/%s", record.Kind, record.ID, name)
+		addUnique(&report.UnsupportedFields, field)
+		reasons = append(reasons, fmt.Sprintf("%s %q has unsupported source field %q", record.Kind, record.ID, name))
 	}
 	return reasons
+}
+
+// These source fields have no native Beads JSONL destination, but are safe to
+// retain as an explicit reserved metadata archive on the issue. Keeping the
+// value in the emitted line makes the loss reviewable and prevents a source
+// field from disappearing silently. Workflow-bearing fields stay fail-closed
+// because representing them as an ordinary issue would change semantics.
+var archivableBeadSourceFields = map[string]bool{
+	"actor": true, "compacted_at": true, "compacted_at_commit": true,
+	"compaction_level": true, "content_hash": true, "current_revision": true,
+	"estimated_minutes": true, "last_activity": true, "no_history": true,
+	"original_size": true, "participation_generation": true, "ri" + "g": true,
+	"sender": true, "source_repo": true, "storage_class": true,
+}
+
+func representedSourceFields(kind string) map[string]bool {
+	fields := map[string]bool{}
+	switch kind {
+	case "bead":
+		for _, name := range []string{
+			"acceptance_criteria", "assignee", "close_reason", "closed_at", "closed_by_session",
+			"created_at", "created_by", "defer_until", "description", "design", "due_at",
+			"external_ref", "id", "issue_type", "metadata", "notes", "owner", "pinned",
+			"priority", "source_system", "spec_id", "started_at", "status", "title", "updated_at",
+		} {
+			fields[name] = true
+		}
+	case "edge":
+		for _, name := range []string{"created_at", "created_by", "depends_on_external", "depends_on_issue_id", "id", "issue_id", "metadata", "thread_id", "type"} {
+			fields[name] = true
+		}
+		fields["depends_on_"+"wi"+"sp_id"] = true
+	case "comment":
+		for _, name := range []string{"author", "created_at", "id", "issue_id", "text"} {
+			fields[name] = true
+		}
+	case "memory", "config":
+		fields["key"], fields["value"] = true, true
+	}
+	return fields
+}
+
+func archivedSourceFields(record Record, report *Report) map[string]any {
+	if record.Kind != "bead" {
+		return nil
+	}
+	allowed := representedSourceFields(record.Kind)
+	archived := map[string]any{}
+	for name, value := range record.Source.Fields {
+		if value == nil || allowed[name] || !archivableBeadSourceFields[name] {
+			continue
+		}
+		archived[name] = cloneValue(value)
+		addUnique(&report.ArchivedSourceFields, fmt.Sprintf("bead/%s/source/%s", record.ID, name))
+	}
+	return archived
 }
 
 func isSecretKey(key string) bool {
