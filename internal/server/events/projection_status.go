@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	core "github.com/buildbetter-app/plugs/internal/core/events"
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -99,6 +100,9 @@ func (a *ProjectionStatusAdapter) Status(ctx context.Context, binding string) (c
 	if head.Incarnation == "" {
 		return core.ProjectionStatus{}, errors.New("projection status event log has no incarnation")
 	}
+	if err := head.Revision.Validate(); err != nil {
+		return core.ProjectionStatus{}, fmt.Errorf("projection status event log has an invalid head revision: %w", err)
+	}
 	state, generation, err := a.checkpoints.Load(ctx, binding)
 	if err != nil {
 		return core.ProjectionStatus{}, err
@@ -126,8 +130,18 @@ func (a *ProjectionStatusAdapter) Status(ctx context.Context, binding string) (c
 	if state.Position.Incarnation != head.Incarnation {
 		return core.ProjectionStatus{}, &driver.ErrIncarnationChanged{From: state.Position.Incarnation, To: head.Incarnation}
 	}
+	if cmp, err := core.CompareNatural(state.Position.Revision, head.Revision); err != nil {
+		return core.ProjectionStatus{}, fmt.Errorf("invalid projection checkpoint revision: %w", err)
+	} else if cmp > 0 {
+		return core.ProjectionStatus{}, futureCheckpointError(head, "checkpoint revision", state.Position.Revision)
+	}
 	if err := state.LagAcceptedThrough.Validate(); err != nil {
 		return core.ProjectionStatus{}, fmt.Errorf("invalid projection lag watermark: %w", err)
+	}
+	if cmp, err := core.CompareNatural(state.LagAcceptedThrough, head.Revision); err != nil {
+		return core.ProjectionStatus{}, fmt.Errorf("invalid projection lag watermark: %w", err)
+	} else if cmp > 0 {
+		return core.ProjectionStatus{}, futureCheckpointError(head, "lag-accepted-through watermark", state.LagAcceptedThrough)
 	}
 	status := core.ProjectionStatus{
 		Binding:            binding,
@@ -138,6 +152,18 @@ func (a *ProjectionStatusAdapter) Status(ctx context.Context, binding string) (c
 		LagAcceptedThrough: state.LagAcceptedThrough,
 	}
 	return core.NormalizeProjectionStatus(status, binding), nil
+}
+
+// futureCheckpointError keeps an impossible durable position visible as an
+// explicit event boundary. Callers must not clamp it to the head or treat it
+// as a healthy checkpoint, because either choice would fabricate readiness.
+func futureCheckpointError(head core.Head, field string, value model.Revision) error {
+	return fmt.Errorf("projection %s %s is beyond event log head %s: %w", field, value.String(), head.Revision.String(), &core.BoundaryError{
+		Code:   "cursor_invalid",
+		From:   head.Incarnation,
+		Head:   head,
+		Reason: "checkpoint",
+	})
 }
 
 func cloneFailure(failure *core.Failure) *core.Failure {

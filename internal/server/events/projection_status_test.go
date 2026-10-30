@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	core "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
@@ -96,6 +98,9 @@ func TestProjectionStatusReadsRealCheckpointAfterDeliveryAndFailure(t *testing.T
 
 func TestProjectionStatusReadsPersistedStallAndRefusesLostLease(t *testing.T) {
 	f := newFixture(t)
+	for i := 0; i < 3; i++ {
+		f.commit(t, time.Time{}, bead("pl-status-stall-"+model.Natural64(uint64(i+1)).String(), "stall"))
+	}
 	registry := statusRegistry(t, statusProjector(nil))
 	checkpoints := f.checkpoints(t)
 	if _, err := checkpoints.Save(f.ctx, "core", 0, core.State{
@@ -145,6 +150,47 @@ func TestProjectionStatusRefusesCheckpointFromAnotherIncarnation(t *testing.T) {
 	}
 }
 
+func TestProjectionStatusRefusesFutureCheckpointAndLagWatermark(t *testing.T) {
+	tests := []struct {
+		name  string
+		state core.State
+		field string
+	}{
+		{
+			name:  "checkpoint revision",
+			state: core.State{Class: core.Projection, Position: core.Position{Revision: "1"}},
+			field: "checkpoint revision",
+		},
+		{
+			name: "lag accepted through watermark",
+			state: core.State{
+				Class:              core.Projection,
+				Position:           core.Position{Revision: "0"},
+				LagAcceptedThrough: "1",
+			},
+			field: "lag-accepted-through watermark",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFixture(t)
+			test.state.Position.Incarnation = f.incarnation
+			if _, err := f.checkpoints(t).Save(f.ctx, "core", 0, test.state); err != nil {
+				t.Fatal(err)
+			}
+			adapter := statusAdapter(t, f, statusRegistry(t, statusProjector(nil)))
+			var boundary *core.BoundaryError
+			status, err := adapter.Status(f.ctx, "core")
+			if !errors.As(err, &boundary) || boundary.Code != "cursor_invalid" || boundary.Reason != "checkpoint" {
+				t.Fatalf("future %s was accepted: status=%+v err=%v", test.field, status, err)
+			}
+			if !strings.Contains(err.Error(), test.field) {
+				t.Fatalf("future %s error omitted field: %v", test.field, err)
+			}
+		})
+	}
+}
+
 func TestProjectionStatusSurvivesSQLiteRestart(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "projection-status.db")
@@ -167,7 +213,31 @@ func TestProjectionStatusSurvivesSQLiteRestart(t *testing.T) {
 		_ = first.Close()
 		t.Fatal(err)
 	}
-	if _, err := checkpoints.Save(ctx, "core", 0, core.State{Class: core.Projection, Position: core.Position{Incarnation: meta.Incarnation, Revision: "7"}, Halted: true}); err != nil {
+	set, err := conformance.Seed(ctx, first, lease, driver.ChangesetHeader{
+		Incarnation: meta.Incarnation,
+		Kind:        model.ChangesetWrite,
+		Principal:   model.PrincipalRef{Kind: "system", ID: "projection-status-test"},
+	}, []conformance.FixtureChange{{
+		Ref:          model.RefByID("pl-restart", model.Natural64(0)),
+		Kind:         "bead",
+		Op:           model.OpCreate,
+		Body:         []byte(`{"title":"restart"}`),
+		ChangedPaths: []string{"/title"},
+	}})
+	if err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	if set.Revision.String() != "1" {
+		_ = first.Close()
+		t.Fatalf("seed revision=%s want 1", set.Revision)
+	}
+	if _, err := checkpoints.Save(ctx, "core", 0, core.State{
+		Class:              core.Projection,
+		Position:           core.Position{Incarnation: meta.Incarnation, Revision: set.Revision, Index: "0"},
+		LagAcceptedThrough: set.Revision,
+		Halted:             true,
+	}); err != nil {
 		_ = first.Close()
 		t.Fatal(err)
 	}
@@ -203,7 +273,7 @@ func TestProjectionStatusSurvivesSQLiteRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, err := adapter.Status(ctx, "core")
-	if err != nil || !status.Halted || status.Position.Revision.String() != "7" || status.Position.Incarnation != meta.Incarnation {
+	if err != nil || !status.Halted || status.Position.Revision.String() != "1" || status.LagAcceptedThrough.String() != "1" || status.Position.Incarnation != meta.Incarnation {
 		t.Fatalf("restarted status=%+v err=%v", status, err)
 	}
 }
