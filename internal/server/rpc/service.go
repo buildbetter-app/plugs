@@ -188,6 +188,23 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 			attachments = []model.Attachment{}
 		}
 		out := map[string]any{"bead": beadJSON(v.Bead), "attachments": attachments}
+		if v.Comments != nil {
+			comments := make([]map[string]any, len(v.Comments))
+			for i, comment := range v.Comments {
+				value := map[string]any{"body": comment.Body, "principal": comment.Principal, "time": timestamp(comment.Time)}
+				if comment.Origin != "" {
+					value["origin"] = comment.Origin
+					if comment.SourceTime != nil {
+						value["sourceTime"] = timestamp(*comment.SourceTime)
+					}
+					if comment.SourceAuthor != "" {
+						value["sourceAuthor"] = comment.SourceAuthor
+					}
+				}
+				comments[i] = value
+			}
+			out["comments"] = comments
+		}
 		if v.Lease != nil {
 			out["lease"] = map[string]any{"holder": v.Lease.Principal.ID, "expiresAt": timestamp(v.Lease.ExpiresAt), "ttlMs": v.Lease.TTL.Milliseconds(), "epoch": v.Lease.Epoch}
 		}

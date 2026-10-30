@@ -366,6 +366,18 @@ type GetResult struct {
 	Bead        Bead
 	Attachments []model.Attachment
 	Lease       *Lease
+	Comments    []Comment
+}
+
+// Comment keeps verified actor/target time separate from untrusted import
+// provenance. A nil Comments slice preserves the legacy omitted result.
+type Comment struct {
+	Body         string
+	Principal    model.PrincipalRef
+	Time         time.Time
+	Origin       string
+	SourceAuthor string
+	SourceTime   *time.Time
 }
 
 type BeadPage struct {
