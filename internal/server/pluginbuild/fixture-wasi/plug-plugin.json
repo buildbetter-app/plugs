@@ -1,0 +1,35 @@
+{
+  "manifest_version": 1,
+  "plugins": [
+    {
+      "id": "app.example.wasi",
+      "alias": "wasi",
+      "version": "1.0.0",
+      "plugin_api": "1.0",
+      "runtime": "wasip1",
+      "provides": [
+        {
+          "kind": "subscriber",
+          "name": "normalize",
+          "phases": ["mutate"],
+          "reads": ["fields.title"],
+          "owns": ["fields.normalized"]
+        },
+        {
+          "kind": "subscriber",
+          "name": "check",
+          "phases": ["validate"],
+          "reads": ["fields.title"]
+        },
+        {
+          "kind": "methods",
+          "prefix": "x.wasi",
+          "methods": {
+            "echo": {"permission": "read", "resource": "params.id"},
+            "probe": {"permission": "read", "resource": "params.id"}
+          }
+        }
+      ]
+    }
+  ]
+}
