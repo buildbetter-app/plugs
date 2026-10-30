@@ -5,10 +5,92 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestSplitWordsWithOffsetsPreservesBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		text   string
+		words  []string
+		starts []int
+	}{
+		{"", nil, nil},
+		{"HTTPServer fooBar2_ABC", []string{"http", "server", "foo", "bar2", "abc"}, []int{0, 4, 11, 14, 19}},
+		{"fooBARBaz", []string{"foo", "bar", "baz"}, []int{0, 3, 6}},
+		{"v2Token", []string{"v2token"}, []int{0}},
+		{"éÉlan\n世界!尾", []string{"é", "élan", "世界", "尾"}, []int{0, 2, 8, 15}},
+		{"İFoo caféHTTPServer123", []string{"i", "foo", "café", "http", "server123"}, []int{0, 2, 6, 11, 15}},
+		{"... one\ttwo\n", []string{"one", "two"}, []int{4, 8}},
+	} {
+		t.Run(test.text, func(t *testing.T) {
+			words, starts := splitWordsWithOffsets(test.text)
+			if !reflect.DeepEqual(words, test.words) || !reflect.DeepEqual(starts, test.starts) {
+				t.Fatalf("got words=%q starts=%v, want words=%q starts=%v", words, starts, test.words, test.starts)
+			}
+		})
+	}
+	text := "世界\nHTTPServer suffix"
+	if at := phraseIndex(text, "http server"); at != len("世界\n") || lineAt(text, at) != 2 {
+		t.Fatalf("phrase byte offset/line changed: %d", at)
+	}
+	for _, test := range []struct {
+		text, phrase string
+		want         int
+	}{
+		{"İstanbul", "istanbul", 0},
+		{"ıstanbul", "istanbul", -1},
+		{"Σ", "ς", 0},
+		{"α\nfirst_second THIRD first.second", "first second", len("α\n")},
+		{"left,\nright", "left right", 0},
+	} {
+		if got := phraseIndex(test.text, test.phrase); got != test.want {
+			t.Fatalf("phraseIndex(%q, %q) = %d, want %d", test.text, test.phrase, got, test.want)
+		}
+	}
+}
+
+func TestPhraseIndexManyWordsAbsentAndLateMatch(t *testing.T) {
+	prefix := strings.Repeat("alphaBeta 世界\n", 4096)
+	text := prefix + "late_match late match"
+	if at := phraseIndex(text, "missing pair"); at != -1 {
+		t.Fatalf("absent phrase matched at %d", at)
+	}
+	if at := phraseIndex(text, "late match"); at != len(prefix) || lineAt(text, at) != 4097 {
+		t.Fatalf("first late phrase has wrong byte offset/line: %d", at)
+	}
+}
+
+// Growing-prefix conversions allocate quadratically even on this small fixture.
+// A generous linear byte budget catches that regression without a wall-clock limit.
+func TestSplitWordsWithOffsetsAllocationBudget(t *testing.T) {
+	text := strings.Repeat("alphaBeta 世界 ", 1024)
+	result := testing.Benchmark(func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			words, starts := splitWordsWithOffsets(text)
+			if len(words) != 3*1024 || starts[len(starts)-1] != len(text)-len("世界 ") {
+				b.Fatal("large input was not fully tokenized")
+			}
+		}
+	})
+	if result.N == 0 {
+		t.Fatal("tokenization benchmark did not complete")
+	}
+	if allocated, budget := result.AllocedBytesPerOp(), int64(len(text)*64); allocated > budget {
+		t.Fatalf("tokenizing %d bytes allocated %d bytes, linear budget %d", len(text), allocated, budget)
+	}
+}
+
+func BenchmarkSplitWordsWithOffsetsLargeInventoryFile(b *testing.B) {
+	text := strings.Repeat("alphaBeta 世界 ", 32*1024)
+	b.SetBytes(int64(len(text)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		splitWordsWithOffsets(text)
+	}
+}
 
 func testConfig() Config {
 	return Config{
