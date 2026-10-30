@@ -206,6 +206,7 @@ internal/core/ontologymigration/types.go
 internal/core/ontologymigration/validation_test.go
 internal/core/ontologyops/BUILD.bazel
 internal/core/ontologyops/README.md
+internal/core/ontologyops/apply.go
 internal/core/ontologyops/plan.go
 internal/core/ontologyops/reads.go
 internal/core/ontologyops/rows.go
@@ -228,6 +229,7 @@ internal/core/pipeline/operations_test.go
 internal/core/pipeline/options.go
 internal/core/pipeline/pipeline_test.go
 internal/core/pipeline/prepare.go
+internal/core/pipeline/protected.go
 internal/core/pipeline/response.go
 internal/core/pipeline/response_test.go
 internal/core/pipeline/snapshot.go

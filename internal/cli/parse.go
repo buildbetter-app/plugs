@@ -32,6 +32,14 @@ Commands:
   cancel ID [--reason TEXT] [--expect REVISION]
   fail ID [--reason TEXT] [--expect REVISION]
   history --as-of REVISION [--id ID] [--limit N] [--cursor TOKEN]
+  ontology get [--project PROJECT]
+  ontology describe [--project PROJECT] [--type TYPE]
+  ontology schema --project PROJECT --type TYPE [--status STATUS]
+  ontology check [--project PROJECT]
+  ontology plan --document JSON [--project PROJECT] [--expect JSON]
+  ontology apply PLAN_DIGEST --expect JSON [--proof DIGEST] [--session-id ID]
+  ontology history [--project PROJECT] [--after REVISION] [--limit N]
+  ontology diff --from REVISION --to REVISION [--project PROJECT]
   history get ID --as-of REVISION
   history diff ID --from REVISION --to REVISION
   events [--event TYPE] [--resource REF] [--limit N] [--after TOKEN]
@@ -110,6 +118,9 @@ func ParseCommand(args []string) (Command, error) {
 		return Command{}, fmt.Errorf("command is required")
 	}
 	name := args[0]
+	if name == "ontology" {
+		return parseOntologyCommand(args[1:])
+	}
 	commandArgs := args[1:]
 	if name == "history" && len(commandArgs) > 0 && (commandArgs[0] == "get" || commandArgs[0] == "diff") {
 		name = "history." + commandArgs[0]
@@ -369,6 +380,156 @@ func ParseCommand(args []string) (Command, error) {
 		}
 	}
 	return c, nil
+}
+
+func parseOntologyCommand(args []string) (Command, error) {
+	if len(args) == 0 {
+		return Command{}, fmt.Errorf("ontology subcommand is required")
+	}
+	subcommand := args[0]
+	allowed := map[string]bool{"get": true, "describe": true, "schema": true, "check": true, "plan": true, "apply": true, "history": true, "diff": true}
+	if !allowed[subcommand] {
+		return Command{}, fmt.Errorf("unsupported ontology command %q", subcommand)
+	}
+	fs := flag.NewFlagSet("ontology "+subcommand, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var project, typ, status, document, expect, after, from, to, proof, sessionID, key string
+	var limit int
+	fs.StringVar(&project, "project", "", "project")
+	fs.StringVar(&typ, "type", "", "type")
+	fs.StringVar(&status, "status", "", "status")
+	fs.StringVar(&document, "document", "", "ontology document JSON")
+	fs.StringVar(&expect, "expect", "", "expect JSON array")
+	fs.StringVar(&after, "after", "", "after revision")
+	fs.StringVar(&from, "from", "", "from revision")
+	fs.StringVar(&to, "to", "", "to revision")
+	fs.StringVar(&proof, "proof", "", "human presence proof")
+	fs.StringVar(&sessionID, "session-id", "", "interactive session ID")
+	fs.IntVar(&limit, "limit", 100, "limit")
+	fs.StringVar(&key, "idempotency-key", "", "idempotency key")
+	ordered, err := interspersed(fs, args[1:])
+	if err != nil {
+		return Command{}, err
+	}
+	if err := fs.Parse(ordered); err != nil {
+		return Command{}, err
+	}
+	cmd := Command{Method: "ontology." + subcommand, Params: map[string]any{}, Key: key}
+	seen := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+	if (subcommand != "apply" && fs.NArg() != 0) || (subcommand == "apply" && fs.NArg() == 0) || fs.NArg() > 1 {
+		return cmd, fmt.Errorf("ontology %s takes the expected positional arguments only", subcommand)
+	}
+	if seen["project"] {
+		cmd.Params["project"] = project
+	}
+	switch subcommand {
+	case "describe":
+		if typ != "" {
+			cmd.Params["type"] = typ
+		}
+	case "schema":
+		if project == "" || typ == "" {
+			return cmd, fmt.Errorf("ontology schema requires --project and --type")
+		}
+		cmd.Params["project"], cmd.Params["type"] = project, typ
+		if status != "" {
+			cmd.Params["status"] = status
+		}
+	case "plan":
+		if document == "" {
+			return cmd, fmt.Errorf("ontology plan requires --document JSON")
+		}
+		value, err := wire.DecodeJSON([]byte(document))
+		if err != nil {
+			return cmd, fmt.Errorf("--document must be a JSON object: %w", err)
+		}
+		if _, ok := value.(map[string]any); !ok {
+			return cmd, fmt.Errorf("--document must be a JSON object")
+		}
+		cmd.Params["document"] = value
+		if seen["expect"] {
+			parsed, err := parseJSONArray(expect, "--expect")
+			if err != nil {
+				return cmd, err
+			}
+			cmd.Params["expect"] = parsed
+		}
+	case "apply":
+		if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+			return cmd, fmt.Errorf("ontology apply requires one plan digest")
+		}
+		if !canonicalDigest(fs.Arg(0)) {
+			return cmd, fmt.Errorf("ontology apply requires a 64-character lowercase SHA-256 plan digest")
+		}
+		cmd.Params["planDigest"] = fs.Arg(0)
+		if !seen["expect"] {
+			return cmd, fmt.Errorf("ontology apply requires --expect JSON")
+		}
+		parsed, err := parseJSONArray(expect, "--expect")
+		if err != nil {
+			return cmd, err
+		}
+		cmd.Params["expect"] = parsed
+		if proof == "" {
+			return cmd, fmt.Errorf("ontology apply requires --proof DIGEST")
+		}
+		if sessionID != "" {
+			cmd.Params["humanPresence"] = map[string]any{"mode": "interactive_session", "sessionId": sessionID, "challenge": fs.Arg(0), "proof": proof}
+		} else {
+			cmd.Params["humanPresence"] = map[string]any{"mode": "presence_check", "challenge": fs.Arg(0), "proof": proof}
+		}
+	case "history":
+		if seen["after"] {
+			n, err := revision(after)
+			if err != nil {
+				return cmd, err
+			}
+			cmd.Params["after"] = n
+		}
+		if limit < 1 || limit > 1000 {
+			return cmd, fmt.Errorf("--limit must be between 1 and 1000")
+		}
+		cmd.Params["limit"] = limit
+	case "diff":
+		if !seen["from"] || !seen["to"] {
+			return cmd, fmt.Errorf("ontology diff requires --from and --to")
+		}
+		fromRevision, err := revision(from)
+		if err != nil {
+			return cmd, err
+		}
+		toRevision, err := revision(to)
+		if err != nil {
+			return cmd, err
+		}
+		cmd.Params["fromRevision"], cmd.Params["toRevision"] = fromRevision, toRevision
+	}
+	return cmd, nil
+}
+
+func canonicalDigest(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func parseJSONArray(raw, flagName string) ([]any, error) {
+	value, err := wire.DecodeJSON([]byte(raw))
+	if err != nil {
+		return nil, fmt.Errorf("%s must be a JSON array: %w", flagName, err)
+	}
+	array, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be a JSON array", flagName)
+	}
+	return array, nil
 }
 
 func revision(s string) (json.Number, error) {
