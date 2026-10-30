@@ -21,3 +21,25 @@ namespaced metadata, while edge, comment, config, memory, archive, and
 allocator evidence remain queryable records. The ordinary read/write services
 can operate on the restored IDs; derived-table rebuild and complete A6 parity
 remain out of scope, as does a restore certificate.
+
+`Merge(readers ...io.Reader)` validates every input and returns a canonical
+merged archive as bytes. `MergeArchives(archives ...*Archive)` accepts retained
+`Read` results. Both are offline operations with no store dependencies; an
+error returns nil bytes. Callers publish the returned bytes only after success.
+
+The merger preserves project prefixes and allocator state, record IDs, source
+history, source content digests, secret references, and configuration paths and
+precedence. It sorts projects, records, sources, and tar members, derives the
+merged store ID from the sorted input digests, recomputes member checksums, and
+validates the complete output through `Read`. Input order does not affect the
+output. Identical global records and configuration inputs are retained once.
+
+Duplicate or ambiguous prefixes, conflicting global identities or configuration
+paths, incompatible source disposition contracts, and unsupported schema/kind
+versions refuse. Nonempty conflict, working-set, or remote declarations also
+refuse: this bounded format cannot independently establish that they are clean
+or merged. Differing evidence for the same migration version refuses instead
+of discarding either source. The input verification limits and incomplete
+history disclosures remain in the output; this adds no full A6 history replay
+or restore certification. Live restore and converter round-trip execution
+remain with their existing owners.

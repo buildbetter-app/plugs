@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,6 +48,69 @@ func (c *testClock) advance(d time.Duration) {
 	c.mu.Unlock()
 }
 
+// serviceBackedPolicy is a deliberately small host policy used only by this
+// integration package. Every resource permission check first reads the
+// current bead through the real core service; readable then models a current
+// grant that can be revoked without changing the durable store.
+type serviceBackedPolicy struct {
+	service     *service.Service
+	presence    atomic.Bool
+	readable    atomic.Bool
+	serviceGets atomic.Int32
+}
+
+func newServiceBackedPolicy() *serviceBackedPolicy {
+	policy := &serviceBackedPolicy{}
+	policy.presence.Store(true)
+	policy.readable.Store(true)
+	return policy
+}
+
+func (p *serviceBackedPolicy) AdmitPresence(context.Context, model.PrincipalRef, string) (bool, error) {
+	return p.presence.Load(), nil
+}
+
+func (p *serviceBackedPolicy) current(ctx context.Context, by model.PrincipalRef, bead service.Bead) (bool, error) {
+	if p.service == nil {
+		return false, errors.New("service-backed policy has no service")
+	}
+	if _, err := p.service.Get(ctx, by, service.GetRequest{ID: model.RefByID(bead.ID, model.Natural64(0))}); err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		return false, nil
+	}
+	p.serviceGets.Add(1)
+	return p.readable.Load(), nil
+}
+
+func (p *serviceBackedPolicy) CanRead(ctx context.Context, by model.PrincipalRef, bead service.Bead) (bool, error) {
+	return p.current(ctx, by, bead)
+}
+
+func (p *serviceBackedPolicy) Read(ctx context.Context, by model.PrincipalRef, event model.DurableEvent) (coreevents.Visibility, error) {
+	id, ok := strings.CutPrefix(event.Resource, "bead/")
+	if !ok || id == "" {
+		return coreevents.Visibility{}, nil
+	}
+	allowed, err := p.current(ctx, by, service.Bead{ID: id, Project: "project-a"})
+	if err != nil {
+		return coreevents.Visibility{}, err
+	}
+	if !allowed {
+		return coreevents.Visibility{}, nil
+	}
+	return coreevents.Visibility{Readable: true, Before: event.Before, After: event.After}, nil
+}
+
+func (p *serviceBackedPolicy) ReadResource(ctx context.Context, by model.PrincipalRef, resource model.AuditResource) (coreevents.ResourceVisibility, error) {
+	if resource.Kind != "bead" {
+		return coreevents.ResourceVisibility{}, nil
+	}
+	allowed, err := p.current(ctx, by, service.Bead{ID: resource.Ref.ID, Project: "project-a"})
+	return coreevents.ResourceVisibility{Readable: allowed}, err
+}
+
 type fixture struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -65,6 +129,15 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T) *fixture {
+	return newConfiguredFixture(t, nil)
+}
+
+func newPolicyFixture(t *testing.T) (*fixture, *serviceBackedPolicy) {
+	policy := newServiceBackedPolicy()
+	return newConfiguredFixture(t, policy), policy
+}
+
+func newConfiguredFixture(t *testing.T, policy *serviceBackedPolicy) *fixture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	f := &fixture{ctx: ctx, cancel: cancel, store: memory.New(), clock: &testClock{t: time.Date(2026, 10, 29, 15, 0, 0, 0, time.UTC)}}
@@ -92,11 +165,19 @@ func newFixture(t *testing.T) *fixture {
 		}),
 	)
 	f.svc = service.New(f.store, f.lease, f.writer, service.WithOntology(ontology), service.WithClock(f.clock.now))
+	if policy != nil {
+		policy.service = f.svc
+	}
+	var readPolicy collab.ReadPolicy
+	if policy != nil {
+		readPolicy = policy
+	}
 	f.collab, err = collab.New(ctx, collab.Config{
 		Service:                f.svc,
 		Lease:                  f.lease,
 		Clock:                  f.clock.now,
-		AuthorizationInstalled: func() bool { return false },
+		AuthorizationInstalled: func() bool { return policy != nil },
+		Policy:                 readPolicy,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -111,6 +192,9 @@ func newFixture(t *testing.T) *fixture {
 		Log:           serverevents.Log{Store: f.store},
 		Materializer:  serverevents.HistoryMaterializer{Store: f.store},
 		Authorization: coreevents.AllowAll{},
+	}
+	if policy != nil {
+		reader.Authorization = policy
 	}
 	codec, err := serverevents.NewCursorCodec([]byte(strings.Repeat("collabwatch-cursor-key-", 2)))
 	if err != nil {
@@ -290,6 +374,16 @@ func (f *fixture) create(t *testing.T, id string) {
 	}
 }
 
+func (f *fixture) update(t *testing.T, id, title string) {
+	t.Helper()
+	response := f.call(t, alice, "bead.update", map[string]any{
+		"id":     map[string]any{"id": id},
+		"fields": map[string]any{"title": title},
+		"_meta":  map[string]any{"project": "project-a", "idempotencyKey": f.writeKey()},
+	})
+	_ = result(t, response)
+}
+
 func (f *fixture) claim(t *testing.T, id string) {
 	t.Helper()
 	response := f.call(t, alice, "bead.claim", map[string]any{
@@ -423,6 +517,71 @@ func TestPresenceAndWatchShareRPCSessionLifetimeAndPreserveDurableState(t *testi
 	}
 	if rows := presenceRows(t, f.call(t, bob, "presence.list", map[string]any{"project": "project-a"})); len(rows) != 0 {
 		t.Fatalf("closed session remained visible: %v", rows)
+	}
+}
+
+func TestPresenceAndWatchUseCurrentServiceBackedAccess(t *testing.T) {
+	f, policy := newPolicyFixture(t)
+	f.create(t, "service-policy-bead")
+	sessionID := f.session(t, alice)
+	result(t, f.call(t, alice, "presence.set", map[string]any{
+		"sessionId": sessionID,
+		"focus":     "bead/service-policy-bead",
+		"_meta":     map[string]any{"project": "project-a"},
+	}))
+
+	subscription := f.subscribe(t, alice, sessionID, "")
+	snapshot := nextFrame(t, subscription)
+	if snapshot.Kind != watch.FrameSnapshot || len(snapshot.Events) != 1 || snapshot.Events[0].Durable == nil {
+		t.Fatalf("policy-backed snapshot=%+v", snapshot)
+	}
+
+	f.update(t, "service-policy-bead", "visible update")
+	visible := nextFrame(t, subscription)
+	if visible.Kind != watch.FrameDelta || len(visible.Events) != 1 || visible.Events[0].Durable == nil {
+		t.Fatalf("policy-backed visible delta=%+v", visible)
+	}
+
+	beforeMask := durableState(t, f)
+	policy.readable.Store(false)
+	rows := presenceRows(t, f.call(t, bob, "presence.list", map[string]any{"project": "project-a"}))
+	if len(rows) != 1 {
+		t.Fatalf("current-denial presence rows=%v", rows)
+	}
+	row := rows[0].(map[string]any)
+	if _, found := row["focus"]; found {
+		t.Fatalf("current service-backed denial leaked focus: %v", row)
+	}
+	if afterMask := durableState(t, f); string(beforeMask) != string(afterMask) {
+		t.Fatal("presence permission read changed durable rows or history")
+	}
+
+	f.update(t, "service-policy-bead", "denied update")
+	denied := nextFrame(t, subscription)
+	if denied.Kind != watch.FrameDelta {
+		t.Fatalf("current-denial watch frame=%+v", denied)
+	}
+	visibilityLost := false
+	for _, event := range denied.Events {
+		if event.Durable != nil {
+			t.Fatalf("denied watch delivered durable event: %+v", denied)
+		}
+		if event.Control != nil && event.Control.Type == model.EventVisibilityLost {
+			visibilityLost = true
+		}
+	}
+	if !visibilityLost {
+		t.Fatalf("current service-backed denial did not revoke delivery: %+v", denied)
+	}
+	if policy.serviceGets.Load() == 0 {
+		t.Fatal("permission checks did not read through the actual service")
+	}
+
+	if _, err := f.callSessionClose(t, alice, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if rows := presenceRows(t, f.call(t, bob, "presence.list", map[string]any{"project": "project-a"})); len(rows) != 0 {
+		t.Fatalf("closed policy-backed session remained visible: %v", rows)
 	}
 }
 

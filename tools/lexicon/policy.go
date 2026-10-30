@@ -13,6 +13,8 @@ import (
 // Protected paths are explicit so a new protected file fails closed. Binary
 // files are accepted only when their exact SHA-256 is listed below.
 type TreePolicy struct {
+	ReferencePrefixes []string
+	ReferenceSHA256   map[string]string
 	ProtectedPrefixes []string
 	// StrictProtectedPrefixes require every path to appear in ProtectedPaths or
 	// BinarySHA256. This keeps retained CI and design trees explicit.
@@ -25,6 +27,7 @@ type pathDisposition uint8
 
 const (
 	dispositionScan pathDisposition = iota
+	dispositionReference
 	dispositionProtected
 	dispositionBinary
 )
@@ -34,6 +37,10 @@ const (
 // its owner to update this policy before the blocking gate can pass.
 func DefaultTreePolicy() TreePolicy {
 	p := TreePolicy{
+		ReferencePrefixes: []string{"spec/recorded/goldens.json"},
+		ReferenceSHA256: map[string]string{
+			"spec/recorded/goldens.json": "26a086334357d55ea847daa301f45c9435a71bba75fb6c324456aebf459fbf32",
+		},
 		ProtectedPrefixes:       []string{".github/", "engdocs/design/plug/"},
 		StrictProtectedPrefixes: []string{".github/", "engdocs/design/plug/"},
 		ProtectedPaths: map[string]struct{}{
@@ -158,6 +165,20 @@ func DefaultTreePolicy() TreePolicy {
 
 func (p TreePolicy) disposition(name string, content []byte) (pathDisposition, error) {
 	name = path.Clean(strings.ReplaceAll(name, "\\", "/"))
+	for _, prefix := range p.ReferencePrefixes {
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		expected, ok := p.ReferenceSHA256[name]
+		if !ok {
+			return dispositionScan, fmt.Errorf("unlisted immutable reference path %q", name)
+		}
+		actual := sha256.Sum256(content)
+		if hex.EncodeToString(actual[:]) != expected {
+			return dispositionScan, fmt.Errorf("immutable reference %q does not match its declared SHA-256", name)
+		}
+		return dispositionReference, nil
+	}
 	if name == "." || strings.HasPrefix(name, "/") || name == ".." || strings.HasPrefix(name, "../") {
 		return dispositionScan, fmt.Errorf("invalid repository path %q", name)
 	}
