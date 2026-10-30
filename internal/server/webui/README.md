@@ -101,15 +101,38 @@ Untrusted titles, IDs, reasons and presence data are rendered as text.
   pages exceeding the row budget explicitly refuse. These optional calls are
   not runtime-qualified by the legacy bead/history fixture.
 - Presence reads advertised `presence.list`, shows at most five returned
-  sessions and states the remainder. Missing methods show unavailable states.
-  The UI makes no durable writes. Live view delivery opens only the optional
-  collaboration lifetime described above; this is not a login/auth session UI.
+  sessions and states the remainder. It renders only the returned principal
+  kind/id, delegation, focus, and bounded working-on resources. Anonymous
+  rows say when the response carries no distinguishable client label; the UI
+  does not invent one or expose session credentials. Missing methods show
+  unavailable states. The UI makes no durable writes. Live view delivery opens
+  only the optional collaboration lifetime described above; this is not a
+  login/auth session UI.
+- Explain reads advertised `view.explain` and renders the returned reason
+  strings, unreadable-blocker count, and pending-readiness flag. If the server
+  returns only the `included` marker or no reason, the UI says that no direct
+  reason was supplied instead of guessing a blocker.
+- Epic progress remains explicitly unavailable until an admitted parent-aware
+  hierarchy and authorized count query exist. Type summaries are never shown
+  as epic progress.
+
 - Refresh, cancellation, a 15-second read deadline, empty results and RPC
-  refusals have explicit states. Interactive login, remote/CORS
-  composition and epic rollups remain outside this slice. The frame bridge is
-  a bounded host seam; plugin installation, digest locks and authorization
-  grants remain owned by the plugin-host lane. Five-person UX validation
-  against real views/watches remains unqualified.
+  refusals have explicit states. Interactive login and remote/CORS composition
+  remain outside this slice. The frame bridge is a bounded host seam;
+  plugin installation, digest locks and authorization grants remain owned by
+  the plugin-host lane. Five-person UX validation against real views/watches
+  remains unqualified.
+
+`TestBrowserAdmittedViewWatchStoredRowsAndCleanup` retains the original
+legacy nil-event-plan journey. `TestBrowserRealExplainAndPresenceUXGaps`
+adds a separate real store/Writer/RPC/Chrome journey with the admitted audited
+Writer so the actual claim has committed slot provenance. Its canonical audit
+adapter has no conditional-edge source locator and will refuse those decisions;
+the fixture creates no such edges. It proves returned filter reasons, the
+missing-direct-reason message, and actual principal/focus/working-on rendering
+with no session token used as identity. Neither fixture certifies a readable
+direct blocker, distinguishable anonymous labels, epic counts, or installed
+production policy.
 
 The executable composition at this change's pinned base still does not bind
 `viewrpc.BindWithConfig`, supply a production `viewops.ViewReader`, or set

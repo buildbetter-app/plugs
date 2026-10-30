@@ -23,14 +23,16 @@ type pageCodec struct {
 	incarnation string
 }
 type cursorPayload struct {
-	Version     int            `json:"version"`
-	Method      string         `json:"method"`
-	Principal   string         `json:"principal"`
-	Scope       string         `json:"scope"`
-	Ontology    model.Revision `json:"ontology"`
-	Incarnation string         `json:"incarnation"`
-	Offset      int            `json:"offset"`
-	AsOf        asOf           `json:"asOf"`
+	Version               int            `json:"version"`
+	Method                string         `json:"method"`
+	Principal             string         `json:"principal"`
+	Scope                 string         `json:"scope"`
+	Ontology              model.Revision `json:"ontology"`
+	Incarnation           string         `json:"incarnation"`
+	Offset                int            `json:"offset"`
+	AsOf                  asOf           `json:"asOf"`
+	AuthorizationRevision model.Revision `json:"authorizationRevision,omitempty"`
+	AuthorizationBound    bool           `json:"authorizationBound,omitempty"`
 }
 
 func newPageCodec(config Config) (*pageCodec, error) {
@@ -107,6 +109,7 @@ func sameRevision(a, b model.Revision) bool {
 
 func (c *pageCodec) decode(call Call, p serviceParams) (*service.PagePosition, error) {
 	if p.Cursor == "" {
+		c.defaultHistoryIncarnation(call, p)
 		return nil, nil
 	}
 	if len(p.Cursor) > maxCursorBytes {
@@ -133,17 +136,39 @@ func (c *pageCodec) decode(call Call, p serviceParams) (*service.PagePosition, e
 	if err = wire.DecodeInto(body, &payload); err != nil || payload.Version != 1 || payload.Offset < 0 {
 		return nil, cursorInvalid()
 	}
-	if payload.Incarnation != c.incarnation {
-		return nil, incarnationChanged(payload.Incarnation, c.incarnation)
-	}
-	principal, scope, err := c.binding(call, p)
+	// Check scope under the authenticated token's own generation before
+	// reporting an incarnation change. In history's omitted-incarnation
+	// form, that is the generation used when this token was issued.
+	issued := *c
+	issued.incarnation = payload.Incarnation
+	principal, scope, err := issued.binding(call, p)
 	if err != nil {
 		return nil, cursorInvalid()
 	}
-	if payload.Method != call.Method || payload.Principal != principal || payload.Scope != scope || !sameRevision(payload.Ontology, c.ontology) || payload.AsOf.Incarnation != c.incarnation {
+	if payload.Method != call.Method || payload.Principal != principal || payload.Scope != scope || !sameRevision(payload.Ontology, c.ontology) || payload.AsOf.Incarnation != payload.Incarnation {
 		return nil, cursorInvalid()
 	}
-	return &service.PagePosition{Offset: payload.Offset, AsOf: service.AsOf{Revision: payload.AsOf.Revision, Incarnation: payload.AsOf.Incarnation}}, nil
+	if payload.AuthorizationBound && payload.AuthorizationRevision.Validate() != nil {
+		return nil, cursorInvalid()
+	}
+	if payload.Incarnation != c.incarnation {
+		return nil, incarnationChanged(payload.Incarnation, c.incarnation)
+	}
+	c.defaultHistoryIncarnation(call, p)
+	return &service.PagePosition{
+		Offset:                payload.Offset,
+		AsOf:                  service.AsOf{Revision: payload.AsOf.Revision, Incarnation: payload.AsOf.Incarnation},
+		AuthorizationRevision: payload.AuthorizationRevision,
+		AuthorizationBound:    payload.AuthorizationBound,
+	}, nil
+}
+
+func (c *pageCodec) defaultHistoryIncarnation(call Call, p serviceParams) {
+	if call.Method == "history.query" && p.AsOf != nil && p.AsOf.Incarnation == "" {
+		// p.AsOf belongs to this call's decoded parameters. The service must
+		// receive the same generation as cursor binding and page validation.
+		p.AsOf.Incarnation = c.incarnation
+	}
 }
 
 func (c *pageCodec) encode(call Call, p serviceParams, position service.PagePosition) (string, error) {
@@ -156,11 +181,20 @@ func (c *pageCodec) encode(call Call, p serviceParams, position service.PagePosi
 	if position.AsOf.Incarnation != c.incarnation {
 		return "", fmt.Errorf("service returned another incarnation")
 	}
+	if position.AuthorizationBound && position.AuthorizationRevision.Validate() != nil {
+		return "", fmt.Errorf("service returned an invalid authorization revision")
+	}
 	principal, scope, err := c.binding(call, p)
 	if err != nil {
 		return "", err
 	}
-	payload := cursorPayload{Version: 1, Method: call.Method, Principal: principal, Scope: scope, Ontology: c.ontology, Incarnation: c.incarnation, Offset: position.Offset, AsOf: asOf{position.AsOf.Revision, position.AsOf.Incarnation}}
+	payload := cursorPayload{
+		Version: 1, Method: call.Method, Principal: principal, Scope: scope,
+		Ontology: c.ontology, Incarnation: c.incarnation, Offset: position.Offset,
+		AsOf:                  asOf{position.AsOf.Revision, position.AsOf.Incarnation},
+		AuthorizationRevision: position.AuthorizationRevision,
+		AuthorizationBound:    position.AuthorizationBound,
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", err

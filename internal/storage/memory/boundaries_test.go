@@ -134,3 +134,30 @@ func TestHistoricalBoundsAndIsolation(t *testing.T) {
 		t.Fatal("unsupported branch observation accepted")
 	}
 }
+
+func TestRestoreHistoryCapabilityRefusesBeforeMutation(t *testing.T) {
+	ctx := context.Background()
+	s := New()
+	defer s.Close()
+
+	before, err := s.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.RequireRestoreCapability(s, driver.RestoreModeCurrentImage); err != nil {
+		t.Fatalf("current-image restore was refused: %v", err)
+	}
+	if err := driver.RequireRestoreCapability(s, driver.RestoreModeFullHistory); !errors.Is(err, driver.ErrUnsupported) {
+		t.Fatalf("full-history restore error=%v", err)
+	}
+	if _, err := driver.RestoreModeForHistory("partial"); err == nil {
+		t.Fatal("malformed history was accepted")
+	}
+	after, err := s.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatalf("restore capability validation mutated memory metadata: before=%+v after=%+v", before, after)
+	}
+}
