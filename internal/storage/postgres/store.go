@@ -21,8 +21,12 @@ import (
 // Store owns a connection pool and its readers, transactions and active leases.
 // Independent Open calls share only the durable state in the DSN's database.
 type Store struct {
-	db        *sql.DB
-	lockConn  *sql.Conn
+	db       *sql.DB
+	lockConn *sql.Conn
+	// renewConn is reserved from the pool so lease heartbeats cannot wait for
+	// request transactions to return a general-purpose connection.
+	renewConn *sql.Conn
+	renewMu   sync.Mutex
 	lockMu    sync.Mutex
 	mu        sync.Mutex
 	closed    bool
@@ -54,8 +58,15 @@ func Open(ctx context.Context, cfg driver.Config) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	s := &Store{db: db, lockConn: lockConn, resources: make(map[interface{ Close() error }]struct{}), leases: make(map[*activeLease]struct{})}
+	renewConn, err := db.Conn(ctx)
+	if err != nil {
+		_ = lockConn.Close()
+		_ = db.Close()
+		return nil, err
+	}
+	s := &Store{db: db, lockConn: lockConn, renewConn: renewConn, resources: make(map[interface{ Close() error }]struct{}), leases: make(map[*activeLease]struct{})}
 	if err := s.initialize(ctx); err != nil {
+		_ = renewConn.Close()
 		_ = lockConn.Close()
 		_ = db.Close()
 		return nil, err
@@ -258,6 +269,12 @@ func (s *Store) Close() error {
 		s.lockConn = nil
 	}
 	s.lockMu.Unlock()
+	s.renewMu.Lock()
+	if s.renewConn != nil {
+		errs = append(errs, s.renewConn.Close())
+		s.renewConn = nil
+	}
+	s.renewMu.Unlock()
 	errs = append(errs, s.db.Close())
 	return errors.Join(errs...)
 }

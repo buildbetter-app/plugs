@@ -205,7 +205,17 @@ func (l *activeLease) Renew(ctx context.Context) error {
 	}()
 	started := time.Now()
 	var epoch string
-	err := l.store.db.QueryRowContext(renewCtx, `UPDATE plug_postgres.lease SET expires=clock_timestamp()+($3::bigint*interval '1 microsecond') WHERE singleton AND epoch=$1 AND owner=$2 AND expires>clock_timestamp() RETURNING epoch::text`, decimal(l.epoch), l.owner, l.ttl.Microseconds()).Scan(&epoch)
+	l.store.renewMu.Lock()
+	renewConn := l.store.renewConn
+	if renewConn == nil {
+		l.store.renewMu.Unlock()
+		return driver.ErrTxClosed
+	}
+	// This connection is reserved at Store.Open and is never leased to a
+	// request transaction. Keep the lock through the query so Store.Close
+	// cannot close the connection underneath an in-flight heartbeat.
+	err := renewConn.QueryRowContext(renewCtx, `UPDATE plug_postgres.lease SET expires=clock_timestamp()+($3::bigint*interval '1 microsecond') WHERE singleton AND epoch=$1 AND owner=$2 AND expires>clock_timestamp() RETURNING epoch::text`, decimal(l.epoch), l.owner, l.ttl.Microseconds()).Scan(&epoch)
+	l.store.renewMu.Unlock()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	// A successful SQL response arriving after local expiry cannot resurrect

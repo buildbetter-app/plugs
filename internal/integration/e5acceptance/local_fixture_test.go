@@ -31,6 +31,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/postgres"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 	"github.com/buildbetter-app/plugs/pluginapi"
 )
 
@@ -42,8 +44,10 @@ const watchedID = "00000000-0000-4000-8000-000000000002"
 const bindingID = "e5-local-derive"
 
 type localFixture struct {
-	store       *memory.Store
+	store       driver.Store
 	lease       driver.ActiveLease
+	stopRenewal context.CancelFunc
+	renewed     chan error
 	facts       *authzrpc.MutableFacts
 	base        authzfixed.Facts
 	composition *authzrpc.Composition
@@ -158,11 +162,62 @@ func newLocalFixture(t *testing.T) *localFixture {
 	bindings := f.host.Mutators()
 	demand(t, len(bindings) == 1 && bindings[0].ID == bindingID && !bindings[0].FailOpen, "actual host mutator missing")
 	f.evidence["binding"] = binding
-	f.store = memory.New()
-	t.Cleanup(func() { demand(t, f.store.Close() == nil, "store cleanup failed") })
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("PLUG_E5_STORAGE")))
+	if backend == "" {
+		backend = "memory"
+	}
+	switch backend {
+	case "memory":
+		f.store = memory.New()
+	case "sqlite":
+		var err error
+		f.store, err = (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: filepath.Join(t.TempDir(), "e5.db")})
+		demand(t, err == nil, "owned SQLite storage unavailable")
+	case "postgres":
+		dsn := os.Getenv("E5_POSTGRES_DSN")
+		demand(t, strings.TrimSpace(dsn) != "", "E5_POSTGRES_DSN is required for PostgreSQL storage")
+		var err error
+		f.store, err = (postgres.Driver{}).Open(context.Background(), driver.Config{DSN: dsn})
+		demand(t, err == nil, "owned PostgreSQL storage unavailable")
+	default:
+		t.Fatalf("unsupported PLUG_E5_STORAGE=%q", backend)
+	}
+	f.evidence["storageBackend"] = backend
 	f.lease, err = f.store.Lease(context.Background(), "e5-local-wasi", driver.LeaseTTL)
 	demand(t, err == nil, "owned memory lease unavailable")
-	t.Cleanup(func() { demand(t, f.lease.Release(context.Background()) == nil, "lease cleanup failed") })
+	renewCtx, stopRenewal := context.WithCancel(context.Background())
+	f.stopRenewal, f.renewed = stopRenewal, make(chan error, 1)
+	lease, done := f.lease, f.renewed
+	go func() {
+		ticker := time.NewTicker(driver.LeaseRenewEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-renewCtx.Done():
+				done <- nil
+				return
+			case <-ticker.C:
+				renewCallCtx, cancel := context.WithTimeout(renewCtx, driver.LeaseTTL-2*driver.LeaseRenewEvery)
+				err := lease.Renew(renewCallCtx)
+				cancel()
+				if err != nil {
+					if renewCtx.Err() != nil {
+						err = nil
+					}
+					done <- err
+					return
+				}
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		f.stopRenewal()
+		if err := <-f.renewed; err != nil {
+			t.Errorf("storage lease renewal: %v", err)
+		}
+		demand(t, f.lease.Release(context.Background()) == nil, "lease cleanup failed")
+		demand(t, f.store.Close() == nil, "store cleanup failed")
+	})
 	var seed []conformance.FixtureChange
 	for _, row := range []struct{ id, title string }{{targetID, "seed"}, {watchedID, "observed"}} {
 		body, _ := json.Marshal(map[string]any{"id": row.id, "type": "issue", "project": "project", "fields": map[string]any{
@@ -171,7 +226,7 @@ func newLocalFixture(t *testing.T) *localFixture {
 		seed = append(seed, conformance.FixtureChange{Ref: model.RefByID(row.id, model.Natural64(0)), Kind: "bead", Op: model.OpCreate, Body: body})
 	}
 	_, err = conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, seed)
-	demand(t, err == nil, "canonical memory storage seed failed")
+	demand(t, err == nil, "canonical storage seed failed")
 	meta, err := f.store.Meta(context.Background())
 	demand(t, err == nil, "owned store metadata failed")
 	ns := authz.Namespace{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}
