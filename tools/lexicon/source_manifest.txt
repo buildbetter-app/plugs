@@ -112,6 +112,8 @@ internal/cli/README.md
 internal/cli/archive_test.go
 internal/cli/config.go
 internal/cli/config_test.go
+internal/cli/gate.go
+internal/cli/gate_test.go
 internal/cli/local.go
 internal/cli/local_test.go
 internal/cli/parse.go
@@ -462,6 +464,7 @@ internal/server/pluginbuild/containment_linux_amd64.go
 internal/server/pluginbuild/containment_linux_amd64_test.go
 internal/server/pluginbuild/containment_other.go
 internal/server/pluginbuild/containment_other_test.go
+internal/server/pluginbuild/durable_test.go
 internal/server/pluginbuild/fixture-wasi/BUILD.bazel
 internal/server/pluginbuild/fixture-wasi/go.mod.template
 internal/server/pluginbuild/fixture-wasi/plug-plugin.json
@@ -470,6 +473,7 @@ internal/server/pluginbuild/fixture/BUILD.bazel
 internal/server/pluginbuild/fixture/go.mod.template
 internal/server/pluginbuild/fixture/plug-plugin.json
 internal/server/pluginbuild/fixture/plugin.go
+internal/server/pluginbuild/persistent.go
 internal/server/pluginbuild/process_other.go
 internal/server/pluginbuild/process_unix.go
 internal/server/pluginbuild/source_test.go
