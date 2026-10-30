@@ -640,6 +640,8 @@ internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
 internal/storage/driver/offline_restore.go
 internal/storage/driver/receipt_contract_test.go
+internal/storage/driver/restore.go
+internal/storage/driver/restore_test.go
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/allocator.go
 internal/storage/memory/audit_test.go
