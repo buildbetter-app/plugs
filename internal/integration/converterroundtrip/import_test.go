@@ -95,6 +95,10 @@ func admittedImportProfile(t *testing.T, archiveBytes []byte) (driver.RestoreImp
 func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 	data := admittedFixtureBytes(t)
 	profile, archive := admittedImportProfile(t, data)
+	inspection, err := InspectImport(context.Background(), bytes.NewReader(data))
+	if err != nil || inspection.SourceStoreID != profile.SourceStoreID || inspection.ArchiveSHA256 != profile.ArchiveDigest || inspection.DerivedSHA256 != profile.DerivedDigest {
+		t.Fatalf("import inspection=%+v err=%v profile=%+v", inspection, err, profile)
+	}
 	for _, kind := range []string{"memory", "sqlite"} {
 		t.Run(kind, func(t *testing.T) {
 			store, lease, cleanup := openTarget(t, kind)
@@ -121,6 +125,15 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 			if report.Archive.SHA256() != archive.SHA256() || report.Restored.Head.String() != "1" || report.IdempotencyKey != profile.IdempotencyKey {
 				t.Fatalf("restore report=%+v", report)
 			}
+			recovered, err := RecoverImport(ctx, store, profile, Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest})
+			if err != nil || !recovered.Recovered || recovered.Restored.Head.String() != "1" {
+				t.Fatalf("import recovery=%+v err=%v", recovered, err)
+			}
+			altered := profile
+			altered.Admission.Actor.ID = "restore-admin-altered"
+			if _, err = RecoverImport(ctx, store, altered, Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}); !errors.Is(err, driver.ErrConflict) {
+				t.Fatalf("altered import profile accepted: %v", err)
+			}
 			after, err := store.Meta(ctx)
 			if err != nil || after.Head.String() != "1" {
 				t.Fatalf("post-call meta=%+v err=%v", after, err)
@@ -131,8 +144,14 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 			}
 			rows, err := reader.Query(ctx, driver.Query{Filter: map[string]any{"project": "demo"}, Limit: 100})
 			_ = reader.Close()
-			if err != nil || len(rows.Items) != 3 {
-				t.Fatalf("restored rows=%d err=%v", len(rows.Items), err)
+			beadRows := 0
+			for _, row := range rows.Items {
+				if row.Kind == "bead" {
+					beadRows++
+				}
+			}
+			if err != nil || beadRows != 3 {
+				t.Fatalf("restored bead rows=%d total=%d err=%v", beadRows, len(rows.Items), err)
 			}
 			var imported pipeline.Comment
 			foundComment := false
