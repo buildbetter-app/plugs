@@ -653,8 +653,8 @@ pluginapi/op.go
 pluginapi/types.go
 pluginapi/types_test.go
 scripts/ci/plug-bazel-config-test.sh
-scripts/ci/plug-bazel-targets.sh
 scripts/ci/plug-bazel-targets-test.sh
+scripts/ci/plug-bazel-targets.sh
 sdk/go/BUILD.bazel
 sdk/go/conformance/BUILD.bazel
 sdk/go/conformance/fixture.go
