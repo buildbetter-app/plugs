@@ -1,7 +1,7 @@
 # Current Plug guides
 
 These pages describe the admitted source snapshot
-**[`a5118ecc74af1e1e0c0f578af2a4dca80a043ccc`](https://github.com/buildbetter-app/plugs/tree/a5118ecc74af1e1e0c0f578af2a4dca80a043ccc)**
+**[`5402faf12a21bbefa325a276ecce69f90fdd6b4e`](https://github.com/buildbetter-app/plugs/tree/5402faf12a21bbefa325a276ecce69f90fdd6b4e)**
 (2026-10-30). The earlier
 [runtime guides](../plug-runtime/README.md) remain an intentionally immutable
 snapshot at `471d0199c89acf9e242f44978f2824120726de32`; they are useful for the

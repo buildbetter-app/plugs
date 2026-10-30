@@ -1,7 +1,7 @@
 # Dump, restore, and portability
 
 This page is scoped to the audited `origin/main` snapshot
-[`a5118ecc74af1e1e0c0f578af2a4dca80a043ccc`](https://github.com/buildbetter-app/plugs/tree/a5118ecc74af1e1e0c0f578af2a4dca80a043ccc).
+[`5402faf12a21bbefa325a276ecce69f90fdd6b4e`](https://github.com/buildbetter-app/plugs/tree/5402faf12a21bbefa325a276ecce69f90fdd6b4e).
 It separates the archive operations that are present in this tree from the
 restore and rollback seams that are still under review.
 
