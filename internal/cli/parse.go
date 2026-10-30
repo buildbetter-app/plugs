@@ -36,6 +36,8 @@ Commands:
   history diff ID --from REVISION --to REVISION
   events [--event TYPE] [--resource REF] [--limit N] [--after TOKEN]
   health
+  dump --output FILE [--history full|head] [--page-size N]
+  restore FILE [--history full|head]
   session                 Read one JSON argv array per line from stdin.
 
 Without a selected server, local storage is persistent SQLite at .plug/plug.db.
@@ -119,11 +121,11 @@ func ParseCommand(args []string) (Command, error) {
 	} else if name == "events" && len(commandArgs) > 0 && commandArgs[0] == "tail" {
 		commandArgs = commandArgs[1:]
 	}
-	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "reopen": true, "defer": true, "cancel": true, "fail": true, "history": true, "history.get": true, "history.diff": true, "events": true, "health": true}
+	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "reopen": true, "defer": true, "cancel": true, "fail": true, "history": true, "history.get": true, "history.diff": true, "events": true, "health": true, "dump": true, "restore": true}
 	if !allowed[name] {
 		return Command{}, fmt.Errorf("unsupported command %q", name)
 	}
-	var title, typ, fields, body, reason, asOf, expect, id, key, cursor, after, eventType, resource, from, to string
+	var title, typ, fields, body, reason, asOf, expect, id, key, cursor, after, eventType, resource, from, to, output, history string
 	var limit int
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -159,6 +161,13 @@ func ParseCommand(args []string) (Command, error) {
 		add(&id, "id")
 		add(&cursor, "cursor")
 		fs.IntVar(&limit, "limit", 1000, "limit")
+	case "dump":
+		fs.StringVar(&history, "history", "full", "history")
+		fs.StringVar(&cursor, "cursor", "", "cursor")
+		fs.StringVar(&output, "output", "", "output")
+		fs.IntVar(&limit, "page-size", 1<<20, "page size")
+	case "restore":
+		fs.StringVar(&history, "history", "full", "history")
 	case "history.get":
 		add(&asOf, "as-of")
 	case "history.diff":
@@ -188,6 +197,37 @@ func ParseCommand(args []string) (Command, error) {
 	p := map[string]any{}
 	c := Command{Method: "bead." + name, Params: p, Key: key}
 	needID := name == "get" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail" || name == "history.get" || name == "history.diff"
+	if name == "restore" {
+		if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+			return c, fmt.Errorf("restore requires exactly one archive path")
+		}
+		if history != "full" && history != "head" {
+			return c, fmt.Errorf("--history must be full or head")
+		}
+		c.Method = "admin.restore.begin"
+		c.Params["path"] = fs.Arg(0)
+		c.Params["history"] = history
+		return c, nil
+	}
+	if name == "dump" {
+		if fs.NArg() != 0 {
+			return c, fmt.Errorf("dump takes no positional arguments; use --output")
+		}
+		if strings.TrimSpace(output) == "" {
+			return c, fmt.Errorf("dump requires --output FILE")
+		}
+		if history != "full" && history != "head" {
+			return c, fmt.Errorf("--history must be full or head")
+		}
+		if limit < 1 || limit > 67108864 {
+			return c, fmt.Errorf("--page-size must be between 1 and 67108864")
+		}
+		c.Method = "admin.dump"
+		c.Params["output"] = output
+		c.Params["history"] = history
+		c.Params["pageSize"] = limit
+		return c, nil
+	}
 	if needID {
 		if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
 			return c, fmt.Errorf("%s requires exactly one bead ID", name)
