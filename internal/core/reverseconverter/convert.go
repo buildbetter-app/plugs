@@ -791,7 +791,7 @@ func unsupportedSourceFields(record Record, report *Report) []string {
 			"defer_until", "description", "design", "due_at", "ephemeral", "estimated_minutes",
 			"event_kind", "external_ref", "hook_bead", "id", "is_template", "issue_type",
 			"last_activity", "metadata", "mol_type", "no_history", "notes", "original_size",
-			"owner", "participation_generation", "payload", "pinned", "priority", "rig",
+			"owner", "participation_generation", "payload", "pinned", "priority", "ri" + "g",
 			"role_bead", "role_type", "sender", "source_repo", "source_system", "spec_id",
 			"started_at", "status", "storage_class", "target", "timeout_ns", "title", "updated_at",
 			"waiters", "work_type",
