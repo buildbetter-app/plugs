@@ -488,7 +488,10 @@
       if (id && (typeof ref.id !== "string" || (Object.hasOwn(ref, "branch") && !integer(ref.branch)))) invalid();
       if (key && (typeof ref.key !== "string" || Object.hasOwn(ref, "branch"))) invalid();
       const branch = Object.hasOwn(ref, "branch") ? String(ref.branch) : "0";
-      return { ...edge, label: id ? ref.id + (branch !== "0" ? " · branch " + branch : "") : "Key " + ref.key, selectable: id && !!ref.id && branch === "0" };
+      // The existing form strips CR/LF and trims its ID; Explain also refuses
+      // Unicode edge whitespace. Never turn a canonical ref into another ID.
+      const selectable = id && !!ref.id && branch === "0" && ref.id.trim() === ref.id && !/^\p{White_Space}|\p{White_Space}$|[\r\n]/u.test(ref.id);
+      return { ...edge, label: id ? ref.id + (branch !== "0" ? " · branch " + branch : "") : "Key " + ref.key, selectable };
     }) };
   }
   function renderDirectBlockers(node, result) {

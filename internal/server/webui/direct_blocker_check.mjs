@@ -76,6 +76,7 @@ try {
         assert(row.verdict.startsWith(({ satisfied: "Satisfied", unsatisfied: "Unsatisfied", unknown: "Unknown" })[edge.state]));
         if (Object.hasOwn(edge.blocker, "key")) { assert.equal(row.ref, "Key " + edge.blocker.key); assert.equal(row.href, ""); }
         else if (fixture.name === "branch") { assert.equal(row.ref, "pl-branch · branch 9007199254740993"); assert.equal(row.href, ""); }
+        else if (fixture.unselectable) { assert.equal(row.ref, edge.blocker.id); assert.equal(row.href, ""); }
         else { assert.equal(row.ref, edge.blocker.id); const link = new URL(row.href); assert.equal(link.origin, new URL(base).origin); assert.equal(link.searchParams.get("itemId"), edge.blocker.id); assert.equal(link.searchParams.get("view"), "explain"); }
       }
       const hidden = fixture.direct?.hiddenCount || fixture.hidden || 0;
@@ -85,6 +86,13 @@ try {
       if (fixture.select) {
         await evaluate("document.querySelector('.blocker-ref').click()"); await settled();
         assert.equal(requests.at(-1).params.itemId, fixture.select, "link must select the actual canonical blocker ID");
+      }
+      if (fixture.unselectable) {
+        const before = requests.length;
+        await evaluate("document.querySelector('.blocker-ref').click()");
+        await delay(75);
+        assert.equal(requests.length, before, "unsupported references must not request a transformed target");
+        assert.equal(await evaluate("document.querySelector('#explain-id').value"), "pl-dependent");
       }
       if (fixture.refresh) {
         await evaluate("document.querySelector('#refresh').click()"); await settled();

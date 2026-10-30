@@ -123,7 +123,8 @@ Untrusted titles, IDs, reasons and presence data are rendered as text.
   When optional `directBlockers` is present, each returned canonical reference
   stays beside its own safe reason and satisfied/unsatisfied/unknown verdict.
   Current branch-zero IDs link into the existing Explain item selection;
-  unresolved keys and other branches retain their exact identity as text.
+  unresolved keys, other branches, and IDs that the current form/backend
+  cannot preserve unchanged retain their exact identity as text.
   Opening a link rereads the current explanation. An absent capability,
   evaluated empty result, and count-only unreadable result remain distinct.
   References and reasons use textContent. `TestBrowserDirectBlockerContractFixtures`
