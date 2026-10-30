@@ -52,6 +52,15 @@ go_test(
     ],
 )
 
+go_test(
+    name = "presence_display_test",
+    srcs = ["presence_display_test.go"],
+    embedsrcs = ["presence_display_check.mjs"],
+    env_inherit = ["PATH"],
+    tags = ["local"],
+    embed = [":webui"],
+)
+
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),

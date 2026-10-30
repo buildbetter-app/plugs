@@ -101,10 +101,18 @@ Untrusted titles, IDs, reasons and presence data are rendered as text.
   pages exceeding the row budget explicitly refuse. These optional calls are
   not runtime-qualified by the legacy bead/history fixture.
 - Presence reads advertised `presence.list`, shows at most five returned
-  sessions and states the remainder. It renders only the returned principal
-  kind/id, delegation, focus, and bounded working-on resources. Anonymous
-  rows say when the response carries no distinguishable client label; the UI
-  does not invent one or expose session credentials. Missing methods show
+  sessions and states the remainder. It renders the returned principal
+  kind/id, delegation, focus, bounded working-on resources, and optional
+  `displayName`. The label is explicitly marked untrusted and rendered as text
+  beside the principal, separate from `onBehalfOf`; it never replaces either.
+  Sessions remain separate rows even when their principal or label matches.
+  Anonymous rows without a label retain the unavailable-label message; the UI
+  never derives identity from an input agent label or exposes session tokens.
+  Malformed label output (including null, empty or padded strings, Unicode
+  Cc/Cf or surrogate code points, or more than 64 Unicode scalar values) refuses
+  the read with `invalid_response`. Raw Unicode White_Space trimming,
+  empty-to-absent normalization and typed `invalid_params` belong to the
+  separately owned `session.open` consumer. Missing methods show
   unavailable states. The UI makes no durable writes. Live view delivery opens
   only the optional collaboration lifetime described above; this is not a
   login/auth session UI.
@@ -145,12 +153,23 @@ filters. The project on a view read remains authoritative. Parent/assignee
 projection and parent relations are absent; type counts cannot qualify epic
 progress. No foreign composition/policy implementation is added here.
 
+`TestBrowserPresenceDisplayNameContractFixtures` separately drives the actual
+embedded page in Chrome using explicit canonical/malformed RPC response
+fixtures. It proves label omission, untrusted text rendering, principal and
+sponsor separation, distinct same-principal sessions, Unicode output bounds,
+five-row and working-on limits, mobile wrapping, and stale-label removal after
+empty/refused rereads. These fixtures do not implement or qualify the collab
+consumer, real session normalization, policy masking, expiry, or the E3
+20,000-bead/50-agent workload. At this fixed input the collab display-name
+consumer remains a separate prerequisite for real composed qualification.
+
 ## Verification
 
 Run Go and browser checks through Bazel only:
 
 ```sh
 bazel --ignore_all_rc_files test //internal/server/webui:webui_test \
+  //internal/server/webui:presence_display_test \
   --disk_cache=/tmp/plug-swarm/bazel-disk-cache \
   --local_resources=memory=8192 --jobs=2 --test_timeout=900 \
   --cache_test_results=no --test_output=all --test_arg=-test.v

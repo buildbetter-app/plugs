@@ -428,6 +428,16 @@
     renderRows($("blocked-state"), state.blocked.items, "No blocked rows in this view.", "The server returned an empty authorized view.");
     continuation($("blocked-more"), state.blocked.nextCursor, state.blocked.items.length + " blocked rows shown.");
   }
+  // Presence returns normalized output. Raw input normalization and typed
+  // invalid_params belong to session.open; reject malformed read responses.
+  function presenceDisplayName(entry) {
+    if (!Object.hasOwn(entry, "displayName")) return "";
+    const label = entry.displayName;
+    if (typeof label !== "string" || !label || Array.from(label).length > 64 || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(label) || /^\p{White_Space}|\p{White_Space}$/u.test(label)) {
+      throw new RPCError("The presence display label is unreadable.", "invalid_response");
+    }
+    return label;
+  }
   async function presence(signal) {
     if (!state.methods.has("presence.list")) { message($("presence-rows"), "unavailable", "Presence unavailable.", "This server does not expose live presence."); return; }
     const result = await rpc("presence.list", { project: state.config.project }, signal);
@@ -439,18 +449,25 @@
       const principalRef = entry && entry.principal;
       if (!principalRef || typeof principalRef.kind !== "string" || !principalRef.kind || typeof principalRef.id !== "string" || !principalRef.id) throw new RPCError("The presence principal is unreadable.", "invalid_response");
       const kind = principalRef.kind, id = principalRef.id;
+      const displayName = presenceDisplayName(entry);
       const delegated = typeof entry.onBehalfOf === "string" && entry.onBehalfOf ? entry.onBehalfOf : "";
       const principal = delegated ? "on behalf of " + delegated : (id && id !== "anonymous" ? kind + ":" + id : kind);
       const initial = document.createElement("span"); initial.className = "presence-initial"; text(initial, principal.slice(0, 1).toUpperCase());
       const content = document.createElement("div");
       const name = document.createElement("div"); name.className = "presence-name"; text(name, principal);
       const identity = document.createElement("div"); identity.className = "presence-identity";
-      text(identity, kind === "anonymous" && !delegated ? "Anonymous principal · client label unavailable" : kind + ":" + id + " principal");
+      const anonymousUnavailable = "Anonymous principal · client label unavailable";
+      text(identity, kind === "anonymous" && !delegated ? (displayName ? "Anonymous principal" : anonymousUnavailable) : kind + ":" + id + " principal");
+      content.append(name, identity);
+      if (displayName) {
+        const label = document.createElement("div"); label.className = "presence-display-name";
+        text(label, "Client label (untrusted): " + displayName); content.appendChild(label);
+      }
       const working = Array.isArray(entry.workingOn) ? entry.workingOn.filter((resource) => typeof resource === "string" && resource) : [];
       const shown = working.slice(0, 3);
       const workingLabel = shown.length ? "Working on " + shown.join(", ") : "No claimed work shared";
       const remainder = working.length - shown.length;
-      const focus = document.createElement("div"); focus.className = "presence-focus"; text(focus, [entry.focus ? "Focus " + entry.focus : "No focus shared", workingLabel + (remainder > 0 ? " + " + remainder + " more" : "")].join(" · ")); content.append(name, identity, focus);
+      const focus = document.createElement("div"); focus.className = "presence-focus"; text(focus, [entry.focus ? "Focus " + entry.focus : "No focus shared", workingLabel + (remainder > 0 ? " + " + remainder + " more" : "")].join(" · ")); content.appendChild(focus);
       const scope = document.createElement("span"); scope.className = "presence-scope"; text(scope, working.length + " working");
       row.append(initial, content, scope); $("presence-rows").appendChild(row);
     });

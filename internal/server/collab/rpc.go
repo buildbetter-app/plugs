@@ -3,6 +3,9 @@ package collab
 import (
 	"context"
 	"fmt"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
@@ -34,12 +37,13 @@ func Bind(registry *rpc.Registry, manager *Manager) error {
 }
 
 type params struct {
-	SessionID  string    `json:"sessionId"`
-	Focus      *string   `json:"focus"`
-	WorkingOn  []string  `json:"workingOn"`
-	OnBehalfOf *string   `json:"onBehalfOf"`
-	Project    *string   `json:"project"`
-	Meta       wire.Meta `json:"_meta"`
+	SessionID   string    `json:"sessionId"`
+	Focus       *string   `json:"focus"`
+	WorkingOn   []string  `json:"workingOn"`
+	OnBehalfOf  *string   `json:"onBehalfOf"`
+	DisplayName *string   `json:"displayName"`
+	Project     *string   `json:"project"`
+	Meta        wire.Meta `json:"_meta"`
 }
 
 func (m *Manager) handle(ctx context.Context, call rpc.Call) (any, error) {
@@ -50,7 +54,11 @@ func (m *Manager) handle(ctx context.Context, call rpc.Call) (any, error) {
 	caller := Caller{Principal: call.Principal, Agent: call.Meta.Agent}
 	switch call.Method {
 	case "session.open":
-		return m.Open(ctx, caller, call.Meta.Project, p.OnBehalfOf)
+		name, err := normalizeDisplayName(p.DisplayName)
+		if err != nil {
+			return nil, err
+		}
+		return m.open(ctx, caller, call.Meta.Project, p.OnBehalfOf, name)
 	case "session.close":
 		if err := m.CloseSession(ctx, caller, p.SessionID); err != nil {
 			return nil, err
@@ -72,4 +80,21 @@ func (m *Manager) handle(ctx context.Context, call rpc.Call) (any, error) {
 	default:
 		return nil, failure("method_not_found", "unsupported collaboration method")
 	}
+}
+
+func normalizeDisplayName(input *string) (string, error) {
+	if input == nil {
+		return "", nil
+	}
+	name := strings.TrimSpace(*input)
+	if utf8.RuneCountInString(name) > 64 {
+		return "", failure("invalid_params", "displayName exceeds 64 Unicode scalar values after trimming")
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return "", failure("invalid_params", "displayName contains a control or format character")
+		}
+	}
+	// Do not retain an arbitrarily padded raw input buffer in a live entry.
+	return strings.Clone(name), nil
 }

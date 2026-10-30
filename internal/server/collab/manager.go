@@ -15,17 +15,18 @@ import (
 )
 
 type entry struct {
-	session  Session
-	caller   Caller
-	owner    string
-	project  string
-	group    string
-	focus    string
-	working  []string
-	expires  time.Time
-	ctx      context.Context
-	cancel   context.CancelFunc
-	sequence uint64
+	session     Session
+	caller      Caller
+	owner       string
+	project     string
+	group       string
+	displayName string
+	focus       string
+	working     []string
+	expires     time.Time
+	ctx         context.Context
+	cancel      context.CancelFunc
+	sequence    uint64
 }
 
 type Manager struct {
@@ -185,6 +186,10 @@ func (m *Manager) admit(ctx context.Context, by model.PrincipalRef, project stri
 }
 
 func (m *Manager) Open(ctx context.Context, caller Caller, project string, onBehalfOf *string) (Session, error) {
+	return m.open(ctx, caller, project, onBehalfOf, "")
+}
+
+func (m *Manager) open(ctx context.Context, caller Caller, project string, onBehalfOf *string, displayName string) (Session, error) {
 	ctx, cancel, caller, err := m.prepare(ctx, caller, project)
 	if err != nil {
 		return Session{}, err
@@ -229,7 +234,7 @@ func (m *Manager) Open(ctx context.Context, caller Caller, project string, onBeh
 	s := Session{SessionID: id, Principal: displayPrincipal(caller.Principal), OpenedAt: now, OnBehalfOf: name}
 	sessionCtx, sessionCancel := context.WithCancel(m.ctx)
 	m.sequence++
-	m.sessions[id] = &entry{session: s, caller: caller, owner: ownership(caller), project: project, group: group, expires: now.Add(m.config.IdleTTL), ctx: sessionCtx, cancel: sessionCancel, sequence: m.sequence}
+	m.sessions[id] = &entry{session: s, caller: caller, owner: ownership(caller), project: project, group: group, displayName: displayName, expires: now.Add(m.config.IdleTTL), ctx: sessionCtx, cancel: sessionCancel, sequence: m.sequence}
 	return s, nil
 }
 
@@ -434,7 +439,7 @@ func (m *Manager) set(ctx context.Context, caller Caller, req SetRequest, before
 	m.sequence++
 	updated.sequence = m.sequence
 	m.sessions[req.SessionID] = &updated
-	return Presence{SessionID: req.SessionID, Principal: displayPrincipal(caller.Principal), Focus: focus, WorkingOn: slices.Clone(working), OnBehalfOf: name}, nil
+	return Presence{SessionID: req.SessionID, Principal: displayPrincipal(caller.Principal), Focus: focus, WorkingOn: slices.Clone(working), OnBehalfOf: name, DisplayName: before.displayName}, nil
 }
 
 // Close ends this manager's lifetime. A new manager starts empty even when it
