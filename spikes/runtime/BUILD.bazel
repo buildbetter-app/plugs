@@ -1,0 +1,33 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "runtime",
+    srcs = ["abi.go", "concurrency.go", "sandbox.go"],
+    importpath = "github.com/buildbetter-app/plugs/spikes/runtime",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//internal/core/model",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+    ],
+)
+
+go_test(
+    name = "runtime_test",
+    srcs = ["abi_test.go", "concurrency_test.go", "sandbox_test.go"],
+    embed = [":runtime"],
+    deps = [
+        "//internal/core/model",
+        "//internal/storage/driver",
+        "@com_github_tetratelabs_wazero//:wazero",
+        "@com_github_tetratelabs_wazero//api",
+    ],
+    tags = ["local"],
+)
+
+go_binary(
+    name = "runtime_spike",
+    srcs = ["cmd/runtime-spike/main.go"],
+    deps = [":runtime"],
+)

@@ -10,14 +10,18 @@ import (
 	"github.com/buildbetter-app/plugs/internal/client"
 )
 
-// Execute selects an explicit server, then PLUG_SERVER, then local mode. The
-// current tree has no config-file loader: an existing config is refused. Only
-// --memory selects disposable local state. Remote failures never open a store.
+// Execute selects an explicit server, then PLUG_SERVER, then workspace config,
+// then persistent local SQLite. --memory is the explicit disposable local
+// choice. The shared server command keeps its own composition lifecycle, while
+// client-mode remote failures never open a local store.
 func Execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) int {
 	return execute(ctx, args, in, out, errOut, nil)
 }
 
 func execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer, factory StorageFactory) int {
+	if isServerCommand(args) {
+		return executeServer(ctx, args, out, errOut)
+	}
 	o, command, err := Parse(args)
 	if errors.Is(err, ErrHelp) {
 		fmt.Fprint(out, Usage)
@@ -57,19 +61,30 @@ func execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 		}
 		return 0
 	}
-	if _, err := os.Stat(".plug/config.yaml"); err == nil {
-		fmt.Fprintln(errOut, ".plug/config.yaml loading is not installed; select --server explicitly")
-		return 2
-	} else if !errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintln(errOut, "unable to inspect .plug/config.yaml")
+	file, err := resolveFileConfig()
+	if err != nil {
+		fmt.Fprintln(errOut, err)
 		return 2
 	}
-	if !o.Memory {
-		fmt.Fprintln(errOut, "persistent storage is not installed; use --memory for an explicit disposable session")
-		return 2
+	if file.serverSet {
+		if o.Memory {
+			fmt.Fprintln(errOut, "--memory conflicts with server selected by .plug/config.yaml")
+			return 2
+		}
+		return runRemote(ctx, file.server, ".plug/config.yaml", o, command, in, out, errOut)
 	}
-	fmt.Fprintln(errOut, "warning: memory storage is disposable; all data is discarded when this process exits")
-	l, err := OpenLocal(ctx, LocalConfig{Project: o.Project, Agent: o.Agent, Storage: StorageConfig{Driver: "memory"}, Factory: factory})
+	storage := file.storage
+	openFactory := factory
+	if o.Memory {
+		fmt.Fprintln(errOut, "warning: memory storage is disposable; all data is discarded when this process exits")
+		storage = StorageConfig{Driver: "memory"}
+		if openFactory == nil {
+			openFactory = MemoryFactory
+		}
+	} else if openFactory == nil {
+		openFactory = SQLiteFactory
+	}
+	l, err := OpenLocal(ctx, LocalConfig{Project: o.Project, Agent: o.Agent, Storage: storage, Factory: openFactory})
 	if err != nil {
 		fmt.Fprintln(errOut, err)
 		return 1
@@ -79,6 +94,24 @@ func execute(ctx context.Context, args []string, in io.Reader, out, errOut io.Wr
 	closeErr := l.Close()
 	if err = errors.Join(err, closeErr); err != nil {
 		fmt.Fprintln(errOut, err)
+		return 1
+	}
+	return 0
+}
+
+func runRemote(ctx context.Context, server, source string, o Options, command []string, in io.Reader, out, errOut io.Writer) int {
+	transport, err := client.NewHTTP(client.HTTPConfig{Server: server, Token: os.Getenv("PLUG_TOKEN")})
+	if err != nil {
+		fmt.Fprintf(errOut, "%s: %v\n", source, err)
+		return 2
+	}
+	defer transport.Close()
+	remote, err := client.New(transport, o.Project, o.Agent)
+	if err == nil {
+		err = runSession(ctx, &Session{Client: remote, Out: out, Err: errOut, JSON: o.JSON}, command, in)
+	}
+	if err != nil {
+		fmt.Fprintf(errOut, "%s: %v\n", source, err)
 		return 1
 	}
 	return 0

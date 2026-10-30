@@ -52,10 +52,20 @@ func (w *Writer) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	if meta.Method == "bead.release" {
 		return port.WriteOutcome{}, failure("invalid_params", "bead.release requires the protected claim release entry point")
 	}
-	return w.applyWithOutcome(ctx, by, cs, meta, nil)
+	return w.applyWithOutcome(ctx, by, cs, meta, nil, nil)
 }
 
-func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, release *claimReleaseMode) (port.WriteOutcome, error) {
+// ApplyClaimNextEmpty is the transaction-level seam for a terminal claimNext
+// null. The probe runs only after the transaction has acquired the head and
+// before it can publish the durable H+1 receipt.
+func (w *Writer) ApplyClaimNextEmpty(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, probe port.ClaimNextReadyProbe) (port.WriteOutcome, error) {
+	if meta.Method == "bead.release" {
+		return port.WriteOutcome{}, failure("invalid_params", "bead.release requires the protected claim release entry point")
+	}
+	return w.applyWithOutcome(ctx, by, cs, meta, nil, probe)
+}
+
+func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, release *claimReleaseMode, terminalProbe port.ClaimNextReadyProbe) (port.WriteOutcome, error) {
 	if ctx.Value(callbackKey{}) != nil {
 		return port.WriteOutcome{}, failure("plugin_reentrant_write", "graph writes are forbidden in synchronous callbacks")
 	}
@@ -151,7 +161,7 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 		}
 		var commit model.Commit
 		if err == nil {
-			commit, err = w.transact(preCtx, p, by, meta, principal, hash)
+			commit, err = w.transact(preCtx, p, by, meta, principal, hash, terminalProbe)
 		}
 		if errors.Is(err, errStale) || errors.Is(err, driver.ErrConflict) {
 			continue
@@ -277,7 +287,7 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 	return clone(commit)
 }
 
-func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRef, meta model.WriteMeta, principal, hash string) (model.Commit, error) {
+func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRef, meta model.WriteMeta, principal, hash string, terminalProbe port.ClaimNextReadyProbe) (model.Commit, error) {
 	sentinels := p.sentinels()
 	writes := map[string]*pending{}
 	for id, pending := range p.writes {
@@ -315,6 +325,19 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		return model.Commit{}, err
 	} else if prior != nil {
 		return model.Commit{}, errStale
+	}
+	// The claimNext empty result is special: after the head lock, this probe
+	// observes the latest committed ready set through the write transaction.
+	// A candidate means the earlier live walk became stale, so release the
+	// transaction and let the service restart before publishing a null receipt.
+	if len(writes) == 0 && meta.Method == "bead.claimNext" && terminalProbe != nil {
+		ready, err := terminalProbe(ctx, tx)
+		if err != nil {
+			return model.Commit{}, err
+		}
+		if ready {
+			return model.Commit{}, port.ErrClaimNextReady
+		}
 	}
 	keys := make([]driver.LockKey, len(locks))
 	for i, lock := range locks {

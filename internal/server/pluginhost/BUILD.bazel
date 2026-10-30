@@ -12,6 +12,9 @@ go_library(
         "//internal/storage/driver",
         "//pluginapi",
         "//sdk/go:sdk_go",
+        "@com_github_tetratelabs_wazero//:wazero",
+        "@com_github_tetratelabs_wazero//api",
+        "@com_github_tetratelabs_wazero//imports/wasi_snapshot_preview1",
     ],
 )
 

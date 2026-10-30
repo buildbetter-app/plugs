@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "dumpformat",
+    srcs = glob(["*.go"], exclude = ["*_test.go"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/core/dumpformat",
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "dumpformat_test",
+    srcs = glob(["*_test.go"]),
+    embed = [":dumpformat"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

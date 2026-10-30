@@ -131,7 +131,13 @@ func (a *Adapter) Register(registry *rpc.Registry) error {
 	if err := registry.Register("view.watch", a.viewWatch); err != nil {
 		return err
 	}
-	return registry.Register("bead.watch", a.beadWatch)
+	if err := registry.Register("bead.watch", a.beadWatch); err != nil {
+		return err
+	}
+	if a.manager.PresenceEnabled() {
+		return registry.Register("presence.watch", a.presenceWatch)
+	}
+	return nil
 }
 
 type filterParams struct {
@@ -159,6 +165,12 @@ type beadWatchParams struct {
 	Meta wire.Meta `json:"_meta"`
 	ID   model.Ref `json:"id"`
 	From string    `json:"from,omitempty"`
+}
+
+type presenceWatchParams struct {
+	Meta      wire.Meta `json:"_meta"`
+	SessionID string    `json:"sessionId"`
+	From      string    `json:"from,omitempty"`
 }
 
 type unsubscribeParams struct {
@@ -198,6 +210,17 @@ func (a *Adapter) beadWatch(ctx context.Context, call rpc.Call) (any, error) {
 		return nil, invalidParams(errors.New("bead.watch requires an ID reference without a branch"))
 	}
 	return a.open(ctx, call.Principal, watch.Request{Method: watch.MethodBeadWatch, Resource: "bead/" + params.ID.ID, From: params.From})
+}
+
+func (a *Adapter) presenceWatch(ctx context.Context, call rpc.Call) (any, error) {
+	var params presenceWatchParams
+	if err := decode(call.Params, &params); err != nil {
+		return nil, invalidParams(err)
+	}
+	if params.SessionID == "" || params.SessionID != SessionID(ctx) {
+		return nil, invalidParams(errors.New("sessionId is required"))
+	}
+	return a.open(ctx, call.Principal, watch.Request{Method: watch.MethodPresenceWatch, Project: call.Meta.Project, Agent: call.Meta.Agent, From: params.From})
 }
 
 func (a *Adapter) open(ctx context.Context, principal model.PrincipalRef, request watch.Request) (any, error) {

@@ -17,6 +17,7 @@ type Service struct {
 	lease    driver.ActiveLease
 	writer   model.Writer
 	ontology *Ontology
+	events   EventProvider
 	now      func() time.Time
 }
 
@@ -25,6 +26,9 @@ type Option func(*Service)
 // WithOntology shares the same project ontology resolver used by the pipeline.
 func WithOntology(o *Ontology) Option       { return func(s *Service) { s.ontology = o } }
 func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = now } }
+func WithEventProvider(provider EventProvider) Option {
+	return func(s *Service) { s.events = provider }
+}
 
 // New never opens a transaction or storage driver. The composition root owns
 // the store, active lease and the single Writer, and closes their lifetime.
@@ -164,8 +168,8 @@ func (s *Service) claim(ctx context.Context, by model.PrincipalRef, req ClaimReq
 // ClaimNextWithOutcome walks the live ready set and lowers the first candidate
 // through the same claim pipeline as bead.claim. A candidate can disappear or
 // lose its claim race while the queue is being walked; those ordinary races
-// advance to the next candidate. nil is the cataloged JSON-null result when
-// the ready set is empty at commit.
+// advance to the next candidate. NullResult retains the cataloged JSON-null
+// outcome and its replay metadata when the ready set is empty at commit.
 func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta) (*port.WriteOutcome, error) {
 	if err := s.admit(ctx, by); err != nil {
 		return nil, err
@@ -211,17 +215,21 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 			return &out, nil
 		}
 		if entry != nil {
-			if err := s.CommitClaimNextEmpty(ctx, by, req, meta); err != nil {
+			// A stored null is terminal for this exact selector. Replay must not
+			// probe today's ready set and accidentally claim a later candidate.
+			out, err := s.CommitClaimNextEmpty(ctx, by, req, meta, nil)
+			if err != nil {
 				return nil, err
 			}
-			return nil, nil
+			out.NullResult = true
+			return &out, nil
 		}
 	}
 
 	position := (*PagePosition)(nil)
 	fresh := false
 	for {
-		page, err := s.Ready(ctx, by, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position})
+		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position})
 		if err != nil {
 			return nil, err
 		}
@@ -243,28 +251,46 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 				position = nil
 				continue
 			}
-			if err := s.CommitClaimNextEmpty(ctx, by, req, meta); err != nil {
+			out, err := s.CommitClaimNextEmpty(ctx, by, req, meta, s.claimNextReadyProbe(req))
+			if err != nil {
+				if errors.Is(err, port.ErrClaimNextReady) {
+					fresh = false
+					position = nil
+					continue
+				}
 				return nil, err
 			}
-			return nil, nil
+			out.NullResult = true
+			return &out, nil
 		}
 		position = page.Next
 	}
 }
 
+// claimNextReadyProbe observes the complete ready set on the transaction's
+// post-head snapshot. It is deliberately separate from the live walk so the
+// transaction can release and restart if a candidate appeared in between.
+func (s *Service) claimNextReadyProbe(req ClaimNextRequest) port.ClaimNextReadyProbe {
+	return func(ctx context.Context, reader driver.Reader) (bool, error) {
+		items, err := s.ReadyCandidates(ctx, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter}, reader)
+		return len(items) != 0, err
+	}
+}
+
 // CommitClaimNextEmpty is the narrow guarded-service seam for a terminal
-// claimNext selection. It records a durable no-op receipt after the guarded
-// candidate walk; it never performs an unguarded ready scan.
-func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta) error {
+// claimNext selection. It records a durable H+1 receipt only after the
+// supplied transaction-level probe observes no ready candidate. A nil probe
+// is reserved for replay of an already durable empty receipt.
+func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta, probe port.ClaimNextReadyProbe) (port.WriteOutcome, error) {
 	if err := s.admit(ctx, by); err != nil {
-		return err
+		return port.WriteOutcome{}, err
 	}
 	if strings.TrimSpace(req.Project) == "" {
-		return failure("project_required", "supply a project")
+		return port.WriteOutcome{}, failure("project_required", "supply a project")
 	}
 	identity, err := ClaimNextRequestIdentity(req)
 	if err != nil {
-		return failure("invalid_params", "invalid claimNext selector")
+		return port.WriteOutcome{}, failure("invalid_params", "invalid claimNext selector")
 	}
 	meta.ClaimNextIdentity = identity
 	meta.Method = "bead.claimNext"
@@ -273,8 +299,14 @@ func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRe
 	} else if meta.AgentLabel == "" {
 		meta.AgentLabel = meta.Agent
 	}
-	_, err = s.apply(ctx, by, "bead.claimNext", model.ChangeSet{Ops: []model.Op{}}, meta, true)
-	return err
+	writer, ok := s.writer.(interface {
+		ApplyClaimNextEmpty(context.Context, model.PrincipalRef, model.ChangeSet, model.WriteMeta, port.ClaimNextReadyProbe) (port.WriteOutcome, error)
+	})
+	if !ok {
+		return port.WriteOutcome{}, failure("internal_error", "writer does not support claimNext terminal probes")
+	}
+	out, err := writer.ApplyClaimNextEmpty(ctx, by, model.ChangeSet{Ops: []model.Op{}}, meta, probe)
+	return out, mapped(err)
 }
 
 func claimNextRace(err error) bool {
@@ -285,6 +317,11 @@ func claimNextRace(err error) bool {
 	switch value.Data.Code {
 	case "forbidden", "not_found", "precondition_failed", "ontology_guard_failed":
 		return true
+	case "busy":
+		// Only a candidate's live-lease race is skippable. Pre-phase timeout,
+		// active-store lease loss and every other busy condition remain a wire
+		// error rather than being converted into terminal null.
+		return value.Data.Hint == "bead already has a live claim"
 	default:
 		return false
 	}
@@ -352,14 +389,76 @@ func (s *Service) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, r
 }
 
 func (s *Service) close(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
-	if err := namedRef(req.ID); err != nil {
+	return s.lifecycle(ctx, by, "bead.close", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
+}
+
+// Reopen moves an existing bead through the ontology's reopen slot. The
+// transition, lease settlement, guard evaluation and history publication all
+// remain in the shared Writer pipeline used by every named lifecycle verb.
+func (s *Service) Reopen(ctx context.Context, by model.PrincipalRef, req ReopenRequest, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.reopen(ctx, by, req, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) ReopenWithOutcome(ctx context.Context, by model.PrincipalRef, req ReopenRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.reopen(ctx, by, req, meta, true)
+}
+
+func (s *Service) reopen(ctx context.Context, by model.PrincipalRef, req ReopenRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	return s.lifecycle(ctx, by, "bead.reopen", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
+}
+
+// Defer moves an existing bead through the ontology's defer slot.
+func (s *Service) Defer(ctx context.Context, by model.PrincipalRef, req DeferRequest, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.deferBead(ctx, by, req, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) DeferWithOutcome(ctx context.Context, by model.PrincipalRef, req DeferRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.deferBead(ctx, by, req, meta, true)
+}
+
+func (s *Service) deferBead(ctx context.Context, by model.PrincipalRef, req DeferRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	return s.lifecycle(ctx, by, "bead.defer", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
+}
+
+// Cancel moves an existing bead through the ontology's cancel slot.
+func (s *Service) Cancel(ctx context.Context, by model.PrincipalRef, req CancelRequest, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.cancel(ctx, by, req, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) CancelWithOutcome(ctx context.Context, by model.PrincipalRef, req CancelRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.cancel(ctx, by, req, meta, true)
+}
+
+func (s *Service) cancel(ctx context.Context, by model.PrincipalRef, req CancelRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	return s.lifecycle(ctx, by, "bead.cancel", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
+}
+
+// Fail moves an existing bead through the ontology's failure slot.
+func (s *Service) Fail(ctx context.Context, by model.PrincipalRef, req FailRequest, meta model.WriteMeta) (model.Commit, error) {
+	v, err := s.fail(ctx, by, req, meta, false)
+	return v.Commit, err
+}
+
+func (s *Service) FailWithOutcome(ctx context.Context, by model.PrincipalRef, req FailRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.fail(ctx, by, req, meta, true)
+}
+
+func (s *Service) fail(ctx context.Context, by model.PrincipalRef, req FailRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	return s.lifecycle(ctx, by, "bead.fail", req.ID, req.Reason, req.Expect, meta, outcomeRequired)
+}
+
+func (s *Service) lifecycle(ctx context.Context, by model.PrincipalRef, method string, id model.Ref, reason string, expect []model.Precondition, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	if err := namedRef(id); err != nil {
 		return port.WriteOutcome{}, err
 	}
-	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: req.ID, Fields: map[string]any{}}}}, Expect: req.Expect}
-	if req.Reason != "" {
-		cs.Ops = append(cs.Ops, model.Op{Kind: model.OpComment, Comment: &model.CommentOp{Target: req.ID, Body: req.Reason}})
+	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: id, Fields: map[string]any{}}}}, Expect: expect}
+	if reason != "" {
+		cs.Ops = append(cs.Ops, model.Op{Kind: model.OpComment, Comment: &model.CommentOp{Target: id, Body: reason}})
 	}
-	return s.apply(ctx, by, "bead.close", cs, meta, outcomeRequired)
+	return s.apply(ctx, by, method, cs, meta, outcomeRequired)
 }
 
 func (s *Service) reader(ctx context.Context, by model.PrincipalRef, asOf *AsOf) (driver.Reader, error) {

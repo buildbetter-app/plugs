@@ -8,13 +8,17 @@ go_library(
     deps = [
         "//internal/api/wire",
         "//internal/client",
+        "//internal/core/events",
         "//internal/core/model",
         "//internal/core/pipeline",
         "//internal/core/service",
+        "//internal/server/composition",
         "//internal/server/rpc",
+        "//internal/server/events",
         "//internal/server/transport/inprocess",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "//internal/storage/sqlite",
     ],
 )
 
@@ -25,10 +29,12 @@ go_test(
     embed = [":cli"],
     deps = [
         "//internal/api/wire",
+        "//internal/client",
         "//internal/core/pipeline",
         "//internal/core/port",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "//internal/storage/sqlite",
     ],
 )
 
