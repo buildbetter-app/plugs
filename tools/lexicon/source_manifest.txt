@@ -267,6 +267,8 @@ internal/core/service/audit_test.go
 internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
 internal/core/service/claim_recovery_test.go
+internal/core/service/direct_blockers.go
+internal/core/service/direct_blockers_test.go
 internal/core/service/gate.go
 internal/core/service/graph.go
 internal/core/service/history.go
