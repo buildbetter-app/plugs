@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"net"
 	"net/http"
 	"net/netip"
@@ -64,12 +65,52 @@ func listenAddress(address string) (string, bool, error) {
 
 // AdmitHTTP is for RPC HTTP requests, including /mcp. It requires Plug-RPC: 1
 // even when no Origin header is present. Browser origins, when present, must
-// match this request's authority and its actual TLS scheme.
+// match this request's authority and actual TLS scheme, or be admitted by the
+// configured core-session cross-origin authorizer.
 func (a *Authenticator) AdmitHTTP(r *http.Request) (Identity, error) {
 	if r == nil || !oneHeader(r.Header, "Plug-RPC", "1") {
 		return Identity{}, ErrForbidden
 	}
 	return a.admitRequest(r)
+}
+
+// AdmitHTTPTransport applies the network and HTTP-marker admission contract
+// without requiring a bearer credential. Public login/callback handlers use
+// it before processing an unauthenticated request; they must apply their own
+// credential and origin policy before issuing anything. It grants no identity
+// or cross-origin bearer authority. Browser preflights must request the marker
+// on the subsequent GET/POST, since the preflight itself cannot carry it.
+// RPC transports must use AdmitHTTP, which always requires the marker itself.
+func (a *Authenticator) AdmitHTTPTransport(r *http.Request) error {
+	if a == nil {
+		return ErrUnavailable
+	}
+	if r == nil {
+		return ErrForbidden
+	}
+	if r.Method == http.MethodOptions {
+		if !requestsHTTPMarker(r.Header) {
+			return ErrForbidden
+		}
+	} else if !oneHeader(r.Header, "Plug-RPC", "1") {
+		return ErrForbidden
+	}
+	return a.checkHTTPPosture(r)
+}
+
+func requestsHTTPMarker(header http.Header) bool {
+	methods := header.Values("Access-Control-Request-Method")
+	if len(methods) != 1 || (methods[0] != http.MethodGet && methods[0] != http.MethodPost) {
+		return false
+	}
+	for _, line := range header.Values("Access-Control-Request-Headers") {
+		for _, name := range strings.Split(line, ",") {
+			if strings.EqualFold(strings.TrimSpace(name), "Plug-RPC") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // AdmitWebSocket applies the same Host/Origin rules at the WebSocket endpoint.
@@ -93,41 +134,70 @@ func (a *Authenticator) AdmitWebSocket(r *http.Request) (Identity, error) {
 }
 
 func (a *Authenticator) admitRequest(r *http.Request) (Identity, error) {
-	host, port, err := authority(r.Host)
-	if err != nil {
-		return Identity{}, ErrForbidden
-	}
-	peer, err := peerIP(r.RemoteAddr)
-	if err != nil {
-		return Identity{}, ErrForbidden
-	}
-	loopback := !a.configured() || isLoopbackHost(host)
-	if local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
-		localIP, err := peerIP(local.String())
-		if err != nil || (!a.configured() && !localIP.IsLoopback()) {
-			return Identity{}, ErrForbidden
-		}
-		loopback = loopback || localIP.IsLoopback()
-	}
-	if loopback && (!isLoopbackHost(host) || !peer.IsLoopback()) {
-		return Identity{}, ErrForbidden
-	}
-	if !loopback && r.TLS == nil {
-		return Identity{}, ErrForbidden
+	if err := a.checkHTTPPosture(r); err != nil {
+		return Identity{}, err
 	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
 	origins := r.Header.Values("Origin")
-	if len(origins) > 1 || (len(origins) == 1 && !sameOrigin(origins[0], scheme, host, port)) {
-		return Identity{}, ErrForbidden
-	}
 	token, err := bearerToken(r.Header)
 	if err != nil {
 		return Identity{}, err
 	}
+	if len(origins) > 1 {
+		return Identity{}, ErrForbidden
+	}
+	if len(origins) == 1 && !sameOrigin(origins[0], scheme, r.Host) {
+		if err := a.allowCrossOrigin(r.Context(), origins[0], token); err != nil {
+			return Identity{}, err
+		}
+	}
 	return a.Admit(r.Context(), token)
+}
+
+func (a *Authenticator) checkHTTPPosture(r *http.Request) error {
+	host, _, err := authority(r.Host)
+	if err != nil {
+		return ErrForbidden
+	}
+	peer, err := peerIP(r.RemoteAddr)
+	if err != nil {
+		return ErrForbidden
+	}
+	loopback := !a.configured() || isLoopbackHost(host)
+	if local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+		localIP, err := peerIP(local.String())
+		if err != nil || (!a.configured() && !localIP.IsLoopback()) {
+			return ErrForbidden
+		}
+		loopback = loopback || localIP.IsLoopback()
+	}
+	if loopback && (!isLoopbackHost(host) || !peer.IsLoopback()) {
+		return ErrForbidden
+	}
+	if !loopback && r.TLS == nil {
+		return ErrForbidden
+	}
+	return nil
+}
+
+func (a *Authenticator) allowCrossOrigin(ctx context.Context, origin, token string) error {
+	if !strings.HasPrefix(token, CoreSessionPrefix) || a.cross == nil {
+		return ErrForbidden
+	}
+	if err := a.cross(ctx, origin, token); err != nil {
+		switch {
+		case errors.Is(err, ErrTokenExpired):
+			return ErrTokenExpired
+		case errors.Is(err, ErrUnavailable):
+			return ErrUnavailable
+		default:
+			return ErrForbidden
+		}
+	}
+	return nil
 }
 
 func bearerToken(h http.Header) (string, error) {
@@ -146,7 +216,11 @@ func bearerToken(h http.Header) (string, error) {
 	return token, nil
 }
 
-func sameOrigin(raw, scheme, host, port string) bool {
+func sameOrigin(raw, scheme, requestHost string) bool {
+	host, port, err := authority(requestHost)
+	if err != nil {
+		return false
+	}
 	if strings.ContainsAny(raw, "?#") {
 		return false
 	}

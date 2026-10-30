@@ -10,6 +10,27 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
+const (
+	gateKindField          = "gate_kind"
+	gateStateField         = "gate_state"
+	gateApprovalsField     = "gate_approvals"
+	gateApprovalCountField = "gate_approval_count"
+	gateDetailsField       = "gate_details"
+)
+
+func isGateMethod(method string) bool {
+	return method == "gate.approve" || method == "gate.report"
+}
+
+func isGateField(name string) bool {
+	switch name {
+	case gateKindField, gateStateField, gateApprovalsField, gateApprovalCountField, gateDetailsField:
+		return true
+	default:
+		return false
+	}
+}
+
 // SlotForMethod recognizes only named lifecycle verbs. A caller-controlled
 // status patch is never sufficient authority to choose a transition.
 func SlotForMethod(method string) (Slot, bool) {
@@ -137,11 +158,46 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 	if before != nil && before.ID != after.ID {
 		return invalid("id", "bead identity is immutable")
 	}
+	gateMethod := isGateMethod(method)
+	if gateMethod {
+		switch after.Fields[gateStateField] {
+		case GateStateResolved:
+			method = "bead.close"
+		case GateStateFailed:
+			method = "bead.fail"
+		default:
+			method = "bead.update"
+		}
+	}
 	slot, lifecycle := SlotForMethod(method)
 	if before != nil && !lifecycle && (before.Status != after.Status || hasPath(facts.Touched, "status") || hasPath(facts.Touched, "fields.status")) {
 		return []Violation{{Code: "ontology_use_slot_verb", Field: "status", Message: "status must be changed through a lifecycle verb"}}
 	}
 	var violations []Violation
+	for _, name := range []string{gateKindField, gateStateField, gateApprovalsField, gateApprovalCountField, gateDetailsField} {
+		value, exists := after.Fields[name]
+		if gateMethod {
+			continue
+		}
+		if before == nil {
+			if !exists {
+				continue
+			}
+			if name == gateKindField {
+				kind, ok := value.(string)
+				if _, active := e.Gate(kind); !ok || !active {
+					violations = append(violations, invalid("fields."+name, "unknown or archived gate kind")...)
+				}
+				continue
+			}
+		} else {
+			old, present := before.Fields[name]
+			if present == exists && sameValue(old, value) && !hasPath(facts.Touched, "fields."+name) {
+				continue
+			}
+		}
+		violations = append(violations, Violation{Code: "ontology_use_slot_verb", Field: "fields." + name, Message: "gate state must be changed through a gate verb"})
+	}
 	_, priorityViolations := Priority(*after)
 	violations = append(violations, priorityViolations...)
 	_, templateViolations := IsTemplate(*after)
@@ -162,6 +218,9 @@ func Validate(e Effective, before, after *BeadState, method string, facts GuardF
 		if name == "priority" || name == "template" {
 			continue
 		} // fixed kernel field, checked above
+		if isGateField(name) {
+			continue
+		}
 		field, ok := t.Fields[name]
 		if !ok {
 			violations = append(violations, Violation{Code: "ontology_unknown_field", Field: "fields." + name, Message: "unknown typed field"})
