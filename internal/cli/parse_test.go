@@ -49,6 +49,34 @@ func TestHistoryUsesCanonicalResourceFilter(t *testing.T) {
 	}
 }
 
+func TestReadCommandParsersUseCanonicalRPCMethods(t *testing.T) {
+	cases := []struct {
+		args   []string
+		method string
+		check  func(map[string]any) bool
+	}{
+		{[]string{"events", "--event", "bead.updated", "--resource", "bead/pl-1", "--limit", "2"}, "event.list", func(p map[string]any) bool {
+			f := p["filter"].(map[string]any)
+			return p["limit"] == 2 && f["events"].([]string)[0] == "bead.updated" && f["resources"].([]string)[0] == "bead/pl-1"
+		}},
+		{[]string{"history", "get", "pl-1", "--as-of", "3"}, "history.get", func(p map[string]any) bool {
+			return p["ref"].(map[string]any)["id"] == "pl-1" && p["asOf"].(map[string]any)["revision"].(json.Number) == "3"
+		}},
+		{[]string{"history", "diff", "pl-1", "--from", "1", "--to", "3"}, "history.diff", func(p map[string]any) bool {
+			return p["fromRevision"].(json.Number) == "1" && p["toRevision"].(json.Number) == "3"
+		}},
+		{[]string{"health"}, "admin.health", func(p map[string]any) bool { return len(p) == 0 }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method, func(t *testing.T) {
+			command, err := ParseCommand(tc.args)
+			if err != nil || command.Method != tc.method || !tc.check(command.Params) {
+				t.Fatalf("command=%+v err=%v", command, err)
+			}
+		})
+	}
+}
+
 func TestParseNamedLifecycleCommands(t *testing.T) {
 	for _, name := range []string{"close", "reopen", "defer", "cancel", "fail"} {
 		t.Run(name, func(t *testing.T) {
