@@ -66,6 +66,7 @@ func Compile(base Document, overlays map[string]Document, plugins PluginCatalog)
 		mergeDefinitions(merged.Statuses, overlay.Statuses, func(v Status) bool { return v.Archived }, func(v Status) Status { v.Archived = true; return v }, path+".statuses", add)
 		mergeDefinitions(merged.Workflows, overlay.Workflows, func(v Workflow) bool { return v.Archived }, func(v Workflow) Workflow { v.Archived = true; return v }, path+".workflows", add)
 		mergeDefinitions(merged.Types, overlay.Types, func(v Type) bool { return v.Archived }, func(v Type) Type { v.Archived = true; return v }, path+".types", add)
+		mergeDefinitions(merged.GateKinds, overlay.GateKinds, func(v GateKind) bool { return v.Archived }, func(v GateKind) GateKind { v.Archived = true; return v }, path+".gate_kinds", add)
 		compiled.projects[project] = compileEffective(merged, plugins, path, add)
 	}
 	if len(problems) != 0 {
@@ -116,6 +117,9 @@ func cloneDocument(doc Document) (Document, error) {
 	if copy.Types == nil {
 		copy.Types = map[string]Type{}
 	}
+	if copy.GateKinds == nil {
+		copy.GateKinds = map[string]GateKind{}
+	}
 	return copy, err
 }
 
@@ -139,6 +143,36 @@ func mergeDefinitions[T any](base, overlay map[string]T, archived func(T) bool, 
 
 func compileEffective(doc Document, plugins PluginCatalog, prefix string, add func(string, string)) Effective {
 	e := Effective{document: doc, degraded: map[string]bool{}}
+	for _, key := range keys(doc.GateKinds) {
+		gate := doc.GateKinds[key]
+		path := prefix + ".gate_kinds." + key
+		checkKey(key, path, add)
+		if gate.Archived {
+			continue
+		}
+		if gate.Resolver == "" {
+			add(path+".resolver", "resolver is required")
+		}
+		if gate.Count != "" && gate.Count != GateCountHumans && gate.Count != GateCountPrincipals {
+			add(path+".count", "count must be humans or principals")
+		}
+		if gate.OnTimeout != "" && gate.OnTimeout != GateTimeoutEscalate && gate.OnTimeout != GateTimeoutFail {
+			add(path+".on_timeout", "on_timeout must be escalate or fail")
+		}
+		if gate.Timeout != "" {
+			if duration, err := parseGateTimeout(gate.Timeout); err != nil || duration <= 0 {
+				add(path+".timeout", "timeout must be a positive duration")
+			}
+		}
+		// Resolver parameters are opaque to core. Only the built-in manual
+		// resolver gives min_approvals a kernel meaning and therefore receives
+		// this validation.
+		if isManualResolver(gate.Resolver) {
+			if _, err := gateMinApprovals(gate); err != nil {
+				add(path+".params.min_approvals", err.Error())
+			}
+		}
+	}
 	if len(doc.Statuses) == 0 {
 		add(prefix+".statuses", "at least one status is required")
 	}

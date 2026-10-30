@@ -1,7 +1,8 @@
-# Ontology reads and plans over JSON-RPC
+# Ontology reads, plans, and protected apply over JSON-RPC
 
-Claims on this page use **`9d03323f423cf28d202b328ed7c116e45db8406f`**. Start
-with the [domain operations](../../internal/core/ontologyops/README.md) and
+Claims on this page describe the current implementation, based on
+**`9d1845ceef104e8847f2f45cfc7ef6b16072837f`**. Start with the
+[domain operations](../../internal/core/ontologyops/README.md) and
 the [registry binding](../../internal/server/ontologyrpc/README.md); the
 binding uses the existing [canonical catalog](../../internal/api/wire/catalog.go)
 and [registry](../../internal/server/rpc/registry.go).
@@ -9,13 +10,20 @@ and [registry](../../internal/server/rpc/registry.go).
 ## Bind only implemented methods
 
 Call `ontologyrpc.Bind(registry, service)` before `rpc.New` snapshots the
-registry. It registers exactly:
+registry. It registers the seven read/plan methods below, and adds
+`ontology.apply` only when the supplied service exposes the canonical
+protected Writer capability:
 
 ```text
 ontology.get       ontology.describe    ontology.schema
 ontology.check     ontology.history     ontology.diff
 ontology.plan
 ```
+
+Read-only composition roots therefore keep `ontology.apply` out of discovery;
+an apply request there returns `method_not_found`. A protected composition root
+advertises the additional method only after it has supplied the source locator,
+active lease, validating-pre manifest and canonical Writer seam.
 
 The server accepts the canonical named-object parameters and validates the
 canonical result at the byte boundary. An explicit `project` overrides
@@ -48,7 +56,8 @@ bazel --ignore_all_rc_files test //internal/server/ontologyrpc:ontologyrpc_test 
 ```
 
 The test crosses in-process JSON-RPC bytes, service writes, memory storage,
-strict source decoding, compilation, migration planning, historical rows, and
+strict source decoding, compilation, migration planning, historical rows,
+protected publication, complete row-image preservation, durable replay and
 result-schema validation. It also checks discovery and malformed parameters;
 the [domain tests](../../internal/core/ontologyops/service_test.go) cover row,
 source, caller, and binding-manifest invalidation.
@@ -69,13 +78,20 @@ Unknown document members, unsupported directives, missing installed-authorizer
 transition facts, and projectless rows refuse. `NoValidatingPre()` is valid
 only when the host explicitly has no validating-pre bindings.
 
-`ontology.apply` is deliberately absent from discovery. A request such as
+On a read-only host, a request such as
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"ontology.apply","params":{"planDigest":"anything"}}
 ```
 
 returns `method_not_found`; a bearer credential or caller-supplied presence
-object does not change that. Atomic protected publication, durable
-idempotency, projections, policy revalidation, and a method/digest/key-bound
-human proof are separate work.
+object does not change that. When the protected Writer capability is bound,
+`ontology.apply` accepts the retained digest and exact CAS, requires an
+idempotency key, and commits the source and all planned row images in one
+transaction. Anonymous callers must type the plan digest as a
+`presence_check`; authenticated callers must be a live interactive `user`
+session. API keys, services, agents and other-origin/iframe calls cannot
+satisfy the proof. Replays are resolved from the Writer receipt and return the
+original commit with response-only replay metadata. Policy revalidation,
+projection updates, gate resolver facts, directive wire admission and
+multi-source planning remain unsupported and return typed refusals.
