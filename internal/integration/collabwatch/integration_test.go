@@ -1,10 +1,15 @@
 package collabwatch_test
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -112,16 +117,17 @@ func (p *serviceBackedPolicy) ReadResource(ctx context.Context, by model.Princip
 }
 
 type fixture struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	store  *memory.Store
-	lease  driver.ActiveLease
-	clock  *testClock
-	writer *pipeline.Writer
-	svc    *service.Service
-	collab *collab.Manager
-	watch  *watch.Manager
-	server *rpc.Server
+	ctx     context.Context
+	cancel  context.CancelFunc
+	store   *memory.Store
+	lease   driver.ActiveLease
+	clock   *testClock
+	writer  *pipeline.Writer
+	svc     *service.Service
+	collab  *collab.Manager
+	watch   *watch.Manager
+	adapter *watchhttp.Adapter
+	server  *rpc.Server
 
 	mu     sync.Mutex
 	nextID string
@@ -223,6 +229,7 @@ func newConfiguredFixtureWithLog(t *testing.T, policy *serviceBackedPolicy, wrap
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.adapter = adapter
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -246,6 +253,227 @@ func newConfiguredFixtureWithLog(t *testing.T, policy *serviceBackedPolicy, wrap
 		t.Fatal(err)
 	}
 	return f
+}
+
+// presenceHTTPFixture is a disposable trusted-host composition around the
+// existing RPC dispatcher and watch NDJSON adapter. The handler injects the
+// principal/session lifetime as a host would; request metadata never supplies
+// either authority.
+type presenceHTTPFixture struct {
+	principal model.PrincipalRef
+	sessionID string
+	lifetime  context.Context
+	server    *httptest.Server
+	client    *http.Client
+}
+
+func newPresenceHTTPFixture(t *testing.T, f *fixture, principal model.PrincipalRef, sessionID string) *presenceHTTPFixture {
+	t.Helper()
+	h := &presenceHTTPFixture{principal: principal, sessionID: sessionID}
+	if sessionID != "" {
+		lifetime, err := f.collab.SessionContext(f.ctx, collab.Caller{Principal: principal}, sessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.lifetime = lifetime
+	}
+	h.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := rpc.WithPrincipal(r.Context(), h.principal)
+		ctx = watchhttp.WithPrincipal(ctx, h.principal)
+		if h.sessionID != "" && h.lifetime != nil {
+			ctx = watchhttp.WithSession(ctx, h.sessionID, h.lifetime)
+		}
+		switch r.URL.Path {
+		case "/rpc/v1":
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", http.MethodPost)
+				http.Error(w, "use POST", http.StatusMethodNotAllowed)
+				return
+			}
+			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+			if err != nil {
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			defer r.Body.Close()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(f.server.Dispatch(ctx, body))
+		case watchhttp.DefaultPath:
+			f.adapter.ServeHTTP(w, r.WithContext(ctx))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	h.client = h.server.Client()
+	t.Cleanup(func() { h.close() })
+	return h
+}
+
+func (h *presenceHTTPFixture) close() {
+	if h == nil {
+		return
+	}
+	if h.client != nil {
+		h.client.CloseIdleConnections()
+	}
+	if h.server != nil {
+		h.server.Close()
+	}
+}
+
+func (h *presenceHTTPFixture) call(t *testing.T, method string, params map[string]any) map[string]any {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, h.server.URL+"/rpc/v1", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := h.client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(response.Body)
+		t.Fatalf("HTTP RPC %s status=%d body=%s", method, response.StatusCode, raw)
+	}
+	var value map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&value); err != nil {
+		t.Fatalf("decode HTTP RPC %s: %v", method, err)
+	}
+	return value
+}
+
+type presenceHTTPNotify struct {
+	SubscriptionID string        `json:"subscriptionId"`
+	Events         []model.Event `json:"events"`
+	Cursor         string        `json:"cursor"`
+}
+
+type presenceHTTPStream struct {
+	response *http.Response
+	cancel   context.CancelFunc
+	decoder  *json.Decoder
+}
+
+func (h *presenceHTTPFixture) openPresenceWatch(t *testing.T, from string) (*presenceHTTPStream, presenceHTTPNotify) {
+	t.Helper()
+	params := map[string]any{
+		"sessionId": h.sessionID,
+		"_meta":     map[string]any{"project": "project-a"},
+	}
+	if from != "" {
+		params["from"] = from
+	}
+	response := h.call(t, "presence.watch", params)
+	opened := result(t, response)
+	subscriptionID, ok := opened["subscriptionId"].(string)
+	if !ok || subscriptionID == "" {
+		t.Fatalf("presence.watch response=%v", response)
+	}
+	cursor, ok := opened["cursor"].(string)
+	if !ok || cursor == "" {
+		t.Fatalf("presence.watch cursor=%v", opened)
+	}
+	streamContext, cancel := context.WithCancel(context.Background())
+	request, err := http.NewRequestWithContext(streamContext, http.MethodPost, h.server.URL+watchhttp.DefaultPath, strings.NewReader(fmt.Sprintf(`{"subscriptionId":%q}`, subscriptionID)))
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	streamResponse, err := h.client.Do(request)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if streamResponse.StatusCode != http.StatusOK || streamResponse.Header.Get("Content-Type") != "application/x-ndjson" {
+		body, _ := io.ReadAll(streamResponse.Body)
+		_ = streamResponse.Body.Close()
+		t.Fatalf("presence stream status=%d content-type=%q body=%s", streamResponse.StatusCode, streamResponse.Header.Get("Content-Type"), body)
+	}
+	stream := &presenceHTTPStream{response: streamResponse, cancel: cancel, decoder: json.NewDecoder(bufio.NewReader(streamResponse.Body))}
+	initial := stream.next(t)
+	if initial.SubscriptionID != subscriptionID || initial.Cursor != cursor {
+		t.Fatalf("presence HTTP snapshot=%+v opened=%v", initial, opened)
+	}
+	return stream, initial
+}
+
+func (s *presenceHTTPStream) next(t *testing.T) presenceHTTPNotify {
+	t.Helper()
+	type decoded struct {
+		value presenceHTTPNotify
+		err   error
+	}
+	resultCh := make(chan decoded, 1)
+	go func() {
+		var value presenceHTTPNotify
+		resultCh <- decoded{value: value, err: s.decoder.Decode(&value)}
+	}()
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("decode presence HTTP stream: %v", result.err)
+		}
+		return result.value
+	case <-time.After(3 * time.Second):
+		s.close()
+		t.Fatal("timed out waiting for presence HTTP stream frame")
+		return presenceHTTPNotify{}
+	}
+}
+
+func (s *presenceHTTPStream) waitEOF(t *testing.T) {
+	t.Helper()
+	type decoded struct{ err error }
+	resultCh := make(chan decoded, 1)
+	go func() {
+		var value presenceHTTPNotify
+		resultCh <- decoded{err: s.decoder.Decode(&value)}
+	}()
+	select {
+	case result := <-resultCh:
+		if !errors.Is(result.err, io.EOF) {
+			t.Fatalf("presence HTTP stream ended with %v", result.err)
+		}
+	case <-time.After(3 * time.Second):
+		s.close()
+		t.Fatal("timed out waiting for presence HTTP stream cancellation")
+	}
+}
+
+func (s *presenceHTTPStream) close() {
+	if s == nil {
+		return
+	}
+	if s.cancel != nil {
+		s.cancel()
+	}
+	if s.response != nil {
+		_ = s.response.Body.Close()
+	}
+}
+
+func assertPresenceCursor(t *testing.T, principal model.PrincipalRef, token string) coreevents.Position {
+	t.Helper()
+	codec, err := serverevents.NewCursorCodec([]byte(strings.Repeat("collabwatch-cursor-key-", 2)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := serverevents.BindingFor("presence.watch", coreevents.Filter{Resources: []string{"presence/project-a"}}, principal, model.Natural64(1), "policy-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	position, err := codec.Decode(token, binding)
+	if err != nil {
+		t.Fatalf("presence cursor is not signed/bound: %v", err)
+	}
+	return position
 }
 
 func (f *fixture) call(t *testing.T, principal model.PrincipalRef, method string, params map[string]any) map[string]any {
@@ -810,4 +1038,201 @@ func TestWatchSessionCapAndReconnectFromCursorUseRealRPCBoundary(t *testing.T) {
 	if !seen["bead/resume-live"] {
 		t.Fatal("reconnected watch did not receive a live delta")
 	}
+}
+
+func requirePresenceHTTPDelta(t *testing.T, notify presenceHTTPNotify, from string) string {
+	t.Helper()
+	if notify.Cursor == "" || len(notify.Events) != 1 || notify.Events[0].Control == nil || notify.Events[0].Control.Type != model.EventWatchDelta {
+		t.Fatalf("presence HTTP delta=%+v", notify)
+	}
+	details, ok := notify.Events[0].Control.Details.(model.WatchDeltaDetails)
+	if !ok || details.FromCursor != from || details.ToCursor != notify.Cursor || len(details.Events) != 0 {
+		t.Fatalf("presence HTTP delta details=%+v", notify.Events[0].Control.Details)
+	}
+	return notify.Cursor
+}
+
+func waitPresenceWatchCount(t *testing.T, manager *watch.Manager, sessionID string, want int) {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if manager.WatchCount(sessionID) == want {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("presence HTTP watch count=%d want %d", manager.WatchCount(sessionID), want)
+		}
+	}
+}
+
+func TestPresenceWatchHTTPAcceptance(t *testing.T) {
+	t.Run("create-mask-reconnect-and-refuse-before-allocation", func(t *testing.T) {
+		f, policy := newPolicyFixture(t)
+		f.create(t, "http-presence-mask")
+		session1 := f.session(t, alice)
+
+		// A request without the trusted session lifetime is refused before the
+		// manager allocates a watch or any durable state can change.
+		beforeRefusal := durableState(t, f)
+		refuser := newPresenceHTTPFixture(t, f, alice, "")
+		refused := refuser.call(t, "presence.watch", map[string]any{
+			"sessionId": session1,
+			"_meta":     map[string]any{"project": "project-a"},
+		})
+		if code := errorCode(t, refused); code != "invalid_params" {
+			t.Fatalf("missing trusted session refusal code=%s response=%v", code, refused)
+		}
+		if got := f.watch.WatchCount(session1); got != 0 {
+			t.Fatalf("refused presence.watch retained %d watches", got)
+		}
+		if afterRefusal := durableState(t, f); string(beforeRefusal) != string(afterRefusal) {
+			t.Fatal("refused presence.watch changed durable state")
+		}
+
+		h1 := newPresenceHTTPFixture(t, f, alice, session1)
+		stream1, initial := h1.openPresenceWatch(t, "")
+		initialPosition := assertPresenceCursor(t, alice, initial.Cursor)
+		if initialPosition.Incarnation == "" {
+			t.Fatalf("initial presence cursor has no incarnation: %+v", initialPosition)
+		}
+
+		beforeSet := durableState(t, f)
+		set := h1.call(t, "presence.set", map[string]any{
+			"sessionId": session1,
+			"focus":     "bead/http-presence-mask",
+			"_meta":     map[string]any{"project": "project-a"},
+		})
+		if got := result(t, set)["focus"]; got != "bead/http-presence-mask" {
+			t.Fatalf("HTTP presence.set=%v", set)
+		}
+		if afterSet := durableState(t, f); string(beforeSet) != string(afterSet) {
+			t.Fatal("HTTP presence.set changed durable state")
+		}
+		visible := presenceRows(t, h1.call(t, "presence.list", map[string]any{"project": "project-a"}))
+		if len(visible) != 1 || visible[0].(map[string]any)["focus"] != "bead/http-presence-mask" {
+			t.Fatalf("visible HTTP presence=%v", visible)
+		}
+		setDelta := stream1.next(t)
+		setCursor := requirePresenceHTTPDelta(t, setDelta, initial.Cursor)
+		_ = assertPresenceCursor(t, alice, setCursor)
+
+		beforeMask := durableState(t, f)
+		policy.readable.Store(false)
+		bobHTTP := newPresenceHTTPFixture(t, f, bob, "")
+		masked := presenceRows(t, bobHTTP.call(t, "presence.list", map[string]any{"project": "project-a"}))
+		if len(masked) != 1 {
+			t.Fatalf("masked HTTP presence=%v", masked)
+		}
+		maskedRow := masked[0].(map[string]any)
+		if _, found := maskedRow["focus"]; found {
+			t.Fatalf("HTTP presence mask leaked focus=%v", maskedRow)
+		}
+		if afterMask := durableState(t, f); string(beforeMask) != string(afterMask) {
+			t.Fatal("HTTP presence masking changed durable state")
+		}
+		maskDelta := stream1.next(t)
+		maskCursor := requirePresenceHTTPDelta(t, maskDelta, setCursor)
+		_ = assertPresenceCursor(t, alice, maskCursor)
+
+		closed := h1.call(t, "session.close", map[string]any{"sessionId": session1})
+		if _, ok := closed["error"]; ok {
+			t.Fatalf("HTTP session.close failed: %v", closed)
+		}
+		stream1.waitEOF(t)
+		waitPresenceWatchCount(t, f.watch, session1, 0)
+
+		policy.readable.Store(true)
+		session2 := f.session(t, alice)
+		h2 := newPresenceHTTPFixture(t, f, alice, session2)
+		stream2, resumed := h2.openPresenceWatch(t, maskCursor)
+		resumedPosition := assertPresenceCursor(t, alice, resumed.Cursor)
+		if resumed.Cursor == maskCursor || resumedPosition.Incarnation != initialPosition.Incarnation {
+			t.Fatalf("HTTP presence reconnect cursor=%+v from=%s", resumed, maskCursor)
+		}
+		setAgain := h2.call(t, "presence.set", map[string]any{
+			"sessionId": session2,
+			"focus":     "bead/http-presence-mask",
+			"_meta":     map[string]any{"project": "project-a"},
+		})
+		if got := result(t, setAgain)["focus"]; got != "bead/http-presence-mask" {
+			t.Fatalf("HTTP reconnected presence.set=%v", setAgain)
+		}
+		live := stream2.next(t)
+		liveCursor := requirePresenceHTTPDelta(t, live, resumed.Cursor)
+		_ = assertPresenceCursor(t, alice, liveCursor)
+		stream2.close()
+	})
+
+	t.Run("expiry-cancels-http-stream", func(t *testing.T) {
+		f := newFixture(t)
+		sessionID := f.session(t, alice)
+		h := newPresenceHTTPFixture(t, f, alice, sessionID)
+		stream, initial := h.openPresenceWatch(t, "")
+		if initial.Cursor == "" {
+			t.Fatal("expiry fixture returned an empty cursor")
+		}
+		f.clock.advance(collab.SessionTTL)
+		if rows := presenceRows(t, f.call(t, bob, "presence.list", map[string]any{"project": "project-a"})); len(rows) != 0 {
+			t.Fatalf("expired HTTP presence remained visible=%v", rows)
+		}
+		stream.waitEOF(t)
+		waitPresenceWatchCount(t, f.watch, sessionID, 0)
+	})
+
+	t.Run("incarnation-gap-is-a-terminal-http-control", func(t *testing.T) {
+		f1 := newFixture(t)
+		f1.create(t, "http-presence-gap")
+		session1 := f1.session(t, alice)
+		h1 := newPresenceHTTPFixture(t, f1, alice, session1)
+		stream1, initial := h1.openPresenceWatch(t, "")
+		set := h1.call(t, "presence.set", map[string]any{
+			"sessionId": session1,
+			"focus":     "bead/http-presence-gap",
+			"_meta":     map[string]any{"project": "project-a"},
+		})
+		if _, ok := set["result"]; !ok {
+			t.Fatalf("gap fixture presence.set=%v", set)
+		}
+		delta := stream1.next(t)
+		oldCursor := requirePresenceHTTPDelta(t, delta, initial.Cursor)
+		oldPosition := assertPresenceCursor(t, alice, oldCursor)
+		stream1.close()
+		if _, err := f1.callSessionClose(t, alice, session1); err != nil {
+			t.Fatal(err)
+		}
+
+		f2 := newFixture(t)
+		oldMeta, err := f1.store.Meta(f1.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		newMeta, err := f2.store.Meta(f2.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if oldMeta.Incarnation == newMeta.Incarnation || oldPosition.Incarnation != oldMeta.Incarnation {
+			t.Fatalf("fixtures did not provide distinct incarnations: old=%+v new=%+v cursor=%+v", oldMeta, newMeta, oldPosition)
+		}
+		session2 := f2.session(t, alice)
+		h2 := newPresenceHTTPFixture(t, f2, alice, session2)
+		gapStream, gap := h2.openPresenceWatch(t, oldCursor)
+		if len(gap.Events) != 1 || gap.Events[0].Control == nil || gap.Events[0].Control.Type != model.EventGap {
+			t.Fatalf("HTTP incarnation gap=%+v", gap)
+		}
+		details, ok := gap.Events[0].Control.Details.(model.EventGapDetails)
+		if !ok || details.FromIncarnation != oldMeta.Incarnation || details.ToIncarnation != newMeta.Incarnation {
+			t.Fatalf("HTTP incarnation gap details=%+v old=%s new=%s", gap.Events[0].Control.Details, oldMeta.Incarnation, newMeta.Incarnation)
+		}
+		if gap.Cursor == oldCursor {
+			t.Fatal("incarnation gap did not issue a new signed cursor")
+		}
+		_ = assertPresenceCursor(t, alice, gap.Cursor)
+		gapStream.waitEOF(t)
+		waitPresenceWatchCount(t, f2.watch, session2, 0)
+	})
 }
