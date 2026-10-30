@@ -76,7 +76,9 @@ construction. Oversize body is 413, bad media/encoding 415, unreadable body
 400, body deadline 408, saturated concurrency 429, bad path 404 and wrong
 method 405. Credential failure is 401, forbidden admission is 403 and an
 unavailable provider is 503. No CORS, preflight, WebSocket, MCP, stdio,
-trusted-proxy TLS or cross-origin browser mode is installed in this handler.
+trusted-proxy TLS or cross-origin browser mode is installed in this handler;
+see [transport selection](transports.md) for the separate adapters and their
+composition boundaries.
 
 Anonymous listeners bind only loopback with no override. Authenticated network
 listeners require a configured provider and directly terminated TLS. Host,
