@@ -1,51 +1,62 @@
 # Plug runtime guides
 
-These guides describe accepted source **`471d0199c89acf9e242f44978f2824120726de32`**
-(2026-10-29). Start with the [disposable CLI session](cli.md) to try the
-implemented lifecycle without configuring a server or database.
+These guides describe the accepted source snapshot
+[`127ac22e1d003cce4babe6cbcbc8367ad264e649`](https://github.com/buildbetter-app/plugs/tree/127ac22e1d003cce4babe6cbcbc8367ad264e649)
+(2026-10-29) together with the focused persistent-local-CLI addition. The
+design and OpenRPC catalog describe a wider target surface.
 
 | Guide | Use it for |
 | --- | --- |
-| [CLI](cli.md) | One-process memory sessions, commands, retries and cancellation. |
-| [RPC and HTTP](rpc-http.md) | Bound methods, JSON-RPC bytes, admission and HTTP limits. |
-| [Native plugins](native-plugins.md) | Public SDK registration and trusted host capabilities. |
-| [Events](events.md) | Committed events, current visibility, delivery and checkpoints. |
-| [Storage](storage.md) | Memory, SQLite and PostgreSQL lifetimes and supported persistence. |
+| [CLI](cli.md) | Persistent local SQLite, explicit memory sessions, admitted remote HTTP, commands, retries and cancellation. |
+| [RPC and HTTP](rpc-http.md) | JSON-RPC registry, explicit service bindings, admission and transport limits. |
+| [Native plugins](native-plugins.md) | The public SDK, trusted native host and callback capabilities. |
+| [Events](events.md) | Ordered audit plans, materialization, delivery and fenced checkpoints. |
+| [Storage](storage.md) | Memory, SQLite and PostgreSQL ownership, persistence and fencing. |
 
-## Snapshot and boundaries
+## Snapshot and package boundaries
 
-All implementation claims use the
-[immutable source tree](https://github.com/buildbetter-app/plugs/tree/471d0199c89acf9e242f44978f2824120726de32).
-Relative source links browse the checkout; use that SHA when comparing later
-versions. The older [package map](../plug-packages/README.md) remains pinned to
-its own earlier snapshot. The [design](../design/plug/design.md),
-[OpenRPC catalog](../design/plug/contracts/openrpc.json) and
-[behavior cards](../design/plug/spec/behaviors.md) cover a broader contract;
-an entry there alone does not install an RPC handler or CLI command.
+Relative source links point into this checkout; use the SHA above when
+comparing a later tree. The older [package map](../plug-packages/README.md)
+and canonical [design](../design/plug/design.md) remain broader references.
+An entry in a contract or catalog does not install a handler or a composition
+root.
 
 At this snapshot:
 
-- The CLI composes a real core, Writer, memory store, RPC dispatcher and
-  in-process byte transport. Each invocation discards its memory store.
-- HTTP is an embeddable admitted transport. There is no runnable `plug server`
-  command or remote CLI transport in this snapshot.
-- Native plugins are compiled in and explicitly connected by a composition
-  root. The public Go packages are `pluginapi` and `sdk/go`; applications
-  outside this module use JSON-RPC rather than importing `internal` packages.
-- All three baseline drivers implement history, receipts and checkpoints.
-  Ordered audit-plan persistence is included only for memory; see the
-  [driver distinction](storage.md#audit-plan-boundary).
-- The optional Writer audit producer and event delivery are present. The
-  protected-source ontology audit adapter and full connected conditional
-  dependency behavior remain separate follow-ons. Their presence on another
-  branch supplies no behavior at this pin.
+- `cmd/plug` can run persistent local SQLite at `.plug/plug.db`, an explicit
+  process-lifetime memory session, or the same JSON-RPC bytes through the
+  admitted HTTP client. `.plug/config.yaml` can select a server or a SQLite
+  path; there is no runnable `plug server` command.
+- `server/rpc` owns wire validation and cursors. `BindService` supplies the
+  lifecycle surface; `server/ontologyrpc` and `server/collab` are explicit
+  adapters that a composition root may bind. `ontology.apply` remains
+  unbound and refuses with `method_not_found`; the composed runtime's watch
+  adapter binds `presence.watch` when its real collaboration snapshot source
+  is available.
+- `server/authn`, the process-local API-key provider and the bounded OIDC core
+  session provider admit credentials only when a host composes them. The HTTP
+  transport has no login route, cookie mode or authorization policy of its own.
+- The public Go surface is `pluginapi` and `sdk/go`. Native plugins are
+  trusted compiled-in code; WASM isolation, artifact builds, durable plugin
+  state and automatic extension exposure are follow-ons.
+- Memory, SQLite and PostgreSQL implement history, receipts, checkpoints and
+  complete ordered audit-plan persistence. The connected conditional-audit
+  service-to-delivery proof is qualified against memory; SQL persistence and
+  the engine-specific acceptance targets are separate evidence, not a
+  production recovery claim.
 
-OIDC/login sessions, durable API-key persistence, collaboration presence and
-ontology RPC adapters are also absent from this pin. Remote CLI/HTTP-client
-adapters are follow-ons even though the embeddable HTTP server transport is
-present. No follow-on implementation commit is incorporated by these guides.
+The current package boundaries are exercised by the real source-linked tests
+in the individual guides and by the merged integration packages:
+[audit](../../internal/integration/audit/README.md),
+[API-key HTTP](../../internal/integration/apikey/README.md),
+[SQLite connected acceptance](../../internal/integration/sqliteacceptance/README.md),
+[OIDC](../../internal/integration/oidc), and
+[extended behavior slices](../../spec/extended/README.md). These are bounded
+package checks, not a full behavior-card, performance, hosted-CI, deployment,
+failover, migration or public-release certification.
 
-The local examples use synthetic disposable state. Package tests establish
-their named boundaries; they do not qualify production deployment, failover,
-performance, hosted CI, migration or a public release. Historical race and
-benchmark results are not certification of this runtime snapshot.
+Unsupported surfaces must stay explicit: network event watches, persistent
+API-key storage, public login methods, authorization-fact management,
+`ontology.apply`, dump/restore commands, local PostgreSQL CLI mode,
+WASM/plugin isolation and production topology are not implied by a catalog
+entry, a package README or an open design item.

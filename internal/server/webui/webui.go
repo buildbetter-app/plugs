@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -29,6 +30,8 @@ type Config struct {
 	RPCPath   string
 	Project   string
 	MaxRows   int
+	Catalog   Catalog
+	Frames    []FrameBundle
 
 	// BlockedViewID and BlockedViewDefinition are optional. They are used only
 	// when the server advertises view.run/view.explain. The server remains the
@@ -38,11 +41,21 @@ type Config struct {
 }
 
 type browserConfig struct {
-	RPCPath               string          `json:"rpcPath"`
-	Project               string          `json:"project"`
-	MaxRows               int             `json:"maxRows"`
-	BlockedViewID         string          `json:"blockedViewId,omitempty"`
-	BlockedViewDefinition json.RawMessage `json:"blockedViewDefinition,omitempty"`
+	RPCPath               string            `json:"rpcPath"`
+	Project               string            `json:"project"`
+	MaxRows               int               `json:"maxRows"`
+	BlockedViewID         string            `json:"blockedViewId,omitempty"`
+	BlockedViewDefinition json.RawMessage   `json:"blockedViewDefinition,omitempty"`
+	Catalog               Catalog           `json:"catalog"`
+	Frames                []frameDescriptor `json:"frames,omitempty"`
+}
+
+type frameDescriptor struct {
+	ID      string   `json:"id"`
+	Title   string   `json:"title"`
+	Src     string   `json:"src"`
+	Methods []string `json:"methods"`
+	Project string   `json:"project"`
 }
 
 // Handler serves only files below Config.MountPath. It is safe for concurrent
@@ -52,12 +65,13 @@ type Handler struct {
 	config []byte
 	assets fs.FS
 	admit  *authn.Authenticator
+	frames map[string]frameBundle
 }
 
 //go:embed static/index.html static/app.js static/styles.css static/favicon.svg
 var embedded embed.FS
 
-const contentSecurityPolicy = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; form-action 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'"
+const contentSecurityPolicy = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'self'; frame-ancestors 'none'; form-action 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'"
 
 // New validates the explicit browser/RPC composition and returns an embedded
 // handler. Unsupported UI methods are represented in the browser as an
@@ -97,6 +111,32 @@ func New(config Config) (*Handler, error) {
 		}
 		config.BlockedViewDefinition = append(json.RawMessage(nil), config.BlockedViewDefinition...)
 	}
+	if config.Catalog.Panels == nil && config.Catalog.Columns == nil && config.Catalog.Buttons == nil {
+		config.Catalog = DefaultCatalog()
+	}
+	if err := config.Catalog.Validate(); err != nil {
+		return nil, err
+	}
+	bundles := append([]FrameBundle(nil), config.Frames...)
+	sort.SliceStable(bundles, func(i, j int) bool { return bundles[i].ID < bundles[j].ID })
+	frames := make(map[string]frameBundle, len(bundles))
+	descriptors := make([]frameDescriptor, 0, len(bundles))
+	for _, bundle := range bundles {
+		if _, exists := frames[bundle.ID]; exists {
+			return nil, fmt.Errorf("webui: duplicate frame %q", bundle.ID)
+		}
+		prepared, err := prepareFrameBundle(bundle, config.Project)
+		if err != nil {
+			return nil, err
+		}
+		frames[bundle.ID] = prepared
+		grant := prepared.bridge.Grant()
+		descriptors = append(descriptors, frameDescriptor{
+			ID: bundle.ID, Title: prepared.Title,
+			Src:     config.MountPath + "frames/" + bundle.ID + "/index.html",
+			Methods: grant.Methods, Project: grant.Project,
+		})
+	}
 
 	encoded, err := json.Marshal(browserConfig{
 		RPCPath:               config.RPCPath,
@@ -104,6 +144,8 @@ func New(config Config) (*Handler, error) {
 		MaxRows:               config.MaxRows,
 		BlockedViewID:         config.BlockedViewID,
 		BlockedViewDefinition: config.BlockedViewDefinition,
+		Catalog:               config.Catalog.clone(),
+		Frames:                descriptors,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("webui: encode browser config: %w", err)
@@ -112,7 +154,9 @@ func New(config Config) (*Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("webui: anonymous admission: %w", err)
 	}
-	return &Handler{cfg: config, config: encoded, assets: embedded, admit: admit}, nil
+	config.Catalog = config.Catalog.clone()
+	config.Frames = bundles
+	return &Handler{cfg: config, config: encoded, assets: embedded, admit: admit, frames: frames}, nil
 }
 
 func mountPath(raw string) (string, error) {
@@ -164,6 +208,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	probe := r.Clone(r.Context())
 	probe.Header = r.Header.Clone()
 	probe.Header.Set("Plug-RPC", "1")
+	// Sandboxed frames have an opaque origin and therefore send `Origin: null`.
+	// Their assets are still loopback-only, have no credentials, and carry a
+	// response CSP that prevents embedding outside this host. Do not weaken
+	// normal page/RPC origin admission for any other route.
+	frameRequest := r.URL != nil && strings.HasPrefix(r.URL.Path, h.cfg.MountPath+"frames/")
+	if frameRequest && len(r.Header.Values("Origin")) == 1 && r.Header.Get("Origin") == "null" {
+		probe.Header.Del("Origin")
+	}
 	if _, err := h.admit.AdmitHTTP(probe); err != nil {
 		h.writeError(w, r.Method != http.MethodHead, http.StatusForbidden, "the anonymous UI requires same-origin loopback access")
 		return
@@ -195,6 +247,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.writeBytes(w, r.Method == http.MethodGet, http.StatusOK, "application/json; charset=utf-8", h.config)
 		return
 	}
+	if strings.HasPrefix(asset, "frames/") {
+		h.serveFrame(w, r, strings.TrimPrefix(asset, "frames/"))
+		return
+	}
 	if asset != "index.html" && asset != "app.js" && asset != "styles.css" && asset != "favicon.svg" {
 		h.writeError(w, r.Method == http.MethodGet, http.StatusNotFound, "UI asset not found")
 		return
@@ -211,6 +267,46 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"favicon.svg": "image/svg+xml",
 	}[asset]
 	h.writeBytes(w, r.Method == http.MethodGet, http.StatusOK, contentType, data)
+}
+
+func (h *Handler) serveFrame(w http.ResponseWriter, r *http.Request, asset string) {
+	parts := strings.SplitN(asset, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		h.writeError(w, r.Method == http.MethodGet, http.StatusNotFound, "UI frame asset not found")
+		return
+	}
+	bundle, ok := h.frames[parts[0]]
+	if !ok {
+		h.writeError(w, r.Method == http.MethodGet, http.StatusNotFound, "UI frame asset not found")
+		return
+	}
+	data, ok := bundle.Assets[parts[1]]
+	if !ok {
+		h.writeError(w, r.Method == http.MethodGet, http.StatusNotFound, "UI frame asset not found")
+		return
+	}
+	contentType := frameContentType(parts[1])
+	w.Header().Set("Content-Security-Policy", frameContentSecurityPolicy)
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	w.Header().Set("Content-Type", contentType)
+	h.writeBytes(w, r.Method == http.MethodGet, http.StatusOK, contentType, data)
+}
+
+func frameContentType(name string) string {
+	switch path.Ext(name) {
+	case ".html":
+		return "text/html; charset=utf-8"
+	case ".js":
+		return "text/javascript; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".svg":
+		return "image/svg+xml"
+	case ".json":
+		return "application/json; charset=utf-8"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func (h *Handler) setHeaders(w http.ResponseWriter) {

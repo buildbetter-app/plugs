@@ -15,6 +15,10 @@ import (
 
 const Usage = `Usage: plug [--server URL | --memory] [--project PROJECT] [--agent LABEL] [--json] COMMAND
 
+Shared server:
+  server                 Start the configured shared HTTP server
+  server --local         Start a disposable loopback server with embedded UI
+
 Commands:
   ready [--type TYPE] [--limit N] [--cursor TOKEN]
   get ID [--as-of REVISION]
@@ -26,14 +30,22 @@ Commands:
   link FROM TO --kind KIND [--expect REVISION]
   unlink FROM TO --kind KIND [--expect REVISION]
   batch --changeset JSON
+  reopen ID [--reason TEXT] [--expect REVISION]
+  defer ID [--reason TEXT] [--expect REVISION]
+  cancel ID [--reason TEXT] [--expect REVISION]
+  fail ID [--reason TEXT] [--expect REVISION]
   history --as-of REVISION [--id ID] [--limit N] [--cursor TOKEN]
   session                 Read one JSON argv array per line from stdin.
 
-Memory storage is disposable and exists only for this process. In a session,
-@last is the ID returned by the last write; @revision is its revision.
-Server selection: --server, then PLUG_SERVER; PLUG_TOKEN supplies the bearer.
-An unreachable configured server is an error. Remote calls use POST /rpc/v1.
-Config-file loading and persistent local storage are not installed in this slice.
+Without a selected server, local storage is persistent SQLite at .plug/plug.db.
+Memory storage is disposable and exists only for this process when --memory is
+explicitly selected. In a session, @last is the ID returned by the last write;
+@revision is its revision. Server selection is --server, then PLUG_SERVER, then
+.plug/config.yaml; PLUG_TOKEN supplies the bearer. An unreachable configured
+server is an error. Remote calls use POST /rpc/v1. A local config may select a
+server or SQLite storage (driver: sqlite, path: PATH). The shared server also
+reads .plug/config.yaml. In-process --memory storage remains disposable and
+never starts a listener or UI.
 Global options precede COMMAND. Command options may precede or follow ID.
 Writes accept --idempotency-key KEY to retry a write whose response was lost.
 `
@@ -95,7 +107,7 @@ func ParseCommand(args []string) (Command, error) {
 		return Command{}, fmt.Errorf("command is required")
 	}
 	name := args[0]
-	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "link": true, "unlink": true, "batch": true, "history": true}
+	allowed := map[string]bool{"ready": true, "get": true, "create": true, "claim": true, "update": true, "comment": true, "close": true, "reopen": true, "defer": true, "cancel": true, "fail": true, "link": true, "unlink": true, "batch": true, "history": true}
 	if !allowed[name] {
 		return Command{}, fmt.Errorf("unsupported command %q", name)
 	}
@@ -132,13 +144,16 @@ func ParseCommand(args []string) (Command, error) {
 		add(&expect, "expect")
 	case "batch":
 		add(&changeset, "changeset")
+	case "reopen", "defer", "cancel", "fail":
+		add(&reason, "reason")
+		add(&expect, "expect")
 	case "history":
 		add(&asOf, "as-of")
 		add(&id, "id")
 		add(&cursor, "cursor")
 		fs.IntVar(&limit, "limit", 1000, "limit")
 	}
-	write := name == "create" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "link" || name == "unlink" || name == "batch"
+	write := name == "create" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail" || name == "link" || name == "unlink" || name == "batch"
 	if write {
 		add(&key, "idempotency-key")
 	}
@@ -157,7 +172,7 @@ func ParseCommand(args []string) (Command, error) {
 		method = "tx.apply"
 	}
 	c := Command{Method: method, Params: p, Key: key}
-	needID := name == "get" || name == "update" || name == "claim" || name == "comment" || name == "close"
+	needID := name == "get" || name == "update" || name == "claim" || name == "comment" || name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail"
 	if needID {
 		if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
 			return c, fmt.Errorf("%s requires exactly one bead ID", name)
@@ -207,7 +222,7 @@ func ParseCommand(args []string) (Command, error) {
 		}
 		p["body"] = body
 	}
-	if name == "close" && seen["reason"] {
+	if (name == "close" || name == "reopen" || name == "defer" || name == "cancel" || name == "fail") && seen["reason"] {
 		p["reason"] = reason
 	}
 	if name == "link" || name == "unlink" {

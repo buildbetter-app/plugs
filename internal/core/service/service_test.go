@@ -176,6 +176,123 @@ func TestMemoryPipelineServiceLifecycleAndHistory(t *testing.T) {
 	}
 }
 
+func TestNamedLifecycleSlotsReplayRefuseIllegalMovesAndPreserveHistory(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	id, created := create(t, f, "slot lifecycle")
+
+	write := func(method, reason string) port.WriteOutcome {
+		t.Helper()
+		m := meta(t)
+		var outcome port.WriteOutcome
+		var err error
+		switch method {
+		case "bead.defer":
+			outcome, err = f.svc.DeferWithOutcome(ctx, anonymous, DeferRequest{ID: id, Reason: reason}, m)
+		case "bead.reopen":
+			outcome, err = f.svc.ReopenWithOutcome(ctx, anonymous, ReopenRequest{ID: id, Reason: reason}, m)
+		case "bead.claim":
+			outcome, err = f.svc.ClaimWithOutcome(ctx, anonymous, ClaimRequest{ID: id}, m)
+		case "bead.fail":
+			outcome, err = f.svc.FailWithOutcome(ctx, anonymous, FailRequest{ID: id, Reason: reason}, m)
+		case "bead.cancel":
+			outcome, err = f.svc.CancelWithOutcome(ctx, anonymous, CancelRequest{ID: id, Reason: reason}, m)
+		case "bead.close":
+			outcome, err = f.svc.CloseWithOutcome(ctx, anonymous, CloseRequest{ID: id, Reason: reason}, m)
+		default:
+			t.Fatalf("unknown lifecycle method %q", method)
+		}
+		if err != nil {
+			t.Fatalf("%s failed: %v", method, err)
+		}
+		if outcome.Replayed {
+			t.Fatalf("fresh %s was marked replay", method)
+		}
+		return outcome
+	}
+
+	steps := []struct {
+		method string
+		reason string
+		status string
+	}{
+		{"bead.defer", "waiting", "backlog"},
+		{"bead.reopen", "ready again", "todo"},
+		{"bead.claim", "", "in_progress"},
+		{"bead.fail", "failed validation", "failed"},
+		{"bead.reopen", "retrying", "todo"},
+		{"bead.cancel", "no longer needed", "canceled"},
+		{"bead.reopen", "reconsidered", "todo"},
+		{"bead.claim", "", "in_progress"},
+		{"bead.close", "completed", "done"},
+		{"bead.reopen", "follow-up", "todo"},
+	}
+	for i, step := range steps {
+		outcome := write(step.method, step.reason)
+		wantRevision := model.Natural64(uint64(i + 2))
+		if outcome.Commit.Revision.String() != wantRevision.String() || len(outcome.Commit.Results) == 0 {
+			t.Fatalf("%s commit=%+v want revision %s", step.method, outcome.Commit, wantRevision)
+		}
+		got, err := f.svc.Get(ctx, anonymous, GetRequest{ID: id})
+		if err != nil || got.Bead.Status != step.status || got.Bead.Revision.String() != wantRevision.String() {
+			t.Fatalf("%s state=%+v err=%v", step.method, got, err)
+		}
+	}
+
+	// A second key for the same lifecycle request is a durable replay, not a
+	// fresh transition; it must not append another comment or history row.
+	replayKey := meta(t)
+	first, err := f.svc.FailWithOutcome(ctx, anonymous, FailRequest{ID: id, Reason: "terminal failure"}, replayKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterFirst, err := f.store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := f.svc.FailWithOutcome(ctx, anonymous, FailRequest{ID: id, Reason: "terminal failure"}, replayKey)
+	if err != nil || !replay.Replayed || !bytes.Equal(mustJSON(t, first.Commit), mustJSON(t, replay.Commit)) {
+		t.Fatalf("keyed lifecycle replay changed its result: first=%+v replay=%+v err=%v", first, replay, err)
+	}
+	afterReplay, err := f.store.Meta(ctx)
+	if err != nil || afterReplay.Head.String() != afterFirst.Head.String() {
+		t.Fatalf("keyed lifecycle replay advanced history: before=%+v after=%+v err=%v", afterFirst, afterReplay, err)
+	}
+
+	// Fail targets failed, so repeating it while already in failed is an illegal
+	// transition and leaves the failed request without a receipt or revision.
+	before, err := f.store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.svc.FailWithOutcome(ctx, anonymous, FailRequest{ID: id}, meta(t))
+	wantCode(t, err, "invalid_params")
+	after, err := f.store.Meta(ctx)
+	if err != nil || after.Head.String() != before.Head.String() {
+		t.Fatalf("illegal reopen changed head: before=%+v after=%+v err=%v", before, after, err)
+	}
+
+	// Every successful slot is represented in pinned history, including the
+	// initial create and the final failed image.
+	history, err := f.svc.History(ctx, anonymous, HistoryRequest{Project: "local", AsOf: AsOf{Revision: afterFirst.Head}, Filter: &Filter{Resources: []string{id.ID}}, Limit: 100})
+	if err != nil || len(history.Items) != 1 || history.Items[0].Status != "failed" {
+		t.Fatalf("lifecycle history=%+v err=%v", history, err)
+	}
+	initial, err := f.svc.History(ctx, anonymous, HistoryRequest{Project: "local", AsOf: AsOf{Revision: created.Revision}, Filter: &Filter{Resources: []string{id.ID}}})
+	if err != nil || len(initial.Items) != 1 || initial.Items[0].Status != "todo" {
+		t.Fatalf("initial lifecycle history=%+v err=%v", initial, err)
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
 func TestReadinessAndSlotGuardUseLiveBlockers(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()

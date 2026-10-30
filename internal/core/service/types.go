@@ -83,6 +83,33 @@ type LinkRequest struct {
 	Expect []model.Precondition
 }
 
+// The named lifecycle requests intentionally share the close shape. Their
+// method name selects the ontology slot; callers cannot choose a target status
+// through request fields.
+type ReopenRequest struct {
+	ID     model.Ref
+	Reason string
+	Expect []model.Precondition
+}
+
+type DeferRequest struct {
+	ID     model.Ref
+	Reason string
+	Expect []model.Precondition
+}
+
+type CancelRequest struct {
+	ID     model.Ref
+	Reason string
+	Expect []model.Precondition
+}
+
+type FailRequest struct {
+	ID     model.Ref
+	Reason string
+	Expect []model.Precondition
+}
+
 type HistoryRequest struct {
 	Project  string
 	AsOf     AsOf

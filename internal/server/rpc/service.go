@@ -25,6 +25,10 @@ type Service interface {
 	ApplyWithOutcome(context.Context, model.PrincipalRef, model.ChangeSet, model.WriteMeta) (port.WriteOutcome, error)
 	LinkWithOutcome(context.Context, model.PrincipalRef, service.LinkRequest, model.WriteMeta) (port.WriteOutcome, error)
 	UnlinkWithOutcome(context.Context, model.PrincipalRef, service.LinkRequest, model.WriteMeta) (port.WriteOutcome, error)
+	ReopenWithOutcome(context.Context, model.PrincipalRef, service.ReopenRequest, model.WriteMeta) (port.WriteOutcome, error)
+	DeferWithOutcome(context.Context, model.PrincipalRef, service.DeferRequest, model.WriteMeta) (port.WriteOutcome, error)
+	CancelWithOutcome(context.Context, model.PrincipalRef, service.CancelRequest, model.WriteMeta) (port.WriteOutcome, error)
+	FailWithOutcome(context.Context, model.PrincipalRef, service.FailRequest, model.WriteMeta) (port.WriteOutcome, error)
 	History(context.Context, model.PrincipalRef, service.HistoryRequest) (service.BeadPage, error)
 }
 
@@ -78,7 +82,7 @@ func BindService(registry *Registry, svc Service) error {
 	if registry == nil || svc == nil {
 		return fmt.Errorf("nil service or registry")
 	}
-	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.comment", "bead.close", "bead.link", "bead.unlink", "tx.apply", "history.query"}
+	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "bead.link", "bead.unlink", "tx.apply", "history.query"}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 	for _, name := range names {
@@ -155,6 +159,18 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		return writeOutcome(v), err
 	case "bead.close":
 		v, err := svc.CloseWithOutcome(ctx, c.Principal, service.CloseRequest{ID: p.ID, Reason: p.Reason, Expect: p.Expect}, meta)
+		return writeOutcome(v), err
+	case "bead.reopen":
+		v, err := svc.ReopenWithOutcome(ctx, c.Principal, service.ReopenRequest{ID: p.ID, Reason: p.Reason, Expect: p.Expect}, meta)
+		return writeOutcome(v), err
+	case "bead.defer":
+		v, err := svc.DeferWithOutcome(ctx, c.Principal, service.DeferRequest{ID: p.ID, Reason: p.Reason, Expect: p.Expect}, meta)
+		return writeOutcome(v), err
+	case "bead.cancel":
+		v, err := svc.CancelWithOutcome(ctx, c.Principal, service.CancelRequest{ID: p.ID, Reason: p.Reason, Expect: p.Expect}, meta)
+		return writeOutcome(v), err
+	case "bead.fail":
+		v, err := svc.FailWithOutcome(ctx, c.Principal, service.FailRequest{ID: p.ID, Reason: p.Reason, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
 	case "bead.claim":
 		v, err := svc.ClaimWithOutcome(ctx, c.Principal, service.ClaimRequest{ID: p.ID, Expect: p.Expect}, meta)

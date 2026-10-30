@@ -11,9 +11,9 @@ to their owners.
 The source cards are the canonical files in
 `/home/dev/plugs/engdocs/design/plug/spec/behaviors/`: `work.md`, `content.md`,
 `history.md`, and `surfaces.md`. No legacy application packages are imported.
-The scenario expectations are authored Plug contract assertions. There are
-**no recorded reference goldens in this change**, and passing these assertions
-does not establish reference parity.
+The connected scenario expectations are authored Plug contract assertions; the
+separately reviewed Beads-base vectors live in [`spec/recorded/`](recorded/).
+Passing either suite alone does not establish cross-driver reference parity.
 
 ## Running the connected scenarios
 
