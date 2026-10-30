@@ -273,6 +273,18 @@ func (s *GuardedService) CommentWithOutcome(ctx context.Context, by model.Princi
 func (s *GuardedService) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	return s.delegate.CloseWithOutcome(ctx, by, req, meta)
 }
+func (s *GuardedService) ReopenWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ReopenRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.delegate.ReopenWithOutcome(ctx, by, req, meta)
+}
+func (s *GuardedService) DeferWithOutcome(ctx context.Context, by model.PrincipalRef, req service.DeferRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.delegate.DeferWithOutcome(ctx, by, req, meta)
+}
+func (s *GuardedService) CancelWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CancelRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.delegate.CancelWithOutcome(ctx, by, req, meta)
+}
+func (s *GuardedService) FailWithOutcome(ctx context.Context, by model.PrincipalRef, req service.FailRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	return s.delegate.FailWithOutcome(ctx, by, req, meta)
+}
 
 func (s *GuardedService) checkRead(ctx context.Context, by model.PrincipalRef, method string, ref model.Ref) (bool, error) {
 	_, snapshot, closeReader, err := s.current(ctx, nil)
