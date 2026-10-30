@@ -32,10 +32,17 @@ func plugBinary(t *testing.T) string {
 }
 
 func runPlug(t *testing.T, input string, args ...string) (string, string, error) {
+	return runPlugInDir(t, "", input, args...)
+}
+
+func runPlugInDir(t *testing.T, dir, input string, args ...string) (string, string, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, plugBinary(t), args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	cmd.Env = append(os.Environ(), "PLUG_SERVER=", "PLUG_TOKEN=")
 	cmd.Stdin = strings.NewReader(input)
 	var out, errOut bytes.Buffer
@@ -173,6 +180,17 @@ func TestExecutableMemoryLifecycle(t *testing.T) {
 	}
 }
 
+func TestExecutablePersistentDefaultAndStopsSession(t *testing.T) {
+	dir := t.TempDir()
+	out, errOut, err := runPlugInDir(t, dir, "", "--json", "ready")
+	if err != nil || errOut != "" || !strings.Contains(out, `"items":[]`) {
+		t.Fatalf("implicit persistent storage failed: %q %q %v", out, errOut, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".plug", "plug.db")); err != nil {
+		t.Fatalf("implicit persistent storage did not create SQLite file: %v", err)
+	}
+}
+
 func TestExecutableMemoryNamedLifecycleCommands(t *testing.T) {
 	commands := `
 ["create","--title","Lifecycle","--idempotency-key","00000000000000000000000000000001"]
@@ -228,13 +246,9 @@ func TestExecutableMemoryNamedLifecycleCommands(t *testing.T) {
 	}
 }
 
-func TestExecutableRefusesUnsupportedAndStopsSession(t *testing.T) {
-	out, errOut, err := runPlug(t, "", "ready")
-	if err == nil || out != "" || !strings.Contains(errOut, "persistent storage is not installed") {
-		t.Fatalf("implicit storage fallback: %q %q %v", out, errOut, err)
-	}
+func TestExecutableSessionRefusalStopsSession(t *testing.T) {
 	input := "[\"create\",\"--title\",\"First\"]\n[\"get\",\"pl-missing\"]\n[\"create\",\"--title\",\"Must not run\"]\n"
-	out, errOut, err = runPlug(t, input, "--memory", "--json", "session")
+	out, errOut, err := runPlugInDir(t, t.TempDir(), input, "--memory", "--json", "session")
 	if err == nil || len(strings.Split(strings.TrimSpace(out), "\n")) != 1 || !strings.Contains(errOut, "not_found") || !strings.Contains(errOut, "session line 2") {
 		t.Fatalf("session refusal: %q %q %v", out, errOut, err)
 	}

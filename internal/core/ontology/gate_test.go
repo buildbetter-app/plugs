@@ -83,6 +83,55 @@ func TestManualApprovalRefusesAnonymousMultiApproval(t *testing.T) {
 	}
 }
 
+func TestManualApprovalExcludesPersistedAnonymousFromMultiApproval(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		count string
+	}{
+		{name: "humans", count: GateCountHumans},
+		{name: "principals", count: GateCountPrincipals},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := DefaultDocument()
+			doc.GateKinds = map[string]GateKind{
+				"multi_approval": {
+					Resolver: "builtin.manual",
+					Count:    tc.count,
+					Params:   map[string]any{"min_approvals": json.Number("2")},
+				},
+			}
+			snapshot, problems := Compile(doc, nil, nil)
+			if len(problems) != 0 {
+				t.Fatal(problems)
+			}
+			e := snapshot.Effective("")
+			state := GateState{
+				Kind:  "multi_approval",
+				Type:  "issue",
+				State: GateStatePending,
+				Approvals: []GateApproval{
+					{Principal: model.PrincipalRef{Kind: "anonymous"}},
+					{Principal: user("user:one")},
+				},
+			}
+
+			// Replaying the stored user's approval is idempotent. The persisted
+			// anonymous observation does not manufacture the second identity.
+			replay, err := e.ApproveGate(state, user("user:one"), true)
+			if err != nil || replay.State != GateStatePending || replay.Approvals != 1 || replay.Added || replay.Transition != nil {
+				t.Fatalf("persisted anonymous plus duplicate user replay: %+v, %v", replay, err)
+			}
+
+			// A distinct authenticated human can complete the threshold after
+			// the anonymous observation has been excluded from the count.
+			second, err := e.ApproveGate(state, user("user:two"), true)
+			if err != nil || second.State != GateStateResolved || second.Approvals != 2 || !second.Added || second.Approval == nil || second.Approval.Principal.Kind != "user" || second.Approval.Principal.ID != "user:two" || second.Transition == nil || second.Transition.Slot != Close || second.Transition.Status != "done" {
+				t.Fatalf("persisted anonymous plus distinct user: %+v, %v", second, err)
+			}
+		})
+	}
+}
+
 func TestManualApprovalRefusesUnsponsoredHumanAndMalformedState(t *testing.T) {
 	e := manualGateEffective(t, 1)
 	_, err := e.ApproveGate(gateState(), model.PrincipalRef{Kind: "service", ID: "service:orphan"}, true)

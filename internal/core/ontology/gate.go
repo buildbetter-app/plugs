@@ -156,9 +156,15 @@ func EvaluateApproval(kind GateKind, state GateState, principal model.PrincipalR
 
 	counted := map[string]struct{}{}
 	for _, approval := range state.Approvals {
-		identity, err := gateIdentity(approval.Principal, gateCount(kind))
+		identity, countedApproval, err := gateApprovalIdentity(approval.Principal, gateCount(kind), min > 1)
 		if err != nil {
 			return GateDecision{}, gateFailure("invalid_params", "stored approval has no valid counting identity")
+		}
+		// Anonymous approvals remain valid durable observations, but they cannot
+		// contribute to a multi-human threshold. This makes recovery fail closed
+		// without discarding the observation or preventing later human approvals.
+		if !countedApproval {
+			continue
 		}
 		counted[identity] = struct{}{}
 	}
@@ -295,6 +301,30 @@ func gateIdentity(principal model.PrincipalRef, count string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return gateIdentityFromChain(chain, count)
+}
+
+// gateApprovalIdentity returns the canonical counting identity and whether the
+// approval contributes to the threshold. A stored anonymous approval is
+// accepted and counted for a single-approval gate, but is excluded from every
+// multi-approval threshold regardless of whether the policy counts humans or
+// principals.
+func gateApprovalIdentity(principal model.PrincipalRef, count string, multiApproval bool) (string, bool, error) {
+	chain, err := principalChain(principal)
+	if err != nil {
+		return "", false, err
+	}
+	if multiApproval && chain[0].Kind == "anonymous" {
+		return "", false, nil
+	}
+	identity, err := gateIdentityFromChain(chain, count)
+	if err != nil {
+		return "", false, err
+	}
+	return identity, true, nil
+}
+
+func gateIdentityFromChain(chain []model.PrincipalRef, count string) (string, error) {
 	// Anonymous mode has one principal. The transport may attach a transient
 	// label, but that label must not manufacture additional approval identities.
 	if chain[0].Kind == "anonymous" {
