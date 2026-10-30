@@ -19,6 +19,7 @@ type Service struct {
 	now                    func() time.Time
 	memoryReadAuthorizer   MemoryReadAuthorizer
 	authorizationInstalled func() bool
+	events                 EventProvider
 }
 
 type Option func(*Service)
@@ -39,6 +40,10 @@ func WithMemoryReadAuthorizer(authorizer MemoryReadAuthorizer) Option {
 // false, even if a stale memory policy remains configured.
 func WithAuthorizationInstalled(installed func() bool) Option {
 	return func(s *Service) { s.authorizationInstalled = installed }
+}
+
+func WithEventProvider(provider EventProvider) Option {
+	return func(s *Service) { s.events = provider }
 }
 
 // New never opens a transaction or storage driver. The composition root owns

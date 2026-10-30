@@ -10,6 +10,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 // Service is the domain-only port implemented by core/service. Core never
@@ -43,12 +44,16 @@ type MemoryService interface {
 
 type serviceParams struct {
 	ID           json.RawMessage      `json:"id"`
+	Ref          model.Ref            `json:"ref"`
 	AsOf         *asOf                `json:"asOf"`
 	Project      string               `json:"project"`
 	ViewID       string               `json:"viewId"`
 	Filter       *filter              `json:"filter"`
 	Limit        model.Natural        `json:"limit"`
 	Cursor       string               `json:"cursor"`
+	After        string               `json:"after"`
+	FromRevision model.Revision       `json:"fromRevision"`
+	ToRevision   model.Revision       `json:"toRevision"`
 	Type         string               `json:"type"`
 	Fields       map[string]any       `json:"fields"`
 	Parent       *model.Ref           `json:"parent"`
@@ -115,6 +120,17 @@ func BindService(registry *Registry, svc Service) error {
 	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "history.query"}
 	if _, ok := svc.(MemoryService); ok {
 		names = append(names, "agent.brief", "memory.get", "memory.list", "memory.save", "memory.delete")
+	}
+	if capability, ok := any(svc).(interface{ EventListConfigured() bool }); !ok || capability.EventListConfigured() {
+		if _, ok := any(svc).(service.EventReader); ok {
+			names = append(names, "event.list")
+		}
+	}
+	if _, ok := any(svc).(service.HistoryReader); ok {
+		names = append(names, "history.get", "history.diff")
+	}
+	if _, ok := any(svc).(service.HealthReader); ok {
+		names = append(names, "admin.health")
 	}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
@@ -186,6 +202,49 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 			return nil, err
 		}
 		return c.paging.page(c, p, position, v)
+	case "event.list":
+		reader, ok := any(svc).(service.EventReader)
+		if !ok || p.Filter == nil {
+			return nil, &model.Error{Data: model.ErrorData{Code: "internal_error", Hint: "event reader is not configured"}}
+		}
+		if p.After == "" && p.Cursor != "" {
+			p.After = p.Cursor
+		}
+		v, err := reader.EventList(ctx, c.Principal, service.EventListRequest{Filter: p.Filter.domain(), After: p.After, Limit: int(limit)})
+		if err != nil {
+			return nil, err
+		}
+		return eventPageJSON(v), nil
+	case "history.get":
+		reader, ok := any(svc).(service.HistoryReader)
+		if !ok || p.AsOf == nil {
+			return nil, &model.Error{Data: model.ErrorData{Code: "internal_error", Hint: "history reader is not configured"}}
+		}
+		v, err := reader.HistoryGet(ctx, c.Principal, service.HistoryVersionRequest{Ref: p.Ref, AsOf: *p.AsOf.domain()})
+		if err != nil {
+			return nil, err
+		}
+		return historyVersionJSON(v), nil
+	case "history.diff":
+		reader, ok := any(svc).(service.HistoryReader)
+		if !ok {
+			return nil, &model.Error{Data: model.ErrorData{Code: "internal_error", Hint: "history reader is not configured"}}
+		}
+		v, err := reader.HistoryDiff(ctx, c.Principal, service.HistoryDiffRequest{Ref: p.Ref, FromRevision: p.FromRevision, ToRevision: p.ToRevision})
+		if err != nil {
+			return nil, err
+		}
+		return historyDiffJSON(v), nil
+	case "admin.health":
+		reader, ok := any(svc).(service.HealthReader)
+		if !ok {
+			return nil, &model.Error{Data: model.ErrorData{Code: "internal_error", Hint: "health reader is not configured"}}
+		}
+		v, err := reader.Health(ctx, c.Principal)
+		if err != nil {
+			return nil, err
+		}
+		return healthJSON(v), nil
 	case "agent.brief":
 		if !memoryCapable {
 			return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
@@ -403,6 +462,66 @@ func briefJSON(v service.BriefResult) map[string]any {
 	return map[string]any{"whoami": whoami, "claims": claims, "readyTop": ready, "recentChanges": recent, "ontologySummary": ontology, "conventions": conventions, "memories": memories}
 }
 
+func eventPageJSON(v service.EventPage) map[string]any {
+	events := v.Events
+	if events == nil {
+		events = []model.Event{}
+	}
+	if v.Cursor == "" {
+		// The event service always returns an opaque cursor, including an empty
+		// page. Keep the wire shape explicit if an injected provider violates
+		// that seam so catalog validation reports the handler error.
+		return map[string]any{"events": events, "cursor": ""}
+	}
+	return map[string]any{"events": events, "cursor": v.Cursor}
+}
+func historyVersionJSON(v service.HistoryVersion) map[string]any {
+	patch := v.Patch
+	if patch == nil {
+		patch = []map[string]any{}
+	}
+	out := map[string]any{"ref": v.Ref, "revision": v.Revision, "base": v.Base, "patch": patch, "createdAt": timestamp(v.CreatedAt)}
+	if v.Body != nil {
+		out["body"] = v.Body
+	}
+	if v.Principal.Kind != "" {
+		out["principal"] = v.Principal
+	}
+	return out
+}
+func historyDiffJSON(v service.HistoryDiff) map[string]any {
+	patch := make([]map[string]any, 0, len(v.Patch))
+	for _, operation := range v.Patch {
+		item := map[string]any{"op": operation.Op, "path": operation.Path}
+		if operation.Op != "remove" {
+			item["value"] = operation.Value
+		}
+		patch = append(patch, item)
+	}
+	paths := v.ChangedPaths
+	if paths == nil {
+		paths = []string{}
+	}
+	return map[string]any{"patch": patch, "changedPaths": paths}
+}
+func healthJSON(v driver.StoreHealth) map[string]any {
+	authorization := v.AuthorizationChain
+	if authorization == nil {
+		authorization = []string{}
+	}
+	out := map[string]any{
+		"driver": v.Driver, "role": v.Role, "leaseEpoch": model.Natural64(v.LeaseEpoch),
+		"head": v.Head, "incarnation": v.Incarnation, "ontology": v.Ontology,
+		"pluginSet": v.PluginSet, "authorizationChain": authorization,
+	}
+	if v.ReplicationLag > 0 {
+		out["replicationLagMs"] = model.Natural64(uint64(v.ReplicationLag / time.Millisecond))
+	}
+	if !v.LastBackupCheckpoint.IsZero() {
+		out["lastBackupCheckpoint"] = timestamp(v.LastBackupCheckpoint)
+	}
+	return out
+}
 func timestamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 func beadJSON(b service.Bead) map[string]any {
 	out := map[string]any{"id": b.ID, "type": b.Type, "revision": b.Revision}
