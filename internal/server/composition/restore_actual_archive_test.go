@@ -20,6 +20,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
 
 const actualArchiveSHA256 = "1b70534a5ff3e1da6cd9826fbdfae6ffea3436853b5e26162c588ab58fda5f67"
@@ -150,9 +151,39 @@ func TestProductionCompositionRestoreFailsClosedWithoutPresenceVerifier(t *testi
 func TestActualArchiveRestoreClaimNextAndTxApplyWithLoggedTestPresence(t *testing.T) {
 	data, manifest, manifestHash := readActualArchive(t)
 	presenceState, verifier := loggedTestPresenceVerifier(t)
+	ctx := context.Background()
+	startupIncarnation := "restore-composition-startup"
+	cursorKey := bytes.Repeat([]byte{0x4a}, 32)
+	// Mint a cursor under the target's startup generation. The target starts
+	// empty for the native restore, so a separate composition with the same
+	// startup metadata supplies the pre-restore page token.
+	source := startRuntime(t, Config{
+		Driver: "memory", Project: "pl", Address: DefaultAddress, AuthMode: "anonymous", CursorKey: cursorKey,
+		StoreFactory: func(context.Context, string, driver.Config) (driver.Store, error) {
+			return memory.NewWithOptions(memory.Options{StoreID: "restore-cursor-source", Incarnation: startupIncarnation})
+		},
+	})
+	for i := 0; i < 2; i++ {
+		if _, err := source.client.Call(ctx, "bead.create", map[string]any{
+			"type": "issue", "fields": map[string]any{"title": fmt.Sprintf("cursor source %d", i)},
+		}, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sourcePage, err := source.client.Call(ctx, "bead.ready", map[string]any{"limit": 1}, "")
+	if err != nil {
+		t.Fatalf("source cursor page: %v", err)
+	}
+	oldCursor, ok := resultObject(t, sourcePage)["nextCursor"].(string)
+	if !ok || oldCursor == "" {
+		t.Fatalf("source page did not issue a cursor: %s", sourcePage.JSON)
+	}
 	f := startRuntime(t, Config{
-		Driver: "memory", Project: "pl", Address: DefaultAddress, AuthMode: "anonymous",
+		Driver: "memory", Project: "pl", Address: DefaultAddress, AuthMode: "anonymous", CursorKey: cursorKey,
 		RestorePresence: verifier,
+		StoreFactory: func(context.Context, string, driver.Config) (driver.Store, error) {
+			return memory.NewWithOptions(memory.Options{StoreID: "restore-cursor-target", Incarnation: startupIncarnation})
+		},
 	})
 	before := captureActualArchiveCensus(t, f.r.Store)
 	if !before.Meta.Head.IsZero() || len(before.Rows) != 0 {
@@ -194,6 +225,44 @@ func TestActualArchiveRestoreClaimNextAndTxApplyWithLoggedTestPresence(t *testin
 		}
 	}
 	t.Logf("actual archive restored: pre_meta=%+v pre_rows=%d post_meta=%+v post_rows=%d kinds=%v", before.Meta, len(before.Rows), afterRestore.Meta, len(afterRestore.Rows), afterRestore.Kinds)
+
+	for _, method := range []string{"bead.ready", "history.query"} {
+		params := map[string]any{"limit": 1}
+		if method == "history.query" {
+			params["asOf"] = map[string]any{"revision": afterRestore.Meta.Head}
+		}
+		page, err := f.client.Call(context.Background(), method, params, "")
+		if err != nil {
+			t.Fatalf("%s after restore: %v", method, err)
+		}
+		var decoded struct {
+			Items []json.RawMessage `json:"items"`
+			AsOf  struct {
+				Incarnation string `json:"incarnation"`
+			} `json:"asOf"`
+		}
+		if err := json.Unmarshal(page.JSON, &decoded); err != nil || len(decoded.Items) != 1 || decoded.AsOf.Incarnation != afterRestore.Meta.Incarnation {
+			t.Fatalf("%s retained stale composition generation: page=%s err=%v", method, page.JSON, err)
+		}
+	}
+	hello := f.r.RPC.Dispatch(ctx, []byte(`{"jsonrpc":"2.0","id":"hello","method":"server.hello","params":{}}`))
+	var helloResponse struct {
+		Result struct {
+			Incarnation string `json:"incarnation"`
+		} `json:"result"`
+		Error *wire.Error `json:"error"`
+	}
+	if err := json.Unmarshal(hello, &helloResponse); err != nil || helloResponse.Error != nil || helloResponse.Result.Incarnation != afterRestore.Meta.Incarnation {
+		t.Fatalf("hello retained startup incarnation: page=%s err=%v", hello, err)
+	}
+	_, err = f.client.Call(context.Background(), "bead.ready", map[string]any{"limit": 1, "cursor": oldCursor}, "")
+	var oldCursorError *wire.Error
+	if !errors.As(err, &oldCursorError) || oldCursorError.Data.Code != "incarnation_changed" {
+		t.Fatalf("pre-restore cursor was not typed as incarnation_changed: %v", err)
+	}
+	if oldCursorError.Data.Details["fromIncarnation"] != before.Meta.Incarnation || oldCursorError.Data.Details["toIncarnation"] != afterRestore.Meta.Incarnation {
+		t.Fatalf("old cursor generation details=%v", oldCursorError.Data.Details)
+	}
 
 	claim, err := f.client.Call(context.Background(), "bead.claimNext", map[string]any{
 		"filter": map[string]any{"types": []string{"issue"}},
