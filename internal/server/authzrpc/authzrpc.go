@@ -168,6 +168,7 @@ func New(ctx context.Context, config Config) (*Composition, error) {
 	guarded := &GuardedService{
 		delegate:        domain,
 		checker:         checker,
+		lease:           config.Lease,
 		commitEmpty:     domain.CommitClaimNextEmpty,
 		claimNextPage:   domain.ClaimNextReadyPage,
 		readyCandidates: domain.ReadyCandidates,
