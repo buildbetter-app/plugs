@@ -29,5 +29,5 @@ const (
 	ErrHotEgress  = "plugin_egress_in_hot_path"
 	ErrEgress     = "plugin_egress_denied"
 	ErrInactive   = "plugin_host_inactive"
-	ErrPluginBusy = "plugin_runtime_pool_busy"
+	ErrPluginBusy = "plugin_busy"
 )
