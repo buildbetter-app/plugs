@@ -58,6 +58,9 @@ func NewWASMNative(wasm []byte, manifest pluginapi.PluginManifest, instance stri
 			if err != nil {
 				return sdk.Registration{}, err
 			}
+			if capabilities, ok := host.(*capabilities); ok {
+				capabilities.onDispose = runtime.close
+			}
 			return runtime.registration(manifest), nil
 		},
 	}, nil
@@ -184,7 +187,9 @@ func (r *wasmRuntime) closeLocked() {
 		return
 	}
 	r.closed = true
-	_ = r.module.Close(context.Background())
+	if r.module != nil {
+		_ = r.module.Close(context.Background())
+	}
 	_ = r.runtime.Close(context.Background())
 }
 
@@ -386,6 +391,7 @@ func decodeWASMJSON(data []byte, dst any) error {
 // one scoped reader; methods and direct ABI tests pass none.
 func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest, readers ...pluginapi.SnapshotReader) (wasmResponse, error) {
 	if len(readers) > 1 {
+		r.close()
 		return wasmResponse{}, failure(ErrRead, "multiple WASM snapshot readers")
 	}
 	if len(readers) == 1 && readers[0] != nil {
@@ -397,10 +403,12 @@ func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest, readers .
 		return wasmResponse{}, failure(ErrInactive, "WASM module is closed")
 	}
 	if err := ctx.Err(); err != nil {
+		r.closeLocked()
 		return wasmResponse{}, err
 	}
 	data, err := json.Marshal(request)
 	if err != nil || len(data) > maxWASMMessage {
+		r.closeLocked()
 		return wasmResponse{}, failure(ErrMethod, "WASM request exceeds the message limit")
 	}
 	ptr, err := r.alloc.Call(ctx, uint64(len(data)))
@@ -408,10 +416,12 @@ func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest, readers .
 		r.closeLocked()
 	}
 	if err != nil || len(ptr) != 1 || ptr[0] == 0 || ptr[0] > uint64(^uint32(0)) {
+		r.closeLocked()
 		return wasmResponse{}, failure(ErrMethod, "WASM allocation failed: %v", err)
 	}
 	input := uint32(ptr[0])
 	if ok := r.memory.Write(input, data); !ok {
+		r.closeLocked()
 		return wasmResponse{}, failure(ErrMethod, "WASM input is outside guest memory")
 	}
 	packed, err := r.handle.Call(ctx, uint64(input), uint64(len(data)))
@@ -419,21 +429,26 @@ func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest, readers .
 		r.closeLocked()
 	}
 	if err != nil || len(packed) != 1 {
+		r.closeLocked()
 		return wasmResponse{}, failure(ErrMethod, "WASM handler failed: %v", err)
 	}
 	outputPtr, outputLen := uint32(packed[0]>>32), uint32(packed[0])
 	if outputLen > maxWASMMessage {
+		r.closeLocked()
 		return wasmResponse{}, failure(ErrMethod, "WASM response exceeds the message limit")
 	}
 	output, ok := r.memory.Read(outputPtr, outputLen)
 	if !ok || !json.Valid(output) {
+		r.closeLocked()
 		return wasmResponse{}, failure(ErrMethod, "WASM response is not valid JSON")
 	}
 	var response wasmResponse
 	if err := json.Unmarshal(output, &response); err != nil {
+		r.closeLocked()
 		return wasmResponse{}, failure(ErrMethod, "WASM response envelope is invalid: %v", err)
 	}
 	if response.Error != "" {
+		r.closeLocked()
 		return wasmResponse{}, fmt.Errorf("WASM plugin: %s", response.Error)
 	}
 	return response, nil

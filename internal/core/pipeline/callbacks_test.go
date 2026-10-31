@@ -88,6 +88,68 @@ func TestMutatorDataflowOwnershipAndFailOpen(t *testing.T) {
 	code(t, err, "invalid_params")
 }
 
+type queuedTimedMutator struct{}
+
+func (queuedTimedMutator) Mutate(context.Context, port.ProposedChange, port.SnapshotReader) ([]port.Patch, error) {
+	return nil, errors.New("legacy callback path used")
+}
+
+func (queuedTimedMutator) MutateWithTimeout(ctx context.Context, timeout time.Duration, _ port.ProposedChange, _ port.SnapshotReader) ([]port.Patch, error) {
+	// Model a bounded pool queue wait followed by a callback that uses its full
+	// execution budget. The queue delay must not consume the callback budget.
+	select {
+	case <-time.After(100 * time.Millisecond):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	execution, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	select {
+	case <-time.After(200 * time.Millisecond):
+		return nil, nil
+	case <-execution.Done():
+		return nil, execution.Err()
+	}
+}
+
+func TestTimedMutatorStartsBudgetAfterPoolQueue(t *testing.T) {
+	h := setup(t)
+	w := h.writer(WithMutators(MutatorBinding{ID: "queued", Mutator: queuedTimedMutator{}}))
+	started := time.Now()
+	if _, err := w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{create("queued")}}, meta(1)); err != nil {
+		t.Fatalf("timed callback failed after bounded queue wait: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 290*time.Millisecond {
+		t.Fatalf("timed callback did not exercise queue plus execution windows: elapsed=%s", elapsed)
+	}
+}
+
+type timedPoolBusyError struct{}
+
+func (timedPoolBusyError) Error() string      { return "runtime pool queue is full" }
+func (timedPoolBusyError) CallbackBusy() bool { return true }
+
+type busyTimedMutator struct{}
+
+func (busyTimedMutator) Mutate(context.Context, port.ProposedChange, port.SnapshotReader) ([]port.Patch, error) {
+	return nil, errors.New("legacy callback path used")
+}
+
+func (busyTimedMutator) MutateWithTimeout(context.Context, time.Duration, port.ProposedChange, port.SnapshotReader) ([]port.Patch, error) {
+	return nil, timedPoolBusyError{}
+}
+
+func TestTimedMutatorPoolBusyMapsToRetryableBusy(t *testing.T) {
+	h := setup(t)
+	w := h.writer(WithMutators(MutatorBinding{ID: "busy", Mutator: busyTimedMutator{}}))
+	_, err := w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{create("busy")}}, meta(1))
+	code(t, err, "busy")
+	var typed *model.Error
+	if !errors.As(err, &typed) || !typed.Data.Retryable {
+		t.Fatalf("pool busy error was not retryable: %v", err)
+	}
+}
+
 type authorizerFunc func(context.Context, port.AuthorizationStage, port.ProposedChange, port.SnapshotReader) error
 
 func (f authorizerFunc) Authorize(ctx context.Context, s port.AuthorizationStage, p port.ProposedChange, r port.SnapshotReader) error {

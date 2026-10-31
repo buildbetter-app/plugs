@@ -17,21 +17,32 @@ type invocation struct {
 	reader pluginapi.SnapshotReader
 }
 
-// Native callbacks are serialized per instance. A timed-out callback keeps
-// its slot until it exits; it cannot retain usable I/O after its deadline.
+// Native callbacks are serialized per instance. A timed-out, refused, or
+// otherwise failed callback disposes its guest; the pool may replace that
+// member only after its callback has unwound.
 func (i *instance) run(ctx context.Context, phase pluginapi.Phase, timeout time.Duration, reader pluginapi.SnapshotReader, fn func(context.Context) error) error {
+	if i.isDisposed() {
+		return failure(ErrInactive, "host instance is disposed")
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
+		i.dispose()
 		return err
 	}
 	select {
 	case i.gate <- struct{}{}:
 	case <-ctx.Done():
+		i.dispose()
 		return ctx.Err()
+	}
+	if i.isDisposed() {
+		<-i.gate
+		return failure(ErrInactive, "host instance is disposed")
 	}
 	if err := ctx.Err(); err != nil {
 		<-i.gate
+		i.dispose()
 		return err
 	}
 	if scoped, ok := reader.(*scopedReader); ok {
@@ -58,12 +69,25 @@ func (i *instance) run(ctx context.Context, phase pluginapi.Phase, timeout time.
 	select {
 	case err := <-result:
 		if ctx.Err() != nil {
+			i.dispose()
 			return ctx.Err()
+		}
+		if err != nil {
+			i.dispose()
 		}
 		return err
 	case <-ctx.Done():
+		i.dispose()
 		return ctx.Err()
 	}
+}
+
+// waitIdle waits until the per-instance callback gate is released. It is used
+// by instance pools after a deadline returns while an uncooperative callback
+// is still unwinding in the background.
+func (i *instance) waitIdle() {
+	i.gate <- struct{}{}
+	<-i.gate
 }
 
 func (i *instance) current() (*invocation, error) {
@@ -81,7 +105,10 @@ func (c *invocation) hot() bool {
 	return c.phase == pluginapi.PhaseMutate || c.phase == pluginapi.PhaseValidate
 }
 
-type capabilities struct{ instance *instance }
+type capabilities struct {
+	instance  *instance
+	onDispose func()
+}
 
 var _ pluginapi.Host = (*capabilities)(nil)
 

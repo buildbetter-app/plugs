@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -12,6 +13,18 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+type callbackBusy interface {
+	CallbackBusy() bool
+}
+
+func callbackFailure(kind, id string, err error) error {
+	var busy callbackBusy
+	if errors.As(err, &busy) && busy.CallbackBusy() {
+		return failure("busy", "write pre phases exceeded their deadline")
+	}
+	return failure("subscriber_unavailable", "pre "+kind+" "+id+" failed")
+}
 
 type callbackKey struct{}
 
@@ -79,15 +92,20 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 		if err != nil {
 			return err
 		}
-		patches, err := invoke(ctx, 250*time.Millisecond, func(call context.Context) ([]port.Patch, error) {
-			return binding.Mutator.Mutate(call, proposal, p.snapshot.child())
-		})
+		var patches []port.Patch
+		if timed, ok := binding.Mutator.(port.TimedMutator); ok {
+			patches, err = timed.MutateWithTimeout(ctx, 250*time.Millisecond, proposal, p.snapshot.child())
+		} else {
+			patches, err = invoke(ctx, 250*time.Millisecond, func(call context.Context) ([]port.Patch, error) {
+				return binding.Mutator.Mutate(call, proposal, p.snapshot.child())
+			})
+		}
 		if err != nil {
 			if binding.FailOpen {
 				p.warnings = append(p.warnings, skipped(binding.ID))
 				continue
 			}
-			return failure("subscriber_unavailable", "pre mutator "+binding.ID+" failed")
+			return callbackFailure("mutator", binding.ID, err)
 		}
 		patches, err = clone(patches)
 		if err != nil {
@@ -140,9 +158,15 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 		done := make(chan validation, 1)
 		results[i] = done
 		go func(binding ValidatorBinding) {
-			v, e := invoke(ctx, 500*time.Millisecond, func(call context.Context) (port.Verdict, error) {
-				return binding.Validator.Validate(call, proposal, p.snapshot.child())
-			})
+			var v port.Verdict
+			var e error
+			if timed, ok := binding.Validator.(port.TimedValidator); ok {
+				v, e = timed.ValidateWithTimeout(ctx, 500*time.Millisecond, proposal, p.snapshot.child())
+			} else {
+				v, e = invoke(ctx, 500*time.Millisecond, func(call context.Context) (port.Verdict, error) {
+					return binding.Validator.Validate(call, proposal, p.snapshot.child())
+				})
+			}
 			done <- validation{v, e}
 		}(binding)
 	}
@@ -153,7 +177,7 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 				p.warnings = append(p.warnings, skipped(binding.ID))
 				continue
 			}
-			return failure("subscriber_unavailable", "pre validator "+binding.ID+" failed")
+			return callbackFailure("validator", binding.ID, result.err)
 		}
 		if !result.verdict.Allow {
 			return &model.Error{Message: "pre validator rejected the write", Data: model.ErrorData{Code: "ontology_guard_failed", Details: map[string]any{"binding": binding.ID, "violations": result.verdict.Violations}}}
@@ -217,9 +241,14 @@ func (w *Writer) post(ctx context.Context, p *prepared, commit model.Commit) []m
 		}
 		go func(binding PostBinding) {
 			snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}, bounded: true}
-			_, err := invoke(ctx, 500*time.Millisecond, func(call context.Context) (struct{}, error) {
-				return struct{}{}, binding.Subscriber.After(call, change, snapshot)
-			})
+			var err error
+			if timed, ok := binding.Subscriber.(port.TimedPostSubscriber); ok {
+				err = timed.AfterWithTimeout(ctx, 500*time.Millisecond, change, snapshot)
+			} else {
+				_, err = invoke(ctx, 500*time.Millisecond, func(call context.Context) (struct{}, error) {
+					return struct{}{}, binding.Subscriber.After(call, change, snapshot)
+				})
+			}
 			done <- err
 		}(binding)
 	}

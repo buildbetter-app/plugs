@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -93,12 +94,30 @@ type Mutator interface {
 	Mutate(context.Context, ProposedChange, SnapshotReader) ([]Patch, error)
 }
 
+// TimedMutator lets a host that owns an execution pool start the callback
+// budget after it acquires a runtime. Ordinary mutators remain wrapped by the
+// pipeline's legacy invoke boundary.
+type TimedMutator interface {
+	MutateWithTimeout(context.Context, time.Duration, ProposedChange, SnapshotReader) ([]Patch, error)
+}
+
 type Validator interface {
 	Validate(context.Context, ProposedChange, SnapshotReader) (Verdict, error)
 }
 
+// TimedValidator is the validator counterpart to TimedMutator.
+type TimedValidator interface {
+	ValidateWithTimeout(context.Context, time.Duration, ProposedChange, SnapshotReader) (Verdict, error)
+}
+
 type PostSubscriber interface {
 	After(context.Context, CommittedChange, SnapshotReader) error
+}
+
+// TimedPostSubscriber lets a pooled host keep queue wait outside its callback
+// execution budget while retaining the normal post callback bound.
+type TimedPostSubscriber interface {
+	AfterWithTimeout(context.Context, time.Duration, CommittedChange, SnapshotReader) error
 }
 
 // Ontology supplies defaults and named slot selection, then validates the
