@@ -159,6 +159,46 @@ func (s *Store) check(ctx context.Context) error {
 	return nil
 }
 
+// renewConnLocked returns the reserved heartbeat connection while renewMu is
+// held. A cancelled PostgreSQL query can poison an *sql.Conn; callers must
+// discard that handle before the next heartbeat rather than retaining it.
+func (s *Store) renewConnLocked(ctx context.Context) (*sql.Conn, error) {
+	if s.renewConn != nil {
+		return s.renewConn, nil
+	}
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return nil, driver.ErrTxClosed
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	closed = s.closed
+	if !closed {
+		s.renewConn = conn
+	}
+	s.mu.Unlock()
+	if closed {
+		_ = conn.Close()
+		return nil, driver.ErrTxClosed
+	}
+	return conn, nil
+}
+
+// discardRenewConnLocked removes a failed reserved heartbeat connection while
+// renewMu is held. The next heartbeat reacquires a fresh reserved handle.
+func (s *Store) discardRenewConnLocked(conn *sql.Conn) {
+	if s.renewConn != conn {
+		return
+	}
+	s.renewConn = nil
+	_ = conn.Close()
+}
+
 // ensureLockKeys uses the connection reserved for lock-row preparation. Lock
 // acquisition itself holds one pooled writer connection; using the general
 // pool here would deadlock when all writers reach this boundary together.

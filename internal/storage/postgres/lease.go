@@ -206,15 +206,18 @@ func (l *activeLease) Renew(ctx context.Context) error {
 	started := time.Now()
 	var epoch string
 	l.store.renewMu.Lock()
-	renewConn := l.store.renewConn
-	if renewConn == nil {
-		l.store.renewMu.Unlock()
-		return driver.ErrTxClosed
+	renewConn, err := l.store.renewConnLocked(renewCtx)
+	if err == nil {
+		// This connection is reserved at Store.Open and is never leased to a
+		// request transaction. Keep the lock through the query so Store.Close
+		// cannot close the connection underneath an in-flight heartbeat.
+		err = renewConn.QueryRowContext(renewCtx, `UPDATE plug_postgres.lease SET expires=clock_timestamp()+($3::bigint*interval '1 microsecond') WHERE singleton AND epoch=$1 AND owner=$2 AND expires>clock_timestamp() RETURNING epoch::text`, decimal(l.epoch), l.owner, l.ttl.Microseconds()).Scan(&epoch)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			// A cancelled or failed pgx query may leave the reserved handle
+			// unusable. Never retain it for the next heartbeat.
+			l.store.discardRenewConnLocked(renewConn)
+		}
 	}
-	// This connection is reserved at Store.Open and is never leased to a
-	// request transaction. Keep the lock through the query so Store.Close
-	// cannot close the connection underneath an in-flight heartbeat.
-	err := renewConn.QueryRowContext(renewCtx, `UPDATE plug_postgres.lease SET expires=clock_timestamp()+($3::bigint*interval '1 microsecond') WHERE singleton AND epoch=$1 AND owner=$2 AND expires>clock_timestamp() RETURNING epoch::text`, decimal(l.epoch), l.owner, l.ttl.Microseconds()).Scan(&epoch)
 	l.store.renewMu.Unlock()
 	l.mu.Lock()
 	defer l.mu.Unlock()
