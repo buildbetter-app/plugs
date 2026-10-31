@@ -22,12 +22,14 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/server/webui"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/postgres"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
@@ -160,12 +162,16 @@ type fixture struct {
 	renewed    chan error
 	// Optional fixture-only composition inputs. Existing regression fixtures
 	// retain the default clock, ID generator and method surface.
-	clock         func() time.Time
-	writerOptions []pipeline.Option
-	bind          func(*rpc.Registry) error
-	httpConfig    httpjson.Config
-	uiConfig      *webui.Config
-	mount         func(*http.ServeMux)
+	clock            func() time.Time
+	writerOptions    []pipeline.Option
+	bind             func(*rpc.Registry) error
+	httpConfig       httpjson.Config
+	uiConfig         *webui.Config
+	mount            func(*http.ServeMux)
+	ontologySource   *service.OntologySource
+	ontologyRef      model.Ref
+	ontologyRevision model.Revision
+	ontologyDigest   string
 }
 
 func newFixture(t *testing.T, b backend) *fixture {
@@ -243,9 +249,43 @@ func (f *fixture) start() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	ontology := service.NewOntology(nil)
-	writerOptions := append([]pipeline.Option{pipeline.WithOntology(ontology)}, f.writerOptions...)
-	serviceOptions := []service.Option{service.WithOntology(ontology)}
+	o := service.NewOntology(nil)
+	var audit service.OntologySourceLocator
+	if f.ontologySource != nil {
+		source := *f.ontologySource
+		snapshot, problems := ontology.Compile(source.Base, source.Overlays, source.Plugins)
+		if len(problems) != 0 {
+			f.t.Fatalf("fixture ontology does not compile: %+v", problems)
+		}
+		o = service.NewOntology(snapshot.Effective)
+		f.ontologyDigest = snapshot.Digest()
+		if f.ontologyRevision.IsZero() {
+			body, err := service.MarshalOntologySource(source)
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			// Create this fixture's own protected source before bead IDs are
+			// allocated. This is not an assumed pre-existing ontology locator.
+			ref := model.RefByID("ontology/e3-scripted", model.Natural64(0))
+			at := time.Now().UTC()
+			if f.clock != nil {
+				at = f.clock()
+			}
+			seeded, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{
+				Time: at, Principal: model.PrincipalRef{Kind: "system", ID: "e3-ontology-fixture"},
+			}, []conformance.FixtureChange{{Ref: ref, Kind: "ontology", Op: model.OpCreate, Body: body}})
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			f.ontologyRef, f.ontologyRevision = seeded.Changes[0].Ref, seeded.Revision
+		}
+		audit = service.StaticOntologySource(f.ontologyRef)
+	}
+	writerOptions := append([]pipeline.Option{pipeline.WithOntology(o)}, f.writerOptions...)
+	if audit != nil {
+		writerOptions = append(writerOptions, pipeline.WithOntologyAudit(service.NewOntologyAudit(audit)))
+	}
+	serviceOptions := []service.Option{service.WithOntology(o)}
 	if f.clock != nil {
 		writerOptions = append(writerOptions, pipeline.WithClock(f.clock))
 		serviceOptions = append(serviceOptions, service.WithClock(f.clock))
