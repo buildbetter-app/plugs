@@ -36,9 +36,20 @@ type failoverContainers struct {
 }
 
 func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
+	runPostgresFailoverClaims(t, 1)
+}
+
+func TestPublicHTTPClaimNextTwoHundredAgentsPostgresLateFailover(t *testing.T) {
+	runPostgresFailoverClaims(t, 100)
+}
+
+func runPostgresFailoverClaims(t *testing.T, killAfter int) {
+	t.Helper()
 	if os.Getenv("PLUG_E5_FAILOVER") != "1" {
 		t.Skip("Lane A requires PLUG_E5_FAILOVER=1; the ordinary E5 target remains fixture-only")
 	}
+	const sessions = 200
+	demand(t, killAfter > 0 && killAfter < sessions, "failover threshold must leave work before and after the kill")
 
 	started := time.Now()
 	containers := startFailoverContainers(t)
@@ -60,23 +71,29 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client := &failoverClient{current: primary, primary: primary, primaryAcked: map[string]publicWinnerEvidence{}}
+	client := &failoverClient{current: primary, primary: primary, primaryAcked: map[string]publicWinnerEvidence{}, killAfter: killAfter}
 	var failoverOnce sync.Once
 	switchDone := make(chan struct{})
 	client.switchDone = switchDone
 	type takeoverResult struct {
-		fixture *localFixture
-		killed  time.Time
-		err     error
+		fixture            *localFixture
+		killed             time.Time
+		acknowledgedAtKill int
+		err                error
 	}
 	takeover := make(chan takeoverResult, 1)
 
-	// An acknowledged claim starts the outage while other calls are in flight.
+	// The acknowledged-claim threshold starts the outage with calls in flight.
 	// Stop dispatching new calls to the dead endpoint during the explicit
 	// topology switch; retain and account for any overlapping failed calls.
 	trigger := func() {
 		failoverOnce.Do(func() {
 			defer close(switchDone)
+			acknowledged := len(client.primaryAcknowledged())
+			if acknowledged < killAfter {
+				takeover <- takeoverResult{err: fmt.Errorf("primary acknowledgments before kill=%d want at least %d", acknowledged, killAfter)}
+				return
+			}
 			killed := time.Now()
 			if err := containers.killPrimary(); err != nil {
 				takeover <- takeoverResult{err: err}
@@ -86,12 +103,11 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 			if err == nil {
 				client.swap(replacement)
 			}
-			takeover <- takeoverResult{fixture: replacement, killed: killed, err: err}
+			takeover <- takeoverResult{fixture: replacement, killed: killed, acknowledgedAtKill: acknowledged, err: err}
 		})
 	}
 	client.onPrimaryCommit = trigger
 
-	const sessions = 200
 	tokens := make([]string, sessions)
 	agents := make([]model.PrincipalRef, sessions)
 	principalKeys := make(map[string]struct{}, sessions)
@@ -188,7 +204,7 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 	select {
 	case result = <-takeover:
 	case <-time.After(time.Minute):
-		t.Fatal("primary workload never acknowledged a claim to trigger failover")
+		t.Fatalf("primary workload never reached %d acknowledged claims to trigger failover", killAfter)
 	}
 	if result.err != nil {
 		t.Fatal(result.err)
@@ -199,6 +215,8 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 	if result.killed.IsZero() {
 		t.Fatal("failover kill timestamp was not recorded")
 	}
+	t.Logf("postgres failover trigger: kill_after=%d primary_acknowledged_at_kill=%d", killAfter, result.acknowledgedAtKill)
+	demand(t, result.acknowledgedAtKill >= killAfter && result.acknowledgedAtKill < sessions, "primary was not killed at the requested mid-workload acknowledgment threshold")
 	firstNewPrimaryCommit := client.firstNewPrimaryCommit()
 	metrics := publicWorkloadSummary{Workers: sessions, Launched: sessions, Winners: map[string]int{}}
 	expectedWinners := seededWinnerIDs(sessions)
@@ -326,6 +344,7 @@ type failoverClient struct {
 	primaryAcked     map[string]publicWinnerEvidence
 	primaryAttempts  atomic.Int64
 	promotedAttempts atomic.Int64
+	killAfter        int
 	switching        bool
 	switchDone       <-chan struct{}
 	onPrimaryCommit  func()
@@ -379,7 +398,7 @@ func (c *failoverClient) claim(key, token string, agent model.PrincipalRef) (pub
 				c.primaryAcked = map[string]publicWinnerEvidence{}
 			}
 			c.primaryAcked[reply.winnerID] = publicWinnerEvidence{principal: agent, result: reply.commit.Results[0]}
-			if !c.switching {
+			if !c.switching && len(c.primaryAcked) >= c.killAfter {
 				c.switching = true
 				startSwitch = true
 			}
