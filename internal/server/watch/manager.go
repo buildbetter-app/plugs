@@ -482,7 +482,12 @@ func (current *watch) run() {
 			if err := current.step(); err != nil {
 				current.mu.Lock()
 				if current.closeErr == nil {
-					if current.ctx.Err() != nil {
+					// Presence watches are owned by their collaboration session. A
+					// close or expiry can remove that session while this poll is
+					// still in flight, so the source may report not_found before
+					// the session lifetime cancellation reaches this worker. Keep
+					// the transport-level closure sentinel stable in that race.
+					if current.ctx.Err() != nil || (current.request.Method == MethodPresenceWatch && isNotFound(err)) {
 						current.closeErr = ErrSubscriptionClosed
 					} else {
 						current.closeErr = err
@@ -571,9 +576,13 @@ func watchBindingChange(method Method, reason string) string {
 	return reason
 }
 
-func isViewDeleted(err error) bool {
+func isNotFound(err error) bool {
 	var typed *model.Error
 	return errors.As(err, &typed) && typed.Data.Code == "not_found"
+}
+
+func isViewDeleted(err error) bool {
+	return isNotFound(err)
 }
 
 // The event service owns actual log/materializer/authorization semantics. It
