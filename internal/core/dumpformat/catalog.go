@@ -4,6 +4,18 @@ package dumpformat
 // internal/plugdump/catalog.go. These names describe source data only.
 var issueColumns = "id content_hash title description design acceptance_criteria notes status priority issue_type assignee estimated_minutes created_at created_by owner updated_at closed_at closed_by_session external_ref spec_id compaction_level compacted_at compacted_at_commit original_size sender ephemeral wisp_type pinned is_template mol_type work_type source_system metadata source_repo close_reason event_kind actor target payload await_type await_id timeout_ns waiters hook_bead role_bead agent_state last_activity role_type rig due_at defer_until no_history started_at is_blocked row_lock storage_class current_revision participation_generation"
 
+// OpaqueIssueFields are Beads issue columns without a native Plug field. They
+// are carried as reserved beads.<field> metadata and are never interpreted by
+// Plug. Keep this list in the dump-format package so restore and reverse
+// conversion cannot silently drift apart.
+var opaqueIssueFields = []string{
+	"agent_state", "await_id", "await_type", "ephemeral", "event_kind",
+	"hook_bead", "is_template", "mol_type", "payload", "role_bead",
+	"role_type", "target", "timeout_ns", "waiters", "wisp_type", "work_type",
+}
+
+func OpaqueIssueFields() []string { return append([]string(nil), opaqueIssueFields...) }
+
 var tableColumns = map[string]string{
 	"schema_migrations":         "version content_hash",
 	"ignored_schema_migrations": "version applied_at content_hash",

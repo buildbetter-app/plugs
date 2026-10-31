@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 )
 
 var supportedIssueTypes = map[string]bool{
@@ -37,6 +39,11 @@ var supportedBeadBodyFields = map[string]bool{
 	"started_at": true, "metadata": true, "spec_id": true, "external_ref": true,
 	"pinned": true, "labels": true, "status_category": true, "result": true,
 }
+
+const (
+	beadsAgentStateMetadataKey = "beads.agent_state"
+	beadsAwaitIDMetadataKey    = "beads.await_id"
+)
 
 type dependencyLine struct {
 	ID          string `json:"id,omitempty"`
@@ -439,18 +446,6 @@ func convertBead(record Record, report *Report) (*workingIssue, []string) {
 	} else if outcome != "" {
 		reasons = append(reasons, fmt.Sprintf("bead %q has outcome on non-completed status", record.ID))
 	}
-	for _, field := range []string{"await_type", "await_id", "mol_type", "hook_bead", "role_bead", "agent_state", "event_kind", "target", "timeout_ns", "waiters"} {
-		if nonEmpty(record.Source.Fields[field]) {
-			report.UnsupportedFields = append(report.UnsupportedFields, "bead/"+record.ID+"/"+field)
-			reasons = append(reasons, fmt.Sprintf("bead %q has active unsupported field %q", record.ID, field))
-		}
-	}
-	for _, field := range []string{"ephemeral", "is_template"} {
-		if truthy(record.Source.Fields[field]) {
-			report.UnsupportedFields = append(report.UnsupportedFields, "bead/"+record.ID+"/"+field)
-			reasons = append(reasons, fmt.Sprintf("bead %q has unsupported %s disposition", record.ID, field))
-		}
-	}
 	if class := text(record.Source.Fields["storage_class"]); class != "" && class != "versioned" {
 		report.UnsupportedFields = append(report.UnsupportedFields, "bead/"+record.ID+"/storage_class")
 		reasons = append(reasons, fmt.Sprintf("bead %q has unsupported storage class %q", record.ID, class))
@@ -477,6 +472,28 @@ func convertBead(record Record, report *Report) (*workingIssue, []string) {
 	metadata = cloneMap(metadata)
 	if metadata == nil {
 		metadata = map[string]any{}
+	}
+	for _, field := range dumpformat.OpaqueIssueFields() {
+		value, present := record.Source.Fields[field]
+		if !present {
+			continue
+		}
+		if (field == "agent_state" || field == "await_id") && value != nil {
+			if _, ok := value.(string); !ok {
+				reasons = append(reasons, fmt.Sprintf("bead %q source field %q is not a string", record.ID, field))
+				continue
+			}
+		}
+		key := "beads." + field
+		if existing, exists := metadata[key]; exists {
+			if !jsonEquivalent(existing, value) {
+				reasons = append(reasons, fmt.Sprintf("bead %q source field %q conflicts with metadata %q", record.ID, field, key))
+			}
+			continue
+		}
+		// Keep this value opaque. The Beads importer owns its meaning; Plug
+		// carries the exact JSON value without workflow mapping.
+		metadata[key] = cloneValue(value)
 	}
 	if len(archivedSource) > 0 {
 		if _, exists := metadata["_plug_source_fields"]; exists {
@@ -835,12 +852,14 @@ func representedSourceFields(kind string) map[string]bool {
 	fields := map[string]bool{}
 	switch kind {
 	case "bead":
-		for _, name := range []string{
+		names := []string{
 			"acceptance_criteria", "assignee", "close_reason", "closed_at", "closed_by_session",
 			"created_at", "created_by", "defer_until", "description", "design", "due_at",
 			"external_ref", "id", "issue_type", "metadata", "notes", "owner", "pinned",
 			"priority", "source_system", "spec_id", "started_at", "status", "title", "updated_at",
-		} {
+		}
+		names = append(names, dumpformat.OpaqueIssueFields()...)
+		for _, name := range names {
 			fields[name] = true
 		}
 	case "edge":

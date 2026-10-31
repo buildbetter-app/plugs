@@ -202,12 +202,165 @@ func TestConvertArchivesUnsupportedSourceFields(t *testing.T) {
 	t.Fatal("archived issue was not emitted")
 }
 
+func TestConvertPreservesOpaqueAgentStateMetadata(t *testing.T) {
+	const state = "opaque/v1:phase=ready\x00"
+	dump := cloneDump(fixtureDump())
+	dump.Records["bead"][0].Source.Fields["agent_state"] = state
+	result, err := Convert(dump)
+	if err != nil {
+		t.Fatalf("agent_state was refused: %v", err)
+	}
+	if containsString(result.Report.UnsupportedFields, "bead/demo-3/agent_state") || containsString(result.Report.ArchivedSourceFields, "bead/demo-3/source/agent_state") {
+		t.Fatalf("agent_state was classified as loss: %+v", result.Report)
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+		var issue issueLine
+		if err := json.Unmarshal(line, &issue); err != nil || issue.ID != "demo-3" {
+			continue
+		}
+		if got, ok := issue.Metadata[beadsAgentStateMetadataKey].(string); !ok || got != state {
+			t.Fatalf("agent_state metadata=%#v, want exact %q", issue.Metadata[beadsAgentStateMetadataKey], state)
+		}
+		return
+	}
+	t.Fatal("agent_state issue was not emitted")
+}
+
+func TestConvertRefusesAgentStateTypeOrMetadataConflict(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		setup func(map[string]any)
+		want  string
+	}{
+		{name: "non-string source", value: json.Number("1"), want: "source field \"agent_state\" is not a string"},
+		{name: "metadata conflict", value: "source-state", setup: func(metadata map[string]any) { metadata[beadsAgentStateMetadataKey] = "metadata-state" }, want: "conflicts with metadata"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dump := cloneDump(fixtureDump())
+			dump.Records["bead"][0].Source.Fields["agent_state"] = tt.value
+			if tt.setup != nil {
+				tt.setup(dump.Records["bead"][0].Body["metadata"].(map[string]any))
+			}
+			result, err := Convert(dump)
+			var refusal *Refusal
+			if !errors.As(err, &refusal) || !strings.Contains(err.Error(), tt.want) || len(result.JSONL) != 0 {
+				t.Fatalf("agent_state validation=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestConvertPreservesOpaqueAwaitIDMetadata(t *testing.T) {
+	const awaitID = "opaque-await/v1:owner=worker\x00"
+	dump := cloneDump(fixtureDump())
+	dump.Records["bead"][0].Source.Fields["await_id"] = awaitID
+	result, err := Convert(dump)
+	if err != nil {
+		t.Fatalf("await_id was refused: %v", err)
+	}
+	if containsString(result.Report.UnsupportedFields, "bead/demo-3/await_id") || containsString(result.Report.ArchivedSourceFields, "bead/demo-3/source/await_id") {
+		t.Fatalf("await_id was classified as loss: %+v", result.Report)
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+		var issue issueLine
+		if err := json.Unmarshal(line, &issue); err != nil || issue.ID != "demo-3" {
+			continue
+		}
+		if got, ok := issue.Metadata[beadsAwaitIDMetadataKey].(string); !ok || got != awaitID {
+			t.Fatalf("await_id metadata=%#v, want exact %q", issue.Metadata[beadsAwaitIDMetadataKey], awaitID)
+		}
+		return
+	}
+	t.Fatal("await_id issue was not emitted")
+}
+
+func TestConvertPreservesEveryOpaqueIssueFieldByteForByte(t *testing.T) {
+	want := map[string]any{
+		"agent_state": "opaque-agent\x00state",
+		"await_id":    "opaque-await\x00id",
+		"await_type":  "human",
+		"ephemeral":   json.Number("1"),
+		"event_kind":  nil,
+		"hook_bead":   "demo-1",
+		"is_template": false,
+		"mol_type":    "formula",
+		"payload":     map[string]any{"state": "waiting", "number": json.Number("9007199254740993")},
+		"role_bead":   "demo-2",
+		"role_type":   "agent",
+		"target":      "demo-3",
+		"timeout_ns":  json.Number("9007199254740993"),
+		"waiters":     []any{"demo-1", nil},
+		"wisp_type":   "run",
+		"work_type":   "workflow",
+	}
+	dump := cloneDump(fixtureDump())
+	for field, value := range want {
+		dump.Records["bead"][0].Source.Fields[field] = value
+	}
+	result, err := Convert(dump)
+	if err != nil {
+		t.Fatalf("opaque fields were refused: %v", err)
+	}
+	var rawIssue struct {
+		ID       string                     `json:"id"`
+		Metadata map[string]json.RawMessage `json:"metadata"`
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+		var candidate struct {
+			ID       string                     `json:"id"`
+			Metadata map[string]json.RawMessage `json:"metadata"`
+		}
+		if err := json.Unmarshal(line, &candidate); err == nil && candidate.ID == "demo-3" {
+			rawIssue = candidate
+			break
+		}
+	}
+	if rawIssue.ID == "" {
+		t.Fatal("opaque issue was not emitted")
+	}
+	for field, value := range want {
+		key := "beads." + field
+		got, ok := rawIssue.Metadata[key]
+		encoded, marshalErr := json.Marshal(value)
+		if marshalErr != nil || !ok || !bytes.Equal(got, encoded) {
+			t.Fatalf("opaque metadata %s=%s want %s (present=%v marshal=%v)", key, got, encoded, ok, marshalErr)
+		}
+		if containsString(result.Report.UnsupportedFields, "bead/demo-3/"+field) || containsString(result.Report.ArchivedSourceFields, "bead/demo-3/source/"+field) {
+			t.Fatalf("opaque field %s was classified as loss: %+v", field, result.Report)
+		}
+	}
+}
+
+func TestConvertRefusesAwaitIDTypeOrMetadataConflict(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		setup func(map[string]any)
+		want  string
+	}{
+		{name: "non-string source", value: json.Number("1"), want: "source field \"await_id\" is not a string"},
+		{name: "metadata conflict", value: "source-await", setup: func(metadata map[string]any) { metadata[beadsAwaitIDMetadataKey] = "metadata-await" }, want: "conflicts with metadata"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dump := cloneDump(fixtureDump())
+			dump.Records["bead"][0].Source.Fields["await_id"] = tt.value
+			if tt.setup != nil {
+				tt.setup(dump.Records["bead"][0].Body["metadata"].(map[string]any))
+			}
+			result, err := Convert(dump)
+			var refusal *Refusal
+			if !errors.As(err, &refusal) || !strings.Contains(err.Error(), tt.want) || len(result.JSONL) != 0 {
+				t.Fatalf("await_id validation=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestConvertRefusesWorkflowAndUnknownSourceFields(t *testing.T) {
-	for field, value := range map[string]any{
-		"payload": map[string]any{"state": "running"}, "wi" + "sp_type": "run",
-		"work_type": "workflow", "role_type": "agent", "ephemeral": true,
-		"is_template": true, "target": "demo-1", "unknown_column": "unaccounted",
-	} {
+	for field, value := range map[string]any{"unknown_column": "unaccounted"} {
 		t.Run(field, func(t *testing.T) {
 			dump := cloneDump(fixtureDump())
 			dump.Records["bead"][0].Source.Fields[field] = value
