@@ -138,7 +138,7 @@ jobs:
             echo "BAZELISK_HOME=$BAZELISK_HOME"
             echo "BAZELISK_VERIFY_SHA256=$BAZELISK_VERIFY_SHA256"
           } >> "$GITHUB_ENV"
-          bazel --version | tee "$REMOTE_BAZEL_EVIDENCE_DIR/bazel-version.log"
+          "$RUNNER_TEMP/bin/bazel" --version | tee "$REMOTE_BAZEL_EVIDENCE_DIR/bazel-version.log"
           grep -Fq "bazel $bazel_version" "$REMOTE_BAZEL_EVIDENCE_DIR/bazel-version.log"
           printf '%s\n' "bazel_version=$bazel_version" "bazelisk_version=v1.29.0" \
             "bazelisk_sha256=$BAZELISK_SHA256" "bazel_sha256=$BAZEL_SHA256" \
