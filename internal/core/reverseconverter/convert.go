@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 )
 
 var supportedIssueTypes = map[string]bool{
