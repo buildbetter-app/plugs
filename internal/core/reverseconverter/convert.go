@@ -164,6 +164,10 @@ func prepareTypeDirectives(directives []ontologymigration.Directive) (typeDirect
 			reasons = append(reasons, fmt.Sprintf("type directive %q must use map_type", directive.ID))
 			continue
 		}
+		if directive.Field != "" || directive.Value != nil || directive.Conversion != "" || directive.Violation != "" || directive.Reason != "" {
+			reasons = append(reasons, fmt.Sprintf("type directive %q contains members not valid for map_type", directive.ID))
+			continue
+		}
 		if directive.Target.Project == "" {
 			reasons = append(reasons, fmt.Sprintf("type directive %q requires a target project", directive.ID))
 			continue
