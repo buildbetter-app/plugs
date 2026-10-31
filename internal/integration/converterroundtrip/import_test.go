@@ -24,10 +24,18 @@ import (
 // server exporter: no verified history, a hash source declaration, and a
 // block dependency. This is test data only; it is never written back.
 func admittedFixtureBytes(t *testing.T) []byte {
-	return admittedFixtureBytesWithAgentState(t, "")
+	return admittedFixtureBytesWithOpaqueFields(t, "", "")
 }
 
 func admittedFixtureBytesWithAgentState(t *testing.T, agentState string) []byte {
+	return admittedFixtureBytesWithOpaqueFields(t, agentState, "")
+}
+
+func admittedFixtureBytesWithAgentStateAndAwaitID(t *testing.T, agentState, awaitID string) []byte {
+	return admittedFixtureBytesWithOpaqueFields(t, agentState, awaitID)
+}
+
+func admittedFixtureBytesWithOpaqueFields(t *testing.T, agentState, awaitID string) []byte {
 	t.Helper()
 	return rewriteData(t, func(members map[string][]byte) {
 		var manifest map[string]any
@@ -83,6 +91,11 @@ func admittedFixtureBytesWithAgentState(t *testing.T, agentState string) []byte 
 				source(record)["agent_state"] = agentState
 			})
 		}
+		if awaitID != "" {
+			changeRecord(t, members, "bead", func(record map[string]any) {
+				source(record)["await_id"] = awaitID
+			})
+		}
 		members["manifest.json"] = encode(t, manifest)
 	})
 }
@@ -112,7 +125,8 @@ func admittedImportProfile(t *testing.T, archiveBytes []byte) (driver.RestoreImp
 
 func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 	const agentState = "opaque/v1:phase=ready\x00"
-	data := admittedFixtureBytesWithAgentState(t, agentState)
+	const awaitID = "opaque-await/v1:owner=worker\x00"
+	data := admittedFixtureBytesWithAgentStateAndAwaitID(t, agentState, awaitID)
 	profile, archive := admittedImportProfile(t, data)
 	agentStateID := archive.Records("bead")[0].ID
 	inspection, err := InspectImport(context.Background(), bytes.NewReader(data))
@@ -183,6 +197,7 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 			var imported pipeline.Comment
 			foundComment := false
 			foundAgentState := false
+			foundAwaitID := false
 			for _, row := range rows.Items {
 				if row.Kind != "bead" {
 					continue
@@ -201,13 +216,18 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 						t.Fatalf("agent_state metadata=%s want=%q", raw, agentState)
 					}
 					foundAgentState = true
+					raw, ok = doc.Metadata["beads.await_id"]
+					if !ok || json.Unmarshal(raw, &got) != nil || got != awaitID {
+						t.Fatalf("await_id metadata=%s want=%q", raw, awaitID)
+					}
+					foundAwaitID = true
 				}
 			}
 			if !foundComment || imported.Origin != "import" || !reflect.DeepEqual(imported.Principal, profile.Admission.Actor) || imported.SourceAuthor != "fixture-commenter" || imported.SourceTime == nil || imported.Time.IsZero() {
 				t.Fatalf("imported comment=%+v found=%v", imported, foundComment)
 			}
-			if !foundAgentState {
-				t.Fatalf("agent_state bead %s was not restored", agentStateID)
+			if !foundAgentState || !foundAwaitID {
+				t.Fatalf("opaque metadata bead %s was not fully restored: agent_state=%v await_id=%v", agentStateID, foundAgentState, foundAwaitID)
 			}
 
 			ontology := service.NewOntology(nil)
@@ -253,6 +273,10 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 					got, ok := line.Metadata["beads.agent_state"].(string)
 					if !ok || got != agentState {
 						t.Fatalf("reverse agent_state metadata=%#v want=%q", line.Metadata["beads.agent_state"], agentState)
+					}
+					got, ok = line.Metadata["beads.await_id"].(string)
+					if !ok || got != awaitID {
+						t.Fatalf("reverse await_id metadata=%#v want=%q", line.Metadata["beads.await_id"], awaitID)
 					}
 					found = true
 				}

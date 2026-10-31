@@ -534,7 +534,10 @@ func compareImportBinding(ctx context.Context, r driver.Reader, evidence archive
 
 type planMode uint8
 
-const beadsAgentStateMetadataKey = "beads.agent_state"
+const (
+	beadsAgentStateMetadataKey = "beads.agent_state"
+	beadsAwaitIDMetadataKey    = "beads.await_id"
+)
 
 const (
 	planLegacy planMode = iota
@@ -632,6 +635,19 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 					return restorePlan{}, fmt.Errorf("bead %s agent_state: %w", source.ID, err)
 				}
 				metadata[beadsAgentStateMetadataKey] = encoded
+			}
+		}
+		if value, present := source.Source.Fields["await_id"]; present && value != nil {
+			awaitID, ok := value.(string)
+			if !ok {
+				return restorePlan{}, fmt.Errorf("bead %s source field await_id is not text", source.ID)
+			}
+			if awaitID != "" {
+				encoded, err := json.Marshal(awaitID)
+				if err != nil {
+					return restorePlan{}, fmt.Errorf("bead %s await_id: %w", source.ID, err)
+				}
+				metadata[beadsAwaitIDMetadataKey] = encoded
 			}
 		}
 		for key, value := range source.Body {

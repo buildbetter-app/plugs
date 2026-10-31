@@ -252,6 +252,56 @@ func TestConvertRefusesAgentStateTypeOrMetadataConflict(t *testing.T) {
 	}
 }
 
+func TestConvertPreservesOpaqueAwaitIDMetadata(t *testing.T) {
+	const awaitID = "opaque-await/v1:owner=worker\x00"
+	dump := cloneDump(fixtureDump())
+	dump.Records["bead"][0].Source.Fields["await_id"] = awaitID
+	result, err := Convert(dump)
+	if err != nil {
+		t.Fatalf("await_id was refused: %v", err)
+	}
+	if containsString(result.Report.UnsupportedFields, "bead/demo-3/await_id") || containsString(result.Report.ArchivedSourceFields, "bead/demo-3/source/await_id") {
+		t.Fatalf("await_id was classified as loss: %+v", result.Report)
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+		var issue issueLine
+		if err := json.Unmarshal(line, &issue); err != nil || issue.ID != "demo-3" {
+			continue
+		}
+		if got, ok := issue.Metadata[beadsAwaitIDMetadataKey].(string); !ok || got != awaitID {
+			t.Fatalf("await_id metadata=%#v, want exact %q", issue.Metadata[beadsAwaitIDMetadataKey], awaitID)
+		}
+		return
+	}
+	t.Fatal("await_id issue was not emitted")
+}
+
+func TestConvertRefusesAwaitIDTypeOrMetadataConflict(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		setup func(map[string]any)
+		want  string
+	}{
+		{name: "non-string source", value: json.Number("1"), want: "source field \"await_id\" is not a string"},
+		{name: "metadata conflict", value: "source-await", setup: func(metadata map[string]any) { metadata[beadsAwaitIDMetadataKey] = "metadata-await" }, want: "conflicts with metadata"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dump := cloneDump(fixtureDump())
+			dump.Records["bead"][0].Source.Fields["await_id"] = tt.value
+			if tt.setup != nil {
+				tt.setup(dump.Records["bead"][0].Body["metadata"].(map[string]any))
+			}
+			result, err := Convert(dump)
+			var refusal *Refusal
+			if !errors.As(err, &refusal) || !strings.Contains(err.Error(), tt.want) || len(result.JSONL) != 0 {
+				t.Fatalf("await_id validation=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestConvertRefusesWorkflowAndUnknownSourceFields(t *testing.T) {
 	for field, value := range map[string]any{
 		"payload": map[string]any{"state": "running"}, "wi" + "sp_type": "run",

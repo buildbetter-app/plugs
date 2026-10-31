@@ -1,11 +1,25 @@
 package dumpformat
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestIssueAwaitIDIsOpaqueTextOnly(t *testing.T) {
+	fixture := newMergeFixture(t, "pl")
+	fixture.records["bead"][0].Source.Fields["await_id"] = "opaque-await/v1\x00"
+	if _, err := Read(bytes.NewReader(fixture.bytes(t, nil))); err != nil {
+		t.Fatalf("opaque await_id was refused: %v", err)
+	}
+
+	fixture.records["bead"][0].Source.Fields["await_id"] = json.Number("1")
+	if _, err := Read(bytes.NewReader(fixture.bytes(t, nil))); err == nil || !strings.Contains(err.Error(), "await_id must be text") {
+		t.Fatalf("non-text await_id was accepted: %v", err)
+	}
+}
 
 func TestDetachedValuesPreserveNestedNullAndNumber(t *testing.T) {
 	a := &Archive{byKind: map[string][]Record{"bead": {{Body: Row{"nested": map[string]any{"null": nil, "number": json.Number("9007199254740993"), "array": []any{"original"}}}}}}}

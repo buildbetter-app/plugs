@@ -107,7 +107,14 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 				return fmt.Errorf("agent_state must be text")
 			}
 		}
-		for _, key := range []string{"await_type", "await_id", "mol_type", "hook_bead", "role_bead", "event_kind"} {
+		// await_id is a Beads-owned opaque string. It is carried through the
+		// converter as metadata, but never interpreted as Plug workflow state.
+		if value, present := fields["await_id"]; present && value != nil {
+			if _, ok := value.(string); !ok {
+				return fmt.Errorf("await_id must be text")
+			}
+		}
+		for _, key := range []string{"await_type", "mol_type", "hook_bead", "role_bead", "event_kind"} {
 			if stringValue(fields[key]) != "" {
 				return fmt.Errorf("unsupported source workflow field")
 			}

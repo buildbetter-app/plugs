@@ -38,7 +38,10 @@ var supportedBeadBodyFields = map[string]bool{
 	"pinned": true, "labels": true, "status_category": true, "result": true,
 }
 
-const beadsAgentStateMetadataKey = "beads.agent_state"
+const (
+	beadsAgentStateMetadataKey = "beads.agent_state"
+	beadsAwaitIDMetadataKey    = "beads.await_id"
+)
 
 type dependencyLine struct {
 	ID          string `json:"id,omitempty"`
@@ -441,7 +444,7 @@ func convertBead(record Record, report *Report) (*workingIssue, []string) {
 	} else if outcome != "" {
 		reasons = append(reasons, fmt.Sprintf("bead %q has outcome on non-completed status", record.ID))
 	}
-	for _, field := range []string{"await_type", "await_id", "mol_type", "hook_bead", "role_bead", "event_kind", "target", "timeout_ns", "waiters"} {
+	for _, field := range []string{"await_type", "mol_type", "hook_bead", "role_bead", "event_kind", "target", "timeout_ns", "waiters"} {
 		if nonEmpty(record.Source.Fields[field]) {
 			report.UnsupportedFields = append(report.UnsupportedFields, "bead/"+record.ID+"/"+field)
 			reasons = append(reasons, fmt.Sprintf("bead %q has active unsupported field %q", record.ID, field))
@@ -498,6 +501,27 @@ func convertBead(record Record, report *Report) (*workingIssue, []string) {
 				// Keep this value opaque. The Beads importer owns its meaning;
 				// Plug must carry the exact source string without workflow mapping.
 				metadata[beadsAgentStateMetadataKey] = agentState
+			}
+		}
+	}
+	if value, exists := metadata[beadsAwaitIDMetadataKey]; exists {
+		if _, ok := value.(string); !ok {
+			reasons = append(reasons, fmt.Sprintf("bead %q metadata %q is not a string", record.ID, beadsAwaitIDMetadataKey))
+		}
+	}
+	if value, present := record.Source.Fields["await_id"]; present && value != nil {
+		awaitID, ok := value.(string)
+		if !ok {
+			reasons = append(reasons, fmt.Sprintf("bead %q source field %q is not a string", record.ID, "await_id"))
+		} else if awaitID != "" {
+			if existing, exists := metadata[beadsAwaitIDMetadataKey]; exists {
+				if existing != awaitID {
+					reasons = append(reasons, fmt.Sprintf("bead %q source field %q conflicts with metadata %q", record.ID, "await_id", beadsAwaitIDMetadataKey))
+				}
+			} else {
+				// Keep this value opaque. The Beads importer owns its meaning;
+				// Plug must carry the exact source string without workflow mapping.
+				metadata[beadsAwaitIDMetadataKey] = awaitID
 			}
 		}
 	}
@@ -863,7 +887,7 @@ func representedSourceFields(kind string) map[string]bool {
 			"created_at", "created_by", "defer_until", "description", "design", "due_at",
 			"external_ref", "id", "issue_type", "metadata", "notes", "owner", "pinned",
 			"priority", "source_system", "spec_id", "started_at", "status", "title", "updated_at",
-			"agent_state",
+			"agent_state", "await_id",
 		} {
 			fields[name] = true
 		}
