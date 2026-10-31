@@ -19,15 +19,20 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 const (
-	publicClaimMethod = "bead.claimNext"
-	publicRetryBudget = 64
-	bulkObserverID    = "00000000-0000-4000-8000-000000000999"
+	publicClaimMethod       = "bead.claimNext"
+	publicRetryBudget       = 64
+	bulkObserverID          = "00000000-0000-4000-8000-000000000999"
+	lifecycleRetryBudget    = 64
+	lifecycleRequestTimeout = 5 * time.Second
+	lifecyclePhaseTimeout   = 45 * time.Second
 )
 
 type publicClaimReply struct {
@@ -297,6 +302,260 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 		}
 	}
 	t.Logf("public authenticated 200-agent claimNext: launched=%d received=%d A=%d C=%d B=%d L=%d S=%d N=%d E=%d X=%d retry_starts=%d distinct_principals=%d distinct_tokens=%d distinct_keys=%d distinct_winners=%d receipts=%d cap=8 retry_budget=64; source-built WASI/public fixture only", metrics.Launched, metrics.Received, metrics.Attempts, metrics.Conflicts, metrics.Busy, metrics.RateLimited, metrics.Successes, metrics.Nulls, metrics.Errors, metrics.TerminalRetryable, metrics.Attempts-sessions, len(principalKeys), len(tokenSet), len(workerKeys), len(metrics.Winners), metrics.Successes)
+
+	// Keep the claim assertions above as the acceptance boundary, then exercise
+	// the same 200 records through the named lifecycle verbs. Each phase fans
+	// out all agents concurrently, uses a bounded retry budget for typed
+	// write_conflict/busy responses, and gives every request a cancellable
+	// deadline so a lock cycle is observable instead of hanging the test.
+	winnerIDs := make([]string, 0, len(winnerEvidence))
+	winnerPrincipals := make(map[string]model.PrincipalRef, len(winnerEvidence))
+	for winnerID := range winnerEvidence {
+		winnerIDs = append(winnerIDs, winnerID)
+		winnerPrincipals[winnerID] = winnerEvidence[winnerID].principal
+	}
+	sort.Strings(winnerIDs)
+	for phase, method := range []string{"bead.update", "bead.comment", "bead.close"} {
+		summary := runPublicLifecyclePhase(t, f, winnerIDs, winnerPrincipals, method, phase)
+		if summary.Attempts != summary.Operations+summary.Retries || summary.Retries != summary.Conflicts+summary.Busy {
+			t.Fatalf("lifecycle %s retry accounting mismatch: %+v", method, summary)
+		}
+		if summary.Successes != len(winnerIDs) || summary.Errors != 0 || summary.Deadlines != 0 {
+			t.Fatalf("lifecycle %s failed: %+v", method, summary)
+		}
+		t.Logf("E5 lifecycle %s: operations=%d successes=%d attempts=%d retries=%d write_conflicts=%d busy=%d errors=%d deadlines=%d deadlock_free=%t cap=8", method, summary.Operations, summary.Successes, summary.Attempts, summary.Retries, summary.Conflicts, summary.Busy, summary.Errors, summary.Deadlines, summary.Deadlines == 0)
+	}
+
+	finalReader := f.reader(t)
+	for index, winnerID := range winnerIDs {
+		rows, err := finalReader.Get(context.Background(), []model.Ref{model.RefByID(winnerID, model.Natural64(0))})
+		demand(t, err == nil && len(rows) == 1, fmt.Sprintf("lifecycle winner %s disappeared", winnerID))
+		doc, err := pipeline.DecodeDocument(rows[0].Body)
+		demand(t, err == nil, fmt.Sprintf("lifecycle winner %s body malformed", winnerID))
+		demand(t, doc.Fields["title"] == fmt.Sprintf("e5-lifecycle-update-%03d", index), fmt.Sprintf("lifecycle winner %s update not durable", winnerID))
+		demand(t, doc.Fields["status"] == "done", fmt.Sprintf("lifecycle winner %s close status=%v", winnerID, doc.Fields["status"]))
+		commentBodies := make(map[string]bool, len(doc.Comments))
+		for _, comment := range doc.Comments {
+			commentBodies[comment.Body] = true
+		}
+		demand(t, commentBodies[fmt.Sprintf("e5-lifecycle-comment-%03d", index)], fmt.Sprintf("lifecycle winner %s comment not durable", winnerID))
+		demand(t, commentBodies[fmt.Sprintf("e5-lifecycle-close-%03d", index)], fmt.Sprintf("lifecycle winner %s close reason not durable", winnerID))
+	}
+	t.Logf("E5 lifecycle final state: records=%d updated=%d comments=%d closed=%d deadlock_free=true", len(winnerIDs), len(winnerIDs), len(winnerIDs), len(winnerIDs))
+}
+
+type publicWriteReply struct {
+	key            string
+	status         int
+	resultPresent  bool
+	commit         *model.Commit
+	errorCode      string
+	errorRetryable bool
+	errorHint      string
+	protocolError  string
+}
+
+func (r publicWriteReply) retryable() bool {
+	return r.errorRetryable && (r.errorCode == "write_conflict" || r.errorCode == "busy")
+}
+
+type publicLifecycleResult struct {
+	final     publicWriteReply
+	attempts  int
+	retries   int
+	conflicts int
+	busy      int
+	deadline  bool
+}
+
+type publicLifecycleSummary struct {
+	Operations int
+	Successes  int
+	Attempts   int
+	Retries    int
+	Conflicts  int
+	Busy       int
+	Errors     int
+	Deadlines  int
+	ErrorCodes map[string]int
+}
+
+func runPublicLifecyclePhase(t *testing.T, f *localFixture, winnerIDs []string, winnerPrincipals map[string]model.PrincipalRef, method string, phase int) publicLifecycleSummary {
+	t.Helper()
+	phaseCtx, cancel := context.WithTimeout(context.Background(), lifecyclePhaseTimeout)
+	defer cancel()
+	start := make(chan struct{})
+	results := make(chan publicLifecycleResult, len(winnerIDs))
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for index, winnerID := range winnerIDs {
+		index, winnerID := index, winnerID
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			select {
+			case sem <- struct{}{}:
+			case <-phaseCtx.Done():
+				results <- publicLifecycleResult{deadline: true}
+				return
+			}
+			result := runPublicLifecycleOperation(phaseCtx, f, winnerPrincipals[winnerID], winnerID, method, index, phase)
+			<-sem
+			results <- result
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	summary := publicLifecycleSummary{Operations: len(winnerIDs), ErrorCodes: map[string]int{}}
+	for result := range results {
+		summary.Attempts += result.attempts
+		summary.Retries += result.retries
+		summary.Conflicts += result.conflicts
+		summary.Busy += result.busy
+		if result.deadline {
+			summary.Deadlines++
+			continue
+		}
+		if result.final.protocolError == "" && result.final.resultPresent && result.final.commit != nil {
+			summary.Successes++
+		} else {
+			summary.Errors++
+			code := result.final.errorCode
+			if code == "" {
+				code = result.final.protocolError
+			}
+			summary.ErrorCodes[code]++
+		}
+	}
+	return summary
+}
+
+func runPublicLifecycleOperation(ctx context.Context, f *localFixture, principal model.PrincipalRef, winnerID, method string, index, phase int) publicLifecycleResult {
+	result := publicLifecycleResult{}
+	for attempt := 1; attempt <= lifecycleRetryBudget; attempt++ {
+		if ctx.Err() != nil {
+			result.deadline = true
+			return result
+		}
+		requestCtx, cancel := context.WithTimeout(ctx, lifecycleRequestTimeout)
+		reply := publicLifecycleRequest(requestCtx, f, principal, winnerID, method, index, phase)
+		cancel()
+		result.attempts++
+		result.final = reply
+		if reply.retryable() {
+			if reply.errorCode == "write_conflict" {
+				result.conflicts++
+			} else {
+				result.busy++
+			}
+			if attempt == lifecycleRetryBudget {
+				return result
+			}
+			result.retries++
+			select {
+			case <-ctx.Done():
+				result.deadline = true
+				return result
+			case <-time.After(time.Duration(1+index%5) * time.Millisecond):
+			}
+			continue
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(requestCtx.Err(), context.DeadlineExceeded) {
+			result.deadline = true
+		}
+		return result
+	}
+	return result
+}
+
+func publicLifecycleRequest(ctx context.Context, f *localFixture, principal model.PrincipalRef, winnerID, method string, index, phase int) publicWriteReply {
+	id := model.RefByID(winnerID, model.Natural64(0))
+	fields := map[string]any{}
+	body := ""
+	reason := ""
+	switch method {
+	case "bead.update":
+		fields = map[string]any{"title": fmt.Sprintf("e5-lifecycle-update-%03d", index)}
+	case "bead.comment":
+		body = fmt.Sprintf("e5-lifecycle-comment-%03d", index)
+	case "bead.close":
+		reason = fmt.Sprintf("e5-lifecycle-close-%03d", index)
+	}
+	key := fmt.Sprintf("%032x", 100000+phase*1000+index)
+	meta := model.WriteMeta{Method: method, IdempotencyKey: key, Project: "project", Return: "full"}
+	var outcome port.WriteOutcome
+	var err error
+	switch method {
+	case "bead.update":
+		outcome, err = f.lifecycle.UpdateWithOutcome(ctx, principal, service.UpdateRequest{ID: id, Fields: fields}, meta)
+	case "bead.comment":
+		outcome, err = f.lifecycle.CommentWithOutcome(ctx, principal, service.CommentRequest{ID: id, Body: body}, meta)
+	case "bead.close":
+		outcome, err = f.lifecycle.CloseWithOutcome(ctx, principal, service.CloseRequest{ID: id, Reason: reason}, meta)
+	default:
+		return publicWriteReply{key: key, protocolError: "unknown lifecycle method"}
+	}
+	reply := publicWriteReply{key: key, status: http.StatusOK}
+	if err == nil {
+		if outcome.Commit.Revision.IsZero() {
+			reply.protocolError = "lifecycle result is not a committed response"
+			return reply
+		}
+		reply.resultPresent, reply.commit = true, &outcome.Commit
+		return reply
+	}
+	var modelErr *model.Error
+	if errors.As(err, &modelErr) {
+		reply.errorCode, reply.errorRetryable, reply.errorHint = string(modelErr.Data.Code), modelErr.Data.Retryable, modelErr.Data.Hint
+		return reply
+	}
+	reply.protocolError = err.Error()
+	return reply
+}
+
+// TestE5StaleLeaseFencingAfterLifecycle exercises the same backend selected by
+// PLUG_E5_STORAGE. It deliberately stages a write, releases its lease, and
+// requires the stale transaction to be fenced before a fresh holder can read
+// the unchanged record. The standalone store keeps the public fixture lease
+// and renewal goroutine untouched.
+func TestE5StaleLeaseFencingAfterLifecycle(t *testing.T) {
+	store := openE5Store(t, e5StorageBackend())
+	defer store.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	old, err := store.Lease(ctx, "e5-stale-old", driver.LeaseTTL)
+	demand(t, err == nil, "stale-fence old lease unavailable")
+	ref := model.RefByID("e5-stale-lifecycle", model.Natural64(0))
+	body := []byte(`{"id":"e5-stale-lifecycle","type":"issue","project":"project","fields":{"title":"stale","status":"todo"}}`)
+	_, err = conformance.Seed(ctx, store, old, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpCreate, Body: body}})
+	demand(t, err == nil, "stale-fence seed failed")
+	tx, err := store.Write(ctx, old)
+	demand(t, err == nil, "stale-fence transaction unavailable")
+	_, err = tx.Lock(ctx, []driver.LockRequest{{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Mode: driver.LockUpdate}})
+	demand(t, err == nil, "stale-fence record lock failed")
+	_, err = tx.Head(ctx)
+	demand(t, err == nil, "stale-fence head allocation failed")
+	oldEpoch := old.Epoch()
+	demand(t, old.Release(ctx) == nil, "stale-fence old lease release failed")
+	staleErr := tx.Put(ctx, driver.Record{Ref: ref, Kind: "bead", Body: []byte(`{"id":"e5-stale-lifecycle","type":"issue","project":"project","fields":{"title":"must-not-publish","status":"done"}}`)})
+	var fenced driver.ErrFenced
+	demand(t, errors.As(staleErr, &fenced), fmt.Sprintf("stale transaction was not fenced: %v", staleErr))
+	_ = tx.Rollback(context.Background())
+	next, err := store.Lease(ctx, "e5-stale-new", driver.LeaseTTL)
+	demand(t, err == nil, "stale-fence fresh lease unavailable")
+	defer next.Release(context.Background())
+	demand(t, next.Epoch() > oldEpoch, "fresh lease did not advance epoch")
+	meta, err := store.Meta(ctx)
+	demand(t, err == nil, "stale-fence metadata unavailable")
+	reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	demand(t, err == nil, "stale-fence reader unavailable")
+	rows, err := reader.Get(ctx, []model.Ref{ref})
+	demand(t, err == nil && len(rows) == 1 && bytes.Contains(rows[0].Body, []byte(`"title":"stale"`)), "stale transaction changed durable record")
+	demand(t, reader.Close() == nil, "stale-fence reader close failed")
+	t.Logf("E5 stale lease: backend=%s fenced=true old_epoch=%d new_epoch=%d unchanged=true", e5StorageBackend(), oldEpoch, next.Epoch())
 }
 
 type publicWorkloadSummary struct {
