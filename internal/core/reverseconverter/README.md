@@ -20,6 +20,16 @@ link metadata, and memory values. A source status of `hooked` remains
 `pinned`, and `frozen` retain their source status while their category remains
 `backlog`. A completed source must carry `success` or `failure`.
 
+Unknown source issue types are closed-world refusals unless the caller supplies
+an explicit `ontologymigration.MapType` directive to
+`ConvertWithDirectives` (or `ConvertArchiveWithDirectives`). The directive
+selects the original project/type, may target one exact source ID, and must
+match at least one source row without overlapping another directive. It
+authorizes the ontology mapping while the emitted Beads
+`issue_type` remains the original source value, so a decision or other custom
+type is never silently collapsed into a built-in kind. Missing, conflicting,
+malformed, or unused directives refuse before any JSONL is returned.
+
 Beads does not retain dependency row IDs through JSONL import. Each emitted
 dependency therefore carries a canonical metadata envelope:
 
