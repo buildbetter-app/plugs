@@ -92,9 +92,14 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 		if err != nil {
 			return err
 		}
-		patches, err := invoke(ctx, 250*time.Millisecond, func(call context.Context) ([]port.Patch, error) {
-			return binding.Mutator.Mutate(call, proposal, p.snapshot.child())
-		})
+		var patches []port.Patch
+		if timed, ok := binding.Mutator.(port.TimedMutator); ok {
+			patches, err = timed.MutateWithTimeout(ctx, 250*time.Millisecond, proposal, p.snapshot.child())
+		} else {
+			patches, err = invoke(ctx, 250*time.Millisecond, func(call context.Context) ([]port.Patch, error) {
+				return binding.Mutator.Mutate(call, proposal, p.snapshot.child())
+			})
+		}
 		if err != nil {
 			if binding.FailOpen {
 				p.warnings = append(p.warnings, skipped(binding.ID))
@@ -153,9 +158,15 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 		done := make(chan validation, 1)
 		results[i] = done
 		go func(binding ValidatorBinding) {
-			v, e := invoke(ctx, 500*time.Millisecond, func(call context.Context) (port.Verdict, error) {
-				return binding.Validator.Validate(call, proposal, p.snapshot.child())
-			})
+			var v port.Verdict
+			var e error
+			if timed, ok := binding.Validator.(port.TimedValidator); ok {
+				v, e = timed.ValidateWithTimeout(ctx, 500*time.Millisecond, proposal, p.snapshot.child())
+			} else {
+				v, e = invoke(ctx, 500*time.Millisecond, func(call context.Context) (port.Verdict, error) {
+					return binding.Validator.Validate(call, proposal, p.snapshot.child())
+				})
+			}
 			done <- validation{v, e}
 		}(binding)
 	}
@@ -230,9 +241,14 @@ func (w *Writer) post(ctx context.Context, p *prepared, commit model.Commit) []m
 		}
 		go func(binding PostBinding) {
 			snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}, bounded: true}
-			_, err := invoke(ctx, 500*time.Millisecond, func(call context.Context) (struct{}, error) {
-				return struct{}{}, binding.Subscriber.After(call, change, snapshot)
-			})
+			var err error
+			if timed, ok := binding.Subscriber.(port.TimedPostSubscriber); ok {
+				err = timed.AfterWithTimeout(ctx, 500*time.Millisecond, change, snapshot)
+			} else {
+				_, err = invoke(ctx, 500*time.Millisecond, func(call context.Context) (struct{}, error) {
+					return struct{}{}, binding.Subscriber.After(call, change, snapshot)
+				})
+			}
 			done <- err
 		}(binding)
 	}

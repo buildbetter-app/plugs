@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"context"
 	"sort"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
@@ -95,6 +96,14 @@ func (h *Host) Posts() []pipeline.PostBinding {
 type subscriberAdapter struct{ binding *bound }
 
 func (a *subscriberAdapter) Mutate(ctx context.Context, c port.ProposedChange, r port.SnapshotReader) ([]port.Patch, error) {
+	return a.mutate(ctx, a.binding.Timeout, c, r)
+}
+
+func (a *subscriberAdapter) MutateWithTimeout(ctx context.Context, timeout time.Duration, c port.ProposedChange, r port.SnapshotReader) ([]port.Patch, error) {
+	return a.mutate(ctx, minTimeout(a.binding.Timeout, timeout), c, r)
+}
+
+func (a *subscriberAdapter) mutate(ctx context.Context, timeout time.Duration, c port.ProposedChange, r port.SnapshotReader) ([]port.Patch, error) {
 	original, err := toPublicProposal(c, a.binding.Binding)
 	if err != nil || len(original.Changes) == 0 {
 		return nil, err
@@ -108,7 +117,7 @@ func (a *subscriberAdapter) Mutate(ctx context.Context, c port.ProposedChange, r
 		return nil, err
 	}
 	var patches []pluginapi.Patch
-	err = a.binding.pool.run(ctx, pluginapi.PhaseMutate, a.binding.Timeout, reader, func(instance *instance, ctx context.Context) error {
+	err = a.binding.pool.run(ctx, pluginapi.PhaseMutate, timeout, reader, func(instance *instance, ctx context.Context) error {
 		var err error
 		patches, err = instance.registration.Mutators[a.binding.Subscriber].Mutate(ctx, proposal, reader)
 		if err != nil {
@@ -136,6 +145,14 @@ func (a *subscriberAdapter) Mutate(ctx context.Context, c port.ProposedChange, r
 }
 
 func (a *subscriberAdapter) Validate(ctx context.Context, c port.ProposedChange, r port.SnapshotReader) (port.Verdict, error) {
+	return a.validate(ctx, a.binding.Timeout, c, r)
+}
+
+func (a *subscriberAdapter) ValidateWithTimeout(ctx context.Context, timeout time.Duration, c port.ProposedChange, r port.SnapshotReader) (port.Verdict, error) {
+	return a.validate(ctx, minTimeout(a.binding.Timeout, timeout), c, r)
+}
+
+func (a *subscriberAdapter) validate(ctx context.Context, timeout time.Duration, c port.ProposedChange, r port.SnapshotReader) (port.Verdict, error) {
 	original, err := toPublicProposal(c, a.binding.Binding)
 	if err != nil {
 		return port.Verdict{}, err
@@ -152,7 +169,7 @@ func (a *subscriberAdapter) Validate(ctx context.Context, c port.ProposedChange,
 		return port.Verdict{}, err
 	}
 	var verdict pluginapi.Verdict
-	err = a.binding.pool.run(ctx, pluginapi.PhaseValidate, a.binding.Timeout, reader, func(instance *instance, ctx context.Context) error {
+	err = a.binding.pool.run(ctx, pluginapi.PhaseValidate, timeout, reader, func(instance *instance, ctx context.Context) error {
 		var err error
 		verdict, err = instance.registration.Validators[a.binding.Subscriber].Validate(ctx, proposal, reader)
 		if err == nil {
@@ -171,6 +188,14 @@ func (a *subscriberAdapter) Validate(ctx context.Context, c port.ProposedChange,
 }
 
 func (a *subscriberAdapter) After(ctx context.Context, c port.CommittedChange, r port.SnapshotReader) error {
+	return a.after(ctx, a.binding.Timeout, c, r)
+}
+
+func (a *subscriberAdapter) AfterWithTimeout(ctx context.Context, timeout time.Duration, c port.CommittedChange, r port.SnapshotReader) error {
+	return a.after(ctx, minTimeout(a.binding.Timeout, timeout), c, r)
+}
+
+func (a *subscriberAdapter) after(ctx context.Context, timeout time.Duration, c port.CommittedChange, r port.SnapshotReader) error {
 	proposal, err := toPublicProposal(port.ProposedChange{RequestID: c.RequestID, Principal: c.Principal, BaseRevision: c.Revision, Changes: c.Changes}, a.binding.Binding)
 	if err != nil || len(proposal.Changes) == 0 {
 		return err
@@ -184,9 +209,16 @@ func (a *subscriberAdapter) After(ctx context.Context, c port.CommittedChange, r
 		return err
 	}
 	committed := pluginapi.CommittedChange{RequestID: proposal.RequestID, Principal: proposal.Principal, Revision: proposal.BaseRevision, Changes: proposal.Changes}
-	return a.binding.pool.run(ctx, pluginapi.PhasePost, a.binding.Timeout, reader, func(instance *instance, ctx context.Context) error {
+	return a.binding.pool.run(ctx, pluginapi.PhasePost, timeout, reader, func(instance *instance, ctx context.Context) error {
 		return instance.registration.Posts[a.binding.Subscriber].After(ctx, committed, reader)
 	})
+}
+
+func minTimeout(binding, outer time.Duration) time.Duration {
+	if outer <= 0 || outer >= binding {
+		return binding
+	}
+	return outer
 }
 
 func (a *subscriberAdapter) reader(ctx context.Context, r port.SnapshotReader, revision model.Revision) (*scopedReader, error) {

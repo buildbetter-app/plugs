@@ -15,7 +15,8 @@ type Method struct {
 }
 
 // Registration names callbacks exactly as declared by the manifest. Instances
-// receive a separate Host and state namespace, even when sharing native code.
+// receive a separate Host and guest runtime, even when sharing native code. A
+// binding may pool those runtimes while sharing its host-side State().
 type Registration struct {
 	Methods    []Method
 	Mutators   map[string]pluginapi.Mutator
