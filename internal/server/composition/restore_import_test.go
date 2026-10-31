@@ -25,6 +25,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/transport/inprocess"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 func compositionRestorePresence() restore.Presence {
