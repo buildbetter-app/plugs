@@ -416,6 +416,10 @@ func (r *Runtime) bind(config Config) error {
 	r.RPC, err = rpc.New(registry, rpc.Config{
 		Incarnation: meta.Incarnation, DefaultProject: config.Project,
 		AuthMode: config.AuthMode, OntologyRevision: model.Natural64(1), CursorKey: key,
+		CurrentIncarnation: func(ctx context.Context) (string, error) {
+			current, err := r.Store.Meta(ctx)
+			return current.Incarnation, err
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("composition: create RPC server: %w", err)
