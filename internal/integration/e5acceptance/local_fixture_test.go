@@ -130,6 +130,10 @@ type localFixture struct {
 	sourceRoot  string
 	evidence    map[string]any
 	requests    int
+	// allowClosedStoreFailure is used only by the failover fixture. Its
+	// primary is intentionally killed, so releasing the old SQL lease during
+	// cleanup can legitimately return the dead connection error.
+	allowClosedStoreFailure bool
 }
 
 func demand(t *testing.T, ok bool, message string) {
@@ -287,11 +291,15 @@ func newLocalFixture(t *testing.T) *localFixture {
 	}()
 	t.Cleanup(func() {
 		f.stopRenewal()
-		if err := <-f.renewed; err != nil {
+		if err := <-f.renewed; err != nil && !f.allowClosedStoreFailure {
 			t.Errorf("storage lease renewal: %v", err)
 		}
-		demand(t, f.lease.Release(context.Background()) == nil, "lease cleanup failed")
-		demand(t, f.store.Close() == nil, "store cleanup failed")
+		if err := f.lease.Release(context.Background()); err != nil && !f.allowClosedStoreFailure {
+			demand(t, false, "lease cleanup failed")
+		}
+		if err := f.store.Close(); err != nil && !f.allowClosedStoreFailure {
+			demand(t, false, "store cleanup failed")
+		}
 	})
 	var seed []conformance.FixtureChange
 	for _, row := range []struct{ id, title string }{{targetID, "seed"}, {watchedID, "observed"}} {
