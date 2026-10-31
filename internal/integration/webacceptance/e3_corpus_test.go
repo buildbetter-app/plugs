@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/collab"
@@ -117,16 +118,16 @@ func newE3FixtureMode(t *testing.T, browser bool) *e3Fixture {
 	base := &fixture{
 		t: t, backend: sqliteBackend, ctx: ctx, cancel: cancel,
 		path: filepath.Join(t.TempDir(), "e3.db"), cursorKey: make([]byte, 32),
-		clock: func() time.Time { return now },
+		clock:          func() time.Time { return now },
+		ontologySource: &service.OntologySource{Base: ontology.DefaultDocument()},
 	}
 	if _, err := rand.Read(base.cursorKey); err != nil {
 		t.Fatal(err)
 	}
 	nextID := 0
-	// Complete ordinary slot event plans use the admitted audit adapter. This
-	// workload has ordinary blocks edges only; conditional audit is explicitly
-	// unavailable with a nil durable source locator and would refuse if used.
-	base.writerOptions = []pipeline.Option{pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)), pipeline.WithIDGenerator(func() (string, error) {
+	// start installs the tracked audit from the actual protected source it
+	// creates, without consuming the deterministic bead ID generator.
+	base.writerOptions = []pipeline.Option{pipeline.WithIDGenerator(func() (string, error) {
 		nextID++
 		return e3ID(nextID), nil
 	})}
@@ -191,7 +192,11 @@ func newE3FixtureMode(t *testing.T, browser bool) *e3Fixture {
 		Clock: now.Format(time.RFC3339Nano), ExpectedBeads: e3Beads,
 		Authorization:      "real anonymous no-plugin installation; no installed-policy or authorized/denied qualification",
 		StoredStatusCounts: map[string]int{}, Engine: map[string]any{"driver": "sqlite", "disposable": true},
-		Audit: map[string]any{"writerOption": "WithOntologyAudit(service.NewOntologyAudit(nil))", "scope": "complete ordinary Writer event plans; blocks edges only; conditional audit refuses without durable source locator"},
+		Audit: map[string]any{
+			"writerOption": "WithOntologyAudit(service.NewOntologyAudit(service.StaticOntologySource(sourceRef)))",
+			"sourceRef":    base.ontologyRef, "sourceRevision": base.ontologyRevision, "definitionDigest": base.ontologyDigest,
+			"scope": "actual protected fixture source; same definition for Writer, tracked audit and pinned direct-blocker reads; blocks workload only",
+		},
 	}
 	t.Cleanup(func() { writeE3JSON(t, filepath.Join(f.evidence, "corpus-workload.json"), f.receipt) })
 	return f
