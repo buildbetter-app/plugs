@@ -163,6 +163,16 @@ jobs:
           ARGS=(--nosystem_rc --nohome_rc --noworkspace_rc \
             "--bazelrc=$RUNNER_TEMP/plug.bazelrc")
           ARGS+=("${USER_ARGS[@]}")
+          # Tests that build fixtures from this checkout need its root; the box
+          # wrapper passes the same variable for its worktree.
+          command=""
+          for arg in "${USER_ARGS[@]}"; do
+            case "$arg" in -*) ;; *) command=$arg; break ;; esac
+          done
+          if [[ "$command" == test || "$command" == coverage ]] &&
+            [[ " ${USER_ARGS[*]} " != *"PLUG_SOURCE_MODULE_ROOT="* ]]; then
+            ARGS+=("--test_env=PLUG_SOURCE_MODULE_ROOT=$GITHUB_WORKSPACE")
+          fi
           printf '%q ' bazel "${ARGS[@]}" > "$REMOTE_BAZEL_EVIDENCE_DIR/command.txt"
           printf '\n' >> "$REMOTE_BAZEL_EVIDENCE_DIR/command.txt"
           set +e
