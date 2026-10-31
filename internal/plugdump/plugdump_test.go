@@ -151,6 +151,70 @@ func TestDumpStatusMapping(t *testing.T) {
 	}
 }
 
+func TestDumpUnknownIssueTypeRequiresOntologyDirective(t *testing.T) {
+	source, inventory := fixture(t)
+	source["issues"].Rows[0]["issue_type"] = "decision"
+	data, err := Build(context.Background(), source, inventory)
+	if err == nil || len(data) != 0 || !strings.Contains(err.Error(), "unsupported issue type; workflow/ontology mapping required") {
+		t.Fatalf("unknown issue type did not retain the closed-world refusal: data=%d err=%v", len(data), err)
+	}
+}
+
+func TestDumpOntologyDirectivePreservesUnknownIssueType(t *testing.T) {
+	source, inventory := fixture(t)
+	for _, row := range source["issues"].Rows {
+		row["issue_type"] = "decision"
+	}
+	inventory.Ontology = []OntologyDirective{{
+		ID: "preserve-decision", Kind: "map_type",
+		Target: OntologyTarget{Project: "demo", Type: "decision"},
+		From:   "decision", To: "issue",
+	}}
+	data := buildFixture(t, source, inventory)
+	manifest, err := Validate(bytes.NewReader(data))
+	if err != nil || len(manifest.Ontology) != 1 || manifest.Ontology[0].ID != "preserve-decision" {
+		t.Fatalf("directive evidence missing from manifest: err=%v ontology=%+v", err, manifest.Ontology)
+	}
+	var records []Record
+	for _, line := range bytes.Split(bytes.TrimSpace(archiveMembers(t, data)["records/bead.ndjson"]), []byte{'\n'}) {
+		var record Record
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, record)
+		if record.Body["type"] != "issue" || record.Body["source_type"] != "decision" || record.Source.Fields["issue_type"] != "decision" {
+			t.Fatalf("directive changed or dropped source type: %+v", record)
+		}
+	}
+	if len(records) != len(source["issues"].Rows) || records[0].Source.Fields["created_by"] != source["issues"].Rows[0]["created_by"] {
+		t.Fatalf("directive lost rows or attribution: got=%d want=%d", len(records), len(source["issues"].Rows))
+	}
+}
+
+func TestDumpOntologyDirectiveRefusals(t *testing.T) {
+	tests := map[string]func(*Inventory){
+		"wrong kind": func(i *Inventory) {
+			i.Ontology = []OntologyDirective{{ID: "bad", Kind: "map_status", Target: OntologyTarget{Project: "demo", Type: "decision"}, From: "decision", To: "issue"}}
+		},
+		"wrong target": func(i *Inventory) {
+			i.Ontology = []OntologyDirective{{ID: "bad", Kind: "map_type", Target: OntologyTarget{Project: "demo", Type: "decision"}, From: "other", To: "issue"}}
+		},
+		"unused": func(i *Inventory) {
+			i.Ontology = []OntologyDirective{{ID: "unused", Kind: "map_type", Target: OntologyTarget{Project: "demo", Type: "decision"}, From: "decision", To: "issue"}}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			source, inventory := fixture(t)
+			mutate(&inventory)
+			data, err := Build(context.Background(), source, inventory)
+			if err == nil || len(data) != 0 {
+				t.Fatalf("malformed or unused directive was accepted: data=%d err=%v", len(data), err)
+			}
+		})
+	}
+}
+
 func TestDumpRefusals(t *testing.T) {
 	tests := map[string]func(fixtureSource, *Inventory){
 		"unknown main":    func(s fixtureSource, _ *Inventory) { s["schema_migrations"].Rows[0]["version"] = 73 },

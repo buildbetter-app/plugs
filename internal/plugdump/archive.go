@@ -156,6 +156,14 @@ func Validate(reader io.Reader) (Manifest, error) {
 	if _, err := copyProjects(manifest.Projects); err != nil {
 		return Manifest{}, err
 	}
+	projects, _ := copyProjects(manifest.Projects)
+	ontology, err := copyOntology(manifest.Ontology, projects)
+	if err != nil {
+		return Manifest{}, err
+	}
+	if len(ontology) != len(manifest.Ontology) {
+		return Manifest{}, fmt.Errorf("ontology directives are not canonical")
+	}
 	if len(manifest.Files) != len(members)-1 {
 		return Manifest{}, fmt.Errorf("unlisted or missing archive member")
 	}
@@ -173,6 +181,7 @@ func Validate(reader io.Reader) (Manifest, error) {
 	}
 	registry := map[string]bool{}
 	counts := map[string]int{}
+	var beadRecords []Record
 	lastKind := ""
 	for _, kind := range manifest.Kinds {
 		if !knownKinds[kind.Name] || kind.Version != 1 || kind.Name <= lastKind || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 {
@@ -197,6 +206,9 @@ func Validate(reader io.Reader) (Manifest, error) {
 			if err := validateRecord(record, manifest.Projects, counts); err != nil {
 				return Manifest{}, err
 			}
+			if record.Kind == "bead" {
+				beadRecords = append(beadRecords, record)
+			}
 			last = recordKey(record)
 		}
 	}
@@ -208,11 +220,45 @@ func Validate(reader io.Reader) (Manifest, error) {
 	if err := validateDispositions(manifest.Sources, counts); err != nil {
 		return Manifest{}, err
 	}
+	if err := validateOntologyRecords(manifest.Ontology, manifest.Projects, beadRecords); err != nil {
+		return Manifest{}, err
+	}
 	hasHistory := counts["issue_versions"]+counts["issue_snapshots"]+counts["compaction_snapshots"] != 0
 	if hasHistory != (manifest.History == "available-unverified") {
 		return Manifest{}, fmt.Errorf("history declaration does not match archived source rows")
 	}
 	return manifest, nil
+}
+
+func validateOntologyRecords(directives []OntologyDirective, projects []Project, records []Record) error {
+	validated, err := copyOntology(directives, projects)
+	if err != nil {
+		return err
+	}
+	used := map[string]bool{}
+	for _, record := range records {
+		issueType := text(record.Source.Fields, "issue_type")
+		if text(record.Body, "source_type") != issueType || text(record.Body, "type") != "issue" {
+			return fmt.Errorf("bead source type/body mismatch")
+		}
+		if builtInIssueTypes[issueType] {
+			continue
+		}
+		var matches []OntologyDirective
+		for _, directive := range validated {
+			if directive.Target.Project == record.Project && directive.Target.Type == issueType && directive.From == issueType && (directive.Target.ID == "" || directive.Target.ID == record.ID) {
+				matches = append(matches, directive)
+			}
+		}
+		if len(matches) != 1 {
+			return fmt.Errorf("unsupported issue type; workflow/ontology mapping required")
+		}
+		used[matches[0].ID] = true
+	}
+	if len(used) != len(validated) {
+		return fmt.Errorf("unaccounted ontology directive")
+	}
+	return nil
 }
 
 func validateRecord(record Record, projects []Project, counts map[string]int) error {

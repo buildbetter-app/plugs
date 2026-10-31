@@ -5,7 +5,9 @@ This is Nikhil's Beads fork for plugin development. Start with the [architecture
 The `beads` branch also provides an offline `bd --readonly export --format
 plug-dump/1 --plug-inventory inventory.json -o dump.tar` path. The
 [export format and input inventory](internal/plugdump/README.md) describe its
-supported head-state slice, source archives, and explicit refusals. Ordinary
+supported head-state slice, source archives, and explicit refusals. Inventory
+`ontology` `map_type` directives are required for non-built-in issue types and
+are retained as manifest evidence; ordinary
 `bd export` still defaults to JSONL. This exporter does not certify a complete
 store migration or a Plug restore.
 
