@@ -320,17 +320,21 @@ func TestRestoreImportAnonymousBindingKeepsHonestScope(t *testing.T) {
 
 func TestRestoreImportAdmissionDigestIsBoundAndOpaque(t *testing.T) {
 	actor := model.PrincipalRef{Kind: "user", ID: "user:restore"}
-	one, err := importAdmissionDigest("authenticated", actor, "", "restore-admin", "pl", strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 32))
+	one, err := importAdmissionDigest("authenticated", actor, "", "restore-admin", driver.RestoreHistoryModeSnapshot, "pl", strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 32))
 	if err != nil || len(one) != 64 {
 		t.Fatalf("digest=%q err=%v", one, err)
 	}
-	two, err := importAdmissionDigest("authenticated", actor, "", "restore-admin", "pl", strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("d", 32))
+	two, err := importAdmissionDigest("authenticated", actor, "", "restore-admin", driver.RestoreHistoryModeSnapshot, "pl", strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("d", 32))
 	if err != nil || one == two || one == strings.Repeat("a", 64) {
 		t.Fatalf("binding digest was not complete/opaque: one=%q two=%q", one, two)
 	}
-	three, err := importAdmissionDigest("authenticated", actor, "", "restore-admin", "pl", strings.Repeat("e", 64), strings.Repeat("b", 64), strings.Repeat("c", 32))
+	three, err := importAdmissionDigest("authenticated", actor, "", "restore-admin", driver.RestoreHistoryModeSnapshot, "pl", strings.Repeat("e", 64), strings.Repeat("b", 64), strings.Repeat("c", 32))
 	if err != nil || one == three {
 		t.Fatalf("changed archive with the same derived digest reused admission binding: one=%q three=%q", one, three)
+	}
+	four, err := importAdmissionDigest("authenticated", actor, "", "restore-admin", driver.RestoreHistoryModeFull, "pl", strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 32))
+	if err != nil || one == four {
+		t.Fatalf("history mode was not bound into admission digest: snapshot=%q full=%q", one, four)
 	}
 }
 
