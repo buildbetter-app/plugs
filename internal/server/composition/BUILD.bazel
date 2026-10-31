@@ -49,6 +49,7 @@ go_test(
         "//internal/core/pipeline",
         "//internal/core/port",
         "//internal/core/restore",
+        "//internal/core/reverseconverter",
         "//internal/core/service",
         "//internal/core/viewops",
         "//internal/integration/converterroundtrip",

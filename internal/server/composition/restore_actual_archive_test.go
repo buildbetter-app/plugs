@@ -19,6 +19,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
@@ -307,6 +308,18 @@ func TestActualArchiveRestoreClaimNextAndTxApplyWithLoggedTestPresence(t *testin
 		t.Fatalf("post-workload census=%+v", postWorkload)
 	}
 
+	converted, err := reverseconverter.ConvertArchive(data)
+	if err != nil {
+		t.Fatalf("actual archive reverse conversion: %v", err)
+	}
+	assertActualArchiveOpaqueMetadata(t, data, converted.JSONL)
+	if path := os.Getenv("PR196_REVERSE_PATH"); path != "" {
+		if err := os.WriteFile(path, converted.JSONL, 0o600); err != nil {
+			t.Fatalf("write reverse JSONL: %v", err)
+		}
+	}
+	t.Logf("actual archive reverse PASS: bytes=%d digest=%s", len(converted.JSONL), converted.Digest)
+
 	// Same-bound production retry must recover the original receipt read-only;
 	// it must not replay the archive into the now-nonempty target.
 	retryBegin, err := f.client.Call(context.Background(), "admin.restore.begin", map[string]any{
@@ -335,6 +348,45 @@ func TestActualArchiveRestoreClaimNextAndTxApplyWithLoggedTestPresence(t *testin
 		t.Fatalf("logged test verifier calls=%d; expected begin/chunk/finish and recovery checks", presenceState.calls)
 	}
 	t.Logf("actual archive workload PASS with test-only stubbed gate: calls=%d final_meta=%+v rows=%d", presenceState.calls, afterRecovery.Meta, len(afterRecovery.Rows))
+}
+
+func assertActualArchiveOpaqueMetadata(t *testing.T, data, jsonl []byte) {
+	t.Helper()
+	archive, err := dumpformat.Read(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("actual archive opaque read: %v", err)
+	}
+	lines := map[string]map[string]json.RawMessage{}
+	for _, raw := range bytes.Split(bytes.TrimSpace(jsonl), []byte{'\n'}) {
+		var line struct {
+			ID       string                     `json:"id"`
+			Metadata map[string]json.RawMessage `json:"metadata"`
+		}
+		if err := json.Unmarshal(raw, &line); err != nil || line.ID == "" {
+			continue
+		}
+		lines[line.ID] = line.Metadata
+	}
+	for _, record := range archive.Records("bead") {
+		metadata, ok := lines[record.ID]
+		if !ok {
+			t.Fatalf("reverse JSONL omitted bead %s", record.ID)
+		}
+		for _, field := range dumpformat.OpaqueIssueFields() {
+			value, present := record.Source.Fields[field]
+			if !present {
+				continue
+			}
+			want, err := json.Marshal(value)
+			if err != nil {
+				t.Fatalf("marshal source %s/%s: %v", record.ID, field, err)
+			}
+			got, present := metadata["beads."+field]
+			if !present || !bytes.Equal(got, want) {
+				t.Fatalf("reverse opaque %s/%s=%s want %s", record.ID, field, got, want)
+			}
+		}
+	}
 }
 
 func equalStringSlices(a, b []string) bool {

@@ -11,6 +11,8 @@ go_test(
         "//internal/client",
         "//internal/core/dumpformat",
         "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/port",
         "//internal/core/restore",
         "//internal/storage/driver",
         "//internal/storage/sqlite",

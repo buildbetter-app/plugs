@@ -1,11 +1,53 @@
 package dumpformat
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestIssueAwaitIDIsOpaqueTextOnly(t *testing.T) {
+	fixture := newMergeFixture(t, "pl")
+	fixture.records["bead"][0].Source.Fields["await_id"] = "opaque-await/v1\x00"
+	if _, err := Read(bytes.NewReader(fixture.bytes(t, nil))); err != nil {
+		t.Fatalf("opaque await_id was refused: %v", err)
+	}
+
+	fixture.records["bead"][0].Source.Fields["await_id"] = json.Number("1")
+	if _, err := Read(bytes.NewReader(fixture.bytes(t, nil))); err == nil || !strings.Contains(err.Error(), "await_id must be text") {
+		t.Fatalf("non-text await_id was accepted: %v", err)
+	}
+}
+
+func TestOpaqueIssueFieldsAcceptActiveValuesWithoutInterpretation(t *testing.T) {
+	fixture := newMergeFixture(t, "pl")
+	values := map[string]any{
+		"agent_state": "agent-state",
+		"await_id":    "await-id",
+		"await_type":  "human",
+		"ephemeral":   json.Number("1"),
+		"event_kind":  nil,
+		"hook_bead":   "pl-2",
+		"is_template": json.Number("1"),
+		"mol_type":    "formula",
+		"payload":     map[string]any{"state": "waiting"},
+		"role_bead":   "pl-3",
+		"role_type":   "agent",
+		"target":      "pl-4",
+		"timeout_ns":  json.Number("9007199254740993"),
+		"waiters":     []any{"pl-2", nil},
+		"wisp_type":   "run",
+		"work_type":   "workflow",
+	}
+	for field, value := range values {
+		fixture.records["bead"][0].Source.Fields[field] = value
+	}
+	if _, err := Read(bytes.NewReader(fixture.bytes(t, nil))); err != nil {
+		t.Fatalf("opaque issue fields were interpreted or refused: %v", err)
+	}
+}
 
 func TestDetachedValuesPreserveNestedNullAndNumber(t *testing.T) {
 	a := &Archive{byKind: map[string][]Record{"bead": {{Body: Row{"nested": map[string]any{"null": nil, "number": json.Number("9007199254740993"), "array": []any{"original"}}}}}}}

@@ -6,9 +6,11 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -22,6 +24,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/watch"
 	"github.com/buildbetter-app/plugs/internal/server/watchhttp"
 	"github.com/buildbetter-app/plugs/internal/server/webui"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 const e3GrantKey = "e3.acceptance.readers"
@@ -213,7 +217,22 @@ func newE3BrowserHost(f *e3Fixture) *e3BrowserHost {
 func (h *e3BrowserHost) bind(registry *rpc.Registry) error {
 	var err error
 	f := h.f
-	h.views, err = viewops.New(f.store, f.lease, viewops.Config{Views: e3SavedViews{h.policy}, AuthorizeRead: h.policy.AuthorizeRead, OntologyRevision: model.Natural64(1), PolicyVersion: "e3-stored-policy-v1"})
+	var directBlockers viewops.DirectBlockerSource
+	if f.ontologySource != nil {
+		locate := service.StaticOntologySource(f.ontologyRef)
+		directBlockers = func(ctx context.Context, reader driver.Reader, dependent model.Ref, limit int) (viewops.DirectBlockerVerdict, error) {
+			verdict, err := service.ReadDirectBlockers(ctx, reader, service.DirectBlockerRequest{Dependent: dependent, Ontology: locate, Limit: limit})
+			if err != nil {
+				return viewops.DirectBlockerVerdict{}, err
+			}
+			out := viewops.DirectBlockerVerdict{Edges: make([]viewops.DirectBlockerEdge, 0, len(verdict.Edges))}
+			for _, edge := range verdict.Edges {
+				out.Edges = append(out.Edges, viewops.DirectBlockerEdge{Blocker: edge.Blocker, Kind: edge.Kind, State: viewops.DirectBlockerState(edge.State), Reason: edge.Reason})
+			}
+			return out, nil
+		}
+	}
+	h.views, err = viewops.New(f.store, f.lease, viewops.Config{Views: e3SavedViews{h.policy}, AuthorizeRead: h.policy.AuthorizeRead, DirectBlockers: directBlockers, OntologyRevision: f.ontologyRevision, PolicyVersion: "e3-stored-policy-v1"})
 	if err != nil {
 		return err
 	}
@@ -371,4 +390,83 @@ func (f *e3Fixture) seedBrowserMetadata() e3Grant {
 
 func writeE3Bytes(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o644)
+}
+
+// This is a small real-store/HTTP fixture gate, not the five-task E3 run.
+func TestE3ConfiguredDirectBlockerFixture(t *testing.T) {
+	root := os.Getenv("PLUG_WEB_ACCEPTANCE_EVIDENCE_DIR")
+	if root == "" {
+		root = os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+	}
+	if root == "" {
+		root = t.TempDir()
+	}
+	// This small fixture also writes corpus/watch cleanup receipts. Keep them
+	// separate from the full scripted runtime's durable root/e3 artifacts.
+	t.Setenv("PLUG_WEB_ACCEPTANCE_EVIDENCE_DIR", filepath.Join(root, "configured-fixture"))
+	f := newE3FixtureMode(t, true)
+	if f.evidence != filepath.Join(root, "configured-fixture", "e3") || f.evidence == filepath.Join(root, "e3") {
+		t.Fatalf("focused fixture shares the full runtime evidence directory: %s", f.evidence)
+	}
+	f.populate(1, 100)
+	f.seedBrowserMetadata()
+	meta := f.meta()
+	r, err := f.store.Read(f.ctx, driver.View{Incarnation: meta.Incarnation, At: &meta.Head})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := r.Get(f.ctx, []model.Ref{f.ontologyRef})
+	_ = r.Close()
+	if err != nil || len(rows) != 1 || rows[0].Kind != "ontology" || rows[0].Revision != f.ontologyRevision || rows[0].Ref != f.ontologyRef {
+		t.Fatalf("actual protected source: rows=%+v err=%v", rows, err)
+	}
+	body, err := service.MarshalOntologySource(*f.ontologySource)
+	if err != nil || string(rows[0].Body) != string(body) || f.ontologyDigest == "" {
+		t.Fatalf("stored definition differs from Writer/audit source: %v", err)
+	}
+	for _, index := range []int{51, 60, 61} {
+		f.call("tx.apply", map[string]any{
+			"changeSet": model.ChangeSet{Ops: []model.Op{{Kind: model.OpLink, Link: &model.LinkOp{Kind: model.OpLink, From: model.RefByID(e3ID(52), model.Natural64(0)), To: model.RefByID(e3ID(index), model.Natural64(0)), LinkKind: "blocks"}}}},
+			"_meta":     map[string]any{"project": e3Project, "idempotencyKey": e3Key("fixture-blocker-" + e3ID(index))},
+		}, nil)
+	}
+	// A real deletion leaves a dangling link; it must stay unknown instead of
+	// becoming an active blocker or a denied existing target.
+	if _, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{Time: f.clock()}, []conformance.FixtureChange{{Ref: model.RefByID(e3ID(61), model.Natural64(0)), Kind: "bead", Op: model.OpDelete}}); err != nil {
+		t.Fatal(err)
+	}
+	params := map[string]any{"viewId": e3ID(98), "itemId": e3ID(52), "_meta": map[string]any{"project": e3Project}}
+	var result viewops.ExplainResult
+	wire := f.call("view.explain", params, &result)
+	if !result.Included || result.DirectBlockers == nil || result.DirectBlockers.HiddenCount != 1 || len(result.DirectBlockers.Edges) != 2 || strings.Contains(string(wire.Result), e3ID(60)) {
+		t.Fatalf("readable/unknown/count-only HTTP result: %s", wire.Result)
+	}
+	for _, edge := range result.DirectBlockers.Edges {
+		switch edge.Blocker.ID {
+		case e3ID(51):
+			if edge.Blocker != model.RefByID(e3ID(51), model.Natural64(0)) || edge.Kind != "blocks" || edge.State != viewops.DirectBlockerUnsatisfied || edge.Reason != "blocker status does not satisfy blocks" {
+				t.Fatalf("readable authoritative edge: %+v", edge)
+			}
+		case e3ID(61):
+			if edge.State != viewops.DirectBlockerUnknown {
+				t.Fatalf("missing target became active: %+v", edge)
+			}
+		default:
+			t.Fatalf("unexpected exposed edge: %+v", edge)
+		}
+	}
+	writeE3JSON(t, filepath.Join(f.evidence, "configured-blocker-http.json"), map[string]any{"sourceHead": f.receipt.SourceHead, "sourceTree": f.receipt.SourceTree, "sourceRef": f.ontologyRef, "sourceRevision": f.ontologyRevision, "snapshotHead": f.meta().Head, "response": wire})
+	ctx, cancel := context.WithCancel(f.ctx)
+	cancel()
+	partial, err := f.browser.views.Explain(ctx, model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, viewops.ExplainRequest{ViewID: e3ID(98), ItemID: e3ID(52), Project: e3Project})
+	var typed *model.Error
+	if !errors.As(err, &typed) || typed.Data.Code != "busy" || partial.DirectBlockers != nil || partial.Included {
+		t.Fatalf("canceled explain did not refuse atomically: %+v %v", partial, err)
+	}
+	// Invalid protected source must refuse the whole HTTP result, even with
+	// already-readable blocker data; no partial successful edge may escape.
+	if _, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{Time: f.clock()}, []conformance.FixtureChange{{Ref: f.ontologyRef, Kind: "ontology", Op: model.OpPatch, Body: []byte(`{"base":{"unexpected":true}}`)}}); err != nil {
+		t.Fatal(err)
+	}
+	f.expectCode("view.explain", params, "invalid_params")
 }

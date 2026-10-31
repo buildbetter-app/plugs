@@ -535,6 +535,11 @@ func compareImportBinding(ctx context.Context, r driver.Reader, evidence archive
 type planMode uint8
 
 const (
+	beadsAgentStateMetadataKey = "beads.agent_state"
+	beadsAwaitIDMetadataKey    = "beads.await_id"
+)
+
+const (
 	planLegacy planMode = iota
 	planImport
 	planInspection
@@ -618,6 +623,19 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 				}
 				metadata[key] = encoded
 			}
+		}
+		for _, field := range dumpformat.OpaqueIssueFields() {
+			value, present := source.Source.Fields[field]
+			if !present {
+				continue
+			}
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				return restorePlan{}, fmt.Errorf("bead %s opaque field %s: %w", source.ID, field, err)
+			}
+			// Opaque Beads columns are stored as reserved metadata. Plug never
+			// interprets these values; the importer owns their meaning.
+			metadata["beads."+field] = encoded
 		}
 		for key, value := range source.Body {
 			switch key {
