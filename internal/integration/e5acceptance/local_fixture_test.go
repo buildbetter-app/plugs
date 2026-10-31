@@ -132,6 +132,10 @@ type localFixture struct {
 	sourceRoot  string
 	evidence    map[string]any
 	requests    int
+	// allowClosedStoreFailure is used only by the failover fixture. Its
+	// primary is intentionally killed, so releasing the old SQL lease during
+	// cleanup can legitimately return the dead connection error.
+	allowClosedStoreFailure bool
 }
 
 func demand(t *testing.T, ok bool, message string) {
@@ -164,6 +168,34 @@ func writeEvidence(t *testing.T, name string, data []byte) {
 	}
 	demand(t, os.MkdirAll(output, 0o700) == nil, "evidence directory failed")
 	demand(t, os.WriteFile(filepath.Join(output, name), data, 0o600) == nil, "evidence write failed")
+}
+
+func (f *localFixture) startLeaseRenewal() {
+	renewCtx, stopRenewal := context.WithCancel(context.Background())
+	f.stopRenewal, f.renewed = stopRenewal, make(chan error, 1)
+	lease, done := f.lease, f.renewed
+	go func() {
+		ticker := time.NewTicker(driver.LeaseRenewEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-renewCtx.Done():
+				done <- nil
+				return
+			case <-ticker.C:
+				renewCallCtx, cancel := context.WithTimeout(renewCtx, driver.LeaseTTL-2*driver.LeaseRenewEvery)
+				err := lease.Renew(renewCallCtx)
+				cancel()
+				if err != nil {
+					if renewCtx.Err() != nil {
+						err = nil
+					}
+					done <- err
+					return
+				}
+			}
+		}
+	}()
 }
 
 func newLocalFixture(t *testing.T) *localFixture {
@@ -241,38 +273,18 @@ func newLocalFixture(t *testing.T) *localFixture {
 	f.evidence["storageBackend"] = backend
 	f.lease, err = f.store.Lease(context.Background(), "e5-local-wasi", driver.LeaseTTL)
 	demand(t, err == nil, "owned memory lease unavailable")
-	renewCtx, stopRenewal := context.WithCancel(context.Background())
-	f.stopRenewal, f.renewed = stopRenewal, make(chan error, 1)
-	lease, done := f.lease, f.renewed
-	go func() {
-		ticker := time.NewTicker(driver.LeaseRenewEvery)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-renewCtx.Done():
-				done <- nil
-				return
-			case <-ticker.C:
-				renewCallCtx, cancel := context.WithTimeout(renewCtx, driver.LeaseTTL-2*driver.LeaseRenewEvery)
-				err := lease.Renew(renewCallCtx)
-				cancel()
-				if err != nil {
-					if renewCtx.Err() != nil {
-						err = nil
-					}
-					done <- err
-					return
-				}
-			}
-		}
-	}()
+	f.startLeaseRenewal()
 	t.Cleanup(func() {
 		f.stopRenewal()
-		if err := <-f.renewed; err != nil {
+		if err := <-f.renewed; err != nil && !f.allowClosedStoreFailure {
 			t.Errorf("storage lease renewal: %v", err)
 		}
-		demand(t, f.lease.Release(context.Background()) == nil, "lease cleanup failed")
-		demand(t, f.store.Close() == nil, "store cleanup failed")
+		if err := f.lease.Release(context.Background()); err != nil && !f.allowClosedStoreFailure {
+			demand(t, false, "lease cleanup failed")
+		}
+		if err := f.store.Close(); err != nil && !f.allowClosedStoreFailure {
+			demand(t, false, "store cleanup failed")
+		}
 	})
 	var seed []conformance.FixtureChange
 	for _, row := range []struct{ id, title string }{{targetID, "seed"}, {watchedID, "observed"}} {
