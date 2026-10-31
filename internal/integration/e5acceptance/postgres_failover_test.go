@@ -2,6 +2,7 @@ package e5acceptance_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -59,11 +60,10 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client := &failoverClient{current: primary, primary: primary, primaryAcked: map[string]struct{}{}}
-	var firstRequest atomic.Bool
+	client := &failoverClient{current: primary, primary: primary, primaryAcked: map[string]publicWinnerEvidence{}}
 	var failoverOnce sync.Once
-	killStarted := make(chan struct{})
 	switchDone := make(chan struct{})
+	client.switchDone = switchDone
 	type takeoverResult struct {
 		fixture *localFixture
 		killed  time.Time
@@ -71,27 +71,25 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 	}
 	takeover := make(chan takeoverResult, 1)
 
-	// Kill only after the workload has entered the HTTP path. A short delay
-	// keeps this a mid-run failure while allowing the primary to acknowledge a
-	// non-zero prefix of claims for the loss accounting below.
+	// An acknowledged claim starts the outage while other calls are in flight.
+	// Stop dispatching new calls to the dead endpoint during the explicit
+	// topology switch; retain and account for any overlapping failed calls.
 	trigger := func() {
 		failoverOnce.Do(func() {
+			defer close(switchDone)
+			killed := time.Now()
 			if err := containers.killPrimary(); err != nil {
 				takeover <- takeoverResult{err: err}
 				return
 			}
-			killed := time.Now()
-			close(killStarted)
 			replacement, err := containers.promoteAndOpen(t, primary)
 			if err == nil {
 				client.swap(replacement)
-				close(switchDone)
-			} else {
-				close(switchDone)
 			}
 			takeover <- takeoverResult{fixture: replacement, killed: killed, err: err}
 		})
 	}
+	client.onPrimaryCommit = trigger
 
 	const sessions = 200
 	tokens := make([]string, sessions)
@@ -122,6 +120,8 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 		conflicts      int
 		busy           int
 		rateLimited    int
+		outageRetries  int
+		outageCodes    map[string]int
 		finalRetryable bool
 		index          int
 		key            string
@@ -138,18 +138,21 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 			defer wg.Done()
 			<-start
 			var last publicClaimReply
-			outcome := workerResult{index: i, key: key, agent: agents[i]}
+			outcome := workerResult{index: i, key: key, agent: agents[i], outageCodes: map[string]int{}}
 			for attempt := 1; attempt <= publicRetryBudget; attempt++ {
 				outcome.attempts++
 				httpSem <- struct{}{}
-				if firstRequest.CompareAndSwap(false, true) {
-					go func() {
-						time.Sleep(75 * time.Millisecond)
-						trigger()
-					}()
-				}
-				last = client.claim(key, tokens[i])
+				var interrupted bool
+				last, interrupted = client.claim(key, tokens[i], agents[i])
 				<-httpSem
+				if interrupted && attempt < publicRetryBudget {
+					// Only a failed call to the old composition overlapping
+					// the deliberate kill gets this topology retry. Preserve
+					// its class separately; never relabel it as public busy.
+					outcome.outageRetries++
+					outcome.outageCodes[last.errorCode]++
+					continue
+				}
 				switch last.outcome() {
 				case publicWriteConflict:
 					outcome.conflicts++
@@ -158,20 +161,13 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 				case publicRateLimited:
 					outcome.rateLimited++
 				default:
-					results <- workerResult{final: last, attempts: outcome.attempts, conflicts: outcome.conflicts, busy: outcome.busy, rateLimited: outcome.rateLimited, index: i, key: key, agent: agents[i]}
+					outcome.final = last
+					results <- outcome
 					return
 				}
 				if attempt == publicRetryBudget {
 					outcome.finalRetryable = true
 					break
-				}
-				// Once the primary is dead, hold retryable workers until the
-				// promoted composition is installed. This prevents the fixed
-				// 64-attempt client budget from expiring during promotion.
-				select {
-				case <-killStarted:
-					<-switchDone
-				default:
 				}
 				switch last.outcome() {
 				case publicRateLimited:
@@ -180,14 +176,20 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 					time.Sleep(time.Duration(1+i%4) * time.Millisecond)
 				}
 			}
-			results <- workerResult{final: last, attempts: outcome.attempts, conflicts: outcome.conflicts, busy: outcome.busy, rateLimited: outcome.rateLimited, finalRetryable: outcome.finalRetryable, index: i, key: key, agent: agents[i]}
+			outcome.final = last
+			results <- outcome
 		}(i, key)
 	}
 	close(start)
 	wg.Wait()
 	close(results)
 
-	result := <-takeover
+	var result takeoverResult
+	select {
+	case result = <-takeover:
+	case <-time.After(time.Minute):
+		t.Fatal("primary workload never acknowledged a claim to trigger failover")
+	}
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
@@ -206,7 +208,16 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 	errorCodes := map[string]int{}
 	errorHints := map[string]int{}
 	httpStatuses := map[string]int{}
+	outageCodes := map[string]int{}
+	outageRetries := 0
 	acknowledgedMissing := 0
+	primaryAcked := client.primaryAcknowledged()
+	for winnerID, evidence := range primaryAcked {
+		if err := validatePersistedClaim(reader, winnerID, evidence.principal, &evidence.result, true, model.Natural64(2)); err != nil {
+			acknowledgedMissing++
+		}
+	}
+	t.Logf("postgres failover retention: primary_acknowledged=%d acknowledged_missing_after_promotion=%d", len(primaryAcked), acknowledgedMissing)
 	for outcome := range results {
 		metrics.Received++
 		httpStatuses[strconv.Itoa(outcome.final.status)]++
@@ -214,6 +225,10 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 		metrics.Conflicts += outcome.conflicts
 		metrics.Busy += outcome.busy
 		metrics.RateLimited += outcome.rateLimited
+		outageRetries += outcome.outageRetries
+		for code, count := range outcome.outageCodes {
+			outageCodes[code] += count
+		}
 		expectedKey := fmt.Sprintf("%032x", 2000+outcome.index)
 		demand(t, outcome.key == expectedKey && outcome.final.key == expectedKey, fmt.Sprintf("failover worker %d response was correlated to the wrong key", outcome.index))
 		demand(t, equalJSONValues(outcome.agent, agents[outcome.index]), fmt.Sprintf("failover worker %d principal correlation changed", outcome.index))
@@ -235,12 +250,10 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 			metrics.Nulls++
 		case publicWriteConflict, publicBusy, publicRateLimited:
 			metrics.TerminalRetryable++
-			acknowledgedMissing++
 			errorCodes[outcome.final.errorCode]++
 			errorHints[sanitizePublicHint(outcome.final.errorHint)]++
 		default:
 			metrics.Errors++
-			acknowledgedMissing++
 			code := outcome.final.errorCode
 			if code == "" {
 				if outcome.final.protocolError != "" {
@@ -259,10 +272,19 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 	if observed, err := standby.store.Meta(context.Background()); err == nil {
 		promotedHead = observed.Head.String()
 	}
-	t.Logf("postgres failover claimNext partial/final: launched=%d received=%d A=%d C=%d B=%d L=%d S=%d N=%d E=%d X=%d primary_attempts=%d promoted_attempts=%d primary_acknowledged=%d new_primary_commit_observed=%t promoted_head=%s http_statuses=%s error_codes=%s error_hints=%s", metrics.Launched, metrics.Received, metrics.Attempts, metrics.Conflicts, metrics.Busy, metrics.RateLimited, metrics.Successes, metrics.Nulls, metrics.Errors, metrics.TerminalRetryable, client.primaryAttempts.Load(), client.promotedAttempts.Load(), len(client.primaryAcknowledged()), !firstNewPrimaryCommit.IsZero(), promotedHead, formatPublicCounters(httpStatuses), formatPublicCounters(errorCodes), formatPublicCounters(errorHints))
-	if err := metrics.validateAccounting(false); err != nil {
+	t.Logf("postgres failover claimNext partial/final: launched=%d received=%d A=%d C=%d B=%d L=%d S=%d N=%d E=%d X=%d O=%d primary_attempts=%d promoted_attempts=%d primary_acknowledged=%d new_primary_commit_observed=%t promoted_head=%s http_statuses=%s error_codes=%s error_hints=%s outage_error_codes=%s", metrics.Launched, metrics.Received, metrics.Attempts, metrics.Conflicts, metrics.Busy, metrics.RateLimited, metrics.Successes, metrics.Nulls, metrics.Errors, metrics.TerminalRetryable, outageRetries, client.primaryAttempts.Load(), client.promotedAttempts.Load(), len(client.primaryAcknowledged()), !firstNewPrimaryCommit.IsZero(), promotedHead, formatPublicCounters(httpStatuses), formatPublicCounters(errorCodes), formatPublicCounters(errorHints), formatPublicCounters(outageCodes))
+	// O counts real failed HTTP attempts during the controlled outage. The
+	// original RPC and final-outcome accounting still applies to A-O, with
+	// the full equation checked explicitly so no attempt disappears.
+	demand(t, metrics.Attempts == metrics.Conflicts+metrics.Busy+metrics.RateLimited+metrics.Successes+metrics.Nulls+metrics.Errors+outageRetries, "failover attempt accounting mismatch including outage retries")
+	rpcMetrics := metrics
+	rpcMetrics.Attempts -= outageRetries
+	if err := rpcMetrics.validateAccounting(false); err != nil {
 		t.Fatal(err)
 	}
+	demand(t, client.primaryAttempts.Load()+client.promotedAttempts.Load() == int64(metrics.Attempts), "failover route attempt accounting mismatch")
+	demand(t, len(client.primaryAcknowledged()) > 0, "primary acknowledged no claims before kill")
+	demand(t, client.promotedAttempts.Load() > 0, "no claims reached the promoted composition")
 	demand(t, metrics.Successes == sessions, fmt.Sprintf("exactly one successful outcome per agent required, successes=%d", metrics.Successes))
 	demand(t, validateWinnerSet(metrics.Winners, expectedWinners, sessions) == nil, "promoted winner set is not exactly the seeded distinct set")
 	for winnerID, evidence := range winnerEvidence {
@@ -270,17 +292,26 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 			t.Fatalf("promoted persisted winner %s failed validation: %v", winnerID, err)
 		}
 	}
-	for winnerID := range client.primaryAcknowledged() {
-		rows, err := reader.Get(context.Background(), []model.Ref{model.RefByID(winnerID, model.Natural64(0))})
-		if err != nil || len(rows) != 1 {
-			acknowledgedMissing++
-		}
-	}
-
 	meta, err := standby.store.Meta(context.Background())
 	demand(t, err == nil, "promoted metadata unavailable")
 	demand(t, meta.Head.String() == strconv.Itoa(sessions+2), fmt.Sprintf("promoted head=%s want=%d", meta.Head, sessions+2))
 	demand(t, acknowledgedMissing == 0, fmt.Sprintf("acknowledged commits missing after promotion=%d", acknowledgedMissing))
+	select {
+	case <-primary.lease.Lost():
+	case <-time.After(driver.LeaseTTL):
+		t.Fatal("old writer did not observe lease loss")
+	}
+	demand(t, standby.lease.Epoch() > primary.lease.Epoch(), "promotion did not advance the writer lease epoch")
+	staleTx, staleErr := standby.store.Write(context.Background(), primary.lease)
+	if staleTx != nil {
+		_ = staleTx.Close()
+	}
+	var fenced driver.ErrFenced
+	demand(t, errors.As(staleErr, &fenced), "promoted store accepted the stale writer lease")
+	staleReply := publicClaimNextToken(primary, fmt.Sprintf("%032x", 9999), tokens[0], closedStart)
+	demand(t, staleReply.outcome() == publicBusy && staleReply.errorHint == "active storage lease was lost", "old composition did not fence requests after lease loss")
+	afterFence, err := standby.store.Meta(context.Background())
+	demand(t, err == nil && afterFence.Head == meta.Head, "stale writer probe changed the promoted head")
 	demand(t, !firstNewPrimaryCommit.IsZero(), "no successful commit observed after promotion")
 	newPrimarySeconds := firstNewPrimaryCommit.Sub(result.killed).Seconds()
 	demand(t, newPrimarySeconds >= 0, fmt.Sprintf("new-primary commit preceded kill: %.3fs", newPrimarySeconds))
@@ -292,9 +323,12 @@ type failoverClient struct {
 	current          *localFixture
 	primary          *localFixture
 	firstNewCommit   atomic.Int64
-	primaryAcked     map[string]struct{}
+	primaryAcked     map[string]publicWinnerEvidence
 	primaryAttempts  atomic.Int64
 	promotedAttempts atomic.Int64
+	switching        bool
+	switchDone       <-chan struct{}
+	onPrimaryCommit  func()
 }
 
 func (c *failoverClient) swap(next *localFixture) {
@@ -311,18 +345,23 @@ func (c *failoverClient) firstNewPrimaryCommit() time.Time {
 	return time.Unix(0, ns)
 }
 
-func (c *failoverClient) primaryAcknowledged() map[string]struct{} {
+func (c *failoverClient) primaryAcknowledged() map[string]publicWinnerEvidence {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	copy := make(map[string]struct{}, len(c.primaryAcked))
-	for winner := range c.primaryAcked {
-		copy[winner] = struct{}{}
+	copy := make(map[string]publicWinnerEvidence, len(c.primaryAcked))
+	for winner, evidence := range c.primaryAcked {
+		copy[winner] = evidence
 	}
 	return copy
 }
 
-func (c *failoverClient) claim(key, token string) publicClaimReply {
+func (c *failoverClient) claim(key, token string, agent model.PrincipalRef) (publicClaimReply, bool) {
 	c.mu.RLock()
+	if c.switching {
+		c.mu.RUnlock()
+		<-c.switchDone
+		c.mu.RLock()
+	}
 	f := c.current
 	primary := c.primary
 	c.mu.RUnlock()
@@ -333,18 +372,36 @@ func (c *failoverClient) claim(key, token string) publicClaimReply {
 	}
 	reply := publicClaimNextToken(f, key, token, closedStart)
 	if reply.outcome() == publicSuccess {
+		startSwitch := false
 		c.mu.Lock()
 		if f == primary {
 			if c.primaryAcked == nil {
-				c.primaryAcked = map[string]struct{}{}
+				c.primaryAcked = map[string]publicWinnerEvidence{}
 			}
-			c.primaryAcked[reply.winnerID] = struct{}{}
+			c.primaryAcked[reply.winnerID] = publicWinnerEvidence{principal: agent, result: reply.commit.Results[0]}
+			if !c.switching {
+				c.switching = true
+				startSwitch = true
+			}
 		} else {
 			c.firstNewCommit.CompareAndSwap(0, time.Now().UnixNano())
 		}
 		c.mu.Unlock()
+		if startSwitch {
+			go c.onPrimaryCommit()
+		}
 	}
-	return reply
+	c.mu.RLock()
+	overlap := f == primary && c.switching
+	c.mu.RUnlock()
+	interrupted := false
+	if overlap && reply.outcome() == publicOther && reply.protocolError == "" {
+		switch reply.errorCode {
+		case "authz_unavailable", "internal_error", "subscriber_unavailable":
+			interrupted = true
+		}
+	}
+	return reply, interrupted
 }
 
 var closedStart = func() <-chan struct{} {
@@ -466,7 +523,12 @@ func (c *failoverContainers) promoteAndOpen(t *testing.T, primary *localFixture)
 		return nil, fmt.Errorf("compose promoted standby: %w", err)
 	}
 	replacement := &localFixture{store: store, lease: lease, provider: primary.provider, tokens: primary.tokens, base: base, composition: composition, host: primary.host, evidence: map[string]any{}}
+	replacement.startLeaseRenewal()
 	t.Cleanup(func() {
+		replacement.stopRenewal()
+		if err := <-replacement.renewed; err != nil {
+			t.Errorf("promoted standby lease renewal: %v", err)
+		}
 		if err := lease.Release(context.Background()); err != nil {
 			t.Errorf("promoted standby lease cleanup: %v", err)
 		}

@@ -168,6 +168,34 @@ func writeEvidence(t *testing.T, name string, data []byte) {
 	demand(t, os.WriteFile(filepath.Join(output, name), data, 0o600) == nil, "evidence write failed")
 }
 
+func (f *localFixture) startLeaseRenewal() {
+	renewCtx, stopRenewal := context.WithCancel(context.Background())
+	f.stopRenewal, f.renewed = stopRenewal, make(chan error, 1)
+	lease, done := f.lease, f.renewed
+	go func() {
+		ticker := time.NewTicker(driver.LeaseRenewEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-renewCtx.Done():
+				done <- nil
+				return
+			case <-ticker.C:
+				renewCallCtx, cancel := context.WithTimeout(renewCtx, driver.LeaseTTL-2*driver.LeaseRenewEvery)
+				err := lease.Renew(renewCallCtx)
+				cancel()
+				if err != nil {
+					if renewCtx.Err() != nil {
+						err = nil
+					}
+					done <- err
+					return
+				}
+			}
+		}
+	}()
+}
+
 func newLocalFixture(t *testing.T) *localFixture {
 	t.Helper()
 	f := &localFixture{tokens: map[string]string{}, evidence: map[string]any{}}
@@ -264,31 +292,7 @@ func newLocalFixture(t *testing.T) *localFixture {
 	f.evidence["storageBackend"] = backend
 	f.lease, err = f.store.Lease(context.Background(), "e5-local-wasi", driver.LeaseTTL)
 	demand(t, err == nil, "owned memory lease unavailable")
-	renewCtx, stopRenewal := context.WithCancel(context.Background())
-	f.stopRenewal, f.renewed = stopRenewal, make(chan error, 1)
-	lease, done := f.lease, f.renewed
-	go func() {
-		ticker := time.NewTicker(driver.LeaseRenewEvery)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-renewCtx.Done():
-				done <- nil
-				return
-			case <-ticker.C:
-				renewCallCtx, cancel := context.WithTimeout(renewCtx, driver.LeaseTTL-2*driver.LeaseRenewEvery)
-				err := lease.Renew(renewCallCtx)
-				cancel()
-				if err != nil {
-					if renewCtx.Err() != nil {
-						err = nil
-					}
-					done <- err
-					return
-				}
-			}
-		}
-	}()
+	f.startLeaseRenewal()
 	t.Cleanup(func() {
 		f.stopRenewal()
 		if err := <-f.renewed; err != nil && !f.allowClosedStoreFailure {
