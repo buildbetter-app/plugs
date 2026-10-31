@@ -203,6 +203,8 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 	standby := result.fixture
 	reader := standby.reader(t)
 	winnerEvidence := map[string]publicWinnerEvidence{}
+	errorCodes := map[string]int{}
+	errorHints := map[string]int{}
 	acknowledgedMissing := 0
 	for outcome := range results {
 		metrics.Received++
@@ -232,11 +234,26 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 		case publicWriteConflict, publicBusy, publicRateLimited:
 			metrics.TerminalRetryable++
 			acknowledgedMissing++
+			errorCodes[outcome.final.errorCode]++
+			errorHints[sanitizePublicHint(outcome.final.errorHint)]++
 		default:
 			metrics.Errors++
 			acknowledgedMissing++
+			code := outcome.final.errorCode
+			if code == "" {
+				if outcome.final.protocolError != "" {
+					code = "protocol_error"
+				} else {
+					code = "other_error"
+				}
+			}
+			errorCodes[code]++
+			errorHints[sanitizePublicHint(outcome.final.errorHint)]++
 		}
 	}
+	// Retain sanitized outcome evidence even when an unchanged assertion below
+	// fails; never log response bodies, tokens, or raw protocol errors.
+	t.Logf("postgres failover claimNext partial/final: launched=%d received=%d A=%d C=%d B=%d L=%d S=%d N=%d E=%d X=%d primary_acknowledged=%d new_primary_commit_observed=%t error_codes=%s error_hints=%s", metrics.Launched, metrics.Received, metrics.Attempts, metrics.Conflicts, metrics.Busy, metrics.RateLimited, metrics.Successes, metrics.Nulls, metrics.Errors, metrics.TerminalRetryable, len(client.primaryAcknowledged()), !firstNewPrimaryCommit.IsZero(), formatPublicCounters(errorCodes), formatPublicCounters(errorHints))
 	if err := metrics.validateAccounting(false); err != nil {
 		t.Fatal(err)
 	}
