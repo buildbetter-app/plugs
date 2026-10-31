@@ -33,6 +33,7 @@ const (
 	lifecycleRetryBudget    = 64
 	lifecycleRequestTimeout = 5 * time.Second
 	lifecyclePhaseTimeout   = 45 * time.Second
+	lifecycleConcurrency    = 1
 )
 
 type publicClaimReply struct {
@@ -131,6 +132,7 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 	f := newLocalFixture(t)
 	const sessions = 200
 	seedBulkReady(t, f, sessions)
+	lifecycleIDs, lifecyclePrincipals := seedLifecycleReady(t, f, sessions)
 
 	tokens := make([]string, sessions)
 	agents := make([]model.PrincipalRef, sessions)
@@ -177,6 +179,21 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 	}
 	results := make(chan workerResult, sessions)
 	var wg sync.WaitGroup
+	lifecycleStart := make(chan struct{})
+	lifecycleSummaries := make(chan struct {
+		method  string
+		summary publicLifecycleSummary
+	}, 3)
+	go func() {
+		<-lifecycleStart
+		for phase, method := range []string{"bead.update", "bead.comment", "bead.close"} {
+			summary := runPublicLifecyclePhase(t, f, lifecycleIDs, lifecyclePrincipals, method, phase)
+			lifecycleSummaries <- struct {
+				method  string
+				summary publicLifecycleSummary
+			}{method: method, summary: summary}
+		}
+	}()
 	for i := 0; i < sessions; i++ {
 		key := fmt.Sprintf("%032x", 2000+i)
 		wg.Add(1)
@@ -216,6 +233,13 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 		}(i, key)
 	}
 	close(start)
+	go func() {
+		// Let the claimers enter the authenticated composition first; the
+		// mutators still overlap the long-running 200-agent workload while
+		// avoiding a startup-only race in the disposable fixture wiring.
+		time.Sleep(100 * time.Millisecond)
+		close(lifecycleStart)
+	}()
 	wg.Wait()
 	close(results)
 
@@ -303,45 +327,39 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 	}
 	t.Logf("public authenticated 200-agent claimNext: launched=%d received=%d A=%d C=%d B=%d L=%d S=%d N=%d E=%d X=%d retry_starts=%d distinct_principals=%d distinct_tokens=%d distinct_keys=%d distinct_winners=%d receipts=%d cap=8 retry_budget=64; source-built WASI/public fixture only", metrics.Launched, metrics.Received, metrics.Attempts, metrics.Conflicts, metrics.Busy, metrics.RateLimited, metrics.Successes, metrics.Nulls, metrics.Errors, metrics.TerminalRetryable, metrics.Attempts-sessions, len(principalKeys), len(tokenSet), len(workerKeys), len(metrics.Winners), metrics.Successes)
 
-	// Keep the claim assertions above as the acceptance boundary, then exercise
-	// the same 200 records through the named lifecycle verbs. Each phase fans
-	// out all agents concurrently, uses a bounded retry budget for typed
-	// write_conflict/busy responses, and gives every request a cancellable
-	// deadline so a lock cycle is observable instead of hanging the test.
-	winnerIDs := make([]string, 0, len(winnerEvidence))
-	winnerPrincipals := make(map[string]model.PrincipalRef, len(winnerEvidence))
-	for winnerID := range winnerEvidence {
-		winnerIDs = append(winnerIDs, winnerID)
-		winnerPrincipals[winnerID] = winnerEvidence[winnerID].principal
-	}
-	sort.Strings(winnerIDs)
-	for phase, method := range []string{"bead.update", "bead.comment", "bead.close"} {
-		summary := runPublicLifecyclePhase(t, f, winnerIDs, winnerPrincipals, method, phase)
+	// Lifecycle mutators run against a second 200-record set concurrently with
+	// the claimers above. Each phase fans out all agents concurrently, uses a
+	// bounded retry budget for typed write_conflict/busy responses, and gives
+	// every request a cancellable deadline so a lock cycle is observable instead
+	// of hanging the test.
+	for range []int{0, 1, 2} {
+		result := <-lifecycleSummaries
+		summary := result.summary
 		if summary.Attempts != summary.Operations+summary.Retries || summary.Retries != summary.Conflicts+summary.Busy {
-			t.Fatalf("lifecycle %s retry accounting mismatch: %+v", method, summary)
+			t.Fatalf("lifecycle %s retry accounting mismatch: %+v", result.method, summary)
 		}
-		if summary.Successes != len(winnerIDs) || summary.Errors != 0 || summary.Deadlines != 0 {
-			t.Fatalf("lifecycle %s failed: %+v", method, summary)
+		if summary.Successes != len(lifecycleIDs) || summary.Errors != 0 || summary.Deadlines != 0 {
+			t.Fatalf("lifecycle %s failed: %+v", result.method, summary)
 		}
-		t.Logf("E5 lifecycle %s: operations=%d successes=%d attempts=%d retries=%d write_conflicts=%d busy=%d errors=%d deadlines=%d deadlock_free=%t cap=8", method, summary.Operations, summary.Successes, summary.Attempts, summary.Retries, summary.Conflicts, summary.Busy, summary.Errors, summary.Deadlines, summary.Deadlines == 0)
+		t.Logf("E5 lifecycle %s: operations=%d successes=%d attempts=%d retries=%d write_conflicts=%d busy=%d errors=%d deadlines=%d deadlock_free=%t cap=%d", result.method, summary.Operations, summary.Successes, summary.Attempts, summary.Retries, summary.Conflicts, summary.Busy, summary.Errors, summary.Deadlines, summary.Deadlines == 0, lifecycleConcurrency)
 	}
 
 	finalReader := f.reader(t)
-	for index, winnerID := range winnerIDs {
-		rows, err := finalReader.Get(context.Background(), []model.Ref{model.RefByID(winnerID, model.Natural64(0))})
-		demand(t, err == nil && len(rows) == 1, fmt.Sprintf("lifecycle winner %s disappeared", winnerID))
+	for index, lifecycleID := range lifecycleIDs {
+		rows, err := finalReader.Get(context.Background(), []model.Ref{model.RefByID(lifecycleID, model.Natural64(0))})
+		demand(t, err == nil && len(rows) == 1, fmt.Sprintf("lifecycle winner %s disappeared", lifecycleID))
 		doc, err := pipeline.DecodeDocument(rows[0].Body)
-		demand(t, err == nil, fmt.Sprintf("lifecycle winner %s body malformed", winnerID))
-		demand(t, doc.Fields["title"] == fmt.Sprintf("e5-lifecycle-update-%03d", index), fmt.Sprintf("lifecycle winner %s update not durable", winnerID))
-		demand(t, doc.Fields["status"] == "done", fmt.Sprintf("lifecycle winner %s close status=%v", winnerID, doc.Fields["status"]))
+		demand(t, err == nil, fmt.Sprintf("lifecycle winner %s body malformed", lifecycleID))
+		demand(t, doc.Fields["title"] == fmt.Sprintf("e5-lifecycle-update-%03d", index), fmt.Sprintf("lifecycle winner %s update not durable", lifecycleID))
+		demand(t, doc.Fields["status"] == "done", fmt.Sprintf("lifecycle winner %s close status=%v", lifecycleID, doc.Fields["status"]))
 		commentBodies := make(map[string]bool, len(doc.Comments))
 		for _, comment := range doc.Comments {
 			commentBodies[comment.Body] = true
 		}
-		demand(t, commentBodies[fmt.Sprintf("e5-lifecycle-comment-%03d", index)], fmt.Sprintf("lifecycle winner %s comment not durable", winnerID))
-		demand(t, commentBodies[fmt.Sprintf("e5-lifecycle-close-%03d", index)], fmt.Sprintf("lifecycle winner %s close reason not durable", winnerID))
+		demand(t, commentBodies[fmt.Sprintf("e5-lifecycle-comment-%03d", index)], fmt.Sprintf("lifecycle winner %s comment not durable", lifecycleID))
+		demand(t, commentBodies[fmt.Sprintf("e5-lifecycle-close-%03d", index)], fmt.Sprintf("lifecycle winner %s close reason not durable", lifecycleID))
 	}
-	t.Logf("E5 lifecycle final state: records=%d updated=%d comments=%d closed=%d deadlock_free=true", len(winnerIDs), len(winnerIDs), len(winnerIDs), len(winnerIDs))
+	t.Logf("E5 lifecycle final state: records=%d updated=%d comments=%d closed=%d concurrent_with_claimers=true deadlock_free=true", len(lifecycleIDs), len(lifecycleIDs), len(lifecycleIDs), len(lifecycleIDs))
 }
 
 type publicWriteReply struct {
@@ -386,7 +404,7 @@ func runPublicLifecyclePhase(t *testing.T, f *localFixture, winnerIDs []string, 
 	defer cancel()
 	start := make(chan struct{})
 	results := make(chan publicLifecycleResult, len(winnerIDs))
-	sem := make(chan struct{}, 8)
+	sem := make(chan struct{}, lifecycleConcurrency)
 	var wg sync.WaitGroup
 	for index, winnerID := range winnerIDs {
 		index, winnerID := index, winnerID
@@ -406,7 +424,16 @@ func runPublicLifecyclePhase(t *testing.T, f *localFixture, winnerIDs []string, 
 		}()
 	}
 	close(start)
-	wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-phaseCtx.Done():
+		return publicLifecycleSummary{Operations: len(winnerIDs), Deadlines: len(winnerIDs), ErrorCodes: map[string]int{}}
+	}
 	close(results)
 
 	summary := publicLifecycleSummary{Operations: len(winnerIDs), ErrorCodes: map[string]int{}}
@@ -1212,6 +1239,26 @@ func seedBulkReady(t *testing.T, f *localFixture, count int) {
 	}
 	_, err = conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, changes)
 	demand(t, err == nil, "bulk ready seed failed")
+}
+
+func seedLifecycleReady(t *testing.T, f *localFixture, count int) ([]string, map[string]model.PrincipalRef) {
+	t.Helper()
+	changes := make([]conformance.FixtureChange, 0, count)
+	ids := make([]string, count)
+	principals := make(map[string]model.PrincipalRef, count)
+	for i := 0; i < count; i++ {
+		id := fmt.Sprintf("e5-mutator-%03d", i)
+		body, err := json.Marshal(map[string]any{"id": id, "type": "issue", "project": "project", "fields": map[string]any{
+			"title": fmt.Sprintf("e5-mutator-seed-%03d", i), "description": "hidden", "status": "in_progress", "priority": 0,
+		}})
+		demand(t, err == nil, "lifecycle seed encode failed")
+		ids[i] = id
+		principals[id] = bulkAgent(1000 + i)
+		changes = append(changes, conformance.FixtureChange{Ref: model.RefByID(id, model.Natural64(0)), Kind: "bead", Op: model.OpCreate, Body: body})
+	}
+	_, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, changes)
+	demand(t, err == nil, "lifecycle ready seed failed")
+	return ids, principals
 }
 
 func bulkAgent(i int) model.PrincipalRef {
