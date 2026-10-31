@@ -91,8 +91,10 @@ func presenceError(err error) error {
 // ImportHook is the optional trusted host bridge for validated offline
 // converter archives. The manager owns the authenticated paged session and
 // supplies the complete archive only after its checksum, manifest and caller
-// checks have succeeded. Native archives never use this hook.
-type ImportHook func(context.Context, string, model.PrincipalRef, []byte, string, model.WriteMeta, Presence) (RestoreStatus, error)
+// checks have succeeded. Native archives never use this hook. The explicit
+// history policy is passed separately from write metadata so it cannot be
+// confused with an ordinary graph write field.
+type ImportHook func(context.Context, string, model.PrincipalRef, []byte, string, driver.RestoreHistoryMode, model.WriteMeta, Presence) (RestoreStatus, error)
 
 type nativeRecord struct {
 	Ref      model.Ref       `json:"ref"`
@@ -343,6 +345,7 @@ type restoreSession struct {
 	id          string
 	manifest    map[string]any
 	history     string
+	historyMode driver.RestoreHistoryMode
 	hash        string
 	principal   model.PrincipalRef
 	agentLabel  string
@@ -590,11 +593,13 @@ func (m *Manager) beginAs(ctx context.Context, principal model.PrincipalRef, man
 	if err := m.requireLease(); err != nil {
 		return RestoreStatus{}, err
 	}
-	if history == "" {
-		history = "full"
+	historyMode, modeErr := driver.ParseRestoreHistoryMode(history)
+	if modeErr != nil {
+		return RestoreStatus{}, restoreHistoryModelError(modeErr)
 	}
-	if history != "full" && history != "head" {
-		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "history must be full or head"}}
+	archiveHistory := "full"
+	if historyMode == driver.RestoreHistoryModeSnapshot {
+		archiveHistory = "head"
 	}
 	manifestData, err := json.Marshal(manifest)
 	if err != nil {
@@ -603,6 +608,9 @@ func (m *Manager) beginAs(ctx context.Context, principal model.PrincipalRef, man
 	var parsed dumpformat.Manifest
 	if err := json.Unmarshal(manifestData, &parsed); err != nil || parsed.Format != dumpformat.Format || parsed.Schema != 1 || (parsed.Scope != dumpformat.Scope && parsed.Scope != "plug-native-store") {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: "unsupported dump manifest"}}
+	}
+	if err := driver.ValidateRestoreHistoryPolicy(historyMode, parsed.History); err != nil {
+		return RestoreStatus{}, restoreHistoryModelError(err)
 	}
 	// Converter imports perform the empty-target check in the trusted adapter,
 	// which first attempts read-only receipt recovery for a same-bound retry.
@@ -622,7 +630,7 @@ func (m *Manager) beginAs(ctx context.Context, principal model.PrincipalRef, man
 	}
 	id := newID("restore")
 	m.mu.Lock()
-	m.restores[id] = &restoreSession{id: id, manifest: cloneMap(manifest), history: history, hash: hash, principal: principal, agentLabel: meta.AgentLabel, idempotency: meta.IdempotencyKey, pages: map[uint64][]byte{}, state: "receiving"}
+	m.restores[id] = &restoreSession{id: id, manifest: cloneMap(manifest), history: archiveHistory, historyMode: historyMode, hash: hash, principal: principal, agentLabel: meta.AgentLabel, idempotency: meta.IdempotencyKey, pages: map[uint64][]byte{}, state: "receiving"}
 	m.mu.Unlock()
 	return RestoreStatus{RestoreID: id, State: "receiving", ReceivedPages: 0, Warnings: []model.Warning{}}, nil
 }
@@ -746,11 +754,11 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 		return m.fail(id, err)
 	}
 	m.mu.Lock()
-	wantHistory := ""
 	var importHook ImportHook
 	importMeta := meta
+	var historyMode driver.RestoreHistoryMode
 	if current := m.restores[id]; current != nil {
-		wantHistory = current.history
+		historyMode = current.historyMode
 		importHook = m.importHook
 		// The converter profile is bound to the begin operation, not to a
 		// caller-chosen finish key or agent label. Native restore continues to
@@ -763,7 +771,7 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 	}
 	m.mu.Unlock()
 	manifest := archive.Manifest()
-	if wantHistory != "" && manifest.Scope == "plug-native-store" && manifest.History != wantHistory {
+	if historyMode == driver.RestoreHistoryModeFull && manifest.Scope == "plug-native-store" && manifest.History != "full" {
 		return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: "archive history does not match restore request"}})
 	}
 	canonicalManifest, err := json.Marshal(manifest)
@@ -787,7 +795,7 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 			current.state = "applying"
 		}
 		m.mu.Unlock()
-		status, importErr := importHook(ctx, id, principal, archiveBytes, canonicalHash, importMeta, presence)
+		status, importErr := importHook(ctx, id, principal, archiveBytes, canonicalHash, historyMode, importMeta, presence)
 		if importErr != nil {
 			if errors.Is(importErr, driver.ErrRestoreTargetNotEmpty) {
 				importErr = &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target is initialized; restore requires a fully empty store"}}
@@ -848,6 +856,16 @@ func samePrincipal(left, right model.PrincipalRef) bool {
 	leftJSON, leftErr := json.Marshal(left)
 	rightJSON, rightErr := json.Marshal(right)
 	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
+}
+
+func restoreHistoryModelError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if code, details, ok := driver.ErrorMapping(err); ok {
+		return &model.Error{Data: model.ErrorData{Code: code, Hint: err.Error(), Details: details}}
+	}
+	return &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 }
 
 func (m *Manager) fail(id string, err error) (RestoreStatus, error) {

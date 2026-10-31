@@ -154,6 +154,9 @@ type RestoreImportProfile struct {
 	IdempotencyKey string                 `json:"idempotencyKey"`
 	ArchiveDigest  string                 `json:"archiveDigest"`
 	DerivedDigest  string                 `json:"derivedDigest"`
+	// HistoryMode is explicit policy for archive history. Empty input is
+	// normalized to full by Detached; snapshot and partial are opt-in.
+	HistoryMode RestoreHistoryMode `json:"historyMode,omitempty"`
 }
 
 type RestoreImportTx interface {
@@ -168,6 +171,11 @@ func (p RestoreImportProfile) Detached() (RestoreImportProfile, error) {
 	if p.Method != "offline.restore.import" || len(p.IdempotencyKey) < 16 || ValidateCheckpointKey(p.IdempotencyKey) != nil || ValidateCheckpointKey(string(p.SourceStoreID)) != nil || !importDigest(p.ArchiveDigest) || !importDigest(p.DerivedDigest) || !importDigest(p.Admission.AdmissionDigest) {
 		return RestoreImportProfile{}, fmt.Errorf("invalid prepared import binding")
 	}
+	historyMode, err := ParseRestoreHistoryMode(string(p.HistoryMode))
+	if err != nil {
+		return RestoreImportProfile{}, err
+	}
+	p.HistoryMode = historyMode
 	a := p.Admission
 	if (a.Mode == "authenticated" && a.Scope != "") || (a.Mode == "anonymous-local" && a.Scope != "" && ValidateCheckpointKey(a.Scope) != nil) {
 		return RestoreImportProfile{}, fmt.Errorf("import admission scope is not the normalized G4 agent label")

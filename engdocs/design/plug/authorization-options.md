@@ -124,6 +124,44 @@ The contract is data, not decisions. To respect P28d ("core keeps no permission 
 
 **Authentication first.** Policy enforcement requires authentication (checked). `plugin.plan` refuses an authorization plugin with `authz_requires_authn` unless an authentication provider is configured. Anonymous mode exists only without one, so policies never see an anonymous principal.
 
+### Parent/child permission contract (post-stop, 2026-10-31)
+
+The fixed project/team model keeps the later parent/child decision as a
+bounded extension of the #18 candidate; it does not introduce Cedar or
+user-configurable policy. The five rules are:
+
+1. parented create and reparent require edit authorization on the epic/parent to attach;
+2. hidden parents reveal existence only, without content;
+3. epic progress shows visible-child counts plus “N more you can’t see”;
+4. the child remains in its own project;
+5. moving a child needs edit authorization on the child and on the new epic/parent.
+
+The parent is a direct canonical `Ref`. A parented create therefore checks
+ordinary create authorization for the new child and edit authorization on the
+parent. A reparent checks edit authorization on the child and the new parent;
+the old parent is not an authorization target. The link does not change the
+child's `project`, and child creation/reparenting do not grant cross-project
+access. The child continues to use its own project's permissions. A caller
+that can see a child but not its parent may learn only that a parent exists;
+parent content, fields, status and project details remain undisclosed.
+
+The parent-aware epic progress path is a bounded `view.run` interpretation
+over the existing envelope. It selects direct children by canonical parent
+equality, evaluates each child under one content/ontology/current-authority
+binding, and counts only children visible to the caller. Hidden children add
+only to the hidden total rendered as “N more you can’t see”; they have no
+status in the result. Grandchildren and unrelated same-type beads are not
+members of the summary. No new RPC, cursor or result member is released here;
+the hierarchy writer, executable authorization extension, implementation and
+qualification remain separately deferred.
+
+The older #18 statement that parented create and reparent were denied remains
+the historical decision and the current runtime boundary. This section
+supersedes that boundary only as a conditional design target for a future
+separately admitted implementation. It neither installs permits nor changes
+the non-disclosure and cross-project boundaries today; project moves remain
+outside this contract.
+
 **Ontology changes.** The Cedar entity schema is generated from the A3 ontology. That ontology is versioned (P10), fully customizable (D3), and split into a server base plus per-project overlays that overwrite base definitions (P41). A schema change can invalidate a validated policy, so:
 
 - `ontology.plan` and `ontology.apply` regenerate the Cedar schema for every project overlay and revalidate every policy. Apply is refused (`authz_policy_invalid`) if any policy fails.

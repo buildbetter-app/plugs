@@ -223,7 +223,7 @@ func TestRestoreRefusalsDoNotMutateTarget(t *testing.T) {
 	}
 	defer target.Close()
 	key := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	if _, err := target.Client.Call(ctx, "admin.restore.begin", map[string]any{"manifest": manifest, "humanPresence": presence}, key); err != nil {
+	if _, err := target.Client.Call(ctx, "admin.restore.begin", map[string]any{"manifest": manifest, "history": "head", "humanPresence": presence}, key); err != nil {
 		t.Fatal(err)
 	}
 	// A malformed page is rejected before it can enter the session.
@@ -238,7 +238,7 @@ func TestRestoreRefusalsDoNotMutateTarget(t *testing.T) {
 	// The original session remains receiving and a cancellation never writes.
 	manifestValue, _ = wire.DecodeJSON(mustMember(t, archive, "manifest.json"))
 	manifest = manifestValue.(map[string]any)
-	begin, err := target.Client.Call(ctx, "admin.restore.begin", map[string]any{"manifest": manifest, "humanPresence": presence}, key+"03")
+	begin, err := target.Client.Call(ctx, "admin.restore.begin", map[string]any{"manifest": manifest, "history": "head", "humanPresence": presence}, key+"03")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestNativeFullHistoryRefusesBeforeMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest, manifestHash := manifestForRestore(t, archive)
+	manifest, _ := manifestForRestore(t, archive)
 	if archive.Manifest().History != "full" || archive.Manifest().VersionCount < 2 || archive.Manifest().ChangesetCount < 2 {
 		t.Fatalf("fixture did not contain full history: %+v", archive.Manifest())
 	}
@@ -316,12 +316,7 @@ func TestNativeFullHistoryRefusesBeforeMutation(t *testing.T) {
 	}
 	defer lease.Release(ctx)
 	mgr := restore.NewManager(targetStore, lease, trustedPresenceVerifier())
-	status, err := mgr.Begin(ctx, manifest, "full", restore.Presence(presence))
-	if err != nil {
-		t.Fatal(err)
-	}
-	uploadManagerArchive(t, ctx, mgr, status.RestoreID, data, restore.Presence(presence))
-	_, err = mgr.Finish(ctx, status.RestoreID, manifestHash, model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "full-history-target"}, restore.Presence(presence))
+	_, err = mgr.Begin(ctx, manifest, "full", restore.Presence(presence))
 	var typed *model.Error
 	if err == nil || !errors.As(err, &typed) || typed.Data.Code != "restore_violation" || !strings.Contains(typed.Data.Hint, "full-history") {
 		t.Fatalf("full-history archive was not explicitly refused: %T %v", err, err)
