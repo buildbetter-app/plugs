@@ -134,6 +134,32 @@ type fixture struct {
 	key    int
 }
 
+// presencePollGate holds one snapshot poll across session.close and then
+// returns the source's expected not_found result. This models the production
+// race where the session map is removed before the watch worker observes its
+// canceled lifetime.
+type presencePollGate struct {
+	source      watch.PresenceSource
+	calls       atomic.Int32
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce sync.Once
+	releaseOnce sync.Once
+}
+
+func (g *presencePollGate) Snapshot(ctx context.Context, principal model.PrincipalRef, agent, sessionID, project string) ([]byte, error) {
+	if g.calls.Add(1) == 2 {
+		g.startedOnce.Do(func() { close(g.started) })
+		<-g.release
+		return nil, &model.Error{Data: model.ErrorData{Code: "not_found"}}
+	}
+	return g.source.Snapshot(ctx, principal, agent, sessionID, project)
+}
+
+func (g *presencePollGate) Release() {
+	g.releaseOnce.Do(func() { close(g.release) })
+}
+
 func newFixture(t *testing.T) *fixture {
 	return newConfiguredFixture(t, nil)
 }
@@ -153,6 +179,14 @@ func newConfiguredFixture(t *testing.T, policy *serviceBackedPolicy) *fixture {
 // manager. The wrapper still delegates scans and materialization to the real
 // store.
 func newConfiguredFixtureWithLog(t *testing.T, policy *serviceBackedPolicy, wrapLog func(coreevents.Log) coreevents.Log) *fixture {
+	return newConfiguredFixtureWithLogAndPresence(t, policy, wrapLog, nil)
+}
+
+func newConfiguredFixtureWithPresence(t *testing.T, policy *serviceBackedPolicy, wrapPresence func(watch.PresenceSource) watch.PresenceSource) *fixture {
+	return newConfiguredFixtureWithLogAndPresence(t, policy, nil, wrapPresence)
+}
+
+func newConfiguredFixtureWithLogAndPresence(t *testing.T, policy *serviceBackedPolicy, wrapLog func(coreevents.Log) coreevents.Log, wrapPresence func(watch.PresenceSource) watch.PresenceSource) *fixture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	f := &fixture{ctx: ctx, cancel: cancel, store: memory.New(), clock: &testClock{t: time.Date(2026, 10, 29, 15, 0, 0, 0, time.UTC)}}
@@ -220,7 +254,11 @@ func newConfiguredFixtureWithLog(t *testing.T, policy *serviceBackedPolicy, wrap
 		t.Fatal(err)
 	}
 	events := &serverevents.Service{Reader: reader, Cursors: codec}
-	f.watch, err = watch.New(ctx, watch.Config{Events: events, Presence: f.collab, Coalesce: 5 * time.Millisecond, MaxLag: time.Second})
+	presence := watch.PresenceSource(f.collab)
+	if wrapPresence != nil {
+		presence = wrapPresence(presence)
+	}
+	f.watch, err = watch.New(ctx, watch.Config{Events: events, Presence: presence, Coalesce: 5 * time.Millisecond, MaxLag: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -731,6 +769,35 @@ func durableState(t *testing.T, f *fixture) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func TestPresenceWatchCloseDuringInFlightSnapshotReturnsClosed(t *testing.T) {
+	gate := &presencePollGate{started: make(chan struct{}), release: make(chan struct{})}
+	defer gate.Release()
+	f := newConfiguredFixtureWithPresence(t, nil, func(source watch.PresenceSource) watch.PresenceSource {
+		gate.source = source
+		return gate
+	})
+	sessionID := f.session(t, alice)
+	subscription := f.presenceWatch(t, alice, sessionID, "")
+	_ = nextFrame(t, subscription)
+
+	select {
+	case <-gate.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("presence watch did not reach the in-flight snapshot gate")
+	}
+	if _, err := f.callSessionClose(t, alice, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	gate.Release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := subscription.Next(ctx); !errors.Is(err, watch.ErrSubscriptionClosed) {
+		t.Fatalf("session close during presence poll returned %v", err)
+	}
+	waitForWatchCount(t, f, sessionID, 0)
 }
 
 func TestPresenceAndWatchShareRPCSessionLifetimeAndPreserveDurableState(t *testing.T) {
