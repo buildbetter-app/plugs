@@ -245,6 +245,9 @@ func TestActualArchiveRestoreClaimNextAndTxApplyWithLoggedTestPresence(t *testin
 			t.Fatalf("%s retained stale composition generation: page=%s err=%v", method, page.JSON, err)
 		}
 	}
+	if _, err := f.client.Call(ctx, "memory.list", map[string]any{"limit": 1}, ""); err != nil {
+		t.Fatalf("memory.list after restore retained stale composition generation: %v", err)
+	}
 	hello := f.r.RPC.Dispatch(ctx, []byte(`{"jsonrpc":"2.0","id":"hello","method":"server.hello","params":{}}`))
 	var helloResponse struct {
 		Result struct {
