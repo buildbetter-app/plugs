@@ -549,6 +549,7 @@ internal/server/pluginbuild/source_test.go
 internal/server/pluginbuild/store.go
 internal/server/pluginbuild/test_sdk.bzl
 internal/server/pluginhost/BUILD.bazel
+internal/server/pluginhost/README.md
 internal/server/pluginhost/adapters.go
 internal/server/pluginhost/call.go
 internal/server/pluginhost/core_reader.go

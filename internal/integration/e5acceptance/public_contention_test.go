@@ -33,7 +33,7 @@ const (
 	lifecycleRetryBudget    = 64
 	lifecycleRequestTimeout = 5 * time.Second
 	lifecyclePhaseTimeout   = 45 * time.Second
-	lifecycleConcurrency    = 1
+	lifecycleConcurrency    = 8
 )
 
 type publicClaimReply struct {
@@ -233,13 +233,10 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 		}(i, key)
 	}
 	close(start)
-	go func() {
-		// Let the claimers enter the authenticated composition first; the
-		// mutators still overlap the long-running 200-agent workload while
-		// avoiding a startup-only race in the disposable fixture wiring.
-		time.Sleep(100 * time.Millisecond)
-		close(lifecycleStart)
-	}()
+	// Release both workloads together. Lifecycle operations target a separate
+	// 200-record set, so this exercises concurrent storage and callback activity
+	// without changing the claim winner contract.
+	close(lifecycleStart)
 	wg.Wait()
 	close(results)
 
@@ -338,10 +335,13 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 		if summary.Attempts != summary.Operations+summary.Retries || summary.Retries != summary.Conflicts+summary.Busy {
 			t.Fatalf("lifecycle %s retry accounting mismatch: %+v", result.method, summary)
 		}
+		if summary.MaxBusyRetries > lifecycleRetryBudget {
+			t.Fatalf("lifecycle %s exceeded busy retry budget: max=%d budget=%d", result.method, summary.MaxBusyRetries, lifecycleRetryBudget)
+		}
 		if summary.Successes != len(lifecycleIDs) || summary.Errors != 0 || summary.Deadlines != 0 {
 			t.Fatalf("lifecycle %s failed: %+v", result.method, summary)
 		}
-		t.Logf("E5 lifecycle %s: operations=%d successes=%d attempts=%d retries=%d write_conflicts=%d busy=%d errors=%d deadlines=%d deadlock_free=%t cap=%d", result.method, summary.Operations, summary.Successes, summary.Attempts, summary.Retries, summary.Conflicts, summary.Busy, summary.Errors, summary.Deadlines, summary.Deadlines == 0, lifecycleConcurrency)
+		t.Logf("E5 lifecycle %s: operations=%d successes=%d attempts=%d retries=%d write_conflicts=%d busy=%d max_busy_retries=%d errors=%d deadlines=%d deadlock_free=%t cap=%d", result.method, summary.Operations, summary.Successes, summary.Attempts, summary.Retries, summary.Conflicts, summary.Busy, summary.MaxBusyRetries, summary.Errors, summary.Deadlines, summary.Deadlines == 0, lifecycleConcurrency)
 	}
 
 	finalReader := f.reader(t)
@@ -387,15 +387,16 @@ type publicLifecycleResult struct {
 }
 
 type publicLifecycleSummary struct {
-	Operations int
-	Successes  int
-	Attempts   int
-	Retries    int
-	Conflicts  int
-	Busy       int
-	Errors     int
-	Deadlines  int
-	ErrorCodes map[string]int
+	Operations     int
+	Successes      int
+	Attempts       int
+	Retries        int
+	Conflicts      int
+	Busy           int
+	MaxBusyRetries int
+	Errors         int
+	Deadlines      int
+	ErrorCodes     map[string]int
 }
 
 func runPublicLifecyclePhase(t *testing.T, f *localFixture, winnerIDs []string, winnerPrincipals map[string]model.PrincipalRef, method string, phase int) publicLifecycleSummary {
@@ -442,6 +443,9 @@ func runPublicLifecyclePhase(t *testing.T, f *localFixture, winnerIDs []string, 
 		summary.Retries += result.retries
 		summary.Conflicts += result.conflicts
 		summary.Busy += result.busy
+		if result.busy > summary.MaxBusyRetries {
+			summary.MaxBusyRetries = result.busy
+		}
 		if result.deadline {
 			summary.Deadlines++
 			continue
