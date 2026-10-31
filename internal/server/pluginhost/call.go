@@ -66,6 +66,14 @@ func (i *instance) run(ctx context.Context, phase pluginapi.Phase, timeout time.
 	}
 }
 
+// waitIdle waits until the per-instance callback gate is released. It is used
+// by instance pools after a deadline returns while an uncooperative callback
+// is still unwinding in the background.
+func (i *instance) waitIdle() {
+	i.gate <- struct{}{}
+	<-i.gate
+}
+
 func (i *instance) current() (*invocation, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()

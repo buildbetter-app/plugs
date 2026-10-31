@@ -50,11 +50,23 @@ type Binding struct {
 
 type Host struct {
 	instances  map[string]*instance
+	natives    map[string]sdk.Native
 	bindings   []*bound
 	methods    map[string]registeredMethod
 	dispatcher Dispatcher
 	authorize  func(context.Context, string, []pluginapi.Ref) error
 }
+
+const (
+	// maxRuntimeInstances is the settled per-binding WASI pool size. Each
+	// member owns its guest module and linear memory; only the host state store
+	// is shared between members.
+	maxRuntimeInstances = 4
+	// callbackQueueWait is separate from the callback execution budget. A
+	// caller that cannot acquire a runtime in this interval gets a typed,
+	// retryable pool-busy error instead of spending its execution budget queued.
+	callbackQueueWait = 100 * time.Millisecond
+)
 
 type instance struct {
 	manifest     pluginapi.PluginManifest
@@ -68,8 +80,61 @@ type instance struct {
 }
 type bound struct {
 	Binding
-	instance *instance
+	pool *instancePool
 }
+
+type instancePool struct {
+	available chan *instance
+}
+
+func newInstancePool(native sdk.Native, owner *Host, source *instance) (*instancePool, error) {
+	pool := &instancePool{available: make(chan *instance, maxRuntimeInstances)}
+	for n := 0; n < maxRuntimeInstances; n++ {
+		member, err := newInstance(native, source.manifest, owner, source.state)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateRegistration(member); err != nil {
+			return nil, err
+		}
+		pool.available <- member
+	}
+	return pool, nil
+}
+
+// run acquires an idle member with a bounded queue wait, then starts the
+// member's callback deadline only after it has been acquired. The selected
+// member is returned to the pool even when the callback times out or panics.
+func (p *instancePool) run(ctx context.Context, phase pluginapi.Phase, timeout time.Duration, reader pluginapi.SnapshotReader, fn func(*instance, context.Context) error) error {
+	wait := callbackQueueWait
+	if timeout > 0 && timeout < wait {
+		wait = timeout
+	}
+	queueCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	var member *instance
+	select {
+	case member = <-p.available:
+	case <-queueCtx.Done():
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return failure(ErrPluginBusy, "plugin runtime pool queue is full")
+	}
+	err := member.run(ctx, phase, timeout, reader, func(execCtx context.Context) error {
+		return fn(member, execCtx)
+	})
+	// A timed-out native callback may still be unwinding while instance.run
+	// returns. Do not advertise that member to another caller until its gate is
+	// actually released; otherwise the pool's queue bound would be bypassed by
+	// callbacks waiting on a stale per-instance slot.
+	go func() {
+		member.waitIdle()
+		p.available <- member
+	}()
+	return err
+}
+
 type registeredMethod struct {
 	sdk.Method
 	instance *instance
@@ -77,7 +142,7 @@ type registeredMethod struct {
 }
 
 func New(config Config) (*Host, error) {
-	h := &Host{instances: map[string]*instance{}, methods: map[string]registeredMethod{}, dispatcher: config.Dispatcher, authorize: config.Authorize}
+	h := &Host{instances: map[string]*instance{}, natives: map[string]sdk.Native{}, methods: map[string]registeredMethod{}, dispatcher: config.Dispatcher, authorize: config.Authorize}
 	aliases, ids := map[string]string{}, map[string]string{}
 	for _, native := range config.Natives {
 		if err := native.Manifest.Validate(); err != nil {
@@ -98,20 +163,15 @@ func New(config Config) (*Host, error) {
 		if h.instances[key] != nil {
 			return nil, failure(ErrManifest, "duplicate instance %s", key)
 		}
-		manifest, err := pluginapi.CloneJSON(p)
-		if err != nil {
-			return nil, err
-		}
-		i := &instance{manifest: manifest, name: native.Instance, owner: h, gate: make(chan struct{}, 1), state: newStateStore()}
-		registration, err := native.New(&capabilities{instance: i})
+		i, err := newInstance(native, p, h, newStateStore())
 		if err != nil {
 			return nil, fmt.Errorf("initialize %s: %w", key, err)
 		}
-		i.registration = registration
 		if err := h.register(i); err != nil {
 			return nil, err
 		}
 		h.instances[key] = i
+		h.natives[key] = native
 	}
 	seen := map[string]bool{}
 	for _, binding := range config.Bindings {
@@ -169,7 +229,11 @@ func New(config Config) (*Host, error) {
 		}
 		binding.Reads = append([]string(nil), binding.Reads...)
 		binding.Owns = append([]string(nil), binding.Owns...)
-		h.bindings = append(h.bindings, &bound{binding, i})
+		pool, err := newInstancePool(h.natives[binding.Alias+"/"+binding.Instance], h, i)
+		if err != nil {
+			return nil, fmt.Errorf("initialize binding %s runtime pool: %w", binding.ID, err)
+		}
+		h.bindings = append(h.bindings, &bound{Binding: binding, pool: pool})
 	}
 	ordered, err := order(h.bindings)
 	if err != nil {
@@ -180,14 +244,52 @@ func New(config Config) (*Host, error) {
 }
 
 func (h *Host) register(i *instance) error {
+	if err := validateRegistration(i); err != nil {
+		return err
+	}
+	declared := methodGrants(i.manifest)
+	for _, m := range i.registration.Methods {
+		d := m.Descriptor
+		grant := declared[d.Name]
+		if h.methods[d.Name].instance != nil {
+			return failure(ErrMethod, "invalid or undeclared registration %s", d.Name)
+		}
+		h.methods[d.Name] = registeredMethod{m, i, grant}
+	}
+	return nil
+}
+
+func newInstance(native sdk.Native, manifest pluginapi.PluginManifest, owner *Host, state *stateStore) (*instance, error) {
+	copyManifest, err := pluginapi.CloneJSON(manifest)
+	if err != nil {
+		return nil, err
+	}
+	i := &instance{manifest: copyManifest, name: native.Instance, owner: owner, gate: make(chan struct{}, 1), state: state}
+	registration, err := native.New(&capabilities{instance: i})
+	if err != nil {
+		return nil, err
+	}
+	i.registration = registration
+	return i, nil
+}
+
+func methodGrants(manifest pluginapi.PluginManifest) map[string]pluginapi.MethodGrant {
 	declared := map[string]pluginapi.MethodGrant{}
+	for _, p := range manifest.Provides {
+		if p.Kind != "methods" {
+			continue
+		}
+		for suffix, grant := range p.Methods {
+			declared[p.Prefix+"."+suffix] = grant
+		}
+	}
+	return declared
+}
+
+func validateRegistration(i *instance) error {
+	declared := methodGrants(i.manifest)
 	subs := map[string]map[pluginapi.Phase]bool{}
 	for _, p := range i.manifest.Provides {
-		if p.Kind == "methods" {
-			for suffix, grant := range p.Methods {
-				declared[p.Prefix+"."+suffix] = grant
-			}
-		}
 		if p.Kind == "subscriber" {
 			subs[p.Name] = map[pluginapi.Phase]bool{}
 			for _, phase := range p.Phases {
@@ -198,10 +300,9 @@ func (h *Host) register(i *instance) error {
 	for _, m := range i.registration.Methods {
 		d := m.Descriptor
 		grant, ok := declared[d.Name]
-		if !ok || h.methods[d.Name].instance != nil || d.Permission != grant.Permission || d.Resource == nil || d.Params == nil || d.Result == nil || m.Handle == nil {
+		if !ok || d.Permission != grant.Permission || d.Resource == nil || d.Params == nil || d.Result == nil || m.Handle == nil {
 			return failure(ErrMethod, "invalid or undeclared registration %s", d.Name)
 		}
-		h.methods[d.Name] = registeredMethod{m, i, grant}
 		delete(declared, d.Name)
 	}
 	if len(declared) > 0 {

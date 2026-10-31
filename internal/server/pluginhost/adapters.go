@@ -108,9 +108,9 @@ func (a *subscriberAdapter) Mutate(ctx context.Context, c port.ProposedChange, r
 		return nil, err
 	}
 	var patches []pluginapi.Patch
-	err = a.binding.instance.run(ctx, pluginapi.PhaseMutate, a.binding.Timeout, reader, func(ctx context.Context) error {
+	err = a.binding.pool.run(ctx, pluginapi.PhaseMutate, a.binding.Timeout, reader, func(instance *instance, ctx context.Context) error {
 		var err error
-		patches, err = a.binding.instance.registration.Mutators[a.binding.Subscriber].Mutate(ctx, proposal, reader)
+		patches, err = instance.registration.Mutators[a.binding.Subscriber].Mutate(ctx, proposal, reader)
 		if err != nil {
 			return err
 		}
@@ -152,9 +152,9 @@ func (a *subscriberAdapter) Validate(ctx context.Context, c port.ProposedChange,
 		return port.Verdict{}, err
 	}
 	var verdict pluginapi.Verdict
-	err = a.binding.instance.run(ctx, pluginapi.PhaseValidate, a.binding.Timeout, reader, func(ctx context.Context) error {
+	err = a.binding.pool.run(ctx, pluginapi.PhaseValidate, a.binding.Timeout, reader, func(instance *instance, ctx context.Context) error {
 		var err error
-		verdict, err = a.binding.instance.registration.Validators[a.binding.Subscriber].Validate(ctx, proposal, reader)
+		verdict, err = instance.registration.Validators[a.binding.Subscriber].Validate(ctx, proposal, reader)
 		if err == nil {
 			verdict, err = pluginapi.CloneJSON(verdict)
 		}
@@ -184,8 +184,8 @@ func (a *subscriberAdapter) After(ctx context.Context, c port.CommittedChange, r
 		return err
 	}
 	committed := pluginapi.CommittedChange{RequestID: proposal.RequestID, Principal: proposal.Principal, Revision: proposal.BaseRevision, Changes: proposal.Changes}
-	return a.binding.instance.run(ctx, pluginapi.PhasePost, a.binding.Timeout, reader, func(ctx context.Context) error {
-		return a.binding.instance.registration.Posts[a.binding.Subscriber].After(ctx, committed, reader)
+	return a.binding.pool.run(ctx, pluginapi.PhasePost, a.binding.Timeout, reader, func(instance *instance, ctx context.Context) error {
+		return instance.registration.Posts[a.binding.Subscriber].After(ctx, committed, reader)
 	})
 }
 

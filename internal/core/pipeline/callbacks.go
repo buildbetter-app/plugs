@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -12,6 +13,18 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+type callbackBusy interface {
+	CallbackBusy() bool
+}
+
+func callbackFailure(kind, id string, err error) error {
+	var busy callbackBusy
+	if errors.As(err, &busy) && busy.CallbackBusy() {
+		return failure("busy", "write pre phases exceeded their deadline")
+	}
+	return failure("subscriber_unavailable", "pre "+kind+" "+id+" failed")
+}
 
 type callbackKey struct{}
 
@@ -87,7 +100,7 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 				p.warnings = append(p.warnings, skipped(binding.ID))
 				continue
 			}
-			return failure("subscriber_unavailable", "pre mutator "+binding.ID+" failed")
+			return callbackFailure("mutator", binding.ID, err)
 		}
 		patches, err = clone(patches)
 		if err != nil {
@@ -153,7 +166,7 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 				p.warnings = append(p.warnings, skipped(binding.ID))
 				continue
 			}
-			return failure("subscriber_unavailable", "pre validator "+binding.ID+" failed")
+			return callbackFailure("validator", binding.ID, result.err)
 		}
 		if !result.verdict.Allow {
 			return &model.Error{Message: "pre validator rejected the write", Data: model.ErrorData{Code: "ontology_guard_failed", Details: map[string]any{"binding": binding.ID, "violations": result.verdict.Violations}}}

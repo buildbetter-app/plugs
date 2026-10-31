@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -307,9 +308,90 @@ func TestDeterministicMutatorOrder(t *testing.T) {
 	}
 }
 
+func TestBindingRuntimePoolUsesDistinctInstancesAndSharedState(t *testing.T) {
+	h, err := New(Config{Natives: []sdk.Native{conformance.Native(conformance.Options{})}, Bindings: fixtureBindings()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.bindings) == 0 || h.bindings[0].pool == nil {
+		t.Fatal("binding runtime pool was not initialized")
+	}
+	pool := h.bindings[0].pool
+	members := make([]*instance, 0, maxRuntimeInstances)
+	for i := 0; i < maxRuntimeInstances; i++ {
+		select {
+		case member := <-pool.available:
+			members = append(members, member)
+		default:
+			t.Fatalf("pool exposed %d members, want %d", len(members), maxRuntimeInstances)
+		}
+	}
+	for _, member := range members {
+		pool.available <- member
+	}
+	for i := range members {
+		if members[i].state != h.instances["fixture/default"].state {
+			t.Fatalf("pool member %d did not share the host-side state store", i)
+		}
+		for j := i + 1; j < len(members); j++ {
+			if members[i] == members[j] {
+				t.Fatalf("pool members %d and %d alias the same runtime instance", i, j)
+			}
+		}
+	}
+}
+
+func TestBindingRuntimePoolReturnsBusyWhenQueueIsFull(t *testing.T) {
+	h, err := New(Config{Natives: []sdk.Native{conformance.Native(conformance.Options{})}, Bindings: fixtureBindings()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := h.bindings[0].pool
+	started := make(chan struct{}, maxRuntimeInstances)
+	release := make(chan struct{})
+	var group sync.WaitGroup
+	for i := 0; i < maxRuntimeInstances; i++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			err := pool.run(context.Background(), pluginapi.PhaseMutate, time.Second, nil, func(_ *instance, _ context.Context) error {
+				started <- struct{}{}
+				<-release
+				return nil
+			})
+			if err != nil {
+				t.Errorf("pool member callback failed: %v", err)
+			}
+		}()
+	}
+	for i := 0; i < maxRuntimeInstances; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("pool member did not start")
+		}
+	}
+	queueCalled := make(chan struct{}, 1)
+	err = pool.run(context.Background(), pluginapi.PhaseMutate, time.Second, nil, func(*instance, context.Context) error {
+		queueCalled <- struct{}{}
+		return nil
+	})
+	if code(err) != ErrPluginBusy {
+		t.Fatalf("queue overflow error=%v, want %s", err, ErrPluginBusy)
+	}
+	select {
+	case <-queueCalled:
+		t.Fatal("queue-overflow callback unexpectedly ran")
+	default:
+	}
+	close(release)
+	group.Wait()
+}
+
 func TestPostRestrictionsStateAndRetainedHTTP(t *testing.T) {
-	var retained *http.Client
+	var active *http.Client
 	native := conformance.Native(conformance.Options{After: func(ctx context.Context, h pluginapi.Host, _ pluginapi.CommittedChange, _ pluginapi.SnapshotReader) error {
+		active = h.HTTP()
 		if err := requireCode(h.Call(context.Background(), "tx.apply", map[string]any{}, nil), ErrReentrant); err != nil {
 			return err
 		}
@@ -328,11 +410,9 @@ func TestPostRestrictionsStateAndRetainedHTTP(t *testing.T) {
 		if err != nil || !found || !value {
 			return fmt.Errorf("state did not roundtrip")
 		}
-		_, err = retained.Get("https://not-declared.example")
+		_, err = active.Get("https://not-declared.example")
 		return requireCode(err, ErrEgress)
 	}})
-	constructor := native.New
-	native.New = func(h pluginapi.Host) (sdk.Registration, error) { retained = h.HTTP(); return constructor(h) }
 	h, err := New(Config{Natives: []sdk.Native{native}, Bindings: fixtureBindings(), Dispatcher: &dispatcher{}})
 	if err != nil {
 		t.Fatal(err)
@@ -345,7 +425,10 @@ func TestPostRestrictionsStateAndRetainedHTTP(t *testing.T) {
 			}
 		}
 	}
-	if _, err = retained.Get("https://example.com"); code(err) != ErrInactive {
+	if active == nil {
+		t.Fatal("post callback did not expose its active host")
+	}
+	if _, err = active.Get("https://example.com"); code(err) != ErrInactive {
 		t.Fatalf("retained client worked outside callback: %v", err)
 	}
 	for _, ip := range []string{"127.0.0.1", "10.0.0.1", "169.254.169.254", "::1", "fe80::1", "::ffff:127.0.0.1"} {
@@ -360,14 +443,13 @@ func TestNativeDeadlineRevokesRetainedCapabilities(t *testing.T) {
 	release := make(chan struct{})
 	exited := make(chan struct{})
 	var retained pluginapi.Host
-	native := conformance.Native(conformance.Options{Probe: func(_ context.Context, _ pluginapi.Host, _ pluginapi.ProposedChange, r pluginapi.SnapshotReader) error {
+	native := conformance.Native(conformance.Options{Probe: func(_ context.Context, h pluginapi.Host, _ pluginapi.ProposedChange, r pluginapi.SnapshotReader) error {
+		retained = h
 		started <- r
 		<-release
 		close(exited)
 		return nil
 	}})
-	constructor := native.New
-	native.New = func(h pluginapi.Host) (sdk.Registration, error) { retained = h; return constructor(h) }
 	bindings := fixtureBindings()
 	bindings[0].Timeout = 10 * time.Millisecond
 	h, err := New(Config{Natives: []sdk.Native{native}, Bindings: bindings})
