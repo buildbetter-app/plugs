@@ -138,7 +138,7 @@ jobs:
             echo "BAZELISK_HOME=$BAZELISK_HOME"
             echo "BAZELISK_VERIFY_SHA256=$BAZELISK_VERIFY_SHA256"
           } >> "$GITHUB_ENV"
-          "$RUNNER_TEMP/bin/bazel" --version | tee "$REMOTE_BAZEL_EVIDENCE_DIR/bazel-version.log"
+          "$RUNNER_TEMP/plug-bazelisk" --version | tee "$REMOTE_BAZEL_EVIDENCE_DIR/bazel-version.log"
           grep -Fq "bazel $bazel_version" "$REMOTE_BAZEL_EVIDENCE_DIR/bazel-version.log"
           printf '%s\n' "bazel_version=$bazel_version" "bazelisk_version=v1.29.0" \
             "bazelisk_sha256=$BAZELISK_SHA256" "bazel_sha256=$BAZEL_SHA256" \
@@ -163,6 +163,16 @@ jobs:
           ARGS=(--nosystem_rc --nohome_rc --noworkspace_rc \
             "--bazelrc=$RUNNER_TEMP/plug.bazelrc")
           ARGS+=("${USER_ARGS[@]}")
+          # Tests that build fixtures from this checkout need its root; the box
+          # wrapper passes the same variable for its worktree.
+          command=""
+          for arg in "${USER_ARGS[@]}"; do
+            case "$arg" in -*) ;; *) command=$arg; break ;; esac
+          done
+          if [[ "$command" == test || "$command" == coverage ]] &&
+            [[ " ${USER_ARGS[*]} " != *"PLUG_SOURCE_MODULE_ROOT="* ]]; then
+            ARGS+=("--test_env=PLUG_SOURCE_MODULE_ROOT=$GITHUB_WORKSPACE")
+          fi
           printf '%q ' bazel "${ARGS[@]}" > "$REMOTE_BAZEL_EVIDENCE_DIR/command.txt"
           printf '\n' >> "$REMOTE_BAZEL_EVIDENCE_DIR/command.txt"
           set +e
