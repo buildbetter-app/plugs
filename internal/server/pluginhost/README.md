@@ -11,5 +11,7 @@ Use it for state that must be observed consistently across callback instances.
 Acquiring a runtime has a separate bounded queue wait. If all four members are
 busy when that bound expires, the host returns a retryable pool-busy error.
 Callback execution receives its normal phase timeout only after a runtime has
-been acquired. A callback that fails or exceeds that execution timeout keeps
-the existing subscriber-unavailable mapping.
+been acquired. A callback that traps, refuses a request, or exceeds that
+execution timeout disposes its member; the pool replaces it only with a fresh
+guest after the callback unwinds. These failures keep the existing
+subscriber-unavailable mapping.

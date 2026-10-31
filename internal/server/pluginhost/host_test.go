@@ -388,6 +388,43 @@ func TestBindingRuntimePoolReturnsBusyWhenQueueIsFull(t *testing.T) {
 	group.Wait()
 }
 
+func TestBindingRuntimePoolReplacesFailedMemberWithFreshGuest(t *testing.T) {
+	h, err := New(Config{Natives: []sdk.Native{conformance.Native(conformance.Options{})}, Bindings: fixtureBindings()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := h.bindings[0].pool
+	var failed *instance
+	err = p.run(context.Background(), pluginapi.PhaseMutate, time.Second, nil, func(member *instance, _ context.Context) error {
+		failed = member
+		return errors.New("guest callback failed")
+	}, "principal")
+	if err == nil {
+		t.Fatal("failed callback unexpectedly succeeded")
+	}
+	if failed == nil || !failed.isDisposed() {
+		t.Fatalf("failed callback member was not disposed: member=%p", failed)
+	}
+	deadline := time.After(time.Second)
+	for len(p.available) != maxRuntimeInstances {
+		select {
+		case <-deadline:
+			t.Fatalf("pool did not refill after failed member: available=%d", len(p.available))
+		case <-time.After(time.Millisecond):
+		}
+	}
+	for i := 0; i < maxRuntimeInstances; i++ {
+		member := <-p.available
+		if member == failed {
+			t.Fatal("disposed callback member returned to the pool")
+		}
+		if member.isDisposed() {
+			t.Fatal("disposed replacement member returned to the pool")
+		}
+		p.available <- member
+	}
+}
+
 func TestPostRestrictionsStateAndRetainedHTTP(t *testing.T) {
 	var active *http.Client
 	native := conformance.Native(conformance.Options{After: func(ctx context.Context, h pluginapi.Host, _ pluginapi.CommittedChange, _ pluginapi.SnapshotReader) error {

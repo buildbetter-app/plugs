@@ -77,6 +77,8 @@ type instance struct {
 	mu           sync.Mutex
 	active       *invocation
 	state        *stateStore
+	disposed     bool
+	disposeFn    func()
 }
 type bound struct {
 	Binding
@@ -85,10 +87,29 @@ type bound struct {
 
 type instancePool struct {
 	available chan *instance
+	native    sdk.Native
+	manifest  pluginapi.PluginManifest
+	owner     *Host
+	state     *stateStore
+	mu        sync.Mutex
+	affinity  map[string]*instance
+	leased    map[*instance]bool
+	notify    chan struct{}
 }
 
 func newInstancePool(native sdk.Native, owner *Host, source *instance) (*instancePool, error) {
-	pool := &instancePool{available: make(chan *instance, maxRuntimeInstances)}
+	pool := &instancePool{
+		available: make(chan *instance, maxRuntimeInstances),
+		native:    native,
+		manifest:  source.manifest,
+		owner:     owner,
+		state:     source.state,
+		affinity:  map[string]*instance{},
+		leased:    map[*instance]bool{},
+		notify:    make(chan struct{}, 1),
+	}
+	// The source instance owns extension methods. Each binding gets four fresh
+	// callback guests; only the host-side state store crosses that boundary.
 	for n := 0; n < maxRuntimeInstances; n++ {
 		member, err := newInstance(native, source.manifest, owner, source.state)
 		if err != nil {
@@ -102,36 +123,152 @@ func newInstancePool(native sdk.Native, owner *Host, source *instance) (*instanc
 	return pool, nil
 }
 
+func (p *instancePool) newMember() (*instance, error) {
+	member, err := newInstance(p.native, p.manifest, p.owner, p.state)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRegistration(member); err != nil {
+		member.dispose()
+		return nil, err
+	}
+	return member, nil
+}
+
+func (p *instancePool) signal() {
+	select {
+	case p.notify <- struct{}{}:
+	default:
+	}
+}
+
+// takeFree reassigns an idle affinity member when every unpinned member is
+// occupied by another principal. This keeps affinity useful for sequential
+// callbacks without pinning a four-member pool to an unbounded number of
+// principals.
+func (p *instancePool) takeFree(key string) *instance {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for owner, member := range p.affinity {
+		if p.leased[member] || member.isDisposed() {
+			continue
+		}
+		delete(p.affinity, owner)
+		p.leased[member] = true
+		if key != "" {
+			p.affinity[key] = member
+		}
+		return member
+	}
+	return nil
+}
+
+func (p *instancePool) acquire(ctx context.Context, wait time.Duration, key string) (*instance, error) {
+	queueCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	for {
+		if key != "" {
+			p.mu.Lock()
+			member := p.affinity[key]
+			if member != nil && !member.isDisposed() && !p.leased[member] {
+				p.leased[member] = true
+				p.mu.Unlock()
+				return member, nil
+			}
+			p.mu.Unlock()
+		}
+		if member := p.takeFree(key); member != nil {
+			return member, nil
+		}
+		select {
+		case member := <-p.available:
+			if member == nil || member.isDisposed() {
+				continue
+			}
+			if key != "" {
+				p.mu.Lock()
+				if current := p.affinity[key]; current == nil || current.isDisposed() {
+					p.affinity[key] = member
+				}
+				p.leased[member] = true
+				p.mu.Unlock()
+			}
+			return member, nil
+		case <-p.notify:
+			// A keyed member may have completed while it remains outside the
+			// general available channel. Recheck its affinity before waiting.
+			continue
+		case <-queueCtx.Done():
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return nil, failure(ErrPluginBusy, "plugin runtime pool queue is full")
+		}
+	}
+}
+
+func (p *instancePool) release(member *instance, key string, err error) {
+	if err != nil {
+		// Dispose before waiting so a trapped or expired WASI call is asked to
+		// unwind; the old member is never put back into the pool.
+		member.dispose()
+		member.waitIdle()
+		p.mu.Lock()
+		if key != "" && p.affinity[key] == member {
+			delete(p.affinity, key)
+		}
+		delete(p.leased, member)
+		p.mu.Unlock()
+		fresh, freshErr := p.newMember()
+		if freshErr == nil {
+			p.available <- fresh
+			p.signal()
+		}
+		return
+	}
+	member.waitIdle()
+	p.mu.Lock()
+	delete(p.leased, member)
+	keepAffinity := key != "" && p.affinity[key] == member && !member.isDisposed()
+	if !keepAffinity {
+		for owner, current := range p.affinity {
+			if current == member {
+				delete(p.affinity, owner)
+			}
+		}
+	}
+	p.mu.Unlock()
+	if !keepAffinity {
+		p.available <- member
+	}
+	p.signal()
+}
+
 // run acquires an idle member with a bounded queue wait, then starts the
 // member's callback deadline only after it has been acquired. The selected
-// member is returned to the pool even when the callback times out or panics.
-func (p *instancePool) run(ctx context.Context, phase pluginapi.Phase, timeout time.Duration, reader pluginapi.SnapshotReader, fn func(*instance, context.Context) error) error {
+// member is retained only while it is healthy. A non-empty affinity key keeps
+// a sequential caller on one guest while allowing other keys to use the other
+// pool members concurrently.
+func (p *instancePool) run(ctx context.Context, phase pluginapi.Phase, timeout time.Duration, reader pluginapi.SnapshotReader, fn func(*instance, context.Context) error, affinity ...string) error {
 	wait := callbackQueueWait
 	if timeout > 0 && timeout < wait {
 		wait = timeout
 	}
-	queueCtx, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
-	var member *instance
-	select {
-	case member = <-p.available:
-	case <-queueCtx.Done():
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		return failure(ErrPluginBusy, "plugin runtime pool queue is full")
+	key := ""
+	if len(affinity) != 0 {
+		key = affinity[0]
 	}
-	err := member.run(ctx, phase, timeout, reader, func(execCtx context.Context) error {
+	member, err := p.acquire(ctx, wait, key)
+	if err != nil {
+		return err
+	}
+	err = member.run(ctx, phase, timeout, reader, func(execCtx context.Context) error {
 		return fn(member, execCtx)
 	})
 	// A timed-out native callback may still be unwinding while instance.run
 	// returns. Do not advertise that member to another caller until its gate is
-	// actually released; otherwise the pool's queue bound would be bypassed by
-	// callbacks waiting on a stale per-instance slot.
-	go func() {
-		member.waitIdle()
-		p.available <- member
-	}()
+	// actually released; failed members are replaced only after that drain.
+	go p.release(member, key, err)
 	return err
 }
 
@@ -265,12 +402,35 @@ func newInstance(native sdk.Native, manifest pluginapi.PluginManifest, owner *Ho
 		return nil, err
 	}
 	i := &instance{manifest: copyManifest, name: native.Instance, owner: owner, gate: make(chan struct{}, 1), state: state}
-	registration, err := native.New(&capabilities{instance: i})
+	host := &capabilities{instance: i}
+	registration, err := native.New(host)
 	if err != nil {
 		return nil, err
 	}
 	i.registration = registration
+	i.disposeFn = host.onDispose
 	return i, nil
+}
+
+func (i *instance) isDisposed() bool {
+	i.mu.Lock()
+	disposed := i.disposed
+	i.mu.Unlock()
+	return disposed
+}
+
+func (i *instance) dispose() {
+	i.mu.Lock()
+	if i.disposed {
+		i.mu.Unlock()
+		return
+	}
+	i.disposed = true
+	dispose := i.disposeFn
+	i.mu.Unlock()
+	if dispose != nil {
+		dispose()
+	}
 }
 
 func methodGrants(manifest pluginapi.PluginManifest) map[string]pluginapi.MethodGrant {

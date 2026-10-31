@@ -529,12 +529,24 @@ func TestWASIGuestBridgeAcceptance(t *testing.T) {
 				t.Fatalf("unexpected underlying reads: get=%d query=%d want=%d/0", gets.Load(), queries.Load(), tc.gets)
 			}
 			echo, reuseErr := host.Invoke(context.Background(), "x.wasi.echo", json.RawMessage(`{"id":"after-refusal"}`))
-			if tc.trap {
-				if !hasPluginHostCode(reuseErr, pluginhost.ErrInactive) || len(echo) != 0 {
-					t.Fatalf("disposed source-built guest was reused: %s (%v)", echo, reuseErr)
-				}
-			} else if reuseErr != nil || string(echo) != `{"id":"after-refusal"}` {
-				t.Fatalf("typed read refusal unexpectedly disposed the guest: %s (%v)", echo, reuseErr)
+			if reuseErr != nil || string(echo) != `{"id":"after-refusal"}` {
+				t.Fatalf("method guest was affected by callback disposal: %s (%v)", echo, reuseErr)
+			}
+			// The failed callback member is disposed and removed from its pool;
+			// the next callback for this principal must execute on a healthy
+			// replacement member.
+			replacement, replacementErr := host.Mutators()[0].Mutator.Mutate(context.Background(), port.ProposedChange{
+				RequestID:    "replacement",
+				Principal:    h.by,
+				BaseRevision: model.Natural64(1),
+				Changes: []port.Change{{
+					Resource: model.ResourceRef{Kind: "bead", Ref: model.RefByID("pl-a", "")},
+					Op:       model.Op{Kind: model.OpPatch, Patch: &model.PatchOp{Kind: model.OpPatch, Target: model.RefByID("pl-a", ""), Fields: map[string]any{"title": "replacement"}}},
+					After:    []byte(`{"type":"issue","fields":{"title":"replacement"}}`),
+				}},
+			}, &wasiSnapshot{revision: model.Natural64(1)})
+			if replacementErr != nil || len(replacement) != 1 {
+				t.Fatalf("fresh callback member was not usable after disposal: patches=%v err=%v", replacement, replacementErr)
 			}
 			after := h.state(t, meta)
 			if !bytes.Equal(wasiGuestJSON(t, before), wasiGuestJSON(t, after)) {

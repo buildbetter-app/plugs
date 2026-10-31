@@ -2,6 +2,7 @@ package pluginhost
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"time"
 
@@ -116,6 +117,10 @@ func (a *subscriberAdapter) mutate(ctx context.Context, timeout time.Duration, c
 	if err != nil {
 		return nil, err
 	}
+	affinity, err := principalAffinity(proposal.Principal)
+	if err != nil {
+		return nil, err
+	}
 	var patches []pluginapi.Patch
 	err = a.binding.pool.run(ctx, pluginapi.PhaseMutate, timeout, reader, func(instance *instance, ctx context.Context) error {
 		var err error
@@ -129,7 +134,7 @@ func (a *subscriberAdapter) mutate(ctx context.Context, timeout time.Duration, c
 		// A plugin must not retain an output map that core later consumes.
 		patches, err = pluginapi.CloneJSON(patches)
 		return err
-	})
+	}, affinity)
 	if err != nil {
 		return nil, err
 	}
@@ -168,6 +173,10 @@ func (a *subscriberAdapter) validate(ctx context.Context, timeout time.Duration,
 	if err != nil {
 		return port.Verdict{}, err
 	}
+	affinity, err := principalAffinity(proposal.Principal)
+	if err != nil {
+		return port.Verdict{}, err
+	}
 	var verdict pluginapi.Verdict
 	err = a.binding.pool.run(ctx, pluginapi.PhaseValidate, timeout, reader, func(instance *instance, ctx context.Context) error {
 		var err error
@@ -176,7 +185,7 @@ func (a *subscriberAdapter) validate(ctx context.Context, timeout time.Duration,
 			verdict, err = pluginapi.CloneJSON(verdict)
 		}
 		return err
-	})
+	}, affinity)
 	if err != nil {
 		return port.Verdict{}, err
 	}
@@ -208,10 +217,22 @@ func (a *subscriberAdapter) after(ctx context.Context, timeout time.Duration, c 
 	if err != nil {
 		return err
 	}
+	affinity, err := principalAffinity(proposal.Principal)
+	if err != nil {
+		return err
+	}
 	committed := pluginapi.CommittedChange{RequestID: proposal.RequestID, Principal: proposal.Principal, Revision: proposal.BaseRevision, Changes: proposal.Changes}
 	return a.binding.pool.run(ctx, pluginapi.PhasePost, timeout, reader, func(instance *instance, ctx context.Context) error {
 		return instance.registration.Posts[a.binding.Subscriber].After(ctx, committed, reader)
-	})
+	}, affinity)
+}
+
+func principalAffinity(principal pluginapi.PrincipalRef) (string, error) {
+	data, err := json.Marshal(principal)
+	if err != nil {
+		return "", failure(ErrMethod, "principal cannot be encoded for runtime affinity: %v", err)
+	}
+	return string(data), nil
 }
 
 func minTimeout(binding, outer time.Duration) time.Duration {
