@@ -349,7 +349,6 @@ func startFailoverContainers(t *testing.T) *failoverContainers {
 	c.primaryDSN = "postgres://postgres@127.0.0.1:" + primaryPort + "/" + failoverDatabase + "?sslmode=disable"
 	c.standbyDSN = "postgres://postgres@127.0.0.1:" + standbyPort + "/" + failoverDatabase + "?sslmode=disable"
 	waitPostgres(t, c.primary, failoverDatabase)
-	waitStandbyDataDir(t, c.standby)
 	if output, err := e5Docker("exec", c.primary, "psql", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", "CREATE ROLE "+failoverReplicationUser+" WITH REPLICATION LOGIN PASSWORD '"+failoverReplicationPassword+"'"); err != nil {
 		t.Fatalf("replication role creation failed: %v %s", err, output)
 	}
@@ -364,6 +363,11 @@ func startFailoverContainers(t *testing.T) *failoverContainers {
 
 func (c *failoverContainers) prepareStandby(t *testing.T) error {
 	t.Helper()
+	// The idle standby bypasses the image's postgres initialization. Prepare an
+	// empty, postgres-owned directory; pg_basebackup creates PG_VERSION below.
+	if output, err := e5Docker("exec", c.standby, "install", "-d", "-m", "0700", "-o", "postgres", "-g", "postgres", "/var/lib/postgresql/data"); err != nil {
+		return fmt.Errorf("standby data directory preparation: %v %s", err, output)
+	}
 	if output, err := e5Docker("exec", c.standby, "sh", "-c", "rm -rf /var/lib/postgresql/data/*"); err != nil {
 		return fmt.Errorf("standby data reset: %v %s", err, output)
 	}
@@ -466,16 +470,4 @@ func waitPostgres(t *testing.T, name, database string) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("container %s did not become ready", name)
-}
-
-func waitStandbyDataDir(t *testing.T, name string) {
-	t.Helper()
-	deadline := time.Now().Add(45 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := e5Docker("exec", name, "test", "-f", "/var/lib/postgresql/data/PG_VERSION"); err == nil {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatalf("container %s did not initialize its standby data directory", name)
 }
