@@ -29,12 +29,20 @@ jobs:
     permissions:
       contents: read
     env:
-      REMOTE_BAZEL_EVIDENCE_DIR: ${{ runner.temp }}/remote-bazel-evidence
-      PLUG_BAZEL_REPOSITORY_CACHE: ${{ runner.temp }}/plug-bazel-repository-cache
       ARGS_INPUT: ${{ inputs.args }}
     steps:
       - name: Set up RunsOn
         uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+
+      - name: Set remote Bazel paths
+        env:
+          REMOTE_BAZEL_EVIDENCE_DIR: ${{ runner.temp }}/remote-bazel-evidence
+          PLUG_BAZEL_REPOSITORY_CACHE: ${{ runner.temp }}/plug-bazel-repository-cache
+        run: |
+          {
+            echo "REMOTE_BAZEL_EVIDENCE_DIR=$REMOTE_BAZEL_EVIDENCE_DIR"
+            echo "PLUG_BAZEL_REPOSITORY_CACHE=$PLUG_BAZEL_REPOSITORY_CACHE"
+          } >> "$GITHUB_ENV"
 
       - name: Validate dispatch inputs
         env:
