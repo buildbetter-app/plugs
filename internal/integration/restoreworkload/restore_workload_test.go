@@ -18,6 +18,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/client"
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
@@ -450,4 +452,221 @@ func sameSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+type thinSliceWarningSubscriber struct{}
+
+func (thinSliceWarningSubscriber) After(context.Context, port.CommittedChange, port.SnapshotReader) error {
+	return errors.New("thin-slice post subscriber unavailable")
+}
+
+func openThinSliceLocal(t *testing.T, backend, dsn, agent string, warnings bool) *cli.Local {
+	t.Helper()
+	cfg := cli.LocalConfig{
+		Project:          "restore-thin-slice",
+		Agent:            agent,
+		Storage:          cli.StorageConfig{Driver: backend, DSN: dsn},
+		PresenceVerifier: trustedPresence(),
+	}
+	if backend == "sqlite" {
+		cfg.Factory = func(ctx context.Context, storageCfg cli.StorageConfig) (driver.Store, func() error, error) {
+			store, err := (sqlite.Driver{}).Open(ctx, driver.Config{DSN: storageCfg.DSN})
+			if err != nil {
+				return nil, nil, err
+			}
+			return store, store.Close, nil
+		}
+	} else if backend != "memory" {
+		t.Fatalf("unknown thin-slice backend %q", backend)
+	}
+	if warnings {
+		cfg.PipelineOptions = []pipeline.Option{pipeline.WithPostSubscribers(pipeline.PostBinding{
+			ID:         "thin-slice-warning",
+			Subscriber: thinSliceWarningSubscriber{},
+		})}
+	}
+	local, err := cli.OpenLocal(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := local.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return local
+}
+
+func thinSliceKey(n int) string { return fmt.Sprintf("%032x", n) }
+
+func thinSliceCommit(t *testing.T, c *client.Client, method string, params map[string]any, key string) (model.Commit, client.Result) {
+	t.Helper()
+	result, err := c.Call(context.Background(), method, params, key)
+	if err != nil {
+		t.Fatalf("%s: %v", method, err)
+	}
+	var commit model.Commit
+	if err := json.Unmarshal(result.JSON, &commit); err != nil {
+		t.Fatalf("%s response=%s: %v", method, result.JSON, err)
+	}
+	if len(commit.Warnings) != 1 || commit.Warnings[0].Code != "post_subscriber_failed" || commit.Warnings[0].Details["binding"] != "thin-slice-warning" {
+		t.Fatalf("%s warnings=%+v response=%s", method, commit.Warnings, result.JSON)
+	}
+	return commit, result
+}
+
+func thinSliceCreate(t *testing.T, c *client.Client, title string, key int) model.Ref {
+	t.Helper()
+	result, err := c.Call(context.Background(), "bead.create", map[string]any{
+		"type": "issue", "fields": map[string]any{"title": title},
+	}, thinSliceKey(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var commit model.Commit
+	if err := json.Unmarshal(result.JSON, &commit); err != nil || len(commit.Results) != 1 {
+		t.Fatalf("create=%s err=%v", result.JSON, err)
+	}
+	if len(commit.Warnings) != 0 {
+		t.Fatalf("source create unexpectedly warned: %+v", commit.Warnings)
+	}
+	return commit.Results[0].Ref
+}
+
+func assertThinSliceRegistry(t *testing.T, c *client.Client) {
+	t.Helper()
+	result, err := c.Call(context.Background(), "rpc.discover", map[string]any{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		OpenRPC     string `json:"openrpc"`
+		MethodsHash string `json:"methodsHash"`
+		Methods     []struct {
+			Name string `json:"name"`
+		} `json:"methods"`
+	}
+	if err := json.Unmarshal(result.JSON, &document); err != nil {
+		t.Fatalf("rpc.discover=%s: %v", result.JSON, err)
+	}
+	if document.OpenRPC == "" || document.MethodsHash == "" {
+		t.Fatalf("generated registry discovery missing version/hash: %+v", document)
+	}
+	want := map[string]bool{
+		"bead.ready": true, "bead.claimNext": true, "bead.update": true,
+		"bead.comment": true, "bead.close": true, "history.query": true, "tx.apply": true,
+	}
+	for _, method := range document.Methods {
+		delete(want, method.Name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("generated registry omitted thin-slice methods: %v", want)
+	}
+	t.Logf("generated registry path: OpenRPC=%s methodsHash=%s methods=%d", document.OpenRPC, document.MethodsHash, len(document.Methods))
+}
+
+func TestRestoredThinSliceLifecycleAcrossMemoryAndSQLite(t *testing.T) {
+	source := openThinSliceLocal(t, "memory", "", "thin-source", false)
+	blocker := thinSliceCreate(t, source.Client, "thin blocker", 1)
+	dependent := thinSliceCreate(t, source.Client, "thin dependent", 2)
+	linkSet := model.ChangeSet{Ops: []model.Op{{
+		Kind: model.OpLink,
+		Link: &model.LinkOp{Kind: model.OpLink, From: dependent, To: blocker, LinkKind: "blocks"},
+	}}}
+	if _, err := source.Client.Call(context.Background(), "tx.apply", map[string]any{"changeSet": linkSet}, thinSliceKey(3)); err != nil {
+		t.Fatalf("source link: %v", err)
+	}
+	archiveData, archive := captureHeadDump(t, source.Client)
+	if err := source.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, backend := range []string{"memory", "sqlite"} {
+		t.Run(backend, func(t *testing.T) {
+			dsn := ""
+			if backend == "sqlite" {
+				dsn = filepath.Join(t.TempDir(), "thin-slice.db")
+			}
+			target := openThinSliceLocal(t, backend, dsn, "thin-worker", true)
+			restoredIncarnation := restoreHead(t, target.Client, archiveData, archive)
+			assertThinSliceRegistry(t, target.Client)
+
+			ready := readyPage(t, target.Client)
+			if ready.revision != "1" || ready.incarnation != restoredIncarnation || !sameSet(ready.ids, []string{blocker.ID}) {
+				t.Fatalf("fresh restored ready page=%+v", ready)
+			}
+
+			claimParams := map[string]any{"filter": map[string]any{"types": []string{"issue"}}}
+			claimed, claimResult := thinSliceCommit(t, target.Client, "bead.claimNext", claimParams, thinSliceKey(10))
+			if claimed.Revision.String() != "2" || len(claimed.Results) != 1 || claimed.Results[0].Ref.ID != blocker.ID {
+				t.Fatalf("claimNext=%+v", claimed)
+			}
+			claimReplay, err := target.Client.Call(context.Background(), "bead.claimNext", claimParams, thinSliceKey(10))
+			if err != nil || !claimReplay.Replayed || !bytes.Equal(claimResult.JSON, claimReplay.JSON) {
+				t.Fatalf("claimNext replay=%s replayed=%t err=%v", claimReplay.JSON, claimReplay.Replayed, err)
+			}
+
+			updated, _ := thinSliceCommit(t, target.Client, "bead.update", map[string]any{
+				"id": map[string]any{"id": blocker.ID}, "fields": map[string]any{"title": "thin blocker updated"},
+			}, thinSliceKey(11))
+			if updated.Revision.String() != "3" {
+				t.Fatalf("update revision=%s", updated.Revision)
+			}
+			commented, _ := thinSliceCommit(t, target.Client, "bead.comment", map[string]any{
+				"id": map[string]any{"id": blocker.ID}, "body": "thin slice comment",
+			}, thinSliceKey(12))
+			if commented.Revision.String() != "4" {
+				t.Fatalf("comment revision=%s", commented.Revision)
+			}
+
+			beforeGuard := readyPage(t, target.Client)
+			_, err = target.Client.Call(context.Background(), "bead.close", map[string]any{
+				"id": map[string]any{"id": dependent.ID}, "reason": "blocked close must refuse",
+			}, thinSliceKey(13))
+			requireCode(t, err, "ontology_guard_failed")
+			afterGuard := readyPage(t, target.Client)
+			if beforeGuard.revision != afterGuard.revision || !sameSet(beforeGuard.ids, afterGuard.ids) {
+				t.Fatalf("close guard changed ready state: before=%+v after=%+v", beforeGuard, afterGuard)
+			}
+
+			history := historyPage(t, target.Client, blocker.ID, "1", restoredIncarnation)
+			if len(history) != 1 || history[0].title != "thin blocker" || history[0].revision != "1" {
+				t.Fatalf("restored history=%+v", history)
+			}
+
+			changeSet := model.ChangeSet{Ops: []model.Op{{
+				Kind:  model.OpPatch,
+				Patch: &model.PatchOp{Target: blocker, Fields: map[string]any{"description": "tx.apply after history"}},
+			}}}
+			applied, applyResult := thinSliceCommit(t, target.Client, "tx.apply", map[string]any{"changeSet": changeSet}, thinSliceKey(14))
+			if applied.Revision.String() != "5" || len(applied.Results) != 1 {
+				t.Fatalf("tx.apply=%+v", applied)
+			}
+			applyReplay, err := target.Client.Call(context.Background(), "tx.apply", map[string]any{"changeSet": changeSet}, thinSliceKey(14))
+			if err != nil || !applyReplay.Replayed || !bytes.Equal(applyResult.JSON, applyReplay.JSON) {
+				t.Fatalf("tx.apply replay=%s replayed=%t err=%v", applyReplay.JSON, applyReplay.Replayed, err)
+			}
+
+			closedBlocker, _ := thinSliceCommit(t, target.Client, "bead.close", map[string]any{
+				"id": map[string]any{"id": blocker.ID}, "reason": "unblock dependent",
+			}, thinSliceKey(15))
+			if closedBlocker.Revision.String() != "6" {
+				t.Fatalf("blocker close revision=%s", closedBlocker.Revision)
+			}
+			readyAfterBlocker := readyPage(t, target.Client)
+			if !sameSet(readyAfterBlocker.ids, []string{dependent.ID}) {
+				t.Fatalf("dependent did not become ready after blocker close: %+v", readyAfterBlocker)
+			}
+			closedDependent, _ := thinSliceCommit(t, target.Client, "bead.close", map[string]any{
+				"id": map[string]any{"id": dependent.ID}, "reason": "thin slice complete",
+			}, thinSliceKey(16))
+			if closedDependent.Revision.String() != "7" {
+				t.Fatalf("dependent close revision=%s", closedDependent.Revision)
+			}
+			if final := readyPage(t, target.Client); len(final.ids) != 0 || final.revision != "7" {
+				t.Fatalf("final ready page=%+v", final)
+			}
+			t.Logf("thin restored lifecycle passed on %s: restore=%s claim=2 update=3 comment=4 tx.apply=5 close=6/7 warnings=replayed", backend, restoredIncarnation)
+		})
+	}
 }
