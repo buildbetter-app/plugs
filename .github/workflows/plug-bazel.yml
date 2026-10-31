@@ -116,6 +116,7 @@ jobs:
           test --nocache_test_results
           test --test_output=errors
           test --test_timeout=900
+          test --test_env=PLUG_SOURCE_MODULE_ROOT=$GITHUB_WORKSPACE
           EOF
           export BAZELISK_HOME="$RUNNER_TEMP/plug-bazelisk-home"
           export BAZELISK_VERIFY_SHA256="$BAZEL_SHA256"
