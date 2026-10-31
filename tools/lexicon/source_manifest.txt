@@ -338,6 +338,7 @@ internal/integration/cursorhttp/fixture_test.go
 internal/integration/dumpvalidation/BUILD.bazel
 internal/integration/dumpvalidation/dumpvalidation_test.go
 internal/integration/e5acceptance/BUILD.bazel
+internal/integration/e5acceptance/fixture-local-wasi/BUILD.bazel
 internal/integration/e5acceptance/fixture-local-wasi/go.mod.template
 internal/integration/e5acceptance/fixture-local-wasi/plug-plugin.json
 internal/integration/e5acceptance/fixture-local-wasi/plugin.go

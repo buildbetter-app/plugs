@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "local_wasi_test",
     srcs = ["local_fixture_test.go", "local_wasi_test.go", "public_contention_test.go"],
-    embedsrcs = [":local_guest_sources"],
+    embedsrcs = ["//internal/integration/e5acceptance/fixture-local-wasi:sources"],
     deps = [
         "//internal/core/authz",
         "//internal/core/model",
@@ -21,15 +21,6 @@ go_test(
         "//internal/storage/postgres",
         "//internal/storage/sqlite",
         "//pluginapi",
-    ],
-)
-
-filegroup(
-    name = "local_guest_sources",
-    srcs = [
-        "fixture-local-wasi/go.mod.template",
-        "fixture-local-wasi/plug-plugin.json",
-        "fixture-local-wasi/plugin.go",
     ],
 )
 
