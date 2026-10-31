@@ -391,3 +391,26 @@ func TestRenewCancellationAndReplacedExpiry(t *testing.T) {
 	}
 	t.Log("caller cancellation preserves the live lease; successful renewal replaces the old timer and cannot resurrect after the new expiry")
 }
+
+func TestRenewUsesReservedConnectionWhenRequestPoolIsExhausted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+
+	// Open reserves the lock and heartbeat connections before request traffic
+	// starts. Reducing the general pool to those two handles leaves no pooled
+	// request connection available; a heartbeat must still complete through its
+	// reserved handle.
+	s.db.SetMaxOpenConns(2)
+	s.db.SetMaxIdleConns(0)
+	if err := lease.Renew(ctx); err != nil {
+		t.Fatalf("renewal starved by exhausted request pool: %v", err)
+	}
+
+	// Restore the pool limit so the test cleanup can release the lease through
+	// the ordinary request path.
+	s.db.SetMaxOpenConns(96)
+	s.db.SetMaxIdleConns(16)
+	t.Log("lease heartbeat completed on the reserved connection while the request pool had no free handle")
+}

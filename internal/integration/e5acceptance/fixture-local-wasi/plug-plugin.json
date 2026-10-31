@@ -1,0 +1,12 @@
+{
+  "manifest_version": 1,
+  "plugins": [{
+    "id": "app.example.e5local", "alias": "e5local", "version": "1.0.0",
+    "plugin_api": "1.0", "runtime": "wasip1",
+    "provides": [{
+      "kind": "subscriber", "name": "derive", "phases": ["mutate"],
+      "reads": ["fields.title"], "owns": ["fields.title"],
+      "max_point_reads": 1
+    }]
+  }]
+}

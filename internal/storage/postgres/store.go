@@ -21,8 +21,12 @@ import (
 // Store owns a connection pool and its readers, transactions and active leases.
 // Independent Open calls share only the durable state in the DSN's database.
 type Store struct {
-	db        *sql.DB
-	lockConn  *sql.Conn
+	db       *sql.DB
+	lockConn *sql.Conn
+	// renewConn is reserved from the pool so lease heartbeats cannot wait for
+	// request transactions to return a general-purpose connection.
+	renewConn *sql.Conn
+	renewMu   sync.Mutex
 	lockMu    sync.Mutex
 	mu        sync.Mutex
 	closed    bool
@@ -54,8 +58,15 @@ func Open(ctx context.Context, cfg driver.Config) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	s := &Store{db: db, lockConn: lockConn, resources: make(map[interface{ Close() error }]struct{}), leases: make(map[*activeLease]struct{})}
+	renewConn, err := db.Conn(ctx)
+	if err != nil {
+		_ = lockConn.Close()
+		_ = db.Close()
+		return nil, err
+	}
+	s := &Store{db: db, lockConn: lockConn, renewConn: renewConn, resources: make(map[interface{ Close() error }]struct{}), leases: make(map[*activeLease]struct{})}
 	if err := s.initialize(ctx); err != nil {
+		_ = renewConn.Close()
 		_ = lockConn.Close()
 		_ = db.Close()
 		return nil, err
@@ -146,6 +157,46 @@ func (s *Store) check(ctx context.Context) error {
 		return driver.ErrTxClosed
 	}
 	return nil
+}
+
+// renewConnLocked returns the reserved heartbeat connection while renewMu is
+// held. A cancelled PostgreSQL query can poison an *sql.Conn; callers must
+// discard that handle before the next heartbeat rather than retaining it.
+func (s *Store) renewConnLocked(ctx context.Context) (*sql.Conn, error) {
+	if s.renewConn != nil {
+		return s.renewConn, nil
+	}
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return nil, driver.ErrTxClosed
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	closed = s.closed
+	if !closed {
+		s.renewConn = conn
+	}
+	s.mu.Unlock()
+	if closed {
+		_ = conn.Close()
+		return nil, driver.ErrTxClosed
+	}
+	return conn, nil
+}
+
+// discardRenewConnLocked removes a failed reserved heartbeat connection while
+// renewMu is held. The next heartbeat reacquires a fresh reserved handle.
+func (s *Store) discardRenewConnLocked(conn *sql.Conn) {
+	if s.renewConn != conn {
+		return
+	}
+	s.renewConn = nil
+	_ = conn.Close()
 }
 
 // ensureLockKeys uses the connection reserved for lock-row preparation. Lock
@@ -258,6 +309,12 @@ func (s *Store) Close() error {
 		s.lockConn = nil
 	}
 	s.lockMu.Unlock()
+	s.renewMu.Lock()
+	if s.renewConn != nil {
+		errs = append(errs, s.renewConn.Close())
+		s.renewConn = nil
+	}
+	s.renewMu.Unlock()
 	errs = append(errs, s.db.Close())
 	return errors.Join(errs...)
 }

@@ -575,6 +575,13 @@ func (r *Runtime) renew(holder string) {
 	defer close(r.renewDone)
 	ticker := time.NewTicker(driver.LeaseRenewEvery)
 	defer ticker.Stop()
+	// Leave a full renewal interval between a heartbeat timeout and the
+	// driver's lease deadline. A short request-side timeout can otherwise turn
+	// transient SQL/lock contention into an avoidable lease loss.
+	renewTimeout := driver.LeaseTTL - 2*driver.LeaseRenewEvery
+	if renewTimeout <= 0 {
+		renewTimeout = driver.LeaseRenewEvery
+	}
 	for {
 		select {
 		case <-r.ctx.Done():
@@ -582,7 +589,7 @@ func (r *Runtime) renew(holder string) {
 		case <-r.Lease.Lost():
 			return
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(r.ctx, time.Second)
+			ctx, cancel := context.WithTimeout(r.ctx, renewTimeout)
 			err := r.Lease.Renew(ctx)
 			cancel()
 			if err != nil {
