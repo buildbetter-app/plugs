@@ -31,6 +31,65 @@ import (
 
 const beadID = "00000000-0000-4000-8000-000000000001"
 
+type leaseLossSnapshotStore struct {
+	driver.Store
+	lost      atomic.Bool
+	metaReads atomic.Int64
+}
+
+func (s *leaseLossSnapshotStore) Meta(ctx context.Context) (driver.Meta, error) {
+	if s.lost.Load() {
+		s.metaReads.Add(1)
+		return driver.Meta{}, errors.New("snapshot access after lease loss")
+	}
+	return s.Store.Meta(ctx)
+}
+
+func TestLostLeaseFencesAuthorizationSnapshotsBeforeStorage(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	t.Cleanup(func() { _ = store.Close() })
+	lease, err := store.Lease(ctx, "lost-lease-snapshots", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lease.Release(ctx) })
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := authz.Namespace{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}
+	observed := &leaseLossSnapshotStore{Store: store}
+	f := &fixture{store: store, keys: authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})}
+	f.server, err = authzrpc.New(ctx, authzrpc.Config{
+		Store: observed, Lease: lease, Provider: f.keys,
+		Facts:     authzrpc.StaticFacts{Facts: authzfixed.Facts{Namespace: ns}},
+		Namespace: ns, DefaultProject: "project",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	observed.lost.Store(true)
+	for i, method := range []string{"bead.get", "bead.claimNext"} {
+		t.Run(method, func(t *testing.T) {
+			params := map[string]any{}
+			if method == "bead.get" {
+				params["id"] = model.RefByID(beadID, model.Natural64(0))
+			}
+			got := f.call(t, worker("user:operator"), method, params, 9000+i)
+			if got.Error == nil || got.Error.Data.Code != "busy" || !got.Error.Data.Retryable || got.Error.Data.Hint != "active storage lease was lost" {
+				t.Error("lost lease was not returned as a retryable busy response before snapshot access")
+			}
+		})
+	}
+	if reads := observed.metaReads.Load(); reads != 0 {
+		t.Fatalf("authorization accessed storage %d times after lease loss", reads)
+	}
+}
+
 type fixture struct {
 	store  *memory.Store
 	keys   *authnapikey.Provider

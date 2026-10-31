@@ -18,6 +18,7 @@ import (
 type GuardedService struct {
 	delegate        rpc.Service
 	checker         *Checker
+	lease           driver.ActiveLease
 	commitEmpty     func(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta, port.ClaimNextReadyProbe) (port.WriteOutcome, error)
 	claimNextPage   func(context.Context, model.PrincipalRef, service.ReadyRequest) (service.BeadPage, error)
 	readyCandidates func(context.Context, service.ReadyRequest, driver.Reader) ([]service.Bead, error)
@@ -346,8 +347,15 @@ func (s *GuardedService) checkRead(ctx context.Context, by model.PrincipalRef, m
 }
 
 func (s *GuardedService) current(ctx context.Context, asOf *service.AsOf) (driver.Reader, Snapshot, func(), error) {
-	if s == nil || s.checker == nil || s.checker.store == nil {
+	if s == nil || s.checker == nil || s.checker.store == nil || s.lease == nil {
 		return nil, nil, func() {}, errors.New("authorization store is unavailable")
+	}
+	// Authorization and idempotency reads can precede the domain service's
+	// lease guard. Fence them before touching storage after lease loss too.
+	select {
+	case <-s.lease.Lost():
+		return nil, nil, func() {}, &model.Error{Data: model.ErrorData{Code: "busy", Retryable: true, Hint: "active storage lease was lost"}}
+	default:
 	}
 	meta, err := s.checker.store.Meta(ctx)
 	if err != nil {
