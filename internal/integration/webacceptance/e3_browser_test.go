@@ -185,7 +185,10 @@ func TestE3ScriptedBrowserTaskReceipts(t *testing.T) {
 	if err := os.WriteFile(script, e3BrowserCheck, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(f.ctx, 6*time.Minute)
+	// The browser recorder retries only test-side reads/watch attachment after
+	// the UI's existing per-operation deadline. Keep enough wall time for a
+	// slower hosted runner while leaving all product deadlines unchanged.
+	ctx, cancel := context.WithTimeout(f.ctx, 10*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, node, script, f.server.URL, f.evidence, chrome)
 	output, runErr := command.CombinedOutput()

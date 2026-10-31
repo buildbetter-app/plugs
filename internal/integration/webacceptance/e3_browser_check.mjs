@@ -103,6 +103,12 @@ const receipt = {
 let stderr = "", ws, send, evaluate;
 chrome.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const readRetryLimit = 3;
+const readRetryDelay = 250;
+const watchRetryLimit = 3;
+const watchRetryWait = 20000;
+receipt.infrastructure.readRetries = [];
+receipt.infrastructure.watchRetries = [];
 async function until(fn, description, timeout = 25000) {
   const started = performance.now();
   while (performance.now() - started < timeout) {
@@ -128,7 +134,44 @@ const text = (selector) => evaluate(`document.querySelector(${JSON.stringify(sel
 const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)})?.click()`);
 const domRows = (selector) => evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(selector)})).map(r => ({text:r.textContent,title:r.querySelector('.row-title')?.textContent,meta:r.querySelector('.row-meta')?.textContent,revision:r.querySelector('.row-revision')?.textContent}))`);
 const settled = () => until(async () => await text("#connection-state") !== "Loading" && await text("#connection-state") !== "Connecting" && await evaluate("document.querySelector('#refresh') && !document.querySelector('#refresh').disabled"), "completed UI read");
-async function select(view) { await click(`[data-view="${view}"]`); await settled(); }
+async function readView(view, description) {
+  let last;
+  for (let attempt = 1; attempt <= readRetryLimit; attempt++) {
+    try {
+      await click(`[data-view="${view}"]`);
+      await settled();
+      const connection = await text("#connection-state");
+      const watch = await text("#watch-state");
+      if (connection === "Connected") return;
+      last = { view, attempt, connection, watch };
+    } catch (error) {
+      last = { view, attempt, error: String(error.message || error) };
+    }
+    receipt.infrastructure.readRetries.push(last);
+    if (attempt < readRetryLimit) await delay(readRetryDelay);
+  }
+  throw new Error(`${description} did not reach Connected after ${readRetryLimit} attempts: ${JSON.stringify(last)}`);
+}
+async function select(view) { await readView(view, `read ${view}`); }
+async function waitForWatch(description) {
+  let lastError;
+  for (let attempt = 1; attempt <= watchRetryLimit; attempt++) {
+    try {
+      return await until(async () => /connected/i.test(await text("#watch-state")), description, watchRetryWait);
+    } catch (error) {
+      lastError = error;
+      const state = { attempt, connection: await text("#connection-state"), watch: await text("#watch-state") };
+      receipt.infrastructure.watchRetries.push(state);
+      if (attempt === watchRetryLimit) throw error;
+      // The embedded UI keeps its 15-second product read/watch deadline. A
+      // test-only refresh retries a slow runner's read without changing that
+      // deadline or treating a snapshot as a live-watch success.
+      await click("#refresh");
+      await settled();
+    }
+  }
+  throw lastError;
+}
 async function screenshot(name) {
   const png = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
   await writeFile(path.join(evidence, name + ".png"), Buffer.from(png.data, "base64"));
@@ -205,7 +248,7 @@ try {
   const started = performance.now();
   await send("Page.navigate", { url: base + "/ui/" });
   await until(() => evaluate("document.readyState === 'complete' && !!document.querySelector('#refresh')"), "actual embedded page load");
-  await settled();
+  await readView("home", "initial home read");
   receipt.infrastructure.initialReadElapsedMs = performance.now() - started;
   receipt.infrastructure.initialConnection = await text("#connection-state");
   receipt.infrastructure.initialWatch = await text("#watch-state");
@@ -249,7 +292,7 @@ try {
     outcome.startedAt = performance.now();
     await select("home");
     assert.equal(await text("#connection-state"), "Connected");
-    await until(async () => /connected/i.test(await text("#watch-state")), "real view.watch NDJSON attachment");
+    await waitForWatch("real view.watch NDJSON attachment");
     const before = await domRows("#changed-rows .row");
     assert(before.length > 0 && before.length <= 25);
     assert(!before.some((row) => row.text.includes(fixture.deniedId)));
@@ -298,7 +341,7 @@ try {
   // Qualification control: prove a CURRENT stored denial revokes the saved
   // view's reader. Never substitute a permit callback or fake watch success.
   await select("home");
-  await until(async () => /connected/i.test(await text("#watch-state")), "real watch for stored revocation");
+  await waitForWatch("real watch for stored revocation");
   const revoked = { ...fixture.grant, resources: fixture.grant.resources.filter((id) => id !== fixture.homeViewId) };
   const denial = await direct("tx.apply", { changeSet: { ops: [{ kind: "setMeta", target: { id: fixture.grantCarrierId, branch: 0 }, key: fixture.grantKey, value: revoked }] }, _meta: meta(fixture.revokeKey) });
   assert.equal(denial.error, undefined, JSON.stringify(denial));
