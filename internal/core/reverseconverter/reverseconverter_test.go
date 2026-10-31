@@ -518,6 +518,26 @@ func TestConvertUnknownTypeDirectiveSupportsCustomAndExactRows(t *testing.T) {
 	}
 }
 
+func TestConvertTypeDirectiveRejectsIrrelevantMembers(t *testing.T) {
+	tests := map[string]func(*ontologymigration.Directive){
+		"field":      func(d *ontologymigration.Directive) { d.Field = "custom" },
+		"value":      func(d *ontologymigration.Directive) { d.Value = 1 },
+		"conversion": func(d *ontologymigration.Directive) { d.Conversion = "string_to_integer" },
+		"violation":  func(d *ontologymigration.Directive) { d.Violation = "digest" },
+		"reason":     func(d *ontologymigration.Directive) { d.Reason = "migration note" },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			directive := allowTypeDirective("decision")
+			mutate(&directive)
+			result, err := ConvertWithDirectives(unknownTypeDump("decision"), []ontologymigration.Directive{directive})
+			if err == nil || !strings.Contains(err.Error(), "not valid for map_type") || len(result.JSONL) != 0 {
+				t.Fatalf("irrelevant map_type member was accepted: result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestConvertTypeDirectiveValidationAndUsage(t *testing.T) {
 	tests := []struct {
 		name       string
