@@ -444,18 +444,6 @@ func convertBead(record Record, report *Report) (*workingIssue, []string) {
 	} else if outcome != "" {
 		reasons = append(reasons, fmt.Sprintf("bead %q has outcome on non-completed status", record.ID))
 	}
-	for _, field := range []string{"await_type", "mol_type", "hook_bead", "role_bead", "event_kind", "target", "timeout_ns", "waiters"} {
-		if nonEmpty(record.Source.Fields[field]) {
-			report.UnsupportedFields = append(report.UnsupportedFields, "bead/"+record.ID+"/"+field)
-			reasons = append(reasons, fmt.Sprintf("bead %q has active unsupported field %q", record.ID, field))
-		}
-	}
-	for _, field := range []string{"ephemeral", "is_template"} {
-		if truthy(record.Source.Fields[field]) {
-			report.UnsupportedFields = append(report.UnsupportedFields, "bead/"+record.ID+"/"+field)
-			reasons = append(reasons, fmt.Sprintf("bead %q has unsupported %s disposition", record.ID, field))
-		}
-	}
 	if class := text(record.Source.Fields["storage_class"]); class != "" && class != "versioned" {
 		report.UnsupportedFields = append(report.UnsupportedFields, "bead/"+record.ID+"/storage_class")
 		reasons = append(reasons, fmt.Sprintf("bead %q has unsupported storage class %q", record.ID, class))
@@ -483,47 +471,27 @@ func convertBead(record Record, report *Report) (*workingIssue, []string) {
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
-	if value, exists := metadata[beadsAgentStateMetadataKey]; exists {
-		if _, ok := value.(string); !ok {
-			reasons = append(reasons, fmt.Sprintf("bead %q metadata %q is not a string", record.ID, beadsAgentStateMetadataKey))
+	for _, field := range dumpformat.OpaqueIssueFields() {
+		value, present := record.Source.Fields[field]
+		if !present {
+			continue
 		}
-	}
-	if value, present := record.Source.Fields["agent_state"]; present && value != nil {
-		agentState, ok := value.(string)
-		if !ok {
-			reasons = append(reasons, fmt.Sprintf("bead %q source field %q is not a string", record.ID, "agent_state"))
-		} else if agentState != "" {
-			if existing, exists := metadata[beadsAgentStateMetadataKey]; exists {
-				if existing != agentState {
-					reasons = append(reasons, fmt.Sprintf("bead %q source field %q conflicts with metadata %q", record.ID, "agent_state", beadsAgentStateMetadataKey))
-				}
-			} else {
-				// Keep this value opaque. The Beads importer owns its meaning;
-				// Plug must carry the exact source string without workflow mapping.
-				metadata[beadsAgentStateMetadataKey] = agentState
+		if (field == "agent_state" || field == "await_id") && value != nil {
+			if _, ok := value.(string); !ok {
+				reasons = append(reasons, fmt.Sprintf("bead %q source field %q is not a string", record.ID, field))
+				continue
 			}
 		}
-	}
-	if value, exists := metadata[beadsAwaitIDMetadataKey]; exists {
-		if _, ok := value.(string); !ok {
-			reasons = append(reasons, fmt.Sprintf("bead %q metadata %q is not a string", record.ID, beadsAwaitIDMetadataKey))
-		}
-	}
-	if value, present := record.Source.Fields["await_id"]; present && value != nil {
-		awaitID, ok := value.(string)
-		if !ok {
-			reasons = append(reasons, fmt.Sprintf("bead %q source field %q is not a string", record.ID, "await_id"))
-		} else if awaitID != "" {
-			if existing, exists := metadata[beadsAwaitIDMetadataKey]; exists {
-				if existing != awaitID {
-					reasons = append(reasons, fmt.Sprintf("bead %q source field %q conflicts with metadata %q", record.ID, "await_id", beadsAwaitIDMetadataKey))
-				}
-			} else {
-				// Keep this value opaque. The Beads importer owns its meaning;
-				// Plug must carry the exact source string without workflow mapping.
-				metadata[beadsAwaitIDMetadataKey] = awaitID
+		key := "beads." + field
+		if existing, exists := metadata[key]; exists {
+			if !jsonEquivalent(existing, value) {
+				reasons = append(reasons, fmt.Sprintf("bead %q source field %q conflicts with metadata %q", record.ID, field, key))
 			}
+			continue
 		}
+		// Keep this value opaque. The Beads importer owns its meaning; Plug
+		// carries the exact JSON value without workflow mapping.
+		metadata[key] = cloneValue(value)
 	}
 	if len(archivedSource) > 0 {
 		if _, exists := metadata["_plug_source_fields"]; exists {
@@ -882,13 +850,14 @@ func representedSourceFields(kind string) map[string]bool {
 	fields := map[string]bool{}
 	switch kind {
 	case "bead":
-		for _, name := range []string{
+		names := []string{
 			"acceptance_criteria", "assignee", "close_reason", "closed_at", "closed_by_session",
 			"created_at", "created_by", "defer_until", "description", "design", "due_at",
 			"external_ref", "id", "issue_type", "metadata", "notes", "owner", "pinned",
 			"priority", "source_system", "spec_id", "started_at", "status", "title", "updated_at",
-			"agent_state", "await_id",
-		} {
+		}
+		names = append(names, dumpformat.OpaqueIssueFields()...)
+		for _, name := range names {
 			fields[name] = true
 		}
 	case "edge":

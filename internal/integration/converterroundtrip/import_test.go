@@ -32,10 +32,14 @@ func admittedFixtureBytesWithAgentState(t *testing.T, agentState string) []byte 
 }
 
 func admittedFixtureBytesWithAgentStateAndAwaitID(t *testing.T, agentState, awaitID string) []byte {
-	return admittedFixtureBytesWithOpaqueFields(t, agentState, awaitID)
+	return admittedFixtureBytesWithFields(t, map[string]any{"agent_state": agentState, "await_id": awaitID})
 }
 
 func admittedFixtureBytesWithOpaqueFields(t *testing.T, agentState, awaitID string) []byte {
+	return admittedFixtureBytesWithAgentStateAndAwaitID(t, agentState, awaitID)
+}
+
+func admittedFixtureBytesWithFields(t *testing.T, opaque map[string]any) []byte {
 	t.Helper()
 	return rewriteData(t, func(members map[string][]byte) {
 		var manifest map[string]any
@@ -86,14 +90,11 @@ func admittedFixtureBytesWithOpaqueFields(t *testing.T, agentState, awaitID stri
 		edge["body"].(map[string]any)["type"] = "blocks"
 		edge["source"].(map[string]any)["fields"].(map[string]any)["type"] = "blocks"
 		members["records/edge.ndjson"] = encode(t, edge)
-		if agentState != "" {
+		if len(opaque) != 0 {
 			changeRecord(t, members, "bead", func(record map[string]any) {
-				source(record)["agent_state"] = agentState
-			})
-		}
-		if awaitID != "" {
-			changeRecord(t, members, "bead", func(record map[string]any) {
-				source(record)["await_id"] = awaitID
+				for field, value := range opaque {
+					source(record)[field] = value
+				}
 			})
 		}
 		members["manifest.json"] = encode(t, manifest)
@@ -126,7 +127,25 @@ func admittedImportProfile(t *testing.T, archiveBytes []byte) (driver.RestoreImp
 func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 	const agentState = "opaque/v1:phase=ready\x00"
 	const awaitID = "opaque-await/v1:owner=worker\x00"
-	data := admittedFixtureBytesWithAgentStateAndAwaitID(t, agentState, awaitID)
+	opaque := map[string]any{
+		"agent_state": agentState,
+		"await_id":    awaitID,
+		"await_type":  "human",
+		"ephemeral":   json.Number("1"),
+		"event_kind":  nil,
+		"hook_bead":   "demo-1",
+		"is_template": false,
+		"mol_type":    "formula",
+		"payload":     map[string]any{"state": "waiting", "number": json.Number("9007199254740993")},
+		"role_bead":   "demo-2",
+		"role_type":   "agent",
+		"target":      "demo-3",
+		"timeout_ns":  json.Number("9007199254740993"),
+		"waiters":     []any{"demo-1", nil},
+		"wisp_type":   "run",
+		"work_type":   "workflow",
+	}
+	data := admittedFixtureBytesWithFields(t, opaque)
 	profile, archive := admittedImportProfile(t, data)
 	agentStateID := archive.Records("bead")[0].ID
 	inspection, err := InspectImport(context.Background(), bytes.NewReader(data))
@@ -210,17 +229,14 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 					imported, foundComment = doc.Comments[0], true
 				}
 				if doc.ID == agentStateID {
-					var got string
-					raw, ok := doc.Metadata["beads.agent_state"]
-					if !ok || json.Unmarshal(raw, &got) != nil || got != agentState {
-						t.Fatalf("agent_state metadata=%s want=%q", raw, agentState)
+					for field, want := range opaque {
+						raw, ok := doc.Metadata["beads."+field]
+						encoded, marshalErr := json.Marshal(want)
+						if !ok || marshalErr != nil || !bytes.Equal(raw, encoded) {
+							t.Fatalf("%s metadata=%s want=%s (present=%v marshal=%v)", field, raw, encoded, ok, marshalErr)
+						}
 					}
-					foundAgentState = true
-					raw, ok = doc.Metadata["beads.await_id"]
-					if !ok || json.Unmarshal(raw, &got) != nil || got != awaitID {
-						t.Fatalf("await_id metadata=%s want=%q", raw, awaitID)
-					}
-					foundAwaitID = true
+					foundAgentState, foundAwaitID = true, true
 				}
 			}
 			if !foundComment || imported.Origin != "import" || !reflect.DeepEqual(imported.Principal, profile.Admission.Actor) || imported.SourceAuthor != "fixture-commenter" || imported.SourceTime == nil || imported.Time.IsZero() {
@@ -257,8 +273,8 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 				found := false
 				for {
 					var line struct {
-						ID       string         `json:"id"`
-						Metadata map[string]any `json:"metadata"`
+						ID       string                     `json:"id"`
+						Metadata map[string]json.RawMessage `json:"metadata"`
 					}
 					err := decoder.Decode(&line)
 					if errors.Is(err, io.EOF) {
@@ -270,13 +286,12 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 					if line.ID != agentStateID {
 						continue
 					}
-					got, ok := line.Metadata["beads.agent_state"].(string)
-					if !ok || got != agentState {
-						t.Fatalf("reverse agent_state metadata=%#v want=%q", line.Metadata["beads.agent_state"], agentState)
-					}
-					got, ok = line.Metadata["beads.await_id"].(string)
-					if !ok || got != awaitID {
-						t.Fatalf("reverse await_id metadata=%#v want=%q", line.Metadata["beads.await_id"], awaitID)
+					for field, want := range opaque {
+						got, ok := line.Metadata["beads."+field]
+						encoded, marshalErr := json.Marshal(want)
+						if !ok || marshalErr != nil || !bytes.Equal(got, encoded) {
+							t.Fatalf("reverse %s metadata=%s want=%s (present=%v marshal=%v)", field, got, encoded, ok, marshalErr)
+						}
 					}
 					found = true
 				}

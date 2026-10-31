@@ -624,31 +624,18 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 				metadata[key] = encoded
 			}
 		}
-		if value, present := source.Source.Fields["agent_state"]; present && value != nil {
-			agentState, ok := value.(string)
-			if !ok {
-				return restorePlan{}, fmt.Errorf("bead %s source field agent_state is not text", source.ID)
+		for _, field := range dumpformat.OpaqueIssueFields() {
+			value, present := source.Source.Fields[field]
+			if !present {
+				continue
 			}
-			if agentState != "" {
-				encoded, err := json.Marshal(agentState)
-				if err != nil {
-					return restorePlan{}, fmt.Errorf("bead %s agent_state: %w", source.ID, err)
-				}
-				metadata[beadsAgentStateMetadataKey] = encoded
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				return restorePlan{}, fmt.Errorf("bead %s opaque field %s: %w", source.ID, field, err)
 			}
-		}
-		if value, present := source.Source.Fields["await_id"]; present && value != nil {
-			awaitID, ok := value.(string)
-			if !ok {
-				return restorePlan{}, fmt.Errorf("bead %s source field await_id is not text", source.ID)
-			}
-			if awaitID != "" {
-				encoded, err := json.Marshal(awaitID)
-				if err != nil {
-					return restorePlan{}, fmt.Errorf("bead %s await_id: %w", source.ID, err)
-				}
-				metadata[beadsAwaitIDMetadataKey] = encoded
-			}
+			// Opaque Beads columns are stored as reserved metadata. Plug never
+			// interprets these values; the importer owns their meaning.
+			metadata["beads."+field] = encoded
 		}
 		for key, value := range source.Body {
 			switch key {

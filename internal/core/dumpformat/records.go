@@ -92,11 +92,6 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 		default:
 			return fmt.Errorf("unsupported source type")
 		}
-		for _, key := range []string{"ephemeral", "is_template"} {
-			if active(fields[key]) {
-				return fmt.Errorf("unsupported source workflow flag")
-			}
-		}
 		if class := stringValue(fields["storage_class"]); class != "" && class != "versioned" {
 			return fmt.Errorf("unsupported storage class")
 		}
@@ -112,11 +107,6 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 		if value, present := fields["await_id"]; present && value != nil {
 			if _, ok := value.(string); !ok {
 				return fmt.Errorf("await_id must be text")
-			}
-		}
-		for _, key := range []string{"await_type", "mol_type", "hook_bead", "role_bead", "event_kind"} {
-			if stringValue(fields[key]) != "" {
-				return fmt.Errorf("unsupported source workflow field")
 			}
 		}
 		labels, ok := record.Body["labels"].([]any)
