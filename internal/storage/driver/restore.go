@@ -112,7 +112,7 @@ func (e ErrRestoreHistoryRefused) Error() string {
 	if e.History != "" {
 		history = fmt.Sprintf(" history %q", e.History)
 	}
-	if e.Mode == RestoreHistoryModeFull && e.History == RestoreHistoryHead {
+	if e.Mode == RestoreHistoryModeFull && (e.History == RestoreHistoryHead || e.History == RestoreHistoryFull || e.History == RestoreHistoryVerified) {
 		return "full-history restore is unavailable; source versions and changesets cannot be replayed by this driver"
 	}
 	if e.Reason == RestoreHistoryReasonNotYetSupported {
