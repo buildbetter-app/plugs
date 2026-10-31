@@ -38,6 +38,21 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 		return GetResult{}, err
 	}
 	result := GetResult{Bead: bead, Attachments: doc.Attachments}
+	if len(doc.Comments) != 0 {
+		result.Comments = make([]Comment, len(doc.Comments))
+		for i, comment := range doc.Comments {
+			principal, err := clonePrincipalValue(comment.Principal)
+			if err != nil {
+				return GetResult{}, failure("internal_error", "invalid persisted comment actor")
+			}
+			value := Comment{Body: comment.Body, Principal: principal, Time: comment.Time, Origin: comment.Origin, SourceAuthor: comment.SourceAuthor}
+			if comment.SourceTime != nil {
+				at := *comment.SourceTime
+				value.SourceTime = &at
+			}
+			result.Comments[i] = value
+		}
+	}
 	if doc.Lease != nil {
 		ttl, err := durationMS(doc.Lease.TtlMs)
 		if err != nil {

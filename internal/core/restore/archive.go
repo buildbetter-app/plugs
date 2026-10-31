@@ -88,6 +88,12 @@ func presenceError(err error) error {
 	return &model.Error{Data: model.ErrorData{Code: "human_presence_required", Hint: hint}}
 }
 
+// ImportHook is the optional trusted host bridge for validated offline
+// converter archives. The manager owns the authenticated paged session and
+// supplies the complete archive only after its checksum, manifest and caller
+// checks have succeeded. Native archives never use this hook.
+type ImportHook func(context.Context, string, model.PrincipalRef, []byte, string, model.WriteMeta, Presence) (RestoreStatus, error)
+
 type nativeRecord struct {
 	Ref      model.Ref       `json:"ref"`
 	Kind     string          `json:"kind"`
@@ -338,6 +344,9 @@ type restoreSession struct {
 	manifest    map[string]any
 	history     string
 	hash        string
+	principal   model.PrincipalRef
+	agentLabel  string
+	idempotency string
 	pages       map[uint64][]byte
 	state       string
 	warnings    []model.Warning
@@ -347,12 +356,13 @@ type restoreSession struct {
 // Manager is safe for concurrent RPC calls. A restore session is in-memory
 // until finish; the store itself is changed only by one atomic driver commit.
 type Manager struct {
-	store    driver.Store
-	lease    driver.ActiveLease
-	verifier PresenceVerifier
-	mu       sync.Mutex
-	dumps    map[string]dumpSnapshot
-	restores map[string]*restoreSession
+	store      driver.Store
+	lease      driver.ActiveLease
+	verifier   PresenceVerifier
+	mu         sync.Mutex
+	dumps      map[string]dumpSnapshot
+	restores   map[string]*restoreSession
+	importHook ImportHook
 }
 
 type dumpSnapshot struct {
@@ -368,6 +378,18 @@ func NewManager(store driver.Store, lease driver.ActiveLease, verifier ...Presen
 		presenceVerifier = verifier[0]
 	}
 	return &Manager{store: store, lease: lease, verifier: presenceVerifier, dumps: map[string]dumpSnapshot{}, restores: map[string]*restoreSession{}}
+}
+
+// SetImportHook installs the trusted composition bridge for converter
+// archives. It is configured before the registry is exposed and is optional
+// so the CLI and native-only callers retain their existing behavior.
+func (m *Manager) SetImportHook(hook ImportHook) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.importHook = hook
+	m.mu.Unlock()
 }
 
 func (m *Manager) requirePresence(p Presence) error {
@@ -541,6 +563,24 @@ type RestoreStatus struct {
 }
 
 func (m *Manager) Begin(ctx context.Context, manifest map[string]any, history string, presence Presence) (RestoreStatus, error) {
+	return m.BeginAs(ctx, model.PrincipalRef{}, manifest, history, presence)
+}
+
+// BeginAs binds the admitted caller to the paged restore session. Presence is
+// still checked by the injected verifier; the principal binding prevents a
+// different user from inheriting a session between begin and finish.
+func (m *Manager) BeginAs(ctx context.Context, principal model.PrincipalRef, manifest map[string]any, history string, presence Presence) (RestoreStatus, error) {
+	return m.beginAs(ctx, principal, manifest, history, model.WriteMeta{}, presence)
+}
+
+// BeginAsWithMeta is the transport-facing form of BeginAs. The metadata is
+// retained privately for the converter finish hook so a retry uses the same
+// G4 scope and operation key that was admitted at begin.
+func (m *Manager) BeginAsWithMeta(ctx context.Context, principal model.PrincipalRef, manifest map[string]any, history string, meta model.WriteMeta, presence Presence) (RestoreStatus, error) {
+	return m.beginAs(ctx, principal, manifest, history, meta, presence)
+}
+
+func (m *Manager) beginAs(ctx context.Context, principal model.PrincipalRef, manifest map[string]any, history string, meta model.WriteMeta, presence Presence) (RestoreStatus, error) {
 	if err := m.requirePresence(presence); err != nil {
 		return RestoreStatus{}, err
 	}
@@ -564,8 +604,13 @@ func (m *Manager) Begin(ctx context.Context, manifest map[string]any, history st
 	if err := json.Unmarshal(manifestData, &parsed); err != nil || parsed.Format != dumpformat.Format || parsed.Schema != 1 || (parsed.Scope != dumpformat.Scope && parsed.Scope != "plug-native-store") {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: "unsupported dump manifest"}}
 	}
-	if _, err := m.emptyTarget(ctx); err != nil {
-		return RestoreStatus{}, err
+	// Converter imports perform the empty-target check in the trusted adapter,
+	// which first attempts read-only receipt recovery for a same-bound retry.
+	// Native restore keeps the existing early empty-target refusal.
+	if parsed.Scope != dumpformat.Scope {
+		if _, err := m.emptyTarget(ctx); err != nil {
+			return RestoreStatus{}, err
+		}
 	}
 	canonical, err := json.Marshal(parsed)
 	if err != nil {
@@ -577,12 +622,19 @@ func (m *Manager) Begin(ctx context.Context, manifest map[string]any, history st
 	}
 	id := newID("restore")
 	m.mu.Lock()
-	m.restores[id] = &restoreSession{id: id, manifest: cloneMap(manifest), history: history, hash: hash, pages: map[uint64][]byte{}, state: "receiving"}
+	m.restores[id] = &restoreSession{id: id, manifest: cloneMap(manifest), history: history, hash: hash, principal: principal, agentLabel: meta.AgentLabel, idempotency: meta.IdempotencyKey, pages: map[uint64][]byte{}, state: "receiving"}
 	m.mu.Unlock()
 	return RestoreStatus{RestoreID: id, State: "receiving", ReceivedPages: 0, Warnings: []model.Warning{}}, nil
 }
 
 func (m *Manager) Chunk(ctx context.Context, id string, page uint64, data []byte, checksum string, presence Presence) (RestoreStatus, error) {
+	return m.ChunkAs(ctx, model.PrincipalRef{}, id, page, data, checksum, presence)
+}
+
+// ChunkAs rechecks the caller binding and operation-bound presence for every
+// uploaded page. It intentionally retains the old Chunk wrapper for local
+// fixtures that use the anonymous in-process API.
+func (m *Manager) ChunkAs(ctx context.Context, principal model.PrincipalRef, id string, page uint64, data []byte, checksum string, presence Presence) (RestoreStatus, error) {
 	if err := m.requirePresence(presence); err != nil {
 		return RestoreStatus{}, err
 	}
@@ -603,6 +655,9 @@ func (m *Manager) Chunk(ctx context.Context, id string, page uint64, data []byte
 	session := m.restores[id]
 	if session == nil {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "restore session not found"}}
+	}
+	if !samePrincipal(session.principal, principal) {
+		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "restore session caller changed"}}
 	}
 	if session.state != "receiving" {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "restore session is no longer receiving"}}
@@ -643,6 +698,10 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 		m.mu.Unlock()
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "restore session not found"}}
 	}
+	if !samePrincipal(session.principal, principal) {
+		m.mu.Unlock()
+		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "restore session caller changed"}}
+	}
 	if session.state != "receiving" {
 		status := restoreStatus(session)
 		m.mu.Unlock()
@@ -663,6 +722,10 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 		m.mu.Unlock()
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "restore session not found"}}
 	}
+	if !samePrincipal(session.principal, principal) {
+		m.mu.Unlock()
+		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "restore session caller changed"}}
+	}
 	if session.state != "receiving" {
 		status := restoreStatus(session)
 		m.mu.Unlock()
@@ -682,25 +745,68 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 	if err := ctx.Err(); err != nil {
 		return m.fail(id, err)
 	}
-	if err := validateSupportedArchive(archive); err != nil {
-		return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}})
-	}
 	m.mu.Lock()
 	wantHistory := ""
+	var importHook ImportHook
+	importMeta := meta
 	if current := m.restores[id]; current != nil {
 		wantHistory = current.history
+		importHook = m.importHook
+		// The converter profile is bound to the begin operation, not to a
+		// caller-chosen finish key or agent label. Native restore continues to
+		// use the finish metadata below.
+		if current.idempotency != "" {
+			importMeta.IdempotencyKey = current.idempotency
+		}
+		importMeta.AgentLabel = current.agentLabel
+		importMeta.Agent = current.agentLabel
 	}
 	m.mu.Unlock()
-	if wantHistory != "" && archive.Manifest().Scope == "plug-native-store" && archive.Manifest().History != wantHistory {
+	manifest := archive.Manifest()
+	if wantHistory != "" && manifest.Scope == "plug-native-store" && manifest.History != wantHistory {
 		return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: "archive history does not match restore request"}})
 	}
-	canonicalManifest, err := json.Marshal(archive.Manifest())
+	canonicalManifest, err := json.Marshal(manifest)
 	if err != nil {
 		return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: err.Error()}})
 	}
 	canonicalHash := memberDigest(canonicalManifest)
 	if !strings.EqualFold(manifestHash, admittedManifestHash) || canonicalHash != admittedManifestHash {
 		return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: "manifest checksum mismatch"}})
+	}
+	if manifest.Scope == dumpformat.Scope {
+		if importHook == nil {
+			// Preserve the standalone manager's historical refusal when no
+			// trusted converter boundary is installed. Composition installs the
+			// hook for admitted converter imports; direct/native-only managers
+			// must retain the B17 unsupported-profile contract.
+			return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "converter archive restore is unavailable; source disclosures and allocator state must be preserved by the converter boundary"}})
+		}
+		m.mu.Lock()
+		if current := m.restores[id]; current != nil {
+			current.state = "applying"
+		}
+		m.mu.Unlock()
+		status, importErr := importHook(ctx, id, principal, archiveBytes, canonicalHash, importMeta, presence)
+		if importErr != nil {
+			if errors.Is(importErr, driver.ErrRestoreTargetNotEmpty) {
+				importErr = &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target is initialized; restore requires a fully empty store"}}
+			} else if errors.Is(importErr, driver.ErrConflict) {
+				importErr = &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "restore import binding does not match the durable receipt"}}
+			}
+			return m.fail(id, importErr)
+		}
+		m.mu.Lock()
+		if current := m.restores[id]; current != nil {
+			current.state = "complete"
+			current.incarnation = status.Incarnation
+		}
+		status = restoreStatus(m.restores[id])
+		m.mu.Unlock()
+		return status, nil
+	}
+	if err := validateSupportedArchive(archive); err != nil {
+		return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}})
 	}
 	_, err = m.emptyTarget(ctx)
 	if err != nil {
@@ -733,6 +839,15 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 	status := restoreStatus(m.restores[id])
 	m.mu.Unlock()
 	return status, nil
+}
+
+func samePrincipal(left, right model.PrincipalRef) bool {
+	if left.Kind == "" && left.ID == "" {
+		return true
+	}
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
 func (m *Manager) fail(id string, err error) (RestoreStatus, error) {
