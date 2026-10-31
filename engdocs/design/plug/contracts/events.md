@@ -26,7 +26,7 @@ alternative spellings.
 | --- | --- | --- | --- |
 | `bead.created` | bead | A `create` operation commits. | Durable commit event; participates in every delivery class. |
 | `bead.updated` | bead | A `patch` or `setMeta` operation changes a bead. | One event per changed resource; `setBy` identifies request or mutator ownership. |
-| `bead.reparented` | bead | A `reparent` operation commits. | Closure and project changes appear in `changed`; derived closure rows follow in a derived changeset when fan-out is deferred. |
+| `bead.reparented` | bead | A `reparent` operation commits. | Closure and parent-link changes appear in `changed`; derived closure rows follow in a derived changeset when fan-out is deferred. The child project remains unchanged under the parent/child contract, and parent content follows current read authorization and non-disclosure. |
 | `bead.linked` | bead | A `link` operation commits. | `changed` includes the typed edge; blocking edges bump `graph/blocking`. |
 | `bead.unlinked` | bead | An `unlink` operation commits. | The `before` image contains the removed edge when readable. |
 | `bead.commented` | bead | A `comment` operation commits. | Markdown is normalized before this event is written. |

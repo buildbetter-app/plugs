@@ -105,6 +105,21 @@ after publication, and new codes use the next unused value. The
 allocation for this snapshot; any future registry or generator must preserve
 every existing row.
 
+## Parent/child refusal boundary
+
+The post-stop parent/child contract reuses this closed error vocabulary. A
+parented create or reparent that is not yet admitted by the implementation
+continues to return the current `invalid_params`/`forbidden` refusal. Once a
+future slice is separately admitted, a missing or hidden parent remains
+non-disclosing: return `not_found` after disclosure checks or the existing
+authorization denial, without a count or error that distinguishes hidden
+content. A self/descendant cycle or other child invariant failure is
+`ontology_guard_failed`; an over-limit closure rewrite is
+`closure_too_large`; an over-limit authorized progress input is
+`scope_too_large`. Refused attempts publish no partial hierarchy, closure,
+event or receipt state. This text records the conditional contract only; it
+does not claim runtime support or qualification.
+
 ## Runtime mapping
 
 - `code` is the stable wire string carried in `error.data.code` or a warning.
