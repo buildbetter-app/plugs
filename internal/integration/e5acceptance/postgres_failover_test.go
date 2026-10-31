@@ -205,9 +205,11 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 	winnerEvidence := map[string]publicWinnerEvidence{}
 	errorCodes := map[string]int{}
 	errorHints := map[string]int{}
+	httpStatuses := map[string]int{}
 	acknowledgedMissing := 0
 	for outcome := range results {
 		metrics.Received++
+		httpStatuses[strconv.Itoa(outcome.final.status)]++
 		metrics.Attempts += outcome.attempts
 		metrics.Conflicts += outcome.conflicts
 		metrics.Busy += outcome.busy
@@ -253,7 +255,11 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 	}
 	// Retain sanitized outcome evidence even when an unchanged assertion below
 	// fails; never log response bodies, tokens, or raw protocol errors.
-	t.Logf("postgres failover claimNext partial/final: launched=%d received=%d A=%d C=%d B=%d L=%d S=%d N=%d E=%d X=%d primary_acknowledged=%d new_primary_commit_observed=%t error_codes=%s error_hints=%s", metrics.Launched, metrics.Received, metrics.Attempts, metrics.Conflicts, metrics.Busy, metrics.RateLimited, metrics.Successes, metrics.Nulls, metrics.Errors, metrics.TerminalRetryable, len(client.primaryAcknowledged()), !firstNewPrimaryCommit.IsZero(), formatPublicCounters(errorCodes), formatPublicCounters(errorHints))
+	promotedHead := "<unavailable>"
+	if observed, err := standby.store.Meta(context.Background()); err == nil {
+		promotedHead = observed.Head.String()
+	}
+	t.Logf("postgres failover claimNext partial/final: launched=%d received=%d A=%d C=%d B=%d L=%d S=%d N=%d E=%d X=%d primary_attempts=%d promoted_attempts=%d primary_acknowledged=%d new_primary_commit_observed=%t promoted_head=%s http_statuses=%s error_codes=%s error_hints=%s", metrics.Launched, metrics.Received, metrics.Attempts, metrics.Conflicts, metrics.Busy, metrics.RateLimited, metrics.Successes, metrics.Nulls, metrics.Errors, metrics.TerminalRetryable, client.primaryAttempts.Load(), client.promotedAttempts.Load(), len(client.primaryAcknowledged()), !firstNewPrimaryCommit.IsZero(), promotedHead, formatPublicCounters(httpStatuses), formatPublicCounters(errorCodes), formatPublicCounters(errorHints))
 	if err := metrics.validateAccounting(false); err != nil {
 		t.Fatal(err)
 	}
@@ -282,11 +288,13 @@ func TestPublicHTTPClaimNextTwoHundredAgentsPostgresFailover(t *testing.T) {
 }
 
 type failoverClient struct {
-	mu             sync.RWMutex
-	current        *localFixture
-	primary        *localFixture
-	firstNewCommit atomic.Int64
-	primaryAcked   map[string]struct{}
+	mu               sync.RWMutex
+	current          *localFixture
+	primary          *localFixture
+	firstNewCommit   atomic.Int64
+	primaryAcked     map[string]struct{}
+	primaryAttempts  atomic.Int64
+	promotedAttempts atomic.Int64
 }
 
 func (c *failoverClient) swap(next *localFixture) {
@@ -318,6 +326,11 @@ func (c *failoverClient) claim(key, token string) publicClaimReply {
 	f := c.current
 	primary := c.primary
 	c.mu.RUnlock()
+	if f == primary {
+		c.primaryAttempts.Add(1)
+	} else {
+		c.promotedAttempts.Add(1)
+	}
 	reply := publicClaimNextToken(f, key, token, closedStart)
 	if reply.outcome() == publicSuccess {
 		c.mu.Lock()
@@ -366,7 +379,7 @@ func startFailoverContainers(t *testing.T) *failoverContainers {
 	c.primaryDSN = "postgres://postgres@127.0.0.1:" + primaryPort + "/" + failoverDatabase + "?sslmode=disable"
 	c.standbyDSN = "postgres://postgres@127.0.0.1:" + standbyPort + "/" + failoverDatabase + "?sslmode=disable"
 	waitPostgres(t, c.primary, failoverDatabase)
-	if output, err := e5Docker("exec", c.primary, "psql", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", "CREATE ROLE "+failoverReplicationUser+" WITH REPLICATION LOGIN PASSWORD '"+failoverReplicationPassword+"'"); err != nil {
+	if output, err := e5Docker("exec", c.primary, "psql", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", "CREATE ROLE "+failoverReplicationUser+" WITH REPLICATION LOGIN PASSWORD '"+failoverReplicationPassword+"'"); err != nil {
 		t.Fatalf("replication role creation failed: %v %s", err, output)
 	}
 	if output, err := e5Docker("exec", c.primary, "sh", "-c", "printf 'host replication e5_repl 0.0.0.0/0 trust\\n' >> /var/lib/postgresql/data/pg_hba.conf"); err != nil {
@@ -481,7 +494,9 @@ func waitPostgres(t *testing.T, name, database string) {
 	t.Helper()
 	deadline := time.Now().Add(45 * time.Second)
 	for time.Now().Before(deadline) {
-		if output, err := e5Docker("exec", name, "pg_isready", "-U", "postgres", "-d", database); err == nil && strings.Contains(string(output), "accepting connections") {
+		// The image starts a temporary Unix-socket-only server during initdb.
+		// TCP is available only after that server exits and final startup ends.
+		if output, err := e5Docker("exec", name, "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", database); err == nil && strings.Contains(string(output), "accepting connections") {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
