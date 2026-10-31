@@ -198,8 +198,17 @@ type RestoreImportProfile struct {
 	IdempotencyKey string                 `json:"idempotencyKey"`
 	ArchiveDigest  string                 `json:"archiveDigest"`
 	DerivedDigest  string                 `json:"derivedDigest"`
+	HistoryMode    string                 `json:"historyMode,omitempty"` // full (default), partial, snapshot
 }
 ```
+
+`historyMode` is part of the admitted profile and its request hash. Omitted
+input is strict `full`; `partial` and `snapshot` require an explicit operator
+choice. A full import refuses unavailable, unverified, non-contiguous or
+unmappable source history with a typed reason. Partial history records a
+verified range, exact gaps and a floor only when replay is available; until
+then it returns typed `not-yet-supported`. Snapshot imports the current image,
+sets the floor to revision 1 and starts a new incarnation.
 
 Authenticated mode requires a live interactive user, restore-admin authority,
 and operation/archive-bound D32; its normalized G4 agent scope is empty.

@@ -3702,6 +3702,16 @@
             "type": "string",
             "minLength": 64,
             "maxLength": 64
+          },
+          "historyMode": {
+            "type": "string",
+            "enum": [
+              "full",
+              "partial",
+              "snapshot"
+            ],
+            "default": "full",
+            "description": "Archive history policy. Omitted input is strict full history; partial and snapshot are explicit opt-ins."
           }
         },
         "required": [

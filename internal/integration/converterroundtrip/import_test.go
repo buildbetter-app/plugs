@@ -114,6 +114,7 @@ func admittedImportProfile(t *testing.T, archiveBytes []byte) (driver.RestoreImp
 		},
 		SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import",
 		IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), DerivedDigest: strings.Repeat("c", 64),
+		HistoryMode: driver.RestoreHistoryModeSnapshot,
 	}
 	restoreTime := time.Date(2026, 10, 30, 19, 0, 0, 0, time.UTC)
 	plan, err := buildPlanWithProfile(archive, &profile, restoreTime)
@@ -122,6 +123,98 @@ func admittedImportProfile(t *testing.T, archiveBytes []byte) (driver.RestoreImp
 	}
 	profile.DerivedDigest = plan.derivedDigest
 	return profile, archive
+}
+
+func TestRestoreImportHistoryModesAreExplicitAcrossMemoryAndSQLite(t *testing.T) {
+	data := admittedFixtureBytes(t)
+	snapshotProfile, _ := admittedImportProfile(t, data)
+	for _, kind := range []string{"memory", "sqlite"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := context.Background()
+			for _, test := range []struct {
+				name   string
+				mode   driver.RestoreHistoryMode
+				reason driver.RestoreHistoryReason
+			}{
+				{name: "default-full", mode: "", reason: driver.RestoreHistoryReasonUnavailable},
+				{name: "partial", mode: driver.RestoreHistoryModePartial, reason: driver.RestoreHistoryReasonNotYetSupported},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					store, lease, cleanup := openTarget(t, kind)
+					defer cleanup()
+					before, err := store.Meta(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					profile := snapshotProfile
+					profile.HistoryMode = test.mode
+					_, err = RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile)
+					var refused driver.ErrRestoreHistoryRefused
+					wantMode := test.mode
+					if wantMode == "" {
+						wantMode = driver.RestoreHistoryModeFull
+					}
+					if !errors.As(err, &refused) || refused.Mode != wantMode || refused.Reason != test.reason {
+						t.Fatalf("mode=%q refusal=%T %v", test.mode, err, err)
+					}
+					after, metaErr := store.Meta(ctx)
+					if metaErr != nil || after != before {
+						t.Fatalf("refused mode changed target: before=%+v after=%+v err=%v", before, after, metaErr)
+					}
+				})
+			}
+
+			store, lease, cleanup := openTarget(t, kind)
+			func() {
+				defer cleanup()
+				unverifiedData := fixtureBytes(t)
+				unverifiedArchive, err := dumpformat.Read(bytes.NewReader(unverifiedData))
+				if err != nil {
+					t.Fatal(err)
+				}
+				profile := snapshotProfile
+				profile.SourceStoreID = driver.StoreID(unverifiedArchive.Manifest().StoreID)
+				profile.ArchiveDigest = unverifiedArchive.SHA256()
+				profile.DerivedDigest = strings.Repeat("c", 64)
+				profile.HistoryMode = driver.RestoreHistoryModeFull
+				_, err = RestoreImportWithLease(ctx, bytes.NewReader(unverifiedData), store, lease, profile)
+				var refused driver.ErrRestoreHistoryRefused
+				if !errors.As(err, &refused) || refused.Reason != driver.RestoreHistoryReasonAvailableUnverified {
+					t.Fatalf("available-unverified full refusal=%T %v", err, err)
+				}
+			}()
+
+			store, lease, cleanup = openTarget(t, kind)
+			defer cleanup()
+			before, err := store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile := snapshotProfile
+			profile.HistoryMode = driver.RestoreHistoryModeSnapshot
+			report, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile)
+			if err != nil {
+				t.Fatalf("snapshot import: %v", err)
+			}
+			if report.Restored.Head.String() != "1" || report.Restored.HistoryFloor.String() != "1" || report.Restored.Incarnation == before.Incarnation {
+				t.Fatalf("snapshot metadata before=%+v restored=%+v", before, report.Restored)
+			}
+			if _, err := store.Read(ctx, driver.View{Incarnation: before.Incarnation}); err != nil {
+				var changed driver.ErrIncarnationChanged
+				if !errors.As(err, &changed) {
+					t.Fatalf("old incarnation read=%v", err)
+				}
+			} else {
+				t.Fatal("old incarnation read was accepted")
+			}
+			at := model.Natural64(0)
+			_, err = store.Read(ctx, driver.View{Incarnation: report.Restored.Incarnation, At: &at})
+			var truncated driver.ErrTruncated
+			if !errors.As(err, &truncated) || truncated.Floor.String() != "1" {
+				t.Fatalf("snapshot floor read=%v", err)
+			}
+		})
+	}
 }
 
 func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {

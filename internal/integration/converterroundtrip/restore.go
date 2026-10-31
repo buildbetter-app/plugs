@@ -158,6 +158,20 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	if err != nil {
 		return report, err
 	}
+	// The historical Restore/RestoreWithLease wrappers predate the trusted
+	// host admission profile and retain their compatibility behavior: they are
+	// current-image imports. The explicit import surface defaults to strict
+	// full history and must name snapshot to flatten an incomplete archive.
+	if profile != nil {
+		mode, modeErr := driver.ParseRestoreHistoryMode(string(profile.HistoryMode))
+		if modeErr != nil {
+			return report, modeErr
+		}
+		profile.HistoryMode = mode
+		if policyErr := driver.ValidateRestoreHistoryPolicy(mode, archive.Manifest().History); policyErr != nil {
+			return report, policyErr
+		}
+	}
 	if !meta.Head.IsZero() {
 		return report, ErrTargetNotEmpty
 	}
@@ -504,6 +518,9 @@ func compareImportBinding(ctx context.Context, r driver.Reader, evidence archive
 	}
 	var manifest dumpformat.Manifest
 	if err = json.Unmarshal(manifestRaw, &manifest); err != nil {
+		return err
+	}
+	if err = driver.ValidateRestoreHistoryPolicy(binding.Profile.HistoryMode, manifest.History); err != nil {
 		return err
 	}
 	if len(binding.Projects) != len(manifest.Projects) {

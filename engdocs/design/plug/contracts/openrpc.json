@@ -4523,6 +4523,8 @@
             "type": "string",
             "enum": [
               "full",
+              "partial",
+              "snapshot",
               "head"
             ]
           }
@@ -9968,6 +9970,16 @@
             "type": "string",
             "minLength": 64,
             "maxLength": 64
+          },
+          "historyMode": {
+            "type": "string",
+            "enum": [
+              "full",
+              "partial",
+              "snapshot"
+            ],
+            "default": "full",
+            "description": "Archive history policy. Omitted input is strict full history; partial and snapshot are explicit opt-ins."
           }
         },
         "required": [
@@ -12534,7 +12546,7 @@
     "methodCount": 81,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "925afc30e52e4659b24e34f311698c96930f215ba460fee7c1634634d1ff04ff",
-    "descriptorSha256": "9284a056a19510723f1fd663aae5b122adcbec60e496cf3b1f08c4d95918cc83",
+    "descriptorSha256": "b73bf289e8c14af6a54040910623eed775755d6ef197f14be7e4c046d4856d1d",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -15523,6 +15535,8 @@
               "type": "string",
               "enum": [
                 "full",
+                "partial",
+                "snapshot",
                 "head"
               ]
             }

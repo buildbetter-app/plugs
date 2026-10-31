@@ -91,7 +91,7 @@ The reviewed native command shape is:
 
 ```text
 plug dump --output FILE [--history full|head] [--page-size N]
-plug restore FILE [--history full|head]
+plug restore FILE [--history full|partial|snapshot]
 ```
 
 Those commands are reserved and unavailable on the current snapshot. The
@@ -100,7 +100,7 @@ corresponding RPC contract is paged and admin-only:
 | Method | Contract shape |
 | --- | --- |
 | `admin.dump` | `history` is `full` or `head`; `cursor` continues a snapshot; `pageSize` is 1 through 67108864; the result is a `DumpPage` with `dumpId`, zero-based `page`, base64 `data`, optional `nextPage`, `done`, and a per-page `sha256`. |
-| `admin.restore.begin` | Admits a manifest and `history` (`full` or `head`) and returns `RestoreStatus` in `receiving` state. The target must be empty before a session is admitted. |
+| `admin.restore.begin` | Admits a manifest and an explicit history policy in `history` (`full` by default; `partial` and `snapshot` are opt-ins; `head` remains a compatibility alias for `snapshot`) and returns `RestoreStatus` in `receiving` state. The target must be empty before a session is admitted. |
 | `admin.restore.chunk` | Appends one zero-based `page` for a `restoreId`; `data` and its required `sha256` are checked before the page is retained. Pages are contiguous and unique. |
 | `admin.restore.finish` | Takes `restoreId` and `manifestSha256`, validates the complete archive, then publishes the restore atomically if the target is still empty. |
 
@@ -125,6 +125,19 @@ archive into a successful restore. A successful admitted restore returns a
 `RestoreStatus`; a partial failure is represented by its `warnings` field,
 while validation and capability refusals remain errors.
 
+### Restore history modes
+
+Restore policy is strict by default. An omitted `history` value is `full`; an
+operator must explicitly choose `partial` or `snapshot` when source history
+cannot be imported as complete native Plug history. The policy is bound into
+the host admission digest and the transaction-local import profile.
+
+| Restore mode | Behavior |
+| --- | --- |
+| `full` (default) | Requires a complete, verified, contiguous and mappable source history. It refuses with a typed `restore_violation` reason when history is unavailable, available but unverified, non-contiguous, unmappable, or when the current restore seam cannot replay it. |
+| `partial` | Opts into a verified range plus an explicit gap marker and history floor. The current importer refuses with typed `not-yet-supported` until replay and exact-gap recording are available; it never fabricates history. |
+| `snapshot` | Imports the current image only, establishes a new history floor at revision 1, and starts a new store incarnation. Reads below the floor return typed truncation; cursors from the old incarnation return `incarnation_changed`. `head` is accepted as a compatibility spelling. |
+
 ### Current image versus full history
 
 Readable history is not the same capability as injecting source history into a
@@ -132,17 +145,17 @@ target. The reviewed restore adapter maps declarations as follows:
 
 | Dump history declaration | Required mode | Boundary |
 | --- | --- | --- |
-| `head` or `unavailable` | `RestoreModeCurrentImage` | A current-image writer may admit it when all other validation succeeds. |
+| `head` or `unavailable` | `RestoreModeCurrentImage` | A current-image writer may admit it only when the caller selected `snapshot`. |
 | Omitted, `full`, or `verified` | `RestoreModeFullHistory` | A target must explicitly advertise full-history injection; a readable `history` capability alone is insufficient. |
 | `available-unverified` | Full-history evidence is required | `ErrRestoreUnsupported` is returned and maps to `restore_violation`; it must not be flattened into a head image. |
 | Any other value | None | `ErrRestoreHistory` is returned and maps to `restore_violation`. |
 
 The current drivers do not advertise full-history injection. The native
 current-image seam therefore refuses source versions and changesets that it
-cannot replay, and it refuses converter archives whose source disclosures
-would be lost. A refusal happens after archive and digest validation but before
-the target lease, transaction, restore fence, or publication. No implementation
-may silently turn an unverified or full-history archive into a current image.
+cannot replay, and converter archives with incomplete source disclosures
+require the explicit `snapshot` opt-in. A refusal happens after archive and
+digest validation but before target mutation. No implementation may silently
+turn an unverified or full-history archive into a current image.
 
 ### Allocator continuation
 
