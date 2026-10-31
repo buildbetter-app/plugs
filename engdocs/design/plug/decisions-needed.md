@@ -26,6 +26,15 @@ Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn G
   settings changes, production cutover or a public release.
 - **#20 (2026-10-29, in Paseo):** only fully compiled type count summaries (explicit `fields=[]`, at most 100 groups) may scan up to 100,000 inputs; ordinary views keep the 20,000 cap.
 - **#18 (2026-10-29, in Paseo):** adopted the reviewed fixed-permission authorization candidate (`c9f5f29d`); create, reparent and project moves are denied under the plugin until later slices.
+- **Post-stop parent/child contract (2026-10-31, binding):** the later
+  parent/child decision conditionally supersedes #18's historical
+  **parented-create/reparent denial boundary** for a future, separately
+  admitted implementation of parent links and parent-aware epic progress. It
+  does not change the historical #18 decision or claim runtime support. A
+  child remains in its own project, so project moves remain outside this
+  contract; child creation/reparenting do not grant cross-project access and
+  non-disclosure is preserved until the implementation and qualification are
+  separately admitted.
 - **#16 — DECIDED (2026-10-29, Paseo, about 03:37 UTC):** Nikhil chose
   **Replace inherited workflows with qualified Plug CI (Recommended)**.
   Plug-owned Bazel CI must qualify on the exact head before a reviewed CI
