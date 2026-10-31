@@ -173,8 +173,11 @@ The target emits `${prefix}-${32 lowercase hex}` for top-level IDs and
 previewed and consumed once, checked against every existing, source and staged
 ID (including 32-wide source IDs), and seeded through `RestoreAllocators` under
 the complete allocator lock set in the guarded restore transaction and replay.
-Source hash continuation remains unsupported; fixed-authz parented create,
-reparent and project moves remain denied.
+Source hash continuation remains unsupported. The historical #18 fixed-authz
+boundary denied parented create, reparent and project moves; the post-stop
+parent/child section below conditionally supersedes only the parented
+create/reparent part for a future separately admitted implementation. Current
+runtime support is not claimed, and project moves remain denied.
 
 The prepared import profile is host-private and transaction-local. It binds the
 trusted admission to the restore operation and recovery:
@@ -2245,6 +2248,44 @@ representation for `Changeset.chain`, `Changeset.changes` and
 `ChangeRecord.changedPaths`. Null collection elements remain invalid. This
 compatibility does not relax `ChangeSet` requests or event descriptor fields;
 the canonical OpenRPC request schema is unchanged.
+
+### Parent/child permissions and epic progress (post-stop contract)
+
+`CreateOp.Parent` and `ReparentOp.Parent` are direct canonical parent
+references; nil means that the child is top-level. The binding permission
+rules are:
+
+1. parented create and reparent require edit authorization on the epic/parent to attach;
+2. hidden parents reveal existence only, without content;
+3. epic progress shows visible-child counts plus “N more you can’t see”;
+4. the child remains in its own project;
+5. moving a child needs edit authorization on the child and on the new epic/parent.
+
+A parented create additionally requires ordinary create authorization for the
+new child. A reparent checks edit authorization on the child and the new
+parent; the old parent is not an authorization target. The parent link does
+not rewrite `CreateOp.Project` or `ReparentOp.Project`, and child
+creation/reparenting do not grant cross-project access. The child continues to
+use its own project's permissions. A caller that can see the child but not the
+parent may learn only that a parent exists; parent content is withheld, so
+non-disclosure is preserved.
+
+The parent-aware epic progress path reuses the existing `view.run` request and
+`ViewResult`/`ViewGroup` envelope. Its producer selects direct children whose
+stored `Parent` equals the requested epic, binds content, ontology and current
+authority once, and evaluates each child with that binding. Only visible
+children contribute status/readiness counts. Hidden direct children contribute
+only an authorization-elided total rendered as “N more you can’t see”; no
+status is exposed for them. Grandchildren, unrelated same-type beads and
+denied children are excluded from the visible denominator. This contract adds
+no new RPC, cursor, `groupBy` value or result member; exact producer wiring,
+implementation and qualification remain deferred.
+
+The historical #18 fixed-authz denial of parented create and reparent remains
+the current runtime boundary at this head. This later contract/design step
+supersedes that boundary only as a conditional target for a future separately
+admitted implementation. It does not install a permit or claim runtime
+support; project moves remain outside this slice.
 
 ## `pluginapi` (public)
 

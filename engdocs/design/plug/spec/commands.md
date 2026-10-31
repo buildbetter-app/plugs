@@ -102,7 +102,7 @@ folded into the core contract rather than copied as Beads aliases.
 | `bd status` | **Fold** — `view.run` plus `admin.health` | P31b/A6; graph and driver status are separate concerns |
 | `bd query`, `bd q` (read form) | **Fold** — `view.run` with the A1 filter/query grammar | A1/A7; `bd q`'s write form is above |
 | `bd search` | **Fold** — `view.run`/search view | A7 views; a search index is an implementation detail |
-| `bd children` | **Fold** — `view.run` over the parent relation | P31b; ancestor closure is core (P50) |
+| `bd children` | **Fold** — `view.run` over the direct parent relation | P31b/P50; parent-aware selection is direct-child only |
 | `bd graph` | **Fold** — `view.run`/`view.watch` graph projection | A7; the UI draws the result without a CDN |
 | `bd graph check` | **Fold** — `ontology.check` and graph invariants | A3/A6; no separate graph checker contract |
 | `bd orphans` | **Fold** — `view.run` over references and status | P31b; no special storage table |
@@ -120,7 +120,7 @@ folded into the core contract rather than copied as Beads aliases.
 | `bd duplicates`, `bd find-duplicates` | **Fold** — a view/plugin-assisted candidate list, then `bead.link` | P31b and P26b; similarity/AI is optional plugin behavior, not core |
 | `bd supersede` | **Fold** — `bead.link` plus `bead.close` | A1 link/slot verbs |
 | `bd epic` | **Fold** — `epic` is an ontology type, not a command subsystem | D14/P10 |
-| `bd epic status` | **Fold** — `view.run` grouped by children/status | P31b |
+| `bd epic status` | **Fold** — parent-aware `view.run` progress: visible-child counts plus “N more you can’t see” | P31b; hidden children have no status and the contract remains implementation-deferred |
 | `bd epic close-eligible` | **Fold** — `view.run` followed by guarded `bead.close` | A3 graph guards |
 | `bd label` | **Fold** — typed `fields.labels` through `bead.update` | P23a; no label side table in Plug |
 | `bd label add`, `bd tag` | **Fold** — `bead.update` labels | P23a; tag is an alias |

@@ -707,6 +707,45 @@ Fixture setup is not a product import or migration bypass. No-authz allow,
 P58/P83/P84, authn/error/pre/post-image/deputy/human-proof rules, current history
 permissions, no root bypass and existing recovery/stop lines remain unchanged.
 
+### Parent/child permissions and epic progress (post-stop contract, 2026-10-31)
+
+The later binding parent/child decision supplies the contract/design step for
+the hierarchy follow-up. The five permission rules are:
+
+1. parented create and reparent require edit authorization on the epic/parent to attach;
+2. hidden parents reveal existence only, without content;
+3. epic progress shows visible-child counts plus “N more you can’t see”;
+4. the child remains in its own project;
+5. moving a child needs edit authorization on the child and on the new epic/parent.
+
+For a parented create, the caller must also have the ordinary create
+authorization for the new child. Reparenting checks edit authorization on the
+child and the new parent; no permission on the old parent is required. A
+parent link leaves the child's project unchanged. Child creation/reparenting do
+not grant cross-project access: only the link crosses projects, and the child
+continues to use its own project's permissions. If a viewer can read a child
+but not its parent, the response may disclose that a parent exists but no
+parent content, fields, status or project details. Non-disclosure is preserved
+for hidden parents and children.
+
+Parent-aware epic progress uses the existing `view.run`/`ViewResult` path. It
+selects canonical direct children whose `Parent` equals the requested epic;
+grandchildren and unrelated beads of the same type are excluded. One
+content-snapshot, ontology and current-authority binding governs the full
+summary. Counts and readiness categories include only visible children; a
+hidden child contributes only to the hidden total rendered as the literal
+“N more you can’t see”, with no status for that child. The ordinary authorized
+input cap and existing typed refusal rules remain in force. This planning step
+adds no new RPC, cursor or result member.
+
+The initial #18 statement above that ordinary parented create and reparent are
+denied remains the historical and current runtime boundary at this head. This
+post-stop contract/design step supersedes that specific boundary only as a
+conditional target for a future separately admitted implementation, after the
+hierarchy writer, authorization, and qualification gates are released. It does
+not install a permit, remove the current `invalid_params`/`forbidden`
+refusals, or claim runtime support. Project moves remain outside this slice.
+
 **Separate gates:** #18 adopts design semantics; controller v2 separately
 authorizes scoped implementation waves. Neither supplies a measured candidate,
 runtime acceptance or production migration permission.
