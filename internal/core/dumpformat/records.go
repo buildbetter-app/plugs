@@ -100,7 +100,14 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 		if class := stringValue(fields["storage_class"]); class != "" && class != "versioned" {
 			return fmt.Errorf("unsupported storage class")
 		}
-		for _, key := range []string{"await_type", "await_id", "mol_type", "hook_bead", "role_bead", "agent_state", "event_kind"} {
+		// agent_state is a Beads-owned opaque string. It is carried through the
+		// converter as metadata, but never interpreted as Plug workflow state.
+		if value, present := fields["agent_state"]; present && value != nil {
+			if _, ok := value.(string); !ok {
+				return fmt.Errorf("agent_state must be text")
+			}
+		}
+		for _, key := range []string{"await_type", "await_id", "mol_type", "hook_bead", "role_bead", "event_kind"} {
 			if stringValue(fields[key]) != "" {
 				return fmt.Errorf("unsupported source workflow field")
 			}

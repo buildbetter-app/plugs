@@ -202,6 +202,56 @@ func TestConvertArchivesUnsupportedSourceFields(t *testing.T) {
 	t.Fatal("archived issue was not emitted")
 }
 
+func TestConvertPreservesOpaqueAgentStateMetadata(t *testing.T) {
+	const state = "opaque/v1:phase=ready\x00"
+	dump := cloneDump(fixtureDump())
+	dump.Records["bead"][0].Source.Fields["agent_state"] = state
+	result, err := Convert(dump)
+	if err != nil {
+		t.Fatalf("agent_state was refused: %v", err)
+	}
+	if containsString(result.Report.UnsupportedFields, "bead/demo-3/agent_state") || containsString(result.Report.ArchivedSourceFields, "bead/demo-3/source/agent_state") {
+		t.Fatalf("agent_state was classified as loss: %+v", result.Report)
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+		var issue issueLine
+		if err := json.Unmarshal(line, &issue); err != nil || issue.ID != "demo-3" {
+			continue
+		}
+		if got, ok := issue.Metadata[beadsAgentStateMetadataKey].(string); !ok || got != state {
+			t.Fatalf("agent_state metadata=%#v, want exact %q", issue.Metadata[beadsAgentStateMetadataKey], state)
+		}
+		return
+	}
+	t.Fatal("agent_state issue was not emitted")
+}
+
+func TestConvertRefusesAgentStateTypeOrMetadataConflict(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		setup func(map[string]any)
+		want  string
+	}{
+		{name: "non-string source", value: json.Number("1"), want: "source field \"agent_state\" is not a string"},
+		{name: "metadata conflict", value: "source-state", setup: func(metadata map[string]any) { metadata[beadsAgentStateMetadataKey] = "metadata-state" }, want: "conflicts with metadata"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dump := cloneDump(fixtureDump())
+			dump.Records["bead"][0].Source.Fields["agent_state"] = tt.value
+			if tt.setup != nil {
+				tt.setup(dump.Records["bead"][0].Body["metadata"].(map[string]any))
+			}
+			result, err := Convert(dump)
+			var refusal *Refusal
+			if !errors.As(err, &refusal) || !strings.Contains(err.Error(), tt.want) || len(result.JSONL) != 0 {
+				t.Fatalf("agent_state validation=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestConvertRefusesWorkflowAndUnknownSourceFields(t *testing.T) {
 	for field, value := range map[string]any{
 		"payload": map[string]any{"state": "running"}, "wi" + "sp_type": "run",

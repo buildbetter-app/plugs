@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -23,6 +24,10 @@ import (
 // server exporter: no verified history, a hash source declaration, and a
 // block dependency. This is test data only; it is never written back.
 func admittedFixtureBytes(t *testing.T) []byte {
+	return admittedFixtureBytesWithAgentState(t, "")
+}
+
+func admittedFixtureBytesWithAgentState(t *testing.T, agentState string) []byte {
 	t.Helper()
 	return rewriteData(t, func(members map[string][]byte) {
 		var manifest map[string]any
@@ -73,6 +78,11 @@ func admittedFixtureBytes(t *testing.T) []byte {
 		edge["body"].(map[string]any)["type"] = "blocks"
 		edge["source"].(map[string]any)["fields"].(map[string]any)["type"] = "blocks"
 		members["records/edge.ndjson"] = encode(t, edge)
+		if agentState != "" {
+			changeRecord(t, members, "bead", func(record map[string]any) {
+				source(record)["agent_state"] = agentState
+			})
+		}
 		members["manifest.json"] = encode(t, manifest)
 	})
 }
@@ -101,8 +111,10 @@ func admittedImportProfile(t *testing.T, archiveBytes []byte) (driver.RestoreImp
 }
 
 func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
-	data := admittedFixtureBytes(t)
+	const agentState = "opaque/v1:phase=ready\x00"
+	data := admittedFixtureBytesWithAgentState(t, agentState)
 	profile, archive := admittedImportProfile(t, data)
+	agentStateID := archive.Records("bead")[0].ID
 	inspection, err := InspectImport(context.Background(), bytes.NewReader(data))
 	if err != nil || inspection.SourceStoreID != profile.SourceStoreID || inspection.ArchiveSHA256 != profile.ArchiveDigest || inspection.DerivedSHA256 != profile.DerivedDigest {
 		t.Fatalf("import inspection=%+v err=%v profile=%+v", inspection, err, profile)
@@ -170,6 +182,7 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 			}
 			var imported pipeline.Comment
 			foundComment := false
+			foundAgentState := false
 			for _, row := range rows.Items {
 				if row.Kind != "bead" {
 					continue
@@ -181,9 +194,20 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 				if len(doc.Comments) == 1 {
 					imported, foundComment = doc.Comments[0], true
 				}
+				if doc.ID == agentStateID {
+					var got string
+					raw, ok := doc.Metadata["beads.agent_state"]
+					if !ok || json.Unmarshal(raw, &got) != nil || got != agentState {
+						t.Fatalf("agent_state metadata=%s want=%q", raw, agentState)
+					}
+					foundAgentState = true
+				}
 			}
 			if !foundComment || imported.Origin != "import" || !reflect.DeepEqual(imported.Principal, profile.Admission.Actor) || imported.SourceAuthor != "fixture-commenter" || imported.SourceTime == nil || imported.Time.IsZero() {
 				t.Fatalf("imported comment=%+v found=%v", imported, foundComment)
+			}
+			if !foundAgentState {
+				t.Fatalf("agent_state bead %s was not restored", agentStateID)
 			}
 
 			ontology := service.NewOntology(nil)
@@ -206,8 +230,35 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 			}
 			if _, err := reverseconverter.ReadBytes(data); err != nil {
 				t.Fatalf("reverse read: %v", err)
-			} else if _, err := reverseconverter.ConvertArchive(data); err != nil {
+			} else if converted, err := reverseconverter.ConvertArchive(data); err != nil {
 				t.Fatalf("reverse convert: %v", err)
+			} else {
+				decoder := json.NewDecoder(bytes.NewReader(converted.JSONL))
+				found := false
+				for {
+					var line struct {
+						ID       string         `json:"id"`
+						Metadata map[string]any `json:"metadata"`
+					}
+					err := decoder.Decode(&line)
+					if errors.Is(err, io.EOF) {
+						break
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if line.ID != agentStateID {
+						continue
+					}
+					got, ok := line.Metadata["beads.agent_state"].(string)
+					if !ok || got != agentState {
+						t.Fatalf("reverse agent_state metadata=%#v want=%q", line.Metadata["beads.agent_state"], agentState)
+					}
+					found = true
+				}
+				if !found {
+					t.Fatalf("reverse output omitted agent_state for %s", agentStateID)
+				}
 			}
 		})
 	}

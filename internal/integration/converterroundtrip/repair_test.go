@@ -231,7 +231,7 @@ func TestRestoreRefusesUnsupportedSemanticsBeforeWrite(t *testing.T) {
 			})
 		}, "unverified comment attribution"},
 	}
-	for _, prefix := range []string{"beads.source.status", "beads.source_fields", "plug.restore.allocator"} {
+	for _, prefix := range []string{"beads.agent_state", "beads.source.status", "beads.source_fields", "plug.restore.allocator"} {
 		key := prefix
 		tests = append(tests, struct {
 			name  string
