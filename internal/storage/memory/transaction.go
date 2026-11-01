@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -25,6 +26,7 @@ type transaction struct {
 	snapshotAt              model.Revision
 	incarnation             string
 	restore                 *driver.Meta
+	offlineHistory          *driver.PreparedOfflineHistory
 	nativeRestore           *driver.NativeRestoreProfile
 	importRestore           *driver.RestoreImportProfile
 	closed, locked, hasHead bool
@@ -213,10 +215,10 @@ func (t *transaction) writable(key driver.LockKey) error {
 		return fmt.Errorf("memory: write requires locks")
 	}
 	want := keyID(key)
-	for _, request := range t.acquired {
-		if keyID(request.Key) == want && request.Mode != driver.LockShare {
-			return nil
-		}
+	// ValidateLockSet and selection preserve the canonical global key order.
+	i := sort.Search(len(t.acquired), func(i int) bool { return keyID(t.acquired[i].Key) >= want })
+	if i < len(t.acquired) && keyID(t.acquired[i].Key) == want && t.acquired[i].Mode != driver.LockShare {
+		return nil
 	}
 	return fmt.Errorf("memory: missing update lock for %s", want)
 }
@@ -365,6 +367,9 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	defer s.mu.Unlock()
 	if err := t.check(ctx); err != nil {
 		return model.Changeset{}, err
+	}
+	if t.offlineHistory != nil {
+		return model.Changeset{}, fmt.Errorf("prepared history requires CommitOfflineHistory")
 	}
 	if !t.hasHead || s.head != t {
 		return model.Changeset{}, fmt.Errorf("memory: commit requires Head")

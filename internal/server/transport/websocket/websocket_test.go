@@ -24,9 +24,10 @@ import (
 )
 
 type fixture struct {
-	t      *testing.T
-	server *rpc.Server
-	http   *httptest.Server
+	t       *testing.T
+	server  *rpc.Server
+	http    *httptest.Server
+	handler *websocket.Handler
 }
 
 func newFixture(t *testing.T, config websocket.Config, register func(*rpc.Registry)) *fixture {
@@ -50,9 +51,10 @@ func newFixture(t *testing.T, config websocket.Config, register func(*rpc.Regist
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture := &fixture{t: t, server: server}
+	fixture := &fixture{t: t, server: server, handler: handler}
 	fixture.http = httptest.NewServer(handler)
 	t.Cleanup(fixture.http.Close)
+	t.Cleanup(func() { _ = handler.Close() })
 	return fixture
 }
 

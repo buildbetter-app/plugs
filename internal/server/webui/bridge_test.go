@@ -7,11 +7,81 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/server/webui"
 )
+
+func pinFrameBundle(t *testing.T, bundle webui.FrameBundle) webui.FrameBundle {
+	t.Helper()
+	digest, err := webui.FrameBundleDigest(bundle.Assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle.Digest = digest
+	return bundle
+}
+
+func TestFrameDigestPinsCompleteInventoryBeforeAdmission(t *testing.T) {
+	assets := map[string][]byte{"index.html": []byte(`<script src="./frame.js"></script>`), "frame.js": []byte(`globalThis.loaded = true;`)}
+	bundle := pinFrameBundle(t, webui.FrameBundle{ID: "pinned", Assets: assets})
+	if bundle.Digest != "48db5ce999f895f67ed7923ffd19f9120dd5d63ac606311cad8672d17ffcbe47" {
+		t.Fatalf("plug-ui-bundle/1 inventory format changed: %s", bundle.Digest)
+	}
+	digest, err := webui.FrameBundleDigest(map[string][]byte{"frame.js": assets["frame.js"], "index.html": assets["index.html"]})
+	if err != nil || digest != bundle.Digest {
+		t.Fatal("map insertion order changed the pinned digest", err)
+	}
+	for _, name := range []string{"missing", "wrong", "case", "content", "path", "extra", "truncated"} {
+		t.Run(name, func(t *testing.T) {
+			changed := bundle
+			changed.Assets = make(map[string][]byte, len(assets))
+			for key, value := range assets {
+				changed.Assets[key] = append([]byte(nil), value...)
+			}
+			switch name {
+			case "missing":
+				changed.Digest = ""
+			case "wrong":
+				changed.Digest = strings.Repeat("0", 64)
+			case "case":
+				changed.Digest = strings.ToUpper(changed.Digest)
+			case "content":
+				changed.Assets["frame.js"][0] = 'x'
+			case "path":
+				changed.Assets["renamed.js"] = changed.Assets["frame.js"]
+				delete(changed.Assets, "frame.js")
+			case "extra":
+				changed.Assets["extra.js"] = []byte(`globalThis.extra = true;`)
+			case "truncated":
+				changed.Assets["frame.js"] = changed.Assets["frame.js"][:1]
+			}
+			if _, err := webui.New(webui.Config{Frames: []webui.FrameBundle{changed}}); err == nil {
+				t.Fatal("drifted or unpinned frame was admitted")
+			}
+		})
+	}
+	handler, err := webui.New(webui.Config{Frames: []webui.FrameBundle{bundle}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := append([]byte(nil), assets["frame.js"]...)
+	assets["frame.js"][0] = 'x'
+	assets["other.js"] = []byte("different")
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	response, err := server.Client().Get(server.URL + "/ui/frames/pinned/frame.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != http.StatusOK || !reflect.DeepEqual(data, original) {
+		t.Fatal("caller mutation changed the admitted digest-checked bytes", err)
+	}
+}
 
 func TestBridgeAllowsOnlyGrantedProjectScopedCalls(t *testing.T) {
 	bridge, err := webui.NewBridge(webui.BridgeGrant{Project: "web", Methods: []string{"bead.get", "tx.apply"}})
@@ -106,7 +176,7 @@ func TestBridgeRefusesD16CredentialsAndEgressCapabilities(t *testing.T) {
 func TestEmbeddedFrameUsesOpaqueNoEgressCSPAndHostBinding(t *testing.T) {
 	h, err := webui.New(webui.Config{
 		Project: "web",
-		Frames: []webui.FrameBundle{{
+		Frames: []webui.FrameBundle{pinFrameBundle(t, webui.FrameBundle{
 			ID:    "linear",
 			Title: "Linear panel",
 			Grant: webui.BridgeGrant{Methods: []string{"bead.get"}},
@@ -114,7 +184,7 @@ func TestEmbeddedFrameUsesOpaqueNoEgressCSPAndHostBinding(t *testing.T) {
 				"index.html": []byte(`<!doctype html><script src="./frame.js"></script>`),
 				"frame.js":   []byte(`window.parent.postMessage({jsonrpc:"2.0",id:"ready",method:"bead.get",params:{}},"*");`),
 			},
-		}},
+		})},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -143,6 +213,14 @@ func TestEmbeddedFrameUsesOpaqueNoEgressCSPAndHostBinding(t *testing.T) {
 	}
 	if strings.Contains(csp, "allow-same-origin") || response.Header.Get("X-Frame-Options") != "SAMEORIGIN" {
 		t.Fatalf("frame is not opaque/host-bound: CSP=%q XFO=%q", csp, response.Header.Get("X-Frame-Options"))
+	}
+	for _, directive := range []string{"script-src", "style-src", "img-src"} {
+		if !strings.Contains(csp, directive+" "+server.URL+"/ui/frames/linear/") {
+			t.Fatalf("%s is not confined to the admitted bundle: %s", directive, csp)
+		}
+	}
+	if response.Header.Get("Cross-Origin-Resource-Policy") != "cross-origin" || response.Header.Get("Access-Control-Allow-Origin") != "null" || response.Header.Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatal("opaque-frame assets did not receive non-credentialed resource admission")
 	}
 	if !strings.Contains(string(body), "frame.js") {
 		t.Fatal("embedded frame lost its asset reference")
@@ -176,8 +254,22 @@ func TestEmbeddedFrameUsesOpaqueNoEgressCSPAndHostBinding(t *testing.T) {
 			Methods []string `json:"methods"`
 		} `json:"frames"`
 	}
-	if err := json.Unmarshal(configBody, &config); err != nil || len(config.Frames) != 1 || config.Frames[0].Src != "/ui/frames/linear/index.html" || len(config.Frames[0].Methods) != 1 {
+	if err := json.Unmarshal(configBody, &config); err != nil || len(config.Frames) != 1 || config.Frames[0].Src != "/ui/frame-hosts/linear/index.html" || len(config.Frames[0].Methods) != 1 {
 		t.Fatalf("frame descriptor is not embedded safely: %s err=%v", configBody, err)
+	}
+	wrapper, err := server.Client().Get(server.URL + config.Frames[0].Src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapper.Body.Close()
+	wrapperCSP := wrapper.Header.Get("Content-Security-Policy")
+	for _, want := range []string{"default-src 'none'", "frame-src " + server.URL + "/ui/frames/linear/index.html;", "script-src " + server.URL + "/ui/frame-host.js;", "connect-src 'none'"} {
+		if !strings.Contains(wrapperCSP, want) {
+			t.Fatalf("trusted wrapper lacks exact-entry containment %q: %s", want, wrapperCSP)
+		}
+	}
+	if wrapper.StatusCode != http.StatusOK || strings.Contains(wrapperCSP, "frame-src 'self'") {
+		t.Fatal("trusted wrapper allows an unrelated document")
 	}
 }
 
@@ -187,10 +279,10 @@ func TestFrameBundleRejectsCredentialOrNetworkCode(t *testing.T) {
 		"cookie": []byte(`<script>document.cookie</script>`),
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := webui.New(webui.Config{Frames: []webui.FrameBundle{{
+			_, err := webui.New(webui.Config{Frames: []webui.FrameBundle{pinFrameBundle(t, webui.FrameBundle{
 				ID: "unsafe", Grant: webui.BridgeGrant{Project: "default"},
 				Assets: map[string][]byte{"index.html": source},
-			}}})
+			})}})
 			if err == nil || !strings.Contains(err.Error(), "credentials or network egress") {
 				t.Fatalf("unsafe frame accepted: %v", err)
 			}
