@@ -22,7 +22,33 @@ func (t *transaction) header(h driver.ChangesetHeader) ([]byte, error) {
 	if err := branchZero(h.Branch); err != nil {
 		return nil, err
 	}
-	if h.Incarnation != t.meta.Incarnation {
+	expected := t.meta.Incarnation
+	if h.Kind == model.ChangesetRestore && t.restore == nil {
+		return nil, fmt.Errorf("%w: restore requires prepared capability", driver.ErrUnsupported)
+	}
+	if t.restore != nil {
+		validate := driver.ValidateOfflineRestoreHeader
+		if t.nativeRestore != nil {
+			validate = t.nativeRestore.ValidateHeader
+		}
+		if t.importRestore != nil {
+			validate = t.importRestore.ValidateHeader
+		}
+		if err := validate(h); err != nil {
+			return nil, err
+		}
+		if t.importRestore != nil {
+			for _, r := range t.records {
+				if r != nil {
+					if err := t.importRestore.ValidateRecord(*r, h.Time); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+		expected = t.restore.Incarnation
+	}
+	if h.Incarnation != expected {
 		return nil, driver.ErrIncarnationChanged{From: h.Incarnation, To: t.meta.Incarnation}
 	}
 	principal, err := driver.PrincipalKey(h.Principal)
@@ -198,9 +224,17 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	if err := t.check(ctx); err != nil {
 		return zero, t.abortFenced(err)
 	}
+	if t.offlineHistory != nil {
+		return zero, fmt.Errorf("prepared history requires CommitOfflineHistory")
+	}
 	scope, err := t.header(h)
 	if err != nil {
 		return zero, err
+	}
+	if t.restore != nil {
+		if err := t.restoreEmpty(ctx); err != nil {
+			return zero, err
+		}
 	}
 	// G4 replay is checked before validating fresh operations: a retry may
 	// propose different rows but must never publish them under an existing key.
@@ -316,6 +350,12 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		_ = t.finish()
 		return zero, err
 	}
+	if t.restore != nil {
+		if _, err = t.sql.ExecContext(ctx, `UPDATE plug_postgres.meta SET store_id=$1,incarnation=$2,history_floor=$3 WHERE singleton`, string(t.restore.StoreID), t.restore.Incarnation, t.restore.HistoryFloor.String()); err != nil {
+			_ = t.finish()
+			return zero, err
+		}
+	}
 	if err = t.saveReceipt(ctx, scope, h, response, entry); err != nil {
 		_ = t.finish()
 		return zero, err
@@ -392,6 +432,9 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 	scope, err := t.header(h)
 	if err != nil {
 		return zero, err
+	}
+	if t.restore != nil {
+		return zero, fmt.Errorf("prepared restore cannot commit a no-op")
 	}
 	if h.Events != nil {
 		return zero, fmt.Errorf("postgres: no-op cannot contain an event plan")

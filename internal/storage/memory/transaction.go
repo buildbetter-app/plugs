@@ -25,6 +25,7 @@ type transaction struct {
 	snapshotAt              model.Revision
 	incarnation             string
 	restore                 *driver.Meta
+	offlineHistory          *driver.PreparedOfflineHistory
 	nativeRestore           *driver.NativeRestoreProfile
 	importRestore           *driver.RestoreImportProfile
 	closed, locked, hasHead bool
@@ -365,6 +366,9 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	defer s.mu.Unlock()
 	if err := t.check(ctx); err != nil {
 		return model.Changeset{}, err
+	}
+	if t.offlineHistory != nil {
+		return model.Changeset{}, fmt.Errorf("prepared history requires CommitOfflineHistory")
 	}
 	if !t.hasHead || s.head != t {
 		return model.Changeset{}, fmt.Errorf("memory: commit requires Head")

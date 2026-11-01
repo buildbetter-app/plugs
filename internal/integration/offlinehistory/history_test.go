@@ -112,6 +112,7 @@ func TestAtomicOfflineHistoryRoundTripAllDrivers(t *testing.T) {
 				p := profile(mode)
 				when := time.Now().UTC()
 				h := payload(partial)
+				p.HistoryDigest, _ = driver.OfflineHistoryDigest(h)
 				m, e := port.PrepareOfflineHistory(ctx, p, h, when)
 				if e != nil {
 					t.Fatal(e)
@@ -214,10 +215,14 @@ func TestOfflineHistoryRollbackAndRefusalAreAtomic(t *testing.T) {
 			}
 			h := payload(false)
 			h.Verified = false
-			if _, e := port.PrepareOfflineHistory(ctx, profile(driver.RestoreHistoryModeFull), h, time.Now()); e == nil {
+			badProfile := profile(driver.RestoreHistoryModeFull)
+			badProfile.HistoryDigest, _ = driver.OfflineHistoryDigest(h)
+			if _, e := port.PrepareOfflineHistory(ctx, badProfile, h, time.Now()); e == nil {
 				t.Fatal("unverified source admitted")
 			}
-			if _, e := port.PrepareOfflineHistory(ctx, profile(driver.RestoreHistoryModeFull), payload(false), time.Now()); e != nil {
+			goodProfile := profile(driver.RestoreHistoryModeFull)
+			goodProfile.HistoryDigest, _ = driver.OfflineHistoryDigest(payload(false))
+			if _, e := port.PrepareOfflineHistory(ctx, goodProfile, payload(false), time.Now()); e != nil {
 				t.Fatal(e)
 			}
 			stage(t, tx)
@@ -238,6 +243,48 @@ func TestOfflineHistoryRollbackAndRefusalAreAtomic(t *testing.T) {
 			entries, e := r.Changesets(ctx, nil, 10)
 			if e != nil || len(entries) != 0 {
 				t.Fatal("rollback leaked history")
+			}
+		})
+	}
+}
+
+func TestSnapshotPreparedRestoreAcrossAllDrivers(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			s := openStore(t, engine)
+			old, _ := s.Meta(ctx)
+			tx, _ := begin(t, s)
+			p := profile(driver.RestoreHistoryModeSnapshot)
+			port, ok := tx.(driver.RestoreImportTx)
+			if !ok {
+				t.Fatal("missing prepared snapshot capability")
+			}
+			m, e := port.PrepareRestoreImport(ctx, p)
+			if e != nil {
+				t.Fatal(e)
+			}
+			stage(t, tx)
+			entry, e := tx.Commit(ctx, header(p, m, time.Now().UTC()))
+			if e != nil {
+				t.Fatal(e)
+			}
+			got, _ := s.Meta(ctx)
+			if got.Head.String() != "1" || got.HistoryFloor.String() != "1" || got.Incarnation == old.Incarnation || entry.Principal.ID != actor.ID {
+				t.Fatalf("snapshot=%+v", got)
+			}
+			r, e := s.Read(ctx, driver.View{Incarnation: got.Incarnation})
+			if e != nil {
+				t.Fatal(e)
+			}
+			defer r.Close()
+			rows, e := r.Get(ctx, []model.Ref{record("").Ref})
+			if e != nil || len(rows) != 1 || !bytes.Equal(rows[0].Body, record("after").Body) {
+				t.Fatal("snapshot changed current image")
+			}
+			var truncated driver.ErrTruncated
+			if _, e = r.Changesets(ctx, nil, 10); !errors.As(e, &truncated) {
+				t.Fatal("snapshot lacks typed history floor")
 			}
 		})
 	}

@@ -3,6 +3,8 @@ package driver
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -373,6 +375,105 @@ func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 	sort.Strings(keys)
 	for _, id := range keys {
 		plan.Records = append(plan.Records, state[id])
+	}
+	return plan, nil
+}
+
+// PreparedOfflineHistory owns detached payload and admission state. Only the
+// driver stores it; neither callers nor commit headers can retarget its binding.
+type PreparedOfflineHistory struct {
+	current Meta
+	meta    Meta
+	profile RestoreImportProfile
+	history OfflineHistory
+	when    time.Time
+}
+
+func OfflineHistoryDigest(h OfflineHistory) (string, error) {
+	data, err := json.Marshal(h)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func PrepareOfflineHistoryBinding(current Meta, p RestoreImportProfile, h OfflineHistory, when time.Time) (*PreparedOfflineHistory, error) {
+	bound, err := p.Detached()
+	if err != nil {
+		return nil, err
+	}
+	digest, err := OfflineHistoryDigest(h)
+	if err != nil {
+		return nil, err
+	}
+	if bound.HistoryDigest == "" || digest != bound.HistoryDigest {
+		return nil, fmt.Errorf("offline history payload differs from admitted digest")
+	}
+	raw, err := json.Marshal(h)
+	if err != nil {
+		return nil, err
+	}
+	var detached OfflineHistory
+	if err = json.Unmarshal(raw, &detached); err != nil {
+		return nil, err
+	}
+	plan, err := BuildOfflineHistory(current, bound, detached, when, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &PreparedOfflineHistory{current: current, meta: plan.Meta, profile: bound, history: detached, when: when}, nil
+}
+func (b *PreparedOfflineHistory) Meta() Meta { return b.meta }
+func (b *PreparedOfflineHistory) Finalize(h ChangesetHeader, tail []Record, locks LockSet, bumps []LockKey) (OfflineHistoryPlan, error) {
+	if err := b.profile.ValidateHeader(h); err != nil {
+		return OfflineHistoryPlan{}, err
+	}
+	if h.Incarnation != b.meta.Incarnation || !h.Time.Equal(b.when) || !h.Branch.IsZero() {
+		return OfflineHistoryPlan{}, fmt.Errorf("history commit differs from prepared lifetime/time")
+	}
+	if err := ValidateHeaderLocks(h.LockKeys, locks); err != nil {
+		return OfflineHistoryPlan{}, err
+	}
+	plan, err := BuildOfflineHistory(b.current, b.profile, b.history, b.when, tail)
+	if err != nil {
+		return OfflineHistoryPlan{}, err
+	}
+	plan.Meta.Incarnation = b.meta.Incarnation
+	for i := range plan.Entries {
+		plan.Entries[i].Incarnation = b.meta.Incarnation
+	}
+	held := map[string]bool{}
+	bumped := map[string]bool{}
+	for _, r := range locks {
+		if r.Mode != LockShare {
+			id, _ := EncodeLockKey(r.Key)
+			held[id] = true
+		}
+	}
+	for _, k := range bumps {
+		id, _ := EncodeLockKey(k)
+		bumped[id] = true
+	}
+	for _, row := range plan.Rows {
+		r := row.Record
+		key, _ := EncodeLockKey(LockKey{Kind: LockRecord, Ref: &r.Ref})
+		if !held[key] {
+			return OfflineHistoryPlan{}, fmt.Errorf("history publication requires complete record update locks")
+		}
+		if r.Kind == "bead" {
+			if !r.Ref.IsID() {
+				return OfflineHistoryPlan{}, fmt.Errorf("history bead requires resolved id")
+			}
+			s, err := NewBeadSentinel(r.Ref.ID)
+			if err != nil {
+				return OfflineHistoryPlan{}, err
+			}
+			key, _ := EncodeLockKey(LockKey{Kind: LockSentinel, Sentinel: s})
+			if !held[key] || !bumped[key] {
+				return OfflineHistoryPlan{}, fmt.Errorf("history bead requires its exact sentinel lock and bump")
+			}
+		}
 	}
 	return plan, nil
 }
