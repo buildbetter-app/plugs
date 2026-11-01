@@ -16,6 +16,12 @@ func testSnapshot() Snapshot {
 	for _, name := range dimensions {
 		s.Metrics = append(s.Metrics, Metric{Dimension: name, Count: 2, SHA256: jsonDigest(name)})
 	}
+	for _, family := range workflowDispositionFamilies {
+		s.WorkflowDispositions = append(s.WorkflowDispositions, WorkflowDisposition{
+			Family: family, Rows: 0, Action: "refuse-if-nonempty",
+			Reason: "workflow/overlay/routing/audit/credential mapping is unsupported in this slice",
+		})
+	}
 	return s
 }
 
@@ -75,6 +81,12 @@ func TestPairedCensusRejectsAmbiguityAndOmissions(t *testing.T) {
 		}},
 		{"unknown dimension", func(i *StoreInventory, p *PairedInput) { p.Observations[0].Snapshot.Metrics[0].Dimension = "other" }},
 		{"negative count", func(i *StoreInventory, p *PairedInput) { p.Observations[0].Snapshot.Metrics[0].Count = -1 }},
+		{"free workflow reason", func(i *StoreInventory, p *PairedInput) {
+			p.Observations[0].Snapshot.WorkflowDispositions[0].Reason = "private-workflow-reason"
+		}},
+		{"unknown workflow action", func(i *StoreInventory, p *PairedInput) {
+			p.Observations[0].Snapshot.WorkflowDispositions[0].Action = "carry"
+		}},
 		{"unpaired cursor", func(i *StoreInventory, p *PairedInput) { p.Observations[0].Snapshot.Schema.Ignored = 26 }},
 		{"block and snapshot", func(i *StoreInventory, p *PairedInput) { p.Observations[0].Block = SchemaDrift }},
 		{"free text block", func(i *StoreInventory, p *PairedInput) {
@@ -116,6 +128,15 @@ func TestPairedCensusPreservesTypedBoundariesAndSourceBinding(t *testing.T) {
 	r, e = Reconcile(i, p)
 	if e != nil || r.Stores[0].Stages[3].Block != SchemaDrift {
 		t.Fatal("changed migration fingerprint was admitted")
+	}
+}
+
+func TestPairedCensusBlocksWorkflowDispositionDrift(t *testing.T) {
+	i, p := completeInput()
+	p.Observations[3].Snapshot.WorkflowDispositions[0].Rows = 1
+	r, err := Reconcile(i, p)
+	if err != nil || r.Status != "BLOCK" || r.Stores[0].Stages[3].Status != "BLOCK" {
+		t.Fatalf("workflow disposition drift was not blocked: err=%v result=%+v", err, r)
 	}
 }
 

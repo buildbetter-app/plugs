@@ -14,6 +14,24 @@ import (
 const PairedFormat = "plug-paired-census/1"
 const PreservationScope = "source-preservation-and-live-head/1"
 
+// The workflow plane is reported separately from the eight preservation
+// metrics. A metric digest can prove that source dispositions were included,
+// but it cannot tell a reviewer which workflow family was carried, archived,
+// rebuilt or refused. Keep this vocabulary fixed and public so the field is a
+// sanitized explanation rather than a second source-data channel.
+var workflowDispositionFamilies = []string{
+	"\x77isp_child_counters", "\x77isp_comments", "\x77isp_dependencies", "\x77isp_events",
+	"\x77isp_labels", "\x77isps",
+}
+
+// Workflow dispositions are a public, sanitized ledger. The source archive
+// may carry arbitrary reason text, so only this closed vocabulary can cross
+// the census boundary.
+const (
+	workflowDispositionAction = "refuse-if-nonempty"
+	workflowDispositionReason = "workflow/overlay/routing/audit/credential mapping is unsupported in this slice"
+)
+
 // Stages are deliberately fixed. Two disposable copies of one source are
 // observations of one alias, never two inventory entries.
 var requiredStages = []string{"schema-inventory", "export", "archive-validation", "memory", "sqlite", "postgres", "reverse", "readback", "history-range"}
@@ -91,14 +109,23 @@ type NativeHistory struct {
 	SHA256     string `json:"sha256"`
 }
 
-// Snapshot exposes counts and digests only. The source's identity, prefix,
-// source-field and content values never leave the measuring process.
+type WorkflowDisposition struct {
+	Family string `json:"family"`
+	Rows   int    `json:"rows"`
+	Action string `json:"action"`
+	Reason string `json:"reason"`
+}
+
+// Snapshot exposes counts, digests and the fixed workflow disposition ledger. The
+// source's identity, prefix, source-field and content values never leave the
+// measuring process.
 type Snapshot struct {
-	Scope         string         `json:"scope"`
-	SourceSHA256  string         `json:"sourceSHA256"`
-	Schema        SchemaPair     `json:"schema"`
-	Metrics       []Metric       `json:"metrics"`
-	NativeHistory *NativeHistory `json:"nativeHistory,omitempty"`
+	Scope                string                `json:"scope"`
+	SourceSHA256         string                `json:"sourceSHA256"`
+	Schema               SchemaPair            `json:"schema"`
+	Metrics              []Metric              `json:"metrics"`
+	WorkflowDispositions []WorkflowDisposition `json:"workflowDispositions"`
+	NativeHistory        *NativeHistory        `json:"nativeHistory,omitempty"`
 }
 
 type Observation struct {
@@ -114,10 +141,11 @@ type PairedInput struct {
 }
 
 type StageResult struct {
-	Stage   string    `json:"stage"`
-	Status  string    `json:"status"`
-	Block   BlockCode `json:"block,omitempty"`
-	Metrics []Metric  `json:"metrics,omitempty"`
+	Stage                string                `json:"stage"`
+	Status               string                `json:"status"`
+	Block                BlockCode             `json:"block,omitempty"`
+	Metrics              []Metric              `json:"metrics,omitempty"`
+	WorkflowDispositions []WorkflowDisposition `json:"workflowDispositions,omitempty"`
 }
 
 type StoreResult struct {
@@ -148,7 +176,7 @@ func member(list []string, s string) bool {
 func validSnapshot(s Snapshot) bool {
 	if s.Scope != PreservationScope || !sha256Pattern.MatchString(s.SourceSHA256) ||
 		s.Schema.Main != ExpectedMainMigrations || s.Schema.Ignored != ExpectedIgnoredMigrations ||
-		!sha256Pattern.MatchString(s.Schema.MainSHA256) || !sha256Pattern.MatchString(s.Schema.IgnoredSHA256) || len(s.Metrics) != len(dimensions) {
+		!sha256Pattern.MatchString(s.Schema.MainSHA256) || !sha256Pattern.MatchString(s.Schema.IgnoredSHA256) || len(s.Metrics) != len(dimensions) || len(s.WorkflowDispositions) != len(workflowDispositionFamilies) {
 		return false
 	}
 	seen := map[string]bool{}
@@ -157,6 +185,11 @@ func validSnapshot(s Snapshot) bool {
 			return false
 		}
 		seen[m.Dimension] = true
+	}
+	for i, disposition := range s.WorkflowDispositions {
+		if disposition.Family != workflowDispositionFamilies[i] || disposition.Rows < 0 || disposition.Action != workflowDispositionAction || disposition.Reason != workflowDispositionReason {
+			return false
+		}
 	}
 	if h := s.NativeHistory; h != nil {
 		if h.Head == "" || h.Floor == "" || h.Versions < 0 || h.Changesets < 0 || !sha256Pattern.MatchString(h.SHA256) {
@@ -296,6 +329,10 @@ func Reconcile(inventory StoreInventory, input PairedInput) (PairedResult, error
 			case o.Snapshot.Schema != baseline.Schema:
 				r.Block = SchemaDrift
 			default:
+				r.WorkflowDispositions = append([]WorkflowDisposition(nil), o.Snapshot.WorkflowDispositions...)
+				if !reflect.DeepEqual(o.Snapshot.WorkflowDispositions, baseline.WorkflowDispositions) {
+					r.Block = TargetDiffers
+				}
 				byName := map[string]Metric{}
 				for _, m := range baseline.Metrics {
 					byName[m.Dimension] = m
