@@ -2,8 +2,12 @@ package websocket
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/binary"
+	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,6 +68,90 @@ func TestServeConnectionStopsOnSlowSocket(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("slow-consumer refusal left the handler blocked on a socket write")
+	}
+}
+
+// completedResponseConn holds a successful network write just before Flush
+// returns. The peer has received its response, but the writer still owns the
+// connection. A subsequent close deadline lets that completed write drain.
+type completedResponseConn struct {
+	net.Conn
+	flushed chan struct{}
+	resume  chan struct{}
+	once    sync.Once
+}
+
+func (c *completedResponseConn) Write(data []byte) (int, error) {
+	n, err := c.Conn.Write(data)
+	if err == nil {
+		c.once.Do(func() {
+			close(c.flushed)
+			<-c.resume
+		})
+	}
+	return n, err
+}
+
+func (c *completedResponseConn) SetWriteDeadline(deadline time.Time) error {
+	select {
+	case <-c.flushed:
+		select {
+		case c.resume <- struct{}{}:
+		default:
+		}
+	default:
+	}
+	return c.Conn.SetWriteDeadline(deadline)
+}
+
+func TestCloseFlushesPolicyFrameAfterInFlightResponse(t *testing.T) {
+	server, client := net.Pipe()
+	paused := &completedResponseConn{Conn: server, flushed: make(chan struct{}), resume: make(chan struct{}, 1)}
+	t.Cleanup(func() {
+		select {
+		case paused.resume <- struct{}{}:
+		default:
+		}
+		_ = client.Close()
+		_ = server.Close()
+	})
+	config, err := (Config{}).defaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := newConn(paused, bufio.NewReadWriter(bufio.NewReader(paused), bufio.NewWriter(paused)), config)
+	response := []byte(`{"jsonrpc":"2.0","id":"accepted","result":{}}`)
+	written := make(chan error, 1)
+	go func() { written <- connection.WriteMessage(context.Background(), TextMessage, response) }()
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	packet := make([]byte, 2+len(response))
+	if _, err := io.ReadFull(client, packet); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(packet, append([]byte{0x81, byte(len(response))}, response...)) {
+		t.Fatal("accepted response frame changed")
+	}
+	<-paused.flushed
+	closed := make(chan error, 1)
+	go func() {
+		closed <- connection.Close(context.Background(), closePolicy, "authentication no longer valid")
+	}()
+	var header [2]byte
+	if _, err := io.ReadFull(client, header[:]); err != nil {
+		t.Fatalf("policy close was lost behind the completed response: %v", err)
+	}
+	payload := make([]byte, int(header[1]&0x7f))
+	if _, err := io.ReadFull(client, payload); err != nil {
+		t.Fatal(err)
+	}
+	if header[0] != 0x88 || header[1]&0x80 != 0 || len(payload) < 2 || binary.BigEndian.Uint16(payload[:2]) != closePolicy {
+		t.Fatalf("policy close frame changed: header=%x payload=%x", header, payload)
+	}
+	if err := <-written; err != nil {
+		t.Fatalf("accepted response failed: %v", err)
+	}
+	if err := <-closed; err != nil {
+		t.Fatal(err)
 	}
 }
 
