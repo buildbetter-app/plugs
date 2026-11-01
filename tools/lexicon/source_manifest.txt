@@ -303,6 +303,8 @@ internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
 internal/core/viewops/BUILD.bazel
+internal/core/viewops/epic_progress.go
+internal/core/viewops/parent_projection.go
 internal/core/viewops/run.go
 internal/core/viewops/service.go
 internal/core/viewops/service_test.go
@@ -544,6 +546,7 @@ internal/server/composition/composition_test.go
 internal/server/composition/config.go
 internal/server/composition/configfile.go
 internal/server/composition/configfile_test.go
+internal/server/composition/epic_progress_test.go
 internal/server/composition/mcp.go
 internal/server/composition/mcp_lifecycle_test.go
 internal/server/composition/restore_actual_archive_test.go
@@ -678,8 +681,11 @@ internal/server/transport/websocket/handler.go
 internal/server/transport/websocket/lifecycle_test.go
 internal/server/transport/websocket/websocket_test.go
 internal/server/viewrpc/BUILD.bazel
+internal/server/viewrpc/README.md
 internal/server/viewrpc/bind.go
 internal/server/viewrpc/cursor.go
+internal/server/viewrpc/epic_progress.go
+internal/server/viewrpc/epic_progress_test.go
 internal/server/viewrpc/integration_test.go
 internal/server/watch/BUILD.bazel
 internal/server/watch/authorization.go

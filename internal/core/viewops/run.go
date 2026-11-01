@@ -131,6 +131,9 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	if err != nil {
 		return Result{}, err
 	}
+	if isEpicProgress(definition) {
+		return s.runEpicProgress(ctx, by, req, definition)
+	}
 	filter := *definition.Filter
 	terms, err := parseQuery(filter.Query)
 	if err != nil {
@@ -271,6 +274,9 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 				}
 			}
 		}
+	}
+	if err := s.projectParents(ctx, by, reader, rows, definition.Fields, &result); err != nil {
+		return Result{}, err
 	}
 	return result, nil
 }
@@ -414,6 +420,13 @@ func (s *Service) item(row stored, fields []string, rows []stored, authorized ma
 		}
 		if !hasField(fields, "status") {
 			item.Status = ""
+		}
+	}
+	if row.doc.Parent != nil && (fields == nil || hasField(fields, "parent")) {
+		if s.cfg.ParentProjection != nil || s.cfg.AuthorizeRead == nil {
+			item.Parent = row.doc.Parent.ID
+		} else {
+			item.ParentHidden = true
 		}
 	}
 	for _, target := range row.doc.Links {
