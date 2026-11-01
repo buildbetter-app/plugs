@@ -429,6 +429,11 @@ internal/integration/sqliteacceptance/leases_refusals_test.go
 internal/integration/sqliteacceptance/transactions_test.go
 internal/integration/sqlreadersnapshots/BUILD.bazel
 internal/integration/sqlreadersnapshots/integration_test.go
+internal/integration/transports/BUILD.bazel
+internal/integration/transports/README.md
+internal/integration/transports/client_test.go
+internal/integration/transports/fixture_test.go
+internal/integration/transports/transports_test.go
 internal/integration/viewpermissions/BUILD.bazel
 internal/integration/viewpermissions/viewpermissions_test.go
 internal/integration/watchsql/BUILD.bazel
@@ -555,6 +560,7 @@ internal/server/pluginhost/adapters.go
 internal/server/pluginhost/call.go
 internal/server/pluginhost/core_reader.go
 internal/server/pluginhost/egress.go
+internal/server/pluginhost/egress_test.go
 internal/server/pluginhost/errors.go
 internal/server/pluginhost/fields.go
 internal/server/pluginhost/host_test.go

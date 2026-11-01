@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "transports_test",
+    srcs = ["client_test.go", "fixture_test.go", "transports_test.go"],
+    args = ["-test.v"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/restore",
+        "//internal/core/service",
+        "//internal/plugins/authnapikey",
+        "//internal/server/authn",
+        "//internal/server/pluginhost",
+        "//internal/server/rpc",
+        "//internal/server/transport/httpjson",
+        "//internal/server/transport/mcp",
+        "//internal/server/transport/stdio",
+        "//internal/server/transport/websocket",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//pluginapi",
+        "//sdk/go:sdk_go",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
