@@ -369,6 +369,8 @@ internal/integration/migrationpre/README.md
 internal/integration/migrationpre/compose.go
 internal/integration/migrationpre/integration_test.go
 internal/integration/oidc/BUILD.bazel
+internal/integration/oidc/browser_cors_check.mjs
+internal/integration/oidc/browser_cors_test.go
 internal/integration/oidc/composition_test.go
 internal/integration/oidc/flow_test.go
 internal/integration/oidc/http_test.go
@@ -660,10 +662,15 @@ internal/server/webui/browser_test.go
 internal/server/webui/catalog.go
 internal/server/webui/comment_check.mjs
 internal/server/webui/direct_blocker_check.mjs
+internal/server/webui/frame_digest.go
+internal/server/webui/frame_host.go
 internal/server/webui/presence_display_check.mjs
 internal/server/webui/presence_display_test.go
+internal/server/webui/sandbox_check.mjs
+internal/server/webui/sandbox_test.go
 internal/server/webui/static/app.js
 internal/server/webui/static/favicon.svg
+internal/server/webui/static/frame-host.js
 internal/server/webui/static/index.html
 internal/server/webui/static/styles.css
 internal/server/webui/view_watch_check.mjs
