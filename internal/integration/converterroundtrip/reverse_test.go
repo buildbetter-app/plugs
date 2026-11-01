@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
@@ -162,6 +163,102 @@ func TestLiveReverseRefusesUnrepresentableDeltasWithoutPartialOutput(t *testing.
 	}
 }
 
+func TestLiveReverseFromCheckedSourceHistory(t *testing.T) {
+	ctx := context.Background()
+	for _, test := range []struct {
+		file string
+		mode driver.RestoreHistoryMode
+	}{
+		{"full.tar", driver.RestoreHistoryModeFull},
+		{"dolt-source-partial.tar", driver.RestoreHistoryModePartial},
+		{"dolt-source-partial.tar", driver.RestoreHistoryModeSnapshot},
+	} {
+		for _, engine := range []string{"memory", "sqlite", "postgres"} {
+			t.Run(test.file+"/"+string(test.mode)+"/"+engine, func(t *testing.T) {
+				data, err := os.ReadFile("../offlinehistory/testdata/" + test.file)
+				if err != nil {
+					t.Fatal(err)
+				}
+				p, archive := admittedImportProfile(t, data)
+				p.HistoryMode = test.mode
+				if test.mode != driver.RestoreHistoryModeSnapshot {
+					p, err = BindHistoryImport(ctx, bytes.NewReader(data), p, time.Now().UTC())
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				store, lease, cleanup := openReverseTarget(t, engine)
+				defer cleanup()
+				if _, err = RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, p); err != nil {
+					t.Fatal(err)
+				}
+				before, err := ReverseRestored(ctx, store)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertSourceOpaque(t, before.Result.JSONL, archive)
+				if len(before.Result.Report.LostPostSwitchHistory) == 0 {
+					t.Fatal("head-state reverse omitted its history-loss disclosure")
+				}
+				writer := pipeline.New(store, lease, pipeline.WithOntology(service.NewOntology(nil)))
+				_, err = writer.Apply(ctx, p.Admission.Actor, model.ChangeSet{Ops: []model.Op{{
+					Kind: model.OpPatch, Patch: &model.PatchOp{Target: model.RefByID("demo-7", model.Natural64(0)), Fields: map[string]any{"description": "after history restore"}},
+				}}}, model.WriteMeta{Method: "tx.apply", Project: "demo", IdempotencyKey: strings.Repeat("e", 32)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				state := reverseState(t, store)
+				after, err := ReverseRestored(ctx, store)
+				if err != nil || after.Result.Digest == before.Result.Digest {
+					t.Fatalf("live history reverse failed: %v", err)
+				}
+				assertReverseDescription(t, after.Result.JSONL, "after history restore")
+				assertSourceOpaque(t, after.Result.JSONL, archive)
+				if !reflect.DeepEqual(state, reverseState(t, store)) {
+					t.Fatal("history reverse changed the store")
+				}
+				if test.mode != driver.RestoreHistoryModeSnapshot {
+					for _, mode := range []string{"history-changed", "history-missing"} {
+						got, err := ReverseRestored(ctx, reverseReadHook{Store: store, mode: mode})
+						var refused ReverseRefusal
+						if !errors.As(err, &refused) || len(got.Result.JSONL) != 0 {
+							t.Fatalf("changed history binding did not refuse: %v", err)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+func assertSourceOpaque(t *testing.T, data []byte, archive *dumpformat.Archive) {
+	t.Helper()
+	got := map[string]map[string]json.RawMessage{}
+	d := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var row struct {
+			ID       string                     `json:"id"`
+			Metadata map[string]json.RawMessage `json:"metadata"`
+		}
+		if err := d.Decode(&row); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if row.ID != "" {
+			got[row.ID] = row.Metadata
+		}
+	}
+	for _, record := range archive.Records("bead") {
+		for _, field := range dumpformat.OpaqueIssueFields() {
+			var value any
+			if err := decodeReverseJSON(got[record.ID]["beads."+field], &value); err != nil || !sameReverseJSON(value, record.Source.Fields[field]) {
+				t.Fatalf("reverse changed source opaque field %s: %v", field, err)
+			}
+		}
+	}
+}
+
 func openReverseTarget(t *testing.T, kind string) (driver.Store, driver.ActiveLease, func()) {
 	t.Helper()
 	if kind != "postgres" {
@@ -278,6 +375,20 @@ func (r reverseQueryHook) Query(ctx context.Context, q driver.Query) (driver.Pag
 		return page, err
 	}
 	for i, row := range page.Items {
+		if row.Ref.ID == driver.OfflineHistoryEvidenceID {
+			switch r.mode {
+			case "history-changed":
+				page.Items[i].Body = []byte(`{"changed":true}`)
+			case "history-missing":
+				page.Items = append(page.Items[:i], page.Items[i+1:]...)
+			}
+			if strings.HasPrefix(r.mode, "history-") {
+				break
+			}
+		}
+		if strings.HasPrefix(r.mode, "history-") {
+			continue
+		}
 		if row.Ref.ID != "demo-7" {
 			continue
 		}

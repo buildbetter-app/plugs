@@ -18,7 +18,10 @@ go_library(
 go_test(
     name = "converterroundtrip_test",
     srcs = glob(["*_test.go"]),
-    data = ["testdata/synthetic-plug-dump-1.tar"],
+    data = [
+        "testdata/synthetic-plug-dump-1.tar",
+        "//internal/integration/offlinehistory:lexicon_files",
+    ],
     embed = [":converterroundtrip"],
     deps = [
         "//internal/core/dumpformat",
