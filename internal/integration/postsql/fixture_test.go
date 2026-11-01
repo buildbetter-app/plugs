@@ -113,6 +113,7 @@ func (f *fixture) writer(host *pluginhost.Host, store driver.Store) *pipeline.Wr
 		store = f.store
 	}
 	opts := []pipeline.Option{
+		pipeline.WithPostFailureStore(f.store.(driver.CheckpointStore)),
 		pipeline.WithOntology(service.NewOntology(nil)),
 		pipeline.WithOntologyAudit(service.NewTrackedOntologyAudit(service.StaticOntologySource(sourceRef))),
 		pipeline.WithIDGenerator(func() (string, error) { return fmt.Sprintf("pl-post-sql-%d", f.ids.Add(1)), nil }),

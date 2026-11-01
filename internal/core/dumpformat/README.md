@@ -23,6 +23,17 @@ path does not dispatch converter archives to the separate offline seam described
 below. Admin operations require a host-injected, method-and-digest-bound human-presence
 verifier and fail closed when that verifier is unavailable.
 
+Native head images retain protected ontology source records alongside ordinary
+records. An ontology source must have kind `ontology`, an ID of `ontology` or
+`ontology/...`, and branch zero. Before opening a write transaction, restore
+decodes the stored source with the canonical strict decoder and compiles its
+base, overlays and plugin catalog. Both the source envelope and plain base
+document forms are supported. The source body is preserved; restore neither
+seeds replacement ontology nor installs plugins. Malformed sources, mismatched
+protected identities and unknown native kinds refuse without publishing data.
+This native admission does not widen the offline converter's kind registry or
+relax human-presence, caller, manifest, empty-target or history checks.
+
 `internal/integration/converterroundtrip` supplies a trusted offline restore
 seam. It refuses unsupported semantics before acquiring a write transaction:
 parent and external relations, unverified comments, available-unverified history,

@@ -102,7 +102,7 @@ full_graph=0
 ci_contract=0
 packages=()
 seeds=()
-resource_paths=()
+source_paths=()
 unknown_paths=()
 resource_labels=()
 while IFS= read -r path; do
@@ -122,15 +122,7 @@ while IFS= read -r path; do
         full_graph=1
         continue
       fi
-      if [[ "$path" == */* ]]; then
-        package="${path%/*}"
-        file="${path##*/}"
-        packages+=("//$package")
-        seeds+=("//$package:$file")
-      else
-        packages+=("//")
-        seeds+=("//:$path")
-      fi
+      source_paths+=("$path")
       ;;
     *)
       if valid_revision "$head" && ! git cat-file -e "$head:$path" 2>/dev/null; then
@@ -138,18 +130,17 @@ while IFS= read -r path; do
         unknown_paths+=("$path")
         continue
       fi
-      # Resource labels can live below a package directory (for example,
-      # //internal/server/webui:static/index.html), so infer ownership from
-      # Bazel's source-file labels rather than from the filesystem directory.
-      resource_paths+=("$path")
+      source_paths+=("$path")
       ;;
   esac
 done <"$output/changed-files.txt"
 
-if ((full_graph == 0 && ${#resource_paths[@]} > 0)); then
+if ((${#source_paths[@]} > 0)); then
   declare -A source_label_by_path=()
   # //... selects rules, not their source-file inputs. Walk the rule closure
-  # to find resources named by embedsrcs, data, filegroups, and other inputs.
+  # for actual ownership: Go sources and resources can live below the BUILD
+  # package directory. Resolve even in full-graph mode because delivery also
+  # uses packages.txt to query the owning libraries' reverse dependents.
   if source_inventory="$(query 'kind("source file", deps(//...))')"; then :; else
     code=$?
     echo "targets: cannot query Bazel source-file ownership" >&2
@@ -169,7 +160,7 @@ if ((full_graph == 0 && ${#resource_paths[@]} > 0)); then
     source_label_by_path["$source_path"]="$label"
   done
 
-  for path in "${resource_paths[@]}"; do
+  for path in "${source_paths[@]}"; do
     label="${source_label_by_path[$path]:-}"
     if [[ -n "$label" ]]; then
       label_body="${label#//}"
@@ -180,7 +171,9 @@ if ((full_graph == 0 && ${#resource_paths[@]} > 0)); then
         packages+=("//")
       fi
       seeds+=("$label")
-      resource_labels+=("$path=$label")
+      if [[ "$path" != *.go ]]; then
+        resource_labels+=("$path=$label")
+      fi
     else
       # An unowned file may still affect a custom rule, a generated input, or
       # a package declaration outside this diff. Complete-graph selection is

@@ -59,6 +59,7 @@ func DefaultTreePolicy() TreePolicy {
 			".github/pages-redirect/index.html":                    {},
 			".github/runs-on.yml":                                  {},
 			".github/workflows/plug-bazel.yml":                     {},
+			".github/workflows/plug-nightly-restore-diffs.yml":     {},
 			".github/workflows/plug-runs-on-smoke.yml":             {},
 			".github/workflows/plug-remote-bazel.yml":              {},
 			"engdocs/design/plug/adversarial-review-2026-10-28.md": {},

@@ -32,6 +32,21 @@ func (c Chain) budget() (time.Duration, error) {
 func bounded[T any](ctx context.Context, b time.Duration, fn func(context.Context) (T, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, b)
 	defer cancel()
+	// Timer delivery can lag the deadline under load. Do not start or accept
+	// component work after the elapsed budget, even before Done is closed.
+	budgetError := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			return context.DeadlineExceeded
+		}
+		return nil
+	}
+	if err := budgetError(); err != nil {
+		var zero T
+		return zero, err
+	}
 	type result struct {
 		v   T
 		err error
@@ -52,7 +67,7 @@ func bounded[T any](ctx context.Context, b time.Duration, fn func(context.Contex
 		var zero T
 		return zero, ctx.Err()
 	case r := <-ch:
-		if err := ctx.Err(); err != nil {
+		if err := budgetError(); err != nil {
 			var zero T
 			return zero, err
 		}
