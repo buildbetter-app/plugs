@@ -140,6 +140,8 @@ internal/core/authz/chain.go
 internal/core/authz/chain_test.go
 internal/core/authz/doc.go
 internal/core/authz/filter.go
+internal/core/authz/hierarchy.go
+internal/core/authz/hierarchy_test.go
 internal/core/authz/identity.go
 internal/core/authz/identity_test.go
 internal/core/authz/mutation.go
@@ -478,6 +480,9 @@ internal/server/authzrpc/README.md
 internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/checker.go
+internal/server/authzrpc/hierarchy.go
+internal/server/authzrpc/hierarchy_read.go
+internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
 internal/server/claimrpc/BUILD.bazel

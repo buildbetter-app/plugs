@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "authzrpc",
-    srcs = ["authzrpc.go", "checker.go", "service.go", "slice.go"],
+    srcs = ["authzrpc.go", "checker.go", "hierarchy.go", "hierarchy_read.go", "service.go", "slice.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/authzrpc",
     visibility = ["//:__subpackages__"],
     deps = [
@@ -37,6 +37,22 @@ go_test(
         "//internal/storage/memory",
         "//pluginapi",
         "//sdk/go:sdk_go",
+    ],
+)
+
+go_test(
+    name = "hierarchy_test",
+    srcs = ["hierarchy_test.go"],
+    embed = [":authzrpc"],
+    deps = [
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/port",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
     ],
 )
 
