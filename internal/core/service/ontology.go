@@ -290,7 +290,7 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 		}
 	}
 	var graph map[string]storedBead
-	if lifecycle {
+	if lifecycle || hierarchyGraphNeeded(proposal) {
 		var err error
 		graph, err = scanBeads(ctx, reader)
 		if err != nil {
@@ -348,18 +348,8 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 			if err != nil {
 				return err
 			}
-			// The tracked query and final overlay prove absence only when no
-			// direct child exists. Canonical Parent refs are readable before
-			// the full hierarchy child-status guard is installed; an observed
-			// child leaves NoOpenChildren unknown so guarded transitions refuse.
-			noChildren := true
+			noChildren := o.noOpenChildren(doc, graph)
 			facts.NoOpenBlockers, facts.NoOpenChildren = &noBlockers, &noChildren
-			for _, child := range graph {
-				if child.doc.Parent != nil && child.doc.Parent.ID == doc.ID {
-					facts.NoOpenChildren = nil
-					break
-				}
-			}
 			facts.Evidence = map[string]bool{}
 			for _, attachment := range doc.Attachments {
 				if attachment.URI != "" || attachment.ContentRef != "" {
@@ -379,7 +369,7 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 			return err
 		}
 	}
-	return nil
+	return o.validateHierarchyParents(proposal, graph)
 }
 
 // Recognize only the named empty slot patch and optional same-target reason.

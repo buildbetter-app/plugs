@@ -879,7 +879,7 @@ func TestSameClaimStillValidatesMutatorsAndPreservesLease(t *testing.T) {
 	}
 }
 
-func TestUnsupportedReadsAndParentRefuseWithoutPartialSuccess(t *testing.T) {
+func TestUnsupportedReadsAndMalformedParentRefuseWithoutPartialSuccess(t *testing.T) {
 	next := 0
 	f := setup(t, pipeline.WithIDGenerator(func() (string, error) {
 		ids := []string{"pl-a", "pl-b", "pl-c"}
@@ -888,7 +888,7 @@ func TestUnsupportedReadsAndParentRefuseWithoutPartialSuccess(t *testing.T) {
 		return id, nil
 	}))
 	ctx := context.Background()
-	id, _ := create(t, f, "One")
+	create(t, f, "One")
 	_, _ = create(t, f, "Two")
 	first, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1})
 	if err != nil || len(first.Items) != 1 || first.Next == nil {
@@ -909,7 +909,8 @@ func TestUnsupportedReadsAndParentRefuseWithoutPartialSuccess(t *testing.T) {
 	wantCode(t, err, "invalid_params")
 	_, err = f.svc.Ready(ctx, anonymous, ReadyRequest{})
 	wantCode(t, err, "project_required")
-	_, err = f.svc.Create(ctx, anonymous, CreateRequest{Type: "issue", Fields: map[string]any{}, Parent: &id}, meta(t))
+	parentAlias := model.RefByKey("unresolved-parent")
+	_, err = f.svc.Create(ctx, anonymous, CreateRequest{Type: "issue", Fields: map[string]any{}, Parent: &parentAlias}, meta(t))
 	wantCode(t, err, "invalid_params")
 	_, err = f.svc.History(ctx, anonymous, HistoryRequest{Project: "local", AsOf: AsOf{Revision: model.Natural64(1), Incarnation: "different"}})
 	wantCode(t, err, "incarnation_changed")
