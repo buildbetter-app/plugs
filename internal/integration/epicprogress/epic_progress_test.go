@@ -224,7 +224,8 @@ func TestEpicProgressHierarchyPermissionsAndAtomicRefusals(t *testing.T) {
 	// NEW parent matter; the child's own project remains unchanged.
 	mover := f.issue(t, agent("mover")).Token
 	committed(t, move(mover, child, &next, ""))
-	read := result(t, f.api.call(t, f.viewer(t, visible), "bead.get", map[string]any{"id": child, "_meta": map[string]any{"project": visible}}))
+	viewer := f.viewer(t, visible)
+	read := result(t, f.api.call(t, viewer, "bead.get", map[string]any{"id": child, "_meta": map[string]any{"project": visible}}))
 	bead := object(t, read["bead"])
 	if bead["project"] != visible {
 		t.Fatalf("reparent moved child project: %v", bead)
@@ -236,6 +237,12 @@ func TestEpicProgressHierarchyPermissionsAndAtomicRefusals(t *testing.T) {
 	if bytes.Contains(firstJSON(t, read), []byte(next.ID)) {
 		t.Fatal("bead.get disclosed a hidden parent's identity")
 	}
+	// Use the actual provider-detached principal from this HTTP credential.
+	// Rebuilding a typed caveat literal would bypass its canonical admission form.
+	principal, e := f.keys.Authenticate(context.Background(), viewer)
+	if e != nil {
+		t.Fatal(e)
+	}
 	meta, e := f.store.Meta(context.Background())
 	if e != nil {
 		t.Fatal(e)
@@ -245,9 +252,12 @@ func TestEpicProgressHierarchyPermissionsAndAtomicRefusals(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer snapshot.Close()
-	disclosure, e := f.app.Checker.ParentDisclosure(context.Background(), model.PrincipalRef{Kind: "user", ID: "user:ep6-reader", Caveats: map[string]any{"projects": []model.Ref{projectRef(visible)}}}, child, snapshot)
-	if e != nil || !disclosure.Exists || disclosure.Ref != nil {
+	disclosure, binding, e := f.app.Checker.AuthorizeParentProjection(context.Background(), principal, snapshot, child)
+	if e != nil || !disclosure.Exists || disclosure.Ref != nil || binding == "" {
 		t.Fatalf("parent disclosure is not existence-only: %+v %v", disclosure, e)
+	}
+	if e := f.app.Checker.ValidateReadAuthorityBinding(context.Background(), principal, binding); e != nil {
+		t.Fatalf("parent projection lost its current authority binding: %v", e)
 	}
 	before := f.head(t)
 	requireCode(t, move(f.owner, child, &child, ""), "ontology_guard_failed")
