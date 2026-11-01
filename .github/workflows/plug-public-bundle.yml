@@ -64,6 +64,9 @@ jobs:
       - name: Fetch and verify canonical Beads source
         run: |
           set -euo pipefail
+          if ! git cat-file -e "$BEADS_COMMIT^{commit}"; then
+            git fetch --no-tags origin refs/heads/beads:refs/remotes/origin/beads
+          fi
           git cat-file -e "$BEADS_COMMIT^{commit}"
           git cat-file -e "$PLUG_COMMIT^{commit}"
           source_ref="refs/remotes/origin/$PLUG_SOURCE_REF"
