@@ -21,9 +21,10 @@ go_library(
 
 go_test(
     name = "plugdump_test",
-    srcs = ["plugdump_test.go", "source_history_test.go"],
+    srcs = ["plugdump_test.go", "source_history_test.go", "source_history_sql_test.go"],
     data = glob(["testdata/**"]),
     embed = [":plugdump"],
+    deps = ["//internal/testutil", "@com_github_go_sql_driver_mysql//:mysql"],
 )
 
 filegroup(
