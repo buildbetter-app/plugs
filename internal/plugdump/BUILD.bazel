@@ -18,7 +18,7 @@ go_library(
 
 go_test(
     name = "plugdump_test",
-    srcs = ["plugdump_test.go"],
+    srcs = ["plugdump_test.go", "source_history_test.go"],
     data = glob(["testdata/**"]),
     embed = [":plugdump"],
 )
