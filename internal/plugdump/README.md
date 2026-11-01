@@ -191,3 +191,33 @@ The explicit tag replaces the repository rc's required pure-Go regex tag when
 ambient rc files are disabled. A target reporting PASS without an actual
 named `--- PASS` test is not behavior evidence. Legacy Dolt integration tests
 require their own lane and are not certified by this fixture run.
+
+## Verified source commit images
+
+An optional `SourceHistoryReader` captures the reachable Dolt graph and complete
+historical table images within the same scoped reader as the current export.
+`SQLSource` implements it using Dolt SQL over the caller's transaction. It never
+returns a database or transaction handle. The added `history/source.json` member
+uses `beads-dolt-images/1`: source commits and opaque attribution, the complete
+current events table, and an explicitly checked range of portable business
+images and cumulative event images at exact source commit IDs.
+
+A complete linear graph, every representable image, unchanged earlier events
+and an exact current-head comparison are required for `history=verified`.
+Missing images or unsupported older schemas permit only a proven contiguous
+suffix with a complete baseline. Exact inclusive prefix gaps distinguish
+`unavailable`, `unmappable` and `not-retained`; the manifest remains
+`available-unverified`. A merge, dirty working set, missing ancestry, absent
+baseline or unprovable head leaves a raw unverified capture with an explicit
+reason, never fabricated historical state. A failed commit/ancestry census
+returns typed `ErrSourceHistoryUnavailable` and no archive bytes. Captures are
+bounded to 10,000 commits and the existing 128 MiB envelope.
+
+Plug full history remains the strict restore default. Explicit partial imports
+the proven suffix with its gaps and floor; explicit snapshot imports only the
+current state with a new floor. Dolt commit images are explicit import units,
+not claims about individual SQL transactions or edits between commits. Audit
+rows and source authors are provenance, never verified Plug principals.
+All opaque source issue fields remain in `source.fields`; this layer never
+interprets orchestration state or changes its JSON values. Other migration
+checks, including source-principal attribution, remain unperformed.
