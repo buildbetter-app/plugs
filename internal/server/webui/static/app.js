@@ -609,10 +609,21 @@
       node.appendChild(row);
     });
   }
-  function target(view) { return $({ home: "changed-rows", next: "next-rows", blocked: "blocked-state", presence: "presence-rows", explain: "explain-state" }[view]); }
+  async function epic(signal) {
+    const id = $("epic-id").value;
+    if (!id) { text($("epic-state"), "Enter an epic ID to read its progress."); return; }
+    requireMethod("view.run");
+    if (typeof PlugEpicProgress.read !== "function") throw new RPCError("Parent-aware progress is unavailable.", "unavailable");
+    const summary = await PlugEpicProgress.read({ id, rpc, signal, config: state.config, asOfParams });
+    signal.throwIfAborted();
+    PlugEpicProgress.show(summary, state.config.maxRows);
+    text($("epic-state"), "Counts include only children you can see.");
+  }
+  function target(view) { return $({ home: "changed-rows", next: "next-rows", blocked: "blocked-state", presence: "presence-rows", explain: "explain-state", epic: "epic-state" }[view]); }
   async function load(nextPage) {
     if (state.work) state.work.controller.abort();
     stopWatch();
+    PlugEpicProgress.clear();
     text($("comment-state"), "Comments await a completed item read.");
     const work = { controller: new AbortController(), timedOut: false };
     const view = state.activeView; state.work = work;
@@ -630,10 +641,18 @@
       else if (view === "blocked") await blocked(nextPage, work.controller.signal);
       else if (view === "presence") await presence(work.controller.signal);
       else if (view === "explain") await explain(work.controller.signal);
+      else if (view === "epic") await epic(work.controller.signal);
       if (state.work !== work) return;
       setConnection("ok", "Connected"); setMessage("");
     } catch (error) {
       if (state.work !== work) return;
+      if (view === "epic") {
+        PlugEpicProgress.clear();
+        // Parent refusal details are not presentation data. Do not copy a
+        // server hint that could contain an unreadable identity or status.
+        const known = ["invalid_response", "invalid_params", "method_not_found", "scope_too_large", "cursor_invalid", "cursor_stale", "forbidden", "not_found", "unavailable"];
+        error = new RPCError("Epic progress is unavailable. Refresh to request a new snapshot.", known.includes(error && error.code) ? error.code : "unavailable");
+      }
       stopWatch();
       text($("comment-state"), "Comments unavailable: this read did not complete.");
       if (work.liveFailure) return;
@@ -656,11 +675,14 @@
   $("refresh").addEventListener("click", () => load(false));
   $("cancel").addEventListener("click", () => { if (state.work) state.work.controller.abort(); });
   $("stop-watch").addEventListener("click", () => { stopWatch(); watchStatus("Live changes cancelled. Refresh to reconnect."); });
-  window.addEventListener("pagehide", () => { if (state.work) state.work.controller.abort(); stopWatch(); watchStatus("Live changes stopped. Refresh to reconnect."); });
+  window.addEventListener("pagehide", () => { if (state.work) state.work.controller.abort(); stopWatch(); PlugEpicProgress.clear(); watchStatus("Live changes stopped. Refresh to reconnect."); });
   $("explain-form").addEventListener("submit", (event) => { event.preventDefault(); load(false); });
+  $("epic-form").addEventListener("submit", (event) => { event.preventDefault(); load(false); });
   document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => selectView(tab.dataset.view)));
   const requested = new URLSearchParams(location.search).get("view");
   const requestedItem = new URLSearchParams(location.search).get("itemId");
   if (requested === "explain" && requestedItem) $("explain-id").value = requestedItem;
-  selectView(["next", "blocked", "explain", "presence"].includes(requested) ? requested : "home");
+  const requestedEpic = new URLSearchParams(location.search).get("epicId");
+  if (requested === "epic" && requestedEpic) $("epic-id").value = requestedEpic;
+  selectView(["next", "blocked", "explain", "presence", "epic"].includes(requested) ? requested : "home");
 }());

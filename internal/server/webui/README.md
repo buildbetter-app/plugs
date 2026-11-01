@@ -138,6 +138,13 @@ Untrusted titles, IDs, reasons and presence data are rendered as text.
 - Epic progress remains explicitly unavailable until an admitted parent-aware
   hierarchy and authorized count query exist. Type summaries are never shown
   as epic progress.
+  The Epic progress tab contains an isolated count renderer and clears its
+  previous counts before a refresh, cancellation or refused read. Its draft
+  consumer has no parent-aware wire adapter yet: ordinary `view.run` discovery
+  alone does not enable progress. `TestBrowserEpicProgressPresentation` checks
+  visible-only counts, the exact hidden remainder, output bounds, text-only
+  status labels and mobile wrapping using explicit presentation inputs. This
+  test does not qualify the hierarchy, permissions, ontology or RPC producer.
 
 - Refresh, cancellation, a 15-second read deadline, empty results and RPC
   refusals have explicit states. Interactive login and remote/CORS composition

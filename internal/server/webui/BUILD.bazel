@@ -9,6 +9,7 @@ go_library(
     ],
     embedsrcs = [
         "static/app.js",
+        "static/epic-progress.js",
         "static/favicon.svg",
         "static/index.html",
         "static/styles.css",
@@ -70,4 +71,13 @@ filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "epic_progress_test",
+    srcs = ["epic_progress_test.go"],
+    embedsrcs = ["epic_progress_check.mjs"],
+    env_inherit = ["PATH"],
+    tags = ["local"],
+    embed = [":webui"],
 )
