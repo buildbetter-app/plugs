@@ -263,6 +263,7 @@ internal/core/restore/archive.go
 internal/core/restore/b17_connected_query_test.go
 internal/core/restore/b17_data_test.go
 internal/core/restore/fixture_test.go
+internal/core/restore/native_ancestor_restore_test.go
 internal/core/restore/native_hierarchy.go
 internal/core/restore/native_ontology_test.go
 internal/core/restore/native_profile_test.go
