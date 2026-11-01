@@ -287,9 +287,6 @@ func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology b
 	if err := rpc.BindService(registry, f.app.Service); err != nil {
 		t.Fatal(err)
 	}
-	if err := rpc.BindTxApply(registry, f.app.Service); err != nil {
-		t.Fatal(err)
-	}
 	if err := viewrpc.BindWithConfig(registry, views, viewrpc.Config{CursorKey: []byte("ep6-disposable-cursor-key-0123456789")}); err != nil {
 		t.Fatal(err)
 	}
