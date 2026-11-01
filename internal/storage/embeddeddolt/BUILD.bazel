@@ -218,6 +218,7 @@ go_test(
         "querier_contract_test.go",
         "race_detector_off_test.go",
         "race_detector_on_test.go",
+        "raw_db_accessor_test.go",
         "reader_contract_test.go",
         "ready_claimer_contract_test.go",
         "ready_counter_contract_test.go",

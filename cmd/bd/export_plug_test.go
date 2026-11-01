@@ -146,8 +146,14 @@ type plugFixtureStore struct {
 	db *sql.DB
 }
 
-func (s plugFixtureStore) DB() *sql.DB           { return s.db }
-func (s plugFixtureStore) UnderlyingDB() *sql.DB { return s.db }
+func (s plugFixtureStore) WithRawDBTx(ctx context.Context, opts *sql.TxOptions, fn func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, opts)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	return fn(tx)
+}
 
 func TestPlugDumpCommandEndToEnd(t *testing.T) {
 	isolateBeadsDirForTest(t)
