@@ -40,7 +40,7 @@ Done = the five recorded parent/child rules are enforced at the authorization
 boundary, proven by focused and whole-tree exact-head RunsOn tests and an
 independent GPT-6 review; a typed seam or static contract alone does not count.
 Scope is the bounded authorization layer. Integrated hierarchy persistence,
-closure/ontology guards, public RPC and the progress producer remain EP3–EP5
+closure/ontology guards, hierarchy write RPC and the progress producer remain EP3–EP5
 dependencies and require their own end-to-end evidence.
 
 `Config.Hierarchy` explicitly opts the trusted composition into
@@ -77,7 +77,7 @@ prove query completeness or authorize a new wire shape.
 
 `ReadAuthorityBinding(ctx, principal, snapshot)` returns an opaque digest of
 the authenticated caller/epoch, namespace/incarnation, validated facts and
-observed ACL/context/plugins/ontology generations. Continuation hosts must
+observed ACL/context/plugins/ontology generations and current authority revision. Continuation hosts must
 obtain it from a **fresh current authority snapshot** on every request and
 compare the cursor binding before serving a pinned data page or hidden count.
 Reusing only the cursor's old data snapshot cannot detect revocation. The
@@ -95,3 +95,20 @@ returning. After bucketing and immediately before publishing, the host must
 also call `ValidateReadAuthorityBinding(ctx, principal, PolicyBinding)`; a
 changed generation refuses the whole result without recounting under a second
 authority snapshot or returning any partial count.
+
+Public `bead.get`, `bead.ready` and `history.query` project parent relations
+from pinned content using current child/parent authority. A readable parent
+keeps the existing bare ID string; an unreadable parent becomes exactly
+`parent:{exists:true}`; roots omit the member. Request and persisted Parent
+Refs are unchanged. `ParentHidden` is internal projection state only.
+
+View producers can call `AuthorizeParentProjections(ctx, principal,
+contentReader, visibleChildRefs)` once for the complete item/group output.
+`ParentProjectionAuthority.Parents` is keyed by child ID and contains typed
+`ParentDisclosure` values, together with one `PolicyBinding`. The singular
+`AuthorizeParentProjection` delegates to this bounded batch. A source failure,
+unreadable child or invalid batch refuses the complete projection. Producers
+must also run the final `ValidateReadAuthorityBinding` before publication.
+The binding includes the current authority revision, so concurrent source
+changes conservatively refuse refresh rather than retaining a record-dependent
+custom-rule or project-caveat grant. Ordinary view traversal is EP4's layer.

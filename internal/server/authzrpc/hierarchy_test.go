@@ -702,3 +702,86 @@ func TestHierarchyOptInAuthenticatedWriterAndReplay(t *testing.T) {
 		t.Fatal("denied replay published a write")
 	}
 }
+
+func TestParentProjectionPinnedContentAndCurrentAuthority(t *testing.T) {
+	f := newHFixture(t, true)
+	ctx := context.Background()
+	by := model.PrincipalRef{Kind: "user", ID: "user:viewer"}
+	content := f.snapshot(t)
+	// The current child changes parents after content is pinned. Projection
+	// must still describe its historical parent, using only current read grants.
+	if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: hRef("child"), Kind: "bead", Op: model.OpUpdate, Body: hBody("child", "child-project", "new", "todo")}}); err != nil {
+		t.Fatal(err)
+	}
+	f.app.Checker.chain.Links = []authz.Link{hDeny{ids: map[string]bool{"old": true}, action: authz.Read}}
+	result, err := f.app.Checker.AuthorizeParentProjections(ctx, by, content, []model.Ref{hRef("child"), hRef("visible"), hRef("new")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := result.Parents["child"]; !p.Exists || p.Ref != nil {
+		t.Fatalf("historical hidden parent = %+v", p)
+	}
+	if p := result.Parents["visible"]; !p.Exists || p.Ref == nil || p.Ref.ID != "new" {
+		t.Fatalf("readable parent = %+v", p)
+	}
+	if p := result.Parents["new"]; p.Exists || p.Ref != nil {
+		t.Fatalf("root = %+v", p)
+	}
+	if err := f.app.Checker.ValidateReadAuthorityBinding(ctx, by, result.PolicyBinding); err != nil {
+		t.Fatal(err)
+	}
+	// Record-dependent custom rules and project caveats must not outlive a
+	// current-source change even when the ACL registry itself is unchanged.
+	if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: hRef("new"), Kind: "bead", Op: model.OpUpdate, Body: hBody("new", "parent-project", "", "done")}}); err != nil {
+		t.Fatal(err)
+	}
+	requireHCode(t, f.app.Checker.ValidateReadAuthorityBinding(ctx, by, result.PolicyBinding), "authz_unavailable")
+	for _, refs := range [][]model.Ref{{hRef("visible"), hRef("visible")}, {hRef("absent")}} {
+		partial, err := f.app.Checker.AuthorizeParentProjections(ctx, by, content, refs)
+		if err == nil || partial.Parents != nil || partial.PolicyBinding != "" {
+			t.Fatal("invalid batch published a partial projection", partial, err)
+		}
+	}
+	f.app.Checker.chain.Links = []authz.Link{hDeny{ids: map[string]bool{"visible": true}, action: authz.Read}}
+	_, _, err = f.app.Checker.AuthorizeParentProjection(ctx, by, content, hRef("visible"))
+	requireHCode(t, err, "not_found")
+}
+
+func TestParentProjectionFinalCheckRefusesRevocation(t *testing.T) {
+	f := newHFixture(t, true)
+	revoked := f.base
+	revoked.Grants = nil
+	f.app.Checker.chain.Links = []authz.Link{&hRevokeDuringRead{facts: f.facts, next: revoked}}
+	result, err := f.app.Checker.AuthorizeParentProjections(context.Background(), model.PrincipalRef{Kind: "user", ID: "user:viewer"}, f.snapshot(t), []model.Ref{hRef("visible")})
+	requireHCode(t, err, "authz_unavailable")
+	if result.Parents != nil || result.PolicyBinding != "" {
+		t.Fatal("mid-projection revocation published a partial result")
+	}
+}
+
+func TestHierarchyHTTPParentCustomForbidAndRefCaveat(t *testing.T) {
+	for _, mode := range []string{"custom-forbid", "ref-caveat"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newHFixture(t, true)
+			by := model.PrincipalRef{Kind: "user", ID: "user:reader"}
+			if mode == "custom-forbid" {
+				f.app.Checker.chain.Links = []authz.Link{hDeny{ids: map[string]bool{"new": true}, action: authz.Read}}
+			} else {
+				by.Caveats = map[string]any{"refs": []model.Ref{hRef("visible")}}
+			}
+			reply := f.callRPC(t, by, "bead.get", map[string]any{"id": hRef("visible")})
+			if reply.Error != nil {
+				t.Fatalf("child read refused: %+v", reply.Error)
+			}
+			var result struct {
+				Bead map[string]any `json:"bead"`
+			}
+			if err := json.Unmarshal(reply.Result, &result); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(result.Bead["parent"], map[string]any{"exists": true}) || bytes.Contains(reply.Result, []byte(`"new"`)) {
+				t.Fatalf("parent content escaped: %s", reply.Result)
+			}
+		})
+	}
+}

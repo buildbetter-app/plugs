@@ -10,6 +10,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -18,6 +19,114 @@ import (
 type ParentDisclosure struct {
 	Exists bool       `json:"exists"`
 	Ref    *model.Ref `json:"ref,omitempty"`
+}
+
+// ParentProjectionAuthority contains projections for already visible children.
+// A single CURRENT authority snapshot authorizes the complete batch against
+// PINNED content; its binding must be validated again before publication.
+type ParentProjectionAuthority struct {
+	Parents       map[string]ParentDisclosure
+	PolicyBinding string
+}
+
+func (c *Checker) AuthorizeParentProjections(ctx context.Context, principal model.PrincipalRef, content driver.Reader, children []model.Ref) (ParentProjectionAuthority, error) {
+	if c == nil || content == nil || len(children) > listPostfilterCap {
+		return ParentProjectionAuthority{}, hierarchyUnavailable()
+	}
+	authority, _, closeReader, err := (&GuardedService{checker: c, lease: c.lease}).current(ctx, nil)
+	if err != nil {
+		return ParentProjectionAuthority{}, err
+	}
+	defer closeReader()
+	caller, err := c.callerFor(ctx, principal)
+	if err != nil {
+		return ParentProjectionAuthority{}, authzError(err)
+	}
+	s, err := c.load(ctx, authority, caller)
+	if err != nil {
+		return ParentProjectionAuthority{}, hierarchyUnavailable()
+	}
+	parents, err := c.parentProjections(ctx, caller, s, content, children)
+	if err != nil {
+		return ParentProjectionAuthority{}, err
+	}
+	binding, err := c.readAuthorityBinding(ctx, caller, s, authority)
+	if err != nil {
+		return ParentProjectionAuthority{}, err
+	}
+	if err := c.ValidateReadAuthorityBinding(ctx, principal, binding); err != nil {
+		return ParentProjectionAuthority{}, err
+	}
+	return ParentProjectionAuthority{Parents: parents, PolicyBinding: binding}, nil
+}
+
+// AuthorizeParentProjection is the single-child form. Multi-item producers
+// should use AuthorizeParentProjections once for their entire visible output.
+func (c *Checker) AuthorizeParentProjection(ctx context.Context, principal model.PrincipalRef, content driver.Reader, child model.Ref) (ParentDisclosure, string, error) {
+	result, err := c.AuthorizeParentProjections(ctx, principal, content, []model.Ref{child})
+	if err != nil {
+		return ParentDisclosure{}, "", err
+	}
+	return result.Parents[child.ID], result.PolicyBinding, nil
+}
+
+func (c *Checker) parentProjections(ctx context.Context, caller authz.Caller, authority *slice, content driver.Reader, children []model.Ref) (map[string]ParentDisclosure, error) {
+	if content == nil || content.Snapshot().Incarnation != c.chain.Namespace.Incarnation {
+		return nil, hierarchyUnavailable()
+	}
+	parents := make(map[string]ParentDisclosure, len(children))
+	for _, child := range children {
+		if hierarchyRef(child) != nil {
+			return nil, hierarchyUnavailable()
+		}
+		if _, duplicate := parents[child.ID]; duplicate {
+			return nil, hierarchyUnavailable()
+		}
+		allowed, err := c.hierarchyRead(ctx, caller, authority, child)
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			return nil, notFound()
+		}
+		row, err := hierarchySource(ctx, content, child)
+		if err != nil {
+			return nil, err
+		}
+		if row == nil {
+			return nil, notFound()
+		}
+		target, _ := authz.HierarchyImage(*row)
+		projection := ParentDisclosure{Exists: target.Parent != nil}
+		if target.Parent != nil {
+			// Historical content never carries an older read grant. A missing
+			// or currently denied parent contributes existence only.
+			current, err := hierarchySource(ctx, authority.snapshot, *target.Parent)
+			if err != nil {
+				return nil, err
+			}
+			if current != nil {
+				allowed, err := c.hierarchyRead(ctx, caller, authority, *target.Parent)
+				if err != nil {
+					return nil, err
+				}
+				if allowed {
+					ref := *target.Parent
+					projection.Ref = &ref
+				}
+			}
+		}
+		parents[child.ID] = projection
+	}
+	return parents, nil
+}
+
+func projectBeadParent(bead *service.Bead, disclosure ParentDisclosure) {
+	bead.Parent = ""
+	bead.ParentHidden = disclosure.Exists && disclosure.Ref == nil
+	if disclosure.Ref != nil {
+		bead.Parent = disclosure.Ref.ID
+	}
 }
 
 // ChildVisibility carries only readable child refs and the exact hidden
@@ -226,6 +335,11 @@ func (c *Checker) ReadAuthorityBinding(ctx context.Context, principal model.Prin
 }
 
 func (c *Checker) readAuthorityBinding(ctx context.Context, caller authz.Caller, s *slice, snapshot Snapshot) (string, error) {
+	viewSource, ok := snapshot.(interface{ Snapshot() driver.View })
+	if !ok || viewSource.Snapshot().At == nil {
+		return "", hierarchyUnavailable()
+	}
+	view := viewSource.Snapshot()
 	contextFact, err := driver.NewReadFact(authz.ContextDependency(c.chain.Namespace).Key)
 	if err != nil {
 		return "", hierarchyUnavailable()
@@ -241,11 +355,12 @@ func (c *Checker) readAuthorityBinding(ctx context.Context, caller authz.Caller,
 	}
 	data, err := json.Marshal(struct {
 		Version string
+		View    driver.View
 		Caller  authz.Caller
 		Facts   any
 		ACL     model.Revision
 		States  []driver.LockState
-	}{"ep2/read-scope/1", caller, s.facts, s.authorizationRevision, states})
+	}{"ep2/read-scope/2", view, caller, s.facts, s.authorizationRevision, states})
 	if err != nil {
 		return "", hierarchyUnavailable()
 	}
