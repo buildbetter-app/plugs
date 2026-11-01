@@ -42,7 +42,7 @@ jobs:
               "run_id": os.environ["GITHUB_RUN_ID"],
               "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
               "event": os.environ["GITHUB_EVENT_NAME"],
-              "fixture_scope": "checked-in public synthetic fixture only",
+              "fixture_scope": "checked-in public synthetic snapshot and history fixtures only",
               "night_streak": "not evaluated by a single run",
           }
           Path(os.environ["RUNNER_TEMP"], "n1-restore-evidence", "run.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -112,8 +112,9 @@ jobs:
           fi
           {
             echo 'Fresh public/synthetic fixture comparisons only.'
-            echo 'History replay and PostgreSQL offline import retain explicit unsupported boundaries.'
-            echo 'Snapshot versions are restore bases; a single run does not establish a three-night streak.'
+            echo 'Full, partial and snapshot comparisons use real memory, SQLite and PostgreSQL stores.'
+            echo 'Partial history retains exact gaps and typed floor truncation; snapshot versions are restore bases.'
+            echo 'This is not real-ledger/source-exporter history qualification or a three-night streak.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload public comparison evidence

@@ -295,7 +295,7 @@ func TestNightlyFreshStoreDiffs(t *testing.T) {
 			status = "failed"
 		}
 		report := map[string]any{"schema": "plug-nightly-restore-diffs/v1", "status": status, "source_fixture_sha256": fixtureSHA, "snapshot_fixture_sha256": digest(data), "results": results,
-			"boundaries": []string{"source_full_history_not_qualified", "partial_history_not_yet_supported", "postgres_offline_import_not_yet_supported", "snapshot_versions_are_restore_bases_not_source_history", "old_storage_cursor_requires_incarnation_reset", "memory.list_rpc_continuation_not_qualified", "public_synthetic_fixture_only_not_complete_private_census", "one_dispatch_is_not_a_three_night_streak"}}
+			"boundaries": []string{"original_unverified_history_refused", "snapshot_versions_are_restore_bases_not_source_history", "old_storage_cursor_requires_incarnation_reset", "memory.list_rpc_continuation_not_qualified", "public_synthetic_fixture_only_not_complete_private_census", "one_dispatch_is_not_a_three_night_streak"}}
 		encoded := append(jsonBytes(t, report), '\n')
 		if dir := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); dir != "" {
 			if err := os.WriteFile(filepath.Join(dir, "nightly-restore-diffs.json"), encoded, 0600); err != nil {
@@ -337,14 +337,6 @@ func TestNightlyFreshStoreDiffs(t *testing.T) {
 					unchanged(t, store, before)
 				}
 				restored, err := converterroundtrip.RestoreImport(ctx, bytes.NewReader(data), store, p)
-				if kind == "postgres" {
-					if !errors.Is(err, driver.ErrUnsupported) {
-						t.Fatalf("PostgreSQL import boundary changed; extend comparisons against the newly admitted primitive: %v", err)
-					}
-					unchanged(t, store, before)
-					results = append(results, outcome{Driver: kind, Restore: iteration, Status: "unsupported", Boundary: "driver.ErrUnsupported/offline_restore", Incarnation: before.Incarnation})
-					return
-				}
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -367,7 +359,7 @@ func TestNightlyFreshStoreDiffs(t *testing.T) {
 				} else {
 					same(t, "independent fresh-store census/digests", got, *baseline)
 				}
-				if kind == "sqlite" {
+				if kind != "memory" {
 					if err := store.Close(); err != nil {
 						t.Fatal(err)
 					}
