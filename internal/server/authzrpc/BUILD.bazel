@@ -30,6 +30,7 @@ go_test(
         "//internal/core/authz",
         "//internal/core/model",
         "//internal/core/pipeline",
+        "//internal/core/port",
         "//internal/plugins/authnapikey",
         "//internal/plugins/authzfixed",
         "//internal/server/pluginhost",

@@ -2,6 +2,7 @@ package authzrpc_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -13,8 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/internal/storage/postgres"
@@ -45,6 +49,287 @@ func TestFixedPermissionsAcrossDrivers(t *testing.T) {
 				open = postgresFactory(t)
 			}
 			t.Run("immutable_registry", func(t *testing.T) { immutableRegistry(t, open) })
+			t.Run("compiled_lists_equal_point_reads", func(t *testing.T) { listMembership(t, open) })
+			t.Run("history_uses_current_permissions", func(t *testing.T) { currentHistory(t, open) })
+			t.Run("post_image", func(t *testing.T) { postImage(t, open) })
+			t.Run("authorization_races", func(t *testing.T) { authorizationRaces(t, open) })
+		})
+	}
+}
+
+func fixtureRef(n int) model.Ref {
+	return model.RefByID(fmt.Sprintf("00000000-0000-4000-8000-%012d", n), model.Natural64(0))
+}
+
+func matrixFixture(t *testing.T, open storeFactory) *fixture {
+	t.Helper()
+	f := newFixtureOn(t, open(t), nil)
+	next := f.base
+	next.Projects = append(append([]authzfixed.Project(nil), next.Projects...),
+		authzfixed.Project{Ref: model.RefByID("inactive", model.Natural64(0)), Name: "inactive", InstallationID: "fixed"},
+		authzfixed.Project{Ref: model.RefByID("other", model.Natural64(0)), Name: "other", InstallationID: "fixed", Active: true})
+	if err := f.facts.Replace(next); err != nil {
+		t.Fatal(err)
+	}
+	f.base = next
+	var changes []conformance.FixtureChange
+	for i, project := range []string{"", "unregistered", "inactive", "other", "project", "project"} {
+		ref := fixtureRef(i + 2)
+		body, err := json.Marshal(map[string]any{"id": ref.ID, "type": "issue", "project": project, "fields": map[string]any{"title": "historical", "status": "todo", "priority": i + 1}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		changes = append(changes, conformance.FixtureChange{Ref: ref, Kind: "bead", Op: model.OpCreate, Body: body})
+	}
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, changes); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+type rpcPage struct {
+	Items []struct {
+		ID     string         `json:"id"`
+		Fields map[string]any `json:"fields"`
+	} `json:"items"`
+	NextCursor string `json:"nextCursor"`
+	AsOf       struct {
+		Revision    model.Revision `json:"revision"`
+		Incarnation string         `json:"incarnation"`
+	} `json:"asOf"`
+}
+
+func page(t *testing.T, got reply) rpcPage {
+	t.Helper()
+	success(t, got)
+	var p rpcPage
+	if err := json.Unmarshal(got.Result, &p); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func listMembership(t *testing.T, open storeFactory) {
+	f := matrixFixture(t, open)
+	// Expected membership is fixture-authored, not computed by Eval, Compile,
+	// any SQL projection or the point-read response being compared with lists.
+	for _, row := range []struct {
+		name string
+		by   model.PrincipalRef
+		ids  []int
+	}{
+		{"user", model.PrincipalRef{Kind: "user", ID: "user:reader"}, []int{1, 2, 3, 4, 5, 6, 7}},
+		{"user_refs", model.PrincipalRef{Kind: "user", ID: "user:scoped", Caveats: map[string]any{"refs": []model.Ref{fixtureRef(1), fixtureRef(3), fixtureRef(7)}}}, []int{1, 3, 7}},
+		{"user_projects", model.PrincipalRef{Kind: "user", ID: "user:projects", Caveats: map[string]any{"projects": []model.Ref{model.RefByID("project", model.Natural64(0)), model.RefByID("inactive", model.Natural64(0))}}}, []int{1, 4, 6, 7}},
+		{"agent_with_involved_sponsor", worker("user:operator"), nil},
+		{"user_empty_caveat", model.PrincipalRef{Kind: "user", ID: "user:empty", Caveats: map[string]any{"refs": []model.Ref{}}}, nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			want := map[string]bool{}
+			for _, n := range row.ids {
+				want[fixtureRef(n).ID] = true
+			}
+			for n := 1; n <= 7; n++ {
+				got := f.call(t, row.by, "bead.get", map[string]any{"id": fixtureRef(n)}, 1000+n)
+				if want[fixtureRef(n).ID] {
+					success(t, got)
+				} else if got.Error == nil || got.Error.Data.Code != "not_found" {
+					t.Fatalf("denied point read leaked a result: %+v", got)
+				}
+			}
+			for _, scope := range []struct {
+				name string
+				ids  []int
+			}{{"project", []int{1, 6, 7}}, {"unregistered", []int{3}}, {"inactive", []int{4}}, {"other", []int{5}}} {
+				params := map[string]any{"limit": 1, "_meta": map[string]any{"project": scope.name}}
+				var ids []string
+				for pages := 0; ; pages++ {
+					if pages > 7 {
+						t.Fatal("authorized pagination failed to terminate")
+					}
+					got := page(t, f.call(t, row.by, "bead.ready", params, 1100))
+					for _, item := range got.Items {
+						ids = append(ids, item.ID)
+					}
+					if got.NextCursor == "" {
+						break
+					}
+					params["cursor"] = got.NextCursor
+				}
+				var expected []string
+				for _, n := range scope.ids {
+					if want[fixtureRef(n).ID] {
+						expected = append(expected, fixtureRef(n).ID)
+					}
+				}
+				if !reflect.DeepEqual(ids, expected) {
+					t.Fatalf("compiled list differs from independent per-item membership: project=%s got=%v want=%v", scope.name, ids, expected)
+				}
+			}
+		})
+	}
+}
+
+func currentHistory(t *testing.T, open storeFactory) {
+	f := matrixFixture(t, open)
+	view := f.reader(t).Snapshot()
+	by := model.PrincipalRef{Kind: "user", ID: "user:history", Caveats: map[string]any{"projects": []model.Ref{model.RefByID("newproject", model.Natural64(0))}}}
+	params := map[string]any{"asOf": map[string]any{"revision": *view.At, "incarnation": view.Incarnation}, "_meta": map[string]any{"project": "unregistered"}}
+	if got := page(t, f.call(t, by, "history.query", params, 1200)); len(got.Items) != 0 {
+		t.Fatal("unknown current assignment granted historical read")
+	}
+	next := f.base
+	next.Projects = append(append([]authzfixed.Project(nil), next.Projects...), authzfixed.Project{
+		Ref: model.RefByID("newproject", model.Natural64(0)), Name: "unregistered", InstallationID: "fixed", Active: true,
+	})
+	if err := f.facts.Replace(next); err != nil {
+		t.Fatal(err)
+	}
+	got := page(t, f.call(t, by, "history.query", params, 1201))
+	if len(got.Items) != 1 || got.Items[0].ID != fixtureRef(3).ID || got.Items[0].Fields["title"] != "historical" || got.AsOf.Revision.String() != view.At.String() {
+		t.Fatalf("history did not combine current read permission with the requested content snapshot: %+v", got)
+	}
+	if got := page(t, f.call(t, worker("user:operator"), "history.query", params, 1202)); len(got.Items) != 0 {
+		t.Fatal("Agent borrowed its sponsor's history read permit")
+	}
+	// A separate current restricted principal cannot use an old content
+	// revision to bypass its intersecting caveat.
+	by.Caveats["refs"] = []model.Ref{fixtureRef(1)}
+	if got := page(t, f.call(t, by, "history.query", params, 1203)); len(got.Items) != 0 {
+		t.Fatal("historical content bypassed current principal restrictions")
+	}
+	unrestricted := model.PrincipalRef{Kind: "user", ID: "user:history-cursor"}
+	cursorParams := map[string]any{"asOf": params["asOf"], "limit": 1}
+	first := page(t, f.call(t, unrestricted, "history.query", cursorParams, 1204))
+	if len(first.Items) != 1 || first.NextCursor == "" {
+		t.Fatal("history fixture did not produce a continuation")
+	}
+	next.Grants = nil
+	if err := f.facts.Replace(next); err != nil {
+		t.Fatal(err)
+	}
+	cursorParams["cursor"] = first.NextCursor
+	denied := f.call(t, unrestricted, "history.query", cursorParams, 1205)
+	if denied.Error == nil || denied.Error.Data.Code != "cursor_invalid" || len(denied.Result) != 0 {
+		t.Fatal("history cursor did not invalidate after current ACL changed")
+	}
+}
+
+func postImage(t *testing.T, open storeFactory) {
+	f := newFixtureOn(t, open(t), nil)
+	ctx := context.Background()
+	reader := f.reader(t)
+	rows, err := reader.Get(ctx, []model.Ref{fixtureRef(1)})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("stored pre-image: %v", err)
+	}
+	proposal := port.ProposedChange{Principal: worker("user:operator"), Meta: model.WriteMeta{Method: "bead.update"}, Changes: []port.Change{{Resource: model.ResourceRef{Kind: "bead", Ref: fixtureRef(1)}, Before: rows[0].Body, After: rows[0].Body}}}
+	if err := f.server.Checker.Authorize(ctx, port.AuthorizeAfter, proposal, reader); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"project", "parent", "owner", "assignee", "type", "labels", "restricted"} {
+		t.Run(field, func(t *testing.T) {
+			var body map[string]any
+			if err := json.Unmarshal(rows[0].Body, &body); err != nil {
+				t.Fatal(err)
+			}
+			body[field] = "changed"
+			after, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			change := proposal
+			change.Changes = append([]port.Change(nil), proposal.Changes...)
+			change.Changes[0].After = after
+			if err := f.server.Checker.Authorize(ctx, port.AuthorizeAfter, change, reader); err == nil {
+				t.Fatal("permission-bearing post-image was allowed")
+			}
+			change.Changes[0].Before = after
+			if err := f.server.Checker.Authorize(ctx, port.AuthorizeAfter, change, reader); err == nil {
+				t.Fatal("fabricated pre-image bypassed the stored source")
+			}
+		})
+	}
+}
+
+type authorizationRaceStore struct {
+	driver.Store
+	beforeWrite atomic.Pointer[func() error]
+}
+
+func (s *authorizationRaceStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	if hook := s.beforeWrite.Swap(nil); hook != nil {
+		if err := (*hook)(); err != nil {
+			return nil, err
+		}
+	}
+	return s.Store.Write(ctx, lease)
+}
+
+func authorizationRaces(t *testing.T, open storeFactory) {
+	for _, change := range []string{"direct_grant", "team_edge", "membership", "team_active", "project_active", "bead_assignment"} {
+		t.Run(change, func(t *testing.T) {
+			store := &authorizationRaceStore{Store: open(t)}
+			f := newFixtureOn(t, store, nil)
+			if change == "direct_grant" {
+				f.base.Grants = []authz.Grant{{Subject: authz.SubjectRef{Kind: "user", ID: "user:operator"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: model.RefByID("project", model.Natural64(0))}, Role: "involved"}}
+				if err := f.facts.Replace(f.base); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var changed model.Revision
+			var calls int
+			hook := func() error {
+				calls++
+				next := f.base
+				switch change {
+				case "direct_grant":
+					next.Grants = nil
+				case "team_edge":
+					next.Grants = append([]authz.Grant(nil), next.Grants[:1]...)
+				case "membership":
+					next.Grants = append([]authz.Grant(nil), next.Grants[1:]...)
+				case "team_active":
+					next.Teams = append([]authzfixed.Team(nil), next.Teams...)
+					next.Teams[0].Active = false
+				case "project_active":
+					next.Projects = append([]authzfixed.Project(nil), next.Projects...)
+					next.Projects[0].Active = false
+				case "bead_assignment":
+					_, err := conformance.Seed(context.Background(), store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{
+						Ref: fixtureRef(1), Kind: "bead", Op: model.OpPatch,
+						Body: []byte(`{"id":"` + beadID + `","type":"issue","project":"unregistered","fields":{"title":"seed","status":"todo","priority":0}}`),
+					}})
+					if err != nil {
+						return err
+					}
+				}
+				if change != "bead_assignment" {
+					if err := f.facts.Replace(next); err != nil {
+						return err
+					}
+				}
+				meta, err := store.Meta(context.Background())
+				changed = meta.Head
+				return err
+			}
+			// Writer preparation (including both authorization stages) runs
+			// before Store.Write. This real competing commit races its recorded
+			// dependencies, rather than manufacturing a stale-snapshot error.
+			store.beforeWrite.Store(&hook)
+			by := worker("user:operator")
+			got := f.call(t, by, "bead.update", map[string]any{"id": fixtureRef(1), "fields": map[string]any{"title": "must not commit"}}, 1300)
+			if calls != 1 || got.Error == nil || got.Error.Data.Code != "forbidden" || f.receipt(t, by, "bead.update", 1300) != nil || f.reader(t).Snapshot().At.String() != changed.String() {
+				t.Fatalf("raced authorization committed or failed to reauthorize: calls=%d error=%+v head=%s competing=%s", calls, got.Error, f.reader(t).Snapshot().At, changed)
+			}
+			rows, err := f.reader(t).Get(context.Background(), []model.Ref{fixtureRef(1)})
+			if err != nil || len(rows) != 1 {
+				t.Fatalf("raced source disappeared: %v", err)
+			}
+			var body struct{ Fields map[string]any }
+			if err := json.Unmarshal(rows[0].Body, &body); err != nil || body.Fields["title"] != "seed" {
+				t.Fatal("denied race published a partial post-image")
+			}
 		})
 	}
 }

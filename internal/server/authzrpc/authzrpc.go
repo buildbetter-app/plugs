@@ -277,9 +277,12 @@ func (s *MutableFacts) Replace(facts authzfixed.Facts) error {
 		s.facts = copy
 		return nil
 	}
-	// The composition namespace remains pinned by the Checker. Replacing with
-	// a different namespace is retained as source state so the next Load fails
-	// closed through that binding check rather than silently changing scope.
+	// Once installed, authority and existing name/Ref bindings are immutable.
+	// Validate before opening a write transaction so a refused replacement
+	// neither advances the ACL generation nor poisons the installed source.
+	if err := authzfixed.ValidateRegistryUpdate(s.facts, copy); err != nil {
+		return err
+	}
 	ctx := context.Background()
 	fact, err := driver.NewReadFact(authz.ACLDependency(s.namespace).Key)
 	if err != nil {

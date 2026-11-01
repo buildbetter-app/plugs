@@ -176,7 +176,12 @@ func (f *fixture) call(t *testing.T, by model.PrincipalRef, method string, param
 	if err != nil {
 		t.Fatal(err)
 	}
-	params["_meta"] = map[string]any{"idempotencyKey": fmt.Sprintf("%032x", key)}
+	meta, _ := params["_meta"].(map[string]any)
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	meta["idempotencyKey"] = fmt.Sprintf("%032x", key)
+	params["_meta"] = meta
 	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
 	if err != nil {
 		t.Fatal(err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -217,7 +218,16 @@ func disposablePostgres(t *testing.T) string {
 	docker := func(args ...string) ([]byte, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		return exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+		cmd := exec.CommandContext(ctx, "docker", append([]string{"--host=unix:///var/run/docker.sock"}, args...)...)
+		for _, value := range os.Environ() {
+			key, _, _ := strings.Cut(value, "=")
+			switch key {
+			case "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH":
+			default:
+				cmd.Env = append(cmd.Env, value)
+			}
+		}
+		return cmd.CombinedOutput()
 	}
 	if out, err := docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=authz", "-p", "127.0.0.1::5432", image); err != nil {
 		t.Fatalf("disposable Postgres start: %v %s", err, out)
@@ -237,7 +247,7 @@ func disposablePostgres(t *testing.T) string {
 	}
 	deadline := time.Now().Add(40 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := docker("exec", name, "pg_isready", "-U", "postgres", "-d", "authz"); err == nil {
+		if _, err := docker("exec", name, "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "authz"); err == nil {
 			t.Logf("disposable PostgreSQL image=%s loopback_only=true cleanup=owned", image)
 			return fmt.Sprintf("postgres://postgres@127.0.0.1:%s/authz?sslmode=disable", port)
 		}
