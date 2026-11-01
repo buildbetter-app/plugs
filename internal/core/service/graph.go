@@ -21,9 +21,8 @@ type storedBead struct {
 	doc    pipeline.Document
 }
 
-// The supported envelope has no parent relation. Rejecting unknown envelope
-// members is essential: a full scan then proves the absence of children rather
-// than silently ignoring a relation this slice cannot evaluate.
+// Strict envelope decoding preserves canonical direct parents; a malformed
+// relation cannot become an observed absence in a guard or count query.
 func decodeDocument(raw []byte) (pipeline.Document, error) {
 	var doc pipeline.Document
 	dec := json.NewDecoder(bytes.NewReader(raw))
@@ -34,6 +33,14 @@ func decodeDocument(raw []byte) (pipeline.Document, error) {
 	}
 	if err := dec.Decode(new(any)); err != io.EOF || doc.ID == "" || doc.Type == "" || doc.Fields == nil {
 		return doc, failure("invalid_params", "invalid bead document")
+	}
+	if doc.Parent != nil {
+		if err := doc.Parent.Validate(); err != nil || !doc.Parent.IsID() || doc.Parent.ID == "" || !doc.Parent.Branch.IsZero() {
+			return doc, failure("invalid_params", "invalid stored parent")
+		}
+		if _, err := driver.NewClosureSentinel(doc.Parent.ID); err != nil {
+			return doc, failure("invalid_params", "invalid stored parent")
+		}
 	}
 	// Preserve member presence before Go zero values erase null/empty provenance.
 	var envelope struct {
@@ -192,7 +199,11 @@ func beadValue(row storedBead) (Bead, error) {
 		}
 		metadata[k] = v
 	}
-	return Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...)}, nil
+	parent := ""
+	if doc.Parent != nil {
+		parent = doc.Parent.ID
+	}
+	return Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...), Parent: parent}, nil
 }
 
 func beadPriority(bead Bead) (int, error) {

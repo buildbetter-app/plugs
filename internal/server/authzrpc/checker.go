@@ -18,10 +18,12 @@ import (
 // It never accepts authorization facts from a request; the chain and source
 // are fixed at composition time and all source reads use the supplied snapshot.
 type Checker struct {
-	chain  authz.Chain
-	source FactsSource
-	caller CallerSource
-	store  driver.Store
+	chain     authz.Chain
+	source    FactsSource
+	caller    CallerSource
+	store     driver.Store
+	lease     driver.ActiveLease
+	hierarchy bool
 }
 
 var _ port.Authorizer = (*Checker)(nil)
@@ -90,6 +92,9 @@ func (c *Checker) decision(ctx context.Context, snapshot Snapshot, principal mod
 // cannot be smuggled through a permitted update. Replay rechecks the current
 // chain only and never trusts a receipt as a grant.
 func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, proposal port.ProposedChange, reader port.SnapshotReader) error {
+	if c != nil && c.hierarchy && hierarchyMethod(proposal.Meta.Method) {
+		return c.AuthorizeHierarchy(ctx, stage, proposal, reader)
+	}
 	if reader == nil {
 		return &model.Error{Message: "authorization snapshot unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
