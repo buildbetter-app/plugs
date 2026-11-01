@@ -909,6 +909,14 @@ spec/recorded/goldens_test.go
 spec/recorded/provenance.py
 spec/recorded_test.go
 spec/rpc_test.go
+spec/s1-b21-b24/BUILD.bazel
+spec/s1-b21-b24/README.md
+spec/s1-b21-b24/acceptance_test.go
+spec/s1-b21-b24/fixture_test.go
+spec/s1-b21-b24/record_reference.py
+spec/s1-b21-b24/reference-a.json
+spec/s1-b21-b24/reference-b.json
+spec/s1-b21-b24/reference_test.go
 spikes/authz/evidence-v6/current-status.md
 spikes/authz/evidence-v6/postgres-result.json
 spikes/authz/evidence-v6/provenance-manifest.json
