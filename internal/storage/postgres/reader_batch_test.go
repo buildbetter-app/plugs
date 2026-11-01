@@ -62,6 +62,20 @@ func TestBatchedReaderPreservesHistoryMissesAndStagedOverlays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	zero := model.Natural64(0)
+	empty := testRead(t, s, &zero)
+	if rows, err := empty.Get(ctx, []model.Ref{a, b, missing}); err != nil || len(rows) != 0 {
+		t.Fatalf("revision zero disclosed a later record: %+v %v", rows, err)
+	}
+	if states, err := empty.Observe(ctx, keys); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, state := range states {
+			if state.Present || !state.Revision.IsZero() || state.Record != nil || state.Derived != nil {
+				t.Fatalf("revision zero disclosed a later key state: %+v", state)
+			}
+		}
+	}
 	for _, historical := range []bool{true, false} {
 		var at *model.Revision
 		if historical {
