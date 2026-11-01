@@ -29,9 +29,10 @@ outcome side by side. B01/B02 use `A3/D3/P74` and `A3/P22` respectively for
 category and stored-order differences. B03 uses `P10/P41/D24/A3`; B04 keeps
 claim semantics with `A4/P60`. The decisions are data in the manifest, not
 comments hidden in assertions. Timestamps, generated revisions, random leases,
-and Dolt commit IDs are omitted only where the manifest names them; Go and SQL
-clock schedules are fixed in the Plug replay and every reached time field is
-checked against that schedule.
+and Dolt commit IDs are omitted only where the manifest names them. Plug's Go
+pipeline clock is fixed and checked; the B01-B04 trace does not reach
+SQL-generated timestamps, so SQLite/PostgreSQL driver wall-clock paths remain
+an explicit qualification blocker rather than an asserted seam.
 
 I5 authorization is qualified by the existing exact-head
 `internal/server/authzrpc:drivers_test` fixture. It checks compiled list

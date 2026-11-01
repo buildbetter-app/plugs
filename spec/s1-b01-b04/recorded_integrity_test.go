@@ -134,8 +134,11 @@ func TestReferenceTwinsHaveStablePinnedProvenance(t *testing.T) {
 		}
 	}
 	clock := mapField(t, manifest, "clock")
-	if stringField(t, clock, "mode") != "controlled-go-and-sql-on-Plug-replay" || stringField(t, clock, "seed") == "" {
+	if stringField(t, clock, "mode") != "controlled-go; sql-driver-clock-unreached" || stringField(t, clock, "seed") == "" {
 		t.Fatalf("clock provenance is incomplete: %+v", clock)
+	}
+	if stringField(t, clock, "limitation") == "" {
+		t.Fatalf("clock limitation is not explicit: %+v", clock)
 	}
 	omitted, ok := clock["omittedFields"].([]any)
 	if !ok || len(omitted) < 10 {

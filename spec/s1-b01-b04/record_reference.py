@@ -324,7 +324,7 @@ class Recorder:
                 "timezone": "UTC",
                 "seed": "2026-01-01T00:00:00Z",
                 "go": "Plug replay injects one monotonic UTC function",
-                "sql": "Plug replay uses the driver clock seam and records every reached SQL timestamp",
+                "sql": "B01-B04 replay does not reach SQL-generated timestamps; SQLite/PostgreSQL driver wall-clock paths remain unqualified",
                 "omitted": NORMALIZED_FIELDS,
             },
             "actors": ["s1-reference-recorder", "s1-foreign-actor"],
