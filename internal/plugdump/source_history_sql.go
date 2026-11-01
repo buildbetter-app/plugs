@@ -32,13 +32,9 @@ func (s SQLSource) ReadSourceCommits(ctx context.Context) (SourceCommitLog, erro
 	if err != nil || len(ancestors.Rows) > 20000 {
 		return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "ancestry-unavailable"}
 	}
-	parents := map[string][]string{}
-	for _, row := range ancestors.Rows {
-		id, parent := historyText(row["commit_hash"]), historyText(row["parent_hash"])
-		if !validCommitID(id) || !validCommitID(parent) {
-			return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "invalid-ancestry"}
-		}
-		parents[id] = append(parents[id], parent)
+	parents, err := sourceParentCensus(ancestors.Rows)
+	if err != nil {
+		return SourceCommitLog{}, err
 	}
 	result := SourceCommitLog{Head: headID, Clean: len(status.Rows) == 0, Commits: []SourceCommit{}}
 	for _, row := range log.Rows {
@@ -52,12 +48,52 @@ func (s SQLSource) ReadSourceCommits(ctx context.Context) (SourceCommitLog, erro
 				metadata[key] = value
 			}
 		}
-		p := append([]string{}, parents[id]...)
+		p, observed := parents[id]
+		if !observed {
+			return SourceCommitLog{}, ErrSourceHistoryUnavailable{Reason: "ancestry-unavailable"}
+		}
+		p = append([]string{}, p...)
 		sort.Strings(p)
 		result.Commits = append(result.Commits, SourceCommit{ID: id, Parents: p, Metadata: metadata})
 	}
 	sort.Slice(result.Commits, func(i, j int) bool { return result.Commits[i].ID < result.Commits[j].ID })
 	return result, nil
+}
+
+func sourceParentCensus(rows []Row) (map[string][]string, error) {
+	parents := map[string][]string{}
+	roots, seen := map[string]bool{}, map[string]bool{}
+	invalid := func() (map[string][]string, error) {
+		return nil, ErrSourceHistoryUnavailable{Reason: "invalid-ancestry"}
+	}
+	for _, row := range rows {
+		id := historyText(row["commit_hash"])
+		if !validCommitID(id) {
+			return invalid()
+		}
+		parentValue, present := row["parent_hash"]
+		if !present {
+			return invalid()
+		}
+		// The pinned Dolt system table represents a root with one explicit
+		// SQL NULL parent row. An absent census row or empty hash is not proof
+		// of a root, and a root cannot also have a non-null parent.
+		if parentValue == nil {
+			if _, observed := parents[id]; observed {
+				return invalid()
+			}
+			parents[id], roots[id] = []string{}, true
+			continue
+		}
+		parent := historyText(parentValue)
+		key := id + ":" + parent
+		if roots[id] || !validCommitID(parent) || seen[key] {
+			return invalid()
+		}
+		seen[key] = true
+		parents[id] = append(parents[id], parent)
+	}
+	return parents, nil
 }
 
 func (s SQLSource) ReadSourceImage(ctx context.Context, id string) (map[string]Table, error) {

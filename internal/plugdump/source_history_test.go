@@ -306,3 +306,31 @@ func TestSourceHistoryValidationChecksTypeScopeInFramesAndBaseline(t *testing.T)
 		}
 	}
 }
+
+func TestSourceParentCensusRequiresExplicitRootAndValidParents(t *testing.T) {
+	root, child := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	rootRow := Row{"commit_hash": root, "parent_hash": nil}
+	edge := Row{"commit_hash": child, "parent_hash": root}
+	parents, err := sourceParentCensus([]Row{edge, rootRow})
+	if err != nil || len(parents) != 2 || len(parents[root]) != 0 || len(parents[child]) != 1 || parents[child][0] != root {
+		t.Fatalf("explicit pinned Dolt root was not retained: %v", err)
+	}
+	for name, rows := range map[string][]Row{
+		"empty-parent":   {{"commit_hash": root, "parent_hash": ""}},
+		"invalid-parent": {{"commit_hash": child, "parent_hash": "not-a-hash"}},
+		"duplicate-root": {rootRow, rootRow},
+		"duplicate-edge": {rootRow, edge, edge},
+		"root-then-edge": {rootRow, {"commit_hash": root, "parent_hash": child}},
+		"edge-then-root": {{"commit_hash": root, "parent_hash": child}, rootRow},
+		"invalid-commit": {{"commit_hash": "", "parent_hash": nil}},
+		"missing-parent": {{"commit_hash": root}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := sourceParentCensus(rows)
+			var refused ErrSourceHistoryUnavailable
+			if !errors.As(err, &refused) || refused.Reason != "invalid-ancestry" {
+				t.Fatalf("invalid ancestry became a root: %v", err)
+			}
+		})
+	}
+}
