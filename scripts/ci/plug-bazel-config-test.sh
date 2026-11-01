@@ -178,6 +178,6 @@ fi
 
 "$target_tests"
 "$delivery_tests"
-python3 scripts/ci/public-bundle-test.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/ci/public-bundle-test.py
 
 echo "plug-ci-config: shell syntax and fail-closed argument checks passed"
