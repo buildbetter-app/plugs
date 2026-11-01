@@ -53,6 +53,9 @@ func TestS1B01ReplayReadyMembershipOrderAndDeferredParent(t *testing.T) {
 			)
 			initial := f.readyIDs("b01-initial", owner)
 			t.Logf("B01 initial Plug ready projection backend=%s ready=%v", backend.name, initial)
+			if code := errorCode(t, f.call("b01-defer-item", "bead.defer", owner, map[string]any{"id": map[string]any{"id": "b01-deferred"}, "reason": "wait"})); code != "" {
+				t.Fatalf("defer item refused: %s", code)
+			}
 			if code := errorCode(t, f.call("b01-defer", "bead.defer", owner, map[string]any{"id": map[string]any{"id": "b01-parent"}, "reason": "wait"})); code != "" {
 				t.Fatalf("defer refused: %s", code)
 			}
