@@ -57,7 +57,7 @@ func TestBatchedReaderPreservesHistoryMissesAndStagedOverlays(t *testing.T) {
 	if err := tx.BumpSentinels(ctx, []driver.Sentinel{driver.SentinelGraphBlocking}); err != nil {
 		t.Fatal(err)
 	}
-	header.Changes = []model.ChangeRecord{{Ref: a, Op: model.OpPatch}, {Ref: b, Op: model.OpDelete}}
+	header.Changes = []model.ChangeRecord{{Ref: a, Op: model.OpPatch, FromRevision: first.Revision}, {Ref: b, Op: model.OpDelete, FromRevision: first.Revision}}
 	second, err := tx.Commit(ctx, header)
 	if err != nil {
 		t.Fatal(err)
