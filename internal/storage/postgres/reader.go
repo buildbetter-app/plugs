@@ -438,6 +438,12 @@ func (r *reader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.L
 	if err := driver.ValidateLockKeys(keys); err != nil {
 		return nil, err
 	}
+	return r.observeKeys(ctx, keys)
+}
+
+// observeKeys runs under the reader mutex and the caller's fresh check/view.
+// Lock also uses it after acquiring the complete set and refreshing readMeta.
+func (r *reader) observeKeys(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
 	states := make([]driver.LockState, len(keys))
 	recordIDs := []string{}
 	stateIDs := [][]byte{}
