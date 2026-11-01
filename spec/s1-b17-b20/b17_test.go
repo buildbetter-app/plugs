@@ -62,7 +62,7 @@ func openB17Harness(t *testing.T, engine string) *b17Harness {
 func (h *b17Harness) close(t *testing.T) {
 	t.Helper()
 	if h.lease != nil {
-		if err := h.lease.Release(context.Background()); err != nil && !errors.Is(err, driver.ErrLeaseLost) {
+		if err := h.lease.Release(context.Background()); err != nil {
 			t.Error(err)
 		}
 		h.lease = nil

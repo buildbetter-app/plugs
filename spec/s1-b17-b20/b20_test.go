@@ -27,7 +27,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
-const cursorKey = "cardb20-same-process-event-key-1"
+const b20CursorKey = "cardb20-same-process-event-key-1"
 
 //go:embed reference/b20/*.json reference/b20/record_reference.py
 var retained embed.FS
@@ -90,7 +90,7 @@ func newRuntime(t *testing.T, store driver.Store, live bool, id string) *runtime
 		Materializer:  serverevents.HistoryMaterializer{Store: store},
 		Authorization: coreevents.AllowAll{},
 	}
-	codec, err := serverevents.NewCursorCodec([]byte(cursorKey))
+	codec, err := serverevents.NewCursorCodec([]byte(b20CursorKey))
 	if err != nil {
 		cancel()
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func newRuntime(t *testing.T, store driver.Store, live bool, id string) *runtime
 	}
 	server, err := rpc.New(registry, rpc.Config{
 		DefaultProject: "cardb20", Incarnation: meta.Incarnation,
-		OntologyRevision: model.Natural64(1), CursorKey: []byte(cursorKey),
+		OntologyRevision: model.Natural64(1), CursorKey: []byte(b20CursorKey),
 	})
 	if err != nil {
 		cancel()
@@ -417,7 +417,7 @@ func TestB20SQLiteReopenPreservesJournalContinuity(t *testing.T) {
 
 	// Reopening proves the durable log, not signed-cursor persistence. Build a
 	// fresh event projection and cursor signer over the reopened store.
-	codec, err := serverevents.NewCursorCodec([]byte(cursorKey))
+	codec, err := serverevents.NewCursorCodec([]byte(b20CursorKey))
 	if err != nil {
 		t.Fatal(err)
 	}
