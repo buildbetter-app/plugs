@@ -422,12 +422,8 @@ func (s *Store) claimNextEvidence(ctx context.Context, plan Plan, subject string
 		ORDER BY b.sort_bucket,b.sort_rank,b.sort_created,b.id LIMIT 1`
 		args = []any{-1, 0, 0, 0, subject}
 	}
-	if s.Dialect == DialectPostgres {
-		if snapshot != nil {
-			q += ` FOR UPDATE OF b`
-		} else {
-			q += ` FOR UPDATE`
-		}
+	if s.Dialect == DialectPostgres && snapshot == nil {
+		q += ` FOR UPDATE`
 	}
 	var id int
 	err = runner.QueryRowContext(ctx, s.bind(q), args...).Scan(&id)
@@ -444,6 +440,17 @@ func (s *Store) claimNextEvidence(ctx context.Context, plan Plan, subject string
 	}
 	evidence.CandidateID = id
 	if s.Dialect == DialectPostgres {
+		if snapshot != nil {
+			// The batched projection chooses the candidate without locking its
+			// whole ordered join. Lock the one live bead by primary key, then
+			// keep the deliberate authorization recheck below.
+			var lockedID int
+			err = runner.QueryRowContext(ctx, `SELECT id FROM bead WHERE id=$1 AND ready=1 AND claimed_by IS NULL FOR UPDATE`, id).Scan(&lockedID)
+			if err != nil {
+				return evidence, fmt.Errorf("claim candidate %d changed before lock: %w", id, err)
+			}
+			id = lockedID
+		}
 		evidence.LockAcquired = true
 	}
 	if snapshot != nil {
