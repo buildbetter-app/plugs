@@ -27,9 +27,11 @@ new key for an uncertain write, retry a refusal blindly, or rewrite a typed
 permission error as an empty success.
 
 For an MCP host, use the existing discovered tools (`agent_brief`,
-`bead_claimNext`, `bead_get`, `bead_update`, `bead_comment`, `bead_close`, and
-`memory_*`) with the same semantics and project metadata. The host owns bearer
-injection. Do not invent compatibility commands, shell flags, or bypass tools.
+`bead_claimNext`, `bead_get`, `bead_update`, `bead_comment`, and `bead_close`)
+with the same semantics and project metadata. For non-core methods such as
+`memory.list`, use discovered `plug_call` with the canonical method name and
+named params; there are no `memory_*` tools. The host owns bearer injection.
+Do not invent compatibility commands, shell flags, or bypass tools.
 
 Rehearsal mode uses synthetic records and disposable stores only. GitHub writes,
 push, deployment, gate side effects, staging and production access are outside

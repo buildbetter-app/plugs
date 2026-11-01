@@ -265,11 +265,11 @@ func runDisposable(ctx context.Context, kind, root string, index int, seen map[s
 	run.AuthenticatedMCP = true
 	run.Baseline, err = workload(ctx, source.rpc)
 	if err != nil {
-		return run, err
+		return run, fmt.Errorf("HTTP reference workload: %w", err)
 	}
 	run.Shadow, err = workload(ctx, shadow)
 	if err != nil {
-		return run, err
+		return run, fmt.Errorf("MCP shadow workload: %w", err)
 	}
 	if run.Baseline.Completed != 3 || run.Shadow.Completed != 3 {
 		return run, fmt.Errorf("synthetic task completion mismatch")
@@ -549,7 +549,19 @@ func (t *mcpTransport) RoundTrip(ctx context.Context, data []byte) ([]byte, erro
 	if json.Unmarshal(data, &request) != nil {
 		return nil, fmt.Errorf("invalid caller bytes")
 	}
-	encoded, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "method": "tools/call", "params": map[string]any{"name": strings.ReplaceAll(request.Method, ".", "_"), "arguments": request.Params}})
+	catalog, err := wire.DefaultCatalog()
+	if err != nil {
+		return nil, fmt.Errorf("MCP caller catalog unavailable")
+	}
+	desc, known := catalog.Descriptor(request.Method)
+	if !known {
+		return nil, fmt.Errorf("unknown canonical caller method")
+	}
+	name, arguments := "plug_call", map[string]any{"method": request.Method, "params": request.Params}
+	if desc.AgentCore {
+		name, arguments = strings.ReplaceAll(request.Method, ".", "_"), request.Params
+	}
+	encoded, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "method": "tools/call", "params": map[string]any{"name": name, "arguments": arguments}})
 	if err != nil {
 		return nil, err
 	}
