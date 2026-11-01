@@ -198,7 +198,56 @@ jobs:
           name: plug-public-bundle-${{ inputs.label }}-${{ github.run_id }}
           path: ${{ runner.temp }}/public-bundle-downloaded
 
+      - name: Restore executable paths from canonical archive
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import stat
+          import tarfile
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "public-bundle-downloaded"
+          manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+          artifacts = manifest.get("artifacts")
+          archive_record = manifest.get("archive")
+          expected = {"bin/bd", "bin/plug"}
+          if not isinstance(artifacts, dict) or set(artifacts) != expected:
+              raise SystemExit("downloaded bundle artifact set is not exact")
+          if not isinstance(archive_record, dict) or archive_record.get("name") != "bundle.tar":
+              raise SystemExit("downloaded bundle archive record is invalid")
+          archive = root / "bundle.tar"
+          payload = archive.read_bytes()
+          if len(payload) != archive_record.get("size"):
+              raise SystemExit("downloaded bundle archive size mismatch")
+          if hashlib.sha256(payload).hexdigest() != archive_record.get("sha256"):
+              raise SystemExit("downloaded bundle archive digest mismatch")
+          with tarfile.open(archive, "r") as stream:
+              members = stream.getmembers()
+              if {member.name for member in members} != expected or len(members) != len(expected):
+                  raise SystemExit("downloaded bundle archive members are not exact")
+              for member in members:
+                  path = PurePosixPath(member.name)
+                  if (not member.isreg() or not member.name or path.is_absolute()
+                          or str(path) != member.name
+                          or any(part in {"", ".", ".."} for part in path.parts)
+                          or stat.S_IMODE(member.mode) != 0o755):
+                      raise SystemExit("downloaded bundle archive member is unsafe")
+                  destination = root / member.name
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  source = stream.extractfile(member)
+                  if source is None:
+                      raise SystemExit("downloaded bundle archive member has no payload")
+                  destination.write_bytes(source.read())
+                  destination.chmod(0o755)
+          PY
+
       - name: Verify downloaded bundle containment and hashes
         run: |
           set -euo pipefail
-          python3 scripts/ci/public-bundle.py verify --directory "$RUNNER_TEMP/public-bundle-downloaded"
+          bundle="$RUNNER_TEMP/public-bundle-downloaded"
+          python3 scripts/ci/public-bundle.py verify --directory "$bundle"
+          "$bundle/bin/bd" version --json > "$RUNNER_TEMP/downloaded-bd-version.json"
+          "$bundle/bin/plug" --help > "$RUNNER_TEMP/downloaded-plug-help" 2>&1
