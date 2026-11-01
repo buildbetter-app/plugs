@@ -29,8 +29,8 @@ func runPlugExport(cmd *cobra.Command) error {
 	if usesProxiedServer() || storeIsRemoteBackend(store) || store == nil {
 		return HandleErrorRespectJSON("plug-dump/1 requires an offline capture with the existing raw database read capability; proxied/remote stores are unsupported")
 	}
-	accessor, ok := storage.UnwrapStore(store).(storage.RawDBAccessor)
-	if !ok || accessor.DB() == nil {
+	accessor, ok := storage.UnwrapStore(store).(storage.RawDBTxAccessor)
+	if !ok {
 		return HandleErrorRespectJSON("store cannot expose the complete paired census read set")
 	}
 	file, err := os.Open(exportPlugInventory)
@@ -46,12 +46,16 @@ func runPlugExport(cmd *cobra.Command) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	tx, err := accessor.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	var data []byte
+	err = accessor.WithRawDBTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable}, func(tx *sql.Tx) error {
+		var buildErr error
+		data, buildErr = plugdump.Build(ctx, plugdump.SQLSource{DB: tx}, inventory)
+		return buildErr
+	})
 	if err != nil {
-		return HandleErrorRespectJSON("cannot begin read-only frozen-source transaction: %v", err)
+		return HandleErrorRespectJSON("plug-dump/1 refused: %v", err)
 	}
-	defer func() { _ = tx.Rollback() }()
-	if err := exportPlugFromSource(ctx, cmd, plugdump.SQLSource{DB: tx}, inventory, exportOutput); err != nil {
+	if err := writePlugExport(cmd, data, exportOutput); err != nil {
 		return HandleErrorRespectJSON("plug-dump/1 refused: %v", err)
 	}
 	return nil
@@ -64,6 +68,11 @@ func exportPlugFromSource(ctx context.Context, cmd *cobra.Command, source plugdu
 	if err != nil {
 		return err
 	}
+	return writePlugExport(cmd, data, output)
+}
+
+// Publish only after the source transaction and its connection are released.
+func writePlugExport(cmd *cobra.Command, data []byte, output string) error {
 	if output != "" {
 		return atomicfile.WriteFile(output, data, 0o600)
 	}
