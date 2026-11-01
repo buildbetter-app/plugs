@@ -30,7 +30,8 @@ close, history, dump, and restore. It preserves the D1 close-guard, atomic
 `tx.apply`, warning, replay, and generated-registry assertions. Its final dump
 comes from the mutated restored runtime at revision 7. Each resulting archive
 is restored into new memory and SQLite targets, so all four driver pairs check
-the completed state, exact IDs, updated fields, comment body/actor/time, and
+the completed state, exact IDs, updated fields, comment and close-reason
+body/actor/time, and
 dependency link. Readback checks the record census, store identity, fresh
 incarnation, empty ready set, and new revision-1 history floor; old-incarnation
 and below-floor history requests must refuse. The archive explicitly requests

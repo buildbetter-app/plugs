@@ -704,10 +704,27 @@ func TestRestoredThinSliceLifecycleAcrossMemoryAndSQLite(t *testing.T) {
 				closed[ref.ID] = document
 			}
 			blockerDocument := closed[blocker.ID]
-			if blockerDocument.Fields["title"] != "thin blocker updated" || blockerDocument.Fields["description"] != "tx.apply after history" || len(blockerDocument.Comments) != 1 || blockerDocument.Comments[0].Body != "thin slice comment" || blockerDocument.Comments[0].Time.IsZero() || blockerDocument.Comments[0].Principal.Kind == "" {
-				t.Fatalf("post-close history lost updated fields or comment attribution: %+v", blockerDocument)
+			if blockerDocument.Fields["title"] != "thin blocker updated" || blockerDocument.Fields["description"] != "tx.apply after history" {
+				t.Fatalf("post-close history lost updated fields: %+v", blockerDocument)
 			}
 			dependentDocument := closed[dependent.ID]
+			for _, expected := range []struct {
+				document pipeline.Document
+				bodies   []string
+			}{
+				{blockerDocument, []string{"thin slice comment", "unblock dependent"}},
+				{dependentDocument, []string{"thin slice complete"}},
+			} {
+				if len(expected.document.Comments) != len(expected.bodies) {
+					t.Fatalf("post-close history lost comments or close reasons: %+v", expected.document)
+				}
+				for i, body := range expected.bodies {
+					comment := expected.document.Comments[i]
+					if comment.Body != body || comment.Time.IsZero() || comment.Principal.Kind == "" || comment.Principal.ID == "" {
+						t.Fatalf("post-close history lost comment attribution: %+v", expected.document)
+					}
+				}
+			}
 			if len(dependentDocument.Links) != 1 || dependentDocument.Links[0].To != blocker || dependentDocument.Links[0].Kind != "blocks" {
 				t.Fatalf("post-close history lost dependency: %+v", dependentDocument)
 			}
@@ -765,7 +782,7 @@ func TestRestoredThinSliceLifecycleAcrossMemoryAndSQLite(t *testing.T) {
 					}
 					// Close joins the local lease-renewal worker and releases the
 					// store; no listener, UI, or detached background work is used.
-					t.Logf("I2 in-process lifecycle %s -> %s: ready -> claim -> update -> comment -> close -> history -> dump(head=7) -> restore(head=1); records=%d comments=1 dependency=blocks test-presence-verifier=restore-workload", backend, restoredBackend, manifest.RecordCount)
+					t.Logf("I2 in-process lifecycle %s -> %s: ready -> claim -> update -> comment -> close -> history -> dump(head=7) -> restore(head=1); records=%d comments=2/1 dependency=blocks test-presence-verifier=restore-workload", backend, restoredBackend, manifest.RecordCount)
 				})
 			}
 		})
