@@ -104,8 +104,12 @@ notification that has no canonical response is reported as an `rpc.rejected`
 push with reason `notification_no_result`. Responses remain the exact bytes
 returned by the canonical dispatcher.
 
-The admitted identity is stamped on the connection context and on every
-dispatch. A peer close or connection cancellation cancels in-flight work;
+Before each dispatch, the handler revalidates the original admitted handshake
+against the live authenticator, then stamps that current identity on the call
+context. Revoked or expired credentials close the connection with `1008`;
+unavailable authentication closes it with retryable `1013`. Neither case
+reaches RPC or falls back to anonymous. A peer close or connection cancellation
+cancels in-flight work;
 closing the connection also stops the bounded reader, dispatcher and writer
 loops. The handler owns no store, listener, session manager or watch manager.
 `Handler.Close` stops new upgrades, cancels and closes its connections, and

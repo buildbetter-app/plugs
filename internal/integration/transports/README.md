@@ -15,6 +15,13 @@ cancels an active WebSocket core read, waits for its reader to return, and
 closes the store only after that drain; ordinary HTTP shutdown does not own
 upgraded sockets. The WebSocket handler stops accepting upgrades when closed.
 
+An open WebSocket rechecks its original admitted credential before every
+message dispatch, including messages queued before expiry or revocation. It
+closes on invalid credentials or unavailable authentication and never falls
+back to anonymous. Same-connection tests perform a live write, then revoke the
+key or advance a controlled clock to exact expiry and require no further core
+write, native callback or outbound request.
+
 Negative cases cover hostile Host and Origin headers, forwarded-header
 spoofing, missing HTTP markers, missing/malformed/revoked credentials, and the
 real admin dump handler's human-presence refusal. API-key Users receive no
