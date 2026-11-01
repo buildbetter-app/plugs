@@ -43,7 +43,7 @@ var projects = []string{epics, visible, hidden, oldEpics, newEpics}
 func ref(id string) model.Ref             { return model.RefByID(id, model.Natural64(0)) }
 func projectRef(project string) model.Ref { return ref("project-" + project) }
 func agent(id string) model.PrincipalRef {
-	return model.PrincipalRef{Kind: "agent", ID: "agent-" + id, Sponsor: &model.PrincipalRef{Kind: "user", ID: id}}
+	return model.PrincipalRef{Kind: "agent", ID: "agent:" + id, Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:" + id}}
 }
 
 type endpoint struct {
@@ -246,7 +246,7 @@ func newFixture(t *testing.T, backend, path string, progress bool) *fixture {
 	}
 	for user, allowed := range map[string][]string{"owner": projects, "mover": {visible, newEpics}, "child-only": {visible}, "parent-only": {epics}} {
 		for _, project := range allowed {
-			f.base.Grants = append(f.base.Grants, authz.Grant{Subject: authz.SubjectRef{Kind: "user", ID: user}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: projectRef(project)}, Role: "involved"})
+			f.base.Grants = append(f.base.Grants, authz.Grant{Subject: authz.SubjectRef{Kind: "user", ID: "user:" + user}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: projectRef(project)}, Role: "involved"})
 		}
 	}
 	f.facts, err = authzrpc.NewMutableFacts(f.base)

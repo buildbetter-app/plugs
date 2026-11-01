@@ -37,7 +37,7 @@ func (f *fixture) viewer(t *testing.T, allowed ...string) string {
 	for _, p := range allowed {
 		refs = append(refs, projectRef(p))
 	}
-	return f.issue(t, model.PrincipalRef{Kind: "user", ID: "ep6-reader", Caveats: map[string]any{"projects": refs}}).Token
+	return f.issue(t, model.PrincipalRef{Kind: "user", ID: "user:ep6-reader", Caveats: map[string]any{"projects": refs}}).Token
 }
 
 type progress struct {
@@ -163,7 +163,7 @@ func TestEpicProgressRealHTTPVisibilityAndFreshAuthority(t *testing.T) {
 			inspectProgress(t, f.api.call(t, viewer, "view.run", first.refresh), map[string]int{"total": 2, "status:todo": 2}, 1)
 			// A real credential revocation must reject even an old valid content
 			// snapshot. CP7 User reads are not invented project-grant permissions.
-			key := f.issue(t, model.PrincipalRef{Kind: "user", ID: "revoked-reader", Caveats: map[string]any{"projects": []model.Ref{projectRef(epics), projectRef(visible)}}})
+			key := f.issue(t, model.PrincipalRef{Kind: "user", ID: "user:revoked-reader", Caveats: map[string]any{"projects": []model.Ref{projectRef(epics), projectRef(visible)}}})
 			inspectProgress(t, f.api.call(t, key.Token, "view.run", pinned), first.counts, 1)
 			if !f.keys.Revoke(key.ID) {
 				t.Fatal("credential revocation did not happen")
@@ -213,6 +213,10 @@ func TestEpicProgressHierarchyPermissionsAndAtomicRefusals(t *testing.T) {
 	if bead["project"] != visible {
 		t.Fatalf("reparent moved child project: %v", bead)
 	}
+	parentObject := object(t, bead["parent"])
+	if len(parentObject) != 1 || parentObject["exists"] != true {
+		t.Fatalf("hidden parent is not strict existence-only object: %v", parentObject)
+	}
 	if bytes.Contains(firstJSON(t, read), []byte(next.ID)) {
 		t.Fatal("bead.get disclosed a hidden parent's identity")
 	}
@@ -225,7 +229,7 @@ func TestEpicProgressHierarchyPermissionsAndAtomicRefusals(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer snapshot.Close()
-	disclosure, e := f.app.Checker.ParentDisclosure(context.Background(), model.PrincipalRef{Kind: "user", ID: "ep6-reader", Caveats: map[string]any{"projects": []model.Ref{projectRef(visible)}}}, child, snapshot)
+	disclosure, e := f.app.Checker.ParentDisclosure(context.Background(), model.PrincipalRef{Kind: "user", ID: "user:ep6-reader", Caveats: map[string]any{"projects": []model.Ref{projectRef(visible)}}}, child, snapshot)
 	if e != nil || !disclosure.Exists || disclosure.Ref != nil {
 		t.Fatalf("parent disclosure is not existence-only: %+v %v", disclosure, e)
 	}
@@ -290,7 +294,7 @@ func TestEpicProgressFifthTaskAtTwentyThousandBeads(t *testing.T) {
 	var direct []model.Ref
 	for i := 0; i < 50; i++ {
 		p := agent("owner")
-		p.ID = fmt.Sprintf("ep6-agent-%02d", i)
+		p.ID = fmt.Sprintf("agent:ep6-%02d", i)
 		key := f.issue(t, p).Token
 		op := model.Op{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Project: visible, Fields: map[string]any{"title": fmt.Sprintf("agent child %02d", i)}, Parent: &parent}}
 		direct = append(direct, committed(t, f.write(t, key, "tx.apply", visible, map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{op}}})).Results[0].Ref)
