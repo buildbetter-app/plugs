@@ -102,6 +102,9 @@ func reopenI1SQLite(t *testing.T, f *recoveryFixture) {
 func TestI1ThousandOperationBoundaryAcrossLocalStores(t *testing.T) {
 	recoveryStores(t, func(t *testing.T, f *recoveryFixture) {
 		ctx := context.Background()
+		o := f.svc.ontology
+		writer, metrics := pipeline.NewWithTelemetry(f.store, f.lease, pipeline.WithOntology(o), pipeline.WithClock(func() time.Time { return f.now }))
+		f.svc = New(f.store, f.lease, writer, WithOntology(o), WithClock(func() time.Time { return f.now }))
 		key := meta(t)
 		key.Method = "tx.apply"
 		cs := model.ChangeSet{Ops: make([]model.Op, 1000)}
@@ -119,6 +122,13 @@ func TestI1ThousandOperationBoundaryAcrossLocalStores(t *testing.T) {
 
 		// A refusal must leave the same key usable for the supported boundary.
 		out, err := f.svc.ApplyWithOutcome(ctx, anonymous, cs, key)
+		phaseMillis := map[pipeline.Phase]float64{}
+		for phase, results := range metrics.Snapshot().LaneMillis {
+			for _, millis := range results {
+				phaseMillis[phase] += millis
+			}
+		}
+		t.Logf("1000-op pipeline phase times (ms): %v", phaseMillis)
 		if err != nil {
 			t.Fatalf("1000-op batch: %v", err)
 		}
