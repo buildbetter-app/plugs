@@ -216,3 +216,136 @@ func TestSourceArchiveHistoryRefusalsLeaveTargetEmpty(t *testing.T) {
 		}
 	}
 }
+
+// Hide unrelated optional capabilities while retaining the real driver's
+// atomic implementation. Each interface must stand on its own contract.
+type selectiveRestoreStore struct {
+	driver.Store
+	capability string
+}
+
+type historyOnlyTx struct {
+	driver.WriteTx
+	driver.OfflineHistoryTx
+	driver.AllocatorContinuation
+}
+
+type importOnlyTx struct {
+	driver.WriteTx
+	driver.RestoreImportTx
+	driver.AllocatorContinuation
+}
+
+type legacyOnlyTx struct {
+	driver.WriteTx
+	driver.OfflineRestoreTx
+}
+
+func (s selectiveRestoreStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	tx, err := s.Store.Write(ctx, lease)
+	if err != nil {
+		return nil, err
+	}
+	switch s.capability {
+	case "history":
+		return historyOnlyTx{tx, tx.(driver.OfflineHistoryTx), tx.(driver.AllocatorContinuation)}, nil
+	case "import":
+		return importOnlyTx{tx, tx.(driver.RestoreImportTx), tx.(driver.AllocatorContinuation)}, nil
+	case "legacy":
+		return legacyOnlyTx{tx, tx.(driver.OfflineRestoreTx)}, nil
+	default:
+		return struct{ driver.WriteTx }{tx}, nil
+	}
+}
+
+func TestSourceArchiveSelectsOnlyTheRequestedRestoreCapability(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		for _, tc := range []struct {
+			name, capability string
+			mode             driver.RestoreHistoryMode
+			wantHead         string
+		}{
+			{"full-history-only", "history", driver.RestoreHistoryModeFull, "5"},
+			{"partial-history-only", "history", driver.RestoreHistoryModePartial, "3"},
+			{"snapshot-import-only", "import", driver.RestoreHistoryModeSnapshot, "1"},
+			{"full-no-capability", "none", driver.RestoreHistoryModeFull, ""},
+			{"partial-no-capability", "none", driver.RestoreHistoryModePartial, ""},
+			{"full-legacy-only", "legacy", driver.RestoreHistoryModeFull, ""},
+			{"full-import-only", "import", driver.RestoreHistoryModeFull, ""},
+		} {
+			t.Run(engine+"/"+tc.name, func(t *testing.T) {
+				ctx := context.Background()
+				path := "testdata/full.tar"
+				if tc.mode == driver.RestoreHistoryModePartial {
+					path = "testdata/partial.tar"
+				}
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				inspection, err := converterroundtrip.InspectImport(ctx, bytes.NewReader(data))
+				if err != nil {
+					t.Fatal(err)
+				}
+				p := profile(tc.mode)
+				p.SourceStoreID, p.ArchiveDigest, p.DerivedDigest = inspection.SourceStoreID, inspection.ArchiveSHA256, inspection.DerivedSHA256
+				if tc.mode != driver.RestoreHistoryModeSnapshot {
+					p, err = converterroundtrip.BindHistoryImport(ctx, bytes.NewReader(data), p, time.Now().UTC())
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				s := openStore(t, engine)
+				before, err := s.Meta(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				lease, err := s.Lease(ctx, "capability-dispatch", driver.LeaseTTL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer lease.Release(context.Background())
+				report, err := converterroundtrip.RestoreImportWithLease(ctx, bytes.NewReader(data), selectiveRestoreStore{s, tc.capability}, lease, p)
+				if tc.wantHead == "" {
+					var refused driver.ErrRestoreHistoryRefused
+					if !errors.As(err, &refused) || refused.Reason != driver.RestoreHistoryReasonNotYetSupported || refused.Mode != tc.mode {
+						t.Fatalf("missing replay capability must refuse with its typed reason: %T %v", err, err)
+					}
+					after, err := s.Meta(ctx)
+					if err != nil || !reflect.DeepEqual(before, after) {
+						t.Fatalf("capability refusal changed metadata: %+v %v", after, err)
+					}
+					r, err := s.Read(ctx, driver.View{Incarnation: before.Incarnation})
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer r.Close()
+					rows, err := r.Query(ctx, driver.Query{Limit: 1})
+					if err != nil || len(rows.Items) != 0 {
+						t.Fatalf("capability refusal published records: %+v %v", rows, err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if report.Restored.Head.String() != tc.wantHead || report.Restored.Incarnation == before.Incarnation {
+					t.Fatalf("wrong publication through standalone capability: %+v", report.Restored)
+				}
+				at := model.Natural64(1)
+				r, err := s.Read(ctx, driver.View{Incarnation: report.Restored.Incarnation, At: &at})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer r.Close()
+				rows, err := r.Get(ctx, []model.Ref{model.RefByID("demo-7", model.Natural64(0))})
+				if err != nil || len(rows) != 1 {
+					t.Fatalf("standalone capability lost the first image: %v", err)
+				}
+				if tc.mode != driver.RestoreHistoryModeSnapshot && !bytes.Contains(rows[0].Body, []byte("Historical title")) {
+					t.Fatal("history-only capability flattened verified history")
+				}
+			})
+		}
+	}
+}
