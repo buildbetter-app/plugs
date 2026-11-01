@@ -64,13 +64,16 @@ jobs:
       - name: Fetch and verify canonical Beads source
         run: |
           set -euo pipefail
-          git fetch --no-tags origin refs/heads/beads:refs/remotes/origin/beads
-          git fetch --no-tags origin "refs/heads/$PLUG_SOURCE_REF:refs/remotes/origin/$PLUG_SOURCE_REF"
           git cat-file -e "$BEADS_COMMIT^{commit}"
           git cat-file -e "$PLUG_COMMIT^{commit}"
-          test "$(git rev-parse "refs/remotes/origin/$PLUG_SOURCE_REF")" = "$PLUG_COMMIT"
+          source_ref="refs/remotes/origin/$PLUG_SOURCE_REF"
+          git show-ref --verify --quiet "$source_ref"
+          source_sha="$(git rev-parse "$source_ref^{commit}")"
+          test "$source_sha" = "$PLUG_COMMIT"
           beads_tree="$(git rev-parse "$BEADS_COMMIT^{tree}")"
           plug_tree="$(git rev-parse "$PLUG_COMMIT^{tree}")"
+          source_tree="$(git rev-parse "$source_ref^{tree}")"
+          test "$source_tree" = "$plug_tree"
           git ls-tree -r --full-tree "$BEADS_COMMIT" > "$RUNNER_TEMP/beads-source-manifest"
           git ls-tree -r --full-tree "$PLUG_COMMIT" > "$RUNNER_TEMP/plug-source-manifest"
           mkdir -p "$RUNNER_TEMP/beads-source"
