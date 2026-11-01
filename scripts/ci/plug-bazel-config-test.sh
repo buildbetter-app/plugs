@@ -111,31 +111,77 @@ def require_fragments(label, code, fragments):
     if missing:
         raise SystemExit(f"config: {label} is missing: " + ", ".join(missing))
 
-def check_dispatch_workflow(label, code, fragments, action_count):
+def yaml_blocks(code, key):
+    """Return (indent, inline_value, child_lines) for each mapping named key."""
+    lines = code.splitlines()
+    blocks = []
+    for index, line in enumerate(lines):
+        match = re.match(rf"^( *)(?:{re.escape(key)}):(?:\s*(.*))?$", line)
+        if not match:
+            continue
+        indent = len(match.group(1))
+        children = []
+        for child in lines[index + 1:]:
+            if child.strip():
+                child_indent = len(child) - len(child.lstrip(" "))
+                if child_indent <= indent:
+                    break
+            children.append(child)
+        blocks.append((indent, (match.group(2) or "").strip(), children))
+    return blocks
+
+def immediate_keys(indent, children):
+    keys = []
+    for line in children:
+        if not line.strip():
+            continue
+        if len(line) - len(line.lstrip(" ")) != indent + 2:
+            continue
+        match = re.match(r"^\s{2,}([A-Za-z0-9_-]+):(?:\s*(.*))?$", line)
+        if match:
+            keys.append((match.group(1), (match.group(2) or "").strip()))
+    return keys
+
+def check_dispatch_workflow(label, code, fragments, action_count, expected_triggers):
     """Check a workflow that may execute only trusted scheduled or dispatched code."""
     require_fragments(label, code, fragments)
-    for trigger in (
-        "push:", "pull_request:", "pull_request_target:", "workflow_call:",
-        "workflow_run:", "repository_dispatch:", "merge_group:",
-    ):
-        if re.search(rf"(?m)^  {re.escape(trigger)}", code):
-            raise SystemExit(f"config: {label} must be schedule/workflow_dispatch only")
-    for token in (
-        "secrets.", "${{ secrets", "github.event.pull_request",
-        "contents: write", "actions: write", "id-token: write",
-        "packages: write", "pull-requests: write", "permissions: write-all",
-    ):
-        if token in code:
-            raise SystemExit(f"config: {label} exposes a secret or pull-request context: {token}")
-    actions = re.findall(r"uses: (\S+)", code)
+    trigger_blocks = [block for block in yaml_blocks(code, "on") if block[0] == 0]
+    if len(trigger_blocks) != 1 or trigger_blocks[0][1]:
+        raise SystemExit(f"config: {label} must declare triggers as a mapping")
+    trigger_keys = immediate_keys(trigger_blocks[0][0], trigger_blocks[0][2])
+    if len(trigger_keys) != len({key for key, _ in trigger_keys}) or {
+        key for key, _ in trigger_keys
+    } != set(expected_triggers):
+        raise SystemExit(f"config: {label} must be schedule/workflow_dispatch only")
+    permission_blocks = yaml_blocks(code, "permissions")
+    top_level_permissions = []
+    for indent, inline_value, children in permission_blocks:
+        if inline_value and inline_value != "{}":
+            raise SystemExit(f"config: {label} permissions must be an explicit read/none mapping")
+        entries = immediate_keys(indent, children)
+        if len(entries) != len({key for key, _ in entries}):
+            raise SystemExit(f"config: {label} contains duplicate permission keys")
+        for key, value in entries:
+            value = value.split(" #", 1)[0].strip()
+            if value not in {"read", "none"}:
+                raise SystemExit(f"config: {label} grants non-read permission {key}: {value}")
+        if indent == 0:
+            top_level_permissions.extend(entries)
+    if dict(top_level_permissions).get("contents") != "read":
+        raise SystemExit(f"config: {label} must grant top-level contents: read")
+    if re.search(r"\bsecrets\b|github\.event\.(?:pull_request|issue|discussion)", code):
+        raise SystemExit(f"config: {label} exposes a secret or untrusted event context")
+    actions = re.findall(r"(?m)^\s*uses:\s*(\S+)", code)
     if len(actions) != action_count or any(
         not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action)
         for action in actions
     ):
         raise SystemExit(f"config: every {label} action must retain its full immutable pin")
-    if "permissions:\n  contents: read" not in code:
-        raise SystemExit(f"config: {label} must grant contents: read only")
-    if "runs-on: runs-on=${{ github.run_id }}/runner=bb-x64-16" not in code:
+    # The expression contains spaces; compare the complete mapping line after
+    # normalizing whitespace instead of trusting a substring in a run script.
+    runson_lines = [re.sub(r"\s+", " ", line.strip()) for line in code.splitlines()
+                    if re.match(r"^\s*runs-on:\s*", line)]
+    if runson_lines != ["runs-on: runs-on=${{ github.run_id }}/runner=bb-x64-16"]:
         raise SystemExit(f"config: {label} must use the pinned RunsOn runner")
 
 nightly_code = without_comments(nightly_workflow)
@@ -151,6 +197,7 @@ check_dispatch_workflow(
         "if-no-files-found: error", "retention-days: 30",
     ),
     4,
+    ("schedule", "workflow_dispatch"),
 )
 
 if public_workflow is not None:
@@ -174,6 +221,7 @@ if public_workflow is not None:
             "BEADS_COMMIT: 9d6fff760b7a314b476539198504d77ce0959656",
         ),
         4,
+        ("workflow_dispatch",),
     )
 
 forbidden = (
