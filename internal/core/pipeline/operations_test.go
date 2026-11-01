@@ -83,6 +83,25 @@ func TestConditionalLinksAreAtomicGuardedAndDoNotWriteEndpoints(t *testing.T) {
 	}
 }
 
+func TestDependencyEndpointIdentityRefusesRetypeAndWrongKindUnlink(t *testing.T) {
+	h := setup(t)
+	w := h.writer()
+	seed := apply(t, w, model.ChangeSet{Ops: []model.Op{create("source"), create("target")}}, meta(21))
+	source, target := seed.Results[0].Ref, seed.Results[1].Ref
+	apply(t, w, model.ChangeSet{Ops: []model.Op{link(source, target, "blocks")}}, meta(22))
+	retype := link(source, target, "relates-to")
+	_, err := w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{retype}}, meta(23))
+	code(t, err, "ontology_guard_failed")
+	wrongKind := retype
+	wrongKind.Kind = model.OpUnlink
+	_, err = w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{wrongKind}}, meta(24))
+	code(t, err, "not_found")
+	doc, err := DecodeDocument(apply(t, w, model.ChangeSet{Ops: []model.Op{patch(source, map[string]any{"title": "read"})}}, meta(25)).Results[0].Record)
+	if err != nil || len(doc.Links) != 1 || doc.Links[0].Kind != "blocks" || doc.Links[0].To.ID != target.ID {
+		t.Fatalf("endpoint identity changed after typed refusal: %+v err=%v", doc.Links, err)
+	}
+}
+
 func TestCommentsMetadataAndNullFieldsPreserveAtomicImages(t *testing.T) {
 	h := setup(t)
 	w := h.writer()

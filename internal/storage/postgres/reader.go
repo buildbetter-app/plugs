@@ -116,6 +116,7 @@ func (r *reader) finish() error {
 		r.writer.blobs = nil
 		r.writer.allocators = nil
 		r.writer.bumps = nil
+		r.writer.allocated = nil
 		r.writer.acquired = nil
 		close(r.writer.done)
 	}

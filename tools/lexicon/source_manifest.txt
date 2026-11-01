@@ -748,9 +748,13 @@ internal/storage/conformance/locks.go
 internal/storage/conformance/noops.go
 internal/storage/conformance/responses.go
 internal/storage/conformance/staged_reads.go
+internal/storage/depid/BUILD.bazel
+internal/storage/depid/depid.go
+internal/storage/depid/depid_test.go
 internal/storage/driver/BUILD.bazel
 internal/storage/driver/allocator.go
 internal/storage/driver/allocator_contract_test.go
+internal/storage/driver/allocator_hash_test.go
 internal/storage/driver/audit_contract_test.go
 internal/storage/driver/driver.go
 internal/storage/driver/errors.go
@@ -823,8 +827,8 @@ internal/storage/sqlite/pending_test.go
 internal/storage/sqlite/process_test.go
 internal/storage/sqlite/reader.go
 internal/storage/sqlite/schema.go
-internal/storage/sqlite/staged_reads_test.go
 internal/storage/sqlite/sqlite_test.go
+internal/storage/sqlite/staged_reads_test.go
 internal/storage/sqlite/store.go
 internal/storage/sqlite/transaction.go
 internal/storage/sqlite/validation.go
@@ -904,6 +908,13 @@ spec/recorded/goldens_test.go
 spec/recorded/provenance.py
 spec/recorded_test.go
 spec/rpc_test.go
+spec/s1-b09-b12/BUILD.bazel
+spec/s1-b09-b12/README.md
+spec/s1-b09-b12/projection.py
+spec/s1-b09-b12/provenance.json
+spec/s1-b09-b12/record_reference.py
+spec/s1-b09-b12/replay_test.go
+spec/s1-b09-b12/vectors.json
 spikes/authz/evidence-v6/current-status.md
 spikes/authz/evidence-v6/postgres-result.json
 spikes/authz/evidence-v6/provenance-manifest.json

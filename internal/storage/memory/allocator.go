@@ -127,6 +127,9 @@ func (t *transaction) AllocateTopLevel(ctx context.Context, prefix, expected str
 	if value.Mode == driver.AllocatorRandom {
 		return t.consumeRandom(ctx, value, "", expected)
 	}
+	if value.Mode == driver.AllocatorHash {
+		return fmt.Errorf("%w: hash allocation requires the content tuple", driver.ErrUnsupported)
+	}
 	if err := value.ValidateCandidate("", expected); err != nil {
 		return err
 	}
@@ -155,22 +158,83 @@ func (t *transaction) AllocateChild(ctx context.Context, parent, expected string
 	if value.Mode == driver.AllocatorRandom {
 		return t.consumeRandom(ctx, value, parent, expected)
 	}
-	if err := value.ValidateCandidate(parent, expected); err != nil {
+	child, err := value.ValidateChildCandidate(parent, expected)
+	if err != nil {
 		return err
 	}
 	current := value.Children[parent]
-	if current == ^uint64(0) {
+	if child <= current {
+		return fmt.Errorf("%w: allocator child counter already consumed %s", driver.ErrConflict, expected)
+	}
+	if child == ^uint64(0) {
 		return fmt.Errorf("%w: child counter exhausted", driver.ErrUnsupported)
+	}
+	ref := model.Ref{ID: expected}
+	id, err := recordKey(ref)
+	if err != nil {
+		return err
+	}
+	if _, staged := t.records[id]; staged || t.allocated[id] {
+		return fmt.Errorf("%w: allocator candidate already staged or reserved", driver.ErrConflict)
+	}
+	if _, exists := t.base.kinds[id]; exists {
+		return fmt.Errorf("%w: allocator candidate already exists", driver.ErrConflict)
 	}
 	if value.Children == nil {
 		value.Children = make(map[string]uint64)
 	}
-	value.Children[parent] = current + 1
+	value.Children[parent] = child
+	if t.allocated == nil {
+		t.allocated = make(map[string]bool)
+	}
+	t.allocated[id] = true
+	return t.stageAllocator(prefix, value)
+}
+
+func (t *transaction) AllocateHashTopLevel(ctx context.Context, prefix string, input driver.HashInput, expected string) error {
+	s := t.store
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return err
+	}
+	value, ok := t.allocators[prefix]
+	if !ok {
+		value, ok = t.base.allocators[prefix]
+	}
+	if !ok {
+		return driver.ErrNotFound
+	}
+	if value.Mode != driver.AllocatorHash {
+		return fmt.Errorf("%w: allocator is not hash mode", driver.ErrUnsupported)
+	}
+	if err := value.ValidateHashCandidate(input, expected); err != nil {
+		return err
+	}
+	ref := model.Ref{ID: expected}
+	id, err := recordKey(ref)
+	if err != nil {
+		return err
+	}
+	if _, staged := t.records[id]; staged || t.allocated[id] {
+		return fmt.Errorf("%w: allocator candidate already staged or reserved", driver.ErrConflict)
+	}
+	if _, exists := t.base.kinds[id]; exists {
+		return fmt.Errorf("%w: allocator candidate already exists", driver.ErrConflict)
+	}
+	if t.allocated == nil {
+		t.allocated = make(map[string]bool)
+	}
+	t.allocated[id] = true
+	// Hash allocators have no monotonic counter, but advancing the allocator
+	// fact still serializes candidate consumption and records the exact
+	// configured policy in the same commit.
 	return t.stageAllocator(prefix, value)
 }
 
 var _ driver.AllocatorReader = (*reader)(nil)
 var _ driver.AllocatorContinuation = (*transaction)(nil)
+var _ driver.HashAllocatorContinuation = (*transaction)(nil)
 
 func allocatorPrefix(staged, base map[string]driver.OfflineAllocator, parent string) string {
 	prefix := ""

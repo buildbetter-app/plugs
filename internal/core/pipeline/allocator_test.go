@@ -189,6 +189,39 @@ func TestHashAllocatorRefusesCreateWithoutFallback(t *testing.T) {
 	}
 }
 
+func TestHashAllocatorMintsCollisionFreeBatchAndReplays(t *testing.T) {
+	h := setup(t)
+	seed := driver.NewHashAllocator("demo", 3, 8, 0.25)
+	seedAllocator(t, h.store, h.lease, seed)
+	w := h.writer(WithIDGenerator(func() (string, error) {
+		return "fallback-must-not-run", nil
+	}))
+	request := meta(92)
+	request.Project = "demo"
+	cs := model.ChangeSet{Ops: []model.Op{create("first"), create("second")}}
+	commit, err := w.Apply(context.Background(), by, cs, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commit.Results) != 2 || commit.Results[0].Ref.ID == commit.Results[1].Ref.ID {
+		t.Fatalf("hash batch IDs=%+v", commit.Results)
+	}
+	for _, result := range commit.Results {
+		if !strings.HasPrefix(result.Ref.ID, "demo-") || len(strings.TrimPrefix(result.Ref.ID, "demo-")) != 3 {
+			t.Fatalf("hash ID=%q", result.Ref.ID)
+		}
+	}
+	replay, err := w.Apply(context.Background(), by, cs, request)
+	if err != nil || !reflect.DeepEqual(commit, replay) {
+		t.Fatalf("hash replay commit=%+v err=%v replay=%+v", commit, err, replay)
+	}
+	reader := h.read(t)
+	value, err := reader.(driver.AllocatorReader).LoadAllocator(context.Background(), "demo")
+	if err != nil || value.Mode != driver.AllocatorHash || value.MinHashLength != 3 || value.MaxHashLength != 8 {
+		t.Fatalf("hash allocator after batch=%+v err=%v", value, err)
+	}
+}
+
 func TestConcurrentRestoredCreatesAdvanceDistinctIDs(t *testing.T) {
 	h := setup(t)
 	seedAllocator(t, h.store, h.lease, driver.OfflineAllocator{Prefix: "demo", Mode: driver.AllocatorSequential, LastID: 8})

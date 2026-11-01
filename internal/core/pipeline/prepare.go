@@ -33,6 +33,8 @@ type pending struct {
 	// again after the allocator fact lock is acquired before publication.
 	allocatorPrefix   string
 	allocatorExpected string
+	allocatorChild    string
+	allocatorHash     *driver.HashInput
 }
 
 func (p *pending) body() (json.RawMessage, error) {
@@ -52,19 +54,23 @@ func memoryMethod(method string) bool {
 }
 
 type prepared struct {
-	snapshot         *snapshotReader
-	writes           map[string]*pending
-	proposal         port.ProposedChange
-	release          *claimReleaseMode
-	warnings         []model.Warning
-	mutators         []string
-	refs             []model.Ref
-	changed          map[string]bool
-	audit            *auditPlan
-	allocatorCursors map[string]uint64
-	allocatorSeen    map[string]bool
-	hierarchyEdits   []hierarchyEdit
-	hierarchyDelta   *hierarchyDelta
+	snapshot          *snapshotReader
+	writes            map[string]*pending
+	proposal          port.ProposedChange
+	release           *claimReleaseMode
+	warnings          []model.Warning
+	mutators          []string
+	refs              []model.Ref
+	changed           map[string]bool
+	audit             *auditPlan
+	allocatorCursors  map[string]uint64
+	allocatorSeen     map[string]bool
+	allocatorCounts   map[string]uint64
+	beads             []driver.Record
+	beadsLoaded       bool
+	maxHierarchyDepth int
+	hierarchyEdits    []hierarchyEdit
+	hierarchyDelta    *hierarchyDelta
 }
 
 func failure(code model.ErrorCode, message string) error {
@@ -150,7 +156,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	if _, err := snapshot.observe(ctx, []driver.LockKey{driver.OntologySentinelLock, driver.PluginsSentinelLock}); err != nil {
 		return nil, err
 	}
-	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}, allocatorCursors: map[string]uint64{}, allocatorSeen: map[string]bool{}}
+	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}, allocatorCursors: map[string]uint64{}, allocatorSeen: map[string]bool{}, allocatorCounts: map[string]uint64{}, maxHierarchyDepth: w.cfg.hierarchyMaxDepth}
 	aliases := map[string]model.Ref{}
 	slotRef := ""
 	if len(cs.Ops) == 0 {
@@ -193,7 +199,19 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if project == "" {
 				project = meta.Project
 			}
-			id, allocatorPrefix, allocatorExpected, e := p.nextAllocatorID(ctx, project, w.cfg.newID, w.cfg.newAllocatorID)
+			var id, allocatorPrefix, allocatorExpected, allocatorChild string
+			var allocatorHash *driver.HashInput
+			var e error
+			if parent != nil {
+				id, allocatorPrefix, allocatorExpected, allocatorChild, e = p.nextChildAllocatorID(ctx, project, parent.ID, w.cfg.newID, w.cfg.newAllocatorChildID)
+			} else {
+				creator, principalErr := driver.PrincipalKey(by)
+				if principalErr != nil {
+					return nil, failure("invalid_params", principalErr.Error())
+				}
+				input := driver.HashInput{Title: hashField(c.Fields, "title"), Description: hashField(c.Fields, "description"), Creator: creator, Timestamp: w.cfg.now().UTC()}
+				id, allocatorPrefix, allocatorExpected, allocatorHash, e = p.nextAllocatorID(ctx, project, input, w.cfg.newID, w.cfg.newAllocatorID)
+			}
 			if e != nil {
 				return nil, e
 			}
@@ -212,7 +230,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if snapshot.reads.states[key].Present {
 				return nil, errStale
 			}
-			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}}, setBy: map[string]string{}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected}
+			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}}, setBy: map[string]string{}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected, allocatorChild: allocatorChild, allocatorHash: allocatorHash}
 			p.writes[id] = current
 			if parent != nil {
 				current.setBy["parent"] = "request"
@@ -322,11 +340,22 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				}
 				// The endpoint is read, not written, unless another op targets it.
 				found := -1
+				conflictingKind := ""
 				for i, link := range current.doc.Links {
-					if link.To.ID == to.ID && link.Kind == kind {
-						found = i
-						break
+					if link.To.ID != to.ID {
+						continue
 					}
+					if link.Kind == kind {
+						found = i
+						continue
+					}
+					conflictingKind = link.Kind
+				}
+				if op.Kind == model.OpLink && conflictingKind != "" {
+					return nil, failure("ontology_guard_failed", fmt.Sprintf("dependency endpoints already have link kind %s", conflictingKind))
+				}
+				if op.Kind == model.OpUnlink && found < 0 && conflictingKind != "" {
+					return nil, failure("not_found", "link of the requested kind does not exist")
 				}
 				if op.Kind == model.OpLink && found < 0 {
 					current.doc.Links = append(current.doc.Links, Link{To: to, Kind: kind})
@@ -606,62 +635,238 @@ func cloneAnyMap(value map[string]any) map[string]any {
 	return out
 }
 
-// nextAllocatorID previews a restored sequential counter on the immutable
-// preparation snapshot. The matching allocator fact is upgraded to an update
-// lock in transact, where the expected ID is consumed atomically with records.
-// An absent capability or absent project state keeps the legacy random path;
-// an admitted but unsupported mode fails closed rather than inventing an ID.
-func (p *prepared) nextAllocatorID(ctx context.Context, project string, fallback func() (string, error), mint func(driver.OfflineAllocator) (string, error)) (string, string, string, error) {
+func hashField(fields map[string]any, name string) string {
+	value, ok := fields[name]
+	if !ok || value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return text
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return string(raw)
+}
+
+func (p *prepared) loadBeads(ctx context.Context) error {
+	if p.beadsLoaded {
+		return nil
+	}
+	var cursor *driver.Cursor
+	for {
+		page, err := p.snapshot.Query(ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 1000, Cursor: cursor})
+		if err != nil {
+			return err
+		}
+		p.beads = append(p.beads, page.Items...)
+		if page.NextCursor == nil {
+			p.beadsLoaded = true
+			return nil
+		}
+		if len(page.Items) == 0 {
+			return failure("internal_error", "allocator scan did not advance")
+		}
+		cursor = page.NextCursor
+	}
+}
+
+// allocatorObservations returns the top-level count and occupied IDs for a
+// project, plus the largest observed direct numeric child for the requested
+// parent. It reads the immutable graph once and layers batch-created records
+// over that snapshot, so staged hash collisions and stale child counters are
+// both visible before lock acquisition.
+func (p *prepared) allocatorObservations(ctx context.Context, prefix, parent string) (uint64, map[string]bool, uint64, error) {
+	if err := p.loadBeads(ctx); err != nil {
+		return 0, nil, 0, err
+	}
+	count := uint64(0)
+	occupied := map[string]bool{}
+	maxChild := uint64(0)
+	add := func(id string, project string, deleted bool) {
+		if deleted {
+			return
+		}
+		occupied[id] = true
+		if prefix != "" && project == prefix && strings.HasPrefix(id, prefix+"-") {
+			tail := strings.TrimPrefix(id, prefix+"-")
+			if tail != "" && !strings.ContainsRune(tail, '.') {
+				count++
+			}
+		}
+		if parent != "" {
+			if n, err := driver.ChildNumber(parent, id); err == nil && n > maxChild {
+				maxChild = n
+			}
+		}
+	}
+	for _, record := range p.beads {
+		doc, err := DecodeDocument(record.Body)
+		if err != nil {
+			return 0, nil, 0, err
+		}
+		add(record.Ref.ID, doc.Project, false)
+	}
+	for id, pending := range p.writes {
+		if pending.kind != "bead" {
+			continue
+		}
+		add(id, pending.doc.Project, pending.deleted)
+	}
+	return count, occupied, maxChild, nil
+}
+
+func (p *prepared) fallbackChildID(ctx context.Context, parent string) (string, error) {
+	_, _, maxChild, err := p.allocatorObservations(ctx, "", parent)
+	if err != nil {
+		return "", err
+	}
+	if maxChild == ^uint64(0) {
+		return "", fmt.Errorf("%w: child counter exhausted", driver.ErrUnsupported)
+	}
+	return fmt.Sprintf("%s.%d", parent, maxChild+1), nil
+}
+
+// nextAllocatorID previews a restored allocator on the immutable preparation
+// snapshot. Hash candidates are content-bound and collision-checked against
+// committed plus batch-staged IDs; sequential candidates retain their legacy
+// cursor behavior. The matching allocator fact is upgraded to an update lock
+// in transact, where the expected ID is consumed atomically with records.
+func (p *prepared) nextAllocatorID(ctx context.Context, project string, input driver.HashInput, fallback func() (string, error), mint func(driver.OfflineAllocator) (string, error)) (string, string, string, *driver.HashInput, error) {
 	if project == "" {
 		id, err := fallback()
-		return id, "", "", err
+		return id, "", "", nil, err
 	}
 	reader, ok := p.snapshot.reader.(driver.AllocatorReader)
 	if !ok {
 		id, err := fallback()
-		return id, "", "", err
+		return id, "", "", nil, err
 	}
 	if !p.allocatorSeen[project] {
 		key, err := driver.AllocatorLock(project)
 		if err != nil {
-			return "", "", "", err
+			return "", "", "", nil, err
 		}
 		if _, err = p.snapshot.observe(ctx, []driver.LockKey{key}); err != nil {
-			return "", "", "", err
+			return "", "", "", nil, err
 		}
 		p.allocatorSeen[project] = true
 	}
 	state, err := reader.LoadAllocator(ctx, project)
 	if errors.Is(err, driver.ErrNotFound) {
 		id, fallbackErr := fallback()
-		return id, "", "", fallbackErr
+		return id, "", "", nil, fallbackErr
 	}
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", nil, err
 	}
-	if state.Mode == driver.AllocatorRandom {
+	switch state.Mode {
+	case driver.AllocatorRandom:
 		id, err := mint(state)
 		if err != nil {
-			return "", "", "", err
+			return "", "", "", nil, err
 		}
 		if err := state.ValidateCandidate("", id); err != nil {
-			return "", "", "", err
+			return "", "", "", nil, err
 		}
-		return id, project, id, nil
+		return id, project, id, nil, nil
+	case driver.AllocatorHash:
+		count, occupied, _, err := p.allocatorObservations(ctx, project, "")
+		if err != nil {
+			return "", "", "", nil, err
+		}
+		id, err := state.MintHashID(input, count, func(candidate string) (bool, error) {
+			if occupied[candidate] {
+				return true, nil
+			}
+			for _, pending := range p.writes {
+				if !pending.deleted && pending.ref.ID == candidate {
+					return true, nil
+				}
+			}
+			return false, nil
+		})
+		if err != nil {
+			return "", "", "", nil, err
+		}
+		return id, project, id, &input, nil
+	default:
+		if cursor, exists := p.allocatorCursors[project]; exists {
+			state.LastID = cursor
+		}
+		id, err := state.NextID()
+		if err != nil {
+			return "", "", "", nil, err
+		}
+		if state.LastID == ^uint64(0) {
+			return "", "", "", nil, fmt.Errorf("%w: allocator counter exhausted", driver.ErrUnsupported)
+		}
+		next := state.LastID + 1
+		p.allocatorCursors[project] = next
+		return id, project, id, nil, nil
 	}
-	if cursor, exists := p.allocatorCursors[project]; exists {
-		state.LastID = cursor
+}
+
+// nextChildAllocatorID keeps the dotted ID contract even when no restored
+// allocator exists by reconciling the direct-child scan. A restored random
+// allocator retains its opaque suffix; sequential/hash allocators repair a
+// stale counter to the observed maximum before consuming the candidate.
+func (p *prepared) nextChildAllocatorID(ctx context.Context, project, parent string, fallback func() (string, error), mint func(driver.OfflineAllocator, string) (string, error)) (string, string, string, string, error) {
+	if project == "" {
+		id, err := p.fallbackChildID(ctx, parent)
+		return id, "", "", "", err
 	}
-	id, err := state.NextID()
+	reader, ok := p.snapshot.reader.(driver.AllocatorReader)
+	if !ok {
+		id, err := p.fallbackChildID(ctx, parent)
+		return id, "", "", "", err
+	}
+	if !p.allocatorSeen[project] {
+		key, err := driver.AllocatorLock(project)
+		if err != nil {
+			return "", "", "", "", err
+		}
+		if _, err = p.snapshot.observe(ctx, []driver.LockKey{key}); err != nil {
+			return "", "", "", "", err
+		}
+		p.allocatorSeen[project] = true
+	}
+	state, err := reader.LoadAllocator(ctx, project)
+	if errors.Is(err, driver.ErrNotFound) {
+		id, fallbackErr := p.fallbackChildID(ctx, parent)
+		return id, "", "", "", fallbackErr
+	}
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
-	if state.LastID == ^uint64(0) {
-		return "", "", "", fmt.Errorf("%w: allocator counter exhausted", driver.ErrUnsupported)
+	if state.Mode == driver.AllocatorRandom {
+		id, err := mint(state, parent)
+		if err != nil {
+			return "", "", "", "", err
+		}
+		if err := state.ValidateCandidate(parent, id); err != nil {
+			return "", "", "", "", err
+		}
+		return id, project, id, parent, nil
 	}
-	next := state.LastID + 1
-	p.allocatorCursors[project] = next
-	return id, project, id, nil
+	_, occupied, observed, err := p.allocatorObservations(ctx, project, parent)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	if current := state.Children[parent]; observed > current {
+		current = observed
+		state.Children[parent] = current
+	}
+	if state.Children[parent] == ^uint64(0) {
+		return "", "", "", "", fmt.Errorf("%w: child counter exhausted", driver.ErrUnsupported)
+	}
+	next := state.Children[parent] + 1
+	id := fmt.Sprintf("%s.%d", parent, next)
+	if occupied[id] {
+		return "", "", "", "", errStale
+	}
+	return id, project, id, parent, nil
 }
 
 func applyFields(p *pending, fields map[string]any, setter string) error {

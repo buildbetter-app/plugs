@@ -32,6 +32,7 @@ type transaction struct {
 	blobs           map[driver.Hash][]byte
 	allocators      map[string]driver.OfflineAllocator
 	bumps           map[string]driver.LockKey
+	allocated       map[string]bool
 	done            chan struct{}
 }
 
@@ -68,7 +69,7 @@ func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.Wri
 	}
 	r := &reader{store: s, sql: tx, meta: m, conn: conn, cleanupDone: cleanupDone}
 	r.at, _ = m.Head.Uint64()
-	t := &transaction{reader: r, lease: l, records: make(map[string]*driver.Record), identities: make(map[string]driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), allocators: make(map[string]driver.OfflineAllocator), bumps: make(map[string]driver.LockKey), done: make(chan struct{})}
+	t := &transaction{reader: r, lease: l, records: make(map[string]*driver.Record), identities: make(map[string]driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), allocators: make(map[string]driver.OfflineAllocator), bumps: make(map[string]driver.LockKey), allocated: make(map[string]bool), done: make(chan struct{})}
 	r.writer = t
 	if err = s.track(r); err != nil {
 		_ = r.finish()

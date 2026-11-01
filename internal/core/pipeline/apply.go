@@ -463,8 +463,21 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			if pending == nil || pending.allocatorPrefix == "" || consumed[ref.ID] {
 				continue
 			}
-			if err := allocator.AllocateTopLevel(ctx, pending.allocatorPrefix, pending.allocatorExpected); err != nil {
-				return model.Commit{}, err
+			var allocationErr error
+			switch {
+			case pending.allocatorChild != "":
+				allocationErr = allocator.AllocateChild(ctx, pending.allocatorChild, pending.allocatorExpected)
+			case pending.allocatorHash != nil:
+				hashAllocator, supported := tx.(driver.HashAllocatorContinuation)
+				if !supported {
+					return model.Commit{}, driver.ErrUnsupported
+				}
+				allocationErr = hashAllocator.AllocateHashTopLevel(ctx, pending.allocatorPrefix, *pending.allocatorHash, pending.allocatorExpected)
+			default:
+				allocationErr = allocator.AllocateTopLevel(ctx, pending.allocatorPrefix, pending.allocatorExpected)
+			}
+			if allocationErr != nil {
+				return model.Commit{}, allocationErr
 			}
 			consumed[ref.ID] = true
 		}

@@ -162,6 +162,9 @@ func (t *transaction) AllocateTopLevel(ctx context.Context, prefix, expected str
 	if err != nil {
 		return err
 	}
+	if value.Mode == driver.AllocatorHash {
+		return fmt.Errorf("%w: hash allocation requires the content tuple", driver.ErrUnsupported)
+	}
 	next, err := value.NextID()
 	if err != nil {
 		return err
@@ -187,26 +190,80 @@ func (t *transaction) AllocateChild(ctx context.Context, parent, expected string
 	if err != nil {
 		return err
 	}
-	next, err := value.NextChildID(parent)
+	child, err := value.ValidateChildCandidate(parent, expected)
 	if err != nil {
 		return err
 	}
-	if expected != next {
-		return fmt.Errorf("%w: allocator next child ID is %s, expected %s", driver.ErrConflict, next, expected)
-	}
 	current := value.Children[parent]
-	if current == ^uint64(0) {
+	if child <= current {
+		return fmt.Errorf("%w: allocator child counter already consumed %s", driver.ErrConflict, expected)
+	}
+	if child == ^uint64(0) {
 		return fmt.Errorf("%w: child counter exhausted", driver.ErrUnsupported)
+	}
+	ref := driver.Ref{ID: expected}
+	id, err := recordKey(ref)
+	if err != nil {
+		return err
+	}
+	if _, staged := t.records[id]; staged || t.allocated[id] {
+		return fmt.Errorf("%w: allocator candidate already staged or reserved", driver.ErrConflict)
+	}
+	var exists bool
+	if err := t.sql.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM plug_postgres.records WHERE key=$1)`, []byte(id)).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("%w: allocator candidate already exists", driver.ErrConflict)
 	}
 	if value.Children == nil {
 		value.Children = make(map[string]uint64)
 	}
-	value.Children[parent] = current + 1
+	value.Children[parent] = child
+	return t.stageAllocator(prefix, value)
+}
+
+func (t *transaction) AllocateHashTopLevel(ctx context.Context, prefix string, input driver.HashInput, expected string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return err
+	}
+	value, err := t.currentAllocator(ctx, prefix)
+	if err != nil {
+		return err
+	}
+	if value.Mode != driver.AllocatorHash {
+		return fmt.Errorf("%w: allocator is not hash mode", driver.ErrUnsupported)
+	}
+	if err := value.ValidateHashCandidate(input, expected); err != nil {
+		return err
+	}
+	ref := driver.Ref{ID: expected}
+	id, err := recordKey(ref)
+	if err != nil {
+		return err
+	}
+	if _, staged := t.records[id]; staged || t.allocated[id] {
+		return fmt.Errorf("%w: allocator candidate already staged or reserved", driver.ErrConflict)
+	}
+	var exists bool
+	if err := t.sql.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM plug_postgres.records WHERE key=$1)`, []byte(id)).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("%w: allocator candidate already exists", driver.ErrConflict)
+	}
+	if t.allocated == nil {
+		t.allocated = make(map[string]bool)
+	}
+	t.allocated[id] = true
 	return t.stageAllocator(prefix, value)
 }
 
 var _ driver.AllocatorReader = (*reader)(nil)
 var _ driver.AllocatorContinuation = (*transaction)(nil)
+var _ driver.HashAllocatorContinuation = (*transaction)(nil)
 
 func (t *transaction) allocatorPrefix(ctx context.Context, parent string) (string, error) {
 	prefix := ""
