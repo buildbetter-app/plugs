@@ -20,6 +20,15 @@ var builtInIssueTypes = map[string]bool{
 	"task": true, "bug": true, "feature": true, "epic": true, "chore": true,
 }
 
+// These issue columns have no lossless Plug issue-body representation. They
+// are retained verbatim in source.fields and are never interpreted as Plug
+// workflow state by the exporter.
+var opaqueIssueFields = [...]string{
+	"agent_state", "await_id", "await_type", "ephemeral", "event_kind",
+	"hook_bead", "is_template", "mol_type", "payload", "role_bead",
+	"role_type", "target", "timeout_ns", "waiters", "wisp_type", "work_type",
+}
+
 func copyOntology(input []OntologyDirective, projects []Project) ([]OntologyDirective, error) {
 	output := append([]OntologyDirective(nil), input...)
 	seenIDs := map[string]bool{}
@@ -161,24 +170,13 @@ func (m *mapping) issues(rows []Row) error {
 		if err := m.ontologyDirective(project.Prefix, issueType, id); err != nil {
 			return err
 		}
-		// Even in the durable table these flags can identify a promoted wisp.
-		// Refuse active workflow semantics rather than pretend they are issues.
-		for _, key := range []string{"ephemeral", "is_template"} {
-			if active(row[key]) {
-				return fmt.Errorf("unsupported issue flag %s", key)
-			}
-		}
 		if class := text(row, "storage_class"); class != "" && class != "versioned" {
 			return fmt.Errorf("unsupported issue storage class")
 		}
-		for _, key := range []string{"await_type", "await_id", "mol_type", "hook_bead", "role_bead", "agent_state", "event_kind"} {
-			if text(row, key) != "" {
-				return fmt.Errorf("unsupported active workflow field %s", key)
-			}
+		fields, err := copyIssueSourceFields(row)
+		if err != nil {
+			return err
 		}
-		fields := cloneRow(row)
-		delete(fields, "row_lock")
-		delete(fields, "is_blocked")
 		body := map[string]any{"type": "issue", "source_type": row["issue_type"], "title": row["title"], "status_category": category, "labels": []string{}}
 		if result != "" {
 			body["result"] = result
@@ -192,12 +190,16 @@ func (m *mapping) issues(rows []Row) error {
 	return nil
 }
 
-func active(value any) bool {
-	if value == nil || value == false || value == "" {
-		return false
+func copyIssueSourceFields(row Row) (Row, error) {
+	fields := cloneRow(row)
+	for _, key := range opaqueIssueFields {
+		if _, ok := fields[key]; !ok {
+			return nil, fmt.Errorf("missing source field in issues")
+		}
 	}
-	n, err := natural(value)
-	return err != nil || n != 0
+	delete(fields, "row_lock")
+	delete(fields, "is_blocked")
+	return fields, nil
 }
 
 func (m *mapping) allocator(tables map[string]Table) error {

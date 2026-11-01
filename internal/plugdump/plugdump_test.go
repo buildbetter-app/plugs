@@ -130,6 +130,59 @@ func TestDumpDeterministicPreservation(t *testing.T) {
 	}
 }
 
+func TestDumpPreservesOpaqueIssueFields(t *testing.T) {
+	source, inventory := fixture(t)
+	row := source["issues"].Rows[0]
+	row["agent_state"] = "state\x00opaque"
+	row["await_id"] = "demo-8"
+	row["await_type"] = "human"
+	row["ephemeral"] = int32(1)
+	row["event_kind"] = "opaque-event"
+	row["hook_bead"] = "demo-8"
+	row["is_template"] = int32(1)
+	row["mol_type"] = "opaque-mol"
+	row["payload"] = `{"opaque":"x\\u0000y","n":9007199254740993}`
+	row["role_bead"] = "demo-8"
+	row["role_type"] = "opaque-role"
+	row["target"] = "opaque-target"
+	row["timeout_ns"] = int64(9007199254740993)
+	row["waiters"] = `["demo-8"]`
+	row["wisp_type"] = "opaque-wisp"
+	row["work_type"] = "opaque-work"
+
+	data := buildFixture(t, source, inventory)
+	if _, err := Validate(bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	var record Record
+	for _, line := range bytes.Split(bytes.TrimSpace(archiveMembers(t, data)["records/bead.ndjson"]), []byte{'\n'}) {
+		var candidate Record
+		if err := decodeJSON(line, &candidate); err != nil {
+			t.Fatal(err)
+		}
+		if candidate.ID == row["id"] {
+			record = candidate
+			break
+		}
+	}
+	if record.ID == "" {
+		t.Fatal("opaque-field fixture bead was not exported")
+	}
+	for _, key := range opaqueIssueFields {
+		want, err := json.Marshal(row[key])
+		if err != nil {
+			t.Fatalf("marshal source %s: %v", key, err)
+		}
+		got, err := json.Marshal(record.Source.Fields[key])
+		if err != nil {
+			t.Fatalf("marshal archive %s: %v", key, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("opaque field %s changed: got %s, want %s", key, got, want)
+		}
+	}
+}
+
 func TestDumpStatusMapping(t *testing.T) {
 	for status, category := range map[string]string{"open": "unstarted", "in_progress": "started", "hooked": "started", "blocked": "backlog", "deferred": "backlog", "pinned": "backlog", "frozen": "backlog", "closed": "completed"} {
 		t.Run(status, func(t *testing.T) {
