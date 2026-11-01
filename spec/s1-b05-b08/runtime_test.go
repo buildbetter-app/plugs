@@ -89,6 +89,17 @@ func TestB05HeartbeatIsQuietReplayedAndReclaimableAcrossStores(t *testing.T) {
 			if row.Lease != nil || row.Bead.Status != "todo" {
 				t.Fatalf("reclaimed row=%+v lease=%+v", row.Bead, row.Lease)
 			}
+			// A later claim under the same anonymous identity must use its new
+			// durable deadline rather than a stale pre-reclaim overlay.
+			f.now = f.now.Add(time.Second)
+			reclaimClaim := f.call(t, f.ctx, "bead.claim", map[string]any{"id": id}, key("claim-after-reclaim"), actor)
+			if reclaimClaim.Error != nil {
+				t.Fatalf("claim after reclaim refused: %s", reclaimClaim.Error.Data.Code)
+			}
+			var claimedAgain model.Commit
+			if err := json.Unmarshal(reclaimClaim.Result, &claimedAgain); err != nil || claimedAgain.LeaseExpiresAt == nil || !claimedAgain.LeaseExpiresAt.Equal(f.now.Add(5*time.Minute)) {
+				t.Fatalf("claim after reclaim lease=%s err=%v", reclaimClaim.Result, err)
+			}
 		})
 	}
 }

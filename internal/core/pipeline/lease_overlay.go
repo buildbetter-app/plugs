@@ -96,7 +96,10 @@ func EffectiveLease(ctx context.Context, store driver.CheckpointStore, id string
 		}
 		return nil, err
 	}
-	if !present || !sameLeaseIdentity(base, overlay) {
+	// A reclaimed bead can be claimed again under the same principal, agent,
+	// and storage epoch.  Its new durable expiry is the claim boundary; an
+	// older checkpoint must never resurrect the prior lease image.
+	if !present || !sameLeaseIdentity(base, overlay) || !overlay.ExpiresAt.After(base.ExpiresAt) {
 		return cloneLease(base), nil
 	}
 	value := cloneLease(base)
