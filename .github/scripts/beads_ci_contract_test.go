@@ -135,6 +135,32 @@ func TestCarrierCannotExtendPrivilegesOrChangePins(t *testing.T) {
 	}
 }
 
+func TestExistingPlugCIContract(t *testing.T) {
+	root := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
+	if root == "" {
+		t.Fatal("the remote gate must supply PLUG_SOURCE_MODULE_ROOT")
+	}
+	cmd := exec.Command("bash", "scripts/ci/plug-bazel-config-test.sh")
+	cmd.Dir = root
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"TMPDIR=" + t.TempDir(),
+		"LANG=C.UTF-8",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"PYTHONDONTWRITEBYTECODE=1",
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("existing Plug CI contract failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "plug-ci-config: shell syntax and fail-closed argument checks passed") {
+		t.Fatalf("existing config validation did not finish: %s", output)
+	}
+	t.Log(string(output))
+}
+
 func git(t *testing.T, root string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
