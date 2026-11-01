@@ -144,6 +144,14 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	viewer := source.viewer(t, epics, visible)
 	before := inspectProgress(t, source.api.call(t, viewer, "view.run", progressParams(g.parent, epics)), map[string]int{"total": 2, "status:todo": 1, "status:done": 1}, 1)
 	beforeImages := persistedImages(t, source.store)
+	if len(beforeImages) != 7 {
+		t.Fatalf("source census has %d images, want six beads and one protected ontology", len(beforeImages))
+	}
+	for _, id := range []model.Ref{g.parent, g.open, g.done, g.secret, g.grandchild, g.unrelated, ref("ontology/ep6")} {
+		if _, exists := beforeImages[id.ID]; !exists {
+			t.Fatalf("source census omitted fixture identity %s", id.ID)
+		}
+	}
 	beforeClosure := persistedClosure(t, source.store)
 	if len(beforeClosure) != 11 {
 		t.Fatalf("source hierarchy closure has %d rows, want 11 for six beads", len(beforeClosure))
