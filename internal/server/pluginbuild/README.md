@@ -137,7 +137,9 @@ bytes, real compilation failure and cancellation, explicit trust and
 containment, real guest filesystem/network/environment refusals, initialization
 cancellation, static WASI import/export/memory checks, wrong source digest,
 changed source/HEAD/output, closed output, digest restore, and asynchronous
-rebuild match/mismatch comparison. Remote resolution, installation/approval, durable
+rebuild match/mismatch comparison. The WASI reproduction check builds the same
+pinned commit from a second clean checkout with the original source digest,
+then compares its artifact digest with the restored lock. Remote resolution, installation/approval, durable
 external artifact storage, build quotas, and UI bundles remain separate work.
 
 `TestWASIGuestBridgeAcceptance` builds the existing WASI fixture from committed
