@@ -5,6 +5,11 @@ the installed fixed checker, hierarchy Writer, snapshot-bound view adapter,
 and physical SQLite dump/restore/reopen. It has no replacement progress
 responses, prewritten bead rows, skipped capability checks, or reduced-load
 fallback. The protected ontology fixture alone uses the conformance seed port.
+Status setup and mutation use real lifecycle slot verbs on a separate admitted
+anonymous loopback fixture host over the same owned store. The fixed policy
+continues to refuse those lifecycle routes. Hierarchy writes, authorization,
+counts and revocation use the authenticated fixed-policy endpoint; the fixture
+host supplies no count responses or hierarchy writes.
 
 The scenarios check direct children against grandchildren and unrelated beads;
 visible status counts with an authorization-only hidden remainder; a refresh

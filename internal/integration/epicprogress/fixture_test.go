@@ -15,6 +15,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
@@ -160,6 +161,7 @@ type fixture struct {
 	base      authzfixed.Facts
 	app       *authzrpc.Composition
 	api       *endpoint
+	lifecycle *endpoint
 	sequence  int
 	owner     string
 	stopRenew context.CancelFunc
@@ -311,6 +313,9 @@ func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology b
 func (f *fixture) close(t *testing.T) {
 	t.Helper()
 	f.once.Do(func() {
+		if f.lifecycle != nil {
+			f.lifecycle.close(t)
+		}
 		if f.api != nil {
 			f.api.close(t)
 		}
@@ -325,6 +330,42 @@ func (f *fixture) close(t *testing.T) {
 			t.Error(err)
 		}
 	})
+}
+
+// lifecycleFixture is a separately admitted anonymous loopback host over the
+// owned fixture store. The unchanged fixed policy does not grant lifecycle
+// verbs. This host creates status observations through the real slot/ontology
+// Writer; it never supplies hierarchy writes, count responses or a caller grant.
+func lifecycleFixture(t *testing.T, store driver.Store, lease driver.ActiveLease) *endpoint {
+	t.Helper()
+	meta, err := store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := service.NewOntology(nil)
+	writer := pipeline.New(store, lease, pipeline.WithOntology(resolver))
+	domain := service.New(store, lease, writer, service.WithOntology(resolver))
+	registry, err := rpc.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rpc.BindService(registry, domain); err != nil {
+		t.Fatal(err)
+	}
+	server, err := rpc.New(registry, rpc.Config{Incarnation: meta.Incarnation, AuthMode: "anonymous", DefaultProject: epics,
+		CurrentIncarnation: func(ctx context.Context) (string, error) { m, e := store.Meta(ctx); return m.Incarnation, e }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission, err := authn.New(authn.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := httpjson.New(server, admission, httpjson.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return listen(t, handler)
 }
 
 func (f *fixture) issue(t *testing.T, p model.PrincipalRef) authnapikey.IssuedKey {

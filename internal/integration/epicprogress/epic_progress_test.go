@@ -29,7 +29,21 @@ func (f *fixture) graph(t *testing.T) graph {
 
 func (f *fixture) status(t *testing.T, id model.Ref, status, project string) {
 	t.Helper()
-	committed(t, f.write(t, f.owner, "bead.update", project, map[string]any{"id": id, "fields": map[string]any{"status": status}}))
+	method := map[string]string{"done": "bead.close", "failed": "bead.fail", "todo": "bead.reopen"}[status]
+	if method == "" {
+		t.Fatalf("unsupported fixture status %q", status)
+	}
+	before := f.head(t)
+	requireCode(t, f.write(t, f.owner, method, project, map[string]any{"id": id}), "forbidden")
+	if f.head(t) != before {
+		t.Fatal("fixed-policy lifecycle refusal changed source state")
+	}
+	if f.lifecycle == nil {
+		f.lifecycle = lifecycleFixture(t, f.store, f.lease)
+	}
+	f.sequence++
+	params := map[string]any{"id": id, "_meta": map[string]any{"project": project, "idempotencyKey": fmt.Sprintf("%032x", f.sequence), "return": "full"}}
+	committed(t, f.lifecycle.call(t, "", method, params))
 }
 
 func (f *fixture) viewer(t *testing.T, allowed ...string) string {
@@ -151,7 +165,8 @@ func TestEpicProgressRealHTTPVisibilityAndFreshAuthority(t *testing.T) {
 				}
 			}
 			// Changing a hidden status cannot alter a visible numerator or leak a
-			// hidden status bucket. Actual mutation crosses the guarded HTTP Writer.
+			// hidden status bucket. The separate fixture host uses actual slot verbs;
+			// counts continue through the API-key/fixed-policy HTTP boundary.
 			f.status(t, g.secret, "failed", hidden)
 			inspectProgress(t, f.api.call(t, viewer, "view.run", first.refresh), first.counts, 1)
 			inspectProgress(t, f.api.call(t, f.viewer(t, projects...), "view.run", request), map[string]int{"total": 3, "status:todo": 1, "status:done": 1, "status:failed": 1}, 0)
