@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -76,7 +77,7 @@ func ReverseRestored(ctx context.Context, store driver.Store) (LiveReverse, erro
 		}
 		cursor = page.NextCursor
 	}
-	if err := projectLiveDump(&dump, live); err != nil {
+	if err := projectLiveDump(ctx, r, &dump, live); err != nil {
 		return LiveReverse{}, err
 	}
 	converted, err := reverseconverter.Convert(dump)
@@ -99,6 +100,26 @@ func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter
 	if _, ok := evidence.Members["manifest.json"]; !ok {
 		return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
 	}
+	if envelope, err := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256)); err == nil {
+		if hashBytes(envelope) != evidence.ArchiveSHA256 {
+			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+		}
+		dump, err := reverseconverter.ReadBytes(envelope)
+		if err != nil || len(dump.Members) != len(evidence.Members) {
+			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+		}
+		for path, file := range evidence.Members {
+			member, ok := dump.Members[path]
+			if !ok || int64(len(member)) != file.Size || hashBytes(member) != file.SHA256 {
+				return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+			}
+		}
+		return dump, nil
+	} else if !errors.Is(err, driver.ErrNotFound) {
+		return reverseconverter.Dump{}, err
+	}
+	// Older restores retained only members. Their exact source hash can still
+	// be checked when the envelope used the canonical Go writer.
 	paths := []string{}
 	for path := range evidence.Members {
 		if path != "manifest.json" {
@@ -133,7 +154,7 @@ func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter
 	return reverseconverter.ReadBytes(archive.Bytes())
 }
 
-func projectLiveDump(dump *reverseconverter.Dump, live map[string]driver.Record) error {
+func projectLiveDump(ctx context.Context, reader driver.Reader, dump *reverseconverter.Dump, live map[string]driver.Record) error {
 	var archiveBinding archiveEvidence
 	if json.Unmarshal(live["restore/archive"].Body, &archiveBinding) != nil {
 		return ReverseRefusal{"invalid_source_evidence"}
@@ -144,6 +165,13 @@ func projectLiveDump(dump *reverseconverter.Dump, live map[string]driver.Record)
 		if binding.Kind != "instance_config" || json.Unmarshal(binding.Body, &evidence) != nil ||
 			evidence.Profile.ArchiveDigest != archiveBinding.ArchiveSHA256 || string(evidence.Profile.SourceStoreID) != dump.Manifest.StoreID {
 			return ReverseRefusal{"invalid_import_binding"}
+		}
+		if evidence.Profile.HistoryDigest != "" {
+			marker, ok := live[driver.OfflineHistoryEvidenceID]
+			if !ok || marker.Kind != "beads-archive" || validateReverseHistory(ctx, reader, evidence, archiveBinding, marker) != nil {
+				return ReverseRefusal{"invalid_history_binding"}
+			}
+			delete(live, driver.OfflineHistoryEvidenceID)
 		}
 		delete(live, importBindingRecordID)
 		for _, project := range dump.Manifest.Projects {
@@ -188,6 +216,33 @@ func projectLiveDump(dump *reverseconverter.Dump, live map[string]driver.Record)
 		return ReverseRefusal{"unmapped_live_record"}
 	}
 	return nil
+}
+
+// A source replay adds a core-owned marker beyond the source head records.
+// Accept it only when the same snapshot's original final receipt and retained
+// source history agree. Later ordinary writes do not change that receipt.
+func validateReverseHistory(ctx context.Context, reader driver.Reader, binding importBindingEvidence, archive archiveEvidence, marker driver.Record) error {
+	p, err := binding.Profile.Detached()
+	if err != nil {
+		return err
+	}
+	request, err := p.RequestHash()
+	if err != nil || request != binding.RequestHash {
+		return driver.ErrConflict
+	}
+	principal, err := driver.PrincipalKey(p.Admission.Actor)
+	if err != nil {
+		return err
+	}
+	receipt, err := reader.IdempotencyByKey(ctx, principal, p.AgentLabel(), p.Method, p.IdempotencyKey)
+	if err != nil || receipt == nil || receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Incarnation != reader.Snapshot().Incarnation {
+		return driver.ErrConflict
+	}
+	rows, err := reader.Get(ctx, []model.Ref{marker.Ref})
+	if err != nil || len(rows) != 1 || !bytes.Equal(rows[0].Body, marker.Body) {
+		return driver.ErrConflict
+	}
+	return validateHistoryRecovery(ctx, reader, p, archive, receipt)
 }
 
 func projectLiveBead(source reverseconverter.Record, row driver.Record, dump reverseconverter.Dump) (reverseconverter.Record, error) {

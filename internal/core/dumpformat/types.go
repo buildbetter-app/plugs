@@ -88,6 +88,7 @@ type Record struct {
 // cannot turn a validated record into an unchecked restore request.
 type Archive struct {
 	sha256   string
+	tarBytes []byte
 	manifest Manifest
 	members  map[string][]byte
 	byKind   map[string][]Record
@@ -113,6 +114,11 @@ func (a *Archive) NativeMember(path string) ([]byte, bool) {
 
 // SHA256 binds the exact validated tar bytes, including its manifest.
 func (a *Archive) SHA256() string { return a.sha256 }
+
+// TarBytes returns the exact validated source envelope, including tar headers
+// and padding. Reconstructing members does not reproduce every valid envelope.
+// Derived history images have no independent source envelope.
+func (a *Archive) TarBytes() []byte { return append([]byte(nil), a.tarBytes...) }
 
 func (a *Archive) Manifest() Manifest {
 	m := a.manifest

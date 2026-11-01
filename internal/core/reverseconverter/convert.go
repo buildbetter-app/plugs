@@ -234,7 +234,9 @@ func ConvertWithDirectives(dump Dump, directives []ontologymigration.Directive) 
 		normalizeReport(&report)
 		return Result{Report: report}, withReport(&Refusal{Reasons: uniqueStrings(directiveReasons), Report: report}, report)
 	}
-	if dump.Manifest.History == "available-unverified" {
+	if dump.Manifest.History == "verified" {
+		addUnique(&report.LostPostSwitchHistory, "verified source history is not replayed by a head-state Beads import")
+	} else if dump.Manifest.History == "available-unverified" {
 		addUnique(&report.LostPostSwitchHistory, "available-unverified source history is not representable in a head-state Beads import")
 	} else {
 		addUnique(&report.LostPostSwitchHistory, "Plug head-state dump contains no complete post-switch history")
@@ -440,7 +442,7 @@ func validateDumpShape(dump Dump, report *Report) error {
 	if m.Format != PlugDumpFormat || m.Schema != 1 || m.Reference != BeadsReference || m.MainVersion != 72 || m.IgnoredVersion != 28 || m.StoreID == "" || m.Machine == "" || m.Scope != "offline-head-and-source-archives" {
 		return refusal("unsupported plug-dump manifest")
 	}
-	if m.History != "unavailable" && m.History != "available-unverified" {
+	if m.History != "unavailable" && m.History != "available-unverified" && m.History != "verified" {
 		return refusal("unsupported history disposition %q", m.History)
 	}
 	if len(m.Kinds) == 0 {
