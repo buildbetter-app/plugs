@@ -1765,6 +1765,8 @@ sh_test(
         ":bd_test",
         ":compact_gc_fixture",
         ":dolt_server_pinned_shards.txt",
+        "//internal/plugdump:synthetic_source",
+        "//internal/plugdump:synthetic_inventory",
         ":preflight_go_fixture",
         "@go_sdk//:bin/gofmt",
     ],
