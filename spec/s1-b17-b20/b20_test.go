@@ -129,10 +129,6 @@ func newRuntime(t *testing.T, store driver.Store, live bool, id string) *runtime
 		cancel()
 		t.Fatal(err)
 	}
-	if err = rpc.BindTxApply(registry, domain); err != nil {
-		cancel()
-		t.Fatal(err)
-	}
 	server, err := rpc.New(registry, rpc.Config{
 		DefaultProject: "cardb20", Incarnation: meta.Incarnation,
 		OntologyRevision: model.Natural64(1), CursorKey: []byte(b20CursorKey),

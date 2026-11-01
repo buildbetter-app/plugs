@@ -70,7 +70,7 @@ func i6ImportArchive(t *testing.T, data []byte) []byte {
 			source := record["source"].(map[string]any)["fields"].(map[string]any)
 			body["type"] = "blocks"
 			source["type"] = "blocks"
-			lines[i] = i6JSON(t, record)
+			lines[i] = bytes.TrimSuffix(i6JSON(t, record), []byte{'\n'})
 		}
 		members[name] = append(bytes.Join(lines, []byte{'\n'}), '\n')
 	}

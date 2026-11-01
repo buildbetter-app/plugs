@@ -14,7 +14,7 @@ go_test(
     data = [
         "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
         "//spec/recorded:lexicon_files",
-    ],
+    ] + glob(["reference/b18/*.json"]),
     args = ["-test.v"],
     deps = [
         "//internal/api/wire",

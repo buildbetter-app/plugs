@@ -87,7 +87,7 @@ func (h *b17Harness) writer() *pipeline.Writer {
 }
 
 func b17Meta(n int) model.WriteMeta {
-	return model.WriteMeta{Method: "tx.apply", Project: "s1-b17-b20", AgentLabel: "s1-b17-agent", IdempotencyKey: fmt.Sprintf("s1-b17-%032d", n)}
+	return model.WriteMeta{Method: "tx.apply", Project: "s1-b17-b20", AgentLabel: "s1-b17-agent", IdempotencyKey: fmt.Sprintf("%032x", n)}
 }
 
 func b17Create() model.Op {
