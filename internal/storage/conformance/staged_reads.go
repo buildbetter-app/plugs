@@ -97,5 +97,5 @@ func RunStagedReadOverlay(t *testing.T, factory Factory) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertStaged(states, "1", "", `{"value":"updated"}`, false, "0", "")
+	assertStaged(states, "1", "", `{"value":"updated"}`, false, "1", "")
 }

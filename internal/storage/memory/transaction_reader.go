@@ -42,6 +42,11 @@ func (t *transaction) snapshotReader(ctx context.Context) (*reader, error) {
 	}
 	for id, value := range t.derived {
 		value = copyLock(value)
+		if committed, ok := view.keys[id]; ok {
+			// Match record observations: a staged derived mutation keeps the
+			// committed predicate revision as its optimistic token.
+			value.Revision = committed.Revision
+		}
 		view.keys[id] = value
 		view.keyHistory[id] = append(append([]driver.LockState(nil), view.keyHistory[id]...), value)
 	}
