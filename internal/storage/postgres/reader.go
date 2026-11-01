@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -242,31 +243,106 @@ func (r *reader) recordAt(ctx context.Context, key string) (storedRecord, bool, 
 	return result, true, nil
 }
 
+// recordsAt batches current rows without changing the bounded historical
+// reconstruction path. Any current-row miss still uses recordAt, except at
+// revision zero where no committed record can exist. Nothing survives this call.
+func (r *reader) recordsAt(ctx context.Context, ids []string) (map[string]storedRecord, error) {
+	result := make(map[string]storedRecord, len(ids))
+	if len(ids) == 0 || r.at == 0 {
+		return result, nil
+	}
+	keys := make([][]byte, len(ids))
+	for i, id := range ids {
+		keys[i] = []byte(id)
+	}
+	rows, err := r.sql.QueryContext(ctx, `SELECT key,ref,kind,revision::text,body,deleted,version_count::text
+	 FROM plug_postgres.records WHERE key=ANY($1::bytea[]) AND revision<=$2`, keys, decimal(r.at))
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var id, raw []byte
+		var value storedRecord
+		var revision, count string
+		if err = rows.Scan(&id, &raw, &value.record.Kind, &revision, &value.record.Body, &value.deleted, &count); err != nil {
+			break
+		}
+		if err = decode(raw, &value.record.Ref); err != nil {
+			break
+		}
+		var n uint64
+		if n, err = parseCounter(revision); err != nil {
+			break
+		}
+		value.record.Revision = model.Natural64(n)
+		if value.count, err = parseCounter(count); err != nil {
+			break
+		}
+		result[string(id)] = value
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	closeErr := rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	for _, id := range ids {
+		if _, exists := result[id]; exists {
+			continue
+		}
+		value, exists, err := r.recordAt(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			result[id] = value
+		}
+	}
+	return result, nil
+}
+
 func (r *reader) get(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
-	result := make([]driver.Record, 0, len(refs))
-	for _, ref := range refs {
+	ids := make([]string, len(refs))
+	read := []string{}
+	values := map[string]storedRecord{}
+	seen := map[string]bool{}
+	for i, ref := range refs {
 		key, err := recordKey(ref)
 		if err != nil {
 			return nil, err
 		}
+		ids[i] = key
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		if r.writer != nil {
 			if v, ok := r.writer.records[key]; ok {
 				if v != nil {
-					copy, err := copied(*v)
-					if err != nil {
-						return nil, err
-					}
-					result = append(result, copy)
+					values[key] = storedRecord{record: *v}
 				}
 				continue
 			}
 		}
-		value, ok, err := r.recordAt(ctx, key)
-		if err != nil {
-			return nil, err
-		}
-		if ok && !value.deleted {
-			result = append(result, value.record)
+		read = append(read, key)
+	}
+	stored, err := r.recordsAt(ctx, read)
+	if err != nil {
+		return nil, err
+	}
+	for id, value := range stored {
+		values[id] = value
+	}
+	result := make([]driver.Record, 0, len(refs))
+	for _, id := range ids {
+		if value, exists := values[id]; exists && !value.deleted {
+			row := value.record
+			row.Body = bytes.Clone(row.Body)
+			result = append(result, row)
 		}
 	}
 	return result, nil
@@ -362,13 +438,77 @@ func (r *reader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.L
 	if err := driver.ValidateLockKeys(keys); err != nil {
 		return nil, err
 	}
-	states := make([]driver.LockState, 0, len(keys))
-	for _, key := range keys {
-		state, err := r.observe(ctx, key)
+	states := make([]driver.LockState, len(keys))
+	recordIDs := []string{}
+	stateIDs := [][]byte{}
+	indexes := map[string]int{}
+	for i, key := range keys {
+		id, err := keyID(key)
 		if err != nil {
 			return nil, err
 		}
-		states = append(states, state)
+		owned, err := copied(key)
+		if err != nil {
+			return nil, err
+		}
+		states[i] = driver.LockState{Key: owned, Revision: model.Natural64(0)}
+		indexes[id] = i
+		if key.Kind == driver.LockRecord {
+			if r.writer != nil {
+				if _, staged := r.writer.records[id]; staged {
+					states[i], err = r.observe(ctx, key)
+					if err != nil {
+						return nil, err
+					}
+					continue
+				}
+			}
+			recordIDs = append(recordIDs, id)
+		} else if r.writer != nil {
+			if state, staged := r.writer.derived[id]; staged {
+				states[i], err = copied(state)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				stateIDs = append(stateIDs, []byte(id))
+			}
+		} else {
+			stateIDs = append(stateIDs, []byte(id))
+		}
+	}
+	records, err := r.recordsAt(ctx, recordIDs)
+	if err != nil {
+		return nil, err
+	}
+	for id, value := range records {
+		i := indexes[id]
+		states[i].Revision = value.record.Revision
+		states[i].Present = !value.deleted
+		if !value.deleted {
+			row := value.record
+			states[i].Record = &row
+		}
+	}
+	if len(stateIDs) != 0 {
+		rows, err := r.sql.QueryContext(ctx, `SELECT DISTINCT ON (key) key,value FROM plug_postgres.states
+		 WHERE key=ANY($1::bytea[]) AND revision<=$2 ORDER BY key,revision DESC`, stateIDs, decimal(r.at))
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id, raw []byte
+			if err := rows.Scan(&id, &raw); err != nil {
+				return nil, err
+			}
+			if err := decode(raw, &states[indexes[string(id)]]); err != nil {
+				return nil, err
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
 	}
 	return states, nil
 }
