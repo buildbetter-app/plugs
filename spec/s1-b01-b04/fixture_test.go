@@ -142,7 +142,7 @@ func (f *fixture) install() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	server, err := rpc.New(registry, rpc.Config{DefaultProject: project, Incarnation: meta.Incarnation, CursorKey: []byte("s1-b01-b04-fixed-cursor-key")})
+	server, err := rpc.New(registry, rpc.Config{DefaultProject: project, Incarnation: meta.Incarnation, CursorKey: []byte("s1-b01-b04-fixed-cursor-key-32-bytes-min")})
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func customDocument() ontology.Document {
 			},
 			Transitions: []ontology.Rule{{From: []string{"queued"}, To: "working", Guards: []ontology.Guard{{Kind: ontology.NoOpenBlockers}}}, {To: "finished", Guards: []ontology.Guard{{Kind: ontology.NoOpenBlockers}}}, {To: "broken"}, {To: "abandoned"}, {To: "queued"}, {To: "parked"}, {To: "shared"}},
 		}},
-		Types: map[string]ontology.Type{"issue": {Name: "Issue", Workflow: "issue", Fields: map[string]ontology.Field{"title": {Type: "string"}, "priority": {Type: "integer"}}}},
+		Types: map[string]ontology.Type{"issue": {Name: "Issue", Workflow: "issue", Fields: map[string]ontology.Field{"title": {Type: "string"}}}},
 	}
 }
 
