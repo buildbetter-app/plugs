@@ -211,7 +211,7 @@ func TestChainBudgetAndInvalidContext(t *testing.T) {
 // Deadline delivery is asynchronous. A context may already report a passed
 // deadline while its cancellation callback has not run (Err remains nil).
 // WithTimeout inherits the earlier deadline, so the budget boundary must
-// check elapsed wall time as well as the cancellation channel.
+// check elapsed time as well as the cancellation channel.
 type delayedCancellationContext struct {
 	context.Context
 	deadline time.Time
@@ -224,6 +224,20 @@ func TestAuthorizationBudgetRejectsElapsedDeadlineBeforeCancellation(t *testing.
 	_, err := bounded(ctx, time.Millisecond, func(context.Context) (bool, error) { return true, nil })
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("elapsed authorization budget returned success before asynchronous cancellation: %v", err)
+	}
+}
+
+func TestAuthorizationBudgetRejectsLateResultBeforeCancellation(t *testing.T) {
+	// WithTimeout inherits this earlier deadline without installing its own
+	// timer. Cancellation is deliberately delayed by the parent, so only the
+	// result-path elapsed-deadline check can reject the late component result.
+	ctx := delayedCancellationContext{Context: context.Background(), deadline: time.Now().Add(5 * time.Millisecond)}
+	_, err := bounded(ctx, 100*time.Millisecond, func(context.Context) (bool, error) {
+		time.Sleep(time.Until(ctx.deadline) + time.Millisecond)
+		return true, nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("late component result escaped elapsed authorization budget: %v", err)
 	}
 }
 
