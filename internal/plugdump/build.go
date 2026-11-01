@@ -230,9 +230,23 @@ func natural(value any) (uint64, error) {
 	var s string
 	switch value := value.(type) {
 	case int:
-		s = strconv.Itoa(value)
+		s = strconv.FormatInt(int64(value), 10)
+	case int8:
+		s = strconv.FormatInt(int64(value), 10)
+	case int16:
+		s = strconv.FormatInt(int64(value), 10)
+	case int32:
+		s = strconv.FormatInt(int64(value), 10)
 	case int64:
 		s = strconv.FormatInt(value, 10)
+	case uint:
+		s = strconv.FormatUint(uint64(value), 10)
+	case uint8:
+		s = strconv.FormatUint(uint64(value), 10)
+	case uint16:
+		s = strconv.FormatUint(uint64(value), 10)
+	case uint32:
+		s = strconv.FormatUint(uint64(value), 10)
 	case uint64:
 		s = strconv.FormatUint(value, 10)
 	case json.Number:

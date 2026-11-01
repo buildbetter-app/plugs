@@ -510,6 +510,34 @@ func TestDumpSQLValuePreservesTextAndBinary(t *testing.T) {
 	}
 }
 
+func TestDumpNaturalAcceptsLosslessIntegerWidths(t *testing.T) {
+	const want = uint64(42)
+	for name, value := range map[string]any{
+		"int":    int(42),
+		"int8":   int8(42),
+		"int16":  int16(42),
+		"int32":  int32(42),
+		"int64":  int64(42),
+		"uint":   uint(42),
+		"uint8":  uint8(42),
+		"uint16": uint16(42),
+		"uint32": uint32(42),
+		"uint64": uint64(42),
+		"number": json.Number("42"),
+		"string": "42",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := natural(value)
+			if err != nil || got != want {
+				t.Fatalf("natural(%T) = %d, %v; want %d, nil", value, got, err, want)
+			}
+		})
+	}
+	if _, err := natural(int32(-1)); err == nil {
+		t.Fatal("natural accepted a negative signed integer")
+	}
+}
+
 func TestDumpEveryUnsupportedFamily(t *testing.T) {
 	for name := range tableColumns {
 		action, _ := actionFor(name)
