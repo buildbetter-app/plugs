@@ -383,7 +383,7 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 		return nil, err
 	}
 	historyRows := counts["issue_versions"] + counts["issue_snapshots"] + counts["compaction_snapshots"]
-	if (historyRows != 0) != (manifest.History == "available-unverified") {
+	if _, captured := members[SourceHistoryMember]; !captured && (historyRows != 0) != (manifest.History == "available-unverified") {
 		return nil, fmt.Errorf("history declaration does not match archived source rows")
 	}
 	if err := validateRelations(manifest.Projects, byKind); err != nil {
