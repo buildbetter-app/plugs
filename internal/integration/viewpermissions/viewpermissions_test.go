@@ -325,7 +325,7 @@ func TestViewCursorDeniedAfterRealPermissionAndDefinitionChanges(t *testing.T) {
 	requireCode(t, f.call(t, fresh.Token, "view.run", map[string]any{"viewId": "issues", "cursor": savedCursor}), "cursor_invalid")
 }
 
-func TestViewCursorDeniedWhenFixedFactsSourceChanges(t *testing.T) {
+func TestViewCursorSurvivesRefusedNamespaceReplacement(t *testing.T) {
 	f := newFixture(t)
 	key := f.issue(t, model.PrincipalRef{Kind: "user", ID: "user:operator"})
 	definition := map[string]any{"filter": map[string]any{"types": []string{"issue"}}, "fields": []string{"id"}, "budgetTokens": 1}
@@ -334,17 +334,16 @@ func TestViewCursorDeniedWhenFixedFactsSourceChanges(t *testing.T) {
 	if !ok || cursor == "" {
 		t.Fatalf("first page did not return a cursor: %v", first)
 	}
-	// The source is replaced as one complete trusted snapshot. A namespace
-	// drift is rejected by the real Checker, so a continuation cannot reuse a
-	// cursor under an untrusted fixed-permission source.
+	// Namespace drift must be refused before replacing the installed source;
+	// the unchanged original authority still governs the cursor continuation.
 	changed := authzfixed.Facts{Namespace: authz.Namespace{
 		StoreID: f.ns.StoreID, Incarnation: f.ns.Incarnation,
 		InstallationID: "replaced", Authority: f.ns.Authority,
 	}}
-	if err := f.facts.Replace(changed); err != nil {
-		t.Fatal(err)
+	if err := f.facts.Replace(changed); err == nil {
+		t.Fatal("installed source accepted a different namespace")
 	}
-	requireCode(t, f.call(t, key.Token, "view.run", map[string]any{"definition": definition, "cursor": cursor}), "authz_unavailable")
+	result(t, f.call(t, key.Token, "view.run", map[string]any{"definition": definition, "cursor": cursor}))
 }
 
 func TestCandidateCapAppliesAfterRealFixedReadAuthorization(t *testing.T) {

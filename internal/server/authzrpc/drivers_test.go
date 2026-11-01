@@ -75,7 +75,7 @@ func matrixFixture(t *testing.T, open storeFactory) *fixture {
 	var changes []conformance.FixtureChange
 	for i, project := range []string{"", "unregistered", "inactive", "other", "project", "project"} {
 		ref := fixtureRef(i + 2)
-		body, err := json.Marshal(map[string]any{"id": ref.ID, "type": "issue", "project": project, "fields": map[string]any{"title": "historical", "status": "todo", "priority": i + 1}})
+		body, err := json.Marshal(map[string]any{"id": ref.ID, "type": "issue", "project": project, "fields": map[string]any{"title": "historical", "status": "todo", "priority": min(i+1, 4)}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -225,7 +225,7 @@ func postImage(t *testing.T, open storeFactory) {
 	}
 	proposal := port.ProposedChange{Principal: worker("user:operator"), Meta: model.WriteMeta{Method: "bead.update"}, Changes: []port.Change{{Resource: model.ResourceRef{Kind: "bead", Ref: fixtureRef(1)}, Before: rows[0].Body, After: rows[0].Body}}}
 	if err := f.server.Checker.Authorize(ctx, port.AuthorizeAfter, proposal, reader); err != nil {
-		t.Fatal(err)
+		t.Fatalf("unchanged supported image: %#v", err)
 	}
 	for _, field := range []string{"project", "parent", "owner", "assignee", "type", "labels", "restricted"} {
 		t.Run(field, func(t *testing.T) {

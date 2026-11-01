@@ -206,7 +206,7 @@ func (f *fixture) call(t *testing.T, by model.PrincipalRef, method string, param
 func success(t *testing.T, got reply) {
 	t.Helper()
 	if got.Error != nil {
-		t.Fatalf("RPC error = %s", got.Error.Data.Code)
+		t.Fatalf("RPC error = %+v", got.Error.Data)
 	}
 	if len(got.Result) == 0 {
 		t.Fatal("RPC omitted its result")
