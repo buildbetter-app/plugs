@@ -11,8 +11,10 @@ driver. Each preparation owns two fresh stores, ephemeral API keys and loopback
 HTTP/MCP endpoints. It seeds only synthetic tasks and memory, dumps the source,
 restores an empty target, compares ready identities/content, checks the new
 incarnation, and runs parsed agent commands through authenticated HTTP and MCP.
-It checks three distinct claims and completed task lifecycles, then attempts
-reverse conversion of the post-workload native dump. The owned directory,
+The MCP fixture uses the generic `plug_call` tool with canonical method names;
+projected core tools use snake-case names. It checks three distinct claims and
+completed task lifecycles, then attempts reverse conversion of the post-workload
+native dump. The owned directory,
 stores, HTTP clients and listeners close before a successful report is returned.
 There is no input for a server URL, DSN, bearer, command adapter or cloud account.
 

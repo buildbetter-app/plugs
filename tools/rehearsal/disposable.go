@@ -504,6 +504,24 @@ func newMCPClient(ctx context.Context, f *fixture) (*client.Client, func(), erro
 		close()
 		return nil, nil, fmt.Errorf("MCP initialization failed")
 	}
+	listed, _, err := t.exchange(ctx, []byte(`{"jsonrpc":"2.0","id":"discover","method":"tools/list","params":{}}`))
+	var discovery struct {
+		JSONRPC string `json:"jsonrpc"`
+		ID      string
+		Result  struct{ Tools []struct{ Name string } }
+	}
+	if err != nil || json.Unmarshal(listed, &discovery) != nil || discovery.JSONRPC != "2.0" || discovery.ID != "discover" {
+		close()
+		return nil, nil, fmt.Errorf("MCP tool discovery failed")
+	}
+	found := false
+	for _, tool := range discovery.Result.Tools {
+		found = found || tool.Name == "plug_call"
+	}
+	if !found {
+		close()
+		return nil, nil, fmt.Errorf("MCP canonical caller tool unavailable")
+	}
 	c, err := client.New(t, "rehearsal", "rehearsal-agent")
 	if err != nil {
 		close()
@@ -549,19 +567,10 @@ func (t *mcpTransport) RoundTrip(ctx context.Context, data []byte) ([]byte, erro
 	if json.Unmarshal(data, &request) != nil {
 		return nil, fmt.Errorf("invalid caller bytes")
 	}
-	catalog, err := wire.DefaultCatalog()
-	if err != nil {
-		return nil, fmt.Errorf("MCP caller catalog unavailable")
-	}
-	desc, known := catalog.Descriptor(request.Method)
-	if !known {
-		return nil, fmt.Errorf("unknown canonical caller method")
-	}
-	name, arguments := "plug_call", map[string]any{"method": request.Method, "params": request.Params}
-	if desc.AgentCore {
-		name, arguments = strings.ReplaceAll(request.Method, ".", "_"), request.Params
-	}
-	encoded, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "method": "tools/call", "params": map[string]any{"name": name, "arguments": arguments}})
+	// The generic discovered tool preserves canonical camel-case method names
+	// and also admits visible non-core methods such as memory.list. Projected
+	// core tool names use a separate snake-case naming convention.
+	encoded, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "method": "tools/call", "params": map[string]any{"name": "plug_call", "arguments": map[string]any{"method": request.Method, "params": request.Params}}})
 	if err != nil {
 		return nil, err
 	}
