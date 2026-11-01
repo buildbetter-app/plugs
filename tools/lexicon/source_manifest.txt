@@ -808,9 +808,13 @@ internal/storage/conformance/locks.go
 internal/storage/conformance/noops.go
 internal/storage/conformance/responses.go
 internal/storage/conformance/staged_reads.go
+internal/storage/depid/BUILD.bazel
+internal/storage/depid/depid.go
+internal/storage/depid/depid_test.go
 internal/storage/driver/BUILD.bazel
 internal/storage/driver/allocator.go
 internal/storage/driver/allocator_contract_test.go
+internal/storage/driver/allocator_hash_test.go
 internal/storage/driver/audit_contract_test.go
 internal/storage/driver/driver.go
 internal/storage/driver/errors.go
@@ -1011,6 +1015,8 @@ spec/s1-b05-b08/reclaim_race_test.go
 spec/s1-b05-b08/record_reference.py
 spec/s1-b05-b08/reference/provenance.json
 spec/s1-b05-b08/runtime_test.go
+spec/s1-b09-b12/BUILD.bazel
+spec/s1-b09-b12/README.md
 spec/s1-b09-b12/compaction/BUILD.bazel
 spec/s1-b09-b12/compaction/audit_test.go
 spec/s1-b09-b12/compaction/b12_test.go
@@ -1021,6 +1027,11 @@ spec/s1-b09-b12/compaction/guards_test.go
 spec/s1-b09-b12/compaction/presence_test.go
 spec/s1-b09-b12/compaction/publication_test.go
 spec/s1-b09-b12/compaction/selection_test.go
+spec/s1-b09-b12/projection.py
+spec/s1-b09-b12/provenance.json
+spec/s1-b09-b12/record_reference.py
+spec/s1-b09-b12/replay_test.go
+spec/s1-b09-b12/vectors.json
 spec/s1-b13-b16/BUILD.bazel
 spec/s1-b13-b16/README.md
 spec/s1-b13-b16/capture_regressions_test.go
