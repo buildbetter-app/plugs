@@ -31,6 +31,10 @@ type Config struct {
 	Natives    []sdk.Native
 	Bindings   []Binding
 	Dispatcher Dispatcher
+	// AuthenticationConfigured is trusted host configuration, never a plugin
+	// grant or caller-supplied principal. Leave it false in anonymous mode:
+	// even declared egress is disabled without an authentication provider.
+	AuthenticationConfigured bool
 	// Authorize checks a caller's permission to invoke extension methods. With
 	// no authorization plugin nil permits, matching core's optional chain.
 	Authorize func(context.Context, string, []pluginapi.Ref) error
@@ -49,12 +53,13 @@ type Binding struct {
 }
 
 type Host struct {
-	instances  map[string]*instance
-	natives    map[string]sdk.Native
-	bindings   []*bound
-	methods    map[string]registeredMethod
-	dispatcher Dispatcher
-	authorize  func(context.Context, string, []pluginapi.Ref) error
+	instances                map[string]*instance
+	natives                  map[string]sdk.Native
+	bindings                 []*bound
+	methods                  map[string]registeredMethod
+	dispatcher               Dispatcher
+	authorize                func(context.Context, string, []pluginapi.Ref) error
+	authenticationConfigured bool
 }
 
 const (
@@ -279,7 +284,7 @@ type registeredMethod struct {
 }
 
 func New(config Config) (*Host, error) {
-	h := &Host{instances: map[string]*instance{}, natives: map[string]sdk.Native{}, methods: map[string]registeredMethod{}, dispatcher: config.Dispatcher, authorize: config.Authorize}
+	h := &Host{instances: map[string]*instance{}, natives: map[string]sdk.Native{}, methods: map[string]registeredMethod{}, dispatcher: config.Dispatcher, authorize: config.Authorize, authenticationConfigured: config.AuthenticationConfigured}
 	aliases, ids := map[string]string{}, map[string]string{}
 	for _, native := range config.Natives {
 		if err := native.Manifest.Validate(); err != nil {
