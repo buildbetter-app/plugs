@@ -113,6 +113,63 @@ try {
     assert.equal((await snapshot()).total, "");
     assert(requests.every(request => ["server.hello", "rpc.methods"].includes(request.method)), "presentation must not issue fallback counts or graph reads");
     console.log("PASS presentation malformed/capped inputs refuse; refresh and missing capability clear old counts");
+  } else if (mode === "contract") {
+    const cases = await (await fetch(base + "/fixtures/cases.json")).json();
+    for (const fixture of cases) {
+      const url = base + "/fixtures/" + fixture.name + "/ui/?view=epic&epicId=pl-parent";
+      const before = requests.filter(request => request.method === "view.run").length;
+      await send("Page.navigate", { url });
+      await until(() => evaluate(`location.href === ${JSON.stringify(url)} && document.readyState === 'complete' && !!document.querySelector('#refresh')`), "contract page");
+      await settled();
+      const result = await snapshot();
+      const state = await value("#connection-state");
+      assert.equal(result.injected, false, fixture.name);
+      assert.equal(result.overflow, false, fixture.name);
+      assert(!(/unreadable-child|unreadable-status|unreadable-project/.test(await value("main"))), "no identities/statuses from malformed data or error hints");
+      if (fixture.code) {
+        assert.equal(state, "Unavailable", fixture.name);
+        assert((await value("#epic-state")).includes(fixture.code), fixture.name + " preserves its typed refusal");
+        assert.equal(result.total, "", fixture.name);
+        assert.equal(result.remainder, "", fixture.name);
+      } else {
+        assert.equal(state, "Connected", fixture.name);
+        assert.equal(result.total, fixture.total + " visible children", fixture.name);
+        assert.deepEqual(result.statuses, fixture.statuses, fixture.name);
+        assert.equal(result.remainder, fixture.hidden ? fixture.hidden + " more you cannot see" : "", fixture.name);
+      }
+      assert.equal(requests.filter(request => request.method === "view.run").length, before + 1, "a hidden remainder must not start a follow-up read");
+      if (fixture.refresh) {
+        await click("#refresh");
+        if (fixture.refresh === "slow") {
+          await until(() => requests.filter(request => request.method === "view.run").length === before + 2, "in-flight read to cancel");
+          assert.equal((await snapshot()).total, "", "old counts clear before a pending permission read");
+          await click("#cancel"); await settled();
+          assert.equal(await value("#connection-state"), "Cancelled");
+          assert.equal((await snapshot()).total, "");
+          assert.equal((await snapshot()).remainder, "");
+        } else {
+          await settled();
+          if (fixture.refresh === "empty") {
+            assert.equal((await snapshot()).total, "0 visible children");
+            assert.deepEqual((await snapshot()).statuses, []);
+          } else {
+            assert.equal(await value("#connection-state"), "Unavailable");
+            assert((await value("#epic-state")).includes(fixture.refresh));
+            assert.equal((await snapshot()).total, "");
+          }
+          assert.equal((await snapshot()).remainder, "", "refresh must remove the prior hidden remainder");
+        }
+        assert(!(/unreadable-child|unreadable-status/.test(await value("main"))));
+      }
+      console.log("PASS wire consumer " + fixture.name);
+    }
+    const before = requests.filter(request => request.method === "view.run").length;
+    await evaluate("document.querySelector('#epic-id').value = 'pl-parent AND status=unreadable-status'; document.querySelector('#epic-form').requestSubmit()");
+    await settled();
+    assert.equal(requests.filter(request => request.method === "view.run").length, before, "an ID must not inject filter syntax");
+    assert.equal((await snapshot()).total, "");
+    assert(requests.every(request => ["server.hello", "rpc.methods", "view.run"].includes(request.method)), "no fallback graph or write RPCs");
+    console.log("PASS wire consumer canonical parent requests, no hidden pagination, no graph/policy fallback");
   } else {
     throw new Error("unknown epic browser mode");
   }
@@ -123,5 +180,5 @@ try {
   chrome.kill("SIGTERM");
   await Promise.race([stopped, delay(2000)]);
   if (chrome.exitCode === null) { chrome.kill("SIGKILL"); await stopped; }
-  await rm(profile, { recursive: true, force: true });
+  await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }

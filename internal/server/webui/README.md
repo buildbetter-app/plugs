@@ -135,13 +135,27 @@ Untrusted titles, IDs, reasons and presence data are rendered as text.
   References and reasons use textContent. `TestBrowserDirectBlockerContractFixtures`
   covers these states and hostile text using explicit response fixtures;
   it does not qualify the producer, authorization, or full E3 workload.
-- Epic progress remains explicitly unavailable until an admitted parent-aware
-  hierarchy and authorized count query exist. Type summaries are never shown
-  as epic progress.
-  The Epic progress tab contains an isolated count renderer and clears its
-  previous counts before a refresh, cancellation or refused read. Its draft
-  consumer has no parent-aware wire adapter yet: ordinary `view.run` discovery
-  alone does not enable progress. `TestBrowserEpicProgressPresentation` checks
+- Epic progress uses only the explicitly opted-in parent-aware `view.run`
+  definition: `filter.query="parent=<bare ID>"`, `fields=[]` and
+  `groupBy=["epic-progress"]`. Ordinary `view.run` discovery is insufficient:
+  a disabled producer refuses the definition. The tab renders visible counts
+  from the `total` and `status:<canonical status>` groups, preserving the
+  producer's status semantics instead of classifying statuses in the browser.
+  Only the total group's `authorization` elision supplies the exact
+  “N more you cannot see” remainder. Its same-request `continueWith` is a
+  fresh permission check, never a hidden-child next page; the UI validates
+  its scope and never executes a response-supplied call. Refresh builds the
+  same parent request again without a cursor or `asOf`.
+  Count-only results must be complete with no payload items or `nextCursor`.
+  Unknown groups, non-authorization elisions, inconsistent totals, unsafe
+  counts and responses beyond the 20,000-child or UI status-row bounds refuse
+  the entire read. No count is approximated or truncated. The request leaves
+  the producer's token budget at its default; `MaxRows` is only a presentation
+  bound. Snapshot status keys come from that one result, without an extra
+  ontology read. Type summaries are never shown as epic progress.
+  Previous counts clear before refresh, cancellation, navigation or refusal;
+  refusal details never render a parent identity from a server hint.
+  `TestBrowserEpicProgressPresentation` checks
   visible-only counts, the exact hidden remainder, output bounds, text-only
   status labels and mobile wrapping using explicit presentation inputs. This
   test does not qualify the hierarchy, permissions, ontology or RPC producer.

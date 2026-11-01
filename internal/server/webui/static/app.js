@@ -613,11 +613,13 @@
     const id = $("epic-id").value;
     if (!id) { text($("epic-state"), "Enter an epic ID to read its progress."); return; }
     requireMethod("view.run");
-    if (typeof PlugEpicProgress.read !== "function") throw new RPCError("Parent-aware progress is unavailable.", "unavailable");
     const summary = await PlugEpicProgress.read({ id, rpc, signal, config: state.config, asOfParams });
     signal.throwIfAborted();
     PlugEpicProgress.show(summary, state.config.maxRows);
     text($("epic-state"), "Counts include only children you can see.");
+    text($("snapshot-state"), "Epic snapshot rev " + summary.asOf.revision);
+    text($("epic-progress-heading"), "Epic progress");
+    text($("epic-progress-state"), "Open Epic progress to read a bounded direct-child summary.");
   }
   function target(view) { return $({ home: "changed-rows", next: "next-rows", blocked: "blocked-state", presence: "presence-rows", explain: "explain-state", epic: "epic-state" }[view]); }
   async function load(nextPage) {
@@ -650,7 +652,7 @@
         PlugEpicProgress.clear();
         // Parent refusal details are not presentation data. Do not copy a
         // server hint that could contain an unreadable identity or status.
-        const known = ["invalid_response", "invalid_params", "method_not_found", "scope_too_large", "cursor_invalid", "cursor_stale", "forbidden", "not_found", "unavailable"];
+        const known = ["invalid_response", "invalid_params", "method_not_found", "unknown_field", "scope_too_large", "response_exceeds_budget", "cursor_invalid", "cursor_expired", "incarnation_changed", "history_gone", "forbidden", "not_found", "unavailable"];
         error = new RPCError("Epic progress is unavailable. Refresh to request a new snapshot.", known.includes(error && error.code) ? error.code : "unavailable");
       }
       stopWatch();
