@@ -1,0 +1,378 @@
+package driver
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"math"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
+)
+
+// OfflineHistoryTx is an optional trusted-host capability. The caller validates
+// source evidence before admission, locks the complete final image and calls
+// Head. Preparation binds a detached payload to that admission. Commit publishes
+// every imported version, changeset, head record, floor, gap marker and receipt
+// together, or none. Ordinary Commit must refuse a prepared history import.
+// Imported revisions describe import order, never inferred source transactions.
+type OfflineHistoryTx interface {
+	PrepareOfflineHistory(context.Context, RestoreImportProfile, OfflineHistory, time.Time) (Meta, error)
+	CommitOfflineHistory(context.Context, ChangesetHeader) (model.Changeset, error)
+}
+
+const OfflineHistoryEvidenceID = "plug-restore-history"
+
+// SourceHistoryGap is an inclusive unavailable source sequence range. A partial
+// replay retains a contiguous suffix; every earlier sequence is accounted for
+// explicitly, including known history deliberately left outside that suffix.
+type SourceHistoryGap struct {
+	First  uint64 `json:"first"`
+	Last   uint64 `json:"last"`
+	Reason string `json:"reason"`
+}
+
+// SourceHistoryChange carries complete converted images. Nil Before means a
+// proven creation, nil After a proven deletion; two nil images are invalid.
+// Missing images cannot be filled from the archive's current head.
+type SourceHistoryChange struct {
+	Before *Record `json:"before,omitempty"`
+	After  *Record `json:"after,omitempty"`
+}
+
+// SourceHistoryBatch is an explicitly ordered import unit, not an assertion
+// about source SQL transactions. Event and commit IDs are untrusted provenance.
+type SourceHistoryBatch struct {
+	Sequence  uint64                `json:"sequence"`
+	EventIDs  []string              `json:"eventIds"`
+	CommitIDs []string              `json:"commitIds,omitempty"`
+	Changes   []SourceHistoryChange `json:"changes"`
+}
+
+// OfflineHistory is trusted source verification output, never an RPC authority
+// object. Verified must be established by the source adapter's range/image
+// verifier, not an operator flag. Baseline is a complete converted state just
+// before First; it is required for a partial suffix and is never synthesized.
+type OfflineHistory struct {
+	Source           string               `json:"source"`
+	Verified         bool                 `json:"verified"`
+	Complete         bool                 `json:"complete"`
+	First            uint64               `json:"first"`
+	Head             uint64               `json:"head"`
+	BaselineVerified bool                 `json:"baselineVerified"`
+	Baseline         []Record             `json:"baseline,omitempty"`
+	Gaps             []SourceHistoryGap   `json:"gaps"`
+	Batches          []SourceHistoryBatch `json:"batches"`
+}
+
+type SourceImportRevision struct {
+	Sequence  uint64         `json:"sequence"`
+	Revision  model.Revision `json:"revision"`
+	EventIDs  []string       `json:"eventIds"`
+	CommitIDs []string       `json:"commitIds,omitempty"`
+}
+type HistoryImportEvidence struct {
+	Source   string                 `json:"source"`
+	Mode     RestoreHistoryMode     `json:"mode"`
+	Complete bool                   `json:"complete"`
+	First    uint64                 `json:"first"`
+	Head     uint64                 `json:"head"`
+	Floor    model.Revision         `json:"floor"`
+	Gaps     []SourceHistoryGap     `json:"gaps"`
+	Mapping  []SourceImportRevision `json:"mapping"`
+}
+
+// OfflineHistoryPlan is detached validation output. Drivers build it again
+// from the bound payload at publication; callers cannot submit a prepared plan.
+type OfflineHistoryRow struct {
+	Record  Record
+	Deleted bool
+}
+
+type OfflineHistoryPlan struct {
+	Meta     Meta
+	Records  []Record
+	Rows     []OfflineHistoryRow
+	Versions []Version
+	Entries  []model.Changeset
+	Evidence HistoryImportEvidence
+}
+
+func historyRecordKey(r Record) (string, error) {
+	if err := r.Ref.Validate(); err != nil {
+		return "", err
+	}
+	if !r.Ref.Branch.IsZero() || strings.TrimSpace(r.Kind) != r.Kind || r.Kind == "" || !json.Valid(r.Body) {
+		return "", fmt.Errorf("invalid history record image")
+	}
+	return EncodeLockKey(LockKey{Kind: LockRecord, Ref: &r.Ref})
+}
+func sameHistoryRecord(a, b Record) bool {
+	return a.Ref == b.Ref && a.Kind == b.Kind && bytes.Equal(a.Body, b.Body)
+}
+
+// BuildOfflineHistory checks coverage, exact preimages and final-image equality
+// before allocating any driver state. All principals/times are the admitted
+// restore actor/time; source attribution stays in the retained source archive.
+func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input OfflineHistory, when time.Time, tail []Record) (OfflineHistoryPlan, error) {
+	if !current.Head.IsZero() || !current.HistoryFloor.IsZero() {
+		return OfflineHistoryPlan{}, ErrRestoreTargetNotEmpty
+	}
+	p, err := profile.Detached()
+	if err != nil {
+		return OfflineHistoryPlan{}, err
+	}
+	refuse := func(reason RestoreHistoryReason) (OfflineHistoryPlan, error) {
+		return OfflineHistoryPlan{}, ErrRestoreHistoryRefused{Mode: p.HistoryMode, History: RestoreHistoryAvailableUnverified, Reason: reason}
+	}
+	if p.HistoryMode == RestoreHistoryModeSnapshot {
+		return refuse(RestoreHistoryReasonUnmappable)
+	}
+	if !input.Verified {
+		return refuse(RestoreHistoryReasonAvailableUnverified)
+	}
+	if input.Source == "" || strings.TrimSpace(input.Source) != input.Source || strings.ContainsRune(input.Source, '\x00') || when.IsZero() {
+		return refuse(RestoreHistoryReasonUnmappable)
+	}
+	// Copy every body, principal and provenance slice before validation binds it.
+	data, err := json.Marshal(input)
+	if err != nil {
+		return OfflineHistoryPlan{}, err
+	}
+	if len(data) > 128<<20 {
+		return refuse(RestoreHistoryReasonUnmappable)
+	}
+	var h OfflineHistory
+	if err = json.Unmarshal(data, &h); err != nil {
+		return OfflineHistoryPlan{}, err
+	}
+	if h.First == 0 || h.Head < h.First || h.Head-h.First != uint64(len(h.Batches))-1 || len(h.Batches) == 0 || len(h.Batches) > 100000 {
+		return refuse(RestoreHistoryReasonNonContiguous)
+	}
+	partial := h.First > 1
+	if p.HistoryMode == RestoreHistoryModeFull && (!h.Complete || partial || len(h.Gaps) != 0 || len(h.Baseline) != 0) {
+		return refuse(RestoreHistoryReasonNonContiguous)
+	}
+	if !partial && (!h.Complete || len(h.Gaps) != 0 || len(h.Baseline) != 0) {
+		return refuse(RestoreHistoryReasonNonContiguous)
+	}
+	if partial {
+		if h.Complete || !h.BaselineVerified || len(h.Gaps) == 0 {
+			return refuse(RestoreHistoryReasonNonContiguous)
+		}
+		next := uint64(1)
+		for _, g := range h.Gaps {
+			if g.First != next || g.Last < g.First || g.Last >= h.First || strings.TrimSpace(g.Reason) == "" {
+				return refuse(RestoreHistoryReasonNonContiguous)
+			}
+			next = g.Last + 1
+		}
+		if next != h.First {
+			return refuse(RestoreHistoryReasonNonContiguous)
+		}
+	}
+	meta, err := NewOfflineRestoreMeta(current, p.SourceStoreID)
+	if err != nil {
+		return OfflineHistoryPlan{}, err
+	}
+	meta.HistoryFloor = model.Natural64(0)
+	plan := OfflineHistoryPlan{Meta: meta, Evidence: HistoryImportEvidence{Source: h.Source, Mode: p.HistoryMode, Complete: h.Complete, First: h.First, Head: h.Head, Gaps: append([]SourceHistoryGap{}, h.Gaps...), Mapping: []SourceImportRevision{}}}
+	state := map[string]Record{}
+	counts := map[string]int{}
+	last := map[string]model.Revision{}
+	deleted := map[string]bool{}
+	kinds := map[string]string{}
+	var rev uint64
+	evidenceRef := model.RefByID(OfflineHistoryEvidenceID, model.Natural64(0))
+	evidenceKey, _ := EncodeLockKey(LockKey{Kind: LockRecord, Ref: &evidenceRef})
+	emit := func(changes []SourceHistoryChange, key string) error {
+		if rev == math.MaxUint64 {
+			return fmt.Errorf("history revision exhausted")
+		}
+		rev++
+		revision := model.Natural64(rev)
+		entry := model.Changeset{Revision: revision, Branch: model.Natural64(0), Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Time: when, Principal: p.Admission.Actor, Chain: []string{}, IdempotencyKey: key, Changes: []model.ChangeRecord{}}
+		seen := map[string]bool{}
+		for _, c := range changes {
+			var record Record
+			if c.After != nil {
+				record = *c.After
+			} else if c.Before != nil {
+				record = *c.Before
+			} else {
+				return fmt.Errorf("empty source delta")
+			}
+			id, e := historyRecordKey(record)
+			if e != nil {
+				return e
+			}
+			if seen[id] {
+				return fmt.Errorf("duplicate history delta")
+			}
+			seen[id] = true
+			if previousKind, ok := kinds[id]; ok && previousKind != record.Kind {
+				return fmt.Errorf("history changes record kind")
+			}
+			kinds[id] = record.Kind
+			before, present := state[id]
+			if c.Before == nil && present || c.Before != nil && (!present || !sameHistoryRecord(before, *c.Before)) {
+				return fmt.Errorf("unproven history preimage")
+			}
+			if c.Before != nil {
+				if _, e = historyRecordKey(*c.Before); e != nil {
+					return e
+				}
+				if c.Before.Ref != record.Ref || c.Before.Kind != record.Kind {
+					return fmt.Errorf("history delta changes identity/kind")
+				}
+			}
+			if c.Before != nil && c.After != nil && sameHistoryRecord(*c.Before, *c.After) {
+				return fmt.Errorf("source delta has no durable change")
+			}
+			if c.After != nil {
+				if e = p.ValidateRecord(*c.After, when); e != nil {
+					return e
+				}
+			}
+			v := Version{Ref: record.Ref, Revision: revision, CreatedAt: when, Principal: p.Admission.Actor, Deleted: c.After == nil, Base: counts[id]%VersionBaseEvery == 0 || deleted[id]}
+			op := model.OpPatch
+			if c.Before == nil {
+				op = model.OpCreate
+			}
+			if c.After == nil {
+				op = model.OpDelete
+				delete(state, id)
+			} else {
+				record.Revision = revision
+				record.Body = bytes.Clone(record.Body)
+				state[id] = record
+				if v.Base {
+					v.Body = bytes.Clone(record.Body)
+				} else {
+					v.Patch, e = json.Marshal([]map[string]any{{"op": "replace", "path": "", "value": json.RawMessage(record.Body)}})
+					if e != nil {
+						return e
+					}
+				}
+			}
+			from := last[id]
+			if from == "" {
+				from = model.Natural64(0)
+			}
+			entry.Changes = append(entry.Changes, model.ChangeRecord{Ref: record.Ref, Op: op, FromRevision: from, ChangedPaths: []string{""}})
+			row := record
+			row.Revision = revision
+			row.Body = bytes.Clone(row.Body)
+			if c.After == nil {
+				row.Body = nil
+			}
+			plan.Rows = append(plan.Rows, OfflineHistoryRow{Record: row, Deleted: c.After == nil})
+			plan.Versions = append(plan.Versions, v)
+			counts[id]++
+			last[id] = revision
+			deleted[id] = c.After == nil
+		}
+		plan.Entries = append(plan.Entries, entry)
+		return nil
+	}
+	if partial {
+		base := []SourceHistoryChange{}
+		for i := range h.Baseline {
+			id, e := historyRecordKey(h.Baseline[i])
+			if e != nil || id == evidenceKey {
+				return refuse(RestoreHistoryReasonUnmappable)
+			}
+			base = append(base, SourceHistoryChange{After: &h.Baseline[i]})
+		}
+		if err = emit(base, ""); err != nil {
+			return refuse(RestoreHistoryReasonUnmappable)
+		}
+		plan.Meta.HistoryFloor = model.Natural64(1)
+	}
+	seenEvents := map[string]bool{}
+	for i, b := range h.Batches {
+		if b.Sequence != h.First+uint64(i) {
+			return refuse(RestoreHistoryReasonNonContiguous)
+		}
+		if len(b.EventIDs) == 0 || len(b.Changes) == 0 {
+			return refuse(RestoreHistoryReasonUnmappable)
+		}
+		for _, id := range b.EventIDs {
+			if id == "" || strings.TrimSpace(id) != id || strings.ContainsRune(id, '\x00') || seenEvents[id] {
+				return refuse(RestoreHistoryReasonUnmappable)
+			}
+			seenEvents[id] = true
+		}
+		for _, id := range b.CommitIDs {
+			if id == "" || strings.TrimSpace(id) != id || strings.ContainsRune(id, '\x00') {
+				return refuse(RestoreHistoryReasonUnmappable)
+			}
+		}
+		for _, c := range b.Changes {
+			var r *Record
+			if c.After != nil {
+				r = c.After
+			} else {
+				r = c.Before
+			}
+			if r == nil {
+				return refuse(RestoreHistoryReasonUnmappable)
+			}
+			id, e := historyRecordKey(*r)
+			if e != nil || id == evidenceKey {
+				return refuse(RestoreHistoryReasonUnmappable)
+			}
+		}
+		if err = emit(b.Changes, ""); err != nil {
+			return refuse(RestoreHistoryReasonUnmappable)
+		}
+		plan.Evidence.Mapping = append(plan.Evidence.Mapping, SourceImportRevision{Sequence: b.Sequence, Revision: model.Natural64(rev), EventIDs: b.EventIDs, CommitIDs: b.CommitIDs})
+	}
+	// Tail is the independently rebuilt head. Historical records must agree;
+	// non-historical records become explicit restore-time creates, never history.
+	extra := []SourceHistoryChange{}
+	tailSeen := map[string]bool{}
+	for i, r := range tail {
+		id, e := historyRecordKey(r)
+		if e != nil || id == evidenceKey || tailSeen[id] {
+			return refuse(RestoreHistoryReasonUnmappable)
+		}
+		tailSeen[id] = true
+		if old, ok := state[id]; ok {
+			if !sameHistoryRecord(old, r) {
+				return refuse(RestoreHistoryReasonUnmappable)
+			}
+		} else {
+			extra = append(extra, SourceHistoryChange{After: &tail[i]})
+		}
+	}
+	if tail != nil {
+		for id := range state {
+			if !tailSeen[id] {
+				return refuse(RestoreHistoryReasonUnmappable)
+			}
+		}
+	}
+	plan.Evidence.Floor = plan.Meta.HistoryFloor
+	marker, err := json.Marshal(plan.Evidence)
+	if err != nil {
+		return OfflineHistoryPlan{}, err
+	}
+	extra = append(extra, SourceHistoryChange{After: &Record{Ref: evidenceRef, Kind: "beads-archive", Body: marker}})
+	if err = emit(extra, p.IdempotencyKey); err != nil {
+		return refuse(RestoreHistoryReasonUnmappable)
+	}
+	plan.Meta.Head = model.Natural64(rev)
+	keys := make([]string, 0, len(state))
+	for id := range state {
+		keys = append(keys, id)
+	}
+	sort.Strings(keys)
+	for _, id := range keys {
+		plan.Records = append(plan.Records, state[id])
+	}
+	return plan, nil
+}

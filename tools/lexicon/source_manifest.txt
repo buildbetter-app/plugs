@@ -75,6 +75,7 @@ engdocs/plug-next/audit.md
 engdocs/plug-next/authn.md
 engdocs/plug-next/cli-rpc-trace.json
 engdocs/plug-next/dump-restore.md
+engdocs/plug-next/offline-history.md
 engdocs/plug-next/ontology-gates.md
 engdocs/plug-next/ontology-rpc.md
 engdocs/plug-next/remote-cli.md
@@ -690,6 +691,8 @@ internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
+internal/storage/driver/offline_history.go
+internal/storage/driver/offline_history_test.go
 internal/storage/driver/offline_restore.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go

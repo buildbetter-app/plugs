@@ -8,6 +8,7 @@ go_library(
         "errors.go",
         "keys.go",
         "offline_restore.go",
+        "offline_history.go",
         "restore.go",
     ],
     importpath = "github.com/buildbetter-app/plugs/internal/storage/driver",
