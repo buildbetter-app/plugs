@@ -171,13 +171,6 @@ func TestActualArchiveRestoreClaimNextAndTxApplyWithLoggedTestPresence(t *testin
 			t.Fatal(err)
 		}
 	}
-	for _, key := range []string{"cursor-source-memory-0", "cursor-source-memory-1"} {
-		if _, err := source.client.Call(ctx, "memory.save", map[string]any{
-			"key": key, "content": "pre-restore memory",
-		}, ""); err != nil {
-			t.Fatalf("source memory %s: %v", key, err)
-		}
-	}
 	sourcePage, err := source.client.Call(ctx, "bead.ready", map[string]any{"limit": 1}, "")
 	if err != nil {
 		t.Fatalf("source cursor page: %v", err)
@@ -185,14 +178,6 @@ func TestActualArchiveRestoreClaimNextAndTxApplyWithLoggedTestPresence(t *testin
 	oldCursor, ok := resultObject(t, sourcePage)["nextCursor"].(string)
 	if !ok || oldCursor == "" {
 		t.Fatalf("source page did not issue a cursor: %s", sourcePage.JSON)
-	}
-	sourceMemoryPage, err := source.client.Call(ctx, "memory.list", map[string]any{"limit": 1}, "")
-	if err != nil {
-		t.Fatalf("source memory cursor page: %v", err)
-	}
-	oldMemoryCursor, ok := resultObject(t, sourceMemoryPage)["nextCursor"].(string)
-	if !ok || oldMemoryCursor == "" {
-		t.Fatalf("source memory page did not issue a cursor: %s", sourceMemoryPage.JSON)
 	}
 	f := startRuntime(t, Config{
 		Driver: "memory", Project: "pl", Address: DefaultAddress, AuthMode: "anonymous", CursorKey: cursorKey,
@@ -283,67 +268,6 @@ func TestActualArchiveRestoreClaimNextAndTxApplyWithLoggedTestPresence(t *testin
 		t.Fatalf("old cursor generation details=%v", oldCursorError.Data.Details)
 	}
 
-	_, err = f.client.Call(ctx, "memory.list", map[string]any{"limit": 1, "cursor": oldMemoryCursor}, "")
-	var oldMemoryCursorError *wire.Error
-	if !errors.As(err, &oldMemoryCursorError) || oldMemoryCursorError.Data.Code != "incarnation_changed" {
-		t.Fatalf("pre-restore memory cursor was not typed as incarnation_changed: %v", err)
-	}
-	if oldMemoryCursorError.Data.Details["fromIncarnation"] != before.Meta.Incarnation || oldMemoryCursorError.Data.Details["toIncarnation"] != afterRestore.Meta.Incarnation {
-		t.Fatalf("old memory cursor generation details=%v", oldMemoryCursorError.Data.Details)
-	}
-
-	for _, key := range []string{"restore-memory-a", "restore-memory-b"} {
-		if _, err := f.client.Call(ctx, "memory.save", map[string]any{
-			"key": key, "content": "post-restore memory",
-		}, ""); err != nil {
-			t.Fatalf("post-restore memory %s: %v", key, err)
-		}
-	}
-	postRestorePage, err := f.client.Call(ctx, "memory.list", map[string]any{"limit": 1}, "")
-	if err != nil {
-		t.Fatalf("post-restore memory cursor page: %v", err)
-	}
-	postRestoreObject := resultObject(t, postRestorePage)
-	postRestoreItems, ok := postRestoreObject["items"].([]any)
-	if !ok || len(postRestoreItems) != 1 || postRestoreItems[0].(map[string]any)["key"] != "restore-memory-a" {
-		t.Fatalf("post-restore memory page=%s", postRestorePage.JSON)
-	}
-	postRestoreAsOf, ok := postRestoreObject["asOf"].(map[string]any)
-	if !ok || postRestoreAsOf["incarnation"] != afterRestore.Meta.Incarnation {
-		t.Fatalf("post-restore memory page generation=%v want %s", postRestoreObject["asOf"], afterRestore.Meta.Incarnation)
-	}
-	freshMemoryCursor, ok := postRestoreObject["nextCursor"].(string)
-	if !ok || freshMemoryCursor == "" {
-		t.Fatalf("post-restore memory page did not issue a cursor: %s", postRestorePage.JSON)
-	}
-	if _, err := f.client.Call(ctx, "memory.save", map[string]any{
-		"key": "restore-memory-c", "content": "post-restore memory",
-	}, ""); err != nil {
-		t.Fatalf("post-restore later memory: %v", err)
-	}
-	continuedMemoryPage, err := f.client.Call(ctx, "memory.list", map[string]any{"limit": 1, "cursor": freshMemoryCursor}, "")
-	if err != nil {
-		t.Fatalf("post-restore memory continuation: %v", err)
-	}
-	continuedObject := resultObject(t, continuedMemoryPage)
-	continuedItems, ok := continuedObject["items"].([]any)
-	if !ok || len(continuedItems) != 1 || continuedItems[0].(map[string]any)["key"] != "restore-memory-b" {
-		t.Fatalf("post-restore memory continuation=%s", continuedMemoryPage.JSON)
-	}
-	lastMemoryCursor, ok := continuedObject["nextCursor"].(string)
-	if !ok || lastMemoryCursor == "" {
-		t.Fatalf("post-restore memory continuation did not advance: %s", continuedMemoryPage.JSON)
-	}
-	lastMemoryPage, err := f.client.Call(ctx, "memory.list", map[string]any{"limit": 1, "cursor": lastMemoryCursor}, "")
-	if err != nil {
-		t.Fatalf("post-restore final memory continuation: %v", err)
-	}
-	lastObject := resultObject(t, lastMemoryPage)
-	lastItems, ok := lastObject["items"].([]any)
-	if !ok || len(lastItems) != 1 || lastItems[0].(map[string]any)["key"] != "restore-memory-c" || lastObject["nextCursor"] != nil {
-		t.Fatalf("post-restore final memory page=%s", lastMemoryPage.JSON)
-	}
-
 	claim, err := f.client.Call(context.Background(), "bead.claimNext", map[string]any{
 		"filter": map[string]any{"types": []string{"issue"}},
 	}, strings.Repeat("4", 32))
@@ -424,6 +348,148 @@ func TestActualArchiveRestoreClaimNextAndTxApplyWithLoggedTestPresence(t *testin
 		t.Fatalf("logged test verifier calls=%d; expected begin/chunk/finish and recovery checks", presenceState.calls)
 	}
 	t.Logf("actual archive workload PASS with test-only stubbed gate: calls=%d final_meta=%+v rows=%d", presenceState.calls, afterRecovery.Meta, len(afterRecovery.Rows))
+}
+
+func TestComposedMemoryListCursorAcrossRestore(t *testing.T) {
+	data, manifest, manifestHash := readActualArchive(t)
+	pageHash := sha256.Sum256(data)
+	for _, engine := range []string{"memory", "sqlite"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			_, verifier := loggedTestPresenceVerifier(t)
+			cursorKey := bytes.Repeat([]byte{0x6b}, 32)
+			config := Config{
+				Driver: engine, Project: "pl", Address: DefaultAddress, AuthMode: "anonymous",
+				CursorKey: cursorKey, RestorePresence: verifier,
+			}
+			if engine == "sqlite" {
+				config.DSN = filepath.Join(t.TempDir(), "restore-memory-cursor.db")
+			}
+			target := startRuntime(t, config)
+			before := captureActualArchiveCensus(t, target.r.Store)
+			if !before.Meta.Head.IsZero() || len(before.Rows) != 0 {
+				t.Fatalf("restore target is not empty: %+v", before)
+			}
+
+			// Restore requires an empty target. A real sibling runtime sharing
+			// its startup incarnation, signing key and caller scope issues the
+			// pre-restore token without populating or resetting the target.
+			source := startRuntime(t, Config{
+				Driver: "memory", Project: "pl", Address: DefaultAddress, AuthMode: "anonymous", CursorKey: cursorKey,
+				StoreFactory: func(context.Context, string, driver.Config) (driver.Store, error) {
+					return memory.NewWithOptions(memory.Options{Incarnation: before.Meta.Incarnation})
+				},
+			})
+			save := func(f *runtimeFixture, key, content string) model.Revision {
+				t.Helper()
+				result, err := f.client.Call(ctx, "memory.save", map[string]any{"key": key, "content": content}, "")
+				if err != nil {
+					t.Fatalf("save memory %s: %v", key, err)
+				}
+				var commit struct {
+					Revision model.Revision `json:"revision"`
+				}
+				if err := json.Unmarshal(result.JSON, &commit); err != nil {
+					t.Fatal(err)
+				}
+				return commit.Revision
+			}
+			list := func(f *runtimeFixture, cursor, key, content string, revision model.Revision, more bool) string {
+				t.Helper()
+				params := map[string]any{"limit": 1}
+				if cursor != "" {
+					params["cursor"] = cursor
+				}
+				result, err := f.client.Call(ctx, "memory.list", params, "")
+				if err != nil {
+					t.Fatalf("memory.list: %v", err)
+				}
+				var page struct {
+					Items []struct {
+						Key      string         `json:"key"`
+						Content  string         `json:"content"`
+						Revision model.Revision `json:"revision"`
+					} `json:"items"`
+					NextCursor *string `json:"nextCursor"`
+				}
+				if err := json.Unmarshal(result.JSON, &page); err != nil {
+					t.Fatal(err)
+				}
+				if len(page.Items) != 1 || page.Items[0].Key != key || page.Items[0].Content != content || page.Items[0].Revision != revision {
+					t.Fatalf("memory page=%s want key=%s content=%s revision=%s", result.JSON, key, content, revision)
+				}
+				if !more {
+					if page.NextCursor != nil {
+						t.Fatalf("final memory page retained a cursor: %s", result.JSON)
+					}
+					return ""
+				}
+				if page.NextCursor == nil || *page.NextCursor == "" || *page.NextCursor == cursor {
+					t.Fatalf("memory page did not advance: %s", result.JSON)
+				}
+				return *page.NextCursor
+			}
+			alphaRevision := save(source, "alpha", "before restore")
+			zetaRevision := save(source, "zeta", "before restore")
+			oldCursor := list(source, "", "alpha", "before restore", alphaRevision, true)
+			list(source, oldCursor, "zeta", "before restore", zetaRevision, false)
+
+			restoreArchive := func() archiveCensusSnapshot {
+				t.Helper()
+				begin, err := target.client.Call(ctx, "admin.restore.begin", map[string]any{
+					"manifest": manifest, "history": "head", "humanPresence": actualArchivePresence,
+				}, strings.Repeat("a", 32))
+				if err != nil {
+					t.Fatalf("restore begin: %v", err)
+				}
+				id := compositionRestoreStatus(t, begin)["restoreId"].(string)
+				if _, err := target.client.Call(ctx, "admin.restore.chunk", map[string]any{
+					"restoreId": id, "page": 0, "data": base64.StdEncoding.EncodeToString(data),
+					"sha256": hex.EncodeToString(pageHash[:]), "humanPresence": actualArchivePresence,
+				}, ""); err != nil {
+					t.Fatalf("restore chunk: %v", err)
+				}
+				finish, err := target.client.Call(ctx, "admin.restore.finish", map[string]any{
+					"restoreId": id, "manifestSha256": manifestHash, "humanPresence": actualArchivePresence,
+				}, "")
+				if err != nil || compositionRestoreStatus(t, finish)["state"] != "complete" {
+					t.Fatalf("restore finish=%s err=%v", finish.JSON, err)
+				}
+				return captureActualArchiveCensus(t, target.r.Store)
+			}
+			restored := restoreArchive()
+			if restored.Meta.Incarnation == "" || restored.Meta.Incarnation == before.Meta.Incarnation || restored.Meta.Head.String() != "1" || len(restored.Rows) != 136 {
+				t.Fatalf("restore did not publish a new generation: before=%+v after=%+v", before.Meta, restored.Meta)
+			}
+			refused, err := target.client.Call(ctx, "memory.list", map[string]any{"limit": 1, "cursor": oldCursor}, "")
+			var remote *wire.Error
+			if !errors.As(err, &remote) || remote.Data.Code != "incarnation_changed" || len(refused.JSON) != 0 {
+				t.Fatalf("stale memory cursor result=%s err=%v", refused.JSON, err)
+			}
+			if remote.Data.Details["fromIncarnation"] != before.Meta.Incarnation || remote.Data.Details["toIncarnation"] != restored.Meta.Incarnation {
+				t.Fatalf("stale memory cursor generation details=%v", remote.Data.Details)
+			}
+			afterRefusal := captureActualArchiveCensus(t, target.r.Store)
+			if afterRefusal.Meta != restored.Meta || !equalStringSlices(afterRefusal.Rows, restored.Rows) {
+				t.Fatal("stale memory cursor refusal changed the restored store")
+			}
+
+			alphaRevision = save(target, "alpha", "after restore")
+			save(target, "zeta", "after restore")
+			paged := captureActualArchiveCensus(t, target.r.Store)
+			cursor := list(target, "", "alpha", "after restore", alphaRevision, true)
+			// Same-bound recovery is read-only and must keep this cursor valid.
+			recovered := restoreArchive()
+			if recovered.Meta != paged.Meta || !equalStringSlices(recovered.Rows, paged.Rows) {
+				t.Fatal("restore receipt recovery changed the memory cursor generation or rows")
+			}
+			zetaRevision = save(target, "zeta", "updated after first page")
+			middleRevision := save(target, "middle", "inserted after first page")
+			cursor = list(target, cursor, "middle", "inserted after first page", middleRevision, true)
+			list(target, cursor, "zeta", "updated after first page", zetaRevision, false)
+			t.Logf("memory.list restore cursor PASS: driver=%s from=%s to=%s stale=incarnation_changed recovery=read-only live-pages=alpha,middle,zeta", engine, before.Meta.Incarnation, restored.Meta.Incarnation)
+		})
+	}
 }
 
 func assertActualArchiveOpaqueMetadata(t *testing.T, data, jsonl []byte) {
