@@ -165,6 +165,13 @@ standalone Beads users. The `bd` binary includes everything; just `bd init` and 
 - Push to GitHub with `bd dolt push` — code and issues in one repo
 - Zero ops: no server, no ports, no PID files
 
+Offline Plug dumps (`bd export --format plug-dump/1`) also work in embedded
+mode without starting a server. Use a disposable, quiesced copy with
+`--readonly` and an explicit `--plug-inventory`. Export reads the census in
+one scoped transaction and releases it before publishing the archive. Schema
+and inventory refusals still apply; this does not certify source history or
+a complete restore.
+
 ### Server Mode (Multi-Writer / Orchestrator)
 
 Connects to a running `dolt sql-server` for multi-client access.

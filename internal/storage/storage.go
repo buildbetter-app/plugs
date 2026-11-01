@@ -795,6 +795,18 @@ type RawDBAccessor interface {
 	UnderlyingDB() *sql.DB
 }
 
+// RawDBTxAccessor provides scoped raw SQL reads without exposing a store's
+// database connection. Callers that need a consistent source census should
+// type-assert to this interface instead of RawDBAccessor.
+type RawDBTxAccessor interface {
+	// WithRawDBTx passes opts to database/sql, invokes fn once, then rolls
+	// back the transaction and releases its connection before returning.
+	// Callback and cleanup errors are returned; the callback is never retried.
+	// fn must only read, must not commit or roll back, and must close its rows
+	// before returning. Neither the transaction nor its rows may escape fn.
+	WithRawDBTx(ctx context.Context, opts *sql.TxOptions, fn func(*sql.Tx) error) error
+}
+
 // StoreLocator provides filesystem path information for the store.
 // Callers that need the store's on-disk location should type-assert to this interface.
 type StoreLocator interface {
