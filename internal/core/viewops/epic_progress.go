@@ -72,6 +72,13 @@ func (s *Service) runEpicProgress(ctx context.Context, by model.PrincipalRef, re
 	if !exists || (req.Project != "" && parentRow.doc.Project != req.Project) {
 		return Result{}, failure("not_found", "epic was not found")
 	}
+	allowed, err := s.authorize(ctx, by, parentRow)
+	if err != nil {
+		return Result{}, mapped(err)
+	}
+	if !allowed {
+		return Result{}, failure("not_found", "epic was not found")
+	}
 	children := make([]model.Ref, 0)
 	direct := map[string]stored{}
 	for _, row := range rows {
@@ -97,23 +104,37 @@ func (s *Service) runEpicProgress(ctx context.Context, by model.PrincipalRef, re
 		return Result{}, mapped(err)
 	}
 	if authority.PolicyBinding == "" {
-		return Result{}, failure("authz_unavailable", "epic authority binding is unavailable")
+		return Result{}, epicUnavailable("epic authority binding is unavailable")
 	}
 	visible := authority.Visible
 	seen := make(map[string]bool, len(visible))
 	for _, ref := range visible {
 		if ref.Validate() != nil || !ref.IsID() || !ref.Branch.IsZero() || seen[ref.ID] {
-			return Result{}, failure("authz_unavailable", "epic authorization returned an invalid child set")
+			return Result{}, epicUnavailable("epic authorization returned an invalid child set")
 		}
 		if _, ok := direct[ref.ID]; !ok {
-			return Result{}, failure("authz_unavailable", "epic authorization returned a child outside the pinned scope")
+			return Result{}, epicUnavailable("epic authorization returned a child outside the pinned scope")
 		}
 		seen[ref.ID] = true
 	}
 	hidden, err := authority.Hidden.Uint64()
 	if err != nil || hidden != uint64(len(children)-len(visible)) {
-		return Result{}, failure("authz_unavailable", "epic authorization returned an incomplete child set")
+		return Result{}, epicUnavailable("epic authorization returned an incomplete child set")
 	}
+	// The scoped adapter cannot bypass an additional host read boundary. Each
+	// visible child still uses its own stored project; denial adds only to the
+	// authorization remainder, and an unavailable authorizer aborts the count.
+	readable := make([]model.Ref, 0, len(visible))
+	for _, ref := range visible {
+		allowed, err := s.authorize(ctx, by, direct[ref.ID])
+		if err != nil {
+			return Result{}, mapped(err)
+		}
+		if allowed {
+			readable = append(readable, ref)
+		}
+	}
+	visible = readable
 	if len(visible) > OrdinaryCandidateCap {
 		return Result{}, &model.Error{Data: model.ErrorData{Code: "scope_too_large", Hint: "authorized epic input exceeds the ordinary cap", Details: map[string]any{"cap": OrdinaryCandidateCap}}}
 	}
@@ -194,4 +215,9 @@ func epicOntology(ctx context.Context, reader driver.Reader, locate service.Onto
 		return ontology.Effective{}, failure("invalid_params", "epic ontology source does not compile")
 	}
 	return snapshot.Effective(project), nil
+}
+
+// Scope adapter failures are retryable refusals at the core boundary too.
+func epicUnavailable(hint string) error {
+	return &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Hint: hint, Retryable: true}}
 }

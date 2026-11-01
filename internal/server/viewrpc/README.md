@@ -12,6 +12,17 @@ binding views. Nil leaves the capability unavailable. The adapter delegates
 policy to EP2's checker. It does not enable hierarchy writes, project moves,
 or the UI, and it does not add a method or wire member.
 
+An existing anonymous host with no authentication or authorization plugin may
+explicitly call `NewAnonymousEpicProgressConfig(realStore, ontologySource)`.
+This separate constructor retains the real pinned content, durable ontology,
+incarnation and caps, and returns complete visible counts without an
+authorization elision. It accepts only the anonymous principal. Composition
+refuses it with authenticated mode, a provider/session store, or authorization
+installed; viewops also refuses combining it with a read authorizer. A missing
+fixed checker never selects this mode: `NewEpicProgressConfig(nil, source)`
+continues to fail. Anonymous browser evidence and authenticated fixed-policy
+evidence are separate claims.
+
 ```json
 {
   "definition": {

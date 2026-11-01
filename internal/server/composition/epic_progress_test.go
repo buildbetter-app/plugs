@@ -21,6 +21,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
+	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/server/viewrpc"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -36,6 +37,7 @@ type epicFixture struct {
 	base     authzfixed.Facts
 	adapter  *viewops.EpicProgressConfig
 	opt      *viewops.EpicProgressConfig
+	read     viewops.AuthorizeRead
 	revision model.Revision
 }
 
@@ -56,7 +58,13 @@ func newEpicFixture(t *testing.T, enabled bool) *epicFixture {
 		}
 	}
 	f.runtimeFixture = startRuntime(t, Config{Driver: "memory", Project: "parent-project", Address: DefaultAddress,
-		AuthMode: "authenticated", Auth: authn.Config{Provider: keys, AuthorizationInstalled: func() bool { return true }}, EpicProgress: opt})
+		AuthMode: "authenticated", Auth: authn.Config{Provider: keys, AuthorizationInstalled: func() bool { return true }}, EpicProgress: opt,
+		AuthorizeRead: func(ctx context.Context, by model.PrincipalRef, resource model.ResourceRef, project string) error {
+			if f.read != nil {
+				return f.read(ctx, by, resource, project)
+			}
+			return nil
+		}})
 	ctx := context.Background()
 	meta, err := f.r.Store.Meta(ctx)
 	if err != nil {
@@ -130,11 +138,12 @@ func (f *epicFixture) call(t *testing.T, params map[string]any) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := http.NewRequest(http.MethodPost, "http://"+f.server.Addr().String()+"/rpc", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, "http://"+f.server.Addr().String()+httpjson.Path, bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Plug-RPC", "1")
 	req.Header.Set("Authorization", "Bearer "+f.key)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -341,8 +350,17 @@ func TestEpicProgressOrdinaryInputCap(t *testing.T) {
 		}
 		changes = append(changes, conformance.FixtureChange{Ref: epicRef(id), Kind: "bead", Op: model.OpCreate, Body: body})
 	}
-	if _, err := conformance.Seed(context.Background(), f.r.Store, f.r.Lease, driver.ChangesetHeader{}, changes); err != nil {
-		t.Fatal(err)
+	// Preserve the full 20,000-row boundary. Short fixture transactions let the
+	// real composition renew its ordinary lease instead of blocking renewal
+	// behind one quadratic 20,000-record lock declaration.
+	for start := 0; start < len(changes); start += 100 {
+		end := start + 100
+		if end > len(changes) {
+			end = len(changes)
+		}
+		if _, err := conformance.Seed(context.Background(), f.r.Store, f.r.Lease, driver.ChangesetHeader{}, changes[start:end]); err != nil {
+			t.Fatal(err)
+		}
 	}
 	groups := epicGroups(t, epicResult(t, f.call(t, epicParams("epic"))))
 	if groups["total"]["count"] != float64(viewops.OrdinaryCandidateCap) {
@@ -384,11 +402,12 @@ func TestAnonymousEpicProgressRequiresExplicitNoPluginComposition(t *testing.T) 
 		t.Fatal(err)
 	}
 	payload, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "anonymous-progress", "method": "view.run", "params": epicParams("epic")})
-	request, err := http.NewRequest(http.MethodPost, "http://"+f.server.Addr().String()+"/rpc", bytes.NewReader(payload))
+	request, err := http.NewRequest(http.MethodPost, "http://"+f.server.Addr().String()+httpjson.Path, bytes.NewReader(payload))
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Plug-RPC", "1")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -408,5 +427,94 @@ func TestAnonymousEpicProgressRequiresExplicitNoPluginComposition(t *testing.T) 
 			_ = r.Close(context.Background())
 			t.Fatal("anonymous mode silently bypassed authenticated/policy composition")
 		}
+	}
+}
+
+func TestEpicProgressPreservesOrdinaryParentAndChildReadBoundary(t *testing.T) {
+	for _, code := range []model.ErrorCode{"forbidden", "authz_unavailable"} {
+		t.Run(string(code), func(t *testing.T) {
+			f := newEpicFixture(t, true)
+			f.read = func(_ context.Context, _ model.PrincipalRef, resource model.ResourceRef, project string) error {
+				if resource.Ref.ID != "epic" || project != "parent-project" {
+					t.Fatalf("parent admission used another resource/project: %v %s", resource, project)
+				}
+				return &model.Error{Data: model.ErrorData{Code: code, Retryable: code == "authz_unavailable"}}
+			}
+			want := string(code)
+			if code == "forbidden" {
+				want = "not_found"
+			}
+			epicCode(t, f.call(t, epicParams("epic")), want)
+		})
+	}
+	f := newEpicFixture(t, true)
+	f.read = func(_ context.Context, _ model.PrincipalRef, resource model.ResourceRef, project string) error {
+		if resource.Ref.ID == "visible-one" {
+			if project != "child-project" {
+				t.Fatal("child inherited parent project admission")
+			}
+			return &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+		}
+		return nil
+	}
+	groups := epicGroups(t, epicResult(t, f.call(t, epicParams("epic"))))
+	if len(groups) != 2 || groups["total"]["count"] != float64(1) || groups["total"]["elided"].(map[string]any)["count"] != float64(2) || groups["status:todo"] != nil {
+		t.Fatalf("ordinary child read boundary bypassed: %v", groups)
+	}
+}
+
+func TestEpicProgressPinsOntologyAndRefusesMissingSource(t *testing.T) {
+	f := newEpicFixture(t, true)
+	if _, err := conformance.Seed(context.Background(), f.r.Store, f.r.Lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: epicRef("ontology"), Kind: "ontology", Op: model.OpDelete}}); err != nil {
+		t.Fatal(err)
+	}
+	epicCode(t, f.call(t, epicParams("epic")), "invalid_params")
+	p := epicParams("epic")
+	p["asOf"] = map[string]any{"revision": f.revision}
+	result := epicResult(t, f.call(t, p))
+	groups := epicGroups(t, result)
+	if groups["total"]["count"] != float64(2) || groups["status:todo"]["count"] != float64(1) || fmt.Sprint(result["asOf"].(map[string]any)["revision"]) != f.revision.String() {
+		t.Fatalf("historical content did not use its own ontology: %v", result)
+	}
+	p["asOf"].(map[string]any)["incarnation"] = "another-store-incarnation"
+	epicCode(t, f.call(t, p), "incarnation_changed")
+}
+
+func TestEpicProgressGroupCapIncludesTotal(t *testing.T) {
+	f := newEpicFixture(t, true)
+	doc := ontology.DefaultDocument()
+	workflow := doc.Workflows["issue"]
+	changes := []conformance.FixtureChange{}
+	parent := epicRef("epic")
+	for i := 0; i < viewops.MaxGroups-2; i++ {
+		status := fmt.Sprintf("phase%03d", i)
+		doc.Statuses[status] = ontology.Status{Name: status, Category: ontology.Started}
+		workflow.Statuses = append(workflow.Statuses, status)
+		body, err := json.Marshal(pipeline.Document{ID: status, Type: "issue", Project: "child-project", Parent: &parent, Fields: map[string]any{"title": status, "status": status, "priority": 0}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		changes = append(changes, conformance.FixtureChange{Ref: epicRef(status), Kind: "bead", Op: model.OpCreate, Body: body})
+	}
+	doc.Workflows["issue"] = workflow
+	source, err := service.MarshalOntologySource(service.OntologySource{Base: doc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := append([]conformance.FixtureChange{{Ref: epicRef("ontology"), Kind: "ontology", Op: model.OpUpdate, Body: source}}, changes[:len(changes)-1]...)
+	if _, err := conformance.Seed(context.Background(), f.r.Store, f.r.Lease, driver.ChangesetHeader{}, first); err != nil {
+		t.Fatal(err)
+	}
+	groups := epicGroups(t, epicResult(t, f.call(t, epicParams("epic"))))
+	if len(groups) != viewops.MaxGroups {
+		t.Fatalf("100-group boundary was reduced: %d", len(groups))
+	}
+	if _, err := conformance.Seed(context.Background(), f.r.Store, f.r.Lease, driver.ChangesetHeader{}, changes[len(changes)-1:]); err != nil {
+		t.Fatal(err)
+	}
+	response := f.call(t, epicParams("epic"))
+	epicCode(t, response, "scope_too_large")
+	if response["error"].(map[string]any)["data"].(map[string]any)["details"].(map[string]any)["cap"] != float64(viewops.MaxGroups) {
+		t.Fatal("group refusal did not retain the bound")
 	}
 }
