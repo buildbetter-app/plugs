@@ -201,6 +201,10 @@ returns a database or transaction handle. The added `history/source.json` member
 uses `beads-dolt-images/1`: source commits and opaque attribution, the complete
 current events table, and an explicitly checked range of portable business
 images and cumulative event images at exact source commit IDs.
+Current, baseline and frame event arrays are copied and ordered by lossless
+source identity, so equivalent event-row permutations produce identical history
+members and archive bytes. This wire order does not imply event chronology;
+stored values and caller-owned rows remain unchanged.
 
 The ordinary read-only export command uses the optional port inside the scoped
 raw transaction. It finishes rollback and connection cleanup before publishing

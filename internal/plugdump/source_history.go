@@ -45,7 +45,7 @@ func captureSourceHistory(ctx context.Context, src Source, inventory Inventory, 
 	if err != nil {
 		return nil, err
 	}
-	h := &SourceHistory{Format: SourceHistoryFormat, Commits: log.Commits, Events: tables["events"].Rows}
+	h := &SourceHistory{Format: SourceHistoryFormat, Commits: log.Commits, Events: canonicalSourceEvents(tables["events"].Rows)}
 	unverified := func(reason string) (*SourceHistory, error) {
 		h.Range = SourceHistoryRange{Status: "unverified", Reason: reason, Baseline: []Record{}, BaselineEvents: []Row{}, Gaps: []HistoryGap{}, Frames: []SourceHistoryFrame{}}
 		return h, nil
@@ -244,7 +244,15 @@ func portableSourceImage(ctx context.Context, tables map[string]Table, inventory
 	if _, ok := eventImage(tables["events"].Rows); !ok {
 		return nil, nil, fmt.Errorf("invalid source audit image")
 	}
-	return records, tables["events"].Rows, nil
+	return records, canonicalSourceEvents(tables["events"].Rows), nil
+}
+
+// Event identity gives a deterministic wire order without implying chronology.
+// Sort a copied slice so the caller's source images and stored values stay intact.
+func canonicalSourceEvents(rows []Row) []Row {
+	copy := append([]Row{}, rows...)
+	sort.Slice(copy, func(i, j int) bool { return SourceEventID(copy[i]) < SourceEventID(copy[j]) })
+	return copy
 }
 
 func applicableHistoryOntology(directives []OntologyDirective, issues []Record) []OntologyDirective {
