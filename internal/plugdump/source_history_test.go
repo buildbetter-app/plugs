@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -252,5 +253,56 @@ func TestExportSourceHistoryPreservesScopedHeadTypeDirectives(t *testing.T) {
 				t.Fatalf("valid scoped type history lost: status=%s reason=%s first=%d frames=%d", h.Range.Status, h.Range.Reason, h.Range.First, len(h.Range.Frames))
 			}
 		})
+	}
+}
+
+func TestSourceHistoryValidationChecksTypeScopeInFramesAndBaseline(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		for _, scope := range []string{"missing", "wrong-issue", "covered"} {
+			t.Run(fmt.Sprintf("partial=%t/%s", partial, scope), func(t *testing.T) {
+				s, inventory := historyFixture(t)
+				if partial {
+					delete(s.images, s.log.Commits[0].ID)
+				}
+				if scope != "missing" {
+					s.fixtureSource["issues"].Rows[0]["issue_type"] = "decision"
+					s.images[s.log.Head]["issues"].Rows[0]["issue_type"] = "decision"
+					inventory.Ontology = []OntologyDirective{{ID: "decision", Kind: "map_type", Target: OntologyTarget{Project: "demo", Type: "decision", ID: "demo-7"}, From: "decision", To: "issue"}}
+				}
+				data := buildFixture(t, s, inventory)
+				manifest, h := sourceCapture(t, data)
+				rows := h.Range.Frames[0].Records
+				if partial {
+					rows = h.Range.Baseline
+				}
+				id := "demo-7"
+				if scope == "wrong-issue" {
+					id = "demo-8"
+				}
+				for i := range rows {
+					if rows[i].Kind == "bead" && rows[i].ID == id {
+						rows[i].Source.Fields["issue_type"] = "decision"
+						rows[i].Body["source_type"] = "decision"
+					}
+				}
+				members := archiveMembers(t, data)
+				var err error
+				members[SourceHistoryMember], err = marshal(h)
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = validateSourceHistory(manifest, members)
+				if scope == "covered" {
+					if err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				var refusal ErrSourceHistory
+				if !errors.As(err, &refusal) || refusal.Reason != "unmappable" {
+					t.Fatalf("historical type escaped directive scope: %v", err)
+				}
+			})
+		}
 	}
 }
