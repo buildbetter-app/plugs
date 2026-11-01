@@ -259,13 +259,56 @@ func (s *nativeOntologyWriteCounter) Write(ctx context.Context, lease driver.Act
 	return s.Store.Write(ctx, lease)
 }
 
+// Memory refuses nonzero branches at seed time. This negative-only reader
+// presents a forged branch to the real dumper, which computes a consistent
+// manifest and checksums. It is never used for positive round-trip evidence.
+type nativeOntologyBranchStore struct {
+	driver.Store
+	branch model.Natural
+}
+
+func (s nativeOntologyBranchStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	r, err := s.Store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	return nativeOntologyBranchReader{Reader: r, branch: s.branch}, nil
+}
+
+type nativeOntologyBranchReader struct {
+	driver.Reader
+	branch model.Natural
+}
+
+func (r nativeOntologyBranchReader) Query(ctx context.Context, query driver.Query) (driver.Page[driver.Record], error) {
+	page, err := r.Reader.Query(ctx, query)
+	for i := range page.Items {
+		page.Items[i].Ref.Branch = r.branch
+	}
+	return page, err
+}
+
+func (r nativeOntologyBranchReader) Versions(ctx context.Context, ref driver.Ref, req driver.PageReq) (driver.Page[driver.Version], error) {
+	ref.Branch = model.Natural64(0)
+	page, err := r.Reader.Versions(ctx, ref, req)
+	for i := range page.Items {
+		page.Items[i].Ref.Branch = r.branch
+	}
+	return page, err
+}
+
 // Even malformed records get their checksums and manifest from the actual
-// native producer. Refusals cannot be caused by a hand-built broken envelope.
+// native producer. Refusals cannot be caused by a broken tar envelope.
 func rawNativeOntologyArchive(t *testing.T, row conformance.FixtureChange) ([]byte, map[string]any, string) {
 	t.Helper()
-	store := memory.New()
+	var store driver.Store = memory.New()
 	defer store.Close()
+	branch := row.Ref.Branch
+	row.Ref.Branch = model.Natural64(0)
 	seedNativeOntology(t, store, row)
+	if !branch.IsZero() {
+		store = nativeOntologyBranchStore{Store: store, branch: branch}
+	}
 	data, manifest, err := restore.Dump(context.Background(), store, "head")
 	if err != nil {
 		t.Fatal(err)
