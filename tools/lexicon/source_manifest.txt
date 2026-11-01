@@ -277,6 +277,7 @@ internal/core/service/graph.go
 internal/core/service/history.go
 internal/core/service/history_reads_test.go
 internal/core/service/history_sqlite_rpc_test.go
+internal/core/service/i1_acceptance_test.go
 internal/core/service/memories.go
 internal/core/service/ontology.go
 internal/core/service/reads.go
