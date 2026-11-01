@@ -1,7 +1,6 @@
 package s1b05b08
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -126,10 +125,10 @@ func TestB06B07B08DependencyLifecycleEdges(t *testing.T) {
 	if cycle.Error == nil || cycle.Error.Data.Code != "invalid_params" && cycle.Error.Data.Code != "ontology_guard_failed" {
 		t.Fatalf("cycle=%+v", cycle)
 	}
-	if _, err := f.service.Close(f.ctx, anonymous, service.CloseRequest{ID: child}, service.WriteMeta{Project: project, IdempotencyKey: key("child-close"), Agent: actor, AgentLabel: actor, Method: "bead.close"}); err != nil {
+	if _, err := f.service.Close(f.ctx, anonymous, service.CloseRequest{ID: child}, model.WriteMeta{Project: project, IdempotencyKey: key("child-close"), Agent: actor, AgentLabel: actor, Method: "bead.close"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.Close(f.ctx, anonymous, service.CloseRequest{ID: parent}, service.WriteMeta{Project: project, IdempotencyKey: key("parent-close-after"), Agent: actor, AgentLabel: actor, Method: "bead.close"}); err != nil {
+	if _, err := f.service.Close(f.ctx, anonymous, service.CloseRequest{ID: parent}, model.WriteMeta{Project: project, IdempotencyKey: key("parent-close-after"), Agent: actor, AgentLabel: actor, Method: "bead.close"}); err != nil {
 		t.Fatal(err)
 	}
 	// A same-type re-add is a no-op and must not mint another graph revision.
