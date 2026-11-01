@@ -338,7 +338,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 						break
 					}
 					if op.Kind == model.OpLink {
-						return nil, failure("ontology_guard_failed", "dependency endpoint already has a different type")
+						return nil, failure("invalid_params", "dependency endpoint already has a different type")
 					}
 				}
 				if op.Kind == model.OpLink && found < 0 {
