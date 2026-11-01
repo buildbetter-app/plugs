@@ -68,7 +68,33 @@ func (c *Checker) AuthorizeEpicProgress(ctx context.Context, principal model.Pri
 	if err != nil {
 		return EpicProgressAuthority{}, err
 	}
+	if err := c.ValidateReadAuthorityBinding(ctx, principal, binding); err != nil {
+		return EpicProgressAuthority{}, err
+	}
 	return EpicProgressAuthority{Visible: visibility.Refs, Hidden: visibility.Hidden, PolicyBinding: binding}, nil
+}
+
+// ValidateReadAuthorityBinding performs a fresh final generation check, never
+// a second independently filtered count. EP4 must call it with the returned
+// PolicyBinding after status bucketing and immediately before publication.
+// A changed context/policy fails the entire response; no partial count escapes.
+func (c *Checker) ValidateReadAuthorityBinding(ctx context.Context, principal model.PrincipalRef, expected string) error {
+	if c == nil || len(expected) != sha256.Size*2 {
+		return hierarchyUnavailable()
+	}
+	current, _, closeReader, err := (&GuardedService{checker: c, lease: c.lease}).current(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer closeReader()
+	binding, err := c.ReadAuthorityBinding(ctx, principal, current)
+	if err != nil {
+		return err
+	}
+	if binding != expected {
+		return hierarchyUnavailable()
+	}
+	return nil
 }
 
 func (c *Checker) ParentDisclosure(ctx context.Context, principal model.PrincipalRef, child model.Ref, snapshot Snapshot) (ParentDisclosure, error) {

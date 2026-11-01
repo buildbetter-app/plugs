@@ -171,7 +171,7 @@ func hProposal(by model.PrincipalRef, method string, changes ...port.Change) por
 	return port.ProposedChange{Principal: by, Meta: model.WriteMeta{Method: method, Project: "child-project"}, Changes: changes}
 }
 
-func requireHCode(t *testing.T, err error, code string) {
+func requireHCode(t *testing.T, err error, code model.ErrorCode) {
 	t.Helper()
 	var value *model.Error
 	if !errors.As(err, &value) || value.Data.Code != code {
@@ -462,6 +462,7 @@ func TestEpicProgressUsesCurrentAuthorityAgainstPinnedContent(t *testing.T) {
 	if content.Snapshot().At.String() == f.snapshot(t).Snapshot().At.String() {
 		t.Fatal("test did not keep the old content snapshot across ACL writes")
 	}
+	requireHCode(t, f.app.Checker.ValidateReadAuthorityBinding(context.Background(), by, first.PolicyBinding), "authz_unavailable")
 	revoked.Grants = nil
 	if err := f.facts.Replace(revoked); err != nil {
 		t.Fatal(err)
@@ -470,6 +471,40 @@ func TestEpicProgressUsesCurrentAuthorityAgainstPinnedContent(t *testing.T) {
 	requireHCode(t, err, "not_found")
 	if len(result.Visible) != 0 || !result.Hidden.IsZero() || result.PolicyBinding != "" {
 		t.Fatal("unreadable parent disclosed child progress")
+	}
+}
+
+type hRevokeDuringRead struct {
+	once  sync.Once
+	facts *MutableFacts
+	next  authzfixed.Facts
+	err   error
+}
+
+func (r *hRevokeDuringRead) Check(_ context.Context, _ authz.Slice, requests []authz.CheckRequest) ([]authz.Step, error) {
+	out := make([]authz.Step, len(requests))
+	for i, req := range requests {
+		out[i].Effect = authz.NoDecision
+		if req.Action == authz.Read && req.Resource.Ref.ID == "visible" {
+			r.once.Do(func() { r.err = r.facts.Replace(r.next) })
+		}
+	}
+	return out, r.err
+}
+
+func (*hRevokeDuringRead) Filter(authz.ListRequest) (authz.FilterExpr, error) {
+	return authz.FilterExpr{Op: authz.False}, authz.ErrCheckOnly
+}
+
+func TestEpicProgressFinalCheckRefusesMidCountRevocation(t *testing.T) {
+	f := newHFixture(t, true)
+	revoked := f.base
+	revoked.Grants = nil
+	f.app.Checker.chain.Links = []authz.Link{&hRevokeDuringRead{facts: f.facts, next: revoked}}
+	result, err := f.app.Checker.AuthorizeEpicProgress(context.Background(), model.PrincipalRef{Kind: "user", ID: "operator"}, f.snapshot(t), hRef("new"), []model.Ref{hRef("visible")})
+	requireHCode(t, err, "authz_unavailable")
+	if len(result.Visible) != 0 || !result.Hidden.IsZero() || result.PolicyBinding != "" {
+		t.Fatal("mid-count revocation escaped the final fresh authority check")
 	}
 }
 

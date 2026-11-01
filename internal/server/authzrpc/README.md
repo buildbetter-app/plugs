@@ -90,4 +90,8 @@ child's current read authority against the caller's pinned content membership.
 It returns `Visible`, exact `Hidden` and `PolicyBinding` from that one authority
 snapshot. EP4/EP5 must bucket only visible statuses from `contentReader` and
 refuse incomplete candidate enumeration; an old content revision never keeps
-revoked read grants alive.
+revoked read grants alive. The helper freshly validates its binding before
+returning. After bucketing and immediately before publishing, the host must
+also call `ValidateReadAuthorityBinding(ctx, principal, PolicyBinding)`; a
+changed generation refuses the whole result without recounting under a second
+authority snapshot or returning any partial count.
