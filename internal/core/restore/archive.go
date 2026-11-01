@@ -23,7 +23,9 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -1207,6 +1209,22 @@ func decodeNativeRecords(data []byte) ([]driver.Record, error) {
 		var body map[string]any
 		if err := json.Unmarshal(value.Body, &body); err != nil || body == nil {
 			return nil, fmt.Errorf("native record body must be an object")
+		}
+		// A native head image carries the stored protected source, not an
+		// asserted runtime snapshot. Validate both identity and source before
+		// apply can open a publication transaction, preserving its raw body.
+		ontologyID := value.Ref.IsID() && (value.Ref.ID == "ontology" || strings.HasPrefix(value.Ref.ID, "ontology/"))
+		if value.Kind == "ontology" || ontologyID {
+			if value.Kind != "ontology" || !ontologyID || !value.Ref.Branch.IsZero() {
+				return nil, fmt.Errorf("native ontology requires a protected branch-zero ontology ID and kind")
+			}
+			source, err := service.DecodeOntologySource(value.Body)
+			if err != nil {
+				return nil, fmt.Errorf("invalid native ontology source: %w", err)
+			}
+			if _, problems := ontology.Compile(source.Base, source.Overlays, source.Plugins); len(problems) != 0 {
+				return nil, fmt.Errorf("native ontology source does not compile")
+			}
 		}
 		key, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &value.Ref})
 		if err != nil || seen[key] {
