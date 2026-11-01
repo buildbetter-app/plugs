@@ -214,7 +214,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		}
 		digest, digestErr := driver.OfflineHistoryDigest(lowered)
 		if digestErr != nil || digest != profile.HistoryDigest {
-			return report, fmt.Errorf("history payload differs from admitted binding")
+			return report, driver.ErrRestoreHistoryRefused{Mode: profile.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
 		}
 		tail := make([]driver.Record, 0, len(plan.records))
 		for _, r := range plan.records {

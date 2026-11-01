@@ -50,7 +50,7 @@ func BindHistoryImport(ctx context.Context, input io.Reader, profile driver.Rest
 		return p, err
 	}
 	if p.HistoryDigest != "" && p.HistoryDigest != digest {
-		return p, fmt.Errorf("history payload differs from prior binding")
+		return p, driver.ErrRestoreHistoryRefused{Mode: p.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
 	}
 	p.HistoryDigest = digest
 	return p.Detached()
