@@ -904,6 +904,10 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	if err != nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 	}
+	ancestorPlan, err := nativeAncestorPlanForArchive(records, archive.Native())
+	if err != nil {
+		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
+	}
 	if m.lease == nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "lease_not_held", Hint: "restore requires an active storage lease"}}
 	}
@@ -916,7 +920,7 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	if !ok {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "native restore capability is unsupported"}}
 	}
-	locks, sentinels, err := restoreLocks(records)
+	locks, sentinels, err := restoreLocks(records, ancestorPlan)
 	if err != nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 	}
@@ -969,6 +973,11 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	}
 	for _, record := range records {
 		if err := tx.Put(ctx, record); err != nil {
+			return model.Changeset{}, err
+		}
+	}
+	if ancestorPlan != nil && len(ancestorPlan.rows) != 0 {
+		if err := tx.PutDerived(ctx, driver.DerivedAncestorClosure, nil, ancestorPlan.rows); err != nil {
 			return model.Changeset{}, err
 		}
 	}
@@ -1290,7 +1299,7 @@ func documentMap(doc pipeline.Document) (map[string]any, error) {
 	return value, nil
 }
 
-func restoreLocks(records []driver.Record) ([]driver.LockRequest, []driver.Sentinel, error) {
+func restoreLocks(records []driver.Record, ancestorPlan *nativeAncestorPlan) ([]driver.LockRequest, []driver.Sentinel, error) {
 	byKey := map[string]driver.LockRequest{}
 	sentinelSet := map[driver.Sentinel]bool{}
 	add := func(key driver.LockKey, mode driver.LockMode) error {
@@ -1311,6 +1320,16 @@ func restoreLocks(records []driver.Record) ([]driver.LockRequest, []driver.Senti
 			if err != nil {
 				return nil, nil, err
 			}
+			sentinelSet[sentinel] = true
+		}
+	}
+	if ancestorPlan != nil {
+		for _, lock := range ancestorPlan.locks {
+			if err := add(lock.Key, lock.Mode); err != nil {
+				return nil, nil, err
+			}
+		}
+		for _, sentinel := range ancestorPlan.sentinels {
 			sentinelSet[sentinel] = true
 		}
 	}
