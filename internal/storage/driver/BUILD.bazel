@@ -24,6 +24,7 @@ go_test(
         "keys_test.go",
         "receipt_contract_test.go",
         "restore_test.go",
+        "offline_history_test.go",
     ],
     embed = [":driver"],
     deps = ["//internal/core/model"],
