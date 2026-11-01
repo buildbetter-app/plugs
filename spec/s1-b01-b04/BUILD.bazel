@@ -17,6 +17,7 @@ go_test(
     srcs = [
         "fixture_test.go",
         "replay_test.go",
+        "replay_support_test.go",
     ],
     embedsrcs = [
         "manifest.json",
