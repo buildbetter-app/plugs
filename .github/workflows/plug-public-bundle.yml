@@ -1,0 +1,182 @@
+name: Plug public executable bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Exact Plug commit to build
+        required: true
+        type: string
+      label:
+        description: Short public bundle label
+        required: true
+        type: string
+      plug_target:
+        description: Exact Plug executable target (for example //cmd/plug:plug)
+        required: true
+        default: //cmd/plug:plug
+        type: string
+
+run-name: plug-public-bundle ${{ inputs.label }} ${{ inputs.sha }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Public pinned executables
+    runs-on: runs-on=${{ github.run_id }}/runner=bb-x64-16
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      BEADS_COMMIT: 9d6fff760b7a314b476539198504d77ce0959656
+      PLUG_COMMIT: ${{ inputs.sha }}
+      PLUG_TARGET: ${{ inputs.plug_target }}
+      BUNDLE_LABEL: ${{ inputs.label }}
+    steps:
+      - name: Set up RunsOn
+        uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+
+      - name: Validate dispatch inputs
+        run: |
+          set -euo pipefail
+          [[ "$PLUG_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "invalid Plug SHA" >&2; exit 1; }
+          [[ "$BUNDLE_LABEL" =~ ^[A-Za-z0-9._-]{1,48}$ ]] || { echo "invalid bundle label" >&2; exit 1; }
+          [[ "$PLUG_TARGET" =~ ^//[A-Za-z0-9_./:-]+$ ]] || { echo "invalid Bazel target" >&2; exit 1; }
+
+      - name: Checkout exact Plug revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ inputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch and verify canonical Beads source
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/beads:refs/remotes/origin/beads
+          git cat-file -e "$BEADS_COMMIT^{commit}"
+          beads_tree="$(git rev-parse "$BEADS_COMMIT^{tree}")"
+          plug_tree="$(git rev-parse "$PLUG_COMMIT^{tree}")"
+          git ls-tree -r --full-tree "$BEADS_COMMIT" > "$RUNNER_TEMP/beads-source-manifest"
+          git ls-tree -r --full-tree "$PLUG_COMMIT" > "$RUNNER_TEMP/plug-source-manifest"
+          mkdir -p "$RUNNER_TEMP/beads-source"
+          git archive --format=tar "$BEADS_COMMIT" | tar -x -C "$RUNNER_TEMP/beads-source"
+          printf '%s\n' \
+            "BEADS_TREE=$beads_tree" \
+            "PLUG_TREE=$plug_tree" \
+            "BEADS_MANIFEST=$RUNNER_TEMP/beads-source-manifest" \
+            "PLUG_MANIFEST=$RUNNER_TEMP/plug-source-manifest" >> "$GITHUB_ENV"
+
+      - name: Build canonical Beads importer
+        run: |
+          set -euo pipefail
+          test "$(go version)" = "go version go1.26.10 linux/amd64"
+          mkdir -p "$RUNNER_TEMP/built/bin"
+          (
+            cd "$RUNNER_TEMP/beads-source"
+            CGO_ENABLED=0 go build -tags gms_pure_go -trimpath \
+              -ldflags "-X main.Build=public-$BEADS_COMMIT -X main.Commit=$BEADS_COMMIT" \
+              -o "$RUNNER_TEMP/built/bin/bd" ./cmd/bd
+          )
+          "$RUNNER_TEMP/built/bin/bd" version --json > "$RUNNER_TEMP/bd-version.json"
+
+      - name: Install pinned Bazel toolchain
+        env:
+          BAZELISK_SHA256: 5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992
+          BAZEL_SHA256: d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8
+        run: |
+          set -euo pipefail
+          test "$(tr -d '[:space:]' < .bazelversion)" = 9.3.0
+          mkdir -p "$RUNNER_TEMP/bazel-home" "$RUNNER_TEMP/bazel-cache" "$RUNNER_TEMP/bin"
+          curl --fail --silent --show-error --location --retry 3 --max-time 120 \
+            --output "$RUNNER_TEMP/bazelisk" \
+            https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64
+          printf '%s  %s\n' "$BAZELISK_SHA256" "$RUNNER_TEMP/bazelisk" | sha256sum --check --status
+          chmod 755 "$RUNNER_TEMP/bazelisk"
+          cat > "$RUNNER_TEMP/public.bazelrc" <<EOF
+          common --enable_bzlmod
+          common --color=no
+          common --repository_cache=$RUNNER_TEMP/bazel-cache
+          common --remote_cache=
+          common --remote_executor=
+          common --repo_contents_cache=
+          build --lockfile_mode=error
+          EOF
+          export BAZELISK_HOME="$RUNNER_TEMP/bazel-home"
+          export BAZELISK_VERIFY_SHA256="$BAZEL_SHA256"
+          printf '%s\n' "BAZEL_VERSION=$("$RUNNER_TEMP/bazelisk" --version | tail -1)" >> "$GITHUB_ENV"
+
+      - name: Build exact Plug runtime target
+        run: |
+          set -euo pipefail
+          export BAZELISK_HOME="$RUNNER_TEMP/bazel-home"
+          export BAZELISK_VERIFY_SHA256=d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8
+          bazel=("$RUNNER_TEMP/bazelisk" --nosystem_rc --nohome_rc --noworkspace_rc --bazelrc="$RUNNER_TEMP/public.bazelrc")
+          "${bazel[@]}" build --jobs=2 --local_resources=memory=8192 "$PLUG_TARGET"
+          mapfile -t outputs < <("${bazel[@]}" cquery --output=files "$PLUG_TARGET")
+          [[ "${#outputs[@]}" -eq 1 && -f "${outputs[0]}" ]] || { echo "target did not resolve to one file" >&2; exit 1; }
+          cp --dereference "${outputs[0]}" "$RUNNER_TEMP/built/bin/plug"
+          chmod 755 "$RUNNER_TEMP/built/bin/plug"
+          set +e
+          "$RUNNER_TEMP/built/bin/plug" --help > "$RUNNER_TEMP/plug-help" 2>&1
+          help_rc=$?
+          set -e
+          [[ "$help_rc" -eq 0 ]] || { echo "Plug runtime help probe failed" >&2; exit 1; }
+          printf '%s\n' "$help_rc" > "$RUNNER_TEMP/plug-help-exit"
+
+      - name: Seal and verify public bundle
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          metadata = {
+              "toolchain": {
+                  "go": "go version go1.26.10 linux/amd64",
+                  "bazel": os.environ.get("BAZEL_VERSION", ""),
+                  "bazelisk_sha256": "5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992",
+              },
+              "resolution": {
+                  "beads_version_sha256": hashlib.sha256((root / "bd-version.json").read_bytes()).hexdigest(),
+                  "plug_help_sha256": hashlib.sha256((root / "plug-help").read_bytes()).hexdigest(),
+                  "plug_help_exit": int((root / "plug-help-exit").read_text()),
+              },
+              "build": {
+                  "beads": "CGO_ENABLED=0 go build -tags gms_pure_go -trimpath ./cmd/bd",
+                  "plug": "bazel build --jobs=2 --local_resources=memory=8192 " + os.environ["PLUG_TARGET"],
+                  "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+              },
+          }
+          (root / "bundle-metadata.json").write_text(json.dumps(metadata, sort_keys=True) + "\n")
+          PY
+          python3 scripts/ci/public-bundle.py create \
+            --output "$RUNNER_TEMP/public-bundle" \
+            --bd "$RUNNER_TEMP/built/bin/bd" \
+            --plug "$RUNNER_TEMP/built/bin/plug" \
+            --metadata "$RUNNER_TEMP/bundle-metadata.json" \
+            --beads-commit "$BEADS_COMMIT" --beads-tree "$BEADS_TREE" --beads-manifest "$BEADS_MANIFEST" \
+            --plug-commit "$PLUG_COMMIT" --plug-tree "$PLUG_TREE" --plug-manifest "$PLUG_MANIFEST" \
+            --plug-target "$PLUG_TARGET"
+          python3 scripts/ci/public-bundle.py verify --directory "$RUNNER_TEMP/public-bundle"
+
+      - name: Upload public executables and provenance
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: plug-public-bundle-${{ inputs.label }}-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 14
+          path: ${{ runner.temp }}/public-bundle
+
+      - name: Download and verify uploaded bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: plug-public-bundle-${{ inputs.label }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/public-bundle-downloaded
+
+      - name: Verify downloaded bundle containment and hashes
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/public-bundle.py verify --directory "$RUNNER_TEMP/public-bundle-downloaded"

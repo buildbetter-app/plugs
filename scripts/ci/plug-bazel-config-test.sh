@@ -29,6 +29,7 @@ import sys
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
 remote_workflow = Path(sys.argv[4]).read_text(encoding="utf-8")
+public_workflow = Path(".github/workflows/plug-public-bundle.yml").read_text(encoding="utf-8")
 targets = Path(sys.argv[2]).read_text(encoding="utf-8")
 collector = Path(sys.argv[3]).read_text(encoding="utf-8")
 ast.parse(collector)  # Syntax without writing a cache into the source tree.
@@ -136,8 +137,27 @@ if "eval " in remote_code or "set -x" in remote_code or "pull_request_target:" i
 remote_actions = re.findall(r"uses: (\S+)", remote_code)
 if len(remote_actions) != 5 or any(not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action) for action in remote_actions):
     raise SystemExit("config: every remote Bazel action must retain its full immutable pin")
+public_code = "\n".join(line for line in public_workflow.splitlines() if not line.lstrip().startswith("#"))
+for fragment in (
+    "workflow_dispatch:", "ref: ${{ inputs.sha }}", "fetch-depth: 0",
+    "persist-credentials: false", "runs-on=${{ github.run_id }}/runner=bb-x64-16",
+    "timeout-minutes: 60", "actions/upload-artifact@", "actions/download-artifact@",
+    "if-no-files-found: error", "retention-days: 14", "public-bundle.py create",
+    "public-bundle.py verify", "git fetch --no-tags origin refs/heads/beads",
+    "BEADS_COMMIT: 9d6fff760b7a314b476539198504d77ce0959656",
+):
+    if fragment not in public_code:
+        raise SystemExit("config: public bundle workflow is missing: " + fragment)
+if "pull_request:" in public_code or "pull_request_target:" in public_code or "push:" in public_code:
+    raise SystemExit("config: public bundle workflow must be dispatch-only")
+public_actions = re.findall(r"uses: (\S+)", public_code)
+if len(public_actions) != 4 or any(not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action) for action in public_actions):
+    raise SystemExit("config: every public bundle action must retain its full immutable pin")
+for token in ("pull_request_target:", "gastownhall/beads", "steveyegge/beads", "rbe-west", "RBE_"):
+    if token in public_code:
+        raise SystemExit("config: public bundle workflow contains a forbidden token: " + token)
 workflow_files = sorted(Path(".github/workflows").glob("*.yml"))
-if [path.name for path in workflow_files] != ["plug-bazel.yml", "plug-remote-bazel.yml", "plug-runs-on-smoke.yml"]:
+if [path.name for path in workflow_files] != ["plug-bazel.yml", "plug-public-bundle.yml", "plug-remote-bazel.yml", "plug-runs-on-smoke.yml"]:
     raise SystemExit("config: inherited workflow files remain: " + ", ".join(str(path) for path in workflow_files))
 print("plug-ci-config: workflow, permissions, cache, lock, targets, and retirement checks passed")
 PYTHON
