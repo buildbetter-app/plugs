@@ -5,6 +5,7 @@
     "DeterminateSystems/determinate-nix-action@*",
     "DeterminateSystems/nix-installer-action@*",
     "anchore/sbom-action@*",
+    "buildbetter-app/plugs@*",
     "codecov/codecov-action@*",
     "cygwin/cygwin-install-action@*",
     "docker/setup-buildx-action@*",
