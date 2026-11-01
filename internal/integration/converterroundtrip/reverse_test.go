@@ -49,7 +49,7 @@ func TestLiveReverseReadsPostRestoreEditsAndOpaqueValues(t *testing.T) {
 				}
 			}
 			apply("live edit", "f")
-			state := snapshot(t, store)
+			state := reverseState(t, store)
 			after, err := ReverseRestored(ctx, store)
 			if err != nil || after.Snapshot.At == nil || after.Snapshot.At.String() != state.Meta.Head.String() || after.Result.Digest == before.Result.Digest {
 				t.Fatalf("live reverse revision/digest failed: %v", err)
@@ -76,7 +76,7 @@ func TestLiveReverseReadsPostRestoreEditsAndOpaqueValues(t *testing.T) {
 					}
 				}
 			}
-			if !reflect.DeepEqual(state, snapshot(t, store)) {
+			if !reflect.DeepEqual(state, reverseState(t, store)) {
 				t.Fatal("reverse changed the store")
 			}
 			// The wrapper writes after opening the reader. Export must remain
@@ -125,7 +125,7 @@ func TestLiveReverseRefusesUnrepresentableDeltasWithoutPartialOutput(t *testing.
 			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
 				t.Fatal(err)
 			}
-			state := snapshot(t, store)
+			state := reverseState(t, store)
 			for _, mode := range []string{"extra", "missing", "comment", "opaque", "provenance", "claim"} {
 				t.Run(mode, func(t *testing.T) {
 					got, err := ReverseRestored(ctx, reverseReadHook{Store: store, mode: mode})
@@ -135,11 +135,36 @@ func TestLiveReverseRefusesUnrepresentableDeltasWithoutPartialOutput(t *testing.
 					}
 				})
 			}
-			if !reflect.DeepEqual(state, snapshot(t, store)) {
+			if !reflect.DeepEqual(state, reverseState(t, store)) {
 				t.Fatal("refused reverse changed the store")
 			}
 		})
 	}
+}
+
+func reverseState(t *testing.T, store driver.Store) struct {
+	Meta    driver.Meta
+	Records []driver.Record
+} {
+	t.Helper()
+	ctx := context.Background()
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	rows, err := r.Query(ctx, driver.Query{Limit: 1000})
+	if err != nil || rows.NextCursor != nil {
+		t.Fatalf("test census incomplete: %v", err)
+	}
+	return struct {
+		Meta    driver.Meta
+		Records []driver.Record
+	}{meta, rows.Items}
 }
 
 type reverseReadHook struct {

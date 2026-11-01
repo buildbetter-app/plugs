@@ -412,7 +412,11 @@ func containsByteReference(value any) bool {
 
 // ConvertArchive is the one-shot convenience form used by rollback tooling.
 func ConvertArchive(data []byte) (Result, error) {
-	return ConvertArchiveWithDirectives(data, nil)
+	dump, err := ReadBytes(data)
+	if err != nil {
+		return Result{}, err
+	}
+	return Convert(dump)
 }
 
 // ConvertArchiveWithDirectives is ConvertWithDirectives for a canonical archive.

@@ -274,12 +274,12 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 	}
 	source.Source.Fields["status"] = status
 	delete(source.Body, "result")
-	switch status {
-	case "open":
+	switch stringValue(doc.Fields["status"]) {
+	case "todo":
 		source.Body["status_category"] = "unstarted"
-	case "in_progress", "hooked":
+	case "in_progress":
 		source.Body["status_category"] = "started"
-	case "closed":
+	case "done":
 		source.Body["status_category"], source.Body["result"] = "completed", "success"
 	default:
 		source.Body["status_category"] = "backlog"
