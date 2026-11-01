@@ -50,6 +50,7 @@ go_library(
         "open_stub.go",
         "querier.go",
         "queries.go",
+        "raw_db_accessor.go",
         "readonly.go",
         "ready_claimer.go",
         "ready_counter.go",
