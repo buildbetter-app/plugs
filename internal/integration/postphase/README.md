@@ -22,14 +22,14 @@ outcomes, log rows, event plans or delivery checkpoints.
 
 ## Boundaries
 
-The native `Host.Posts()` adapter and the event `Dispatcher` are separate
-existing execution paths. These tests consume the same real Writer-created
-store history through each path; they add no queue composition. The public
-native `CommittedChange` has no delivery key or `Late` field, and the direct
-native path creates no binding checkpoint. Native crash redelivery, native
-dead-letter/breaker/alert-sink composition, and runtime restart recovery remain
-unsupported and unproved. The dispatcher-only notice does not prove those
-native surfaces. Graph writes and undeclared egress explicitly refuse.
+The native `Host.Posts()` adapter and the event `Dispatcher` have separate
+delivery semantics. The Writer now stores metadata-only native dead letters
+under a key derived from incarnation, revision and binding before finalizing
+a failed post warning. These entries do not advance event checkpoints. The
+public native `CommittedChange` has no delivery key or `Late` field. Native
+crash redelivery, breaker/alert-sink composition and runtime restart recovery
+remain unsupported and unproved. The dispatcher-only notice does not prove
+those native surfaces. Graph writes and undeclared egress explicitly refuse.
 
 The driver is the real **memory** implementation. Checkpoints and receipts
 survive adapter reconstruction and lease takeover within that store's lifetime;
@@ -37,10 +37,9 @@ this is not disk durability, a process restart, SQLite/Postgres acceptance or
 production failover. Finalizer takeover preserves an outcome captured in the
 test process; it does not reconstruct a lost callback outcome after a crash.
 
-Run named cases with ordinary local Bazel:
+Run named cases at a committed head through RunsOn:
 
 ```sh
-bazel --ignore_all_rc_files test //internal/integration/postphase:postphase_test \
-  --jobs=2 --test_timeout=900 --lockfile_mode=error --test_output=all \
-  --test_arg=-test.v
+/tmp/plug-swarm/bin/remote-bazel "$PWD" HEAD i4-postphase -- test \
+  //internal/integration/postphase:postphase_test --test_output=all --test_arg=-test.v
 ```
