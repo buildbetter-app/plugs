@@ -231,6 +231,15 @@ func TestHierarchyOrderedCreatesAndFinalImages(t *testing.T) {
 	epic := hCreate("batch-parent", "epic", "parent-project", nil, "")
 	child := hCreate("batch-child", "", "child-project", &alias, parent.ID)
 	proposal := hProposal(hAgent(), "tx.apply", epic, child)
+	// Exercise the same detachment boundary as Writer callbacks: absent
+	// Before images become explicit JSON null while source misses stay tracked.
+	encoded, err := json.Marshal(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encoded, &proposal); err != nil {
+		t.Fatal(err)
+	}
 	s := f.snapshot(t)
 	if err := f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, proposal, s); err != nil {
 		t.Fatal(err)
@@ -518,16 +527,13 @@ type hReply struct {
 	} `json:"_meta"`
 }
 
-func (f *hFixture) createRPC(t *testing.T, key int) hReply {
+func (f *hFixture) callRPC(t *testing.T, principal model.PrincipalRef, method string, params map[string]any) hReply {
 	t.Helper()
-	issued, err := f.keys.Issue(hAgent(), time.Now().Add(time.Hour))
+	issued, err := f.keys.Issue(principal, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "bead.create", "params": map[string]any{
-		"type": "issue", "fields": map[string]any{"title": "created"},
-		"_meta": map[string]any{"project": "child-project", "idempotencyKey": fmt.Sprintf("%032x", key)},
-	}})
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +551,90 @@ func (f *hFixture) createRPC(t *testing.T, key int) hReply {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &reply); err != nil {
 		t.Fatal(err)
 	}
+	if reply.Error != nil {
+		t.Logf("%s response: %s", method, recorder.Body.Bytes())
+	}
 	return reply
+}
+
+func (f *hFixture) createRPC(t *testing.T, key int) hReply {
+	t.Helper()
+	return f.callRPC(t, hAgent(), "bead.create", map[string]any{
+		"type": "issue", "fields": map[string]any{"title": "created"},
+		"_meta": map[string]any{"project": "child-project", "idempotencyKey": fmt.Sprintf("%032x", key)},
+	})
+}
+
+func TestHierarchyHTTPParentDisclosure(t *testing.T) {
+	f := newHFixture(t, true)
+	by := model.PrincipalRef{Kind: "user", ID: "user:reader", Caveats: map[string]any{"projects": []model.Ref{hRef("child-project")}}}
+	meta, err := f.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{"bead.get", "bead.ready", "history.query"} {
+		t.Run(method, func(t *testing.T) {
+			params := map[string]any{"_meta": map[string]any{"project": "child-project"}}
+			if method == "bead.get" {
+				params["id"] = hRef("visible")
+			}
+			if method == "history.query" {
+				params["asOf"] = map[string]any{"revision": meta.Head, "incarnation": meta.Incarnation}
+			}
+			reply := f.callRPC(t, by, method, params)
+			if reply.Error != nil {
+				t.Fatalf("authorized child read refused: %+v", reply.Error)
+			}
+			var result struct {
+				Bead  map[string]any   `json:"bead"`
+				Items []map[string]any `json:"items"`
+			}
+			if err := json.Unmarshal(reply.Result, &result); err != nil {
+				t.Fatal(err)
+			}
+			items := result.Items
+			if method == "bead.get" {
+				items = []map[string]any{result.Bead}
+			}
+			if len(items) == 0 {
+				t.Fatal("visible child disappeared")
+			}
+			for _, item := range items {
+				if item["project"] != "child-project" {
+					t.Fatalf("child project changed: %v", item["project"])
+				}
+				if !reflect.DeepEqual(item["parent"], map[string]any{"exists": true}) {
+					t.Fatalf("hidden parent did not remain existence-only: %v", item["parent"])
+				}
+			}
+			if bytes.Contains(reply.Result, []byte(`"new"`)) || bytes.Contains(reply.Result, []byte(`"old"`)) || bytes.Contains(reply.Result, []byte("parent-project")) || bytes.Contains(reply.Result, []byte("old-project")) {
+				t.Fatalf("hidden parent content escaped: %s", reply.Result)
+			}
+		})
+	}
+	denied := f.callRPC(t, by, "bead.get", map[string]any{"id": hRef("new")})
+	if denied.Error == nil || denied.Error.Data.Code != "not_found" || len(denied.Result) != 0 {
+		t.Fatal("project caveat did not conceal the denied parent itself")
+	}
+	// CP7 still permits an unconstrained User to read every bead.
+	user := model.PrincipalRef{Kind: "user", ID: "user:reader"}
+	for _, id := range []string{"visible", "new"} {
+		reply := f.callRPC(t, user, "bead.get", map[string]any{"id": hRef(id)})
+		var result struct {
+			Bead map[string]any `json:"bead"`
+		}
+		if reply.Error != nil || json.Unmarshal(reply.Result, &result) != nil {
+			t.Fatal("unconstrained User read refused")
+		}
+		if id == "visible" && result.Bead["parent"] != "new" {
+			t.Fatal("readable parent lost its compatible bare ID")
+		}
+		if id == "new" {
+			if _, present := result.Bead["parent"]; present {
+				t.Fatal("root disclosed a nonexistent parent")
+			}
+		}
+	}
 }
 
 func TestHierarchyOptInAuthenticatedWriterAndReplay(t *testing.T) {
@@ -611,5 +700,88 @@ func TestHierarchyOptInAuthenticatedWriterAndReplay(t *testing.T) {
 	after, _ = f.store.Meta(context.Background())
 	if after.Head.String() != revocation.Head.String() {
 		t.Fatal("denied replay published a write")
+	}
+}
+
+func TestParentProjectionPinnedContentAndCurrentAuthority(t *testing.T) {
+	f := newHFixture(t, true)
+	ctx := context.Background()
+	by := model.PrincipalRef{Kind: "user", ID: "user:viewer"}
+	content := f.snapshot(t)
+	// The current child changes parents after content is pinned. Projection
+	// must still describe its historical parent, using only current read grants.
+	if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: hRef("child"), Kind: "bead", Op: model.OpUpdate, Body: hBody("child", "child-project", "new", "todo")}}); err != nil {
+		t.Fatal(err)
+	}
+	f.app.Checker.chain.Links = []authz.Link{hDeny{ids: map[string]bool{"old": true}, action: authz.Read}}
+	result, err := f.app.Checker.AuthorizeParentProjections(ctx, by, content, []model.Ref{hRef("child"), hRef("visible"), hRef("new")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := result.Parents["child"]; !p.Exists || p.Ref != nil {
+		t.Fatalf("historical hidden parent = %+v", p)
+	}
+	if p := result.Parents["visible"]; !p.Exists || p.Ref == nil || p.Ref.ID != "new" {
+		t.Fatalf("readable parent = %+v", p)
+	}
+	if p := result.Parents["new"]; p.Exists || p.Ref != nil {
+		t.Fatalf("root = %+v", p)
+	}
+	if err := f.app.Checker.ValidateReadAuthorityBinding(ctx, by, result.PolicyBinding); err != nil {
+		t.Fatal(err)
+	}
+	// Record-dependent custom rules and project caveats must not outlive a
+	// current-source change even when the ACL registry itself is unchanged.
+	if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: hRef("new"), Kind: "bead", Op: model.OpUpdate, Body: hBody("new", "parent-project", "", "done")}}); err != nil {
+		t.Fatal(err)
+	}
+	requireHCode(t, f.app.Checker.ValidateReadAuthorityBinding(ctx, by, result.PolicyBinding), "authz_unavailable")
+	for _, refs := range [][]model.Ref{{hRef("visible"), hRef("visible")}, {hRef("absent")}} {
+		partial, err := f.app.Checker.AuthorizeParentProjections(ctx, by, content, refs)
+		if err == nil || partial.Parents != nil || partial.PolicyBinding != "" {
+			t.Fatal("invalid batch published a partial projection", partial, err)
+		}
+	}
+	f.app.Checker.chain.Links = []authz.Link{hDeny{ids: map[string]bool{"visible": true}, action: authz.Read}}
+	_, _, err = f.app.Checker.AuthorizeParentProjection(ctx, by, content, hRef("visible"))
+	requireHCode(t, err, "not_found")
+}
+
+func TestParentProjectionFinalCheckRefusesRevocation(t *testing.T) {
+	f := newHFixture(t, true)
+	revoked := f.base
+	revoked.Grants = nil
+	f.app.Checker.chain.Links = []authz.Link{&hRevokeDuringRead{facts: f.facts, next: revoked}}
+	result, err := f.app.Checker.AuthorizeParentProjections(context.Background(), model.PrincipalRef{Kind: "user", ID: "user:viewer"}, f.snapshot(t), []model.Ref{hRef("visible")})
+	requireHCode(t, err, "authz_unavailable")
+	if result.Parents != nil || result.PolicyBinding != "" {
+		t.Fatal("mid-projection revocation published a partial result")
+	}
+}
+
+func TestHierarchyHTTPParentCustomForbidAndRefCaveat(t *testing.T) {
+	for _, mode := range []string{"custom-forbid", "ref-caveat"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newHFixture(t, true)
+			by := model.PrincipalRef{Kind: "user", ID: "user:reader"}
+			if mode == "custom-forbid" {
+				f.app.Checker.chain.Links = []authz.Link{hDeny{ids: map[string]bool{"new": true}, action: authz.Read}}
+			} else {
+				by.Caveats = map[string]any{"refs": []model.Ref{hRef("visible")}}
+			}
+			reply := f.callRPC(t, by, "bead.get", map[string]any{"id": hRef("visible")})
+			if reply.Error != nil {
+				t.Fatalf("child read refused: %+v", reply.Error)
+			}
+			var result struct {
+				Bead map[string]any `json:"bead"`
+			}
+			if err := json.Unmarshal(reply.Result, &result); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(result.Bead["parent"], map[string]any{"exists": true}) || bytes.Contains(reply.Result, []byte(`"new"`)) {
+				t.Fatalf("parent content escaped: %s", reply.Result)
+			}
+		})
 	}
 }

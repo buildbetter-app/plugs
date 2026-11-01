@@ -14,7 +14,7 @@ import (
 )
 
 // Document is the stored bead body. Fields are ontology data; Metadata is
-// separate plugin data. Lease, comments, links and attachments are core owned.
+// separate plugin data. Parent, lease, comments, links and attachments are core owned.
 type Document struct {
 	ID          string                     `json:"id"`
 	Type        string                     `json:"type"`

@@ -1,6 +1,7 @@
 package authzrpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -92,7 +93,12 @@ func (c *Checker) AuthorizeHierarchy(ctx context.Context, stage port.Authorizati
 			}
 			continue
 		}
-		if (source == nil) != (len(change.Before) == 0) {
+		// Writer detaches proposals through JSON: a nil RawMessage becomes
+		// the explicit JSON null image. Both encode the same tracked miss;
+		// neither may disguise an existing source record.
+		beforeImage := bytes.TrimSpace(change.Before)
+		hasBefore := len(beforeImage) != 0 && !bytes.Equal(beforeImage, []byte("null"))
+		if (source != nil) != hasBefore {
 			return forbidden("hierarchy source mismatch")
 		}
 		if source != nil {
