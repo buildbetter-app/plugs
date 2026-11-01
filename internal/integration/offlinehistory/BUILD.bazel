@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "offlinehistory_test",
+    srcs = glob(["*_test.go"]),
+    deps = [
+        "//internal/core/model",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+    ],
+    size = "large",
+    tags = ["local", "requires-network"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

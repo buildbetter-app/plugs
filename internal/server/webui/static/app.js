@@ -116,10 +116,24 @@
     const methods = new Set(Array.isArray(descriptor.methods) ? descriptor.methods : []);
     const project = typeof descriptor.project === "string" ? descriptor.project : state.config.project;
     const callTimes = [];
+    const pending = new Set();
+    let active = true, loads = 0;
+    const revoke = () => {
+      if (!active) return;
+      active = false;
+      frame.dataset.bridgeState = "revoked";
+      pending.forEach((controller) => controller.abort());
+      pending.clear();
+      window.removeEventListener("message", onMessage);
+      frame.removeEventListener("load", onLoad);
+    };
+    const onLoad = () => { if (++loads > 1) revoke(); };
     const onMessage = async (event) => {
-      // Sandboxed frames have origin "null". The WindowProxy is the identity;
-      // origin alone cannot distinguish two opaque plugin frames.
-      if (event.source !== frame.contentWindow || event.origin !== "null") return;
+      // Bind the trusted same-origin wrapper, never an untrusted document's
+      // reusable WindowProxy. Its child has an opaque sandbox and a separate
+      // exact-entry frame-src policy which contains navigation before scripts.
+      if (!active || event.source !== frame.contentWindow || event.origin !== location.origin) return;
+      if (event.data?.plugFrameLifecycle === "revoked" && !Object.hasOwn(event.data, "jsonrpc")) { revoke(); return; }
       let size;
       try { size = JSON.stringify(event.data).length; } catch (_) { bridgeFailure(event.source, null, "invalid_message", "Bridge message is not serializable."); return; }
       if (size > 256 * 1024) { bridgeFailure(event.source, event.data && event.data.id, "message_too_large", "Bridge message exceeds the framing limit."); return; }
@@ -142,15 +156,20 @@
         bridgeFailure(event.source, request.id, "scope_denied", "Bridge params are outside the granted project."); return;
       }
       const forwarded = Object.assign({}, params, { _meta: { project } });
+      const controller = new AbortController();
+      pending.add(controller);
       try {
-        const result = await rpc(request.method, forwarded, new AbortController().signal, project);
-        bridgeResponse(event.source, { jsonrpc: "2.0", id: request.id, result });
+        const result = await rpc(request.method, forwarded, controller.signal, project);
+        if (active) bridgeResponse(event.source, { jsonrpc: "2.0", id: request.id, result });
       } catch (error) {
-        bridgeFailure(event.source, request.id, error && error.code || "bridge_refused", failure(error));
+        if (active) bridgeFailure(event.source, request.id, error && error.code || "bridge_refused", failure(error));
+      } finally {
+        pending.delete(controller);
       }
     };
     window.addEventListener("message", onMessage);
-    state.bridges.push(() => window.removeEventListener("message", onMessage));
+    frame.addEventListener("load", onLoad);
+    state.bridges.push(revoke);
   }
   function renderCatalog(catalog) {
     const node = $("catalog-entries");
@@ -172,16 +191,19 @@
   function renderFrames(frames) {
     const node = $("plugin-frames");
     if (!node) return;
+    state.bridges.forEach((revoke) => revoke()); state.bridges = [];
     clear(node); node.hidden = true;
     frames.forEach((descriptor) => {
       if (!descriptor || typeof descriptor.id !== "string" || typeof descriptor.src !== "string" || bridgeFieldDenied(descriptor)) return;
       let source;
       try { source = new URL(descriptor.src, location.href); } catch (_) { return; }
-      if (source.origin !== location.origin || !source.pathname.includes("/frames/")) return;
+      const expected = new URL("./frame-hosts/" + encodeURIComponent(descriptor.id) + "/index.html", location.href);
+      if (source.href !== expected.href) return;
       const article = document.createElement("article"); article.className = "plugin-frame";
       const heading = document.createElement("div"); heading.className = "plugin-frame-heading"; text(heading, descriptor.title || descriptor.id);
-      const frame = document.createElement("iframe"); frame.title = descriptor.title || descriptor.id; frame.setAttribute("sandbox", "allow-scripts"); frame.setAttribute("referrerpolicy", "no-referrer"); frame.src = source.href;
-      article.append(heading, frame); node.appendChild(article); node.hidden = false; installBridge(frame, descriptor);
+      const frame = document.createElement("iframe"); frame.title = descriptor.title || descriptor.id; frame.setAttribute("referrerpolicy", "no-referrer");
+      installBridge(frame, descriptor); frame.src = source.href;
+      article.append(heading, frame); node.appendChild(article); node.hidden = false;
     });
   }
   function requireMethod(name) {
@@ -656,7 +678,7 @@
   $("refresh").addEventListener("click", () => load(false));
   $("cancel").addEventListener("click", () => { if (state.work) state.work.controller.abort(); });
   $("stop-watch").addEventListener("click", () => { stopWatch(); watchStatus("Live changes cancelled. Refresh to reconnect."); });
-  window.addEventListener("pagehide", () => { if (state.work) state.work.controller.abort(); stopWatch(); watchStatus("Live changes stopped. Refresh to reconnect."); });
+  window.addEventListener("pagehide", () => { state.bridges.forEach((revoke) => revoke()); if (state.work) state.work.controller.abort(); stopWatch(); watchStatus("Live changes stopped. Refresh to reconnect."); });
   $("explain-form").addEventListener("submit", (event) => { event.preventDefault(); load(false); });
   document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => selectView(tab.dataset.view)));
   const requested = new URLSearchParams(location.search).get("view");
