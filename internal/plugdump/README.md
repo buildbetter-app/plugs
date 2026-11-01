@@ -2,9 +2,10 @@
 
 `bd --readonly export --format plug-dump/1 --plug-inventory inventory.json
 -o dump.tar` reads a disposable frozen Beads capture through the existing
-`storage.RawDBAccessor` capability. It gathers the entire read set in a
-read-only, repeatable-read SQL transaction and rolls back. It performs no
-storage migration, restore, remote merge, credential lookup, or hook execution.
+`storage.RawDBTxAccessor` capability. It gathers the entire read set in a
+read-only, Serializable SQL transaction and rolls back before publishing. It
+performs no storage migration, restore, remote merge, credential lookup, or
+hook execution.
 Ordinary `bd export` retains its JSONL defaults and selection flags.
 
 This is the connected **head-state and source-archive slice**, with scope
@@ -192,3 +193,51 @@ The explicit tag replaces the repository rc's required pure-Go regex tag when
 ambient rc files are disabled. A target reporting PASS without an actual
 named `--- PASS` test is not behavior evidence. Legacy Dolt integration tests
 require their own lane and are not certified by this fixture run.
+
+## Verified source commit images
+
+An optional `SourceHistoryReader` captures the reachable Dolt graph and complete
+historical table images within the same scoped reader as the current export.
+`SQLSource` implements it using Dolt SQL over the caller's transaction. It never
+returns a database or transaction handle. The added `history/source.json` member
+uses `beads-dolt-images/1`: source commits and opaque attribution, the complete
+current events table, and an explicitly checked range of portable business
+images and cumulative event images at exact source commit IDs.
+Current, baseline and frame event arrays are copied and ordered by lossless
+source identity, so equivalent event-row permutations produce identical history
+members and archive bytes. This wire order does not imply event chronology;
+stored values and caller-owned rows remain unchanged.
+
+The ordinary read-only export command uses the optional port inside the scoped
+raw transaction. It finishes rollback and connection cleanup before publishing
+the archive. A source without provable ancestry refuses with a typed source
+error; operator inventory declarations cannot turn missing history into proof.
+
+A complete linear graph, every representable image, unchanged earlier events,
+an exact current-head comparison and a stable final head/clean/commit census
+are required for `history=verified`.
+Missing images or unsupported older schemas permit only a proven contiguous
+suffix with a complete baseline. Exact inclusive prefix gaps distinguish
+`unavailable`, `unmappable` and `not-retained`; the manifest remains
+`available-unverified`. A merge, dirty working set, missing ancestry, absent
+baseline or unprovable head leaves a raw unverified capture with an explicit
+reason, never fabricated historical state. A failed commit/ancestry census
+returns typed `ErrSourceHistoryUnavailable` and no archive bytes. Captures are
+bounded to 10,000 commits and the existing 128 MiB envelope.
+
+Plug full history remains the strict restore default. Explicit partial imports
+the proven suffix with its gaps and floor; explicit snapshot imports only the
+current state with a new floor. Dolt commit images are explicit import units,
+not claims about individual SQL transactions or edits between commits. Audit
+rows and source authors are provenance, never verified Plug principals.
+The complete opaque issue-field list is `agent_state`, `await_id`, `await_type`,
+`ephemeral`, `event_kind`, `hook_bead`, `is_template`, `mol_type`, `payload`,
+`role_bead`, `role_type`, `target`, `timeout_ns`, `waiters`, `wisp_type` and
+`work_type`. All remain in `source.fields`; this layer never interprets their
+orchestration state or changes their JSON values. Preservation starts at SQL
+readback; native JSON storage may normalize an inserted numeric value before
+export. The exporter never reconstructs an earlier numeric representation.
+Historical images may use a
+subset of the head's explicit type directives; every custom historical type
+still requires an exact project/type/optional issue match. Other migration
+checks, including source-principal attribution, remain unperformed.

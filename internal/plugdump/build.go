@@ -106,7 +106,22 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 		Warnings:     []string{"not a complete store migration or Plug restore certificate", "source history and attribution are unverified; no Plug versions, changesets or live leases invented"},
 		Verification: verificationLimits(),
 	}
-	return encode(manifest, mapper.records, map[string][]byte{"config/sources.json": config})
+	files := map[string][]byte{"config/sources.json": config}
+	history, err := captureSourceHistory(ctx, src, inventory, mapper.records, tables)
+	if err != nil {
+		return nil, err
+	}
+	if history != nil {
+		manifest.History = "available-unverified"
+		if history.Range.Status == "verified" && history.Range.Complete {
+			manifest.History = "verified"
+		}
+		files[SourceHistoryMember], err = marshal(history)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return encode(manifest, mapper.records, files)
 }
 
 func verificationLimits() map[string]string {

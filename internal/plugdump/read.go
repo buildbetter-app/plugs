@@ -19,7 +19,7 @@ import (
 )
 
 // Queryer is satisfied by sql.Tx. The command begins a read-only transaction
-// through storage.RawDBAccessor and always rolls it back after gathering data.
+// through storage.RawDBTxAccessor and always rolls it back after gathering data.
 type Queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }

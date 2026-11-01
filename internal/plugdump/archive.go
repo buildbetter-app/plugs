@@ -114,7 +114,7 @@ func Validate(reader io.Reader) (Manifest, error) {
 		if header.Typeflag != tar.TypeReg || header.Size < 0 || header.Size > MaxArchiveBytes || header.Mode != 0o600 || header.Uid != 0 || header.Gid != 0 || header.Linkname != "" || len(header.PAXRecords) != 0 || header.Format != tar.FormatUSTAR || !header.ModTime.Equal(time.Unix(0, 0)) {
 			return Manifest{}, fmt.Errorf("noncanonical tar member")
 		}
-		if header.Name != "manifest.json" && header.Name != "config/sources.json" && !(strings.HasPrefix(header.Name, "records/") && strings.HasSuffix(header.Name, ".ndjson") && knownKinds[strings.TrimSuffix(strings.TrimPrefix(header.Name, "records/"), ".ndjson")]) {
+		if header.Name != "manifest.json" && header.Name != "config/sources.json" && header.Name != SourceHistoryMember && !(strings.HasPrefix(header.Name, "records/") && strings.HasSuffix(header.Name, ".ndjson") && knownKinds[strings.TrimSuffix(strings.TrimPrefix(header.Name, "records/"), ".ndjson")]) {
 			return Manifest{}, fmt.Errorf("unknown archive member")
 		}
 		if _, ok := members[header.Name]; ok {
@@ -142,7 +142,7 @@ func Validate(reader io.Reader) (Manifest, error) {
 	if manifest.Format != Format || manifest.Schema != 1 || manifest.Reference != BeadsReference || manifest.MainVersion != 72 || manifest.IgnoredVersion != 28 || manifest.StoreID == "" || manifest.Machine == "" || manifest.Scope != "offline-head-and-source-archives" {
 		return Manifest{}, fmt.Errorf("unsupported manifest schema, source or scope")
 	}
-	if manifest.History != "unavailable" && manifest.History != "available-unverified" {
+	if manifest.History != "unavailable" && manifest.History != "available-unverified" && manifest.History != "verified" {
 		return Manifest{}, fmt.Errorf("unsupported history claim")
 	}
 	if len(manifest.Warnings) == 0 || len(manifest.Verification) == 0 {
@@ -224,8 +224,11 @@ func Validate(reader io.Reader) (Manifest, error) {
 		return Manifest{}, err
 	}
 	hasHistory := counts["issue_versions"]+counts["issue_snapshots"]+counts["compaction_snapshots"] != 0
-	if hasHistory != (manifest.History == "available-unverified") {
+	if _, captured := members[SourceHistoryMember]; !captured && hasHistory != (manifest.History == "available-unverified") {
 		return Manifest{}, fmt.Errorf("history declaration does not match archived source rows")
+	}
+	if err := validateSourceHistory(manifest, members); err != nil {
+		return Manifest{}, err
 	}
 	return manifest, nil
 }

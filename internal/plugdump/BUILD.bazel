@@ -9,6 +9,9 @@ go_library(
         "map.go",
         "migration_hashes.go",
         "read.go",
+        "source_history.go",
+        "source_history_sql.go",
+        "source_history_wire.go",
         "types.go",
     ],
     importpath = "github.com/steveyegge/beads/internal/plugdump",
@@ -18,9 +21,17 @@ go_library(
 
 go_test(
     name = "plugdump_test",
-    srcs = ["plugdump_test.go"],
+    srcs = [
+        "plugdump_test.go",
+        "source_history_sql_test.go",
+        "source_history_test.go",
+    ],
     data = glob(["testdata/**"]),
     embed = [":plugdump"],
+    deps = [
+        "//internal/testutil",
+        "@com_github_go_sql_driver_mysql//:mysql",
+    ],
 )
 
 filegroup(
