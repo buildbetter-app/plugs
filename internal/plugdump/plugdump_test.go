@@ -130,6 +130,59 @@ func TestDumpDeterministicPreservation(t *testing.T) {
 	}
 }
 
+func TestDumpPreservesOpaqueIssueFields(t *testing.T) {
+	source, inventory := fixture(t)
+	row := source["issues"].Rows[0]
+	row["agent_state"] = "state\x00opaque"
+	row["await_id"] = "demo-8"
+	row["await_type"] = "human"
+	row["ephemeral"] = int32(1)
+	row["event_kind"] = "opaque-event"
+	row["hook_bead"] = "demo-8"
+	row["is_template"] = int32(1)
+	row["mol_type"] = "opaque-mol"
+	row["payload"] = `{"opaque":"x\\u0000y","n":9007199254740993}`
+	row["role_bead"] = "demo-8"
+	row["role_type"] = "opaque-role"
+	row["target"] = "opaque-target"
+	row["timeout_ns"] = int64(9007199254740993)
+	row["waiters"] = `["demo-8"]`
+	row["wisp_type"] = "opaque-wisp"
+	row["work_type"] = "opaque-work"
+
+	data := buildFixture(t, source, inventory)
+	if _, err := Validate(bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	var record Record
+	for _, line := range bytes.Split(bytes.TrimSpace(archiveMembers(t, data)["records/bead.ndjson"]), []byte{'\n'}) {
+		var candidate Record
+		if err := decodeJSON(line, &candidate); err != nil {
+			t.Fatal(err)
+		}
+		if candidate.ID == row["id"] {
+			record = candidate
+			break
+		}
+	}
+	if record.ID == "" {
+		t.Fatal("opaque-field fixture bead was not exported")
+	}
+	for _, key := range opaqueIssueFields {
+		want, err := json.Marshal(row[key])
+		if err != nil {
+			t.Fatalf("marshal source %s: %v", key, err)
+		}
+		got, err := json.Marshal(record.Source.Fields[key])
+		if err != nil {
+			t.Fatalf("marshal archive %s: %v", key, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("opaque field %s changed: got %s, want %s", key, got, want)
+		}
+	}
+}
+
 func TestDumpStatusMapping(t *testing.T) {
 	for status, category := range map[string]string{"open": "unstarted", "in_progress": "started", "hooked": "started", "blocked": "backlog", "deferred": "backlog", "pinned": "backlog", "frozen": "backlog", "closed": "completed"} {
 		t.Run(status, func(t *testing.T) {
@@ -146,6 +199,70 @@ func TestDumpStatusMapping(t *testing.T) {
 				if record.Body["status_category"] != category {
 					t.Fatalf("%s mapped to %v", status, record.Body["status_category"])
 				}
+			}
+		})
+	}
+}
+
+func TestDumpUnknownIssueTypeRequiresOntologyDirective(t *testing.T) {
+	source, inventory := fixture(t)
+	source["issues"].Rows[0]["issue_type"] = "decision"
+	data, err := Build(context.Background(), source, inventory)
+	if err == nil || len(data) != 0 || !strings.Contains(err.Error(), "unsupported issue type; workflow/ontology mapping required") {
+		t.Fatalf("unknown issue type did not retain the closed-world refusal: data=%d err=%v", len(data), err)
+	}
+}
+
+func TestDumpOntologyDirectivePreservesUnknownIssueType(t *testing.T) {
+	source, inventory := fixture(t)
+	for _, row := range source["issues"].Rows {
+		row["issue_type"] = "decision"
+	}
+	inventory.Ontology = []OntologyDirective{{
+		ID: "preserve-decision", Kind: "map_type",
+		Target: OntologyTarget{Project: "demo", Type: "decision"},
+		From:   "decision", To: "issue",
+	}}
+	data := buildFixture(t, source, inventory)
+	manifest, err := Validate(bytes.NewReader(data))
+	if err != nil || len(manifest.Ontology) != 1 || manifest.Ontology[0].ID != "preserve-decision" {
+		t.Fatalf("directive evidence missing from manifest: err=%v ontology=%+v", err, manifest.Ontology)
+	}
+	var records []Record
+	for _, line := range bytes.Split(bytes.TrimSpace(archiveMembers(t, data)["records/bead.ndjson"]), []byte{'\n'}) {
+		var record Record
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, record)
+		if record.Body["type"] != "issue" || record.Body["source_type"] != "decision" || record.Source.Fields["issue_type"] != "decision" {
+			t.Fatalf("directive changed or dropped source type: %+v", record)
+		}
+	}
+	if len(records) != len(source["issues"].Rows) || records[0].Source.Fields["created_by"] != source["issues"].Rows[0]["created_by"] {
+		t.Fatalf("directive lost rows or attribution: got=%d want=%d", len(records), len(source["issues"].Rows))
+	}
+}
+
+func TestDumpOntologyDirectiveRefusals(t *testing.T) {
+	tests := map[string]func(*Inventory){
+		"wrong kind": func(i *Inventory) {
+			i.Ontology = []OntologyDirective{{ID: "bad", Kind: "map_status", Target: OntologyTarget{Project: "demo", Type: "decision"}, From: "decision", To: "issue"}}
+		},
+		"wrong target": func(i *Inventory) {
+			i.Ontology = []OntologyDirective{{ID: "bad", Kind: "map_type", Target: OntologyTarget{Project: "demo", Type: "decision"}, From: "other", To: "issue"}}
+		},
+		"unused": func(i *Inventory) {
+			i.Ontology = []OntologyDirective{{ID: "unused", Kind: "map_type", Target: OntologyTarget{Project: "demo", Type: "decision"}, From: "decision", To: "issue"}}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			source, inventory := fixture(t)
+			mutate(&inventory)
+			data, err := Build(context.Background(), source, inventory)
+			if err == nil || len(data) != 0 {
+				t.Fatalf("malformed or unused directive was accepted: data=%d err=%v", len(data), err)
 			}
 		})
 	}
@@ -443,6 +560,34 @@ func TestDumpSQLValuePreservesTextAndBinary(t *testing.T) {
 	value, err = sqlValue([]byte(`{"counter":9007199254740993}`), "JSON")
 	if err != nil || value.(map[string]any)["counter"] != json.Number("9007199254740993") {
 		t.Fatal("SQL JSON integer was narrowed")
+	}
+}
+
+func TestDumpNaturalAcceptsLosslessIntegerWidths(t *testing.T) {
+	const want = uint64(42)
+	for name, value := range map[string]any{
+		"int":    int(42),
+		"int8":   int8(42),
+		"int16":  int16(42),
+		"int32":  int32(42),
+		"int64":  int64(42),
+		"uint":   uint(42),
+		"uint8":  uint8(42),
+		"uint16": uint16(42),
+		"uint32": uint32(42),
+		"uint64": uint64(42),
+		"number": json.Number("42"),
+		"string": "42",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := natural(value)
+			if err != nil || got != want {
+				t.Fatalf("natural(%T) = %d, %v; want %d, nil", value, got, err, want)
+			}
+		})
+	}
+	if _, err := natural(int32(-1)); err == nil {
+		t.Fatal("natural accepted a negative signed integer")
 	}
 }
 

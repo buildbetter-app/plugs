@@ -29,6 +29,10 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
+	ontology, err := copyOntology(inventory.Ontology, projects)
+	if err != nil {
+		return nil, err
+	}
 	config, dispositions, err := readExternal(inventory.External)
 	if err != nil {
 		return nil, err
@@ -53,9 +57,20 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 			return nil, fmt.Errorf("unsupported nonempty family %s (live claims must be resolved)", name)
 		}
 	}
-	mapper := mapping{projects: projects, beads: map[string]string{}, records: map[string][]Record{}, policy: inventory.ConfigPolicy, usedPolicy: map[string]bool{}}
+	mapper := mapping{
+		projects:     projects,
+		beads:        map[string]string{},
+		records:      map[string][]Record{},
+		policy:       inventory.ConfigPolicy,
+		usedPolicy:   map[string]bool{},
+		ontology:     ontology,
+		usedOntology: map[string]bool{},
+	}
 	if err := mapper.issues(tables["issues"].Rows); err != nil {
 		return nil, err
+	}
+	if len(mapper.usedOntology) != len(ontology) {
+		return nil, fmt.Errorf("unaccounted ontology directive")
 	}
 	if err := mapper.allocator(tables); err != nil {
 		return nil, err
@@ -87,7 +102,7 @@ func Build(ctx context.Context, src Source, inventory Inventory) ([]byte, error)
 	manifest := Manifest{
 		Format: Format, Schema: 1, Reference: BeadsReference, StoreID: inventory.StoreID, Machine: inventory.Machine,
 		MainVersion: 72, IgnoredVersion: 28, Scope: "offline-head-and-source-archives", History: inventory.History,
-		Projects: mapper.projects, Sources: dispositions,
+		Projects: mapper.projects, Ontology: ontology, Sources: dispositions,
 		Warnings:     []string{"not a complete store migration or Plug restore certificate", "source history and attribution are unverified; no Plug versions, changesets or live leases invented"},
 		Verification: verificationLimits(),
 	}
@@ -99,7 +114,7 @@ func verificationLimits() map[string]string {
 		"capture": "operator declarations; freeze/remotes/working-set not independently verified",
 		"schema":  "paired migration hashes and exact column names; SQL types, indexes and constraints not independently verified",
 		"history": "available source rows archived only; no A6 replay or completeness claim",
-		"a3":      "not-run", "authz.verify": "not-run", "derived": "not-run", "plugin_lock": "not-produced", "ontology": "built-in status mapping only",
+		"a3":      "not-run", "authz.verify": "not-run", "derived": "not-run", "plugin_lock": "not-produced", "ontology": "built-in status mapping; explicit map_type directives recorded in manifest",
 	}
 }
 
@@ -215,9 +230,23 @@ func natural(value any) (uint64, error) {
 	var s string
 	switch value := value.(type) {
 	case int:
-		s = strconv.Itoa(value)
+		s = strconv.FormatInt(int64(value), 10)
+	case int8:
+		s = strconv.FormatInt(int64(value), 10)
+	case int16:
+		s = strconv.FormatInt(int64(value), 10)
+	case int32:
+		s = strconv.FormatInt(int64(value), 10)
 	case int64:
 		s = strconv.FormatInt(value, 10)
+	case uint:
+		s = strconv.FormatUint(uint64(value), 10)
+	case uint8:
+		s = strconv.FormatUint(uint64(value), 10)
+	case uint16:
+		s = strconv.FormatUint(uint64(value), 10)
+	case uint32:
+		s = strconv.FormatUint(uint64(value), 10)
 	case uint64:
 		s = strconv.FormatUint(value, 10)
 	case json.Number:

@@ -17,6 +17,7 @@
     "scope": {"const": "offline-head-and-source-archives"},
     "history": {"enum": ["unavailable", "available-unverified"]},
     "projects": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/project"}},
+    "ontology": {"type": "array", "items": {"$ref": "#/$defs/ontologyDirective"}},
     "kind_registry": {"type": "array", "items": {"$ref": "#/$defs/kind"}},
     "files": {"type": "object", "minProperties": 1, "additionalProperties": {"$ref": "#/$defs/file"}},
     "sources": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/source"}},
@@ -33,7 +34,7 @@
         "authz.verify": {"const": "not-run"},
         "derived": {"const": "not-run"},
         "plugin_lock": {"const": "not-produced"},
-        "ontology": {"const": "built-in status mapping only"}
+        "ontology": {"const": "built-in status mapping; explicit map_type directives recorded in manifest"}
       }
     }
   },
@@ -51,6 +52,28 @@
         "child_counters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/natural"}}
       },
       "allOf": [{"if": {"properties": {"id_mode": {"const": "hash"}}}, "then": {"properties": {"hash_length": {"minimum": 1}}}}]
+    },
+    "ontologyTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project", "type"],
+      "properties": {
+        "project": {"type": "string", "minLength": 1},
+        "type": {"type": "string", "minLength": 1},
+        "id": {"type": "string", "minLength": 1}
+      }
+    },
+    "ontologyDirective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "target", "from", "to"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "kind": {"const": "map_type"},
+        "target": {"$ref": "#/$defs/ontologyTarget"},
+        "from": {"type": "string", "minLength": 1},
+        "to": {"const": "issue"}
+      }
     },
     "kind": {
       "type": "object",

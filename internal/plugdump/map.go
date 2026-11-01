@@ -7,11 +7,101 @@ import (
 )
 
 type mapping struct {
-	projects   []Project
-	beads      map[string]string
-	records    map[string][]Record
-	policy     map[string]string
-	usedPolicy map[string]bool
+	projects     []Project
+	beads        map[string]string
+	records      map[string][]Record
+	policy       map[string]string
+	usedPolicy   map[string]bool
+	ontology     []OntologyDirective
+	usedOntology map[string]bool
+}
+
+var builtInIssueTypes = map[string]bool{
+	"task": true, "bug": true, "feature": true, "epic": true, "chore": true,
+}
+
+// These issue columns have no lossless Plug issue-body representation. They
+// are retained verbatim in source.fields and are never interpreted as Plug
+// workflow state by the exporter.
+var opaqueIssueFields = [...]string{
+	"agent_state", "await_id", "await_type", "ephemeral", "event_kind",
+	"hook_bead", "is_template", "mol_type", "payload", "role_bead",
+	"role_type", "target", "timeout_ns", "waiters", "wisp_type", "work_type",
+}
+
+func copyOntology(input []OntologyDirective, projects []Project) ([]OntologyDirective, error) {
+	output := append([]OntologyDirective(nil), input...)
+	seenIDs := map[string]bool{}
+	seenTargets := map[string]bool{}
+	knownProjects := map[string]bool{}
+	for _, project := range projects {
+		knownProjects[project.Prefix] = true
+	}
+	for _, directive := range output {
+		if strings.TrimSpace(directive.ID) == "" {
+			return nil, fmt.Errorf("ontology directive requires an ID")
+		}
+		if seenIDs[directive.ID] {
+			return nil, fmt.Errorf("duplicate ontology directive ID")
+		}
+		seenIDs[directive.ID] = true
+		if directive.Kind != "map_type" {
+			return nil, fmt.Errorf("ontology directive %q must use map_type", directive.ID)
+		}
+		if directive.Target.Project == "" || directive.Target.Type == "" || directive.From == "" || directive.To == "" {
+			return nil, fmt.Errorf("ontology directive %q requires project, source and target types", directive.ID)
+		}
+		if !knownProjects[directive.Target.Project] {
+			return nil, fmt.Errorf("ontology directive %q targets an unaccounted project", directive.ID)
+		}
+		if builtInIssueTypes[directive.Target.Type] {
+			return nil, fmt.Errorf("ontology directive %q cannot remap a built-in issue type", directive.ID)
+		}
+		if directive.From != directive.Target.Type {
+			return nil, fmt.Errorf("ontology directive %q source must equal target type", directive.ID)
+		}
+		if directive.To != "issue" {
+			return nil, fmt.Errorf("ontology directive %q must target the Plug issue kind", directive.ID)
+		}
+		key := directive.Target.Project + "\x00" + directive.Target.Type + "\x00" + directive.Target.ID
+		if seenTargets[key] {
+			return nil, fmt.Errorf("duplicate ontology directive target")
+		}
+		seenTargets[key] = true
+	}
+	sort.Slice(output, func(i, j int) bool {
+		a, b := output[i], output[j]
+		if a.ID != b.ID {
+			return a.ID < b.ID
+		}
+		if a.Target.Project != b.Target.Project {
+			return a.Target.Project < b.Target.Project
+		}
+		if a.Target.Type != b.Target.Type {
+			return a.Target.Type < b.Target.Type
+		}
+		return a.Target.ID < b.Target.ID
+	})
+	return output, nil
+}
+
+func (m *mapping) ontologyDirective(project, issueType, id string) error {
+	if builtInIssueTypes[issueType] {
+		return nil
+	}
+	var matches []OntologyDirective
+	for _, directive := range m.ontology {
+		if directive.Target.Project == project && directive.Target.Type == issueType && directive.From == issueType && (directive.Target.ID == "" || directive.Target.ID == id) {
+			matches = append(matches, directive)
+		}
+	}
+	if len(matches) != 1 {
+		// Preserve the original closed-world refusal for callers that did not
+		// provide a directive. Details stay out of the stable user-facing error.
+		return fmt.Errorf("unsupported issue type; workflow/ontology mapping required")
+	}
+	m.usedOntology[matches[0].ID] = true
+	return nil
 }
 
 func (m *mapping) add(kind, id, project, table string, body map[string]any, row Row) {
@@ -76,29 +166,17 @@ func (m *mapping) issues(rows []Row) error {
 		default:
 			return fmt.Errorf("unsupported source status; explicit overlay mapping required")
 		}
-		switch text(row, "issue_type") {
-		case "task", "bug", "feature", "epic", "chore":
-		default:
-			return fmt.Errorf("unsupported issue type; workflow/ontology mapping required")
-		}
-		// Even in the durable table these flags can identify a promoted wisp.
-		// Refuse active workflow semantics rather than pretend they are issues.
-		for _, key := range []string{"ephemeral", "is_template"} {
-			if active(row[key]) {
-				return fmt.Errorf("unsupported issue flag %s", key)
-			}
+		issueType := text(row, "issue_type")
+		if err := m.ontologyDirective(project.Prefix, issueType, id); err != nil {
+			return err
 		}
 		if class := text(row, "storage_class"); class != "" && class != "versioned" {
 			return fmt.Errorf("unsupported issue storage class")
 		}
-		for _, key := range []string{"await_type", "await_id", "mol_type", "hook_bead", "role_bead", "agent_state", "event_kind"} {
-			if text(row, key) != "" {
-				return fmt.Errorf("unsupported active workflow field %s", key)
-			}
+		fields, err := copyIssueSourceFields(row)
+		if err != nil {
+			return err
 		}
-		fields := cloneRow(row)
-		delete(fields, "row_lock")
-		delete(fields, "is_blocked")
 		body := map[string]any{"type": "issue", "source_type": row["issue_type"], "title": row["title"], "status_category": category, "labels": []string{}}
 		if result != "" {
 			body["result"] = result
@@ -112,12 +190,16 @@ func (m *mapping) issues(rows []Row) error {
 	return nil
 }
 
-func active(value any) bool {
-	if value == nil || value == false || value == "" {
-		return false
+func copyIssueSourceFields(row Row) (Row, error) {
+	fields := cloneRow(row)
+	for _, key := range opaqueIssueFields {
+		if _, ok := fields[key]; !ok {
+			return nil, fmt.Errorf("missing source field in issues")
+		}
 	}
-	n, err := natural(value)
-	return err != nil || n != 0
+	delete(fields, "row_lock")
+	delete(fields, "is_blocked")
+	return fields, nil
 }
 
 func (m *mapping) allocator(tables map[string]Table) error {

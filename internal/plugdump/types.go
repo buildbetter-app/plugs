@@ -30,16 +30,17 @@ type Source interface {
 // Inventory supplies the offline capture's identity and external-file census.
 // These declarations are operator evidence, never an independent freeze proof.
 type Inventory struct {
-	Version         string            `json:"version"`
-	StoreID         string            `json:"store_id"`
-	Machine         string            `json:"machine"`
-	Projects        []Project         `json:"projects"`
-	Quiesced        bool              `json:"quiesced"`
-	RemotesMerged   bool              `json:"remotes_merged"`
-	WorkingSetClean bool              `json:"working_set_clean"`
-	History         string            `json:"history"` // unavailable or available-unverified
-	External        []ExternalInput   `json:"external"`
-	ConfigPolicy    map[string]string `json:"config_policy"` // public or secret, every DB config/metadata key
+	Version         string              `json:"version"`
+	StoreID         string              `json:"store_id"`
+	Machine         string              `json:"machine"`
+	Projects        []Project           `json:"projects"`
+	Ontology        []OntologyDirective `json:"ontology"`
+	Quiesced        bool                `json:"quiesced"`
+	RemotesMerged   bool                `json:"remotes_merged"`
+	WorkingSetClean bool                `json:"working_set_clean"`
+	History         string              `json:"history"` // unavailable or available-unverified
+	External        []ExternalInput     `json:"external"`
+	ConfigPolicy    map[string]string   `json:"config_policy"` // public or secret, every DB config/metadata key
 }
 
 type Project struct {
@@ -48,6 +49,26 @@ type Project struct {
 	HashLength    int               `json:"hash_length"`
 	LastID        uint64            `json:"last_id"`
 	ChildCounters map[string]uint64 `json:"child_counters"`
+}
+
+// OntologyDirective is the closed-world map_type declaration used to admit a
+// Beads issue type that is not one of the built-in exporter types. The target
+// type is the original Beads spelling; To is the Plug kind emitted by this
+// archive. A target ID may narrow a declaration to one exact source row.
+// This mirrors the Plug ontology migration directive shape without importing
+// Plug's implementation into Beads.
+type OntologyDirective struct {
+	ID     string         `json:"id"`
+	Kind   string         `json:"kind"`
+	Target OntologyTarget `json:"target"`
+	From   string         `json:"from"`
+	To     string         `json:"to"`
+}
+
+type OntologyTarget struct {
+	Project string `json:"project"`
+	Type    string `json:"type"`
+	ID      string `json:"id,omitempty"`
 }
 
 // The initial reader accepts absent external sources, or an explicitly
@@ -93,21 +114,22 @@ type Disposition struct {
 }
 
 type Manifest struct {
-	Format         string            `json:"format"`
-	Schema         int               `json:"schema"`
-	Reference      string            `json:"beads_reference"`
-	StoreID        string            `json:"store_id"`
-	Machine        string            `json:"machine"`
-	MainVersion    int               `json:"main_version"`
-	IgnoredVersion int               `json:"ignored_version"`
-	Scope          string            `json:"scope"`
-	History        string            `json:"history"`
-	Projects       []Project         `json:"projects"`
-	Kinds          []Kind            `json:"kind_registry"`
-	Files          map[string]File   `json:"files"`
-	Sources        []Disposition     `json:"sources"`
-	Warnings       []string          `json:"warnings"`
-	Verification   map[string]string `json:"verification"`
+	Format         string              `json:"format"`
+	Schema         int                 `json:"schema"`
+	Reference      string              `json:"beads_reference"`
+	StoreID        string              `json:"store_id"`
+	Machine        string              `json:"machine"`
+	MainVersion    int                 `json:"main_version"`
+	IgnoredVersion int                 `json:"ignored_version"`
+	Scope          string              `json:"scope"`
+	History        string              `json:"history"`
+	Projects       []Project           `json:"projects"`
+	Ontology       []OntologyDirective `json:"ontology,omitempty"`
+	Kinds          []Kind              `json:"kind_registry"`
+	Files          map[string]File     `json:"files"`
+	Sources        []Disposition       `json:"sources"`
+	Warnings       []string            `json:"warnings"`
+	Verification   map[string]string   `json:"verification"`
 }
 
 func marshal(value any) ([]byte, error) {

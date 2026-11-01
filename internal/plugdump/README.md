@@ -33,7 +33,7 @@ Validation never extracts the tar or opens a target store.
 
 | Member | Contents |
 | --- | --- |
-| `manifest.json` | `format: plug-dump/1`, `schema: 1`, pinned reference, store/machine identity, paired schema cursors, allocator projects, kind registry, file checksums/sizes, source counts/dispositions, history and verification limits |
+| `manifest.json` | `format: plug-dump/1`, `schema: 1`, pinned reference, store/machine identity, paired schema cursors, allocator projects, optional ontology directives, kind registry, file checksums/sizes, source counts/dispositions, history and verification limits |
 | `records/<kind>.ndjson` | Sorted typed records for every present supported kind; an absent kind has no registry entry or member |
 | `config/sources.json` | Every declared external input, path, precedence, absence or normalized JSON config; secrets are references |
 
@@ -61,6 +61,13 @@ status; they are not represented as verified A6 history.
 
 Source status/type spellings remain in provenance. Supported issue types are
 `task`, `bug`, `feature`, `epic` and `chore`; the Plug record type is `issue`.
+Every other durable issue type is a closed-world refusal unless the inventory
+contains an explicit `ontology` `map_type` directive whose target project and
+source type match the row and whose `to` value is `issue`. The directive
+mirrors Plug's ontology migration shape (`id`, `kind`, `target`, `from`, and
+`to`), is recorded in the manifest, and never rewrites `source_type` or drops
+a row. Directives that are malformed, unused, overlap, target a built-in type,
+or target an unaccounted project refuse before archive publication.
 Supported edge types are `blocks`, `parent-child`, `related` and
 `discovered-from`. Targets retain their typed issue/external discriminator;
 wisp targets and dangling issue targets refuse. Labels sort without loss;
@@ -78,7 +85,8 @@ to 4 MiB each. Source text must be UTF-8.
 The operator supplies store/machine identity, unique project prefixes, ID mode
 (`hash` or `sequential`), adaptive hash length, top-level and child counters,
 quiescence/clean-working-set/merged-remotes declarations, history availability,
-every external input and per-key `config_policy`. These are operator-supplied
+every external input, per-key `config_policy`, and any required ontology
+directives. These are operator-supplied
 evidence, not independent freeze/ancestry proofs. Every read table and every
 requested file must be accounted for. Multiple projects within one capture
 are supported; merging separate databases/machine working sets is not.
@@ -132,10 +140,11 @@ verification is explicitly unimplemented; the manifest never certifies it.
 | `ready_issues`, `blocked_issues` | Derived views are excluded from base-table reads; rebuilding and runtime membership/cycle comparison remain unverified |
 
 All nonempty refused families remain unsupported inputs; an empty table is
-still counted. Durable rows with ephemeral/template flags, a non-versioned
-storage class, or active gate/molecule/agent markers refuse as well. Unmapped
-fields on otherwise supported issues remain in provenance; they do not gain
-invented live Plug semantics.
+still counted. Durable rows with a non-versioned storage class refuse. The
+ephemeral/template flags and active gate/molecule/agent markers on otherwise
+supported issue rows are retained verbatim in `source.fields` only; they do
+not gain interpreted live Plug workflow semantics. Unmapped fields on
+otherwise supported issues remain in provenance under the same boundary.
 
 Every external family below is mandatory in the inventory, even when absent:
 
