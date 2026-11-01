@@ -428,10 +428,12 @@ func TestFactsSourceRejectsNamespaceDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	bad := authzfixed.Facts{Namespace: authz.Namespace{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, InstallationID: "other", Authority: model.RefByID("authority", model.Natural64(0))}}
-	if err := f.facts.Replace(bad); err != nil {
-		t.Fatal(err)
+	if err := f.facts.Replace(bad); err == nil {
+		t.Fatal("installed source accepted a different namespace")
 	}
-	wantCode(t, f.call(t, user.Token, "bead.ready", map[string]any{"limit": 1, "_meta": map[string]any{"project": "project"}}), "authz_unavailable")
+	// Refuse drift at its source without replacing the last valid facts or
+	// turning subsequent authorized reads into an unavailable installation.
+	result(t, f.call(t, user.Token, "bead.ready", map[string]any{"limit": 1, "_meta": map[string]any{"project": "project"}}))
 }
 
 // The hook makes a real authorized claim after the outer request has selected
