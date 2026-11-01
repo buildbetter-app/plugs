@@ -562,6 +562,11 @@ func (p *prepared) changeRecords() []model.ChangeRecord {
 		}
 		if pending.deleted {
 			kind = model.OpDelete
+		} else if kind != model.OpCreate && pending.kind != "memory" && len(pending.before) != 0 {
+			before, err := DecodeDocument(pending.before)
+			if err == nil && parentID(before.Parent) != parentID(pending.doc.Parent) {
+				kind = model.OpReparent
+			}
 		}
 		// A slot patch plus its optional reason comment is one transition.
 		// Keep the changed blocker anchored to the patch, not the comment.

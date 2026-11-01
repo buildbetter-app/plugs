@@ -32,12 +32,12 @@ func TestAncestorCodecAndParentEnvelope(t *testing.T) {
 			}
 		}
 	}
-	for _, parent := range []string{`"pl-p"`, `{"key":"p"}`, `{"id":""}`, `{"id":"p","branch":"1"}`} {
+	for _, parent := range []string{`"pl-p"`, `{"key":"p"}`, `{"id":""}`, `{"id":"p","branch":1}`} {
 		if _, err := DecodeDocument([]byte(`{"id":"pl-c","type":"issue","fields":{},"parent":` + parent + `}`)); err == nil {
 			t.Fatalf("accepted malformed stored Parent %s", parent)
 		}
 	}
-	for _, parent := range []string{`null`, `{"id":"pl-p"}`, `{"id":"pl-p","branch":"0"}`} {
+	for _, parent := range []string{`null`, `{"id":"pl-p"}`, `{"id":"pl-p","branch":0}`} {
 		if _, err := DecodeDocument([]byte(`{"id":"pl-c","type":"issue","fields":{},"parent":` + parent + `}`)); err != nil {
 			t.Fatalf("canonical Parent %s: %v", parent, err)
 		}
