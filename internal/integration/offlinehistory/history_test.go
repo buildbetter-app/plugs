@@ -289,3 +289,47 @@ func TestSnapshotPreparedRestoreAcrossAllDrivers(t *testing.T) {
 		})
 	}
 }
+
+func TestPreparedHistoryRejectsChangedActorPayloadAndUnstagedHead(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			s := openStore(t, engine)
+			old, _ := s.Meta(ctx)
+			tx, _ := begin(t, s)
+			port, ok := tx.(driver.OfflineHistoryTx)
+			if !ok {
+				t.Fatal("missing guarded capability")
+			}
+			p := profile(driver.RestoreHistoryModeFull)
+			h := payload(false)
+			p.HistoryDigest, _ = driver.OfflineHistoryDigest(h)
+			when := time.Now().UTC()
+			forged := payload(false)
+			forged.Batches[0].EventIDs[0] = "another-source"
+			if _, e := port.PrepareOfflineHistory(ctx, p, forged, when); e == nil {
+				t.Fatal("admitted payload digest was not enforced")
+			}
+			m, e := port.PrepareOfflineHistory(ctx, p, h, when)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, e = port.CommitOfflineHistory(ctx, header(p, m, when)); e == nil {
+				t.Fatal("unstaged final head admitted")
+			}
+			stage(t, tx)
+			bad := header(p, m, when)
+			bad.Principal.ID = "source-author"
+			if _, e = port.CommitOfflineHistory(ctx, bad); e == nil {
+				t.Fatal("source principal substituted for admitted actor")
+			}
+			got, _ := s.Meta(ctx)
+			if !reflect.DeepEqual(old, got) {
+				t.Fatal("refusal published metadata")
+			}
+			if _, e = port.CommitOfflineHistory(ctx, header(p, m, when)); e != nil {
+				t.Fatal(e)
+			}
+		})
+	}
+}

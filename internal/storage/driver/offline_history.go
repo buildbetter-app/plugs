@@ -348,6 +348,9 @@ func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 				return refuse(RestoreHistoryReasonUnmappable)
 			}
 		} else {
+			if _, known := last[id]; known || r.Kind == "bead" || r.Kind == "memory" {
+				return refuse(RestoreHistoryReasonUnmappable)
+			}
 			extra = append(extra, SourceHistoryChange{After: &tail[i]})
 		}
 	}
