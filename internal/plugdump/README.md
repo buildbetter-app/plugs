@@ -3,8 +3,9 @@
 `bd --readonly export --format plug-dump/1 --plug-inventory inventory.json
 -o dump.tar` reads a disposable frozen Beads capture through the existing
 `storage.RawDBTxAccessor` capability. It gathers the entire read set in a
-read-only, Serializable SQL transaction and rolls back before publishing. It performs no
-storage migration, restore, remote merge, credential lookup, or hook execution.
+read-only, Serializable SQL transaction and rolls back before publishing. It
+performs no storage migration, restore, remote merge, credential lookup, or
+hook execution.
 Ordinary `bd export` retains its JSONL defaults and selection flags.
 
 This is the connected **head-state and source-archive slice**, with scope
@@ -227,7 +228,10 @@ The complete opaque issue-field list is `agent_state`, `await_id`, `await_type`,
 `ephemeral`, `event_kind`, `hook_bead`, `is_template`, `mol_type`, `payload`,
 `role_bead`, `role_type`, `target`, `timeout_ns`, `waiters`, `wisp_type` and
 `work_type`. All remain in `source.fields`; this layer never interprets their
-orchestration state or changes their JSON values. Historical images may use a
+orchestration state or changes their JSON values. Preservation starts at SQL
+readback; native JSON storage may normalize an inserted numeric value before
+export. The exporter never reconstructs an earlier numeric representation.
+Historical images may use a
 subset of the head's explicit type directives; every custom historical type
 still requires an exact project/type/optional issue match. Other migration
 checks, including source-principal attribution, remain unperformed.

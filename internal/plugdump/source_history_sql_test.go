@@ -18,7 +18,7 @@ import (
 )
 
 func TestSQLSourceHistoryReadsPinnedDoltCommitImages(t *testing.T) {
-	if testing.Short() || os.Getenv("BEADS_TEST_SKIP") == "dolt" {
+	if os.Getenv("BEADS_TEST_SKIP") == "dolt" {
 		t.Skip("requires the explicit pinned Dolt source-history lane")
 	}
 	server := testutil.StartIsolatedDoltContainerHandle(t)
@@ -122,6 +122,46 @@ func TestSQLSourceHistoryReadsPinnedDoltCommitImages(t *testing.T) {
 		t.Fatal(err)
 	}
 	commit("public synthetic update")
+	// Compare to direct SQL readback, rather than assuming a native JSON
+	// column retains the numeric representation that the insert requested.
+	var storedPayloadJSON string
+	var storedTimeout int64
+	if err := db.QueryRowContext(ctx, "SELECT payload, timeout_ns FROM issues WHERE id = ?", "demo-7").Scan(&storedPayloadJSON, &storedTimeout); err != nil {
+		t.Fatal(err)
+	}
+	var storedPayload map[string]any
+	if err := decodeJSON([]byte(storedPayloadJSON), &storedPayload); err != nil {
+		t.Fatal(err)
+	}
+	if storedTimeout != 9007199254740993 {
+		t.Fatalf("source BIGINT changed before export: %d", storedTimeout)
+	}
+	t.Logf("public SQL readback before export: payload=%s timeout_ns=%d (requested payload.n=9007199254740993)", storedPayloadJSON, storedTimeout)
+	wantOpaque := Row{}
+	for _, row := range source["issues"].Rows {
+		if row["id"] == "demo-7" {
+			for _, field := range opaqueIssueFields {
+				wantOpaque[field] = row[field]
+			}
+		}
+	}
+	wantOpaque["payload"] = storedPayload
+	checkOpaque := func(image string, records []Record) {
+		t.Helper()
+		for _, record := range records {
+			if record.Kind != "bead" || record.ID != "demo-7" {
+				continue
+			}
+			for _, field := range opaqueIssueFields {
+				got, present := record.Source.Fields[field]
+				if !present || !equalJSON(got, wantOpaque[field]) {
+					t.Fatalf("%s opaque %s differs from source SQL: got %v want %v", image, field, got, wantOpaque[field])
+				}
+			}
+			return
+		}
+		t.Fatalf("%s missing public source issue", image)
+	}
 	build := func() []byte {
 		t.Helper()
 		tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable})
@@ -149,6 +189,25 @@ func TestSQLSourceHistoryReadsPinnedDoltCommitImages(t *testing.T) {
 	}
 	if len(h.Events) != 2 || !bytes.Contains(data, []byte("9007199254740993")) || !bytes.Contains(data, []byte("waiting\\u0000opaque")) {
 		t.Fatal("source audit or opaque bytes were lost")
+	}
+	checkOpaque("baseline", h.Range.Baseline)
+	for _, frame := range h.Range.Frames {
+		checkOpaque(fmt.Sprintf("sequence %d", frame.Sequence), frame.Records)
+	}
+	members := archiveMembers(t, data)
+	for _, kind := range m.Kinds {
+		if kind.Name != "bead" {
+			continue
+		}
+		var records []Record
+		for _, line := range bytes.Split(bytes.TrimSpace(members[kind.File]), []byte{'\n'}) {
+			var record Record
+			if err := decodeJSON(line, &record); err != nil {
+				t.Fatal(err)
+			}
+			records = append(records, record)
+		}
+		checkOpaque("head", records)
 	}
 	t.Logf("actual Dolt capture commits=%d first=%d head=%d events=%d sha256=%s", len(h.Commits), h.Range.First, h.Range.Head, len(h.Events), digest(data))
 	if os.Getenv("PLUG_TEST_EXPORT_PUBLIC_HISTORY") == "1" {
