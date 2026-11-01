@@ -140,10 +140,9 @@ verification is explicitly unimplemented; the manifest never certifies it.
 | `ready_issues`, `blocked_issues` | Derived views are excluded from base-table reads; rebuilding and runtime membership/cycle comparison remain unverified |
 
 All nonempty refused families remain unsupported inputs; an empty table is
-still counted. Durable rows with ephemeral/template flags, a non-versioned
-storage class, or active gate/molecule/agent markers refuse as well. Unmapped
-fields on otherwise supported issues remain in provenance; they do not gain
-invented live Plug semantics.
+still counted. Durable rows with a non-versioned storage class also refuse.
+Opaque workflow columns on otherwise supported issues remain in provenance;
+their presence does not supply live Plug workflow semantics.
 
 Every external family below is mandatory in the inventory, even when absent:
 
@@ -202,8 +201,9 @@ uses `beads-dolt-images/1`: source commits and opaque attribution, the complete
 current events table, and an explicitly checked range of portable business
 images and cumulative event images at exact source commit IDs.
 
-A complete linear graph, every representable image, unchanged earlier events
-and an exact current-head comparison are required for `history=verified`.
+A complete linear graph, every representable image, unchanged earlier events,
+an exact current-head comparison and a stable final head/clean/commit census
+are required for `history=verified`.
 Missing images or unsupported older schemas permit only a proven contiguous
 suffix with a complete baseline. Exact inclusive prefix gaps distinguish
 `unavailable`, `unmappable` and `not-retained`; the manifest remains
@@ -218,6 +218,11 @@ the proven suffix with its gaps and floor; explicit snapshot imports only the
 current state with a new floor. Dolt commit images are explicit import units,
 not claims about individual SQL transactions or edits between commits. Audit
 rows and source authors are provenance, never verified Plug principals.
-All opaque source issue fields remain in `source.fields`; this layer never
-interprets orchestration state or changes its JSON values. Other migration
+The complete opaque issue-field list is `agent_state`, `await_id`, `await_type`,
+`ephemeral`, `event_kind`, `hook_bead`, `is_template`, `mol_type`, `payload`,
+`role_bead`, `role_type`, `target`, `timeout_ns`, `waiters`, `wisp_type` and
+`work_type`. All remain in `source.fields`; this layer never interprets their
+orchestration state or changes their JSON values. Historical images may use a
+subset of the head's explicit type directives; every custom historical type
+still requires an exact project/type/optional issue match. Other migration
 checks, including source-principal attribution, remain unperformed.
