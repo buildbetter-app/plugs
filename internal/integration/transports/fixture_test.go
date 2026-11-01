@@ -155,6 +155,7 @@ func newFixture(t *testing.T, authenticated bool) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = wsHandler.Close() })
 	mcpHandler, err := mcp.New(f.rpc, f.auth, mcp.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -179,12 +180,17 @@ func newFixture(t *testing.T, authenticated bool) *fixture {
 	f.url = "http://" + server.Addr().String()
 	f.client = &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 5 * time.Second}
 	t.Cleanup(f.client.CloseIdleConnections)
+	f.initializeMCP(t)
+	return f
+}
+
+func (f *fixture) initializeMCP(t *testing.T) {
+	t.Helper()
 	status, header, body := f.post(t, mcp.Path, []byte(`{"jsonrpc":"2.0","id":"init","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"i3-fixture","version":"1"}}}`), nil)
 	if status != http.StatusOK || header.Get("MCP-Session-Id") == "" {
 		t.Fatalf("MCP initialize: status=%d body=%s", status, body)
 	}
 	f.session = header.Get("MCP-Session-Id")
-	return f
 }
 
 func deniedEgress(host pluginapi.Host, target, wantCode, detail string) error {

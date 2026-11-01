@@ -9,6 +9,12 @@ principals must agree. MCP uses its required `tools/call` envelope and
 `plug_call`; its canonical content is compared after removing that envelope.
 Stdio receives an identity from trusted host admission before framing input.
 
+The production `composition.Runtime.Listen` fixture also creates a bead over
+the mounted WebSocket route and reads it through all four adapters. Shutdown
+cancels an active WebSocket core read, waits for its reader to return, and
+closes the store only after that drain; ordinary HTTP shutdown does not own
+upgraded sockets. The WebSocket handler stops accepting upgrades when closed.
+
 Negative cases cover hostile Host and Origin headers, forwarded-header
 spoofing, missing HTTP markers, missing/malformed/revoked credentials, and the
 real admin dump handler's human-presence refusal. API-key Users receive no

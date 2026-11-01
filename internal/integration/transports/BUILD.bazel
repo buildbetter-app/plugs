@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "transports_test",
-    srcs = ["client_test.go", "fixture_test.go", "transports_test.go"],
+    srcs = ["client_test.go", "composition_test.go", "fixture_test.go", "transports_test.go"],
     args = ["-test.v"],
     deps = [
         "//internal/core/model",
@@ -11,6 +11,7 @@ go_test(
         "//internal/core/service",
         "//internal/plugins/authnapikey",
         "//internal/server/authn",
+        "//internal/server/composition",
         "//internal/server/pluginhost",
         "//internal/server/rpc",
         "//internal/server/transport/httpjson",
