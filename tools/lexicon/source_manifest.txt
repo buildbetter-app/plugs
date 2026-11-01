@@ -11,6 +11,7 @@
 .github/pages-redirect/index.html
 .github/runs-on.yml
 .github/workflows/plug-bazel.yml
+.github/workflows/plug-nightly-restore-diffs.yml
 .github/workflows/plug-remote-bazel.yml
 .github/workflows/plug-runs-on-smoke.yml
 .gitignore
@@ -151,6 +152,8 @@ internal/core/authz/types.go
 internal/core/dumpformat/BUILD.bazel
 internal/core/dumpformat/README.md
 internal/core/dumpformat/catalog.go
+internal/core/dumpformat/history.go
+internal/core/dumpformat/history_test.go
 internal/core/dumpformat/json.go
 internal/core/dumpformat/merge.go
 internal/core/dumpformat/merge_fixture_test.go
@@ -337,6 +340,7 @@ internal/integration/collabwatch/BUILD.bazel
 internal/integration/collabwatch/integration_test.go
 internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
+internal/integration/converterroundtrip/history.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
 internal/integration/converterroundtrip/native_restore_test.go
@@ -380,9 +384,19 @@ internal/integration/migrationpre/BUILD.bazel
 internal/integration/migrationpre/README.md
 internal/integration/migrationpre/compose.go
 internal/integration/migrationpre/integration_test.go
+internal/integration/nightlyrestore/BUILD.bazel
+internal/integration/nightlyrestore/README.md
+internal/integration/nightlyrestore/engine_test.go
+internal/integration/nightlyrestore/fixture_test.go
+internal/integration/nightlyrestore/history_diff_test.go
+internal/integration/nightlyrestore/restore_diff_test.go
 internal/integration/offlinehistory/BUILD.bazel
+internal/integration/offlinehistory/archive_test.go
 internal/integration/offlinehistory/fixture_test.go
 internal/integration/offlinehistory/history_test.go
+internal/integration/offlinehistory/testdata/full.tar
+internal/integration/offlinehistory/testdata/generate.py
+internal/integration/offlinehistory/testdata/partial.tar
 internal/integration/oidc/BUILD.bazel
 internal/integration/oidc/browser_cors_check.mjs
 internal/integration/oidc/browser_cors_test.go
