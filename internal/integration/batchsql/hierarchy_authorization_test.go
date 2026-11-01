@@ -1,9 +1,14 @@
 package batchsql_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -46,11 +51,15 @@ func TestHierarchyFixedAuthorizationAtWriterAcrossStores(t *testing.T) {
 				t.Fatal(err)
 			}
 			provider := authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
-			writer := func(enabled bool) *pipeline.Writer {
+			composition := func(enabled bool) *authzrpc.Composition {
 				app, err := authzrpc.New(f.ctx, authzrpc.Config{Store: f.store, Lease: f.lease, Provider: provider, Facts: facts, Namespace: ns, DefaultProject: "child-project", Hierarchy: enabled})
 				if err != nil {
 					t.Fatal(err)
 				}
+				return app
+			}
+			writer := func(enabled bool) *pipeline.Writer {
+				app := composition(enabled)
 				return pipeline.New(f.store, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithAuthorizer(app.Checker), pipeline.WithEventContext(app.Checker), pipeline.WithClock(f.now), pipeline.WithIDGenerator(f.nextID))
 			}
 			f.writer = writer(true)
@@ -78,6 +87,77 @@ func TestHierarchyFixedAuthorizationAtWriterAcrossStores(t *testing.T) {
 				}
 				return entry
 			}
+			// Exercise the actual authenticated named HTTP route, including its
+			// service lowering, rather than substituting the direct tx.apply seam.
+			issued, err := provider.Issue(by, time.Now().Add(time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			type namedReply struct {
+				Result json.RawMessage `json:"result"`
+				Error  *struct {
+					Data model.ErrorData `json:"data"`
+				} `json:"error"`
+				Meta struct {
+					Replayed bool `json:"replayed"`
+				} `json:"_meta"`
+			}
+			namedCreate := func(app *authzrpc.Composition, destination model.Ref, key string) namedReply {
+				t.Helper()
+				body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "bead.create", "params": map[string]any{
+					"type": "issue", "fields": map[string]any{"title": "named child"}, "parent": destination,
+					"_meta": map[string]any{"project": "child-project", "idempotencyKey": key},
+				}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/rpc/v1", bytes.NewReader(body))
+				req.RemoteAddr = "127.0.0.1:12345"
+				req.Header.Set("Plug-RPC", "1")
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer "+issued.Token)
+				recorder := httptest.NewRecorder()
+				app.Handler.ServeHTTP(recorder, req)
+				var reply namedReply
+				if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &reply) != nil {
+					t.Fatalf("named create HTTP response: %d %s", recorder.Code, recorder.Body.Bytes())
+				}
+				return reply
+			}
+			namedApp := composition(true)
+			namedMeta := requestMeta("named-parent-create")
+			namedMeta.Method = "bead.create"
+			refuseNamed := func(app *authzrpc.Composition, destination model.Ref, key string, code model.ErrorCode) {
+				t.Helper()
+				before, rows, predicates := f.state(t), hierarchyRows(t, f), hierarchyFacts(t, f)
+				reply := namedCreate(app, destination, key)
+				if reply.Error == nil || reply.Error.Data.Code != code {
+					t.Fatalf("named create refusal: %+v, want %s", reply, code)
+				}
+				requireSameState(t, before, f.state(t))
+				if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || !reflect.DeepEqual(predicates, hierarchyFacts(t, f)) {
+					t.Fatal("refused named create published closure or predicates")
+				}
+			}
+			refuseNamed(composition(false), parent, namedMeta.IdempotencyKey, "forbidden")
+			refuseNamed(namedApp, secret, requestMeta("named-hidden-parent").IdempotencyKey, "forbidden")
+			refuseNamed(namedApp, model.RefByKey("unresolved"), requestMeta("named-alias-parent").IdempotencyKey, "invalid_params")
+			if receipt(namedMeta) != nil {
+				t.Fatal("refused named create left a receipt")
+			}
+			named := namedCreate(namedApp, parent, namedMeta.IdempotencyKey)
+			var namedCommit model.Commit
+			if named.Error != nil || json.Unmarshal(named.Result, &namedCommit) != nil || len(namedCommit.Results) != 1 {
+				t.Fatalf("authorized named parent create: %+v", named)
+			}
+			namedDoc := decodeDocument(t, f.state(t).Records[namedCommit.Results[0].Ref.ID])
+			if namedDoc.Project != "child-project" || namedDoc.Parent == nil || namedDoc.Parent.ID != parent.ID {
+				t.Fatalf("named create lost parent or child ownership: %+v", namedDoc)
+			}
+			if replay := namedCreate(namedApp, parent, namedMeta.IdempotencyKey); replay.Error != nil || !replay.Meta.Replayed || !bytes.Equal(replay.Result, named.Result) {
+				t.Fatalf("named parent create replay differs: %+v", replay)
+			}
+			verifyHierarchy(t, f)
 			batch := model.ChangeSet{Ops: []model.Op{
 				hierarchyCreate("epic", nil, "parent-project"),
 				hierarchyCreate("task", hierarchyRef("epic"), "child-project"),
@@ -125,6 +205,11 @@ func TestHierarchyFixedAuthorizationAtWriterAcrossStores(t *testing.T) {
 				}
 				refuse("missing "+missing, model.ChangeSet{Ops: []model.Op{hierarchyMove(child, &other)}}, requestMeta("revoked-move"))
 				refuse("revoked replay "+missing, move, moveMeta)
+				refuseNamed(namedApp, parent, requestMeta("named-missing-grant").IdempotencyKey, "forbidden")
+				refuseNamed(namedApp, parent, namedMeta.IdempotencyKey, "forbidden")
+				if entry := receipt(namedMeta); entry == nil || !reflect.DeepEqual(entry.Commit, namedCommit) {
+					t.Fatal("revoked named create replay modified the original receipt")
+				}
 				if entry := receipt(moveMeta); entry == nil || !reflect.DeepEqual(entry.Commit, moved) {
 					t.Fatal("revoked replay modified the original receipt")
 				}

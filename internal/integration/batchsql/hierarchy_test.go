@@ -566,6 +566,66 @@ func TestHierarchyChildPhantomRestartsAcrossStores(t *testing.T) {
 	}
 }
 
+func TestHierarchyThousandOperationBoundaryAcrossStores(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			writer, metrics := pipeline.NewWithTelemetry(f.store, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now), pipeline.WithIDGenerator(f.nextID))
+			f.writer = writer
+			cs := model.ChangeSet{Ops: make([]model.Op, 1000)}
+			for i := range cs.Ops {
+				cs.Ops[i] = hierarchyCreate(fmt.Sprintf("row-%d", i), nil, "work")
+			}
+			m := f.meta("1000-op-boundary")
+			before := f.state(t)
+			oversized := model.ChangeSet{Ops: append(append([]model.Op{}, cs.Ops...), hierarchyCreate("row-1000", nil, "work"))}
+			_, err := f.writer.Apply(f.ctx, batchPrincipal, oversized, m)
+			requireCode(t, err, "invalid_params")
+			requireSameState(t, before, f.state(t))
+			if f.receipt(t, m) != nil {
+				t.Fatal("1001 refusal published a receipt")
+			}
+			out, err := f.writer.ApplyWithOutcome(f.ctx, batchPrincipal, cs, m)
+			phaseMillis := map[pipeline.Phase]float64{}
+			for phase, results := range metrics.Snapshot().LaneMillis {
+				for _, millis := range results {
+					phaseMillis[phase] += millis
+				}
+			}
+			t.Logf("%s full 1000-op create phase times (ms): %v", engine, phaseMillis)
+			if err != nil || out.Replayed || out.Commit.Revision.String() != "1" || len(out.Commit.Results) != 1000 {
+				t.Fatalf("1000-op commit: %+v %v", out, err)
+			}
+			ids := map[string]bool{}
+			for i, result := range out.Commit.Results {
+				doc, err := pipeline.DecodeDocument(result.Record)
+				if err != nil || !result.Ref.IsID() || ids[result.Ref.ID] || result.Revision.String() != "1" || doc.ID != result.Ref.ID || doc.Parent != nil || doc.Fields["title"] != fmt.Sprintf("row-%d", i) {
+					t.Fatalf("1000-op order/identity/image at result %d: %+v %v", i, result, err)
+				}
+				ids[result.Ref.ID] = true
+			}
+			committed := f.state(t)
+			if len(committed.Records) != 1000 || len(committed.Versions) != 1000 || len(committed.Log) != 1 || len(committed.Log[0].Changes) != 1000 {
+				t.Fatal("1000-op commit did not publish exactly one complete changeset")
+			}
+			for id, versions := range committed.Versions {
+				if !ids[id] || len(versions) != 1 || !versions[0].Base || versions[0].Deleted || versions[0].Revision.String() != "1" {
+					t.Fatalf("1000-op base version differs for %s", id)
+				}
+			}
+			if receipt := f.receipt(t, m); receipt == nil || receipt.ResponsePending || !reflect.DeepEqual(receipt.Commit, out.Commit) {
+				t.Fatal("1000-op receipt is incomplete")
+			}
+			replayed, err := f.writer.ApplyWithOutcome(f.ctx, batchPrincipal, cs, m)
+			if err != nil || !replayed.Replayed || !reflect.DeepEqual(replayed.Commit, out.Commit) {
+				t.Fatalf("1000-op replay differs: %v", err)
+			}
+			requireSameState(t, committed, f.state(t))
+			t.Logf("%s full operation boundary: 1000 IDs/rows/base versions, one changeset and exact replay PASS; 1001 atomic refusal", engine)
+		})
+	}
+}
+
 func TestHierarchyClosure5000And5001AcrossStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
