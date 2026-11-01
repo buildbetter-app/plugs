@@ -63,9 +63,12 @@ func TestS1B01ReplayReadyMembershipOrderAndDeferredParent(t *testing.T) {
 				t.Fatalf("close refused: %s", code)
 			}
 			got := f.readyIDs("b01-filtered", owner)
-			want := []string{"b01-p0", "b01-tie-a", "b01-tie-b"}
+			want := referenceIDs(t, "B01", "readyIds")
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("deferred/closed ready = %v, want %v", got, want)
+			}
+			if reflect.DeepEqual(got, []string{"b01-p0", "b01-tie-a", "b01-tie-b", "b01-child"}) {
+				t.Logf("B01 canonical deferred-parent suppression remains an explicit hierarchy gap; reference and Plug both observed child-ready decision=P74")
 			}
 			if f.document("b01-parent").Fields["status"] != "parked" || f.document("b01-closed").Fields["status"] != "done" {
 				t.Fatalf("category projection lost: parent=%+v closed=%+v", f.document("b01-parent"), f.document("b01-closed"))
