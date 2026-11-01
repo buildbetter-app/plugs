@@ -9,6 +9,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
 )
 
 func hierarchyMethod(method string) bool {
@@ -151,7 +152,7 @@ func (c *Checker) AuthorizeHierarchy(ctx context.Context, stage port.Authorizati
 		if change.Op.Kind == model.OpCreate {
 			s.staged[ref.ID] = staged
 		}
-		if err := c.checkHierarchyRights(ctx, s, caller, target, change.Op.Kind == model.OpCreate, load); err != nil {
+		if err := c.checkHierarchyRights(ctx, s, caller, target, change.Op.Kind == model.OpCreate, proposal.Meta.Method, load); err != nil {
 			return err
 		}
 		states[ref.ID] = staged
@@ -188,8 +189,8 @@ func (s *hierarchySlice) ProjectForBead(ctx context.Context, ref model.Ref) (aut
 	return s.slice.ProjectForBead(ctx, ref)
 }
 
-func (c *Checker) checkHierarchyRights(ctx context.Context, s *hierarchySlice, caller authz.Caller, target authz.HierarchyTarget, create bool, load func(model.Ref) (*model.Record, error)) error {
-	requests := []authz.CheckRequest{{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: target.Ref}, Method: "bead.update"}}
+func (c *Checker) checkHierarchyRights(ctx context.Context, s *hierarchySlice, caller authz.Caller, target authz.HierarchyTarget, create bool, method string, load func(model.Ref) (*model.Record, error)) error {
+	requests := []authz.CheckRequest{{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: target.Ref}, Method: method}}
 	if create {
 		project, found := s.projectByName(target.Project)
 		if !found {
@@ -197,7 +198,7 @@ func (c *Checker) checkHierarchyRights(ctx context.Context, s *hierarchySlice, c
 		}
 		// Project modify is the fixed create authority; the child check above
 		// also preserves ref caveats and per-bead code-link restrictions.
-		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Project, Ref: project}})
+		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Project, Ref: project}, Method: method})
 	}
 	if target.Parent != nil {
 		parent, staged := s.staged[target.Parent.ID]
@@ -214,9 +215,20 @@ func (c *Checker) checkHierarchyRights(ctx context.Context, s *hierarchySlice, c
 		if _, err := authz.HierarchyImage(parent); err != nil {
 			return forbidden("hierarchy write not authorized")
 		}
-		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: *target.Parent}, Method: "bead.update"})
+		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: *target.Parent}, Method: method})
 	}
-	decisions, err := c.chain.Check(ctx, s, requests)
+	// Translate only the adopted finite policy's membership predicates. Code
+	// links and every other rule set still receive the ORIGINAL method, so a
+	// forbid on reparent/tx.apply cannot be bypassed as a synthetic update.
+	chain := c.chain
+	chain.Rules = make([]authz.RuleSet, len(c.chain.Rules))
+	for i, rules := range c.chain.Rules {
+		chain.Rules[i] = rules
+		if fixed, ok := rules.(*authzfixed.RuleSet); ok {
+			chain.Rules[i] = hierarchyFixedRules{fixed}
+		}
+	}
+	decisions, err := chain.Check(ctx, s, requests)
 	if err != nil {
 		return authzError(err)
 	}
@@ -259,7 +271,7 @@ func (c *Checker) hierarchyReplay(ctx context.Context, s *hierarchySlice, caller
 			return forbidden("hierarchy write not authorized")
 		}
 	}
-	if err := c.checkHierarchyRights(ctx, s, caller, target, change.Op.Kind == model.OpCreate, load); err != nil {
+	if err := c.checkHierarchyRights(ctx, s, caller, target, change.Op.Kind == model.OpCreate, proposal.Meta.Method, load); err != nil {
 		return err
 	}
 	if change.Op.Kind == model.OpCreate && change.Op.Create.Key != "" {
@@ -269,6 +281,24 @@ func (c *Checker) hierarchyReplay(ctx context.Context, s *hierarchySlice, caller
 		aliases[change.Op.Create.Key] = source.Ref
 	}
 	return nil
+}
+
+type hierarchyFixedRules struct{ fixed *authzfixed.RuleSet }
+
+func (r hierarchyFixedRules) Eval(ctx context.Context, s authz.Slice, requests []authz.CheckRequest) ([]authz.Decision, error) {
+	mapped := append([]authz.CheckRequest(nil), requests...)
+	for i := range mapped {
+		mapped[i].Method = "bead.update"
+		if mapped[i].Resource.Kind == authz.Project {
+			mapped[i].Method = ""
+		}
+	}
+	return r.fixed.Eval(ctx, s, mapped)
+}
+
+func (r hierarchyFixedRules) Compile(authz.ListRequest) (authz.FilterTemplate, error) {
+	// This transaction-only adapter must never create a list/discovery permit.
+	return authz.FilterTemplate{}, authz.ErrCheckOnly
 }
 
 func hierarchyCreateMatches(op *model.CreateOp, meta model.WriteMeta, after model.Record) bool {

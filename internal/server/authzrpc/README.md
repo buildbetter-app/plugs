@@ -58,7 +58,9 @@ Creation additionally checks the fixed destination-project modify permission;
 the child check preserves ref caveats and code-link restrictions on the new
 resource. These are existing #18 `modify` predicates, restricted to the typed
 hierarchy path, with authenticated sponsored Agents and no new User/deputy
-write permit. Reparent cannot change the child's project or other protected
+write permit. Only the fixed policy receives that predicate mapping; code
+links and other rule sets keep the original method, including any explicit
+reparent/transaction forbids. Reparent cannot change the child's project or other protected
 assignment fields. A move/detach never asks for old-parent permission. Before,
 after and current receipt-replay checks all use the installed chain; an old
 receipt is never a grant. The Writer must still enforce ontology, real child
@@ -88,4 +90,8 @@ child's current read authority against the caller's pinned content membership.
 It returns `Visible`, exact `Hidden` and `PolicyBinding` from that one authority
 snapshot. EP4/EP5 must bucket only visible statuses from `contentReader` and
 refuse incomplete candidate enumeration; an old content revision never keeps
-revoked read grants alive.
+revoked read grants alive. The helper freshly validates its binding before
+returning. After bucketing and immediately before publishing, the host must
+also call `ValidateReadAuthorityBinding(ctx, principal, PolicyBinding)`; a
+changed generation refuses the whole result without recounting under a second
+authority snapshot or returning any partial count.
