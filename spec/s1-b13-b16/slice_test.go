@@ -254,7 +254,7 @@ func record(t *testing.T, f *fixture, id string) driver.Record {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	rows, err := r.Get(f.ctx, []model.Ref{model.RefByID(id, 0)})
+	rows, err := r.Get(f.ctx, []model.Ref{model.RefByID(id, model.Natural64(0))})
 	if err != nil {
 		t.Fatal(err)
 	}
