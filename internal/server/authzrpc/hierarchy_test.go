@@ -710,7 +710,7 @@ func TestParentProjectionPinnedContentAndCurrentAuthority(t *testing.T) {
 	content := f.snapshot(t)
 	// The current child changes parents after content is pinned. Projection
 	// must still describe its historical parent, using only current read grants.
-	if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: hRef("child"), Kind: "bead", Op: model.OpUpdate, Body: hBody("child", "child-project", "new", "todo")}}); err != nil {
+	if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: hRef("child"), Kind: "bead", Op: model.OpPatch, Body: hBody("child", "child-project", "new", "todo")}}); err != nil {
 		t.Fatal(err)
 	}
 	f.app.Checker.chain.Links = []authz.Link{hDeny{ids: map[string]bool{"old": true}, action: authz.Read}}
@@ -732,7 +732,7 @@ func TestParentProjectionPinnedContentAndCurrentAuthority(t *testing.T) {
 	}
 	// Record-dependent custom rules and project caveats must not outlive a
 	// current-source change even when the ACL registry itself is unchanged.
-	if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: hRef("new"), Kind: "bead", Op: model.OpUpdate, Body: hBody("new", "parent-project", "", "done")}}); err != nil {
+	if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: hRef("new"), Kind: "bead", Op: model.OpPatch, Body: hBody("new", "parent-project", "", "done")}}); err != nil {
 		t.Fatal(err)
 	}
 	requireHCode(t, f.app.Checker.ValidateReadAuthorityBinding(ctx, by, result.PolicyBinding), "authz_unavailable")
