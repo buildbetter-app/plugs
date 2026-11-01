@@ -139,7 +139,7 @@ if len(remote_actions) != 5 or any(not re.fullmatch(r"(?:actions|runs-on)/[a-z/-
     raise SystemExit("config: every remote Bazel action must retain its full immutable pin")
 public_code = "\n".join(line for line in public_workflow.splitlines() if not line.lstrip().startswith("#"))
 for fragment in (
-    "workflow_dispatch:", "ref: ${{ inputs.sha }}", "fetch-depth: 0",
+    "workflow_dispatch:", "source_ref:", "ref: ${{ github.ref }}", "fetch-depth: 0",
     "persist-credentials: false", "runs-on=${{ github.run_id }}/runner=bb-x64-16",
     "timeout-minutes: 60", "actions/upload-artifact@", "actions/download-artifact@",
     "if-no-files-found: error", "retention-days: 14", "public-bundle.py create",
