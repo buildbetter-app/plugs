@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"sort"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -315,18 +316,22 @@ func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 	if _, err := p.snapshot.observe(ctx, sortedKeys(keys)); err != nil {
 		return nil, err
 	}
+	expected := map[string]driver.DerivedRow{}
 	for id := range consumed {
 		depths, err := ancestorDepths(id, before)
 		if err != nil {
 			return nil, err
 		}
-		expected, err := closureRows(id, depths)
+		rows, err := closureRows(id, depths)
 		if err != nil {
 			return nil, err
 		}
-		if err := p.checkClosure(ctx, id, expected); err != nil {
-			return nil, err
+		for key, row := range rows {
+			expected[key] = row
 		}
+	}
+	if err := p.checkClosures(ctx, consumed, expected); err != nil {
+		return nil, err
 	}
 	delta := &hierarchyDelta{}
 	changed := map[string]driver.LockKey{}
@@ -376,28 +381,52 @@ func ancestorLock(key string) driver.LockKey {
 	return driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: key}}
 }
 
-func (p *prepared) checkClosure(ctx context.Context, id string, expected map[string]driver.DerivedRow) error {
-	prefix, err := AncestorPrefix(id)
+// Coalesce the descendant prefixes into one snapshot enumeration. Repeating a
+// full SQL round trip for every new root would consume the fixed pre deadline
+// before any write. Unrelated rows in the common range do not become semantic
+// dependencies; every selected descendant has its own observed sentinel.
+func (p *prepared) checkClosures(ctx context.Context, consumed map[string]bool, expected map[string]driver.DerivedRow) error {
+	prefix := ""
+	first := true
+	for id := range consumed {
+		next, err := AncestorPrefix(id)
+		if err != nil {
+			return err
+		}
+		if first {
+			prefix = next
+			first = false
+			continue
+		}
+		for !strings.HasPrefix(next, prefix) {
+			prefix = prefix[:len(prefix)-1]
+		}
+	}
+	all, err := p.snapshot.reader.DerivedRows(ctx, driver.DerivedAncestorClosure, prefix)
 	if err != nil {
 		return err
 	}
-	rows, err := p.snapshot.reader.DerivedRows(ctx, driver.DerivedAncestorClosure, prefix)
-	if err != nil {
-		return err
+	rows := make([]driver.DerivedRow, 0, len(expected))
+	keys := make([]driver.LockKey, 0, len(expected))
+	previous := ""
+	for _, row := range all {
+		descendant, _, _, err := DecodeAncestorRow(row)
+		if err != nil || (previous != "" && row.Key <= previous) {
+			return failure("ontology_guard_failed", "malformed ancestor closure")
+		}
+		previous = row.Key
+		if !consumed[descendant] {
+			continue
+		}
+		want, exists := expected[row.Key]
+		if !exists || !bytes.Equal(row.Value, want.Value) {
+			return failure("ontology_guard_failed", "malformed ancestor closure")
+		}
+		rows = append(rows, row)
+		keys = append(keys, ancestorLock(row.Key))
 	}
 	if len(rows) != len(expected) {
 		return failure("ontology_guard_failed", "malformed ancestor closure; populated-store backfill is not supported")
-	}
-	keys := make([]driver.LockKey, 0, len(rows))
-	previous := ""
-	for _, row := range rows {
-		descendant, _, _, err := DecodeAncestorRow(row)
-		want, exists := expected[row.Key]
-		if err != nil || descendant != id || !exists || !bytes.Equal(row.Value, want.Value) || (previous != "" && row.Key <= previous) {
-			return failure("ontology_guard_failed", "malformed ancestor closure")
-		}
-		keys = append(keys, ancestorLock(row.Key))
-		previous = row.Key
 	}
 	states, err := p.snapshot.observe(ctx, keys)
 	if err != nil {

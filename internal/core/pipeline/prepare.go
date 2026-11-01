@@ -214,6 +214,9 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}}, setBy: map[string]string{}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected}
 			p.writes[id] = current
+			if parent != nil {
+				current.setBy["parent"] = "request"
+			}
 			p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: id, parent: parentID(parent), create: true})
 			if err = applyFields(current, c.Fields, "request"); err != nil {
 				return nil, err
