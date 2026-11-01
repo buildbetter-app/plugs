@@ -285,7 +285,7 @@ workflow_files = sorted(
 required_workflows = {
     "plug-bazel.yml", "plug-nightly-restore-diffs.yml", "plug-remote-bazel.yml", "plug-runs-on-smoke.yml",
 }
-allowed_workflows = required_workflows | {"plug-public-bundle.yml"}
+allowed_workflows = required_workflows | {"plug-public-bundle.yml", "plug-beads-bazel.yml"}
 missing = sorted(required_workflows - set(workflow_files))
 unexpected = sorted(set(workflow_files) - allowed_workflows)
 if missing:
