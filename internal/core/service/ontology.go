@@ -290,7 +290,7 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 		}
 	}
 	var graph map[string]storedBead
-	if lifecycle {
+	if lifecycle || hierarchyGraphNeeded(proposal) {
 		var err error
 		graph, err = scanBeads(ctx, reader)
 		if err != nil {
@@ -348,10 +348,7 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 			if err != nil {
 				return err
 			}
-			// Every graph row was read through the tracked query and strictly
-			// decoded. An unsupported parent relation would have refused the
-			// scan, so this is an observed absence in the supported envelope.
-			noChildren := true
+			noChildren := o.noOpenChildren(doc, graph)
 			facts.NoOpenBlockers, facts.NoOpenChildren = &noBlockers, &noChildren
 			facts.Evidence = map[string]bool{}
 			for _, attachment := range doc.Attachments {
@@ -372,7 +369,7 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 			return err
 		}
 	}
-	return nil
+	return o.validateHierarchyParents(proposal, graph)
 }
 
 // Recognize only the named empty slot patch and optional same-target reason.

@@ -23,7 +23,9 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -902,6 +904,10 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	if err != nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 	}
+	ancestorPlan, err := nativeAncestorPlanForArchive(records, archive.Native())
+	if err != nil {
+		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
+	}
 	if m.lease == nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "lease_not_held", Hint: "restore requires an active storage lease"}}
 	}
@@ -914,7 +920,7 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	if !ok {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "native restore capability is unsupported"}}
 	}
-	locks, sentinels, err := restoreLocks(records)
+	locks, sentinels, err := restoreLocks(records, ancestorPlan)
 	if err != nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 	}
@@ -967,6 +973,11 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	}
 	for _, record := range records {
 		if err := tx.Put(ctx, record); err != nil {
+			return model.Changeset{}, err
+		}
+	}
+	if ancestorPlan != nil && len(ancestorPlan.rows) != 0 {
+		if err := tx.PutDerived(ctx, driver.DerivedAncestorClosure, nil, ancestorPlan.rows); err != nil {
 			return model.Changeset{}, err
 		}
 	}
@@ -1208,6 +1219,22 @@ func decodeNativeRecords(data []byte) ([]driver.Record, error) {
 		if err := json.Unmarshal(value.Body, &body); err != nil || body == nil {
 			return nil, fmt.Errorf("native record body must be an object")
 		}
+		// A native head image carries the stored protected source, not an
+		// asserted runtime snapshot. Validate both identity and source before
+		// apply can open a publication transaction, preserving its raw body.
+		ontologyID := value.Ref.IsID() && (value.Ref.ID == "ontology" || strings.HasPrefix(value.Ref.ID, "ontology/"))
+		if value.Kind == "ontology" || ontologyID {
+			if value.Kind != "ontology" || !ontologyID || !value.Ref.Branch.IsZero() {
+				return nil, fmt.Errorf("native ontology requires a protected branch-zero ontology ID and kind")
+			}
+			source, err := service.DecodeOntologySource(value.Body)
+			if err != nil {
+				return nil, fmt.Errorf("invalid native ontology source: %w", err)
+			}
+			if _, problems := ontology.Compile(source.Base, source.Overlays, source.Plugins); len(problems) != 0 {
+				return nil, fmt.Errorf("native ontology source does not compile")
+			}
+		}
 		key, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &value.Ref})
 		if err != nil || seen[key] {
 			return nil, fmt.Errorf("duplicate or invalid native record")
@@ -1272,7 +1299,7 @@ func documentMap(doc pipeline.Document) (map[string]any, error) {
 	return value, nil
 }
 
-func restoreLocks(records []driver.Record) ([]driver.LockRequest, []driver.Sentinel, error) {
+func restoreLocks(records []driver.Record, ancestorPlan *nativeAncestorPlan) ([]driver.LockRequest, []driver.Sentinel, error) {
 	byKey := map[string]driver.LockRequest{}
 	sentinelSet := map[driver.Sentinel]bool{}
 	add := func(key driver.LockKey, mode driver.LockMode) error {
@@ -1293,6 +1320,16 @@ func restoreLocks(records []driver.Record) ([]driver.LockRequest, []driver.Senti
 			if err != nil {
 				return nil, nil, err
 			}
+			sentinelSet[sentinel] = true
+		}
+	}
+	if ancestorPlan != nil {
+		for _, lock := range ancestorPlan.locks {
+			if err := add(lock.Key, lock.Mode); err != nil {
+				return nil, nil, err
+			}
+		}
+		for _, sentinel := range ancestorPlan.sentinels {
 			sentinelSet[sentinel] = true
 		}
 	}

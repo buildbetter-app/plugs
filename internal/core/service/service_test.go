@@ -879,7 +879,7 @@ func TestSameClaimStillValidatesMutatorsAndPreservesLease(t *testing.T) {
 	}
 }
 
-func TestUnsupportedReadsAndParentRefuseWithoutPartialSuccess(t *testing.T) {
+func TestUnsupportedReadsAndMalformedParentRefuseWithoutPartialSuccess(t *testing.T) {
 	next := 0
 	f := setup(t, pipeline.WithIDGenerator(func() (string, error) {
 		ids := []string{"pl-a", "pl-b", "pl-c"}
@@ -888,7 +888,7 @@ func TestUnsupportedReadsAndParentRefuseWithoutPartialSuccess(t *testing.T) {
 		return id, nil
 	}))
 	ctx := context.Background()
-	id, _ := create(t, f, "One")
+	create(t, f, "One")
 	_, _ = create(t, f, "Two")
 	first, err := f.svc.Ready(ctx, anonymous, ReadyRequest{Project: "local", Limit: 1})
 	if err != nil || len(first.Items) != 1 || first.Next == nil {
@@ -909,7 +909,8 @@ func TestUnsupportedReadsAndParentRefuseWithoutPartialSuccess(t *testing.T) {
 	wantCode(t, err, "invalid_params")
 	_, err = f.svc.Ready(ctx, anonymous, ReadyRequest{})
 	wantCode(t, err, "project_required")
-	_, err = f.svc.Create(ctx, anonymous, CreateRequest{Type: "issue", Fields: map[string]any{}, Parent: &id}, meta(t))
+	parentAlias := model.RefByKey("unresolved-parent")
+	_, err = f.svc.Create(ctx, anonymous, CreateRequest{Type: "issue", Fields: map[string]any{}, Parent: &parentAlias}, meta(t))
 	wantCode(t, err, "invalid_params")
 	_, err = f.svc.History(ctx, anonymous, HistoryRequest{Project: "local", AsOf: AsOf{Revision: model.Natural64(1), Incarnation: "different"}})
 	wantCode(t, err, "incarnation_changed")
@@ -1636,6 +1637,66 @@ func TestGetRefusesMalformedStoredCommentUnion(t *testing.T) {
 			wantCode(t, err, "internal_error")
 			if got.Comments != nil || got.Bead.ID != "" {
 				t.Fatal("refused document leaked")
+			}
+		})
+	}
+}
+
+// The shared read codec can decode imported/stored canonical Parent refs even
+// before the hierarchy writer/child-status layer is installed. Lifecycle guards
+// must not turn that newly supported source shape into a false child absence.
+func TestCanonicalParentCannotSatisfyNoOpenChildren(t *testing.T) {
+	for _, method := range []string{"bead.close", "bead.fail"} {
+		t.Run(method, func(t *testing.T) {
+			f := setup(t)
+			ctx := context.Background()
+			parent, _ := create(t, f, "Parent")
+			child, _ := create(t, f, "Open child")
+			unrelated, _ := create(t, f, "Unrelated root")
+			body, err := json.Marshal(pipeline.Document{ID: child.ID, Type: "issue", Project: "local", Parent: &parent, Fields: map[string]any{"title": "Open child", "status": "todo", "priority": 0}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: child, Kind: "bead", Op: model.OpPatch, Body: body}}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := f.store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := meta(t)
+			if method == "bead.close" {
+				_, err = f.svc.Close(ctx, anonymous, CloseRequest{ID: parent}, m)
+			} else {
+				_, err = f.svc.Fail(ctx, anonymous, FailRequest{ID: parent}, m)
+			}
+			wantCode(t, err, "ontology_guard_failed")
+			after, err := f.store.Meta(ctx)
+			if err != nil || after.Head.String() != before.Head.String() {
+				t.Fatal("refused parent lifecycle published a write", err)
+			}
+			reader, err := f.store.Read(ctx, driver.View{Incarnation: after.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			principal, err := driver.PrincipalKey(anonymous)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := reader.IdempotencyByKey(ctx, principal, m.AgentLabel, method, m.IdempotencyKey)
+			if err != nil || receipt != nil {
+				t.Fatal("refused parent lifecycle published a receipt", err)
+			}
+			// This restriction is local to the actual direct parent, not a global
+			// refusal whenever any relation exists in the graph.
+			if method == "bead.close" {
+				_, err = f.svc.Close(ctx, anonymous, CloseRequest{ID: unrelated}, meta(t))
+			} else {
+				_, err = f.svc.Fail(ctx, anonymous, FailRequest{ID: unrelated}, meta(t))
+			}
+			if err != nil {
+				t.Fatal("unrelated root lifecycle refused", err)
 			}
 		})
 	}

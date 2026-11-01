@@ -11,12 +11,13 @@ container pinned by digest; every scenario owns a fresh database or SQLite
 file. An unavailable engine fails the target. There is no engine skip, external
 DSN or memory substitute. Containers and databases are removed after the run.
 
-The six tests cover seven scenarios on each engine:
+The tests cover these scenarios on each engine:
 
 - A native post reads its committed SQL revision after an independent Writer
   advances the head. The pending response, final response, record versions and
   event plan agree. Reopen preserves them, and exact replay adds no post effect.
-- A failed native binding returns a durable warning while its peer succeeds.
+- A failed native binding persists a metadata-only dead letter and returns a
+  durable warning while its peer succeeds. Both survive handle reopen.
   Replay, no-op, dry-run and rejected requests add no post effects. Non-committed
   requests have no receipt; changed parameters cannot reuse the same key.
 - A real SQL trigger rejects all four response finalization attempts. Pending
@@ -35,6 +36,10 @@ The six tests cover seven scenarios on each engine:
 - A dispatcher post failure persists dead-letter metadata and emits its actual
   observer notice. Reopen retains that failure; a late retry repeats the same
   delivery key and historical payload, then advances normally.
+- A blocking cycle refuses an entire mixed batch. A SQL trigger then rejects
+  the actual event-log insert after version staging. Neither refusal publishes
+  partial graph, versions, head, receipt or post effects; rollback survives
+  reopen and a same-key retry commits the write and event together.
 
 Callback effects are disposable synced files. Dispatcher delivery is explicitly
 at least once: the rejection/failure cases intentionally record duplicate effects
@@ -42,20 +47,18 @@ with the same key. Consumer idempotency remains the consumer's responsibility.
 
 The native `Host.Posts()` path and event `Dispatcher` remain separate existing
 APIs. Native payloads have no delivery key/late marker and native callbacks do
-not create event checkpoints. This suite does not claim automatic native crash
-redelivery, native dead-letter/breaker/alert composition, an automatic recovery
+not create event checkpoints. Native dead letters identify whole-changeset
+invocations rather than individual event deliveries. This suite does not claim
+automatic native crash redelivery, native breaker/alert composition, an automatic recovery
 worker, OS-process/database restart, replication/failover, RPC coverage,
 performance or full B20/B21/B28 acceptance. Known-outcome finalization is an
 explicit capability call using captured arguments, not unknown-outcome recovery.
 Dispatcher observer notices prove the notification port, not an installed alert
 sink or breaker implementation.
 
-Run through local Bazel with the shared cache:
+Run at a committed head through RunsOn:
 
 ```sh
-bazel --ignore_all_rc_files test \
-  --disk_cache=/tmp/plug-swarm/bazel-disk-cache \
-  --local_resources=memory=8192 --jobs=2 --test_timeout=900 \
-  --lockfile_mode=error --test_output=all --test_arg=-test.v \
-  //internal/integration/postsql:postsql_test
+/tmp/plug-swarm/bin/remote-bazel "$PWD" HEAD i4-postsql -- test \
+  //internal/integration/postsql:postsql_test --test_output=all --test_arg=-test.v
 ```

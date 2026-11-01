@@ -342,14 +342,17 @@ type HistoryRequest struct {
 }
 
 type Bead struct {
-	ID               string
-	Type             string
-	Project          string
-	Revision         model.Revision
-	Status           string
-	Fields           map[string]any
-	Metadata         map[string]any
-	Parent           string
+	ID       string
+	Type     string
+	Project  string
+	Revision model.Revision
+	Status   string
+	Fields   map[string]any
+	Metadata map[string]any
+	Parent   string
+	// ParentHidden is projection state, never a stored relationship or grant.
+	// When true the transport emits only parent:{exists:true}.
+	ParentHidden     bool
 	Labels           []string
 	Assignee         string
 	HiddenBlockers   int
