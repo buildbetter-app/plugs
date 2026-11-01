@@ -137,7 +137,7 @@ func TestBrowserEpicProgressWireContract(t *testing.T) {
 		r["groups"].([]any)[1].(map[string]any)["count"] = 19999
 	})
 	largeHidden := visible("large-hidden", "")
-	largeHidden.Hidden = 20000
+	largeHidden.Hidden = 20001
 	elision(largeHidden.result)["count"] = largeHidden.Hidden
 	cases = append(cases, largeHidden)
 	bad("refresh-scope", "invalid_response", func(r map[string]any) {
