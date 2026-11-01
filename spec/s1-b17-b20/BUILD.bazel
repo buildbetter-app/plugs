@@ -13,7 +13,7 @@ go_test(
     ]),
     data = [
         "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
-        "//spec/recorded:goldens.json",
+        "//spec/recorded:lexicon_files",
     ],
     args = ["-test.v"],
     deps = [
