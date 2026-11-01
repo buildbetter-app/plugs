@@ -186,7 +186,7 @@ func currentHistory(t *testing.T, open storeFactory) {
 		t.Fatal(err)
 	}
 	got := page(t, f.call(t, by, "history.query", params, 1201))
-	if len(got.Items) != 1 || got.Items[0].ID != fixtureRef(3).ID || got.Items[0].Fields["title"] != "historical" || got.AsOf.Revision.String() != view.At.String() {
+	if len(got.Items) != 2 || got.Items[0].ID != fixtureRef(2).ID || got.Items[1].ID != fixtureRef(3).ID || got.Items[0].Fields["title"] != "historical" || got.Items[1].Fields["title"] != "historical" || got.AsOf.Revision.String() != view.At.String() {
 		t.Fatalf("history did not combine current read permission with the requested content snapshot: %+v", got)
 	}
 	if got := page(t, f.call(t, worker("user:operator"), "history.query", params, 1202)); len(got.Items) != 0 {
