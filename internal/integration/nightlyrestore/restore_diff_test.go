@@ -353,6 +353,21 @@ func TestNightlyFreshStoreDiffs(t *testing.T) {
 						t.Fatalf("cursor/reset boundary: %v", err)
 					}
 				}
+				current, err := store.Read(ctx, driver.View{Incarnation: restored.Restored.Incarnation})
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = current.Query(ctx, driver.Query{Limit: 1, Cursor: &driver.Cursor{
+					Incarnation: before.Incarnation,
+					Method:      "query",
+				}})
+				if closeErr := current.Close(); closeErr != nil {
+					t.Fatal(closeErr)
+				}
+				var staleCursor driver.ErrIncarnationChanged
+				if !errors.As(err, &staleCursor) {
+					t.Fatalf("stale pagination cursor was not refused with incarnation reset: %v", err)
+				}
 				got := collect(t, store, a, p)
 				if baseline == nil {
 					baseline = &got

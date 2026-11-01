@@ -13,7 +13,8 @@ paginated counts and IDs, fields, labels, dependency links, original source
 counter declarations, explicit target allocator state, restore base versions,
 retained source archives, every member blob and digest, and the restore
 changeset census. SQLite and PostgreSQL must retain the same census after
-close/reopen.
+close/reopen. Each target also rejects a pre-restore reader and pagination
+cursor with the typed incarnation-reset boundary before its census is read.
 Comment source time and attribution remain compared; only the independently
 validated restore execution timestamp is excluded from cross-run equality.
 Damaged archives and unsupported requests must leave targets unchanged.
