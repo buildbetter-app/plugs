@@ -5,6 +5,10 @@ the installed fixed checker, hierarchy Writer, snapshot-bound view adapter,
 and physical SQLite dump/restore/reopen. It has no replacement progress
 responses, prewritten bead rows, skipped capability checks, or reduced-load
 fallback. The protected ontology fixture alone uses the conformance seed port.
+A passive delegate at the real service boundary records only the raw error
+code/message, operation count and elapsed time on `authz_unavailable`, before
+the RPC catalog maps it to public text. It preserves the same outcome and
+error, with no retries or authorization deadline changes.
 Status setup and mutation use real lifecycle slot verbs on a separate admitted
 anonymous loopback fixture host over the same owned store. The fixed policy
 continues to refuse those lifecycle routes. Hierarchy writes, authorization,

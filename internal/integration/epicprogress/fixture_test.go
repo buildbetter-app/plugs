@@ -16,6 +16,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
@@ -96,6 +97,26 @@ type reply struct {
 	} `json:"_meta"`
 	status int
 	raw    []byte
+}
+
+// Observe only the real service's error before RPC canonicalizes its message.
+// The same request, outcome and error pass through unchanged; there is no
+// second write, retry, policy hook or substitute authorization decision.
+type observedService struct {
+	*authzrpc.GuardedService
+	t *testing.T
+}
+
+var _ rpc.Service = (*observedService)(nil)
+
+func (s *observedService) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
+	started := time.Now()
+	out, err := s.GuardedService.ApplyWithOutcome(ctx, by, cs, meta)
+	var domain *model.Error
+	if errors.As(err, &domain) && domain.Data.Code == "authz_unavailable" {
+		s.t.Logf("EP6 real service refusal: code=%s message=%q operations=%d elapsed_ms=%.3f", domain.Data.Code, domain.Message, len(cs.Ops), float64(time.Since(started))/float64(time.Millisecond))
+	}
+	return out, err
 }
 
 // call crosses the real loopback listener and authentication provider. Tokens
@@ -286,7 +307,7 @@ func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology b
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rpc.BindService(registry, f.app.Service); err != nil {
+	if err := rpc.BindService(registry, &observedService{GuardedService: f.app.Service, t: t}); err != nil {
 		t.Fatal(err)
 	}
 	if err := viewrpc.BindWithConfig(registry, views, viewrpc.Config{CursorKey: []byte("ep6-disposable-cursor-key-0123456789")}); err != nil {
