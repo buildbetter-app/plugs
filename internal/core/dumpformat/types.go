@@ -43,21 +43,22 @@ type Disposition struct {
 }
 
 type Manifest struct {
-	Format         string            `json:"format"`
-	Schema         int               `json:"schema"`
-	Reference      string            `json:"beads_reference"`
-	StoreID        string            `json:"store_id"`
-	Machine        string            `json:"machine"`
-	MainVersion    int               `json:"main_version"`
-	IgnoredVersion int               `json:"ignored_version"`
-	Scope          string            `json:"scope"`
-	History        string            `json:"history"`
-	Projects       []Project         `json:"projects"`
-	Kinds          []Kind            `json:"kind_registry"`
-	Files          map[string]File   `json:"files"`
-	Sources        []Disposition     `json:"sources"`
-	Warnings       []string          `json:"warnings"`
-	Verification   map[string]string `json:"verification"`
+	Format         string              `json:"format"`
+	Schema         int                 `json:"schema"`
+	Reference      string              `json:"beads_reference"`
+	StoreID        string              `json:"store_id"`
+	Machine        string              `json:"machine"`
+	MainVersion    int                 `json:"main_version"`
+	IgnoredVersion int                 `json:"ignored_version"`
+	Scope          string              `json:"scope"`
+	History        string              `json:"history"`
+	Projects       []Project           `json:"projects"`
+	Ontology       []OntologyDirective `json:"ontology,omitempty"`
+	Kinds          []Kind              `json:"kind_registry"`
+	Files          map[string]File     `json:"files"`
+	Sources        []Disposition       `json:"sources"`
+	Warnings       []string            `json:"warnings"`
+	Verification   map[string]string   `json:"verification"`
 	// Native store fields are present only for archives produced by Plug's
 	// engine-neutral admin.dump path. The offline Beads exporter leaves these
 	// fields absent and continues to use the source census above.
@@ -126,6 +127,7 @@ func (a *Archive) Manifest() Manifest {
 		m.Projects[i].ChildCounters = c
 	}
 	m.Kinds = append([]Kind{}, m.Kinds...)
+	m.Ontology = append([]OntologyDirective(nil), m.Ontology...)
 	m.Sources = append([]Disposition{}, m.Sources...)
 	m.Warnings = append([]string{}, m.Warnings...)
 	m.Files = make(map[string]File, len(a.manifest.Files))
