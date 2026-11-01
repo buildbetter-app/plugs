@@ -180,3 +180,48 @@ func TestExportOpaqueIssueFieldsSurviveEveryHistoryImage(t *testing.T) {
 		}
 	}
 }
+
+type movingHistorySource struct {
+	*historyFixtureSource
+	final    SourceCommitLog
+	censuses int
+}
+
+func (s *movingHistorySource) ReadSourceCommits(context.Context) (SourceCommitLog, error) {
+	s.censuses++
+	if s.censuses == 1 {
+		return s.log, nil
+	}
+	return s.final, nil
+}
+
+func TestExportSourceHistoryRejectsMovingCensus(t *testing.T) {
+	for _, change := range []string{"head", "dirty", "parent", "metadata"} {
+		t.Run(change, func(t *testing.T) {
+			fixture, inventory := historyFixture(t)
+			data, err := json.Marshal(fixture.log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var final SourceCommitLog
+			if err := decodeJSON(data, &final); err != nil {
+				t.Fatal(err)
+			}
+			switch change {
+			case "head":
+				final.Head = final.Commits[len(final.Commits)-2].ID
+			case "dirty":
+				final.Clean = false
+			case "parent":
+				final.Commits[2].Parents = []string{strings.Repeat("v", 32)}
+			case "metadata":
+				final.Commits[2].Metadata["message"] = "changed census"
+			}
+			s := &movingHistorySource{historyFixtureSource: fixture, final: final}
+			m, h := sourceCapture(t, buildFixture(t, s, inventory))
+			if m.History != "available-unverified" || h.Range.Status != "unverified" || h.Range.Reason != "source-census-changed" || len(h.Range.Frames) != 0 {
+				t.Fatalf("moving source census became replayable: %+v", h.Range)
+			}
+		})
+	}
+}
