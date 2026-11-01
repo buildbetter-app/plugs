@@ -20,6 +20,10 @@ type transaction struct {
 	*reader
 	lease           *activeLease
 	locked, hasHead bool
+	restore         *driver.Meta
+	nativeRestore   *driver.NativeRestoreProfile
+	importRestore   *driver.RestoreImportProfile
+	offlineHistory  *driver.PreparedOfflineHistory
 	acquired        driver.LockSet
 	records         map[string]*driver.Record
 	identities      map[string]driver.Record
