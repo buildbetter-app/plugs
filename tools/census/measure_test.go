@@ -261,7 +261,7 @@ func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 				}
 			}
 			defer func() { _ = store.Close() }()
-			lease, e := store.Lease(ctx, "census-synthetic", time.Minute)
+			lease, e := store.Lease(ctx, "census-synthetic", 10*time.Second)
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -310,7 +310,7 @@ func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 			writeSanitized(t, "synthetic-"+engine+"-census.json", s)
 			// An actual ordinary Writer update leaves source provenance intact.
 			// A provenance-only census would miss this changed live description.
-			lease, e = store.Lease(ctx, "census-edit", time.Minute)
+			lease, e = store.Lease(ctx, "census-edit", 10*time.Second)
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -326,6 +326,26 @@ func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 			}
 			if observed.reads != observed.closes {
 				t.Fatal("refusal leaked a reader")
+			}
+			// Restore the original content through a second ordinary write.
+			// The now-equal head must still inventory all retained versions and
+			// changesets, including multiple pages for the edited record.
+			var original any
+			for _, row := range capture.archive.Records("bead") {
+				if row.ID == id {
+					original = row.Body["description"]
+				}
+			}
+			_, e = writer.Apply(ctx, model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: model.RefByID(id, model.Natural64(0)), Fields: map[string]any{"description": original}}}}}, model.WriteMeta{Method: "tx.apply", Project: "pl", Agent: "census-test", AgentLabel: "census-test", IdempotencyKey: strings.Repeat("ef", 16)})
+			if e != nil {
+				t.Fatal(e)
+			}
+			returned, e := capture.MeasureStore(ctx, observed, 1)
+			if e != nil || returned.NativeHistory == nil || returned.NativeHistory.Versions != 111 || returned.NativeHistory.Changesets != 2 {
+				t.Fatalf("retained multi-page history census: %v", e)
+			}
+			if observed.reads != observed.closes {
+				t.Fatal("history measurement leaked a reader")
 			}
 		})
 	}
