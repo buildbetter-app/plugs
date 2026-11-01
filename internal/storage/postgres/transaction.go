@@ -137,15 +137,36 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 	// while every writer already owns one self-deadlocks under a wide probe, and
 	// repeatedly inserting existing rows would contend with the lock set itself.
 	missing := make([]string, 0, len(ids))
-	for _, id := range ids {
-		var present bool
-		if err = t.sql.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM plug_postgres.locks WHERE key=$1)`, []byte(id)).Scan(&present); err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			return nil, err
+	present := make(map[string]bool, len(ids))
+	keyBytes := make([][]byte, len(ids))
+	for i, id := range ids {
+		keyBytes[i] = []byte(id)
+	}
+	if len(ids) != 0 {
+		rows, e := t.sql.QueryContext(ctx, `SELECT key FROM plug_postgres.locks WHERE key=ANY($1::bytea[])`, keyBytes)
+		if e != nil {
+			return nil, e
 		}
-		if !present {
+		for rows.Next() {
+			var id []byte
+			if e = rows.Scan(&id); e != nil {
+				break
+			}
+			present[string(id)] = true
+		}
+		if e == nil {
+			e = rows.Err()
+		}
+		closeErr := rows.Close()
+		if e != nil {
+			return nil, e
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+	}
+	for _, id := range ids {
+		if !present[id] {
 			missing = append(missing, id)
 		}
 	}
@@ -165,24 +186,54 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 		}
 		selected := make(driver.LockSet, 0, len(requests))
 		busy := false
-		for i, request := range requests {
+		for i := 0; i < len(requests); {
+			request := requests[i]
+			end := i + 1
+			for end < len(requests) && requests[end].Mode == request.Mode {
+				end++
+			}
 			clause := " FOR UPDATE NOWAIT"
 			if request.Mode == driver.LockShare {
 				clause = " FOR SHARE NOWAIT"
 			} else if request.Mode == driver.LockSkipLocked {
 				clause = " FOR UPDATE SKIP LOCKED"
 			}
-			var ignored []byte
-			err = t.sql.QueryRowContext(ctx, `SELECT key FROM plug_postgres.locks WHERE key=$1`+clause, []byte(ids[i])).Scan(&ignored)
-			if errors.Is(err, sql.ErrNoRows) && request.Mode == driver.LockSkipLocked {
-				err = nil
-				continue
+			// A batch contains only one contiguous mode run. PostgreSQL locks
+			// ORDER BY's bytea keys in the exact validated global key order;
+			// mode runs are never regrouped across an intervening request.
+			var rows *sql.Rows
+			rows, err = t.sql.QueryContext(ctx, `SELECT key FROM plug_postgres.locks
+			 WHERE key=ANY($1::bytea[]) ORDER BY key`+clause, keyBytes[i:end])
+			locked := map[string]bool{}
+			if err == nil {
+				for rows.Next() {
+					var id []byte
+					if err = rows.Scan(&id); err != nil {
+						break
+					}
+					locked[string(id)] = true
+				}
+				if err == nil {
+					err = rows.Err()
+				}
+				closeErr := rows.Close()
+				if err == nil {
+					err = closeErr
+				}
+				if err == nil && len(locked) != end-i && request.Mode != driver.LockSkipLocked {
+					err = sql.ErrNoRows
+				}
 			}
 			if err != nil {
 				busy = sqlState(err) == "55P03"
 				break
 			}
-			selected = append(selected, request)
+			for j := i; j < end; j++ {
+				if locked[ids[j]] {
+					selected = append(selected, requests[j])
+				}
+			}
+			i = end
 		}
 		if err != nil {
 			// NOWAIT avoids holding a prefix while another member is unavailable.
@@ -232,14 +283,14 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 		}
 		t.meta = m
 		t.at, _ = m.Head.Uint64()
-		states := make([]driver.LockState, 0, len(selected))
-		for _, request := range selected {
-			state, err := t.observe(ctx, request.Key)
-			if err != nil {
-				_ = t.finish()
-				return nil, err
-			}
-			states = append(states, state)
+		selectedKeys := make([]driver.LockKey, len(selected))
+		for i, request := range selected {
+			selectedKeys[i] = request.Key
+		}
+		states, err := t.observeKeys(ctx, selectedKeys)
+		if err != nil {
+			_ = t.finish()
+			return nil, err
 		}
 		t.acquired = selected
 		t.locked = true
