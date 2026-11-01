@@ -23,6 +23,16 @@ fixed checker never selects this mode: `NewEpicProgressConfig(nil, source)`
 continues to fail. Anonymous browser evidence and authenticated fixed-policy
 evidence are separate claims.
 
+The fixed constructor also installs the ordinary parent projection. Hosts
+without epic progress may use `NewParentProjectionConfig(checker)` through
+`composition.Config.ParentProjection`. Emitted item and grouped-item parents
+share one batch of current authority over pinned content, including historical
+pages. A readable parent retains its bare ID string; a hidden parent is exactly
+`{"exists":true}`; roots omit parent. The final binding check happens after
+projection. The scoped progress adapter additionally honors the host's ordinary
+read callback on the parent and each visible child in its own stored project.
+
+
 ```json
 {
   "definition": {

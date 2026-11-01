@@ -26,7 +26,7 @@ func New(store ReadStore, lease driver.ActiveLease, cfg Config) (*Service, error
 		return nil, fmt.Errorf("invalid ontology revision: %w", err)
 	}
 	if cfg.EpicProgress != nil {
-		if cfg.EpicProgress.AnonymousOnly && cfg.AuthorizeRead != nil {
+		if cfg.EpicProgress.AnonymousOnly && (cfg.AuthorizeRead != nil || cfg.ParentProjection != nil || cfg.EpicProgress.ParentProjection != nil) {
 			return nil, fmt.Errorf("anonymous epic progress cannot be combined with read authorization")
 		}
 		if cfg.EpicProgress.ValidateAuthority == nil || cfg.EpicProgress.AuthorizeScope == nil || cfg.EpicProgress.OntologySource == nil {
@@ -34,6 +34,16 @@ func New(store ReadStore, lease driver.ActiveLease, cfg Config) (*Service, error
 		}
 		copy := *cfg.EpicProgress
 		cfg.EpicProgress = &copy
+		if cfg.ParentProjection == nil {
+			cfg.ParentProjection = copy.ParentProjection
+		}
+	}
+	if cfg.ParentProjection != nil {
+		if cfg.ParentProjection.Project == nil || cfg.ParentProjection.ValidateAuthority == nil {
+			return nil, fmt.Errorf("parent projection requires current authority and a final fence")
+		}
+		copy := *cfg.ParentProjection
+		cfg.ParentProjection = &copy
 	}
 	return &Service{store: store, lease: lease, cfg: cfg}, nil
 }
@@ -426,7 +436,7 @@ func supportedSort(key string) bool {
 }
 
 func supportedField(field string) bool {
-	if field == "id" || field == "type" || field == "project" || field == "status" || field == "revision" || field == "fields" || field == "metadata" {
+	if field == "id" || field == "type" || field == "project" || field == "status" || field == "revision" || field == "parent" || field == "fields" || field == "metadata" {
 		return true
 	}
 	if strings.HasPrefix(field, "fields.") {

@@ -110,6 +110,8 @@ type Config struct {
 	// EpicProgress is a trusted, optional host capability. The ordinary view
 	// and hierarchy-write authorization boundaries are unchanged when absent.
 	EpicProgress *EpicProgressConfig
+	// ParentProjection applies current authority to ordinary item/group parents.
+	ParentProjection *ParentProjectionConfig
 }
 
 // EpicProgressConfig supplies current authority over a complete, pinned direct
@@ -123,6 +125,7 @@ type Config struct {
 type EpicProgressConfig struct {
 	// AnonymousOnly is an explicit immutable no-plugin host mode. It refuses
 	// authenticated principals and cannot be combined with a read authorizer.
+	ParentProjection  *ParentProjectionConfig
 	AnonymousOnly     bool
 	ValidateAuthority func(context.Context, model.PrincipalRef, string) error
 	AuthorizeScope    func(context.Context, model.PrincipalRef, driver.Reader, model.Ref, []model.Ref) (EpicProgressAuthority, error)
@@ -207,6 +210,7 @@ type Bead struct {
 	Fields           map[string]any `json:"fields,omitempty"`
 	Metadata         map[string]any `json:"metadata,omitempty"`
 	Parent           string         `json:"parent,omitempty"`
+	ParentHidden     bool           `json:"-"`
 	Labels           []string       `json:"labels,omitempty"`
 	Assignee         string         `json:"assignee,omitempty"`
 	HiddenBlockers   int            `json:"hiddenBlockers,omitempty"`

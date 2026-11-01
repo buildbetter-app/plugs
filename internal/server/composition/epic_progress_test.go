@@ -37,6 +37,7 @@ type epicFixture struct {
 	base     authzfixed.Facts
 	adapter  *viewops.EpicProgressConfig
 	opt      *viewops.EpicProgressConfig
+	parents  *viewops.ParentProjectionConfig
 	read     viewops.AuthorizeRead
 	revision model.Revision
 }
@@ -48,6 +49,14 @@ func newEpicFixture(t *testing.T, enabled bool) *epicFixture {
 	var opt *viewops.EpicProgressConfig
 	if enabled {
 		opt = &viewops.EpicProgressConfig{
+			ParentProjection: &viewops.ParentProjectionConfig{
+				Project: func(ctx context.Context, by model.PrincipalRef, content driver.Reader, children []model.Ref) (viewops.ParentProjectionAuthority, error) {
+					return f.parents.Project(ctx, by, content, children)
+				},
+				ValidateAuthority: func(ctx context.Context, by model.PrincipalRef, expected string) error {
+					return f.parents.ValidateAuthority(ctx, by, expected)
+				},
+			},
 			OntologySource: service.StaticOntologySource(epicRef("ontology")),
 			ValidateAuthority: func(ctx context.Context, by model.PrincipalRef, expected string) error {
 				return f.adapter.ValidateAuthority(ctx, by, expected)
@@ -91,6 +100,7 @@ func newEpicFixture(t *testing.T, enabled bool) *epicFixture {
 		t.Fatal(err)
 	}
 	f.opt = f.adapter
+	f.parents = f.adapter.ParentProjection
 	issued, err := keys.Issue(model.PrincipalRef{Kind: "agent", ID: "agent:epic-worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:operator"}}, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -501,7 +511,7 @@ func TestEpicProgressGroupCapIncludesTotal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := append([]conformance.FixtureChange{{Ref: epicRef("ontology"), Kind: "ontology", Op: model.OpUpdate, Body: source}}, changes[:len(changes)-1]...)
+	first := append([]conformance.FixtureChange{{Ref: epicRef("ontology"), Kind: "ontology", Op: model.OpPatch, Body: source}}, changes[:len(changes)-1]...)
 	if _, err := conformance.Seed(context.Background(), f.r.Store, f.r.Lease, driver.ChangesetHeader{}, first); err != nil {
 		t.Fatal(err)
 	}
@@ -516,5 +526,101 @@ func TestEpicProgressGroupCapIncludesTotal(t *testing.T) {
 	epicCode(t, response, "scope_too_large")
 	if response["error"].(map[string]any)["data"].(map[string]any)["details"].(map[string]any)["cap"] != float64(viewops.MaxGroups) {
 		t.Fatal("group refusal did not retain the bound")
+	}
+}
+
+func TestOrdinaryViewParentDisclosureUsesCurrentAuthority(t *testing.T) {
+	for _, grouped := range []bool{false, true} {
+		t.Run(fmt.Sprint(grouped), func(t *testing.T) {
+			f := newEpicFixture(t, true)
+			facts := f.base
+			facts.Grants = append([]authz.Grant(nil), f.base.Grants[1:]...)
+			if err := f.facts.Replace(facts); err != nil {
+				t.Fatal(err)
+			}
+			definition := map[string]any{"filter": map[string]any{}, "fields": []string{"id", "parent"}}
+			if grouped {
+				definition["groupBy"] = []string{"type"}
+			}
+			p := map[string]any{"definition": definition, "_meta": map[string]any{"project": "child-project", "agent": "parent-reader"}, "asOf": map[string]any{"revision": f.revision}}
+			response := f.call(t, p)
+			if response["error"] != nil {
+				t.Fatalf("view parent projection refused: %v", response)
+			}
+			result := response["result"].(map[string]any)
+			items := result["items"].([]any)
+			if grouped {
+				items = result["groups"].([]any)[0].(map[string]any)["items"].([]any)
+			}
+			got := map[string]map[string]any{}
+			for _, value := range items {
+				item := value.(map[string]any)
+				got[item["id"].(string)] = item
+			}
+			if len(got) != 3 {
+				t.Fatalf("ordinary child membership changed: %v", got)
+			}
+			hidden, ok := got["visible-one"]["parent"].(map[string]any)
+			if !ok || len(hidden) != 1 || hidden["exists"] != true {
+				t.Fatalf("hidden parent is not existence-only: %v", got["visible-one"])
+			}
+			if got["grandchild"]["parent"] != "visible-one" || got["unrelated"]["parent"] != nil {
+				t.Fatalf("visible/root parent shape changed: %v", got)
+			}
+			raw, _ := json.Marshal(result)
+			for _, secret := range []string{"epic", "parent-project", "hidden-child", "secret-project"} {
+				if strings.Contains(string(raw), secret) {
+					t.Fatalf("hidden parent leaked through view/group: %s", secret)
+				}
+			}
+			// Restore access and repeat historical content: current authority now
+			// permits the same existing parent string, rather than caching denial.
+			if err := f.facts.Replace(f.base); err != nil {
+				t.Fatal(err)
+			}
+			response = f.call(t, p)
+			if response["error"] != nil {
+				t.Fatalf("fresh parent authority refused: %v", response)
+			}
+			raw, _ = json.Marshal(response["result"])
+			if !strings.Contains(string(raw), `"parent":"epic"`) {
+				t.Fatal("current visible parent did not retain its bare string")
+			}
+		})
+	}
+}
+
+func TestOrdinaryParentProjectionRefusesChangedOrIncompleteAuthority(t *testing.T) {
+	for _, mode := range []string{"changed", "missing", "outside", "binding"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newEpicFixture(t, true)
+			base := f.parents
+			copy := *base
+			copy.Project = func(ctx context.Context, by model.PrincipalRef, content driver.Reader, children []model.Ref) (viewops.ParentProjectionAuthority, error) {
+				value, err := base.Project(ctx, by, content, children)
+				if err != nil {
+					return value, err
+				}
+				switch mode {
+				case "changed":
+					facts := f.base
+					facts.Grants = nil
+					if err := f.facts.Replace(facts); err != nil {
+						return value, err
+					}
+				case "missing":
+					delete(value.Parents, "visible-one")
+				case "outside":
+					parent := epicRef("unrelated")
+					value.Parents["visible-one"] = viewops.ParentDisclosure{Exists: true, Ref: &parent}
+				case "binding":
+					value.PolicyBinding = ""
+				}
+				return value, nil
+			}
+			f.parents = &copy
+			p := map[string]any{"definition": map[string]any{"filter": map[string]any{"resources": []string{"visible-one"}}, "fields": []string{"id", "parent"}}, "_meta": map[string]any{"project": "child-project"}}
+			epicCode(t, f.call(t, p), "authz_unavailable")
+		})
 	}
 }

@@ -99,6 +99,8 @@ type Config struct {
 	// EpicProgress opts into the separately authorized, count-only parent view.
 	// Nil keeps the capability unavailable; no hierarchy write is enabled here.
 	EpicProgress *viewops.EpicProgressConfig
+	// ParentProjection admits current-authority ordinary parent disclosure.
+	ParentProjection *viewops.ParentProjectionConfig
 	// DirectBlockerOntology is an optional protected ontology source locator.
 	// When absent, view.explain omits directBlockers rather than guessing an ID
 	// or falling back to the process-local NewOntology resolver.
@@ -394,6 +396,7 @@ func (r *Runtime) bind(config Config) error {
 		Readiness:         config.Readiness,
 		AuthorizeRead:     config.AuthorizeRead,
 		EpicProgress:      config.EpicProgress,
+		ParentProjection:  config.ParentProjection,
 		DirectBlockers:    directBlockers,
 		ProjectionStatus:  r.ProjectionStatus,
 		ProjectionBinding: viewBinding,

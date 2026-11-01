@@ -19,8 +19,13 @@ func NewEpicProgressConfig(checker *authzrpc.Checker, source service.OntologySou
 	if checker == nil || source == nil {
 		return nil, fmt.Errorf("epic progress requires the fixed checker and durable ontology source")
 	}
+	parents, err := NewParentProjectionConfig(checker)
+	if err != nil {
+		return nil, err
+	}
 	return &viewops.EpicProgressConfig{
-		OntologySource: source,
+		ParentProjection: parents,
+		OntologySource:   source,
 		ValidateAuthority: func(ctx context.Context, by model.PrincipalRef, expected string) error {
 			return checker.ValidateReadAuthorityBinding(ctx, by, expected)
 		},
@@ -70,6 +75,28 @@ func NewAnonymousEpicProgressConfig(store viewops.ReadStore, source service.Onto
 				return &model.Error{Data: model.ErrorData{Code: "incarnation_changed", Hint: "anonymous epic snapshot belongs to another store incarnation"}}
 			}
 			return nil
+		},
+	}, nil
+}
+
+// NewParentProjectionConfig installs rule 2 for ordinary view items, including
+// grouped pages and historical content. It adds no read grant or wire member.
+func NewParentProjectionConfig(checker *authzrpc.Checker) (*viewops.ParentProjectionConfig, error) {
+	if checker == nil {
+		return nil, fmt.Errorf("parent projection requires the fixed checker")
+	}
+	return &viewops.ParentProjectionConfig{
+		ValidateAuthority: checker.ValidateReadAuthorityBinding,
+		Project: func(ctx context.Context, by model.PrincipalRef, content driver.Reader, children []model.Ref) (viewops.ParentProjectionAuthority, error) {
+			value, err := checker.AuthorizeParentProjections(ctx, by, content, children)
+			if err != nil {
+				return viewops.ParentProjectionAuthority{}, err
+			}
+			parents := make(map[string]viewops.ParentDisclosure, len(value.Parents))
+			for id, parent := range value.Parents {
+				parents[id] = viewops.ParentDisclosure{Exists: parent.Exists, Ref: parent.Ref}
+			}
+			return viewops.ParentProjectionAuthority{Parents: parents, PolicyBinding: value.PolicyBinding}, nil
 		},
 	}, nil
 }
