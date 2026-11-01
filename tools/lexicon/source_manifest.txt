@@ -431,6 +431,12 @@ internal/integration/sqliteacceptance/leases_refusals_test.go
 internal/integration/sqliteacceptance/transactions_test.go
 internal/integration/sqlreadersnapshots/BUILD.bazel
 internal/integration/sqlreadersnapshots/integration_test.go
+internal/integration/transports/BUILD.bazel
+internal/integration/transports/README.md
+internal/integration/transports/client_test.go
+internal/integration/transports/composition_test.go
+internal/integration/transports/fixture_test.go
+internal/integration/transports/transports_test.go
 internal/integration/viewpermissions/BUILD.bazel
 internal/integration/viewpermissions/viewpermissions_test.go
 internal/integration/watchsql/BUILD.bazel
@@ -557,6 +563,7 @@ internal/server/pluginhost/adapters.go
 internal/server/pluginhost/call.go
 internal/server/pluginhost/core_reader.go
 internal/server/pluginhost/egress.go
+internal/server/pluginhost/egress_test.go
 internal/server/pluginhost/errors.go
 internal/server/pluginhost/fields.go
 internal/server/pluginhost/host_test.go
@@ -630,6 +637,7 @@ internal/server/transport/websocket/backpressure_test.go
 internal/server/transport/websocket/config.go
 internal/server/transport/websocket/conn.go
 internal/server/transport/websocket/handler.go
+internal/server/transport/websocket/lifecycle_test.go
 internal/server/transport/websocket/websocket_test.go
 internal/server/viewrpc/BUILD.bazel
 internal/server/viewrpc/bind.go
@@ -860,3 +868,6 @@ tools/lexicon/inventory_test.go
 tools/lexicon/output_links/BUILD.bazel
 tools/lexicon/policy.go
 tools/lexicon/source_manifest.txt
+tools/r1/README.md
+tools/r1/managed_postgres_failover_drill.sh
+tools/r1/rollback_rehearsal.sh
