@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -20,6 +21,10 @@ type transaction struct {
 	*reader
 	lease           *activeLease
 	locked, hasHead bool
+	restore         *driver.Meta
+	nativeRestore   *driver.NativeRestoreProfile
+	importRestore   *driver.RestoreImportProfile
+	offlineHistory  *driver.PreparedOfflineHistory
 	acquired        driver.LockSet
 	records         map[string]*driver.Record
 	identities      map[string]driver.Record
@@ -275,9 +280,11 @@ func (t *transaction) writable(key driver.LockKey) error {
 	if err != nil {
 		return err
 	}
-	for _, request := range t.acquired {
-		id, _ := keyID(request.Key)
-		if id == want && request.Mode != driver.LockShare {
+	// ValidateLockSet and skip-locked selection retain EncodeLockKey order.
+	i := sort.Search(len(t.acquired), func(i int) bool { id, _ := keyID(t.acquired[i].Key); return id >= want })
+	if i < len(t.acquired) {
+		id, _ := keyID(t.acquired[i].Key)
+		if id == want && t.acquired[i].Mode != driver.LockShare {
 			return nil
 		}
 	}

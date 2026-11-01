@@ -76,6 +76,7 @@ engdocs/plug-next/audit.md
 engdocs/plug-next/authn.md
 engdocs/plug-next/cli-rpc-trace.json
 engdocs/plug-next/dump-restore.md
+engdocs/plug-next/offline-history.md
 engdocs/plug-next/ontology-gates.md
 engdocs/plug-next/ontology-rpc.md
 engdocs/plug-next/remote-cli.md
@@ -141,6 +142,8 @@ internal/core/authz/chain.go
 internal/core/authz/chain_test.go
 internal/core/authz/doc.go
 internal/core/authz/filter.go
+internal/core/authz/hierarchy.go
+internal/core/authz/hierarchy_test.go
 internal/core/authz/identity.go
 internal/core/authz/identity_test.go
 internal/core/authz/mutation.go
@@ -278,6 +281,7 @@ internal/core/service/graph.go
 internal/core/service/history.go
 internal/core/service/history_reads_test.go
 internal/core/service/history_sqlite_rpc_test.go
+internal/core/service/i1_acceptance_test.go
 internal/core/service/memories.go
 internal/core/service/ontology.go
 internal/core/service/reads.go
@@ -374,7 +378,12 @@ internal/integration/nightlyrestore/README.md
 internal/integration/nightlyrestore/engine_test.go
 internal/integration/nightlyrestore/fixture_test.go
 internal/integration/nightlyrestore/restore_diff_test.go
+internal/integration/offlinehistory/BUILD.bazel
+internal/integration/offlinehistory/fixture_test.go
+internal/integration/offlinehistory/history_test.go
 internal/integration/oidc/BUILD.bazel
+internal/integration/oidc/browser_cors_check.mjs
+internal/integration/oidc/browser_cors_test.go
 internal/integration/oidc/composition_test.go
 internal/integration/oidc/flow_test.go
 internal/integration/oidc/http_test.go
@@ -435,6 +444,12 @@ internal/integration/sqliteacceptance/leases_refusals_test.go
 internal/integration/sqliteacceptance/transactions_test.go
 internal/integration/sqlreadersnapshots/BUILD.bazel
 internal/integration/sqlreadersnapshots/integration_test.go
+internal/integration/transports/BUILD.bazel
+internal/integration/transports/README.md
+internal/integration/transports/client_test.go
+internal/integration/transports/composition_test.go
+internal/integration/transports/fixture_test.go
+internal/integration/transports/transports_test.go
 internal/integration/viewpermissions/BUILD.bazel
 internal/integration/viewpermissions/viewpermissions_test.go
 internal/integration/watchsql/BUILD.bazel
@@ -484,6 +499,9 @@ internal/server/authzrpc/README.md
 internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/checker.go
+internal/server/authzrpc/hierarchy.go
+internal/server/authzrpc/hierarchy_read.go
+internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
 internal/server/claimrpc/BUILD.bazel
@@ -561,6 +579,7 @@ internal/server/pluginhost/adapters.go
 internal/server/pluginhost/call.go
 internal/server/pluginhost/core_reader.go
 internal/server/pluginhost/egress.go
+internal/server/pluginhost/egress_test.go
 internal/server/pluginhost/errors.go
 internal/server/pluginhost/fields.go
 internal/server/pluginhost/host_test.go
@@ -634,6 +653,7 @@ internal/server/transport/websocket/backpressure_test.go
 internal/server/transport/websocket/config.go
 internal/server/transport/websocket/conn.go
 internal/server/transport/websocket/handler.go
+internal/server/transport/websocket/lifecycle_test.go
 internal/server/transport/websocket/websocket_test.go
 internal/server/viewrpc/BUILD.bazel
 internal/server/viewrpc/bind.go
@@ -658,10 +678,15 @@ internal/server/webui/browser_test.go
 internal/server/webui/catalog.go
 internal/server/webui/comment_check.mjs
 internal/server/webui/direct_blocker_check.mjs
+internal/server/webui/frame_digest.go
+internal/server/webui/frame_host.go
 internal/server/webui/presence_display_check.mjs
 internal/server/webui/presence_display_test.go
+internal/server/webui/sandbox_check.mjs
+internal/server/webui/sandbox_test.go
 internal/server/webui/static/app.js
 internal/server/webui/static/favicon.svg
+internal/server/webui/static/frame-host.js
 internal/server/webui/static/index.html
 internal/server/webui/static/styles.css
 internal/server/webui/view_watch_check.mjs
@@ -696,6 +721,8 @@ internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
+internal/storage/driver/offline_history.go
+internal/storage/driver/offline_history_test.go
 internal/storage/driver/offline_restore.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
@@ -711,6 +738,7 @@ internal/storage/memory/metadata.go
 internal/storage/memory/metadata_test.go
 internal/storage/memory/noop.go
 internal/storage/memory/noop_test.go
+internal/storage/memory/offline_history.go
 internal/storage/memory/offline_restore.go
 internal/storage/memory/reader.go
 internal/storage/memory/store.go
@@ -729,6 +757,8 @@ internal/storage/postgres/engine_test.go
 internal/storage/postgres/fencing_test.go
 internal/storage/postgres/lease.go
 internal/storage/postgres/metadata.go
+internal/storage/postgres/offline_history.go
+internal/storage/postgres/offline_restore.go
 internal/storage/postgres/pending_test.go
 internal/storage/postgres/persistence_test.go
 internal/storage/postgres/query.go
@@ -745,6 +775,7 @@ internal/storage/sqlite/lease.go
 internal/storage/sqlite/locks_other.go
 internal/storage/sqlite/locks_unix.go
 internal/storage/sqlite/metadata.go
+internal/storage/sqlite/offline_history.go
 internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/pending_test.go
 internal/storage/sqlite/process_test.go
@@ -859,3 +890,6 @@ tools/lexicon/inventory_test.go
 tools/lexicon/output_links/BUILD.bazel
 tools/lexicon/policy.go
 tools/lexicon/source_manifest.txt
+tools/r1/README.md
+tools/r1/managed_postgres_failover_drill.sh
+tools/r1/rollback_rehearsal.sh
