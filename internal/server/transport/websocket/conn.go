@@ -248,9 +248,6 @@ func (c *Conn) write(ctx context.Context, opcode byte, payload []byte) error {
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	if c.isClosed() {
-		return ErrConnectionClosed
-	}
 	return c.writeLocked(ctx, opcode, payload, c.cfg.WriteTimeout)
 }
 
@@ -264,7 +261,16 @@ func (c *Conn) writeLocked(ctx context.Context, opcode byte, payload []byte, tim
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
 	}
-	if err := c.netConn.SetWriteDeadline(deadline); err != nil {
+	// Admit the initial deadline with the closed flag. After Close publishes
+	// that flag, no data writer may lengthen its bounded handoff deadline.
+	c.closeMu.Lock()
+	if c.closed && opcode != byte(closeMessage) {
+		c.closeMu.Unlock()
+		return ErrConnectionClosed
+	}
+	err := c.netConn.SetWriteDeadline(deadline)
+	c.closeMu.Unlock()
+	if err != nil {
 		return err
 	}
 	callbackDone := make(chan struct{})
@@ -350,12 +356,6 @@ func (c *Conn) closeNetwork() error {
 	c.closed = true
 	c.closeMu.Unlock()
 	return c.netConn.Close()
-}
-
-func (c *Conn) isClosed() bool {
-	c.closeMu.Lock()
-	defer c.closeMu.Unlock()
-	return c.closed
 }
 
 func writeFrame(w *bufio.ReadWriter, opcode byte, payload []byte) error {
