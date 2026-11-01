@@ -825,6 +825,8 @@ scripts/ci/plug-bazel-delivery-test.sh
 scripts/ci/plug-bazel-delivery.py
 scripts/ci/plug-bazel-targets-test.sh
 scripts/ci/plug-bazel-targets.sh
+scripts/ci/public-bundle-test.py
+scripts/ci/public-bundle.py
 scripts/demo.sh
 sdk/go/BUILD.bazel
 sdk/go/conformance/BUILD.bazel
