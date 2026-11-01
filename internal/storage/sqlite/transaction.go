@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -207,10 +208,10 @@ func (t *transaction) writable(key driver.LockKey) error {
 		return fmt.Errorf("sqlite: mutation requires complete lock set")
 	}
 	id := keyID(key)
-	for _, r := range t.acquired {
-		if keyID(r.Key) == id && r.Mode != driver.LockShare {
-			return nil
-		}
+	// Lock keeps a sorted subset even when skip-locked keys are omitted.
+	i := sort.Search(len(t.acquired), func(i int) bool { return keyID(t.acquired[i].Key) >= id })
+	if i < len(t.acquired) && keyID(t.acquired[i].Key) == id && t.acquired[i].Mode != driver.LockShare {
+		return nil
 	}
 	return fmt.Errorf("sqlite: missing update lock for %s", id)
 }
