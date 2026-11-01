@@ -1,0 +1,47 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "recorded_integrity_test",
+    srcs = ["recorded_integrity_test.go"],
+    embedsrcs = [
+        "manifest.json",
+        "record_reference.py",
+        "run-1.json",
+        "run-2.json",
+    ],
+    args = ["-test.v"],
+)
+
+go_test(
+    name = "replay",
+    srcs = [
+        "fixture_test.go",
+        "replay_test.go",
+    ],
+    embedsrcs = [
+        "manifest.json",
+        "run-1.json",
+        "run-2.json",
+    ],
+    args = ["-test.v"],
+    deps = [
+        "//internal/acceptance",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+    ],
+    tags = ["local", "requires-network"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
