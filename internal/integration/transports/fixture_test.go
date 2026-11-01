@@ -59,6 +59,11 @@ type fixture struct {
 
 func newFixture(t *testing.T, authenticated bool) *fixture {
 	t.Helper()
+	return newFixtureWithClock(t, authenticated, time.Now)
+}
+
+func newFixtureWithClock(t *testing.T, authenticated bool, now func() time.Time) *fixture {
+	t.Helper()
 	f := &fixture{store: memory.New(), principal: model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}}
 	t.Cleanup(func() { _ = f.store.Close() })
 	ctx := context.Background()
@@ -71,8 +76,8 @@ func newFixture(t *testing.T, authenticated bool) *fixture {
 	if authenticated {
 		mode = "authenticated"
 		f.principal = model.PrincipalRef{Kind: "user", ID: "user:i3-fixture"}
-		f.keys = authnapikey.New(authnapikey.Config{})
-		issued, err := f.keys.Issue(f.principal, time.Now().Add(time.Hour))
+		f.keys = authnapikey.New(authnapikey.Config{Now: now})
+		issued, err := f.keys.Issue(f.principal, now().Add(time.Hour))
 		if err != nil {
 			t.Fatal(err)
 		}

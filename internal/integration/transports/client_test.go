@@ -106,12 +106,21 @@ func writeFrame(t *testing.T, output io.Writer, payload []byte) {
 
 func readFrame(t *testing.T, input io.Reader) []byte {
 	t.Helper()
+	opcode, data := readServerFrame(t, input)
+	if opcode != 1 {
+		t.Fatalf("expected text frame, got opcode %d", opcode)
+	}
+	return data
+}
+
+func readServerFrame(t *testing.T, input io.Reader) (byte, []byte) {
+	t.Helper()
 	var header [2]byte
 	if _, err := io.ReadFull(input, header[:]); err != nil {
 		t.Fatal(err)
 	}
-	if header[0] != 0x81 || header[1]&0x80 != 0 {
-		t.Fatalf("expected unmasked final text frame, got %x", header)
+	if header[0]&0xf0 != 0x80 || header[1]&0x80 != 0 {
+		t.Fatalf("expected unmasked final frame, got %x", header)
 	}
 	length := uint64(header[1] & 0x7f)
 	if length == 126 {
@@ -134,5 +143,5 @@ func readFrame(t *testing.T, input io.Reader) []byte {
 	if _, err := io.ReadFull(input, data); err != nil {
 		t.Fatal(err)
 	}
-	return data
+	return header[0] & 0x0f, data
 }

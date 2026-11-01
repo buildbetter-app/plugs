@@ -3,12 +3,15 @@ package transports_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/server/transport/mcp"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -132,6 +135,57 @@ func TestSharedErrorsAndHumanPresenceGate(t *testing.T) {
 			}
 			if f.validators.Load() != 0 || f.posts.Load() != 0 || f.targetCalls.Load() != 0 {
 				t.Fatal("refused requests reached native callbacks or egress")
+			}
+		})
+	}
+}
+
+func TestOpenWebSocketRechecksRevokedAndExpiredAPIKeysBeforeDispatch(t *testing.T) {
+	for _, invalidate := range []string{"revoke", "expire"} {
+		t.Run(invalidate, func(t *testing.T) {
+			var clock atomic.Int64
+			start := time.Now()
+			clock.Store(start.UnixNano())
+			f := newFixtureWithClock(t, true, func() time.Time { return time.Unix(0, clock.Load()) })
+			connection, frames, status := f.connect(t, nil)
+			defer connection.Close()
+			if status != http.StatusSwitchingProtocols {
+				t.Fatalf("initial upgrade: %d", status)
+			}
+			create := func(id, key, title string) []byte {
+				return request(t, id, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": title}, "_meta": map[string]any{"idempotencyKey": key}})
+			}
+			writeFrame(t, connection, create("accepted", "550e8400-e29b-41d4-a716-446655440000", "live key"))
+			var accepted envelope
+			if err := json.Unmarshal(readFrame(t, frames), &accepted); err != nil {
+				t.Fatal(err)
+			}
+			success(t, accepted)
+			before, err := f.store.Meta(context.Background())
+			if err != nil || before.Head.IsZero() || f.validators.Load() != 1 || f.posts.Load() != 1 {
+				t.Fatal("live connection did not perform one durable write and native callback pair")
+			}
+			if invalidate == "revoke" {
+				if !f.keys.Revoke(f.keyID) {
+					t.Fatal("fixture key revocation did not acknowledge")
+				}
+			} else {
+				// Reach the exact expiry without sleeps or external time sources.
+				clock.Store(start.Add(time.Hour).UnixNano())
+			}
+			// Reuse the upgraded socket. A fresh-handshake denial alone does not
+			// protect a long-lived connection or a request already in its queue.
+			writeFrame(t, connection, create("refused", "550e8400-e29b-41d4-a716-446655440001", "must not persist"))
+			opcode, payload := readServerFrame(t, frames)
+			if opcode != 8 || len(payload) < 2 || binary.BigEndian.Uint16(payload[:2]) != 1008 {
+				t.Errorf("invalidated connection returned opcode %d; want policy close 1008", opcode)
+			}
+			if bytes.Contains(payload, []byte(f.token)) || bytes.Contains(payload, []byte(f.keyID)) {
+				t.Error("WebSocket credential invalidation leaked key material")
+			}
+			after, err := f.store.Meta(context.Background())
+			if err != nil || after.Head != before.Head || f.validators.Load() != 1 || f.posts.Load() != 1 || f.targetCalls.Load() != 0 {
+				t.Error("invalidated connection reached a durable write, native callback or egress")
 			}
 		})
 	}
