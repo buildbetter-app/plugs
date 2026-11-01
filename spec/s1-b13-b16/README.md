@@ -20,11 +20,11 @@ The selected bounded evidence is:
 * **B15** — exact comment body/principal/order and controlled same-clock stamps,
   one durable changeset/event per accepted comment, untouched anchor fields,
   typed refusals with no receipt/head advance, and SQLite reopen. A public
-  comment-list/keyset producer and the wisp plane remain unqualified.
+  comment-list/keyset producer and the ephemeral plane remain unqualified.
 * **B16** — no parity claim is made. The admitted ontology rejects the typed
   `labels` field and the public filters have no label selector. The test keeps
   those refusals typed and checks that they do not write; add/remove/rename,
-  label patch ordering, durable/wisp rename, and label filters remain
+  label patch ordering, durable/ephemeral rename, and label filters remain
   **UNQUALIFIED**.
 
 Reference recording is deliberately separate from these Plug projections. The
