@@ -75,6 +75,7 @@ engdocs/plug-next/audit.md
 engdocs/plug-next/authn.md
 engdocs/plug-next/cli-rpc-trace.json
 engdocs/plug-next/dump-restore.md
+engdocs/plug-next/offline-history.md
 engdocs/plug-next/ontology-gates.md
 engdocs/plug-next/ontology-rpc.md
 engdocs/plug-next/remote-cli.md
@@ -370,6 +371,9 @@ internal/integration/migrationpre/BUILD.bazel
 internal/integration/migrationpre/README.md
 internal/integration/migrationpre/compose.go
 internal/integration/migrationpre/integration_test.go
+internal/integration/offlinehistory/BUILD.bazel
+internal/integration/offlinehistory/fixture_test.go
+internal/integration/offlinehistory/history_test.go
 internal/integration/oidc/BUILD.bazel
 internal/integration/oidc/browser_cors_check.mjs
 internal/integration/oidc/browser_cors_test.go
@@ -710,6 +714,8 @@ internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
+internal/storage/driver/offline_history.go
+internal/storage/driver/offline_history_test.go
 internal/storage/driver/offline_restore.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
@@ -725,6 +731,7 @@ internal/storage/memory/metadata.go
 internal/storage/memory/metadata_test.go
 internal/storage/memory/noop.go
 internal/storage/memory/noop_test.go
+internal/storage/memory/offline_history.go
 internal/storage/memory/offline_restore.go
 internal/storage/memory/reader.go
 internal/storage/memory/store.go
@@ -743,6 +750,8 @@ internal/storage/postgres/engine_test.go
 internal/storage/postgres/fencing_test.go
 internal/storage/postgres/lease.go
 internal/storage/postgres/metadata.go
+internal/storage/postgres/offline_history.go
+internal/storage/postgres/offline_restore.go
 internal/storage/postgres/pending_test.go
 internal/storage/postgres/persistence_test.go
 internal/storage/postgres/query.go
@@ -759,6 +768,7 @@ internal/storage/sqlite/lease.go
 internal/storage/sqlite/locks_other.go
 internal/storage/sqlite/locks_unix.go
 internal/storage/sqlite/metadata.go
+internal/storage/sqlite/offline_history.go
 internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/pending_test.go
 internal/storage/sqlite/process_test.go
