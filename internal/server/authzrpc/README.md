@@ -58,7 +58,9 @@ Creation additionally checks the fixed destination-project modify permission;
 the child check preserves ref caveats and code-link restrictions on the new
 resource. These are existing #18 `modify` predicates, restricted to the typed
 hierarchy path, with authenticated sponsored Agents and no new User/deputy
-write permit. Reparent cannot change the child's project or other protected
+write permit. Only the fixed policy receives that predicate mapping; code
+links and other rule sets keep the original method, including any explicit
+reparent/transaction forbids. Reparent cannot change the child's project or other protected
 assignment fields. A move/detach never asks for old-parent permission. Before,
 after and current receipt-replay checks all use the installed chain; an old
 receipt is never a grant. The Writer must still enforce ontology, real child

@@ -308,6 +308,10 @@ func TestHierarchyRefusalsDoNotBroadenFixedPolicy(t *testing.T) {
 	err = f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "bead.reparent", hMove(&newParent)), f.snapshot(t))
 	requireHCode(t, err, "forbidden")
 	f.app.Checker.chain.Links = nil
+	f.app.Checker.chain.Links = []authz.Link{hDeny{ids: map[string]bool{"child": true}, action: authz.Modify, method: "bead.reparent"}}
+	err = f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "bead.reparent", hMove(&newParent)), f.snapshot(t))
+	requireHCode(t, err, "forbidden")
+	f.app.Checker.chain.Links = nil
 	s := f.snapshot(t)
 	s.failGet = "new"
 	err = f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "bead.reparent", hMove(&newParent)), s)
@@ -317,13 +321,14 @@ func TestHierarchyRefusalsDoNotBroadenFixedPolicy(t *testing.T) {
 type hDeny struct {
 	ids    map[string]bool
 	action authz.Action
+	method string
 }
 
 func (d hDeny) Check(_ context.Context, _ authz.Slice, requests []authz.CheckRequest) ([]authz.Step, error) {
 	out := make([]authz.Step, len(requests))
 	for i, req := range requests {
 		out[i].Effect = authz.NoDecision
-		if req.Action == d.action && d.ids[req.Resource.Ref.ID] {
+		if req.Action == d.action && d.ids[req.Resource.Ref.ID] && (d.method == "" || d.method == req.Method) {
 			out[i] = authz.Step{Effect: authz.Deny, Reason: "test-specific restriction"}
 		}
 	}
