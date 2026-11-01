@@ -24,8 +24,9 @@ inventories must fit complete pages; partial results fail the tests.
 Boundaries: this is in-process service/Writer acceptance, not HTTP or CLI
 qualification. `id`, `type`, `project` and other envelope names in `fields`
 refuse as unknown typed keys; they are not top-level identity mutation APIs.
-Qualified paths refuse, while parented create and project moves explicitly
-remain unsupported. Existing Writer slot contexts cover fail/cancel/defer and
+Qualified paths and malformed named parents refuse; project moves remain
+unsupported. Canonical parented create is covered by batchsql hierarchy
+acceptance. Existing Writer slot contexts cover fail/cancel/defer and
 reopen; this does not claim those methods are bound by the service or RPC.
 The default has no configurable immutable-field flag or plugin-owned field.
 No ontology planning/apply, migration, permission-provider, gate, parent/child,

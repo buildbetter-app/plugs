@@ -27,6 +27,20 @@ func TestBatchedReaderPreservesHistoryMissesAndStagedOverlays(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A revision-zero backing snapshot is empty, but the transaction must
+	// retain its own staged records and observations before its first commit.
+	if rows, err := tx.Get(ctx, []model.Ref{a, missing, b}); err != nil || len(rows) != 2 || rows[0].Ref.ID != a.ID || rows[1].Ref.ID != b.ID {
+		t.Fatalf("revision-zero staged records: %+v %v", rows, err)
+	}
+	if states, err := tx.Observe(ctx, keys); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, state := range states {
+			if state.Key.Kind == driver.LockRecord && (state.Key.Ref.ID == a.ID || state.Key.Ref.ID == b.ID) && (!state.Present || state.Record == nil || string(state.Record.Body) != `{"value":1}`) {
+				t.Fatalf("revision-zero staged observation lost: %+v", state)
+			}
+		}
+	}
 	if err := tx.PutDerived(ctx, driver.DerivedSortKey, nil, []driver.DerivedRow{initial}); err != nil {
 		t.Fatal(err)
 	}

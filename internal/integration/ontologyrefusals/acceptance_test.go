@@ -112,9 +112,10 @@ func TestIdentityAndCoreFieldsRemainProtected(t *testing.T) {
 		t.Run("unsupported_project_move", func(t *testing.T) {
 			f.refuse(t, "tx.apply", "invalid_params", f.apply(model.Op{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: ref, Project: "other"}}))
 		})
-		t.Run("unsupported_parented_create", func(t *testing.T) {
+		t.Run("malformed_named_parent", func(t *testing.T) {
+			parent := model.RefByKey("unresolved-parent")
 			f.refuse(t, "bead.create", "invalid_params", func(meta model.WriteMeta) (model.Commit, error) {
-				return f.svc.Create(f.ctx, owner, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": "child"}, Parent: &ref}, meta)
+				return f.svc.Create(f.ctx, owner, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": "child"}, Parent: &parent}, meta)
 			})
 		})
 		f.get(t, ref) // also checks ID, type and project after every attempted change
