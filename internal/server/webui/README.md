@@ -148,8 +148,9 @@ Untrusted titles, IDs, reasons and presence data are rendered as text.
   same parent request again without a cursor or `asOf`.
   Count-only results must be complete with no payload items or `nextCursor`.
   Unknown groups, non-authorization elisions, inconsistent totals, unsafe
-  counts and responses beyond the 20,000-child or UI status-row bounds refuse
-  the entire read. No count is approximated or truncated. The request leaves
+  counts, more than 20,000 visible children or too many UI status rows refuse
+  the entire read. The authorized candidate cap does not limit the exact
+  hidden remainder, which must still be a safe natural number. No count is approximated or truncated. The request leaves
   the producer's token budget at its default; `MaxRows` is only a presentation
   bound. The producer's 100-group ceiling includes `total`, so at most 99
   visible status buckets fit in one accepted response. Snapshot status keys

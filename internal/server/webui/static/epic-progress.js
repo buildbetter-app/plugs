@@ -37,7 +37,7 @@
           const elided = group.elided;
           const refresh = elided && elided.continueWith;
           const expected = { ...params, _meta: { project: config.project } };
-          if (!keys(elided, ["count", "reason", "continueWith"]) || !natural(elided.count) || elided.count > 20000 || elided.reason !== "authorization" || !keys(refresh, ["method", "params"]) || refresh.method !== "view.run" || !same(refresh.params, expected)) throw refusal("invalid_response");
+          if (!keys(elided, ["count", "reason", "continueWith"]) || !natural(elided.count) || elided.reason !== "authorization" || !keys(refresh, ["method", "params"]) || refresh.method !== "view.run" || !same(refresh.params, expected)) throw refusal("invalid_response");
           // This is a fresh same-scope reauthorization, not pagination. Never
           // execute a response-supplied method, scope, cursor or hidden row.
           hiddenCount = elided.count;
@@ -47,7 +47,7 @@
         counts.push({ label: group.key.slice(7), count: group.count });
       }
     }
-    if (total === undefined || counts.reduce((sum, group) => sum + group.count, 0) !== total || total + hiddenCount > 20000) throw refusal("invalid_response");
+    if (total === undefined || counts.reduce((sum, group) => sum + group.count, 0) !== total) throw refusal("invalid_response");
     return { visibleCount: total, hiddenCount, counts, asOf: result.asOf };
   }
   function clear() {

@@ -132,7 +132,14 @@ func TestBrowserEpicProgressWireContract(t *testing.T) {
 	}
 	bad("page-elision", "invalid_response", func(r map[string]any) { elision(r)["reason"] = "budget" })
 	bad("unsafe-hidden", "invalid_response", func(r map[string]any) { elision(r)["count"] = uint64(9007199254740993) })
-	bad("child-cap", "invalid_response", func(r map[string]any) { elision(r)["count"] = 20000 })
+	bad("child-cap", "invalid_response", func(r map[string]any) {
+		r["groups"].([]any)[0].(map[string]any)["count"] = 20001
+		r["groups"].([]any)[1].(map[string]any)["count"] = 19999
+	})
+	largeHidden := visible("large-hidden", "")
+	largeHidden.Hidden = 20000
+	elision(largeHidden.result)["count"] = largeHidden.Hidden
+	cases = append(cases, largeHidden)
 	bad("refresh-scope", "invalid_response", func(r map[string]any) {
 		elision(r)["continueWith"].(map[string]any)["params"].(map[string]any)["_meta"] = map[string]any{"project": "unreadable-project"}
 	})
