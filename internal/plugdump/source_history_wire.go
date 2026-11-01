@@ -139,7 +139,7 @@ func validateSourceHistory(manifest Manifest, members map[string][]byte) error {
 			return fail("non-contiguous")
 		}
 	} else {
-		if r.Complete || manifest.History != "available-unverified" || validateHistoryImage(r.Baseline, manifest.Projects) != nil {
+		if r.Complete || manifest.History != "available-unverified" || validateHistoryImage(r.Baseline, manifest) != nil {
 			return fail("unmappable")
 		}
 		next := uint64(1)
@@ -158,7 +158,7 @@ func validateSourceHistory(manifest Manifest, members map[string][]byte) error {
 		if frame.Sequence != r.First+uint64(i) || frame.CommitID != h.Commits[frame.Sequence-1].ID {
 			return fail("non-contiguous")
 		}
-		if validateHistoryImage(frame.Records, manifest.Projects) != nil || !extendsEvents(previous, frame.Events) {
+		if validateHistoryImage(frame.Records, manifest) != nil || !extendsEvents(previous, frame.Events) {
 			return fail("unmappable")
 		}
 		previous = frame.Events
@@ -185,15 +185,16 @@ func validCommitID(id string) bool {
 	return true
 }
 
-func validateHistoryImage(rows []Record, projects []Project) error {
+func validateHistoryImage(rows []Record, manifest Manifest) error {
 	seen, beads := map[string]bool{}, map[string]string{}
 	counts := map[string]int{}
+	issues := []Record{}
 	for _, r := range rows {
 		if r.Kind == "beads-archive" || !knownKinds[r.Kind] || seen[recordKey(r)] {
 			return fmt.Errorf("duplicate or nonportable history record")
 		}
 		seen[recordKey(r)] = true
-		if err := validateRecord(r, projects, counts); err != nil {
+		if err := validateRecord(r, manifest.Projects, counts); err != nil {
 			return err
 		}
 		if r.Kind == "bead" {
@@ -201,6 +202,7 @@ func validateHistoryImage(rows []Record, projects []Project) error {
 				return fmt.Errorf("duplicate historical bead")
 			}
 			beads[r.ID] = r.Project
+			issues = append(issues, r)
 		}
 	}
 	for _, r := range rows {
@@ -210,7 +212,7 @@ func validateHistoryImage(rows []Record, projects []Project) error {
 			}
 		}
 	}
-	return nil
+	return validateOntologyRecords(applicableHistoryOntology(manifest.Ontology, issues), manifest.Projects, issues)
 }
 
 func sameRecordImage(a, b []Record) bool {

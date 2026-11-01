@@ -186,6 +186,20 @@ func linearSourceCommits(log SourceCommitLog) ([]SourceCommit, bool) {
 // Reuse the current closed-world mapper for each independently read image.
 // It cannot borrow a missing business field or row from the current head.
 func portableSourceImage(ctx context.Context, tables map[string]Table, inventory Inventory) ([]Record, []Row, error) {
+	// A head directive may be unused before that type existed. Select only
+	// declarations used by this image; the same mapper still requires exactly
+	// one correctly scoped declaration for every custom historical issue type.
+	issues := []Record{}
+	projects := mapping{projects: inventory.Projects}
+	for _, row := range tables["issues"].Rows {
+		id := text(row, "id")
+		project, err := projects.project(id)
+		if err != nil {
+			return nil, nil, err
+		}
+		issues = append(issues, Record{ID: id, Project: project.Prefix, Source: Provenance{Table: "issues", Fields: row}})
+	}
+	inventory.Ontology = applicableHistoryOntology(inventory.Ontology, issues)
 	inventory.History = "unavailable"
 	if len(tables["issue_versions"].Rows)+len(tables["issue_snapshots"].Rows)+len(tables["compaction_snapshots"].Rows) > 0 {
 		inventory.History = "available-unverified"
@@ -231,4 +245,17 @@ func portableSourceImage(ctx context.Context, tables map[string]Table, inventory
 		return nil, nil, fmt.Errorf("invalid source audit image")
 	}
 	return records, tables["events"].Rows, nil
+}
+
+func applicableHistoryOntology(directives []OntologyDirective, issues []Record) []OntologyDirective {
+	used := []OntologyDirective{}
+	for _, directive := range directives {
+		for _, issue := range issues {
+			if directive.Target.Project == issue.Project && directive.Target.Type == text(issue.Source.Fields, "issue_type") && (directive.Target.ID == "" || directive.Target.ID == issue.ID) {
+				used = append(used, directive)
+				break
+			}
+		}
+	}
+	return used
 }
