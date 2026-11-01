@@ -30,7 +30,7 @@ func RunStagedReadOverlay(t *testing.T, factory Factory) {
 	if err := tx.PutDerived(ctx, driver.DerivedSortKey, nil, []driver.DerivedRow{row}); err != nil {
 		t.Fatal(err)
 	}
-	assertStaged := func(states []driver.LockState, revision, bodyA, bodyB string, derivedPresent bool, derivedValue string) {
+	assertStaged := func(states []driver.LockState, revision, bodyA, bodyB string, derivedPresent bool, derivedRevision, derivedValue string) {
 		t.Helper()
 		if len(states) != len(keys) {
 			t.Fatalf("observation count=%d, want %d", len(states), len(keys))
@@ -53,7 +53,7 @@ func RunStagedReadOverlay(t *testing.T, factory Factory) {
 					t.Fatalf("staged record=%+v, want body %q", state.Record, wantBody)
 				}
 			case driver.LockDerived:
-				if state.Present != derivedPresent || state.Revision.String() != revision {
+				if state.Present != derivedPresent || state.Revision.String() != derivedRevision {
 					t.Fatalf("derived observation=%+v", state)
 				}
 				if derivedPresent && (state.Derived == nil || string(state.Derived.Value) != derivedValue) {
@@ -68,7 +68,7 @@ func RunStagedReadOverlay(t *testing.T, factory Factory) {
 	}
 	// New rows have no committed revision yet. Both staged rows and the
 	// derived row must nevertheless be visible to the transaction reader.
-	assertStaged(states, "0", `{"value":"a"}`, `{"value":"b"}`, true, "before")
+	assertStaged(states, "0", `{"value":"a"}`, `{"value":"b"}`, true, "0", "before")
 	if _, err := tx.Head(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -97,5 +97,5 @@ func RunStagedReadOverlay(t *testing.T, factory Factory) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertStaged(states, "1", "", `{"value":"updated"}`, false, "")
+	assertStaged(states, "1", "", `{"value":"updated"}`, false, "0", "")
 }
