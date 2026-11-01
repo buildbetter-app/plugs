@@ -1,0 +1,12 @@
+runners:
+  bb-x64-16:
+    cpu: [16]
+    ram: [64]
+    # Newer generations only: m6a/m6i compiled about 27% slower than Blacksmith
+    # in the 2026-10-14 trials. Family order sets no preference; Spot uses the
+    # price-capacity-optimized strategy, so any listed family can launch.
+    # Exact `.*` selectors exclude variants such as m7i-flex and local-NVMe types.
+    family: ["m8i.*", "m7i.*", "m8a.*", "m7a.*"]
+    image: ubuntu24-full-x64
+    volume: 200gb:gp3:750mbs:6000iops
+    extras: ["s3-cache"]
