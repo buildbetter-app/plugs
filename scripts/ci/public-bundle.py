@@ -58,9 +58,19 @@ def contained(root: Path, relative: str) -> Path:
 
 def artifact_record(path: Path) -> dict[str, object]:
     mode = stat.S_IMODE(path.stat().st_mode)
-    if path.is_symlink() or not path.is_file() or not mode & 0o111:
+    if path.is_symlink() or not path.is_file() or mode != 0o755:
         raise ValueError(f"artifact is not a regular executable: {path}")
     return {"sha256": digest(path), "size": path.stat().st_size, "mode": oct(mode)}
+
+
+def verify_artifact(path: Path, relative: str, record: object) -> None:
+    if not isinstance(record, dict):
+        raise ValueError(f"artifact record is not an object: {relative}")
+    if record.get("mode") != "0o755":
+        raise ValueError(f"artifact mode is not the fixed executable mode: {relative}")
+    actual = artifact_record(path)
+    if actual != record:
+        raise ValueError(f"artifact digest, size, or mode mismatch: {relative}")
 
 
 def create(args: argparse.Namespace) -> None:
@@ -142,6 +152,8 @@ def verify(args: argparse.Namespace) -> None:
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict) or set(artifacts) != ARTIFACTS:
         raise ValueError("artifact set is not exact")
+    for relative in sorted(ARTIFACTS):
+        verify_artifact(contained(root, relative), relative, artifacts[relative])
     archive_record = manifest.get("archive")
     if not isinstance(archive_record, dict) or archive_record.get("name") != archive.name:
         raise ValueError("archive record is missing")
@@ -158,6 +170,9 @@ def verify(args: argparse.Namespace) -> None:
             for member in members:
                 if not safe_member(member.name) or not member.isreg():
                     raise ValueError("archive contains an unsafe member")
+                record = artifacts[member.name]
+                if not isinstance(record, dict) or stat.S_IMODE(member.mode) != 0o755:
+                    raise ValueError("archive member mode is not the fixed executable mode")
                 destination = contained(extraction, member.name)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 payload = stream.extractfile(member)
@@ -167,11 +182,7 @@ def verify(args: argparse.Namespace) -> None:
                 destination.chmod(member.mode & 0o777)
 
         for relative, record in artifacts.items():
-            extracted = contained(extraction, relative)
-            if digest(extracted) != record.get("sha256") or extracted.stat().st_size != record.get("size"):
-                raise ValueError("extracted artifact digest or size mismatch")
-            if not stat.S_IMODE(extracted.stat().st_mode) & 0o111:
-                raise ValueError("extracted artifact is not executable")
+            verify_artifact(contained(extraction, relative), relative, record)
 
 
 def parser() -> argparse.ArgumentParser:
