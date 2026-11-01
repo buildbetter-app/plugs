@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
@@ -39,6 +40,8 @@ type Preparation struct {
 	Preparation      string        `json:"preparation"`
 	Qualification    string        `json:"r1_qualification"`
 	BaselineKind     string        `json:"baseline_kind"`
+	FactoryWorkers   int           `json:"sampled_factory_workers"`
+	FactoryTasks     int           `json:"sampled_factory_tasks"`
 	AdminProof       string        `json:"admin_proof"`
 	ResourcesCleaned bool          `json:"resources_cleaned"`
 	Runs             []PreparedRun `json:"runs"`
@@ -53,6 +56,8 @@ type PreparedRun struct {
 	AuthenticatedMCP    bool      `json:"authenticated_mcp"`
 	ServiceAdminRefused bool      `json:"service_admin_refused"`
 	NewIncarnation      bool      `json:"new_restore_incarnation"`
+	FactoryWorkers      int       `json:"sampled_factory_workers"`
+	FactoryTasks        int       `json:"sampled_factory_tasks"`
 	DumpDigest          string    `json:"head_dump_sha256"`
 	Baseline            Metrics   `json:"baseline"`
 	Shadow              Metrics   `json:"shadow"`
@@ -61,7 +66,33 @@ type PreparedRun struct {
 	ReverseSeconds      float64   `json:"reverse_attempt_seconds"`
 	SoftwareRollback    string    `json:"software_rollback"`
 	Failover            string    `json:"managed_failover"`
+	Rollback            Rollback  `json:"rollback"`
 }
+
+// Rollback records the bounded rehearsal of every rollback input. The
+// manifests and data digest are real disposable artifacts, but no image or
+// plugin redeployment, Beads import, or source-system readback is attempted.
+// Those omissions remain explicit WAIT evidence rather than a synthetic pass.
+type Rollback struct {
+	ImageDigest       string `json:"image_digest"`
+	PromptDigest      string `json:"prompt_digest"`
+	PluginDigest      string `json:"plugin_digest"`
+	DataDumpDigest    string `json:"data_dump_digest"`
+	InputsFrozen      bool   `json:"inputs_frozen"`
+	Software          string `json:"software"`
+	ReverseConversion string `json:"reverse_conversion"`
+	Data              string `json:"data"`
+	Complete          string `json:"complete"`
+}
+
+const (
+	sampledFactoryWorkers    = 4
+	sampledTasksPerWorker    = 2
+	sampledFactoryTaskCount  = sampledFactoryWorkers * sampledTasksPerWorker
+	rollbackBundleVersion    = "i8-disposable-bundle-v1"
+	rollbackPromptVersion    = "rewritten-caller-prompt-v1"
+	rollbackPluginSetVersion = "dry-run-plugin-set-v1"
+)
 
 var fixturePresence = map[string]any{"mode": "presence_check", "challenge": "disposable-rehearsal", "proof": "synthetic-only"}
 
@@ -72,7 +103,7 @@ func RunDisposable(ctx context.Context, kind, sourceSHA, sourceTree string) (rep
 	if (kind != "memory" && kind != "sqlite") || !sha40.MatchString(sourceSHA) || !sha40.MatchString(sourceTree) {
 		return report, fmt.Errorf("memory/sqlite and full source SHA/tree required")
 	}
-	report = Preparation{SourceSHA: sourceSHA, SourceTree: sourceTree, Driver: kind, Preparation: "PASS", Qualification: "WAIT", BaselineKind: "same-build authenticated HTTP fixture; reference-pool baseline UNQUALIFIED", AdminProof: "synthetic trusted-host session and presence fixture; real D32 UNQUALIFIED"}
+	report = Preparation{SourceSHA: sourceSHA, SourceTree: sourceTree, Driver: kind, Preparation: "PASS", Qualification: "WAIT", BaselineKind: "sampled factory pool over synthetic authenticated HTTP/MCP fixtures; reference factory and staging UNQUALIFIED", FactoryWorkers: sampledFactoryWorkers, FactoryTasks: sampledFactoryTaskCount, AdminProof: "synthetic trusted-host session and presence fixture; real D32 UNQUALIFIED"}
 	if err = ensureWorkRoot(); err != nil {
 		return report, err
 	}
@@ -90,7 +121,7 @@ func RunDisposable(ctx context.Context, kind, sourceSHA, sourceTree string) (rep
 	seen := map[string]bool{}
 	for i := 0; i < 3; i++ {
 		var run PreparedRun
-		run, err = runDisposable(ctx, kind, root, i, seen)
+		run, err = runDisposable(ctx, kind, root, i, seen, sourceSHA, sourceTree)
 		if err != nil {
 			report.Preparation = "BLOCK"
 			return report, err
@@ -192,8 +223,10 @@ func (f *fixture) close() error {
 	return errors.Join(err, f.runtime.Close(ctx))
 }
 
-func runDisposable(ctx context.Context, kind, root string, index int, seen map[string]bool) (run PreparedRun, err error) {
+func runDisposable(ctx context.Context, kind, root string, index int, seen map[string]bool, sourceSHA, sourceTree string) (run PreparedRun, err error) {
 	run.Started = time.Now().UTC()
+	run.FactoryWorkers = sampledFactoryWorkers
+	run.FactoryTasks = sampledFactoryTaskCount
 	source, err := openFixture(ctx, kind, fixtureDSN(kind, root, index, "source"))
 	if err != nil {
 		return run, err
@@ -214,7 +247,7 @@ func runDisposable(ctx context.Context, kind, root string, index int, seen map[s
 	}
 	seen[identity] = true
 	run.FreshEmptyTarget = true
-	for i := 0; i < 3; i++ {
+	for i := 0; i < sampledFactoryTaskCount; i++ {
 		if _, err = source.rpc.Call(ctx, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "synthetic task", "priority": 1}}, ""); err != nil {
 			return run, err
 		}
@@ -257,21 +290,23 @@ func runDisposable(ctx context.Context, kind, root string, index int, seen map[s
 		return run, fmt.Errorf("restored ready identities/content differ")
 	}
 	run.RestoredComparison = true
-	shadow, closeShadow, err := newMCPClient(ctx, target)
-	if err != nil {
-		return run, err
+	shadowOpen := func(ctx context.Context, worker int) (*client.Client, func(), error) {
+		return newMCPClient(ctx, target, fmt.Sprintf("factory-mcp-%d", worker))
 	}
-	defer closeShadow()
 	run.AuthenticatedMCP = true
-	run.Baseline, err = workload(ctx, source.rpc)
-	if err != nil {
-		return run, fmt.Errorf("HTTP reference workload: %w", err)
+	httpOpen := func(_ context.Context, worker int) (*client.Client, func(), error) {
+		httpClient, clientErr := client.New(source.transport, "rehearsal", fmt.Sprintf("factory-http-%d", worker))
+		return httpClient, func() {}, clientErr
 	}
-	run.Shadow, err = workload(ctx, shadow)
+	run.Baseline, err = sampledFactoryPool(ctx, httpOpen, sampledFactoryWorkers, sampledTasksPerWorker)
 	if err != nil {
-		return run, fmt.Errorf("MCP shadow workload: %w", err)
+		return run, fmt.Errorf("HTTP sampled factory workload: %w", err)
 	}
-	if run.Baseline.Completed != 3 || run.Shadow.Completed != 3 {
+	run.Shadow, err = sampledFactoryPool(ctx, shadowOpen, sampledFactoryWorkers, sampledTasksPerWorker)
+	if err != nil {
+		return run, fmt.Errorf("MCP sampled factory workload: %w", err)
+	}
+	if run.Baseline.Completed != sampledFactoryTaskCount || run.Shadow.Completed != sampledFactoryTaskCount {
 		return run, fmt.Errorf("synthetic task completion mismatch")
 	}
 	before, err = readySignature(ctx, source.rpc)
@@ -286,7 +321,7 @@ func runDisposable(ctx context.Context, kind, root string, index int, seen map[s
 		return run, fmt.Errorf("post-workload ready comparison differs")
 	}
 	// Targets for the 100,000-record design workload are not inferred from this
-	// three-task smoke. Missing targets are explicit WAIT rows.
+	// sampled pool. Missing targets are explicit WAIT rows.
 	run.ComparisonWaits = Compare(run.Baseline, run.Shadow, nil)
 	post, _, err := captureDump(ctx, target.adminRPC)
 	if err != nil {
@@ -301,7 +336,11 @@ func runDisposable(ctx context.Context, kind, root string, index int, seen map[s
 	if reverseErr != nil {
 		run.ReverseConversion = "WAIT_native_head_reverse_profile_refused"
 	}
-	run.SoftwareRollback = "UNQUALIFIED_no_redeployment"
+	run.Rollback, err = rehearseRollback(ctx, root, index, sourceSHA, sourceTree, post, source.rpc)
+	if err != nil {
+		return run, err
+	}
+	run.SoftwareRollback = run.Rollback.Software
 	run.Failover = "UNQUALIFIED_use_separately_reviewed_A1_fixture_and_managed_drill"
 	run.Finished = time.Now().UTC()
 	return run, nil
@@ -314,73 +353,269 @@ func fixtureDSN(kind, root string, index int, name string) string {
 	return filepath.Join(root, fmt.Sprintf("%d-%s.db", index, name))
 }
 
-func workload(ctx context.Context, c *client.Client) (Metrics, error) {
-	samples := []Sample{}
+type poolClientFactory func(context.Context, int) (*client.Client, func(), error)
+
+type poolWorkerResult struct {
+	samples   []Sample
+	claimed   []string
+	completed int
+	err       error
+}
+
+// sampledFactoryPool exercises the rewritten caller through several distinct
+// agent sessions. It is deliberately small and synthetic: it catches caller
+// framing, claim uniqueness, lifecycle readback and error drift without
+// pretending to be the 100,000-bead factory or authenticated staging.
+func sampledFactoryPool(ctx context.Context, open poolClientFactory, workers, tasksPerWorker int) (Metrics, error) {
+	if open == nil || workers <= 0 || tasksPerWorker <= 0 {
+		return Metrics{}, fmt.Errorf("sampled factory pool requires a client factory and positive bounds")
+	}
+	poolCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type openedClient struct {
+		client *client.Client
+		close  func()
+	}
+	clients := make([]openedClient, 0, workers)
+	closeOpened := func() {
+		for _, opened := range clients {
+			if opened.close != nil {
+				opened.close()
+			}
+		}
+	}
+	for worker := 0; worker < workers; worker++ {
+		c, closeClient, err := open(poolCtx, worker)
+		if err != nil || c == nil || closeClient == nil {
+			closeOpened()
+			if err == nil {
+				err = fmt.Errorf("factory client unavailable")
+			}
+			return Metrics{}, err
+		}
+		clients = append(clients, openedClient{client: c, close: closeClient})
+	}
+	defer closeOpened()
+	results := make(chan poolWorkerResult, workers)
+	// The pool keeps distinct authenticated sessions and concurrent read
+	// framing, while this tiny fixture serializes each write lifecycle. The
+	// separate E5 contention gate owns concurrent-writer qualification; this
+	// smoke must isolate caller parity from storage contention.
+	var writeMu sync.Mutex
+	var group sync.WaitGroup
+	for worker, opened := range clients {
+		group.Add(1)
+		go func(worker int, opened openedClient) {
+			defer group.Done()
+			result := runPoolWorker(poolCtx, opened.client, worker, tasksPerWorker, &writeMu)
+			if result.err != nil {
+				cancel()
+			}
+			results <- result
+		}(worker, opened)
+	}
+	group.Wait()
+	close(results)
+
+	var samples []Sample
+	claimed := map[string]bool{}
 	completed := 0
-	claimedIDs := map[string]bool{}
-	call := func(argv ...string) (client.Result, error) {
-		command, err := cli.ParseCommand(argv)
-		if err != nil {
-			return client.Result{}, fmt.Errorf("rewritten caller command refused")
+	for result := range results {
+		if result.err != nil {
+			return Metrics{}, result.err
 		}
-		started := time.Now()
-		result, err := c.Call(ctx, command.Method, command.Params, command.Key)
-		sample := Sample{Method: command.Method, Latency: time.Since(started)}
-		sample.Completed = command.Method == "bead.close" && err == nil
-		if err != nil {
-			sample.Code = "transport_error"
-			var remote *wire.Error
-			if errors.As(err, &remote) {
-				sample.Code = remote.Data.Code
-				sample.Retryable = remote.Data.Retryable
+		samples = append(samples, result.samples...)
+		completed += result.completed
+		for _, id := range result.claimed {
+			if id == "" || claimed[id] {
+				return Metrics{}, fmt.Errorf("sampled factory pool returned a duplicate or empty claim")
 			}
+			claimed[id] = true
 		}
-		samples = append(samples, sample)
-		return result, err
 	}
-	if result, err := call("brief", "--budget-tokens", "500"); err != nil || !bytes.Contains(result.JSON, []byte("synthetic caller context")) {
-		return Metrics{}, fmt.Errorf("brief caller failed")
+	if len(claimed) != workers*tasksPerWorker || completed != len(claimed) {
+		return Metrics{}, fmt.Errorf("sampled factory pool did not complete every claimed task")
 	}
-	if result, err := call("memory", "list", "--limit", "10"); err != nil || !bytes.Contains(result.JSON, []byte("synthetic caller context")) {
-		return Metrics{}, fmt.Errorf("memory caller failed")
+
+	// Check the final queue only after every worker has finished. Checking from
+	// inside a worker would race with other legitimate claims.
+	check, closeCheck, err := open(poolCtx, workers)
+	if err != nil || check == nil || closeCheck == nil {
+		if err == nil {
+			err = fmt.Errorf("factory queue-check client unavailable")
+		}
+		return Metrics{}, err
 	}
-	for i := 0; i < 3; i++ {
-		claimed, err := call("claim-next", "--type", "issue")
-		if err != nil {
-			return Metrics{}, fmt.Errorf("atomic claim caller failed")
-		}
-		var commit model.Commit
-		if json.Unmarshal(claimed.JSON, &commit) != nil || len(commit.Results) != 1 {
-			return Metrics{}, fmt.Errorf("atomic claim returned no winner")
-		}
-		id := commit.Results[0].Ref.ID
-		if id == "" || claimedIDs[id] {
-			return Metrics{}, fmt.Errorf("atomic claim returned a missing or repeated winner")
-		}
-		claimedIDs[id] = true
-		for _, argv := range [][]string{{"get", id}, {"update", id, "--title", "synthetic completed task"}, {"comment", id, "--body", "synthetic progress"}, {"close", id, "--reason", "synthetic completion"}} {
-			if _, err := call(argv...); err != nil {
-				return Metrics{}, fmt.Errorf("task lifecycle caller failed")
-			}
-		}
-		final, err := call("get", id)
-		var record struct {
-			Bead struct {
-				Status string
-				Fields map[string]any
-			}
-		}
-		if err != nil || json.Unmarshal(final.JSON, &record) != nil || record.Bead.Status != "done" || record.Bead.Fields["title"] != "synthetic completed task" {
-			return Metrics{}, fmt.Errorf("completed task readback failed")
-		}
-		completed++
-	}
-	ready, err := call("ready", "--limit", "10")
+	defer closeCheck()
+	ready, err := sampledCall(poolCtx, check, &samples, "ready", "--limit", "10")
 	var page struct{ Items []json.RawMessage }
 	if err != nil || json.Unmarshal(ready.JSON, &page) != nil || page.Items == nil || len(page.Items) != 0 {
 		return Metrics{}, fmt.Errorf("completed tasks remained ready")
 	}
-	return Summarize(samples, 3, completed)
+	return Summarize(samples, workers*tasksPerWorker, completed)
+}
+
+func runPoolWorker(ctx context.Context, c *client.Client, worker, tasks int, writeMu *sync.Mutex) poolWorkerResult {
+	result := poolWorkerResult{}
+	call := func(argv ...string) (client.Result, error) {
+		return sampledCall(ctx, c, &result.samples, argv...)
+	}
+	if brief, err := call("brief", "--budget-tokens", "500"); err != nil || !bytes.Contains(brief.JSON, []byte("synthetic caller context")) {
+		result.err = fmt.Errorf("brief caller failed")
+		return result
+	}
+	if memories, err := call("memory", "list", "--limit", "10"); err != nil || !bytes.Contains(memories.JSON, []byte("synthetic caller context")) {
+		result.err = fmt.Errorf("memory caller failed")
+		return result
+	}
+	for task := 0; task < tasks; task++ {
+		var taskErr error
+		writeMu.Lock()
+		func() {
+			defer writeMu.Unlock()
+			claimed, err := call("claim-next", "--type", "issue", "--idempotency-key", poolIdempotencyKey(worker, task, tasks))
+			if err != nil {
+				taskErr = fmt.Errorf("atomic claim caller failed")
+				return
+			}
+			var commit model.Commit
+			if json.Unmarshal(claimed.JSON, &commit) != nil || len(commit.Results) != 1 {
+				taskErr = fmt.Errorf("atomic claim returned no winner")
+				return
+			}
+			id := commit.Results[0].Ref.ID
+			if id == "" {
+				taskErr = fmt.Errorf("atomic claim returned an empty winner")
+				return
+			}
+			result.claimed = append(result.claimed, id)
+			for _, argv := range [][]string{{"get", id}, {"update", id, "--title", "synthetic completed task"}, {"comment", id, "--body", "synthetic progress"}, {"close", id, "--reason", "synthetic completion"}} {
+				if _, err := call(argv...); err != nil {
+					taskErr = fmt.Errorf("task lifecycle caller failed")
+					return
+				}
+			}
+			final, err := call("get", id)
+			var record struct {
+				Bead struct {
+					Status string
+					Fields map[string]any
+				}
+			}
+			if err != nil || json.Unmarshal(final.JSON, &record) != nil || record.Bead.Status != "done" || record.Bead.Fields["title"] != "synthetic completed task" {
+				taskErr = fmt.Errorf("completed task readback failed")
+				return
+			}
+			result.completed++
+		}()
+		if taskErr != nil {
+			result.err = taskErr
+			return result
+		}
+	}
+	return result
+}
+
+func sampledCall(ctx context.Context, c *client.Client, samples *[]Sample, argv ...string) (client.Result, error) {
+	command, err := cli.ParseCommand(argv)
+	if err != nil {
+		return client.Result{}, fmt.Errorf("rewritten caller command refused")
+	}
+	started := time.Now()
+	result, err := c.Call(ctx, command.Method, command.Params, command.Key)
+	sample := Sample{Method: command.Method, Latency: time.Since(started), Completed: command.Method == "bead.close" && err == nil}
+	if err != nil {
+		sample.Code = "transport_error"
+		var remote *wire.Error
+		if errors.As(err, &remote) {
+			sample.Code = remote.Data.Code
+			sample.Retryable = remote.Data.Retryable
+		}
+	}
+	*samples = append(*samples, sample)
+	return result, err
+}
+
+func poolIdempotencyKey(worker, task, tasksPerWorker int) string {
+	return fmt.Sprintf("%064x", uint64(worker*tasksPerWorker+task+1))
+}
+
+func rehearseRollback(ctx context.Context, root string, index int, sourceSHA, sourceTree string, post []byte, oldService *client.Client) (Rollback, error) {
+	if len(post) == 0 || oldService == nil {
+		return Rollback{}, fmt.Errorf("rollback rehearsal requires a nonempty dump and old service")
+	}
+	dir := filepath.Join(root, fmt.Sprintf("%d-rollback", index))
+	if err := os.Mkdir(dir, 0700); err != nil {
+		return Rollback{}, err
+	}
+	artifacts := map[string][]byte{
+		"image.manifest":  []byte(fmt.Sprintf("%s\nsource_sha=%s\nsource_tree=%s\n", rollbackBundleVersion, sourceSHA, sourceTree)),
+		"prompt.manifest": []byte(rollbackPromptVersion + "\n"),
+		"plugin.manifest": []byte(rollbackPluginSetVersion + "\nmode=dry-run\n"),
+		"data.dump":       append([]byte(nil), post...),
+	}
+	digests := map[string]string{}
+	for name, data := range artifacts {
+		path := filepath.Join(dir, name)
+		if err := writeRollbackArtifact(path, data); err != nil {
+			return Rollback{}, err
+		}
+		readback, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(readback, data) {
+			return Rollback{}, fmt.Errorf("rollback artifact readback failed")
+		}
+		sum := sha256.Sum256(readback)
+		digests[name] = hex.EncodeToString(sum[:])
+	}
+	// The old disposable service remains available as a canary. This proves
+	// only that the pre-switch fixture still answers; it is not a redeployment
+	// or image/prompt/plugin rollback receipt.
+	if _, err := oldService.Call(ctx, "agent.brief", map[string]any{"budgetTokens": 1}, ""); err != nil {
+		return Rollback{}, fmt.Errorf("old disposable canary failed")
+	}
+	_, reverseErr := reverseconverter.ConvertArchive(post)
+	reverseStatus := "WAIT_reverse_output_requires_import_readback_and_loss_review"
+	var refusal *reverseconverter.Refusal
+	switch {
+	case reverseErr == nil:
+		reverseStatus = "WAIT_reverse_output_requires_import_readback_and_loss_review"
+	case errors.As(reverseErr, &refusal):
+		reverseStatus = "WAIT_reverse_conversion_refused"
+	default:
+		reverseStatus = "WAIT_reverse_conversion_unavailable"
+	}
+	return Rollback{
+		ImageDigest:       digests["image.manifest"],
+		PromptDigest:      digests["prompt.manifest"],
+		PluginDigest:      digests["plugin.manifest"],
+		DataDumpDigest:    digests["data.dump"],
+		InputsFrozen:      true,
+		Software:          "WAIT_pinned_bundle_canary_only_no_redeployment",
+		ReverseConversion: reverseStatus,
+		Data:              reverseStatus,
+		Complete:          "WAIT_full_image_prompt_plugin_data_rollback_requires_redeployment_and_beads_readback",
+	}, nil
+}
+
+func writeRollbackArtifact(path string, data []byte) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".rollback-*")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0600); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryName, path)
 }
 
 func readySignature(ctx context.Context, c *client.Client) (string, error) {
@@ -490,7 +725,7 @@ type mcpTransport struct {
 	http                     *http.Client
 }
 
-func newMCPClient(ctx context.Context, f *fixture) (*client.Client, func(), error) {
+func newMCPClient(ctx context.Context, f *fixture, agent string) (*client.Client, func(), error) {
 	t := &mcpTransport{endpoint: f.server.URL + "/mcp", token: f.token, http: &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: time.Second}).DialContext}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	close := func() { t.http.CloseIdleConnections() }
 	init, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "init", "method": "initialize", "params": map[string]any{"protocolVersion": mcp.DefaultProtocolVersion, "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "disposable-shadow", "version": "1"}}})
@@ -522,7 +757,7 @@ func newMCPClient(ctx context.Context, f *fixture) (*client.Client, func(), erro
 		close()
 		return nil, nil, fmt.Errorf("MCP canonical caller tool unavailable")
 	}
-	c, err := client.New(t, "rehearsal", "rehearsal-agent")
+	c, err := client.New(t, "rehearsal", agent)
 	if err != nil {
 		close()
 		return nil, nil, err
