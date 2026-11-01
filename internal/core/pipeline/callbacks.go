@@ -81,6 +81,18 @@ func invoke[T any](ctx context.Context, timeout time.Duration, fn func(context.C
 	}
 }
 
+// invokeTimedPost keeps the host-owned queue/execution budget while retaining
+// the same panic boundary as the legacy callback path. A timed adapter is still
+// an untrusted post subscriber: a panic is a post failure, not a process exit.
+func invokeTimedPost(ctx context.Context, timeout time.Duration, fn func(context.Context, time.Duration) error) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = fmt.Errorf("subscriber panicked")
+		}
+	}()
+	return fn(ctx, timeout)
+}
+
 func (w *Writer) pre(ctx context.Context, p *prepared) error {
 	if w.cfg.ontology == nil {
 		return failure("invalid_params", "pipeline requires an ontology hook for bead writes")
@@ -244,7 +256,9 @@ func (w *Writer) post(ctx context.Context, p *prepared, commit model.Commit) ([]
 			snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}, bounded: true}
 			var err error
 			if timed, ok := binding.Subscriber.(port.TimedPostSubscriber); ok {
-				err = timed.AfterWithTimeout(ctx, 500*time.Millisecond, change, snapshot)
+				err = invokeTimedPost(ctx, 500*time.Millisecond, func(call context.Context, timeout time.Duration) error {
+					return timed.AfterWithTimeout(call, timeout, change, snapshot)
+				})
 			} else {
 				_, err = invoke(ctx, 500*time.Millisecond, func(call context.Context) (struct{}, error) {
 					return struct{}{}, binding.Subscriber.After(call, change, snapshot)
