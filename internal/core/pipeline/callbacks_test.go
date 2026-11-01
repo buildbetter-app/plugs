@@ -61,6 +61,38 @@ type postMetadataFault struct {
 	calls   atomic.Int32
 }
 
+type panicTimedPost struct{ calls *atomic.Int32 }
+
+func (p *panicTimedPost) After(context.Context, port.CommittedChange, port.SnapshotReader) error {
+	return errors.New("legacy timed post path used")
+}
+
+func (p *panicTimedPost) AfterWithTimeout(context.Context, time.Duration, port.CommittedChange, port.SnapshotReader) error {
+	p.calls.Add(1)
+	panic("controlled timed post panic")
+}
+
+func TestTimedPostPanicBecomesWarningAndDurableDeadLetter(t *testing.T) {
+	h := setup(t)
+	var calls atomic.Int32
+	w := h.writer(WithPostSubscribers(PostBinding{ID: "timed-panic", Subscriber: &panicTimedPost{calls: &calls}}))
+	cs, m := model.ChangeSet{Ops: []model.Op{create("panic")}}, meta(992)
+	first, err := w.Apply(context.Background(), by, cs, m)
+	if err != nil || first.Revision.String() != "1" || len(first.Warnings) != 1 || first.Warnings[0].Code != "post_subscriber_failed" {
+		t.Fatalf("timed panic was not committed as a warning: commit=%+v err=%v", first, err)
+	}
+	deadKey := PostDeadLetterKey("pipeline-test", first.Revision, "timed-panic")
+	stored, err := h.store.LoadCheckpoint(context.Background(), deadKey)
+	var dead PostDeadLetter
+	if err != nil || stored.Generation != 1 || json.Unmarshal(stored.Payload, &dead) != nil || dead.Binding != "timed-panic" || dead.Revision.String() != "1" || dead.Reason != "post_subscriber_failed" {
+		t.Fatalf("timed panic did not persist a sanitized dead letter: checkpoint=%+v dead=%+v err=%v", stored, dead, err)
+	}
+	replay, err := h.writer().Apply(context.Background(), by, cs, m)
+	if err != nil || !reflect.DeepEqual(first, replay) || calls.Load() != 1 {
+		t.Fatalf("timed panic replay reran post or changed response: first=%+v replay=%+v calls=%d err=%v", first, replay, calls.Load(), err)
+	}
+}
+
 func (s *postMetadataFault) SaveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, generation uint64, payload []byte) (driver.Checkpoint, error) {
 	s.calls.Add(1)
 	if s.persist {
