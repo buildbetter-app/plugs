@@ -707,6 +707,45 @@ Fixture setup is not a product import or migration bypass. No-authz allow,
 P58/P83/P84, authn/error/pre/post-image/deputy/human-proof rules, current history
 permissions, no root bypass and existing recovery/stop lines remain unchanged.
 
+### Parent/child permissions and epic progress (post-stop contract, 2026-10-31)
+
+The later binding parent/child decision supplies the contract/design step for
+the hierarchy follow-up. The five permission rules are:
+
+1. parented create and reparent require edit authorization on the epic/parent to attach;
+2. hidden parents reveal existence only, without content;
+3. epic progress shows visible-child counts plus “N more you can’t see”;
+4. the child remains in its own project;
+5. moving a child needs edit authorization on the child and on the new epic/parent.
+
+For a parented create, the caller must also have the ordinary create
+authorization for the new child. Reparenting checks edit authorization on the
+child and the new parent; no permission on the old parent is required. A
+parent link leaves the child's project unchanged. Child creation/reparenting do
+not grant cross-project access: only the link crosses projects, and the child
+continues to use its own project's permissions. If a viewer can read a child
+but not its parent, the response may disclose that a parent exists but no
+parent content, fields, status or project details. Non-disclosure is preserved
+for hidden parents and children.
+
+Parent-aware epic progress uses the existing `view.run`/`ViewResult` path. It
+selects canonical direct children whose `Parent` equals the requested epic;
+grandchildren and unrelated beads of the same type are excluded. One
+content-snapshot, ontology and current-authority binding governs the full
+summary. Counts and readiness categories include only visible children; a
+hidden child contributes only to the hidden total rendered as the literal
+“N more you can’t see”, with no status for that child. The ordinary authorized
+input cap and existing typed refusal rules remain in force. This planning step
+adds no new RPC, cursor or result member.
+
+The initial #18 statement above that ordinary parented create and reparent are
+denied remains the historical and current runtime boundary at this head. This
+post-stop contract/design step supersedes that specific boundary only as a
+conditional target for a future separately admitted implementation, after the
+hierarchy writer, authorization, and qualification gates are released. It does
+not install a permit, remove the current `invalid_params`/`forbidden`
+refusals, or claim runtime support. Project moves remain outside this slice.
+
 **Separate gates:** #18 adopts design semantics; controller v2 separately
 authorizes scoped implementation waves. Neither supplies a measured candidate,
 runtime acceptance or production migration permission.
@@ -886,7 +925,7 @@ Which facts exist without an authorization plugin: the ancestor closure, the bea
 
 **Change log.** A changeset records revision, branch, incarnation, time, principal, chain, idempotency key, `Kind` (write, derived, revert, migration, redact, restore), `Mutators` (D7) and `Changes[{Ref, Op, FromRevision, ChangedPaths}]`; the field-level header is fixed in the [driver contract](contracts/go-sketches.md#storage-driver) (plan #14). A record's revision, the last that changed it, is A1's compare-and-set token. The record row holds the current body; each version stores an append-only forward diff, a JSON Patch over the changed paths, with strings over 4 KiB as blobs (P30). A full base is stored at creation and every 32 versions (P73), so an as-of read replays at most 31 diffs. At an assumed 300-byte diff, 200,000 writes a day add about 70 MB. The methods are `history.versions`, `history.get {ref, asOf}`, `history.query {asOf}`, `history.diff`, `history.revert` and `history.redact`; an old version is readable only by someone who can read the bead now. Revert applies each path whose head still equals the base, else fails with `precondition_failed {reason: revert}`; it refuses the protected plugin-set, lock and ontology records (`protected_record`, A2). Redaction, the only removal (P45), reaches a fixed closure: every diff and base carrying the value, the blobs they reference (strings over 4 KiB), dead-letter and checkpoint payloads, and `audit` table rows; changesets hold paths, not values, and events are rebuilt from diffs. What it cannot reach it returns as `result.warnings`: earlier dumps, point-in-time backups, plugin `State` and external destinations that already received the value. `history_gone` means redacted or below a head-only restore's `HistoryFloor`. `Ref.Branch` exists; v1 writes branch 0 (P18).
 
-**Dump and restore.** `plug-dump/1` is a tar of `manifest.json` (versions, store ID, head, lock digest, checksums, A3 and `authz.verify` results), sorted `records/<kind>.ndjson`, blobs, `versions` and `changesets`, a digest of the derived tables, and config. History is full, head-only by flag (P20); secrets are `{"$secret": name}` references, ciphertext by flag, credential digests never (P19). Dumps exclude sessions, presence, checkpoints, leases and derived tables, but carry each project's ID allocator state (A1). Restore needs an empty store (P44; restores, one-shot imports are P77), recomputes derived tables against the digest, refuses bad checksums and unrecorded violations, and reports recorded drift as `result.warnings`. Revisions continue under a new incarnation; old tokens fail with `incarnation_changed`. The paged `admin.restore.begin/chunk/finish` names and payloads are the frozen defaults in the [OpenRPC catalog](contracts/openrpc.json) (plan #14). Restoring into another driver changes engines. Beads data arrives the same way, as a `plug-dump/1` archive via P5c's `bd export --format plug-dump/1` exporter on the `beads` branch, importing `issue_versions` (not Dolt commits), keeping IDs and prefixes and refusing unmerged remotes. P76 permits several Beads stores to merge into one archive before the empty-store restore. Restore loads dumped plugin artifacts after checking each against the lock's digest; the rebuild from the pinned commit runs as an asynchronous check and alerts on mismatch (P75).
+**Dump and restore.** `plug-dump/1` is a tar of `manifest.json` (versions, store ID, head, lock digest, checksums, A3 and `authz.verify` results), sorted `records/<kind>.ndjson`, blobs, `versions` and `changesets`, a digest of the derived tables, and config. Dumps are full by default and head-only by flag (P20); restore has an explicit history policy: `full` is the default, while `partial` and `snapshot` are opt-ins. Full refuses unavailable, unverified, non-contiguous or unmappable source history with a typed reason. Partial will carry only a proven range, exact gaps and a floor once replay exists; until then it refuses as not yet supported and never fabricates history. Snapshot imports current state, establishes a new history floor, and starts a new incarnation; old tokens fail with `incarnation_changed`. Secrets are `{"$secret": name}` references, ciphertext by flag, credential digests never (P19). Dumps exclude sessions, presence, checkpoints, leases and derived tables, but carry each project's ID allocator state (A1). Restore needs an empty store (P44; restores, one-shot imports are P77), recomputes derived tables against the digest, refuses bad checksums and unrecorded violations, and reports recorded drift as `result.warnings`. The paged `admin.restore.begin/chunk/finish` names and payloads are the frozen defaults in the [OpenRPC catalog](contracts/openrpc.json) (plan #14). Restoring into another driver changes engines. Beads data arrives the same way, as a `plug-dump/1` archive via P5c's `bd export --format plug-dump/1` exporter on the `beads` branch, importing `issue_versions` (not Dolt commits), keeping IDs and prefixes and refusing unmerged remotes. P76 permits several Beads stores to merge into one archive before the empty-store restore. Restore loads dumped plugin artifacts after checking each against the lock's digest; the rebuild from the pinned commit runs as an asynchronous check and alerts on mismatch (P75).
 
 **Topology (P49).** The active server renews `Store.Lease`; a standby that acquires it after expiry gets a higher epoch, and G5 fences the old holder's late commits with `ErrFenced`. On every uncertain lease-epoch change, the new holder mints a new incarnation before admitting reads or writes, so revisions cannot be reused; a checkpoint regression also sends `event.gap`. The server keeps only state rebuilt on takeover: presence, breakers, pools and watches, which resume from cursors. Replication, backup and recovery belong to the storage plugin. In v1, the Postgres storage plugin delegates replication, failover and backup to a managed HA Postgres while still owning the lease and reporting health and backups through `Store.Health` (P70); the lease and health field shapes are fixed in the [driver contract](contracts/go-sketches.md#storage-driver). Postgres documents a 5-minute RPO and 1-hour RTO (P72). On SQLite it is scheduled dumps and no standby.
 

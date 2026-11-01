@@ -448,7 +448,7 @@
     {
       "name": "bead.create",
       "summary": "Create a bead.",
-      "description": "Create a bead.",
+      "description": "Create a bead. When parent is supplied, the parent-aware contract requires edit authorization on the epic/parent and ordinary create authorization for the child. The link does not grant cross-project access and the child remains in its own project; this parented path is a future separately admitted implementation and current runtime refusals remain.",
       "tags": [
         {
           "name": "core"
@@ -2033,7 +2033,7 @@
     {
       "name": "tx.apply",
       "summary": "Atomically apply up to 1,000 typed operations.",
-      "description": "Atomically apply up to 1,000 typed operations.",
+      "description": "Atomically apply up to 1,000 typed operations. CreateOp.parent and ReparentOp.parent use the parent-aware permission contract: attach requires edit authorization on the epic/parent, and reparent additionally requires edit authorization on the child. The child stays in its own project; implementation and qualification are deferred and current runtime refusals remain.",
       "tags": [
         {
           "name": "core"
@@ -4523,6 +4523,8 @@
             "type": "string",
             "enum": [
               "full",
+              "partial",
+              "snapshot",
               "head"
             ]
           }
@@ -5591,7 +5593,7 @@
     {
       "name": "view.run",
       "summary": "Run a saved or inline budgeted view.",
-      "description": "Run a saved or inline budgeted view.",
+      "description": "Run a saved or inline budgeted view. The parent-aware epic-progress path reuses this envelope for direct-child counts under one content, ontology and current-authority binding: visible-child counts are returned with the literal “N more you can’t see” for hidden children, with no hidden-child status. No new RPC, cursor or result member is added by this deferred contract step.",
       "tags": [
         {
           "name": "view"
@@ -6531,7 +6533,7 @@
       },
       "Filter": {
         "type": "object",
-        "description": "The one filter shape shared by list, event, and view methods.",
+        "description": "The one filter shape shared by list, event, and view methods. Parent-aware epic progress remains on this existing view/filter path and selects direct children by canonical parent equality; it adds no new RPC or filter member in this contract snapshot.",
         "properties": {
           "query": {
             "type": "string",
@@ -6687,7 +6689,24 @@
             "additionalProperties": true
           },
           "parent": {
-            "type": "string"
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "exists": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "exists"
+                ],
+                "additionalProperties": false
+              }
+            ],
+            "description": "Canonical direct parent ID when readable; an unreadable parent is exactly {exists:true} with no identity, project, status or content. Root beads omit parent. Requests and storage retain canonical Ref values."
           },
           "labels": {
             "type": "array",
@@ -7425,6 +7444,7 @@
       },
       "ViewDefinition": {
         "type": "object",
+        "description": "A saved or inline view definition. A future parent-aware epic-progress interpretation uses this existing envelope and does not by itself release a new groupBy value.",
         "properties": {
           "name": {
             "type": "string"
@@ -7502,6 +7522,7 @@
           },
           "elided": {
             "type": "object",
+            "description": "An output bound. Authorization-elided direct children are rendered as the literal “N more you can’t see” and do not expose a status.",
             "properties": {
               "count": {
                 "type": "integer",
@@ -7560,6 +7581,7 @@
           },
           "groups": {
             "type": "array",
+            "description": "Existing grouped output. A parent-aware epic-progress producer counts visible direct children and reports hidden children only as authorization elision.",
             "items": {
               "$ref": "#/components/schemas/ViewGroup"
             }
@@ -9964,6 +9986,16 @@
             "type": "string",
             "minLength": 64,
             "maxLength": 64
+          },
+          "historyMode": {
+            "type": "string",
+            "enum": [
+              "full",
+              "partial",
+              "snapshot"
+            ],
+            "default": "full",
+            "description": "Archive history policy. Omitted input is strict full history; partial and snapshot are explicit opt-ins."
           }
         },
         "required": [
@@ -12530,7 +12562,7 @@
     "methodCount": 81,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "925afc30e52e4659b24e34f311698c96930f215ba460fee7c1634634d1ff04ff",
-    "descriptorSha256": "9284a056a19510723f1fd663aae5b122adcbec60e496cf3b1f08c4d95918cc83",
+    "descriptorSha256": "b73bf289e8c14af6a54040910623eed775755d6ef197f14be7e4c046d4856d1d",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -15519,6 +15551,8 @@
               "type": "string",
               "enum": [
                 "full",
+                "partial",
+                "snapshot",
                 "head"
               ]
             }
@@ -16911,7 +16945,7 @@
       "path": "/home/dev/plugs/engdocs/design/plug",
       "note": "The design inputs are intentionally untracked outside this contract worktree; this contract retains their digests. An implementation generator may later vendor the registry, but it must preserve this artifact's independent checks."
     },
-    "authorizationStatus": "Decisions #17/#18 select fixed project/team permissions and the bounded X1–X9 package; controller v2 authorizes implementation. Decision #19 selects exact-head local Bazel checks plus independent review as the current merge gate. This snapshot retains historical source hashes and does not yet describe the complete X1–X9 contract. D3's unchanged latency targets failed; no runtime or performance acceptance is claimed."
+    "authorizationStatus": "Decisions #17/#18 select fixed project/team permissions and the bounded X1–X9 package; controller v2 authorizes implementation. The post-stop parent/child contract conditionally supersedes #18's parented-create/reparent denial only for a future separately admitted implementation; project moves remain outside the contract. Decision #19 selects exact-head local Bazel checks plus independent review as the current merge gate. This snapshot retains historical source hashes and does not claim parented runtime support, complete X1–X9 acceptance, or performance acceptance."
   },
   "x-driver-error-mappings": [
     {

@@ -174,6 +174,11 @@ func TestWASMSnapshotBridgeUsesCallbackReader(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "closure unsupported") || response.Result != nil {
 		t.Fatalf("unsupported typed reader operation was not an explicit refusal: %+v (%v)", response, err)
 	}
+	if response, err = runtime.invoke(context.Background(), wasmRequest{
+		Op: "read", Method: "get", Params: json.RawMessage(`{"refs":[{"id":"pl-a"}]}`),
+	}, reader); requireCode(err, ErrInactive) != nil || response.Result != nil {
+		t.Fatalf("refused WASM callback guest was reused: %+v (%v)", response, err)
+	}
 }
 
 func TestWASMReadRejectsNullTypedParams(t *testing.T) {

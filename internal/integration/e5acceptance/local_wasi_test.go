@@ -40,8 +40,10 @@ func TestRealWASIOnOneAuthenticatedGuardedWriter(t *testing.T) {
 	demand(t, refusal.Error != nil && refusal.Error.Data.Code == "subscriber_unavailable", "undeclared guest read did not fail closed")
 	demand(t, f.head(t) == head && sameJSON(t, beforeRefusal, f.record(t)) && f.receipt(t, "user:sponsor", 4) == nil, "guest read refusal published partial state")
 	afterRefusal := f.call(t, "user:sponsor", "after-refusal", 5)
-	demand(t, afterRefusal.Error == nil, "actual guest did not remain usable after read refusal")
-	demandTitle(t, f.record(t), "AFTER-REFUSAL|observed|read=1|base=3|call=4|refused=1")
+	demand(t, afterRefusal.Error == nil, "fresh guest did not replace the refused runtime")
+	// The refused guest is disposed. The replacement starts with private guest
+	// memory, while the shared host-side state store remains available.
+	demandTitle(t, f.record(t), "AFTER-REFUSAL|observed|read=1|base=3|call=1|refused=0")
 	finalReceipt := f.receipt(t, "user:sponsor", 5)
 	demand(t, finalReceipt != nil, "final real guest commit receipt missing")
 	revoked := f.base
@@ -55,6 +57,7 @@ func TestRealWASIOnOneAuthenticatedGuardedWriter(t *testing.T) {
 	f.evidence["finalReceipt"] = finalReceipt
 	f.evidence["guestCalls"] = 4
 	f.evidence["guestReads"] = map[string]int{"allowed": 3, "refusedUndeclared": 1}
+	f.evidence["freshGuestAfterRefusal"] = true
 	demand(t, f.requests == 7, "unexpected component request count")
 	f.evidence["authenticatedRPCRequests"] = f.requests
 	f.evidence["successfulGuestCommits"] = 3

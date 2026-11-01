@@ -15,6 +15,15 @@ Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn G
 
 ## Answered
 
+- **Emergency-stop and G1 decision (2026-11-01, binding):** Nikhil decided
+  that the live soft pause, which stops merge admission and was rehearsed on
+  2026-10-31, is sufficient control-plane evidence for G1. G1 passes and work
+  continues. Rehearsing remote-dev App revocation and testbox/shadow egress
+  cut-off is dropped from G1 and is not a required acceptance artifact. The
+  hard-stop and containment mechanisms remain documented operational controls;
+  this decision changes the G1 evidence boundary only and does not authorize
+  production movement, release, deployment, or a G2 switch.
+
 - **#19 — DECIDED (2026-10-29, chat):** merge on exact-head local Bazel CI
   until hosted CI works. Record the command, version, targets, result and logs
   for touched targets plus reverse dependencies (`build` for docs-only PRs).
@@ -26,6 +35,23 @@ Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn G
   settings changes, production cutover or a public release.
 - **#20 (2026-10-29, in Paseo):** only fully compiled type count summaries (explicit `fields=[]`, at most 100 groups) may scan up to 100,000 inputs; ordinary views keep the 20,000 cap.
 - **#18 (2026-10-29, in Paseo):** adopted the reviewed fixed-permission authorization candidate (`c9f5f29d`); create, reparent and project moves are denied under the plugin until later slices.
+- **Post-stop parent/child contract (2026-10-31, binding):** the later
+  parent/child decision conditionally supersedes #18's historical
+  **parented-create/reparent denial boundary** for a future, separately
+  admitted implementation of parent links and parent-aware epic progress. It
+  does not change the historical #18 decision or claim runtime support. A
+  child remains in its own project, so project moves remain outside this
+  contract; child creation/reparenting do not grant cross-project access and
+  non-disclosure is preserved until the implementation and qualification are
+  separately admitted.
+
+  The follow-up is tracked as the deferred contract-to-UX sequence **EP1 →
+  EP2 → EP3 → EP4 → EP5 → EP6**: parented create/reparent contract,
+  parent/child authorization, issueops/storage hierarchy, parent-aware
+  epic-progress RPC, epic-progress view, and the fifth E3 agent-UX task. EP1–EP5
+  require separate implementation, review, and qualification before EP6; the
+  accepted E3 4/5 boundary remains current until then. This sequence adds no
+  runtime, merge, release, or deployment claim.
 - **#16 — DECIDED (2026-10-29, Paseo, about 03:37 UTC):** Nikhil chose
   **Replace inherited workflows with qualified Plug CI (Recommended)**.
   Plug-owned Bazel CI must qualify on the exact head before a reviewed CI

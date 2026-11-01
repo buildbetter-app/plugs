@@ -24,7 +24,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if got := len(c.ErrorCatalog()); got != 61 {
 		t.Fatalf("error inventory = %d", got)
 	}
-	if digest(catalogJSON) != "b999526e5e0a93b351a39b10a404d8d21b8248e7e57836cb378a507eee14e08e" {
+	if digest(catalogJSON) != "276c161e19f817b97d05830b76a949d6a95419f85323cde888026de8e7cae519" {
 		t.Fatal("bounded source snapshot changed; reconcile approved contract")
 	}
 	// These changes affect one of two independent descriptor representations.
@@ -606,5 +606,48 @@ func TestJSONBoundary(t *testing.T) {
 	v, err := DecodeJSON([]byte(`{"n":9007199254740993}`))
 	if err != nil || v.(map[string]any)["n"] != json.Number("9007199254740993") {
 		t.Fatal("number precision lost")
+	}
+}
+
+// Parent disclosure is a response projection, never a second request/storage
+// reference shape. The hidden arm cannot carry identity or other content.
+func TestBeadParentExistenceOnlyResultSchema(t *testing.T) {
+	c, err := DefaultCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	get, _ := c.Descriptor("bead.get")
+	for _, tc := range []struct {
+		name, parent string
+		valid        bool
+	}{
+		{"root", "", true},
+		{"readable", `"parent"`, true},
+		{"hidden", `{"exists":true}`, true},
+		{"false", `{"exists":false}`, false},
+		{"empty", `{}`, false},
+		{"null", `null`, false},
+		{"id", `{"exists":true,"id":"secret"}`, false},
+		{"ref", `{"exists":true,"ref":{"id":"secret"}}`, false},
+		{"project", `{"exists":true,"project":"secret"}`, false},
+		{"status", `{"exists":true,"status":"secret"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := ""
+			if tc.parent != "" {
+				parent = `,"parent":` + tc.parent
+			}
+			raw := []byte(`{"bead":{"id":"child","type":"issue","revision":1` + parent + `},"attachments":[],"comments":[]}`)
+			if err := c.ValidateResult(get, raw); (err == nil) != tc.valid {
+				t.Fatalf("parent %s valid=%v: %v", tc.parent, tc.valid, err)
+			}
+		})
+	}
+	create, _ := c.Descriptor("bead.create")
+	if err := c.ValidateParams(create, []byte(`{"type":"issue","fields":{},"parent":{"id":"parent"}}`)); err != nil {
+		t.Fatal("canonical parent request refused", err)
+	}
+	if err := c.ValidateParams(create, []byte(`{"type":"issue","fields":{},"parent":{"exists":true}}`)); err == nil {
+		t.Fatal("response-only existence object accepted as a parent request")
 	}
 }

@@ -115,3 +115,43 @@ func TestMalformedHistoryMapsToRestoreViolation(t *testing.T) {
 		t.Fatalf("malformed history mapping=%q %#v ok=%v", code, details, ok)
 	}
 }
+
+func TestRestoreHistoryPolicyDefaultsToStrictFullAndKeepsTypedReasons(t *testing.T) {
+	mode, err := ParseRestoreHistoryMode("")
+	if err != nil || mode != RestoreHistoryModeFull {
+		t.Fatalf("empty history mode=%q err=%v", mode, err)
+	}
+	if mode, err = ParseRestoreHistoryMode("head"); err != nil || mode != RestoreHistoryModeSnapshot {
+		t.Fatalf("head compatibility mode=%q err=%v", mode, err)
+	}
+	for _, test := range []struct {
+		name    string
+		history string
+		reason  RestoreHistoryReason
+	}{
+		{name: "unavailable", history: RestoreHistoryUnavailable, reason: RestoreHistoryReasonUnavailable},
+		{name: "available-unverified", history: RestoreHistoryAvailableUnverified, reason: RestoreHistoryReasonAvailableUnverified},
+		{name: "non-contiguous", history: string(RestoreHistoryReasonNonContiguous), reason: RestoreHistoryReasonNonContiguous},
+		{name: "unmappable", history: string(RestoreHistoryReasonUnmappable), reason: RestoreHistoryReasonUnmappable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateRestoreHistoryPolicy(RestoreHistoryModeFull, test.history)
+			var refused ErrRestoreHistoryRefused
+			if !errors.As(err, &refused) || refused.Mode != RestoreHistoryModeFull || refused.Reason != test.reason {
+				t.Fatalf("full history=%q err=%T %v", test.history, err, err)
+			}
+			code, details, ok := ErrorMapping(err)
+			if !ok || code != "restore_violation" || details["reason"] != string(test.reason) {
+				t.Fatalf("mapping=%q %#v ok=%v", code, details, ok)
+			}
+		})
+	}
+	err = ValidateRestoreHistoryPolicy(RestoreHistoryModePartial, RestoreHistoryUnavailable)
+	var partialRefused ErrRestoreHistoryRefused
+	if !errors.As(err, &partialRefused) || partialRefused.Mode != RestoreHistoryModePartial || partialRefused.Reason != RestoreHistoryReasonNotYetSupported {
+		t.Fatalf("partial unavailable error=%T %v", err, err)
+	}
+	if err := ValidateRestoreHistoryPolicy(RestoreHistoryModeSnapshot, RestoreHistoryAvailableUnverified); err != nil {
+		t.Fatalf("snapshot rejected source disclosure: %v", err)
+	}
+}

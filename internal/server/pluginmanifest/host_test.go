@@ -222,8 +222,13 @@ func TestLoadedNativeRuntimeCapabilitiesAndInstanceIsolation(t *testing.T) {
 	}
 	_, err = a.Invoke(ctx, "x.echo.access", json.RawMessage(`{"id":"pl-a","action":"call","method":"bead.ready"}`))
 	hostCode(t, err, pluginhost.ErrMethod)
+	// A declared-method refusal disposes the callback guest. Exercise the
+	// remaining capability boundaries on fresh guests rather than reusing the
+	// disposed member for the same principal.
+	a = newHost("default", dispatcher)
 	_, err = a.Invoke(ctx, "x.echo.access", json.RawMessage(`{"id":"pl-a","action":"egress","url":"https://denied.example"}`))
 	hostCode(t, err, pluginhost.ErrEgress)
+	a = newHost("default", dispatcher)
 	_, err = a.Invoke(ctx, "x.echo.undeclared", json.RawMessage(`{"id":"pl-a"}`))
 	hostCode(t, err, pluginhost.ErrMethod)
 	if len(dispatcher.principals) != 1 {

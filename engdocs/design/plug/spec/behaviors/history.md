@@ -87,8 +87,14 @@ TestCheckSchemaSkew_EqualVersion_NoError`, `TestCheckSchemaSkew_OneAhead_Returns
 
 **Edge cases.** Plug redaction can affect old diffs, bases, blobs, dead letters,
 checkpoints, and audit rows but not already-created backups or external plugin
-destinations. Head-only restore establishes a store-wide history floor;
-old incarnation tokens fail after restore.
+destinations. Restore is strict by default: `full` refuses when source history
+is unavailable, unverified, non-contiguous or unmappable; `partial` is an
+explicit opt-in for a proven range, exact gaps and a floor, and currently
+refuses as not yet supported until replay exists; `snapshot` is an explicit
+head-only import that establishes a store-wide history floor at revision 1.
+Snapshot starts a new incarnation, old incarnation tokens fail after restore,
+and reads below the floor return typed truncation. Nothing fabricates versions
+or changesets.
 
 **Plug disposition.** **Deviate**: path-scoped revert refuses a head/base
 conflict or a protected record (A6); `history.redact` is the only removal

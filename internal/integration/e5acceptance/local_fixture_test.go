@@ -22,6 +22,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
 	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
@@ -123,6 +124,7 @@ type localFixture struct {
 	facts       *authzrpc.MutableFacts
 	base        authzfixed.Facts
 	composition *authzrpc.Composition
+	lifecycle   *service.Service
 	host        *pluginhost.Host
 	artifact    *pluginbuild.Artifact
 	provider    *authnapikey.Provider
@@ -130,6 +132,10 @@ type localFixture struct {
 	sourceRoot  string
 	evidence    map[string]any
 	requests    int
+	// allowClosedStoreFailure is used only by the failover fixture. Its
+	// primary is intentionally killed, so releasing the old SQL lease during
+	// cleanup can legitimately return the dead connection error.
+	allowClosedStoreFailure bool
 }
 
 func demand(t *testing.T, ok bool, message string) {
@@ -162,6 +168,34 @@ func writeEvidence(t *testing.T, name string, data []byte) {
 	}
 	demand(t, os.MkdirAll(output, 0o700) == nil, "evidence directory failed")
 	demand(t, os.WriteFile(filepath.Join(output, name), data, 0o600) == nil, "evidence write failed")
+}
+
+func (f *localFixture) startLeaseRenewal() {
+	renewCtx, stopRenewal := context.WithCancel(context.Background())
+	f.stopRenewal, f.renewed = stopRenewal, make(chan error, 1)
+	lease, done := f.lease, f.renewed
+	go func() {
+		ticker := time.NewTicker(driver.LeaseRenewEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-renewCtx.Done():
+				done <- nil
+				return
+			case <-ticker.C:
+				renewCallCtx, cancel := context.WithTimeout(renewCtx, driver.LeaseTTL-2*driver.LeaseRenewEvery)
+				err := lease.Renew(renewCallCtx)
+				cancel()
+				if err != nil {
+					if renewCtx.Err() != nil {
+						err = nil
+					}
+					done <- err
+					return
+				}
+			}
+		}
+	}()
 }
 
 func newLocalFixture(t *testing.T) *localFixture {
@@ -234,64 +268,23 @@ func newLocalFixture(t *testing.T) *localFixture {
 	bindings := f.host.Mutators()
 	demand(t, len(bindings) == 1 && bindings[0].ID == bindingID && !bindings[0].FailOpen, "actual host mutator missing")
 	f.evidence["binding"] = binding
-	backend := strings.ToLower(strings.TrimSpace(os.Getenv("PLUG_E5_STORAGE")))
-	if backend == "" {
-		backend = "memory"
-	}
-	switch backend {
-	case "memory":
-		f.store = memory.New()
-	case "sqlite":
-		var err error
-		f.store, err = (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: filepath.Join(t.TempDir(), "e5.db")})
-		demand(t, err == nil, "owned SQLite storage unavailable")
-	case "postgres":
-		dsn := e5PostgresDSN
-		if dsn == "" {
-			dsn = os.Getenv("E5_POSTGRES_DSN")
-		}
-		demand(t, strings.TrimSpace(dsn) != "", "E5_POSTGRES_DSN is required for PostgreSQL storage")
-		var err error
-		f.store, err = (postgres.Driver{}).Open(context.Background(), driver.Config{DSN: dsn})
-		demand(t, err == nil, "owned PostgreSQL storage unavailable")
-	default:
-		t.Fatalf("unsupported PLUG_E5_STORAGE=%q", backend)
-	}
+	backend := e5StorageBackend()
+	f.store = openE5Store(t, backend)
 	f.evidence["storageBackend"] = backend
 	f.lease, err = f.store.Lease(context.Background(), "e5-local-wasi", driver.LeaseTTL)
 	demand(t, err == nil, "owned memory lease unavailable")
-	renewCtx, stopRenewal := context.WithCancel(context.Background())
-	f.stopRenewal, f.renewed = stopRenewal, make(chan error, 1)
-	lease, done := f.lease, f.renewed
-	go func() {
-		ticker := time.NewTicker(driver.LeaseRenewEvery)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-renewCtx.Done():
-				done <- nil
-				return
-			case <-ticker.C:
-				renewCallCtx, cancel := context.WithTimeout(renewCtx, driver.LeaseTTL-2*driver.LeaseRenewEvery)
-				err := lease.Renew(renewCallCtx)
-				cancel()
-				if err != nil {
-					if renewCtx.Err() != nil {
-						err = nil
-					}
-					done <- err
-					return
-				}
-			}
-		}
-	}()
+	f.startLeaseRenewal()
 	t.Cleanup(func() {
 		f.stopRenewal()
-		if err := <-f.renewed; err != nil {
+		if err := <-f.renewed; err != nil && !f.allowClosedStoreFailure {
 			t.Errorf("storage lease renewal: %v", err)
 		}
-		demand(t, f.lease.Release(context.Background()) == nil, "lease cleanup failed")
-		demand(t, f.store.Close() == nil, "store cleanup failed")
+		if err := f.lease.Release(context.Background()); err != nil && !f.allowClosedStoreFailure {
+			demand(t, false, "lease cleanup failed")
+		}
+		if err := f.store.Close(); err != nil && !f.allowClosedStoreFailure {
+			demand(t, false, "store cleanup failed")
+		}
 	})
 	var seed []conformance.FixtureChange
 	for _, row := range []struct{ id, title string }{{targetID, "seed"}, {watchedID, "observed"}} {
@@ -315,12 +308,50 @@ func newLocalFixture(t *testing.T) *localFixture {
 		Store: f.store, Lease: f.lease, Provider: f.provider, Facts: f.facts, Namespace: ns, DefaultProject: "project", Mutators: bindings,
 	})
 	demand(t, err == nil, "same-Writer authorizing construction failed")
+	// Named lifecycle verbs are exercised through a test-only service seam after
+	// the authenticated claim assertions. The production HTTP composition above
+	// remains unchanged; this seam isolates contention behavior from the fixed
+	// CP7 authorization vocabulary, which currently admits claim/update only.
+	lifecycleWriter := pipeline.New(f.store, f.lease, pipeline.WithOntology(service.NewOntology(nil)))
+	f.lifecycle = service.New(f.store, f.lease, lifecycleWriter, service.WithOntology(service.NewOntology(nil)))
 	for _, sponsor := range []string{"user:sponsor", "user:outsider"} {
 		issued, err := f.provider.Issue(localAgent(sponsor), time.Now().Add(time.Minute))
 		demand(t, err == nil, "disposable authenticated agent issue failed")
 		f.tokens[sponsor] = issued.Token // In-process only; never log or retain credentials.
 	}
 	return f
+}
+
+func e5StorageBackend() string {
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("PLUG_E5_STORAGE")))
+	if backend == "" {
+		return "memory"
+	}
+	return backend
+}
+
+func openE5Store(t *testing.T, backend string) driver.Store {
+	t.Helper()
+	switch backend {
+	case "memory":
+		return memory.New()
+	case "sqlite":
+		store, err := (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: filepath.Join(t.TempDir(), "e5.db")})
+		demand(t, err == nil, "owned SQLite storage unavailable")
+		return store
+	case "postgres":
+		dsn := e5PostgresDSN
+		if dsn == "" {
+			dsn = os.Getenv("E5_POSTGRES_DSN")
+		}
+		demand(t, strings.TrimSpace(dsn) != "", "E5_POSTGRES_DSN is required for PostgreSQL storage")
+		store, err := (postgres.Driver{}).Open(context.Background(), driver.Config{DSN: dsn})
+		demand(t, err == nil, "owned PostgreSQL storage unavailable")
+		return store
+	default:
+		t.Fatalf("unsupported PLUG_E5_STORAGE=%q", backend)
+		return nil
+	}
 }
 
 func localAgent(sponsor string) model.PrincipalRef {

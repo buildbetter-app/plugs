@@ -173,8 +173,11 @@ The target emits `${prefix}-${32 lowercase hex}` for top-level IDs and
 previewed and consumed once, checked against every existing, source and staged
 ID (including 32-wide source IDs), and seeded through `RestoreAllocators` under
 the complete allocator lock set in the guarded restore transaction and replay.
-Source hash continuation remains unsupported; fixed-authz parented create,
-reparent and project moves remain denied.
+Source hash continuation remains unsupported. The historical #18 fixed-authz
+boundary denied parented create, reparent and project moves; the post-stop
+parent/child section below conditionally supersedes only the parented
+create/reparent part for a future separately admitted implementation. Current
+runtime support is not claimed, and project moves remain denied.
 
 The prepared import profile is host-private and transaction-local. It binds the
 trusted admission to the restore operation and recovery:
@@ -195,8 +198,17 @@ type RestoreImportProfile struct {
 	IdempotencyKey string                 `json:"idempotencyKey"`
 	ArchiveDigest  string                 `json:"archiveDigest"`
 	DerivedDigest  string                 `json:"derivedDigest"`
+	HistoryMode    string                 `json:"historyMode,omitempty"` // full (default), partial, snapshot
 }
 ```
+
+`historyMode` is part of the admitted profile and its request hash. Omitted
+input is strict `full`; `partial` and `snapshot` require an explicit operator
+choice. A full import refuses unavailable, unverified, non-contiguous or
+unmappable source history with a typed reason. Partial history records a
+verified range, exact gaps and a floor only when replay is available; until
+then it returns typed `not-yet-supported`. Snapshot imports the current image,
+sets the floor to revision 1 and starts a new incarnation.
 
 Authenticated mode requires a live interactive user, restore-admin authority,
 and operation/archive-bound D32; its normalized G4 agent scope is empty.
@@ -2245,6 +2257,112 @@ representation for `Changeset.chain`, `Changeset.changes` and
 `ChangeRecord.changedPaths`. Null collection elements remain invalid. This
 compatibility does not relax `ChangeSet` requests or event descriptor fields;
 the canonical OpenRPC request schema is unchanged.
+
+### Parent/child permissions and epic progress (post-stop contract)
+
+`CreateOp.Parent` and `ReparentOp.Parent` are direct canonical parent
+references; nil means that the child is top-level. The binding permission
+rules are:
+
+1. parented create and reparent require edit authorization on the epic/parent to attach;
+2. hidden parents reveal existence only, without content;
+3. epic progress shows visible-child counts plus “N more you can’t see”;
+4. the child remains in its own project;
+5. moving a child needs edit authorization on the child and on the new epic/parent.
+
+A parented create additionally requires ordinary create authorization for the
+new child. A reparent checks edit authorization on the child and the new
+parent; the old parent is not an authorization target. The parent link does
+not rewrite `CreateOp.Project` or `ReparentOp.Project`, and child
+creation/reparenting do not grant cross-project access. The child continues to
+use its own project's permissions. A caller that can see the child but not the
+parent may learn only that a parent exists; parent content is withheld, so
+non-disclosure is preserved.
+
+The parent-aware epic progress path reuses the existing `view.run` request and
+`ViewResult`/`ViewGroup` envelope. Its producer selects direct children whose
+stored `Parent` equals the requested epic, binds content, ontology and current
+authority once, and evaluates each child with that binding. Only visible
+children contribute status/readiness counts. Hidden direct children contribute
+only an authorization-elided total rendered as “N more you can’t see”; no
+status is exposed for them. Grandchildren, unrelated same-type beads and
+denied children are excluded from the visible denominator. This contract adds
+no new RPC, cursor, `groupBy` value or result member; exact producer wiring,
+implementation and qualification remain deferred.
+
+The historical #18 fixed-authz denial of parented create and reparent remains
+the current runtime boundary at this head. This later contract/design step
+supersedes that boundary only as a conditional target for a future separately
+admitted implementation. It does not install a permit or claim runtime
+support; project moves remain outside this slice.
+
+### EP1 hierarchy write contract (conditional, implementation-deferred)
+
+This subsection fixes the smallest write contract needed by the post-stop EP1
+handoff. It describes a future, separately admitted hierarchy writer; it does
+not remove the #18 runtime refusal or claim implementation, qualification, or
+an authorization permit.
+
+**References and ordered batches.** `CreateOp.Parent` and `ReparentOp.Parent`
+are optional direct canonical `Ref` values. Absent or JSON `null` means a
+top-level child. A `Ref` resolves to a live stored ID or to the key of an
+earlier `create` operation in the same ordered `ChangeSet`; malformed, unknown,
+or forward aliases refuse with `invalid_params`. Each operation is evaluated
+against the immutable stored pre-image plus the effects staged by earlier
+operations. Therefore a parent create followed by a child create (or reparent)
+in one `tx.apply` is valid only when the parent operation comes first, and the
+whole batch publishes at one revision or publishes nothing. A later operation
+may refer to an earlier staged record, but no operation may observe a later
+create or a partially published parent.
+
+**Existence, cycles, and child guards.** A missing or deleted parent refuses
+with `not_found` after the normal disclosure check; an unreadable parent may
+produce the same `not_found` or the existing authorization denial, without
+distinguishing hidden from absent content. A self-parent or descendant-parent
+cycle, malformed closure, or final graph that violates the parent's ontology
+child/blocker/no-open-children guard refuses with `ontology_guard_failed`.
+The guard evaluates the final staged graph and real status/blocker facts; it is
+not the current constant `NoOpenChildren=true` shortcut. No implicit detach,
+cascade, or dangling `Parent`/closure row is allowed. Unsupported delete,
+project-change, or other child-invariant cases remain refused until a separate
+contract supplies their atomic behavior.
+
+**Project boundaries.** `CreateOp.Project` selects the new child's project
+under ordinary project rules; the parent project's identity is never inherited.
+A reparent leaves the target child's project unchanged. A non-empty
+`ReparentOp.Project` that differs from that project is an unsupported project
+move and refuses; the parent link may cross projects, but it grants no access
+to either project. The child continues to use its own project's permissions,
+and the EP2 edit checks above remain required for the parent and, on reparent,
+the child.
+
+**Transactional ancestor closure.** Let `C(d,a)` be the live ancestor closure
+with a self row `C(d,d)=0`. A root create adds only its self row. A parented
+create adds the child self row and one row for every ancestor of the parent,
+with depth one greater than the parent's depth. A reparent computes the full
+subtree `S` from the staged graph: it keeps pairs internal to `S`, removes old
+external ancestor pairs, and adds new external pairs (or removes all external
+pairs when moving to root). Depth changes are replacements keyed by both pair
+and value, never ignored updates. The persisted direct `Parent` and all
+derived rows are published together and survive strict decode, projection,
+history, and replay.
+
+Before locking, the writer must enumerate the complete added/removed/replaced
+closure and graph delta for the entire ordered batch, then take the existing
+deterministic closure/derived locks and bump the existing graph/blocking and
+closure sentinels. More than 5,000 affected closure rows, counting removals,
+additions, and depth replacements across the batch, refuses with
+`closure_too_large`; splitting or deferring one logical rewrite cannot bypass
+the bound. Migration-class rewrites and populated-store backfill are outside
+EP1. Any refusal rolls back the record, parent, closure, history, event, and
+receipt state as one unit.
+
+Required future acceptance cases are root and same-batch parent creation,
+forward/missing/hidden parent refs, self and descendant cycles, the real child
+guard, move-to-root and whole-subtree depth replacement, rollback after each
+staged write or sentinel bump, and the 5,000/5,001 closure boundary. These
+cases are implementation gates, not evidence that the current runtime supports
+parented writes.
 
 ## `pluginapi` (public)
 

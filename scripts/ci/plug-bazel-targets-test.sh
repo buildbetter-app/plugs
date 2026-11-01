@@ -9,7 +9,7 @@ resolver="$repo_root/scripts/ci/plug-bazel-targets.sh"
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/plug-bazel-targets-test.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
 
-mkdir -p "$fixture/repo/pkg/static" "$fixture/repo/docs" "$fixture/repo/scripts/ci"
+mkdir -p "$fixture/repo/pkg/static" "$fixture/repo/pkg/cmd/nested" "$fixture/repo/docs" "$fixture/repo/scripts/ci"
 git -C "$fixture/repo" init -q
 git -C "$fixture/repo" config user.name "Plug CI test"
 git -C "$fixture/repo" config user.email "plug-ci-test@example.invalid"
@@ -19,8 +19,13 @@ go_library(
     srcs = ["foo.go"],
     embedsrcs = ["catalog.json", "static/index.html"],
 )
+go_binary(
+    name = "nested",
+    srcs = ["cmd/nested/main.go"],
+)
 EOF
 printf '%s\n' 'package pkg' >"$fixture/repo/pkg/foo.go"
+printf '%s\n' 'package main' 'func main() {}' >"$fixture/repo/pkg/cmd/nested/main.go"
 printf '%s\n' '{"version":1}' >"$fixture/repo/pkg/catalog.json"
 printf '%s\n' '<html>v1</html>' >"$fixture/repo/pkg/static/index.html"
 printf '%s\n' 'unowned documentation' >"$fixture/repo/docs/guide.md"
@@ -34,11 +39,11 @@ cat >"$fixture/fake-bazel" <<'EOF'
 set -euo pipefail
 query="$*"
 case "$query" in
-  *'rdeps(//..., set(//pkg:foo.go))'*|*'rdeps(//..., set(//pkg:catalog.json //pkg:static/index.html))'*)
+  *'rdeps(//..., set(//pkg:foo.go))'*|*'rdeps(//..., set(//pkg:cmd/nested/main.go))'*|*'rdeps(//..., set(//pkg:catalog.json //pkg:static/index.html))'*)
     printf '%s\n' '//consumer:consumer_test'
     ;;
   *'kind("source file", deps(//...))'*)
-    printf '%s\n' '//pkg:foo.go' '//pkg:catalog.json' '//pkg:static/index.html'
+    printf '%s\n' '//pkg:foo.go' '//pkg:cmd/nested/main.go' '//pkg:catalog.json' '//pkg:static/index.html'
     ;;
   *'kind(".*_test rule", //...)'*)
     printf '%s\n' '//pkg:pkg_test'
@@ -62,6 +67,33 @@ head="$(git -C "$fixture/repo" rev-parse HEAD)"
 grep -Fxq '//pkg:pkg_test' "$fixture/package/touched-targets.txt"
 grep -Fxq '//consumer:consumer_test' "$fixture/package/reverse-targets.txt"
 grep -Fxq '0' "$fixture/package/full-graph.txt"
+
+base="$head"
+printf '%s\n' '// nested source owned by the parent BUILD package' >>"$fixture/repo/pkg/cmd/nested/main.go"
+git -C "$fixture/repo" add pkg/cmd/nested/main.go
+git -C "$fixture/repo" commit -q -m nested-source-change
+head="$(git -C "$fixture/repo" rev-parse HEAD)"
+(cd "$fixture/repo" && BAZEL_BIN="$fixture/fake-bazel" "$resolver" --base "$base" --head "$head" --output "$fixture/nested")
+[[ "$(cat "$fixture/nested/packages.txt")" == '//pkg' ]]
+[[ "$(cat "$fixture/nested/seeds.txt")" == '//pkg:cmd/nested/main.go' ]]
+grep -Fxq '//pkg:pkg_test' "$fixture/nested/touched-targets.txt"
+grep -Fxq '//consumer:consumer_test' "$fixture/nested/reverse-targets.txt"
+grep -Fxq '0' "$fixture/nested/full-graph.txt"
+[[ ! -s "$fixture/nested/unknown-files.txt" ]]
+
+base="$head"
+printf '%s\n' '// combined graph and nested source change' >>"$fixture/repo/pkg/cmd/nested/main.go"
+printf '%s\n' '# graph and source changed together' >>"$fixture/repo/pkg/BUILD.bazel"
+git -C "$fixture/repo" add pkg/cmd/nested/main.go pkg/BUILD.bazel
+git -C "$fixture/repo" commit -q -m nested-source-graph-change
+head="$(git -C "$fixture/repo" rev-parse HEAD)"
+(cd "$fixture/repo" && BAZEL_BIN="$fixture/fake-bazel" "$resolver" --base "$base" --head "$head" --output "$fixture/nested-graph")
+# Delivery reuses packages.txt for owning-library queries even in full-graph mode.
+[[ "$(cat "$fixture/nested-graph/packages.txt")" == '//pkg' ]]
+[[ "$(cat "$fixture/nested-graph/seeds.txt")" == '//pkg:cmd/nested/main.go' ]]
+grep -Fxq '//pkg:pkg_test' "$fixture/nested-graph/touched-targets.txt"
+grep -Fxq '1' "$fixture/nested-graph/full-graph.txt"
+[[ ! -s "$fixture/nested-graph/reverse-targets.txt" ]]
 
 base="$head"
 printf '%s\n' '{"version":2}' >"$fixture/repo/pkg/catalog.json"
@@ -90,6 +122,18 @@ grep -Fxq '1' "$fixture/unknown/full-graph.txt"
 [[ ! -s "$fixture/unknown/reverse-targets.txt" ]]
 
 base="$head"
+printf '%s\n' 'package pkg' >"$fixture/repo/pkg/unowned.go"
+git -C "$fixture/repo" add pkg/unowned.go
+git -C "$fixture/repo" commit -q -m unknown-go-source
+head="$(git -C "$fixture/repo" rev-parse HEAD)"
+(cd "$fixture/repo" && BAZEL_BIN="$fixture/fake-bazel" "$resolver" --base "$base" --head "$head" --output "$fixture/unknown-go")
+grep -Fxq 'pkg/unowned.go' "$fixture/unknown-go/unknown-files.txt"
+grep -Fxq '//pkg:pkg_test' "$fixture/unknown-go/touched-targets.txt"
+grep -Fxq '1' "$fixture/unknown-go/full-graph.txt"
+[[ ! -s "$fixture/unknown-go/packages.txt" ]]
+[[ ! -s "$fixture/unknown-go/seeds.txt" ]]
+
+base="$head"
 printf '%s\n' '# graph change' >>"$fixture/repo/pkg/BUILD.bazel"
 git -C "$fixture/repo" add pkg/BUILD.bazel
 git -C "$fixture/repo" commit -q -m graph-change
@@ -109,4 +153,4 @@ grep -Fxq '//:lexicon_gate' "$fixture/ci/touched-targets.txt"
 grep -Fxq '0' "$fixture/ci/full-graph.txt"
 grep -Fq 'fallback=//:lexicon_gate' "$fixture/ci/selection.txt"
 
-echo "plug-ci-targets: package, owned resource, unknown resource, reverse, graph, and CI-only cases passed"
+echo "plug-ci-targets: package, nested Go ownership with/without graph changes, owned/unknown resource, unknown Go, reverse, graph, and CI-only cases passed"

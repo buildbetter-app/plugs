@@ -172,9 +172,11 @@ func (s *Service) create(ctx context.Context, by model.PrincipalRef, req CreateR
 		return port.WriteOutcome{}, failure("invalid_params", "type and fields are required")
 	}
 	if req.Parent != nil {
-		return port.WriteOutcome{}, failure("invalid_params", "parent creation is not supported by this slice")
+		if err := namedRef(*req.Parent); err != nil {
+			return port.WriteOutcome{}, err
+		}
 	}
-	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: req.Type, Fields: req.Fields, Project: meta.Project}}}}
+	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: req.Type, Fields: req.Fields, Parent: req.Parent, Project: meta.Project}}}}
 	return s.apply(ctx, by, "bead.create", cs, meta, outcomeRequired)
 }
 

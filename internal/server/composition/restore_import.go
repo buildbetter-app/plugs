@@ -33,6 +33,7 @@ type RestoreImportPlanner func(context.Context, io.Reader) (converterroundtrip.I
 type RestoreImportRequest struct {
 	IdempotencyKey string
 	AgentLabel     string
+	HistoryMode    driver.RestoreHistoryMode
 	Presence       restore.Presence
 }
 
@@ -40,11 +41,11 @@ type RestoreImportRequest struct {
 // checked the paged archive, canonical manifest hash and initiating principal;
 // this hook performs the trusted converter inspection/admission and returns a
 // normal restore status for the same session.
-func (a *restoreImportAdapter) Import(ctx context.Context, restoreID string, principal model.PrincipalRef, archive []byte, manifestHash string, meta model.WriteMeta, presence restore.Presence) (restore.RestoreStatus, error) {
+func (a *restoreImportAdapter) Import(ctx context.Context, restoreID string, principal model.PrincipalRef, archive []byte, manifestHash string, historyMode driver.RestoreHistoryMode, meta model.WriteMeta, presence restore.Presence) (restore.RestoreStatus, error) {
 	if strings.TrimSpace(manifestHash) == "" {
 		return restore.RestoreStatus{}, fmt.Errorf("restore import manifest hash is required")
 	}
-	request := RestoreImportRequest{IdempotencyKey: meta.IdempotencyKey, AgentLabel: meta.AgentLabel, Presence: presence}
+	request := RestoreImportRequest{IdempotencyKey: meta.IdempotencyKey, AgentLabel: meta.AgentLabel, HistoryMode: historyMode, Presence: presence}
 	report, err := a.importArchive(ctx, principal, bytes.NewReader(archive), request)
 	if err != nil {
 		return restore.RestoreStatus{}, err
@@ -89,6 +90,11 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 	if strings.TrimSpace(request.IdempotencyKey) != request.IdempotencyKey || request.IdempotencyKey == "" {
 		return converterroundtrip.Report{}, errors.New("restore import idempotency key is required")
 	}
+	historyMode, err := driver.ParseRestoreHistoryMode(string(request.HistoryMode))
+	if err != nil {
+		return converterroundtrip.Report{}, err
+	}
+	request.HistoryMode = historyMode
 	if request.Presence == nil {
 		return converterroundtrip.Report{}, authn.ErrHumanPresenceRequired
 	}
@@ -118,7 +124,7 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
-	admissionDigest, err := importAdmissionDigest(mode, actor, scope, authority, archive.Manifest().StoreID, archiveDigest, inspection.DerivedSHA256, request.IdempotencyKey)
+	admissionDigest, err := importAdmissionDigest(mode, actor, scope, authority, request.HistoryMode, archive.Manifest().StoreID, archiveDigest, inspection.DerivedSHA256, request.IdempotencyKey)
 	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
@@ -134,6 +140,7 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 		},
 		SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import",
 		IdempotencyKey: request.IdempotencyKey, ArchiveDigest: archiveDigest, DerivedDigest: inspection.DerivedSHA256,
+		HistoryMode: request.HistoryMode,
 	}
 	if _, err := profile.Detached(); err != nil {
 		return converterroundtrip.Report{}, err
@@ -144,7 +151,7 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
-	currentDigest, err := importAdmissionDigest(mode, actor, scope, authority, archive.Manifest().StoreID, archiveDigest, inspection.DerivedSHA256, request.IdempotencyKey)
+	currentDigest, err := importAdmissionDigest(mode, actor, scope, authority, request.HistoryMode, archive.Manifest().StoreID, archiveDigest, inspection.DerivedSHA256, request.IdempotencyKey)
 	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
@@ -211,19 +218,20 @@ func (a *restoreImportAdapter) admit(ctx context.Context, principal model.Princi
 	return nil
 }
 
-func importAdmissionDigest(mode string, actor model.PrincipalRef, scope, authority, sourceStoreID, archiveDigest, derivedDigest, idempotencyKey string) (string, error) {
+func importAdmissionDigest(mode string, actor model.PrincipalRef, scope, authority string, historyMode driver.RestoreHistoryMode, sourceStoreID, archiveDigest, derivedDigest, idempotencyKey string) (string, error) {
 	binding := struct {
-		Version        string             `json:"version"`
-		Mode           string             `json:"mode"`
-		Actor          model.PrincipalRef `json:"actor"`
-		Scope          string             `json:"scope"`
-		Authority      string             `json:"authority"`
-		Operation      string             `json:"operation"`
-		SourceStoreID  string             `json:"sourceStoreId"`
-		ArchiveDigest  string             `json:"archiveDigest"`
-		DerivedDigest  string             `json:"derivedDigest"`
-		IdempotencyKey string             `json:"idempotencyKey"`
-	}{"restore-import/admission/v1", mode, actor, scope, authority, "admin.restore.begin", sourceStoreID, archiveDigest, derivedDigest, idempotencyKey}
+		Version        string                    `json:"version"`
+		Mode           string                    `json:"mode"`
+		Actor          model.PrincipalRef        `json:"actor"`
+		Scope          string                    `json:"scope"`
+		Authority      string                    `json:"authority"`
+		HistoryMode    driver.RestoreHistoryMode `json:"historyMode"`
+		Operation      string                    `json:"operation"`
+		SourceStoreID  string                    `json:"sourceStoreId"`
+		ArchiveDigest  string                    `json:"archiveDigest"`
+		DerivedDigest  string                    `json:"derivedDigest"`
+		IdempotencyKey string                    `json:"idempotencyKey"`
+	}{"restore-import/admission/v1", mode, actor, scope, authority, historyMode, "admin.restore.begin", sourceStoreID, archiveDigest, derivedDigest, idempotencyKey}
 	data, err := json.Marshal(binding)
 	if err != nil {
 		return "", err

@@ -9,8 +9,10 @@ import (
 	"github.com/buildbetter-app/plugs/pluginapi"
 )
 
-// Native state is per-instance, in-process CAS storage. It is not a durable
-// delivery checkpoint; those belong to the storage/event layer.
+// Native state is host-side, in-process CAS storage shared by every runtime
+// instance in one binding. Guest modules and linear memory remain private to
+// each member. It is not a durable delivery checkpoint; those belong to the
+// storage/event layer.
 type stateStore struct {
 	mu     sync.Mutex
 	values map[string]stateValue

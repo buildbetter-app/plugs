@@ -41,6 +41,7 @@ type config struct {
 	mutators       []MutatorBinding
 	validators     []ValidatorBinding
 	posts          []PostBinding
+	postFailures   driver.CheckpointStore
 	now            func() time.Time
 	newID          func() (string, error)
 	newAllocatorID func(driver.OfflineAllocator) (string, error)
@@ -73,6 +74,13 @@ func WithValidators(b ...ValidatorBinding) Option {
 }
 func WithPostSubscribers(b ...PostBinding) Option {
 	return func(c *config) { c.posts = append(c.posts, b...) }
+}
+
+// WithPostFailureStore preserves the underlying metadata capability when a
+// host decorates Store. Ordinary stores supply it directly. It must be the
+// same store as the Writer: dead letters use its active lease and incarnation.
+func WithPostFailureStore(store driver.CheckpointStore) Option {
+	return func(c *config) { c.postFailures = store }
 }
 
 // WithClock is for hosts that own a controlled clock; client input never sets it.
@@ -184,6 +192,12 @@ func (w *Writer) configure() error {
 	if len(w.cfg.posts) > 0 {
 		if _, ok := w.store.(driver.ResponseFinalizer); !ok {
 			return fmt.Errorf("post subscribers require durable response finalization")
+		}
+		if w.cfg.postFailures == nil {
+			w.cfg.postFailures, _ = w.store.(driver.CheckpointStore)
+		}
+		if w.cfg.postFailures == nil {
+			return fmt.Errorf("post subscribers require durable dead-letter metadata")
 		}
 	}
 	return nil

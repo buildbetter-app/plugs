@@ -138,7 +138,7 @@ func TestUnsupportedCardRemainderRefusesWithoutWrites(t *testing.T) {
 		}
 		f.code(t, f.call(t, method, map[string]any{}), "method_not_found")
 	}
-	f.code(t, f.call(t, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "parented"}, "parent": ref})), "invalid_params")
+	f.code(t, f.call(t, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "parented"}, "parent": model.RefByKey("unresolved-parent")})), "invalid_params")
 	f.code(t, f.call(t, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "must not land", "status": "done"}})), "ontology_use_slot_verb")
 	f.code(t, f.call(t, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "must not land", "unrecognized": true}})), "ontology_unknown_field")
 	for _, op := range []model.Op{
@@ -149,5 +149,5 @@ func TestUnsupportedCardRemainderRefusesWithoutWrites(t *testing.T) {
 		domainCode(t, err, "invalid_params")
 	}
 	requireSameState(t, before, f.state(t))
-	t.Log("unbound public heartbeat/history-mutation/restore/view methods and unsupported parent/attach/reparent/status/unknown-field writes explicitly refused")
+	t.Log("unbound public heartbeat/history-mutation/restore/view methods, malformed named parents and unsupported attach/project-move/status/unknown-field writes explicitly refused")
 }

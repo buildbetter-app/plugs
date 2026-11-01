@@ -2,12 +2,14 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "local_wasi_test",
-    srcs = ["local_fixture_test.go", "local_wasi_test.go", "public_contention_test.go"],
+    srcs = ["local_fixture_test.go", "local_wasi_test.go", "postgres_failover_test.go", "public_contention_test.go"],
     embedsrcs = ["//internal/integration/e5acceptance/fixture-local-wasi:sources"],
     deps = [
         "//internal/core/authz",
         "//internal/core/model",
         "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
         "//internal/plugins/authnapikey",
         "//internal/plugins/authzfixed",
         "//internal/server/authzrpc",

@@ -100,6 +100,10 @@ type Config struct {
 	// Mutators optionally installs trusted host bindings on the same Writer as
 	// the fixed checker and event context. Callback resources remain caller-owned.
 	Mutators []pipeline.MutatorBinding
+	// Hierarchy opts into the bounded EP2 create/reparent authorization adapter.
+	// It does not implement hierarchy storage/RPC or relax ordinary #18 writes.
+	// Keep false until the host installs the separately reviewed hierarchy Writer.
+	Hierarchy bool
 }
 
 // Composition owns the installed chain and is useful to hosts that need the
@@ -149,7 +153,7 @@ func New(ctx context.Context, config Config) (*Composition, error) {
 		return nil, err
 	}
 	chain := authz.Chain{Namespace: ns, Rules: []authz.RuleSet{rules}}
-	checker := &Checker{chain: chain, source: config.Facts, caller: caller, store: config.Store}
+	checker := &Checker{chain: chain, source: config.Facts, caller: caller, store: config.Store, lease: config.Lease, hierarchy: config.Hierarchy}
 	if mutable, ok := config.Facts.(*MutableFacts); ok {
 		if err := mutable.bind(ctx, config.Store, config.Lease, ns); err != nil {
 			return nil, err
@@ -168,6 +172,7 @@ func New(ctx context.Context, config Config) (*Composition, error) {
 	guarded := &GuardedService{
 		delegate:        domain,
 		checker:         checker,
+		lease:           config.Lease,
 		commitEmpty:     domain.CommitClaimNextEmpty,
 		claimNextPage:   domain.ClaimNextReadyPage,
 		readyCandidates: domain.ReadyCandidates,

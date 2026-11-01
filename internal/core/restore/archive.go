@@ -23,7 +23,9 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -91,8 +93,10 @@ func presenceError(err error) error {
 // ImportHook is the optional trusted host bridge for validated offline
 // converter archives. The manager owns the authenticated paged session and
 // supplies the complete archive only after its checksum, manifest and caller
-// checks have succeeded. Native archives never use this hook.
-type ImportHook func(context.Context, string, model.PrincipalRef, []byte, string, model.WriteMeta, Presence) (RestoreStatus, error)
+// checks have succeeded. Native archives never use this hook. The explicit
+// history policy is passed separately from write metadata so it cannot be
+// confused with an ordinary graph write field.
+type ImportHook func(context.Context, string, model.PrincipalRef, []byte, string, driver.RestoreHistoryMode, model.WriteMeta, Presence) (RestoreStatus, error)
 
 type nativeRecord struct {
 	Ref      model.Ref       `json:"ref"`
@@ -343,6 +347,7 @@ type restoreSession struct {
 	id          string
 	manifest    map[string]any
 	history     string
+	historyMode driver.RestoreHistoryMode
 	hash        string
 	principal   model.PrincipalRef
 	agentLabel  string
@@ -590,11 +595,13 @@ func (m *Manager) beginAs(ctx context.Context, principal model.PrincipalRef, man
 	if err := m.requireLease(); err != nil {
 		return RestoreStatus{}, err
 	}
-	if history == "" {
-		history = "full"
+	historyMode, modeErr := driver.ParseRestoreHistoryMode(history)
+	if modeErr != nil {
+		return RestoreStatus{}, restoreHistoryModelError(modeErr)
 	}
-	if history != "full" && history != "head" {
-		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "history must be full or head"}}
+	archiveHistory := "full"
+	if historyMode == driver.RestoreHistoryModeSnapshot {
+		archiveHistory = "head"
 	}
 	manifestData, err := json.Marshal(manifest)
 	if err != nil {
@@ -603,6 +610,9 @@ func (m *Manager) beginAs(ctx context.Context, principal model.PrincipalRef, man
 	var parsed dumpformat.Manifest
 	if err := json.Unmarshal(manifestData, &parsed); err != nil || parsed.Format != dumpformat.Format || parsed.Schema != 1 || (parsed.Scope != dumpformat.Scope && parsed.Scope != "plug-native-store") {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: "unsupported dump manifest"}}
+	}
+	if err := driver.ValidateRestoreHistoryPolicy(historyMode, parsed.History); err != nil {
+		return RestoreStatus{}, restoreHistoryModelError(err)
 	}
 	// Converter imports perform the empty-target check in the trusted adapter,
 	// which first attempts read-only receipt recovery for a same-bound retry.
@@ -622,7 +632,7 @@ func (m *Manager) beginAs(ctx context.Context, principal model.PrincipalRef, man
 	}
 	id := newID("restore")
 	m.mu.Lock()
-	m.restores[id] = &restoreSession{id: id, manifest: cloneMap(manifest), history: history, hash: hash, principal: principal, agentLabel: meta.AgentLabel, idempotency: meta.IdempotencyKey, pages: map[uint64][]byte{}, state: "receiving"}
+	m.restores[id] = &restoreSession{id: id, manifest: cloneMap(manifest), history: archiveHistory, historyMode: historyMode, hash: hash, principal: principal, agentLabel: meta.AgentLabel, idempotency: meta.IdempotencyKey, pages: map[uint64][]byte{}, state: "receiving"}
 	m.mu.Unlock()
 	return RestoreStatus{RestoreID: id, State: "receiving", ReceivedPages: 0, Warnings: []model.Warning{}}, nil
 }
@@ -746,11 +756,11 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 		return m.fail(id, err)
 	}
 	m.mu.Lock()
-	wantHistory := ""
 	var importHook ImportHook
 	importMeta := meta
+	var historyMode driver.RestoreHistoryMode
 	if current := m.restores[id]; current != nil {
-		wantHistory = current.history
+		historyMode = current.historyMode
 		importHook = m.importHook
 		// The converter profile is bound to the begin operation, not to a
 		// caller-chosen finish key or agent label. Native restore continues to
@@ -763,7 +773,7 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 	}
 	m.mu.Unlock()
 	manifest := archive.Manifest()
-	if wantHistory != "" && manifest.Scope == "plug-native-store" && manifest.History != wantHistory {
+	if historyMode == driver.RestoreHistoryModeFull && manifest.Scope == "plug-native-store" && manifest.History != "full" {
 		return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: "archive history does not match restore request"}})
 	}
 	canonicalManifest, err := json.Marshal(manifest)
@@ -787,7 +797,7 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 			current.state = "applying"
 		}
 		m.mu.Unlock()
-		status, importErr := importHook(ctx, id, principal, archiveBytes, canonicalHash, importMeta, presence)
+		status, importErr := importHook(ctx, id, principal, archiveBytes, canonicalHash, historyMode, importMeta, presence)
 		if importErr != nil {
 			if errors.Is(importErr, driver.ErrRestoreTargetNotEmpty) {
 				importErr = &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target is initialized; restore requires a fully empty store"}}
@@ -850,6 +860,16 @@ func samePrincipal(left, right model.PrincipalRef) bool {
 	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
+func restoreHistoryModelError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if code, details, ok := driver.ErrorMapping(err); ok {
+		return &model.Error{Data: model.ErrorData{Code: code, Hint: err.Error(), Details: details}}
+	}
+	return &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
+}
+
 func (m *Manager) fail(id string, err error) (RestoreStatus, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -884,6 +904,10 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	if err != nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 	}
+	ancestorPlan, err := nativeAncestorPlanForArchive(records, archive.Native())
+	if err != nil {
+		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
+	}
 	if m.lease == nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "lease_not_held", Hint: "restore requires an active storage lease"}}
 	}
@@ -896,7 +920,7 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	if !ok {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "native restore capability is unsupported"}}
 	}
-	locks, sentinels, err := restoreLocks(records)
+	locks, sentinels, err := restoreLocks(records, ancestorPlan)
 	if err != nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 	}
@@ -949,6 +973,11 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	}
 	for _, record := range records {
 		if err := tx.Put(ctx, record); err != nil {
+			return model.Changeset{}, err
+		}
+	}
+	if ancestorPlan != nil && len(ancestorPlan.rows) != 0 {
+		if err := tx.PutDerived(ctx, driver.DerivedAncestorClosure, nil, ancestorPlan.rows); err != nil {
 			return model.Changeset{}, err
 		}
 	}
@@ -1190,6 +1219,22 @@ func decodeNativeRecords(data []byte) ([]driver.Record, error) {
 		if err := json.Unmarshal(value.Body, &body); err != nil || body == nil {
 			return nil, fmt.Errorf("native record body must be an object")
 		}
+		// A native head image carries the stored protected source, not an
+		// asserted runtime snapshot. Validate both identity and source before
+		// apply can open a publication transaction, preserving its raw body.
+		ontologyID := value.Ref.IsID() && (value.Ref.ID == "ontology" || strings.HasPrefix(value.Ref.ID, "ontology/"))
+		if value.Kind == "ontology" || ontologyID {
+			if value.Kind != "ontology" || !ontologyID || !value.Ref.Branch.IsZero() {
+				return nil, fmt.Errorf("native ontology requires a protected branch-zero ontology ID and kind")
+			}
+			source, err := service.DecodeOntologySource(value.Body)
+			if err != nil {
+				return nil, fmt.Errorf("invalid native ontology source: %w", err)
+			}
+			if _, problems := ontology.Compile(source.Base, source.Overlays, source.Plugins); len(problems) != 0 {
+				return nil, fmt.Errorf("native ontology source does not compile")
+			}
+		}
 		key, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &value.Ref})
 		if err != nil || seen[key] {
 			return nil, fmt.Errorf("duplicate or invalid native record")
@@ -1254,7 +1299,7 @@ func documentMap(doc pipeline.Document) (map[string]any, error) {
 	return value, nil
 }
 
-func restoreLocks(records []driver.Record) ([]driver.LockRequest, []driver.Sentinel, error) {
+func restoreLocks(records []driver.Record, ancestorPlan *nativeAncestorPlan) ([]driver.LockRequest, []driver.Sentinel, error) {
 	byKey := map[string]driver.LockRequest{}
 	sentinelSet := map[driver.Sentinel]bool{}
 	add := func(key driver.LockKey, mode driver.LockMode) error {
@@ -1275,6 +1320,16 @@ func restoreLocks(records []driver.Record) ([]driver.LockRequest, []driver.Senti
 			if err != nil {
 				return nil, nil, err
 			}
+			sentinelSet[sentinel] = true
+		}
+	}
+	if ancestorPlan != nil {
+		for _, lock := range ancestorPlan.locks {
+			if err := add(lock.Key, lock.Mode); err != nil {
+				return nil, nil, err
+			}
+		}
+		for _, sentinel := range ancestorPlan.sentinels {
 			sentinelSet[sentinel] = true
 		}
 	}

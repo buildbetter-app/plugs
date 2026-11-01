@@ -14,6 +14,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
 
 func TestPostFailureIsCommittedAndDurablyReplayed(t *testing.T) {
@@ -45,6 +46,66 @@ func TestPostFailureIsCommittedAndDurablyReplayed(t *testing.T) {
 	}
 	if h.read(t).Snapshot().At.String() != "1" {
 		t.Fatal("post failure/finalization advanced graph head")
+	}
+	key := PostDeadLetterKey("pipeline-test", result.Revision, "external")
+	stored, err := h.store.LoadCheckpoint(context.Background(), key)
+	var dead PostDeadLetter
+	if err != nil || stored.Generation != 1 || json.Unmarshal(stored.Payload, &dead) != nil || dead.Binding != "external" || dead.Revision.String() != "1" || dead.Incarnation != "pipeline-test" || dead.Reason != "post_subscriber_failed" || !dead.FailedAt.Equal(h.now) {
+		t.Fatalf("failed callback has no durable dead letter: %+v entry=%+v err=%v", stored, dead, err)
+	}
+}
+
+type postMetadataFault struct {
+	*memory.Store
+	persist bool
+	calls   atomic.Int32
+}
+
+func (s *postMetadataFault) SaveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, generation uint64, payload []byte) (driver.Checkpoint, error) {
+	s.calls.Add(1)
+	if s.persist {
+		if _, err := s.Store.SaveCheckpoint(ctx, lease, key, generation, payload); err != nil {
+			return driver.Checkpoint{}, err
+		}
+	}
+	return driver.Checkpoint{}, errors.New("injected post metadata acknowledgement failure")
+}
+
+func TestPostDeadLetterPersistenceFailureKeepsReceiptPendingAndLostAckReloads(t *testing.T) {
+	for _, persist := range []bool{false, true} {
+		t.Run(fmt.Sprintf("persist_%v", persist), func(t *testing.T) {
+			h := setup(t)
+			store := &postMetadataFault{Store: h.store, persist: persist}
+			var posts atomic.Int32
+			w := New(store, h.lease, WithOntology(testOntology{}), WithPostSubscribers(PostBinding{ID: "failed", Subscriber: postFunc(func(context.Context, port.CommittedChange, port.SnapshotReader) error {
+				posts.Add(1)
+				return errors.New("private sink detail must not enter metadata")
+			})}))
+			cs, m := model.ChangeSet{Ops: []model.Op{create("new")}}, meta(991)
+			commit, err := w.Apply(context.Background(), by, cs, m)
+			entry := receipt(t, h, m)
+			if entry == nil || posts.Load() != 1 || h.read(t).Snapshot().At.String() != "1" {
+				t.Fatalf("metadata failure repeated or lost the graph write: entry=%+v posts=%d", entry, posts.Load())
+			}
+			wantCalls := int32(4)
+			if persist {
+				wantCalls = 1
+				if err != nil || entry.ResponsePending || len(commit.Warnings) != 1 {
+					t.Fatalf("lost metadata ack did not reload durable outcome: commit=%+v entry=%+v err=%v", commit, entry, err)
+				}
+			} else {
+				code(t, err, "busy")
+				if !entry.ResponsePending || len(entry.Commit.Warnings) != 0 {
+					t.Fatalf("missing dead letter returned unpersisted success: %+v", entry)
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				_, _ = w.Apply(ctx, by, cs, m)
+			}
+			if store.calls.Load() != wantCalls || posts.Load() != 1 {
+				t.Fatalf("metadata retries reran callback: saves=%d posts=%d", store.calls.Load(), posts.Load())
+			}
+		})
 	}
 }
 
@@ -86,6 +147,68 @@ func TestMutatorDataflowOwnershipAndFailOpen(t *testing.T) {
 	conflict.ID = "second-owner"
 	_, err = h.writer(WithMutators(producer, conflict)).Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{create("other")}}, meta(3))
 	code(t, err, "invalid_params")
+}
+
+type queuedTimedMutator struct{}
+
+func (queuedTimedMutator) Mutate(context.Context, port.ProposedChange, port.SnapshotReader) ([]port.Patch, error) {
+	return nil, errors.New("legacy callback path used")
+}
+
+func (queuedTimedMutator) MutateWithTimeout(ctx context.Context, timeout time.Duration, _ port.ProposedChange, _ port.SnapshotReader) ([]port.Patch, error) {
+	// Model a bounded pool queue wait followed by a callback that uses its full
+	// execution budget. The queue delay must not consume the callback budget.
+	select {
+	case <-time.After(100 * time.Millisecond):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	execution, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	select {
+	case <-time.After(200 * time.Millisecond):
+		return nil, nil
+	case <-execution.Done():
+		return nil, execution.Err()
+	}
+}
+
+func TestTimedMutatorStartsBudgetAfterPoolQueue(t *testing.T) {
+	h := setup(t)
+	w := h.writer(WithMutators(MutatorBinding{ID: "queued", Mutator: queuedTimedMutator{}}))
+	started := time.Now()
+	if _, err := w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{create("queued")}}, meta(1)); err != nil {
+		t.Fatalf("timed callback failed after bounded queue wait: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 290*time.Millisecond {
+		t.Fatalf("timed callback did not exercise queue plus execution windows: elapsed=%s", elapsed)
+	}
+}
+
+type timedPoolBusyError struct{}
+
+func (timedPoolBusyError) Error() string      { return "runtime pool queue is full" }
+func (timedPoolBusyError) CallbackBusy() bool { return true }
+
+type busyTimedMutator struct{}
+
+func (busyTimedMutator) Mutate(context.Context, port.ProposedChange, port.SnapshotReader) ([]port.Patch, error) {
+	return nil, errors.New("legacy callback path used")
+}
+
+func (busyTimedMutator) MutateWithTimeout(context.Context, time.Duration, port.ProposedChange, port.SnapshotReader) ([]port.Patch, error) {
+	return nil, timedPoolBusyError{}
+}
+
+func TestTimedMutatorPoolBusyMapsToRetryableBusy(t *testing.T) {
+	h := setup(t)
+	w := h.writer(WithMutators(MutatorBinding{ID: "busy", Mutator: busyTimedMutator{}}))
+	_, err := w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{create("busy")}}, meta(1))
+	code(t, err, "busy")
+	var typed *model.Error
+	if !errors.As(err, &typed) || !typed.Data.Retryable {
+		t.Fatalf("pool busy error was not retryable: %v", err)
+	}
 }
 
 type authorizerFunc func(context.Context, port.AuthorizationStage, port.ProposedChange, port.SnapshotReader) error
