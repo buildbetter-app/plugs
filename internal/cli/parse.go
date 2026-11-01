@@ -20,6 +20,12 @@ Shared server:
   server --local         Start a disposable loopback server with embedded UI
 
 Commands:
+  brief [--budget-tokens N]
+  claim-next [--type TYPE]
+  memory list [--query TEXT] [--limit N] [--cursor TOKEN]
+  memory get ID
+  memory save --key KEY --content TEXT [--metadata JSON]
+  memory delete ID
   ready [--type TYPE] [--limit N] [--cursor TOKEN]
   get ID [--as-of REVISION]
   create --title TITLE [--type issue] [--fields JSON]
@@ -123,6 +129,9 @@ func ParseCommand(args []string) (Command, error) {
 		return Command{}, fmt.Errorf("command is required")
 	}
 	name := args[0]
+	if name == "brief" || name == "claim-next" || name == "memory" {
+		return parseAgentCommand(args)
+	}
 	if name == "gate" {
 		return parseGateCommand(args[1:])
 	}

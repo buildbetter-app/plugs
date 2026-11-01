@@ -299,7 +299,11 @@ func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 		if b.Sequence != h.First+uint64(i) {
 			return refuse(RestoreHistoryReasonNonContiguous)
 		}
-		if len(b.EventIDs) == 0 || len(b.Changes) == 0 {
+		// A captured Dolt commit may contain no source audit event or no
+		// portable business change. Preserve that explicit source unit without
+		// inventing an event, mutation or grouping. A provenance-free no-op is
+		// never admissible.
+		if len(b.EventIDs)+len(b.CommitIDs) == 0 || len(b.Changes) == 0 && len(b.CommitIDs) == 0 {
 			return refuse(RestoreHistoryReasonUnmappable)
 		}
 		for _, id := range b.EventIDs {
@@ -405,6 +409,9 @@ func PrepareOfflineHistoryBinding(current Meta, p RestoreImportProfile, h Offlin
 	bound, err := p.Detached()
 	if err != nil {
 		return nil, err
+	}
+	if bound.HistoryTime != "" && when.UTC().Format(time.RFC3339Nano) != bound.HistoryTime {
+		return nil, fmt.Errorf("offline history time differs from admitted binding")
 	}
 	digest, err := OfflineHistoryDigest(h)
 	if err != nil {
