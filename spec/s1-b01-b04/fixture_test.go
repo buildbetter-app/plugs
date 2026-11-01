@@ -266,7 +266,7 @@ func errorCode(t *testing.T, raw []byte) string {
 }
 
 func (f *fixture) readyIDs(label, agent string) []string {
-	value := result(f.t, f.call(label, "bead.ready", agent, map[string]any{"limit": 0}))
+	value := result(f.t, f.call(label, "bead.ready", agent, map[string]any{"limit": 1000}))
 	items, ok := value["items"].([]any)
 	if !ok {
 		f.t.Fatalf("ready items missing: %#v", value)

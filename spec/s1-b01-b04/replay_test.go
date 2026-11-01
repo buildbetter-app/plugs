@@ -212,7 +212,7 @@ func TestS1B04ReplayDirectAndClaimNextWithOneWinner(t *testing.T) {
 				// the semantic check below reads the durable document.
 				t.Logf("claimNext wire shape=%s", claimNext)
 			}
-			if doc := f.document("b04-next"); doc.Fields["status"] != "working" || doc.Lease == nil {
+			if doc := f.document("b04-next"); doc.Fields["status"] != "in_progress" || doc.Lease == nil {
 				t.Fatalf("claimNext did not atomically assign status/lease: %+v", doc)
 			}
 			if code := errorCode(t, f.call("b04-direct", "bead.claim", owner, map[string]any{"id": map[string]any{"id": "b04-direct"}})); code != "" {
