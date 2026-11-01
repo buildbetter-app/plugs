@@ -103,6 +103,103 @@ func TestExportSourceHistoryPartialRecordsExactPrefixGaps(t *testing.T) {
 	}
 }
 
+func TestExportSourceHistoryDeterministicEventPermutations(t *testing.T) {
+	for _, mode := range []string{"full", "partial", "unverified"} {
+		permutations := []string{"current", "baseline", "frame", "head-frame", "all"}
+		if mode == "unverified" {
+			permutations = []string{"current", "all"}
+		}
+		for _, permutation := range permutations {
+			t.Run(mode+"/"+permutation, func(t *testing.T) {
+				s, inventory := historyFixture(t)
+				template := s.fixtureSource["events"].Rows[0]
+				// Consecutive IDs above 2^53 must stay distinct. An opaque
+				// string ID and stored values must also survive unchanged.
+				ids := []any{json.Number("9007199254740993"), json.Number("9007199254740992"), "event/opaque"}
+				setEvents := func(tables map[string]Table, count int) {
+					table := tables["events"]
+					table.Rows = []Row{}
+					for i, id := range ids[:count] {
+						row := cloneRow(template)
+						row["id"] = id
+						row["comment"] = "opaque\x00event " + fmt.Sprint(i)
+						row["new_value"] = map[string]any{"n": json.Number("9007199254740993"), "null": nil}
+						table.Rows = append(table.Rows, row)
+					}
+					tables["events"] = table
+				}
+				setEvents(s.fixtureSource, 3)
+				for _, commit := range s.log.Commits {
+					count := 2
+					if commit.ID == s.log.Head {
+						count = 3
+					}
+					setEvents(s.images[commit.ID], count)
+				}
+				if mode == "partial" {
+					delete(s.images, s.log.Commits[0].ID)
+				} else if mode == "unverified" {
+					s.log.Clean = false
+				}
+				buildUnchanged := func() []byte {
+					t.Helper()
+					input := []any{s.fixtureSource, s.images, s.log}
+					before, err := marshal(input)
+					if err != nil {
+						t.Fatal(err)
+					}
+					data := buildFixture(t, s, inventory)
+					after, err := marshal(input)
+					if err != nil || !bytes.Equal(before, after) {
+						t.Fatal("export changed caller-owned source rows, values or commit census")
+					}
+					return data
+				}
+				first := buildUnchanged()
+				_, h := sourceCapture(t, first)
+				if len(h.Events) != 3 || !sameEventImage(h.Events, s.fixtureSource["events"].Rows) {
+					t.Fatal("current event identities or stored values changed")
+				}
+				switch mode {
+				case "full":
+					if !h.Range.Complete || len(h.Range.Frames) != 4 || len(h.Range.Frames[0].Events) != 2 {
+						t.Fatal("fixture did not prove full history with historical events")
+					}
+				case "partial":
+					if h.Range.Status != "verified" || h.Range.First != 3 || len(h.Range.BaselineEvents) != 2 || len(h.Range.Frames) != 2 {
+						t.Fatal("fixture did not prove a partial baseline and retained frames")
+					}
+				case "unverified":
+					if h.Range.Status != "unverified" || h.Range.Reason != "working-set-not-clean" {
+						t.Fatal("fixture did not retain raw unverified events")
+					}
+				}
+				reverse := func(tables map[string]Table) {
+					rows := tables["events"].Rows
+					for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+						rows[i], rows[j] = rows[j], rows[i]
+					}
+				}
+				if permutation == "current" || permutation == "all" {
+					reverse(s.fixtureSource)
+				}
+				for i, commit := range s.log.Commits {
+					if permutation == "all" || permutation == "baseline" && i == 1 || permutation == "frame" && i == 2 || permutation == "head-frame" && commit.ID == s.log.Head {
+						reverse(s.images[commit.ID])
+					}
+				}
+				second := buildUnchanged()
+				if !bytes.Equal(archiveMembers(t, first)[SourceHistoryMember], archiveMembers(t, second)[SourceHistoryMember]) {
+					t.Error("equivalent event-row permutations changed history/source.json")
+				}
+				if !bytes.Equal(first, second) {
+					t.Error("equivalent event-row permutations changed archive bytes")
+				}
+			})
+		}
+	}
+}
+
 func TestExportSourceHistoryCannotPromoteUnprovenRanges(t *testing.T) {
 	for _, scenario := range []string{"dirty", "merge", "missing-parent", "wrong-head", "no-baseline", "event-rewrite"} {
 		t.Run(scenario, func(t *testing.T) {
