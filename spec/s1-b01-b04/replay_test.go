@@ -70,7 +70,7 @@ func TestS1B01ReplayReadyMembershipOrderAndDeferredParent(t *testing.T) {
 			if reflect.DeepEqual(got, []string{"b01-p0", "b01-tie-a", "b01-tie-b", "b01-child"}) {
 				t.Logf("B01 canonical deferred-parent suppression remains an explicit hierarchy gap; reference and Plug both observed child-ready decision=P74")
 			}
-			if f.document("b01-parent").Fields["status"] != "parked" || f.document("b01-closed").Fields["status"] != "done" {
+			if f.document("b01-parent").Fields["status"] != "backlog" || f.document("b01-closed").Fields["status"] != "done" {
 				t.Fatalf("category projection lost: parent=%+v closed=%+v", f.document("b01-parent"), f.document("b01-closed"))
 			}
 			if backend.name == "sqlite" {
