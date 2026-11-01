@@ -54,11 +54,15 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 		}
 	}
 	if doc.Lease != nil {
-		ttl, err := durationMS(doc.Lease.TtlMs)
+		lease, err := s.effectiveLease(ctx, doc.ID, doc.Lease)
 		if err != nil {
 			return GetResult{}, err
 		}
-		result.Lease = &Lease{Principal: doc.Lease.Principal, Agent: doc.Lease.Agent, ExpiresAt: doc.Lease.ExpiresAt, TTL: ttl, Epoch: doc.Lease.Epoch}
+		ttl, err := durationMS(lease.TtlMs)
+		if err != nil {
+			return GetResult{}, err
+		}
+		result.Lease = &Lease{Principal: lease.Principal, Agent: lease.Agent, ExpiresAt: lease.ExpiresAt, TTL: ttl, Epoch: lease.Epoch}
 	}
 	if err := s.admit(ctx, by); err != nil {
 		return GetResult{}, err
@@ -155,8 +159,14 @@ func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r queryReade
 		if !matchesFilter(row, req.Project, req.Filter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
 			continue
 		}
-		if row.doc.Lease != nil && now.Before(row.doc.Lease.ExpiresAt) {
-			continue
+		if row.doc.Lease != nil {
+			lease, err := s.effectiveLease(ctx, row.doc.ID, row.doc.Lease)
+			if err != nil {
+				return nil, err
+			}
+			if now.Before(lease.ExpiresAt) {
+				continue
+			}
 		}
 		unblocked, err := s.ontology.noOpenBlockers(row.doc, graph)
 		if err != nil {

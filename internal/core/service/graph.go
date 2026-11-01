@@ -162,26 +162,47 @@ func state(doc pipeline.Document) ontology.BeadState {
 }
 
 func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
+	terminal := func(target storedBead) bool {
+		effective := o.effective(target.doc.Project)
+		return effective.SatisfiesBlocks(state(target.doc).Status)
+	}
 	for _, link := range doc.Links {
 		switch link.Kind {
-		case "relates-to":
+		case "relates-to", "related", "discovered-from", "replies-to", "duplicates", "supersedes", "authored-by", "assigned-to", "approved-by", "attests", "tracks", "until", "caused-by", "validates", "delegated-from":
 			continue
-		case "blocks", "conditional-blocks":
+		case "blocks", "conditional-blocks", "waits-for", "parent-child":
 			blocker, exists := graph[link.To.ID]
 			if !exists || !link.To.IsID() || !link.To.Branch.IsZero() {
 				return false, nil
 			}
 			s := state(blocker.doc)
 			effective := o.effective(s.Project)
-			satisfied := effective.SatisfiesBlocks(s.Status)
+			satisfied := terminal(blocker)
 			if link.Kind == "conditional-blocks" {
 				satisfied = effective.SatisfiesConditionalBlocks(s.Status)
+			}
+			if link.Kind == "waits-for" && !satisfied {
+				// A waits-for edge is a fanout gate. With no gate metadata on
+				// the compact Plug link envelope, an open target is satisfied
+				// once all of its explicit or linked children are terminal.
+				satisfied = o.noOpenChildren(blocker.doc, graph)
 			}
 			if !satisfied {
 				return false, nil
 			}
 		default:
-			return false, failure("invalid_params", "dependency kind is not supported by the local slice")
+			// Valid custom dependency kinds are retained but have no core
+			// scheduling or blocker effect.
+			continue
+		}
+	}
+	if doc.Parent != nil {
+		parent, exists := graph[doc.Parent.ID]
+		if !exists {
+			return false, nil
+		}
+		if !terminal(parent) {
+			return false, nil
 		}
 	}
 	return true, nil
