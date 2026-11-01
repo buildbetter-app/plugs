@@ -1122,13 +1122,11 @@ func TestCommentGetThroughGuardedRPCSnapshotsAndRefusals(t *testing.T) {
 	facts.Namespace.InstallationID = "other-installation"
 	facts.Projects[0].InstallationID = "other-installation"
 	facts.Teams[0].InstallationID = "other-installation"
-	if err := mutable.Replace(facts); err != nil {
-		t.Fatal(err)
+	if err := mutable.Replace(facts); err == nil {
+		t.Fatal("installed source accepted an installation replacement")
 	}
-	denied := call(t, server, reader, "bead.get", params(&service.AsOf{Revision: old.Revision}))
-	requireCode(t, denied, "authz_unavailable")
-	if _, exists := denied["result"]; exists {
-		t.Fatal("unavailable policy source leaked historical result")
-	}
+	// A refused registry replacement leaves the prior valid facts installed,
+	// including the current-history read permission.
+	result(t, call(t, server, reader, "bead.get", params(&service.AsOf{Revision: old.Revision})))
 	requireCode(t, call(t, server, reader, "bead.comment", `{"id":{"id":"pl-comment-rpc","branch":0},"body":"forged","origin":"import","sourceAuthor":"forged","_meta":{"project":"project"}}`), "invalid_params")
 }
