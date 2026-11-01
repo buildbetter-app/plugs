@@ -89,12 +89,27 @@ func TestMeasuredSourceNamesWorkflowDispositions(t *testing.T) {
 	}
 	want := []string{"\x77isp_child_counters", "\x77isp_comments", "\x77isp_dependencies", "\x77isp_events", "\x77isp_labels", "\x77isps"}
 	for i, disposition := range s.WorkflowDispositions {
-		if disposition.Family != want[i] || disposition.Rows != 0 || disposition.Action != "refuse-if-nonempty" {
+		if disposition.Family != want[i] || disposition.Rows != 0 || disposition.Action != workflowDispositionAction || disposition.Reason != workflowDispositionReason {
 			t.Fatalf("workflow disposition[%d]=%+v, want family=%q, empty, refuse-if-nonempty", i, disposition, want[i])
 		}
-		if disposition.Reason == "" {
-			t.Fatalf("workflow disposition[%d] omitted its refusal reason", i)
+	}
+}
+
+func TestMeasuredArchiveRefusesUntrustedWorkflowReason(t *testing.T) {
+	const marker = "private-workflow-reason-needle"
+	data := rewritePublic(t, func(m map[string][]byte) {
+		var manifest map[string]any
+		mustDecode(t, m["manifest.json"], &manifest)
+		for _, raw := range manifest["sources"].([]any) {
+			source := raw.(map[string]any)
+			if source["family"] == "wisps" {
+				source["reason"] = marker
+			}
 		}
+		m["manifest.json"] = mustEncode(t, manifest)
+	})
+	if _, err := MeasureArchive(bytes.NewReader(data)); err == nil || strings.Contains(err.Error(), marker) {
+		t.Fatalf("untrusted workflow reason was admitted or leaked: %v", err)
 	}
 }
 

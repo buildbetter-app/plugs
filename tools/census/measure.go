@@ -43,10 +43,24 @@ func MeasureArchive(input io.Reader) (*Capture, error) {
 		return nil, refused(ArchiveInvalid)
 	}
 	a, err := dumpformat.Read(input)
-	if err != nil || a.Native() {
+	if err != nil || a.Native() || !validWorkflowDispositions(a.Manifest().Sources) {
 		return nil, refused(ArchiveInvalid)
 	}
 	return &Capture{archive: a}, nil
+}
+
+func validWorkflowDispositions(sources []dumpformat.Disposition) bool {
+	byFamily := make(map[string]dumpformat.Disposition, len(sources))
+	for _, source := range sources {
+		byFamily[source.Family] = source
+	}
+	for _, family := range workflowDispositionFamilies {
+		source, ok := byFamily[family]
+		if !ok || source.Rows < 0 || source.Action != workflowDispositionAction || source.Reason != workflowDispositionReason {
+			return false
+		}
+	}
+	return true
 }
 
 func allSourceRecords(a *dumpformat.Archive) []dumpformat.Record {
@@ -153,7 +167,7 @@ func summarizeWorkflowDispositions(sources []dumpformat.Disposition) []WorkflowD
 	result := make([]WorkflowDisposition, 0, len(workflowDispositionFamilies))
 	for _, family := range workflowDispositionFamilies {
 		source := byFamily[family]
-		result = append(result, WorkflowDisposition{Family: source.Family, Rows: source.Rows, Action: source.Action, Reason: source.Reason})
+		result = append(result, WorkflowDisposition{Family: family, Rows: source.Rows, Action: workflowDispositionAction, Reason: workflowDispositionReason})
 	}
 	return result
 }

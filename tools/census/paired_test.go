@@ -81,6 +81,12 @@ func TestPairedCensusRejectsAmbiguityAndOmissions(t *testing.T) {
 		}},
 		{"unknown dimension", func(i *StoreInventory, p *PairedInput) { p.Observations[0].Snapshot.Metrics[0].Dimension = "other" }},
 		{"negative count", func(i *StoreInventory, p *PairedInput) { p.Observations[0].Snapshot.Metrics[0].Count = -1 }},
+		{"free workflow reason", func(i *StoreInventory, p *PairedInput) {
+			p.Observations[0].Snapshot.WorkflowDispositions[0].Reason = "private-workflow-reason"
+		}},
+		{"unknown workflow action", func(i *StoreInventory, p *PairedInput) {
+			p.Observations[0].Snapshot.WorkflowDispositions[0].Action = "carry"
+		}},
 		{"unpaired cursor", func(i *StoreInventory, p *PairedInput) { p.Observations[0].Snapshot.Schema.Ignored = 26 }},
 		{"block and snapshot", func(i *StoreInventory, p *PairedInput) { p.Observations[0].Block = SchemaDrift }},
 		{"free text block", func(i *StoreInventory, p *PairedInput) {

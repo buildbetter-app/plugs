@@ -24,6 +24,14 @@ var workflowDispositionFamilies = []string{
 	"\x77isp_labels", "\x77isps",
 }
 
+// Workflow dispositions are a public, sanitized ledger. The source archive
+// may carry arbitrary reason text, so only this closed vocabulary can cross
+// the census boundary.
+const (
+	workflowDispositionAction = "refuse-if-nonempty"
+	workflowDispositionReason = "workflow/overlay/routing/audit/credential mapping is unsupported in this slice"
+)
+
 // Stages are deliberately fixed. Two disposable copies of one source are
 // observations of one alias, never two inventory entries.
 var requiredStages = []string{"schema-inventory", "export", "archive-validation", "memory", "sqlite", "postgres", "reverse", "readback", "history-range"}
@@ -179,7 +187,7 @@ func validSnapshot(s Snapshot) bool {
 		seen[m.Dimension] = true
 	}
 	for i, disposition := range s.WorkflowDispositions {
-		if disposition.Family != workflowDispositionFamilies[i] || disposition.Rows < 0 || disposition.Action == "" || disposition.Reason == "" {
+		if disposition.Family != workflowDispositionFamilies[i] || disposition.Rows < 0 || disposition.Action != workflowDispositionAction || disposition.Reason != workflowDispositionReason {
 			return false
 		}
 	}
