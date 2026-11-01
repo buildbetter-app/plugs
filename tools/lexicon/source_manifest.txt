@@ -149,6 +149,7 @@ internal/core/authz/types.go
 internal/core/dumpformat/BUILD.bazel
 internal/core/dumpformat/README.md
 internal/core/dumpformat/catalog.go
+internal/core/dumpformat/history_test.go
 internal/core/dumpformat/json.go
 internal/core/dumpformat/merge.go
 internal/core/dumpformat/merge_fixture_test.go
