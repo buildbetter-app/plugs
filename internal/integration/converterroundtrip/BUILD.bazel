@@ -28,8 +28,11 @@ go_test(
         "//internal/core/service",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "//internal/storage/postgres",
         "//internal/storage/sqlite",
     ],
+    size = "large",
+    tags = ["local", "requires-network"],
 )
 
 filegroup(

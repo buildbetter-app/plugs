@@ -3,17 +3,23 @@ package converterroundtrip
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
+	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/postgres"
 )
 
 func TestLiveReverseReadsPostRestoreEditsAndOpaqueValues(t *testing.T) {
@@ -24,11 +30,20 @@ func TestLiveReverseReadsPostRestoreEditsAndOpaqueValues(t *testing.T) {
 		"payload":    map[string]any{"number": json.Number("9007199254740993"), "null": nil},
 		"waiters":    []any{"other", nil},
 	}
-	for _, kind := range []string{"memory", "sqlite"} {
+	for _, kind := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(kind, func(t *testing.T) {
 			data := admittedFixtureBytesWithFields(t, opaque)
-			profile, _ := admittedImportProfile(t, data)
-			store, lease, cleanup := openTarget(t, kind)
+			profile, archive := admittedImportProfile(t, data)
+			opaqueID := ""
+			for _, record := range archive.Records("bead") {
+				if record.Source.Fields["agent_state"] == opaque["agent_state"] {
+					opaqueID = record.ID
+				}
+			}
+			if opaqueID == "" {
+				t.Fatal("fixture is missing the opaque source bead")
+			}
+			store, lease, cleanup := openReverseTarget(t, kind)
 			defer cleanup()
 			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
 				t.Fatal(err)
@@ -56,6 +71,7 @@ func TestLiveReverseReadsPostRestoreEditsAndOpaqueValues(t *testing.T) {
 			}
 			assertReverseDescription(t, after.Result.JSONL, "live edit")
 			decoder := json.NewDecoder(bytes.NewReader(after.Result.JSONL))
+			foundOpaque := false
 			for {
 				var row struct {
 					ID       string                     `json:"id"`
@@ -66,15 +82,19 @@ func TestLiveReverseReadsPostRestoreEditsAndOpaqueValues(t *testing.T) {
 				} else if err != nil {
 					t.Fatal(err)
 				}
-				if row.Metadata["beads.agent_state"] == nil {
+				if row.ID != opaqueID {
 					continue
 				}
+				foundOpaque = true
 				for field, want := range opaque {
 					var got any
 					if err := decodeReverseJSON(row.Metadata["beads."+field], &got); err != nil || !sameReverseJSON(got, want) {
 						t.Fatalf("opaque field %s changed: %v", field, err)
 					}
 				}
+			}
+			if !foundOpaque {
+				t.Fatal("reverse omitted the opaque source bead")
 			}
 			if !reflect.DeepEqual(state, reverseState(t, store)) {
 				t.Fatal("reverse changed the store")
@@ -113,11 +133,11 @@ func assertReverseDescription(t *testing.T, data []byte, want string) {
 
 func TestLiveReverseRefusesUnrepresentableDeltasWithoutPartialOutput(t *testing.T) {
 	ctx := context.Background()
-	for _, kind := range []string{"memory", "sqlite"} {
+	for _, kind := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(kind, func(t *testing.T) {
 			data := admittedFixtureBytes(t)
 			profile, _ := admittedImportProfile(t, data)
-			store, lease, cleanup := openTarget(t, kind)
+			store, lease, cleanup := openReverseTarget(t, kind)
 			defer cleanup()
 			if _, err := ReverseRestored(ctx, store); err == nil {
 				t.Fatal("empty store was treated as a restored source")
@@ -140,6 +160,69 @@ func TestLiveReverseRefusesUnrepresentableDeltasWithoutPartialOutput(t *testing.
 			}
 		})
 	}
+}
+
+func openReverseTarget(t *testing.T, kind string) (driver.Store, driver.ActiveLease, func()) {
+	t.Helper()
+	if kind != "postgres" {
+		return openTarget(t, kind)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	docker := func(args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, "docker", append([]string{"--host=unix:///var/run/docker.sock"}, args...)...)
+		for _, entry := range os.Environ() {
+			if !strings.HasPrefix(entry, "DOCKER_HOST=") && !strings.HasPrefix(entry, "DOCKER_CONTEXT=") && !strings.HasPrefix(entry, "DOCKER_TLS=") && !strings.HasPrefix(entry, "DOCKER_TLS_VERIFY=") && !strings.HasPrefix(entry, "DOCKER_CERT_PATH=") {
+				cmd.Env = append(cmd.Env, entry)
+			}
+		}
+		return cmd.CombinedOutput()
+	}
+	name := "plug-swarm-i6-reverse-" + digestBytes([]byte(t.TempDir()))[:16]
+	const image = "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
+	if out, err := docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_reverse", "-p", "127.0.0.1::5432", image); err != nil {
+		t.Fatalf("real PostgreSQL start failed: %v %s", err, out)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		if out, err := exec.CommandContext(cleanupCtx, "docker", "--host=unix:///var/run/docker.sock", "rm", "-f", name).CombinedOutput(); err != nil {
+			t.Errorf("owned PostgreSQL cleanup failed: %v %s", err, out)
+		}
+	})
+	address, err := docker("port", name, "5432/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := strings.TrimSpace(string(address))
+	if host, _, err := net.SplitHostPort(addr); err != nil || host != "127.0.0.1" {
+		t.Fatal("test PostgreSQL must bind loopback")
+	}
+	dsn := "postgres://postgres@" + addr + "/plug_reverse?sslmode=disable"
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for {
+		if err := db.PingContext(ctx); err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			t.Fatal("real PostgreSQL did not become ready")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	store, err := postgres.Open(ctx, driver.Config{DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := store.Lease(ctx, "converter-reverse-postgres", driver.LeaseTTL)
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	return store, lease, func() { _ = lease.Release(context.Background()); _ = store.Close() }
 }
 
 func reverseState(t *testing.T, store driver.Store) struct {
@@ -210,13 +293,20 @@ func (r reverseQueryHook) Query(ctx context.Context, q driver.Query) (driver.Pag
 		case "extra":
 			page.Items = append(page.Items, driver.Record{Ref: model.RefByID("unmapped", model.Natural64(0)), Kind: "memory", Body: []byte(`{}`)})
 		case "comment":
-			doc.Comments = append(doc.Comments, pipeline.Comment{})
+			doc.Comments = append(doc.Comments, pipeline.Comment{
+				Body: "live comment", Principal: model.PrincipalRef{Kind: "user", ID: "live-author"},
+				Time: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
+			})
 		case "opaque":
 			delete(doc.Metadata, "beads.await_id")
 		case "provenance":
 			doc.Metadata["beads.source_fields"] = json.RawMessage(`{}`)
 		case "claim":
-			doc.Lease = &pipeline.ClaimLease{}
+			doc.Lease = &pipeline.ClaimLease{
+				Principal: model.PrincipalRef{Kind: "user", ID: "live-author"},
+				ExpiresAt: time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC),
+				TtlMs:     model.Natural64(1000), Epoch: model.Natural64(1),
+			}
 		}
 		page.Items[i].Body, err = json.Marshal(doc)
 		if err != nil {
