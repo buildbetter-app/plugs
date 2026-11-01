@@ -23,12 +23,20 @@ func TestThreeDisposableRehearsals(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !report.ResourcesCleaned || report.Preparation != "PASS" || report.Qualification != "WAIT" || len(report.Runs) != 3 {
+			if !report.ResourcesCleaned || report.Preparation != "PASS" || report.Qualification != "WAIT" || report.FactoryWorkers != sampledFactoryWorkers || report.FactoryTasks != sampledFactoryTaskCount || len(report.Runs) != 3 {
 				t.Fatalf("invalid prep state: %+v", report)
 			}
 			for _, run := range report.Runs {
-				if !run.FreshEmptyTarget || !run.RestoredComparison || !run.NewIncarnation || !run.AuthenticatedMCP || !run.ServiceAdminRefused || run.Baseline.Completed != 3 || run.Shadow.Completed != 3 || len(run.Baseline.Rows) != 8 || len(run.Shadow.Rows) != 8 {
+				if !run.FreshEmptyTarget || !run.RestoredComparison || !run.NewIncarnation || !run.AuthenticatedMCP || !run.ServiceAdminRefused || run.FactoryWorkers != sampledFactoryWorkers || run.FactoryTasks != sampledFactoryTaskCount || run.Baseline.Completed != sampledFactoryTaskCount || run.Shadow.Completed != sampledFactoryTaskCount || len(run.Baseline.Rows) != 8 || len(run.Shadow.Rows) != 8 {
 					t.Fatalf("missing functional evidence: %+v", run)
+				}
+				for _, digest := range []string{run.Rollback.ImageDigest, run.Rollback.PromptDigest, run.Rollback.PluginDigest, run.Rollback.DataDumpDigest} {
+					if len(digest) != 64 {
+						t.Fatalf("rollback digest is not a SHA-256: %q", digest)
+					}
+				}
+				if !run.Rollback.InputsFrozen || run.Rollback.Software != "WAIT_pinned_bundle_canary_only_no_redeployment" || run.Rollback.Complete != "WAIT_full_image_prompt_plugin_data_rollback_requires_redeployment_and_beads_readback" || run.Rollback.Data != run.Rollback.ReverseConversion {
+					t.Fatalf("rollback boundary changed: %+v", run.Rollback)
 				}
 				for _, row := range run.Shadow.Rows {
 					if row.TerminalError != 0 || row.RetryableError != 0 || row.Unknown != 0 {

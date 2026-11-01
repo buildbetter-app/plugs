@@ -10,12 +10,13 @@ configured authenticated service identity.
 driver. Each preparation owns two fresh stores, ephemeral API keys and loopback
 HTTP/MCP endpoints. It seeds only synthetic tasks and memory, dumps the source,
 restores an empty target, compares ready identities/content, checks the new
-incarnation, and runs parsed agent commands through authenticated HTTP and MCP.
-The MCP fixture uses the generic `plug_call` tool with canonical method names;
-projected core tools use snake-case names. It checks three distinct claims and
-completed task lifecycles, then attempts reverse conversion of the post-workload
-native dump. The owned directory,
-stores, HTTP clients and listeners close before a successful report is returned.
+incarnation, and runs a four-agent, eight-task sampled factory pool through
+authenticated HTTP and MCP. The MCP fixture uses the generic `plug_call` tool
+with canonical method names; projected core tools use snake-case names. It
+checks distinct claims, completed task lifecycles and the empty ready queue,
+then attempts reverse conversion of the post-workload native dump. The owned
+directory, stores, HTTP clients and listeners close before a successful report
+is returned.
 There is no input for a server URL, DSN, bearer, command adapter or cloud account.
 
 Agent workloads use service API keys. Dump/restore preparation uses a separate
@@ -23,9 +24,16 @@ private synthetic trusted-host session and presence verifier; service keys are
 explicitly tested to fail admin admission. This fixture supplies no real login
 or D32 acceptance evidence. The synthetic admin session is revoked on cleanup.
 
-The baseline is the same-build HTTP fixture. It is **not** a measured Beads
-factory pool. An authenticated loopback MCP fixture is **not** authenticated
-BuildBetter staging. Neither fixture uses production or customer data.
+The baseline is the same-build HTTP fixture run through the same sampled pool.
+It is **not** a measured Beads reference factory. An authenticated loopback MCP
+fixture is **not** authenticated BuildBetter staging. Neither fixture uses
+production or customer data.
+
+Each run writes disposable, digest-checked image, rewritten-prompt, plugin-set
+and data-dump manifests with atomic replacement, checks an old-service canary,
+and attempts the reverse converter. These are rollback preparations only:
+image/prompt/plugin redeployment, Beads import/readback and complete data
+fidelity remain explicit `WAIT` outcomes.
 
 ## Execution
 
@@ -91,7 +99,8 @@ replace a shadow fortnight or its last measured week. Reports always say
 gate admission. The native-head reverse profile currently refuses the dump.
 That measured refusal is WAIT, and a future conversion alone would still need
 import, loss accounting and source-system readback. No image, prompt or plugin
-redeployment is performed. Managed HA, RPO/RTO and staging remain unqualified.
+redeployment is performed; the digest manifests and old-service canary are
+preparation evidence only. Managed HA, RPO/RTO and staging remain unqualified.
 
 The separately reviewed R1 failover/rollback preparation scripts preserve the
 bounded A1 fixture evidence; this package does not recertify that historical
