@@ -170,6 +170,56 @@ try {
     assert.equal((await snapshot()).total, "");
     assert(requests.every(request => ["server.hello", "rpc.methods", "view.run"].includes(request.method)), "no fallback graph or write RPCs");
     console.log("PASS wire consumer canonical parent requests, no hidden pagination, no graph/policy fallback");
+  } else if (mode === "runtime") {
+    // Expectations describe Writer-persisted synthetic records. The host
+    // mounts the actual producer/RPC/HTTP stack; it never supplies RPC results.
+    const fixture = await (await fetch(base + "/runtime/manifest.json")).json();
+    const navigate = async mount => {
+      const url = base + mount + "?view=epic&epicId=" + encodeURIComponent(fixture.parentID);
+      await send("Page.navigate", { url });
+      await until(() => evaluate(`location.href === ${JSON.stringify(url)} && document.readyState === 'complete' && !!document.querySelector('#refresh')`), "runtime page");
+      await settled();
+    };
+    const check = async expected => {
+      const result = await snapshot();
+      assert.equal(await value("#connection-state"), "Connected");
+      assert.equal(result.total, expected.total + " visible children");
+      assert.deepEqual(result.statuses, expected.statuses);
+      assert.equal(result.remainder, "", "no authorization plugin means no hidden remainder");
+      assert.equal(result.injected, false);
+      assert.equal(result.overflow, false);
+      assert.match(result.revision, /^Snapshot rev [1-9][0-9]*$/);
+      for (const excluded of fixture.excludedText) assert(!(await value("main")).includes(excluded), "unrelated/grandchild bodies never reach the summary");
+      return result.revision;
+    };
+    await navigate("/ui/");
+    const original = await check(fixture.initial);
+    await screenshot("epic-progress-runtime-" + fixture.engine);
+    console.log("PASS runtime " + fixture.engine + " real Writer/direct-child producer/RPC/Chrome, unrelated and grandchildren excluded");
+    for (const step of fixture.steps) {
+      const response = await fetch(base + "/runtime/advance?step=" + encodeURIComponent(step.name), { method: "POST" });
+      assert.equal(response.status, 204, "fixture Writer commit must succeed");
+      await click("#refresh"); await settled();
+      const revision = await check(step);
+      assert.notEqual(revision, original, "refresh reads the new committed snapshot");
+      console.log("PASS runtime " + fixture.engine + " " + step.name + " refresh, real committed status/hierarchy changes");
+    }
+    await navigate("/capped/ui/");
+    assert.equal(await value("#connection-state"), "Unavailable");
+    assert.match(await value("#epic-state"), /response_exceeds_budget/);
+    assert.equal((await snapshot()).total, "");
+    assert.equal((await snapshot()).remainder, "");
+    assert.equal((await snapshot()).revision, "");
+    console.log("PASS runtime " + fixture.engine + " presentation cap clears actual atomic producer output");
+    assert(requests.every(request => ["server.hello", "rpc.methods", "view.run"].includes(request.method)), "browser must make only read RPCs");
+    const reads = requests.filter(request => request.method === "view.run");
+    assert.equal(reads.length, fixture.steps.length + 2, "one fresh read per render, no hidden pagination");
+    for (const request of reads) assert.deepEqual(request.params, {
+      definition: { filter: { query: "parent=" + fixture.parentID }, fields: [], groupBy: ["epic-progress"] },
+      _meta: { project: fixture.project },
+    }, "runtime requests preserve canonical scope, zero rows, default token budget and fresh binding");
+    await writeFile(path.join(evidence, "epic-progress-runtime-" + fixture.engine + "-requests.json"), JSON.stringify(requests, null, 2));
+    console.log("PASS runtime " + fixture.engine + " anonymous no-plugin browser boundary; not authenticated-browser qualification");
   } else {
     throw new Error("unknown epic browser mode");
   }

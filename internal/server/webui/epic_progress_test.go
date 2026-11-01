@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -59,6 +60,7 @@ func TestBrowserEpicProgressPresentation(t *testing.T) {
 
 type epicWireCase struct {
 	Name     string     `json:"name"`
+	MaxRows  int        `json:"-"`
 	Total    int        `json:"total"`
 	Hidden   int        `json:"hidden"`
 	Statuses [][]string `json:"statuses"`
@@ -142,19 +144,43 @@ func TestBrowserEpicProgressWireContract(t *testing.T) {
 			r["groups"] = append(r["groups"].([]any), map[string]any{"key": "status:extra", "count": 0, "items": []any{}})
 		}
 	})
+	// The producer's 100-group cap includes total. A UI configured for 100
+	// status rows must still refuse 100 statuses plus total atomically.
+	for _, statusGroups := range []int{99, 100} {
+		groups := []any{map[string]any{"key": "total", "count": statusGroups, "items": []any{}}}
+		statuses := make([][]string, 0, statusGroups)
+		for i := 0; i < statusGroups; i++ {
+			label := fmt.Sprintf("custom-%02d", i)
+			groups = append(groups, map[string]any{"key": "status:" + label, "count": 1, "items": []any{}})
+			statuses = append(statuses, []string{label, "1"})
+		}
+		fixture := epicWireCase{
+			Name: fmt.Sprintf("groups-%d", statusGroups+1), MaxRows: 100,
+			Total: statusGroups, Statuses: statuses,
+			result: map[string]any{"items": []any{}, "asOf": map[string]any{"revision": 17, "incarnation": "epic-contract"}, "groups": groups},
+		}
+		if statusGroups == 100 {
+			fixture.Code = "response_exceeds_budget"
+		}
+		cases = append(cases, fixture)
+	}
 	for _, code := range []string{"invalid_params", "scope_too_large", "history_gone"} {
 		cases = append(cases, epicWireCase{Name: code, Code: code})
 	}
 	mux := http.NewServeMux()
 	for _, fixture := range cases {
+		maxRows := fixture.MaxRows
+		if maxRows == 0 {
+			maxRows = 5
+		}
 		mount, rpcPath := "/fixtures/"+fixture.Name+"/ui/", "/fixtures/"+fixture.Name+"/rpc/v1"
-		ui, err := webui.New(webui.Config{MountPath: mount, RPCPath: rpcPath, Project: "web", MaxRows: 5})
+		ui, err := webui.New(webui.Config{MountPath: mount, RPCPath: rpcPath, Project: "web", MaxRows: maxRows})
 		if err != nil {
 			t.Fatal(err)
 		}
 		mux.Handle(mount, ui)
 		if fixture.Name == "visible" {
-			root, err := webui.New(webui.Config{RPCPath: rpcPath, Project: "web", MaxRows: 5})
+			root, err := webui.New(webui.Config{RPCPath: rpcPath, Project: "web", MaxRows: maxRows})
 			if err != nil {
 				t.Fatal(err)
 			}
