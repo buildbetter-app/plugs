@@ -22,6 +22,9 @@ func (t *egressTransport) RoundTrip(request *http.Request) (*http.Response, erro
 	if call.hot() {
 		return nil, failure(ErrHotEgress, "HTTP is unavailable during a synchronous pre call")
 	}
+	if !t.instance.owner.authenticationConfigured {
+		return nil, failure(ErrEgress, "HTTP is unavailable in anonymous mode")
+	}
 	if request.URL == nil || request.URL.Scheme != "https" || request.URL.User != nil {
 		return nil, failure(ErrEgress, "only credential-free HTTPS URLs are supported")
 	}

@@ -252,7 +252,11 @@ B0 creates an external graph, ownership map, prompt templates, evidence schema, 
 - Hard stop revokes or disables the remote-dev App installation and terminates the controller.
 - Containment disables credentials and outbound egress for testbox and shadow agents.
 
-The controller verifies the soft pause and hard stop in dry-run mode before it starts implementation. Every run summary records the switch state.
+The controller verifies the live soft pause and merge-admission refusal before
+continuing implementation. Hard stop and containment remain documented
+operational controls, but their App-revocation and egress-disablement
+rehearsals are not G1 acceptance requirements. Every run summary records the
+switch state.
 
 ## Work graph and parallel tracks
 
@@ -437,15 +441,35 @@ Transport, API-key authentication, native host seams, ontology phase ordering an
 
 From 00:00 to 12:00, workers close contract gaps, repeat goldens, run seeded traces, complete authorization and runtime reports, and perform the first full restore-and-compare on disposable data. From 12:00 to 18:00, the controller rehearses merge freeze and compiles the evidence ledger. Nikhil receives a go, re-plan, or stop recommendation for normal-budget continuation.
 
-At **2026-10-31 18:00 UTC**, new scope stops and the merge queue closes except for repairs to a failing required check. At **2026-10-31 23:59 UTC**, the unlimited-budget swarm burst ends. The stop-line deliverable is green Plug CI independent of rbe-west, a working pause and kill switch, the contract pack and generated schemas, first behavior cards and ratchets, UX and authorization spike reports, the runtime and concurrency report, the local vertical slice, the provisional dump and restore validator, inventory gaps, and a dependency-ranked post-stop graph. Production data does not move, and no unresolved safety gate is bypassed.
+At **2026-10-31 18:00 UTC**, new scope stops and the merge queue closes except for repairs to a failing required check. At **2026-10-31 23:59 UTC**, the unlimited-budget swarm burst ends. The stop-line deliverable is green Plug CI independent of rbe-west, a working pause and merge-admission control, the contract pack and generated schemas, first behavior cards and ratchets, UX and authorization spike reports, the runtime and concurrency report, the local vertical slice, the provisional dump and restore validator, inventory gaps, and a dependency-ranked post-stop graph. The live soft pause is sufficient for G1; App-revocation and egress-disablement rehearsals are not G1 deliverables. Production data does not move, and no unresolved safety gate is bypassed.
 
 ## Work after the stop line
 
 Keep the same graph, evidence, ownership, and merge rules at normal budget. Reduce concurrency only after the evidence ledger is consistent. Finish the complete behavior and paired store census, settle the remaining gates, repeat nightly restore diffs, then complete I1-I8 in dependency order. A production candidate requires the shadow metrics, three clean rehearsals, failover and rollback evidence, platform safety, authenticated deployment, and the release publication gate. The graph may report a candidate date only after those proofs; the stop line is not a release promise.
 
+## Deferred EP1–EP6 contract-to-UX path
+
+The current signed workgraph carries the parent-aware epic-progress follow-up
+as a dependency-ranked, deferred contract-to-UX path. It preserves the
+parent/child decision in [decisions-needed.md](decisions-needed.md) and adds no
+runtime support, implementation, qualification, merge, release, or deployment
+claim. The layers remain in this order:
+
+| ID | Dependency rank | Deferred layer and evidence gate |
+|---|---:|---|
+| **EP1** | 2 | **Parented create/reparent contract.** Define canonical parent references and same-batch behavior; refuse missing parents and cycles; preserve project boundaries and child guards; and bound ancestor closure. The contract must be separately reviewed before implementation. |
+| **EP2** | 3 | **Parent/child authorization.** Require parent edit authorization to attach; disclose hidden parents by existence only; keep a child in its own project; require edit on both child and new parent for moves; and grant no cross-project access. |
+| **EP3** | 4 | **Issueops/storage hierarchy layer.** Atomically maintain parent and ancestor closure with the required locks and sentinels, cycle checks, and child guards across each admitted store. |
+| **EP4** | 5 | **Parent-aware epic-progress RPC.** Bind the authorized scope to one snapshot, enforce caps, define continuation/reset behavior, and return typed refusals. |
+| **EP5** | 6 | **Epic progress view.** Report visible-child counts plus the exact “N more you can’t see” remainder while preserving non-disclosure. |
+| **EP6** | 7 | **E3 fifth agent-UX task.** Qualify the epic-progress experience only after EP1–EP5 are separately implemented, reviewed, and qualified. Decision #18's accepted E3 4/5 boundary remains current until then. |
+
+This path is deferred contract-to-UX work. It does not reopen the historical
+#18 runtime denial boundary or imply that any EP layer is implemented today.
+
 ## Gates
 
-- **G1 continuation gate:** the control plane, contracts, first local vertical slice, independent behavior evidence, and provisional converter are green. If they are not, pause and re-plan; do not widen scope to make the graph look healthy.
+- **G1 continuation gate — PASSED (2026-11-01):** Under Nikhil's binding emergency-stop decision, the control plane, contracts, first local vertical slice, independent behavior evidence, and provisional converter are green. The live soft pause's refusal/resume proof is sufficient control-plane evidence for G1; App-revocation and egress-disablement rehearsals are explicitly excluded from this gate. Continue at normal budget without implying production, release, deployment, or G2 qualification.
 - **G2 internal switch gate:** the parity set, paired census, three-night rehearsal streak, shadow metrics, caller rewrite, authenticated service, failover drill, freeze-window rehearsal, and full software-and-data rollback proof all pass. G2 is the only gate that can authorize the one empty-store production restore, after these recorded decisions and all other gates pass.
 - **G3 release gate:** the 0.1.0 scope is still supportable, four weeks of dogfood has no open data-loss or corruption issue, performance and UI/plugin safety checks pass, the publication scan is clean, and the release is separately approved. G3 never turns a green PR or G2 restore into an automatic public release.
 
