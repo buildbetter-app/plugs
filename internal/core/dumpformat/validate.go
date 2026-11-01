@@ -126,7 +126,7 @@ func Read(reader io.Reader) (*Archive, error) {
 		if err := validateNativeArchive(manifest, members, paths); err != nil {
 			return nil, err
 		}
-		return &Archive{manifest: manifest, members: members, native: true}, nil
+		return &Archive{sha256: digest(data), manifest: manifest, members: members, native: true}, nil
 	}
 	if err := validateManifest(manifest, members); err != nil {
 		return nil, err
