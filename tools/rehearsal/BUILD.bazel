@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "rehearsal",
+    srcs = ["admin_fixture.go", "disposable.go", "files.go", "gate.go", "metrics.go"],
+    importpath = "github.com/buildbetter-app/plugs/tools/rehearsal",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/cli",
+        "//internal/client",
+        "//internal/core/dumpformat",
+        "//internal/core/model",
+        "//internal/core/restore",
+        "//internal/core/reverseconverter",
+        "//internal/plugins/authnapikey",
+        "//internal/server/authn",
+        "//internal/server/composition",
+        "//internal/server/transport/mcp",
+    ],
+)
+
+go_test(
+    name = "rehearsal_test",
+    size = "medium",
+    srcs = ["disposable_test.go", "files_test.go", "metrics_test.go"],
+    args = ["-test.v"],
+    embed = [":rehearsal"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

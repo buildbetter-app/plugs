@@ -118,6 +118,8 @@ internal/api/wire/schema.go
 internal/api/wire/wire_test.go
 internal/cli/BUILD.bazel
 internal/cli/README.md
+internal/cli/agent.go
+internal/cli/agent_test.go
 internal/cli/archive_test.go
 internal/cli/config.go
 internal/cli/config_test.go
@@ -813,6 +815,7 @@ pluginapi/manifest.go
 pluginapi/op.go
 pluginapi/types.go
 pluginapi/types_test.go
+plugins/plug/SKILL.md
 scripts/ci/plug-bazel-config-test.sh
 scripts/ci/plug-bazel-delivery-test.sh
 scripts/ci/plug-bazel-delivery.py
@@ -915,3 +918,16 @@ tools/lexicon/source_manifest.txt
 tools/r1/README.md
 tools/r1/managed_postgres_failover_drill.sh
 tools/r1/rollback_rehearsal.sh
+tools/rehearsal/BUILD.bazel
+tools/rehearsal/README.md
+tools/rehearsal/admin_fixture.go
+tools/rehearsal/cmd/shadow-rehearsal/BUILD.bazel
+tools/rehearsal/cmd/shadow-rehearsal/main.go
+tools/rehearsal/disposable.go
+tools/rehearsal/disposable_test.go
+tools/rehearsal/files.go
+tools/rehearsal/files_test.go
+tools/rehearsal/gate.go
+tools/rehearsal/metrics.go
+tools/rehearsal/metrics_test.go
+tools/rehearsal/three_rehearsals.sh
