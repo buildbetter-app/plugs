@@ -36,8 +36,20 @@ func TestSQLSourceHistoryReadsPinnedDoltCommitImages(t *testing.T) {
 	for _, row := range source["issues"].Rows {
 		row["agent_state"] = "waiting\x00opaque"
 		row["await_id"] = "approval/byte-for-byte"
+		row["await_type"] = "human"
+		row["ephemeral"] = json.Number("1")
+		row["event_kind"] = nil
+		row["hook_bead"] = "demo-8"
+		row["is_template"] = json.Number("1")
+		row["mol_type"] = "formula"
+		row["role_bead"] = "demo-7"
+		row["role_type"] = "agent"
+		row["target"] = "demo-8"
 		row["timeout_ns"] = json.Number("9007199254740993")
 		row["payload"] = map[string]any{"n": json.Number("9007199254740993"), "null": nil}
+		row["waiters"] = []any{"demo-8", nil}
+		row["wisp_type"] = "run"
+		row["work_type"] = "workflow"
 	}
 	// This is an explicitly synthetic source database. Its complete closed
 	// column census is real SQL state; no old production schema is inferred.
@@ -132,6 +144,12 @@ func TestSQLSourceHistoryReadsPinnedDoltCommitImages(t *testing.T) {
 		t.Fatal("source audit or opaque bytes were lost")
 	}
 	t.Logf("actual Dolt capture commits=%d first=%d head=%d events=%d sha256=%s", len(h.Commits), h.Range.First, h.Range.Head, len(h.Events), digest(data))
+	if os.Getenv("PLUG_TEST_EXPORT_PUBLIC_HISTORY") == "1" {
+		// Only this fixed public synthetic database can reach this branch.
+		// The standard hosted receipt retains test.log, so a consumer can
+		// qualify these exact exporter-produced bytes without another build.
+		t.Logf("PUBLIC_SOURCE_ARCHIVE_BASE64=%s", base64.StdEncoding.EncodeToString(data))
+	}
 	if output := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); output != "" {
 		if err := os.WriteFile(filepath.Join(output, "dolt-source-partial.tar"), data, 0o600); err != nil {
 			t.Fatal(err)
