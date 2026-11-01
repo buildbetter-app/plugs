@@ -36,7 +36,7 @@ type GateEvidence struct {
 }
 
 var sha40 = regexp.MustCompile(`^[0-9a-f]{40}$`)
-var sha256 = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var receiptDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func utcDay(t time.Time) time.Time {
 	u := t.UTC()
@@ -58,7 +58,7 @@ func EvaluateGate(now time.Time, evidence GateEvidence) []string {
 	} else {
 		seen := map[string]bool{}
 		for i, run := range runs {
-			if !run.Clean || run.SourceSHA != evidence.SourceSHA || run.SourceTree != evidence.SourceTree || !sha256.MatchString(run.Digest) || seen[run.Digest] || run.Finished.IsZero() || run.Finished.After(now) {
+			if !run.Clean || run.SourceSHA != evidence.SourceSHA || run.SourceTree != evidence.SourceTree || !receiptDigestPattern.MatchString(run.Digest) || seen[run.Digest] || run.Finished.IsZero() || run.Finished.After(now) {
 				waits = append(waits, "unclean_unbound_duplicate_or_future_rehearsal")
 			}
 			seen[run.Digest] = true
