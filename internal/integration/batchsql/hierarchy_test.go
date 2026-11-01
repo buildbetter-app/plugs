@@ -14,6 +14,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -60,6 +61,34 @@ func hierarchyRows(t *testing.T, f *fixture) []driver.DerivedRow {
 		t.Fatal(err)
 	}
 	return rows
+}
+
+func hierarchyFacts(t *testing.T, f *fixture) []driver.LockState {
+	t.Helper()
+	keys := map[string]driver.LockKey{}
+	keys["graph"] = driver.GraphBlockingSentinelLock
+	for _, row := range hierarchyRows(t, f) {
+		descendant, _, _, err := pipeline.DecodeAncestorRow(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, _ := driver.NewClosureSentinel(descendant)
+		keys[descendant] = driver.LockKey{Kind: driver.LockSentinel, Sentinel: s}
+	}
+	list := make([]driver.LockKey, 0, len(keys))
+	for _, key := range keys {
+		list = append(list, key)
+	}
+	sort.Slice(list, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(list[i])
+		b, _ := driver.EncodeLockKey(list[j])
+		return a < b
+	})
+	states, err := hierarchyReader(t, f).Observe(f.ctx, list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return states
 }
 
 // Derive the oracle exclusively from persisted direct Parent edges, never from
@@ -125,6 +154,10 @@ func TestHierarchyOrderedBatchAndSubtreeAcrossStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
+			// This case has no conditional links. Enable the complete event plan
+			// with the real audit adapter, which fails closed if one is introduced
+			// without a pinned ontology source.
+			f.writer = pipeline.New(f.store, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)), pipeline.WithClock(f.now), pipeline.WithIDGenerator(f.nextID))
 			seed := hierarchyApply(t, f,
 				hierarchyCreate("a", nil, "parent-project"),
 				hierarchyCreate("b", hierarchyRef("a"), "parent-project"),
@@ -145,12 +178,28 @@ func TestHierarchyOrderedBatchAndSubtreeAcrossStores(t *testing.T) {
 				t.Fatal(err)
 			}
 			moveMeta := f.meta("move")
-			move := model.ChangeSet{Ops: []model.Op{hierarchyMove(c, &a)}}
+			move := model.ChangeSet{Ops: []model.Op{hierarchyMove(c, &a), commentOp(c, "subtree moved")}}
+			dryMeta := f.meta("dry-run")
+			dryMeta.DryRun = true
+			dryState := f.state(t)
+			dry, err := f.writer.Apply(f.ctx, batchPrincipal, move, dryMeta)
+			if err != nil || !dry.WouldCommit {
+				t.Fatalf("hierarchy dry run failed: %+v %v", dry, err)
+			}
+			requireSameState(t, dryState, f.state(t))
+			if !reflect.DeepEqual(oldRows, hierarchyRows(t, f)) || f.receipt(t, dryMeta) != nil {
+				t.Fatal("dry run published closure/receipt")
+			}
 			moved, err := f.writer.Apply(f.ctx, batchPrincipal, move, moveMeta)
 			if err != nil {
 				t.Fatal(err)
 			}
 			got := verifyHierarchy(t, f)
+			movedLog := f.state(t).Log
+			last := movedLog[len(movedLog)-1]
+			if len(last.Events) != 1 || last.Events[0].Type != model.EventBeadReparented || last.Changes[0].Op != model.OpReparent || last.Events[0].Provenance.SetBy["parent"] != "request" {
+				t.Fatalf("reparent event/provenance was lost behind comment: %+v", last)
+			}
 			if got[c.ID+"\x00"+a.ID] != 1 || got[d.ID+"\x00"+a.ID] != 2 {
 				t.Fatal("same-key depth replacements were lost")
 			}
@@ -353,6 +402,7 @@ func TestHierarchyStagedFaultRollbackAcrossStores(t *testing.T) {
 			for _, stage := range []string{"record", "derived", "sentinels", "commit"} {
 				t.Run(stage, func(t *testing.T) {
 					before, rows := f.state(t), hierarchyRows(t, f)
+					facts := hierarchyFacts(t, f)
 					writer := pipeline.New(hierarchyFaultStore{Store: f.store, stage: stage}, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now))
 					m := f.meta(stage)
 					_, err := writer.Apply(f.ctx, batchPrincipal, model.ChangeSet{Ops: []model.Op{hierarchyMove(child, &b)}}, m)
@@ -363,10 +413,94 @@ func TestHierarchyStagedFaultRollbackAcrossStores(t *testing.T) {
 					if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || f.receipt(t, m) != nil {
 						t.Fatal("staged failure published closure/receipt")
 					}
+					if !reflect.DeepEqual(facts, hierarchyFacts(t, f)) {
+						t.Fatal("staged failure published a predicate bump")
+					}
 				})
 			}
 			verifyHierarchy(t, f)
 		})
+	}
+}
+
+// Inject invalid persisted derived state through the real driver, then verify
+// the writer refuses it without treating a missing row as a legacy root or
+// silently backfilling a populated store.
+func TestHierarchyMalformedClosureRefusesAcrossStores(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		for _, defect := range []string{"missing-self", "extra-ancestor", "wrong-depth", "noncanonical-depth"} {
+			t.Run(engine+"/"+defect, func(t *testing.T) {
+				f := newFixture(t, engine)
+				seed := hierarchyApply(t, f, hierarchyCreate("a", nil, "work"), hierarchyCreate("b", nil, "work"), hierarchyCreate("child", hierarchyRef("a"), "work"))
+				a, b, child := seed.Results[0].Ref, seed.Results[1].Ref, seed.Results[2].Ref
+				self, _ := pipeline.AncestorRow(child.ID, child.ID, 0)
+				parent, _ := pipeline.AncestorRow(child.ID, a.ID, 1)
+				var remove, add []driver.DerivedRow
+				switch defect {
+				case "missing-self":
+					remove = []driver.DerivedRow{self}
+				case "extra-ancestor":
+					row, _ := pipeline.AncestorRow(child.ID, b.ID, 2)
+					add = []driver.DerivedRow{row}
+				case "wrong-depth":
+					parent.Value = []byte("2")
+					add = []driver.DerivedRow{parent}
+				case "noncanonical-depth":
+					parent.Value = []byte("01")
+					add = []driver.DerivedRow{parent}
+				}
+				hierarchyRawRows(t, f, child.ID, remove, add)
+				before, rows := f.state(t), hierarchyRows(t, f)
+				m := f.meta("refuse-malformed")
+				_, err := f.writer.Apply(f.ctx, batchPrincipal, model.ChangeSet{Ops: []model.Op{hierarchyMove(child, &b)}}, m)
+				requireCode(t, err, "ontology_guard_failed")
+				requireSameState(t, before, f.state(t))
+				if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || f.receipt(t, m) != nil {
+					t.Fatal("malformed closure was repaired or partially rewritten")
+				}
+			})
+		}
+	}
+}
+
+func hierarchyRawRows(t *testing.T, f *fixture, id string, remove, add []driver.DerivedRow) {
+	t.Helper()
+	tx, err := f.store.Write(f.ctx, f.lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	s, _ := driver.NewClosureSentinel(id)
+	locks := []driver.LockRequest{{Key: driver.LockKey{Kind: driver.LockSentinel, Sentinel: s}, Mode: driver.LockUpdate}}
+	for _, rows := range [][]driver.DerivedRow{remove, add} {
+		for _, row := range rows {
+			locks = append(locks, driver.LockRequest{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: row.Key}}, Mode: driver.LockUpdate})
+		}
+	}
+	sort.Slice(locks, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(locks[i].Key)
+		b, _ := driver.EncodeLockKey(locks[j].Key)
+		return a < b
+	})
+	if _, err := tx.Lock(f.ctx, locks); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Head(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutDerived(f.ctx, driver.DerivedAncestorClosure, remove, add); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.BumpSentinels(f.ctx, []driver.Sentinel{s}); err != nil {
+		t.Fatal(err)
+	}
+	keys := make([]driver.LockKey, len(locks))
+	for i := range locks {
+		keys[i] = locks[i].Key
+	}
+	m := f.meta("inject-derived-corruption")
+	if _, err := tx.Commit(f.ctx, driver.ChangesetHeader{Incarnation: tx.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: f.clock, Principal: batchPrincipal, Method: "test.hierarchy-corruption", IdempotencyKey: m.IdempotencyKey, RequestHash: "test-only", Response: model.Commit{Results: []model.OpResult{}}, Changes: []model.ChangeRecord{}, LockKeys: keys}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -436,6 +570,8 @@ func TestHierarchyClosure5000And5001AcrossStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
+			writer, metrics := pipeline.NewWithTelemetry(f.store, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now), pipeline.WithIDGenerator(f.nextID))
+			f.writer = writer
 			ops := []model.Op{hierarchyCreate("subtree", nil, "work"), hierarchyCreate("extra", nil, "work")}
 			for i := 1; i < 500; i++ {
 				ops = append(ops, hierarchyCreate(fmt.Sprintf("leaf-%d", i), hierarchyRef("subtree"), "work"))
@@ -447,11 +583,21 @@ func TestHierarchyClosure5000And5001AcrossStores(t *testing.T) {
 				}
 				ops = append(ops, hierarchyCreate(fmt.Sprintf("ancestor-%d", i), parent, "work"))
 			}
-			seed := hierarchyApply(t, f, ops...)
+			seed, err := f.writer.Apply(f.ctx, batchPrincipal, model.ChangeSet{Ops: ops}, f.meta("511-op-seed"))
+			phaseMillis := map[pipeline.Phase]float64{}
+			for phase, results := range metrics.Snapshot().LaneMillis {
+				for _, millis := range results {
+					phaseMillis[phase] += millis
+				}
+			}
+			t.Logf("%s unchanged 511-op hierarchy seed phase times (ms): %v", engine, phaseMillis)
+			if err != nil {
+				t.Fatalf("511-op hierarchy seed: %v", err)
+			}
 			subtree, extra, destination, root := seed.Results[0].Ref, seed.Results[1].Ref, seed.Results[len(ops)-1].Ref, seed.Results[len(ops)-10].Ref
 			before, rows := f.state(t), hierarchyRows(t, f)
 			m := f.meta("5001")
-			_, err := f.writer.Apply(f.ctx, batchPrincipal, model.ChangeSet{Ops: []model.Op{hierarchyMove(subtree, &destination), hierarchyMove(extra, &root)}}, m)
+			_, err = f.writer.Apply(f.ctx, batchPrincipal, model.ChangeSet{Ops: []model.Op{hierarchyMove(subtree, &destination), hierarchyMove(extra, &root)}}, m)
 			requireCode(t, err, "closure_too_large")
 			requireSameState(t, before, f.state(t))
 			if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || f.receipt(t, m) != nil {
