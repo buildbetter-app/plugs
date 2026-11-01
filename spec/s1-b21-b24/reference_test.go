@@ -194,13 +194,13 @@ func referenceProjection(t *testing.T, run beadsRun) map[string]any {
 		"orderedCreatedTitle":             createdTitle,
 		"orderedItemCount":                ordered["operations"],
 		"orderedResultRoles":              roles,
-		"orderedRowDelta":                 len(rows("afterOrderedList")) - len(rows("beforeOrderedList")),
-		"orderedHistoryDelta":             len(rows("afterOrderedHistory")) - len(rows("beforeOrderedHistory")),
+		"orderedRowDelta":                 float64(len(rows("afterOrderedList")) - len(rows("beforeOrderedList"))),
+		"orderedHistoryDelta":             float64(len(rows("afterOrderedHistory")) - len(rows("beforeOrderedHistory"))),
 		"refusedBatchExitNonzero":         byStep["refusedBatch"].Exit != 0,
 		"refusedBatchChangedState":        !reflect.DeepEqual(rows("afterRefusedList"), rows("afterOrderedList")),
 		"refusedHistoryChanged":           !reflect.DeepEqual(rows("afterRefusedHistory"), rows("afterOrderedHistory")),
 		"referenceBatchCloseStatus":       single("closedAnchor")["status"],
-		"referenceBatchCloseHistoryDelta": len(rows("afterCloseHistory")) - len(rows("afterRefusedHistory")),
+		"referenceBatchCloseHistoryDelta": float64(len(rows("afterCloseHistory")) - len(rows("afterRefusedHistory"))),
 	}
 }
 

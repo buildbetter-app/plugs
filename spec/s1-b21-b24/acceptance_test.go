@@ -164,7 +164,7 @@ func TestS1B23TitleSearchAndFullTypeSummaryCount(t *testing.T) {
 	for _, engine := range engines() {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
-			f.create(t, "b23-alpha", "needle-alpha")
+			alpha, _ := f.create(t, "b23-alpha", "needle-alpha")
 			f.create(t, "b23-beta", "other-beta")
 			closed, _ := f.create(t, "b23-closed", "needle-closed")
 			if got := f.call("bead.close", "b23-close", map[string]any{"id": closed}); got.Error != nil {
@@ -191,7 +191,7 @@ func TestS1B23TitleSearchAndFullTypeSummaryCount(t *testing.T) {
 			if err := json.Unmarshal(got.Result, &result); err != nil {
 				t.Fatal(err)
 			}
-			if len(result.Items) != 1 || result.Items[0].ID != "s1-b23-alpha" || result.Items[0].Fields.Title != "needle-alpha" {
+			if len(result.Items) != 1 || result.Items[0].ID != alpha.ID || result.Items[0].Fields.Title != "needle-alpha" {
 				t.Fatalf("title search=%+v", result)
 			}
 			summary := f.call("view.run", "b23-summary", map[string]any{
@@ -243,7 +243,9 @@ func TestS1B24UntimedDeferRequiresExplicitReopen(t *testing.T) {
 			if len(page.Items) != 0 {
 				t.Fatalf("deferred item remained ready: %s", ready.Result)
 			}
-			f.clock = f.clock.Add(24 * time.Hour)
+			// Keep the memory lease live while still proving that a positive
+			// controlled-clock advance does not wake an untimed defer.
+			f.clock = f.clock.Add(5 * time.Second)
 			advanced := f.call("bead.ready", "b24-ready-after-clock", map[string]any{"limit": 100})
 			if advanced.Error != nil {
 				t.Fatalf("ready after clock: %+v", advanced.Error)
