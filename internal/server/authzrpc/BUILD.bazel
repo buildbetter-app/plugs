@@ -22,8 +22,10 @@ go_library(
 
 go_test(
     name = "authzrpc_test",
-    srcs = ["authzrpc_test.go"],
+    size = "large",
+    srcs = ["authzrpc_test.go", "drivers_test.go"],
     embed = [":authzrpc"],
+    tags = ["local", "requires-network"],
     deps = [
         "//internal/core/authz",
         "//internal/core/model",
@@ -35,6 +37,8 @@ go_test(
         "//internal/storage/conformance",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
         "//pluginapi",
         "//sdk/go:sdk_go",
     ],

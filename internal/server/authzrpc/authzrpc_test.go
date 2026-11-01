@@ -91,7 +91,8 @@ func TestLostLeaseFencesAuthorizationSnapshotsBeforeStorage(t *testing.T) {
 }
 
 type fixture struct {
-	store  *memory.Store
+	store  driver.Store
+	lease  driver.ActiveLease
 	keys   *authnapikey.Provider
 	facts  *authzrpc.MutableFacts
 	base   authzfixed.Facts
@@ -100,13 +101,19 @@ type fixture struct {
 
 func newFixture(t *testing.T, mutators []pipeline.MutatorBinding) *fixture {
 	t.Helper()
+	return newFixtureOn(t, memory.New(), mutators)
+}
+
+func newFixtureOn(t *testing.T, store driver.Store, mutators []pipeline.MutatorBinding) *fixture {
+	t.Helper()
 	ctx := context.Background()
-	f := &fixture{store: memory.New()}
+	f := &fixture{store: store}
 	t.Cleanup(func() { _ = f.store.Close() })
 	lease, err := f.store.Lease(ctx, "authzrpc-test", driver.LeaseTTL)
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.lease = lease
 	t.Cleanup(func() { _ = lease.Release(ctx) })
 	// Seed a disposable record through the adopted storage fixture. No second
 	// Writer or alternate service exists: all product writes use New's Writer.
