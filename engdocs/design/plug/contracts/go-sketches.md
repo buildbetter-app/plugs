@@ -2296,6 +2296,74 @@ supersedes that boundary only as a conditional target for a future separately
 admitted implementation. It does not install a permit or claim runtime
 support; project moves remain outside this slice.
 
+### EP1 hierarchy write contract (conditional, implementation-deferred)
+
+This subsection fixes the smallest write contract needed by the post-stop EP1
+handoff. It describes a future, separately admitted hierarchy writer; it does
+not remove the #18 runtime refusal or claim implementation, qualification, or
+an authorization permit.
+
+**References and ordered batches.** `CreateOp.Parent` and `ReparentOp.Parent`
+are optional direct canonical `Ref` values. Absent or JSON `null` means a
+top-level child. A `Ref` resolves to a live stored ID or to the key of an
+earlier `create` operation in the same ordered `ChangeSet`; malformed, unknown,
+or forward aliases refuse with `invalid_params`. Each operation is evaluated
+against the immutable stored pre-image plus the effects staged by earlier
+operations. Therefore a parent create followed by a child create (or reparent)
+in one `tx.apply` is valid only when the parent operation comes first, and the
+whole batch publishes at one revision or publishes nothing. A later operation
+may refer to an earlier staged record, but no operation may observe a later
+create or a partially published parent.
+
+**Existence, cycles, and child guards.** A missing or deleted parent refuses
+with `not_found` after the normal disclosure check; an unreadable parent may
+produce the same `not_found` or the existing authorization denial, without
+distinguishing hidden from absent content. A self-parent or descendant-parent
+cycle, malformed closure, or final graph that violates the parent's ontology
+child/blocker/no-open-children guard refuses with `ontology_guard_failed`.
+The guard evaluates the final staged graph and real status/blocker facts; it is
+not the current constant `NoOpenChildren=true` shortcut. No implicit detach,
+cascade, or dangling `Parent`/closure row is allowed. Unsupported delete,
+project-change, or other child-invariant cases remain refused until a separate
+contract supplies their atomic behavior.
+
+**Project boundaries.** `CreateOp.Project` selects the new child's project
+under ordinary project rules; the parent project's identity is never inherited.
+A reparent leaves the target child's project unchanged. A non-empty
+`ReparentOp.Project` that differs from that project is an unsupported project
+move and refuses; the parent link may cross projects, but it grants no access
+to either project. The child continues to use its own project's permissions,
+and the EP2 edit checks above remain required for the parent and, on reparent,
+the child.
+
+**Transactional ancestor closure.** Let `C(d,a)` be the live ancestor closure
+with a self row `C(d,d)=0`. A root create adds only its self row. A parented
+create adds the child self row and one row for every ancestor of the parent,
+with depth one greater than the parent's depth. A reparent computes the full
+subtree `S` from the staged graph: it keeps pairs internal to `S`, removes old
+external ancestor pairs, and adds new external pairs (or removes all external
+pairs when moving to root). Depth changes are replacements keyed by both pair
+and value, never ignored updates. The persisted direct `Parent` and all
+derived rows are published together and survive strict decode, projection,
+history, and replay.
+
+Before locking, the writer must enumerate the complete added/removed/replaced
+closure and graph delta for the entire ordered batch, then take the existing
+deterministic closure/derived locks and bump the existing graph/blocking and
+closure sentinels. More than 5,000 affected closure rows, counting removals,
+additions, and depth replacements across the batch, refuses with
+`closure_too_large`; splitting or deferring one logical rewrite cannot bypass
+the bound. Migration-class rewrites and populated-store backfill are outside
+EP1. Any refusal rolls back the record, parent, closure, history, event, and
+receipt state as one unit.
+
+Required future acceptance cases are root and same-batch parent creation,
+forward/missing/hidden parent refs, self and descendant cycles, the real child
+guard, move-to-root and whole-subtree depth replacement, rollback after each
+staged write or sentinel bump, and the 5,000/5,001 closure boundary. These
+cases are implementation gates, not evidence that the current runtime supports
+parented writes.
+
 ## `pluginapi` (public)
 
 ```go

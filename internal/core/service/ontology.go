@@ -348,11 +348,18 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 			if err != nil {
 				return err
 			}
-			// Every graph row was read through the tracked query and strictly
-			// decoded. An unsupported parent relation would have refused the
-			// scan, so this is an observed absence in the supported envelope.
+			// The tracked query and final overlay prove absence only when no
+			// direct child exists. Canonical Parent refs are readable before
+			// the full hierarchy child-status guard is installed; an observed
+			// child leaves NoOpenChildren unknown so guarded transitions refuse.
 			noChildren := true
 			facts.NoOpenBlockers, facts.NoOpenChildren = &noBlockers, &noChildren
+			for _, child := range graph {
+				if child.doc.Parent != nil && child.doc.Parent.ID == doc.ID {
+					facts.NoOpenChildren = nil
+					break
+				}
+			}
 			facts.Evidence = map[string]bool{}
 			for _, attachment := range doc.Attachments {
 				if attachment.URI != "" || attachment.ContentRef != "" {

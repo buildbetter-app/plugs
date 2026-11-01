@@ -335,9 +335,17 @@ func TestWASIPluginBuildRestoreAndAsyncRebuild(t *testing.T) {
 		_ = restored.Close()
 	}
 	block := make(chan struct{})
+	// Reproduce from the same pinned commit in a different clean checkout,
+	// not the original path or a retained build directory. The manifest loader
+	// must also re-admit the original complete source digest.
+	rebuildSource := wasiCheckout(t, root)
+	if rebuildSource.Root == source.Root || rebuildSource.Commit != source.Commit {
+		t.Fatal("reproduction fixture is not an independent checkout of the exact pin")
+	}
+	rebuildSource.ExpectedDigest = artifact.SourceDigest()
 	restored, checks, err := lockStore.RestoreAndCheck(ctx, lock, func(context.Context) (*pluginbuild.Artifact, error) {
 		<-block
-		return pluginbuild.Build(ctx, pluginbuild.Request{Runtime: pluginapi.RuntimeWASI, Source: source, GoBinary: goPath(t)})
+		return pluginbuild.Build(ctx, pluginbuild.Request{Runtime: pluginapi.RuntimeWASI, Source: rebuildSource, GoBinary: goPath(t)})
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -358,6 +366,7 @@ func TestWASIPluginBuildRestoreAndAsyncRebuild(t *testing.T) {
 	if check.Err != nil || !check.Match {
 		t.Fatalf("rebuild check did not match lock: %+v", check)
 	}
+	t.Logf("pinned WASI reproduced across independent checkouts: commit=%s source=%s artifact=%s", lock.Commit, lock.SourceDigest, lock.ArtifactDigest)
 	_ = restored.Close()
 	// A rebuilt source revision with different bytes must remain a mismatch;
 	// it cannot replace the digest-restored artifact.
