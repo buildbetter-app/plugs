@@ -25,11 +25,11 @@ var knownKinds = map[string]bool{
 	"config": true, "beads-archive": true,
 }
 
-// Native records use the same closed v1 kind registry as the offline
-// converter. Unknown kinds must refuse before a restore can write anything.
+// Native records include the protected ontology source stored by Plug. The
+// offline converter has its own registry; unknown native kinds still refuse.
 var knownNativeKinds = map[string]bool{
 	"bead": true, "edge": true, "comment": true, "memory": true,
-	"config": true, "beads-archive": true,
+	"config": true, "beads-archive": true, "ontology": true,
 }
 
 var externalFamilies = []string{
