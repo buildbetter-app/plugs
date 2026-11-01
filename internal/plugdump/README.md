@@ -140,10 +140,11 @@ verification is explicitly unimplemented; the manifest never certifies it.
 | `ready_issues`, `blocked_issues` | Derived views are excluded from base-table reads; rebuilding and runtime membership/cycle comparison remain unverified |
 
 All nonempty refused families remain unsupported inputs; an empty table is
-still counted. Durable rows with ephemeral/template flags, a non-versioned
-storage class, or active gate/molecule/agent markers refuse as well. Unmapped
-fields on otherwise supported issues remain in provenance; they do not gain
-invented live Plug semantics.
+still counted. Durable rows with a non-versioned storage class refuse. The
+ephemeral/template flags and active gate/molecule/agent markers on otherwise
+supported issue rows are retained verbatim in `source.fields` only; they do
+not gain interpreted live Plug workflow semantics. Unmapped fields on
+otherwise supported issues remain in provenance under the same boundary.
 
 Every external family below is mandatory in the inventory, even when absent:
 
