@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -269,6 +270,58 @@ func TestHierarchyOrderedCreatesAndFinalImages(t *testing.T) {
 		mutate(&bad)
 		err := f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", epic, bad), f.snapshot(t))
 		requireHCode(t, err, "forbidden")
+	}
+}
+
+func TestHierarchyFixedPolicyBatchesHundredOperationAuthorization(t *testing.T) {
+	f := newHFixture(t, true)
+	if !f.app.Checker.canBatchHierarchyChecks() {
+		t.Fatal("fixed-policy hierarchy chain did not select aggregate authorization")
+	}
+	changes := make([]port.Change, 100)
+	for i := range changes {
+		id := fmt.Sprintf("batch-%03d", i)
+		changes[i] = hCreate(id, "", "child-project", nil, "")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := f.app.Checker.AuthorizeHierarchy(ctx, port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", changes...), f.snapshot(t)); err != nil {
+		t.Fatalf("100-operation fixed-policy batch exceeded the unchanged authorization deadline: %v", err)
+	}
+}
+
+type hCountingLink struct{ calls atomic.Int32 }
+
+func (l *hCountingLink) Check(_ context.Context, _ authz.Slice, requests []authz.CheckRequest) ([]authz.Step, error) {
+	l.calls.Add(1)
+	out := make([]authz.Step, len(requests))
+	for i := range out {
+		out[i].Effect = authz.NoDecision
+	}
+	return out, nil
+}
+
+func (*hCountingLink) Filter(authz.ListRequest) (authz.FilterExpr, error) {
+	return authz.FilterExpr{Op: authz.False}, authz.ErrCheckOnly
+}
+
+func TestHierarchyCustomLinksRetainPerOperationFallback(t *testing.T) {
+	f := newHFixture(t, true)
+	link := &hCountingLink{}
+	f.app.Checker.chain.Links = []authz.Link{link}
+	if f.app.Checker.canBatchHierarchyChecks() {
+		t.Fatal("custom-link hierarchy chain selected aggregate authorization")
+	}
+	changes := []port.Change{
+		hCreate("custom-0", "", "child-project", nil, ""),
+		hCreate("custom-1", "", "child-project", nil, ""),
+		hCreate("custom-2", "", "child-project", nil, ""),
+	}
+	if err := f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", changes...), f.snapshot(t)); err != nil {
+		t.Fatalf("custom-link fallback refused a valid batch: %v", err)
+	}
+	if got, want := link.calls.Load(), int32(len(changes)); got != want {
+		t.Fatalf("custom link was batched across operations: calls=%d want=%d", got, want)
 	}
 }
 

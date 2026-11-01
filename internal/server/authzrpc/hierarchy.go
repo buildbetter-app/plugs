@@ -50,6 +50,10 @@ func (c *Checker) AuthorizeHierarchy(ctx context.Context, stage port.Authorizati
 		return hierarchyUnavailable()
 	}
 	s := &hierarchySlice{slice: base, staged: map[string]model.Record{}}
+	var batch *hierarchyCheckBatch
+	if c.canBatchHierarchyChecks() {
+		batch = &hierarchyCheckBatch{}
+	}
 	aliases := map[string]model.Ref{}
 	stored := map[string]*model.Record{}
 	final := map[string]model.Record{}
@@ -88,7 +92,7 @@ func (c *Checker) AuthorizeHierarchy(ctx context.Context, stage port.Authorizati
 			}
 			// A receipt is never a grant. Current child assignment and the
 			// original requested destination are checked; an old parent is not.
-			if err := c.hierarchyReplay(ctx, s, caller, proposal, change, *source, aliases, load); err != nil {
+			if err := c.hierarchyReplay(ctx, s, caller, proposal, change, *source, aliases, load, batch); err != nil {
 				return err
 			}
 			continue
@@ -158,7 +162,7 @@ func (c *Checker) AuthorizeHierarchy(ctx context.Context, stage port.Authorizati
 		if change.Op.Kind == model.OpCreate {
 			s.staged[ref.ID] = staged
 		}
-		if err := c.checkHierarchyRights(ctx, s, caller, target, change.Op.Kind == model.OpCreate, proposal.Meta.Method, load); err != nil {
+		if err := c.checkHierarchyRights(ctx, s, caller, target, change.Op.Kind == model.OpCreate, proposal.Meta.Method, load, batch); err != nil {
 			return err
 		}
 		states[ref.ID] = staged
@@ -167,6 +171,11 @@ func (c *Checker) AuthorizeHierarchy(ctx context.Context, stage port.Authorizati
 				return forbidden("duplicate hierarchy alias")
 			}
 			aliases[change.Op.Create.Key] = ref
+		}
+	}
+	if batch != nil {
+		if err := c.checkHierarchyRightsBatch(ctx, s, batch); err != nil {
+			return err
 		}
 	}
 	for id, state := range states {
@@ -195,7 +204,30 @@ func (s *hierarchySlice) ProjectForBead(ctx context.Context, ref model.Ref) (aut
 	return s.slice.ProjectForBead(ctx, ref)
 }
 
-func (c *Checker) checkHierarchyRights(ctx context.Context, s *hierarchySlice, caller authz.Caller, target authz.HierarchyTarget, create bool, method string, load func(model.Ref) (*model.Record, error)) error {
+type hierarchyCheckGroup struct {
+	start int
+	end   int
+}
+
+type hierarchyCheckBatch struct {
+	requests []authz.CheckRequest
+	groups   []hierarchyCheckGroup
+}
+
+func (c *Checker) canBatchHierarchyChecks() bool {
+	if c == nil || len(c.chain.Links) != 0 || len(c.chain.Rules) == 0 {
+		return false
+	}
+	for _, rules := range c.chain.Rules {
+		fixed, ok := rules.(*authzfixed.RuleSet)
+		if !ok || fixed == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Checker) checkHierarchyRights(ctx context.Context, s *hierarchySlice, caller authz.Caller, target authz.HierarchyTarget, create bool, method string, load func(model.Ref) (*model.Record, error), batch *hierarchyCheckBatch) error {
 	requests := []authz.CheckRequest{{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: target.Ref}, Method: method}}
 	if create {
 		project, found := s.projectByName(target.Project)
@@ -223,23 +255,37 @@ func (c *Checker) checkHierarchyRights(ctx context.Context, s *hierarchySlice, c
 		}
 		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: *target.Parent}, Method: method})
 	}
-	// Translate only the adopted finite policy's membership predicates. Code
-	// links and every other rule set still receive the ORIGINAL method, so a
-	// forbid on reparent/tx.apply cannot be bypassed as a synthetic update.
-	chain := c.chain
-	chain.Rules = make([]authz.RuleSet, len(c.chain.Rules))
-	for i, rules := range c.chain.Rules {
-		chain.Rules[i] = rules
-		if fixed, ok := rules.(*authzfixed.RuleSet); ok {
-			chain.Rules[i] = hierarchyFixedRules{fixed}
+	if batch != nil {
+		start := len(batch.requests)
+		batch.requests = append(batch.requests, requests...)
+		batch.groups = append(batch.groups, hierarchyCheckGroup{start: start, end: len(batch.requests)})
+		return nil
+	}
+	return c.checkHierarchyRequests(ctx, s, requests)
+}
+
+func (c *Checker) checkHierarchyRightsBatch(ctx context.Context, s *hierarchySlice, batch *hierarchyCheckBatch) error {
+	decisions, err := c.checkHierarchyDecisions(ctx, s, batch.requests)
+	if err != nil {
+		return err
+	}
+	for _, group := range batch.groups {
+		if group.start < 0 || group.end > len(decisions) || group.start >= group.end {
+			return hierarchyUnavailable()
+		}
+		for _, decision := range decisions[group.start:group.end] {
+			if decision.Effect != authz.Allow {
+				return forbidden("hierarchy write not authorized")
+			}
 		}
 	}
-	decisions, err := chain.Check(ctx, s, requests)
+	return nil
+}
+
+func (c *Checker) checkHierarchyRequests(ctx context.Context, s *hierarchySlice, requests []authz.CheckRequest) error {
+	decisions, err := c.checkHierarchyDecisions(ctx, s, requests)
 	if err != nil {
-		return authzError(err)
-	}
-	if len(decisions) != len(requests) {
-		return hierarchyUnavailable()
+		return err
 	}
 	for _, decision := range decisions {
 		if decision.Effect != authz.Allow {
@@ -249,7 +295,34 @@ func (c *Checker) checkHierarchyRights(ctx context.Context, s *hierarchySlice, c
 	return nil
 }
 
-func (c *Checker) hierarchyReplay(ctx context.Context, s *hierarchySlice, caller authz.Caller, proposal port.ProposedChange, change port.Change, source model.Record, aliases map[string]model.Ref, load func(model.Ref) (*model.Record, error)) error {
+func (c *Checker) checkHierarchyDecisions(ctx context.Context, s *hierarchySlice, requests []authz.CheckRequest) ([]authz.Decision, error) {
+	// Translate only the adopted finite policy's membership predicates. Code
+	// links and every other rule set still receive the ORIGINAL method, so a
+	// forbid on reparent/tx.apply cannot be bypassed as a synthetic update.
+	chain := c.hierarchyChain()
+	decisions, err := chain.Check(ctx, s, requests)
+	if err != nil {
+		return nil, authzError(err)
+	}
+	if len(decisions) != len(requests) {
+		return nil, hierarchyUnavailable()
+	}
+	return decisions, nil
+}
+
+func (c *Checker) hierarchyChain() authz.Chain {
+	chain := c.chain
+	chain.Rules = make([]authz.RuleSet, len(c.chain.Rules))
+	for i, rules := range c.chain.Rules {
+		chain.Rules[i] = rules
+		if fixed, ok := rules.(*authzfixed.RuleSet); ok {
+			chain.Rules[i] = hierarchyFixedRules{fixed}
+		}
+	}
+	return chain
+}
+
+func (c *Checker) hierarchyReplay(ctx context.Context, s *hierarchySlice, caller authz.Caller, proposal port.ProposedChange, change port.Change, source model.Record, aliases map[string]model.Ref, load func(model.Ref) (*model.Record, error), batch *hierarchyCheckBatch) error {
 	parent, err := hierarchyParent(change.Op, aliases)
 	if err != nil {
 		return err
@@ -277,7 +350,7 @@ func (c *Checker) hierarchyReplay(ctx context.Context, s *hierarchySlice, caller
 			return forbidden("hierarchy write not authorized")
 		}
 	}
-	if err := c.checkHierarchyRights(ctx, s, caller, target, change.Op.Kind == model.OpCreate, proposal.Meta.Method, load); err != nil {
+	if err := c.checkHierarchyRights(ctx, s, caller, target, change.Op.Kind == model.OpCreate, proposal.Meta.Method, load, batch); err != nil {
 		return err
 	}
 	if change.Op.Kind == model.OpCreate && change.Op.Create.Key != "" {
