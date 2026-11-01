@@ -82,7 +82,7 @@ func newHFixture(t *testing.T, enabled bool) *hFixture {
 		f.base.Projects = append(f.base.Projects, authzfixed.Project{Ref: hRef(project), Name: project, InstallationID: "fixed", Active: true})
 	}
 	for _, project := range []string{"child-project", "parent-project"} {
-		f.base.Grants = append(f.base.Grants, authz.Grant{Subject: authz.SubjectRef{Kind: "user", ID: "operator"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: hRef(project)}, Role: "involved"})
+		f.base.Grants = append(f.base.Grants, authz.Grant{Subject: authz.SubjectRef{Kind: "user", ID: "user:operator"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: hRef(project)}, Role: "involved"})
 	}
 	f.facts, err = NewMutableFacts(f.base)
 	if err != nil {
@@ -97,7 +97,7 @@ func newHFixture(t *testing.T, enabled bool) *hFixture {
 }
 
 func hAgent() model.PrincipalRef {
-	return model.PrincipalRef{Kind: "agent", ID: "worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "operator"}}
+	return model.PrincipalRef{Kind: "agent", ID: "agent:worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:operator"}}
 }
 
 type hSnapshot struct {
@@ -289,7 +289,7 @@ func TestHierarchyRefusalsDoNotBroadenFixedPolicy(t *testing.T) {
 		{"sponsor-caveat", func(p *port.ProposedChange) {
 			p.Principal.Sponsor.Caveats = map[string]any{"projects": []model.Ref{hRef("child-project")}}
 		}},
-		{"User-write", func(p *port.ProposedChange) { p.Principal = model.PrincipalRef{Kind: "user", ID: "operator"} }},
+		{"User-write", func(p *port.ProposedChange) { p.Principal = model.PrincipalRef{Kind: "user", ID: "user:operator"} }},
 		{"unsponsored-Agent", func(p *port.ProposedChange) { p.Principal.Sponsor = nil }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -341,7 +341,7 @@ func (d hDeny) Filter(authz.ListRequest) (authz.FilterExpr, error) {
 
 func TestHierarchyDisclosureAndVisibleOnlyCounts(t *testing.T) {
 	f := newHFixture(t, true)
-	by := model.PrincipalRef{Kind: "user", ID: "viewer"}
+	by := model.PrincipalRef{Kind: "user", ID: "user:viewer"}
 	f.app.Checker.chain.Links = []authz.Link{hDeny{ids: map[string]bool{"new": true}, action: authz.Read}}
 	s := f.snapshot(t)
 	disclosure, err := f.app.Checker.ParentDisclosure(context.Background(), by, hRef("visible"), s)
@@ -385,7 +385,7 @@ func TestHierarchyDisclosureAndVisibleOnlyCounts(t *testing.T) {
 
 func TestHierarchyReadBindingInvalidatesOnRevocation(t *testing.T) {
 	f := newHFixture(t, true)
-	by := model.PrincipalRef{Kind: "user", ID: "viewer"}
+	by := model.PrincipalRef{Kind: "user", ID: "user:viewer"}
 	oldSnapshot := f.snapshot(t)
 	old, err := f.app.Checker.ReadAuthorityBinding(context.Background(), by, oldSnapshot)
 	if err != nil || len(old) != 64 {
@@ -443,7 +443,7 @@ func (hInvolvedReads) Filter(authz.ListRequest) (authz.FilterExpr, error) {
 func TestEpicProgressUsesCurrentAuthorityAgainstPinnedContent(t *testing.T) {
 	f := newHFixture(t, true)
 	f.app.Checker.chain.Links = []authz.Link{hInvolvedReads{}}
-	by := model.PrincipalRef{Kind: "user", ID: "operator"}
+	by := model.PrincipalRef{Kind: "user", ID: "user:operator"}
 	content := f.snapshot(t)
 	children := []model.Ref{hRef("visible"), hRef("hidden-one"), hRef("hidden-two")}
 	first, err := f.app.Checker.AuthorizeEpicProgress(context.Background(), by, content, hRef("new"), children)
@@ -501,7 +501,7 @@ func TestEpicProgressFinalCheckRefusesMidCountRevocation(t *testing.T) {
 	revoked := f.base
 	revoked.Grants = nil
 	f.app.Checker.chain.Links = []authz.Link{&hRevokeDuringRead{facts: f.facts, next: revoked}}
-	result, err := f.app.Checker.AuthorizeEpicProgress(context.Background(), model.PrincipalRef{Kind: "user", ID: "operator"}, f.snapshot(t), hRef("new"), []model.Ref{hRef("visible")})
+	result, err := f.app.Checker.AuthorizeEpicProgress(context.Background(), model.PrincipalRef{Kind: "user", ID: "user:operator"}, f.snapshot(t), hRef("new"), []model.Ref{hRef("visible")})
 	requireHCode(t, err, "authz_unavailable")
 	if len(result.Visible) != 0 || !result.Hidden.IsZero() || result.PolicyBinding != "" {
 		t.Fatal("mid-count revocation escaped the final fresh authority check")
