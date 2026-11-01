@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -86,10 +87,53 @@ func (r *snapshotReader) Get(ctx context.Context, refs []model.Ref) ([]driver.Re
 		}
 		keys[encoded] = key
 	}
-	if _, err := r.observe(ctx, sortedKeys(keys)); err != nil {
+	ordered := sortedKeys(keys)
+	states, err := r.observe(ctx, ordered)
+	if err != nil {
 		return nil, err
 	}
-	return r.reader.Get(ctx, refs)
+	// Use only this call's fresh observation, never a retained read-set value:
+	// transaction readers may have a newer locked/staged view on a later call.
+	// Presence (including a tombstone's nonzero revision) is authoritative;
+	// drivers which omit a complete live Record still use their normal Get.
+	values := make(map[string]driver.Record, len(states))
+	fallback := make([]model.Ref, 0)
+	for i, state := range states {
+		if !state.Present {
+			continue
+		}
+		encoded, _ := driver.EncodeLockKey(ordered[i])
+		if state.Record != nil && state.Record.Kind != "" && len(state.Record.Body) != 0 {
+			recordKey, encodeErr := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &state.Record.Ref})
+			if encodeErr == nil && recordKey == encoded && state.Record.Revision.String() == state.Revision.String() {
+				values[encoded] = *state.Record
+				continue
+			}
+		}
+		fallback = append(fallback, *ordered[i].Ref)
+	}
+	if len(fallback) != 0 {
+		rows, err := r.reader.Get(ctx, fallback)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			encoded, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &row.Ref})
+			if err != nil {
+				return nil, err
+			}
+			values[encoded] = row
+		}
+	}
+	result := make([]driver.Record, 0, len(refs))
+	for _, ref := range refs {
+		encoded, _ := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &ref})
+		if row, exists := values[encoded]; exists {
+			row.Body = bytes.Clone(row.Body)
+			result = append(result, row)
+		}
+	}
+	return result, nil
 }
 
 // A general query conservatively depends on the whole graph predicate.

@@ -355,10 +355,10 @@ func (t *transaction) BumpReadFacts(ctx context.Context, values []driver.ReadFac
 	return t.bump(ctx, keys)
 }
 func (t *transaction) recordRef(id string) driver.Ref {
-	for _, r := range t.acquired {
-		if keyID(r.Key) == id && r.Key.Ref != nil {
-			return *r.Key.Ref
-		}
+	// Lock retains canonical order when skipped keys are omitted.
+	i := sort.Search(len(t.acquired), func(i int) bool { return keyID(t.acquired[i].Key) >= id })
+	if i < len(t.acquired) && keyID(t.acquired[i].Key) == id && t.acquired[i].Key.Ref != nil {
+		return *t.acquired[i].Key.Ref
 	}
 	panic("sqlite: record missing validated lock")
 }

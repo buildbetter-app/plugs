@@ -211,8 +211,13 @@ func (s *Store) ensureLockKeys(ctx context.Context, ids []string) error {
 	if s.lockConn == nil {
 		return driver.ErrTxClosed
 	}
-	for _, id := range ids {
-		if _, err := s.lockConn.ExecContext(ctx, `INSERT INTO plug_postgres.locks (key) VALUES ($1) ON CONFLICT DO NOTHING`, []byte(id)); err != nil {
+	if len(ids) != 0 {
+		keys := make([][]byte, len(ids))
+		for i, id := range ids {
+			keys[i] = []byte(id)
+		}
+		if _, err := s.lockConn.ExecContext(ctx, `INSERT INTO plug_postgres.locks (key)
+		 SELECT key FROM unnest($1::bytea[]) AS pending(key) ORDER BY key ON CONFLICT DO NOTHING`, keys); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}

@@ -90,6 +90,9 @@ func (r *syntheticReader) Blob(context.Context, driver.Hash) ([]byte, error) {
 func (r *syntheticReader) Observe(context.Context, []driver.LockKey) ([]driver.LockState, error) {
 	return nil, errors.New("synthetic Observe is not used")
 }
+func (r *syntheticReader) DerivedRows(context.Context, driver.DerivedTable, string) ([]driver.DerivedRow, error) {
+	return nil, errors.New("synthetic DerivedRows is not used")
+}
 func (r *syntheticReader) Query(_ context.Context, q driver.Query) (driver.Page[driver.Record], error) {
 	start := uint64(0)
 	if q.Cursor != nil {
