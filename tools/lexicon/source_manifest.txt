@@ -899,9 +899,16 @@ spikes/runtime/sandbox.go
 spikes/runtime/sandbox_test.go
 tools/census/BUILD.bazel
 tools/census/README.md
+tools/census/behavior.go
 tools/census/census.go
 tools/census/cmd/census_check/main.go
+tools/census/cmd/paired_census/main.go
+tools/census/command.go
 tools/census/gate_test.go
+tools/census/measure.go
+tools/census/measure_test.go
+tools/census/paired.go
+tools/census/paired_test.go
 tools/census/testdata/census.json
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
