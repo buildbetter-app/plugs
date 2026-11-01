@@ -109,10 +109,11 @@ func hAgent() model.PrincipalRef {
 
 type hSnapshot struct {
 	driver.Reader
-	mu      sync.Mutex
-	gets    map[string]int
-	locks   []driver.LockKey
-	failGet string
+	mu          sync.Mutex
+	gets        map[string]int
+	locks       []driver.LockKey
+	failGet     string
+	failObserve string
 }
 
 func (f *hFixture) snapshot(t *testing.T) *hSnapshot {
@@ -145,6 +146,13 @@ func (s *hSnapshot) Get(ctx context.Context, refs []model.Ref) ([]driver.Record,
 func (s *hSnapshot) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
 	s.mu.Lock()
 	s.locks = append(s.locks, keys...)
+	for _, key := range keys {
+		encoded, err := driver.EncodeLockKey(key)
+		if err == nil && encoded == s.failObserve {
+			s.mu.Unlock()
+			return nil, errors.New("test dependency unavailable")
+		}
+	}
 	s.mu.Unlock()
 	return s.Reader.Observe(ctx, keys)
 }
@@ -299,13 +307,15 @@ func TestHierarchyFixedPolicyBatchesHundredOperationAuthorization(t *testing.T) 
 func TestHierarchyFixedPolicyObservesDependenciesOncePerPass(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite"} {
 		t.Run(engine, func(t *testing.T) {
-			var store driver.Store = memory.New()
+			var store driver.Store
 			if engine == "sqlite" {
 				var err error
 				store, err = (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: t.TempDir() + "/hierarchy.db"})
 				if err != nil {
 					t.Fatal(err)
 				}
+			} else {
+				store = memory.New()
 			}
 			f := newHFixtureStore(t, true, store)
 			changes := make([]port.Change, 100)
@@ -326,6 +336,9 @@ func TestHierarchyFixedPolicyObservesDependenciesOncePerPass(t *testing.T) {
 				counts[encoded]++
 			}
 			t.Logf("100-operation authorization: engine=%s elapsed_ms=%.3f source_reads=%d dependency_observations=%d unique_dependencies=%d", engine, float64(time.Since(started))/float64(time.Millisecond), len(s.gets), len(s.locks), len(counts))
+			if got, want := len(counts), 2*len(changes)+5; got != want {
+				t.Fatalf("first-touch dependency set changed: got=%d want=%d", got, want)
+			}
 			acl, _ := driver.NewReadFact(authz.ACLDependency(f.base.Namespace).Key)
 			aclKey, _ := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockReadFact, Fact: acl})
 			for key, count := range counts {
@@ -342,6 +355,12 @@ func TestHierarchyFixedPolicyObservesDependenciesOncePerPass(t *testing.T) {
 			for _, change := range changes {
 				if s.gets[change.Resource.Ref.ID] != 1 {
 					t.Errorf("source absence was not tracked exactly once for %s", change.Resource.Ref.ID)
+				}
+				for _, prefix := range []string{"bead/", "closure/"} {
+					sentinel, _ := driver.NewSentinel(prefix + change.Resource.Ref.ID)
+					if !s.observed(driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}) {
+						t.Errorf("first-touch dependency lost: %s%s", prefix, change.Resource.Ref.ID)
+					}
 				}
 			}
 		})
@@ -375,11 +394,77 @@ func TestHierarchyCustomLinksRetainPerOperationFallback(t *testing.T) {
 		hCreate("custom-1", "", "child-project", nil, ""),
 		hCreate("custom-2", "", "child-project", nil, ""),
 	}
-	if err := f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", changes...), f.snapshot(t)); err != nil {
+	s := f.snapshot(t)
+	if err := f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", changes...), s); err != nil {
 		t.Fatalf("custom-link fallback refused a valid batch: %v", err)
 	}
 	if got, want := link.calls.Load(), int32(len(changes)); got != want {
 		t.Fatalf("custom link was batched across operations: calls=%d want=%d", got, want)
+	}
+	// A custom component also keeps fresh first-touch reads per operation.
+	pluginKey, _ := driver.EncodeLockKey(driver.PluginsSentinelLock)
+	count := 0
+	for _, key := range s.locks {
+		encoded, _ := driver.EncodeLockKey(key)
+		if encoded == pluginKey {
+			count++
+		}
+	}
+	if count <= 1 {
+		t.Fatal("custom-link fallback reused fixed-only dependency observations")
+	}
+}
+
+type hCountingRules struct{ calls atomic.Int32 }
+
+func (r *hCountingRules) Eval(_ context.Context, _ authz.Slice, requests []authz.CheckRequest) ([]authz.Decision, error) {
+	r.calls.Add(1)
+	decisions := make([]authz.Decision, len(requests))
+	for i := range decisions {
+		decisions[i].Effect = authz.NoDecision
+	}
+	return decisions, nil
+}
+
+func (*hCountingRules) Compile(authz.ListRequest) (authz.FilterTemplate, error) {
+	return authz.FilterTemplate{}, authz.ErrCheckOnly
+}
+
+func TestHierarchyCustomRulesRetainPerOperationFallback(t *testing.T) {
+	f := newHFixture(t, true)
+	rules := &hCountingRules{}
+	f.app.Checker.chain.Rules = append(f.app.Checker.chain.Rules, rules)
+	if f.app.Checker.canBatchHierarchyChecks() {
+		t.Fatal("custom rules selected aggregate authorization")
+	}
+	changes := []port.Change{
+		hCreate("custom-rule-0", "", "child-project", nil, ""),
+		hCreate("custom-rule-1", "", "child-project", nil, ""),
+		hCreate("custom-rule-2", "", "child-project", nil, ""),
+	}
+	if err := f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", changes...), f.snapshot(t)); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := rules.calls.Load(), int32(len(changes)); got != want {
+		t.Fatalf("custom rules were batched across operations: calls=%d want=%d", got, want)
+	}
+}
+
+func TestHierarchyFixedPolicyDependencyScopeIsFresh(t *testing.T) {
+	f := newHFixture(t, true)
+	s := f.snapshot(t)
+	parent := hRef("new")
+	proposal := hProposal(hAgent(), "bead.reparent", hMove(&parent))
+	for _, stage := range []port.AuthorizationStage{port.AuthorizeBefore, port.AuthorizeAfter, port.AuthorizeReplay} {
+		if err := f.app.Checker.AuthorizeHierarchy(context.Background(), stage, proposal, s); err != nil {
+			t.Fatalf("%s: %v", stage, err)
+		}
+		// Reusing the Reader, even within the same stage, must not reuse an
+		// earlier pass's successful dependency or hide a new source failure.
+		s.failObserve, _ = driver.EncodeLockKey(driver.PluginsSentinelLock)
+		err := f.app.Checker.AuthorizeHierarchy(context.Background(), stage, proposal, s)
+		requireHCode(t, err, "authz_unavailable")
+		s.failObserve = ""
 	}
 }
 

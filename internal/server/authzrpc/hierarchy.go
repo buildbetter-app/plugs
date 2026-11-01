@@ -53,6 +53,7 @@ func (c *Checker) AuthorizeHierarchy(ctx context.Context, stage port.Authorizati
 	var batch *hierarchyCheckBatch
 	if c.canBatchHierarchyChecks() {
 		batch = &hierarchyCheckBatch{}
+		s.observed = map[authz.Dependency]bool{}
 	}
 	aliases := map[string]model.Ref{}
 	stored := map[string]*model.Record{}
@@ -192,7 +193,31 @@ func (c *Checker) AuthorizeHierarchy(ctx context.Context, stage port.Authorizati
 // creates. The underlying Record calls still observe their persistent misses.
 type hierarchySlice struct {
 	*slice
-	staged map[string]model.Record
+	staged   map[string]model.Record
+	observed map[authz.Dependency]bool
+}
+
+// The finite fixed policy repeatedly records the same dependencies during
+// Chain preparation and predicate evaluation. Retain their first successful
+// tracked read for this authorization invocation only. The Writer cannot
+// publish between these reads; a later Before/After/Replay invocation creates
+// a fresh slice. This stores no decisions or grants, and custom components
+// retain their original reads through the nil-map fallback.
+func (s *hierarchySlice) Record(ctx context.Context, dep authz.Dependency) error {
+	if s.observed == nil {
+		return s.slice.Record(ctx, dep)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.observed[dep] {
+		return nil
+	}
+	if err := s.slice.Record(ctx, dep); err != nil {
+		return err
+	}
+	s.observed[dep] = true
+	return nil
 }
 
 func (s *hierarchySlice) ProjectForBead(ctx context.Context, ref model.Ref) (authz.ProjectBinding, error) {
