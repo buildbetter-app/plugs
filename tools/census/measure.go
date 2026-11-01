@@ -72,7 +72,7 @@ func (c *Capture) Summary() Snapshot {
 
 func summarize(a *dumpformat.Archive, rows []dumpformat.Record) Snapshot {
 	m := a.Manifest()
-	s := Snapshot{Scope: PreservationScope, SourceSHA256: a.SHA256()}
+	s := Snapshot{Scope: PreservationScope, SourceSHA256: a.SHA256(), WorkflowDispositions: summarizeWorkflowDispositions(m.Sources)}
 	s.Schema.Main, s.Schema.Ignored = m.MainVersion, m.IgnoredVersion
 	type identity struct{ Kind, ID, Project string }
 	type migration struct{ Version, Hash any }
@@ -143,6 +143,19 @@ func summarize(a *dumpformat.Archive, rows []dumpformat.Record) Snapshot {
 		Files map[string]dumpformat.File
 	}{rows, m.Files}, "")
 	return s
+}
+
+func summarizeWorkflowDispositions(sources []dumpformat.Disposition) []WorkflowDisposition {
+	byFamily := make(map[string]dumpformat.Disposition, len(sources))
+	for _, source := range sources {
+		byFamily[source.Family] = source
+	}
+	result := make([]WorkflowDisposition, 0, len(workflowDispositionFamilies))
+	for _, family := range workflowDispositionFamilies {
+		source := byFamily[family]
+		result = append(result, WorkflowDisposition{Family: source.Family, Rows: source.Rows, Action: source.Action, Reason: source.Reason})
+	}
+	return result
 }
 
 func decodeRow(data []byte, target any) bool {

@@ -62,7 +62,7 @@ func TestMeasuredSourceIncludesPairedSchemaAndAllFamilies(t *testing.T) {
 		t.Fatal("project state disappeared")
 	}
 	raw, _ := json.Marshal(s)
-	for _, value := range []string{"demo-7", "demo", "Synthetic", "kv.memory", "source_table", "child_counters"} {
+	for _, value := range []string{"demo-7", "demo", "Synthetic", "kv.memory", "source_table"} {
 		if bytes.Contains(raw, []byte(value)) {
 			t.Fatalf("raw source value escaped the measurement: %q", value)
 		}
@@ -76,6 +76,26 @@ func TestMeasuredSourceIncludesPairedSchemaAndAllFamilies(t *testing.T) {
 		t.Fatal("summary mutated the capture")
 	}
 	writeSanitized(t, "synthetic-source-census.json", capture.Summary())
+}
+
+func TestMeasuredSourceNamesWorkflowDispositions(t *testing.T) {
+	capture, err := MeasureArchive(bytes.NewReader(publicFixture(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := capture.Summary()
+	if len(s.WorkflowDispositions) != 6 {
+		t.Fatalf("workflow dispositions=%d, want six declared workflow-plane families", len(s.WorkflowDispositions))
+	}
+	want := []string{"\x77isp_child_counters", "\x77isp_comments", "\x77isp_dependencies", "\x77isp_events", "\x77isp_labels", "\x77isps"}
+	for i, disposition := range s.WorkflowDispositions {
+		if disposition.Family != want[i] || disposition.Rows != 0 || disposition.Action != "refuse-if-nonempty" {
+			t.Fatalf("workflow disposition[%d]=%+v, want family=%q, empty, refuse-if-nonempty", i, disposition, want[i])
+		}
+		if disposition.Reason == "" {
+			t.Fatalf("workflow disposition[%d] omitted its refusal reason", i)
+		}
+	}
 }
 
 func TestMeasuredArchiveRefusesDriftAndSanitizesErrors(t *testing.T) {
