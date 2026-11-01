@@ -199,6 +199,93 @@ func TestCloseBoundsStalledDataWriter(t *testing.T) {
 	}
 }
 
+// pausedDeadlineContext pauses an admitted writer before it installs its normal
+// deadline. Close can publish its shorter handoff deadline in that interval.
+type pausedDeadlineContext struct {
+	context.Context
+	queried chan struct{}
+	resume  <-chan struct{}
+	once    sync.Once
+}
+
+func (c *pausedDeadlineContext) Deadline() (time.Time, bool) {
+	c.once.Do(func() {
+		close(c.queried)
+		<-c.resume
+	})
+	return c.Context.Deadline()
+}
+
+type observedDeadlineConn struct {
+	net.Conn
+	installed chan struct{}
+	once      sync.Once
+}
+
+func (c *observedDeadlineConn) SetWriteDeadline(deadline time.Time) error {
+	err := c.Conn.SetWriteDeadline(deadline)
+	if err == nil {
+		c.once.Do(func() { close(c.installed) })
+	}
+	return err
+}
+
+func TestCloseBoundsWriterBeforeInitialDeadline(t *testing.T) {
+	server, client := net.Pipe()
+	resume := make(chan struct{})
+	var resumeOnce sync.Once
+	releaseWriter := func() { resumeOnce.Do(func() { close(resume) }) }
+	t.Cleanup(func() {
+		releaseWriter()
+		_ = client.Close()
+		_ = server.Close()
+	})
+	observed := &observedDeadlineConn{Conn: server, installed: make(chan struct{})}
+	config, err := (Config{WriteTimeout: 10 * time.Second}).defaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := newConn(observed, bufio.NewReadWriter(bufio.NewReader(observed), bufio.NewWriter(observed)), config)
+	ctx := &pausedDeadlineContext{Context: context.Background(), queried: make(chan struct{}), resume: resume}
+	written := make(chan error, 1)
+	go func() {
+		written <- connection.WriteMessage(ctx, TextMessage, []byte("response awaiting its initial deadline"))
+	}()
+	select {
+	case <-ctx.queried:
+	case <-time.After(time.Second):
+		t.Fatal("data writer did not reach initial deadline admission")
+	}
+	closed := make(chan error, 1)
+	go func() {
+		closed <- connection.Close(context.Background(), closePolicy, "authentication no longer valid")
+	}()
+	select {
+	case <-observed.installed:
+	case <-time.After(time.Second):
+		t.Fatal("policy close did not install its handoff deadline")
+	}
+	// The writer already owns frame serialization; only deadline admission
+	// separates it from overwriting Close's budget with its ten-second timeout.
+	releaseWriter()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("admitted data writer replaced the policy close deadline with its ten-second timeout")
+	}
+	select {
+	case err := <-written:
+		if err == nil {
+			t.Fatal("response unexpectedly reached a peer that never reads")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("data writer remained active after policy close completed")
+	}
+}
+
 func writeMaskedTestFrame(conn net.Conn, payload []byte) error {
 	frame := []byte{0x81, 0x80 | byte(len(payload)), 1, 2, 3, 4}
 	masked := append([]byte(nil), payload...)
