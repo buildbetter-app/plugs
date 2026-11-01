@@ -52,6 +52,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Run public bundle boundary regression
+        run: python3 scripts/ci/public-bundle-test.py
+
       - name: Fetch and verify canonical Beads source
         run: |
           set -euo pipefail
