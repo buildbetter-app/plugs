@@ -16,18 +16,39 @@ func (t *transaction) snapshotReader(ctx context.Context) (*reader, error) {
 	}
 	view := t.base.fork()
 	for id, record := range t.records {
+		ref := t.recordRef(id)
+		key := driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
+		state := view.keys[id]
+		state.Key = key
 		if record == nil {
 			delete(view.records, id)
+			state.Record = nil
+			state.Present = false
 		} else {
-			view.records[id] = copyRecord(*record)
-			view.kinds[id] = record.Kind
+			copy := copyRecord(*record)
+			// A staged replacement retains the committed revision token used by
+			// optimistic guards; the new revision is assigned only at commit.
+			copy.Revision = state.Revision
+			view.records[id] = copy
+			view.kinds[id] = copy.Kind
+			state.Record = &copy
+			state.Present = true
 		}
+		view.keys[id] = copyLock(state)
+		view.keyHistory[id] = append(append([]driver.LockState(nil), view.keyHistory[id]...), copyLock(state))
 	}
 	for hash, data := range t.blobs {
 		view.blobs[hash] = blob{bytes: data}
 	}
 	for id, value := range t.derived {
+		value = copyLock(value)
+		if committed, ok := view.keys[id]; ok {
+			// Match record observations: a staged derived mutation keeps the
+			// committed predicate revision as its optimistic token.
+			value.Revision = committed.Revision
+		}
 		view.keys[id] = value
+		view.keyHistory[id] = append(append([]driver.LockState(nil), view.keyHistory[id]...), value)
 	}
 	return newReader(view, driver.View{Incarnation: view.meta.Incarnation}, s.now)
 }
