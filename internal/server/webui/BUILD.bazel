@@ -6,11 +6,13 @@ go_library(
         "bridge.go",
         "catalog.go",
         "frame_digest.go",
+        "frame_host.go",
         "webui.go",
     ],
     embedsrcs = [
         "static/app.js",
         "static/favicon.svg",
+        "static/frame-host.js",
         "static/index.html",
         "static/styles.css",
     ],

@@ -254,8 +254,22 @@ func TestEmbeddedFrameUsesOpaqueNoEgressCSPAndHostBinding(t *testing.T) {
 			Methods []string `json:"methods"`
 		} `json:"frames"`
 	}
-	if err := json.Unmarshal(configBody, &config); err != nil || len(config.Frames) != 1 || config.Frames[0].Src != "/ui/frames/linear/index.html" || len(config.Frames[0].Methods) != 1 {
+	if err := json.Unmarshal(configBody, &config); err != nil || len(config.Frames) != 1 || config.Frames[0].Src != "/ui/frame-hosts/linear/index.html" || len(config.Frames[0].Methods) != 1 {
 		t.Fatalf("frame descriptor is not embedded safely: %s err=%v", configBody, err)
+	}
+	wrapper, err := server.Client().Get(server.URL + config.Frames[0].Src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wrapper.Body.Close()
+	wrapperCSP := wrapper.Header.Get("Content-Security-Policy")
+	for _, want := range []string{"default-src 'none'", "frame-src " + server.URL + "/ui/frames/linear/index.html;", "script-src " + server.URL + "/ui/frame-host.js;", "connect-src 'none'"} {
+		if !strings.Contains(wrapperCSP, want) {
+			t.Fatalf("trusted wrapper lacks exact-entry containment %q: %s", want, wrapperCSP)
+		}
+	}
+	if wrapper.StatusCode != http.StatusOK || strings.Contains(wrapperCSP, "frame-src 'self'") {
+		t.Fatal("trusted wrapper allows an unrelated document")
 	}
 }
 

@@ -3,6 +3,7 @@ package webui_test
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -66,20 +67,29 @@ func TestBrowserPluginSandboxSafety(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var credentials, outsideAssets, egress atomic.Int64
+	var credentials, outsideAssets, egress, rpcCalls, siblingDocuments atomic.Int64
 	trap := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		egress.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer trap.Close()
 	mux := http.NewServeMux()
-	mux.Handle("/ui/", ui)
+	mux.Handle("/ui/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ui/frames/sibling/index.html" {
+			siblingDocuments.Add(1)
+		}
+		ui.ServeHTTP(w, r)
+	}))
 	mux.Handle(httpjson.Path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rpcCalls.Add(1)
 		if len(r.Header.Values("Cookie")) != 0 || len(r.Header.Values("Authorization")) != 0 {
 			credentials.Add(1)
 		}
 		rpcHandler.ServeHTTP(w, r)
 	}))
+	mux.HandleFunc("/safety-stats", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]int64{"rpcCalls": rpcCalls.Load(), "siblingDocuments": siblingDocuments.Load()})
+	})
 	mux.HandleFunc("/outside.js", func(w http.ResponseWriter, r *http.Request) {
 		outsideAssets.Add(1)
 		w.Header().Set("Content-Type", "text/javascript")

@@ -43,12 +43,22 @@ It never refreshes a pin or builds JavaScript during admission.
 Each frame is served under `frames/<id>/` with a response CSP of `sandbox
 allow-scripts`, no same-origin capability, no forms, and `connect-src 'none'`.
 Script, style and image sources are limited to that bundle's own URL directory.
-The host binds its narrow `postMessage` bridge to that frame's
-`WindowProxy` (`event.source`), checks its exact method/project grant, and
+Each plugin is nested inside a trusted, same-origin host wrapper. The wrapper's
+`frame-src` admits only that plugin's exact `index.html` URL; it contains every
+child navigation, including other same-origin bundles, before another document
+can run. This uses implemented frame-source enforcement, not `navigate-to` or a
+load-event race. The wrapper never evaluates plugin data, and the opaque child
+cannot navigate or inspect its trusted ancestor. Plugin assets stay unchanged.
+The wrapper binds the child's `WindowProxy` and opaque origin; the main host
+binds the trusted wrapper's `event.source` and exact host origin. It checks the
+same narrow `postMessage` method/project grant and
 injects project metadata before the existing same-origin RPC read. D16 methods
 and credential/egress fields are refused; `tx.apply` and `plug_call` require an
 explicit grant by exact name. The host caps each frame at 256 KiB per message
 and 20 bridge calls per second.
+Navigation-policy violations, reloads, pagehide and removal permanently revoke
+the bridge and abort pending host calls; replies are suppressed after revocation.
+Reloading the host creates a new contained frame and a fresh grant.
 
 Before stamping metadata, the live browser bridge checks every explicit
 `project` and `projects` value recursively through objects and arrays. A

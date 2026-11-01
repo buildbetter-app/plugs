@@ -80,7 +80,7 @@ type Handler struct {
 	frames map[string]frameBundle
 }
 
-//go:embed static/index.html static/app.js static/styles.css static/favicon.svg
+//go:embed static/index.html static/app.js static/frame-host.js static/styles.css static/favicon.svg
 var embedded embed.FS
 
 const contentSecurityPolicy = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'self'; frame-ancestors 'none'; form-action 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'"
@@ -156,7 +156,7 @@ func New(config Config) (*Handler, error) {
 		grant := prepared.bridge.Grant()
 		descriptors = append(descriptors, frameDescriptor{
 			ID: bundle.ID, Title: prepared.Title, Digest: prepared.Digest,
-			Src:     config.MountPath + "frames/" + bundle.ID + "/index.html",
+			Src:     config.MountPath + "frame-hosts/" + bundle.ID + "/index.html",
 			Methods: grant.Methods, Project: grant.Project,
 		})
 	}
@@ -276,7 +276,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveFrame(w, r, strings.TrimPrefix(asset, "frames/"))
 		return
 	}
-	if asset != "index.html" && asset != "app.js" && asset != "styles.css" && asset != "favicon.svg" {
+	if strings.HasPrefix(asset, "frame-hosts/") {
+		h.serveFrameHost(w, r, strings.TrimPrefix(asset, "frame-hosts/"))
+		return
+	}
+	if asset != "index.html" && asset != "app.js" && asset != "frame-host.js" && asset != "styles.css" && asset != "favicon.svg" {
 		h.writeError(w, r.Method == http.MethodGet, http.StatusNotFound, "UI asset not found")
 		return
 	}
@@ -286,10 +290,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	contentType := map[string]string{
-		"index.html":  "text/html; charset=utf-8",
-		"app.js":      "text/javascript; charset=utf-8",
-		"styles.css":  "text/css; charset=utf-8",
-		"favicon.svg": "image/svg+xml",
+		"index.html":    "text/html; charset=utf-8",
+		"app.js":        "text/javascript; charset=utf-8",
+		"frame-host.js": "text/javascript; charset=utf-8",
+		"styles.css":    "text/css; charset=utf-8",
+		"favicon.svg":   "image/svg+xml",
 	}[asset]
 	h.writeBytes(w, r.Method == http.MethodGet, http.StatusOK, contentType, data)
 }

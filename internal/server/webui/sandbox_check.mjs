@@ -47,11 +47,14 @@ try {
   const frameSession = async (id) => until(async () => {
     const { targetInfos } = await send("Target.getTargets");
     const frame = targetInfos.find((info) => info.type === "iframe" && info.url === base + "/ui/frames/" + id + "/index.html");
-    return frame && frameSessions.get(frame.targetId);
+    if (!frame) return;
+    if (!frameSessions.has(frame.targetId)) frameSessions.set(frame.targetId, (await send("Target.attachToTarget", { targetId: frame.targetId, flatten: true })).sessionId);
+    return frameSessions.get(frame.targetId);
   }, id + " frame");
-  const probe = await frameSession("probe"), sibling = await frameSession("sibling");
+  let probe = await frameSession("probe");
+  const sibling = await frameSession("sibling");
   await until(() => evaluate("globalThis.safetyLoaded === true && globalThis.safetyModuleLoaded === true", probe), "actual bundle classic/module script execution");
-  assert.equal(await evaluate("document.querySelector('iframe').getAttribute('sandbox')"), "allow-scripts");
+  assert.equal(await evaluate("document.querySelector('iframe').contentDocument.querySelector('iframe').getAttribute('sandbox')"), "allow-scripts");
   console.log("PASS actual_bundle_script_loads_under_product_headers");
 
   const runtimeProof = async (sessionId, embedded) => {
@@ -100,6 +103,29 @@ try {
   const d16 = await call(probe, "d16", "plugin.apply");
   assert.equal(d16.error?.data?.code, "method_not_granted");
   console.log("PASS event_source_bound_bridge_omits_real_cookie_and_denies_sibling_D16");
+
+  // Both destinations are controlled fixtures. The trusted wrapper's policy
+  // must contain navigation before another document can execute or inherit a
+  // bridge, including same-origin sibling bundles with a different grant.
+  const stats = async () => (await fetch(base + "/safety-stats")).json();
+  for (const destination of [base + "/ui/frames/sibling/index.html", "data:text/html,<title>Local navigation fixture</title>"]) {
+    await until(() => evaluate("document.querySelector('#cancel')?.hidden === true"), "host read completion before navigation");
+    const before = await stats();
+    try { await evaluate(`location.assign(${JSON.stringify(destination)})`, probe); } catch (_) {}
+    await until(() => evaluate("document.querySelector('iframe').dataset.bridgeState === 'revoked'"), "contained navigation revokes bridge");
+    await delay(100);
+    assert.deepEqual(await stats(), before, "navigation must not load a sibling document or reach RPC");
+    console.log("PASS navigation_contained_before_document_or_bridge_transfer " + (destination.startsWith("data:") ? "local-data" : "sibling-bundle"));
+    await send("Network.clearBrowserCookies");
+    await send("Page.reload");
+    probe = await frameSession("probe");
+    await until(() => evaluate("globalThis.safetyLoaded === true && globalThis.safetyModuleLoaded === true", probe), "original bundle reload");
+    const restoredCookie = await send("Network.setCookie", { name: "i7-canary", value: "test-only", url: base + "/", sameSite: "Lax" });
+    assert.equal(restoredCookie.success, true);
+    const restored = await call(probe, "after-reload", "rpc.methods");
+    assert.equal(restored.error, undefined); assert(Array.isArray(restored.result?.methods));
+    console.log("PASS original_bundle_bridge_restored_after_host_reload");
+  }
 
   // Direct access with credentials fails before any plugin document is served.
   await send("Page.navigate", { url: base + "/ui/frames/probe/index.html" });
