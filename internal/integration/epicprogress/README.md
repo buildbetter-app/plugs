@@ -18,7 +18,9 @@ restore into an empty store and a physical SQLite close/reopen.
 The load case retains 20,000 actual Writer-created beads and 50 distinct
 sponsored agents. It enumerates persisted records and verifies all direct
 children before asking the fifth task's progress question. This is a runtime
-behavior check, not a usability threshold or human study.
+behavior check, not a usability threshold or human study. The verbose result
+records the actual `view.run` request duration separately from corpus creation,
+along with the observed total and status counts; it imposes no new latency target.
 
 Run only through the authorized RunsOn wrapper at a committed, integrated head:
 

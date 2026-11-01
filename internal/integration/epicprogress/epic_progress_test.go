@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -346,6 +347,11 @@ func TestEpicProgressFifthTaskAtTwentyThousandBeads(t *testing.T) {
 			t.Fatal("agent child was not durably stored")
 		}
 	}
-	inspectProgress(t, f.api.call(t, f.viewer(t, epics, visible), "view.run", progressParams(parent, epics)), map[string]int{"total": 50, "status:todo": 50}, 0)
-	t.Logf("EP6 actual fifth-task HTTP proof: 20000 stored beads, 50 agents, 50 direct children; head=%s incarnation=%s; historical E3 stays 4/5 pending independently admitted integrated browser qualification", meta.Head.String(), meta.Incarnation)
+	viewer := f.viewer(t, epics, visible)
+	request := progressParams(parent, epics)
+	started := time.Now()
+	response := f.api.call(t, viewer, "view.run", request)
+	elapsed := time.Since(started)
+	inspectProgress(t, response, map[string]int{"total": 50, "status:todo": 50}, 0)
+	t.Logf("EP6 actual fifth-task HTTP observation: 20000 stored beads, 50 agents, 50 direct children; view.run query_elapsed_ms=%.3f; total=50 status:todo=50 hidden=0; head=%s incarnation=%s; historical E3 stays 4/5 pending independently admitted integrated browser qualification", float64(elapsed)/float64(time.Millisecond), meta.Head.String(), meta.Incarnation)
 }
