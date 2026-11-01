@@ -397,62 +397,85 @@ func (s *Store) claimNextEvidence(ctx context.Context, plan Plan, subject string
 		}
 	}()
 
-	var q string
-	var args []any
-	if snapshot != nil {
-		q = `SELECT b.id
-			FROM authz_request_visible v JOIN bead b ON b.id=v.bead_id
-			WHERE v.action=? AND v.subject=? AND b.ready=1 AND b.claimed_by IS NULL
-			AND (v.sort_bucket,v.sort_rank,v.sort_created,v.bead_id)>(?,?,?,?)
-			ORDER BY v.sort_bucket,v.sort_rank,v.sort_created,v.bead_id LIMIT 1`
-		args = []any{readerAction, subject, -1, 0, 0, 0}
-	} else if plan == PlanA {
-		q = `WITH visible AS MATERIALIZED (
-			SELECT c.descendant FROM plugin_grant g JOIN authz_cut_closure c ON c.ancestor=g.scope
-			WHERE g.subject=? AND g.role='reader' GROUP BY c.descendant
-		)
-		SELECT b.id FROM bead b JOIN visible v ON v.descendant=b.id
-		WHERE b.ready=1 AND b.claimed_by IS NULL AND (b.sort_bucket,b.sort_rank,b.sort_created,b.id)>(?,?,?,?)
-		ORDER BY b.sort_bucket,b.sort_rank,b.sort_created,b.id LIMIT 1`
-		args = []any{subject, -1, 0, 0, 0}
-	} else {
-		q = `SELECT b.id FROM bead b WHERE b.ready=1 AND b.claimed_by IS NULL AND (b.sort_bucket,b.sort_rank,b.sort_created,b.id)>(?,?,?,?)
-		AND EXISTS (SELECT 1 FROM authz_cut_closure c JOIN plugin_grant g ON g.scope=c.ancestor
-			WHERE c.descendant=b.id AND g.subject=? AND g.role='reader')
-		ORDER BY b.sort_bucket,b.sort_rank,b.sort_created,b.id LIMIT 1`
-		args = []any{-1, 0, 0, 0, subject}
-	}
-	if s.Dialect == DialectPostgres && snapshot == nil {
-		q += ` FOR UPDATE`
-	}
 	var id int
-	err = runner.QueryRowContext(ctx, s.bind(q), args...).Scan(&id)
-	if err == sql.ErrNoRows {
-		if err = finish(true); err != nil {
+	if snapshot != nil {
+		// Walk the cached permission projection, then inspect and lock only the
+		// live candidate row. If a concurrent writer changed that row, advance
+		// the immutable cursor and try the next authorized candidate.
+		cursor := sortKey{bucket: -1, rank: 0, created: 0, id: 0}
+		for {
+			var candidate sortKey
+			err = runner.QueryRowContext(ctx, s.bind(`SELECT bead_id,sort_bucket,sort_rank,sort_created
+				FROM authz_request_visible
+				WHERE action=? AND subject=? AND (sort_bucket,sort_rank,sort_created,bead_id)>(?,?,?,?)
+				ORDER BY sort_bucket,sort_rank,sort_created,bead_id LIMIT 1`), readerAction, subject, cursor.bucket, cursor.rank, cursor.created, cursor.id).Scan(&candidate.id, &candidate.bucket, &candidate.rank, &candidate.created)
+			if err == sql.ErrNoRows {
+				if err = finish(true); err != nil {
+					return evidence, err
+				}
+				finished = true
+				evidence.Committed = true
+				return evidence, nil
+			}
+			if err != nil {
+				return evidence, err
+			}
+			id = candidate.id
+			if s.Dialect == DialectPostgres {
+				err = runner.QueryRowContext(ctx, `SELECT id FROM bead WHERE id=$1 AND ready=1 AND claimed_by IS NULL FOR UPDATE`, id).Scan(&id)
+			} else {
+				err = runner.QueryRowContext(ctx, s.bind(`SELECT id FROM bead WHERE id=? AND ready=1 AND claimed_by IS NULL`), id).Scan(&id)
+			}
+			if err == nil {
+				break
+			}
+			if err != sql.ErrNoRows {
+				return evidence, err
+			}
+			cursor = candidate
+		}
+		if s.Dialect == DialectPostgres {
+			evidence.LockAcquired = true
+		}
+	} else {
+		var q string
+		var args []any
+		if plan == PlanA {
+			q = `WITH visible AS MATERIALIZED (
+				SELECT c.descendant FROM plugin_grant g JOIN authz_cut_closure c ON c.ancestor=g.scope
+				WHERE g.subject=? AND g.role='reader' GROUP BY c.descendant
+			)
+			SELECT b.id FROM bead b JOIN visible v ON v.descendant=b.id
+			WHERE b.ready=1 AND b.claimed_by IS NULL AND (b.sort_bucket,b.sort_rank,b.sort_created,b.id)>(?,?,?,?)
+			ORDER BY b.sort_bucket,b.sort_rank,b.sort_created,b.id LIMIT 1`
+			args = []any{subject, -1, 0, 0, 0}
+		} else {
+			q = `SELECT b.id FROM bead b WHERE b.ready=1 AND b.claimed_by IS NULL AND (b.sort_bucket,b.sort_rank,b.sort_created,b.id)>(?,?,?,?)
+			AND EXISTS (SELECT 1 FROM authz_cut_closure c JOIN plugin_grant g ON g.scope=c.ancestor
+				WHERE c.descendant=b.id AND g.subject=? AND g.role='reader')
+			ORDER BY b.sort_bucket,b.sort_rank,b.sort_created,b.id LIMIT 1`
+			args = []any{-1, 0, 0, 0, subject}
+		}
+		if s.Dialect == DialectPostgres {
+			q += ` FOR UPDATE`
+		}
+		err = runner.QueryRowContext(ctx, s.bind(q), args...).Scan(&id)
+		if err == sql.ErrNoRows {
+			if err = finish(true); err != nil {
+				return evidence, err
+			}
+			finished = true
+			evidence.Committed = true
+			return evidence, nil
+		}
+		if err != nil {
 			return evidence, err
 		}
-		finished = true
-		evidence.Committed = true
-		return evidence, nil
-	}
-	if err != nil {
-		return evidence, err
+		if s.Dialect == DialectPostgres {
+			evidence.LockAcquired = true
+		}
 	}
 	evidence.CandidateID = id
-	if s.Dialect == DialectPostgres {
-		if snapshot != nil {
-			// The batched projection chooses the candidate without locking its
-			// whole ordered join. Lock the one live bead by primary key, then
-			// keep the deliberate authorization recheck below.
-			var lockedID int
-			err = runner.QueryRowContext(ctx, `SELECT id FROM bead WHERE id=$1 AND ready=1 AND claimed_by IS NULL FOR UPDATE`, id).Scan(&lockedID)
-			if err != nil {
-				return evidence, fmt.Errorf("claim candidate %d changed before lock: %w", id, err)
-			}
-			id = lockedID
-		}
-		evidence.LockAcquired = true
-	}
 	if snapshot != nil {
 		if err = s.ensureSnapshotCurrent(snapshot); err != nil {
 			return evidence, err
