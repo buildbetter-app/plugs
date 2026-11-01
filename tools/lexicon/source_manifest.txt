@@ -167,6 +167,8 @@ internal/core/dumpformat/merge.go
 internal/core/dumpformat/merge_fixture_test.go
 internal/core/dumpformat/merge_test.go
 internal/core/dumpformat/migration_hashes.go
+internal/core/dumpformat/ontology.go
+internal/core/dumpformat/ontology_test.go
 internal/core/dumpformat/records.go
 internal/core/dumpformat/sources.go
 internal/core/dumpformat/types.go
@@ -407,6 +409,9 @@ internal/integration/offlinehistory/BUILD.bazel
 internal/integration/offlinehistory/archive_test.go
 internal/integration/offlinehistory/fixture_test.go
 internal/integration/offlinehistory/history_test.go
+internal/integration/offlinehistory/producer_test.go
+internal/integration/offlinehistory/testdata/dolt-source-partial.md
+internal/integration/offlinehistory/testdata/dolt-source-partial.tar
 internal/integration/offlinehistory/testdata/full.tar
 internal/integration/offlinehistory/testdata/generate.py
 internal/integration/offlinehistory/testdata/partial.tar
