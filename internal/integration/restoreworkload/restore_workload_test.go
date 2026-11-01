@@ -579,7 +579,9 @@ func thinSliceHistoryDocument(t *testing.T, c *client.Client, ref model.Ref, rev
 		Ref  model.Ref       `json:"ref"`
 		Body json.RawMessage `json:"body"`
 	}
-	if err := json.Unmarshal(result.JSON, &version); err != nil || version.Ref != ref {
+	// Natural's empty Go value and explicit JSON zero both select branch 0.
+	// Compare the validated wire identity rather than its Go representation.
+	if err := json.Unmarshal(result.JSON, &version); err != nil || !version.Ref.IsID() || version.Ref.ID != ref.ID || version.Ref.Branch.String() != ref.Branch.String() {
 		t.Fatalf("history.get=%s err=%v", result.JSON, err)
 	}
 	document, err := pipeline.DecodeDocument(version.Body)
