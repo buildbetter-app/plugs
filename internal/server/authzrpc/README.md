@@ -112,3 +112,8 @@ must also run the final `ValidateReadAuthorityBinding` before publication.
 The binding includes the current authority revision, so concurrent source
 changes conservatively refuse refresh rather than retaining a record-dependent
 custom-rule or project-caveat grant. Ordinary view traversal is EP4's layer.
+
+The shared canonical Parent read codec does not itself enable lifecycle child
+status qualification. Until EP3 installs that complete guard, a tracked direct
+child leaves `NoOpenChildren` unknown, refusing guarded parent close/fail rather
+than claiming observed absence. Unrelated roots retain their lifecycle behavior.
