@@ -6,7 +6,6 @@ go_test(
         "fixture_test.go",
         "runtime_test.go",
     ],
-    embedsrcs = glob(["reference/*.json"]),
     args = ["-test.v"],
     deps = [
         "//internal/core/model",
