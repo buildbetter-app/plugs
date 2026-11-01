@@ -86,14 +86,23 @@ func TestBrowserEpicProgressStoredGraph(t *testing.T) {
 			if _, err := conformance.Seed(ctx, runtime.Store, runtime.Lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: sourceRef, Kind: "ontology", Op: model.OpCreate, Body: source}}); err != nil {
 				t.Fatal(err)
 			}
+			workflow := service.NewOntology(nil)
 			writer := pipeline.New(runtime.Store, runtime.Lease,
-				pipeline.WithOntology(service.NewOntology(nil)),
+				pipeline.WithOntology(workflow),
 				pipeline.WithOntologyAudit(service.NewOntologyAudit(locate)))
+			domain := service.New(runtime.Store, runtime.Lease, writer, service.WithOntology(workflow))
 			principal := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
 			var sequence int
-			apply := func(ops ...model.Op) (model.Commit, error) {
+			nextMeta := func(project, method string) model.WriteMeta {
 				sequence++
-				return writer.Apply(ctx, principal, model.ChangeSet{Ops: ops}, model.WriteMeta{Project: "web", Method: "tx.apply", IdempotencyKey: fmt.Sprintf("%064x", sequence)})
+				return model.WriteMeta{Project: project, Method: method, IdempotencyKey: fmt.Sprintf("%064x", sequence)}
+			}
+			apply := func(ops ...model.Op) (model.Commit, error) {
+				return writer.Apply(ctx, principal, model.ChangeSet{Ops: ops}, nextMeta("web", "tx.apply"))
+			}
+			claim := func(ref model.Ref, project string) (model.Commit, error) {
+				outcome, err := domain.Claim(ctx, principal, service.ClaimRequest{ID: ref}, nextMeta(project, "bead.claim"))
+				return outcome.Commit, err
 			}
 			create := func(key, parent, project, title string) model.Op {
 				op := model.Op{Kind: model.OpCreate, Create: &model.CreateOp{Kind: model.OpCreate, Key: key, Type: "issue", Project: project, Fields: map[string]any{"title": title}}}
@@ -119,10 +128,7 @@ func TestBrowserEpicProgressStoredGraph(t *testing.T) {
 				t.Fatal("Writer did not commit the complete synthetic graph")
 			}
 			parent, alternate, first, foreign := seed.Results[0].Ref, seed.Results[1].Ref, seed.Results[2].Ref, seed.Results[4].Ref
-			patchStatus := func(ref model.Ref) model.Op {
-				return model.Op{Kind: model.OpPatch, Patch: &model.PatchOp{Kind: model.OpPatch, Target: ref, Fields: map[string]any{"status": "in_progress"}}}
-			}
-			if _, err := apply(patchStatus(foreign)); err != nil {
+			if _, err := claim(foreign, "other-team"); err != nil {
 				t.Fatal(err)
 			}
 			manifest := map[string]any{
@@ -167,13 +173,13 @@ func TestBrowserEpicProgressStoredGraph(t *testing.T) {
 					http.Error(w, "unexpected synthetic fixture step", http.StatusBadRequest)
 					return
 				}
-				var op model.Op
+				var commit model.Commit
+				var err error
 				if next == "status" {
-					op = patchStatus(first)
+					commit, err = claim(first, "web")
 				} else {
-					op = model.Op{Kind: model.OpReparent, Reparent: &model.ReparentOp{Kind: model.OpReparent, Target: first, Parent: &alternate}}
+					commit, err = apply(model.Op{Kind: model.OpReparent, Reparent: &model.ReparentOp{Kind: model.OpReparent, Target: first, Parent: &alternate}})
 				}
-				commit, err := apply(op)
 				if err != nil {
 					t.Errorf("synthetic fixture Writer mutation: %v", err)
 					http.Error(w, "fixture Writer commit refused", http.StatusInternalServerError)
