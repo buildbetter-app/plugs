@@ -40,7 +40,8 @@ jobs:
       contents: read
     env:
       BUNDLE_PROFILE: ${{ inputs.profile }}
-      BEADS_COMMIT: ${{ inputs.profile == 'plug-public-companion/1' && '444fb0623bc46c941f81983cea87020c1002a96c' || '9d6fff760b7a314b476539198504d77ce0959656' }}
+      BEADS_COMMIT: 9d6fff760b7a314b476539198504d77ce0959656
+      BEADS_COMPANION_COMMIT: 444fb0623bc46c941f81983cea87020c1002a96c
       PLUG_COMMIT: ${{ inputs.sha }}
       PLUG_SOURCE_REF: ${{ inputs.source_ref }}
       PLUG_TARGET: ${{ inputs.plug_target }}
@@ -61,7 +62,9 @@ jobs:
               test "$BEADS_COMMIT" = 9d6fff760b7a314b476539198504d77ce0959656
               ;;
             plug-public-companion/1)
-              test "$BEADS_COMMIT" = 444fb0623bc46c941f81983cea87020c1002a96c
+              BEADS_COMMIT="$BEADS_COMPANION_COMMIT"
+              export BEADS_COMMIT
+              printf '%s\n' "BEADS_COMMIT=$BEADS_COMMIT" >> "$GITHUB_ENV"
               test "$PLUG_TARGET" = //tools/roundtrip:roundtrip
               ;;
             *)
