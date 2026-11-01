@@ -106,6 +106,17 @@ func captureSourceHistory(ctx context.Context, src Source, inventory Inventory, 
 			reasons[i], cut = "unmappable", i
 		}
 	}
+	// Immutable commit images do not prove that the surrounding source census
+	// stayed fixed. Re-read it in the same caller-owned scope before admitting
+	// a range, including for sources whose transaction cannot pin system tables.
+	finalLog, err := port.ReadSourceCommits(ctx)
+	if err != nil {
+		return nil, err
+	}
+	finalChain, stable := linearSourceCommits(finalLog)
+	if !stable || !finalLog.Clean || finalLog.Head != log.Head || !equalJSON(chain, finalChain) {
+		return unverified("source-census-changed")
+	}
 	last := len(chain) - 1
 	currentImage := []Record{}
 	for _, kind := range historyKinds {

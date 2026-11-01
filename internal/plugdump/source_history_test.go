@@ -220,7 +220,7 @@ func TestExportSourceHistoryRejectsMovingCensus(t *testing.T) {
 			s := &movingHistorySource{historyFixtureSource: fixture, final: final}
 			m, h := sourceCapture(t, buildFixture(t, s, inventory))
 			if m.History != "available-unverified" || h.Range.Status != "unverified" || h.Range.Reason != "source-census-changed" || len(h.Range.Frames) != 0 {
-				t.Fatalf("moving source census became replayable: %+v", h.Range)
+				t.Fatalf("moving source census became replayable: status=%s reason=%s first=%d head=%d frames=%d", h.Range.Status, h.Range.Reason, h.Range.First, h.Range.Head, len(h.Range.Frames))
 			}
 		})
 	}
