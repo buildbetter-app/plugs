@@ -87,6 +87,7 @@ func (f *fixture) open(t *testing.T) {
 	}
 	writer := pipeline.New(f.store, f.lease,
 		pipeline.WithOntology(f.ontology),
+		pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)),
 		pipeline.WithClock(func() time.Time { return f.now }),
 		pipeline.WithIDGenerator(f.nextIDValue),
 	)
@@ -394,12 +395,12 @@ func runB13(t *testing.T, engine string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotDerived.Key != "always-run-tests-with-race-flag-and-preserve-exact" || gotDerived.Content != derivedContent {
+	if gotDerived.Key != "always-run-tests-with-race-flag-and-preserve" || gotDerived.Content != derivedContent {
 		t.Fatalf("derived memory changed key/content: %+v", gotDerived)
 	}
 
 	page := memoryItems(t, result(t, f.call(t, context.Background(), "list", "memory.list", map[string]any{"limit": 20}, false)))
-	if got := memoryKeys(t, page); !reflect.DeepEqual(got, []string{"  Explicit Key/Ω  ", "always-run-tests-with-race-flag-and-preserve-exact", "alpha"}) {
+	if got := memoryKeys(t, page); !reflect.DeepEqual(got, []string{"  Explicit Key/Ω  ", "always-run-tests-with-race-flag-and-preserve", "alpha"}) {
 		t.Fatalf("memory plane leaked/reordered rows: %v", got)
 	}
 	search := memoryItems(t, result(t, f.call(t, context.Background(), "search", "memory.list", map[string]any{"query": "ALPHA", "limit": 20}, false)))
@@ -416,7 +417,7 @@ func runB13(t *testing.T, engine string) []byte {
 		t.Fatalf("delete did not return one result: %v", deleted)
 	}
 	afterDelete := memoryItems(t, result(t, f.call(t, context.Background(), "after-delete", "memory.list", map[string]any{"limit": 20}, false)))
-	if got := memoryKeys(t, afterDelete); !reflect.DeepEqual(got, []string{"always-run-tests-with-race-flag-and-preserve-exact", "alpha"}) {
+	if got := memoryKeys(t, afterDelete); !reflect.DeepEqual(got, []string{"always-run-tests-with-race-flag-and-preserve", "alpha"}) {
 		t.Fatalf("deleted memory remained visible: %v", got)
 	}
 
@@ -445,10 +446,10 @@ func runB13(t *testing.T, engine string) []byte {
 		f.reopen(t)
 	}
 	reopened := memoryItems(t, result(t, f.call(t, context.Background(), "reopened", "memory.list", map[string]any{"limit": 20}, false)))
-	if got := memoryKeys(t, reopened); !reflect.DeepEqual(got, []string{"always-run-tests-with-race-flag-and-preserve-exact", "alpha"}) {
+	if got := memoryKeys(t, reopened); !reflect.DeepEqual(got, []string{"always-run-tests-with-race-flag-and-preserve", "alpha"}) {
 		t.Fatalf("reopened memory rows=%v", got)
 	}
-	return canonical(memoryProjection{Engine: engine, DerivedKey: gotDerived.Key, ExplicitKey: "  Explicit Key/Ω  ", SearchKeys: memoryKeys(t, search), VisibleKeys: []string{"  Explicit Key/Ω  ", "always-run-tests-with-race-flag-and-preserve-exact", "alpha"}, AfterDelete: memoryKeys(t, afterDelete), ReopenedKeys: memoryKeys(t, reopened), Replacement: createdID(t, replaced) == alphaID, Refusals: refusals})
+	return canonical(memoryProjection{Engine: engine, DerivedKey: gotDerived.Key, ExplicitKey: "  Explicit Key/Ω  ", SearchKeys: memoryKeys(t, search), VisibleKeys: []string{"  Explicit Key/Ω  ", "always-run-tests-with-race-flag-and-preserve", "alpha"}, AfterDelete: memoryKeys(t, afterDelete), ReopenedKeys: memoryKeys(t, reopened), Replacement: createdID(t, replaced) == alphaID, Refusals: refusals})
 }
 
 func errorCode(err error) string {
