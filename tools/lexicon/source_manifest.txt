@@ -861,3 +861,6 @@ tools/lexicon/inventory_test.go
 tools/lexicon/output_links/BUILD.bazel
 tools/lexicon/policy.go
 tools/lexicon/source_manifest.txt
+tools/r1/README.md
+tools/r1/managed_postgres_failover_drill.sh
+tools/r1/rollback_rehearsal.sh
