@@ -412,7 +412,7 @@ func runB13(t *testing.T, engine string) []byte {
 	if id := createdID(t, replaced); id != alphaID {
 		t.Fatalf("replacement minted a new memory ID: got=%s want=%s", id, alphaID)
 	}
-	deleted := result(t, f.call(t, context.Background(), "delete", "memory.delete", map[string]any{"id": ref(spacedID)}, true))
+	deleted := result(t, f.call(t, context.Background(), "delete", "memory.delete", map[string]any{"id": spacedID}, true))
 	if len(deleted["results"].([]any)) != 1 {
 		t.Fatalf("delete did not return one result: %v", deleted)
 	}
