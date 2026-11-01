@@ -27,7 +27,7 @@ func TestThreeDisposableRehearsals(t *testing.T) {
 				t.Fatalf("invalid prep state: %+v", report)
 			}
 			for _, run := range report.Runs {
-				if !run.FreshEmptyTarget || !run.RestoredComparison || !run.NewIncarnation || !run.AuthenticatedMCP || run.Baseline.Completed != 3 || run.Shadow.Completed != 3 || len(run.Baseline.Rows) != 8 || len(run.Shadow.Rows) != 8 {
+				if !run.FreshEmptyTarget || !run.RestoredComparison || !run.NewIncarnation || !run.AuthenticatedMCP || !run.ServiceAdminRefused || run.Baseline.Completed != 3 || run.Shadow.Completed != 3 || len(run.Baseline.Rows) != 8 || len(run.Shadow.Rows) != 8 {
 					t.Fatalf("missing functional evidence: %+v", run)
 				}
 				for _, row := range run.Shadow.Rows {
@@ -52,7 +52,7 @@ func TestThreeDisposableRehearsals(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(string(raw), "synthetic caller context") || strings.Contains(string(raw), "service:rehearsal") {
+			if strings.Contains(string(raw), "synthetic caller context") || strings.Contains(string(raw), "service:rehearsal") || strings.Contains(string(raw), "user:rehearsal-admin") {
 				t.Fatal("report contains payload/principal")
 			}
 			t.Logf("I8_PREP_REPORT %s", raw)

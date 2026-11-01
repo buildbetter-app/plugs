@@ -16,6 +16,11 @@ reverse conversion of the post-workload native dump. The owned directory,
 stores, HTTP clients and listeners close before a successful report is returned.
 There is no input for a server URL, DSN, bearer, command adapter or cloud account.
 
+Agent workloads use service API keys. Dump/restore preparation uses a separate
+private synthetic trusted-host session and presence verifier; service keys are
+explicitly tested to fail admin admission. This fixture supplies no real login
+or D32 acceptance evidence. The synthetic admin session is revoked on cleanup.
+
 The baseline is the same-build HTTP fixture. It is **not** a measured Beads
 factory pool. An authenticated loopback MCP fixture is **not** authenticated
 BuildBetter staging. Neither fixture uses production or customer data.

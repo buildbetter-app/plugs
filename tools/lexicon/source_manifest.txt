@@ -858,6 +858,7 @@ tools/lexicon/policy.go
 tools/lexicon/source_manifest.txt
 tools/rehearsal/BUILD.bazel
 tools/rehearsal/README.md
+tools/rehearsal/admin_fixture.go
 tools/rehearsal/cmd/shadow-rehearsal/BUILD.bazel
 tools/rehearsal/cmd/shadow-rehearsal/main.go
 tools/rehearsal/disposable.go

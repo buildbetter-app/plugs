@@ -25,9 +25,9 @@ func measured(t *testing.T, calls, errors, completed int, latency time.Duration,
 }
 
 func TestMetricsRejectErrorCodeDriftUnknownCallsMissingTargetsAndCompletionDrift(t *testing.T) {
-	base := measured(t, 100, 10, 100, time.Millisecond, "conflict")
+	base := measured(t, 100, 10, 100, time.Millisecond, "write_conflict")
 	targets := map[string]time.Duration{"bead.ready": 50 * time.Millisecond}
-	if issues := Compare(base, measured(t, 200, 20, 95, time.Millisecond, "conflict"), targets); len(issues) != 0 {
+	if issues := Compare(base, measured(t, 200, 20, 95, time.Millisecond, "write_conflict"), targets); len(issues) != 0 {
 		t.Fatal(issues)
 	}
 	for _, test := range []struct {
@@ -37,9 +37,9 @@ func TestMetricsRejectErrorCodeDriftUnknownCallsMissingTargetsAndCompletionDrift
 		want    string
 	}{
 		{"per-code", measured(t, 100, 10, 100, time.Millisecond, "forbidden"), targets, "error_rate_increased:forbidden"},
-		{"rate", measured(t, 100, 11, 100, time.Millisecond, "conflict"), targets, "error_rate_increased:conflict"},
-		{"completion", measured(t, 100, 10, 94, time.Millisecond, "conflict"), targets, "task_completion_outside"},
-		{"p95-exact-boundary", measured(t, 100, 10, 100, 50*time.Millisecond, "conflict"), targets, "p95_target_failed"},
+		{"rate", measured(t, 100, 11, 100, time.Millisecond, "write_conflict"), targets, "error_rate_increased:write_conflict"},
+		{"completion", measured(t, 100, 10, 94, time.Millisecond, "write_conflict"), targets, "task_completion_outside"},
+		{"p95-exact-boundary", measured(t, 100, 10, 100, 50*time.Millisecond, "write_conflict"), targets, "p95_target_failed"},
 		{"missing-target", base, nil, "latency_target_unset"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

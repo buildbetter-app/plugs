@@ -39,26 +39,28 @@ type Preparation struct {
 	Preparation      string        `json:"preparation"`
 	Qualification    string        `json:"r1_qualification"`
 	BaselineKind     string        `json:"baseline_kind"`
+	AdminProof       string        `json:"admin_proof"`
 	ResourcesCleaned bool          `json:"resources_cleaned"`
 	Runs             []PreparedRun `json:"runs"`
 	GateWaits        []string      `json:"gate_waits_at_execution"`
 }
 
 type PreparedRun struct {
-	Started            time.Time `json:"started"`
-	Finished           time.Time `json:"finished"`
-	FreshEmptyTarget   bool      `json:"fresh_empty_target"`
-	RestoredComparison bool      `json:"restored_comparison"`
-	AuthenticatedMCP   bool      `json:"authenticated_mcp"`
-	NewIncarnation     bool      `json:"new_restore_incarnation"`
-	DumpDigest         string    `json:"head_dump_sha256"`
-	Baseline           Metrics   `json:"baseline"`
-	Shadow             Metrics   `json:"shadow"`
-	ComparisonWaits    []string  `json:"comparison_waits"`
-	ReverseConversion  string    `json:"reverse_conversion"`
-	ReverseSeconds     float64   `json:"reverse_attempt_seconds"`
-	SoftwareRollback   string    `json:"software_rollback"`
-	Failover           string    `json:"managed_failover"`
+	Started             time.Time `json:"started"`
+	Finished            time.Time `json:"finished"`
+	FreshEmptyTarget    bool      `json:"fresh_empty_target"`
+	RestoredComparison  bool      `json:"restored_comparison"`
+	AuthenticatedMCP    bool      `json:"authenticated_mcp"`
+	ServiceAdminRefused bool      `json:"service_admin_refused"`
+	NewIncarnation      bool      `json:"new_restore_incarnation"`
+	DumpDigest          string    `json:"head_dump_sha256"`
+	Baseline            Metrics   `json:"baseline"`
+	Shadow              Metrics   `json:"shadow"`
+	ComparisonWaits     []string  `json:"comparison_waits"`
+	ReverseConversion   string    `json:"reverse_conversion"`
+	ReverseSeconds      float64   `json:"reverse_attempt_seconds"`
+	SoftwareRollback    string    `json:"software_rollback"`
+	Failover            string    `json:"managed_failover"`
 }
 
 var fixturePresence = map[string]any{"mode": "presence_check", "challenge": "disposable-rehearsal", "proof": "synthetic-only"}
@@ -70,7 +72,7 @@ func RunDisposable(ctx context.Context, kind, sourceSHA, sourceTree string) (rep
 	if (kind != "memory" && kind != "sqlite") || !sha40.MatchString(sourceSHA) || !sha40.MatchString(sourceTree) {
 		return report, fmt.Errorf("memory/sqlite and full source SHA/tree required")
 	}
-	report = Preparation{SourceSHA: sourceSHA, SourceTree: sourceTree, Driver: kind, Preparation: "PASS", Qualification: "WAIT", BaselineKind: "same-build authenticated HTTP fixture; reference-pool baseline UNQUALIFIED"}
+	report = Preparation{SourceSHA: sourceSHA, SourceTree: sourceTree, Driver: kind, Preparation: "PASS", Qualification: "WAIT", BaselineKind: "same-build authenticated HTTP fixture; reference-pool baseline UNQUALIFIED", AdminProof: "synthetic trusted-host session and presence fixture; real D32 UNQUALIFIED"}
 	if err = ensureWorkRoot(); err != nil {
 		return report, err
 	}
@@ -104,12 +106,15 @@ func RunDisposable(ctx context.Context, kind, sourceSHA, sourceTree string) (rep
 }
 
 type fixture struct {
-	runtime   *composition.Runtime
-	server    *httptest.Server
-	rpc       *client.Client
-	transport *client.HTTPTransport
-	token     string
-	mcp       *mcp.Handler
+	runtime        *composition.Runtime
+	server         *httptest.Server
+	rpc            *client.Client
+	transport      *client.HTTPTransport
+	token          string
+	mcp            *mcp.Handler
+	admin          *fixtureAdmin
+	adminRPC       *client.Client
+	adminTransport *client.HTTPTransport
 }
 
 func openFixture(ctx context.Context, kind, path string) (*fixture, error) {
@@ -118,8 +123,12 @@ func openFixture(ctx context.Context, kind, path string) (*fixture, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fixture credential issue failed")
 	}
+	admin, err := newFixtureAdmin()
+	if err != nil {
+		return nil, fmt.Errorf("fixture admin session unavailable")
+	}
 	runtime, err := composition.Open(ctx, composition.Config{
-		Driver: kind, DSN: path, Project: "rehearsal", AuthMode: "authenticated", Auth: authn.Config{Provider: provider},
+		Driver: kind, DSN: path, Project: "rehearsal", AuthMode: "authenticated", Auth: authn.Config{Provider: provider, CoreSessions: admin},
 		RestorePresence: restore.PresenceVerifierFunc(func(ctx context.Context, method, digest string, p restore.Presence) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -133,7 +142,7 @@ func openFixture(ctx context.Context, kind, path string) (*fixture, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fixture runtime open failed: %w", err)
 	}
-	f := &fixture{runtime: runtime, token: issued.Token}
+	f := &fixture{runtime: runtime, token: issued.Token, admin: admin}
 	handler, err := mcp.New(runtime.RPC, runtime.Authenticator, mcp.Config{})
 	if err != nil {
 		f.close()
@@ -148,6 +157,12 @@ func openFixture(ctx context.Context, kind, path string) (*fixture, error) {
 	if err == nil {
 		f.rpc, err = client.New(f.transport, "rehearsal", "rehearsal-agent")
 	}
+	if err == nil {
+		f.adminTransport, err = client.NewHTTP(client.HTTPConfig{Server: f.server.URL, Token: admin.token})
+	}
+	if err == nil {
+		f.adminRPC, err = client.New(f.adminTransport, "rehearsal", "fixture-admin")
+	}
 	if err != nil {
 		f.close()
 		return nil, err
@@ -158,6 +173,12 @@ func openFixture(ctx context.Context, kind, path string) (*fixture, error) {
 func (f *fixture) close() error {
 	if f.transport != nil {
 		f.transport.Close()
+	}
+	if f.adminTransport != nil {
+		f.adminTransport.Close()
+	}
+	if f.admin != nil {
+		f.admin.revoked.Store(true)
 	}
 	if f.server != nil {
 		f.server.Close()
@@ -205,11 +226,19 @@ func runDisposable(ctx context.Context, kind, root string, index int, seen map[s
 	if err != nil {
 		return run, err
 	}
-	data, archive, err := captureDump(ctx, source.rpc)
+	for _, f := range []*fixture{source, target} {
+		_, denied := f.rpc.Call(ctx, "admin.dump", map[string]any{"history": "head", "pageSize": 1 << 20, "humanPresence": fixturePresence}, "")
+		var remote *wire.Error
+		if !errors.As(denied, &remote) || remote.Data.Code != "human_presence_required" {
+			return run, fmt.Errorf("service key admin boundary was not enforced")
+		}
+	}
+	run.ServiceAdminRefused = true
+	data, archive, err := captureDump(ctx, source.adminRPC)
 	if err != nil {
 		return run, err
 	}
-	if err = restoreDump(ctx, target.rpc, data, archive); err != nil {
+	if err = restoreDump(ctx, target.adminRPC, data, archive); err != nil {
 		return run, err
 	}
 	restoredMeta, err := target.runtime.Store.Meta(ctx)
@@ -259,7 +288,7 @@ func runDisposable(ctx context.Context, kind, root string, index int, seen map[s
 	// Targets for the 100,000-record design workload are not inferred from this
 	// three-task smoke. Missing targets are explicit WAIT rows.
 	run.ComparisonWaits = Compare(run.Baseline, run.Shadow, nil)
-	post, _, err := captureDump(ctx, target.rpc)
+	post, _, err := captureDump(ctx, target.adminRPC)
 	if err != nil {
 		return run, err
 	}
@@ -333,6 +362,14 @@ func workload(ctx context.Context, c *client.Client) (Metrics, error) {
 			if _, err := call(argv...); err != nil {
 				return Metrics{}, fmt.Errorf("task lifecycle caller failed")
 			}
+		}
+		final, err := call("get", id)
+		var record struct {
+			Status string
+			Fields map[string]any
+		}
+		if err != nil || json.Unmarshal(final.JSON, &record) != nil || record.Status != "closed" || record.Fields["title"] != "synthetic completed task" {
+			return Metrics{}, fmt.Errorf("completed task readback failed")
 		}
 		completed++
 	}
