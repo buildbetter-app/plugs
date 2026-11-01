@@ -62,7 +62,7 @@ func BindWithConfig(registry *rpc.Registry, service Service, cfg Config) error {
 type params struct {
 	ViewID     string          `json:"viewId,omitempty"`
 	Definition *definitionWire `json:"definition,omitempty"`
-	Cursor     string          `json:"cursor,omitempty"`
+	Cursor     *string         `json:"cursor,omitempty"`
 	AsOf       *asOfWire       `json:"asOf,omitempty"`
 	ItemID     string          `json:"itemId,omitempty"`
 	Meta       wire.Meta       `json:"_meta,omitempty"`
@@ -120,8 +120,8 @@ func dispatch(ctx context.Context, service Service, codec *CursorCodec, call rpc
 	case "view.run":
 		var cursor *viewops.Cursor
 		var err error
-		if p.Cursor != "" {
-			cursor, err = codec.Decode(p.Cursor)
+		if p.Cursor != nil {
+			cursor, err = codec.Decode(*p.Cursor)
 			if err != nil {
 				return nil, err
 			}

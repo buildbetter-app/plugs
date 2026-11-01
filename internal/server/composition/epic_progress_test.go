@@ -33,6 +33,8 @@ func epicRef(id string) model.Ref { return model.RefByID(id, model.Natural64(0))
 type epicFixture struct {
 	*runtimeFixture
 	key      string
+	keyID    string
+	keys     *authnapikey.Provider
 	facts    *authzrpc.MutableFacts
 	base     authzfixed.Facts
 	adapter  *viewops.EpicProgressConfig
@@ -46,6 +48,7 @@ func newEpicFixture(t *testing.T, enabled bool) *epicFixture {
 	t.Helper()
 	f := &epicFixture{}
 	keys := authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
+	f.keys = keys
 	var opt *viewops.EpicProgressConfig
 	if enabled {
 		opt = &viewops.EpicProgressConfig{
@@ -101,11 +104,7 @@ func newEpicFixture(t *testing.T, enabled bool) *epicFixture {
 	}
 	f.opt = f.adapter
 	f.parents = f.adapter.ParentProjection
-	issued, err := keys.Issue(model.PrincipalRef{Kind: "agent", ID: "agent:epic-worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:operator"}}, time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.key = issued.Token
+	f.setReadScope(t, "parent-project", "child-project")
 	source, err := service.MarshalOntologySource(service.OntologySource{Base: ontology.DefaultDocument()})
 	if err != nil {
 		t.Fatal(err)
@@ -136,6 +135,25 @@ func newEpicFixture(t *testing.T, enabled bool) *epicFixture {
 	}
 	f.revision = cs.Revision
 	return f
+}
+
+// CP7 read permission belongs to Users. API-key project caveats provide the
+// real parent/child read boundary; involved grants remain write authority and
+// are not repurposed to grant an Agent read access.
+func (f *epicFixture) setReadScope(t *testing.T, projects ...string) {
+	t.Helper()
+	refs := make([]model.Ref, 0, len(projects))
+	for _, project := range projects {
+		refs = append(refs, epicRef(project))
+	}
+	issued, err := f.keys.Issue(model.PrincipalRef{Kind: "user", ID: "user:operator", Caveats: map[string]any{"projects": refs}}, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.keyID != "" && !f.keys.Revoke(f.keyID) {
+		t.Fatal("old read credential was not revoked")
+	}
+	f.key, f.keyID = issued.Token, issued.ID
 }
 
 func epicParams(parent string) map[string]any {
@@ -245,11 +263,7 @@ func TestAuthenticatedEpicProgressDirectChildrenAndRefresh(t *testing.T) {
 
 func TestEpicProgressHistoricalContentUsesCurrentAuthority(t *testing.T) {
 	f := newEpicFixture(t, true)
-	facts := f.base
-	facts.Grants = append([]authz.Grant(nil), f.base.Grants[:1]...)
-	if err := f.facts.Replace(facts); err != nil {
-		t.Fatal(err)
-	}
+	f.setReadScope(t, "parent-project")
 	params := epicParams("epic")
 	params["asOf"] = map[string]any{"revision": f.revision}
 	result := epicResult(t, f.call(t, params))
@@ -261,10 +275,7 @@ func TestEpicProgressHistoricalContentUsesCurrentAuthority(t *testing.T) {
 	if refresh["asOf"] != nil {
 		t.Fatal("authorization refresh retained historical snapshot")
 	}
-	facts.Grants = nil
-	if err := f.facts.Replace(facts); err != nil {
-		t.Fatal(err)
-	}
+	f.setReadScope(t, "child-project")
 	epicCode(t, f.call(t, params), "not_found")
 	epicCode(t, f.call(t, epicParams("missing")), "not_found")
 }
@@ -305,7 +316,7 @@ func TestEpicProgressRefusesChangedAuthorityAndUntrustedScope(t *testing.T) {
 
 func TestEpicProgressWireShapeAndCapabilityRefusals(t *testing.T) {
 	f := newEpicFixture(t, true)
-	for _, mode := range []string{"cursor", "budget", "fields-absent", "fields-nonempty", "extra-filter", "malformed-parent", "project", "unknown-member"} {
+	for _, mode := range []string{"cursor", "cursor-empty", "budget", "fields-absent", "fields-nonempty", "extra-filter", "malformed-parent", "project", "unknown-member"} {
 		t.Run(mode, func(t *testing.T) {
 			p := epicParams("epic")
 			d := p["definition"].(map[string]any)
@@ -313,6 +324,9 @@ func TestEpicProgressWireShapeAndCapabilityRefusals(t *testing.T) {
 			switch mode {
 			case "cursor":
 				p["cursor"] = "not-a-view-cursor"
+				want = "cursor_invalid"
+			case "cursor-empty":
+				p["cursor"] = ""
 				want = "cursor_invalid"
 			case "budget":
 				d["budgetTokens"] = 1
@@ -432,8 +446,12 @@ func TestAnonymousEpicProgressRequiresExplicitNoPluginComposition(t *testing.T) 
 		t.Fatal("anonymous no-plugin counts were not complete")
 	}
 	keys := authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
-	for _, auth := range []authn.Config{{Provider: keys}, {AuthorizationInstalled: func() bool { return true }}} {
-		if r, err := Open(context.Background(), Config{Driver: "memory", Project: "parent-project", Address: DefaultAddress, EpicProgress: opt, Auth: auth, AuthMode: "authenticated"}); err == nil {
+	for _, config := range []Config{
+		{AuthMode: "authenticated", Auth: authn.Config{Provider: keys}},
+		{AuthMode: "anonymous", Auth: authn.Config{AuthorizationInstalled: func() bool { return true }}},
+	} {
+		config.Driver, config.Project, config.Address, config.EpicProgress = "memory", "parent-project", DefaultAddress, opt
+		if r, err := Open(context.Background(), config); err == nil {
 			_ = r.Close(context.Background())
 			t.Fatal("anonymous mode silently bypassed authenticated/policy composition")
 		}
@@ -533,11 +551,7 @@ func TestOrdinaryViewParentDisclosureUsesCurrentAuthority(t *testing.T) {
 	for _, grouped := range []bool{false, true} {
 		t.Run(fmt.Sprint(grouped), func(t *testing.T) {
 			f := newEpicFixture(t, true)
-			facts := f.base
-			facts.Grants = append([]authz.Grant(nil), f.base.Grants[1:]...)
-			if err := f.facts.Replace(facts); err != nil {
-				t.Fatal(err)
-			}
+			f.setReadScope(t, "child-project")
 			definition := map[string]any{"filter": map[string]any{}, "fields": []string{"id", "parent"}}
 			if grouped {
 				definition["groupBy"] = []string{"type"}
@@ -575,9 +589,7 @@ func TestOrdinaryViewParentDisclosureUsesCurrentAuthority(t *testing.T) {
 			}
 			// Restore access and repeat historical content: current authority now
 			// permits the same existing parent string, rather than caching denial.
-			if err := f.facts.Replace(f.base); err != nil {
-				t.Fatal(err)
-			}
+			f.setReadScope(t, "parent-project", "child-project")
 			response = f.call(t, p)
 			if response["error"] != nil {
 				t.Fatalf("fresh parent authority refused: %v", response)
@@ -623,4 +635,69 @@ func TestOrdinaryParentProjectionRefusesChangedOrIncompleteAuthority(t *testing.
 			epicCode(t, f.call(t, p), "authz_unavailable")
 		})
 	}
+}
+
+func TestOrdinaryParentDisclosurePreservesAdditionalHostReadBoundary(t *testing.T) {
+	for _, grouped := range []bool{false, true} {
+		for _, code := range []model.ErrorCode{"forbidden", "not_found", "authz_unavailable"} {
+			t.Run(fmt.Sprintf("%t/%s", grouped, code), func(t *testing.T) {
+				f := newEpicFixture(t, true)
+				parentChecks := 0
+				f.read = func(_ context.Context, _ model.PrincipalRef, resource model.ResourceRef, project string) error {
+					if resource.Ref.ID == "epic" {
+						parentChecks++
+						if project != "parent-project" {
+							t.Fatal("parent disclosure inherited child project")
+						}
+						return &model.Error{Data: model.ErrorData{Code: code, Retryable: code == "authz_unavailable"}}
+					}
+					if resource.Ref.ID != "visible-one" || project != "child-project" {
+						t.Fatal("child admission used another source/project")
+					}
+					return nil
+				}
+				definition := map[string]any{"filter": map[string]any{"resources": []string{"visible-one"}}, "fields": []string{"id", "parent"}}
+				if grouped {
+					definition["groupBy"] = []string{"type"}
+				}
+				response := f.call(t, map[string]any{"definition": definition, "_meta": map[string]any{"project": "child-project"}})
+				if parentChecks != 1 {
+					t.Fatalf("host parent boundary checked %d times", parentChecks)
+				}
+				if code == "authz_unavailable" {
+					epicCode(t, response, "authz_unavailable")
+					return
+				}
+				if response["error"] != nil {
+					t.Fatalf("hidden parent removed readable child: %v", response)
+				}
+				result := response["result"].(map[string]any)
+				items := result["items"].([]any)
+				if grouped {
+					items = result["groups"].([]any)[0].(map[string]any)["items"].([]any)
+				}
+				if len(items) != 1 {
+					t.Fatal("hidden parent changed child membership")
+				}
+				parent := items[0].(map[string]any)["parent"].(map[string]any)
+				if len(parent) != 1 || parent["exists"] != true {
+					t.Fatalf("extra host denial leaked parent content: %v", parent)
+				}
+				raw, _ := json.Marshal(result)
+				if strings.Contains(string(raw), "epic") || strings.Contains(string(raw), "parent-project") {
+					t.Fatal("host denied parent identity leaked")
+				}
+			})
+		}
+	}
+}
+
+func TestEpicProgressDoesNotGrantFixedReadAccessToAgent(t *testing.T) {
+	f := newEpicFixture(t, true)
+	issued, err := f.keys.Issue(model.PrincipalRef{Kind: "agent", ID: "agent:worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:operator"}}, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.key = issued.Token
+	epicCode(t, f.call(t, epicParams("epic")), "not_found")
 }

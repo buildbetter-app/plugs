@@ -90,7 +90,19 @@ func (s *Service) projectParents(ctx context.Context, by model.PrincipalRef, con
 			if !disclosure.Exists || ref.Validate() != nil || !ref.IsID() || !ref.Branch.IsZero() || ref.ID == "" || row.doc.Parent == nil || ref.ID != row.doc.Parent.ID {
 				return epicUnavailable("parent projection returned another parent")
 			}
-			item.Parent = ref.ID
+			parent, exists := findStored(rows, ref.ID)
+			if !exists {
+				return epicUnavailable("parent projection source is unavailable")
+			}
+			allowed, err := s.authorize(ctx, by, parent)
+			if err != nil {
+				return mapped(err)
+			}
+			if allowed {
+				item.Parent = ref.ID
+			} else {
+				item.ParentHidden = true
+			}
 		}
 	}
 	if err := cfg.ValidateAuthority(ctx, by, authority.PolicyBinding); err != nil {

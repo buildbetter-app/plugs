@@ -13,6 +13,9 @@ import (
 func TestExplicitAnonymousEpicProgressUsesRealSnapshot(t *testing.T) {
 	f := newFixture(t)
 	source := service.StaticOntologySource(model.RefByID("ontology", model.Natural64(0)))
+	if _, err := NewEpicProgressConfig(nil, source); err == nil {
+		t.Fatal("fixed configuration silently downgraded to anonymous")
+	}
 	cfg, err := NewAnonymousEpicProgressConfig(f.store, source)
 	if err != nil {
 		t.Fatal(err)
