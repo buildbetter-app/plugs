@@ -8,6 +8,7 @@ import (
 	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -47,8 +48,8 @@ func (f *plugSQLFixture) Begin() (driver.Tx, error) {
 	return nil, fmt.Errorf("fixture requires BeginTx read-only options")
 }
 func (f *plugSQLFixture) BeginTx(_ context.Context, options driver.TxOptions) (driver.Tx, error) {
-	if !options.ReadOnly || options.Isolation != driver.IsolationLevel(sql.LevelRepeatableRead) {
-		return nil, fmt.Errorf("expected a read-only repeatable-read transaction")
+	if !options.ReadOnly || options.Isolation != driver.IsolationLevel(sql.LevelSerializable) {
+		return nil, fmt.Errorf("expected a read-only serializable transaction")
 	}
 	f.readOnly = true
 	return f, nil
@@ -143,13 +144,21 @@ func (r *plugSQLRows) Next(dest []driver.Value) error {
 
 type plugFixtureStore struct {
 	storage.DoltStorage
-	db *sql.DB
+	db               *sql.DB
+	afterCallbackErr error
 }
 
-func (s plugFixtureStore) DB() *sql.DB           { return s.db }
-func (s plugFixtureStore) UnderlyingDB() *sql.DB { return s.db }
+func (s plugFixtureStore) WithRawDBTx(ctx context.Context, opts *sql.TxOptions, fn func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, opts)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	return errors.Join(fn(tx), s.afterCallbackErr)
+}
 
-func TestPlugDumpCommandEndToEnd(t *testing.T) {
+func plugExportTestCommand(t *testing.T) *cobra.Command {
+	t.Helper()
 	isolateBeadsDirForTest(t)
 	saveAndRestoreGlobals(t)
 	oldFormat, oldInventory, oldOutput := exportFormat, exportPlugInventory, exportOutput
@@ -168,6 +177,11 @@ func TestPlugDumpCommandEndToEnd(t *testing.T) {
 			exportCmd.Flags().Lookup(name).Changed = changed[name]
 		}
 	})
+	return cmd
+}
+
+func TestPlugDumpCommandEndToEnd(t *testing.T) {
+	cmd := plugExportTestCommand(t)
 	sourcePath, err := bazeltest.RunfileEnv("BEADS_TEST_PLUG_SOURCE")
 	if err != nil {
 		t.Fatal(err)
@@ -257,6 +271,23 @@ func TestPlugDumpCommandEndToEnd(t *testing.T) {
 	if !bytes.Equal(first, stdout.Bytes()) {
 		t.Fatal("stdout serialization differs from file serialization")
 	}
+	// A failed storage scope must finish before publishing any archive bytes.
+	store = plugFixtureStore{db: db, afterCallbackErr: errors.New("scope cleanup failed")}
+	stdout.Reset()
+	if err := exportCmd.RunE(cmd, nil); err == nil || stdout.Len() != 0 {
+		t.Fatal("failed storage scope published an archive to stdout")
+	}
+	exportOutput = output
+	if err := os.WriteFile(output, []byte("existing destination"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := exportCmd.RunE(cmd, nil); err == nil {
+		t.Fatal("storage scope failure accepted")
+	}
+	if data, err := os.ReadFile(output); err != nil || string(data) != "existing destination" {
+		t.Fatal("failed storage scope replaced existing output")
+	}
+	store = plugFixtureStore{db: db}
 	// A refusal leaves both an existing destination and stdout untouched.
 	exportOutput = output
 	if err := os.WriteFile(output, []byte("existing destination"), 0o600); err != nil {
