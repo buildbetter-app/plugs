@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -554,7 +555,8 @@ func assertThinSliceRegistry(t *testing.T, c *client.Client) {
 	}
 	want := map[string]bool{
 		"bead.ready": true, "bead.claimNext": true, "bead.update": true,
-		"bead.comment": true, "bead.close": true, "history.query": true, "tx.apply": true,
+		"bead.comment": true, "bead.close": true, "history.query": true, "history.get": true, "tx.apply": true,
+		"admin.dump": true, "admin.restore.begin": true, "admin.restore.chunk": true, "admin.restore.finish": true,
 	}
 	for _, method := range document.Methods {
 		delete(want, method.Name)
@@ -563,6 +565,28 @@ func assertThinSliceRegistry(t *testing.T, c *client.Client) {
 		t.Fatalf("generated registry omitted thin-slice methods: %v", want)
 	}
 	t.Logf("generated registry path: OpenRPC=%s methodsHash=%s methods=%d", document.OpenRPC, document.MethodsHash, len(document.Methods))
+}
+
+func thinSliceHistoryDocument(t *testing.T, c *client.Client, ref model.Ref, revision, incarnation string) pipeline.Document {
+	t.Helper()
+	result, err := c.Call(context.Background(), "history.get", map[string]any{
+		"ref": ref, "asOf": map[string]any{"revision": json.Number(revision), "incarnation": incarnation},
+	}, "")
+	if err != nil {
+		t.Fatalf("history.get %s at %s: %v", ref.ID, revision, err)
+	}
+	var version struct {
+		Ref  model.Ref       `json:"ref"`
+		Body json.RawMessage `json:"body"`
+	}
+	if err := json.Unmarshal(result.JSON, &version); err != nil || version.Ref != ref {
+		t.Fatalf("history.get=%s err=%v", result.JSON, err)
+	}
+	document, err := pipeline.DecodeDocument(version.Body)
+	if err != nil || document.ID != ref.ID {
+		t.Fatalf("history body=%s err=%v", version.Body, err)
+	}
+	return document
 }
 
 func TestRestoredThinSliceLifecycleAcrossMemoryAndSQLite(t *testing.T) {
@@ -667,6 +691,83 @@ func TestRestoredThinSliceLifecycleAcrossMemoryAndSQLite(t *testing.T) {
 				t.Fatalf("final ready page=%+v", final)
 			}
 			t.Logf("thin restored lifecycle passed on %s: restore=%s claim=2 update=3 comment=4 tx.apply=5 close=6/7 warnings=replayed", backend, restoredIncarnation)
+
+			// Continue the same restored fixture through history, dump and a
+			// second empty-store restore. Exporting the original fixture would
+			// not prove that the mutations above survive this boundary.
+			closed := map[string]pipeline.Document{}
+			for _, ref := range []model.Ref{blocker, dependent} {
+				document := thinSliceHistoryDocument(t, target.Client, ref, "7", restoredIncarnation)
+				if document.Fields["status"] != "done" || document.Lease != nil {
+					t.Fatalf("closed history retained nonterminal state: %+v", document)
+				}
+				closed[ref.ID] = document
+			}
+			blockerDocument := closed[blocker.ID]
+			if blockerDocument.Fields["title"] != "thin blocker updated" || blockerDocument.Fields["description"] != "tx.apply after history" || len(blockerDocument.Comments) != 1 || blockerDocument.Comments[0].Body != "thin slice comment" || blockerDocument.Comments[0].Time.IsZero() || blockerDocument.Comments[0].Principal.Kind == "" {
+				t.Fatalf("post-close history lost updated fields or comment attribution: %+v", blockerDocument)
+			}
+			dependentDocument := closed[dependent.ID]
+			if len(dependentDocument.Links) != 1 || dependentDocument.Links[0].To != blocker || dependentDocument.Links[0].Kind != "blocks" {
+				t.Fatalf("post-close history lost dependency: %+v", dependentDocument)
+			}
+
+			mutatedData, mutatedArchive := captureHeadDump(t, target.Client)
+			manifest := mutatedArchive.Manifest()
+			if !mutatedArchive.Native() || manifest.History != "head" || manifest.NativeHead != "7" || manifest.NativeIncarnation != restoredIncarnation || manifest.NativeStoreID != archive.Manifest().NativeStoreID || manifest.RecordCount < 2 || manifest.ChangesetCount != 0 {
+				t.Fatalf("mutated archive has the wrong snapshot identity or scope: %+v", manifest)
+			}
+			if afterDump := readyPage(t, target.Client); afterDump.revision != "7" || len(afterDump.ids) != 0 {
+				t.Fatalf("dump changed the completed workload: %+v", afterDump)
+			}
+			if err := target.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			for _, restoredBackend := range []string{"memory", "sqlite"} {
+				t.Run("restore-to-"+restoredBackend, func(t *testing.T) {
+					dsn := ""
+					if restoredBackend == "sqlite" {
+						dsn = filepath.Join(t.TempDir(), "completed-slice.db")
+					}
+					roundtrip := openThinSliceLocal(t, restoredBackend, dsn, "thin-roundtrip", false)
+					incarnation := restoreHead(t, roundtrip.Client, mutatedData, mutatedArchive)
+					if incarnation == "" || incarnation == restoredIncarnation || incarnation == archive.Manifest().NativeIncarnation {
+						t.Fatalf("second restore reused a source incarnation: %q", incarnation)
+					}
+					if ready := readyPage(t, roundtrip.Client); ready.revision != "1" || ready.incarnation != incarnation || len(ready.ids) != 0 {
+						t.Fatalf("completed records became ready after restore: %+v", ready)
+					}
+					for _, ref := range []model.Ref{blocker, dependent} {
+						document := thinSliceHistoryDocument(t, roundtrip.Client, ref, "1", incarnation)
+						if !reflect.DeepEqual(document, closed[ref.ID]) {
+							t.Fatalf("%s changed across dump/restore: got=%+v want=%+v", ref.ID, document, closed[ref.ID])
+						}
+					}
+					page := historyPage(t, roundtrip.Client, blocker.ID, "1", incarnation)
+					if len(page) != 1 || page[0].title != "thin blocker updated" || page[0].revision != "1" {
+						t.Fatalf("second restore head history=%+v", page)
+					}
+					_, err := roundtrip.Client.Call(context.Background(), "history.query", map[string]any{
+						"asOf": map[string]any{"revision": 0, "incarnation": incarnation}, "limit": 10,
+					}, "")
+					requireCode(t, err, "cursor_expired")
+					_, err = roundtrip.Client.Call(context.Background(), "history.query", map[string]any{
+						"asOf": map[string]any{"revision": 7, "incarnation": restoredIncarnation}, "limit": 10,
+					}, "")
+					requireCode(t, err, "incarnation_changed")
+					_, readback := captureHeadDump(t, roundtrip.Client)
+					if got := readback.Manifest(); got.RecordCount != manifest.RecordCount || got.NativeStoreID != manifest.NativeStoreID || got.NativeHead != "1" || got.NativeIncarnation != incarnation {
+						t.Fatalf("second restore census/identity changed: got=%+v source=%+v", got, manifest)
+					}
+					if err := roundtrip.Close(); err != nil {
+						t.Fatal(err)
+					}
+					// Close joins the local lease-renewal worker and releases the
+					// store; no listener, UI, or detached background work is used.
+					t.Logf("I2 in-process lifecycle %s -> %s: ready -> claim -> update -> comment -> close -> history -> dump(head=7) -> restore(head=1); records=%d comments=1 dependency=blocks test-presence-verifier=restore-workload", backend, restoredBackend, manifest.RecordCount)
+				})
+			}
 		})
 	}
 }
