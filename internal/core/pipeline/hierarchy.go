@@ -1,0 +1,412 @@
+package pipeline
+
+import (
+	"bytes"
+	"context"
+	"sort"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
+)
+
+const maxClosureRows = 5000
+
+type hierarchyEdit struct {
+	id, parent      string
+	create, deleted bool
+}
+
+type hierarchyDelta struct {
+	remove, add []driver.DerivedRow
+	locks       []driver.LockKey
+	sentinels   []driver.Sentinel
+}
+
+func parentID(parent *model.Ref) string {
+	if parent == nil {
+		return ""
+	}
+	return parent.ID
+}
+
+// Resolve through the same ordered pending graph used by all other operations.
+// In particular, an alias cannot grant existence to a later create, and a
+// transient descendant cycle is not rescued by a later operation in the batch.
+func (p *prepared) resolveParent(ctx context.Context, parent *model.Ref, aliases map[string]model.Ref, child string) (*model.Ref, error) {
+	if parent == nil {
+		return nil, nil
+	}
+	ref, err := p.resolve(*parent, aliases)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	for id := ref.ID; id != ""; {
+		if id == child || seen[id] {
+			return nil, failure("ontology_guard_failed", "parent would form a cycle")
+		}
+		seen[id] = true
+		node, err := p.load(ctx, model.Ref{ID: id})
+		if err != nil {
+			return nil, err
+		}
+		id = parentID(node.doc.Parent)
+	}
+	return &ref, nil
+}
+
+func (p *prepared) documents(ctx context.Context) (map[string]Document, error) {
+	docs := map[string]Document{}
+	var cursor *driver.Cursor
+	for {
+		page, err := p.snapshot.Query(ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 1000, Cursor: cursor})
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range page.Items {
+			doc, err := DecodeDocument(record.Body)
+			if err != nil || doc.ID != record.Ref.ID || !record.Ref.IsID() || !record.Ref.Branch.IsZero() {
+				return nil, failure("ontology_guard_failed", "invalid stored hierarchy document")
+			}
+			if _, exists := docs[doc.ID]; exists {
+				return nil, failure("internal_error", "duplicate bead in graph snapshot")
+			}
+			docs[doc.ID] = doc
+		}
+		if page.NextCursor == nil {
+			return docs, nil
+		}
+		if len(page.Items) == 0 {
+			return nil, failure("internal_error", "non-advancing graph snapshot")
+		}
+		cursor = page.NextCursor
+	}
+}
+
+func parentGraph(docs map[string]Document) map[string]string {
+	parents := make(map[string]string, len(docs))
+	for id, doc := range docs {
+		parents[id] = parentID(doc.Parent)
+	}
+	return parents
+}
+
+func checkParentGraph(parents map[string]string) error {
+	done := map[string]bool{}
+	for id := range parents {
+		path := map[string]bool{}
+		for current := id; current != "" && !done[current]; current = parents[current] {
+			if _, exists := parents[current]; !exists {
+				return failure("ontology_guard_failed", "parent must exist in the final graph; detach children before deletion")
+			}
+			if path[current] {
+				return failure("ontology_guard_failed", "parent would form a cycle")
+			}
+			path[current] = true
+		}
+		for current := range path {
+			done[current] = true
+		}
+	}
+	return nil
+}
+
+func ancestorDepths(id string, parents map[string]string) (map[string]uint64, error) {
+	depths := map[string]uint64{}
+	if _, exists := parents[id]; !exists {
+		return depths, nil
+	}
+	for current := id; current != ""; current = parents[current] {
+		if _, exists := parents[current]; !exists {
+			return nil, failure("ontology_guard_failed", "parent is missing from hierarchy")
+		}
+		if _, cycle := depths[current]; cycle {
+			return nil, failure("ontology_guard_failed", "parent would form a cycle")
+		}
+		depths[current] = uint64(len(depths))
+		if len(depths) > maxClosureRows {
+			return nil, failure("closure_too_large", "ancestor closure exceeds 5000 affected rows")
+		}
+	}
+	return depths, nil
+}
+
+func closureDifference(before, after map[string]uint64) int {
+	n := 0
+	for id, depth := range before {
+		if next, exists := after[id]; !exists || next != depth {
+			n++
+		}
+	}
+	for id := range after {
+		if _, exists := before[id]; !exists {
+			n++
+		}
+	}
+	return n
+}
+
+func closureRows(id string, depths map[string]uint64) (map[string]driver.DerivedRow, error) {
+	rows := make(map[string]driver.DerivedRow, len(depths))
+	for ancestor, depth := range depths {
+		row, err := AncestorRow(id, ancestor, depth)
+		if err != nil {
+			return nil, err
+		}
+		rows[row.Key] = row
+	}
+	return rows, nil
+}
+
+// Count the full ordered batch, including intermediate rewrites which cancel
+// out in the final image. A depth replacement is one affected pair. Only the
+// final net delta is staged; breaking a large rewrite into ops cannot evade
+// the bound. Deleted sources remain available to subsequent subtree moves;
+// the final graph must remove all dangling children explicitly.
+func (p *prepared) hierarchyAffected(parents map[string]string) (map[string]bool, error) {
+	children := map[string]map[string]bool{}
+	for id, parent := range parents {
+		if children[parent] == nil {
+			children[parent] = map[string]bool{}
+		}
+		children[parent][id] = true
+	}
+	affected, count := map[string]bool{}, 0
+	for _, edit := range p.hierarchyEdits {
+		if edit.create {
+			parents[edit.id] = edit.parent
+			if children[edit.parent] == nil {
+				children[edit.parent] = map[string]bool{}
+			}
+			children[edit.parent][edit.id] = true
+		}
+		ids := []string{edit.id}
+		if !edit.create && !edit.deleted && parents[edit.id] != edit.parent {
+			for i := 0; i < len(ids); i++ {
+				for child := range children[ids[i]] {
+					ids = append(ids, child)
+				}
+			}
+		}
+		before := make(map[string]map[string]uint64, len(ids))
+		for _, id := range ids {
+			depths, err := ancestorDepths(id, parents)
+			if err != nil {
+				return nil, err
+			}
+			before[id] = depths
+			affected[id] = true
+		}
+		if !edit.create && !edit.deleted {
+			delete(children[parents[edit.id]], edit.id)
+			parents[edit.id] = edit.parent
+			if children[edit.parent] == nil {
+				children[edit.parent] = map[string]bool{}
+			}
+			children[edit.parent][edit.id] = true
+		}
+		for _, id := range ids {
+			depths, err := ancestorDepths(id, parents)
+			if err != nil {
+				return nil, err
+			}
+			switch {
+			case edit.create, edit.deleted:
+				count += len(depths)
+			default:
+				count += closureDifference(before[id], depths)
+			}
+			if count > maxClosureRows {
+				return nil, failure("closure_too_large", "ordered batch affects more than 5000 closure rows")
+			}
+		}
+	}
+	return affected, nil
+}
+
+// hierarchy prepares source/derived observations and the complete net delta
+// before the single lock acquisition. Root-only creation needs no whole-store
+// graph scan. Existing stores are never backfilled: a consulted live ancestor
+// with missing/extra/wrong-depth rows fails closed.
+func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
+	if len(p.hierarchyEdits) == 0 {
+		return nil, nil
+	}
+	complex := false
+	for _, edit := range p.hierarchyEdits {
+		complex = complex || !edit.create || edit.parent != ""
+	}
+	for _, pending := range p.writes {
+		complex = complex || (len(pending.before) != 0 && pending.doc.Parent != nil)
+	}
+	stored := map[string]Document{}
+	if complex {
+		var err error
+		stored, err = p.documents(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	before := parentGraph(stored)
+	if err := checkParentGraph(before); err != nil {
+		return nil, err
+	}
+	staged := parentGraph(stored)
+	affected, err := p.hierarchyAffected(staged)
+	if err != nil {
+		return nil, err
+	}
+	final := make(map[string]Document, len(stored)+len(p.writes))
+	for id, doc := range stored {
+		final[id] = doc
+	}
+	for id, pending := range p.writes {
+		if pending.deleted {
+			delete(final, id)
+		} else {
+			final[id] = pending.doc
+		}
+	}
+	after := parentGraph(final)
+	if err := checkParentGraph(after); err != nil {
+		return nil, err
+	}
+	oldRows, newRows := map[string]driver.DerivedRow{}, map[string]driver.DerivedRow{}
+	consumed := map[string]bool{}
+	for id := range affected {
+		consumed[id] = true
+		for _, source := range []struct {
+			parents map[string]string
+			rows    map[string]driver.DerivedRow
+		}{{before, oldRows}, {after, newRows}} {
+			depths, err := ancestorDepths(id, source.parents)
+			if err != nil {
+				return nil, err
+			}
+			rows, err := closureRows(id, depths)
+			if err != nil {
+				return nil, err
+			}
+			for ancestor := range depths {
+				consumed[ancestor] = true
+			}
+			for key, row := range rows {
+				source.rows[key] = row
+			}
+		}
+	}
+	keys := map[string]driver.LockKey{}
+	for id := range consumed {
+		ref := model.Ref{ID: id}
+		key := driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
+		encoded, err := driver.EncodeLockKey(key)
+		if err != nil {
+			return nil, err
+		}
+		keys[encoded] = key
+		s, err := driver.NewClosureSentinel(id)
+		if err != nil {
+			return nil, err
+		}
+		key = driver.LockKey{Kind: driver.LockSentinel, Sentinel: s}
+		encoded, _ = driver.EncodeLockKey(key)
+		keys[encoded] = key
+	}
+	if _, err := p.snapshot.observe(ctx, sortedKeys(keys)); err != nil {
+		return nil, err
+	}
+	for id := range consumed {
+		depths, err := ancestorDepths(id, before)
+		if err != nil {
+			return nil, err
+		}
+		expected, err := closureRows(id, depths)
+		if err != nil {
+			return nil, err
+		}
+		if err := p.checkClosure(ctx, id, expected); err != nil {
+			return nil, err
+		}
+	}
+	delta := &hierarchyDelta{}
+	changed := map[string]driver.LockKey{}
+	for key, row := range oldRows {
+		if next, exists := newRows[key]; !exists || !bytes.Equal(row.Value, next.Value) {
+			delta.remove = append(delta.remove, row)
+			changed[key] = ancestorLock(key)
+		}
+	}
+	for key, row := range newRows {
+		if old, exists := oldRows[key]; !exists || !bytes.Equal(row.Value, old.Value) {
+			delta.add = append(delta.add, row)
+			changed[key] = ancestorLock(key)
+		}
+	}
+	scopes := map[string]bool{}
+	for _, key := range sortedKeys(changed) {
+		delta.locks = append(delta.locks, key)
+		row := newRows[key.Derived.Key]
+		if row.Key == "" {
+			row = oldRows[key.Derived.Key]
+		}
+		descendant, _, _, err := DecodeAncestorRow(row)
+		if err != nil {
+			return nil, err
+		}
+		scopes[descendant] = true
+	}
+	// Include exact misses for newly introduced pairs, not just consumed rows.
+	if _, err := p.snapshot.observe(ctx, delta.locks); err != nil {
+		return nil, err
+	}
+	for id := range scopes {
+		s, _ := driver.NewClosureSentinel(id)
+		delta.sentinels = append(delta.sentinels, s)
+	}
+	sort.Slice(delta.remove, func(i, j int) bool { return delta.remove[i].Key < delta.remove[j].Key })
+	sort.Slice(delta.add, func(i, j int) bool { return delta.add[i].Key < delta.add[j].Key })
+	p.hierarchyDelta = delta
+	if !complex {
+		return nil, nil
+	}
+	return final, nil
+}
+
+func ancestorLock(key string) driver.LockKey {
+	return driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: key}}
+}
+
+func (p *prepared) checkClosure(ctx context.Context, id string, expected map[string]driver.DerivedRow) error {
+	prefix, err := AncestorPrefix(id)
+	if err != nil {
+		return err
+	}
+	rows, err := p.snapshot.reader.DerivedRows(ctx, driver.DerivedAncestorClosure, prefix)
+	if err != nil {
+		return err
+	}
+	if len(rows) != len(expected) {
+		return failure("ontology_guard_failed", "malformed ancestor closure; populated-store backfill is not supported")
+	}
+	keys := make([]driver.LockKey, 0, len(rows))
+	previous := ""
+	for _, row := range rows {
+		descendant, _, _, err := DecodeAncestorRow(row)
+		want, exists := expected[row.Key]
+		if err != nil || descendant != id || !exists || !bytes.Equal(row.Value, want.Value) || (previous != "" && row.Key <= previous) {
+			return failure("ontology_guard_failed", "malformed ancestor closure")
+		}
+		keys = append(keys, ancestorLock(row.Key))
+		previous = row.Key
+	}
+	states, err := p.snapshot.observe(ctx, keys)
+	if err != nil {
+		return err
+	}
+	for i, state := range states {
+		if !state.Present || state.Derived == nil || state.Derived.Key != rows[i].Key || !bytes.Equal(state.Derived.Value, rows[i].Value) {
+			return failure("internal_error", "driver closure enumeration differs from its snapshot observations")
+		}
+	}
+	return nil
+}
