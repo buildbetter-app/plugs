@@ -1,11 +1,18 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 )
 
 func TestHarnessHistoryModesAndPrivateOutput(t *testing.T) {
@@ -56,4 +63,74 @@ func TestHarnessErrorsContainNoSourcePathsOrParserText(t *testing.T) {
 	if err != nil || result.Reason != "archive_contract_refused" || strings.Contains(string(encoded), root) || strings.Contains(string(encoded), "private-source-marker") {
 		t.Fatal("runtime diagnostics disclosed source details")
 	}
+}
+
+func TestHarnessNativeProfileCannotDiscloseManifestKind(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "plug-roundtrip-public-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	const marker = "untrusted-source-kind-marker"
+	data := nativeEnvelopeWithKind(t, marker)
+	archive, err := dumpformat.Read(bytes.NewReader(data))
+	if err != nil || !archive.Native() {
+		t.Fatal("regression fixture must be a valid native envelope")
+	}
+	input := filepath.Join(root, "untrusted-source-path-marker")
+	if err := os.WriteFile(input, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(root, "output")
+	result := run([]string{"--input", input, "--output-dir", output})
+	encoded, err := json.Marshal(result)
+	if err != nil || result.Status != "BLOCK" || result.Reason != "source_image_refused" || len(result.Counts) != 0 || strings.Contains(string(encoded), marker) || strings.Contains(string(encoded), root) || strings.Contains(string(encoded), filepath.Base(input)) {
+		t.Fatal("unsupported profile disclosed source details or untrusted counts")
+	}
+	entries, err := os.ReadDir(output)
+	if err != nil || len(entries) != 0 {
+		t.Fatal("unsupported profile produced reverse files")
+	}
+}
+
+// Native manifests do not interpret the Beads kind registry. This valid
+// transport envelope deliberately includes an untrusted registry entry.
+func nativeEnvelopeWithKind(t *testing.T, kind string) []byte {
+	t.Helper()
+	paths := []string{"changesets.ndjson", "config/sources.json", "records/native.ndjson", "versions.ndjson"}
+	members := map[string][]byte{"config/sources.json": []byte("{}\n")}
+	manifest := dumpformat.Manifest{
+		Format: dumpformat.Format, Schema: 1, Scope: "plug-native-store", History: "head",
+		NativeStoreID: "public-native-store", NativeIncarnation: "public-incarnation", NativeHead: "0",
+		Kinds: []dumpformat.Kind{{Name: kind, Count: 7}}, Files: map[string]dumpformat.File{},
+	}
+	h := sha256.New()
+	for _, path := range paths {
+		data := members[path]
+		sum := sha256.Sum256(data)
+		manifest.Files[path] = dumpformat.File{SHA256: hex.EncodeToString(sum[:]), Size: int64(len(data))}
+		_, _ = h.Write([]byte(path))
+		_, _ = h.Write(data)
+	}
+	manifest.NativeDigest = hex.EncodeToString(h.Sum(nil))
+	var err error
+	members["manifest.json"], err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data bytes.Buffer
+	tw := tar.NewWriter(&data)
+	for _, path := range append([]string{"manifest.json"}, paths...) {
+		body := members[path]
+		if err := tw.WriteHeader(&tar.Header{Name: path, Mode: 0o600, Size: int64(len(body)), ModTime: time.Unix(0, 0), Format: tar.FormatUSTAR}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return data.Bytes()
 }
