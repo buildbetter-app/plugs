@@ -189,6 +189,11 @@ func openStore(t *testing.T, backend, path string) (driver.Store, driver.ActiveL
 
 func newFixture(t *testing.T, backend, path string, progress bool) *fixture {
 	t.Helper()
+	return newFixtureMode(t, backend, path, progress, true)
+}
+
+func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology bool) *fixture {
+	t.Helper()
 	store, lease := openStore(t, backend, path)
 	f := &fixture{store: store, lease: lease, renewDone: make(chan struct{})}
 	t.Cleanup(func() { f.close(t) })
@@ -224,6 +229,9 @@ func newFixture(t *testing.T, backend, path string, progress bool) *fixture {
 		t.Fatal(err)
 	}
 	if len(rows) == 0 {
+		if !seedOntology {
+			t.Fatal("restored store lost its protected ontology; reopen must never repair source state")
+		}
 		body, err := service.MarshalOntologySource(service.OntologySource{Base: ontology.DefaultDocument()})
 		if err != nil {
 			t.Fatal(err)

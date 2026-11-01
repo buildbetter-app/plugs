@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
@@ -141,6 +142,7 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	g := source.graph(t)
 	viewer := source.viewer(t, epics, visible)
 	before := inspectProgress(t, source.api.call(t, viewer, "view.run", progressParams(g.parent, epics)), map[string]int{"total": 2, "status:todo": 1, "status:done": 1}, 1)
+	beforeImages := persistedImages(t, source.store)
 	sourceAdmin := admin(t, source.store, source.lease)
 	data, archive := dumpHead(t, sourceAdmin)
 	sourceAdmin.close(t)
@@ -150,10 +152,14 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	}
 	path := filepath.Join(dir, "restored.db")
 	target, lease := openStore(t, "sqlite", path)
+	t.Cleanup(func() { _ = lease.Release(context.Background()); _ = target.Close() })
 	// Do not construct authorization facts or seed ontology in the EMPTY target.
 	// Restore must establish all source state through its admitted native path.
 	targetAdmin := admin(t, target, lease)
 	incarnation := restoreHead(t, targetAdmin, data, archive)
+	if !reflect.DeepEqual(persistedImages(t, target), beforeImages) {
+		t.Fatal("native restore changed source bead or protected ontology images")
+	}
 	targetAdmin.close(t)
 	if err := lease.Release(context.Background()); err != nil {
 		t.Fatal(err)
@@ -166,7 +172,10 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	}
 	// A fresh host/checker/key ring over the reopened physical SQLite file is
 	// essential: no in-memory parent/count/authority cache may satisfy this read.
-	reopened := newFixture(t, "sqlite", path, true)
+	reopened := newFixtureMode(t, "sqlite", path, true, false)
+	if !reflect.DeepEqual(persistedImages(t, reopened.store), beforeImages) {
+		t.Fatal("physical reopen changed restored source images")
+	}
 	read := reopened.viewer(t, epics, visible)
 	after := inspectProgress(t, reopened.api.call(t, read, "view.run", progressParams(g.parent, epics)), before.counts, 1)
 	if after.asOf["incarnation"] != incarnation {
@@ -187,4 +196,56 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	committed(t, reopened.write(t, reopened.owner, "tx.apply", visible, map[string]any{"changeSet": detach}))
 	inspectProgress(t, reopened.api.call(t, read, "view.run", after.refresh), map[string]int{"total": 1, "status:todo": 1}, 1)
 	t.Logf("EP6 native head restore, physical SQLite close/reopen, current policy, cycle refusal, and count refresh proven at restored incarnation %s", incarnation)
+}
+
+// Enumerate both the complete bead census and the exact protected ontology
+// before any fixture construction can seed or normalize a restored store.
+func persistedImages(t *testing.T, store driver.Store) map[string]any {
+	t.Helper()
+	ctx := context.Background()
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	out := map[string]any{}
+	var cursor *driver.Cursor
+	for {
+		page, err := r.Query(ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 1000, Cursor: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range page.Items {
+			if _, exists := out[row.Ref.ID]; exists {
+				t.Fatal("duplicate persisted source identity")
+			}
+			var value map[string]any
+			d := json.NewDecoder(bytes.NewReader(row.Body))
+			d.UseNumber()
+			if err := d.Decode(&value); err != nil {
+				t.Fatal(err)
+			}
+			out[row.Ref.ID] = value
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	rows, err := r.Get(ctx, []model.Ref{ref("ontology/ep6")})
+	if err != nil || len(rows) != 1 || rows[0].Kind != "ontology" {
+		t.Fatalf("protected source missing from persisted census: %v", err)
+	}
+	var ontology map[string]any
+	d := json.NewDecoder(bytes.NewReader(rows[0].Body))
+	d.UseNumber()
+	if err := d.Decode(&ontology); err != nil {
+		t.Fatal(err)
+	}
+	out["ontology/ep6"] = ontology
+	return out
 }
