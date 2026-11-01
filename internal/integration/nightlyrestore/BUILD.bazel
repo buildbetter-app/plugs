@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "nightlyrestore_test",
+    size = "large",
+    srcs = [
+        "engine_test.go",
+        "fixture_test.go",
+        "restore_diff_test.go",
+    ],
+    args = ["-test.v"],
+    data = ["//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar"],
+    tags = ["local", "requires-network"],
+    deps = [
+        "//internal/core/dumpformat",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/integration/converterroundtrip",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
