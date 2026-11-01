@@ -46,7 +46,9 @@ func TestServeConnectionStopsOnSlowSocket(t *testing.T) {
 	rw := bufio.NewReadWriter(bufio.NewReader(serverConn), bufio.NewWriter(serverConn))
 	done := make(chan struct{})
 	go func() {
-		handler.serveConnection(newConn(serverConn, rw, handler.cfg), context.Background(), authn.Identity{})
+		handler.serveConnection(newConn(serverConn, rw, handler.cfg), context.Background(), func(ctx context.Context) (authn.Identity, error) {
+			return authenticator.Admit(ctx, "")
+		})
 		close(done)
 	}()
 

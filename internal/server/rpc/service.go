@@ -610,6 +610,9 @@ func beadJSON(b service.Bead) map[string]any {
 			out[k] = v
 		}
 	}
+	if b.ParentHidden {
+		out["parent"] = map[string]any{"exists": true}
+	}
 	if b.Fields != nil {
 		out["fields"] = b.Fields
 	}

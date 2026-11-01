@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -280,8 +279,11 @@ func checkBridgeProjectValue(raw json.RawMessage, expected, location string) err
 // checked at composition time; no JavaScript build, network fetch, or session
 // access happens in this package.
 type FrameBundle struct {
-	ID     string
-	Title  string
+	ID    string
+	Title string
+	// Digest is the required lowercase SHA-256 from the pinned bundle's
+	// plug-ui-bundle/1 asset inventory, not a digest computed at admission.
+	Digest string
 	Assets map[string][]byte
 	Grant  BridgeGrant
 }
@@ -317,7 +319,7 @@ func prepareFrameBundle(bundle FrameBundle, project string) (frameBundle, error)
 	copyAssets := make(map[string][]byte, len(bundle.Assets))
 	total := 0
 	for name, data := range bundle.Assets {
-		if name == "" || name[0] == '/' || strings.ContainsAny(name, `\\%`) || path.Clean(name) != name || name == "." || strings.HasPrefix(name, "../") || strings.Contains(name, "/../") {
+		if !frameAssetPath(name) {
 			return frameBundle{}, fmt.Errorf("webui: frame %q has invalid asset path %q", bundle.ID, name)
 		}
 		if len(data) > maxFrameAssetBytes || total > maxFrameBundleBytes-len(data) {
@@ -328,6 +330,13 @@ func prepareFrameBundle(bundle FrameBundle, project string) (frameBundle, error)
 		}
 		total += len(data)
 		copyAssets[name] = append([]byte(nil), data...)
+	}
+	digest, err := FrameBundleDigest(copyAssets)
+	if err != nil {
+		return frameBundle{}, err
+	}
+	if bundle.Digest != digest {
+		return frameBundle{}, fmt.Errorf("webui: frame %q digest is missing or differs from its pinned asset inventory", bundle.ID)
 	}
 	bundle.Assets = copyAssets
 	return frameBundle{FrameBundle: bundle, bridge: bridge}, nil
@@ -346,7 +355,12 @@ func containsFrameCapability(data []byte) bool {
 	return false
 }
 
-const frameContentSecurityPolicy = "sandbox allow-scripts; default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'self'; form-action 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'none'; connect-src 'none'; worker-src 'none'; media-src 'none'; manifest-src 'none'"
+func frameContentSecurityPolicy(bundleURL string) string {
+	// A sandboxed document retains its URL for CSP source matching, but its
+	// origin is opaque. Limit passive assets to this bundle's directory rather
+	// than every route or sibling bundle on the host.
+	return fmt.Sprintf("sandbox allow-scripts; default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'self'; form-action 'none'; script-src %s; style-src %s; img-src %s; font-src 'none'; connect-src 'none'; worker-src 'none'; media-src 'none'; manifest-src 'none'", bundleURL, bundleURL, bundleURL)
+}
 
 // regexpMustCompile keeps the public files standard-library-only while making
 // the method grammar declaration obvious at the call site.
