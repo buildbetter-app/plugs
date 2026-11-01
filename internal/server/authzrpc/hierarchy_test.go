@@ -527,16 +527,13 @@ type hReply struct {
 	} `json:"_meta"`
 }
 
-func (f *hFixture) createRPC(t *testing.T, key int) hReply {
+func (f *hFixture) callRPC(t *testing.T, principal model.PrincipalRef, method string, params map[string]any) hReply {
 	t.Helper()
-	issued, err := f.keys.Issue(hAgent(), time.Now().Add(time.Hour))
+	issued, err := f.keys.Issue(principal, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "bead.create", "params": map[string]any{
-		"type": "issue", "fields": map[string]any{"title": "created"},
-		"_meta": map[string]any{"project": "child-project", "idempotencyKey": fmt.Sprintf("%032x", key)},
-	}})
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -555,9 +552,89 @@ func (f *hFixture) createRPC(t *testing.T, key int) hReply {
 		t.Fatal(err)
 	}
 	if reply.Error != nil {
-		t.Logf("bead.create response: %s", recorder.Body.Bytes())
+		t.Logf("%s response: %s", method, recorder.Body.Bytes())
 	}
 	return reply
+}
+
+func (f *hFixture) createRPC(t *testing.T, key int) hReply {
+	t.Helper()
+	return f.callRPC(t, hAgent(), "bead.create", map[string]any{
+		"type": "issue", "fields": map[string]any{"title": "created"},
+		"_meta": map[string]any{"project": "child-project", "idempotencyKey": fmt.Sprintf("%032x", key)},
+	})
+}
+
+func TestHierarchyHTTPParentDisclosure(t *testing.T) {
+	f := newHFixture(t, true)
+	by := model.PrincipalRef{Kind: "user", ID: "user:reader", Caveats: map[string]any{"projects": []model.Ref{hRef("child-project")}}}
+	meta, err := f.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{"bead.get", "bead.ready", "history.query"} {
+		t.Run(method, func(t *testing.T) {
+			params := map[string]any{"_meta": map[string]any{"project": "child-project"}}
+			if method == "bead.get" {
+				params["id"] = hRef("visible")
+			}
+			if method == "history.query" {
+				params["asOf"] = map[string]any{"revision": meta.Head, "incarnation": meta.Incarnation}
+			}
+			reply := f.callRPC(t, by, method, params)
+			if reply.Error != nil {
+				t.Fatalf("authorized child read refused: %+v", reply.Error)
+			}
+			var result struct {
+				Bead  map[string]any   `json:"bead"`
+				Items []map[string]any `json:"items"`
+			}
+			if err := json.Unmarshal(reply.Result, &result); err != nil {
+				t.Fatal(err)
+			}
+			items := result.Items
+			if method == "bead.get" {
+				items = []map[string]any{result.Bead}
+			}
+			if len(items) == 0 {
+				t.Fatal("visible child disappeared")
+			}
+			for _, item := range items {
+				if item["project"] != "child-project" {
+					t.Fatalf("child project changed: %v", item["project"])
+				}
+				if !reflect.DeepEqual(item["parent"], map[string]any{"exists": true}) {
+					t.Fatalf("hidden parent did not remain existence-only: %v", item["parent"])
+				}
+			}
+			if bytes.Contains(reply.Result, []byte(`"new"`)) || bytes.Contains(reply.Result, []byte(`"old"`)) || bytes.Contains(reply.Result, []byte("parent-project")) || bytes.Contains(reply.Result, []byte("old-project")) {
+				t.Fatalf("hidden parent content escaped: %s", reply.Result)
+			}
+		})
+	}
+	denied := f.callRPC(t, by, "bead.get", map[string]any{"id": hRef("new")})
+	if denied.Error == nil || denied.Error.Data.Code != "not_found" || len(denied.Result) != 0 {
+		t.Fatal("project caveat did not conceal the denied parent itself")
+	}
+	// CP7 still permits an unconstrained User to read every bead.
+	user := model.PrincipalRef{Kind: "user", ID: "user:reader"}
+	for _, id := range []string{"visible", "new"} {
+		reply := f.callRPC(t, user, "bead.get", map[string]any{"id": hRef(id)})
+		var result struct {
+			Bead map[string]any `json:"bead"`
+		}
+		if reply.Error != nil || json.Unmarshal(reply.Result, &result) != nil {
+			t.Fatal("unconstrained User read refused")
+		}
+		if id == "visible" && result.Bead["parent"] != "new" {
+			t.Fatal("readable parent lost its compatible bare ID")
+		}
+		if id == "new" {
+			if _, present := result.Bead["parent"]; present {
+				t.Fatal("root disclosed a nonexistent parent")
+			}
+		}
+	}
 }
 
 func TestHierarchyOptInAuthenticatedWriterAndReplay(t *testing.T) {
