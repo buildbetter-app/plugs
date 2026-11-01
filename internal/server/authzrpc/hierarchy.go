@@ -52,7 +52,7 @@ func (c *Checker) AuthorizeHierarchy(ctx context.Context, stage port.Authorizati
 	s := &hierarchySlice{slice: base, staged: map[string]model.Record{}}
 	var batch *hierarchyCheckBatch
 	if c.canBatchHierarchyChecks() {
-		batch = &hierarchyCheckBatch{}
+		batch = &hierarchyCheckBatch{caller: caller}
 		s.observed = map[authz.Dependency]bool{}
 	}
 	aliases := map[string]model.Ref{}
@@ -230,13 +230,55 @@ func (s *hierarchySlice) ProjectForBead(ctx context.Context, ref model.Ref) (aut
 }
 
 type hierarchyCheckGroup struct {
-	start int
-	end   int
+	indices []int
+}
+
+// hierarchyCheckKey identifies the complete fixed-policy input other than the
+// caller. AuthorizeHierarchy obtains one caller before constructing a batch
+// and every request in that batch carries that same caller. Ref values have
+// already passed the canonical hierarchy checks, so ID and branch are the
+// immutable resource identity used by the finite policy.
+type hierarchyCheckKey struct {
+	action authz.Action
+	kind   authz.ResourceKind
+	id     string
+	branch string
+	method string
 }
 
 type hierarchyCheckBatch struct {
 	requests []authz.CheckRequest
 	groups   []hierarchyCheckGroup
+	caller   authz.Caller
+	unique   map[hierarchyCheckKey]int
+}
+
+func (b *hierarchyCheckBatch) add(request authz.CheckRequest) int {
+	if b.unique == nil {
+		b.unique = make(map[hierarchyCheckKey]int)
+	}
+	key := hierarchyCheckKey{
+		action: request.Action,
+		kind:   request.Resource.Kind,
+		id:     request.Resource.Ref.ID,
+		branch: request.Resource.Ref.Branch.String(),
+		method: request.Method,
+	}
+	// A caller is fixed for the entire guarded Writer pass. Keep the
+	// comparison here as a fail-closed guard for future callers of this
+	// helper: equivalent resources from another principal must be evaluated
+	// independently rather than sharing a decision.
+	if reflect.DeepEqual(request.Caller, b.caller) {
+		if index, ok := b.unique[key]; ok {
+			return index
+		}
+	}
+	index := len(b.requests)
+	b.requests = append(b.requests, request)
+	if reflect.DeepEqual(request.Caller, b.caller) {
+		b.unique[key] = index
+	}
+	return index
 }
 
 func (c *Checker) canBatchHierarchyChecks() bool {
@@ -281,9 +323,11 @@ func (c *Checker) checkHierarchyRights(ctx context.Context, s *hierarchySlice, c
 		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: *target.Parent}, Method: method})
 	}
 	if batch != nil {
-		start := len(batch.requests)
-		batch.requests = append(batch.requests, requests...)
-		batch.groups = append(batch.groups, hierarchyCheckGroup{start: start, end: len(batch.requests)})
+		indices := make([]int, 0, len(requests))
+		for _, request := range requests {
+			indices = append(indices, batch.add(request))
+		}
+		batch.groups = append(batch.groups, hierarchyCheckGroup{indices: indices})
 		return nil
 	}
 	return c.checkHierarchyRequests(ctx, s, requests)
@@ -295,11 +339,14 @@ func (c *Checker) checkHierarchyRightsBatch(ctx context.Context, s *hierarchySli
 		return err
 	}
 	for _, group := range batch.groups {
-		if group.start < 0 || group.end > len(decisions) || group.start >= group.end {
+		if len(group.indices) == 0 {
 			return hierarchyUnavailable()
 		}
-		for _, decision := range decisions[group.start:group.end] {
-			if decision.Effect != authz.Allow {
+		for _, index := range group.indices {
+			if index < 0 || index >= len(decisions) {
+				return hierarchyUnavailable()
+			}
+			if decisions[index].Effect != authz.Allow {
 				return forbidden("hierarchy write not authorized")
 			}
 		}

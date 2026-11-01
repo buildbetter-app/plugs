@@ -304,6 +304,33 @@ func TestHierarchyFixedPolicyBatchesHundredOperationAuthorization(t *testing.T) 
 	}
 }
 
+func TestHierarchyFixedPolicyCoalescesEquivalentPermissionRequests(t *testing.T) {
+	caller := authz.Caller{Principal: hAgent(), VerificationID: "verification", CapturedEpoch: model.Natural64(1)}
+	batch := &hierarchyCheckBatch{caller: caller}
+	request := authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Project, Ref: hRef("child-project")}, Method: "tx.apply"}
+	first := batch.add(request)
+	if repeated := batch.add(request); repeated != first {
+		t.Fatalf("equivalent fixed-policy request was not coalesced: first=%d repeated=%d", first, repeated)
+	}
+	if got, want := len(batch.requests), 1; got != want {
+		t.Fatalf("coalesced request count = %d, want %d", got, want)
+	}
+	for _, edit := range []func(*authz.CheckRequest){
+		func(q *authz.CheckRequest) { q.Resource.Ref = hRef("parent-project") },
+		func(q *authz.CheckRequest) { q.Method = "bead.reparent" },
+		func(q *authz.CheckRequest) { q.Caller.VerificationID = "different-verification" },
+	} {
+		changed := request
+		edit(&changed)
+		if got := batch.add(changed); got == first {
+			t.Fatalf("non-equivalent request reused fixed-policy decision: %+v", changed)
+		}
+	}
+	if got, want := len(batch.requests), 4; got != want {
+		t.Fatalf("non-equivalent request count = %d, want %d", got, want)
+	}
+}
+
 func TestHierarchyFixedPolicyObservesDependenciesOncePerPass(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite"} {
 		t.Run(engine, func(t *testing.T) {
