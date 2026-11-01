@@ -96,21 +96,15 @@ func run(args []string) outcome {
 		result.Reason = "archive_contract_refused"
 		return result
 	}
-	if archive.Native() {
-		result.Reason = "source_image_refused"
-		return result
+	result.ArchiveSHA256 = archive.SHA256()
+	result.Counts = map[string]int{}
+	for _, kind := range archive.Manifest().Kinds {
+		result.Counts[kind.Name] = kind.Count
 	}
 	inspection, err := converterroundtrip.InspectImport(ctx, bytes.NewReader(data))
 	if err != nil {
 		result.Reason = "source_image_refused"
 		return result
-	}
-	result.ArchiveSHA256 = archive.SHA256()
-	result.Counts = map[string]int{}
-	// Diagnostics use a fixed vocabulary only after Beads-image admission.
-	// Native manifests do not validate the Beads kind registry.
-	for _, kind := range []string{"bead", "edge", "comment", "memory", "config", "beads-archive"} {
-		result.Counts[kind] = len(archive.Records(kind))
 	}
 	profile := driver.RestoreImportProfile{
 		Admission:     driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "offline-roundtrip-owner"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)},

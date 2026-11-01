@@ -75,7 +75,7 @@ func TestHarnessNativeProfileCannotDiscloseManifestKind(t *testing.T) {
 	data := nativeEnvelopeWithKind(t, marker)
 	archive, err := dumpformat.Read(bytes.NewReader(data))
 	if err != nil || !archive.Native() {
-		t.Fatal("regression fixture must be a valid native envelope")
+		t.Fatalf("public regression fixture must be a valid native envelope: %v", err)
 	}
 	input := filepath.Join(root, "untrusted-source-path-marker")
 	if err := os.WriteFile(input, data, 0o600); err != nil {
@@ -103,6 +103,7 @@ func nativeEnvelopeWithKind(t *testing.T, kind string) []byte {
 		Format: dumpformat.Format, Schema: 1, Scope: "plug-native-store", History: "head",
 		NativeStoreID: "public-native-store", NativeIncarnation: "public-incarnation", NativeHead: "0",
 		Kinds: []dumpformat.Kind{{Name: kind, Count: 7}}, Files: map[string]dumpformat.File{},
+		Projects: []dumpformat.Project{}, Sources: []dumpformat.Disposition{}, Warnings: []string{}, Verification: map[string]string{},
 	}
 	h := sha256.New()
 	for _, path := range paths {
