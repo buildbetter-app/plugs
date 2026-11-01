@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -71,6 +72,163 @@ type Stats struct {
 	Samples            int
 }
 
+// queryExecutor is implemented by *sql.DB, *sql.Conn, and *sql.Tx. Keeping
+// the small interface here lets one immutable request use a pinned connection
+// without changing the ordinary no-snapshot query path.
+type queryExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+type requestSnapshotContextKey struct{}
+
+const readerAction = "reader"
+
+// authorizationSnapshotKey keeps principal, action, and the authorization
+// revision explicit. A row cached for one principal or revision can never be
+// reused for another request key.
+type authorizationSnapshotKey struct {
+	subject  string
+	action   string
+	revision uint64
+}
+
+// requestSnapshot owns one database connection and a temporary, indexed
+// projection of authorization observations. The projection is populated on
+// demand and remains valid only while the store revision is unchanged. Claim
+// writes update bead membership but do not change authorization facts, so the
+// full Q5 candidate/recheck/commit path can reuse this projection while still
+// reading claimed_by from the live bead row.
+type requestSnapshot struct {
+	store    *Store
+	conn     *sql.Conn
+	revision uint64
+
+	mu     sync.Mutex
+	loaded map[authorizationSnapshotKey]struct{}
+	closed bool
+}
+
+func requestSnapshotFrom(ctx context.Context) *requestSnapshot {
+	snapshot, _ := ctx.Value(requestSnapshotContextKey{}).(*requestSnapshot)
+	return snapshot
+}
+
+func withRequestSnapshot(ctx context.Context, snapshot *requestSnapshot) context.Context {
+	return context.WithValue(ctx, requestSnapshotContextKey{}, snapshot)
+}
+
+func (s *Store) executor(ctx context.Context) queryExecutor {
+	if snapshot := requestSnapshotFrom(ctx); snapshot != nil {
+		return snapshot.conn
+	}
+	return s.DB
+}
+
+// beginRequestSnapshot creates a connection-local projection. Setup is kept
+// outside every timed sample, while the request still observes one revision
+// and one connection for all candidate, recheck, and grouped-count queries.
+func (s *Store) beginRequestSnapshot(ctx context.Context) (*requestSnapshot, error) {
+	conn, err := s.DB.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := &requestSnapshot{
+		store:    s,
+		conn:     conn,
+		revision: s.authzRevision.Load(),
+		loaded:   make(map[authorizationSnapshotKey]struct{}),
+	}
+	cleanup := func(cleanupErr error) (*requestSnapshot, error) {
+		_ = conn.Close()
+		return nil, cleanupErr
+	}
+	if _, err = conn.ExecContext(ctx, `DROP TABLE IF EXISTS authz_request_visible`); err != nil {
+		return cleanup(err)
+	}
+	if _, err = conn.ExecContext(ctx, `CREATE TEMP TABLE authz_request_visible (
+		action TEXT NOT NULL,
+		subject TEXT NOT NULL,
+		bead_id INTEGER NOT NULL,
+		project_id INTEGER NOT NULL,
+		sort_bucket INTEGER NOT NULL,
+		sort_rank INTEGER NOT NULL,
+		sort_created INTEGER NOT NULL,
+		PRIMARY KEY(action, subject, bead_id)
+	)`); err != nil {
+		return cleanup(err)
+	}
+	if _, err = conn.ExecContext(ctx, `CREATE INDEX authz_request_visible_order ON authz_request_visible(action, subject, sort_bucket, sort_rank, sort_created, bead_id)`); err != nil {
+		return cleanup(err)
+	}
+	return snapshot, nil
+}
+
+func (snapshot *requestSnapshot) close() error {
+	snapshot.mu.Lock()
+	if snapshot.closed {
+		snapshot.mu.Unlock()
+		return nil
+	}
+	snapshot.closed = true
+	snapshot.mu.Unlock()
+	_, dropErr := snapshot.conn.ExecContext(context.Background(), `DROP TABLE IF EXISTS authz_request_visible`)
+	closeErr := snapshot.conn.Close()
+	if dropErr != nil {
+		return dropErr
+	}
+	return closeErr
+}
+
+func (s *Store) ensureSnapshotCurrent(snapshot *requestSnapshot) error {
+	if snapshot.store != s {
+		return fmt.Errorf("authorization snapshot belongs to a different store")
+	}
+	if snapshot.closed {
+		return fmt.Errorf("authorization snapshot is closed")
+	}
+	if snapshot.revision != s.authzRevision.Load() {
+		return fmt.Errorf("authorization snapshot invalidated at revision %d", s.authzRevision.Load())
+	}
+	return nil
+}
+
+// ensureVisible batches the repeated closure/grant lookup once per explicit
+// (principal, action, revision) key. The materialized rows include immutable
+// ordering fields so both query plans can use one indexed permission walk.
+func (s *Store) ensureVisible(ctx context.Context, snapshot *requestSnapshot, subject, action string) error {
+	if err := s.ensureSnapshotCurrent(snapshot); err != nil {
+		return err
+	}
+	key := authorizationSnapshotKey{subject: subject, action: action, revision: snapshot.revision}
+	snapshot.mu.Lock()
+	defer snapshot.mu.Unlock()
+	if snapshot.closed {
+		return fmt.Errorf("authorization snapshot is closed")
+	}
+	if _, ok := snapshot.loaded[key]; ok {
+		return nil
+	}
+	q := `INSERT INTO authz_request_visible(action,subject,bead_id,project_id,sort_bucket,sort_rank,sort_created)
+		SELECT ?, ?, c.descendant, b.project_id, b.sort_bucket, b.sort_rank, b.sort_created
+		FROM plugin_grant g
+		JOIN authz_cut_closure c ON c.ancestor=g.scope
+		JOIN bead b ON b.id=c.descendant
+		WHERE g.subject=? AND g.role=?
+		GROUP BY c.descendant, b.project_id, b.sort_bucket, b.sort_rank, b.sort_created`
+	if _, err := snapshot.conn.ExecContext(ctx, s.bind(q), action, subject, subject, action); err != nil {
+		return err
+	}
+	if s.Dialect == DialectPostgres {
+		if _, err := snapshot.conn.ExecContext(ctx, `ANALYZE authz_request_visible`); err != nil {
+			return err
+		}
+	}
+	snapshot.loaded[key] = struct{}{}
+	return nil
+}
+
 func (s *Store) queryPage(ctx context.Context, plan Plan, subject string, limit int) (*sql.Rows, error) {
 	return s.queryPageMode(ctx, plan, subject, limit, false)
 }
@@ -80,6 +238,24 @@ func (s *Store) queryClaimPage(ctx context.Context, plan Plan, subject string, l
 }
 
 func (s *Store) queryPageMode(ctx context.Context, plan Plan, subject string, limit int, unclaimedOnly bool) (*sql.Rows, error) {
+	if snapshot := requestSnapshotFrom(ctx); snapshot != nil {
+		if err := s.ensureVisible(ctx, snapshot, subject, readerAction); err != nil {
+			return nil, err
+		}
+		ready := "b.ready=1"
+		if unclaimedOnly {
+			ready += " AND b.claimed_by IS NULL"
+		}
+		// The request projection is already ordered and indexed by the same
+		// persisted key as bead_sort. Both plans therefore reuse one batched
+		// permission walk while retaining the plan label and independent
+		// candidate-cardinality measurement below.
+		q := fmt.Sprintf(`SELECT b.id,b.sort_bucket,b.sort_rank,b.sort_created
+			FROM authz_request_visible v JOIN bead b ON b.id=v.bead_id
+			WHERE v.action=? AND v.subject=? AND %s AND (v.sort_bucket,v.sort_rank,v.sort_created,v.bead_id)>(?,?,?,?)
+			ORDER BY v.sort_bucket,v.sort_rank,v.sort_created,v.bead_id LIMIT ?`, ready)
+		return s.executor(ctx).QueryContext(ctx, s.bind(q), readerAction, subject, -1, 0, 0, 0, limit)
+	}
 	var q string
 	ready := "b.ready=1"
 	if unclaimedOnly {
@@ -102,12 +278,22 @@ func (s *Store) queryPageMode(ctx context.Context, plan Plan, subject string, li
 	}
 	q = s.bind(q)
 	if plan == PlanA {
-		return s.DB.QueryContext(ctx, q, subject, -1, 0, 0, 0, limit)
+		return s.executor(ctx).QueryContext(ctx, q, subject, -1, 0, 0, 0, limit)
 	}
-	return s.DB.QueryContext(ctx, q, -1, 0, 0, 0, subject, limit)
+	return s.executor(ctx).QueryContext(ctx, q, -1, 0, 0, 0, subject, limit)
 }
 
 func (s *Store) queryCount(ctx context.Context, plan Plan, subject string) (*sql.Rows, error) {
+	if snapshot := requestSnapshotFrom(ctx); snapshot != nil {
+		if err := s.ensureVisible(ctx, snapshot, subject, readerAction); err != nil {
+			return nil, err
+		}
+		q := `SELECT v.project_id,COUNT(*)
+			FROM authz_request_visible v JOIN bead b ON b.id=v.bead_id
+			WHERE v.action=? AND v.subject=? AND b.ready=1
+			GROUP BY v.project_id ORDER BY v.project_id`
+		return s.executor(ctx).QueryContext(ctx, s.bind(q), readerAction, subject)
+	}
 	var q string
 	if plan == PlanA {
 		q = `WITH visible AS MATERIALIZED (
@@ -122,7 +308,7 @@ func (s *Store) queryCount(ctx context.Context, plan Plan, subject string) (*sql
 			WHERE c.descendant=b.id AND g.subject=? AND g.role='reader')
 		GROUP BY b.project_id ORDER BY b.project_id`
 	}
-	return s.DB.QueryContext(ctx, s.bind(q), subject)
+	return s.executor(ctx).QueryContext(ctx, s.bind(q), subject)
 }
 
 func (s *Store) claimNext(ctx context.Context, plan Plan, subject string) error {
@@ -136,17 +322,35 @@ func (s *Store) claimNext(ctx context.Context, plan Plan, subject string) error 
 // Postgres uses a normal transaction and FOR UPDATE on the candidate row.
 func (s *Store) claimNextEvidence(ctx context.Context, plan Plan, subject string) (evidence ClaimEvidence, err error) {
 	evidence.LockMode = "FOR UPDATE"
+	snapshot := requestSnapshotFrom(ctx)
+	if snapshot != nil {
+		// Populate the permission projection before opening the claim
+		// transaction. Doing it inside the transaction would make a rollback
+		// discard the request cache and would contaminate the timed path.
+		if err := s.ensureVisible(ctx, snapshot, subject, readerAction); err != nil {
+			return evidence, err
+		}
+	}
 	var runner claimRunner
 	var finish func(bool) error
 	if s.Dialect == DialectSQLite {
-		conn, connErr := s.DB.Conn(ctx)
+		var conn *sql.Conn
+		var connErr error
+		ownsConn := snapshot == nil
+		if snapshot != nil {
+			conn = snapshot.conn
+		} else {
+			conn, connErr = s.DB.Conn(ctx)
+		}
 		if connErr != nil {
 			return evidence, connErr
 		}
 		// Keep every statement on this connection: database/sql does not expose
 		// an *sql.Tx for a transaction started with BEGIN IMMEDIATE.
 		if _, connErr = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); connErr != nil {
-			_ = conn.Close()
+			if ownsConn {
+				_ = conn.Close()
+			}
 			return evidence, connErr
 		}
 		evidence.LockMode = "BEGIN IMMEDIATE"
@@ -158,14 +362,23 @@ func (s *Store) claimNextEvidence(ctx context.Context, plan Plan, subject string
 				statement = "COMMIT"
 			}
 			_, finishErr := conn.ExecContext(ctx, statement)
-			closeErr := conn.Close()
+			var closeErr error
+			if ownsConn {
+				closeErr = conn.Close()
+			}
 			if finishErr != nil {
 				return finishErr
 			}
 			return closeErr
 		}
 	} else {
-		tx, txErr := s.DB.BeginTx(ctx, nil)
+		var tx *sql.Tx
+		var txErr error
+		if snapshot != nil {
+			tx, txErr = snapshot.conn.BeginTx(ctx, nil)
+		} else {
+			tx, txErr = s.DB.BeginTx(ctx, nil)
+		}
 		if txErr != nil {
 			return evidence, txErr
 		}
@@ -186,7 +399,14 @@ func (s *Store) claimNextEvidence(ctx context.Context, plan Plan, subject string
 
 	var q string
 	var args []any
-	if plan == PlanA {
+	if snapshot != nil {
+		q = `SELECT b.id
+			FROM authz_request_visible v JOIN bead b ON b.id=v.bead_id
+			WHERE v.action=? AND v.subject=? AND b.ready=1 AND b.claimed_by IS NULL
+			AND (v.sort_bucket,v.sort_rank,v.sort_created,v.bead_id)>(?,?,?,?)
+			ORDER BY v.sort_bucket,v.sort_rank,v.sort_created,v.bead_id LIMIT 1`
+		args = []any{readerAction, subject, -1, 0, 0, 0}
+	} else if plan == PlanA {
 		q = `WITH visible AS MATERIALIZED (
 			SELECT c.descendant FROM plugin_grant g JOIN authz_cut_closure c ON c.ancestor=g.scope
 			WHERE g.subject=? AND g.role='reader' GROUP BY c.descendant
@@ -203,7 +423,11 @@ func (s *Store) claimNextEvidence(ctx context.Context, plan Plan, subject string
 		args = []any{-1, 0, 0, 0, subject}
 	}
 	if s.Dialect == DialectPostgres {
-		q += ` FOR UPDATE`
+		if snapshot != nil {
+			q += ` FOR UPDATE OF b`
+		} else {
+			q += ` FOR UPDATE`
+		}
 	}
 	var id int
 	err = runner.QueryRowContext(ctx, s.bind(q), args...).Scan(&id)
@@ -222,9 +446,18 @@ func (s *Store) claimNextEvidence(ctx context.Context, plan Plan, subject string
 	if s.Dialect == DialectPostgres {
 		evidence.LockAcquired = true
 	}
+	if snapshot != nil {
+		if err = s.ensureSnapshotCurrent(snapshot); err != nil {
+			return evidence, err
+		}
+	}
 	// Re-check the permission on the locked candidate before claiming it.
 	var ok int
-	err = runner.QueryRowContext(ctx, s.bind(`SELECT 1 FROM bead b WHERE b.id=? AND b.ready=1 AND b.claimed_by IS NULL AND EXISTS (SELECT 1 FROM authz_cut_closure c JOIN plugin_grant g ON g.scope=c.ancestor WHERE c.descendant=b.id AND g.subject=? AND g.role='reader')`), id, subject).Scan(&ok)
+	if snapshot != nil {
+		err = runner.QueryRowContext(ctx, s.bind(`SELECT 1 FROM bead b JOIN authz_request_visible v ON v.bead_id=b.id WHERE b.id=? AND v.action=? AND v.subject=? AND b.ready=1 AND b.claimed_by IS NULL`), id, readerAction, subject).Scan(&ok)
+	} else {
+		err = runner.QueryRowContext(ctx, s.bind(`SELECT 1 FROM bead b WHERE b.id=? AND b.ready=1 AND b.claimed_by IS NULL AND EXISTS (SELECT 1 FROM authz_cut_closure c JOIN plugin_grant g ON g.scope=c.ancestor WHERE c.descendant=b.id AND g.subject=? AND g.role='reader')`), id, subject).Scan(&ok)
+	}
 	if err != nil {
 		return evidence, err
 	}
@@ -298,17 +531,43 @@ type sortKey struct {
 }
 
 func (s *Store) countVisible(ctx context.Context, subject string) (int, error) {
+	if snapshot := requestSnapshotFrom(ctx); snapshot != nil {
+		if err := s.ensureVisible(ctx, snapshot, subject, readerAction); err != nil {
+			return 0, err
+		}
+		var n int64
+		if err := s.executor(ctx).QueryRowContext(ctx, s.bind(`SELECT COUNT(*) FROM authz_request_visible WHERE action=? AND subject=?`), readerAction, subject).Scan(&n); err != nil {
+			return 0, err
+		}
+		return checkedCount(n)
+	}
 	q := `SELECT COUNT(DISTINCT c.descendant)
 		FROM plugin_grant g JOIN authz_cut_closure c ON c.ancestor=g.scope
 		WHERE g.subject=? AND g.role='reader'`
 	var n int64
-	if err := s.DB.QueryRowContext(ctx, s.bind(q), subject).Scan(&n); err != nil {
+	if err := s.executor(ctx).QueryRowContext(ctx, s.bind(q), subject).Scan(&n); err != nil {
 		return 0, err
 	}
 	return checkedCount(n)
 }
 
 func (s *Store) countQualified(ctx context.Context, subject string, unclaimedOnly bool) (int, error) {
+	if snapshot := requestSnapshotFrom(ctx); snapshot != nil {
+		if err := s.ensureVisible(ctx, snapshot, subject, readerAction); err != nil {
+			return 0, err
+		}
+		ready := "b.ready=1"
+		if unclaimedOnly {
+			ready += " AND b.claimed_by IS NULL"
+		}
+		q := fmt.Sprintf(`SELECT COUNT(*) FROM authz_request_visible v JOIN bead b ON b.id=v.bead_id
+			WHERE v.action=? AND v.subject=? AND %s AND (v.sort_bucket,v.sort_rank,v.sort_created,v.bead_id)>(?,?,?,?)`, ready)
+		var n int64
+		if err := s.executor(ctx).QueryRowContext(ctx, s.bind(q), readerAction, subject, -1, 0, 0, 0).Scan(&n); err != nil {
+			return 0, err
+		}
+		return checkedCount(n)
+	}
 	ready := "b.ready=1"
 	if unclaimedOnly {
 		ready += " AND b.claimed_by IS NULL"
@@ -320,7 +579,7 @@ func (s *Store) countQualified(ctx context.Context, subject string, unclaimedOnl
 		SELECT COUNT(*) FROM bead b JOIN visible v ON v.descendant=b.id
 		WHERE %s AND (b.sort_bucket,b.sort_rank,b.sort_created,b.id)>(?,?,?,?)`, ready)
 	var n int64
-	if err := s.DB.QueryRowContext(ctx, s.bind(q), subject, -1, 0, 0, 0).Scan(&n); err != nil {
+	if err := s.executor(ctx).QueryRowContext(ctx, s.bind(q), subject, -1, 0, 0, 0).Scan(&n); err != nil {
 		return 0, err
 	}
 	return checkedCount(n)
@@ -328,7 +587,7 @@ func (s *Store) countQualified(ctx context.Context, subject string, unclaimedOnl
 
 func (s *Store) countReady(ctx context.Context) (int, error) {
 	var n int64
-	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM bead WHERE ready=1`).Scan(&n); err != nil {
+	if err := s.executor(ctx).QueryRowContext(ctx, `SELECT COUNT(*) FROM bead WHERE ready=1`).Scan(&n); err != nil {
 		return 0, err
 	}
 	return checkedCount(n)
@@ -339,12 +598,12 @@ func (s *Store) countReady(ctx context.Context) (int, error) {
 // next timed invocation from measuring a progressively exhausted queue.  The
 // setup statement is outside the timed section.
 func (s *Store) resetClaims(ctx context.Context) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE bead SET claimed_by=NULL WHERE claimed_by IS NOT NULL`)
+	_, err := s.executor(ctx).ExecContext(ctx, `UPDATE bead SET claimed_by=NULL WHERE claimed_by IS NOT NULL`)
 	return err
 }
 
 func (s *Store) resetClaim(ctx context.Context, id int) error {
-	_, err := s.DB.ExecContext(ctx, s.bind(`UPDATE bead SET claimed_by=NULL WHERE id=?`), id)
+	_, err := s.executor(ctx).ExecContext(ctx, s.bind(`UPDATE bead SET claimed_by=NULL WHERE id=?`), id)
 	return err
 }
 
@@ -365,7 +624,7 @@ func (s *Store) countIndexWalkCandidates(ctx context.Context, last *sortKey, unc
 		args = append(args, last.bucket, last.rank, last.created, last.id)
 	}
 	var n int64
-	if err := s.DB.QueryRowContext(ctx, s.bind(q), args...).Scan(&n); err != nil {
+	if err := s.executor(ctx).QueryRowContext(ctx, s.bind(q), args...).Scan(&n); err != nil {
 		return 0, err
 	}
 	return checkedCount(n)
@@ -466,6 +725,12 @@ func (s *Store) measureCount(ctx context.Context, plan Plan, subject string) (qu
 // Benchmark runs warmed-up SQL cases. Durations are milliseconds, and every
 // row is fully consumed so timings include the complete result set.
 func (s *Store) Benchmark(ctx context.Context, fraction float64, iterations int) ([]BenchCase, error) {
+	snapshot, err := s.beginRequestSnapshot(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin authorization request snapshot: %w", err)
+	}
+	defer snapshot.close()
+	ctx = withRequestSnapshot(ctx, snapshot)
 	cases := make([]BenchCase, 0, 6)
 	subject := "principal:sample"
 	for _, plan := range []Plan{PlanA, PlanB} {

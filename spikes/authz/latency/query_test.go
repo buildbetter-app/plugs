@@ -3,10 +3,92 @@ package authz
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
 )
+
+func TestRequestSnapshotSeparatesKeysAndRejectsInvalidation(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenSQLite(filepath.Join(t.TempDir(), "snapshot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Reset(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for id := 1; id <= 2; id++ {
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO bead(id,parent_id,depth,project_id,ready,sort_bucket,sort_rank,sort_created) VALUES(?,?,?,?,?,?,?,?)`, id, 0, 0, id, 1, 0, id, id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO authz_cut_closure(descendant,ancestor,depth) VALUES(?,?,?)`, id, id, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, grant := range [][2]string{{"principal:sample", "1"}, {"principal:admin", "2"}} {
+		if _, err := s.DB.ExecContext(ctx, `INSERT INTO plugin_grant(subject,scope,role) VALUES(?,?,?)`, grant[0], grant[1], readerAction); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	snapshot, err := s.beginRequestSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.close()
+	snapshotCtx := withRequestSnapshot(ctx, snapshot)
+	for _, test := range []struct {
+		subject string
+		want    []int
+	}{
+		{subject: "principal:sample", want: []int{1}},
+		{subject: "principal:admin", want: []int{2}},
+		{subject: "principal:none", want: nil},
+	} {
+		rows, err := s.queryPage(snapshotCtx, PlanA, test.subject, 10)
+		if err != nil {
+			t.Fatalf("subject %s: %v", test.subject, err)
+		}
+		var got []int
+		for rows.Next() {
+			var id, bucket, rank, created int
+			if err := rows.Scan(&id, &bucket, &rank, &created); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, id)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != len(test.want) {
+			t.Fatalf("subject %s rows=%v want=%v", test.subject, got, test.want)
+		}
+		for i := range got {
+			if got[i] != test.want[i] {
+				t.Fatalf("subject %s rows=%v want=%v", test.subject, got, test.want)
+			}
+		}
+	}
+	if err := s.ensureVisible(snapshotCtx, snapshot, "principal:sample", "writer"); err != nil {
+		t.Fatal(err)
+	}
+	var writerRows int
+	if err := snapshot.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM authz_request_visible WHERE action=? AND subject=?`, "writer", "principal:sample").Scan(&writerRows); err != nil {
+		t.Fatal(err)
+	}
+	if writerRows != 0 {
+		t.Fatalf("writer cache rows=%d, want no reader grant leakage", writerRows)
+	}
+
+	// A committed policy/dependency write advances the revision. The old
+	// snapshot must fail closed instead of serving stale authorization rows.
+	s.bumpAuthorizationRevision()
+	if _, err := s.queryPage(snapshotCtx, PlanA, "principal:sample", 1); err == nil || !strings.Contains(err.Error(), "invalidated") {
+		t.Fatalf("stale snapshot error=%v, want invalidated", err)
+	}
+}
 
 func TestClaimNextSQLiteLocksRechecksAndCommits(t *testing.T) {
 	ctx := context.Background()

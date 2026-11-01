@@ -89,6 +89,7 @@ func (s *Store) RewriteClosureMigration(ctx context.Context, epic, newParent int
 	if err = tx.Commit(); err != nil {
 		return result, err
 	}
+	s.bumpAuthorizationRevision()
 	result.DurationMS = float64(time.Since(start).Microseconds()) / 1000
 	return result, nil
 }

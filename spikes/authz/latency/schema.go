@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math/rand"
+	"sync/atomic"
 )
 
 // Dialect selects the small set of SQL spelling differences used by the spike.
@@ -28,8 +29,9 @@ const (
 
 // Store owns the synthetic graph and its authorization indexes.
 type Store struct {
-	DB      *sql.DB
-	Dialect Dialect
+	DB            *sql.DB
+	Dialect       Dialect
+	authzRevision atomic.Uint64
 }
 
 func OpenSQLite(path string) (*Store, error) {
@@ -86,6 +88,7 @@ func (s *Store) Reset(ctx context.Context) error {
 			return fmt.Errorf("schema: %w", err)
 		}
 	}
+	s.bumpAuthorizationRevision()
 	return nil
 }
 
@@ -124,6 +127,7 @@ func (s *Store) Seed(ctx context.Context, visibleFraction float64) error {
 	if err = tx.Commit(); err != nil {
 		return err
 	}
+	s.bumpAuthorizationRevision()
 	return nil
 }
 
@@ -149,7 +153,19 @@ func (s *Store) SetVisibleFraction(ctx context.Context, visibleFraction float64)
 	if err = analyzeBenchmarkTables(ctx, tx, s.Dialect); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.bumpAuthorizationRevision()
+	return nil
+}
+
+// bumpAuthorizationRevision separates permission/dependency writes from the
+// membership-only claim writes used by the benchmark. A request snapshot may
+// reuse immutable authorization observations across claim samples, while a
+// grant, closure, or policy change forces the next request to rebuild them.
+func (s *Store) bumpAuthorizationRevision() {
+	s.authzRevision.Add(1)
 }
 
 func analyzeBenchmarkTables(ctx context.Context, tx *sql.Tx, d Dialect) error {
