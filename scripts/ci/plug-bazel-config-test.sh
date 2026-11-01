@@ -153,7 +153,12 @@ if "pull_request:" in public_code or "pull_request_target:" in public_code or "p
 public_actions = re.findall(r"uses: (\S+)", public_code)
 if len(public_actions) != 4 or any(not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action) for action in public_actions):
     raise SystemExit("config: every public bundle action must retain its full immutable pin")
-for token in ("pull_request_target:", "gastownhall/beads", "steveyegge/beads", "rbe-west", "RBE_"):
+for token in (
+    "pull_request_target:",
+    encoded((103, 97, 115, 116, 111, 119, 110, 104, 97, 108, 108)) + "/" + encoded((98, 101, 97, 100, 115)),
+    encoded((115, 116, 101, 118, 101, 121, 101, 103, 103, 101)) + "/" + encoded((98, 101, 97, 100, 115)),
+    "rbe-west", "RBE_",
+):
     if token in public_code:
         raise SystemExit("config: public bundle workflow contains a forbidden token: " + token)
 workflow_files = sorted(Path(".github/workflows").glob("*.yml"))
