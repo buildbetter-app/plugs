@@ -19,6 +19,7 @@ go_test(
     name = "service_test",
     srcs = glob(["*_test.go"], exclude = ["history_sqlite_rpc_test.go"]),
     embed = [":service"],
+    tags = ["block-network"],
     deps = [
         "//internal/core/events",
         "//internal/core/model",
