@@ -84,7 +84,7 @@ func TestWorkflowSecurityContract(t *testing.T) {
 		{"fork-runner", "github.event.pull_request.head.repo.full_name == github.repository", "true"},
 		{"dependabot-runner", "github.actor != 'dependabot[bot]'", "true"},
 		{"runner-class", "runner=bb-x64-16", "runner=other"},
-		{"workspace-rc", "--noworkspace_rc", "--workspace_rc"},
+		{"trusted-rc", "--rc \"$RUNNER_TEMP/beads.bazelrc\"", "--rc /untrusted.rc"},
 		{"missing-actual-gate", "ci-harness/.github/scripts/beads-ci-contract.py run", "echo skipped"},
 		{"missing-event-check", "--event-name \"$GITHUB_EVENT_NAME\"", ""},
 		{"missing-evidence", "if-no-files-found: error", "if-no-files-found: warn"},
@@ -209,6 +209,8 @@ assert 'test' in args
 assert '--run_under=//tools/bazel:test_env' in args
 assert '--nocache_test_results' in args
 assert '--noworkspace_rc' in args
+assert '--nosystem_rc' in args
+assert '--nohome_rc' in args
 assert '--test_env=BEADS_TEST_SKIP=dolt' in args
 assert '--@rules_go//go/config:race' in args
 whole = '//...' in args

@@ -99,7 +99,7 @@ def check_workflow(text):
         "ref: ${{ inputs.harness_sha }}", "path: source", "path: ci-harness",
         '[[ "$GITHUB_EVENT_NAME" == pull_request ]]',
         '[[ "$BASE_REF" == beads ]]',
-        "--nosystem_rc", "--nohome_rc", "--noworkspace_rc",
+        '--rc "$RUNNER_TEMP/beads.bazelrc"',
         "common --remote_cache=", "common --remote_executor=", "common --repo_contents_cache=",
         "BAZELISK_VERIFY_SHA256", "sha256sum --check --status",
         "ci-harness/.github/scripts/beads-ci-contract.py run",
