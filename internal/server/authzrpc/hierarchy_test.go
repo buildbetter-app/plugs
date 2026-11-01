@@ -231,6 +231,15 @@ func TestHierarchyOrderedCreatesAndFinalImages(t *testing.T) {
 	epic := hCreate("batch-parent", "epic", "parent-project", nil, "")
 	child := hCreate("batch-child", "", "child-project", &alias, parent.ID)
 	proposal := hProposal(hAgent(), "tx.apply", epic, child)
+	// Exercise the same detachment boundary as Writer callbacks: absent
+	// Before images become explicit JSON null while source misses stay tracked.
+	encoded, err := json.Marshal(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encoded, &proposal); err != nil {
+		t.Fatal(err)
+	}
 	s := f.snapshot(t)
 	if err := f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, proposal, s); err != nil {
 		t.Fatal(err)
