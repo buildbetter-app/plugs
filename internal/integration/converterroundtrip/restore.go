@@ -251,10 +251,6 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		return report, err
 	}
 	defer tx.Close()
-	capability, ok := tx.(driver.OfflineRestoreTx)
-	if !ok {
-		return report, driver.ErrUnsupported
-	}
 	if _, err = tx.Lock(ctx, requests); err != nil {
 		return report, err
 	}
@@ -279,6 +275,10 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			err = continuation.RestoreAllocators(ctx, plan.allocators)
 		}
 	} else if profile == nil {
+		capability, ok := tx.(driver.OfflineRestoreTx)
+		if !ok {
+			return report, driver.ErrUnsupported
+		}
 		restored, err = capability.PrepareOfflineRestore(ctx, driver.StoreID(archive.Manifest().StoreID))
 	} else {
 		importCapability, importOK := tx.(driver.RestoreImportTx)
