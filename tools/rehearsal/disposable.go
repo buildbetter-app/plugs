@@ -365,10 +365,12 @@ func workload(ctx context.Context, c *client.Client) (Metrics, error) {
 		}
 		final, err := call("get", id)
 		var record struct {
-			Status string
-			Fields map[string]any
+			Bead struct {
+				Status string
+				Fields map[string]any
+			}
 		}
-		if err != nil || json.Unmarshal(final.JSON, &record) != nil || record.Status != "closed" || record.Fields["title"] != "synthetic completed task" {
+		if err != nil || json.Unmarshal(final.JSON, &record) != nil || record.Bead.Status != "closed" || record.Bead.Fields["title"] != "synthetic completed task" {
 			return Metrics{}, fmt.Errorf("completed task readback failed")
 		}
 		completed++
