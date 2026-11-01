@@ -545,6 +545,9 @@ func (f *hFixture) createRPC(t *testing.T, key int) hReply {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &reply); err != nil {
 		t.Fatal(err)
 	}
+	if reply.Error != nil {
+		t.Logf("bead.create response: %s", recorder.Body.Bytes())
+	}
 	return reply
 }
 
