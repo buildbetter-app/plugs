@@ -159,6 +159,11 @@ type storedRecord struct {
 // nearest full base and replay at most 31 RFC6902 root-replacement patches.
 func (r *reader) recordAt(ctx context.Context, key string) (storedRecord, bool, error) {
 	var result storedRecord
+	// Revision zero precedes every persisted record, just as in recordsAt.
+	// Callers check the live context/lease and their staged overlay separately.
+	if r.at == 0 {
+		return result, false, nil
+	}
 	var raw, body []byte
 	var rev, count string
 	var kind string
