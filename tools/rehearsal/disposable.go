@@ -370,13 +370,15 @@ func workload(ctx context.Context, c *client.Client) (Metrics, error) {
 				Fields map[string]any
 			}
 		}
-		if err != nil || json.Unmarshal(final.JSON, &record) != nil || record.Bead.Status != "closed" || record.Bead.Fields["title"] != "synthetic completed task" {
+		if err != nil || json.Unmarshal(final.JSON, &record) != nil || record.Bead.Status != "done" || record.Bead.Fields["title"] != "synthetic completed task" {
 			return Metrics{}, fmt.Errorf("completed task readback failed")
 		}
 		completed++
 	}
-	if _, err := call("ready", "--limit", "10"); err != nil {
-		return Metrics{}, fmt.Errorf("ready caller failed")
+	ready, err := call("ready", "--limit", "10")
+	var page struct{ Items []json.RawMessage }
+	if err != nil || json.Unmarshal(ready.JSON, &page) != nil || page.Items == nil || len(page.Items) != 0 {
+		return Metrics{}, fmt.Errorf("completed tasks remained ready")
 	}
 	return Summarize(samples, 3, completed)
 }
