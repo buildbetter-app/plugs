@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -213,10 +214,10 @@ func (t *transaction) writable(key driver.LockKey) error {
 		return fmt.Errorf("memory: write requires locks")
 	}
 	want := keyID(key)
-	for _, request := range t.acquired {
-		if keyID(request.Key) == want && request.Mode != driver.LockShare {
-			return nil
-		}
+	// ValidateLockSet and selection preserve the canonical global key order.
+	i := sort.Search(len(t.acquired), func(i int) bool { return keyID(t.acquired[i].Key) >= want })
+	if i < len(t.acquired) && keyID(t.acquired[i].Key) == want && t.acquired[i].Mode != driver.LockShare {
+		return nil
 	}
 	return fmt.Errorf("memory: missing update lock for %s", want)
 }
