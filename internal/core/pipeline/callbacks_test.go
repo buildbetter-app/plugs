@@ -14,6 +14,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
 
 func TestPostFailureIsCommittedAndDurablyReplayed(t *testing.T) {
@@ -45,6 +46,66 @@ func TestPostFailureIsCommittedAndDurablyReplayed(t *testing.T) {
 	}
 	if h.read(t).Snapshot().At.String() != "1" {
 		t.Fatal("post failure/finalization advanced graph head")
+	}
+	key := PostDeadLetterKey("pipeline-test", result.Revision, "external")
+	stored, err := h.store.LoadCheckpoint(context.Background(), key)
+	var dead PostDeadLetter
+	if err != nil || stored.Generation != 1 || json.Unmarshal(stored.Payload, &dead) != nil || dead.Binding != "external" || dead.Revision.String() != "1" || dead.Incarnation != "pipeline-test" || dead.Reason != "post_subscriber_failed" || !dead.FailedAt.Equal(h.now) {
+		t.Fatalf("failed callback has no durable dead letter: %+v entry=%+v err=%v", stored, dead, err)
+	}
+}
+
+type postMetadataFault struct {
+	*memory.Store
+	persist bool
+	calls   atomic.Int32
+}
+
+func (s *postMetadataFault) SaveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, generation uint64, payload []byte) (driver.Checkpoint, error) {
+	s.calls.Add(1)
+	if s.persist {
+		if _, err := s.Store.SaveCheckpoint(ctx, lease, key, generation, payload); err != nil {
+			return driver.Checkpoint{}, err
+		}
+	}
+	return driver.Checkpoint{}, errors.New("injected post metadata acknowledgement failure")
+}
+
+func TestPostDeadLetterPersistenceFailureKeepsReceiptPendingAndLostAckReloads(t *testing.T) {
+	for _, persist := range []bool{false, true} {
+		t.Run(fmt.Sprintf("persist_%v", persist), func(t *testing.T) {
+			h := setup(t)
+			store := &postMetadataFault{Store: h.store, persist: persist}
+			var posts atomic.Int32
+			w := New(store, h.lease, WithOntology(testOntology{}), WithPostSubscribers(PostBinding{ID: "failed", Subscriber: postFunc(func(context.Context, port.CommittedChange, port.SnapshotReader) error {
+				posts.Add(1)
+				return errors.New("private sink detail must not enter metadata")
+			})}))
+			cs, m := model.ChangeSet{Ops: []model.Op{create("new")}}, meta(991)
+			commit, err := w.Apply(context.Background(), by, cs, m)
+			entry := receipt(t, h, m)
+			if entry == nil || posts.Load() != 1 || h.read(t).Snapshot().At.String() != "1" {
+				t.Fatalf("metadata failure repeated or lost the graph write: entry=%+v posts=%d", entry, posts.Load())
+			}
+			wantCalls := int32(4)
+			if persist {
+				wantCalls = 1
+				if err != nil || entry.ResponsePending || len(commit.Warnings) != 1 {
+					t.Fatalf("lost metadata ack did not reload durable outcome: commit=%+v entry=%+v err=%v", commit, entry, err)
+				}
+			} else {
+				code(t, err, "busy")
+				if !entry.ResponsePending || len(entry.Commit.Warnings) != 0 {
+					t.Fatalf("missing dead letter returned unpersisted success: %+v", entry)
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				_, _ = w.Apply(ctx, by, cs, m)
+			}
+			if store.calls.Load() != wantCalls || posts.Load() != 1 {
+				t.Fatalf("metadata retries reran callback: saves=%d posts=%d", store.calls.Load(), posts.Load())
+			}
+		})
 	}
 }
 

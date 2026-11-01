@@ -241,6 +241,7 @@ internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
 internal/core/pipeline/options.go
 internal/core/pipeline/pipeline_test.go
+internal/core/pipeline/post.go
 internal/core/pipeline/prepare.go
 internal/core/pipeline/protected.go
 internal/core/pipeline/response.go
@@ -407,6 +408,7 @@ internal/integration/postphase/postphase_test.go
 internal/integration/postphase/receipts_test.go
 internal/integration/postsql/BUILD.bazel
 internal/integration/postsql/README.md
+internal/integration/postsql/atomic_test.go
 internal/integration/postsql/delivery_test.go
 internal/integration/postsql/engine_test.go
 internal/integration/postsql/faults_test.go
