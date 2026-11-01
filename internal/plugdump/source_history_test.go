@@ -225,3 +225,32 @@ func TestExportSourceHistoryRejectsMovingCensus(t *testing.T) {
 		})
 	}
 }
+
+func TestExportSourceHistoryPreservesScopedHeadTypeDirectives(t *testing.T) {
+	for _, earlier := range []string{"builtin", "covered", "wrong-issue"} {
+		t.Run(earlier, func(t *testing.T) {
+			s, inventory := historyFixture(t)
+			s.fixtureSource["issues"].Rows[0]["issue_type"] = "decision"
+			s.images[s.log.Head]["issues"].Rows[0]["issue_type"] = "decision"
+			inventory.Ontology = []OntologyDirective{{ID: "preserve-decision", Kind: "map_type", Target: OntologyTarget{Project: "demo", Type: "decision", ID: "demo-7"}, From: "decision", To: "issue"}}
+			if earlier == "covered" {
+				for _, image := range s.images {
+					image["issues"].Rows[0]["issue_type"] = "decision"
+				}
+			}
+			if earlier == "wrong-issue" {
+				s.images[s.log.Commits[2].ID]["issues"].Rows[1]["issue_type"] = "decision"
+			}
+			_, h := sourceCapture(t, buildFixture(t, s, inventory))
+			if earlier == "wrong-issue" {
+				if h.Range.Status != "unverified" || h.Range.Complete {
+					t.Fatal("historical issue borrowed a directive for another issue")
+				}
+				return
+			}
+			if h.Range.Status != "verified" || !h.Range.Complete || len(h.Range.Frames) != 4 {
+				t.Fatalf("valid scoped type history lost: status=%s reason=%s first=%d frames=%d", h.Range.Status, h.Range.Reason, h.Range.First, len(h.Range.Frames))
+			}
+		})
+	}
+}
