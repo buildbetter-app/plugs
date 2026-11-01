@@ -14,6 +14,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -153,7 +154,10 @@ func TestHierarchyOrderedBatchAndSubtreeAcrossStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
-			f.writer = pipeline.New(f.store, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithOntologyAudit(f.ontology), pipeline.WithClock(f.now), pipeline.WithIDGenerator(f.nextID))
+			// This case has no conditional links. Enable the complete event plan
+			// with the real audit adapter, which fails closed if one is introduced
+			// without a pinned ontology source.
+			f.writer = pipeline.New(f.store, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)), pipeline.WithClock(f.now), pipeline.WithIDGenerator(f.nextID))
 			seed := hierarchyApply(t, f,
 				hierarchyCreate("a", nil, "parent-project"),
 				hierarchyCreate("b", hierarchyRef("a"), "parent-project"),
