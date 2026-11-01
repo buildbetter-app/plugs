@@ -1,0 +1,37 @@
+{
+  "schema": "plug.s1-b05-b08.reference-provenance.v1",
+  "cards": ["B05", "B06", "B07", "B08"],
+  "source": {
+    "commit": "9d6fff760b7a314b476539198504d77ce0959656",
+    "tree": "cde121d6e4119e454857ad1c3ca293e2791be840"
+  },
+  "status": "blocked",
+  "binary": {
+    "sha256": null,
+    "versionDigest": null,
+    "driver": "embedded-dolt"
+  },
+  "recordings": [],
+  "blocked": [
+    {
+      "stage": "reference-twin",
+      "code": "reference-executable-run-required",
+      "message": "No fresh public pinned executable run is retained for B05-B08; authored expectations are not recordings."
+    },
+    {
+      "stage": "clock-provenance",
+      "code": "go-sql-clock-control-required",
+      "message": "B05 lease deadlines and B08 lifecycle timestamps require controlled Go and SQL clocks before qualification."
+    }
+  ],
+  "requiredDimensions": [
+    "ids", "prefixes", "counters", "dependencies", "lease-deadlines",
+    "blocked-reasons", "categories", "outcomes", "versions", "changesets",
+    "events", "archives", "digests"
+  ],
+  "limits": [
+    "Historical B07 reference bytes remain under spec/recorded/extension and are not relabeled.",
+    "No private or inventoried store was opened.",
+    "No reference raw/projection digest is asserted while recordings is empty."
+  ]
+}

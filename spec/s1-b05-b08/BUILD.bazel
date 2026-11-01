@@ -4,7 +4,14 @@ go_test(
     name = "acceptance",
     srcs = [
         "fixture_test.go",
+        "projection_test.go",
+        "provenance_test.go",
         "runtime_test.go",
+    ],
+    embedsrcs = [
+        "project_reference.py",
+        "record_reference.py",
+        "reference/provenance.json",
     ],
     args = ["-test.v"],
     deps = [

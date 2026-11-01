@@ -44,7 +44,7 @@ type fixture struct {
 
 func newFixture(t *testing.T, engine string) *fixture {
 	t.Helper()
-	f := &fixture{t: t, ctx: context.Background(), engine: engine, now: time.Date(2026, 11, 1, 23, 0, 0, 0, time.UTC), ids: []string{"s1-b05", "s1-b06", "s1-b07", "s1-b08", "s1-child", "s1-target"}}
+	f := &fixture{t: t, ctx: context.Background(), engine: engine, now: time.Date(2026, 11, 1, 23, 0, 0, 0, time.UTC), ids: []string{"s1-b05", "s1-b06", "s1-b07", "s1-b08", "s1-child", "s1-target", "s1-custom-source", "s1-custom-target"}}
 	if engine == "memory" {
 		f.store = memory.New()
 	} else {

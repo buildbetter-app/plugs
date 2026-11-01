@@ -122,6 +122,16 @@ func TestB06B07B08DependencyLifecycleEdges(t *testing.T) {
 	if custom.Error != nil {
 		t.Fatalf("custom edge refused: %s", custom.Error.Data.Code)
 	}
+	customSource := f.create(t, "custom-source")
+	customTarget := f.create(t, "custom-target")
+	customOnly := f.call(t, f.ctx, "bead.link", map[string]any{"from": customSource, "to": customTarget, "kind": "custom-edge"}, key("custom-only"), actor)
+	if customOnly.Error != nil {
+		t.Fatalf("standalone custom edge refused: %s", customOnly.Error.Data.Code)
+	}
+	customClose := f.call(t, f.ctx, "bead.close", map[string]any{"id": customSource}, key("custom-source-close"), actor)
+	if customClose.Error != nil {
+		t.Fatalf("custom edge incorrectly blocked close: %s", customClose.Error.Data.Code)
+	}
 	retype := f.call(t, f.ctx, "bead.link", map[string]any{"from": parent, "to": child, "kind": "blocks"}, key("retype"), actor)
 	if retype.Error == nil || retype.Error.Data.Code != "invalid_params" {
 		t.Fatalf("retype=%+v", retype)
