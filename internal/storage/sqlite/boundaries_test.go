@@ -13,6 +13,81 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
+func TestRecordRefPreservesAcquiredSubsetAndFailureBoundary(t *testing.T) {
+	ctx := testContext(t)
+	s := openStore(t, ctx, filepath.Join(t.TempDir(), "record-ref.db"))
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	first, skipped, last := testRef("pl-lookup-1"), testRef("pl-lookup-2"), testRef("pl-lookup-3")
+	alias := model.RefByKey("lookup-alias")
+	recordLock := func(ref driver.Ref) driver.LockKey { return driver.LockKey{Kind: driver.LockRecord, Ref: &ref} }
+	holder, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if _, err = holder.Lock(ctx, driver.LockSet{{Key: recordLock(skipped), Mode: driver.LockUpdate}}); err != nil {
+		t.Fatal(err)
+	}
+	write, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer write.Close()
+	fact := driver.LockKey{Kind: driver.LockReadFact, Fact: "lookup/fact"}
+	sentinel := driver.GraphBlockingSentinelLock
+	derived := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedReadyState, Key: "lookup"}}
+	requests := driver.LockSet{
+		{Key: recordLock(first), Mode: driver.LockShare},
+		{Key: recordLock(skipped), Mode: driver.LockSkipLocked},
+		{Key: recordLock(last), Mode: driver.LockSkipLocked},
+		{Key: recordLock(alias), Mode: driver.LockUpdate},
+		{Key: fact, Mode: driver.LockShare},
+		{Key: sentinel, Mode: driver.LockShare},
+		{Key: derived, Mode: driver.LockShare},
+	}
+	states, err := write.Lock(ctx, requests)
+	if err != nil || len(states) != len(requests)-1 {
+		t.Fatalf("mixed lock set did not skip exactly the held record: %d states, %v", len(states), err)
+	}
+	tx := write.(*transaction)
+	if err := driver.ValidateLockSet(tx.acquired); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []driver.Ref{first, last, alias} {
+		id := keyID(recordLock(want))
+		got := tx.recordRef(id)
+		if got != want {
+			t.Fatalf("record lookup changed selected form or mode behavior: got %+v, want %+v", got, want)
+		}
+		got.ID = "caller-mutation"
+		if tx.recordRef(id) != want {
+			t.Fatal("returned Ref aliases the acquired set")
+		}
+	}
+	for name, key := range map[string]driver.LockKey{
+		"before": recordLock(testRef("pl-lookup-0")), "skipped": recordLock(skipped),
+		"between": recordLock(testRef("pl-lookup-4")), "missing-alias": recordLock(model.RefByKey("lookup-missing")),
+		"read-fact": fact, "sentinel": sentinel, "derived": derived,
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if got := recover(); got != "sqlite: record missing validated lock" {
+					t.Fatalf("missing/nonrecord lookup panic = %v", got)
+				}
+			}()
+			tx.recordRef(keyID(key))
+		})
+	}
+	t.Run("empty", func(t *testing.T) {
+		defer func() {
+			if got := recover(); got != "sqlite: record missing validated lock" {
+				t.Fatalf("empty lookup panic = %v", got)
+			}
+		}()
+		(&transaction{}).recordRef(keyID(recordLock(first)))
+	})
+}
+
 func TestHistoricalReplayAcrossScheduledTombstones(t *testing.T) {
 	ctx := testContext(t)
 	s := openStore(t, ctx, filepath.Join(t.TempDir(), "history.db"))

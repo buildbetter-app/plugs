@@ -91,6 +91,7 @@ type Archive struct {
 	members  map[string][]byte
 	byKind   map[string][]Record
 	native   bool
+	history  *SourceHistory
 }
 
 // Native reports whether this is an archive emitted by Plug's admin.dump
