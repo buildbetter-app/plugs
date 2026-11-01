@@ -19,6 +19,7 @@ type Document struct {
 	ID          string                     `json:"id"`
 	Type        string                     `json:"type"`
 	Project     string                     `json:"project,omitempty"`
+	Parent      *model.Ref                 `json:"parent,omitempty"`
 	Fields      map[string]any             `json:"fields"`
 	Metadata    map[string]json.RawMessage `json:"metadata,omitempty"`
 	Labels      []string                   `json:"labels,omitempty"`
@@ -83,12 +84,26 @@ func DecodeDocument(body []byte) (Document, error) {
 	if d.ID == "" || d.Type == "" || d.Fields == nil {
 		return d, fmt.Errorf("invalid bead document")
 	}
+	if err := validateParent(d.Parent); err != nil {
+		return d, err
+	}
 	for _, comment := range d.Comments {
 		if err := comment.Validate(); err != nil {
 			return d, err
 		}
 	}
 	return d, nil
+}
+
+func validateParent(parent *model.Ref) error {
+	if parent == nil {
+		return nil
+	}
+	if err := parent.Validate(); err != nil || !parent.IsID() || parent.ID == "" || !parent.Branch.IsZero() {
+		return fmt.Errorf("stored parent must be a canonical ID on branch zero")
+	}
+	_, err := driver.NewClosureSentinel(parent.ID)
+	return err
 }
 
 // NewImportedComment accepts only the binding of a previously admitted host

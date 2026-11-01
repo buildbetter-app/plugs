@@ -63,6 +63,8 @@ type prepared struct {
 	audit            *auditPlan
 	allocatorCursors map[string]uint64
 	allocatorSeen    map[string]bool
+	hierarchyEdits   []hierarchyEdit
+	hierarchyDelta   *hierarchyDelta
 }
 
 func failure(code model.ErrorCode, message string) error {
@@ -174,9 +176,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if protectedName(c.Type) {
 				return nil, failure("protected_record", "protected resources require their plan/apply path")
 			}
-			if c.Parent != nil {
-				return nil, failure("invalid_params", "parented create is unsupported until closure maintenance is available")
+			parent, err := p.resolveParent(ctx, c.Parent, aliases, "")
+			if err != nil {
+				return nil, err
 			}
+			c.Parent = parent
 			if c.Type == "" {
 				return nil, failure("invalid_params", "create requires a type")
 			}
@@ -208,8 +212,9 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if snapshot.reads.states[key].Present {
 				return nil, errStale
 			}
-			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Fields: map[string]any{}}, setBy: map[string]string{}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected}
+			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}}, setBy: map[string]string{}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected}
 			p.writes[id] = current
+			p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: id, parent: parentID(parent), create: true})
 			if err = applyFields(current, c.Fields, "request"); err != nil {
 				return nil, err
 			}
@@ -231,7 +236,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			case model.OpAttach:
 				return nil, failure("invalid_params", "attach is unsupported by this pipeline slice")
 			case model.OpReparent:
-				return nil, failure("invalid_params", "reparent is unsupported until closure maintenance is available")
+				target = op.Reparent.Target
 			default:
 				return nil, failure("invalid_params", "unsupported operation")
 			}
@@ -269,6 +274,18 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				}
 			}
 			switch op.Kind {
+			case model.OpReparent:
+				if project := op.Reparent.Project; project != "" && project != current.doc.Project {
+					return nil, failure("invalid_params", "reparent cannot move a bead between projects")
+				}
+				parent, e := p.resolveParent(ctx, op.Reparent.Parent, aliases, target.ID)
+				if e != nil {
+					return nil, e
+				}
+				op.Reparent.Target, op.Reparent.Parent = target, parent
+				current.doc.Parent = parent
+				current.setBy["parent"] = "request"
+				p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, parent: parentID(parent)})
 			case model.OpPatch:
 				if err = applyFields(current, op.Patch.Fields, "request"); err != nil {
 					return nil, err
@@ -317,6 +334,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				current.setBy["links"] = "request"
 			case model.OpDelete:
 				current.deleted = true
+				p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, deleted: true})
 			case model.OpSetMeta:
 				if op.SetMeta.Key == "" || strings.HasPrefix(op.SetMeta.Key, "_plug") || strings.HasPrefix(op.SetMeta.Key, "core.") {
 					return nil, failure("protected_record", "reserved core metadata cannot be changed")
@@ -895,6 +913,11 @@ func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta
 
 func (p *prepared) sentinels() []driver.Sentinel {
 	set := map[driver.Sentinel]bool{}
+	if p.hierarchyDelta != nil {
+		for _, s := range p.hierarchyDelta.sentinels {
+			set[s] = true
+		}
+	}
 	for _, pending := range p.writes {
 		if !p.changed[pending.ref.ID] {
 			continue
@@ -957,6 +980,10 @@ func (p *prepared) detectChanges() error {
 }
 
 func (p *prepared) graph(ctx context.Context) error {
+	docs, err := p.hierarchy(ctx)
+	if err != nil {
+		return err
+	}
 	need := false
 	for _, c := range p.proposal.Changes {
 		if c.Op.Kind == model.OpLink || c.Op.Kind == model.OpUnlink || c.Op.Kind == model.OpDelete {
@@ -966,24 +993,11 @@ func (p *prepared) graph(ctx context.Context) error {
 	if !need {
 		return nil
 	}
-	docs := map[string]Document{}
-	var cursor *driver.Cursor
-	for {
-		page, err := p.snapshot.Query(ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 1000, Cursor: cursor})
+	if docs == nil {
+		docs, err = p.documents(ctx)
 		if err != nil {
 			return err
 		}
-		for _, record := range page.Items {
-			d, err := DecodeDocument(record.Body)
-			if err != nil {
-				return err
-			}
-			docs[d.ID] = d
-		}
-		if page.NextCursor == nil {
-			break
-		}
-		cursor = page.NextCursor
 	}
 	for id, pending := range p.writes {
 		if pending.deleted {
