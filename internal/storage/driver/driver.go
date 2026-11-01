@@ -631,6 +631,12 @@ type Reader interface {
 	// duplicate-free. It never acquires transaction locks. The pipeline
 	// compares these observations to Lock's current committed state.
 	Observe(context.Context, []LockKey) ([]LockState, error)
+	// DerivedRows enumerates the live rows of one opaque table/key prefix in
+	// bytewise key order at this snapshot (including a transaction's staged
+	// changes). Empty prefix selects the whole table. Callers must guard the
+	// corresponding predicate sentinel and Observe the consumed exact keys;
+	// enumeration itself does not acquire locks or infer semantic scopes.
+	DerivedRows(context.Context, DerivedTable, string) ([]DerivedRow, error)
 	Query(context.Context, Query) (Page[Record], error)
 	Versions(context.Context, Ref, PageReq) (Page[Version], error)
 	// Changesets returns complete committed changesets strictly after the
