@@ -46,6 +46,9 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 			return nil, fmt.Errorf("offline merge input %d has not been validated by Read", i)
 		}
 		manifest := archive.Manifest()
+		if _, present := archive.SourceHistory(); present {
+			return nil, fmt.Errorf("offline merge cannot preserve source history mappings")
+		}
 		if manifest.Scope != Scope {
 			return nil, fmt.Errorf("offline merge input %d has unsupported scope %q", i, manifest.Scope)
 		}

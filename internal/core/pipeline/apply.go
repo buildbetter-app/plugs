@@ -250,12 +250,15 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 		}
 		if len(p.changed) != 0 && len(w.cfg.posts) > 0 {
 			phaseStarted = time.Now()
-			warnings := w.post(ctx, p, commit)
+			warnings, postErr := w.post(ctx, p, commit)
 			postResult := ResultSuccess
 			if len(warnings) != 0 {
 				postResult = ResultWarning
 			}
 			w.observePhaseResult(PhasePost, time.Since(phaseStarted), postResult)
+			if postErr != nil {
+				return port.WriteOutcome{}, responseUnavailable(meta, commit.Revision, true)
+			}
 			phaseStarted = time.Now()
 			commit, err = w.finalizeResponse(ctx, principal, meta, hash, commit.Revision, warnings)
 			w.observePhaseSince(ctx, PhaseResponse, phaseStarted, err)

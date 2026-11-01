@@ -26,8 +26,10 @@ with tempfile.TemporaryDirectory(prefix="plug-bazel-delivery-test.") as temporar
     (repo / "scripts/ci").mkdir(parents=True)
     for name in ("plug-bazel-delivery.py", "plug-bazel-targets.sh"):
         shutil.copyfile(source / "scripts/ci" / name, repo / "scripts/ci" / name)
-    (repo / "pkg").mkdir()
+    (repo / "pkg/cmd/nested").mkdir(parents=True)
     (repo / "pkg/file.go").write_text("package pkg\n")
+    (repo / "pkg/cmd/nested/main.go").write_text("package main\nfunc main() {}\n")
+    (repo / "pkg/BUILD.bazel").write_text('go_library(name="pkg", srcs=["file.go"])\ngo_binary(name="nested", srcs=["cmd/nested/main.go"])\n')
     (repo / "MODULE.bazel.lock").write_text("{}\n")
     (repo / ".bazelversion").write_text("9.3.0\n")
     git("add", ".")
@@ -71,7 +73,12 @@ elif command == "query":
         print("query failed", file=sys.stderr)
         sys.exit(config["query_exit"])
     expression = args[args.index("query") + 1]
-    if '.*_library rule' in expression:
+    if expression == 'kind("source file", deps(//...))':
+        print("//pkg:file.go\n//pkg:cmd/nested/main.go")
+    elif '.*_library rule' in expression:
+        # A directory without a BUILD is not a Bazel package. Reproduce the
+        # real owning-libraries failure if the selector invents one.
+        assert expression == 'kind(".*_library rule", set(//pkg:all))', expression
         print("//pkg:pkg")
     elif 'set(//pkg:pkg)' in expression:
         print("//libraryconsumer:library_test")
@@ -79,6 +86,8 @@ elif command == "query":
         print("//consumer:consumer_test")
     elif 'tests(set(' in expression:
         print("\n".join(("//pkg:pkg_test", "//consumer:consumer_test", "//libraryconsumer:library_test", "//tools/lexicon:lexicon_gate")))
+    elif expression == 'kind(".*_test rule", //...)':
+        print("//pkg:pkg_test\n//consumer:consumer_test")
     else:
         print("//pkg:pkg_test")
 elif command == "test":
@@ -221,6 +230,20 @@ else:
     (repo / "pkg/file.go").write_text(original)
     phase("begin", repo / "inside-source", 2)
     assert not (repo / "inside-source").exists()
+
+    # Keep the package-only delivery/failure cases above and separately cover
+    # the graph-plus-nested-source path that failed in the hosted workflow.
+    base = head
+    (repo / "pkg/cmd/nested/main.go").write_text("package main\nfunc main() {}\n// changed\n")
+    with (repo / "pkg/BUILD.bazel").open("a") as out:
+        out.write("# graph change with nested source\n")
+    git("add", ".")
+    git("commit", "-qm", "nested-source-graph-change")
+    head = git("rev-parse", "HEAD")
+    out, result = exercise("nested-graph-pass", {})
+    assert (out / "selection/packages.txt").read_text().splitlines() == ["//pkg"]
+    assert (out / "selection/full-graph.txt").read_text().strip() == "1"
+    assert (out / "selection/seeds.txt").read_text().splitlines() == ["//pkg:cmd/nested/main.go"]
 
 print("plug-ci-delivery: bundle, accounting, secrets exclusion, tamper/escape, query/test/collector/shutdown first-failure and cleanup fixtures passed")
 PY

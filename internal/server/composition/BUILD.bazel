@@ -21,6 +21,7 @@ go_library(
         "//internal/server/rpc",
         "//internal/server/transport/httpjson",
         "//internal/server/transport/mcp",
+        "//internal/server/transport/websocket",
         "//internal/server/viewrpc",
         "//internal/server/watch",
         "//internal/server/watchhttp",
