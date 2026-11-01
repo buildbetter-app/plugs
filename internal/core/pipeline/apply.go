@@ -402,6 +402,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		allocatorKeys = append(allocatorKeys, key)
 		allocatorPrefixes[pending.allocatorPrefix] = true
 	}
+	if p.hierarchyDelta != nil {
+		allocatorKeys = append(allocatorKeys, p.hierarchyDelta.locks...)
+	}
 	locks, err := p.snapshot.locks(writes, sentinels, allocatorKeys...)
 	if err != nil {
 		return model.Commit{}, err
@@ -508,6 +511,11 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			err = tx.Put(ctx, driver.Record{Ref: pending.ref, Kind: pending.kind, Body: body})
 		}
 		if err != nil {
+			return model.Commit{}, err
+		}
+	}
+	if p.hierarchyDelta != nil && (len(p.hierarchyDelta.remove) != 0 || len(p.hierarchyDelta.add) != 0) {
+		if err := tx.PutDerived(ctx, driver.DerivedAncestorClosure, p.hierarchyDelta.remove, p.hierarchyDelta.add); err != nil {
 			return model.Commit{}, err
 		}
 	}
