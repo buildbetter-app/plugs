@@ -12,6 +12,7 @@
 .github/runs-on.yml
 .github/workflows/plug-bazel.yml
 .github/workflows/plug-nightly-restore-diffs.yml
+.github/workflows/plug-public-bundle.yml
 .github/workflows/plug-remote-bazel.yml
 .github/workflows/plug-runs-on-smoke.yml
 .gitignore
@@ -834,6 +835,8 @@ scripts/ci/plug-bazel-delivery-test.sh
 scripts/ci/plug-bazel-delivery.py
 scripts/ci/plug-bazel-targets-test.sh
 scripts/ci/plug-bazel-targets.sh
+scripts/ci/public-bundle-test.py
+scripts/ci/public-bundle.py
 scripts/demo.sh
 sdk/go/BUILD.bazel
 sdk/go/conformance/BUILD.bazel

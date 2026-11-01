@@ -218,6 +218,7 @@ if public_workflow is not None:
             "if-no-files-found: error", "retention-days: 14",
             "public-bundle.py create", "public-bundle.py verify",
             "git fetch --no-tags origin refs/heads/beads",
+            "ref: ${{ github.ref }}",
             '[[ "$PLUG_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]',
             '[[ "$PLUG_SOURCE_REF" =~ ^[A-Za-z0-9._/-]+$ ]]',
             '[[ "$BUNDLE_LABEL" =~ ^[A-Za-z0-9._-]{1,48}$ ]]',
@@ -227,6 +228,15 @@ if public_workflow is not None:
         4,
         ("workflow_dispatch",),
     )
+    public_forbidden = (
+        "pull_request_target:",
+        encoded((103, 97, 115, 116, 111, 119, 110, 104, 97, 108, 108)) + "/" + encoded((98, 101, 97, 100, 115)),
+        encoded((115, 116, 101, 118, 101, 121, 101, 103, 103, 101)) + "/" + encoded((98, 101, 97, 100, 115)),
+        "rbe-west", "RBE_",
+    )
+    for token in public_forbidden:
+        if token in public_code:
+            raise SystemExit("config: public bundle workflow contains a forbidden token: " + token)
 
 forbidden = (
     "pull_request_target:",
@@ -296,5 +306,6 @@ fi
 
 "$target_tests"
 "$delivery_tests"
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/ci/public-bundle-test.py
 
 echo "plug-ci-config: shell syntax and fail-closed argument checks passed"
