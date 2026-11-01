@@ -205,7 +205,17 @@ func prepareTypeDirectives(directives []ontologymigration.Directive) (typeDirect
 // source issue types require an explicit map_type directive; the source type is
 // retained in the JSONL rather than silently rewritten to a built-in type.
 func Convert(dump Dump) (Result, error) {
-	return ConvertWithDirectives(dump, nil)
+	directives := make([]ontologymigration.Directive, 0, len(dump.Manifest.Ontology))
+	for _, d := range dump.Manifest.Ontology {
+		if d.Kind != "map_type" || d.To != "issue" || supportedIssueTypes[d.From] {
+			return Result{}, refusal("unsupported archive ontology directive")
+		}
+		directives = append(directives, ontologymigration.Directive{
+			ID: d.ID, Kind: ontologymigration.MapType, From: d.From, To: d.To,
+			Target: ontologymigration.Target{Project: d.Target.Project, Type: d.Target.Type, ID: d.Target.ID},
+		})
+	}
+	return ConvertWithDirectives(dump, directives)
 }
 
 // ConvertWithDirectives is Convert with explicit ontology map_type directives

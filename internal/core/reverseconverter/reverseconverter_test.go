@@ -775,6 +775,32 @@ func TestReadConvertCanonicalArchiveRejectsUnsupportedPinnedValues(t *testing.T)
 
 func canonicalPinnedArchive(t *testing.T, pinned any) []byte {
 	t.Helper()
+	return canonicalMappedArchive(t, pinned, false)
+}
+
+func TestCanonicalArchiveCarriesItsTypeAuthorizationToReverse(t *testing.T) {
+	data := canonicalMappedArchive(t, json.Number("0"), true)
+	dump, err := ReadBytes(data)
+	if err != nil || len(dump.Manifest.Ontology) != 1 {
+		t.Fatalf("canonical directive was not retained: %v", err)
+	}
+	result, err := ConvertArchive(data)
+	if err != nil || len(result.Report.TypeMappings) != 1 {
+		t.Fatalf("canonical directive was not applied: %v", err)
+	}
+	found := false
+	for _, issue := range result.Projection.Issues {
+		if issue.ID == "demo-7" {
+			found = issue.Kind == "decision"
+		}
+	}
+	if !found {
+		t.Fatal("canonical directive did not preserve source type")
+	}
+}
+
+func canonicalMappedArchive(t *testing.T, pinned any, explicit bool) []byte {
+	t.Helper()
 	original := canonicalFixtureBytes(t)
 	archive, err := dumpformat.Read(bytes.NewReader(original))
 	if err != nil {
@@ -787,6 +813,10 @@ func canonicalPinnedArchive(t *testing.T, pinned any) []byte {
 		if record.ID == "demo-7" {
 			record.Body["pinned"] = pinned
 			record.Source.Fields["pinned"] = pinned
+			if explicit {
+				record.Body["source_type"] = "decision"
+				record.Source.Fields["issue_type"] = "decision"
+			}
 		}
 		encoded, err := json.Marshal(record)
 		if err != nil {
@@ -794,6 +824,10 @@ func canonicalPinnedArchive(t *testing.T, pinned any) []byte {
 		}
 		beadData.Write(encoded)
 		beadData.WriteByte('\n')
+	}
+	if explicit {
+		manifest.Ontology = []dumpformat.OntologyDirective{{ID: "preserve-decision", Kind: "map_type", Target: dumpformat.OntologyTarget{Project: "demo", Type: "decision"}, From: "decision", To: "issue"}}
+		manifest.Verification["ontology"] = "built-in status mapping; explicit map_type directives recorded in manifest"
 	}
 
 	members := make(map[string][]byte, len(manifest.Files))

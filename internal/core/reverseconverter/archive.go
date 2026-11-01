@@ -41,6 +41,7 @@ func adaptArchive(archive *dumpformat.Archive) (Dump, error) {
 		IgnoredVersion: source.IgnoredVersion,
 		Scope:          source.Scope,
 		History:        source.History,
+		Ontology:       append([]dumpformat.OntologyDirective(nil), source.Ontology...),
 		Warnings:       append([]string(nil), source.Warnings...),
 		Verification:   cloneStringMap(source.Verification),
 		Files:          make(map[string]File, len(source.Files)),
