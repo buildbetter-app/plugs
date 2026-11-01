@@ -570,6 +570,8 @@ func TestHierarchyClosure5000And5001AcrossStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
+			writer, metrics := pipeline.NewWithTelemetry(f.store, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now), pipeline.WithIDGenerator(f.nextID))
+			f.writer = writer
 			ops := []model.Op{hierarchyCreate("subtree", nil, "work"), hierarchyCreate("extra", nil, "work")}
 			for i := 1; i < 500; i++ {
 				ops = append(ops, hierarchyCreate(fmt.Sprintf("leaf-%d", i), hierarchyRef("subtree"), "work"))
@@ -581,11 +583,21 @@ func TestHierarchyClosure5000And5001AcrossStores(t *testing.T) {
 				}
 				ops = append(ops, hierarchyCreate(fmt.Sprintf("ancestor-%d", i), parent, "work"))
 			}
-			seed := hierarchyApply(t, f, ops...)
+			seed, err := f.writer.Apply(f.ctx, batchPrincipal, model.ChangeSet{Ops: ops}, f.meta("511-op-seed"))
+			phaseMillis := map[pipeline.Phase]float64{}
+			for phase, results := range metrics.Snapshot().LaneMillis {
+				for _, millis := range results {
+					phaseMillis[phase] += millis
+				}
+			}
+			t.Logf("%s unchanged 511-op hierarchy seed phase times (ms): %v", engine, phaseMillis)
+			if err != nil {
+				t.Fatalf("511-op hierarchy seed: %v", err)
+			}
 			subtree, extra, destination, root := seed.Results[0].Ref, seed.Results[1].Ref, seed.Results[len(ops)-1].Ref, seed.Results[len(ops)-10].Ref
 			before, rows := f.state(t), hierarchyRows(t, f)
 			m := f.meta("5001")
-			_, err := f.writer.Apply(f.ctx, batchPrincipal, model.ChangeSet{Ops: []model.Op{hierarchyMove(subtree, &destination), hierarchyMove(extra, &root)}}, m)
+			_, err = f.writer.Apply(f.ctx, batchPrincipal, model.ChangeSet{Ops: []model.Op{hierarchyMove(subtree, &destination), hierarchyMove(extra, &root)}}, m)
 			requireCode(t, err, "closure_too_large")
 			requireSameState(t, before, f.state(t))
 			if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || f.receipt(t, m) != nil {
