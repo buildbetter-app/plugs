@@ -33,8 +33,16 @@ absolute URL paths; the mount ends in `/` and the RPC path does not.
 default catalog records the chosen "Changes since I looked" home, `blockedBy`
 column, and `bead.claimNext` action as data; it does not execute plugin code in
 the host page. `Frames` optionally supplies prebuilt embedded assets. Each
-frame is served under `frames/<id>/` with a response CSP of `sandbox
+`FrameBundle` requires a pinned lowercase SHA-256 `Digest` over its complete
+asset inventory. `FrameBundleDigest` computes the packaging pin: JSON with
+format `plug-ui-bundle/1` and path-sorted files containing `path`, byte `size`,
+and lowercase `sha256`. Admission verifies a detached copy against the supplied
+pin; missing pins, extra/missing files and changed paths or bytes refuse startup.
+It never refreshes a pin or builds JavaScript during admission.
+
+Each frame is served under `frames/<id>/` with a response CSP of `sandbox
 allow-scripts`, no same-origin capability, no forms, and `connect-src 'none'`.
+Script, style and image sources are limited to that bundle's own URL directory.
 The host binds its narrow `postMessage` bridge to that frame's
 `WindowProxy` (`event.source`), checks its exact method/project grant, and
 injects project metadata before the existing same-origin RPC read. D16 methods
@@ -54,6 +62,11 @@ Static GET/HEAD require loopback access; cookies, Authorization, remote peers,
 cross-origin requests and other methods are refused. Sandboxed frame assets
 accept only the browser's opaque `Origin: null` request after the same
 loopback/host checks; their CSP still forbids network connections and forms.
+These public, digest-checked frame assets use cross-origin resource admission
+so an opaque frame can load its actual external scripts. Module requests from
+`Origin: null` receive only `Access-Control-Allow-Origin: null`, with no
+credential allowance. Host assets retain same-origin resource policy. Direct
+opens retain the sandbox, and credentialed asset requests still refuse.
 Fetches omit credentials.
 Authenticated hello responses explicitly report that browser sessions are
 unconfigured. The host CSP permits only local assets, same-origin connections,
@@ -61,6 +74,14 @@ and explicitly configured same-origin frames; inline scripts/styles, object
 embedding and forms are disabled. Frame responses add their own opaque-origin
 `sandbox allow-scripts` CSP.
 Untrusted titles, IDs, reasons and presence data are rendered as text.
+
+`sandbox_safety_test` runs Chrome against the real UI and RPC handler. The
+bundle's classic and module scripts must load under the product headers. It
+checks frame and direct-open storage/DOM isolation, denied network/forms/popups,
+own-directory script loading, source-bound grants, and RPC credential omission
+with a real browser cookie present. The OIDC integration browser test separately
+proves actual CORS preflights and origin-bound bearer calls without credentialed
+CORS. Both use disposable loopback fixtures, not a production server.
 
 ## Connected slice and limits
 

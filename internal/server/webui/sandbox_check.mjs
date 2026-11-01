@@ -50,7 +50,7 @@ try {
     return frame && frameSessions.get(frame.targetId);
   }, id + " frame");
   const probe = await frameSession("probe"), sibling = await frameSession("sibling");
-  await until(() => evaluate("globalThis.safetyLoaded === true", probe), "actual bundle script execution");
+  await until(() => evaluate("globalThis.safetyLoaded === true && globalThis.safetyModuleLoaded === true", probe), "actual bundle classic/module script execution");
   assert.equal(await evaluate("document.querySelector('iframe').getAttribute('sandbox')"), "allow-scripts");
   console.log("PASS actual_bundle_script_loads_under_product_headers");
 
@@ -106,7 +106,7 @@ try {
   await until(() => evaluate("document.body?.textContent.includes('credentials are not configured')"), "credentialed direct open refusal");
   await send("Network.clearBrowserCookies");
   await send("Page.navigate", { url: base + "/ui/frames/probe/index.html" });
-  await until(() => evaluate("globalThis.safetyLoaded === true"), "direct bundle script execution");
+  await until(() => evaluate("globalThis.safetyLoaded === true && globalThis.safetyModuleLoaded === true"), "direct bundle classic/module script execution");
   await runtimeProof(undefined, false);
   console.log("PASS direct_open_with_credentials_refused");
 } finally {

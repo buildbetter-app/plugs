@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "bridge.go",
         "catalog.go",
+        "frame_digest.go",
         "webui.go",
     ],
     embedsrcs = [

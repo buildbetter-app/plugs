@@ -51,12 +51,17 @@ func TestBrowserPluginSandboxSafety(t *testing.T) {
 		t.Fatal(err)
 	}
 	assets := map[string][]byte{
-		"index.html": []byte(`<!doctype html><title>Sandbox probe</title><script src="./frame.js" defer></script><p id="ready">Loading</p>`),
+		"index.html": []byte(`<!doctype html><title>Sandbox probe</title><script src="./frame.js" defer></script><script type="module" src="./module.js"></script><p id="ready">Loading</p>`),
 		"frame.js":   []byte(`globalThis.safetyLoaded = true; document.querySelector("#ready").textContent = "Bundle script loaded";`),
+		"module.js":  []byte(`globalThis.safetyModuleLoaded = true;`),
+	}
+	digest, err := webui.FrameBundleDigest(assets)
+	if err != nil {
+		t.Fatal(err)
 	}
 	ui, err := webui.New(webui.Config{Project: "web", Frames: []webui.FrameBundle{
-		{ID: "probe", Grant: webui.BridgeGrant{Methods: []string{"rpc.methods"}}, Assets: assets},
-		{ID: "sibling", Grant: webui.BridgeGrant{}, Assets: assets},
+		{ID: "probe", Digest: digest, Grant: webui.BridgeGrant{Methods: []string{"rpc.methods"}}, Assets: assets},
+		{ID: "sibling", Digest: digest, Grant: webui.BridgeGrant{}, Assets: assets},
 	}})
 	if err != nil {
 		t.Fatal(err)

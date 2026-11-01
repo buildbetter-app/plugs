@@ -64,6 +64,7 @@ type browserConfig struct {
 type frameDescriptor struct {
 	ID      string   `json:"id"`
 	Title   string   `json:"title"`
+	Digest  string   `json:"digest"`
 	Src     string   `json:"src"`
 	Methods []string `json:"methods"`
 	Project string   `json:"project"`
@@ -154,7 +155,7 @@ func New(config Config) (*Handler, error) {
 		frames[bundle.ID] = prepared
 		grant := prepared.bridge.Grant()
 		descriptors = append(descriptors, frameDescriptor{
-			ID: bundle.ID, Title: prepared.Title,
+			ID: bundle.ID, Title: prepared.Title, Digest: prepared.Digest,
 			Src:     config.MountPath + "frames/" + bundle.ID + "/index.html",
 			Methods: grant.Methods, Project: grant.Project,
 		})
@@ -310,7 +311,23 @@ func (h *Handler) serveFrame(w http.ResponseWriter, r *http.Request, asset strin
 		return
 	}
 	contentType := frameContentType(parts[1])
-	w.Header().Set("Content-Security-Policy", frameContentSecurityPolicy)
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	// Host and actual listener/peer posture were checked before serving any
+	// asset. The bundle path consists only of validated configuration values.
+	bundleURL := scheme + "://" + r.Host + h.cfg.MountPath + "frames/" + bundle.ID + "/"
+	w.Header().Set("Content-Security-Policy", frameContentSecurityPolicy(bundleURL))
+	// The frame has an opaque origin, so same-origin CORP would block its own
+	// external scripts. These are public, digest-checked static assets with no
+	// credentials; all host assets retain their same-origin policy. Modules
+	// additionally require CORS for the opaque origin, never credentials.
+	w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
+	w.Header().Add("Vary", "Origin")
+	if r.Header.Get("Origin") == "null" {
+		w.Header().Set("Access-Control-Allow-Origin", "null")
+	}
 	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 	w.Header().Set("Content-Type", contentType)
 	h.writeBytes(w, r.Method == http.MethodGet, http.StatusOK, contentType, data)
