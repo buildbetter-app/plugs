@@ -360,8 +360,10 @@ func TestI6PublicSyntheticRestoreDumpReverseCensus(t *testing.T) {
 			if err != nil || !nativeArchive.Native() {
 				t.Fatalf("native dump validation=%v", err)
 			}
-			if manifest.NativeHead != "1" || manifest.RecordCount != afterRestore.Rows || manifest.NativeDigest == "" || manifest.NativeDigest != i6NativeDigest(t, nativeArchive) || nativeArchive.SHA256() != i6SHA256(native) {
-				t.Fatalf("native dump manifest=%+v rows=%d", manifest, afterRestore.Rows)
+			nativeDigest := i6NativeDigest(t, nativeArchive)
+			tarDigest := i6SHA256(native)
+			if manifest.NativeHead != "1" || manifest.RecordCount != afterRestore.Rows || manifest.NativeDigest == "" || manifest.NativeDigest != nativeDigest || nativeArchive.SHA256() != tarDigest {
+				t.Fatalf("native dump manifest=%+v rows=%d nativeDigest=%s tarDigest=%s archiveDigest=%s", manifest, afterRestore.Rows, nativeDigest, tarDigest, nativeArchive.SHA256())
 			}
 			kindCounts := map[string]int{}
 			for _, row := range i6NativeRows(t, nativeArchive) {
