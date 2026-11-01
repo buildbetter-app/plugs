@@ -14,6 +14,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
@@ -143,6 +144,10 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	viewer := source.viewer(t, epics, visible)
 	before := inspectProgress(t, source.api.call(t, viewer, "view.run", progressParams(g.parent, epics)), map[string]int{"total": 2, "status:todo": 1, "status:done": 1}, 1)
 	beforeImages := persistedImages(t, source.store)
+	beforeClosure := persistedClosure(t, source.store)
+	if len(beforeClosure) != 11 {
+		t.Fatalf("source hierarchy closure has %d rows, want 11 for six beads", len(beforeClosure))
+	}
 	sourceAdmin := admin(t, source.store, source.lease)
 	data, archive := dumpHead(t, sourceAdmin)
 	sourceAdmin.close(t)
@@ -160,6 +165,9 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	if !reflect.DeepEqual(persistedImages(t, target), beforeImages) {
 		t.Fatal("native restore changed source bead or protected ontology images")
 	}
+	if restored := persistedClosure(t, target); !reflect.DeepEqual(restored, beforeClosure) {
+		t.Fatalf("native restore changed canonical hierarchy closure: got %d rows, want %d", len(restored), len(beforeClosure))
+	}
 	targetAdmin.close(t)
 	if err := lease.Release(context.Background()); err != nil {
 		t.Fatal(err)
@@ -175,6 +183,9 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	reopened := newFixtureMode(t, "sqlite", path, true, false)
 	if !reflect.DeepEqual(persistedImages(t, reopened.store), beforeImages) {
 		t.Fatal("physical reopen changed restored source images")
+	}
+	if !reflect.DeepEqual(persistedClosure(t, reopened.store), beforeClosure) {
+		t.Fatal("physical reopen changed restored canonical hierarchy closure")
 	}
 	read := reopened.viewer(t, epics, visible)
 	after := inspectProgress(t, reopened.api.call(t, read, "view.run", progressParams(g.parent, epics)), before.counts, 1)
@@ -194,8 +205,44 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	}
 	detach := model.ChangeSet{Ops: []model.Op{{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: g.done}}}}
 	committed(t, reopened.write(t, reopened.owner, "tx.apply", visible, map[string]any{"changeSet": detach}))
+	if rows := len(persistedClosure(t, reopened.store)); rows != 10 {
+		t.Fatalf("restored detach left %d hierarchy closure rows, want 10", rows)
+	}
 	inspectProgress(t, reopened.api.call(t, read, "view.run", after.refresh), map[string]int{"total": 1, "status:todo": 1}, 1)
 	t.Logf("EP6 native head restore, physical SQLite close/reopen, current policy, cycle refusal, and count refresh proven at restored incarnation %s", incarnation)
+}
+
+// Derived hierarchy state is part of a usable restore: count reads can succeed
+// from source bodies even when the next real Writer refuses missing closure.
+// Compare every canonical key/value before host composition and after reopen;
+// the native restore owner must rebuild it atomically, never this fixture.
+func persistedClosure(t *testing.T, store driver.Store) map[string]string {
+	t.Helper()
+	ctx := context.Background()
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	rows, err := r.DerivedRows(ctx, driver.DerivedAncestorClosure, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	images := make(map[string]string, len(rows))
+	for _, row := range rows {
+		if _, _, _, err := pipeline.DecodeAncestorRow(row); err != nil {
+			t.Fatalf("persisted hierarchy closure is not canonical: %v", err)
+		}
+		if _, exists := images[row.Key]; exists {
+			t.Fatal("duplicate persisted hierarchy closure key")
+		}
+		images[row.Key] = hex.EncodeToString(row.Value)
+	}
+	return images
 }
 
 // Enumerate both the complete bead census and the exact protected ontology

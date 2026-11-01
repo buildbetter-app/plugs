@@ -19,6 +19,10 @@ child/new-parent permissions without an old-parent grant; existence-only
 hidden-parent disclosure; cycle, project-move and mixed-batch atomic refusals;
 explicit capability refusal; and hierarchy persistence after native head-state
 restore into an empty store and a physical SQLite close/reopen.
+Restore also compares every canonical hierarchy closure key/value before host
+composition and after physical reopen, then requires the existing cycle
+refusal and a successful real detach with updated counts and closure rows.
+The fixture never repairs missing derived state.
 
 The load case retains 20,000 actual Writer-created beads and 50 distinct
 sponsored agents. It enumerates persisted records and verifies all direct
