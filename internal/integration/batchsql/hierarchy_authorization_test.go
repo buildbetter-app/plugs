@@ -1,6 +1,7 @@
 package batchsql_test
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 
@@ -53,6 +54,13 @@ func TestHierarchyFixedAuthorizationAtWriterAcrossStores(t *testing.T) {
 				return pipeline.New(f.store, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithAuthorizer(app.Checker), pipeline.WithEventContext(app.Checker), pipeline.WithClock(f.now), pipeline.WithIDGenerator(f.nextID))
 			}
 			f.writer = writer(true)
+			errorData := func(err error) any {
+				var typed *model.Error
+				if errors.As(err, &typed) {
+					return typed.Data
+				}
+				return err
+			}
 			by := model.PrincipalRef{Kind: "agent", ID: "agent:hierarchy-worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:operator"}}
 			requestMeta := func(label string) model.WriteMeta {
 				m := f.meta(label)
@@ -76,7 +84,7 @@ func TestHierarchyFixedAuthorizationAtWriterAcrossStores(t *testing.T) {
 			}}
 			created, err := f.writer.Apply(f.ctx, by, batch, requestMeta("authorized-ordered-create"))
 			if err != nil {
-				t.Fatalf("authorized same-batch hierarchy create: %v", err)
+				t.Fatalf("authorized same-batch hierarchy create: %v (%+v)", err, errorData(err))
 			}
 			doc := decodeDocument(t, f.state(t).Records[created.Results[1].Ref.ID])
 			if doc.Project != "child-project" || doc.Parent == nil || doc.Parent.ID != created.Results[0].Ref.ID {
@@ -86,7 +94,7 @@ func TestHierarchyFixedAuthorizationAtWriterAcrossStores(t *testing.T) {
 			moveMeta := requestMeta("authorized-move")
 			moved, err := f.writer.Apply(f.ctx, by, move, moveMeta)
 			if err != nil {
-				t.Fatalf("move required permission on the old parent: %v", err)
+				t.Fatalf("move required permission on the old parent: %v (%+v)", err, errorData(err))
 			}
 			verifyHierarchy(t, f)
 			replayed, err := f.writer.ApplyWithOutcome(f.ctx, by, move, moveMeta)
