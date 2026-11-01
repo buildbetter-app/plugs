@@ -21,6 +21,9 @@ func AncestorPrefix(descendant string) (string, error) {
 
 // AncestorRow encodes C(descendant, ancestor)=depth, including the self row.
 func AncestorRow(descendant, ancestor string, depth uint64) (driver.DerivedRow, error) {
+	if (descendant == ancestor) != (depth == 0) {
+		return driver.DerivedRow{}, fmt.Errorf("only the self ancestor has depth zero")
+	}
 	prefix, err := AncestorPrefix(descendant)
 	if err != nil {
 		return driver.DerivedRow{}, err
