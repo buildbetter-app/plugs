@@ -15,6 +15,27 @@ tree. This source-shape inventory is not an executed converter, a per-store
 row census, or behavior-parity evidence; those artifacts remain deferred in
 the [behavior catalog](behaviors.md#deferred-census-and-golden-artifacts).
 
+The [executable census tools](../../../../tools/census/README.md) now retain
+that source-shape ratchet and add reproducible per-source measurements and
+reconciliation. A declared alias has nine required stages from paired-schema
+inventory through export, archive validation, memory/SQLite/Postgres restore,
+reverse, source reimport/readback and history-range proof. Each stage carries
+counts/digests for counts, IDs, prefixes, counters, dependencies, versions,
+archives and content, or an explicit typed block. Missing authoritative
+inventory remains a block; separate disposable copies do not increase the
+source count. Operational inventories and owner measurements stay outside the
+repository and never put private inputs into CI.
+
+The measured boundary uses validated source archives and immutable reads of
+already opened disposable Plug stores. It checks live native fields alongside
+retained provenance and archive bytes. Retained counters do not certify native
+allocator continuation, and retained version rows do not certify replayable
+source history; those dimensions remain typed blocks until their actual
+boundaries are proven. The behavior census enumerates all B01–B28 cards,
+parsed test declarations and existing reference-slice digests while preserving
+the full-card qualification blocks. Neither these measurements nor the
+13,139 unqualified source-test dispositions claim complete behavioral parity.
+
 ## Contract and scope
 
 The converter reads a store with the pinned `bd` build, validates the paired

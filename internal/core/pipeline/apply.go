@@ -250,12 +250,15 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 		}
 		if len(p.changed) != 0 && len(w.cfg.posts) > 0 {
 			phaseStarted = time.Now()
-			warnings := w.post(ctx, p, commit)
+			warnings, postErr := w.post(ctx, p, commit)
 			postResult := ResultSuccess
 			if len(warnings) != 0 {
 				postResult = ResultWarning
 			}
 			w.observePhaseResult(PhasePost, time.Since(phaseStarted), postResult)
+			if postErr != nil {
+				return port.WriteOutcome{}, responseUnavailable(meta, commit.Revision, true)
+			}
 			phaseStarted = time.Now()
 			commit, err = w.finalizeResponse(ctx, principal, meta, hash, commit.Revision, warnings)
 			w.observePhaseSince(ctx, PhaseResponse, phaseStarted, err)
@@ -402,6 +405,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		allocatorKeys = append(allocatorKeys, key)
 		allocatorPrefixes[pending.allocatorPrefix] = true
 	}
+	if p.hierarchyDelta != nil {
+		allocatorKeys = append(allocatorKeys, p.hierarchyDelta.locks...)
+	}
 	locks, err := p.snapshot.locks(writes, sentinels, allocatorKeys...)
 	if err != nil {
 		return model.Commit{}, err
@@ -511,6 +517,11 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			return model.Commit{}, err
 		}
 	}
+	if p.hierarchyDelta != nil && (len(p.hierarchyDelta.remove) != 0 || len(p.hierarchyDelta.add) != 0) {
+		if err := tx.PutDerived(ctx, driver.DerivedAncestorClosure, p.hierarchyDelta.remove, p.hierarchyDelta.add); err != nil {
+			return model.Commit{}, err
+		}
+	}
 	changes := p.changeRecords()
 	events, chain, err := p.events(revision, changes)
 	if err != nil {
@@ -554,6 +565,11 @@ func (p *prepared) changeRecords() []model.ChangeRecord {
 		}
 		if pending.deleted {
 			kind = model.OpDelete
+		} else if kind != model.OpCreate && pending.kind != "memory" && len(pending.before) != 0 {
+			before, err := DecodeDocument(pending.before)
+			if err == nil && parentID(before.Parent) != parentID(pending.doc.Parent) {
+				kind = model.OpReparent
+			}
 		}
 		// A slot patch plus its optional reason comment is one transition.
 		// Keep the changed blocker anchored to the patch, not the comment.

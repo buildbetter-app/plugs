@@ -386,6 +386,16 @@ func TestGateRPCMemoryAndSQLiteAtomicPersistenceReplayAndHistory(t *testing.T) {
 			if state, approvals := gateState(t, duplicate); state != "pending" || approvals != "1" {
 				t.Fatalf("duplicate sponsor approval: state=%s approvals=%s", state, approvals)
 			}
+			// A direct human and a different service/agent sponsor chain are
+			// still the same human. They cannot create observations or events.
+			aliceHuman := model.PrincipalRef{Kind: "user", ID: "user:alice"}
+			aliceService := model.PrincipalRef{Kind: "service", ID: "service:alice", Sponsor: &aliceHuman}
+			for _, identity := range []model.PrincipalRef{aliceHuman, {Kind: "agent", ID: "agent:alice-nested", Sponsor: &aliceService}} {
+				response := gateCall(t, runtime.server, rpc.WithPrincipal(context.Background(), identity), "gate.approve", writeParams(t, map[string]any{"id": ref}))
+				if state, approvals := gateState(t, response); state != "pending" || approvals != "1" {
+					t.Fatalf("sponsor-resolved human was counted twice: state=%s approvals=%s", state, approvals)
+				}
+			}
 
 			staleParams := writeParams(t, map[string]any{
 				"id":     ref,

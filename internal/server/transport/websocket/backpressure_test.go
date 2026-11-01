@@ -2,8 +2,12 @@ package websocket
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/binary"
+	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,6 +68,221 @@ func TestServeConnectionStopsOnSlowSocket(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("slow-consumer refusal left the handler blocked on a socket write")
+	}
+}
+
+// completedResponseConn holds a successful network write just before Flush
+// returns. The peer has received its response, but the writer still owns the
+// connection. A subsequent close deadline lets that completed write drain.
+type completedResponseConn struct {
+	net.Conn
+	flushed chan struct{}
+	resume  chan struct{}
+	once    sync.Once
+}
+
+func (c *completedResponseConn) Write(data []byte) (int, error) {
+	n, err := c.Conn.Write(data)
+	if err == nil {
+		c.once.Do(func() {
+			close(c.flushed)
+			<-c.resume
+		})
+	}
+	return n, err
+}
+
+func (c *completedResponseConn) SetWriteDeadline(deadline time.Time) error {
+	select {
+	case <-c.flushed:
+		select {
+		case c.resume <- struct{}{}:
+		default:
+		}
+	default:
+	}
+	return c.Conn.SetWriteDeadline(deadline)
+}
+
+func TestCloseFlushesPolicyFrameAfterInFlightResponse(t *testing.T) {
+	server, client := net.Pipe()
+	paused := &completedResponseConn{Conn: server, flushed: make(chan struct{}), resume: make(chan struct{}, 1)}
+	t.Cleanup(func() {
+		select {
+		case paused.resume <- struct{}{}:
+		default:
+		}
+		_ = client.Close()
+		_ = server.Close()
+	})
+	config, err := (Config{}).defaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := newConn(paused, bufio.NewReadWriter(bufio.NewReader(paused), bufio.NewWriter(paused)), config)
+	response := []byte(`{"jsonrpc":"2.0","id":"accepted","result":{}}`)
+	written := make(chan error, 1)
+	go func() { written <- connection.WriteMessage(context.Background(), TextMessage, response) }()
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	packet := make([]byte, 2+len(response))
+	if _, err := io.ReadFull(client, packet); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(packet, append([]byte{0x81, byte(len(response))}, response...)) {
+		t.Fatal("accepted response frame changed")
+	}
+	<-paused.flushed
+	closed := make(chan error, 1)
+	go func() {
+		closed <- connection.Close(context.Background(), closePolicy, "authentication no longer valid")
+	}()
+	var header [2]byte
+	if _, err := io.ReadFull(client, header[:]); err != nil {
+		t.Fatalf("policy close was lost behind the completed response: %v", err)
+	}
+	payload := make([]byte, int(header[1]&0x7f))
+	if _, err := io.ReadFull(client, payload); err != nil {
+		t.Fatal(err)
+	}
+	if header[0] != 0x88 || header[1]&0x80 != 0 || len(payload) < 2 || binary.BigEndian.Uint16(payload[:2]) != closePolicy {
+		t.Fatalf("policy close frame changed: header=%x payload=%x", header, payload)
+	}
+	if err := <-written; err != nil {
+		t.Fatalf("accepted response failed: %v", err)
+	}
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+}
+
+type observedWriteConn struct {
+	net.Conn
+	started chan struct{}
+}
+
+func (c *observedWriteConn) Write(data []byte) (int, error) {
+	select {
+	case c.started <- struct{}{}:
+	default:
+	}
+	return c.Conn.Write(data)
+}
+
+func TestCloseBoundsStalledDataWriter(t *testing.T) {
+	server, client := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	observed := &observedWriteConn{Conn: server, started: make(chan struct{}, 1)}
+	config, err := (Config{WriteTimeout: 10 * time.Second}).defaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := newConn(observed, bufio.NewReadWriter(bufio.NewReader(observed), bufio.NewWriter(observed)), config)
+	written := make(chan error, 1)
+	go func() {
+		written <- connection.WriteMessage(context.Background(), TextMessage, []byte("stalled response"))
+	}()
+	<-observed.started
+	closed := make(chan error, 1)
+	go func() {
+		closed <- connection.Close(context.Background(), closePolicy, "authentication no longer valid")
+	}()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("policy close waited for the stalled data write's ten-second timeout")
+	}
+	if err := <-written; err == nil {
+		t.Fatal("stalled response unexpectedly reached a peer that never reads")
+	}
+}
+
+// pausedDeadlineContext pauses an admitted writer before it installs its normal
+// deadline. Close can publish its shorter handoff deadline in that interval.
+type pausedDeadlineContext struct {
+	context.Context
+	queried chan struct{}
+	resume  <-chan struct{}
+	once    sync.Once
+}
+
+func (c *pausedDeadlineContext) Deadline() (time.Time, bool) {
+	c.once.Do(func() {
+		close(c.queried)
+		<-c.resume
+	})
+	return c.Context.Deadline()
+}
+
+type observedDeadlineConn struct {
+	net.Conn
+	installed chan struct{}
+	once      sync.Once
+}
+
+func (c *observedDeadlineConn) SetWriteDeadline(deadline time.Time) error {
+	err := c.Conn.SetWriteDeadline(deadline)
+	if err == nil {
+		c.once.Do(func() { close(c.installed) })
+	}
+	return err
+}
+
+func TestCloseBoundsWriterBeforeInitialDeadline(t *testing.T) {
+	server, client := net.Pipe()
+	resume := make(chan struct{})
+	var resumeOnce sync.Once
+	releaseWriter := func() { resumeOnce.Do(func() { close(resume) }) }
+	t.Cleanup(func() {
+		releaseWriter()
+		_ = client.Close()
+		_ = server.Close()
+	})
+	observed := &observedDeadlineConn{Conn: server, installed: make(chan struct{})}
+	config, err := (Config{WriteTimeout: 10 * time.Second}).defaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := newConn(observed, bufio.NewReadWriter(bufio.NewReader(observed), bufio.NewWriter(observed)), config)
+	ctx := &pausedDeadlineContext{Context: context.Background(), queried: make(chan struct{}), resume: resume}
+	written := make(chan error, 1)
+	go func() {
+		written <- connection.WriteMessage(ctx, TextMessage, []byte("response awaiting its initial deadline"))
+	}()
+	select {
+	case <-ctx.queried:
+	case <-time.After(time.Second):
+		t.Fatal("data writer did not reach initial deadline admission")
+	}
+	closed := make(chan error, 1)
+	go func() {
+		closed <- connection.Close(context.Background(), closePolicy, "authentication no longer valid")
+	}()
+	select {
+	case <-observed.installed:
+	case <-time.After(time.Second):
+		t.Fatal("policy close did not install its handoff deadline")
+	}
+	// The writer already owns frame serialization; only deadline admission
+	// separates it from overwriting Close's budget with its ten-second timeout.
+	releaseWriter()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("admitted data writer replaced the policy close deadline with its ten-second timeout")
+	}
+	select {
+	case err := <-written:
+		if err == nil {
+			t.Fatal("response unexpectedly reached a peer that never reads")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("data writer remained active after policy close completed")
 	}
 }
 

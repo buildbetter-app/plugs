@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/pluginapi"
@@ -145,6 +146,20 @@ func TestNativeWarningAndSuppressedPostsRemainDurableOnSQL(t *testing.T) {
 			t.Fatal("native warning was not finalized in SQL")
 		}
 		same(t, out.Commit, entry.Commit)
+		deadKey := pipeline.PostDeadLetterKey(f.meta(t).Incarnation, out.Commit.Revision, "post-bad")
+		metadata := f.store.(driver.CheckpointStore)
+		dead, err := metadata.LoadCheckpoint(f.ctx, deadKey)
+		var failure pipeline.PostDeadLetter
+		if err != nil || dead.Generation != 1 || json.Unmarshal(dead.Payload, &failure) != nil || failure.Binding != "post-bad" || failure.Revision.String() != out.Commit.Revision.String() || failure.Reason != "post_subscriber_failed" || failure.FailedAt.IsZero() {
+			t.Fatalf("native failure missing durable SQL dead letter: generation=%d failure=%+v err=%v", dead.Generation, failure, err)
+		}
+		goodKey := pipeline.PostDeadLetterKey(f.meta(t).Incarnation, out.Commit.Revision, "post-good")
+		if successful, err := metadata.LoadCheckpoint(f.ctx, goodKey); err != nil || successful.Generation != 0 {
+			t.Fatalf("successful peer was dead-lettered: %+v err=%v", successful, err)
+		}
+		if bytes.Contains(dead.Payload, []byte("disposable destination")) || bytes.Contains(dead.Payload, []byte("warning-source")) {
+			t.Fatal("dead-letter metadata retained callback error text or graph images")
+		}
 		ref := out.Commit.Results[0].Ref
 		before := f.graph(t, ref)
 		goodBefore, badBefore := effects(t, good), effects(t, bad)
@@ -182,6 +197,11 @@ func TestNativeWarningAndSuppressedPostsRemainDurableOnSQL(t *testing.T) {
 		same(t, before, f.graph(t, ref))
 		f.reopen(t)
 		replay := apply(t, f, f.writer(nativeHost(t, posts...), nil), cs, m)
+		reloaded, err := f.store.(driver.CheckpointStore).LoadCheckpoint(f.ctx, deadKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		same(t, dead, reloaded)
 		if !replay.Replayed {
 			t.Fatal("reopened native warning did not replay")
 		}

@@ -102,3 +102,24 @@ func TestOfflineHistoryPartialRequiresProvenBaselineExactGapAndSuffix(t *testing
 		}
 	}
 }
+
+func TestOfflineHistoryRetainsExplicitCommitWithoutInventingAnEventOrChange(t *testing.T) {
+	h := replayFixture()
+	h.Head = 5
+	h.Batches = append(h.Batches, SourceHistoryBatch{Sequence: 5, CommitIDs: []string{"source-empty-commit"}, EventIDs: []string{}, Changes: []SourceHistoryChange{}})
+	when := time.Now().UTC()
+	p := replayProfile(RestoreHistoryModeFull)
+	p.HistoryTime = when.Format(time.RFC3339Nano)
+	p.HistoryDigest, _ = OfflineHistoryDigest(h)
+	plan, err := BuildOfflineHistory(Meta{}, p, h, when, nil)
+	if err != nil || len(plan.Entries[4].Changes) != 0 || plan.Evidence.Mapping[4].CommitIDs[0] != "source-empty-commit" || len(plan.Evidence.Mapping[4].EventIDs) != 0 {
+		t.Fatalf("empty source commit was invented or dropped: %+v %v", plan, err)
+	}
+	if _, err = PrepareOfflineHistoryBinding(Meta{}, p, h, when.Add(time.Second)); err == nil {
+		t.Fatal("restore time drifted from historical comment binding")
+	}
+	h.Batches[4].CommitIDs = nil
+	if _, err = BuildOfflineHistory(Meta{}, p, h, when, nil); err == nil {
+		t.Fatal("provenance-free empty source unit admitted")
+	}
+}
