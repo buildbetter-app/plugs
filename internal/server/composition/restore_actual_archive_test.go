@@ -171,6 +171,13 @@ func TestActualArchiveRestoreClaimNextAndTxApplyWithLoggedTestPresence(t *testin
 			t.Fatal(err)
 		}
 	}
+	for _, key := range []string{"cursor-source-memory-0", "cursor-source-memory-1"} {
+		if _, err := source.client.Call(ctx, "memory.save", map[string]any{
+			"key": key, "content": "pre-restore memory",
+		}, ""); err != nil {
+			t.Fatalf("source memory %s: %v", key, err)
+		}
+	}
 	sourcePage, err := source.client.Call(ctx, "bead.ready", map[string]any{"limit": 1}, "")
 	if err != nil {
 		t.Fatalf("source cursor page: %v", err)
@@ -178,6 +185,14 @@ func TestActualArchiveRestoreClaimNextAndTxApplyWithLoggedTestPresence(t *testin
 	oldCursor, ok := resultObject(t, sourcePage)["nextCursor"].(string)
 	if !ok || oldCursor == "" {
 		t.Fatalf("source page did not issue a cursor: %s", sourcePage.JSON)
+	}
+	sourceMemoryPage, err := source.client.Call(ctx, "memory.list", map[string]any{"limit": 1}, "")
+	if err != nil {
+		t.Fatalf("source memory cursor page: %v", err)
+	}
+	oldMemoryCursor, ok := resultObject(t, sourceMemoryPage)["nextCursor"].(string)
+	if !ok || oldMemoryCursor == "" {
+		t.Fatalf("source memory page did not issue a cursor: %s", sourceMemoryPage.JSON)
 	}
 	f := startRuntime(t, Config{
 		Driver: "memory", Project: "pl", Address: DefaultAddress, AuthMode: "anonymous", CursorKey: cursorKey,
@@ -266,6 +281,67 @@ func TestActualArchiveRestoreClaimNextAndTxApplyWithLoggedTestPresence(t *testin
 	}
 	if oldCursorError.Data.Details["fromIncarnation"] != before.Meta.Incarnation || oldCursorError.Data.Details["toIncarnation"] != afterRestore.Meta.Incarnation {
 		t.Fatalf("old cursor generation details=%v", oldCursorError.Data.Details)
+	}
+
+	_, err = f.client.Call(ctx, "memory.list", map[string]any{"limit": 1, "cursor": oldMemoryCursor}, "")
+	var oldMemoryCursorError *wire.Error
+	if !errors.As(err, &oldMemoryCursorError) || oldMemoryCursorError.Data.Code != "incarnation_changed" {
+		t.Fatalf("pre-restore memory cursor was not typed as incarnation_changed: %v", err)
+	}
+	if oldMemoryCursorError.Data.Details["fromIncarnation"] != before.Meta.Incarnation || oldMemoryCursorError.Data.Details["toIncarnation"] != afterRestore.Meta.Incarnation {
+		t.Fatalf("old memory cursor generation details=%v", oldMemoryCursorError.Data.Details)
+	}
+
+	for _, key := range []string{"restore-memory-a", "restore-memory-b"} {
+		if _, err := f.client.Call(ctx, "memory.save", map[string]any{
+			"key": key, "content": "post-restore memory",
+		}, ""); err != nil {
+			t.Fatalf("post-restore memory %s: %v", key, err)
+		}
+	}
+	postRestorePage, err := f.client.Call(ctx, "memory.list", map[string]any{"limit": 1}, "")
+	if err != nil {
+		t.Fatalf("post-restore memory cursor page: %v", err)
+	}
+	postRestoreObject := resultObject(t, postRestorePage)
+	postRestoreItems, ok := postRestoreObject["items"].([]any)
+	if !ok || len(postRestoreItems) != 1 || postRestoreItems[0].(map[string]any)["key"] != "restore-memory-a" {
+		t.Fatalf("post-restore memory page=%s", postRestorePage.JSON)
+	}
+	postRestoreAsOf, ok := postRestoreObject["asOf"].(map[string]any)
+	if !ok || postRestoreAsOf["incarnation"] != afterRestore.Meta.Incarnation {
+		t.Fatalf("post-restore memory page generation=%v want %s", postRestoreObject["asOf"], afterRestore.Meta.Incarnation)
+	}
+	freshMemoryCursor, ok := postRestoreObject["nextCursor"].(string)
+	if !ok || freshMemoryCursor == "" {
+		t.Fatalf("post-restore memory page did not issue a cursor: %s", postRestorePage.JSON)
+	}
+	if _, err := f.client.Call(ctx, "memory.save", map[string]any{
+		"key": "restore-memory-c", "content": "post-restore memory",
+	}, ""); err != nil {
+		t.Fatalf("post-restore later memory: %v", err)
+	}
+	continuedMemoryPage, err := f.client.Call(ctx, "memory.list", map[string]any{"limit": 1, "cursor": freshMemoryCursor}, "")
+	if err != nil {
+		t.Fatalf("post-restore memory continuation: %v", err)
+	}
+	continuedObject := resultObject(t, continuedMemoryPage)
+	continuedItems, ok := continuedObject["items"].([]any)
+	if !ok || len(continuedItems) != 1 || continuedItems[0].(map[string]any)["key"] != "restore-memory-b" {
+		t.Fatalf("post-restore memory continuation=%s", continuedMemoryPage.JSON)
+	}
+	lastMemoryCursor, ok := continuedObject["nextCursor"].(string)
+	if !ok || lastMemoryCursor == "" {
+		t.Fatalf("post-restore memory continuation did not advance: %s", continuedMemoryPage.JSON)
+	}
+	lastMemoryPage, err := f.client.Call(ctx, "memory.list", map[string]any{"limit": 1, "cursor": lastMemoryCursor}, "")
+	if err != nil {
+		t.Fatalf("post-restore final memory continuation: %v", err)
+	}
+	lastObject := resultObject(t, lastMemoryPage)
+	lastItems, ok := lastObject["items"].([]any)
+	if !ok || len(lastItems) != 1 || lastItems[0].(map[string]any)["key"] != "restore-memory-c" || lastObject["nextCursor"] != nil {
+		t.Fatalf("post-restore final memory page=%s", lastMemoryPage.JSON)
 	}
 
 	claim, err := f.client.Call(context.Background(), "bead.claimNext", map[string]any{
