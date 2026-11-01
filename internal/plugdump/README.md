@@ -2,8 +2,8 @@
 
 `bd --readonly export --format plug-dump/1 --plug-inventory inventory.json
 -o dump.tar` reads a disposable frozen Beads capture through the existing
-`storage.RawDBAccessor` capability. It gathers the entire read set in a
-read-only, repeatable-read SQL transaction and rolls back. It performs no
+`storage.RawDBTxAccessor` capability. It gathers the entire read set in a
+read-only, Serializable SQL transaction and rolls back before publishing. It performs no
 storage migration, restore, remote merge, credential lookup, or hook execution.
 Ordinary `bd export` retains its JSONL defaults and selection flags.
 
