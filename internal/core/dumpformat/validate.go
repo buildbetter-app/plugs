@@ -30,6 +30,7 @@ var knownKinds = map[string]bool{
 var knownNativeKinds = map[string]bool{
 	"bead": true, "edge": true, "comment": true, "memory": true,
 	"config": true, "beads-archive": true, "ontology": true,
+	"instance_config": true, "restore-archive": true,
 }
 
 var externalFamilies = []string{
