@@ -25,6 +25,16 @@ func New(store ReadStore, lease driver.ActiveLease, cfg Config) (*Service, error
 	if err := cfg.OntologyRevision.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid ontology revision: %w", err)
 	}
+	if cfg.EpicProgress != nil {
+		if cfg.EpicProgress.AnonymousOnly && cfg.AuthorizeRead != nil {
+			return nil, fmt.Errorf("anonymous epic progress cannot be combined with read authorization")
+		}
+		if cfg.EpicProgress.ValidateAuthority == nil || cfg.EpicProgress.AuthorizeScope == nil || cfg.EpicProgress.OntologySource == nil {
+			return nil, fmt.Errorf("epic progress requires current authority, scope authorization and durable ontology source")
+		}
+		copy := *cfg.EpicProgress
+		cfg.EpicProgress = &copy
+	}
 	return &Service{store: store, lease: lease, cfg: cfg}, nil
 }
 
@@ -349,6 +359,9 @@ func validateDefinition(def Definition) error {
 	}
 	if err := validateFilter(*def.Filter); err != nil {
 		return err
+	}
+	if isEpicProgress(def) {
+		return validateEpicProgress(def)
 	}
 	for _, field := range def.Fields {
 		if !supportedField(field) {

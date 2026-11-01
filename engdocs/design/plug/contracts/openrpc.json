@@ -5593,7 +5593,7 @@
     {
       "name": "view.run",
       "summary": "Run a saved or inline budgeted view.",
-      "description": "Run a saved or inline budgeted view. The parent-aware epic-progress path reuses this envelope for direct-child counts under one content, ontology and current-authority binding: visible-child counts are returned with the literal “N more you can’t see” for hidden children, with no hidden-child status. No new RPC, cursor or result member is added by this deferred contract step.",
+      "description": "Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=<bare bead ID>\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:<canonical status ID> groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. No RPC, filter, cursor or result member is added.",
       "tags": [
         {
           "name": "view"
@@ -6533,7 +6533,7 @@
       },
       "Filter": {
         "type": "object",
-        "description": "The one filter shape shared by list, event, and view methods. Parent-aware epic progress remains on this existing view/filter path and selects direct children by canonical parent equality; it adds no new RPC or filter member in this contract snapshot.",
+        "description": "The shared filter envelope is unchanged. The opt-in epic-progress view uses exactly query=parent=<bare branch-zero bead ID> with no additional query clauses, resources, types or events; it selects canonical direct children only, across their own projects.",
         "properties": {
           "query": {
             "type": "string",
@@ -7428,7 +7428,7 @@
       },
       "ViewDefinition": {
         "type": "object",
-        "description": "A saved or inline view definition. A future parent-aware epic-progress interpretation uses this existing envelope and does not by itself release a new groupBy value.",
+        "description": "The trusted epic-progress capability admits groupBy=[\"epic-progress\"], explicitly present fields=[], and exactly filter.query=\"parent=<bare bead ID>\". No sort or additional filters are admitted. budgetTokens must be absent or zero: this complete count is not token-budgeted or paged. The ordinary authorized input cap is 20,000, never the 100,000 type-summary exception; at most 100 groups including total are returned. Refusals return no partial counts.",
         "properties": {
           "name": {
             "type": "string"
@@ -7506,7 +7506,7 @@
           },
           "elided": {
             "type": "object",
-            "description": "An output bound. Authorization-elided direct children are rendered as the literal “N more you can’t see” and do not expose a status.",
+            "description": "An output bound. Epic progress reports hidden direct children only on the total group: count is the exact hidden remainder and reason is authorization. Render the literal “N more you can’t see”; never infer hidden statuses. Its required continueWith refreshes the same authorized request without cursor/asOf and cannot reveal or page hidden children. Ordinary output_budget elision retains its signed continuation semantics.",
             "properties": {
               "count": {
                 "type": "integer",
@@ -7565,7 +7565,7 @@
           },
           "groups": {
             "type": "array",
-            "description": "Existing grouped output. A parent-aware epic-progress producer counts visible direct children and reports hidden children only as authorization elision.",
+            "description": "Existing grouped output. Epic progress returns key=total with the visible direct-child count and status:<canonical status ID> groups counting visible children only; every items array is empty. Keys identify statuses in the ontology read from the same asOf content snapshot; they do not infer labels, readiness or completion policy. Only total may carry authorization elision. MaxGroups=100 includes total; incomplete or over-limit results refuse without truncation.",
             "items": {
               "$ref": "#/components/schemas/ViewGroup"
             }

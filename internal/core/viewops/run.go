@@ -131,6 +131,9 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	if err != nil {
 		return Result{}, err
 	}
+	if isEpicProgress(definition) {
+		return s.runEpicProgress(ctx, by, req, definition)
+	}
 	filter := *definition.Filter
 	terms, err := parseQuery(filter.Query)
 	if err != nil {

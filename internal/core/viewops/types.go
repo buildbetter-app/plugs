@@ -10,6 +10,7 @@ import (
 
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -106,6 +107,34 @@ type Config struct {
 	// carried into watch cursors; an empty value is valid for an immutable
 	// no-plugin installation.
 	PolicyVersion string
+	// EpicProgress is a trusted, optional host capability. The ordinary view
+	// and hierarchy-write authorization boundaries are unchanged when absent.
+	EpicProgress *EpicProgressConfig
+}
+
+// EpicProgressConfig supplies current authority over a complete, pinned direct
+// child set. AuthorizeScope must require read access to the parent (returning
+// not_found for a hidden parent) and return only readable child refs, checked
+// in each child's own project. It must never grant access through the link.
+// AuthorizeScope receives PINNED CONTENT and must itself fence one current
+// authority snapshot, including for asOf content. ValidateAuthority checks a
+// fresh CURRENT snapshot's caller, facts, ACL/context and generations against
+// the returned binding after status bucketing, before any counts escape.
+type EpicProgressConfig struct {
+	// AnonymousOnly is an explicit immutable no-plugin host mode. It refuses
+	// authenticated principals and cannot be combined with a read authorizer.
+	AnonymousOnly     bool
+	ValidateAuthority func(context.Context, model.PrincipalRef, string) error
+	AuthorizeScope    func(context.Context, model.PrincipalRef, driver.Reader, model.Ref, []model.Ref) (EpicProgressAuthority, error)
+	OntologySource    service.OntologySourceLocator
+}
+
+// EpicProgressAuthority is host-private. It does not add a wire result member
+// or grant. EP2's Checker.AuthorizeEpicProgress is adapted to this projection.
+type EpicProgressAuthority struct {
+	Visible       []model.Ref
+	Hidden        model.Natural
+	PolicyBinding string
 }
 
 // Keep the resolver contract visible from the view package while the shared

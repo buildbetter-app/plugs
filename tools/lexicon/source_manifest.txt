@@ -229,6 +229,7 @@ internal/core/ontologyops/source.go
 internal/core/ontologyops/types.go
 internal/core/pipeline/BUILD.bazel
 internal/core/pipeline/allocator_test.go
+internal/core/pipeline/ancestor.go
 internal/core/pipeline/apply.go
 internal/core/pipeline/audit.go
 internal/core/pipeline/audit_guard_test.go
@@ -239,6 +240,8 @@ internal/core/pipeline/claim_recovery.go
 internal/core/pipeline/document.go
 internal/core/pipeline/gate.go
 internal/core/pipeline/guard_test.go
+internal/core/pipeline/hierarchy.go
+internal/core/pipeline/hierarchy_test.go
 internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
 internal/core/pipeline/options.go
@@ -276,6 +279,7 @@ internal/core/service/direct_blockers.go
 internal/core/service/direct_blockers_test.go
 internal/core/service/gate.go
 internal/core/service/graph.go
+internal/core/service/hierarchy_guards.go
 internal/core/service/history.go
 internal/core/service/history_reads_test.go
 internal/core/service/history_sqlite_rpc_test.go
@@ -287,6 +291,7 @@ internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
 internal/core/viewops/BUILD.bazel
+internal/core/viewops/epic_progress.go
 internal/core/viewops/run.go
 internal/core/viewops/service.go
 internal/core/viewops/service_test.go
@@ -314,6 +319,7 @@ internal/integration/batchsql/BUILD.bazel
 internal/integration/batchsql/README.md
 internal/integration/batchsql/batch_test.go
 internal/integration/batchsql/fixture_test.go
+internal/integration/batchsql/hierarchy_test.go
 internal/integration/claimsql/BUILD.bazel
 internal/integration/claimsql/README.md
 internal/integration/claimsql/claim_sql_test.go
@@ -503,6 +509,7 @@ internal/server/composition/composition_test.go
 internal/server/composition/config.go
 internal/server/composition/configfile.go
 internal/server/composition/configfile_test.go
+internal/server/composition/epic_progress_test.go
 internal/server/composition/mcp.go
 internal/server/composition/mcp_lifecycle_test.go
 internal/server/composition/restore_actual_archive_test.go
@@ -635,8 +642,11 @@ internal/server/transport/websocket/conn.go
 internal/server/transport/websocket/handler.go
 internal/server/transport/websocket/websocket_test.go
 internal/server/viewrpc/BUILD.bazel
+internal/server/viewrpc/README.md
 internal/server/viewrpc/bind.go
 internal/server/viewrpc/cursor.go
+internal/server/viewrpc/epic_progress.go
+internal/server/viewrpc/epic_progress_test.go
 internal/server/viewrpc/integration_test.go
 internal/server/watch/BUILD.bazel
 internal/server/watch/authorization.go
@@ -704,6 +714,7 @@ internal/storage/memory/allocator.go
 internal/storage/memory/audit_test.go
 internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_test.go
+internal/storage/memory/derived_reader.go
 internal/storage/memory/lease.go
 internal/storage/memory/lifetimes_test.go
 internal/storage/memory/metadata.go
@@ -722,6 +733,7 @@ internal/storage/postgres/allocator_test.go
 internal/storage/postgres/boundaries_test.go
 internal/storage/postgres/commit.go
 internal/storage/postgres/conformance_test.go
+internal/storage/postgres/derived_reader.go
 internal/storage/postgres/driver.go
 internal/storage/postgres/encoding.go
 internal/storage/postgres/engine_test.go
@@ -739,6 +751,7 @@ internal/storage/sqlite/BUILD.bazel
 internal/storage/sqlite/README.md
 internal/storage/sqlite/allocator.go
 internal/storage/sqlite/boundaries_test.go
+internal/storage/sqlite/derived_reader.go
 internal/storage/sqlite/engine_test.go
 internal/storage/sqlite/lease.go
 internal/storage/sqlite/locks_other.go

@@ -172,10 +172,18 @@ func encodeResult(codec *CursorCodec, call rpc.Call, p params, result viewops.Re
 		for _, group := range result.Groups {
 			entry := map[string]any{"key": group.Key, "count": group.Count, "items": group.Items}
 			if group.Elided != nil {
-				if next == "" {
+				refresh := group.Elided.Reason == "authorization"
+				if refresh && (group.Key != "total" || result.NextCursor != nil) {
+					return nil, fmt.Errorf("authorization elision must be an atomic epic total")
+				}
+				if !refresh && next == "" {
 					return nil, fmt.Errorf("view group elision lacks continuation cursor")
 				}
-				continueParams, err := continuationParams(call, p, next)
+				cursor := next
+				if refresh {
+					cursor = ""
+				}
+				continueParams, err := continuationParams(call, p, cursor)
 				if err != nil {
 					return nil, err
 				}
@@ -189,7 +197,10 @@ func encodeResult(codec *CursorCodec, call rpc.Call, p params, result viewops.Re
 }
 
 func continuationParams(call rpc.Call, p params, cursor string) (map[string]any, error) {
-	params := map[string]any{"cursor": cursor}
+	params := map[string]any{}
+	if cursor != "" {
+		params["cursor"] = cursor
+	}
 	if p.ViewID != "" {
 		params["viewId"] = p.ViewID
 	} else if p.Definition != nil {
