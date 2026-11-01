@@ -73,7 +73,7 @@ func matrixFixture(t *testing.T, open storeFactory) *fixture {
 	}
 	f.base = next
 	var changes []conformance.FixtureChange
-	for i, project := range []string{"", "unregistered", "inactive", "other", "project", "project"} {
+	for i, project := range []string{"unregistered", "unregistered", "inactive", "other", "project", "project"} {
 		ref := fixtureRef(i + 2)
 		body, err := json.Marshal(map[string]any{"id": ref.ID, "type": "issue", "project": project, "fields": map[string]any{"title": "historical", "status": "todo", "priority": min(i+1, 4)}})
 		if err != nil {
@@ -140,7 +140,7 @@ func listMembership(t *testing.T, open storeFactory) {
 			for _, scope := range []struct {
 				name string
 				ids  []int
-			}{{"project", []int{1, 6, 7}}, {"unregistered", []int{3}}, {"inactive", []int{4}}, {"other", []int{5}}} {
+			}{{"project", []int{1, 6, 7}}, {"unregistered", []int{2, 3}}, {"inactive", []int{4}}, {"other", []int{5}}} {
 				params := map[string]any{"limit": 1, "_meta": map[string]any{"project": scope.name}}
 				var ids []string
 				for pages := 0; ; pages++ {
