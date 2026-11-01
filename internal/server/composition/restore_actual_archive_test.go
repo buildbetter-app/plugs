@@ -483,6 +483,16 @@ func TestComposedMemoryListCursorAcrossRestore(t *testing.T) {
 			if recovered.Meta != paged.Meta || !equalStringSlices(recovered.Rows, paged.Rows) {
 				t.Fatal("restore receipt recovery changed the memory cursor generation or rows")
 			}
+			if engine == "sqlite" {
+				// A stable signing key also keeps the restored-store cursor valid
+				// across a durable server restart without changing incarnation.
+				target.stop(t)
+				target = startRuntime(t, config)
+				reopened := captureActualArchiveCensus(t, target.r.Store)
+				if reopened.Meta != paged.Meta || !equalStringSlices(reopened.Rows, paged.Rows) {
+					t.Fatal("reopening the restored store changed its generation or rows")
+				}
+			}
 			zetaRevision = save(target, "zeta", "updated after first page")
 			middleRevision := save(target, "middle", "inserted after first page")
 			cursor = list(target, cursor, "middle", "inserted after first page", middleRevision, true)
