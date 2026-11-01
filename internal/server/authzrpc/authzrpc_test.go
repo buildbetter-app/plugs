@@ -91,7 +91,8 @@ func TestLostLeaseFencesAuthorizationSnapshotsBeforeStorage(t *testing.T) {
 }
 
 type fixture struct {
-	store  *memory.Store
+	store  driver.Store
+	lease  driver.ActiveLease
 	keys   *authnapikey.Provider
 	facts  *authzrpc.MutableFacts
 	base   authzfixed.Facts
@@ -100,13 +101,19 @@ type fixture struct {
 
 func newFixture(t *testing.T, mutators []pipeline.MutatorBinding) *fixture {
 	t.Helper()
+	return newFixtureOn(t, memory.New(), mutators)
+}
+
+func newFixtureOn(t *testing.T, store driver.Store, mutators []pipeline.MutatorBinding) *fixture {
+	t.Helper()
 	ctx := context.Background()
-	f := &fixture{store: memory.New()}
+	f := &fixture{store: store}
 	t.Cleanup(func() { _ = f.store.Close() })
 	lease, err := f.store.Lease(ctx, "authzrpc-test", driver.LeaseTTL)
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.lease = lease
 	t.Cleanup(func() { _ = lease.Release(ctx) })
 	// Seed a disposable record through the adopted storage fixture. No second
 	// Writer or alternate service exists: all product writes use New's Writer.
@@ -169,7 +176,12 @@ func (f *fixture) call(t *testing.T, by model.PrincipalRef, method string, param
 	if err != nil {
 		t.Fatal(err)
 	}
-	params["_meta"] = map[string]any{"idempotencyKey": fmt.Sprintf("%032x", key)}
+	meta, _ := params["_meta"].(map[string]any)
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	meta["idempotencyKey"] = fmt.Sprintf("%032x", key)
+	params["_meta"] = meta
 	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +206,7 @@ func (f *fixture) call(t *testing.T, by model.PrincipalRef, method string, param
 func success(t *testing.T, got reply) {
 	t.Helper()
 	if got.Error != nil {
-		t.Fatalf("RPC error = %s", got.Error.Data.Code)
+		t.Fatalf("RPC error = %+v", got.Error.Data)
 	}
 	if len(got.Result) == 0 {
 		t.Fatal("RPC omitted its result")

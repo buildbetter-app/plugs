@@ -24,6 +24,7 @@ type transaction struct {
 	lease           *activeLease
 	locked, hasHead bool
 	restore         *driver.Meta
+	offlineHistory  *driver.PreparedOfflineHistory
 	nativeRestore   *driver.NativeRestoreProfile
 	importRestore   *driver.RestoreImportProfile
 	acquired        driver.LockSet
@@ -368,6 +369,9 @@ func (t *transaction) recordRef(id string) driver.Ref {
 func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (model.Changeset, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.offlineHistory != nil {
+		return model.Changeset{}, fmt.Errorf("prepared history requires CommitOfflineHistory")
+	}
 	if err := t.validateHeader(ctx, h); err != nil {
 		return model.Changeset{}, err
 	}

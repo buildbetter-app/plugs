@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -78,6 +79,18 @@ func invoke[T any](ctx context.Context, timeout time.Duration, fn func(context.C
 		var zero T
 		return zero, ctx.Err()
 	}
+}
+
+// invokeTimedPost keeps the host-owned queue/execution budget while retaining
+// the same panic boundary as the legacy callback path. A timed adapter is still
+// an untrusted post subscriber: a panic is a post failure, not a process exit.
+func invokeTimedPost(ctx context.Context, timeout time.Duration, fn func(context.Context, time.Duration) error) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = fmt.Errorf("subscriber panicked")
+		}
+	}()
+	return fn(ctx, timeout)
 }
 
 func (w *Writer) pre(ctx context.Context, p *prepared) error {
@@ -212,9 +225,9 @@ func (w *Writer) authorize(ctx context.Context, stage port.AuthorizationStage, p
 	return err
 }
 
-func (w *Writer) post(ctx context.Context, p *prepared, commit model.Commit) []model.Warning {
+func (w *Writer) post(ctx context.Context, p *prepared, commit model.Commit) ([]model.Warning, error) {
 	if len(w.cfg.posts) == 0 {
-		return nil
+		return nil, nil
 	}
 	// The caller may disconnect immediately after commit; committed callbacks
 	// still receive their bounded window and read precisely the commit revision.
@@ -243,7 +256,9 @@ func (w *Writer) post(ctx context.Context, p *prepared, commit model.Commit) []m
 			snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}, bounded: true}
 			var err error
 			if timed, ok := binding.Subscriber.(port.TimedPostSubscriber); ok {
-				err = timed.AfterWithTimeout(ctx, 500*time.Millisecond, change, snapshot)
+				err = invokeTimedPost(ctx, 500*time.Millisecond, func(call context.Context, timeout time.Duration) error {
+					return timed.AfterWithTimeout(call, timeout, change, snapshot)
+				})
 			} else {
 				_, err = invoke(ctx, 500*time.Millisecond, func(call context.Context) (struct{}, error) {
 					return struct{}{}, binding.Subscriber.After(call, change, snapshot)
@@ -253,10 +268,25 @@ func (w *Writer) post(ctx context.Context, p *prepared, commit model.Commit) []m
 		}(binding)
 	}
 	warnings := []model.Warning{}
+	failures := make(chan error, len(w.cfg.posts))
+	var persisted sync.WaitGroup
 	for i, binding := range w.cfg.posts {
 		if err := <-results[i]; err != nil {
 			warnings = append(warnings, model.Warning{Code: "post_subscriber_failed", Message: "post subscriber failed after commit", Details: map[string]any{"binding": binding.ID, "revision": commit.Revision}})
+			persisted.Add(1)
+			go func(id string) {
+				defer persisted.Done()
+				if err := w.deadLetterPost(ctx, view.Incarnation, commit.Revision, id); err != nil {
+					failures <- err
+				}
+			}(binding.ID)
 		}
 	}
-	return warnings
+	persisted.Wait()
+	select {
+	case err := <-failures:
+		return warnings, err
+	default:
+		return warnings, nil
+	}
 }

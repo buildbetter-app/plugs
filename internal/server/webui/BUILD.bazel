@@ -5,12 +5,15 @@ go_library(
     srcs = [
         "bridge.go",
         "catalog.go",
+        "frame_digest.go",
+        "frame_host.go",
         "webui.go",
     ],
     embedsrcs = [
         "static/app.js",
         "static/epic-progress.js",
         "static/favicon.svg",
+        "static/frame-host.js",
         "static/index.html",
         "static/styles.css",
     ],
@@ -59,18 +62,26 @@ go_test(
 )
 
 go_test(
+    name = "sandbox_safety_test",
+    srcs = ["sandbox_test.go"],
+    embedsrcs = ["sandbox_check.mjs"],
+    env_inherit = ["PATH"],
+    args = ["-test.v"],
+    deps = [
+        ":webui",
+        "//internal/server/authn",
+        "//internal/server/rpc",
+        "//internal/server/transport/httpjson",
+    ],
+)
+
+go_test(
     name = "presence_display_test",
     srcs = ["presence_display_test.go"],
     embedsrcs = ["presence_display_check.mjs"],
     env_inherit = ["PATH"],
     tags = ["local"],
     embed = [":webui"],
-)
-
-filegroup(
-    name = "lexicon_files",
-    srcs = glob(["**"]),
-    visibility = ["//visibility:public"],
 )
 
 go_test(
@@ -96,4 +107,10 @@ go_test(
         "//internal/storage/memory",
         "//internal/storage/sqlite",
     ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
 )
