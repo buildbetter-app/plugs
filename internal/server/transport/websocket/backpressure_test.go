@@ -155,6 +155,50 @@ func TestCloseFlushesPolicyFrameAfterInFlightResponse(t *testing.T) {
 	}
 }
 
+type observedWriteConn struct {
+	net.Conn
+	started chan struct{}
+}
+
+func (c *observedWriteConn) Write(data []byte) (int, error) {
+	select {
+	case c.started <- struct{}{}:
+	default:
+	}
+	return c.Conn.Write(data)
+}
+
+func TestCloseBoundsStalledDataWriter(t *testing.T) {
+	server, client := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	observed := &observedWriteConn{Conn: server, started: make(chan struct{}, 1)}
+	config, err := (Config{WriteTimeout: 10 * time.Second}).defaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := newConn(observed, bufio.NewReadWriter(bufio.NewReader(observed), bufio.NewWriter(observed)), config)
+	written := make(chan error, 1)
+	go func() {
+		written <- connection.WriteMessage(context.Background(), TextMessage, []byte("stalled response"))
+	}()
+	<-observed.started
+	closed := make(chan error, 1)
+	go func() {
+		closed <- connection.Close(context.Background(), closePolicy, "authentication no longer valid")
+	}()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("policy close waited for the stalled data write's ten-second timeout")
+	}
+	if err := <-written; err == nil {
+		t.Fatal("stalled response unexpectedly reached a peer that never reads")
+	}
+}
+
 func writeMaskedTestFrame(conn net.Conn, payload []byte) error {
 	frame := []byte{0x81, 0x80 | byte(len(payload)), 1, 2, 3, 4}
 	masked := append([]byte(nil), payload...)

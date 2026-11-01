@@ -246,20 +246,37 @@ func (c *Conn) write(ctx context.Context, opcode byte, payload []byte) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	stop := context.AfterFunc(ctx, func() { _ = c.netConn.SetWriteDeadline(time.Now()) })
-	defer stop()
-	deadline := time.Now().Add(c.cfg.WriteTimeout)
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.isClosed() {
+		return ErrConnectionClosed
+	}
+	return c.writeLocked(ctx, opcode, payload, c.cfg.WriteTimeout)
+}
+
+// writeLocked owns both the frame and its cancellation deadline until the
+// callback has stopped. A completed write must not expire a later close frame.
+func (c *Conn) writeLocked(ctx context.Context, opcode byte, payload []byte, timeout time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(timeout)
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
 	}
 	if err := c.netConn.SetWriteDeadline(deadline); err != nil {
 		return err
 	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	if c.isClosed() {
-		return ErrConnectionClosed
-	}
+	callbackDone := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(callbackDone)
+		_ = c.netConn.SetWriteDeadline(time.Now())
+	})
+	defer func() {
+		if !stop() {
+			<-callbackDone
+		}
+	}()
 	if err := writeFrame(c.writer, opcode, payload); err != nil {
 		return err
 	}
@@ -291,30 +308,24 @@ func (c *Conn) writeClose(ctx context.Context, code uint16, reason string) error
 	payload := make([]byte, 2+len(reasonBytes))
 	binary.BigEndian.PutUint16(payload[:2], code)
 	copy(payload[2:], reasonBytes)
-	// A stalled data writer may already hold writeMu. Close must never wait for
-	// that writer: the network close below is what interrupts its Flush. When
-	// the mutex is available, make a best-effort close handshake with a short
-	// deadline before releasing the socket.
-	if !c.writeMu.TryLock() {
-		return ErrConnectionClosed
-	}
-	defer c.writeMu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	stop := context.AfterFunc(ctx, func() { _ = c.netConn.SetWriteDeadline(time.Now()) })
-	defer stop()
-	deadline := time.Now().Add(closeWriteTimeout)
-	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
-		deadline = ctxDeadline
+	ctx, cancel := context.WithTimeout(ctx, closeWriteTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
 	}
+	// Close has stopped new data writes. Bound any in-flight Flush before
+	// waiting for its mutex, then send the close frame if the peer drains it.
+	// The same budget covers both the writer handoff and the close frame.
+	deadline, _ := ctx.Deadline()
 	if err := c.netConn.SetWriteDeadline(deadline); err != nil {
 		return err
 	}
-	if err := writeFrame(c.writer, byte(closeMessage), payload); err != nil {
-		return err
-	}
-	return c.writer.Flush()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.writeLocked(ctx, byte(closeMessage), payload, closeWriteTimeout)
 }
 
 // Close sends a bounded close frame once and then releases the socket.
