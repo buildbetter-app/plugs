@@ -56,13 +56,24 @@ func TestBrowserPluginSandboxSafety(t *testing.T) {
 		"frame.js":   []byte(`globalThis.safetyLoaded = true; document.querySelector("#ready").textContent = "Bundle script loaded";`),
 		"module.js":  []byte(`globalThis.safetyModuleLoaded = true;`),
 	}
+	siblingAssets := make(map[string][]byte, len(assets))
+	for name, data := range assets {
+		siblingAssets[name] = data
+	}
+	// A controlled alternate document attempts an ordinary granted read only
+	// when it is the navigation fixture; its initial sibling role is unchanged.
+	siblingAssets["frame.js"] = append(append([]byte(nil), assets["frame.js"]...), []byte(`if (location.hash === "#navigation-probe") parent.postMessage({jsonrpc:"2.0",id:"navigation-fixture",method:"rpc.methods",params:{}}, "*");`)...)
+	siblingDigest, err := webui.FrameBundleDigest(siblingAssets)
+	if err != nil {
+		t.Fatal(err)
+	}
 	digest, err := webui.FrameBundleDigest(assets)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ui, err := webui.New(webui.Config{Project: "web", Frames: []webui.FrameBundle{
 		{ID: "probe", Digest: digest, Grant: webui.BridgeGrant{Methods: []string{"rpc.methods"}}, Assets: assets},
-		{ID: "sibling", Digest: digest, Grant: webui.BridgeGrant{}, Assets: assets},
+		{ID: "sibling", Digest: siblingDigest, Grant: webui.BridgeGrant{}, Assets: siblingAssets},
 	}})
 	if err != nil {
 		t.Fatal(err)

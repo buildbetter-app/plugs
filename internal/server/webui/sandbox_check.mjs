@@ -108,11 +108,19 @@ try {
   // must contain navigation before another document can execute or inherit a
   // bridge, including same-origin sibling bundles with a different grant.
   const stats = async () => (await fetch(base + "/safety-stats")).json();
-  for (const destination of [base + "/ui/frames/sibling/index.html", "data:text/html,<title>Local navigation fixture</title>"]) {
+  const localDocument = '<title>Local navigation fixture</title><script>parent.postMessage({jsonrpc:"2.0",id:"navigation-fixture",method:"rpc.methods",params:{}}, "*");</script>';
+  for (const destination of [base + "/ui/frames/sibling/index.html#navigation-probe", "data:text/html," + encodeURIComponent(localDocument)]) {
     await until(() => evaluate("document.querySelector('#cancel')?.hidden === true"), "host read completion before navigation");
     const before = await stats();
+    await evaluate(`(() => {
+      globalThis.navigationPolicySeen = false;
+      document.querySelector('iframe').contentWindow.addEventListener('securitypolicyviolation', (event) => {
+        if (event.effectiveDirective === 'frame-src') globalThis.navigationPolicySeen = true;
+      });
+    })()`);
     try { await evaluate(`location.assign(${JSON.stringify(destination)})`, probe); } catch (_) {}
     await until(() => evaluate("document.querySelector('iframe').dataset.bridgeState === 'revoked'"), "contained navigation revokes bridge");
+    await until(() => evaluate("globalThis.navigationPolicySeen === true"), "exact-entry CSP blocks navigation before the load fence");
     await delay(100);
     assert.deepEqual(await stats(), before, "navigation must not load a sibling document or reach RPC");
     console.log("PASS navigation_contained_before_document_or_bridge_transfer " + (destination.startsWith("data:") ? "local-data" : "sibling-bundle"));
