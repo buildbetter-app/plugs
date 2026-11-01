@@ -23,9 +23,6 @@ func (t *transaction) header(h driver.ChangesetHeader) ([]byte, error) {
 		return nil, err
 	}
 	expected := t.meta.Incarnation
-	if h.Kind == model.ChangesetRestore && t.restore == nil {
-		return nil, fmt.Errorf("%w: restore requires prepared capability", driver.ErrUnsupported)
-	}
 	if t.restore != nil {
 		validate := driver.ValidateOfflineRestoreHeader
 		if t.nativeRestore != nil {
