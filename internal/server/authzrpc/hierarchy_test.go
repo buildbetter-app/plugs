@@ -23,6 +23,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
 func hRef(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
@@ -40,7 +41,7 @@ func hBody(id, project, parent, status string) []byte {
 }
 
 type hFixture struct {
-	store *memory.Store
+	store driver.Store
 	lease driver.ActiveLease
 	keys  *authnapikey.Provider
 	facts *MutableFacts
@@ -50,8 +51,13 @@ type hFixture struct {
 
 func newHFixture(t *testing.T, enabled bool) *hFixture {
 	t.Helper()
+	return newHFixtureStore(t, enabled, memory.New())
+}
+
+func newHFixtureStore(t *testing.T, enabled bool, store driver.Store) *hFixture {
+	t.Helper()
 	ctx := context.Background()
-	f := &hFixture{store: memory.New()}
+	f := &hFixture{store: store}
 	t.Cleanup(func() { _ = f.store.Close() })
 	var err error
 	f.lease, err = f.store.Lease(ctx, "hierarchy-authz", driver.LeaseTTL)
@@ -287,6 +293,58 @@ func TestHierarchyFixedPolicyBatchesHundredOperationAuthorization(t *testing.T) 
 	defer cancel()
 	if err := f.app.Checker.AuthorizeHierarchy(ctx, port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", changes...), f.snapshot(t)); err != nil {
 		t.Fatalf("100-operation fixed-policy batch exceeded the unchanged authorization deadline: %v", err)
+	}
+}
+
+func TestHierarchyFixedPolicyObservesDependenciesOncePerPass(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite"} {
+		t.Run(engine, func(t *testing.T) {
+			var store driver.Store = memory.New()
+			if engine == "sqlite" {
+				var err error
+				store, err = (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: t.TempDir() + "/hierarchy.db"})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			f := newHFixtureStore(t, true, store)
+			changes := make([]port.Change, 100)
+			for i := range changes {
+				changes[i] = hCreate(fmt.Sprintf("observed-%03d", i), "", "child-project", nil, "")
+			}
+			s := f.snapshot(t)
+			started := time.Now()
+			if err := f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", changes...), s); err != nil {
+				t.Fatal(err)
+			}
+			counts := map[string]int{}
+			for _, key := range s.locks {
+				encoded, err := driver.EncodeLockKey(key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				counts[encoded]++
+			}
+			t.Logf("100-operation authorization: engine=%s elapsed_ms=%.3f source_reads=%d dependency_observations=%d unique_dependencies=%d", engine, float64(time.Since(started))/float64(time.Millisecond), len(s.gets), len(s.locks), len(counts))
+			acl, _ := driver.NewReadFact(authz.ACLDependency(f.base.Namespace).Key)
+			aclKey, _ := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockReadFact, Fact: acl})
+			for key, count := range counts {
+				// FactsSource.Load and Checker.load separately fence the ACL.
+				// The finite policy may observe each dependency only once more.
+				limit := 1
+				if key == aclKey {
+					limit = 3
+				}
+				if count > limit {
+					t.Errorf("snapshot dependency repeatedly read: key=%s observations=%d limit=%d", key, count, limit)
+				}
+			}
+			for _, change := range changes {
+				if s.gets[change.Resource.Ref.ID] != 1 {
+					t.Errorf("source absence was not tracked exactly once for %s", change.Resource.Ref.ID)
+				}
+			}
+		})
 	}
 }
 
