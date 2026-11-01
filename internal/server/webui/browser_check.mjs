@@ -84,7 +84,9 @@ try {
   const frameSession = async (name) => until(async () => {
     const { targetInfos } = await send("Target.getTargets");
     const target = targetInfos.find((info) => info.type === "iframe" && info.url === base + "/ui/frames/" + name + "/index.html");
-    return target && frameSessions.get(target.targetId);
+    if (!target) return;
+    if (!frameSessions.has(target.targetId)) frameSessions.set(target.targetId, (await send("Target.attachToTarget", { targetId: target.targetId, flatten: true })).sessionId);
+    return frameSessions.get(target.targetId);
   }, name + " frame session");
   const scopeSession = await frameSession("scope-probe");
   const siblingSession = await frameSession("sibling-probe");

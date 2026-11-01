@@ -44,7 +44,26 @@ func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req ser
 	if !allowed {
 		return service.GetResult{}, notFound()
 	}
-	return s.delegate.Get(ctx, by, req)
+	content, _, closeContent, err := s.current(ctx, req.AsOf)
+	if err != nil {
+		return service.GetResult{}, err
+	}
+	defer closeContent()
+	view := content.Snapshot()
+	req.AsOf = &service.AsOf{Revision: *view.At, Incarnation: view.Incarnation}
+	result, err := s.delegate.Get(ctx, by, req)
+	if err != nil {
+		return service.GetResult{}, err
+	}
+	parents, err := s.checker.AuthorizeParentProjections(ctx, by, content, []model.Ref{req.ID})
+	if err != nil {
+		return service.GetResult{}, err
+	}
+	projectBeadParent(&result.Bead, parents.Parents[req.ID.ID])
+	if err := s.checker.ValidateReadAuthorityBinding(ctx, by, parents.PolicyBinding); err != nil {
+		return service.GetResult{}, err
+	}
+	return result, nil
 }
 
 func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
@@ -379,11 +398,9 @@ func (s *GuardedService) current(ctx context.Context, asOf *service.AsOf) (drive
 }
 
 func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, method string, limit int, position *service.PagePosition, page service.BeadPage, pinned bool) (service.BeadPage, error) {
-	var authorizationAt *service.AsOf
-	if !pinned {
-		authorizationAt = &service.AsOf{Revision: page.AsOf.Revision, Incarnation: page.AsOf.Incarnation}
-	}
-	_, snapshot, closeReader, err := s.current(ctx, authorizationAt)
+	// Historical and current content both use current authority. Only content
+	// membership and parent relationships remain pinned to the returned page.
+	_, snapshot, closeReader, err := s.current(ctx, nil)
 	if err != nil {
 		return service.BeadPage{}, err
 	}
@@ -442,12 +459,35 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 		end = len(filtered)
 	}
 	out := service.BeadPage{Items: append([]service.Bead(nil), filtered[offset:end]...), AsOf: page.AsOf}
+	content, _, closeContent, err := s.current(ctx, &page.AsOf)
+	if err != nil {
+		return service.BeadPage{}, err
+	}
+	defer closeContent()
+	refs := make([]model.Ref, len(out.Items))
+	for i, bead := range out.Items {
+		refs[i] = model.RefByID(bead.ID, model.Natural64(0))
+	}
+	parents, err := s.checker.parentProjections(ctx, caller, authorization, content, refs)
+	if err != nil {
+		return service.BeadPage{}, err
+	}
+	for i := range out.Items {
+		projectBeadParent(&out.Items[i], parents[out.Items[i].ID])
+	}
 	if end < len(filtered) {
 		out.Next = &service.PagePosition{
 			Offset: end, AsOf: page.AsOf,
 			AuthorizationRevision: authorization.authorizationRevision,
 			AuthorizationBound:    authorization.authorizationBound,
 		}
+	}
+	binding, err := s.checker.readAuthorityBinding(ctx, caller, authorization, snapshot)
+	if err != nil {
+		return service.BeadPage{}, err
+	}
+	if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
+		return service.BeadPage{}, err
 	}
 	return out, nil
 }
