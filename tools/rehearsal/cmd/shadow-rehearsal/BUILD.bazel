@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_binary")
+
+go_binary(
+    name = "shadow-rehearsal",
+    srcs = ["main.go"],
+    importpath = "github.com/buildbetter-app/plugs/tools/rehearsal/cmd/shadow-rehearsal",
+    visibility = ["//visibility:public"],
+    deps = ["//tools/rehearsal"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

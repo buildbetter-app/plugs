@@ -856,3 +856,15 @@ tools/lexicon/inventory_test.go
 tools/lexicon/output_links/BUILD.bazel
 tools/lexicon/policy.go
 tools/lexicon/source_manifest.txt
+tools/rehearsal/BUILD.bazel
+tools/rehearsal/README.md
+tools/rehearsal/cmd/shadow-rehearsal/BUILD.bazel
+tools/rehearsal/cmd/shadow-rehearsal/main.go
+tools/rehearsal/disposable.go
+tools/rehearsal/disposable_test.go
+tools/rehearsal/files.go
+tools/rehearsal/files_test.go
+tools/rehearsal/gate.go
+tools/rehearsal/metrics.go
+tools/rehearsal/metrics_test.go
+tools/rehearsal/three_rehearsals.sh
