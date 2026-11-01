@@ -131,6 +131,13 @@ func TestSQLSourceHistoryReadsPinnedDoltCommitImages(t *testing.T) {
 		defer tx.Rollback()
 		data, err := Build(ctx, SQLSource{DB: tx}, inventory)
 		if err != nil {
+			// This database is fixed public test data. Keep the actual system
+			// row shape in the receipt when its ancestry cannot be validated.
+			if ancestry, readErr := (SQLSource{DB: tx}).historyTable(ctx, "SELECT commit_hash, parent_hash FROM dolt_commit_ancestors"); readErr == nil {
+				for _, row := range ancestry.Rows {
+					t.Logf("public fixture ancestry commit=%v parent=%v parent_type=%T", row["commit_hash"], row["parent_hash"], row["parent_hash"])
+				}
+			}
 			t.Fatal(err)
 		}
 		return data
@@ -138,7 +145,7 @@ func TestSQLSourceHistoryReadsPinnedDoltCommitImages(t *testing.T) {
 	data := build()
 	m, h := sourceCapture(t, data)
 	if m.History != "available-unverified" || h.Range.Status != "verified" || h.Range.Complete || len(h.Range.Baseline) == 0 || len(h.Range.Frames) == 0 {
-		t.Fatalf("real Dolt suffix was not proven: %+v", h.Range)
+		t.Fatalf("real Dolt suffix was not proven: status=%s reason=%s first=%d head=%d frames=%d", h.Range.Status, h.Range.Reason, h.Range.First, h.Range.Head, len(h.Range.Frames))
 	}
 	if len(h.Events) != 2 || !bytes.Contains(data, []byte("9007199254740993")) || !bytes.Contains(data, []byte("waiting\\u0000opaque")) {
 		t.Fatal("source audit or opaque bytes were lost")
