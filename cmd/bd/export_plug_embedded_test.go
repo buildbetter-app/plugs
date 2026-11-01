@@ -89,6 +89,13 @@ func TestEmbeddedPlugDumpCommandEndToEnd(t *testing.T) {
 				return readErr
 			}
 		}
+		migrations, err := (plugdump.SQLSource{DB: tx}).ReadTable(ctx, "schema_migrations")
+		if err != nil {
+			return err
+		}
+		if len(migrations.Rows) != 0 {
+			t.Logf("synthetic main cursor: %d rows; version type %T, content hash type %T", len(migrations.Rows), migrations.Rows[0]["version"], migrations.Rows[0]["content_hash"])
+		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -116,14 +123,14 @@ func TestEmbeddedPlugDumpCommandEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	issueCount := 0
+	beadCount := 0
 	for _, kind := range manifest.Kinds {
-		if kind.Name == "issue" {
-			issueCount = kind.Count
+		if kind.Name == "bead" {
+			beadCount = kind.Count
 		}
 	}
-	if issueCount != 1 || manifest.History != "unavailable" {
-		t.Fatalf("issue count = %d, history = %q", issueCount, manifest.History)
+	if beadCount != 1 || manifest.History != "unavailable" {
+		t.Fatalf("bead count = %d, history = %q", beadCount, manifest.History)
 	}
 	if err := exportCmd.RunE(cmd, nil); err != nil {
 		t.Fatal(err)
