@@ -227,6 +227,19 @@ func postImage(t *testing.T, open storeFactory) {
 	if err := f.server.Checker.Authorize(ctx, port.AuthorizeAfter, proposal, reader); err != nil {
 		t.Fatalf("unchanged supported image: %#v", err)
 	}
+	// The native caller and the same caller detached by authentication/freezing
+	// must agree. Keep the typed Ref caveat above to cover object-key ordering.
+	wire, err := json.Marshal(proposal.Principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireProposal := proposal
+	if err := json.Unmarshal(wire, &wireProposal.Principal); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.server.Checker.Authorize(ctx, port.AuthorizeAfter, wireProposal, reader); err != nil {
+		t.Fatalf("unchanged wire image: %#v", err)
+	}
 	for _, field := range []string{"project", "parent", "owner", "assignee", "type", "labels", "restricted"} {
 		t.Run(field, func(t *testing.T) {
 			var body map[string]any
