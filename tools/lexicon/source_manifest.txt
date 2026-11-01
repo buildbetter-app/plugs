@@ -116,6 +116,8 @@ internal/api/wire/schema.go
 internal/api/wire/wire_test.go
 internal/cli/BUILD.bazel
 internal/cli/README.md
+internal/cli/agent.go
+internal/cli/agent_test.go
 internal/cli/archive_test.go
 internal/cli/config.go
 internal/cli/config_test.go
@@ -754,6 +756,7 @@ pluginapi/manifest.go
 pluginapi/op.go
 pluginapi/types.go
 pluginapi/types_test.go
+plugins/plug/SKILL.md
 scripts/ci/plug-bazel-config-test.sh
 scripts/ci/plug-bazel-delivery-test.sh
 scripts/ci/plug-bazel-delivery.py
