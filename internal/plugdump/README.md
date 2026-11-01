@@ -201,6 +201,11 @@ uses `beads-dolt-images/1`: source commits and opaque attribution, the complete
 current events table, and an explicitly checked range of portable business
 images and cumulative event images at exact source commit IDs.
 
+The ordinary read-only export command uses the optional port inside the scoped
+raw transaction. It finishes rollback and connection cleanup before publishing
+the archive. A source without provable ancestry refuses with a typed source
+error; operator inventory declarations cannot turn missing history into proof.
+
 A complete linear graph, every representable image, unchanged earlier events,
 an exact current-head comparison and a stable final head/clean/commit census
 are required for `history=verified`.

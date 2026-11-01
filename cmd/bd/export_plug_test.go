@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -30,6 +31,7 @@ type plugSQLFixture struct {
 	tables     map[string]plugdump.Table
 	readOnly   bool
 	rolledBack bool
+	censuses   int
 }
 
 func (f *plugSQLFixture) Connect(context.Context) (driver.Conn, error) { return f, nil }
@@ -52,12 +54,20 @@ func (f *plugSQLFixture) BeginTx(_ context.Context, options driver.TxOptions) (d
 		return nil, fmt.Errorf("expected a read-only serializable transaction")
 	}
 	f.readOnly = true
+	f.rolledBack = false
 	return f, nil
 }
 func (f *plugSQLFixture) Commit() error   { return fmt.Errorf("read-only exporter must never commit") }
 func (f *plugSQLFixture) Rollback() error { f.rolledBack = true; return nil }
 
 func (f *plugSQLFixture) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	if !f.readOnly || f.rolledBack {
+		return nil, fmt.Errorf("fixture read outside its active read-only transaction")
+	}
+	if rows, ok := f.historyQuery(query); ok {
+		return rows, nil
+	}
+	query = strings.TrimSuffix(query, " AS OF '"+plugFixtureCommitID+"'")
 	if strings.HasPrefix(query, "SELECT table_name FROM information_schema.tables ") {
 		var names []string
 		for name := range f.tables {
@@ -113,6 +123,62 @@ func (f *plugSQLFixture) QueryContext(_ context.Context, query string, _ []drive
 		rows.values = append(rows.values, values)
 	}
 	return rows, nil
+}
+
+const plugFixtureCommitID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+// This protocol fixture explicitly declares one synthetic complete root image.
+// The separate source-history lane reads actual pinned Dolt ancestry/images;
+// these fixed SQL replies only exercise command dispatch and scoped reads.
+func (f *plugSQLFixture) historyQuery(query string) (driver.Rows, bool) {
+	switch query {
+	case "SELECT DOLT_HASHOF('HEAD')":
+		f.censuses++
+		return &plugSQLRows{columns: []string{"hash"}, values: [][]driver.Value{{plugFixtureCommitID}}}, true
+	case "SELECT table_name, staged, status FROM dolt_status":
+		return &plugSQLRows{columns: []string{"table_name", "staged", "status"}}, true
+	case "SELECT * FROM dolt_log LIMIT 10001":
+		return &plugSQLRows{columns: []string{"commit_hash", "message"}, values: [][]driver.Value{{plugFixtureCommitID, "public synthetic protocol root"}}}, true
+	case "SELECT commit_hash, parent_hash FROM dolt_commit_ancestors LIMIT 20001":
+		return &plugSQLRows{columns: []string{"commit_hash", "parent_hash"}, values: [][]driver.Value{{plugFixtureCommitID, nil}}}, true
+	case "SHOW TABLES AS OF '" + plugFixtureCommitID + "'":
+		names := make([]string, 0, len(f.tables))
+		for name := range f.tables {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		rows := &plugSQLRows{columns: []string{"table_name"}}
+		for _, name := range names {
+			rows.values = append(rows.values, []driver.Value{name})
+		}
+		return rows, true
+	default:
+		return nil, false
+	}
+}
+
+func plugExportHistory(t *testing.T, data []byte) plugdump.SourceHistory {
+	t.Helper()
+	reader := tar.NewReader(bytes.NewReader(data))
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			t.Fatal("source history member missing from command archive")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Name != plugdump.SourceHistoryMember {
+			continue
+		}
+		var history plugdump.SourceHistory
+		decoder := json.NewDecoder(reader)
+		decoder.UseNumber()
+		if err = decoder.Decode(&history); err != nil {
+			t.Fatal(err)
+		}
+		return history
+	}
 }
 
 type plugSQLRows struct {
@@ -231,6 +297,10 @@ func TestPlugDumpCommandEndToEnd(t *testing.T) {
 	manifest, err := plugdump.Validate(bytes.NewReader(first))
 	if err != nil || manifest.Projects[0].LastID != 8 || !fixture.readOnly || !fixture.rolledBack {
 		t.Fatalf("failed command archive/transaction contract: %v", err)
+	}
+	history := plugExportHistory(t, first)
+	if fixture.censuses != 2 || manifest.History != "verified" || !history.Range.Complete || history.Range.First != 1 || history.Range.Head != 1 || len(history.Range.Frames) != 1 || history.Range.Frames[0].CommitID != plugFixtureCommitID {
+		t.Fatal("command did not preserve its explicit synthetic source proof")
 	}
 	t.Logf("real export handler: %d archive bytes, sha256=%x, %d registered kinds, top-level counter=%d, child counter=%d; read-only transaction rolled back", len(first), sha256.Sum256(first), len(manifest.Kinds), manifest.Projects[0].LastID, manifest.Projects[0].ChildCounters["demo-7"])
 	if artifacts := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); artifacts != "" {

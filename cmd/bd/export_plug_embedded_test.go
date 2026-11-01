@@ -68,6 +68,8 @@ func TestEmbeddedPlugDumpCommandEndToEnd(t *testing.T) {
 	inventory.Projects = []plugdump.Project{{Prefix: "demo", IDMode: "hash", HashLength: 3, ChildCounters: map[string]uint64{}}}
 	inventory.ConfigPolicy = map[string]string{}
 	opts := &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable}
+	var sourceLog plugdump.SourceCommitLog
+	var sourceEvents plugdump.Table
 	if err := s.WithRawDBTx(ctx, opts, func(tx *sql.Tx) error {
 		for _, table := range []string{"config", "metadata"} {
 			rows, err := tx.QueryContext(ctx, "SELECT `key` FROM `"+table+"`")
@@ -96,7 +98,12 @@ func TestEmbeddedPlugDumpCommandEndToEnd(t *testing.T) {
 		if len(migrations.Rows) != 0 {
 			t.Logf("synthetic main cursor: %d rows; version type %T, content hash type %T", len(migrations.Rows), migrations.Rows[0]["version"], migrations.Rows[0]["content_hash"])
 		}
-		return nil
+		sourceLog, err = (plugdump.SQLSource{DB: tx}).ReadSourceCommits(ctx)
+		if err != nil {
+			return err
+		}
+		sourceEvents, err = (plugdump.SQLSource{DB: tx}).ReadTable(ctx, "events")
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -129,9 +136,42 @@ func TestEmbeddedPlugDumpCommandEndToEnd(t *testing.T) {
 			beadCount = kind.Count
 		}
 	}
-	if beadCount != 1 || manifest.History != "unavailable" {
+	if beadCount != 1 || manifest.History == "unavailable" || !sourceLog.Clean {
 		t.Fatalf("bead count = %d, history = %q", beadCount, manifest.History)
 	}
+	history := plugExportHistory(t, first)
+	if len(history.Commits) != len(sourceLog.Commits) || len(history.Commits) == 0 {
+		t.Fatal("command source commit census changed")
+	}
+	wantCommits := map[string][]byte{}
+	for _, commit := range sourceLog.Commits {
+		wantCommits[commit.ID], err = json.Marshal(commit)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, commit := range history.Commits {
+		got, err := json.Marshal(commit)
+		if err != nil || !bytes.Equal(got, wantCommits[commit.ID]) {
+			t.Fatalf("command changed actual source commit %s: %v", commit.ID, err)
+		}
+	}
+	wantEvents, err := json.Marshal(sourceEvents.Rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotEvents, err := json.Marshal(history.Events)
+	if err != nil || !bytes.Equal(wantEvents, gotEvents) {
+		t.Fatalf("command changed actual source events: %v", err)
+	}
+	if history.Range.Status == "verified" {
+		if history.Range.Head != uint64(len(sourceLog.Commits)) || len(history.Range.Frames) == 0 || history.Range.Frames[len(history.Range.Frames)-1].CommitID != sourceLog.Head {
+			t.Fatal("command claimed an unproven source head")
+		}
+	} else if history.Range.Status != "unverified" || history.Range.Reason == "" || len(history.Range.Frames) != 0 || manifest.History != "available-unverified" {
+		t.Fatal("command invented a range from unavailable historical images")
+	}
+	t.Logf("actual embedded history commits=%d events=%d range=%s reason=%s", len(history.Commits), len(history.Events), history.Range.Status, history.Range.Reason)
 	if err := exportCmd.RunE(cmd, nil); err != nil {
 		t.Fatal(err)
 	}
