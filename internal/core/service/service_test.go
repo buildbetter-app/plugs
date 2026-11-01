@@ -1683,7 +1683,7 @@ func TestCanonicalParentCannotSatisfyNoOpenChildren(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			receipt, err := reader.IdempotencyByKey(ctx, principal, "", method, m.IdempotencyKey)
+			receipt, err := reader.IdempotencyByKey(ctx, principal, m.AgentLabel, method, m.IdempotencyKey)
 			if err != nil || receipt != nil {
 				t.Fatal("refused parent lifecycle published a receipt", err)
 			}
