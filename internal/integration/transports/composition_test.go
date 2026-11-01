@@ -24,7 +24,7 @@ import (
 // controlled delay makes the ordering of connection drain and store close
 // observable, including after the request has already been canceled.
 type drainingStore struct {
-	driver.Store
+	*memory.Store
 	readers   atomic.Int64
 	block     atomic.Bool
 	early     atomic.Bool
