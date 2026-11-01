@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ const (
 	closeGoingAway   = 1001
 	closeProtocol    = 1002
 	closeUnsupported = 1003
+	closePolicy      = 1008
 	closeTooLarge    = 1009
 	closeTryAgain    = 1013
 	closeInternal    = 1011
@@ -30,9 +32,19 @@ const (
 // listener, session or watch manager. A composition root mounts it at Path and
 // may use Stream for subscriptions opened through the existing watch adapter.
 type Handler struct {
-	rpc   *rpc.Server
-	authn *authn.Authenticator
-	cfg   Config
+	rpc         *rpc.Server
+	authn       *authn.Authenticator
+	cfg         Config
+	mu          sync.Mutex
+	closed      bool
+	connections map[*activeConnection]struct{}
+	active      sync.WaitGroup
+	closeOnce   sync.Once
+}
+
+type activeConnection struct {
+	cancel context.CancelFunc
+	conn   net.Conn
 }
 
 func New(server *rpc.Server, authenticator *authn.Authenticator, config Config) (*Handler, error) {
@@ -46,7 +58,34 @@ func New(server *rpc.Server, authenticator *authn.Authenticator, config Config) 
 	if !strings.HasPrefix(config.Path, "/") || strings.ContainsAny(config.Path, "?#") {
 		return nil, fmt.Errorf("websocket: Path must be an absolute path without query markers")
 	}
-	return &Handler{rpc: server, authn: authenticator, cfg: config}, nil
+	return &Handler{rpc: server, authn: authenticator, cfg: config, connections: map[*activeConnection]struct{}{}}, nil
+}
+
+// Close stops admission, cancels and closes every owned upgrade, and waits for
+// its dispatch and writer to return. net/http.Shutdown does not own hijacked
+// connections, so a composition must call Close before releasing the store.
+// Dispatchers must honor their contexts, as with ordinary HTTP requests.
+func (h *Handler) Close() error {
+	if h == nil {
+		return nil
+	}
+	h.closeOnce.Do(func() {
+		h.mu.Lock()
+		h.closed = true
+		connections := make([]activeConnection, 0, len(h.connections))
+		for connection := range h.connections {
+			connections = append(connections, *connection)
+		}
+		h.mu.Unlock()
+		for _, connection := range connections {
+			connection.cancel()
+			if connection.conn != nil {
+				_ = connection.conn.Close()
+			}
+		}
+		h.active.Wait()
+	})
+	return nil
 }
 
 // ServeHTTP performs the HTTP upgrade only after the existing WebSocket
@@ -54,6 +93,27 @@ func New(server *rpc.Server, authenticator *authn.Authenticator, config Config) 
 // browsers cannot set Plug-RPC on a WebSocket handshake. Once upgraded,
 // every JSON message is passed unchanged to rpc.Server.Dispatch.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Register before admission so Close also joins a handshake already in
+	// flight. The closed check and Add share the mutex used by Close's snapshot.
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		h.reject(w, http.StatusServiceUnavailable, "busy", "WebSocket transport is closed", nil)
+		return
+	}
+	ctx, cancel := context.WithCancel(r.Context())
+	active := &activeConnection{cancel: cancel}
+	h.connections[active] = struct{}{}
+	h.active.Add(1)
+	h.mu.Unlock()
+	defer func() {
+		cancel()
+		h.mu.Lock()
+		delete(h.connections, active)
+		h.mu.Unlock()
+		h.active.Done()
+	}()
+	r = r.WithContext(ctx)
 	if r.URL.Path != h.cfg.Path || r.URL.EscapedPath() != h.cfg.Path || r.URL.RawQuery != "" || r.URL.ForceQuery {
 		h.reject(w, http.StatusNotFound, "not_found", "unknown WebSocket endpoint", nil)
 		return
@@ -63,7 +123,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.reject(w, http.StatusMethodNotAllowed, "invalid_request", "use GET /rpc/v1/ws", nil)
 		return
 	}
-	identity, err := h.authn.AdmitWebSocket(r)
+	_, err := h.authn.AdmitWebSocket(r)
 	if err != nil {
 		status := http.StatusForbidden
 		if errors.Is(err, authn.ErrUnauthenticated) || errors.Is(err, authn.ErrTokenExpired) {
@@ -84,12 +144,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	defer conn.Close()
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return
+	}
+	active.conn = conn
+	h.mu.Unlock()
 	if err := handshake(rw, r.Header.Get("Sec-WebSocket-Key")); err != nil {
-		_ = conn.Close()
 		return
 	}
 	connection := newConn(conn, rw, h.cfg)
-	h.serveConnection(connection, r.Context(), identity)
+	// Keep the admitted handshake inputs private to this connection. Recheck
+	// them immediately before dispatch so queued messages cannot reuse a
+	// detached identity after credential revocation or expiry.
+	admission := r.Clone(r.Context())
+	h.serveConnection(connection, r.Context(), func(ctx context.Context) (authn.Identity, error) {
+		return h.authn.AdmitWebSocket(admission.WithContext(ctx))
+	})
 }
 
 // reject is used only before an HTTP upgrade. Once the socket is upgraded,
@@ -113,12 +186,9 @@ type outbound struct {
 	data []byte
 }
 
-func (h *Handler) serveConnection(connection *Conn, requestContext context.Context, identity authn.Identity) {
+func (h *Handler) serveConnection(connection *Conn, requestContext context.Context, admit func(context.Context) (authn.Identity, error)) {
 	ctx, cancel := context.WithCancel(requestContext)
 	defer cancel()
-	principal := identity.Principal()
-	ctx = authn.WithIdentity(ctx, identity)
-	ctx = rpc.WithPrincipal(ctx, principal)
 
 	requests := make(chan []byte, h.cfg.MaxPendingReads)
 	outgoing := make(chan outbound, h.cfg.MaxPendingWrites)
@@ -161,8 +231,18 @@ func (h *Handler) serveConnection(connection *Conn, requestContext context.Conte
 					return
 				}
 				callContext, callCancel := context.WithTimeout(ctx, h.cfg.RequestTimeout)
+				identity, err := admit(callContext)
+				if err != nil {
+					callCancel()
+					code, reason := uint16(closePolicy), "authentication no longer valid"
+					if errors.Is(err, authn.ErrUnavailable) {
+						code, reason = closeTryAgain, "authentication unavailable"
+					}
+					terminate(code, reason)
+					return
+				}
 				callContext = authn.WithIdentity(callContext, identity)
-				callContext = rpc.WithPrincipal(callContext, principal)
+				callContext = rpc.WithPrincipal(callContext, identity.Principal())
 				response := h.rpc.Dispatch(callContext, data)
 				callCancel()
 				if len(response) > 0 {
