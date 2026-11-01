@@ -25,7 +25,6 @@ go_test(
     ],
     args = ["-test.v"],
     deps = [
-        "//internal/acceptance",
         "//internal/core/model",
         "//internal/core/ontology",
         "//internal/core/pipeline",
