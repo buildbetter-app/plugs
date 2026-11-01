@@ -95,7 +95,7 @@ func RestoreImport(ctx context.Context, input io.Reader, target driver.Store, pr
 	}
 	archive, err := dumpformat.Read(input)
 	if err != nil {
-		return Report{}, err
+		return Report{}, historyReadError(bound.HistoryMode, err)
 	}
 	return restoreArchiveWithProfile(ctx, archive, target, nil, &bound, verification)
 }
@@ -112,7 +112,7 @@ func RestoreImportWithLease(ctx context.Context, input io.Reader, target driver.
 	}
 	archive, err := dumpformat.Read(input)
 	if err != nil {
-		return Report{}, err
+		return Report{}, historyReadError(bound.HistoryMode, err)
 	}
 	return restoreArchiveWithProfile(ctx, archive, target, lease, &bound, verification)
 }
@@ -168,7 +168,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			return report, modeErr
 		}
 		profile.HistoryMode = mode
-		if policyErr := driver.ValidateRestoreHistoryPolicy(mode, archive.Manifest().History); policyErr != nil {
+		if policyErr := validateArchiveHistoryPolicy(mode, archive); policyErr != nil {
 			return report, policyErr
 		}
 	}
@@ -184,6 +184,15 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			return report, fmt.Errorf("%w: import source store does not match archive", ErrRestoreUnavailable)
 		}
 		restoreTime = time.Now().UTC()
+		if profile.HistoryMode != driver.RestoreHistoryModeSnapshot {
+			if profile.HistoryTime == "" || profile.HistoryDigest == "" {
+				return report, driver.ErrRestoreHistoryRefused{Mode: profile.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
+			}
+			restoreTime, err = time.Parse(time.RFC3339Nano, profile.HistoryTime)
+			if err != nil {
+				return report, err
+			}
+		}
 	}
 	plan, err := buildPlanWithProfile(archive, profile, restoreTime)
 	if err != nil {
@@ -194,6 +203,29 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	}
 	if len(checks) != 1 || checks[0].ArchiveSHA256 != archive.SHA256() || checks[0].DerivedSHA256 != plan.derivedDigest || profile != nil && (checks[0].ArchiveSHA256 != profile.ArchiveDigest || checks[0].DerivedSHA256 != profile.DerivedDigest) {
 		return report, fmt.Errorf("%w: exact archive and rebuilt derived digest verification required", ErrRestoreUnavailable)
+	}
+	var history *driver.OfflineHistory
+	var replay driver.OfflineHistoryPlan
+	lockPlan := plan
+	if profile != nil && profile.HistoryMode != driver.RestoreHistoryModeSnapshot {
+		lowered, lowerErr := lowerSourceHistory(archive, *profile, restoreTime)
+		if lowerErr != nil {
+			return report, lowerErr
+		}
+		digest, digestErr := driver.OfflineHistoryDigest(lowered)
+		if digestErr != nil || digest != profile.HistoryDigest {
+			return report, fmt.Errorf("history payload differs from admitted binding")
+		}
+		tail := make([]driver.Record, 0, len(plan.records))
+		for _, r := range plan.records {
+			tail = append(tail, driver.Record{Ref: r.ref, Kind: r.kind, Body: r.body})
+		}
+		replay, err = driver.BuildOfflineHistory(meta, *profile, lowered, restoreTime, tail)
+		if err != nil {
+			return report, err
+		}
+		history = &lowered
+		lockPlan = historyLockPlan(plan, lowered)
 	}
 	if profile != nil {
 		report.IdempotencyKey = profile.IdempotencyKey
@@ -213,7 +245,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		}
 		defer func() { _ = lease.Release(context.WithoutCancel(ctx)) }()
 	}
-	requests := lockRequests(plan)
+	requests := lockRequests(lockPlan)
 	tx, err := target.Write(ctx, lease)
 	if err != nil {
 		return report, err
@@ -233,7 +265,20 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		return report, err
 	}
 	var restored driver.Meta
-	if profile == nil {
+	if history != nil {
+		historyCapability, historyOK := tx.(driver.OfflineHistoryTx)
+		if !historyOK {
+			return report, driver.ErrRestoreHistoryRefused{Mode: profile.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonNotYetSupported}
+		}
+		restored, err = historyCapability.PrepareOfflineHistory(ctx, *profile, *history, restoreTime)
+		if err == nil {
+			continuation, continuationOK := tx.(driver.AllocatorContinuation)
+			if !continuationOK {
+				return report, driver.ErrUnsupported
+			}
+			err = continuation.RestoreAllocators(ctx, plan.allocators)
+		}
+	} else if profile == nil {
 		restored, err = capability.PrepareOfflineRestore(ctx, driver.StoreID(archive.Manifest().StoreID))
 	} else {
 		importCapability, importOK := tx.(driver.RestoreImportTx)
@@ -260,7 +305,16 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			return report, err
 		}
 		changes = append(changes, model.ChangeRecord{Ref: record.ref, Op: model.OpCreate, FromRevision: model.Natural64(0), ChangedPaths: []string{"/"}})
-		results = append(results, model.OpResult{Ref: record.ref, Revision: model.Natural64(1), Record: append([]byte(nil), record.body...)})
+		revision := model.Natural64(1)
+		if history != nil {
+			for _, final := range replay.Records {
+				if final.Ref == record.ref {
+					revision = final.Revision
+					break
+				}
+			}
+		}
+		results = append(results, model.OpResult{Ref: record.ref, Revision: revision, Record: append([]byte(nil), record.body...)})
 	}
 	for _, item := range plan.derived {
 		if err = tx.PutDerived(ctx, item.Table, nil, []driver.DerivedRow{{Key: item.Key, Value: item.Value}}); err != nil {
@@ -276,7 +330,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			return report, fmt.Errorf("restore blob digest mismatch")
 		}
 	}
-	if err = tx.BumpSentinels(ctx, plan.sentinels); err != nil {
+	if err = tx.BumpSentinels(ctx, lockPlan.sentinels); err != nil {
 		return report, err
 	}
 	principal := restorePrincipal
@@ -289,11 +343,15 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		agentLabel = profile.AgentLabel()
 		commitTime = restoreTime
 	}
-	commit, err := tx.Commit(ctx, driver.ChangesetHeader{
+	commitFn := tx.Commit
+	if history != nil {
+		commitFn = tx.(driver.OfflineHistoryTx).CommitOfflineHistory
+	}
+	commit, err := commitFn(ctx, driver.ChangesetHeader{
 		Incarnation: restored.Incarnation, Kind: model.ChangesetRestore,
 		Time: commitTime, Principal: principal, Chain: []string{},
 		Method: method, AgentLabel: agentLabel, IdempotencyKey: report.IdempotencyKey, RequestHash: report.RequestHash,
-		Response: model.Commit{Revision: model.Natural64(1), Results: results, Warnings: []model.Warning{}},
+		Response: model.Commit{Revision: restored.Head, Results: results, Warnings: []model.Warning{}},
 		Changes:  changes, LockKeys: lockKeys(requests),
 	})
 	if err != nil {
@@ -317,7 +375,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		report.Restored, report.Recovered = recovered.Restored, true
 		return report, nil
 	}
-	if commit.Kind != model.ChangesetRestore || commit.Incarnation != restored.Incarnation || len(commit.Changes) != len(plan.records) {
+	if commit.Kind != model.ChangesetRestore || commit.Incarnation != restored.Incarnation || commit.Revision != restored.Head || history == nil && len(commit.Changes) != len(plan.records) {
 		return report, fmt.Errorf("restore commit did not retain its complete changeset")
 	}
 	report.Restored = restored
@@ -397,7 +455,7 @@ func RecoverImport(ctx context.Context, target driver.Store, profile driver.Rest
 	if err != nil {
 		return Report{}, err
 	}
-	if receipt == nil || receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Incarnation != meta.Incarnation || receipt.Changeset.Revision.String() != "1" || receipt.Commit.Revision.String() != "1" || receipt.Changeset.IdempotencyKey != bound.IdempotencyKey {
+	if receipt == nil || receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Incarnation != meta.Incarnation || receipt.Changeset.Revision != receipt.Commit.Revision || receipt.Changeset.IdempotencyKey != bound.IdempotencyKey || bound.HistoryDigest == "" && receipt.Commit.Revision.String() != "1" {
 		return Report{}, driver.ErrConflict
 	}
 	var evidence archiveEvidence
@@ -462,6 +520,11 @@ func RecoverImport(ctx context.Context, target driver.Store, profile driver.Rest
 	if err = compareImportBinding(ctx, r, evidence, binding); err != nil {
 		return Report{}, driver.ErrConflict
 	}
+	if bound.HistoryDigest != "" {
+		if err = validateHistoryRecovery(ctx, r, bound, evidence, receipt); err != nil {
+			return Report{}, driver.ErrConflict
+		}
+	}
 	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true}, nil
 }
 
@@ -520,8 +583,12 @@ func compareImportBinding(ctx context.Context, r driver.Reader, evidence archive
 	if err = json.Unmarshal(manifestRaw, &manifest); err != nil {
 		return err
 	}
-	if err = driver.ValidateRestoreHistoryPolicy(binding.Profile.HistoryMode, manifest.History); err != nil {
-		return err
+	if binding.Profile.HistoryDigest == "" {
+		if err = driver.ValidateRestoreHistoryPolicy(binding.Profile.HistoryMode, manifest.History); err != nil {
+			return err
+		}
+	} else if binding.Profile.HistoryTime == "" || binding.Profile.HistoryMode == driver.RestoreHistoryModeFull && manifest.History != "verified" || binding.Profile.HistoryMode == driver.RestoreHistoryModePartial && manifest.History != "verified" && manifest.History != "available-unverified" {
+		return driver.ErrConflict
 	}
 	if len(binding.Projects) != len(manifest.Projects) {
 		return driver.ErrConflict
@@ -580,7 +647,7 @@ func buildPlanForInspection(archive *dumpformat.Archive) (restorePlan, error) {
 
 func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time, mode planMode) (restorePlan, error) {
 	manifest := archive.Manifest()
-	if manifest.History != "unavailable" {
+	if mode == planLegacy && manifest.History != "unavailable" {
 		return restorePlan{}, fmt.Errorf("%w: unverified source history cannot be restored", ErrRestoreUnavailable)
 	}
 	if mode == planLegacy && len(archive.Records("comment")) != 0 {

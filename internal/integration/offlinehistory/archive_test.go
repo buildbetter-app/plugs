@@ -115,7 +115,7 @@ func TestSourceArchiveHistoryRoundTripAllDrivers(t *testing.T) {
 				if floor == "1" {
 					at := model.Natural64(0)
 					_, err = s.Read(ctx, driver.View{Incarnation: report.Restored.Incarnation, At: &at})
-					var truncated driver.ErrHistoryTruncated
+					var truncated driver.ErrTruncated
 					if !errors.As(err, &truncated) {
 						t.Fatalf("floor refusal: %T %v", err, err)
 					}

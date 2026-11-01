@@ -114,8 +114,10 @@ func validateSourceHistory(a *Archive) error {
 	if h.Format != SourceHistoryFormat || len(h.Commits) > 100000 || len(h.Range.Frames) > 100000 {
 		return fail("unmappable")
 	}
-	if err := validateSecretReferences(h.Events); err != nil {
-		return err
+	for _, event := range h.Events {
+		if err := validateSecretReferences(map[string]any(event)); err != nil {
+			return err
+		}
 	}
 	currentEvents := []Row{}
 	for _, r := range a.byKind["beads-archive"] {
@@ -132,7 +134,7 @@ func validateSourceHistory(a *Archive) error {
 			return fail("unmappable")
 		}
 		seenCommits[c.ID] = true
-		if err := validateSecretReferences(c.Metadata); err != nil {
+		if err := validateSecretReferences(map[string]any(c.Metadata)); err != nil {
 			return err
 		}
 		for _, p := range c.Parents {
@@ -270,6 +272,9 @@ func eventImage(rows []Row) (map[string]Row, bool) {
 			if _, ok := row[name]; !ok {
 				return nil, false
 			}
+		}
+		if validateSecretReferences(map[string]any(row)) != nil {
+			return nil, false
 		}
 		result[id] = row
 	}
