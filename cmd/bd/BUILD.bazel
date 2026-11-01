@@ -1770,6 +1770,8 @@ sh_test(
     ],
     env = {
         "BEADS_TEST_BD_BINARY": "$(rlocationpath :bd_for_tests)",
+        "BEADS_TEST_PLUG_SOURCE": "$(rlocationpath //internal/plugdump:synthetic_source)",
+        "BEADS_TEST_PLUG_INVENTORY": "$(rlocationpath //internal/plugdump:synthetic_inventory)",
         "BEADS_TEST_DOLT_SERVER": "local",
         # The integration jobs' global git identity (tools/bazel/test_env.sh).
         "BEADS_TEST_GIT_IDENTITY": "1",
