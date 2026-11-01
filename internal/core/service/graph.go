@@ -170,7 +170,7 @@ func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]stored
 		switch link.Kind {
 		case "relates-to", "related", "discovered-from", "replies-to", "duplicates", "supersedes", "authored-by", "assigned-to", "approved-by", "attests", "tracks", "until", "caused-by", "validates", "delegated-from":
 			continue
-		case "blocks", "conditional-blocks", "waits-for", "parent-child":
+		case "blocks", "conditional-blocks", "waits-for":
 			blocker, exists := graph[link.To.ID]
 			if !exists || !link.To.IsID() || !link.To.Branch.IsZero() {
 				return false, nil
@@ -196,12 +196,33 @@ func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]stored
 			continue
 		}
 	}
-	if doc.Parent != nil {
-		parent, exists := graph[doc.Parent.ID]
-		if !exists {
+	return true, nil
+}
+
+// readyDependencies extends the close-guard blocker predicate with the
+// scheduling-only hierarchy edges. Parent-child and an explicit parent affect
+// ready membership, but they are not blockers for closing the child itself.
+func (o *Ontology) readyDependencies(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
+	ready, err := o.noOpenBlockers(doc, graph)
+	if err != nil || !ready {
+		return ready, err
+	}
+	terminal := func(target storedBead) bool {
+		effective := o.effective(target.doc.Project)
+		return effective.SatisfiesBlocks(state(target.doc).Status)
+	}
+	for _, link := range doc.Links {
+		if link.Kind != "parent-child" {
+			continue
+		}
+		target, exists := graph[link.To.ID]
+		if !exists || !link.To.IsID() || !link.To.Branch.IsZero() || !terminal(target) {
 			return false, nil
 		}
-		if !terminal(parent) {
+	}
+	if doc.Parent != nil {
+		parent, exists := graph[doc.Parent.ID]
+		if !exists || !terminal(parent) {
 			return false, nil
 		}
 	}

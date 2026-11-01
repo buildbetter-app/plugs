@@ -168,7 +168,7 @@ func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r queryReade
 				continue
 			}
 		}
-		unblocked, err := s.ontology.noOpenBlockers(row.doc, graph)
+		unblocked, err := s.ontology.readyDependencies(row.doc, graph)
 		if err != nil {
 			return nil, err
 		}
