@@ -21,7 +21,7 @@ with tarfile.open(ROOT / 'internal/integration/converterroundtrip/testdata/synth
 m = json.loads(files.pop('manifest.json'))
 m['projects'][0].update(id_mode='hash', hash_length=1)
 rows = {k['name']: [json.loads(x) for x in files[k['file']].splitlines()] for k in m['kind_registry']}
-rows['beads-archive'] = [r for r in rows['beads-archive'] if r['source']['table'] != 'issue_versions']
+rows['beads-archive'] = [r for r in rows['beads-archive'] if r['source']['table'] not in ('issue_versions', 'events')]
 rows['edge'][0]['body']['type'] = rows['edge'][0]['source']['fields']['type'] = 'blocks'
 opaque = dict(agent_state='waiting\x00opaque', await_id='approval/byte-for-byte', await_type='human',
               ephemeral=1, event_kind=None, hook_bead='demo-8', is_template=1,
