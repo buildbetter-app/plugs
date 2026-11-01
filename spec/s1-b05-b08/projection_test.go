@@ -232,7 +232,7 @@ func projectStore(t *testing.T, f *fixture, ids []string, heartbeatExpiry time.T
 	leases := []leaseProjection{{ID: ids[0], Holder: "anonymous:anonymous", Agent: actor, ExpiresAt: heartbeatExpiry, TTLMS: "300000"}}
 	return semanticProjection{
 		Schema: "plug.s1-b05-b08.semantic.v1", IDs: append([]string(nil), ids...), Prefixes: []string{"s1"},
-		Counters:     map[string]string{"topLevel": "explicit", "child": "not-allocated", "wisp": "not-allocated"},
+		Counters:     map[string]string{"topLevel": "explicit", "child": "not-allocated", "ephemeral": "not-allocated"},
 		Dependencies: dependencies, Leases: leases, Blocked: blocked, Categories: categories,
 		Outcomes: outcomes, Ready: readyIDs, Versions: versions, Changesets: len(changesets), Events: events,
 		Archives: "not-produced:disposable-plug-store",
