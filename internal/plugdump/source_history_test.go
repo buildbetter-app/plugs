@@ -142,3 +142,41 @@ func TestExportSourceHistoryCannotPromoteUnprovenRanges(t *testing.T) {
 		})
 	}
 }
+
+func TestExportOpaqueIssueFieldsSurviveEveryHistoryImage(t *testing.T) {
+	s, inventory := historyFixture(t)
+	opaque := Row{
+		"agent_state": "waiting\x00opaque", "await_id": "approval/byte-for-byte", "await_type": "human",
+		"ephemeral": json.Number("1"), "event_kind": nil, "hook_bead": "demo-8", "is_template": json.Number("1"),
+		"mol_type": "formula", "payload": map[string]any{"n": json.Number("9007199254740993"), "null": nil},
+		"role_bead": "demo-7", "role_type": "agent", "target": "demo-8", "timeout_ns": json.Number("9007199254740993"),
+		"waiters": []any{"demo-8", nil}, "wisp_type": "run", "work_type": "workflow",
+	}
+	apply := func(tables map[string]Table) {
+		for _, row := range tables["issues"].Rows {
+			for name, value := range opaque {
+				row[name] = value
+			}
+		}
+	}
+	apply(s.fixtureSource)
+	for _, tables := range s.images {
+		apply(tables)
+	}
+	_, h := sourceCapture(t, buildFixture(t, s, inventory))
+	if h.Range.Status != "verified" || !h.Range.Complete {
+		t.Fatal("opaque data blocked source proof")
+	}
+	for _, frame := range h.Range.Frames {
+		for _, record := range frame.Records {
+			if record.Kind != "bead" {
+				continue
+			}
+			for field, want := range opaque {
+				if !equalJSON(record.Source.Fields[field], want) {
+					t.Fatalf("sequence %d opaque field %s changed", frame.Sequence, field)
+				}
+			}
+		}
+	}
+}
