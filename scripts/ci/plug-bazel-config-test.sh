@@ -5,6 +5,8 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 workflow=.github/workflows/plug-bazel.yml
+nightly_workflow=.github/workflows/plug-nightly-restore-diffs.yml
+public_workflow=.github/workflows/plug-public-bundle.yml
 remote_workflow=.github/workflows/plug-remote-bazel.yml
 targets=scripts/ci/plug-bazel-targets.sh
 target_tests=scripts/ci/plug-bazel-targets-test.sh
@@ -12,6 +14,7 @@ collector=scripts/ci/plug-bazel-delivery.py
 delivery_tests=scripts/ci/plug-bazel-delivery-test.sh
 
 [[ -f "$workflow" ]] || { echo "config: missing $workflow" >&2; exit 1; }
+[[ -f "$nightly_workflow" ]] || { echo "config: missing $nightly_workflow" >&2; exit 1; }
 [[ -f "$remote_workflow" ]] || { echo "config: missing $remote_workflow" >&2; exit 1; }
 [[ -x "$targets" ]] || { echo "config: $targets is not executable" >&2; exit 1; }
 [[ -x "$target_tests" ]] || { echo "config: $target_tests is not executable" >&2; exit 1; }
@@ -21,7 +24,7 @@ bash -n "$targets"
 bash -n "$target_tests"
 bash -n "$delivery_tests"
 
-python3 - "$workflow" "$targets" "$collector" "$remote_workflow" <<'PYTHON'
+python3 - "$workflow" "$targets" "$collector" "$remote_workflow" "$nightly_workflow" "$public_workflow" <<'PYTHON'
 from pathlib import Path
 import ast
 import re
@@ -29,6 +32,9 @@ import sys
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
 remote_workflow = Path(sys.argv[4]).read_text(encoding="utf-8")
+nightly_workflow = Path(sys.argv[5]).read_text(encoding="utf-8")
+public_path = Path(sys.argv[6])
+public_workflow = public_path.read_text(encoding="utf-8") if public_path.exists() else None
 targets = Path(sys.argv[2]).read_text(encoding="utf-8")
 collector = Path(sys.argv[3]).read_text(encoding="utf-8")
 ast.parse(collector)  # Syntax without writing a cache into the source tree.
@@ -97,6 +103,79 @@ for invalid in ("--no_system_rc", "--no_home_rc", "--no_workspace_rc"):
 def encoded(values):
     return "".join(chr(value) for value in values)
 
+def without_comments(text):
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+def require_fragments(label, code, fragments):
+    missing = sorted(fragment for fragment in fragments if fragment not in code)
+    if missing:
+        raise SystemExit(f"config: {label} is missing: " + ", ".join(missing))
+
+def check_dispatch_workflow(label, code, fragments, action_count):
+    """Check a workflow that may execute only trusted scheduled or dispatched code."""
+    require_fragments(label, code, fragments)
+    for trigger in (
+        "push:", "pull_request:", "pull_request_target:", "workflow_call:",
+        "workflow_run:", "repository_dispatch:", "merge_group:",
+    ):
+        if re.search(rf"(?m)^  {re.escape(trigger)}", code):
+            raise SystemExit(f"config: {label} must be schedule/workflow_dispatch only")
+    for token in (
+        "secrets.", "${{ secrets", "github.event.pull_request",
+        "contents: write", "actions: write", "id-token: write",
+        "packages: write", "pull-requests: write", "permissions: write-all",
+    ):
+        if token in code:
+            raise SystemExit(f"config: {label} exposes a secret or pull-request context: {token}")
+    actions = re.findall(r"uses: (\S+)", code)
+    if len(actions) != action_count or any(
+        not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action)
+        for action in actions
+    ):
+        raise SystemExit(f"config: every {label} action must retain its full immutable pin")
+    if "permissions:\n  contents: read" not in code:
+        raise SystemExit(f"config: {label} must grant contents: read only")
+    if "runs-on: runs-on=${{ github.run_id }}/runner=bb-x64-16" not in code:
+        raise SystemExit(f"config: {label} must use the pinned RunsOn runner")
+
+nightly_code = without_comments(nightly_workflow)
+check_dispatch_workflow(
+    "nightly restore-diffs workflow",
+    nightly_code,
+    (
+        "name: Plug Nightly Restore Diffs", "schedule:", "workflow_dispatch:",
+        "permissions:\n  contents: read",
+        "runs-on: runs-on=${{ github.run_id }}/runner=bb-x64-16",
+        "timeout-minutes: 45", "persist-credentials: false", "fetch-depth: 1",
+        "actions/cache/restore@", "actions/upload-artifact@",
+        "if-no-files-found: error", "retention-days: 30",
+    ),
+    4,
+)
+
+if public_workflow is not None:
+    public_code = without_comments(public_workflow)
+    check_dispatch_workflow(
+        "public bundle workflow",
+        public_code,
+        (
+            "name: Plug public executable bundle", "workflow_dispatch:", "source_ref:",
+            "permissions:\n  contents: read",
+            "runs-on: runs-on=${{ github.run_id }}/runner=bb-x64-16",
+            "timeout-minutes: 60", "persist-credentials: false", "fetch-depth: 0",
+            "actions/upload-artifact@", "actions/download-artifact@",
+            "if-no-files-found: error", "retention-days: 14",
+            "public-bundle.py create", "public-bundle.py verify",
+            "git fetch --no-tags origin refs/heads/beads",
+            '[[ "$PLUG_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]',
+            '[[ "$PLUG_SOURCE_REF" =~ ^[A-Za-z0-9._/-]+$ ]]',
+            '[[ "$BUNDLE_LABEL" =~ ^[A-Za-z0-9._-]{1,48}$ ]]',
+            '[[ "$PLUG_TARGET" =~ ^//[A-Za-z0-9_./:-]+$ ]]',
+            "BEADS_COMMIT: 9d6fff760b7a314b476539198504d77ce0959656",
+        ),
+        4,
+    )
+
 forbidden = (
     "pull_request_target:",
     "rbe-west",
@@ -115,7 +194,7 @@ missing = sorted(fragment for fragment in required_targets if fragment not in ta
 if missing:
     raise SystemExit("config: target resolver is missing: " + ", ".join(missing))
 
-remote_code = "\n".join(line for line in remote_workflow.splitlines() if not line.lstrip().startswith("#"))
+remote_code = without_comments(remote_workflow)
 if "workflow_dispatch:" not in remote_code or "  push:" in remote_code or "  pull_request:" in remote_code:
     raise SystemExit("config: remote Bazel workflow must be dispatch-only")
 for fragment in (
@@ -136,9 +215,21 @@ if "eval " in remote_code or "set -x" in remote_code or "pull_request_target:" i
 remote_actions = re.findall(r"uses: (\S+)", remote_code)
 if len(remote_actions) != 5 or any(not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action) for action in remote_actions):
     raise SystemExit("config: every remote Bazel action must retain its full immutable pin")
-workflow_files = sorted(Path(".github/workflows").glob("*.yml"))
-if [path.name for path in workflow_files] != ["plug-bazel.yml", "plug-remote-bazel.yml", "plug-runs-on-smoke.yml"]:
-    raise SystemExit("config: inherited workflow files remain: " + ", ".join(str(path) for path in workflow_files))
+workflow_files = sorted(
+    path.name
+    for pattern in ("*.yml", "*.yaml")
+    for path in Path(".github/workflows").glob(pattern)
+)
+required_workflows = {
+    "plug-bazel.yml", "plug-nightly-restore-diffs.yml", "plug-remote-bazel.yml", "plug-runs-on-smoke.yml",
+}
+allowed_workflows = required_workflows | {"plug-public-bundle.yml"}
+missing = sorted(required_workflows - set(workflow_files))
+unexpected = sorted(set(workflow_files) - allowed_workflows)
+if missing:
+    raise SystemExit("config: required workflow files are missing: " + ", ".join(missing))
+if unexpected:
+    raise SystemExit("config: inherited workflow files remain: " + ", ".join(unexpected))
 print("plug-ci-config: workflow, permissions, cache, lock, targets, and retirement checks passed")
 PYTHON
 
