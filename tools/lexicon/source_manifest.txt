@@ -654,6 +654,8 @@ internal/server/webui/comment_check.mjs
 internal/server/webui/direct_blocker_check.mjs
 internal/server/webui/presence_display_check.mjs
 internal/server/webui/presence_display_test.go
+internal/server/webui/sandbox_check.mjs
+internal/server/webui/sandbox_test.go
 internal/server/webui/static/app.js
 internal/server/webui/static/favicon.svg
 internal/server/webui/static/index.html
