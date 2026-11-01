@@ -635,8 +635,9 @@ func collectHistory(t *testing.T, store driver.Store, a *dumpformat.Archive, p d
 			t.Fatal(err)
 		}
 	} else {
-		if initial != nil {
+		if err == nil {
 			initial.Close()
+			t.Fatal("below-floor as-of read unexpectedly succeeded")
 		}
 		var truncated driver.ErrTruncated
 		if !errors.As(err, &truncated) || truncated.Floor != meta.HistoryFloor {
@@ -748,8 +749,9 @@ func TestNightlyHistoryFreshStoreDiffs(t *testing.T) {
 					}
 					incarnations[restored.Restored.Incarnation] = true
 					stale, err := store.Read(ctx, driver.View{Incarnation: before.Incarnation})
-					if stale != nil {
+					if err == nil {
 						stale.Close()
+						t.Fatal("old incarnation unexpectedly opened a reader")
 					}
 					var changed driver.ErrIncarnationChanged
 					if !errors.As(err, &changed) {
