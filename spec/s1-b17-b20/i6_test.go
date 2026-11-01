@@ -223,7 +223,9 @@ func i6StoreCensus(t *testing.T, store driver.Store) i6Census {
 func i6NativeDigest(t *testing.T, archive *dumpformat.Archive) string {
 	t.Helper()
 	h := sha256.New()
-	for _, name := range []string{"config/sources.json", "records/native.ndjson", "versions.ndjson", "changesets.ndjson"} {
+	names := []string{"config/sources.json", "records/native.ndjson", "versions.ndjson", "changesets.ndjson"}
+	sort.Strings(names)
+	for _, name := range names {
 		member, ok := archive.Member(name)
 		if !ok {
 			t.Fatalf("native archive omitted %s", name)
