@@ -732,6 +732,7 @@ internal/storage/conformance/lifetimes.go
 internal/storage/conformance/locks.go
 internal/storage/conformance/noops.go
 internal/storage/conformance/responses.go
+internal/storage/conformance/staged_reads.go
 internal/storage/driver/BUILD.bazel
 internal/storage/driver/allocator.go
 internal/storage/driver/allocator_contract_test.go
@@ -762,6 +763,7 @@ internal/storage/memory/noop_test.go
 internal/storage/memory/offline_history.go
 internal/storage/memory/offline_restore.go
 internal/storage/memory/reader.go
+internal/storage/memory/staged_reads_test.go
 internal/storage/memory/store.go
 internal/storage/memory/transaction.go
 internal/storage/memory/transaction_reader.go
@@ -806,6 +808,7 @@ internal/storage/sqlite/pending_test.go
 internal/storage/sqlite/process_test.go
 internal/storage/sqlite/reader.go
 internal/storage/sqlite/schema.go
+internal/storage/sqlite/staged_reads_test.go
 internal/storage/sqlite/sqlite_test.go
 internal/storage/sqlite/store.go
 internal/storage/sqlite/transaction.go
