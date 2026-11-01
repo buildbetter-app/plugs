@@ -38,7 +38,7 @@ func TestHierarchyFixedAuthorizationAtWriterAcrossStores(t *testing.T) {
 				base.Projects = append(base.Projects, authzfixed.Project{Ref: model.RefByID(project, model.Natural64(0)), Name: project, InstallationID: "fixed", Active: true})
 			}
 			for _, project := range []string{"child-project", "parent-project"} {
-				base.Grants = append(base.Grants, authz.Grant{Subject: authz.SubjectRef{Kind: "user", ID: "operator"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: model.RefByID(project, model.Natural64(0))}, Role: "involved"})
+				base.Grants = append(base.Grants, authz.Grant{Subject: authz.SubjectRef{Kind: "user", ID: "user:operator"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: model.RefByID(project, model.Natural64(0))}, Role: "involved"})
 			}
 			facts, err := authzrpc.NewMutableFacts(base)
 			if err != nil {
@@ -53,7 +53,7 @@ func TestHierarchyFixedAuthorizationAtWriterAcrossStores(t *testing.T) {
 				return pipeline.New(f.store, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithAuthorizer(app.Checker), pipeline.WithEventContext(app.Checker), pipeline.WithClock(f.now), pipeline.WithIDGenerator(f.nextID))
 			}
 			f.writer = writer(true)
-			by := model.PrincipalRef{Kind: "agent", ID: "hierarchy-worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "operator"}}
+			by := model.PrincipalRef{Kind: "agent", ID: "agent:hierarchy-worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:operator"}}
 			requestMeta := func(label string) model.WriteMeta {
 				m := f.meta(label)
 				m.Project = "child-project"
