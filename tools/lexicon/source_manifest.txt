@@ -335,9 +335,9 @@ internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
 internal/integration/converterroundtrip/native_restore_test.go
 internal/integration/converterroundtrip/repair_test.go
+internal/integration/converterroundtrip/restore.go
 internal/integration/converterroundtrip/reverse.go
 internal/integration/converterroundtrip/reverse_test.go
-internal/integration/converterroundtrip/restore.go
 internal/integration/converterroundtrip/roundtrip_test.go
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
 internal/integration/cursorhttp/BUILD.bazel
@@ -877,3 +877,7 @@ tools/lexicon/inventory_test.go
 tools/lexicon/output_links/BUILD.bazel
 tools/lexicon/policy.go
 tools/lexicon/source_manifest.txt
+tools/roundtrip/BUILD.bazel
+tools/roundtrip/README.md
+tools/roundtrip/main.go
+tools/roundtrip/main_test.go
