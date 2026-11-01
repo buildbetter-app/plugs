@@ -326,6 +326,7 @@ internal/integration/batchsql/batch_test.go
 internal/integration/batchsql/fixture_test.go
 internal/integration/batchsql/hierarchy_authorization_test.go
 internal/integration/batchsql/hierarchy_test.go
+internal/integration/batchsql/thousand_diagnostic_test.go
 internal/integration/claimsql/BUILD.bazel
 internal/integration/claimsql/README.md
 internal/integration/claimsql/claim_sql_test.go
@@ -777,6 +778,7 @@ internal/storage/sqlite/metadata.go
 internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/pending_test.go
 internal/storage/sqlite/process_test.go
+internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/reader.go
 internal/storage/sqlite/schema.go
 internal/storage/sqlite/sqlite_test.go
