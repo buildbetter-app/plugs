@@ -157,6 +157,8 @@ type RestoreImportProfile struct {
 	// HistoryMode is explicit policy for archive history. Empty input is
 	// normalized to full by Detached; snapshot and partial are opt-in.
 	HistoryMode RestoreHistoryMode `json:"historyMode,omitempty"`
+	// HistoryDigest binds the exact optional verified replay payload.
+	HistoryDigest string `json:"historyDigest,omitempty"`
 }
 
 type RestoreImportTx interface {
@@ -170,6 +172,9 @@ func importDigest(value string) bool {
 func (p RestoreImportProfile) Detached() (RestoreImportProfile, error) {
 	if p.Method != "offline.restore.import" || len(p.IdempotencyKey) < 16 || ValidateCheckpointKey(p.IdempotencyKey) != nil || ValidateCheckpointKey(string(p.SourceStoreID)) != nil || !importDigest(p.ArchiveDigest) || !importDigest(p.DerivedDigest) || !importDigest(p.Admission.AdmissionDigest) {
 		return RestoreImportProfile{}, fmt.Errorf("invalid prepared import binding")
+	}
+	if p.HistoryDigest != "" && !importDigest(p.HistoryDigest) {
+		return RestoreImportProfile{}, fmt.Errorf("invalid history payload digest")
 	}
 	historyMode, err := ParseRestoreHistoryMode(string(p.HistoryMode))
 	if err != nil {

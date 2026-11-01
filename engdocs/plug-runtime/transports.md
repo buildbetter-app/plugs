@@ -11,16 +11,14 @@ catalog is not reachable until a composition root binds its adapter.
 | In-process | `internal/server/transport/inprocess`; use it for a local call in the same process. | The caller owns the context and the application store. It opens no listener or UI. |
 | HTTP | `POST /rpc/v1`; see [RPC and HTTP](rpc-http.md). | The HTTP composition owns the listener, store, lease and shutdown. |
 | stdio | Construct with `stdio.New(dispatcher, stdio.Config{})`, then call `Serve(ctx, in, out)` on the returned transport. | The caller supplies the streams, context and any admitted identity. |
-| WebSocket | `GET /rpc/v1/ws` after a composition root mounts `websocket.Handler`. | The handler owns one connection; the composition owns the listener and any watch/session manager. |
+| WebSocket | `GET /rpc/v1/ws`; the server composition mounts `websocket.Handler`. | The handler owns upgraded connections; the composition closes it before releasing the store. |
 | MCP | `POST /mcp` for requests and authenticated `GET /mcp` for notifications after a composition root mounts `mcp.Handler`. | The handler owns request framing and notification streams; the composition owns the listener, store, lease and shutdown. |
 
-The current server composition mounts HTTP (and its explicitly enabled UI and
-watch handlers). The stdio, WebSocket and MCP packages are composition seams;
-they are not implicitly mounted, and current `Runtime.Listen` has no `/mcp`
-route until a host selects the MCP adapter. Do not infer a runnable route or a
-CLI flag from a package, a catalog entry, or a design document. A host that
-exposes one of these adapters must mount exactly the route or stream it intends
-to support.
+The server composition mounts HTTP at `/rpc/v1`, WebSocket at `/rpc/v1/ws`,
+and MCP at `/mcp`, plus its explicitly enabled UI and watch handlers. Stdio is
+a stream adapter supplied by an embedding host; a package or catalog entry
+does not add a CLI flag. A separate embedding host selects and mounts the
+routes or streams it intends to support.
 
 Because `stdio.New` validates its inputs and returns an error, a caller handles
 construction before serving:
@@ -106,10 +104,18 @@ notification that has no canonical response is reported as an `rpc.rejected`
 push with reason `notification_no_result`. Responses remain the exact bytes
 returned by the canonical dispatcher.
 
-The admitted identity is stamped on the connection context and on every
-dispatch. A peer close or connection cancellation cancels in-flight work;
+Before each dispatch, the handler revalidates the original admitted handshake
+against the live authenticator, then stamps that current identity on the call
+context. Revoked or expired credentials close the connection with `1008`;
+unavailable authentication closes it with retryable `1013`. Neither case
+reaches RPC or falls back to anonymous. A peer close or connection cancellation
+cancels in-flight work;
 closing the connection also stops the bounded reader, dispatcher and writer
 loops. The handler owns no store, listener, session manager or watch manager.
+`Handler.Close` stops new upgrades, cancels and closes its connections, and
+joins their dispatch and writer loops. Call it before releasing the store:
+`net/http.Server.Shutdown` does not drain hijacked connections. The server
+composition owns this ordering in `Runtime.Close`.
 Its `Stream` helper only converts an already opened `watch.Subscription` into
 `event.notify` messages and closes that subscription on return, including on a
 write failure or cancellation. Opening and authorizing a watch remain owned by
@@ -190,12 +196,12 @@ the outer MCP metadata is preserved when `plug_call` carries nested params.
 normalized for equivalent JSON number forms, and a duplicate active ID in the
 same principal/session/agent scope is refused. Cancellation reaches the
 canonical context and releases its active request slot; it cannot commit work
-after the request is canceled. On current `main`, closing the composed runtime
-drains HTTP first, then closes watches and sessions, cancels remaining work,
-releases the lease and closes the store. A host that separately mounts the MCP
-handler owns calling `Handler.Close` before draining its HTTP listener so an
-idle GET stream cannot hold shutdown open. Current `Runtime.Listen` still does
-not mount `/mcp`; the adapter's GET support does not install that route.
+after the request is canceled. Closing the composed runtime first closes MCP
+streams and WebSocket connections, then drains HTTP, closes watches and
+sessions, cancels remaining work, releases the lease and closes the store.
+A host that separately mounts the MCP handler owns calling `Handler.Close`
+before draining its HTTP listener so an idle GET stream cannot hold shutdown
+open. The server composition mounts both MCP request and notification routes.
 
 MCP, WebSocket and stdio are independent adapters: one is never implicitly
 stacked on another.

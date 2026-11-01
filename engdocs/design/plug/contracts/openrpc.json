@@ -6689,8 +6689,24 @@
             "additionalProperties": true
           },
           "parent": {
-            "type": "string",
-            "description": "Canonical direct parent reference. If the caller cannot read the parent, only its existence may be disclosed; parent content is not included."
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "exists": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "exists"
+                ],
+                "additionalProperties": false
+              }
+            ],
+            "description": "Canonical direct parent ID when readable; an unreadable parent is exactly {exists:true} with no identity, project, status or content. Root beads omit parent. Requests and storage retain canonical Ref values."
           },
           "labels": {
             "type": "array",
