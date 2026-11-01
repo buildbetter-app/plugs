@@ -178,7 +178,7 @@ func TestNativeOntologyDumpRestoreAndPhysicalReopen(t *testing.T) {
 					}
 					for _, old := range []string{before.Incarnation, sourceIncarnation} {
 						r, err := store.Read(ctx, driver.View{Incarnation: old})
-						if r != nil {
+						if err == nil && r != nil {
 							_ = r.Close()
 						}
 						var changed driver.ErrIncarnationChanged
