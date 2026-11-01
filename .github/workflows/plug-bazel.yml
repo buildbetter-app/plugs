@@ -1,0 +1,19 @@
+# Keep the reusable workflow and harness checkout on the same reviewed commit.
+name: Plug Bazel
+
+on:
+  pull_request:
+    branches: [beads]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: beads-bazel-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  bazel:
+    uses: buildbetter-app/plugs/.github/workflows/plug-beads-bazel.yml@1f3b8e13869900c1c97364a535f8c4f19f98cb6a
+    with:
+      harness_sha: 1f3b8e13869900c1c97364a535f8c4f19f98cb6a
