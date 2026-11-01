@@ -137,9 +137,13 @@ def immediate_keys(indent, children):
             continue
         if len(line) - len(line.lstrip(" ")) != indent + 2:
             continue
-        match = re.match(r"^\s{2,}([A-Za-z0-9_-]+):(?:\s*(.*))?$", line)
+        match = re.match(
+            r"^\s{2,}(?:(['\"])([A-Za-z0-9_-]+)\1|([A-Za-z0-9_-]+)):(?:\s*(.*))?$",
+            line,
+        )
         if match:
-            keys.append((match.group(1), (match.group(2) or "").strip()))
+            key = match.group(2) or match.group(3)
+            keys.append((key, (match.group(4) or "").strip()))
     return keys
 
 def check_dispatch_workflow(label, code, fragments, action_count, expected_triggers):
@@ -171,7 +175,7 @@ def check_dispatch_workflow(label, code, fragments, action_count, expected_trigg
         raise SystemExit(f"config: {label} must grant top-level contents: read")
     if re.search(r"\bsecrets\b|github\.event\.(?:pull_request|issue|discussion)", code):
         raise SystemExit(f"config: {label} exposes a secret or untrusted event context")
-    actions = re.findall(r"(?m)^\s*uses:\s*(\S+)", code)
+    actions = re.findall(r"(?m)^\s*(?:uses|['\"]uses['\"]):\s*(\S+)", code)
     if len(actions) != action_count or any(
         not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action)
         for action in actions
