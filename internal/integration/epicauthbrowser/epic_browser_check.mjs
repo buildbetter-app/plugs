@@ -22,17 +22,18 @@ async function until(fn, what) {
   while (Date.now() < deadline) { if (await fn()) return; await delay(25); }
   throw new Error("Timed out: " + what);
 }
-const started = Date.now(), wire = [], consoleEntries = [], exceptions = [], steps = [];
+const started = Date.now(), wire = [], streams = [], consoleEntries = [], exceptions = [], steps = [];
+let nativeStreams = [];
 const step = text => { steps.push({ atMs: Date.now() - started, text }); emit({ event: "step", text }); };
-const identities = new Map([[fixture.token, fixture.principal], [fixture.narrowToken, "user:browser-child-only"], [fixture.restrictedToken, fixture.principal], [fixture.deniedToken, "agent:owner"]]);
-const credentials = [fixture.token, fixture.narrowToken, fixture.restrictedToken, fixture.deniedToken].filter(Boolean);
+const identities = new Map([[fixture.token, fixture.principal], [fixture.narrowToken, "user:browser-child-only"], [fixture.restrictedToken, fixture.principal], [fixture.deniedToken, "agent:owner"], [fixture.otherToken, fixture.otherPrincipal]]);
+const credentials = [fixture.token, fixture.narrowToken, fixture.restrictedToken, fixture.deniedToken, fixture.otherToken].filter(Boolean);
 let phase = "sign-in", base = fixture.base, probeSequence = 0;
 try {
   await until(() => /DevTools listening on ws:\/\/[^\s]+/.test(stderr), "Chrome startup");
   const devtools = "http://" + new URL(stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]).host;
   const target = await (await fetch(devtools + "/json/new?about:blank", { method: "PUT" })).json();
   ws = new WebSocket(target.webSocketDebuggerUrl); await once(ws, "open");
-  let sequence = 0; const pending = new Map(), network = new Map();
+  let sequence = 0; const pending = new Map(), network = new Map(), streamNetwork = new Map();
   send = (method, params = {}) => new Promise((resolve, reject) => {
     const id = ++sequence; pending.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params }));
   });
@@ -49,6 +50,20 @@ try {
       const token = String(headers.authorization || "").replace(/^Bearer /, "");
       const row = { phase, atMs: Date.now() - started, url: p.request.url, request: JSON.parse(p.request.postData), authorizationPresent: !!headers.authorization, cookiePresent: !!headers.cookie, principal: identities.get(token) || "" };
       wire.push(row); network.set(p.requestId, row);
+    } else if (event.method === "Network.requestWillBeSent" && p.request.url.endsWith("/watch/v1")) {
+      const headers = Object.fromEntries(Object.entries(p.request.headers).map(([key, value]) => [key.toLowerCase(), value]));
+      const row = { phase, url: p.request.url, request: p.request.postData, authorizationPresent: !!headers.authorization, cookiePresent: !!headers.cookie, principal: identities.get(String(headers.authorization || "").replace(/^Bearer /, "")) || "" };
+      streams.push(row); streamNetwork.set(p.requestId, row);
+    } else if (event.method === "Network.responseReceived" && streamNetwork.has(p.requestId)) {
+      const row = streamNetwork.get(p.requestId); row.status = p.response.status;
+      if (row.status === 401) row.principal = "";
+    } else if (event.method === "Network.loadingFinished" && streamNetwork.has(p.requestId)) {
+      const row = streamNetwork.get(p.requestId);
+      void send("Network.getResponseBody", { requestId: p.requestId }).then(body => { row.rawResponse = body.base64Encoded ? Buffer.from(body.body, "base64").toString() : body.body; }).catch(() => { if (!row.cancelled) exceptions.push("failed to collect actual stream response body"); });
+    } else if (event.method === "Network.loadingFailed" && streamNetwork.has(p.requestId)) {
+      streamNetwork.get(p.requestId).cancelled = !!p.canceled;
+    } else if (event.method === "Network.loadingFailed" && network.has(p.requestId)) {
+      network.get(p.requestId).cancelled = !!p.canceled;
     } else if (event.method === "Network.responseReceived" && network.has(p.requestId)) {
       const row = network.get(p.requestId); row.status = p.response.status;
       if (row.status === 401) row.principal = "";
@@ -56,7 +71,7 @@ try {
       const row = network.get(p.requestId);
       void send("Network.getResponseBody", { requestId: p.requestId }).then(body => {
         row.rawResponse = body.base64Encoded ? Buffer.from(body.body, "base64").toString() : body.body;
-      }).catch(() => { exceptions.push("failed to collect actual Chrome response body"); });
+      }).catch(() => { if (!row.cancelled) exceptions.push("failed to collect actual Chrome response body"); });
     }
   });
   await send("Page.enable"); await send("Runtime.enable"); await send("Network.enable"); await send("Log.enable");
@@ -66,11 +81,11 @@ try {
     assert(!result.exceptionDetails, "browser evaluation failed"); return result.result.value;
   };
   const settled = () => until(() => evaluate("document.querySelector('#cancel')?.hidden && document.querySelector('#connection-state')?.textContent !== 'Loading'"), "completed UI read");
-  const completeWire = () => until(() => wire.every(row => typeof row.rawResponse === "string"), "actual response bodies");
+  const completeWire = () => until(() => wire.every(row => typeof row.rawResponse === "string" || row.cancelled), "actual response bodies or native cancellation");
   const snapshot = () => evaluate(`({ total: document.querySelector('.epic-visible-total')?.textContent || '', statuses: Array.from(document.querySelectorAll('.epic-status-counts > div'), row => [row.querySelector('dt').textContent, row.querySelector('dd').textContent]), remainder: document.querySelector('#epic-remainder').textContent, revision: document.querySelector('#epic-snapshot').textContent })`);
   const click = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
   const navigate = async () => {
-    await send("Page.navigate", { url: base + "/ui/?view=epic&epicId=" + fixture.parent });
+    await send("Page.navigate", { url: base + (fixture.background ? "/ui/?view=home" : "/ui/?view=epic&epicId=" + fixture.parent) });
     await until(() => evaluate("document.readyState === 'complete' && !!globalThis.PlugEpicProgress"), "embedded page"); await settled();
     assert(await evaluate("!!document.querySelector('#auth-token') && !!document.querySelector('#auth-form')"), "embedded UI must offer explicit bearer sign-in");
     assert(!(await snapshot()).total, "unauthenticated page must show no previous counts");
@@ -107,6 +122,125 @@ try {
   const get = (id, asOf) => ({ id, ...(asOf ? { asOf } : {}), _meta: { project: "ep6-visible" } });
   const progress = asOf => ({ definition: { filter: { query: "parent=" + fixture.parent }, fields: [], groupBy: ["epic-progress"] }, ...(asOf ? { asOf } : {}), _meta: { project: "ep6-epics" } });
   const screenshot = async () => { const png = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true }); emit({ event: "screenshot", data: png.data }); };
+  if (fixture.background) {
+    const auth = () => evaluate(`({ footer: document.querySelector('#footer-auth').textContent, signedOut: document.querySelector('#sign-out').hidden, rows: document.querySelectorAll('#changed-rows .row').length, count: document.querySelector('#changed-count').textContent, cancelHidden: document.querySelector('#cancel').hidden, refreshDisabled: document.querySelector('#refresh').disabled, stopHidden: document.querySelector('#stop-watch').hidden, frames: document.querySelectorAll('#plugin-frames iframe').length, revoked: globalThis.previousFrame?.dataset.bridgeState === 'revoked', text: document.querySelector('#presence-rows').textContent })`);
+    // Inspect the real closure-owned read map through Chrome's read-only heap
+    // API. No product export, response interception or source instrumentation.
+    const readMap = async () => {
+      const prototype = await send("Runtime.evaluate", { expression: "Map.prototype" });
+      const maps = await send("Runtime.queryObjects", { prototypeObjectId: prototype.result.objectId });
+      const selected = await send("Runtime.callFunctionOn", { objectId: maps.objects.objectId, functionDeclaration: "function(){return Array.from(this).find(map=>Array.from(map.keys()).some(key=>typeof key==='string'&&key.startsWith('plug:seen:')))}" });
+      assert(selected.result.objectId, "actual authenticated read-marker map must exist before failure");
+      return selected.result.objectId;
+    };
+    const mapSize = async objectId => (await send("Runtime.callFunctionOn", { objectId, functionDeclaration: "function(){return this.size}", returnByValue: true })).result.value;
+    const bridge = async (params, wait = true) => {
+      const { frameTree } = await send("Page.getFrameTree");
+      const nodes = []; const walk = node => { nodes.push(node); (node.childFrames || []).forEach(walk); }; walk(frameTree);
+      const frame = nodes.find(node => node.frame.url === base + "/ui/frame-hosts/auth-probe/index.html");
+      assert(frame, "actual trusted frame wrapper must exist");
+      const { executionContextId } = await send("Page.createIsolatedWorld", { frameId: frame.frame.id, worldName: "background-auth-browser-probe" });
+      const id = "background-frame-" + (++probeSequence);
+      const request = { jsonrpc: "2.0", id, method: "bead.get", params };
+      const expression = `globalThis.responses ||= {}; addEventListener('message', event => {if(event.source===parent&&event.data?.id===${JSON.stringify(id)})globalThis.responses[${JSON.stringify(id)}]=event.data;});parent.postMessage(${JSON.stringify(request)},location.origin);`;
+      await send("Runtime.evaluate", { expression, contextId: executionContextId });
+      if (!wait) return;
+      let response;
+      await until(async () => { const value = await send("Runtime.evaluate", { expression: `globalThis.responses[${JSON.stringify(id)}]`, contextId: executionContextId, returnByValue: true }); response = value.result.value; return !!response; }, "actual frame bridge response");
+      return response;
+    };
+    const homeReady = async () => {
+      await settled(); await completeWire();
+      await until(() => evaluate("document.querySelector('#watch-state').textContent.includes('connected') && document.querySelectorAll('#changed-rows .row').length === 1"), "actual native saved view and watch");
+      assert.equal((await auth()).count, "1");
+    };
+    await navigate(); await signIn(fixture.token); await homeReady();
+    if (fixture.background === "bridge-expired") {
+      const expiring = await control("expiring-key"); credentials.push(expiring.token); identities.set(expiring.token, fixture.principal);
+      await signIn(expiring.token); await homeReady();
+    }
+    const markers = await readMap(); assert((await mapSize(markers)) > 0);
+    await evaluate("globalThis.previousFrame = document.querySelector('#plugin-frames iframe')");
+    step("Authenticated real saved Home view and native watch; closure read markers and active frame bridge observed before background failure");
+    phase = fixture.background;
+    if (fixture.background === "watch-stream-401" || fixture.background === "non-auth-and-switch") {
+      await click('.tab[data-view="presence"]'); await settled(); await completeWire();
+      await control("arm-stream"); await click('.tab[data-view="home"]'); await control("wait-held");
+      if (fixture.background === "watch-stream-401") await control("revoke");
+      else await control("close-session");
+      await control("release");
+    } else if (fixture.background === "watch-read-401") {
+      await control("arm-get"); await bridge({ id: { id: fixture.parent, branch: 0 } }, false); await control("wait-held");
+      await control("revoke"); await control("write-parent");
+    } else {
+      await click('.tab[data-view="presence"]'); await settled(); await completeWire();
+      await control("arm-view"); await click('.tab[data-view="home"]'); await control("wait-held");
+      if (fixture.background === "bridge-expired") await control("wait-expired");
+      else await control("revoke");
+      await bridge({ id: { id: fixture.parent, branch: 0 } }, false);
+    }
+    if (fixture.background === "non-auth-and-switch") {
+      await settled(); await completeWire();
+      assert.match((await auth()).footer, /Authenticated/);
+      assert((await mapSize(markers)) > 0, "non-auth stream 404 must retain identity/read markers");
+      assert.equal((await auth()).revoked, false);
+      const refused = await bridge({ id: fixture.secret }); assert.equal(refused.error?.data.code, "not_found");
+      const readable = await bridge({ id: { id: fixture.parent, branch: 0 } }); assert(readable.result?.bead);
+      assert.match((await auth()).footer, /Authenticated/);
+      step("Actual closed-session watch 404 and native bridge not_found preserve current identity, read markers and bridge; subsequent granted read succeeds");
+      await control("arm-get"); await bridge({ id: { id: fixture.parent, branch: 0 } }, false); await control("wait-held");
+      phase = "prior-identity-switch";
+      const switched = await send("Runtime.callFunctionOn", { objectId: markers, functionDeclaration: "function(token){document.querySelector('#auth-token').value=token;document.querySelector('#auth-form').requestSubmit();return this.size}", arguments: [{ value: fixture.otherToken }], returnByValue: true });
+      assert.equal(switched.result.value, 0, "identity switch clears old marker map before new reads");
+      await homeReady();
+      assert.equal((await auth()).revoked, true, "old bridge must be revoked by the switch");
+      await control("release"); await delay(100); await completeWire();
+      const current = await bridge({ id: { id: fixture.parent, branch: 0 } }); assert(current.result?.bead);
+      assert.equal(wire.filter(row => row.request.method === "bead.get" && !row.cancelled).at(-1).principal, fixture.otherPrincipal);
+      assert.match((await auth()).footer, /Authenticated/); assert.equal((await auth()).rows, 1);
+      assert((await control("stats")).cancelled, "switch must cancel the actual old native request");
+      step("Distinct replacement identity remains connected after actual prior-identity request cancellation; old bridge/read map revoked, new authenticated bridge succeeds");
+    } else {
+      // This assertion precedes release of held normal work, refresh, sign-out
+      // or reauthentication, so none can serve as the teardown fallback.
+      await until(async () => (await auth()).footer === "Sign-in required", "immediate background authentication identity teardown");
+      const cleared = await auth();
+      assert(cleared.signedOut && cleared.cancelHidden && !cleared.refreshDisabled && cleared.stopHidden);
+      assert.equal(cleared.rows, 0); assert.equal(cleared.count, "—"); assert.equal(cleared.frames, 0); assert(cleared.revoked); assert.equal(cleared.text, "");
+      assert.equal(await mapSize(markers), 0, "background auth failure must clear actual closure read markers");
+      assert(await evaluate("localStorage.length === 0 && sessionStorage.length === 0 && document.querySelector('#auth-token').value === ''"));
+      if (fixture.background !== "watch-stream-401") {
+        await control("release");
+        assert((await control("stats")).cancelled, "background auth teardown must cancel active actual native work");
+      }
+      await completeWire();
+      const refused = fixture.background === "watch-stream-401" ? streams.find(row => row.phase === phase && row.status === 401) : wire.find(row => row.phase === phase && row.status === 401 && row.request.method === (fixture.background === "watch-read-401" ? "view.run" : "bead.get"));
+      assert(refused, "background failure must be an actual native HTTP 401");
+      if (fixture.background === "bridge-expired") assert.equal(JSON.parse(refused.rawResponse).error.data.code, "token_expired");
+      step("Background " + fixture.background + " native 401 alone cleared credential presentation, actual closure read map, all rows and bridges; active work/watch aborted before any normal-read fallback");
+      await screenshot();
+      // Only after the teardown proof: a new explicit read must carry no old
+      // bearer. Its 401 cannot be the event that caused the assertions above.
+      phase = "post-teardown-no-bearer"; await fresh();
+      assert(wire.filter(row => row.phase === phase).every(row => !row.authorizationPresent));
+      step("Subsequent explicit read carries no previous bearer after background teardown");
+    }
+    await click("#sign-out");
+    await until(async () => (await control("stats")).active === 0, "all actual native streams stopped");
+    await completeWire();
+    await until(() => streams.every(row => typeof row.rawResponse === "string" || row.cancelled), "actual stream completions");
+    nativeStreams = (await control("streams")).streams;
+    assert.equal(streams.length, nativeStreams.length, "every native watch attachment must be a Chrome request");
+    for (const row of streams) {
+      const native = nativeStreams.find(entry => entry.request === row.request);
+      assert(native); assert.equal(row.status, native.status); assert.equal(row.principal, native.principal);
+      if (typeof row.rawResponse === "string") assert.equal(row.rawResponse, native.body, "actual native stream response-byte parity");
+      else assert(row.cancelled && row.status === 200, "only client-cancelled successful streams may omit Chrome body bytes");
+      assert(row.authorizationPresent && !row.cookiePresent);
+    }
+    assert(streams.some(row => row.status === (fixture.background === "watch-stream-401" ? 401 : fixture.background === "non-auth-and-switch" ? 404 : 200)));
+    step("Actual Chrome/native watch attachment request/status/principal correlation complete; complete response bytes match, cancelled successful streams explicitly recorded");
+  } else {
   await navigate();
   step("Navigated real embedded epic page; anonymous native admission refused; sign-in offered");
   await signIn(fixture.token);
@@ -176,9 +310,10 @@ try {
   assert.equal((await snapshot()).total, ""); assert.equal((await snapshot()).remainder, "");
   assert(await evaluate("localStorage.length === 0 && sessionStorage.length === 0 && document.querySelector('#auth-token').value === ''"), "sign-out retained credentials");
   step("Signed out using the page; progress, credentials and browser storage cleared");
+  }
   await delay(500); await completeWire(); assert.deepEqual(exceptions, []);
   assert(wire.every(row => !row.cookiePresent));
-  const evidence = { population: fixture.population || 3, scope: "disposable authenticated API-key Chrome/native fixture; E3 remains 4/5", steps, wire, console: consoleEntries, exceptions };
+  const evidence = { population: fixture.population || 3, background: fixture.background, scope: "disposable authenticated API-key Chrome/native fixture; E3 remains 4/5", steps, wire, streams, nativeStreams, console: consoleEntries, exceptions };
   const encoded = JSON.stringify(evidence);
   for (const token of credentials) assert(!encoded.includes(token), "credential leaked into evidence");
   emit({ event: "evidence", data: Buffer.from(encoded).toString("base64") });
@@ -186,7 +321,7 @@ try {
   // Preserve the actual assertion even if Chrome profile cleanup also fails.
   console.error(error.stack); process.exitCode = 1;
   await delay(100);
-  const partial = JSON.stringify({ population: fixture.population || 3, scope: "failed disposable authenticated browser fixture; no qualification", steps, wire, console: consoleEntries, exceptions });
+  const partial = JSON.stringify({ population: fixture.population || 3, background: fixture.background, scope: "failed disposable authenticated browser fixture; no qualification", steps, wire, streams, nativeStreams, console: consoleEntries, exceptions });
   if (credentials.every(token => !partial.includes(token))) emit({ event: "evidence", data: Buffer.from(partial).toString("base64") });
 } finally {
   if (send && ws?.readyState === WebSocket.OPEN) await Promise.race([send("Browser.close").catch(() => {}), delay(2000)]);

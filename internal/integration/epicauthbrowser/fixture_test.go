@@ -13,10 +13,12 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
+	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
@@ -27,9 +29,13 @@ import (
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
+	"github.com/buildbetter-app/plugs/internal/server/collab"
+	serverevents "github.com/buildbetter-app/plugs/internal/server/events"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/server/viewrpc"
+	"github.com/buildbetter-app/plugs/internal/server/watch"
+	"github.com/buildbetter-app/plugs/internal/server/watchhttp"
 	"github.com/buildbetter-app/plugs/internal/server/webui"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -488,6 +494,7 @@ type nativeTrace struct {
 	Status         int             `json:"status"`
 	Response       json.RawMessage `json:"response"`
 	ResponseSHA256 string          `json:"responseSha256"`
+	Cancelled      bool            `json:"cancelled,omitempty"`
 }
 type traceLog struct {
 	mu   sync.Mutex
@@ -511,6 +518,7 @@ type traceWriter struct {
 }
 
 func (w *traceWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *traceWriter) Flush()                      { _ = http.NewResponseController(w.ResponseWriter).Flush() }
 func (w *traceWriter) WriteHeader(status int) {
 	w.status = status
 	w.ResponseWriter.WriteHeader(status)
@@ -541,6 +549,7 @@ func (log *traceLog) handler(next http.Handler) http.Handler {
 			return
 		}
 		row.Status = capture.status
+		row.Cancelled = r.Context().Err() != nil
 		row.Response = append(json.RawMessage(nil), capture.body.Bytes()...)
 		sum := sha256.Sum256(row.Response)
 		row.ResponseSHA256 = hex.EncodeToString(sum[:])
@@ -553,4 +562,268 @@ func (log *traceLog) snapshot() []nativeTrace {
 	log.mu.Lock()
 	defer log.mu.Unlock()
 	return append([]nativeTrace(nil), log.rows...)
+}
+
+// These additional host seams are confined to the background-auth regression.
+// Each saved-view, presence and event decision delegates to the unchanged fixed
+// checker through the actual service. No native response or provider is faked.
+type backgroundPolicy struct {
+	f      *fixture
+	parent model.Ref
+}
+
+func (p *backgroundPolicy) allowed(ctx context.Context, by model.PrincipalRef, id model.Ref) (bool, error) {
+	_, err := p.f.app.Service.Get(ctx, by, service.GetRequest{ID: id})
+	var domain *model.Error
+	if errors.As(err, &domain) && (domain.Data.Code == "not_found" || domain.Data.Code == "forbidden") {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (p *backgroundPolicy) GetView(ctx context.Context, by model.PrincipalRef, id string) (viewops.Definition, error) {
+	ok, err := p.allowed(ctx, by, p.parent)
+	if err != nil {
+		return viewops.Definition{}, err
+	}
+	if !ok || id != "background-home" {
+		return viewops.Definition{}, &model.Error{Data: model.ErrorData{Code: "not_found"}}
+	}
+	budget := model.Natural64(25)
+	return viewops.Definition{Filter: &viewops.Filter{Resources: []string{p.parent.ID}}, Fields: []string{"id", "type", "project", "status", "revision", "fields.title"}, Sort: []string{"id"}, BudgetTokens: &budget}, nil
+}
+
+func (p *backgroundPolicy) AdmitPresence(ctx context.Context, by model.PrincipalRef, project string) (bool, error) {
+	if project != epics {
+		return false, nil
+	}
+	return p.allowed(ctx, by, p.parent)
+}
+
+func (p *backgroundPolicy) CanRead(ctx context.Context, by model.PrincipalRef, bead service.Bead) (bool, error) {
+	return p.allowed(ctx, by, ref(bead.ID))
+}
+
+func (p *backgroundPolicy) Read(ctx context.Context, by model.PrincipalRef, event model.DurableEvent) (coreevents.Visibility, error) {
+	id, ok := strings.CutPrefix(event.Resource, "bead/")
+	if !ok {
+		return coreevents.Visibility{}, nil
+	}
+	readable, err := p.allowed(ctx, by, ref(id))
+	return coreevents.Visibility{Readable: readable, Before: event.Before, After: event.After}, err
+}
+
+// A gate delays exactly one real request before admission, without replacing
+// its context, deadline, principal, body or native response. Cancellation still
+// reaches the provider. It supplies explicit ordering, never a retry.
+type requestGate struct {
+	mu        sync.Mutex
+	method    string
+	entered   chan struct{}
+	release   chan struct{}
+	done      chan struct{}
+	session   string
+	cancelled atomic.Bool
+}
+
+func (g *requestGate) arm(method string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.method, g.entered, g.release, g.done = method, make(chan struct{}), make(chan struct{}), make(chan struct{})
+	g.cancelled.Store(false)
+}
+
+func (g *requestGate) handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method := "watch.attach"
+		if r.URL.Path == httpjson.Path {
+			raw, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "read refused", 400)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+			var call struct {
+				Method string `json:"method"`
+			}
+			_ = json.Unmarshal(raw, &call)
+			method = call.Method
+		}
+		g.mu.Lock()
+		var release, done chan struct{}
+		if g.method == method && g.entered != nil {
+			g.method, g.session = "", r.Header.Get("Plug-Session")
+			release, done = g.release, g.done
+			close(g.entered)
+		}
+		g.mu.Unlock()
+		if release != nil {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				g.cancelled.Store(true)
+				<-release
+			}
+			if r.Context().Err() != nil {
+				g.cancelled.Store(true)
+			}
+			defer close(done)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (g *requestGate) wait(t *testing.T) {
+	t.Helper()
+	select {
+	case <-g.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("actual native request did not reach gate")
+	}
+}
+
+func (g *requestGate) unblock() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.release != nil {
+		select {
+		case <-g.release:
+		default:
+			close(g.release)
+		}
+	}
+}
+
+type streamRecord struct {
+	Request   string `json:"request"`
+	Principal string `json:"principal"`
+	Status    int    `json:"status"`
+	Body      string `json:"body"`
+	Cancelled bool   `json:"cancelled"`
+}
+
+type backgroundAuthHost struct {
+	f        *fixture
+	gate     requestGate
+	sessions *collab.Manager
+	watches  *watch.Manager
+	active   atomic.Int64
+	mu       sync.Mutex
+	streams  []streamRecord
+}
+
+func newBackgroundAuthHost(t *testing.T, f *fixture, parent model.Ref) *backgroundAuthHost {
+	t.Helper()
+	h := &backgroundAuthHost{f: f}
+	t.Cleanup(h.gate.unblock)
+	policy := &backgroundPolicy{f: f, parent: parent}
+	views, err := viewops.New(f.store, f.lease, viewops.Config{Views: policy, AuthorizeRead: func(ctx context.Context, by model.PrincipalRef, resource model.ResourceRef, _ string) error {
+		_, err := f.app.Service.Get(ctx, by, service.GetRequest{ID: resource.Ref})
+		return err
+	}, OntologyRevision: model.Natural64(1), PolicyVersion: "fixed-background-regression"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.sessions, err = collab.New(context.Background(), collab.Config{Service: f.app.Service, Lease: f.lease, AuthorizationInstalled: func() bool { return true }, Policy: policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.sessions.Close() })
+	codec, err := serverevents.NewCursorCodec([]byte("background-auth-disposable-event-cursor-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := &serverevents.Service{Reader: &coreevents.Reader{Log: serverevents.Log{Store: f.store}, Materializer: serverevents.HistoryMaterializer{Store: f.store}, Authorization: policy}, Cursors: codec}
+	h.watches, err = watch.New(context.Background(), watch.Config{Events: events})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.watches.Close() })
+	adapter, err := watchhttp.New(h.watches, watchhttp.Config{Views: views, Ontology: model.Natural64(1), PolicyVersion: "fixed-background-regression"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := rpc.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bind := range []func() error{func() error { return rpc.BindService(registry, f.observed) }, func() error { return viewrpc.Bind(registry, views) }, func() error { return collab.Bind(registry, h.sessions) }, func() error { return adapter.Register(registry) }} {
+		if err := bind(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	meta, err := f.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := rpc.New(registry, rpc.Config{AuthMode: "authenticated", Incarnation: meta.Incarnation, OntologyRevision: model.Natural64(1), DefaultProject: epics})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission, err := authn.New(authn.Config{Provider: &recordingProvider{Provider: f.keys}, AuthorizationInstalled: func() bool { return true }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge := func(ctx context.Context, by model.PrincipalRef, id, agent string) (context.Context, error) {
+		lifetime, err := h.sessions.SessionContext(ctx, collab.Caller{Principal: by, Agent: agent}, id)
+		if err != nil {
+			return nil, err
+		}
+		return watchhttp.WithSession(ctx, id, lifetime), nil
+	}
+	transport, err := httpjson.New(server, admission, httpjson.Config{SessionBridge: bridge})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assets := map[string][]byte{"index.html": []byte(`<!doctype html><title>Authentication regression frame</title>`)}
+	digest, err := webui.FrameBundleDigest(assets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui, err := webui.New(webui.Config{Project: epics, HomeViewID: "background-home", WatchPath: watchhttp.DefaultPath, Frames: []webui.FrameBundle{{ID: "auth-probe", Assets: assets, Digest: digest, Grant: webui.BridgeGrant{Project: epics, Methods: []string{"bead.get"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/ui/", ui)
+	mux.Handle(httpjson.Path, f.trace.handler(h.gate.handler(transport)))
+	// Match the real shared host's authentication/session bridge. No stream
+	// status or body is injected; 401 is produced by actual key admission and
+	// 404 by an actually closed collaboration session.
+	stream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		record := streamRecord{Request: string(raw)}
+		capture := &traceWriter{ResponseWriter: w}
+		h.active.Add(1)
+		defer func() {
+			record.Status = capture.status
+			record.Body = capture.body.String()
+			record.Cancelled = r.Context().Err() != nil
+			h.mu.Lock()
+			h.streams = append(h.streams, record)
+			h.mu.Unlock()
+			h.active.Add(-1)
+		}()
+		identity, err := admission.AdmitHTTP(r)
+		if err != nil {
+			http.Error(capture, "unauthenticated", http.StatusUnauthorized)
+			return
+		}
+		record.Principal = identity.Principal().ID
+		ctx, err := bridge(r.Context(), identity.Principal(), r.Header.Get("Plug-Session"), r.Header.Get("Plug-Agent"))
+		if err != nil {
+			http.Error(capture, "session not found", http.StatusNotFound)
+			return
+		}
+		adapter.ServeHTTP(capture, r.WithContext(watchhttp.WithPrincipal(ctx, identity.Principal())))
+	})
+	mux.Handle(watchhttp.DefaultPath, h.gate.handler(stream))
+	f.api.close(t)
+	f.api = listenRoot(t, transport, mux)
+	return h
 }

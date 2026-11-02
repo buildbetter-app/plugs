@@ -20,6 +20,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
+	"github.com/buildbetter-app/plugs/internal/server/collab"
 )
 
 //go:embed epic_browser_check.mjs
@@ -41,6 +42,100 @@ func TestAuthenticatedChromeSignsInThroughNativeRPC(t *testing.T) {
 	f.create(t, hidden, "unreadable child", &parent)
 	key := readerKey(t, f, "user:browser-reader", epics, visible)
 	runBrowser(t, map[string]any{"base": base(f), "token": key.Token, "principal": "user:browser-reader", "parent": parent.ID, "visible": 1, "hidden": 1}, nil, func() []hostTrace { return hostTraces(f) })
+}
+
+// Dedicated F-SRC-1 coverage. These small, actual native hosts isolate browser
+// authentication teardown; none replaces or qualifies the mandatory 20k case.
+func TestAuthenticatedChromeBackgroundAuthenticationTeardown(t *testing.T) {
+	for _, scenario := range []string{"watch-stream-401", "watch-read-401", "bridge-revoked", "bridge-expired", "non-auth-and-switch"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newFixture(t, "sqlite", filepath.Join(t.TempDir(), "background.db"), true)
+			parent := f.create(t, epics, "background authenticated parent", nil)
+			child := f.create(t, visible, "background readable child", &parent)
+			secret := f.create(t, hidden, "background hidden child", &parent)
+			key := readerKey(t, f, "user:background-reader", epics, visible)
+			other := readerKey(t, f, "user:background-other", epics, visible)
+			by, err := f.keys.Authenticate(context.Background(), key.Token)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h := newBackgroundAuthHost(t, f, parent)
+			defer func() {
+				h.gate.unblock()
+				if h.gate.done != nil {
+					select {
+					case <-h.gate.done:
+					case <-time.After(5 * time.Second):
+						t.Error("held native request did not finish during evidence cleanup")
+					}
+				}
+				if t.Failed() {
+					data, _ := json.Marshal(hostTraces(f))
+					t.Logf("EP6_NATIVE_FAILED_EVIDENCE %s", base64.StdEncoding.EncodeToString(data))
+					h.mu.Lock()
+					data, _ = json.Marshal(h.streams)
+					h.mu.Unlock()
+					t.Logf("EP6_NATIVE_FAILED_STREAM_EVIDENCE %s", base64.StdEncoding.EncodeToString(data))
+				}
+			}()
+			activeKey := key
+			control := func(action string) map[string]any {
+				switch action {
+				case "arm-stream":
+					h.gate.arm("watch.attach")
+				case "arm-get":
+					h.gate.arm("bead.get")
+				case "arm-view":
+					h.gate.arm("view.run")
+				case "wait-held":
+					h.gate.wait(t)
+				case "release":
+					h.gate.unblock()
+					select {
+					case <-h.gate.done:
+					case <-time.After(5 * time.Second):
+						t.Fatal("held native request did not finish")
+					}
+				case "revoke":
+					if !f.keys.Revoke(activeKey.ID) {
+						t.Fatal("actual API key was not revoked")
+					}
+				case "expiring-key":
+					activeKey, err = f.keys.Issue(by, time.Now().Add(5*time.Second))
+					if err != nil {
+						t.Fatal(err)
+					}
+					return map[string]any{"token": activeKey.Token}
+				case "wait-expired":
+					if wait := time.Until(activeKey.ExpiresAt); wait > 0 {
+						time.Sleep(wait + time.Millisecond)
+					}
+				case "close-session":
+					if err := h.sessions.CloseSession(context.Background(), collab.Caller{Principal: by}, h.gate.session); err != nil {
+						t.Fatal(err)
+					}
+				case "write-parent":
+					committed(t, f.write(t, f.owner, "bead.update", epics, map[string]any{"id": parent, "fields": map[string]any{"title": "background native update"}}))
+				case "stats":
+					return map[string]any{"active": h.active.Load(), "cancelled": h.gate.cancelled.Load()}
+				case "streams":
+					h.mu.Lock()
+					rows := append([]streamRecord{}, h.streams...)
+					h.mu.Unlock()
+					data, err := json.Marshal(rows)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Logf("EP6_NATIVE_STREAM_EVIDENCE %s", base64.StdEncoding.EncodeToString(data))
+					return map[string]any{"streams": rows}
+				default:
+					t.Fatalf("unexpected background control %q", action)
+				}
+				return map[string]any{"ok": true}
+			}
+			runBrowser(t, map[string]any{"base": base(f), "token": key.Token, "principal": by.ID, "otherToken": other.Token, "otherPrincipal": "user:background-other", "parent": parent.ID, "child": child, "secret": secret, "background": scenario}, control, func() []hostTrace { return hostTraces(f) })
+		})
+	}
 }
 
 func base(f *fixture) string { return strings.TrimSuffix(f.api.url, "/rpc/v1") }
@@ -328,6 +423,11 @@ func runBrowser(t *testing.T, input map[string]any, control func(string) map[str
 		t.Log(stderr.String())
 	}
 	if err != nil {
+		data, marshalErr := json.Marshal(traces())
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		t.Logf("EP6_NATIVE_FAILED_EVIDENCE %s", base64.StdEncoding.EncodeToString(data))
 		t.Fatalf("authenticated Chrome assertions failed: %v", err)
 	}
 	if len(evidence) == 0 {
@@ -349,6 +449,7 @@ func correlateBrowser(t *testing.T, evidence []byte, rows []hostTrace) {
 			RawResponse string `json:"rawResponse"`
 			Status      int    `json:"status"`
 			Principal   string `json:"principal"`
+			Cancelled   bool   `json:"cancelled"`
 		} `json:"wire"`
 		Console    []any `json:"console"`
 		Exceptions []any `json:"exceptions"`
@@ -376,17 +477,29 @@ func correlateBrowser(t *testing.T, evidence []byte, rows []hostTrace) {
 		k := key(row.URL, r.ID, r.Method, r.Params, r.ResponseSHA256)
 		native[k] = append(native[k], r)
 	}
+	cancelled := 0
 	for _, wire := range browser.Wire {
 		sum := sha256.Sum256([]byte(wire.RawResponse))
 		digest := hex.EncodeToString(sum[:])
 		k := key(wire.URL, wire.Request.ID, wire.Request.Method, wire.Request.Params, digest)
+		if wire.Cancelled {
+			cancelled++
+			// Chrome has no response body after abort. Bind the exact request to
+			// the actual native cancellation record, without claiming byte parity.
+			for candidate, records := range native {
+				if len(records) > 0 && records[0].Cancelled && candidate == key(wire.URL, wire.Request.ID, wire.Request.Method, wire.Request.Params, records[0].ResponseSHA256) {
+					k = candidate
+					break
+				}
+			}
+		}
 		found := native[k]
 		if len(found) == 0 {
 			t.Fatalf("Chrome request has no exact native correlation: id=%s method=%s", wire.Request.ID, wire.Request.Method)
 		}
 		row := found[0]
 		native[k] = found[1:]
-		if row.Status != wire.Status || row.Principal != wire.Principal {
+		if !wire.Cancelled && (row.Status != wire.Status || row.Principal != wire.Principal) {
 			t.Fatalf("native status/principal differs for Chrome id=%s: status=%d principal=%s", row.ID, row.Status, row.Principal)
 		}
 	}
@@ -398,5 +511,5 @@ func correlateBrowser(t *testing.T, evidence []byte, rows []hostTrace) {
 		t.Fatal(err)
 	}
 	t.Logf("EP6_NATIVE_CORRELATED_EVIDENCE %s", base64.StdEncoding.EncodeToString(data))
-	t.Logf("EP6_BROWSER_CORRELATION PASS actual Chrome requests=%d actual native traces=%d; exact URL/id/method/params/response SHA256/status and provider-authenticated principal; browser console entries=%d uncaught=0", len(browser.Wire), len(rows), len(browser.Console))
+	t.Logf("EP6_BROWSER_CORRELATION PASS actual Chrome requests=%d actual native traces=%d; exact URL/id/method/params; completed responses match SHA256/status/provider principal; cancelled=%d match native context cancellation without response-byte claims; browser console entries=%d uncaught=0", len(browser.Wire), len(rows), cancelled, len(browser.Console))
 }
