@@ -10,13 +10,13 @@ two fresh runs byte-for-byte after selecting only declared stable fields.
 The selected bounded evidence is:
 
 * **B13** — memory content/key fidelity, Beads-compatible omitted-key
-  derivation at the service seam, replacement, search, deletion, ordinary-bead
+  derivation through public RPC, replacement, search, deletion, ordinary-bead
   plane isolation, typed blank/underivable refusals, and SQLite reopen.
 * **B14** — admitted manual-gate approval through the real RPC/Writer path,
   sponsor-resolved duplicate suppression, terminal slot settlement, and
-  SQLite reopen. `waits-for`, `also_blocks`, public gate creation/listing, and
-  the full gate-member contract remain explicitly unqualified because no
-  corresponding Plug producer is present on this head.
+  SQLite reopen, plus actual `waits-for` link persistence and reopen. Explicit
+  any/all member metadata, `also_blocks`, public gate creation/listing, and
+  the full gate-member contract remain unqualified.
 * **B15** — exact comment body/principal/order and controlled same-clock stamps,
   one durable changeset/event per accepted comment, untouched anchor fields,
   typed refusals with no receipt/head advance, and SQLite reopen. A public
