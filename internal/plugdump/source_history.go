@@ -85,7 +85,18 @@ func captureSourceHistory(ctx context.Context, src Source, inventory Inventory, 
 			reasons[i], cut = "unavailable", i+1
 			continue
 		}
-		records, events, imageErr := portableSourceImage(ctx, image, inventory)
+		var records []Record
+		var events []Row
+		var imageErr error
+		if i == 0 && image != nil && len(image) == 0 {
+			// The complete table census at the proven root succeeded and was
+			// empty. No schema or business/event rows existed to map. A nil
+			// image, missing read, non-root image or partial schema still goes
+			// through the ordinary closed-world refusal path below.
+			records, events = []Record{}, []Row{}
+		} else {
+			records, events, imageErr = portableSourceImage(ctx, image, inventory)
+		}
 		if imageErr != nil {
 			reasons[i], cut = "unmappable", i+1
 			continue

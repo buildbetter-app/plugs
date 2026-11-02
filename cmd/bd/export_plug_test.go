@@ -183,6 +183,20 @@ func TestPlugDumpCompleteRootFromPublicDoltActions(t *testing.T) {
 		t.Logf("PUBLIC_SOURCE_MEMBER name=%s bytes=%d sha256=%x", header.Name, len(body), sha256.Sum256(body))
 	}
 	t.Logf("PUBLIC_SOURCE_COMPLETE issue_id=%s commits=%d events=%d archive_bytes=%d archive_sha256=%x", issue.ID, len(history.Commits), len(history.Events), len(first), sha256.Sum256(first))
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.Open(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer binary.Close()
+	binaryHash := sha256.New()
+	if _, err := io.Copy(binaryHash, binary); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("PUBLIC_SOURCE_EXPORTER_EXECUTABLE_SHA256=%x", binaryHash.Sum(nil))
 	if os.Getenv("PLUG_TEST_EXPORT_PUBLIC_HISTORY") == "1" {
 		t.Logf("PUBLIC_COMPLETE_SOURCE_ARCHIVE_BASE64=%s", base64.StdEncoding.EncodeToString(first))
 	}
@@ -249,6 +263,56 @@ func logPublicHistoryReadbacks(t *testing.T, ctx context.Context, s storage.RawD
 		if !log.Clean {
 			return fmt.Errorf("export changed the actual source working set")
 		}
+		wantCommits := append([]plugdump.SourceCommit{}, log.Commits...)
+		gotCommits := append([]plugdump.SourceCommit{}, history.Commits...)
+		sort.Slice(wantCommits, func(i, j int) bool { return wantCommits[i].ID < wantCommits[j].ID })
+		sort.Slice(gotCommits, func(i, j int) bool { return gotCommits[i].ID < gotCommits[j].ID })
+		want, _ := json.Marshal(wantCommits)
+		got, _ := json.Marshal(gotCommits)
+		if !bytes.Equal(want, got) || log.Head != history.Commits[len(history.Commits)-1].ID {
+			return fmt.Errorf("archive commit metadata/parents/head differ from actual SQL census")
+		}
+		ancestors, err := tx.QueryContext(ctx, "SELECT commit_hash, parent_hash FROM dolt_commit_ancestors ORDER BY commit_hash, parent_hash")
+		if err != nil {
+			return err
+		}
+		for ancestors.Next() {
+			var id string
+			var parent sql.NullString
+			if err := ancestors.Scan(&id, &parent); err != nil {
+				_ = ancestors.Close()
+				return err
+			}
+			var parentValue any
+			if parent.Valid {
+				parentValue = parent.String
+			}
+			body, _ := json.Marshal(plugdump.Row{"commit_hash": id, "parent_hash": parentValue})
+			t.Logf("PUBLIC_SOURCE_RAW_ANCESTRY=%s", body)
+		}
+		readErr := ancestors.Err()
+		_ = ancestors.Close()
+		if readErr != nil {
+			return readErr
+		}
+		for _, name := range []string{"issues", "events"} {
+			table, err := source.ReadTable(ctx, name)
+			if err != nil {
+				return err
+			}
+			if name == "events" {
+				sort.Slice(table.Rows, func(i, j int) bool {
+					return plugdump.SourceEventID(table.Rows[i]) < plugdump.SourceEventID(table.Rows[j])
+				})
+				want, _ := json.Marshal(table.Rows)
+				got, _ := json.Marshal(history.Events)
+				if !bytes.Equal(want, got) {
+					return fmt.Errorf("archive event identities/order/values differ from stored SQL")
+				}
+			}
+			body, _ := json.Marshal(table)
+			t.Logf("PUBLIC_SOURCE_CURRENT_%s=%s", name, body)
+		}
 		for _, commit := range history.Commits {
 			image, err := source.ReadSourceImage(ctx, commit.ID)
 			if err != nil {
@@ -262,10 +326,61 @@ func logPublicHistoryReadbacks(t *testing.T, ctx context.Context, s storage.RawD
 				return err
 			}
 			t.Logf("PUBLIC_SOURCE_STORED_IMAGE=%s", body)
+			for _, frame := range history.Range.Frames {
+				if frame.CommitID == commit.ID {
+					checkPublicStoredHistoryFrame(t, frame, image)
+				}
+			}
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func checkPublicStoredHistoryFrame(t *testing.T, frame plugdump.SourceHistoryFrame, image map[string]plugdump.Table) {
+	t.Helper()
+	events := append([]plugdump.Row{}, image["events"].Rows...)
+	sort.Slice(events, func(i, j int) bool { return plugdump.SourceEventID(events[i]) < plugdump.SourceEventID(events[j]) })
+	want, _ := json.Marshal(events)
+	got, _ := json.Marshal(frame.Events)
+	if !bytes.Equal(want, got) {
+		t.Fatalf("frame %d changed stored event identity/order/values/time", frame.Sequence)
+	}
+	counts := map[string]int{}
+	for _, record := range frame.Records {
+		found := false
+		for _, row := range image[record.Source.Table].Rows {
+			key := "id"
+			if record.Source.Table == "config" || record.Source.Table == "metadata" {
+				key = "key"
+			}
+			if row[key] != record.Source.Fields[key] {
+				continue
+			}
+			fields := plugdump.Row{}
+			for name, value := range row {
+				if record.Source.Table != "issues" || name != "row_lock" && name != "is_blocked" {
+					fields[name] = value
+				}
+			}
+			want, _ := json.Marshal(fields)
+			got, _ := json.Marshal(record.Source.Fields)
+			if !bytes.Equal(want, got) {
+				t.Fatalf("frame %d changed %s stored fields/JSON/BIGINT/time", frame.Sequence, record.Source.Table)
+			}
+			found = true
+			break
+		}
+		if !found {
+			t.Fatalf("frame %d invented source %s/%s", frame.Sequence, record.Source.Table, record.ID)
+		}
+		counts[record.Source.Table]++
+	}
+	for _, table := range []string{"issues", "comments", "config", "metadata", "dependencies"} {
+		if counts[table] != len(image[table].Rows) {
+			t.Fatalf("frame %d omitted or duplicated %s rows", frame.Sequence, table)
+		}
 	}
 }
 

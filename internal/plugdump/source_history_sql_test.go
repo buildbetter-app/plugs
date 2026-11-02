@@ -29,6 +29,19 @@ func TestSQLSourceHistoryReadsPinnedDoltCommitImages(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	// A real, unsupported older business schema deliberately makes this
+	// source incomplete. Empty genesis alone is no longer a history gap.
+	for _, query := range []string{
+		"CREATE TABLE issues (id TEXT, title TEXT)",
+		"INSERT INTO issues VALUES ('demo-legacy', 'unmappable earlier source state')",
+		"CALL DOLT_ADD('-A')",
+		"CALL DOLT_COMMIT('-m', 'public unsupported earlier schema', '--author', 'Synthetic source <source@example.test>')",
+		"DROP TABLE issues",
+	} {
+		if _, err := db.ExecContext(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
 	source, inventory := fixture(t)
 	inventory.Projects[0].IDMode, inventory.Projects[0].HashLength = "hash", 1
 	source["dependencies"].Rows[0]["type"] = "blocks"
