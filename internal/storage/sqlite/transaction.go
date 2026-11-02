@@ -36,6 +36,8 @@ type transaction struct {
 	bumps           map[string]driver.LockKey
 	allocators      map[string]driver.OfflineAllocator
 	allocated       map[string]bool
+
+	checkpointGuards map[string]uint64
 }
 
 func (s *Store) Write(ctx context.Context, l driver.ActiveLease) (driver.WriteTx, error) {
@@ -392,6 +394,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			}
 			result = replay.Changeset
 			return nil
+		}
+		if err := t.checkCheckpointGuards(ctx, c); err != nil {
+			return err
 		}
 		if err = t.validateChanges(ctx, h.Changes); err != nil {
 			return err

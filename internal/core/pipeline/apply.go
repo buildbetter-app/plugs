@@ -456,6 +456,22 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err != nil {
 		return model.Commit{}, err
 	}
+	if len(p.checkpointReads) != 0 {
+		guard, ok := tx.(driver.CheckpointGuardTx)
+		if !ok {
+			return model.Commit{}, driver.ErrUnsupported
+		}
+		keys := make([]string, 0, len(p.checkpointReads))
+		for key := range p.checkpointReads {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if err := guard.ExpectCheckpoint(ctx, key, p.checkpointReads[key]); err != nil {
+				return model.Commit{}, err
+			}
+		}
+	}
 	// Two callers may prepare the same random key concurrently. Recheck after
 	// serialization, before staging anything, and replay outside the transaction.
 	if prior, err := tx.IdempotencyByKey(ctx, principal, meta.AgentLabel, meta.Method, meta.IdempotencyKey); err != nil {
@@ -556,6 +572,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	}
 	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(p.changed) != 0 && len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
 	if err != nil {
+		if errors.Is(err, driver.ErrCheckpointConflict) {
+			return model.Commit{}, errStale
+		}
 		return model.Commit{}, err
 	}
 	if entry.Revision.String() != revision.String() {

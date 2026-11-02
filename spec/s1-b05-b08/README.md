@@ -9,10 +9,26 @@ This package is the focused Plug runtime lane for:
 - B08 linked-child close guards and lifecycle settlement.
 
 The tests construct the real Writer, service, RPC registry, claim binding, and
-memory or file-backed SQLite driver with fixed UTC clocks, finite IDs, fixed
+memory, file-backed SQLite, or disposable PostgreSQL driver with fixed UTC clocks, finite IDs, fixed
 project/agent metadata, and deterministic idempotency keys. Heartbeat refreshes
 are checked against graph head, versions, changesets, and persisted bead bytes;
-SQLite is reopened before replay to prove checkpoint receipt durability.
+Persistent stores are reopened before replay to prove checkpoint receipt durability.
+
+The heartbeat/reclaim regressions pause actual producer calls before forwarding
+to real checkpoint saves and graph commits. Both publication orders are tested:
+a completed heartbeat invalidates an older recovery observation, while reclaim
+or close prevents a late heartbeat from publishing an orphan overlay. Cancelled
+publication retains only its recoverable reservation. Direct driver checks cover
+absent/existing checkpoint generations, stale records, incarnation mismatch,
+lease fencing, rollback, missing capabilities, and reopen. The original PR251
+authorization, replay, interruption, and same-key CAS assertions also run on
+PostgreSQL. No request-phase or test timeout is increased.
+
+B06 additionally refuses ancestor blockers in either direction over explicit
+parents or parent-child links. A reparent cannot introduce such a blocker, and
+refusals preserve earlier batch images, history, graph sentinel, and receipts.
+Association links remain legal. These tests do not certify the missing public
+cycle-report producer or B14's waits-for metadata/fanout behavior.
 
 The historical B07 reference bytes under `spec/recorded/extension/` remain
 unchanged and are not relabeled as full-card evidence. The reference twin

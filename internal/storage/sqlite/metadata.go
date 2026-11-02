@@ -143,6 +143,45 @@ func loadCheckpoint(ctx context.Context, q queryer, key string) (driver.Checkpoi
 	return value, err
 }
 func (s *Store) SaveCheckpoint(ctx context.Context, value driver.ActiveLease, key string, expected uint64, payload []byte) (driver.Checkpoint, error) {
+	return s.saveCheckpoint(ctx, value, key, expected, payload, nil)
+}
+
+func (s *Store) SaveCheckpointIfRecord(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, ref driver.Ref, revision model.Revision, incarnation string) (driver.Checkpoint, error) {
+	id, err := recordKey(ref)
+	if err != nil {
+		return driver.Checkpoint{}, err
+	}
+	if err := revision.Validate(); err != nil {
+		return driver.Checkpoint{}, err
+	}
+	return s.saveCheckpoint(ctx, lease, key, expected, payload, func(c *sql.Conn) error {
+		meta, err := readMeta(ctx, c)
+		if err != nil {
+			return err
+		}
+		if incarnation == "" || incarnation != meta.Incarnation {
+			return driver.ErrIncarnationChanged{From: incarnation, To: meta.Incarnation}
+		}
+		var data []byte
+		err = c.QueryRowContext(ctx, `SELECT data FROM records WHERE key=?`, id).Scan(&data)
+		if errors.Is(err, sql.ErrNoRows) {
+			return driver.ErrConflict
+		}
+		if err != nil {
+			return err
+		}
+		var record driver.Record
+		if err := json.Unmarshal(data, &record); err != nil {
+			return err
+		}
+		if record.Revision.String() != revision.String() {
+			return driver.ErrConflict
+		}
+		return nil
+	})
+}
+
+func (s *Store) saveCheckpoint(ctx context.Context, value driver.ActiveLease, key string, expected uint64, payload []byte, guard func(*sql.Conn) error) (driver.Checkpoint, error) {
 	l, err := s.leaseFor(ctx, value)
 	if err != nil {
 		return driver.Checkpoint{}, err
@@ -153,6 +192,11 @@ func (s *Store) SaveCheckpoint(ctx context.Context, value driver.ActiveLease, ke
 	var result driver.Checkpoint
 	payload = bytes.Clone(payload)
 	err = s.immediate(ctx, l, func(c *sql.Conn) error {
+		if guard != nil {
+			if err := guard(c); err != nil {
+				return err
+			}
+		}
 		current, err := loadCheckpoint(ctx, c, key)
 		if err != nil {
 			return err
@@ -173,6 +217,9 @@ func (s *Store) SaveCheckpoint(ctx context.Context, value driver.ActiveLease, ke
 	result.Payload = bytes.Clone(result.Payload)
 	return result, nil
 }
+
+var _ driver.RecordGuardedCheckpointStore = (*Store)(nil)
+
 func (s *Store) FinalizeResponse(ctx context.Context, value driver.ActiveLease, principal, agent, method, key string, revision model.Revision, warnings []model.Warning) error {
 	l, err := s.leaseFor(ctx, value)
 	if err != nil {

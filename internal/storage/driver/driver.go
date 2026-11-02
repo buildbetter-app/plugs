@@ -544,6 +544,26 @@ type CheckpointStore interface {
 	SaveCheckpoint(context.Context, ActiveLease, string, uint64, []byte) (Checkpoint, error)
 }
 
+// CheckpointGuardTx stages an unversioned metadata observation for Commit.
+// Commit checks every expected generation atomically with graph publication,
+// serialized against SaveCheckpoint even when the key is absent. A changed
+// generation returns ErrCheckpointConflict and publishes nothing. The guard
+// never bumps a graph sentinel or changes the checkpoint. Callers fail closed
+// with ErrUnsupported if a transaction lacks this capability.
+type CheckpointGuardTx interface {
+	ExpectCheckpoint(context.Context, string, uint64) error
+}
+
+// RecordGuardedCheckpointStore publishes metadata only while the named live
+// record still has the observed revision in the supplied incarnation. The
+// record/incarnation check, checkpoint CAS,
+// lease fence and publication are atomic; a changed/deleted record returns
+// ErrConflict without writing. This closes the opposite side of the
+// heartbeat/reclaim race without turning a quiet heartbeat into a graph write.
+type RecordGuardedCheckpointStore interface {
+	SaveCheckpointIfRecord(context.Context, ActiveLease, string, uint64, []byte, Ref, model.Revision, string) (Checkpoint, error)
+}
+
 // ResponseFinalizer is an optional capability for durable post-subscriber
 // outcomes; callers must return ErrUnsupported when absent. FinalizeResponse
 // atomically checks the active lease, full G4 scope and Commit.Revision, appends
