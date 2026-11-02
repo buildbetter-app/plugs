@@ -342,7 +342,8 @@ class ReferenceTest(unittest.TestCase):
         self.assertEqual(len(fetches), 1)
         args, env = fetches[0]
         self.assertIn("--no-write-fetch-head", args)
-        self.assertEqual(args[-2:], [helper.SOURCE_URL, helper.SOURCE_SHA])
+        self.assertIn("--no-tags", args)
+        self.assertEqual(args[-2:], [helper.SOURCE_URL, helper.SOURCE_REF])
         self.assertIn("fixture-token-not-a-secret", env["GIT_CONFIG_VALUE_0"])
         for arguments, environment in calls:
             self.assertNotIn("GH_TOKEN", environment)
