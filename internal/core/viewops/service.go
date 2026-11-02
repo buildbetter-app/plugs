@@ -428,7 +428,7 @@ func validateFilter(filter Filter) error {
 
 func supportedSort(key string) bool {
 	switch key {
-	case "id", "type", "project", "status", "revision":
+	case "id", "type", "project", "status", "title", "revision":
 		return true
 	default:
 		return false
@@ -557,6 +557,10 @@ func sortValue(row stored, key string) string {
 		return row.doc.Project
 	case "status":
 		if value, ok := row.doc.Fields["status"].(string); ok {
+			return value
+		}
+	case "title":
+		if value, ok := row.doc.Fields["title"].(string); ok {
 			return value
 		}
 	case "revision":

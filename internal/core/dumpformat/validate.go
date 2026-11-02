@@ -30,6 +30,7 @@ var knownKinds = map[string]bool{
 var knownNativeKinds = map[string]bool{
 	"bead": true, "edge": true, "comment": true, "memory": true,
 	"config": true, "beads-archive": true, "ontology": true,
+	"instance_config": true, "restore-archive": true,
 }
 
 var externalFamilies = []string{
@@ -125,7 +126,7 @@ func Read(reader io.Reader) (*Archive, error) {
 		if err := validateNativeArchive(manifest, members, paths); err != nil {
 			return nil, err
 		}
-		return &Archive{manifest: manifest, members: members, native: true}, nil
+		return &Archive{sha256: digest(data), manifest: manifest, members: members, native: true}, nil
 	}
 	if err := validateManifest(manifest, members); err != nil {
 		return nil, err
@@ -284,12 +285,24 @@ func validateManifest(manifest Manifest, members map[string][]byte) error {
 	if len(manifest.Warnings) != 2 || manifest.Warnings[0] != "not a complete store migration or Plug restore certificate" || manifest.Warnings[1] != "source history and attribution are unverified; no Plug versions, changesets or live leases invented" {
 		return fmt.Errorf("missing incomplete-conversion disclosures")
 	}
-	wantVerification, _ := json.Marshal(verificationLimits)
+	expectedVerification := make(map[string]string, len(verificationLimits))
+	for key, value := range verificationLimits {
+		expectedVerification[key] = value
+	}
+	if manifest.Verification["ontology"] == explicitOntologyVerification {
+		expectedVerification["ontology"] = explicitOntologyVerification
+	} else if len(manifest.Ontology) != 0 {
+		return fmt.Errorf("explicit ontology directives require their verification disclosure")
+	}
+	wantVerification, _ := json.Marshal(expectedVerification)
 	gotVerification, _ := json.Marshal(manifest.Verification)
 	if !bytes.Equal(append(wantVerification, '\n'), append(gotVerification, '\n')) {
 		return fmt.Errorf("unsupported verification claim")
 	}
 	if err := validateProjects(manifest.Projects); err != nil {
+		return err
+	}
+	if err := validateOntology(manifest.Ontology, manifest.Projects); err != nil {
 		return err
 	}
 	if len(manifest.Files) != len(members)-1 {
@@ -380,6 +393,9 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 		}
 	}
 	if err := validateDispositions(manifest.Sources, counts, members["config/sources.json"]); err != nil {
+		return nil, err
+	}
+	if err := validateIssueOntology(manifest.Ontology, byKind["bead"], true); err != nil {
 		return nil, err
 	}
 	historyRows := counts["issue_versions"] + counts["issue_snapshots"] + counts["compaction_snapshots"]

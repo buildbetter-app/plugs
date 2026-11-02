@@ -40,9 +40,13 @@ const (
 // its owner to update this policy before the blocking gate can pass.
 func DefaultTreePolicy() TreePolicy {
 	return TreePolicy{
-		ReferencePrefixes: []string{"spec/recorded/goldens.json"},
+		ReferencePrefixes: []string{
+			"spec/recorded/goldens.json",
+			"spec/s1-b17-b20/reference/b18/record.py",
+		},
 		ReferenceSHA256: map[string]string{
-			"spec/recorded/goldens.json": "26a086334357d55ea847daa301f45c9435a71bba75fb6c324456aebf459fbf32",
+			"spec/recorded/goldens.json":              "26a086334357d55ea847daa301f45c9435a71bba75fb6c324456aebf459fbf32",
+			"spec/s1-b17-b20/reference/b18/record.py": "375c516727d1dac47c395a7b117171e638f25a1e1f7b95a1c78f61d0552f973f",
 		},
 		ProtectedPrefixes:       []string{".github/", "engdocs/design/plug/"},
 		StrictProtectedPrefixes: []string{".github/", "engdocs/design/plug/"},
@@ -109,6 +113,7 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spike-ux-decision.md":             {},
 		},
 		BinarySHA256: map[string]string{
+			"internal/integration/offlinehistory/testdata/dolt-source-partial.tar":       "b56f1de4a36c22cca379647d5fe1b2962e4358d9976923e76007ea84b7712582",
 			"internal/integration/offlinehistory/testdata/full.tar":                      "a96f0134097751e981ec6c46b7d412fb0dd92938a04df0838564b71c1064a212",
 			"internal/integration/offlinehistory/testdata/partial.tar":                   "ab25df11463f68dbfa1ee1ce781a252cfc1b802abac8bb2f1cbc7bed5932cf9c",
 			"tools/census/testdata/census.json":                                          "d005db62a2110979e7b3884a37fdb9c8b410a964184582776f0987457a85080f",

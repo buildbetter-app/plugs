@@ -1,0 +1,46 @@
+{
+  "source_commit": "9d6fff760b7a314b476539198504d77ce0959656",
+  "binary_sha256": "33cdadbe3bd7a82e2c3c40f4b5da4403d822acc00d544a321df24e277c0836a3",
+  "workload": {
+    "id": "b19-snapshot",
+    "initial_title": "Archive before update",
+    "title": "Archive current state",
+    "description": "Retain this current description",
+    "priority": 2
+  },
+  "projection_fields": [
+    "title",
+    "description",
+    "status",
+    "priority"
+  ],
+  "recordings": [
+    {
+      "workspace": "/tmp/plug-swarm/work/cardb19-reference-1-eccyz10m",
+      "evidence": "/tmp/plug-swarm/ci-local/ACCEPT-B19-RECORDED-SLICE-20261030-preflight/fresh-reference-recordings/recording-1",
+      "export_sha256": "7ce17d07db5c50ce713412fda848458f15246851bb856cec0815d24ad3c645fe",
+      "imported_sha256": "996e587a70a32044556aca54502da2fe95d7610cf04e1b008a3cb4b8e3f2b054",
+      "projection": {
+        "title": "Archive current state",
+        "description": "Retain this current description",
+        "status": "open",
+        "priority": 2
+      },
+      "commands_sha256": "ceed95d84e9d52b8dadf3165ae3b45b55ebe63fcac28a8902410f636d7fbff57"
+    },
+    {
+      "workspace": "/tmp/plug-swarm/work/cardb19-reference-2-gi238wdv",
+      "evidence": "/tmp/plug-swarm/ci-local/ACCEPT-B19-RECORDED-SLICE-20261030-preflight/fresh-reference-recordings/recording-2",
+      "export_sha256": "1f8b8506a5a6ada53e19da05421ae34a80a728ad5d125a337eb12da7e49f1910",
+      "imported_sha256": "1caf93405cf3ad73bc8bcad0d3b11338b8cd2d60ee4ac77122caad053ea8b2ba",
+      "projection": {
+        "title": "Archive current state",
+        "description": "Retain this current description",
+        "status": "open",
+        "priority": 2
+      },
+      "commands_sha256": "314c98bc24981b0aa313946ea1b2e55c88e4986cd3e751c92d8545a9c468b068"
+    }
+  ],
+  "limits": "Two fresh source/target pairs. Current issue JSONL only; no native archive, history export, removed-version producer, migration or cutover certificate."
+}

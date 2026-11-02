@@ -3,6 +3,8 @@ package dumpformat
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -96,5 +98,68 @@ func TestSourceHistoryDoesNotPromoteRawCommitsToVerifiedReplay(t *testing.T) {
 	}
 	if _, err := MergeArchives(a); err == nil {
 		t.Fatal("merge silently discarded source history")
+	}
+}
+
+func TestSourceHistoryChecksTypeDirectivesInEveryImage(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		for _, policy := range []string{"unused-earlier", "covered-earlier", "missing", "wrong-issue", "wrong-type"} {
+			name := fmt.Sprintf("partial=%t/%s", partial, policy)
+			t.Run(name, func(t *testing.T) {
+				f, original := sourceHistoryFixture(t, partial)
+				var h SourceHistory
+				if err := decodeJSON(fixtureJSON(t, original), &h); err != nil {
+					t.Fatal(err)
+				}
+				setType := func(rows []Record, id, issueType string) {
+					t.Helper()
+					for i := range rows {
+						if rows[i].Kind == "bead" && rows[i].ID == id {
+							rows[i].Source.Fields["issue_type"] = issueType
+							rows[i].Body["source_type"] = issueType
+							return
+						}
+					}
+					t.Fatalf("missing fixture bead %s", id)
+				}
+				firstID, secondID := f.records["bead"][0].ID, f.records["bead"][1].ID
+				earlier := h.Range.Frames[0].Records
+				if partial {
+					earlier = h.Range.Baseline
+				}
+				if policy != "missing" {
+					setType(f.records["bead"], firstID, "decision")
+					setType(h.Range.Frames[len(h.Range.Frames)-1].Records, firstID, "decision")
+					f.manifest.Ontology = []OntologyDirective{{ID: "decision", Kind: "map_type", Target: OntologyTarget{Project: "pl", Type: "decision", ID: firstID}, From: "decision", To: "issue"}}
+					f.manifest.Verification["ontology"] = explicitOntologyVerification
+				}
+				switch policy {
+				case "covered-earlier", "missing":
+					setType(earlier, firstID, "decision")
+				case "wrong-issue":
+					setType(earlier, secondID, "decision")
+				case "wrong-type":
+					setType(earlier, firstID, "uncovered-source-type")
+				}
+				a, err := Read(bytes.NewReader(withSourceHistory(t, f, h)))
+				if policy == "unused-earlier" || policy == "covered-earlier" {
+					if err != nil {
+						t.Fatal(err)
+					}
+					sequence := uint64(1)
+					if partial {
+						sequence = h.Range.First - 1
+					}
+					if _, err := a.HistoryImage(sequence); err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				var refusal ErrSourceHistory
+				if !errors.As(err, &refusal) || refusal.Reason != "unmappable" {
+					t.Fatalf("historical type escaped directive scope: %v", err)
+				}
+			})
+		}
 	}
 }
