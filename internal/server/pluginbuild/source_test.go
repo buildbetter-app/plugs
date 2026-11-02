@@ -417,6 +417,149 @@ func (*wasiSnapshot) Observe(context.Context, []driver.LockKey) ([]driver.LockSt
 	return nil, nil
 }
 
+func TestWASIArtifactOwnsPooledHostsAndRealGuestState(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
+	}
+	artifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: wasiCheckout(t, moduleRoot(t)), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = artifact.Close() }()
+	host := wasiGuestHost(t, artifact, 0)
+	secondHost := wasiGuestHost(t, artifact, 0)
+	callState := func(mutator pluginapi.Mutator, principal, title string, reader port.SnapshotReader) (string, error) {
+		after, _ := json.Marshal(map[string]any{"type": "issue", "fields": map[string]any{"title": title}})
+		patches, err := mutator.Mutate(context.Background(), port.ProposedChange{
+			RequestID:    principal + ":" + title,
+			Principal:    model.PrincipalRef{Kind: "user", ID: principal},
+			BaseRevision: model.Natural64(1),
+			Changes: []port.Change{{
+				Resource: model.ResourceRef{Kind: "bead", Ref: model.RefByID("pool-state", "")},
+				Op:       model.Op{Kind: model.OpPatch, Patch: &model.PatchOp{Kind: model.OpPatch, Target: model.RefByID("pool-state", ""), Fields: map[string]any{"title": title}}},
+				After:    after,
+			}},
+		}, reader)
+		if err != nil {
+			return "", err
+		}
+		if len(patches) != 1 {
+			return "", fmt.Errorf("real WASI state callback returned %d patches", len(patches))
+		}
+		var value string
+		if err := json.Unmarshal(patches[0].Paths["fields.normalized"], &value); err != nil {
+			return "", err
+		}
+		return value, nil
+	}
+	mutator := host.Mutators()[0].Mutator
+	for _, tc := range []struct {
+		principal, title, want string
+	}{
+		{"principal-a", "pool-state:a", "POOL-STATE:A#1"},
+		{"principal-a", "pool-state:a", "POOL-STATE:A#2"},
+		{"principal-b", "pool-state:b", "POOL-STATE:B#1"},
+		{"principal-c", "pool-state:c", "POOL-STATE:C#1"},
+		{"principal-d", "pool-state:d", "POOL-STATE:D#1"},
+		// Four first claims fill the real pool; this fifth claim retires an
+		// idle affinity and constructs a fresh guest instead of reusing state.
+		{"principal-e", "pool-state:e", "POOL-STATE:E#1"},
+	} {
+		got, callErr := callState(mutator, tc.principal, tc.title, &wasiSnapshot{revision: model.Natural64(1)})
+		if callErr != nil || got != tc.want {
+			t.Fatalf("real WASI state principal=%s got=%q want=%q err=%v", tc.principal, got, tc.want, callErr)
+		}
+	}
+
+	// Let two previously absent principals overlap at the real pool boundary.
+	// The barrier is outside the guest; the calls below then execute through
+	// distinct pooled WASI modules concurrently and expose private state.
+	entered, release := make(chan struct{}, 2), make(chan struct{})
+	type stateResult struct {
+		value string
+		err   error
+	}
+	results := make(chan stateResult, 2)
+	for _, principal := range []string{"principal-f", "principal-g"} {
+		principal := principal
+		go func() {
+			reader := &wasiBarrierSnapshot{
+				wasiSnapshot: wasiSnapshot{revision: model.Natural64(1)},
+				entered:      entered,
+				release:      release,
+			}
+			value, err := callState(mutator, principal, "pool-state:"+strings.TrimPrefix(principal, "principal-"), reader)
+			results <- stateResult{value: value, err: err}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("real WASI overlapping claim did not reach its barrier")
+		}
+	}
+	close(release)
+	for i := 0; i < 2; i++ {
+		select {
+		case result := <-results:
+			if result.err != nil || !strings.HasSuffix(result.value, "#1") {
+				t.Fatalf("overlapping real WASI claim leaked guest state: value=%q err=%v", result.value, result.err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("overlapping real WASI claim did not finish")
+		}
+	}
+
+	// A real guest refusal disposes its member. The next same-principal call
+	// must observe a replacement module with a fresh private counter.
+	if _, err := callState(mutator, "principal-refused", "acceptance:undeclared", &wasiSnapshot{revision: model.Natural64(1)}); err == nil {
+		t.Fatal("real WASI undeclared callback unexpectedly succeeded")
+	}
+	if got, err := callState(mutator, "principal-refused", "pool-state:replacement", &wasiSnapshot{revision: model.Natural64(1)}); err != nil || !strings.HasSuffix(got, "#1") {
+		t.Fatalf("real WASI refusal did not retire private guest state: value=%q err=%v", got, err)
+	}
+
+	// Artifact.Close owns every admitted host, including the second host, and
+	// remains idempotent. The returned hosts must reject calls after ownership
+	// closes even though callers never explicitly closed either host.
+	if err := artifact.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, current := range []*pluginhost.Host{host, secondHost} {
+		if _, err := current.Invoke(context.Background(), "x.wasi.echo", json.RawMessage(`{"id":"after-artifact-close"}`)); !hasPluginHostCode(err, pluginhost.ErrInactive) {
+			t.Fatalf("artifact owner close left a usable host: %v", err)
+		}
+	}
+	if err := artifact.Close(); err != nil {
+		t.Fatalf("artifact owner close was not idempotent: %v", err)
+	}
+	requireBuildCode(t, func() error {
+		_, err := artifact.Host(context.Background(), pluginhost.Config{})
+		return err
+	}(), pluginbuild.ErrClosed)
+}
+
+type wasiBarrierSnapshot struct {
+	wasiSnapshot
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (s *wasiBarrierSnapshot) Get(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
+	select {
+	case s.entered <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return nil, nil
+}
+
 func TestWASIGuestBridgeAcceptance(t *testing.T) {
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")

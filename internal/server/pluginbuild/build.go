@@ -94,6 +94,7 @@ type Artifact struct {
 
 	mu      sync.Mutex
 	closed  bool
+	hosts   map[*pluginhost.Host]struct{}
 	loaded  bool
 	loadedP *plugin.Plugin
 	natives []sdk.Native
@@ -431,7 +432,22 @@ func (a *Artifact) Host(ctx context.Context, config pluginhost.Config) (*pluginh
 		descriptors = natives
 	}
 	config.Natives = descriptors
-	return pluginhost.New(config)
+	host, err := pluginhost.New(config)
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		_ = host.Close()
+		return nil, refusal(ErrClosed, "artifact has been closed")
+	}
+	if a.hosts == nil {
+		a.hosts = map[*pluginhost.Host]struct{}{}
+	}
+	a.hosts[host] = struct{}{}
+	a.mu.Unlock()
+	return host, nil
 }
 
 // Close removes the disposable output directory. A loaded Go plugin has no
@@ -448,8 +464,22 @@ func (a *Artifact) Close() error {
 	}
 	a.closed = true
 	dir := a.outputDir
+	hosts := make([]*pluginhost.Host, 0, len(a.hosts))
+	for host := range a.hosts {
+		hosts = append(hosts, host)
+	}
+	a.hosts = nil
 	a.mu.Unlock()
-	return os.RemoveAll(dir)
+	var closeErr error
+	for _, host := range hosts {
+		if err := host.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	if err := os.RemoveAll(dir); err != nil && closeErr == nil {
+		closeErr = err
+	}
+	return closeErr
 }
 
 func (a *Artifact) loadNatives(ctx context.Context) ([]sdk.Native, error) {
