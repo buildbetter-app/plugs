@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -286,7 +287,7 @@ func TestS1PinnedBeadsReferenceRecordingsAndIndependentProjections(t *testing.T)
 }
 
 func cardToFile(card string) string {
-	return string([]byte{card[0] + ('a' - 'A'), card[1] + ('a' - 'A'), card[2] + ('a' - 'A')}) + ".json"
+	return strings.ToLower(card) + ".json"
 }
 
 func TestS1ReferenceProjectionKeysRemainBounded(t *testing.T) {
