@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
@@ -141,6 +142,18 @@ func newFixture(t *testing.T, engine string, options ...service.Option) *fixture
 	}
 	f.open()
 	t.Cleanup(f.close)
+	t.Cleanup(func() {
+		if dir := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); dir != "" {
+			data, err := json.MarshalIndent(f.trace, "", "  ")
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if err := os.WriteFile(filepath.Join(dir, strings.ReplaceAll(t.Name(), "/", "_")+".rpc.json"), data, 0644); err != nil {
+				t.Error(err)
+			}
+		}
+	})
 	return f
 }
 
@@ -261,4 +274,27 @@ func (f *fixture) assertSameHead(before driver.Meta) {
 	if !reflect.DeepEqual(before, after) {
 		f.t.Fatalf("refusal published metadata: before=%+v after=%+v", before, after)
 	}
+}
+
+func (f *fixture) meta() driver.Meta {
+	f.t.Helper()
+	m, err := f.store.Meta(context.Background())
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return m
+}
+
+func (f *fixture) versions(ref map[string]any) []driver.Version {
+	f.t.Helper()
+	r, err := f.store.Read(context.Background(), driver.View{Incarnation: f.meta().Incarnation})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer r.Close()
+	page, err := r.Versions(context.Background(), model.RefByID(ref["id"].(string), model.Natural64(0)), driver.PageReq{Limit: 1000})
+	if err != nil || page.NextCursor != nil {
+		f.t.Fatalf("versions incomplete: %v %v", page, err)
+	}
+	return page.Items
 }

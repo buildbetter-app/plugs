@@ -23,6 +23,7 @@ type Service struct {
 	memoryReadAuthorizer   MemoryReadAuthorizer
 	authorizationInstalled func() bool
 	events                 EventProvider
+	compaction             CompactionConfig
 }
 
 // claimNextConflictRestartBudget bounds only the extra full-walk restart used
