@@ -514,7 +514,7 @@ func projectJSONL(data []byte, fields []string) ([]byte, error) {
 			}
 		}
 		projection.Issues[id] = item
-		projection.Edges = append(projection.Edges, projectedNested(row["dependencies"], []string{"issue_id", "depends_on_id", "depends_on_external", "type"})...)
+		projection.Edges = append(projection.Edges, projectedDependencies(row["dependencies"])...)
 		projection.Comments = append(projection.Comments, projectedNested(row["comments"], []string{"id", "issue_id", "author", "created_by", "text", "body"})...)
 	}
 	sortProjection(&projection)
@@ -558,6 +558,28 @@ func projectedNested(value any, fields []string) []map[string]any {
 		if ok {
 			result = append(result, projectMap(object, fields))
 		}
+	}
+	return result
+}
+
+func projectedDependencies(value any) []map[string]any {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		edge := map[string]any{"from": object["issue_id"], "type": object["type"]}
+		if target, ok := object["depends_on_id"]; ok {
+			edge["to"], edge["target_kind"] = target, "depends_on_issue_id"
+		} else if target, ok := object["depends_on_external"]; ok {
+			edge["to"], edge["target_kind"] = target, "depends_on_external"
+		}
+		result = append(result, edge)
 	}
 	return result
 }
