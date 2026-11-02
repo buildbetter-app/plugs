@@ -50,11 +50,22 @@ func NewWASMNative(wasm []byte, manifest pluginapi.PluginManifest, instance stri
 		return sdk.Native{}, err
 	}
 	copyBytes := append([]byte(nil), wasm...)
+	factory := &wasmFactory{wasm: copyBytes, modules: map[api.Module]*wasmRuntime{}}
 	return sdk.Native{
 		Manifest: manifest,
 		Instance: instance,
 		New: func(host pluginapi.Host) (sdk.Registration, error) {
-			runtime, err := newWASMRuntime(copyBytes, host)
+			runtime, err := factory.newRuntime(context.Background(), host)
+			if err != nil {
+				return sdk.Registration{}, err
+			}
+			if capabilities, ok := host.(*capabilities); ok {
+				capabilities.onDispose = runtime.close
+			}
+			return runtime.registration(manifest), nil
+		},
+		NewWithContext: func(ctx context.Context, host pluginapi.Host) (sdk.Registration, error) {
+			runtime, err := factory.newRuntime(ctx, host)
 			if err != nil {
 				return sdk.Registration{}, err
 			}
@@ -66,8 +77,22 @@ func NewWASMNative(wasm []byte, manifest pluginapi.PluginManifest, instance stri
 	}, nil
 }
 
+// wasmFactory owns one compiled immutable module image. Each call to
+// newRuntime instantiates a distinct module in the same wazero runtime, so
+// linear memory, globals, allocators and invocation capabilities remain
+// private while compilation/link setup is paid only once.
+type wasmFactory struct {
+	mu       sync.Mutex
+	wasm     []byte
+	runtime  wazero.Runtime
+	compiled wazero.CompiledModule
+	modules  map[api.Module]*wasmRuntime
+	closed   bool
+}
+
 type wasmRuntime struct {
 	mu      sync.Mutex
+	factory *wasmFactory
 	runtime wazero.Runtime
 	module  api.Module
 	alloc   api.Function
@@ -120,43 +145,66 @@ type wasmReadGrants struct {
 }
 
 func newWASMRuntime(wasm []byte, host pluginapi.Host) (*wasmRuntime, error) {
-	ctx := context.Background()
+	factory := &wasmFactory{wasm: append([]byte(nil), wasm...), modules: map[api.Module]*wasmRuntime{}}
+	return factory.newRuntime(context.Background(), host)
+}
+
+func (f *wasmFactory) ensure(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return failure(ErrInactive, "WASM factory is closed")
+	}
+	if f.runtime != nil && f.compiled != nil {
+		return nil
+	}
 	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter().WithCloseOnContextDone(true).WithMemoryLimitPages(maxWASMPages))
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, runtime); err != nil {
-		_ = runtime.Close(ctx)
-		return nil, failure(ErrManifest, "WASI runtime setup failed: %v", err)
+		_ = runtime.Close(context.Background())
+		return failure(ErrManifest, "WASI runtime setup failed: %v", err)
 	}
-	// The import is the one E5 bridge. It is linked for every module, but it
-	// only sees a scoped reader while a host-driven callback is executing. Calls
-	// during initialization, extension methods or any other unscoped execution
-	// trap explicitly rather than becoming an ambient capability.
-	result := &wasmRuntime{runtime: runtime, host: host}
+	// The import is linked once for the factory. It resolves the concrete
+	// module back to its wasmRuntime, preserving per-guest readers and buffers.
 	if _, err := runtime.NewHostModuleBuilder(wasmModuleName).
-		NewFunctionBuilder().WithFunc(result.hostCall).
+		NewFunctionBuilder().WithFunc(f.hostCall).
 		Export(wasmImportName).Instantiate(ctx); err != nil {
-		_ = runtime.Close(ctx)
-		return nil, failure(ErrManifest, "WASM host import setup failed: %v", err)
+		_ = runtime.Close(context.Background())
+		return failure(ErrManifest, "WASM host import setup failed: %v", err)
 	}
-	compiled, err := runtime.CompileModule(ctx, wasm)
+	compiled, err := runtime.CompileModule(ctx, f.wasm)
 	if err != nil {
-		_ = runtime.Close(ctx)
-		return nil, failure(ErrManifest, "WASM compile failed: %v", err)
+		_ = runtime.Close(context.Background())
+		return failure(ErrManifest, "WASM compile failed: %v", err)
 	}
 	if err := validateCompiledWASM(compiled); err != nil {
-		_ = runtime.Close(ctx)
+		_ = compiled.Close(context.Background())
+		_ = runtime.Close(context.Background())
+		return err
+	}
+	f.runtime, f.compiled = runtime, compiled
+	return nil
+}
+
+func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*wasmRuntime, error) {
+	if err := f.ensure(ctx); err != nil {
 		return nil, err
 	}
-	// A core start section can run during instantiation even when the named
-	// start functions are disabled. Bound that work and _initialize as well as
-	// the later host-driven calls, which have the existing host deadlines.
-	ctx, cancel := context.WithTimeout(ctx, wasmInitTimeout)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	runtime, compiled := f.runtime, f.compiled
+	f.mu.Unlock()
+	initCtx, cancel := context.WithTimeout(ctx, wasmInitTimeout)
 	defer cancel()
-	module, err := runtime.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithStartFunctions())
+	module, err := runtime.InstantiateModule(initCtx, compiled, wazero.NewModuleConfig().WithStartFunctions())
 	if err != nil {
-		_ = runtime.Close(ctx)
 		return nil, failure(ErrManifest, "WASM instantiate failed: %v", err)
 	}
-	result.module = module
+	result := &wasmRuntime{factory: f, runtime: runtime, module: module, host: host}
 	result.alloc = module.ExportedFunction("plug_alloc")
 	result.handle = module.ExportedFunction("plug_handle")
 	result.memory = module.Memory()
@@ -164,16 +212,34 @@ func newWASMRuntime(wasm []byte, host pluginapi.Host) (*wasmRuntime, error) {
 		result.close()
 		return nil, failure(ErrManifest, "WASM module does not expose the required ABI")
 	}
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		result.close()
+		return nil, failure(ErrInactive, "WASM factory is closed")
+	}
+	f.modules[module] = result
+	f.mu.Unlock()
 	// c-shared wasip1 modules expose `_initialize` instead of an exiting
 	// `_start`. Calling it once initializes the Go scheduler before any ABI
 	// calls, while the module remains resident for the host lifetime.
 	if initialize := module.ExportedFunction("_initialize"); initialize != nil {
-		if _, err := initialize.Call(ctx); err != nil {
+		if _, err := initialize.Call(initCtx); err != nil {
 			result.close()
 			return nil, failure(ErrManifest, "WASM runtime initialization failed: %v", err)
 		}
 	}
 	return result, nil
+}
+
+func (f *wasmFactory) hostCall(ctx context.Context, module api.Module, ptr, length uint32) uint64 {
+	f.mu.Lock()
+	runtime := f.modules[module]
+	f.mu.Unlock()
+	if runtime == nil {
+		panic("WASM guest is not initialized")
+	}
+	return runtime.hostCall(ctx, module, ptr, length)
 }
 
 func (r *wasmRuntime) close() {
@@ -188,9 +254,13 @@ func (r *wasmRuntime) closeLocked() {
 	}
 	r.closed = true
 	if r.module != nil {
+		if r.factory != nil {
+			r.factory.mu.Lock()
+			delete(r.factory.modules, r.module)
+			r.factory.mu.Unlock()
+		}
 		_ = r.module.Close(context.Background())
 	}
-	_ = r.runtime.Close(context.Background())
 }
 
 type wasmRequest struct {
