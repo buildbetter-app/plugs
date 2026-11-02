@@ -337,6 +337,7 @@ internal/integration/auditsql/fixture_test.go
 internal/integration/batchsql/BUILD.bazel
 internal/integration/batchsql/README.md
 internal/integration/batchsql/batch_test.go
+internal/integration/batchsql/child_allocator_test.go
 internal/integration/batchsql/fixture_test.go
 internal/integration/batchsql/hierarchy_authorization_test.go
 internal/integration/batchsql/hierarchy_test.go
