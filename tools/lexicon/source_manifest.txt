@@ -481,6 +481,14 @@ internal/integration/restoreworkload/README.md
 internal/integration/restoreworkload/restore_workload_test.go
 internal/integration/rpctx/BUILD.bazel
 internal/integration/rpctx/rpc_tx_test.go
+internal/integration/s1relations/BUILD.bazel
+internal/integration/s1relations/README.md
+internal/integration/s1relations/converter_test.go
+internal/integration/s1relations/engine_test.go
+internal/integration/s1relations/fixture_test.go
+internal/integration/s1relations/preservation_test.go
+internal/integration/s1relations/reference_test.go
+internal/integration/s1relations/subscriber_test.go
 internal/integration/sqliteacceptance/BUILD.bazel
 internal/integration/sqliteacceptance/README.md
 internal/integration/sqliteacceptance/durability_test.go
@@ -548,6 +556,7 @@ internal/server/authzrpc/drivers_test.go
 internal/server/authzrpc/hierarchy.go
 internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
+internal/server/authzrpc/predicate_count_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
 internal/server/claimrpc/BUILD.bazel
@@ -953,6 +962,7 @@ spec/s1-b17-b20/b17_test.go
 spec/s1-b17-b20/b18_test.go
 spec/s1-b17-b20/b19_archive_test.go
 spec/s1-b17-b20/b19_fixture_test.go
+spec/s1-b17-b20/b19_snapshot_test.go
 spec/s1-b17-b20/b20_test.go
 spec/s1-b17-b20/i6_test.go
 spec/s1-b17-b20/reference/b18/record.py
