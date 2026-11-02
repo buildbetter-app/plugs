@@ -380,6 +380,29 @@ func TestEmbeddedPlugNativeInventoryActualCLI(t *testing.T) {
 	if os.Getenv("PLUG_TEST_EXPORT_PUBLIC_HISTORY") == "1" {
 		t.Logf("NATIVE_PUBLIC_ARCHIVE_BASE64=%s", base64.StdEncoding.EncodeToString(archive))
 	}
+	// A later imported legacy ID may be shorter than the native generator's
+	// configured floor. Census the stored IDs without changing that generator.
+	shortInput := filepath.Join(workspace, "public-short.jsonl")
+	if err := os.WriteFile(shortInput, []byte(`{"id":"native-a","title":"Imported short source ID","status":"open","priority":2,"issue_type":"task","created_at":"2026-11-02T00:00:00Z","updated_at":"2026-11-02T00:00:00Z"}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Release the read-only handle before invoking a writer process.
+	if err := nativeStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	run("import", shortInput, "--json")
+	shortInventoryPath := filepath.Join(capture, "short-inventory.json")
+	run("--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", shortInventoryPath)
+	shortRaw, err := os.ReadFile(shortInventoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortInventory, err := plugdump.ReadInventory(bytes.NewReader(shortRaw))
+	if err != nil || len(shortInventory.Projects) != 1 || shortInventory.Projects[0].HashLength != 1 {
+		t.Fatalf("actual imported short ID floor not measured: %s %v", shortRaw, err)
+	}
+	run("--readonly", "export", "--format", plugdump.Format, "--plug-inventory", shortInventoryPath, "--output", filepath.Join(capture, "short-readback.tar"))
+
 }
 
 func mustNativeJSON(t *testing.T, value any) []byte {

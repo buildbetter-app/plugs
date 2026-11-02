@@ -91,6 +91,20 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 			return Inventory{}, nil, fmt.Errorf("unsupported native min_hash_length")
 		}
 	}
+	// Import preserves older valid source IDs even when they are shorter than
+	// the native generator minimum. This inventory floor describes observed IDs;
+	// the actual generator settings remain unchanged in the archived config.
+	for _, row := range tables["issues"].Rows {
+		id := text(row, "id")
+		if !strings.HasPrefix(id, prefix+"-") {
+			return Inventory{}, nil, fmt.Errorf("native issue outside source prefix")
+		}
+		suffix, _, _ := strings.Cut(strings.TrimPrefix(id, prefix+"-"), ".")
+		if !hashPattern.MatchString(suffix) {
+			return Inventory{}, nil, fmt.Errorf("unsupported native issue identity")
+		}
+		hashLength = min(hashLength, len(suffix))
+	}
 	inventory.Projects = []Project{{Prefix: prefix, IDMode: "hash", HashLength: hashLength, ChildCounters: map[string]uint64{}}}
 	// The existing closed-world mapping remains authoritative for allocator,
 	// ontology, unsupported families and every stored business value.

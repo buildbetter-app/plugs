@@ -120,7 +120,11 @@ func runNativePlugInventory(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	parent := filepath.Dir(output)
+	parent, err := filepath.EvalSymlinks(filepath.Dir(output))
+	if err != nil {
+		return HandleErrorRespectJSON("native inventory output parent cannot be resolved")
+	}
+	output = filepath.Join(parent, filepath.Base(output))
 	info, err := os.Lstat(parent)
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
 		return HandleErrorRespectJSON("native inventory output parent must be an existing private directory (0700)")
