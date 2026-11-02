@@ -12,8 +12,7 @@ import (
 func TestThreeDisposableRehearsals(t *testing.T) {
 	sha, tree := os.Getenv("R1_SOURCE_SHA"), os.Getenv("R1_SOURCE_TREE")
 	if sha == "" || tree == "" {
-		sha, tree = strings.Repeat("a", 40), strings.Repeat("b", 40)
-		t.Log("provenance=synthetic unit markers; hosted wrapper receipt binds test source")
+		t.Fatal("R1_SOURCE_SHA and R1_SOURCE_TREE are required; synthetic source markers cannot qualify a rollback transition")
 	}
 	for _, kind := range []string{"memory", "sqlite"} {
 		t.Run(kind, func(t *testing.T) {
@@ -35,8 +34,22 @@ func TestThreeDisposableRehearsals(t *testing.T) {
 						t.Fatalf("rollback digest is not a SHA-256: %q", digest)
 					}
 				}
-				if !run.Rollback.InputsFrozen || run.Rollback.Software != "WAIT_pinned_bundle_canary_only_no_redeployment" || run.Rollback.Complete != "WAIT_full_image_prompt_plugin_data_rollback_requires_redeployment_and_beads_readback" || run.Rollback.Data != run.Rollback.ReverseConversion {
+				if !run.Rollback.InputsFrozen || run.Rollback.Software != "PASS_digest_verified_old_candidate_old" || run.Rollback.Complete != "PASS_executable_image_prompt_plugin_data_transition" || run.Rollback.Data != "PASS_snapshot_restore_public_readback" || run.Rollback.ReverseConversion == "PASS" {
 					t.Fatalf("rollback boundary changed: %+v", run.Rollback)
+				}
+				if !run.Rollback.CandidatePinned || !run.Rollback.OldToCandidate || !run.Rollback.CandidatePublicReadback || !run.Rollback.CandidateStopped || !run.Rollback.CandidateToOld || !run.Rollback.RollbackPublicReadback || !run.Rollback.AtomicReplacements || !run.Rollback.IncarnationBoundary || !run.Rollback.CleanupVerified || !run.Rollback.WrongDigestRefused || !run.Rollback.PinMismatchRefused {
+					t.Fatalf("missing deployable transition evidence: %+v", run.Rollback)
+				}
+				if run.Rollback.OldBundle.SourceSHA != sha || run.Rollback.OldBundle.SourceTree != tree || run.Rollback.CandidateBundle.SourceSHA != sha || run.Rollback.CandidateBundle.SourceTree != tree || run.Rollback.RollbackBundle.SourceSHA != sha || run.Rollback.RollbackBundle.SourceTree != tree {
+					t.Fatalf("bundle provenance is not bound to the candidate: %+v", run.Rollback)
+				}
+				for _, digest := range []string{run.Rollback.OldBundle.ExecutableDigest, run.Rollback.OldBundle.ImageDigest, run.Rollback.OldBundle.PromptDigest, run.Rollback.OldBundle.PluginDigest, run.Rollback.CandidateBundle.ExecutableDigest, run.Rollback.CandidateBundle.ImageDigest, run.Rollback.CandidateBundle.PromptDigest, run.Rollback.CandidateBundle.PluginDigest, run.Rollback.RollbackBundle.ExecutableDigest, run.Rollback.RollbackBundle.ImageDigest, run.Rollback.RollbackBundle.PromptDigest, run.Rollback.RollbackBundle.PluginDigest} {
+					if len(digest) != 64 {
+						t.Fatalf("bundle identity is not a SHA-256: %q", digest)
+					}
+				}
+				if run.Rollback.OldIncarnation == "" || run.Rollback.CandidateIncarnation == "" || run.Rollback.RollbackIncarnation == "" || run.Rollback.OldIncarnation == run.Rollback.CandidateIncarnation || run.Rollback.CandidateIncarnation == run.Rollback.RollbackIncarnation {
+					t.Fatalf("runtime incarnation transition was not proven: %+v", run.Rollback)
 				}
 				for _, row := range run.Shadow.Rows {
 					if row.TerminalError != 0 || row.RetryableError != 0 || row.Unknown != 0 {
@@ -74,5 +87,49 @@ func TestDisposableRunnerRefusesExternalResourceConfiguration(t *testing.T) {
 	}
 	if _, err := RunDisposable(context.Background(), "sqlite", "HEAD", strings.Repeat("b", 40)); err == nil {
 		t.Fatal("unbound source accepted")
+	}
+	if _, err := RunDisposable(context.Background(), "sqlite", strings.Repeat("a", 40), strings.Repeat("b", 40)); err == nil {
+		t.Fatal("synthetic source markers accepted")
+	}
+}
+
+func TestRuntimeBundleValidationAndAtomicReplacementFailClosed(t *testing.T) {
+	if err := ensureWorkRoot(); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.MkdirTemp(workRoot, "plug-swarm-i8-bundle-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	data := []byte("disposable-data")
+	bundle, err := buildRuntimeBundle(root, "candidate", "0123456789abcdef0123456789abcdef01234567", "89abcdef0123456789abcdef0123456789abcdef", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRuntimeBundle(bundle); err != nil {
+		t.Fatal(err)
+	}
+	serviceRoot := filepath.Join(root, "service")
+	if err := installRuntimeFiles(serviceRoot, bundle); err != nil {
+		t.Fatal(err)
+	}
+	promptPath := filepath.Join(serviceRoot, runtimePromptName)
+	promptBefore, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bundle.PromptPath, []byte("tampered"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRuntimeBundle(bundle); err == nil {
+		t.Fatal("wrong prompt digest accepted")
+	}
+	if got, readErr := os.ReadFile(promptPath); readErr != nil || string(got) != string(promptBefore) {
+		t.Fatalf("failed validation changed the installed prompt: %v", readErr)
+	}
+	bundle.PromptPath = filepath.Join(root, "missing-prompt")
+	if err := validateRuntimeBundle(bundle); err == nil {
+		t.Fatal("missing pinned artifact accepted")
 	}
 }
