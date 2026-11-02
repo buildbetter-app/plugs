@@ -1,0 +1,137 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
+)
+
+func TestMissingPinnedBeadsCannotPassOrUsePATH(t *testing.T) {
+	result := outcome{BeadsReimport: "WAIT", BeadsReadback: "WAIT"}
+	runBeads(context.Background(), beadsOptions{}, t.TempDir(), nil, reverseconverter.Result{}, &result)
+	if result.Status != "WAIT" || result.Reason != "pinned_beads_artifact_required" || result.BeadsReimport != "WAIT" || result.BeadsReadback != "WAIT" {
+		t.Fatalf("missing executable certified a roundtrip: %+v", result)
+	}
+}
+
+func TestBeadsDigestMismatchStopsBeforeAnyProcessOrTarget(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "untrusted-artifact")
+	if err := os.WriteFile(binary, []byte("never executed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	result := outcome{BeadsReimport: "WAIT", BeadsReadback: "WAIT"}
+	runBeads(context.Background(), beadsOptions{Binary: binary, SHA256: hash([]byte("different")), BuildRun: "1", Inventory: "not-opened"}, root, nil, reverseconverter.Result{}, &result)
+	if result.Status != "BLOCK" || result.Reason != "beads_artifact_digest_mismatch" {
+		t.Fatalf("artifact boundary: %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(root, "beads-target")); !os.IsNotExist(err) {
+		t.Fatal("unverified artifact created a target")
+	}
+}
+
+func TestOriginalSourceArchiveIsNotPostReimportReadback(t *testing.T) {
+	path := "../../internal/integration/offlinehistory/testdata/dolt-source-partial.tar"
+	source, err := dumpformat.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	converted, err := reverseconverter.ConvertArchive(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The original real SQLSource fixture lacks the reverse stream's metadata
+	// envelopes. Treating it as post-import evidence must fail independently.
+	if reason := compareRawReadback(converted.JSONL, source); reason != "beads_raw_field_changed" {
+		t.Fatalf("original source stood in for a reimported target: %s", reason)
+	}
+	if losses := nativeOpaqueLosses(source, source); len(losses) != 0 {
+		t.Fatalf("same raw source changed: %v", losses)
+	}
+}
+
+func TestPostgresDestinationOverridesRefuseBeforeConnection(t *testing.T) {
+	for _, dsn := range []string{
+		"postgres://example.invalid/plug_roundtrip_public",
+		"postgres://127.0.0.1/production",
+		"postgres://127.0.0.1/plug_roundtrip_public?host=example.invalid",
+		"postgres://127.0.0.1/plug_roundtrip_public?service=external",
+	} {
+		if store, err := openDisposablePostgres(context.Background(), dsn); err == nil || store != nil {
+			t.Fatal("unsafe target accepted")
+		}
+	}
+}
+
+func TestPublicPostgresPartialSnapshotReverseAndMissingBeadsBoundary(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	root, err := os.MkdirTemp("/tmp", "plug-roundtrip-postgres-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	name := "plug-swarm-i6-publictool-" + hash([]byte(root))[:16]
+	docker := func(args ...string) ([]byte, error) {
+		return exec.CommandContext(ctx, "docker", append([]string{"--host=unix:///var/run/docker.sock"}, args...)...).CombinedOutput()
+	}
+	const image = "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
+	if out, err := docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-p", "127.0.0.1::5432", image); err != nil {
+		t.Fatalf("owned PostgreSQL: %v %s", err, out)
+	}
+	t.Cleanup(func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stop()
+		if out, err := exec.CommandContext(cleanup, "docker", "--host=unix:///var/run/docker.sock", "rm", "-f", name).CombinedOutput(); err != nil {
+			t.Errorf("owned PostgreSQL cleanup: %v %s", err, out)
+		}
+	})
+	port, err := docker("port", name, "5432/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := strings.TrimSpace(string(port))
+	if host, _, err := net.SplitHostPort(address); err != nil || host != "127.0.0.1" {
+		t.Fatal("PostgreSQL is not loopback")
+	}
+	base := "postgres://postgres@" + address + "/"
+	db, err := sql.Open("pgx", base+"postgres?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for db.PingContext(ctx) != nil {
+		if ctx.Err() != nil {
+			t.Fatal("owned PostgreSQL did not become ready")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for _, mode := range []string{"partial", "snapshot"} {
+		t.Run(mode, func(t *testing.T) {
+			database := "plug_roundtrip_" + mode
+			if _, err := db.ExecContext(ctx, "CREATE DATABASE "+database); err != nil {
+				t.Fatal(err)
+			}
+			result := run([]string{"--input", "../../internal/integration/offlinehistory/testdata/dolt-source-partial.tar", "--output-dir", filepath.Join(root, mode), "--history-mode", mode, "--engine", "postgres", "--postgres-dsn", base + database + "?sslmode=disable"})
+			if result.Status != "WAIT" || result.Reason != "pinned_beads_artifact_required" || result.Claims != 1 || result.Writes != 1 || result.HistoryFloor != "1" || result.RestoredIncarnation == "" || result.ReverseIncarnation != result.RestoredIncarnation || result.ReverseAt == "" || result.SourceHistoryComplete || len(result.SourceHistoryGaps) != 2 || result.BeadsReimport != "WAIT" || result.BeadsReadback != "WAIT" {
+				t.Fatalf("public PostgreSQL boundary: %+v", result)
+			}
+			encoded, _ := json.Marshal(result)
+			t.Logf("PUBLIC_CONVERTER_OUTCOME %s", encoded)
+		})
+	}
+}
