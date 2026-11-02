@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
+import re
 import stat
 import tarfile
 import tempfile
@@ -20,6 +21,12 @@ import tempfile
 
 SCHEMA = "plug-public-bundle/1"
 COMPANION_SCHEMA = "plug-public-companion/1"
+NATIVE_SCHEMA = "plug-public-native/1"
+NATIVE_BEADS_COMMIT = "305fec3afac83224f46c54f982959fd99db136fa"
+NATIVE_BEADS_TREE = "48e3545b7c5c6a5cdc0119e34dfa379354456a6e"
+NATIVE_BEADS_SOURCE_REF = "refs/remotes/origin/codex/refill-beads-native-inventory-20261102-0610"
+NATIVE_BEADS_MANIFEST_ENTRIES = 5141
+NATIVE_BEADS_MANIFEST_SHA256 = "6c2e549b54b472790d57a27370821d69159d4d6dc817e5bf38dbc56c856c8420"
 
 # Keep the original importer/runtime profile byte-for-byte compatible at the
 # artifact boundary.  The companion profile is deliberately a separate
@@ -27,11 +34,12 @@ COMPANION_SCHEMA = "plug-public-companion/1"
 PROFILE_ARTIFACTS = {
     SCHEMA: {"bin/bd", "bin/plug"},
     COMPANION_SCHEMA: {"bin/bd-export", "bin/roundtrip"},
+    NATIVE_SCHEMA: {"bin/bd-export"},
 }
 ARTIFACTS = PROFILE_ARTIFACTS[SCHEMA]
 
 
-def profile_config(profile: str, plug_target: str) -> dict[str, object]:
+def profile_config(profile: str, plug_target: str | None) -> dict[str, object]:
     if profile == SCHEMA:
         return {
             "artifacts": PROFILE_ARTIFACTS[SCHEMA],
@@ -52,7 +60,80 @@ def profile_config(profile: str, plug_target: str) -> dict[str, object]:
                 "plug_roundtrip": {"label": plug_target, "binary": "bin/roundtrip"},
             },
         }
+    if profile == NATIVE_SCHEMA:
+        if plug_target is not None:
+            raise ValueError("native profile does not accept a Plug target")
+        return {
+            "artifacts": PROFILE_ARTIFACTS[NATIVE_SCHEMA],
+            "inputs": {"bin/bd-export": "bd_export"},
+            "targets": {
+                "beads_exporter": {"label": "//cmd/bd:bd", "binary": "bin/bd-export"},
+            },
+        }
     raise ValueError(f"unsupported bundle profile: {profile}")
+
+
+def verify_native_manifest_contract(manifest: dict[str, object]) -> None:
+    expected_keys = {
+        "schema", "source", "targets", "build", "toolchain", "resolution",
+        "workflow", "source_refs", "artifacts", "archive",
+    }
+    if set(manifest) != expected_keys or manifest.get("schema") != NATIVE_SCHEMA:
+        raise ValueError("native manifest keys or profile are not exact")
+    source = manifest.get("source")
+    if not isinstance(source, dict) or set(source) != {"beads"}:
+        raise ValueError("native manifest must contain only Beads source")
+    beads = source.get("beads")
+    if not isinstance(beads, dict) or set(beads) != {"commit", "tree", "manifest_sha256", "manifest_entries"}:
+        raise ValueError("native Beads source record is not exact")
+    if beads.get("commit") != NATIVE_BEADS_COMMIT or beads.get("tree") != NATIVE_BEADS_TREE:
+        raise ValueError("native Beads source identity is not exact")
+    if beads.get("manifest_sha256") != NATIVE_BEADS_MANIFEST_SHA256:
+        raise ValueError("native Beads source manifest digest is not the pinned manifest")
+    if beads.get("manifest_entries") != NATIVE_BEADS_MANIFEST_ENTRIES:
+        raise ValueError("native Beads source manifest count is not the pinned manifest")
+    if manifest.get("source_refs") != {"beads": NATIVE_BEADS_SOURCE_REF}:
+        raise ValueError("native source references are not exact")
+    if manifest.get("targets") != {
+        "beads_exporter": {"label": "//cmd/bd:bd", "binary": "bin/bd-export"},
+    }:
+        raise ValueError("native target binding is not exact")
+    workflow = manifest.get("workflow")
+    if not isinstance(workflow, dict) or set(workflow) != {"ref", "sha", "profile"} or workflow.get("profile") != NATIVE_SCHEMA:
+        raise ValueError("native workflow provenance is not exact")
+    if not isinstance(workflow.get("ref"), str) or not workflow["ref"] or not isinstance(workflow.get("sha"), str) or not re.fullmatch(r"[0-9a-fA-F]{40}", workflow["sha"]):
+        raise ValueError("native workflow provenance is invalid")
+    build = manifest.get("build")
+    if not isinstance(build, dict) or set(build) != {"beads", "run_id"}:
+        raise ValueError("native build provenance is not exact")
+    if not isinstance(build.get("beads"), str) or not build["beads"]:
+        raise ValueError("native build command is invalid")
+    run_id = build.get("run_id")
+    if not isinstance(run_id, str) or not re.fullmatch(r"[1-9][0-9]*", run_id):
+        raise ValueError("native build.run_id must be a positive decimal string")
+    toolchain = manifest.get("toolchain")
+    if not isinstance(toolchain, dict) or set(toolchain) != {"go", "bazel", "bazelisk_sha256"}:
+        raise ValueError("native toolchain provenance is not exact")
+    if not all(isinstance(toolchain.get(key), str) and toolchain[key] for key in ("go", "bazel")):
+        raise ValueError("native toolchain provenance is invalid")
+    if not isinstance(toolchain.get("bazelisk_sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", toolchain["bazelisk_sha256"]):
+        raise ValueError("native Bazelisk provenance is invalid")
+    resolution = manifest.get("resolution")
+    resolution_keys = {
+        "bd_export_help_sha256", "bd_export_help_exit", "bd_export_version",
+        "bd_export_version_sha256", "bd_init_help_sha256", "bd_import_help_sha256",
+    }
+    if not isinstance(resolution, dict) or set(resolution) != resolution_keys or resolution.get("bd_export_help_exit") != 0:
+        raise ValueError("native resolution provenance is not exact")
+    version = resolution.get("bd_export_version")
+    if not isinstance(version, dict) or version.get("commit") != NATIVE_BEADS_COMMIT or version.get("build") != "public-" + NATIVE_BEADS_COMMIT:
+        raise ValueError("native executable identity is not exact")
+    for key in ("bd_export_help_sha256", "bd_export_version_sha256", "bd_init_help_sha256", "bd_import_help_sha256"):
+        if not isinstance(resolution.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", resolution[key]):
+            raise ValueError("native probe provenance is invalid: " + key)
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != {"bin/bd-export"}:
+        raise ValueError("native artifact set is not exact")
 
 
 def digest(path: Path) -> str:
@@ -109,7 +190,21 @@ def verify_artifact(path: Path, relative: str, record: object) -> None:
 def create(args: argparse.Namespace) -> None:
     output = args.output.resolve()
     profile = getattr(args, "profile", SCHEMA)
-    config = profile_config(profile, args.plug_target)
+    plug_target = getattr(args, "plug_target", None)
+    if profile == NATIVE_SCHEMA:
+        if any(getattr(args, name, None) is not None for name in (
+            "bd", "plug", "roundtrip", "plug_commit", "plug_tree", "plug_manifest", "plug_target",
+        )):
+            raise ValueError("native profile rejects Plug and importer executable inputs")
+    else:
+        required = {
+            SCHEMA: ("bd", "plug", "plug_commit", "plug_tree", "plug_manifest", "plug_target"),
+            COMPANION_SCHEMA: ("bd_export", "roundtrip", "plug_commit", "plug_tree", "plug_manifest", "plug_target"),
+        }[profile]
+        missing = [name for name in required if not isinstance(getattr(args, name, None), str) or not getattr(args, name)]
+        if missing:
+            raise ValueError("missing profile inputs: " + ", ".join(missing))
+    config = profile_config(profile, plug_target)
     artifacts = config["artifacts"]
     inputs = config["inputs"]
     output.mkdir(parents=True, exist_ok=False)
@@ -127,11 +222,54 @@ def create(args: argparse.Namespace) -> None:
     metadata = read_json(Path(args.metadata))
     if not isinstance(metadata, dict):
         raise ValueError("metadata must be an object")
+    if profile == NATIVE_SCHEMA:
+        if args.beads_commit != NATIVE_BEADS_COMMIT or args.beads_tree != NATIVE_BEADS_TREE:
+            raise ValueError("native Beads source identity is not exact")
+        if set(metadata) != {"workflow", "source_refs", "toolchain", "resolution", "build"}:
+            raise ValueError("native metadata keys are not exact")
+        workflow = metadata["workflow"]
+        if not isinstance(workflow, dict) or set(workflow) != {"ref", "sha", "profile"} or workflow.get("profile") != NATIVE_SCHEMA:
+            raise ValueError("native workflow metadata is not exact")
+        if not isinstance(workflow.get("ref"), str) or not workflow["ref"] or not isinstance(workflow.get("sha"), str) or not re.fullmatch(r"[0-9a-fA-F]{40}", workflow["sha"]):
+            raise ValueError("native workflow provenance is invalid")
+        source_refs = metadata["source_refs"]
+        if source_refs != {"beads": NATIVE_BEADS_SOURCE_REF}:
+            raise ValueError("native source references are not exact")
+        toolchain = metadata["toolchain"]
+        if not isinstance(toolchain, dict) or set(toolchain) != {"go", "bazel", "bazelisk_sha256"}:
+            raise ValueError("native toolchain metadata is not exact")
+        if not all(isinstance(toolchain.get(key), str) and toolchain[key] for key in ("go", "bazel")):
+            raise ValueError("native toolchain metadata is invalid")
+        if not isinstance(toolchain.get("bazelisk_sha256"), str) or len(toolchain["bazelisk_sha256"]) != 64:
+            raise ValueError("native Bazelisk provenance is invalid")
+        build = metadata["build"]
+        if not isinstance(build, dict) or set(build) != {"beads", "run_id"}:
+            raise ValueError("native build metadata is not exact")
+        if not isinstance(build.get("beads"), str) or not build["beads"]:
+            raise ValueError("native build command is invalid")
+        run_id = build.get("run_id")
+        if not isinstance(run_id, str) or not re.fullmatch(r"[1-9][0-9]*", run_id):
+            raise ValueError("native build.run_id must be a positive decimal string")
+        resolution = metadata["resolution"]
+        resolution_keys = {
+            "bd_export_help_sha256", "bd_export_help_exit", "bd_export_version",
+            "bd_export_version_sha256", "bd_init_help_sha256", "bd_import_help_sha256",
+        }
+        if not isinstance(resolution, dict) or set(resolution) != resolution_keys:
+            raise ValueError("native resolution metadata is not exact")
+        if resolution.get("bd_export_help_exit") != 0:
+            raise ValueError("native exporter help probe did not pass")
+        version = resolution.get("bd_export_version")
+        if not isinstance(version, dict) or version.get("commit") != NATIVE_BEADS_COMMIT or version.get("build") != "public-" + NATIVE_BEADS_COMMIT:
+            raise ValueError("native executable identity is not linked to the source commit")
+        for key in ("bd_export_help_sha256", "bd_export_version_sha256", "bd_init_help_sha256", "bd_import_help_sha256"):
+            if not isinstance(resolution.get(key), str) or len(resolution[key]) != 64:
+                raise ValueError("native probe provenance is invalid: " + key)
     source_manifests: dict[str, dict[str, object]] = {}
-    for name, commit, tree, source_manifest in (
-        ("beads", args.beads_commit, args.beads_tree, args.beads_manifest),
-        ("plug", args.plug_commit, args.plug_tree, args.plug_manifest),
-    ):
+    sources = [("beads", args.beads_commit, args.beads_tree, args.beads_manifest)]
+    if profile != NATIVE_SCHEMA:
+        sources.append(("plug", args.plug_commit, args.plug_tree, args.plug_manifest))
+    for name, commit, tree, source_manifest in sources:
         manifest_path = Path(source_manifest)
         source_manifests[name] = {
             "commit": commit,
@@ -139,9 +277,13 @@ def create(args: argparse.Namespace) -> None:
             "manifest_sha256": digest(manifest_path),
             "manifest_entries": sum(1 for line in manifest_path.read_text(encoding="utf-8").splitlines() if line),
         }
-        if profile == COMPANION_SCHEMA:
+        if profile in {COMPANION_SCHEMA, NATIVE_SCHEMA}:
             (output / "source").mkdir(exist_ok=True)
             (output / "source" / f"{name}.manifest").write_bytes(manifest_path.read_bytes())
+    if profile == NATIVE_SCHEMA:
+        native_source = source_manifests["beads"]
+        if native_source["manifest_sha256"] != NATIVE_BEADS_MANIFEST_SHA256 or native_source["manifest_entries"] != NATIVE_BEADS_MANIFEST_ENTRIES:
+            raise ValueError("native Beads source manifest is not the pinned manifest")
 
     manifest: dict[str, object] = {
         "schema": profile,
@@ -198,8 +340,10 @@ def verify_provenance(manifest: dict[str, object], expected_path: Path) -> None:
             raise ValueError(f"bundle provenance mismatch: {field}")
     sources = expected["source"]
     actual = manifest.get("source")
-    if not isinstance(sources, dict) or set(sources) != {"beads", "plug"} or not isinstance(actual, dict):
-        raise ValueError("expected provenance must name both canonical sources")
+    if not isinstance(sources, dict) or not isinstance(actual, dict):
+        raise ValueError("expected provenance must name canonical sources")
+    if set(sources) != set(actual):
+        raise ValueError("expected provenance source set does not match the profile")
     for name, record in sources.items():
         if not isinstance(record, dict) or set(record) != {"commit", "tree"}:
             raise ValueError("expected source must contain commit and tree")
@@ -217,12 +361,21 @@ def verify(args: argparse.Namespace) -> None:
     profile = manifest.get("schema")
     if not isinstance(profile, str) or profile not in PROFILE_ARTIFACTS:
         raise ValueError("unsupported bundle manifest")
-    if profile == COMPANION_SCHEMA:
-        if manifest.get("targets") != profile_config(profile, "//tools/roundtrip:roundtrip")["targets"]:
-            raise ValueError("companion executable targets are not exact")
+    if profile in {COMPANION_SCHEMA, NATIVE_SCHEMA}:
+        if profile == NATIVE_SCHEMA:
+            verify_native_manifest_contract(manifest)
+        expected_target = "//tools/roundtrip:roundtrip" if profile == COMPANION_SCHEMA else None
+        if manifest.get("targets") != profile_config(profile, expected_target)["targets"]:
+            raise ValueError("profile executable targets are not exact")
         sources = manifest.get("source")
-        if not isinstance(sources, dict) or set(sources) != {"beads", "plug"}:
-            raise ValueError("companion canonical source manifests are missing")
+        expected_sources = {"beads", "plug"} if profile == COMPANION_SCHEMA else {"beads"}
+        if not isinstance(sources, dict) or set(sources) != expected_sources:
+            raise ValueError("canonical source manifests are missing or contain an unexpected source")
+        source_dir = root / "source"
+        if profile == NATIVE_SCHEMA:
+            names = {path.name for path in source_dir.iterdir()} if source_dir.is_dir() else set()
+            if names != {"beads.manifest"}:
+                raise ValueError("native source manifest set is not exact")
         for name, record in sources.items():
             path = contained(root, f"source/{name}.manifest")
             if not isinstance(record, dict) or digest(path) != record.get("manifest_sha256"):
@@ -284,10 +437,10 @@ def parser() -> argparse.ArgumentParser:
     make.add_argument("--beads-commit", required=True)
     make.add_argument("--beads-tree", required=True)
     make.add_argument("--beads-manifest", required=True)
-    make.add_argument("--plug-commit", required=True)
-    make.add_argument("--plug-tree", required=True)
-    make.add_argument("--plug-manifest", required=True)
-    make.add_argument("--plug-target", required=True)
+    make.add_argument("--plug-commit")
+    make.add_argument("--plug-tree")
+    make.add_argument("--plug-manifest")
+    make.add_argument("--plug-target")
     make.set_defaults(function=create)
     check = subparsers.add_parser("verify")
     check.add_argument("--directory", type=Path, required=True)

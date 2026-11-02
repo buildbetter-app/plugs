@@ -5,11 +5,11 @@ on:
     inputs:
       sha:
         description: Exact Plug commit to build
-        required: true
+        required: false
         type: string
       source_ref:
         description: Branch containing the exact Plug commit
-        required: true
+        required: false
         type: string
       label:
         description: Short public bundle label
@@ -17,8 +17,7 @@ on:
         type: string
       plug_target:
         description: Exact Plug executable target (for example //cmd/plug:plug)
-        required: true
-        default: //cmd/plug:plug
+        required: false
         type: string
       profile:
         description: Public bundle profile
@@ -46,6 +45,9 @@ jobs:
       # failed; these explicit source pins do not change the importer profile.
       BEADS_COMPANION_COMMIT: 682ca798dab448803ea9b74f7da3715c21d8c3ae
       BEADS_COMPANION_TREE: 9d026de307ee915953b247cf42758d0c53303574
+      BEADS_NATIVE_COMMIT: 305fec3afac83224f46c54f982959fd99db136fa
+      BEADS_NATIVE_TREE: 48e3545b7c5c6a5cdc0119e34dfa379354456a6e
+      BEADS_NATIVE_REF: codex/refill-beads-native-inventory-20261102-0610
       PLUG_COMPANION_COMMIT: 83fe6cd8efdbbc6a06194d3fc8b675a4b713baa1
       PLUG_COMPANION_TREE: 79bff38788a8470d1bee30043884ca37c095307b
       PLUG_COMPANION_REF: codex/b1c-roundtrip-source-83fe6cd8-20261102
@@ -60,21 +62,43 @@ jobs:
       - name: Validate dispatch inputs
         run: |
           set -euo pipefail
-          [[ "$PLUG_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "invalid Plug SHA" >&2; exit 1; }
-          [[ "$PLUG_SOURCE_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "invalid Plug source ref" >&2; exit 1; }
           [[ "$BUNDLE_LABEL" =~ ^[A-Za-z0-9._-]{1,48}$ ]] || { echo "invalid bundle label" >&2; exit 1; }
-          [[ "$PLUG_TARGET" =~ ^//[A-Za-z0-9_./:-]+$ ]] || { echo "invalid Bazel target" >&2; exit 1; }
           case "$BUNDLE_PROFILE" in
             plug-public-bundle/1)
+              if [[ -z "$PLUG_TARGET" ]]; then
+                PLUG_TARGET=//cmd/plug:plug
+                export PLUG_TARGET
+                printf '%s\n' "PLUG_TARGET=$PLUG_TARGET" >> "$GITHUB_ENV"
+              fi
+              [[ "$PLUG_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "invalid Plug SHA" >&2; exit 1; }
+              [[ "$PLUG_SOURCE_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "invalid Plug source ref" >&2; exit 1; }
+              [[ "$PLUG_TARGET" =~ ^//[A-Za-z0-9_./:-]+$ ]] || { echo "invalid Bazel target" >&2; exit 1; }
               test "$BEADS_COMMIT" = 9d6fff760b7a314b476539198504d77ce0959656
               ;;
             plug-public-companion/1)
+              if [[ -z "$PLUG_TARGET" ]]; then
+                PLUG_TARGET=//cmd/plug:plug
+                export PLUG_TARGET
+                printf '%s\n' "PLUG_TARGET=$PLUG_TARGET" >> "$GITHUB_ENV"
+              fi
+              [[ "$PLUG_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "invalid Plug SHA" >&2; exit 1; }
+              [[ "$PLUG_SOURCE_REF" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "invalid Plug source ref" >&2; exit 1; }
+              [[ "$PLUG_TARGET" =~ ^//[A-Za-z0-9_./:-]+$ ]] || { echo "invalid Bazel target" >&2; exit 1; }
               BEADS_COMMIT="$BEADS_COMPANION_COMMIT"
               export BEADS_COMMIT
               printf '%s\n' "BEADS_COMMIT=$BEADS_COMMIT" >> "$GITHUB_ENV"
               test "$PLUG_COMMIT" = "$PLUG_COMPANION_COMMIT"
               test "$PLUG_SOURCE_REF" = "$PLUG_COMPANION_REF"
               test "$PLUG_TARGET" = //tools/roundtrip:roundtrip
+              ;;
+            plug-public-native/1)
+              test -z "$PLUG_COMMIT" || { echo "native profile rejects Plug SHA" >&2; exit 1; }
+              test -z "$PLUG_SOURCE_REF" || { echo "native profile rejects Plug source ref" >&2; exit 1; }
+              test -z "$PLUG_TARGET" || { echo "native profile rejects Plug target" >&2; exit 1; }
+              BEADS_COMMIT="$BEADS_NATIVE_COMMIT"
+              export BEADS_COMMIT
+              printf '%s\n' "BEADS_COMMIT=$BEADS_COMMIT" >> "$GITHUB_ENV"
+              test "$BEADS_COMMIT" = 305fec3afac83224f46c54f982959fd99db136fa
               ;;
             *)
               echo "unsupported bundle profile" >&2
@@ -98,42 +122,66 @@ jobs:
       - name: Fetch and verify canonical Beads source
         run: |
           set -euo pipefail
-          if ! git cat-file -e "$BEADS_COMMIT^{commit}"; then
-            git fetch --no-tags origin refs/heads/beads:refs/remotes/origin/beads
+          if [[ "$BUNDLE_PROFILE" == plug-public-native/1 ]]; then
+            beads_source_ref="refs/remotes/origin/$BEADS_NATIVE_REF"
+            if ! git show-ref --verify --quiet "$beads_source_ref"; then
+              git fetch --no-tags origin "refs/heads/$BEADS_NATIVE_REF:$beads_source_ref"
+            fi
+          else
+            beads_source_ref="refs/remotes/origin/beads"
+            if ! git show-ref --verify --quiet "$beads_source_ref"; then
+              git fetch --no-tags origin refs/heads/beads:refs/remotes/origin/beads
+            fi
           fi
-          beads_source_ref="refs/remotes/origin/beads"
           if ! git show-ref --verify --quiet "$beads_source_ref"; then
-            git fetch --no-tags origin refs/heads/beads:refs/remotes/origin/beads
+            echo "canonical Beads source ref is unavailable" >&2
+            exit 1
           fi
           git cat-file -e "$BEADS_COMMIT^{commit}"
-          git cat-file -e "$PLUG_COMMIT^{commit}"
-          source_ref="refs/remotes/origin/$PLUG_SOURCE_REF"
-          git show-ref --verify --quiet "$source_ref"
-          source_sha="$(git rev-parse "$source_ref^{commit}")"
-          test "$source_sha" = "$PLUG_COMMIT"
           beads_tree="$(git rev-parse "$BEADS_COMMIT^{tree}")"
-          plug_tree="$(git rev-parse "$PLUG_COMMIT^{tree}")"
-          source_tree="$(git rev-parse "$source_ref^{tree}")"
-          test "$source_tree" = "$plug_tree"
-          git merge-base --is-ancestor "$BEADS_COMMIT" "$beads_source_ref"
+          if [[ "$BUNDLE_PROFILE" == plug-public-native/1 ]]; then
+            test "$(git rev-parse "$beads_source_ref^{commit}")" = "$BEADS_COMMIT"
+            test "$beads_tree" = "$BEADS_NATIVE_TREE"
+          else
+            git cat-file -e "$PLUG_COMMIT^{commit}"
+            source_ref="refs/remotes/origin/$PLUG_SOURCE_REF"
+            git show-ref --verify --quiet "$source_ref"
+            source_sha="$(git rev-parse "$source_ref^{commit}")"
+            test "$source_sha" = "$PLUG_COMMIT"
+            plug_tree="$(git rev-parse "$PLUG_COMMIT^{tree}")"
+            source_tree="$(git rev-parse "$source_ref^{tree}")"
+            test "$source_tree" = "$plug_tree"
+            git merge-base --is-ancestor "$BEADS_COMMIT" "$beads_source_ref"
+          fi
           if [[ "$BUNDLE_PROFILE" == plug-public-companion/1 ]]; then
             test "$beads_tree" = "$BEADS_COMPANION_TREE"
             test "$plug_tree" = "$PLUG_COMPANION_TREE"
           fi
           git ls-tree -r --full-tree "$BEADS_COMMIT" > "$RUNNER_TEMP/beads-source-manifest"
-          git ls-tree -r --full-tree "$PLUG_COMMIT" > "$RUNNER_TEMP/plug-source-manifest"
           mkdir -p "$RUNNER_TEMP/beads-source"
           git archive --format=tar "$BEADS_COMMIT" | tar -x -C "$RUNNER_TEMP/beads-source"
-          mkdir -p "$RUNNER_TEMP/plug-source"
-          git archive --format=tar "$PLUG_COMMIT" | tar -x -C "$RUNNER_TEMP/plug-source"
-          printf '%s\n' \
-            "BEADS_TREE=$beads_tree" \
-            "BEADS_SOURCE_REF=$beads_source_ref" \
-            "PLUG_TREE=$plug_tree" \
-            "PLUG_SOURCE_REF=$PLUG_SOURCE_REF" \
-            "BEADS_MANIFEST=$RUNNER_TEMP/beads-source-manifest" \
-            "PLUG_MANIFEST=$RUNNER_TEMP/plug-source-manifest" \
-            "PLUG_SOURCE_DIR=$RUNNER_TEMP/plug-source" >> "$GITHUB_ENV"
+          if [[ "$BUNDLE_PROFILE" == plug-public-native/1 ]]; then
+            entries="$(wc -l < "$RUNNER_TEMP/beads-source-manifest")"
+            digest="$(sha256sum "$RUNNER_TEMP/beads-source-manifest" | awk '{print $1}')"
+            test "$entries" -eq 5141
+            test "$digest" = 6c2e549b54b472790d57a27370821d69159d4d6dc817e5bf38dbc56c856c8420
+            printf '%s\n' \
+              "BEADS_TREE=$beads_tree" \
+              "BEADS_SOURCE_REF=$beads_source_ref" \
+              "BEADS_MANIFEST=$RUNNER_TEMP/beads-source-manifest" >> "$GITHUB_ENV"
+          else
+            git ls-tree -r --full-tree "$PLUG_COMMIT" > "$RUNNER_TEMP/plug-source-manifest"
+            mkdir -p "$RUNNER_TEMP/plug-source"
+            git archive --format=tar "$PLUG_COMMIT" | tar -x -C "$RUNNER_TEMP/plug-source"
+            printf '%s\n' \
+              "BEADS_TREE=$beads_tree" \
+              "BEADS_SOURCE_REF=$beads_source_ref" \
+              "PLUG_TREE=$plug_tree" \
+              "PLUG_SOURCE_REF=$PLUG_SOURCE_REF" \
+              "BEADS_MANIFEST=$RUNNER_TEMP/beads-source-manifest" \
+              "PLUG_MANIFEST=$RUNNER_TEMP/plug-source-manifest" \
+              "PLUG_SOURCE_DIR=$RUNNER_TEMP/plug-source" >> "$GITHUB_ENV"
+          fi
 
       - name: Install pinned Bazel toolchain
         env:
@@ -213,6 +261,7 @@ jobs:
           fi
 
       - name: Build exact Plug runtime target
+        if: ${{ inputs.profile != 'plug-public-native/1' }}
         run: |
           set -euo pipefail
           cd "$PLUG_SOURCE_DIR"
@@ -258,6 +307,21 @@ jobs:
                   "plug_help_exit": int((root / "plug-help-exit").read_text()),
               }
               beads_build = "CGO_ENABLED=0 go build -tags gms_pure_go -trimpath ./cmd/bd"
+          elif profile == "plug-public-native/1":
+              resolution = {
+                  "bd_export_help_sha256": hashlib.sha256((root / "bd-export-help").read_bytes()).hexdigest(),
+                  "bd_export_help_exit": int((root / "bd-export-help-exit").read_text()),
+                  "bd_export_version": json.loads((root / "bd-export-version.json").read_text()),
+                  "bd_export_version_sha256": hashlib.sha256((root / "bd-export-version.json").read_bytes()).hexdigest(),
+                  "bd_init_help_sha256": hashlib.sha256((root / "bd-init-help").read_bytes()).hexdigest(),
+                  "bd_import_help_sha256": hashlib.sha256((root / "bd-import-help").read_bytes()).hexdigest(),
+              }
+              beads_build = (
+                  "bazel build --jobs=2 --local_resources=memory=8192 "
+                  "--@rules_go//go/config:tags=gms_pure_go "
+                  "--@rules_go//go/config:gc_linkopts=-X=main.Commit=" + os.environ["BEADS_COMMIT"]
+                  + ",-X=main.Build=public-" + os.environ["BEADS_COMMIT"] + " //cmd/bd:bd"
+              )
           else:
               resolution = {
                   "bd_export_help_sha256": hashlib.sha256((root / "bd-export-help").read_bytes()).hexdigest(),
@@ -281,7 +345,8 @@ jobs:
                   "sha": os.environ.get("GITHUB_SHA", ""),
                   "profile": profile,
               },
-              "source_refs": {
+              "source_refs": {"beads": os.environ.get("BEADS_SOURCE_REF", "")}
+              if profile == "plug-public-native/1" else {
                   "beads": os.environ.get("BEADS_SOURCE_REF", ""),
                   "plug": os.environ.get("PLUG_SOURCE_REF", ""),
               },
@@ -293,27 +358,40 @@ jobs:
               "resolution": resolution,
               "build": {
                   "beads": beads_build,
+                  "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+              }
+              if profile == "plug-public-native/1" else {
+                  "beads": beads_build,
                   "plug": "bazel build --jobs=2 --local_resources=memory=8192 " + os.environ["PLUG_TARGET"],
                   "run_id": os.environ.get("GITHUB_RUN_ID", ""),
               },
           }
           (root / "bundle-metadata.json").write_text(json.dumps(metadata, sort_keys=True) + "\n")
-          targets = {
-              "beads_importer": {"label": "./cmd/bd", "binary": "bin/bd"},
-              "plug_runtime": {"label": os.environ["PLUG_TARGET"], "binary": "bin/plug"},
-          } if profile == "plug-public-bundle/1" else {
-              "beads_exporter": {"label": "//cmd/bd:bd", "binary": "bin/bd-export"},
-              "plug_roundtrip": {"label": "//tools/roundtrip:roundtrip", "binary": "bin/roundtrip"},
-          }
+          if profile == "plug-public-bundle/1":
+              targets = {
+                  "beads_importer": {"label": "./cmd/bd", "binary": "bin/bd"},
+                  "plug_runtime": {"label": os.environ["PLUG_TARGET"], "binary": "bin/plug"},
+              }
+          elif profile == "plug-public-native/1":
+              targets = {"beads_exporter": {"label": "//cmd/bd:bd", "binary": "bin/bd-export"}}
+          else:
+              targets = {
+                  "beads_exporter": {"label": "//cmd/bd:bd", "binary": "bin/bd-export"},
+                  "plug_roundtrip": {"label": "//tools/roundtrip:roundtrip", "binary": "bin/roundtrip"},
+              }
+          if profile == "plug-public-native/1":
+              sources = {"beads": {"commit": os.environ["BEADS_COMMIT"], "tree": os.environ["BEADS_TREE"]}}
+          else:
+              sources = {
+                  "beads": {"commit": os.environ["BEADS_COMMIT"], "tree": os.environ["BEADS_TREE"]},
+                  "plug": {"commit": os.environ["PLUG_COMMIT"], "tree": os.environ["PLUG_TREE"]},
+              }
           expected = {
               "schema": profile,
               "workflow": metadata["workflow"],
               "source_refs": metadata["source_refs"],
               "targets": targets,
-              "source": {
-                  "beads": {"commit": os.environ["BEADS_COMMIT"], "tree": os.environ["BEADS_TREE"]},
-                  "plug": {"commit": os.environ["PLUG_COMMIT"], "tree": os.environ["PLUG_TREE"]},
-              },
+              "source": sources,
           }
           (root / "bundle-expected-provenance.json").write_text(json.dumps(expected, sort_keys=True) + "\n")
           PY
@@ -327,6 +405,13 @@ jobs:
               --beads-commit "$BEADS_COMMIT" --beads-tree "$BEADS_TREE" --beads-manifest "$BEADS_MANIFEST" \
               --plug-commit "$PLUG_COMMIT" --plug-tree "$PLUG_TREE" --plug-manifest "$PLUG_MANIFEST" \
               --plug-target "$PLUG_TARGET"
+          elif [[ "$BUNDLE_PROFILE" == plug-public-native/1 ]]; then
+            python3 scripts/ci/public-bundle.py create \
+              --profile "$BUNDLE_PROFILE" \
+              --output "$RUNNER_TEMP/public-bundle" \
+              --bd-export "$RUNNER_TEMP/built/bin/bd-export" \
+              --metadata "$RUNNER_TEMP/bundle-metadata.json" \
+              --beads-commit "$BEADS_COMMIT" --beads-tree "$BEADS_TREE" --beads-manifest "$BEADS_MANIFEST"
           else
             python3 scripts/ci/public-bundle.py create \
               --profile "$BUNDLE_PROFILE" \
@@ -360,6 +445,8 @@ jobs:
           set -euo pipefail
           if [[ "$BUNDLE_PROFILE" == plug-public-bundle/1 ]]; then
             expected_members='bin/bd bin/plug'
+          elif [[ "$BUNDLE_PROFILE" == plug-public-native/1 ]]; then
+            expected_members='bin/bd-export'
           else
             expected_members='bin/bd-export bin/roundtrip'
           fi
@@ -413,6 +500,8 @@ jobs:
           bundle="$RUNNER_TEMP/public-bundle-downloaded"
           if [[ "$BUNDLE_PROFILE" == plug-public-bundle/1 ]]; then
             expected_members='bin/bd bin/plug'
+          elif [[ "$BUNDLE_PROFILE" == plug-public-native/1 ]]; then
+            expected_members='bin/bd-export'
           else
             expected_members='bin/bd-export bin/roundtrip'
           fi
@@ -433,6 +522,49 @@ jobs:
           if [[ "$BUNDLE_PROFILE" == plug-public-bundle/1 ]]; then
             "$bundle/bin/bd" version --json > "$RUNNER_TEMP/downloaded-bd-version.json"
             "$bundle/bin/plug" --help > "$RUNNER_TEMP/downloaded-plug-help" 2>&1
+          elif [[ "$BUNDLE_PROFILE" == plug-public-native/1 ]]; then
+            set +e
+            "$bundle/bin/bd-export" export --help > "$RUNNER_TEMP/downloaded-bd-export-help" 2>&1
+            export_help_rc=$?
+            set -e
+            [[ "$export_help_rc" -eq 0 ]] || { echo "downloaded native exporter help probe failed" >&2; exit 1; }
+            grep -Fq 'plug-dump/1' "$RUNNER_TEMP/downloaded-bd-export-help" || { echo "downloaded native exporter lacks plug-dump/1 support" >&2; exit 1; }
+            grep -Fq -- '--plug-inventory' "$RUNNER_TEMP/downloaded-bd-export-help"
+            "$bundle/bin/bd-export" version --json > "$RUNNER_TEMP/downloaded-bd-export-version.json"
+            "$bundle/bin/bd-export" init --help > "$RUNNER_TEMP/downloaded-bd-init-help" 2>&1
+            "$bundle/bin/bd-export" import --help > "$RUNNER_TEMP/downloaded-bd-import-help" 2>&1
+            python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          manifest = json.loads((root / "public-bundle-downloaded/manifest.json").read_text())
+          version = json.loads((root / "downloaded-bd-export-version.json").read_text())
+          if version.get("commit") != os.environ["BEADS_COMMIT"] or version.get("build") != "public-" + os.environ["BEADS_COMMIT"]:
+              raise SystemExit("downloaded native Beads executable identity mismatch")
+          if version != manifest["resolution"]["bd_export_version"]:
+              raise SystemExit("downloaded native Beads version probe differs from sealed probe")
+          for probe, key in (
+              ("downloaded-bd-export-help", "bd_export_help_sha256"),
+              ("downloaded-bd-export-version.json", "bd_export_version_sha256"),
+              ("downloaded-bd-init-help", "bd_init_help_sha256"),
+              ("downloaded-bd-import-help", "bd_import_help_sha256"),
+          ):
+              if hashlib.sha256((root / probe).read_bytes()).hexdigest() != manifest["resolution"][key]:
+                  raise SystemExit("downloaded native probe differs from sealed probe: " + key)
+          receipt = {
+              "status": "PASS", "profile": manifest["schema"],
+              "workflow": manifest["workflow"], "source": manifest["source"],
+              "source_refs": manifest["source_refs"], "targets": manifest["targets"],
+              "artifacts": manifest["artifacts"], "archive": manifest["archive"],
+              "bd_export_version": version, "build_run": os.environ["GITHUB_RUN_ID"],
+              "bd_export_help_exit": 0,
+              "canonical_source_manifests_verified": True,
+              "downloaded_modes_digests_and_probes_verified": True,
+          }
+          payload = json.dumps(receipt, sort_keys=True) + "\n"
+          (root / "public-download-verification.json").write_text(payload)
+          print(payload, end="")
+          PY
           else
             set +e
             "$bundle/bin/bd-export" export --help > "$RUNNER_TEMP/downloaded-bd-export-help" 2>&1
@@ -483,8 +615,8 @@ jobs:
           PY
           fi
 
-      - name: Retain public companion download verification
-        if: ${{ success() && inputs.profile == 'plug-public-companion/1' }}
+      - name: Retain public profile download verification
+        if: ${{ success() && (inputs.profile == 'plug-public-companion/1' || inputs.profile == 'plug-public-native/1') }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: plug-public-bundle-verification-${{ inputs.label }}-${{ github.run_id }}

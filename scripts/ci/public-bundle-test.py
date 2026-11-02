@@ -118,6 +118,117 @@ def main() -> None:
         assert (companion_output / "source/beads.manifest").read_bytes() == (root / "beads.manifest").read_bytes()
         assert (companion_output / "source/plug.manifest").read_bytes() == (root / "plug.manifest").read_bytes()
 
+        assert helper.NATIVE_BEADS_MANIFEST_ENTRIES == 5141
+        assert helper.NATIVE_BEADS_MANIFEST_SHA256 == "6c2e549b54b472790d57a27370821d69159d4d6dc817e5bf38dbc56c856c8420"
+        native_fixture = "".join(
+            f"100644 blob {index:040x}\tpath/{index}\n"
+            for index in range(helper.NATIVE_BEADS_MANIFEST_ENTRIES)
+        )
+        (root / "beads.manifest").write_text(native_fixture, encoding="utf-8")
+        helper.NATIVE_BEADS_MANIFEST_SHA256 = helper.digest(root / "beads.manifest")
+        native_output = root / "native"
+        native_metadata = root / "native-metadata.json"
+        native_metadata.write_text(
+            json.dumps(
+                {
+                    "workflow": {
+                        "ref": "refs/heads/test",
+                        "sha": "a" * 40,
+                        "profile": helper.NATIVE_SCHEMA,
+                    },
+                    "source_refs": {"beads": helper.NATIVE_BEADS_SOURCE_REF},
+                    "toolchain": {
+                        "go": "go version go1.26.10 linux/amd64",
+                        "bazel": "bazel 9.3.0",
+                        "bazelisk_sha256": "b" * 64,
+                    },
+                    "resolution": {
+                        "bd_export_help_sha256": "c" * 64,
+                        "bd_export_help_exit": 0,
+                        "bd_export_version": {
+                            "commit": helper.NATIVE_BEADS_COMMIT,
+                            "build": "public-" + helper.NATIVE_BEADS_COMMIT,
+                        },
+                        "bd_export_version_sha256": "d" * 64,
+                        "bd_init_help_sha256": "e" * 64,
+                        "bd_import_help_sha256": "f" * 64,
+                    },
+                    "build": {"beads": "bazel build //cmd/bd:bd", "run_id": "12345"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        native_args = type("Args", (), {
+            "output": native_output,
+            "bd_export": str(root / "bd-export"),
+            "profile": helper.NATIVE_SCHEMA,
+            "metadata": str(native_metadata),
+            "beads_commit": helper.NATIVE_BEADS_COMMIT,
+            "beads_tree": helper.NATIVE_BEADS_TREE,
+            "beads_manifest": str(root / "beads.manifest"),
+        })()
+        helper.create(native_args)
+        helper.verify(type("Args", (), {"directory": native_output})())
+        native_manifest = helper.read_json(native_output / "manifest.json")
+        assert native_manifest["schema"] == helper.NATIVE_SCHEMA
+        assert set(native_manifest["artifacts"]) == {"bin/bd-export"}
+        assert set(native_manifest["source"]) == {"beads"}
+        assert native_manifest["targets"] == {
+            "beads_exporter": {"label": "//cmd/bd:bd", "binary": "bin/bd-export"},
+        }
+        assert native_manifest["build"]["run_id"] == "12345"
+        assert (native_output / "source/beads.manifest").read_bytes() == (root / "beads.manifest").read_bytes()
+        native_expected = {
+            field: copy.deepcopy(native_manifest[field])
+            for field in ("schema", "source", "targets", "workflow", "source_refs")
+        }
+        native_expected["source"] = {
+            name: {field: record[field] for field in ("commit", "tree")}
+            for name, record in native_expected["source"].items()
+        }
+        native_expected_path = root / "native-expected-provenance.json"
+        helper.write_json(native_expected_path, native_expected)
+        native_pinned = type("Args", (), {
+            "directory": native_output,
+            "expected_provenance": native_expected_path,
+        })()
+        helper.verify(native_pinned)
+
+        native_with_plug_arg = type("Args", (), {
+            "output": root / "native-refused",
+            "bd_export": str(root / "bd-export"),
+            "plug_target": "//cmd/plug:plug",
+            "profile": helper.NATIVE_SCHEMA,
+            "metadata": str(native_metadata),
+            "beads_commit": helper.NATIVE_BEADS_COMMIT,
+            "beads_tree": helper.NATIVE_BEADS_TREE,
+            "beads_manifest": str(root / "beads.manifest"),
+        })()
+        expect_refusal(lambda: helper.create(native_with_plug_arg), "native profile accepted a dummy Plug target")
+        for field, value in (
+            ("source", {"plug": {"commit": "1" * 40, "tree": "2" * 40}}),
+            ("source_refs", {"plug": "wrong-source-ref"}),
+            ("targets", {"plug_roundtrip": {"label": "//tools/roundtrip:roundtrip", "binary": "bin/roundtrip"}}),
+            ("artifacts", {"bin/roundtrip": {"sha256": "0" * 64, "size": 1, "mode": "0o755"}}),
+            ("build", {"run_id": "001"}),
+        ):
+            altered = copy.deepcopy(native_manifest)
+            if field in {"source", "source_refs", "targets", "artifacts"}:
+                altered[field].update(value)
+            else:
+                altered[field].update(value)
+            helper.write_json(native_output / "manifest.json", altered)
+            expect_refusal(lambda: helper.verify(native_pinned), f"native {field} mutation was accepted")
+        helper.write_json(native_output / "manifest.json", native_manifest)
+        helper.verify(native_pinned)
+
+        native_source_manifest = native_output / "source/beads.manifest"
+        native_source_manifest.write_bytes(b"wrong native source\n")
+        expect_refusal(lambda: helper.verify(native_pinned), "native source manifest mutation was accepted")
+        native_source_manifest.write_bytes((root / "beads.manifest").read_bytes())
+        helper.verify(native_pinned)
+        helper.NATIVE_BEADS_MANIFEST_SHA256 = "6c2e549b54b472790d57a27370821d69159d4d6dc817e5bf38dbc56c856c8420"
+
         expected = {
             field: copy.deepcopy(companion_manifest[field])
             for field in ("schema", "source", "targets", "workflow", "source_refs")
