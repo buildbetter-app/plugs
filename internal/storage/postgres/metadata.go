@@ -43,6 +43,42 @@ func (s *Store) LoadCheckpoint(ctx context.Context, key string) (driver.Checkpoi
 	return driver.Checkpoint{Generation: n, Payload: payload}, err
 }
 func (s *Store) SaveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte) (driver.Checkpoint, error) {
+	return s.saveCheckpoint(ctx, lease, key, expected, payload, nil)
+}
+
+func (s *Store) SaveCheckpointIfRecord(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, ref driver.Ref, revision model.Revision, incarnation string) (driver.Checkpoint, error) {
+	id, err := recordKey(ref)
+	if err != nil {
+		return driver.Checkpoint{}, err
+	}
+	if err := revision.Validate(); err != nil {
+		return driver.Checkpoint{}, err
+	}
+	return s.saveCheckpoint(ctx, lease, key, expected, payload, func(tx *sql.Tx) error {
+		meta, err := readMeta(ctx, tx, "")
+		if err != nil {
+			return err
+		}
+		if incarnation == "" || incarnation != meta.Incarnation {
+			return driver.ErrIncarnationChanged{From: incarnation, To: meta.Incarnation}
+		}
+		var current string
+		var deleted bool
+		err = tx.QueryRowContext(ctx, `SELECT revision::text,deleted FROM plug_postgres.records WHERE key=$1 FOR SHARE`, []byte(id)).Scan(&current, &deleted)
+		if errors.Is(err, sql.ErrNoRows) {
+			return driver.ErrConflict
+		}
+		if err != nil {
+			return err
+		}
+		if deleted || current != revision.String() {
+			return driver.ErrConflict
+		}
+		return nil
+	})
+}
+
+func (s *Store) saveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, guard func(*sql.Tx) error) (driver.Checkpoint, error) {
 	zero := driver.Checkpoint{}
 	if err := s.check(ctx); err != nil {
 		return zero, err
@@ -61,6 +97,14 @@ func (s *Store) SaveCheckpoint(ctx context.Context, lease driver.ActiveLease, ke
 	defer tx.Rollback()
 	if _, err = s.checkLease(ctx, tx, lease, true); err != nil {
 		return zero, err
+	}
+	if err = lockCheckpoint(ctx, tx, key); err != nil {
+		return zero, err
+	}
+	if guard != nil {
+		if err = guard(tx); err != nil {
+			return zero, err
+		}
 	}
 	data := append([]byte{}, payload...)
 	var generation string
@@ -87,6 +131,8 @@ func (s *Store) SaveCheckpoint(ctx context.Context, lease driver.ActiveLease, ke
 	}
 	return driver.Checkpoint{Generation: n, Payload: data}, nil
 }
+
+var _ driver.RecordGuardedCheckpointStore = (*Store)(nil)
 
 func (s *Store) FinalizeResponse(ctx context.Context, lease driver.ActiveLease, principal, agent, method, key string, revision model.Revision, warnings []model.Warning) error {
 	if err := s.check(ctx); err != nil {

@@ -94,9 +94,15 @@ type Config struct {
 	// ViewReader and Readiness are optional host-owned read projections. When
 	// ViewReader is present, view.run/view.explain and view.watch are composed
 	// over the same store, lease and projection status source.
-	ViewReader    viewops.ViewReader
-	Readiness     viewops.ReadinessReader
-	AuthorizeRead viewops.AuthorizeRead
+	ViewReader         viewops.ViewReader
+	Readiness          viewops.ReadinessReader
+	AuthorizeRead      viewops.AuthorizeRead
+	AuthorizeReadBatch viewops.AuthorizeReadBatch
+	// EpicProgress opts into the separately authorized, count-only parent view.
+	// Nil keeps the capability unavailable; no hierarchy write is enabled here.
+	EpicProgress *viewops.EpicProgressConfig
+	// ParentProjection admits current-authority ordinary parent disclosure.
+	ParentProjection *viewops.ParentProjectionConfig
 	// DirectBlockerOntology is an optional protected ontology source locator.
 	// When absent, view.explain omits directBlockers rather than guessing an ID
 	// or falling back to the process-local NewOntology resolver.
@@ -275,6 +281,11 @@ func (r *Runtime) bind(config Config) error {
 		return err
 	}
 	r.OIDC = oidc
+	if config.EpicProgress != nil && config.EpicProgress.AnonymousOnly &&
+		(config.AuthMode == "authenticated" || authConfig.Provider != nil || authConfig.CoreSessions != nil ||
+			(authConfig.AuthorizationInstalled != nil && authConfig.AuthorizationInstalled())) {
+		return fmt.Errorf("composition: anonymous epic progress requires an explicit anonymous host without authentication or authorization plugins")
+	}
 	ontology := service.NewOntology(nil)
 	writer, metrics := newPipelineWriter(r.Store, r.Lease, pipeline.WithOntology(ontology))
 	r.Metrics = metrics
@@ -384,13 +395,16 @@ func (r *Runtime) bind(config Config) error {
 		}
 	}
 	r.Views, err = viewops.New(r.Store, r.Lease, viewops.Config{
-		Views:             config.ViewReader,
-		Readiness:         config.Readiness,
-		AuthorizeRead:     config.AuthorizeRead,
-		DirectBlockers:    directBlockers,
-		ProjectionStatus:  r.ProjectionStatus,
-		ProjectionBinding: viewBinding,
-		OntologyRevision:  model.Natural64(1),
+		Views:              config.ViewReader,
+		Readiness:          config.Readiness,
+		AuthorizeRead:      config.AuthorizeRead,
+		AuthorizeReadBatch: config.AuthorizeReadBatch,
+		EpicProgress:       config.EpicProgress,
+		ParentProjection:   config.ParentProjection,
+		DirectBlockers:     directBlockers,
+		ProjectionStatus:   r.ProjectionStatus,
+		ProjectionBinding:  viewBinding,
+		OntologyRevision:   model.Natural64(1),
 	})
 	if err != nil {
 		return fmt.Errorf("composition: create view service: %w", err)

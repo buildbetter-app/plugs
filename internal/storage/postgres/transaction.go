@@ -33,6 +33,8 @@ type transaction struct {
 	allocators      map[string]driver.OfflineAllocator
 	bumps           map[string]driver.LockKey
 	done            chan struct{}
+
+	checkpointGuards map[string]uint64
 }
 
 func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {

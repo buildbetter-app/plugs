@@ -43,21 +43,22 @@ type Disposition struct {
 }
 
 type Manifest struct {
-	Format         string            `json:"format"`
-	Schema         int               `json:"schema"`
-	Reference      string            `json:"beads_reference"`
-	StoreID        string            `json:"store_id"`
-	Machine        string            `json:"machine"`
-	MainVersion    int               `json:"main_version"`
-	IgnoredVersion int               `json:"ignored_version"`
-	Scope          string            `json:"scope"`
-	History        string            `json:"history"`
-	Projects       []Project         `json:"projects"`
-	Kinds          []Kind            `json:"kind_registry"`
-	Files          map[string]File   `json:"files"`
-	Sources        []Disposition     `json:"sources"`
-	Warnings       []string          `json:"warnings"`
-	Verification   map[string]string `json:"verification"`
+	Format         string              `json:"format"`
+	Schema         int                 `json:"schema"`
+	Reference      string              `json:"beads_reference"`
+	StoreID        string              `json:"store_id"`
+	Machine        string              `json:"machine"`
+	MainVersion    int                 `json:"main_version"`
+	IgnoredVersion int                 `json:"ignored_version"`
+	Scope          string              `json:"scope"`
+	History        string              `json:"history"`
+	Projects       []Project           `json:"projects"`
+	Ontology       []OntologyDirective `json:"ontology,omitempty"`
+	Kinds          []Kind              `json:"kind_registry"`
+	Files          map[string]File     `json:"files"`
+	Sources        []Disposition       `json:"sources"`
+	Warnings       []string            `json:"warnings"`
+	Verification   map[string]string   `json:"verification"`
 	// Native store fields are present only for archives produced by Plug's
 	// engine-neutral admin.dump path. The offline Beads exporter leaves these
 	// fields absent and continues to use the source census above.
@@ -87,6 +88,7 @@ type Record struct {
 // cannot turn a validated record into an unchecked restore request.
 type Archive struct {
 	sha256   string
+	tarBytes []byte
 	manifest Manifest
 	members  map[string][]byte
 	byKind   map[string][]Record
@@ -113,6 +115,10 @@ func (a *Archive) NativeMember(path string) ([]byte, bool) {
 // SHA256 binds the exact validated tar bytes, including its manifest.
 func (a *Archive) SHA256() string { return a.sha256 }
 
+// TarBytes returns the exact validated source envelope, including tar headers
+// and padding. Derived history images have no independent source envelope.
+func (a *Archive) TarBytes() []byte { return append([]byte(nil), a.tarBytes...) }
+
 func (a *Archive) Manifest() Manifest {
 	m := a.manifest
 	// Preserve empty arrays as empty arrays. Manifest digests bind the exact
@@ -127,6 +133,7 @@ func (a *Archive) Manifest() Manifest {
 		m.Projects[i].ChildCounters = c
 	}
 	m.Kinds = append([]Kind{}, m.Kinds...)
+	m.Ontology = append([]OntologyDirective(nil), m.Ontology...)
 	m.Sources = append([]Disposition{}, m.Sources...)
 	m.Warnings = append([]string{}, m.Warnings...)
 	m.Files = make(map[string]File, len(a.manifest.Files))

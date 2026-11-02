@@ -80,7 +80,7 @@ type Handler struct {
 	frames map[string]frameBundle
 }
 
-//go:embed static/index.html static/app.js static/frame-host.js static/styles.css static/favicon.svg
+//go:embed static/index.html static/app.js static/epic-progress.js static/frame-host.js static/styles.css static/favicon.svg
 var embedded embed.FS
 
 const contentSecurityPolicy = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-src 'self'; frame-ancestors 'none'; form-action 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'"
@@ -280,7 +280,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveFrameHost(w, r, strings.TrimPrefix(asset, "frame-hosts/"))
 		return
 	}
-	if asset != "index.html" && asset != "app.js" && asset != "frame-host.js" && asset != "styles.css" && asset != "favicon.svg" {
+	if asset != "index.html" && asset != "app.js" && asset != "epic-progress.js" && asset != "frame-host.js" && asset != "styles.css" && asset != "favicon.svg" {
 		h.writeError(w, r.Method == http.MethodGet, http.StatusNotFound, "UI asset not found")
 		return
 	}
@@ -290,11 +290,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	contentType := map[string]string{
-		"index.html":    "text/html; charset=utf-8",
-		"app.js":        "text/javascript; charset=utf-8",
-		"frame-host.js": "text/javascript; charset=utf-8",
-		"styles.css":    "text/css; charset=utf-8",
-		"favicon.svg":   "image/svg+xml",
+		"index.html":       "text/html; charset=utf-8",
+		"app.js":           "text/javascript; charset=utf-8",
+		"epic-progress.js": "text/javascript; charset=utf-8",
+		"frame-host.js":    "text/javascript; charset=utf-8",
+		"styles.css":       "text/css; charset=utf-8",
+		"favicon.svg":      "image/svg+xml",
 	}[asset]
 	h.writeBytes(w, r.Method == http.MethodGet, http.StatusOK, contentType, data)
 }

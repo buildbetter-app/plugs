@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Run-bound local Bazel evidence. No hosted upload/retention claim is made here.
 
-begin runs before bootstrap; run resolves and tests the union of the existing
-lanes; finish runs unconditionally before upload (including after failed setup).
+begin runs before bootstrap; selection resolves the complete union of the
+existing lanes; run verifies that selection and executes it; finish runs
+unconditionally before upload (including after failed setup).
 Only explicitly selected platform/tool facts are read, never the environment or
 credential files. Failure bundles retain the first real process exit separately
 from later collection and shutdown failures.
@@ -17,6 +18,7 @@ import platform
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -26,6 +28,17 @@ import xml.etree.ElementTree as ET
 
 
 CAPTURE_ERROR = 86
+PUBLIC_RUNTIME_TARGET = "//tools/roundtrip:public_beads_runtime_test"
+PUBLIC_BUNDLE_DESCRIPTOR = (
+    "41398730774:13120521766:"
+    "66de7c070d365bbd7fc2bd39ed822e5bf72c21efabe0add9a5e26d07bf170a62"
+)
+PUBLIC_ENV_NAMES = (
+    "PLUG_PUBLIC_BEADS_BINARY",
+    "PLUG_PUBLIC_BEADS_SHA256",
+    "PLUG_PUBLIC_BEADS_BUILD_RUN",
+    "PLUG_PUBLIC_BEADS_MANIFEST",
+)
 SAFE_ENV = (
     "PATH", "HOME", "USER", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "TZ",
     "BAZELISK_HOME", "BAZELISK_VERIFY_SHA256", "USE_BAZEL_VERSION",
@@ -226,9 +239,9 @@ def labels(value):
     return result
 
 
-def run(capture):
+def setup_toolchain(capture):
     if capture.code():
-        return
+        return None
     if "pre" not in capture.state:
         raise ValueError("begin must precede run")
     bazel = bazel_command()
@@ -258,6 +271,31 @@ def run(capture):
         return
     if not re.search(r"go version go1\.26\.10\s", sdk):
         raise ValueError("resolved Bazel Go SDK does not match the source pin")
+    capture.state["toolchain_ready"] = True
+    capture.save()
+    return bazel
+
+
+def selection_files(target_dir):
+    return sorted(path for path in target_dir.rglob("*") if path.is_file())
+
+
+def selection_binding(capture, target_dir, selected, resolved):
+    return {
+        "head": git("rev-parse", "HEAD"),
+        "tree": git("rev-parse", "HEAD^{tree}"),
+        "base": capture.state.get("base"),
+        "merge_base": capture.state.get("merge_base"),
+        "selected_targets": selected,
+        "resolved_tests": resolved,
+        "files": {
+            str(path.relative_to(target_dir)): digest(path)
+            for path in selection_files(target_dir)
+        },
+    }
+
+
+def resolve_selection(capture, bazel):
     target_dir = capture.output / "selection"
     resolver_env = child_env()
     resolver_env["BAZEL_BIN"] = bazel[0]
@@ -300,18 +338,100 @@ def run(capture):
     if not resolved:
         raise ValueError("target selection resolved to no tests")
     (target_dir / "resolved-test-targets.txt").write_text("\n".join(resolved) + "\n")
+    capture.state["selected_targets"] = selected
     capture.state["resolved_tests"] = resolved
-    capture.state["test_started"] = True
+    capture.state["selection_ready"] = True
+    capture.state["selection_binding"] = selection_binding(capture, target_dir, selected, resolved)
     capture.save()
+
+
+def selection(capture):
+    bazel = setup_toolchain(capture)
+    if bazel is None:
+        return
+    resolve_selection(capture, bazel)
+
+
+def verify_selection(capture):
+    if not capture.state.get("selection_ready") or "selection_binding" not in capture.state:
+        raise ValueError("selection phase must succeed before run")
+    target_dir = capture.output / "selection"
+    binding = capture.state["selection_binding"]
+    current = selection_binding(capture, target_dir, capture.state.get("selected_targets", []),
+                                capture.state.get("resolved_tests", []))
+    if current != binding:
+        raise ValueError("source, base or resolved selection changed after selection")
+    if subprocess.check_output(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            env=child_env()):
+        raise ValueError("source became dirty after selection")
+    resolved = (target_dir / "resolved-test-targets.txt").read_text().splitlines()
+    if resolved != capture.state["resolved_tests"]:
+        raise ValueError("resolved test target file changed after selection")
+
+
+def public_test_env(capture):
+    resolved = set(capture.state.get("resolved_tests", ()))
+    present = {name: os.environ.get(name) for name in PUBLIC_ENV_NAMES if os.environ.get(name) is not None}
+    if PUBLIC_RUNTIME_TARGET not in resolved:
+        if present:
+            raise ValueError("public executable values supplied without the mandatory runtime target")
+        return []
+    values = {name: os.environ.get(name) for name in PUBLIC_ENV_NAMES}
+    if any(value is None or value == "" for value in values.values()):
+        raise ValueError("mandatory public runtime target lacks prepared executable values")
+    if any("\n" in value or "\r" in value for value in values.values()):
+        raise ValueError("prepared public executable value contains a newline")
+    binary = Path(values["PLUG_PUBLIC_BEADS_BINARY"])
+    manifest = Path(values["PLUG_PUBLIC_BEADS_MANIFEST"])
+    if (not binary.is_absolute() or binary.is_symlink() or not binary.is_file()
+            or stat.S_IMODE(binary.stat().st_mode) != 0o755):
+        raise ValueError("prepared public executable path is not an absolute regular 0755 file")
+    if re.fullmatch(r"[0-9a-f]{64}", values["PLUG_PUBLIC_BEADS_SHA256"]) is None:
+        raise ValueError("prepared public executable SHA256 is malformed")
+    if digest(binary) != values["PLUG_PUBLIC_BEADS_SHA256"]:
+        raise ValueError("prepared public executable SHA256 does not match the file")
+    if (not manifest.is_absolute() or manifest.is_symlink() or not manifest.is_file()):
+        raise ValueError("prepared public manifest path is not an absolute regular file")
+    if re.fullmatch(r"[1-9][0-9]{0,19}", values["PLUG_PUBLIC_BEADS_BUILD_RUN"]) is None:
+        raise ValueError("prepared public producer run is not a positive canonical decimal")
+    receipt_path = capture.output / "public-bundle.json"
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        raise ValueError("prepared public bundle receipt is missing")
+    try:
+        receipt = json.loads(receipt_path.read_text())
+    except (OSError, ValueError) as error:
+        raise ValueError("prepared public bundle receipt is invalid") from error
+    if (receipt.get("status") != "PASS" or receipt.get("descriptor") != PUBLIC_BUNDLE_DESCRIPTOR
+            or receipt.get("manifest_sha256") != PUBLIC_BUNDLE_DESCRIPTOR.rsplit(":", 1)[1]
+            or receipt.get("environment") != values):
+        raise ValueError("prepared public bundle receipt is not bound to the fixed descriptor")
+    return [f"--test_env={name}={values[name]}" for name in PUBLIC_ENV_NAMES]
+
+
+def run(capture):
+    if capture.code():
+        return
+    if "pre" not in capture.state:
+        raise ValueError("begin must precede run")
+    verify_selection(capture)
+    if not capture.state.get("toolchain_ready"):
+        raise ValueError("toolchain and selection phase must precede run")
+    bazel = bazel_command()
+    selected = capture.state["selected_targets"]
     args = [*bazel, "test", *selected, "--lockfile_mode=error", "--nocache_test_results",
             # rules_go needs verbose wrapper events to emit passing/skipped
             # test cases in XML rather than an empty <testsuites> stub.
             "--test_env=GO_TEST_WRAP_TESTV=1",
-            "--test_output=all", "--test_timeout=900", "--jobs=2", "--local_resources=memory=8192",
+            # Preserve short/moderate/long budgets; CP7's eternal tests need 150m.
+            "--test_output=all", "--test_timeout=900,900,900,9000", "--jobs=2", "--local_resources=memory=8192",
             "--remote_cache=", "--remote_executor=", "--repo_contents_cache=",
             "--build_event_publish_all_actions", "--build_event_json_file=" + str(capture.output / "raw.bep.json")]
     if os.environ.get("PLUG_BAZEL_DISK_CACHE"):
         args.append("--disk_cache=" + os.environ["PLUG_BAZEL_DISK_CACHE"])
+    args.extend(public_test_env(capture))
+    capture.state["test_started"] = True
+    capture.save()
     capture.command("tests", args)
 
 
@@ -478,7 +598,7 @@ def verify(output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("begin", "run", "finish", "verify"))
+    parser.add_argument("phase", choices=("begin", "selection", "run", "finish", "verify"))
     parser.add_argument("--output", required=True)
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="")
@@ -501,6 +621,8 @@ def main():
     try:
         if args.phase == "begin":
             begin(capture, args)
+        elif args.phase == "selection":
+            selection(capture)
         elif args.phase == "run":
             run(capture)
         else:

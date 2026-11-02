@@ -22,7 +22,8 @@ go_test(
         "//internal/core/port",
         "//internal/storage/driver",
         "//internal/storage/conformance",
+        "//internal/testclock",
     ],
     size = "large",
-    tags = ["local", "requires-network"],
+    tags = ["exclusive", "local", "requires-network"],
 )

@@ -28,17 +28,27 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Prepare evidence
+      - name: Verify exact checkout and prepare evidence
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/n1-restore-evidence"
+          actual_sha="$(git rev-parse HEAD)"
+          actual_tree="$(git rev-parse HEAD^{tree})"
+          test "$actual_sha" = "$EXPECTED_SHA"
           python3 - <<'PY'
           import json, os, subprocess
           from pathlib import Path
+          expected = os.environ["EXPECTED_SHA"]
+          actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
           report = {
               "schema": "plug-nightly-restore-run/v1",
-              "head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-              "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+              "expected_sha": expected,
+              "head": actual,
+              "tree": tree,
+              "checkout_verified": actual == expected,
               "run_id": os.environ["GITHUB_RUN_ID"],
               "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
               "event": os.environ["GITHUB_EVENT_NAME"],

@@ -163,7 +163,7 @@ func (c EventCause) Validate() error   { return validateEventCause(c) }
 
 func (k OpKind) Validate() error {
 	switch k {
-	case OpCreate, OpPatch, OpReparent, OpLink, OpUnlink, OpComment, OpAttach, OpDelete, OpSetMeta:
+	case OpCreate, OpPatch, OpClose, OpReparent, OpLink, OpUnlink, OpComment, OpAttach, OpDelete, OpSetMeta:
 		return nil
 	}
 	return fmt.Errorf("unknown operation kind %q", k)

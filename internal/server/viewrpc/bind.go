@@ -60,9 +60,10 @@ func BindWithConfig(registry *rpc.Registry, service Service, cfg Config) error {
 }
 
 type params struct {
+	CountOnly  bool            `json:"countOnly,omitempty"`
 	ViewID     string          `json:"viewId,omitempty"`
 	Definition *definitionWire `json:"definition,omitempty"`
-	Cursor     string          `json:"cursor,omitempty"`
+	Cursor     *string         `json:"cursor,omitempty"`
 	AsOf       *asOfWire       `json:"asOf,omitempty"`
 	ItemID     string          `json:"itemId,omitempty"`
 	Meta       wire.Meta       `json:"_meta,omitempty"`
@@ -118,15 +119,18 @@ func dispatch(ctx context.Context, service Service, codec *CursorCodec, call rpc
 	}
 	switch call.Method {
 	case "view.run":
+		if p.CountOnly && p.Cursor != nil {
+			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "countOnly does not accept a cursor"}}
+		}
 		var cursor *viewops.Cursor
 		var err error
-		if p.Cursor != "" {
-			cursor, err = codec.Decode(p.Cursor)
+		if p.Cursor != nil {
+			cursor, err = codec.Decode(*p.Cursor)
 			if err != nil {
 				return nil, err
 			}
 		}
-		result, err := service.Run(ctx, call.Principal, viewops.RunRequest{ViewID: p.ViewID, Definition: p.Definition.domain(), Cursor: cursor, AsOf: p.AsOf.domain(), Project: call.Meta.Project, Agent: call.Meta.Agent})
+		result, err := service.Run(ctx, call.Principal, viewops.RunRequest{CountOnly: p.CountOnly, ViewID: p.ViewID, Definition: p.Definition.domain(), Cursor: cursor, AsOf: p.AsOf.domain(), Project: call.Meta.Project, Agent: call.Meta.Agent})
 		if err != nil {
 			return nil, err
 		}
@@ -149,6 +153,9 @@ func encodeResult(codec *CursorCodec, call rpc.Call, p params, result viewops.Re
 	items := make([]viewops.Bead, 0, len(result.Items))
 	items = append(items, result.Items...)
 	out := map[string]any{"items": items, "asOf": map[string]any{"revision": result.AsOf.Revision}}
+	if result.Count != nil {
+		out["count"] = *result.Count
+	}
 	if result.Projection != nil {
 		// Projection health is response metadata, not part of the signed
 		// paging cursor. Preserve the exact status observed with this pinned
@@ -172,10 +179,18 @@ func encodeResult(codec *CursorCodec, call rpc.Call, p params, result viewops.Re
 		for _, group := range result.Groups {
 			entry := map[string]any{"key": group.Key, "count": group.Count, "items": group.Items}
 			if group.Elided != nil {
-				if next == "" {
+				refresh := group.Elided.Reason == "authorization"
+				if refresh && (group.Key != "total" || result.NextCursor != nil) {
+					return nil, fmt.Errorf("authorization elision must be an atomic epic total")
+				}
+				if !refresh && next == "" {
 					return nil, fmt.Errorf("view group elision lacks continuation cursor")
 				}
-				continueParams, err := continuationParams(call, p, next)
+				cursor := next
+				if refresh {
+					cursor = ""
+				}
+				continueParams, err := continuationParams(call, p, cursor)
 				if err != nil {
 					return nil, err
 				}
@@ -189,7 +204,10 @@ func encodeResult(codec *CursorCodec, call rpc.Call, p params, result viewops.Re
 }
 
 func continuationParams(call rpc.Call, p params, cursor string) (map[string]any, error) {
-	params := map[string]any{"cursor": cursor}
+	params := map[string]any{}
+	if cursor != "" {
+		params["cursor"] = cursor
+	}
 	if p.ViewID != "" {
 		params["viewId"] = p.ViewID
 	} else if p.Definition != nil {

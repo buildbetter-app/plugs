@@ -87,10 +87,8 @@ func validateRecord(record Record, projects []Project, counts map[string]int) er
 		default:
 			return fmt.Errorf("unsupported source status")
 		}
-		switch stringValue(fields["issue_type"]) {
-		case "task", "bug", "feature", "epic", "chore":
-		default:
-			return fmt.Errorf("unsupported source type")
+		if strings.TrimSpace(stringValue(fields["issue_type"])) == "" {
+			return fmt.Errorf("missing source type")
 		}
 		if class := stringValue(fields["storage_class"]); class != "" && class != "versioned" {
 			return fmt.Errorf("unsupported storage class")

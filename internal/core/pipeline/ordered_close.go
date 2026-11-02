@@ -1,0 +1,126 @@
+package pipeline
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/port"
+)
+
+// The trusted ontology selects status keys without evaluating a guard or
+// invoking a subscriber during reference preparation. Actual schema/permission
+// and graph guards stay in the ontology phase, after field mutators.
+type closeSlots interface {
+	CloseSlots(project, beadType string) (initial, target string, ok bool)
+}
+
+type orderedCloseOntology interface {
+	ValidateOrdered(context.Context, []port.Change, port.ProposedChange, port.SnapshotReader) error
+}
+
+func (w *Writer) prepareClose(ctx context.Context, p *prepared, current *pending, op *model.CloseOp, aliases map[string]model.Ref) (json.RawMessage, error) {
+	initial, target, ok := "", "", false
+	if slots, supported := w.cfg.ontology.(closeSlots); supported {
+		initial, target, ok = slots.CloseSlots(current.doc.Project, current.doc.Type)
+	}
+	if !ok && p.refusal == nil {
+		p.refusal = failure("invalid_params", "ontology does not support the close slot")
+	}
+	if len(current.before) == 0 && current.doc.Fields["status"] == nil && initial != "" {
+		current.doc.Fields["status"] = initial
+	}
+	before, err := json.Marshal(current.doc)
+	if err != nil {
+		return nil, err
+	}
+	for i, expect := range op.Expect {
+		ref, err := p.resolve(expect.Ref, aliases)
+		if err != nil {
+			return nil, err
+		}
+		expect.Ref = ref
+		op.Expect[i] = expect
+		p.proposal.Expect = append(p.proposal.Expect, expect)
+		var doc Document
+		var revision model.Revision
+		exists, written := false, false
+		for _, prior := range p.refs {
+			if prior.ID == ref.ID {
+				written = true
+				break
+			}
+		}
+		if value := p.writes[ref.ID]; value != nil {
+			if !value.deleted {
+				doc, revision, exists = value.doc, value.revision, true
+			}
+		} else {
+			rows, err := p.snapshot.Get(ctx, []model.Ref{ref})
+			if err != nil {
+				return nil, err
+			}
+			if len(rows) == 1 {
+				doc, err = DecodeDocument(rows[0].Body)
+				if err != nil {
+					return nil, err
+				}
+				revision, exists = rows[0].Revision, true
+			}
+		}
+		var refusal error
+		if expect.Revision != nil {
+			if !exists || revision.IsZero() {
+				refusal = preconditionFailure("revision", "expected record is absent")
+			} else if written || expect.Revision.String() != revision.String() {
+				refusal = preconditionRevisionFailure(revision)
+			}
+		} else if !exists {
+			refusal = preconditionFailure("hash", "expected record is absent")
+		} else {
+			hash, err := expectationHash(doc, expect.Field)
+			if err != nil {
+				refusal = err
+			} else if hash != expect.Hash {
+				refusal = preconditionFailure("hash", "field hash changed")
+			}
+		}
+		if p.refusal == nil {
+			p.refusal = refusal
+		}
+	}
+	if ok && current.doc.Fields["status"] != target {
+		current.doc.Fields["status"] = target
+		current.setBy["fields.status"] = "request"
+	}
+	if op.Reason != "" {
+		if strings.TrimSpace(op.Reason) == "" {
+			return nil, failure("invalid_params", "comment body must not be empty")
+		}
+		stamp := w.cfg.now().UTC()
+		for _, comment := range current.doc.Comments {
+			if !stamp.After(comment.Time) {
+				stamp = comment.Time.Add(time.Second)
+			}
+		}
+		current.doc.Comments = append(current.doc.Comments, Comment{Body: op.Reason, Principal: p.proposal.Principal, Time: stamp})
+		current.setBy["comments"] = "request"
+	}
+	if current.doc.Lease != nil {
+		current.doc.Lease = nil
+		current.setBy["lease"] = "request"
+	}
+	p.closes[current.ref.ID] = true
+	return before, nil
+}
+
+// Audit and claim handling derive the slot from this record's typed operation,
+// never from the tx.apply method shared by unrelated records in the batch.
+func (p *prepared) lifecycleMethod(value *pending) string {
+	if value != nil && !value.deleted && p.closes[value.ref.ID] {
+		return "bead.close"
+	}
+	return gateLifecycleMethod(p.proposal.Meta.Method, value)
+}

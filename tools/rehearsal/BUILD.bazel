@@ -25,6 +25,16 @@ go_test(
     size = "medium",
     srcs = ["disposable_test.go", "files_test.go", "metrics_test.go"],
     args = ["-test.v"],
+    data = [
+        "//tools/rehearsal/cmd/rollback-runtime:old-runtime",
+        "//tools/rehearsal/cmd/rollback-runtime:candidate-runtime",
+        "disposable.go",
+        "//tools/rehearsal/cmd/rollback-runtime:source",
+    ],
+    env = {
+        "R1_OLD_RUNTIME_BINARY": "$(rootpath //tools/rehearsal/cmd/rollback-runtime:old-runtime)",
+        "R1_CANDIDATE_RUNTIME_BINARY": "$(rootpath //tools/rehearsal/cmd/rollback-runtime:candidate-runtime)",
+    },
     embed = [":rehearsal"],
 )
 

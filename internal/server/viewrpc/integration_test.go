@@ -293,7 +293,7 @@ func TestUnsupportedViewShapesRefuseAndSavedWritesStayUnbound(t *testing.T) {
 	}{
 		{name: "unknown field", params: map[string]any{"definition": map[string]any{"filter": map[string]any{}, "fields": []string{"fields.not-supported"}}}, code: "unknown_field"},
 		{name: "event filter", params: map[string]any{"definition": map[string]any{"filter": map[string]any{"events": []string{"bead.created"}}}}, code: "invalid_params"},
-		{name: "unknown query field", params: map[string]any{"definition": map[string]any{"filter": map[string]any{"query": "title=bug"}}}, code: "unknown_field"},
+		{name: "unknown query field", params: map[string]any{"definition": map[string]any{"filter": map[string]any{"query": "priority=bug"}}}, code: "unknown_field"},
 		{name: "query missing conjunction", params: map[string]any{"definition": map[string]any{"filter": map[string]any{"query": "id=a type=issue"}}}, code: "invalid_params"},
 		{name: "query leading conjunction", params: map[string]any{"definition": map[string]any{"filter": map[string]any{"query": "AND id=a"}}}, code: "invalid_params"},
 		{name: "query trailing conjunction", params: map[string]any{"definition": map[string]any{"filter": map[string]any{"query": "id=a AND"}}}, code: "invalid_params"},
@@ -315,4 +315,16 @@ func mustJSON(t *testing.T, value any) []byte {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func TestB23CountWirePreservesProjectionMetadata(t *testing.T) {
+	f := newFixture(t)
+	createBead(t, f, "counted")
+	got := resultMap(t, f.call(t, context.Background(), "view.run", map[string]any{
+		"countOnly": true, "definition": map[string]any{"filter": map[string]any{}}, "_meta": map[string]any{"project": "p"},
+	}))
+	projection, ok := got["projection"].(map[string]any)
+	if !ok || projection["binding"] != "core" || got["count"] != float64(1) || len(got["items"].([]any)) != 0 || got["groups"] != nil || got["nextCursor"] != nil {
+		t.Fatalf("count-only wire metadata=%v", got)
+	}
 }

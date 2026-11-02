@@ -66,6 +66,101 @@ func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req ser
 	return result, nil
 }
 
+// AuthorizeReadBatch is a count producer adapter to the existing finite read
+// filter. It keeps one fresh current authority snapshot for this call, verifies
+// current row existence, and fences the authority before returning decisions.
+// It never loads item payload projections or retains decisions across calls.
+func (s *GuardedService) AuthorizeReadBatch(ctx context.Context, by model.PrincipalRef, resources []model.ResourceRef) ([]bool, error) {
+	refs := make([]model.Ref, len(resources))
+	for i, resource := range resources {
+		if resource.Kind != "bead" || authz.CanonicalRef(resource.Ref) != nil {
+			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "batch read requires resolved bead references"}}
+		}
+		refs[i] = resource.Ref
+	}
+	current, snapshot, closeReader, err := s.current(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer closeReader()
+	caller, err := s.checker.callerFor(ctx, by)
+	if err != nil {
+		return nil, authzError(err)
+	}
+	authority, err := s.checker.load(ctx, snapshot, caller)
+	if err != nil {
+		return nil, &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+	}
+	// This is the same existing compiled read path as filterPage. Unsupported
+	// compilation refuses; it never falls back to an unprotected driver count.
+	template, err := s.checker.chain.Compile(authz.ListRequest{Caller: caller, Action: authz.Read, ResourceKind: authz.Bead, Method: "bead.get"})
+	if err != nil {
+		return nil, authzError(err)
+	}
+	rows, err := current.Get(ctx, refs)
+	if err != nil {
+		return nil, err
+	}
+	present := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if row.Kind == "bead" {
+			present[row.Ref.ID] = true
+		}
+	}
+	// Match still validates context, facts and caveats for every resource. The
+	// four common dependencies join this same immutable authority snapshot once;
+	// repeating their SQL observations cannot add another snapshot guarantee.
+	facts := &countReadSlice{slice: authority, dependencies: [4]authz.Dependency{
+		authz.ContextDependency(s.checker.chain.Namespace),
+		authz.ACLDependency(s.checker.chain.Namespace),
+		{Kind: "sentinel", Key: "plugins"},
+		{Kind: "sentinel", Key: "ontology"},
+	}}
+	for _, dep := range facts.dependencies {
+		if err := authority.Record(ctx, dep); err != nil {
+			return nil, &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+		}
+	}
+	allowed := make([]bool, len(resources))
+	for i, ref := range refs {
+		if !present[ref.ID] {
+			continue
+		}
+		allowed[i], err = template.Match(ctx, facts, authz.Resource{Kind: authz.Bead, Ref: ref})
+		if err != nil {
+			return nil, authzError(err)
+		}
+	}
+	binding, err := s.checker.readAuthorityBinding(ctx, caller, authority, snapshot)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
+		return nil, err
+	}
+	return allowed, nil
+}
+
+// countReadSlice exists only during one batch against one current snapshot.
+// It retains no effective grants or decisions. Every other dependency remains
+// a real source read, and the caller's final fresh authority fence is unchanged.
+type countReadSlice struct {
+	*slice
+	dependencies [4]authz.Dependency
+}
+
+func (s *countReadSlice) Record(ctx context.Context, dep authz.Dependency) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for _, recorded := range s.dependencies {
+		if dep == recorded {
+			return nil
+		}
+	}
+	return s.slice.Record(ctx, dep)
+}
+
 func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
 	if s == nil || s.delegate == nil || s.checker == nil {
 		return service.BeadPage{}, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}

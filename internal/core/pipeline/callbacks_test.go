@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -59,6 +60,38 @@ type postMetadataFault struct {
 	*memory.Store
 	persist bool
 	calls   atomic.Int32
+}
+
+type panicTimedPost struct{ calls *atomic.Int32 }
+
+func (p *panicTimedPost) After(context.Context, port.CommittedChange, port.SnapshotReader) error {
+	return errors.New("legacy timed post path used")
+}
+
+func (p *panicTimedPost) AfterWithTimeout(context.Context, time.Duration, port.CommittedChange, port.SnapshotReader) error {
+	p.calls.Add(1)
+	panic("controlled timed post panic")
+}
+
+func TestTimedPostPanicBecomesWarningAndDurableDeadLetter(t *testing.T) {
+	h := setup(t)
+	var calls atomic.Int32
+	w := h.writer(WithPostSubscribers(PostBinding{ID: "timed-panic", Subscriber: &panicTimedPost{calls: &calls}}))
+	cs, m := model.ChangeSet{Ops: []model.Op{create("panic")}}, meta(992)
+	first, err := w.Apply(context.Background(), by, cs, m)
+	if err != nil || first.Revision.String() != "1" || len(first.Warnings) != 1 || first.Warnings[0].Code != "post_subscriber_failed" {
+		t.Fatalf("timed panic was not committed as a warning: commit=%+v err=%v", first, err)
+	}
+	deadKey := PostDeadLetterKey("pipeline-test", first.Revision, "timed-panic")
+	stored, err := h.store.LoadCheckpoint(context.Background(), deadKey)
+	var dead PostDeadLetter
+	if err != nil || stored.Generation != 1 || json.Unmarshal(stored.Payload, &dead) != nil || dead.Binding != "timed-panic" || dead.Revision.String() != "1" || dead.Reason != "post_subscriber_failed" {
+		t.Fatalf("timed panic did not persist a sanitized dead letter: checkpoint=%+v dead=%+v err=%v", stored, dead, err)
+	}
+	replay, err := h.writer().Apply(context.Background(), by, cs, m)
+	if err != nil || !reflect.DeepEqual(first, replay) || calls.Load() != 1 {
+		t.Fatalf("timed panic replay reran post or changed response: first=%+v replay=%+v calls=%d err=%v", first, replay, calls.Load(), err)
+	}
 }
 
 func (s *postMetadataFault) SaveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, generation uint64, payload []byte) (driver.Checkpoint, error) {
@@ -326,6 +359,80 @@ func TestConcurrentRevisionCASHasOneWinner(t *testing.T) {
 	versions, err := r.Versions(context.Background(), ref, driver.PageReq{})
 	if err != nil || len(versions.Items) != 2 || r.Snapshot().At.String() != "2" {
 		t.Fatalf("versions=%+v head=%s err=%v", versions, r.Snapshot().At, err)
+	}
+}
+
+func TestStaleCASReleasesRevisionOnlyAfterExpectationAuthorization(t *testing.T) {
+	h := setup(t)
+	seed := apply(t, h.writer(), model.ChangeSet{Ops: []model.Op{create("write-target"), create("expectation-only")}}, meta(40))
+	target, expectationOnly := seed.Results[0].Ref, seed.Results[1].Ref
+	stale := model.Natural64(0)
+	cs := model.ChangeSet{
+		Ops:    []model.Op{patch(target, map[string]any{"title": "must-not-land"})},
+		Expect: []model.Precondition{{Ref: expectationOnly, Revision: &stale}},
+	}
+
+	var deniedCalls, deniedMutations atomic.Int32
+	denied := h.writer(
+		WithMutators(MutatorBinding{ID: "must-not-run", Mutator: mutatorFunc(func(context.Context, port.ProposedChange, port.SnapshotReader) ([]port.Patch, error) {
+			deniedMutations.Add(1)
+			return nil, nil
+		})}),
+		WithAuthorizer(authorizerFunc(func(_ context.Context, stage port.AuthorizationStage, proposal port.ProposedChange, _ port.SnapshotReader) error {
+			if stage != port.AuthorizeBefore {
+				return failure("forbidden", "unexpected authorization stage")
+			}
+			deniedCalls.Add(1)
+			if len(proposal.Expect) != 1 || proposal.Expect[0].Ref.ID != expectationOnly.ID {
+				return failure("forbidden", "expectation-only target was not authorized")
+			}
+			// This models a hidden pre-image: the operation target may be
+			// visible, but the expectation-only record is outside the caller's
+			// permitted write scope.
+			return failure("forbidden", "expectation target is hidden")
+		})),
+	)
+	_, err := denied.Apply(context.Background(), by, cs, meta(41))
+	code(t, err, "forbidden")
+	if deniedCalls.Load() != 1 || deniedMutations.Load() != 0 {
+		t.Fatalf("denied stale CAS crossed the callback boundary: authz=%d mutators=%d", deniedCalls.Load(), deniedMutations.Load())
+	}
+	var deniedModel *model.Error
+	if !errors.As(err, &deniedModel) || deniedModel.Data.Details != nil || strings.Contains(err.Error(), "currentRevision") {
+		t.Fatalf("hidden refusal disclosed stale revision: %v", err)
+	}
+	if head := h.read(t).Snapshot().At.String(); head != "1" {
+		t.Fatalf("denied stale CAS changed head to %s", head)
+	}
+
+	var allowedCalls, allowedMutations atomic.Int32
+	allowed := h.writer(
+		WithMutators(MutatorBinding{ID: "must-not-run-after-allow", Mutator: mutatorFunc(func(context.Context, port.ProposedChange, port.SnapshotReader) ([]port.Patch, error) {
+			allowedMutations.Add(1)
+			return nil, nil
+		})}),
+		WithAuthorizer(authorizerFunc(func(_ context.Context, stage port.AuthorizationStage, proposal port.ProposedChange, _ port.SnapshotReader) error {
+			if stage != port.AuthorizeBefore {
+				return failure("forbidden", "unexpected authorization stage")
+			}
+			allowedCalls.Add(1)
+			if len(proposal.Expect) != 1 || proposal.Expect[0].Ref.ID != expectationOnly.ID {
+				return failure("forbidden", "expectation-only target was not carried")
+			}
+			return nil
+		})),
+	)
+	_, err = allowed.Apply(context.Background(), by, cs, meta(42))
+	code(t, err, "precondition_failed")
+	var staleError *model.Error
+	if !errors.As(err, &staleError) || staleError.Data.Details["reason"] != "revision" || staleError.Data.Details["currentRevision"] == nil {
+		t.Fatalf("allowed stale CAS did not release its typed revision refusal: %v", err)
+	}
+	if allowedCalls.Load() != 1 || allowedMutations.Load() != 0 {
+		t.Fatalf("stale refusal crossed callbacks after allow: authz=%d mutators=%d", allowedCalls.Load(), allowedMutations.Load())
+	}
+	if head := h.read(t).Snapshot().At.String(); head != "1" {
+		t.Fatalf("allowed stale CAS changed head to %s", head)
 	}
 }
 
