@@ -485,5 +485,14 @@ func openDisposablePostgres(ctx context.Context, dsn string) (driver.Store, erro
 // samePinnedValue validates the raw SQL representation independently of the
 // converter. Unknown stored values must not collapse into an expected false.
 func samePinnedValue(want bool, raw any) bool {
-	return want == (raw == true || raw == json.Number("1"))
+	switch value := raw.(type) {
+	case bool:
+		return want == value
+	case json.Number:
+		return value == "1" && want || value == "0" && !want
+	case string:
+		return value == "1" && want || value == "0" && !want
+	default:
+		return false
+	}
 }
