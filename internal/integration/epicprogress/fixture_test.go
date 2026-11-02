@@ -107,13 +107,170 @@ type observedService struct {
 	t *testing.T
 }
 
+// Deadline diagnosis only: retain the concrete SQLite store's optional
+// capabilities and the actual reader's allocator capability. No read is
+// cached, batched, skipped or supplied by the observer; writes stay untouched.
+type observedSQLiteStore struct{ *sqlite.Store }
+
+func (s *observedSQLiteStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	r, err := s.Store.Read(ctx, view)
+	if err != nil {
+		return r, err
+	}
+	allocator, ok := r.(driver.AllocatorReader)
+	if !ok {
+		return r, nil
+	}
+	return &observedSQLiteReader{Reader: r, AllocatorReader: allocator}, nil
+}
+
+type observedSQLiteReader struct {
+	driver.Reader
+	driver.AllocatorReader
+}
+
+type deadlineTraceKey struct{}
+
+type deadlineReadTrace struct {
+	mu     sync.Mutex
+	passes []deadlineReadPass
+}
+
+type deadlineReadPass struct {
+	started, deadline   time.Time
+	firstRead, lastRead time.Time
+	getCalls, getRefs   int
+	observeCalls, keys  int
+	records, misses     int
+	sentinels, facts    int
+	errors              int
+	readWall, maxRead   time.Duration
+}
+
+// CallerSource is reached inside each real checker invocation. Keep its
+// default binding unchanged and mark only contexts of observed 100-op writes.
+// All source calls and authorization decisions are delegated unchanged.
+func observedCaller(ctx context.Context, principal model.PrincipalRef) (authz.Caller, error) {
+	if trace, ok := ctx.Value(deadlineTraceKey{}).(*deadlineReadTrace); ok {
+		trace.mu.Lock()
+		deadline, _ := ctx.Deadline()
+		trace.passes = append(trace.passes, deadlineReadPass{started: time.Now(), deadline: deadline})
+		trace.mu.Unlock()
+	}
+	return authzrpc.DefaultCallerSource(model.Natural64(1))(ctx, principal)
+}
+
+// Reads using the marked checker context or its shorter nested rule context
+// belong to that invocation. The enclosing Writer's two-second context and
+// all later phases have later deadlines and are deliberately not counted.
+func beginObservedRead(ctx context.Context) (*deadlineReadTrace, int, time.Time) {
+	trace, ok := ctx.Value(deadlineTraceKey{}).(*deadlineReadTrace)
+	if !ok {
+		return nil, -1, time.Time{}
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil, -1, time.Time{}
+	}
+	trace.mu.Lock()
+	defer trace.mu.Unlock()
+	for i := len(trace.passes) - 1; i >= 0; i-- {
+		pass := trace.passes[i]
+		if !deadline.After(pass.deadline) && !deadline.Before(pass.started) {
+			return trace, i, time.Now()
+		}
+	}
+	return nil, -1, time.Time{}
+}
+
+func (r *observedSQLiteReader) Get(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
+	trace, pass, started := beginObservedRead(ctx)
+	rows, err := r.Reader.Get(ctx, refs)
+	if trace != nil {
+		ended := time.Now()
+		trace.mu.Lock()
+		p := &trace.passes[pass]
+		p.getCalls++
+		p.getRefs += len(refs)
+		p.recordRead(started, ended, err)
+		trace.mu.Unlock()
+	}
+	return rows, err
+}
+
+func (r *observedSQLiteReader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
+	trace, pass, started := beginObservedRead(ctx)
+	states, err := r.Reader.Observe(ctx, keys)
+	if trace != nil {
+		ended := time.Now()
+		trace.mu.Lock()
+		p := &trace.passes[pass]
+		p.observeCalls++
+		p.keys += len(keys)
+		for _, key := range keys {
+			switch key.Kind {
+			case driver.LockRecord:
+				p.records++
+			case driver.LockSentinel:
+				p.sentinels++
+			case driver.LockReadFact:
+				p.facts++
+			}
+		}
+		for _, state := range states {
+			if state.Key.Kind == driver.LockRecord && !state.Present {
+				p.misses++
+			}
+		}
+		p.recordRead(started, ended, err)
+		trace.mu.Unlock()
+	}
+	return states, err
+}
+
+func (p *deadlineReadPass) recordRead(started, ended time.Time, err error) {
+	if p.firstRead.IsZero() {
+		p.firstRead = started
+	}
+	p.lastRead = ended
+	elapsed := ended.Sub(started)
+	p.readWall += elapsed
+	if elapsed > p.maxRead {
+		p.maxRead = elapsed
+	}
+	if err != nil {
+		p.errors++
+	}
+}
+
+func (trace *deadlineReadTrace) log(t *testing.T, failed bool) {
+	trace.mu.Lock()
+	passes := append([]deadlineReadPass(nil), trace.passes...)
+	trace.mu.Unlock()
+	for i, p := range passes {
+		span := time.Duration(0)
+		if !p.firstRead.IsZero() {
+			span = p.lastRead.Sub(p.firstRead)
+		}
+		t.Logf("EP6 passive SQLite authz reads: failed=%t pass=%d initial_window_ms=%.3f get_calls=%d get_refs=%d observe_calls=%d keys=%d record_keys=%d record_misses=%d sentinels=%d read_facts=%d errors=%d read_wall_ms=%.3f max_read_ms=%.3f read_span_ms=%.3f", failed, i+1, float64(p.deadline.Sub(p.started))/float64(time.Millisecond), p.getCalls, p.getRefs, p.observeCalls, p.keys, p.records, p.misses, p.sentinels, p.facts, p.errors, float64(p.readWall)/float64(time.Millisecond), float64(p.maxRead)/float64(time.Millisecond), float64(span)/float64(time.Millisecond))
+	}
+}
+
 var _ rpc.Service = (*observedService)(nil)
 
 func (s *observedService) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
 	started := time.Now()
+	var trace *deadlineReadTrace
+	if len(cs.Ops) == 100 {
+		trace = &deadlineReadTrace{}
+		ctx = context.WithValue(ctx, deadlineTraceKey{}, trace)
+	}
 	out, err := s.GuardedService.ApplyWithOutcome(ctx, by, cs, meta)
+	if trace != nil && err != nil {
+		trace.log(s.t, true)
+	}
 	var domain *model.Error
-	if errors.As(err, &domain) && domain.Data.Code == "authz_unavailable" {
+	if errors.As(err, &domain) && (domain.Data.Code == "authz_unavailable" || domain.Data.Code == "busy") {
 		s.t.Logf("EP6 real service refusal: code=%s message=%q operations=%d elapsed_ms=%.3f", domain.Data.Code, domain.Message, len(cs.Ops), float64(time.Since(started))/float64(time.Millisecond))
 	}
 	return out, err
@@ -198,6 +355,9 @@ func openStore(t *testing.T, backend, path string) (driver.Store, driver.ActiveL
 		store = memory.New()
 	} else {
 		store, err = (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: path})
+		if err == nil {
+			store = &observedSQLiteStore{Store: store.(*sqlite.Store)}
+		}
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +445,7 @@ func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology b
 		t.Fatal(err)
 	}
 	f.keys = authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
-	f.app, err = authzrpc.New(ctx, authzrpc.Config{Store: store, Lease: lease, Provider: f.keys, Facts: f.facts, Namespace: ns, DefaultProject: epics, Hierarchy: true})
+	f.app, err = authzrpc.New(ctx, authzrpc.Config{Store: store, Lease: lease, Provider: f.keys, Facts: f.facts, Namespace: ns, DefaultProject: epics, Hierarchy: true, Caller: observedCaller})
 	if err != nil {
 		t.Fatal(err)
 	}
