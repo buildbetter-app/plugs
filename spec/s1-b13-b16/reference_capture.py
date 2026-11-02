@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -317,21 +319,109 @@ def fetch_source(root: Path, receipts: list[dict[str, object]], env: dict[str, s
     return source
 
 
+@functools.cache
+def prepared_validator():
+    # This is bundled source, never a helper selected by prepared arguments/env.
+    path = Path(__file__).resolve().parents[2] / "scripts/ci/prepare-public-reference.py"
+    spec = importlib.util.spec_from_file_location("capture_public_reference", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("public reference validation is not present in runfiles")
+    validator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(validator)
+    return validator
+
+
+def prepared_path(value: str, *, directory: bool) -> Path:
+    if not value or any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("prepared input path is malformed")
+    path = Path(value)
+    if (not path.is_absolute() or str(path) != value or path.resolve(strict=True) != path
+            or (not path.is_dir() if directory else not path.is_file())):
+        raise ValueError("prepared input must be an absolute ordinary file or directory without symlinks")
+    return path
+
+
+def consume_prepared(root: Path, artifact: str, source_path: str, validator) -> tuple[Path, dict[str, object], Path]:
+    archive_input = prepared_path(artifact, directory=False)
+    source = prepared_path(source_path, directory=True)
+    if archive_input.stat().st_size != validator.ZIP_SIZE:
+        raise ValueError("reference ZIP differs from the independently pinned bytes")
+    # Snapshot the ZIP into the private capture directory. Validate and consume
+    # that same snapshot; never download a replacement for invalid local input.
+    archive = root / "prepared-artifact.zip"
+    shutil.copyfile(archive_input, archive)
+    manifest = validator.validate_zip(archive, root / "prepared-manifest.json")
+    source_record = validator.validate_source(source)
+    # Both complete validators must succeed before reconstructing any execute bit.
+    payloads = {}
+    with zipfile.ZipFile(archive) as bundle, bundle.open("bundle.tar") as payload, tarfile.open(fileobj=payload, mode="r|") as canonical_archive:
+        for member in canonical_archive:
+            if member.name not in validator.BINARIES or member.name in payloads:
+                raise ValueError("reference canonical member set is not exact")
+            record = validator.BINARIES[member.name]
+            if not member.isreg() or member.mode != 0o755 or member.size != record["size"]:
+                raise ValueError("reference canonical executable type/mode/size mismatch")
+            contents = canonical_archive.extractfile(member)
+            if contents is None:
+                raise ValueError("reference canonical executable is missing")
+            data = contents.read()
+            if len(data) != record["size"] or digest(data) != record["sha256"]:
+                raise ValueError("reference canonical executable digest mismatch")
+            payloads[member.name] = data
+        receipt_sha256 = digest(bundle.read("receipt.json"))
+    if set(payloads) != set(validator.BINARIES):
+        raise ValueError("reference canonical executable is missing")
+    extracted = root / "public-bundle"
+    for name, data in payloads.items():
+        destination = extracted / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("xb") as output:
+            output.write(data)
+        destination.chmod(0o755)
+    return extracted / "bin/bd", {
+        "runId": validator.RUN, "artifactId": validator.ARTIFACT,
+        "downloadUrls": [], "downloadAttempts": [], "providedUrlSha256": None,
+        "downloadSha256": validator.ZIP_SHA256, "downloadSize": validator.ZIP_SIZE,
+        "manifestSha256": validator.MANIFEST_SHA256, "receiptSha256": receipt_sha256,
+        "archive": manifest["archive"], "binary": manifest["artifacts"]["bin/bd"],
+        "source": manifest["source"]["beads"], "preparedSource": source_record,
+        "build": manifest["build"], "toolchain": manifest["toolchain"],
+        "mode": "public-pinned-go-packaged-prepared", "canonicalBazel": False,
+    }, source
+
+
 def main() -> int:
     args = sys.argv[1:]
+    prepared = None
+    provided_url = None
     if not args:
-        provided_url = None
+        pass
     elif len(args) == 2 and args[0] == "--artifact-url":
         provided_url = args[1]
+    elif len(args) == 4 and set(args[::2]) == {"--prepared-artifact", "--prepared-source"}:
+        prepared = dict(zip(args[::2], args[1::2]))
     else:
-        print("usage: reference_capture.py [--artifact-url IMMUTABLE_SIGNED_URL]", file=sys.stderr)
+        print("usage: reference_capture.py [--artifact-url IMMUTABLE_SIGNED_URL | --prepared-artifact ZIP --prepared-source CHECKOUT]", file=sys.stderr)
         return 64
     root = Path(tempfile.mkdtemp(prefix="s1-b13-b16-reference-"))
     receipts: list[dict[str, object]] = []
+    artifact_identity = ({"preparedInputsSupplied": True} if prepared else {
+        "runId": ARTIFACT_RUN, "artifactId": ARTIFACT_ID, "downloadUrls": ARTIFACT_URLS,
+        "providedUrlSupplied": bool(provided_url),
+    })
     try:
-        binary, bundle = download_bundle(root, provided_url)
         env = dict(os.environ)
-        source = fetch_source(root, receipts, env)
+        if prepared:
+            validator = prepared_validator()
+            artifact_identity.update({"runId": validator.RUN, "artifactId": validator.ARTIFACT})
+            binary, bundle, source = consume_prepared(
+                root, prepared["--prepared-artifact"], prepared["--prepared-source"], validator,
+            )
+            binary_sha256 = validator.BINARIES["bin/bd"]["sha256"]
+        else:
+            binary, bundle = download_bundle(root, provided_url)
+            source = fetch_source(root, receipts, env)
+            binary_sha256 = BINARY_SHA256
         recorder = locate_recorder()
         recorder_bytes = recorder.read_bytes()
         output = root / "record.json"
@@ -342,7 +432,7 @@ def main() -> int:
             "--reference-binary",
             str(binary),
             "--binary-sha256",
-            BINARY_SHA256,
+            binary_sha256,
             "--source",
             str(source),
             "--workspace",
@@ -397,12 +487,7 @@ def main() -> int:
     except Exception as error:
         blocker = {
             "schema": "plug.s1-b13-b16.reference-blocker.v1",
-            "artifact": {
-                "runId": ARTIFACT_RUN,
-                "artifactId": ARTIFACT_ID,
-                "downloadUrls": ARTIFACT_URLS,
-                "providedUrlSupplied": bool(provided_url),
-            },
+            "artifact": artifact_identity,
             "commands": receipts,
             "error": str(error),
         }
