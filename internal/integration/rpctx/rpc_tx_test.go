@@ -332,6 +332,7 @@ func TestTransactionAndDependencyRPCsAcrossMemoryAndSQLite(t *testing.T) {
 					"ops": []any{
 						map[string]any{"kind": "create", "key": "dependent", "type": "issue", "fields": map[string]any{"title": "dependent"}},
 						map[string]any{"kind": "link", "from": map[string]any{"key": "dependent"}, "to": map[string]any{"id": blocker.ID}, "linkKind": "blocks"},
+						map[string]any{"kind": "create", "key": "related", "type": "issue", "fields": map[string]any{"title": "related"}},
 					},
 				}}, key("mixed-batch"))
 				if err != nil || !r.Replayed {
