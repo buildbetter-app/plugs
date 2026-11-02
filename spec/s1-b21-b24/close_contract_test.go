@@ -302,8 +302,12 @@ func TestS1B21CloseExpectationsAuthorizeBeforeDisclosureAndCurrentReplay(t *test
 			}
 			hidden.Store(false)
 			allowed := f.call("tx.apply", "close-private", stale)
-			if allowed.Error == nil || allowed.Error.Data.Code != "precondition_failed" || allowed.Error.Data.Details["reason"] != "revision" || allowed.Error.Data.Details["currentRevision"] != "2" {
-				t.Fatalf("allowed guard lost typed current revision: %+v", allowed)
+			if allowed.Error == nil || allowed.Error.Data.Code != "precondition_failed" || allowed.Error.Data.Details["reason"] != "revision" {
+				t.Fatalf("allowed guard lost typed refusal: %+v", allowed.Error)
+			}
+			current, numeric := allowed.Error.Data.Details["currentRevision"].(json.Number)
+			if !numeric || current.String() != "2" {
+				t.Fatalf("allowed guard lost numeric current revision: %#v", allowed.Error.Data.Details)
 			}
 			sameState(t, state, f.state(t))
 			if f.casReceipt(t, "tx.apply", "close-private") != nil || mutators.Load() != 0 {
