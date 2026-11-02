@@ -146,7 +146,7 @@ func TestHeartbeatAuthorizationDenialRevocationAndHiddenNoWrite(t *testing.T) {
 		t.Fatalf("authorized heartbeat refused: %v", err)
 	}
 	beforeReplay := f.state(t, id)
-	leaseKey := heartbeatCheckpointKey(id)
+	leaseKey := heartbeatCheckpointKey(id.ID)
 	receiptKey := heartbeatReceiptCheckpointKey(principal, actor, "bead.heartbeat", meta.IdempotencyKey)
 	beforeLease := loadHeartbeatCheckpoint(t, f, leaseKey)
 	beforeReceipt := loadHeartbeatCheckpoint(t, f, receiptKey)
