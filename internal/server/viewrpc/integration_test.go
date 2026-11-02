@@ -316,3 +316,15 @@ func mustJSON(t *testing.T, value any) []byte {
 	}
 	return raw
 }
+
+func TestB23CountWirePreservesProjectionMetadata(t *testing.T) {
+	f := newFixture(t)
+	createBead(t, f, "counted")
+	got := resultMap(t, f.call(t, context.Background(), "view.run", map[string]any{
+		"countOnly": true, "definition": map[string]any{"filter": map[string]any{}}, "_meta": map[string]any{"project": "p"},
+	}))
+	projection, ok := got["projection"].(map[string]any)
+	if !ok || projection["binding"] != "core" || got["count"] != float64(1) || len(got["items"].([]any)) != 0 || got["groups"] != nil || got["nextCursor"] != nil {
+		t.Fatalf("count-only wire metadata=%v", got)
+	}
+}

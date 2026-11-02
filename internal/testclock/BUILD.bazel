@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "testclock",
+    testonly = True,
+    srcs = ["clock.go", "postgres.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/testclock",
+    visibility = ["//:__subpackages__"],
+)

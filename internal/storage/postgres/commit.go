@@ -303,18 +303,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		_ = t.finish()
 		return zero, err
 	}
-	for id, state := range t.derived {
-		state.Revision = revision
-		if err = t.writeState(ctx, id, state); err != nil {
-			_ = t.finish()
-			return zero, err
-		}
-	}
-	for id, key := range t.bumps {
-		if err = t.writeState(ctx, id, driver.LockState{Key: key, Revision: revision, Present: true}); err != nil {
-			_ = t.finish()
-			return zero, err
-		}
+	if err = t.writeStates(ctx, revision); err != nil {
+		_ = t.finish()
+		return zero, err
 	}
 	for prefix, allocator := range t.allocators {
 		if err = allocator.Validate(); err != nil {
@@ -364,6 +355,48 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		return zero, err
 	}
 	return entry, nil
+}
+
+// Ordinary publication appends the same state images in bounded batches within
+// the existing SQL transaction. This avoids a round trip for every closure row
+// and predicate bump without accumulating one unbounded array of state values.
+func (t *transaction) writeStates(ctx context.Context, revision model.Revision) error {
+	const batchRows = 256
+	keys := make([][]byte, 0, batchRows)
+	values := make([][]byte, 0, batchRows)
+	flush := func() error {
+		if len(keys) == 0 {
+			return nil
+		}
+		_, err := t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.states (key,revision,value)
+		 SELECT key,$2::numeric(20,0),value FROM unnest($1::bytea[],$3::bytea[]) AS state_rows(key,value)`, keys, revision.String(), values)
+		keys, values = keys[:0], values[:0]
+		return err
+	}
+	appendState := func(id string, state driver.LockState) error {
+		state.Revision = revision
+		raw, err := encode(state)
+		if err != nil {
+			return err
+		}
+		keys = append(keys, []byte(id))
+		values = append(values, raw)
+		if len(keys) == batchRows {
+			return flush()
+		}
+		return nil
+	}
+	for id, state := range t.derived {
+		if err := appendState(id, state); err != nil {
+			return err
+		}
+	}
+	for id, key := range t.bumps {
+		if err := appendState(id, driver.LockState{Key: key, Present: true}); err != nil {
+			return err
+		}
+	}
+	return flush()
 }
 
 func (t *transaction) writeState(ctx context.Context, id string, state driver.LockState) error {
