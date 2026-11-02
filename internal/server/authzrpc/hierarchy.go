@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -54,6 +55,12 @@ func (c *Checker) AuthorizeHierarchy(ctx context.Context, stage port.Authorizati
 	stored := map[string]*model.Record{}
 	final := map[string]model.Record{}
 	states := map[string]model.Record{}
+	// Expectation-only references are part of the disclosed pre-image even
+	// when they are absent from Changes. Check them through the same write
+	// permit before hierarchy processing can release any stale refusal.
+	if err := c.authorizeExpectations(ctx, s, caller, proposal); err != nil {
+		return err
+	}
 
 	// Fetch through the tracked reader even for creates: absence is a guarded
 	// fact. A staged mapping is introduced only after that create is allowed.
@@ -174,6 +181,40 @@ func (c *Checker) AuthorizeHierarchy(ctx context.Context, stage port.Authorizati
 		expected, expectedErr := authz.HierarchyImage(state)
 		if err != nil || expectedErr != nil || !sameHierarchyParent(actual.Parent, expected.Parent) {
 			return forbidden("hierarchy final parent mismatch")
+		}
+	}
+	return nil
+}
+
+func (c *Checker) authorizeExpectations(ctx context.Context, s authz.Slice, caller authz.Caller, proposal port.ProposedChange) error {
+	if len(proposal.Expect) == 0 {
+		return nil
+	}
+	requests := make([]authz.CheckRequest, 0, len(proposal.Expect))
+	for _, expect := range proposal.Expect {
+		if err := authz.CanonicalRef(expect.Ref); err != nil {
+			return forbidden("invalid expectation target")
+		}
+		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: expect.Ref}, Method: proposal.Meta.Method})
+	}
+	chain := c.chain
+	chain.Rules = make([]authz.RuleSet, len(c.chain.Rules))
+	for i, rules := range c.chain.Rules {
+		chain.Rules[i] = rules
+		if fixed, ok := rules.(*authzfixed.RuleSet); ok {
+			chain.Rules[i] = hierarchyFixedRules{fixed}
+		}
+	}
+	decisions, err := chain.Check(ctx, s, requests)
+	if err != nil {
+		return authzError(err)
+	}
+	if len(decisions) != len(requests) {
+		return hierarchyUnavailable()
+	}
+	for _, decision := range decisions {
+		if decision.Effect != authz.Allow {
+			return forbidden(strings.Join(decision.Reasons, ","))
 		}
 	}
 	return nil
