@@ -38,7 +38,7 @@ go_test(
         "watch_bootstrap_check.mjs",
     ],
     env_inherit = ["PATH"],
-    tags = ["local"],
+    tags = ["exclusive", "local"],
     embed = [":webui"],
     deps = [
         "//internal/core/events",
