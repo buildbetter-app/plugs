@@ -21,12 +21,12 @@ func TestNativeCaptureRequiresPublicDeclaration(t *testing.T) {
 
 func TestNativeFileObservations(t *testing.T) {
 	root := t.TempDir()
-	raw := []byte("issue-prefix: native\npublic_number: 9007199254740993\n")
+	raw := []byte("#" + strings.Repeat(" public ", 300) + "\nissue-prefix: native\npublic_number: 9007199254740993\n")
 	path := filepath.Join(root, "config.yaml")
 	if err := os.WriteFile(path, raw, 0600); err != nil {
 		t.Fatal(err)
 	}
-	value, err := observeNativePath(path, 0, new(int))
+	value, err := observeNativePath(path, 0, &nativeCaptureBudget{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,11 +35,11 @@ func TestNativeFileObservations(t *testing.T) {
 	if err != nil || !bytes.Equal(decoded, raw) || value["sha256"] != fmt.Sprintf("%x", sha256.Sum256(raw)) || value["state"] != "file" {
 		t.Fatal("native file bytes/hash changed")
 	}
-	absent, err := observeNativePath(filepath.Join(root, "absent"), 0, new(int))
+	absent, err := observeNativePath(filepath.Join(root, "absent"), 0, &nativeCaptureBudget{})
 	if err != nil || absent["state"] != "absent" {
 		t.Fatal("actual absence not observed")
 	}
-	directory, err := observeNativePath(root, 0, new(int))
+	directory, err := observeNativePath(root, 0, &nativeCaptureBudget{})
 	if err != nil || directory["state"] != "directory" || len(directory["entries"].([]any)) != 1 {
 		t.Fatal("present directory falsely omitted")
 	}
@@ -80,7 +80,7 @@ func TestNativeCaptureRefusesUnboundedOrUnsafeSources(t *testing.T) {
 			case "relative":
 				path = "relative"
 			}
-			if value, err := observeNativePath(path, 0, new(int)); err == nil || value != nil {
+			if value, err := observeNativePath(path, 0, &nativeCaptureBudget{}); err == nil || value != nil {
 				t.Fatal("unsupported source became a public capture")
 			}
 		})

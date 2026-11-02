@@ -3,15 +3,19 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/steveyegge/beads/internal/plugdump"
@@ -281,9 +285,108 @@ func TestEmbeddedPlugNativeInventoryActualCLI(t *testing.T) {
 	if !found {
 		t.Fatal("actual imported issue absent from native raw archive")
 	}
+
+	// Compare the delivered raw archive and exact policy set to fresh stored SQL
+	// readbacks, independently of the producer's inventory construction.
+	nativeStore, err := embeddeddolt.OpenReadOnly(context.Background(), filepath.Join(workspace, ".beads"), "native", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nativeStore.Close()
+	records := map[string][]plugdump.Record{}
+	reader := tar.NewReader(bytes.NewReader(archive))
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(header.Name, "records/") {
+			continue
+		}
+		decoder := json.NewDecoder(reader)
+		decoder.UseNumber()
+		for {
+			var record plugdump.Record
+			err := decoder.Decode(&record)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			records[record.Source.Table] = append(records[record.Source.Table], record)
+		}
+	}
+	if err := nativeStore.WithRawDBTx(context.Background(), &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable}, func(tx *sql.Tx) error {
+		source := plugdump.SQLSource{DB: tx}
+		policies := 0
+		for _, name := range []string{"issues", "config", "metadata"} {
+			table, err := source.ReadTable(context.Background(), name)
+			if err != nil {
+				return err
+			}
+			t.Logf("NATIVE_PUBLIC_STORED_%s=%s", name, mustNativeJSON(t, table))
+			if len(table.Rows) != len(records[name]) {
+				return fmt.Errorf("raw %s row census changed", name)
+			}
+			for _, row := range table.Rows {
+				key := "id"
+				if name != "issues" {
+					key = "key"
+					policies++
+					if inventory.ConfigPolicy[name+"/"+fmt.Sprint(row[key])] == "" {
+						return fmt.Errorf("native policy omitted stored %s key", name)
+					}
+				}
+				found := false
+				for _, record := range records[name] {
+					if record.Source.Fields[key] != row[key] {
+						continue
+					}
+					found = true
+					if name == "issues" {
+						delete(row, "row_lock")
+						delete(row, "is_blocked")
+					}
+					if !bytes.Equal(mustNativeJSON(t, row), mustNativeJSON(t, record.Source.Fields)) {
+						return fmt.Errorf("raw %s source values changed", name)
+					}
+				}
+				if !found {
+					return fmt.Errorf("raw %s source row missing", name)
+				}
+			}
+		}
+		if policies != len(inventory.ConfigPolicy) {
+			return fmt.Errorf("native policy contains unmeasured keys")
+		}
+		log, err := source.ReadSourceCommits(context.Background())
+		if err != nil {
+			return err
+		}
+		if !log.Clean {
+			return fmt.Errorf("native capture dirtied its source")
+		}
+		t.Logf("NATIVE_PUBLIC_SOURCE_COMMITS=%s", mustNativeJSON(t, log))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	t.Logf("NATIVE_PUBLIC_INVENTORY=%s", raw)
 	t.Logf("NATIVE_PUBLIC_ARCHIVE bytes=%d sha256=%x history=%s", len(archive), sha256.Sum256(archive), manifest.History)
 	if os.Getenv("PLUG_TEST_EXPORT_PUBLIC_HISTORY") == "1" {
 		t.Logf("NATIVE_PUBLIC_ARCHIVE_BASE64=%s", base64.StdEncoding.EncodeToString(archive))
 	}
+}
+
+func mustNativeJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }

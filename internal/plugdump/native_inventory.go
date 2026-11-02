@@ -101,7 +101,7 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 		}
 		rows := []any{}
 		for _, path := range paths {
-			observed, err := observeNativePath(path, 0, new(int))
+			observed, err := observeNativePath(path, 0, &nativeCaptureBudget{})
 			if err != nil {
 				return Inventory{}, nil, fmt.Errorf("native %s: %w", family, err)
 			}
@@ -193,7 +193,9 @@ func nativePublicValues(input map[string]any) map[string]any {
 
 // Symlinks, special files and oversized trees refuse. Engine directories never
 // pass through this reader; their location is recorded separately without reads.
-func observeNativePath(path string, depth int, budget *int) (map[string]any, error) {
+type nativeCaptureBudget struct{ files, bytes int }
+
+func observeNativePath(path string, depth int, budget *nativeCaptureBudget) (map[string]any, error) {
 	if !filepath.IsAbs(path) || depth > 12 {
 		return nil, fmt.Errorf("unresolved path or excessive directory depth")
 	}
@@ -215,8 +217,8 @@ func observeNativePath(path string, depth int, budget *int) (map[string]any, err
 			if entry.Name() == ".dolt" || entry.Name() == "embeddeddolt" || entry.Name() == "dolt" {
 				return nil, fmt.Errorf("engine contents are outside native filesystem capture")
 			}
-			*budget++
-			if *budget > 1024 {
+			budget.files++
+			if budget.files > 1024 {
 				return nil, fmt.Errorf("native capture file limit")
 			}
 			child, err := observeNativePath(filepath.Join(path, entry.Name()), depth+1, budget)
@@ -231,7 +233,7 @@ func observeNativePath(path string, depth int, budget *int) (map[string]any, err
 	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
 		return nil, fmt.Errorf("native source must be a bounded regular file")
 	}
-	file, err := os.Open(path)
+	file, err := os.OpenInRoot(filepath.Dir(path), filepath.Base(path))
 	if err != nil {
 		return nil, err
 	}
@@ -240,8 +242,8 @@ func observeNativePath(path string, depth int, budget *int) (map[string]any, err
 	if err != nil || closeErr != nil || len(data) > 1<<20 {
 		return nil, fmt.Errorf("native file read failed or exceeded bound")
 	}
-	*budget += len(data)
-	if *budget > 3<<20 {
+	budget.bytes += len(data)
+	if budget.bytes > 3<<20 {
 		return nil, fmt.Errorf("native capture byte limit")
 	}
 	// Decode structured sources to enforce the existing credential reference
