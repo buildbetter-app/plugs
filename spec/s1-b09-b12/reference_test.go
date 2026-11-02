@@ -39,7 +39,7 @@ type referenceRun struct {
 	Commands         []referenceCommand `json:"commands"`
 	Observations     map[string]any     `json:"observations"`
 	Projection       map[string]any     `json:"projection"`
-	RawSHA256        string             `json:"rawSha256"`
+	RawSHA256        string             `json:"rawDigest"`
 	ProjectionSHA256 string             `json:"projectionDigest"`
 }
 
