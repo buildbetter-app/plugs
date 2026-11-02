@@ -1,4 +1,4 @@
-package s1b13b16
+package main
 
 import (
 	"os"
