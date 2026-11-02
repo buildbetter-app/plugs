@@ -26,3 +26,18 @@ func TestVerifiedPublicPartialArchiveReverseDisclosesHistoryLoss(t *testing.T) {
 		t.Fatal("head-state reverse must disclose unreplayed source history")
 	}
 }
+
+// This is a canonical-consumer contract fixture, not real complete-root proof.
+func TestCheckedHistoryHeadReverseDoesNotClaimReplay(t *testing.T) {
+	data, err := os.ReadFile("../../integration/offlinehistory/testdata/full.tar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := ConvertArchive(data)
+	if err != nil {
+		t.Fatalf("canonical checked history cannot reverse its head: %v", err)
+	}
+	if len(result.JSONL) == 0 || len(result.Report.LostPostSwitchHistory) == 0 {
+		t.Fatal("head-state conversion must disclose that source history is not replayed")
+	}
+}
