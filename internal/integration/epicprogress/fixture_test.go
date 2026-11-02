@@ -8,7 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime"
+	"runtime/pprof"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -104,7 +108,8 @@ type reply struct {
 // second write, retry, policy hook or substitute authorization decision.
 type observedService struct {
 	*authzrpc.GuardedService
-	t *testing.T
+	t        *testing.T
+	sequence atomic.Uint64
 }
 
 // Deadline diagnosis only: retain the concrete SQLite store's optional
@@ -121,7 +126,19 @@ func (s *observedSQLiteStore) Read(ctx context.Context, view driver.View) (drive
 	if !ok {
 		return r, nil
 	}
+	if trace, ok := ctx.Value(deadlineTraceKey{}).(*deadlineReadTrace); ok {
+		trace.mu.Lock()
+		trace.head = r.Snapshot().At.String()
+		trace.mu.Unlock()
+	}
 	return &observedSQLiteReader{Reader: r, AllocatorReader: allocator}, nil
+}
+
+func (s *observedSQLiteStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	started := time.Now()
+	tx, err := s.Store.Write(ctx, lease)
+	recordObservedOperation(ctx, "write_admission", 0, started, err)
+	return tx, err
 }
 
 type observedSQLiteReader struct {
@@ -132,8 +149,71 @@ type observedSQLiteReader struct {
 type deadlineTraceKey struct{}
 
 type deadlineReadTrace struct {
-	mu     sync.Mutex
-	passes []deadlineReadPass
+	mu         sync.Mutex
+	passes     []deadlineReadPass
+	head       string
+	operations map[string]deadlineOperation
+}
+
+type deadlineOperation struct {
+	calls, rows, errors int
+	wall, max           time.Duration
+	stack               string
+}
+
+func recordObservedOperation(ctx context.Context, name string, rows int, started time.Time, err error) {
+	trace, ok := ctx.Value(deadlineTraceKey{}).(*deadlineReadTrace)
+	if !ok {
+		return
+	}
+	elapsed := time.Since(started)
+	stack := ""
+	if elapsed >= 20*time.Millisecond || err != nil {
+		var pcs [24]uintptr
+		n := runtime.Callers(2, pcs[:])
+		frames := runtime.CallersFrames(pcs[:n])
+		var names []string
+		for {
+			frame, more := frames.Next()
+			if strings.Contains(frame.Function, "github.com/buildbetter-app/plugs/internal/") {
+				names = append(names, frame.Function)
+			}
+			if !more {
+				break
+			}
+		}
+		stack = strings.Join(names, ";")
+	}
+	trace.mu.Lock()
+	defer trace.mu.Unlock()
+	if trace.operations == nil {
+		trace.operations = map[string]deadlineOperation{}
+	}
+	op := trace.operations[name]
+	op.calls++
+	op.rows += rows
+	op.wall += elapsed
+	if err != nil {
+		op.errors++
+	}
+	if elapsed > op.max {
+		op.max, op.stack = elapsed, stack
+	}
+	trace.operations[name] = op
+}
+
+func (r *observedSQLiteReader) Query(ctx context.Context, query driver.Query) (driver.Page[driver.Record], error) {
+	started := time.Now()
+	page, err := r.Reader.Query(ctx, query)
+	recordObservedOperation(ctx, "query", len(page.Items), started, err)
+	return page, err
+}
+
+func (r *observedSQLiteReader) DerivedRows(ctx context.Context, table driver.DerivedTable, prefix string) ([]driver.DerivedRow, error) {
+	started := time.Now()
+	rows, err := r.Reader.DerivedRows(ctx, table, prefix)
+	recordObservedOperation(ctx, "derived", len(rows), started, err)
+	return rows, err
 }
 
 type deadlineReadPass struct {
@@ -246,7 +326,15 @@ func (p *deadlineReadPass) recordRead(started, ended time.Time, err error) {
 func (trace *deadlineReadTrace) log(t *testing.T, failed bool) {
 	trace.mu.Lock()
 	passes := append([]deadlineReadPass(nil), trace.passes...)
+	head := trace.head
+	operations := make(map[string]deadlineOperation, len(trace.operations))
+	for name, op := range trace.operations {
+		operations[name] = op
+	}
 	trace.mu.Unlock()
+	for name, op := range operations {
+		t.Logf("EP6 passive native operation: head=%s operation=%s calls=%d rows=%d errors=%d wall_ms=%.3f max_ms=%.3f stack=%s", head, name, op.calls, op.rows, op.errors, float64(op.wall)/float64(time.Millisecond), float64(op.max)/float64(time.Millisecond), op.stack)
+	}
 	for i, p := range passes {
 		span := time.Duration(0)
 		if !p.firstRead.IsZero() {
@@ -260,18 +348,24 @@ var _ rpc.Service = (*observedService)(nil)
 
 func (s *observedService) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
 	started := time.Now()
+	sequence := s.sequence.Add(1)
 	var trace *deadlineReadTrace
 	if len(cs.Ops) == 100 {
 		trace = &deadlineReadTrace{}
 		ctx = context.WithValue(ctx, deadlineTraceKey{}, trace)
 	}
-	out, err := s.GuardedService.ApplyWithOutcome(ctx, by, cs, meta)
+	var out port.WriteOutcome
+	var err error
+	pprof.Do(ctx, pprof.Labels("ep6.write", fmt.Sprint(sequence)), func(call context.Context) {
+		out, err = s.GuardedService.ApplyWithOutcome(call, by, cs, meta)
+	})
+	elapsed := time.Since(started)
 	if trace != nil && err != nil {
 		trace.log(s.t, true)
 	}
 	var domain *model.Error
 	if errors.As(err, &domain) && (domain.Data.Code == "authz_unavailable" || domain.Data.Code == "busy") {
-		s.t.Logf("EP6 real service refusal: code=%s message=%q operations=%d elapsed_ms=%.3f", domain.Data.Code, domain.Message, len(cs.Ops), float64(time.Since(started))/float64(time.Millisecond))
+		s.t.Logf("EP6 real service refusal: code=%s message=%q operations=%d elapsed_ms=%.3f write=%d", domain.Data.Code, domain.Message, len(cs.Ops), float64(elapsed)/float64(time.Millisecond), sequence)
 	}
 	return out, err
 }
