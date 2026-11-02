@@ -1542,6 +1542,68 @@ func TestGuardDoesNotIgnoreUnsupportedStoredParent(t *testing.T) {
 	wantCode(t, err, "invalid_params")
 }
 
+func TestHierarchyGraphNeededOnlyForParentRelationChanges(t *testing.T) {
+	parent := model.RefByID("pl-parent", model.Natural64(0))
+	before, err := json.Marshal(pipeline.Document{ID: "pl-child", Type: "issue", Parent: &parent, Fields: map[string]any{"title": "before"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged := append(json.RawMessage(nil), before...)
+	other := model.RefByID("pl-other", model.Natural64(0))
+	changedDoc := pipeline.Document{ID: "pl-child", Type: "issue", Parent: &other, Fields: map[string]any{"title": "after"}}
+	changed, err := json.Marshal(changedDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := json.Marshal(pipeline.Document{ID: "pl-root", Type: "issue", Fields: map[string]any{"title": "root"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childCreate, err := json.Marshal(pipeline.Document{ID: "pl-new", Type: "issue", Parent: &parent, Fields: map[string]any{"title": "new"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bead := func(op model.OpKind, old, next []byte) port.Change {
+		return port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: model.RefByID("pl-child")}, Op: model.Op{Kind: op}, Before: old, After: next}
+	}
+	for name, tc := range map[string]struct {
+		change port.Change
+		want   bool
+	}{
+		"ordinary-parented-field-update": {change: bead(model.OpPatch, before, unchanged), want: false},
+		"actual-parent-edit":             {change: bead(model.OpPatch, before, changed), want: true},
+		"parented-create":                {change: bead(model.OpCreate, nil, childCreate), want: true},
+		"root-create":                    {change: bead(model.OpCreate, nil, root), want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := hierarchyGraphNeeded(port.ProposedChange{Changes: []port.Change{tc.change}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("hierarchyGraphNeeded=%v, want %v", got, tc.want)
+			}
+		})
+	}
+	_, err = hierarchyGraphNeeded(port.ProposedChange{Changes: []port.Change{bead(model.OpPatch, before, []byte(`{"not":"a bead"}`))}})
+	wantCode(t, err, "invalid_params")
+	statusTouch := bead(model.OpPatch, before, unchanged)
+	statusTouch.SetBy = map[string]string{"fields.status": "request"}
+	got, err = hierarchyGraphNeeded(port.ProposedChange{Changes: []port.Change{statusTouch}})
+	if err != nil || !got {
+		t.Fatalf("same-value status touch lost lifecycle graph validation: needed=%v err=%v", got, err)
+	}
+	linkChange := bead(model.OpLink, before, unchanged)
+	got, err = hierarchyGraphNeeded(port.ProposedChange{Changes: []port.Change{linkChange}})
+	if err != nil || !got {
+		t.Fatalf("link mutation lost relational graph validation: needed=%v err=%v", got, err)
+	}
+	got, err = hierarchyGraphNeeded(port.ProposedChange{Changes: []port.Change{{Resource: model.ResourceRef{Kind: "bead"}, Op: model.Op{Kind: model.OpReparent}, Before: unchanged, After: unchanged}}})
+	if err != nil || !got {
+		t.Fatal("explicit reparent must retain graph validation even when the final parent is unchanged")
+	}
+}
+
 func TestSlotSelectionUsesOntologyKeys(t *testing.T) {
 	f := setup(t)
 	doc := ontology.DefaultDocument()
