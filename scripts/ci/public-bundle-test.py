@@ -118,6 +118,9 @@ def main() -> None:
         assert (companion_output / "source/beads.manifest").read_bytes() == (root / "beads.manifest").read_bytes()
         assert (companion_output / "source/plug.manifest").read_bytes() == (root / "plug.manifest").read_bytes()
 
+        assert helper.NATIVE_BEADS_SOURCE_REF == (
+            "refs/remotes/origin/codex/b1c-native-source-35b-305fec3afac8-20261102"
+        )
         assert helper.NATIVE_BEADS_MANIFEST_ENTRIES == 5141
         assert helper.NATIVE_BEADS_MANIFEST_SHA256 == "6c2e549b54b472790d57a27370821d69159d4d6dc817e5bf38dbc56c856c8420"
         native_fixture = "".join(
@@ -194,6 +197,33 @@ def main() -> None:
             "expected_provenance": native_expected_path,
         })()
         helper.verify(native_pinned)
+
+        # Keep the retrieval ref exact, including verification without an
+        # expected-provenance sidecar. Equal trees do not permit another commit.
+        old_source_ref = "refs/remotes/origin/codex/refill-beads-native-inventory-20261102-0610"
+        altered = copy.deepcopy(native_manifest)
+        altered["source_refs"]["beads"] = old_source_ref
+        expect_refusal(
+            lambda: helper.verify_native_manifest_contract(altered),
+            "native verifier accepted the former moving source ref",
+        )
+        altered = copy.deepcopy(native_manifest)
+        altered["source"]["beads"]["commit"] = "dcff9b28739f35dff7ec45660623509788b27cbb"
+        expect_refusal(
+            lambda: helper.verify_native_manifest_contract(altered),
+            "native verifier accepted a different commit with the same tree",
+        )
+        refused_metadata = root / "native-old-ref-metadata.json"
+        altered_metadata = helper.read_json(native_metadata)
+        altered_metadata["source_refs"]["beads"] = old_source_ref
+        helper.write_json(refused_metadata, altered_metadata)
+        refused_args = copy.copy(native_args)
+        refused_args.output = root / "native-old-ref-refused"
+        refused_args.metadata = str(refused_metadata)
+        expect_refusal(
+            lambda: helper.create(refused_args),
+            "native create accepted the former moving source ref",
+        )
 
         native_with_plug_arg = type("Args", (), {
             "output": root / "native-refused",

@@ -24,7 +24,7 @@ COMPANION_SCHEMA = "plug-public-companion/1"
 NATIVE_SCHEMA = "plug-public-native/1"
 NATIVE_BEADS_COMMIT = "305fec3afac83224f46c54f982959fd99db136fa"
 NATIVE_BEADS_TREE = "48e3545b7c5c6a5cdc0119e34dfa379354456a6e"
-NATIVE_BEADS_SOURCE_REF = "refs/remotes/origin/codex/refill-beads-native-inventory-20261102-0610"
+NATIVE_BEADS_SOURCE_REF = "refs/remotes/origin/codex/b1c-native-source-35b-305fec3afac8-20261102"
 NATIVE_BEADS_MANIFEST_ENTRIES = 5141
 NATIVE_BEADS_MANIFEST_SHA256 = "6c2e549b54b472790d57a27370821d69159d4d6dc817e5bf38dbc56c856c8420"
 
