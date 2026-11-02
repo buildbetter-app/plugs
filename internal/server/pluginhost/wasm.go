@@ -29,6 +29,11 @@ const (
 	maxWASMMessage  = 1 << 20
 	maxWASMPages    = 1024 // 64 MiB per guest, including any memory growth.
 	wasmInitTimeout = time.Second
+	// A reader may ignore its context. Retired guests therefore keep their
+	// reader call accounted for until it actually returns. The cap is aligned
+	// with the four live pool members, so cancellation cannot create an
+	// unbounded set of retained reader workers across guest generations.
+	maxWASMReaderWorkers = maxRuntimeInstances
 	// The E5 ABI names the single host import env.plug.call. Keep the
 	// dotted function name intact so static admission and wazero instantiation
 	// enforce the same import contract.
@@ -82,12 +87,14 @@ func NewWASMNative(wasm []byte, manifest pluginapi.PluginManifest, instance stri
 // linear memory, globals, allocators and invocation capabilities remain
 // private while compilation/link setup is paid only once.
 type wasmFactory struct {
-	mu           sync.Mutex
-	wasm         []byte
-	runtime      wazero.Runtime
-	compiled     wazero.CompiledModule
-	modules      map[api.Module]*wasmRuntime
-	constructing int
+	mu            sync.Mutex
+	wasm          []byte
+	runtime       wazero.Runtime
+	compiled      wazero.CompiledModule
+	modules       map[api.Module]*wasmRuntime
+	constructing  int
+	readerSlots   chan struct{}
+	readerWorkers int
 }
 
 type wasmRuntime struct {
@@ -111,6 +118,24 @@ type wasmInvocationKey struct{}
 
 type wasmInvocation struct {
 	reader pluginapi.SnapshotReader
+}
+
+// wasmInitializerObserverKey is an internal acceptance-test seam. It carries
+// no guest capability; it only lets a source-built test observe that the real
+// guest initializer is about to be called without relying on elapsed time.
+type wasmInitializerObserverKey struct{}
+
+// WithWASMInitializerObserver returns a context that observes the entry to a
+// source-built WASI guest's _initialize export. This is intentionally scoped
+// to the internal pluginhost package and has no wire or public plugin effect.
+func WithWASMInitializerObserver(ctx context.Context, observer func()) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wasmInitializerObserverKey{}, observer)
 }
 
 // wasmReadRequest is the deliberately small internal E5 envelope. The
@@ -249,12 +274,46 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 	// `_start`. Calling it once initializes the Go scheduler before any ABI
 	// calls, while the module remains resident for the host lifetime.
 	if initialize := module.ExportedFunction("_initialize"); initialize != nil {
+		if observer, ok := initCtx.Value(wasmInitializerObserverKey{}).(func()); ok {
+			observer()
+		}
 		if _, err := initialize.Call(initCtx); err != nil {
 			result.close()
 			return nil, failure(ErrManifest, "WASM runtime initialization failed: %v", err)
 		}
 	}
 	return result, nil
+}
+
+// acquireReaderWorker reserves one factory-wide slot for a reader call. A
+// canceled callback can return while its reader is still blocked, so the slot
+// remains held until the worker's defer runs. This bounds retention across
+// retired guest instances instead of treating maxRuntimeInstances as a worker
+// limit.
+func (f *wasmFactory) acquireReaderWorker(ctx context.Context) (func(), error) {
+	f.mu.Lock()
+	if f.readerSlots == nil {
+		f.readerSlots = make(chan struct{}, maxWASMReaderWorkers)
+	}
+	slots := f.readerSlots
+	f.mu.Unlock()
+	select {
+	case slots <- struct{}{}:
+		f.mu.Lock()
+		f.readerWorkers++
+		f.mu.Unlock()
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				<-slots
+				f.mu.Lock()
+				f.readerWorkers--
+				f.mu.Unlock()
+			})
+		}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (f *wasmFactory) hostCall(ctx context.Context, module api.Module, ptr, length uint32) uint64 {
@@ -340,8 +399,13 @@ func (r *wasmRuntime) hostCall(ctx context.Context, module api.Module, ptr, leng
 	if request.reader == nil {
 		panic("WASM outbound host calls are unsupported outside snapshot callbacks")
 	}
+	releaseReader, err := r.factory.acquireReaderWorker(ctx)
+	if err != nil {
+		panic(err)
+	}
 	readResult := make(chan wasmReadOutcome, 1)
 	go func() {
+		defer releaseReader()
 		outcome := wasmReadOutcome{}
 		defer func() {
 			if recovered := recover(); recovered != nil {

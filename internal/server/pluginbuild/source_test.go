@@ -559,6 +559,88 @@ func TestWASIArtifactOwnsPooledHostsAndRealGuestState(t *testing.T) {
 		t.Fatalf("late generation changed replacement guest state: value=%q err=%v", got, err)
 	}
 
+	// A canceled callback may leave an uncooperative real guest reader blocked
+	// until the test releases it. Retain four such readers, matching the live
+	// pool ceiling, then prove a fifth admission is bounded without creating a
+	// fifth reader worker. Release every barrier only after the bound oracle so
+	// the test exercises the retired-generation resource accounting.
+	const retainedReaderLimit = 4
+	retained := make([]struct {
+		release chan struct{}
+		drained chan struct{}
+	}, 0, retainedReaderLimit)
+	for i := 0; i < retainedReaderLimit; i++ {
+		entered := make(chan struct{}, 1)
+		release := make(chan struct{})
+		drained := make(chan struct{}, 1)
+		reader := &wasiLateBarrierSnapshot{
+			wasiSnapshot: wasiSnapshot{revision: model.Natural64(1)},
+			entered:      entered,
+			release:      release,
+			drained:      drained,
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		principal := fmt.Sprintf("principal-retained-%d", i)
+		go func() {
+			_, callErr := callStateWithContext(ctx, mutator, principal, "pool-state:"+principal, reader)
+			done <- callErr
+		}()
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			cancel()
+			t.Fatal("retained real WASI callback did not reach its host-read barrier")
+		}
+		cancel()
+		select {
+		case callErr := <-done:
+			if !errors.Is(callErr, context.Canceled) {
+				t.Fatalf("retained real WASI callback returned %v, want cancellation", callErr)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("retained real WASI callback was not bounded after cancellation")
+		}
+		retained = append(retained, struct {
+			release chan struct{}
+			drained chan struct{}
+		}{release: release, drained: drained})
+	}
+	overflowEntered := make(chan struct{}, 1)
+	overflowRelease := make(chan struct{})
+	overflowDrained := make(chan struct{}, 1)
+	overflowReader := &wasiLateBarrierSnapshot{
+		wasiSnapshot: wasiSnapshot{revision: model.Natural64(1)},
+		entered:      overflowEntered,
+		release:      overflowRelease,
+		drained:      overflowDrained,
+	}
+	overflowCtx, cancelOverflow := context.WithTimeout(context.Background(), 2*time.Second)
+	startedOverflow := time.Now()
+	_, overflowErr := callStateWithContext(overflowCtx, mutator, "principal-overflow", "pool-state:overflow", overflowReader)
+	cancelOverflow()
+	if overflowErr == nil || time.Since(startedOverflow) > 2*time.Second {
+		t.Fatalf("reader-worker admission was unbounded: err=%v elapsed=%s", overflowErr, time.Since(startedOverflow))
+	}
+	select {
+	case <-overflowEntered:
+		close(overflowRelease)
+		<-overflowDrained
+		t.Fatal("reader-worker admission exceeded the four-worker bound")
+	default:
+	}
+	for _, blocked := range retained {
+		close(blocked.release)
+		select {
+		case <-blocked.drained:
+		case <-time.After(2 * time.Second):
+			t.Fatal("retained real WASI reader did not drain after cleanup release")
+		}
+	}
+	if got, err := callState(mutator, "principal-after-readers", "pool-state:after-readers", &wasiSnapshot{revision: model.Natural64(1)}); err != nil || !strings.HasSuffix(got, "#1") {
+		t.Fatalf("bounded reader recovery did not refill a fresh guest: value=%q err=%v", got, err)
+	}
+
 	// A real guest refusal disposes its member. The next same-principal call
 	// must observe a replacement module with a fresh private counter.
 	if _, err := callState(mutator, "principal-refused", "acceptance:undeclared", &wasiSnapshot{revision: model.Natural64(1)}); err == nil {
@@ -638,15 +720,27 @@ func TestWASIArtifactAdmissionCancellationAndOwnerClose(t *testing.T) {
 		t.Fatalf("canceled admission removed the still-owned artifact: %v", statErr)
 	}
 
-	// Start a second real admission, then close its owner while the guest
-	// initializer is sleeping. Close must cancel and await that admission before
-	// removing the output, rather than returning with pluginhost.New in flight.
+	// Start a second real admission, observe its actual guest initializer entry,
+	// then close its owner while the initializer is sleeping. Close must cancel
+	// and await that admission before removing the output, rather than returning
+	// with pluginhost.New in flight.
 	hostDone := make(chan error, 1)
+	initializerEntered := make(chan struct{}, 1)
+	admissionCtx := pluginhost.WithWASMInitializerObserver(context.Background(), func() {
+		select {
+		case initializerEntered <- struct{}{}:
+		default:
+		}
+	})
 	go func() {
-		_, hostErr := artifact.Host(context.Background(), pluginhost.Config{})
+		_, hostErr := artifact.Host(admissionCtx, pluginhost.Config{})
 		hostDone <- hostErr
 	}()
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-initializerEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source WASI admission did not enter the real guest initializer")
+	}
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- artifact.Close() }()
 	select {

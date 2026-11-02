@@ -432,7 +432,11 @@ func TestPoolConstructionPreservesManifestErrorAfterQueueExpiry(t *testing.T) {
 		<-ctx.Done()
 		return sdk.Registration{}, failure(ErrManifest, "constructor manifest failure")
 	}
-	h, err := New(Config{Natives: []sdk.Native{native}, Bindings: fixtureBindings()})
+	// Keep one binding in this constructor-race probe so the sixth constructor
+	// is the first queue-expiry replacement, rather than an unrelated second
+	// pool's initial member. The production pool still retains its four-live
+	// ceiling; this test isolates the error-classification boundary.
+	h, err := New(Config{Natives: []sdk.Native{native}, Bindings: fixtureBindings()[:1]})
 	if err != nil {
 		t.Fatal(err)
 	}
