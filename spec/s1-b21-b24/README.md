@@ -62,6 +62,20 @@ Plug contract checks, with real PostgreSQL field/metadata cases in
 `internal/integration/postgresacceptance`; they add no Beads recording or
 full-card parity claim.
 
+The separately authorized B21 `CloseOp` (`kind: "close"`, `target`, optional
+`reason` and `expect`) enters the ordinary close slot at its operation position.
+Its preconditions read the ordered in-request image; a revision guard refuses
+a row written earlier in the request. The enclosing ChangeSet's expectations
+keep their existing pinned-snapshot semantics. Core selects the slot without
+running subscribers; after mutators, ontology checks every request prefix and
+the complete final graph. Later unlink/patch operations cannot rescue an
+earlier refused close. Every required expectation target and the per-op close
+permission must be authorized before private CAS details are released. A
+refusal leaves no durable row, history or successful receipt; accepted batches
+publish one revision and per-op results. Replays return the stored commit,
+including after SQLite/PostgreSQL reopen. No new reference capture or full B21
+card qualification is inferred from these direct Plug regressions.
+
 Run the focused target with:
 
 ```sh
