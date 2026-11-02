@@ -157,8 +157,39 @@ func TestPlugDumpCompleteRootFromPublicDoltActions(t *testing.T) {
 	if manifest.History != "verified" || history.Range.Status != "verified" || !history.Range.Complete || history.Range.First != 1 || history.Range.Head != uint64(len(history.Commits)) || len(history.Range.Frames) != len(history.Commits) || len(history.Range.Gaps)+len(history.Range.Baseline)+len(history.Range.BaselineEvents) != 0 {
 		t.Fatalf("actual source root/event coverage incomplete: status=%s reason=%s complete=%t first=%d head=%d commits=%d gaps=%+v", history.Range.Status, history.Range.Reason, history.Range.Complete, history.Range.First, history.Range.Head, len(history.Commits), history.Range.Gaps)
 	}
-	if len(history.Commits[0].Parents) != 0 || len(history.Range.Frames[0].Records)+len(history.Range.Frames[0].Events) != 0 || len(history.Events) < 4 {
+	if len(history.Commits[0].Parents) != 0 || len(history.Range.Frames[0].Records)+len(history.Range.Frames[0].Events) != 0 || len(history.Events) != 4 {
 		t.Fatal("source root was not empty or actual Beads action events are missing")
+	}
+	actions := map[string]int{
+		"bd: create " + issue.ID:    1,
+		"bd: update " + issue.ID:    2,
+		"bd: label add " + issue.ID: 3,
+		"bd: comment " + issue.ID:   4,
+	}
+	for _, frame := range history.Range.Frames {
+		message, _ := history.Commits[frame.Sequence-1].Metadata["message"].(string)
+		if count, ok := actions[message]; ok {
+			if len(frame.Events) != count {
+				t.Fatalf("actual %s commit retained %d events, want %d", message, len(frame.Events), count)
+			}
+			delete(actions, message)
+		}
+	}
+	if len(actions) != 0 {
+		t.Fatalf("driver source commits missing: %v", actions)
+	}
+	eventTypes := map[string]bool{}
+	for _, event := range history.Events {
+		if event["issue_id"] != issue.ID || event["actor"] != "public-source-author" {
+			t.Fatal("source action identity/attribution changed")
+		}
+		eventType, _ := event["event_type"].(string)
+		eventTypes[eventType] = true
+	}
+	for _, eventType := range []types.EventType{types.EventCreated, types.EventUpdated, types.EventLabelAdded, types.EventCommented} {
+		if !eventTypes[string(eventType)] {
+			t.Fatalf("actual source event %s missing", eventType)
+		}
 	}
 	if err := exportCmd.RunE(cmd, nil); err != nil {
 		t.Fatal(err)
@@ -349,6 +380,20 @@ func checkPublicStoredHistoryFrame(t *testing.T, frame plugdump.SourceHistoryFra
 	}
 	counts := map[string]int{}
 	for _, record := range frame.Records {
+		if record.Kind == "bead" {
+			labels := []string{}
+			for _, row := range image["labels"].Rows {
+				if row["issue_id"] == record.ID {
+					labels = append(labels, row["label"].(string))
+				}
+			}
+			sort.Strings(labels)
+			want, _ := json.Marshal(labels)
+			got, _ := json.Marshal(record.Body["labels"])
+			if !bytes.Equal(want, got) {
+				t.Fatalf("frame %d changed stored labels", frame.Sequence)
+			}
+		}
 		found := false
 		for _, row := range image[record.Source.Table].Rows {
 			key := "id"
