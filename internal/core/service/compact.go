@@ -175,7 +175,9 @@ func compactionChangeSet(row storedBead, summary string, state json.RawMessage) 
 			fields[name] = ""
 		}
 	}
-	ref := row.record.Ref
+	// Omitted branch and explicit branch zero name the same record, but
+	// must produce one request digest across current and historical readers.
+	ref := model.RefByID(row.record.Ref.ID, model.Natural64(0))
 	return model.ChangeSet{Ops: []model.Op{
 		{Kind: model.OpPatch, Patch: &model.PatchOp{Target: ref, Fields: fields}},
 		{Kind: model.OpSetMeta, SetMeta: &model.SetMetaOp{Target: ref, Key: compactionMetadata, Value: state}},
@@ -409,7 +411,13 @@ func (s *Service) compactionReplay(ctx context.Context, by model.PrincipalRef, r
 	if !ok {
 		return model.ChangeSet{}, true, compactionUnavailable("compaction receipt summary is unavailable")
 	}
-	return compactionChangeSet(before, summary, after.doc.Metadata[compactionMetadata]), true, nil
+	// History reconstruction may reorder JSON object members. Re-encode the
+	// typed state exactly as on first admission before hashing the Writer request.
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return model.ChangeSet{}, true, err
+	}
+	return compactionChangeSet(before, summary, raw), true, nil
 }
 
 // CompactionRevertDigest binds D32 proof to this store incarnation and exact
