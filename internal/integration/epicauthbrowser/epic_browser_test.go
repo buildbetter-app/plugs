@@ -96,7 +96,7 @@ func TestAuthenticatedChromeFifthTaskTwentyThousandNativeRestoreReopen(t *testin
 		for i := start; i < end; i++ {
 			create := &model.CreateOp{Type: "issue", Project: visible, Fields: map[string]any{"title": fmt.Sprintf("unrelated %05d", i)}}
 			if i == 51 {
-				create.Parent = &direct[0]
+				create.Parent = &direct[1]
 			}
 			ops = append(ops, model.Op{Kind: model.OpCreate, Create: create})
 		}
@@ -190,7 +190,7 @@ func TestAuthenticatedChromeFifthTaskTwentyThousandNativeRestoreReopen(t *testin
 			}
 			detach := model.ChangeSet{Ops: []model.Op{{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: direct[0]}}}}
 			committed(t, f.write(t, f.owner, "tx.apply", visible, map[string]any{"changeSet": detach}))
-			if len(persistedClosure(t, f.store)) != 20050 {
+			if len(persistedClosure(t, f.store)) != 20051 {
 				t.Fatal("restored detach did not maintain descendant closure")
 			}
 			return map[string]any{"ok": true}

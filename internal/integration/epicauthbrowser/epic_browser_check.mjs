@@ -166,6 +166,11 @@ try {
     await control("detach"); await fresh(); await checkProgress(29, 20, [["todo", "29"]]);
     step("Restored real Writer atomically rejected descendant cycle and detached completed child; UI fresh count=29 remainder=20 with no stale done bucket");
   }
+  if (!fixture.full) {
+    await click('.tab[data-view="home"]'); await settled(); await completeWire();
+    assert(await evaluate("localStorage.length === 0 && sessionStorage.length === 0"), "authenticated displayed-row markers must stay in tab memory");
+    step("Opened actual authenticated home rows; displayed-row markers remain in tab memory");
+  }
   phase = "sign-out";
   await click("#sign-out");
   assert.equal((await snapshot()).total, ""); assert.equal((await snapshot()).remainder, "");
@@ -180,6 +185,9 @@ try {
 } catch (error) {
   // Preserve the actual assertion even if Chrome profile cleanup also fails.
   console.error(error.stack); process.exitCode = 1;
+  await delay(100);
+  const partial = JSON.stringify({ scope: "failed disposable authenticated browser fixture; no qualification", steps, wire, console: consoleEntries, exceptions });
+  if (credentials.every(token => !partial.includes(token))) emit({ event: "evidence", data: Buffer.from(partial).toString("base64") });
 } finally {
   if (send && ws?.readyState === WebSocket.OPEN) await Promise.race([send("Browser.close").catch(() => {}), delay(2000)]);
   if (ws) ws.close();
