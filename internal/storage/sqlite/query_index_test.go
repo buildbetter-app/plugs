@@ -74,8 +74,10 @@ func TestCurrentReadIndexPagesPinnedBodiesAndRebuildsOnOpen(t *testing.T) {
 			}
 		}
 	}
-	check(pinned, []string{"index-a", "index-b", "index-b-other", "index-c"}, []string{"index-a", "index-b", "index-c"})
-	check(historical, []string{"index-a", "index-b", "index-b-other", "index-c"}, []string{"index-a", "index-b", "index-c"})
+	// The contract orders encoded keys, including the branch suffix: the '-'
+	// in index-b-other precedes the ':' in index-b:0.
+	check(pinned, []string{"index-a", "index-b-other", "index-b", "index-c"}, []string{"index-a", "index-b", "index-c"})
+	check(historical, []string{"index-a", "index-b-other", "index-b", "index-c"}, []string{"index-a", "index-b", "index-c"})
 	check(current, []string{"index-a", "index-b-other", "index-c"}, []string{"index-a", "index-c"})
 	for _, r := range []driver.Reader{pinned, historical, current} {
 		if err := r.Close(); err != nil {
