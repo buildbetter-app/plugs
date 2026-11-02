@@ -545,6 +545,7 @@ internal/server/authn/session.go
 internal/server/authn/session_test.go
 internal/server/authzrpc/BUILD.bazel
 internal/server/authzrpc/README.md
+internal/server/authzrpc/atomic_close_test.go
 internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/checker.go
