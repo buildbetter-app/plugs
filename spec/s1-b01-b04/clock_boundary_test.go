@@ -20,6 +20,10 @@ func TestS1B04ApplicationClaimAndDriverReceiptBoundaries(t *testing.T) {
 			if got := f.document("b04-clock").Lease; got == nil || !got.ExpiresAt.Equal(claimedAt.Add(5*time.Minute)) {
 				t.Fatalf("application-generated claim expiry=%+v", got)
 			}
+			principal, err := driver.PrincipalKey(f.document("b04-clock").Lease.Principal)
+			if err != nil {
+				t.Fatal(err)
+			}
 			tick := time.Nanosecond
 			if backend.name == "postgres" {
 				tick = time.Microsecond
@@ -49,7 +53,7 @@ func TestS1B04ApplicationClaimAndDriverReceiptBoundaries(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				receipt, err := r.IdempotencyByKey(f.ctx, "anonymous:", owner, "bead.claim", f.key("clock-claim", "bead.claim", owner))
+				receipt, err := r.IdempotencyByKey(f.ctx, principal, owner, "bead.claim", f.key("clock-claim", "bead.claim", owner))
 				_ = r.Close()
 				if err != nil || (receipt != nil) != (point == "before") {
 					t.Fatalf("%s driver receipt expiry=%+v err=%v", point, receipt, err)
