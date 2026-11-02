@@ -596,7 +596,7 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	}
 	defer closeContent()
 	refs := make([]model.Ref, 0, len(out.Items))
-	for i, bead := range out.Items {
+	for _, bead := range out.Items {
 		if bead.Kind != "workflow.item" {
 			refs = append(refs, model.RefByID(bead.ID, model.Natural64(0)))
 		}
