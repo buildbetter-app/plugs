@@ -155,7 +155,7 @@ func (s *Service) CompactWithOutcome(ctx context.Context, by model.PrincipalRef,
 	if err != nil {
 		return port.WriteOutcome{}, err
 	}
-	cs := compactionChangeSet(candidate.row, summary, raw)
+	cs := compactionChangeSet(candidate.row, summary, raw, candidate.tier)
 	return s.apply(ctx, by, meta.Method, cs, meta, true)
 }
 
@@ -168,8 +168,13 @@ func (s *Service) authorizeCompaction(ctx context.Context, by model.PrincipalRef
 	return s.apply(ctx, by, meta.Method, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: ref, Fields: map[string]any{}}}}}, meta, true)
 }
 
-func compactionChangeSet(row storedBead, summary string, state json.RawMessage) model.ChangeSet {
+func compactionChangeSet(row storedBead, summary string, state json.RawMessage, tier int) model.ChangeSet {
 	fields := map[string]any{"description": summary}
+	// Preserve an existing configured/imported level field as the same atomic
+	// transition. Default records gain no new public field.
+	if _, present := row.doc.Fields["compaction_level"]; present {
+		fields["compaction_level"] = tier
+	}
 	for _, name := range compactionTextFields[1:] {
 		if _, exists := row.doc.Fields[name]; exists {
 			fields[name] = ""
@@ -417,7 +422,7 @@ func (s *Service) compactionReplay(ctx context.Context, by model.PrincipalRef, r
 	if err != nil {
 		return model.ChangeSet{}, true, err
 	}
-	return compactionChangeSet(before, summary, raw), true, nil
+	return compactionChangeSet(before, summary, raw, value.Tier), true, nil
 }
 
 // CompactionRevertDigest binds D32 proof to this store incarnation and exact
@@ -500,7 +505,8 @@ func (s *Service) RevertCompactionWithOutcome(ctx context.Context, by model.Prin
 	}
 	fields := map[string]any{}
 	expects := append([]model.Precondition{}, req.Expect...)
-	for _, name := range compactionTextFields {
+	revertFields := append(append([]string{}, compactionTextFields[:]...), "compaction_level")
+	for _, name := range revertFields {
 		old, oldPresent := original.doc.Fields[name]
 		after, afterPresent := base.doc.Fields[name]
 		oldHash, err := pipeline.FieldHash(old)
