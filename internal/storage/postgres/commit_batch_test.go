@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -487,6 +488,11 @@ func stageLargePublication(t *testing.T, s *Store, lease driver.ActiveLease) (dr
 		facts[i] = driver.ReadFact(fmt.Sprintf("publication/fact/%04d", i))
 		states = append(states, driver.LockKey{Kind: driver.LockReadFact, Fact: facts[i]})
 	}
+	sort.Slice(states, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(states[i])
+		b, _ := driver.EncodeLockKey(states[j])
+		return a < b
+	})
 	keys = append(keys, states...)
 	tx, h := beginTest(t, s, lease, keys...)
 	for _, ref := range refs {
