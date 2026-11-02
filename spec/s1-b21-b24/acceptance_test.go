@@ -245,7 +245,7 @@ func TestS1B24UntimedDeferRequiresExplicitReopen(t *testing.T) {
 			}
 			// Keep the memory lease live while still proving that a positive
 			// controlled-clock advance does not wake an untimed defer.
-			f.clock = f.clock.Add(5 * time.Second)
+			f.advance(t, 5*time.Second)
 			advanced := f.call("bead.ready", "b24-ready-after-clock", map[string]any{"limit": 100})
 			if advanced.Error != nil {
 				t.Fatalf("ready after clock: %+v", advanced.Error)
@@ -256,7 +256,7 @@ func TestS1B24UntimedDeferRequiresExplicitReopen(t *testing.T) {
 			if len(page.Items) != 0 {
 				t.Fatalf("untimed defer woke implicitly: %s", advanced.Result)
 			}
-			invalid := f.call("bead.defer", "b24-target-refused", map[string]any{"id": id, "reason": "still waiting", "until": f.clock.Add(time.Hour)})
+			invalid := f.call("bead.defer", "b24-target-refused", map[string]any{"id": id, "reason": "still waiting", "until": f.clock.Now().Add(time.Hour)})
 			if invalid.Error == nil || invalid.Error.Data.Code != "invalid_params" {
 				t.Fatalf("timed defer was accepted: %+v", invalid)
 			}

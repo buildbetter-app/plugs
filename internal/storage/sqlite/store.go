@@ -24,13 +24,20 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-type Driver struct{}
+// Driver's optional Clock controls persisted time and expiry comparisons. A nil
+// Clock uses time.Now exactly as before. An injected clock must be concurrency
+// safe and nondecreasing. Real lease timers and context deadlines always keep
+// using wall/monotonic time; Clock is not a deadline or TTL override.
+type Driver struct {
+	Clock func() time.Time
+}
 
 func (Driver) Info() driver.Info {
 	return driver.Info{Name: "sqlite", Version: "1", Capabilities: []string{"transactions", "history", "leases", "checkpoints", "allocator_continuation", "core_sessions", "noop", "response_finalization", driver.CapabilityRestoreCurrentImage}}
 }
 
 type Store struct {
+	clock    func() time.Time
 	db       *sql.DB
 	lockDir  string
 	mu       sync.Mutex
@@ -53,7 +60,7 @@ func randomID() string {
 	return hex.EncodeToString(b[:])
 }
 
-func (Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, error) {
+func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -93,7 +100,7 @@ func (Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, error)
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{lockDir: path + ".plug-locks", children: make(map[io.Closer]struct{}), leases: make(map[*activeLease]struct{})}
+	s := &Store{clock: d.Clock, lockDir: path + ".plug-locks", children: make(map[io.Closer]struct{}), leases: make(map[*activeLease]struct{})}
 	if err = os.MkdirAll(s.lockDir, 0700); err != nil {
 		return nil, err
 	}
@@ -311,7 +318,7 @@ func (s *Store) Health(ctx context.Context) (driver.StoreHealth, error) {
 		return driver.StoreHealth{}, err
 	}
 	role := "unknown"
-	if row.token != "" && time.Now().UnixNano() < row.expires {
+	if row.token != "" && s.now().UnixNano() < row.expires {
 		role = "active"
 	}
 	return driver.StoreHealth{Driver: "sqlite", Role: role, LeaseEpoch: row.epoch, Head: m.Head, Incarnation: m.Incarnation, AuthorizationChain: []string{}}, nil
