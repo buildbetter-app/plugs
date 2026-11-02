@@ -292,6 +292,7 @@ internal/core/reverseconverter/BUILD.bazel
 internal/core/reverseconverter/README.md
 internal/core/reverseconverter/archive.go
 internal/core/reverseconverter/convert.go
+internal/core/reverseconverter/public_archive_test.go
 internal/core/reverseconverter/reverseconverter_test.go
 internal/core/reverseconverter/types.go
 internal/core/service/BUILD.bazel
@@ -368,9 +369,15 @@ internal/integration/converterroundtrip/history.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
 internal/integration/converterroundtrip/native_restore_test.go
+internal/integration/converterroundtrip/public_source_test.go
 internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go
+internal/integration/converterroundtrip/reverse.go
+internal/integration/converterroundtrip/reverse_test.go
 internal/integration/converterroundtrip/roundtrip_test.go
+internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar
+internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar
+internal/integration/converterroundtrip/testdata/public-source-990eb800.md
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
 internal/integration/cursorhttp/BUILD.bazel
 internal/integration/cursorhttp/cursor_test.go
@@ -1101,3 +1108,11 @@ tools/rehearsal/gate.go
 tools/rehearsal/metrics.go
 tools/rehearsal/metrics_test.go
 tools/rehearsal/three_rehearsals.sh
+tools/roundtrip/BUILD.bazel
+tools/roundtrip/README.md
+tools/roundtrip/beads.go
+tools/roundtrip/beads_runtime_test.go
+tools/roundtrip/beads_test.go
+tools/roundtrip/main.go
+tools/roundtrip/main_test.go
+tools/roundtrip/testdata/public-companion-profile.json

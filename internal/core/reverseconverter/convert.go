@@ -123,7 +123,9 @@ func Convert(dump Dump) (Result, error) {
 		normalizeReport(&report)
 		return Result{Report: report}, withReport(err, report)
 	}
-	if dump.Manifest.History == "available-unverified" {
+	if dump.Manifest.History == "verified" {
+		addUnique(&report.LostPostSwitchHistory, "verified source history is not replayed by a head-state Beads import")
+	} else if dump.Manifest.History == "available-unverified" {
 		addUnique(&report.LostPostSwitchHistory, "available-unverified source history is not representable in a head-state Beads import")
 	} else {
 		addUnique(&report.LostPostSwitchHistory, "Plug head-state dump contains no complete post-switch history")
@@ -315,7 +317,7 @@ func validateDumpShape(dump Dump, report *Report) error {
 	if m.Format != PlugDumpFormat || m.Schema != 1 || m.Reference != BeadsReference || m.MainVersion != 72 || m.IgnoredVersion != 28 || m.StoreID == "" || m.Machine == "" || m.Scope != "offline-head-and-source-archives" {
 		return refusal("unsupported plug-dump manifest")
 	}
-	if m.History != "unavailable" && m.History != "available-unverified" {
+	if m.History != "unavailable" && m.History != "available-unverified" && m.History != "verified" {
 		return refusal("unsupported history disposition %q", m.History)
 	}
 	if len(m.Kinds) == 0 {
@@ -385,7 +387,13 @@ func convertBead(record Record, report *Report) (*workingIssue, []string) {
 		var ok bool
 		pinned, ok = parsePinned(value)
 		if !ok {
-			reasons = append(reasons, fmt.Sprintf("bead %q field %q is not a boolean or canonical numeric 0/1", record.ID, "pinned"))
+			reasons = append(reasons, fmt.Sprintf("bead %q field %q is not a boolean or canonical numeric/textual 0/1", record.ID, "pinned"))
+		} else if raw, textual := value.(string); textual {
+			// Public paired SQL sources can store this column as TEXT. The
+			// native JSONL boolean represents its meaning; retain the actual
+			// source encoding separately rather than silently erasing it.
+			archivedSource["pinned"] = raw
+			addUnique(&report.ArchivedSourceFields, "bead/"+record.ID+"/source/pinned")
 		}
 	}
 	typ := text(body["source_type"])
@@ -1070,21 +1078,27 @@ func integer(value any) (int64, bool) {
 	}
 }
 
-// parsePinned accepts the two representations admitted at the Beads SQL/JSON
-// boundary: a JSON boolean or the exact integer JSON values 0 and 1 emitted by
-// the TINYINT(1) source column. It deliberately rejects numeric spellings such
-// as 1.0/1e0 and all broad truthiness coercions.
+// parsePinned accepts JSON booleans and exact 0/1 SQL representations. Native
+// TINYINT(1) produces numbers; a supported public paired TEXT schema produces
+// strings. Decimal/exponent spellings, whitespace and truthiness still refuse.
 func parsePinned(value any) (bool, bool) {
 	switch value := value.(type) {
 	case nil:
 		// Keep the existing direct-Convert behavior for an explicit null: it
 		// remains the omitted false value in Beads JSONL. The canonical source
-		// exporter emits the SQL default as numeric 0/1 instead.
+		// exporter can emit the SQL default as numeric or textual 0/1.
 		return false, true
 	case bool:
 		return value, true
 	case json.Number:
 		switch value.String() {
+		case "0":
+			return false, true
+		case "1":
+			return true, true
+		}
+	case string:
+		switch value {
 		case "0":
 			return false, true
 		case "1":
