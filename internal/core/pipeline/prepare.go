@@ -337,7 +337,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 						found = i
 						break
 					}
-					if op.Kind == model.OpLink {
+					// Association links are independent annotations and may coexist
+					// with a workflow edge for the same endpoints. Other kinds share
+					// one dependency identity, so a type change remains a typed
+					// refusal (B07).
+					if op.Kind == model.OpLink && kind != "relates-to" && link.Kind != "relates-to" {
 						return nil, failure("invalid_params", "dependency endpoint already has a different type")
 					}
 				}

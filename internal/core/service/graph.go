@@ -220,12 +220,9 @@ func (o *Ontology) readyDependencies(doc pipeline.Document, graph map[string]sto
 			return false, nil
 		}
 	}
-	if doc.Parent != nil {
-		parent, exists := graph[doc.Parent.ID]
-		if !exists || !terminal(parent) {
-			return false, nil
-		}
-	}
+	// The explicit parent field is hierarchy/disclosure metadata. It is
+	// checked by close guards, while ready membership is governed by graph
+	// dependency edges so a child remains visible when its parent is hidden.
 	return true, nil
 }
 
