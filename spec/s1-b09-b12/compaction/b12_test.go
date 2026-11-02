@@ -63,13 +63,13 @@ func TestB12PublicTierBoundariesHistoryReplayReversalAndReopen(t *testing.T) {
 			closed := f.call("bead.close", "close", map[string]any{"id": ref}, "")
 			boundary := closed["revision"]
 			closedAt := f.clock
-			params := map[string]any{"beforeRevision": boundary, "dryRun": false}
+			params := map[string]any{"beforeRevision": revisionAfter(t, boundary), "dryRun": false}
 			f.clock = closedAt.Add(30*24*time.Hour - time.Nanosecond)
 			before := f.meta()
 			f.call("admin.compact", "too-recent", params, "compaction_unavailable")
 			f.assertSameHead(before)
 			f.clock = closedAt.Add(30 * 24 * time.Hour)
-			dry := f.call("admin.compact", "dry-run", map[string]any{"beforeRevision": boundary, "dryRun": true}, "")
+			dry := f.call("admin.compact", "dry-run", map[string]any{"beforeRevision": revisionAfter(t, boundary), "dryRun": true}, "")
 			assertCommitTarget(t, dry, ref)
 			if dry["wouldCommit"] != true || summaries.Load() != 0 {
 				t.Fatalf("dry run called summary or lost candidate: %v calls=%d", dry, summaries.Load())

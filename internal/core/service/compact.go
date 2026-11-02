@@ -104,7 +104,7 @@ func compactionUnavailable(hint string) error { return failure("compaction_unava
 
 // CompactWithOutcome selects one record, in closed-time/ID order. Repeating
 // calls is the non-atomic batch; a failed item never publishes another item.
-// beforeRevision is an inclusive upper bound on the selected row revision.
+// beforeRevision excludes a selected row at or above the boundary.
 func (s *Service) CompactWithOutcome(ctx context.Context, by model.PrincipalRef, req CompactionRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	if err := s.admit(ctx, by); err != nil {
 		return port.WriteOutcome{}, err
@@ -213,7 +213,7 @@ func (s *Service) nextCompaction(ctx context.Context, by model.PrincipalRef, req
 	now := s.now().UTC()
 	for _, id := range sortedIDs(graph) {
 		row := graph[id]
-		if row.doc.Project != project || req.BeforeRevision != nil && compareNatural(row.record.Revision, *req.BeforeRevision) > 0 {
+		if row.doc.Project != project || req.BeforeRevision != nil && compareNatural(row.record.Revision, *req.BeforeRevision) >= 0 {
 			continue
 		}
 		category, ok := s.ontology.effective(project).Category(state(row.doc).Status)
