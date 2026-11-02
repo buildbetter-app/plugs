@@ -40,7 +40,7 @@ func hierarchyGraphNeeded(proposal port.ProposedChange) (bool, error) {
 	return false, nil
 }
 
-type proposedImage struct {
+type proposalImage struct {
 	parent  string
 	status  string
 	project string
@@ -66,21 +66,21 @@ func changeTouchesStatus(change port.Change) bool {
 // on the no-scan path while introducing/removing a non-root relation does not.
 // The parent key is canonical JSON, retaining nil/presence and branch identity
 // under the strict document decoder.
-func proposedImage(raw []byte) (proposedImage, error) {
+func proposedImage(raw []byte) (proposalImage, error) {
 	if !hasDocument(raw) {
-		return proposedImage{}, nil
+		return proposalImage{}, nil
 	}
 	doc, err := decodeDocument(raw)
 	if err != nil {
-		return proposedImage{}, err
+		return proposalImage{}, err
 	}
-	image := proposedImage{status: state(doc).Status, project: doc.Project, typ: doc.Type}
+	image := proposalImage{status: state(doc).Status, project: doc.Project, typ: doc.Type}
 	if doc.Parent == nil {
 		return image, nil
 	}
 	parent, err := json.Marshal(doc.Parent)
 	if err != nil {
-		return proposedImage{}, err
+		return proposalImage{}, err
 	}
 	image.parent = string(parent)
 	return image, nil
