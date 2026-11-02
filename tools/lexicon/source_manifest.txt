@@ -551,6 +551,7 @@ internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/drivers_test.go
 internal/server/authzrpc/hierarchy.go
+internal/server/authzrpc/hierarchy_lifecycle_test.go
 internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/service.go
