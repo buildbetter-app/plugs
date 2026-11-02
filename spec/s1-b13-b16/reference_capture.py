@@ -89,11 +89,15 @@ def locate_recorder() -> Path:
     raise RuntimeError("record_reference.py is not present in the reference_capture runfiles")
 
 
-def download_bundle(root: Path) -> tuple[Path, dict[str, object]]:
+def download_bundle(root: Path, provided_url: str | None) -> tuple[Path, dict[str, object]]:
     archive_zip = root / "public-artifact.zip"
     download_attempts = []
     auth_env_names = [name for name in ("GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_RUNTIME_TOKEN") if os.environ.get(name)]
-    for url in ARTIFACT_URLS:
+    url_entries = []
+    if provided_url:
+        url_entries.append(("provided-immutable-url", provided_url))
+    url_entries.extend(("public-url", url) for url in ARTIFACT_URLS)
+    for url_ref, url in url_entries:
         headers = {
             "Accept": "application/vnd.github+json",
             "User-Agent": "plug-s1-b13-b16-reference-capture",
@@ -108,10 +112,14 @@ def download_bundle(root: Path) -> tuple[Path, dict[str, object]]:
         try:
             with urllib.request.urlopen(request, timeout=180) as response, archive_zip.open("wb") as stream:
                 shutil.copyfileobj(response, stream)
-            download_attempts.append({"url": url, "status": "downloaded", "authEnvNames": auth_env_names})
+            download_attempts.append({"urlRef": url_ref, "status": "downloaded", "authEnvNames": auth_env_names})
             break
         except (HTTPError, URLError) as error:
-            download_attempts.append({"url": url, "status": "refused", "error": str(error), "authEnvNames": auth_env_names})
+            if isinstance(error, HTTPError):
+                detail = f"http-{error.code}"
+            else:
+                detail = f"url-error-{type(error.reason).__name__}"
+            download_attempts.append({"urlRef": url_ref, "status": "refused", "error": detail, "authEnvNames": auth_env_names})
     else:
         raise RuntimeError(f"all immutable public artifact download URLs refused: {download_attempts}")
     zip_bytes = archive_zip.read_bytes()
@@ -194,6 +202,7 @@ def download_bundle(root: Path) -> tuple[Path, dict[str, object]]:
         "runId": ARTIFACT_RUN,
         "artifactId": ARTIFACT_ID,
         "downloadUrls": ARTIFACT_URLS,
+        "providedUrlSha256": digest(provided_url.encode()) if provided_url else None,
         "downloadSha256": digest(zip_bytes),
         "downloadSize": len(zip_bytes),
         "downloadAttempts": download_attempts,
@@ -225,10 +234,18 @@ def fetch_source(root: Path, receipts: list[dict[str, object]], env: dict[str, s
 
 
 def main() -> int:
+    args = sys.argv[1:]
+    if not args:
+        provided_url = None
+    elif len(args) == 2 and args[0] == "--artifact-url":
+        provided_url = args[1]
+    else:
+        print("usage: reference_capture.py [--artifact-url IMMUTABLE_SIGNED_URL]", file=sys.stderr)
+        return 64
     root = Path(tempfile.mkdtemp(prefix="s1-b13-b16-reference-"))
     receipts: list[dict[str, object]] = []
     try:
-        binary, bundle = download_bundle(root)
+        binary, bundle = download_bundle(root, provided_url)
         env = dict(os.environ)
         source = fetch_source(root, receipts, env)
         recorder = locate_recorder()
@@ -296,7 +313,12 @@ def main() -> int:
     except Exception as error:
         blocker = {
             "schema": "plug.s1-b13-b16.reference-blocker.v1",
-            "artifact": {"runId": ARTIFACT_RUN, "artifactId": ARTIFACT_ID, "downloadUrls": ARTIFACT_URLS},
+            "artifact": {
+                "runId": ARTIFACT_RUN,
+                "artifactId": ARTIFACT_ID,
+                "downloadUrls": ARTIFACT_URLS,
+                "providedUrlSupplied": bool(provided_url),
+            },
             "commands": receipts,
             "error": str(error),
         }
