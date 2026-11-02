@@ -1192,6 +1192,12 @@
           },
           "projection": {
             "$ref": "#/components/schemas/ProjectionStatus"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20000,
+            "description": "Exact authorized ordinary predicate total, present including zero only for countOnly=true. Items is empty; groups, elisions and nextCursor are absent. The ordinary 20,000 authorized-candidate cap applies; overflow refuses scope_too_large without a partial count."
           }
         },
         "required": [

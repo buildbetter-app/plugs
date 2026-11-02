@@ -5,6 +5,7 @@ go_test(
     srcs = [
         "acceptance_test.go",
         "cas_contract_test.go",
+        "clock_boundary_test.go",
         "close_contract_test.go",
         "fixture_test.go",
         "reference_test.go",
@@ -15,6 +16,7 @@ go_test(
         "record_reference.py",
     ],
     args = ["-test.v"],
+    tags = ["local", "requires-network"],
     deps = [
         "//internal/core/model",
         "//internal/core/pipeline",
@@ -25,7 +27,9 @@ go_test(
         "//internal/server/viewrpc",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "//internal/storage/postgres",
         "//internal/storage/sqlite",
+        "//internal/testclock",
     ],
 )
 

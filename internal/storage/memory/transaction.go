@@ -37,6 +37,7 @@ type transaction struct {
 	bumps                   map[string]driver.LockKey
 	allocators              map[string]driver.OfflineAllocator
 	allocated               map[string]bool
+	checkpointGuards        map[string]uint64
 }
 
 func (t *transaction) check(ctx context.Context) error {
@@ -445,6 +446,9 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 			t.finish()
 			return copy, nil
 		}
+	}
+	if err := t.checkCheckpointGuards(); err != nil {
+		return model.Changeset{}, err
 	}
 	if err := t.validateChanges(header.Changes); err != nil {
 		return model.Changeset{}, err

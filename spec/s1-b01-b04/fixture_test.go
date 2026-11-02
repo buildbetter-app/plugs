@@ -28,6 +28,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/internal/storage/postgres"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
+	"github.com/buildbetter-app/plugs/internal/testclock"
 )
 
 const (
@@ -37,23 +38,15 @@ const (
 )
 
 type testClock struct {
-	mu  sync.Mutex
-	now time.Time
+	*testclock.Clock
+	t *testing.T
 }
 
-func newClock() *testClock { return &testClock{now: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)} }
-
-func (c *testClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
+func newClock(t *testing.T) *testClock {
+	return &testClock{Clock: testclock.New(t, time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)), t: t}
 }
 
-func (c *testClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	c.now = c.now.Add(d)
-	c.mu.Unlock()
-}
+func (c *testClock) Advance(d time.Duration) { c.Clock.Advance(c.t, d) }
 
 type fixture struct {
 	t         *testing.T
@@ -85,7 +78,7 @@ func openStore(t *testing.T, backend, path, dsn string, clock *testClock) driver
 		}
 		return store
 	case "sqlite":
-		store, err := (sqlite.Driver{}).Open(ctx, driver.Config{DSN: path})
+		store, err := (sqlite.Driver{Clock: clock.Now}).Open(ctx, driver.Config{DSN: path})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -104,7 +97,10 @@ func openStore(t *testing.T, backend, path, dsn string, clock *testClock) driver
 
 func newFixture(t *testing.T, backend, dsn string, rules *service.Ontology, ids []string) *fixture {
 	t.Helper()
-	clock := newClock()
+	clock := newClock(t)
+	if backend == "postgres" {
+		dsn = clock.BindPostgres(t, dsn)
+	}
 	path := ""
 	if backend == "sqlite" {
 		path = filepath.Join(t.TempDir(), "s1.db")
@@ -459,4 +455,20 @@ func typedCode(err error) string {
 		return ""
 	}
 	return string(value.Data.Code)
+}
+
+// Advancing persisted time can expire the ten-second storage lease. Release it
+// explicitly and acquire the next epoch; never stretch its production budget.
+func (f *fixture) advance(d time.Duration) {
+	f.t.Helper()
+	if err := f.lease.Release(f.ctx); err != nil {
+		f.t.Fatal(err)
+	}
+	f.clock.Advance(d)
+	lease, err := f.store.Lease(f.ctx, "s1-clock-advance", driver.LeaseTTL)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.lease = lease
+	f.install()
 }

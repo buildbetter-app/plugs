@@ -28,6 +28,7 @@ jobs:
     timeout-minutes: 180
     permissions:
       contents: read
+      actions: read
     env:
       ARGS_INPUT: ${{ inputs.args }}
     steps:
@@ -87,6 +88,40 @@ jobs:
           mkdir -p "$REMOTE_BAZEL_EVIDENCE_DIR" "$PLUG_BAZEL_REPOSITORY_CACHE"
           printf '%s\n' "sha=${{ inputs.sha }}" "label=${{ inputs.label }}" \
             "args=$ARGS_INPUT" > "$REMOTE_BAZEL_EVIDENCE_DIR/request.txt"
+
+      - name: Select opt-in public executable bundle
+        id: public_bundle
+        if: ${{ contains(inputs.args, 'PLUG_PUBLIC_BUNDLE') }}
+        env:
+          TRUSTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "$ARGS_INPUT" != *PLUG_PUBLIC_BUNDLE* ]]; then
+            exit 0
+          fi
+          test "$GITHUB_REPOSITORY" = buildbetter-app/plugs
+          [[ "$TRUSTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          # Privileged preparation must never execute the test candidate's
+          # helper. Fetch only this workflow-control commit's public source.
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/buildbetter-app/plugs/contents/scripts/ci/prepare-public-bundle.py?ref=$TRUSTED_WORKFLOW_SHA" \
+            > "$RUNNER_TEMP/prepare-public-bundle.py"
+          descriptor="$(python3 "$RUNNER_TEMP/prepare-public-bundle.py" request --args "$ARGS_INPUT")"
+          printf 'descriptor=%s\n' "$descriptor" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare verified public executable bundle
+        if: ${{ steps.public_bundle.outputs.descriptor != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLIC_BUNDLE_DESCRIPTOR: ${{ steps.public_bundle.outputs.descriptor }}
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/prepare-public-bundle.py" prepare \
+            --descriptor "$PUBLIC_BUNDLE_DESCRIPTOR" \
+            --output "$RUNNER_TEMP/plug-public-bundle-runtime" \
+            --github-env "$GITHUB_ENV" \
+            --evidence "$REMOTE_BAZEL_EVIDENCE_DIR/public-bundle.json"
 
       - name: Restore verified Bazel repository cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -148,6 +183,8 @@ jobs:
 
       - name: Run remote Bazel command
         id: bazel
+        env:
+          PUBLIC_BUNDLE_DESCRIPTOR: ${{ steps.public_bundle.outputs.descriptor }}
         run: |
           set -euo pipefail
           read -ra USER_ARGS <<< "$ARGS_INPUT"
@@ -172,6 +209,15 @@ jobs:
           if [[ "$command" == test || "$command" == coverage ]] &&
             [[ " ${USER_ARGS[*]} " != *"PLUG_SOURCE_MODULE_ROOT="* ]]; then
             ARGS+=("--test_env=PLUG_SOURCE_MODULE_ROOT=$GITHUB_WORKSPACE")
+          fi
+          if [[ -n "$PUBLIC_BUNDLE_DESCRIPTOR" ]]; then
+            # The preparer publishes only these four public values after all
+            # immutable metadata, manifest and executable checks succeed.
+            for name in PLUG_PUBLIC_BEADS_BINARY PLUG_PUBLIC_BEADS_SHA256 \
+              PLUG_PUBLIC_BEADS_BUILD_RUN PLUG_PUBLIC_BEADS_MANIFEST; do
+              [[ -n "${!name}" ]] || { echo "missing prepared public executable value" >&2; exit 1; }
+              ARGS+=("--test_env=$name=${!name}")
+            done
           fi
           printf '%q ' bazel "${ARGS[@]}" > "$REMOTE_BAZEL_EVIDENCE_DIR/command.txt"
           printf '\n' >> "$REMOTE_BAZEL_EVIDENCE_DIR/command.txt"
@@ -209,6 +255,7 @@ jobs:
             ${{ runner.temp }}/remote-bazel-evidence/exit_code
             ${{ runner.temp }}/remote-bazel-evidence/toolchain.txt
             ${{ runner.temp }}/remote-bazel-evidence/bazel-testlogs.tgz
+            ${{ runner.temp }}/remote-bazel-evidence/public-bundle.json
 
       - name: Set job result to Bazel exit code
         if: always()

@@ -262,11 +262,12 @@ func TestStablePlugProjectionAcrossFreshStores(t *testing.T) {
 	first := runStableRecording(t, "memory")
 	second := runStableRecording(t, "memory")
 	third := runStableRecording(t, "sqlite")
+	fourth := runStableRecording(t, "postgres")
 	firstBytes, err := json.Marshal(first.Projection)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, other := range map[string]runtimeRecording{"memory-repeat": second, "sqlite-reopenable": third} {
+	for name, other := range map[string]runtimeRecording{"memory-repeat": second, "sqlite-reopenable": third, "postgres-reopenable": fourth} {
 		otherBytes, marshalErr := json.Marshal(other.Projection)
 		if marshalErr != nil {
 			t.Fatal(marshalErr)
@@ -278,7 +279,7 @@ func TestStablePlugProjectionAcrossFreshStores(t *testing.T) {
 			t.Fatalf("projection digest differs for %s: %s != %s", name, other.ProjectionDigest, first.ProjectionDigest)
 		}
 	}
-	if first.RawDigest == "" || second.RawDigest == "" || third.RawDigest == "" {
+	if first.RawDigest == "" || second.RawDigest == "" || third.RawDigest == "" || fourth.RawDigest == "" {
 		t.Fatal("raw operation digest is missing")
 	}
 	if first.Projection.Changesets == 0 || len(first.Projection.Versions) != len(first.Projection.IDs) {
