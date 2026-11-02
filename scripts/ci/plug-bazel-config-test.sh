@@ -29,6 +29,7 @@ from pathlib import Path
 import ast
 import re
 import sys
+import tempfile
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
 remote_workflow = Path(sys.argv[4]).read_text(encoding="utf-8")
@@ -43,6 +44,60 @@ ast.parse(collector)  # Syntax without writing a cache into the source tree.
 workflow_code = "\n".join(line for line in workflow.splitlines() if not line.lstrip().startswith("#"))
 collector_literals = {node.value for node in ast.walk(ast.parse(collector))
                       if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+
+required_workflows = {
+    "plug-bazel.yml", "plug-nightly-restore-diffs.yml", "plug-remote-bazel.yml", "plug-runs-on-smoke.yml",
+}
+allowed_workflows = required_workflows | {"plug-public-bundle.yml", "plug-beads-bazel.yml"}
+
+def check_workflow_inventory(directory):
+    workflow_files = {
+        path.name
+        for pattern in ("*.yml", "*.yaml")
+        for path in directory.glob(pattern)
+    }
+    missing = sorted(required_workflows - workflow_files)
+    unexpected = sorted(workflow_files - allowed_workflows)
+    if missing:
+        raise SystemExit("config: required workflow files are missing: " + ", ".join(missing))
+    if unexpected:
+        raise SystemExit("config: inherited workflow files remain: " + ", ".join(unexpected))
+
+# Exercise the actual inventory guard with disposable names, independently of
+# PR260 source. CP7 is optional; similarly named additions remain refused.
+with tempfile.TemporaryDirectory(prefix="plug-ci-workflow-inventory.") as temporary:
+    fixture = Path(temporary)
+    for name in required_workflows | {"plug-public-bundle.yml", "plug-beads-bazel.yml"}:
+        (fixture / name).touch()
+    check_workflow_inventory(fixture)
+    cp7_workflow = fixture / "plug-cp7-latency.yml"
+    cp7_workflow.touch()
+    check_workflow_inventory(fixture)
+    for name, message in (
+        ("plug-cp7-latency-extra.yml", "config: inherited workflow files remain: plug-cp7-latency-extra.yml"),
+        ("unexpected.yaml", "config: inherited workflow files remain: unexpected.yaml"),
+    ):
+        unknown = fixture / name
+        unknown.touch()
+        try:
+            check_workflow_inventory(fixture)
+        except SystemExit as error:
+            if str(error) != message:
+                raise
+        else:
+            raise SystemExit("config: inventory accepted an unapproved workflow: " + name)
+        unknown.unlink()
+    cp7_workflow.unlink()
+    check_workflow_inventory(fixture)
+    (fixture / "plug-bazel.yml").unlink()
+    try:
+        check_workflow_inventory(fixture)
+    except SystemExit as error:
+        if str(error) != "config: required workflow files are missing: plug-bazel.yml":
+            raise
+    else:
+        raise SystemExit("config: inventory accepted a missing required workflow")
+print("plug-ci-config: CP7 optional workflow admission and inventory refusal fixtures passed")
 
 # Preserve the old 45-minute job envelope even if the two new 150-minute
 # latency targets run serially. Leave 15 minutes for finalization within the
@@ -293,21 +348,7 @@ if "eval " in remote_code or "set -x" in remote_code or "pull_request_target:" i
 remote_actions = re.findall(r"uses: (\S+)", remote_code)
 if len(remote_actions) != 5 or any(not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action) for action in remote_actions):
     raise SystemExit("config: every remote Bazel action must retain its full immutable pin")
-workflow_files = sorted(
-    path.name
-    for pattern in ("*.yml", "*.yaml")
-    for path in Path(".github/workflows").glob(pattern)
-)
-required_workflows = {
-    "plug-bazel.yml", "plug-nightly-restore-diffs.yml", "plug-remote-bazel.yml", "plug-runs-on-smoke.yml",
-}
-allowed_workflows = required_workflows | {"plug-public-bundle.yml", "plug-beads-bazel.yml"}
-missing = sorted(required_workflows - set(workflow_files))
-unexpected = sorted(set(workflow_files) - allowed_workflows)
-if missing:
-    raise SystemExit("config: required workflow files are missing: " + ", ".join(missing))
-if unexpected:
-    raise SystemExit("config: inherited workflow files remain: " + ", ".join(unexpected))
+check_workflow_inventory(Path(".github/workflows"))
 print("plug-ci-config: workflow, permissions, cache, lock, targets, and retirement checks passed")
 PYTHON
 
