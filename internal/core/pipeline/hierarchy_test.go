@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
