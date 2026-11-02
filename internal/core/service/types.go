@@ -231,6 +231,17 @@ type ClaimRequest struct {
 	Expect []model.Precondition
 }
 
+// HeartbeatRequest identifies the claimed bead whose replica-local lease is
+// being refreshed. The idempotency key and anonymous agent label remain in
+// WriteMeta, matching every other named write.
+type HeartbeatRequest struct {
+	ID model.Ref
+}
+
+type HeartbeatResult struct {
+	LeaseExpiresAt time.Time
+}
+
 // ClaimNextRequest describes the ready-set selection for the atomic queue
 // claim. The RPC layer supplies the project and filter after schema/cursor
 // validation; the service keeps the same bounded ready vocabulary as Ready.

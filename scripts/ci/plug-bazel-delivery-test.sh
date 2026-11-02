@@ -59,6 +59,10 @@ with (root / "calls.jsonl").open("a") as out:
 assert "--version" not in args
 command = next(x for x in args if not x.startswith("--"))
 execution = root / "execution"
+cp7 = ("//internal/integration/cp7latency:cp7_correctness_test",
+       "//internal/integration/cp7latency:cp7_latency_sqlite_test",
+       "//internal/integration/cp7latency:cp7_latency_postgres_test") if config.get("cp7") else ()
+test_labels = ("//pkg:pkg_test", "//consumer:consumer_test", "//libraryconsumer:library_test", "//tools/lexicon:lexicon_gate", *cp7)
 if command == "version":
     assert "--gnu_format" in args
     if not config.get("direct_bazel"):
@@ -85,14 +89,18 @@ elif command == "query":
     elif 'rdeps(' in expression:
         print("//consumer:consumer_test")
     elif 'tests(set(' in expression:
-        print("\n".join(("//pkg:pkg_test", "//consumer:consumer_test", "//libraryconsumer:library_test", "//tools/lexicon:lexicon_gate")))
+        print("\n".join(test_labels))
     elif expression == 'kind(".*_test rule", //...)':
-        print("//pkg:pkg_test\n//consumer:consumer_test")
+        print("\n".join(("//pkg:pkg_test", "//consumer:consumer_test", *cp7)))
     else:
         print("//pkg:pkg_test")
 elif command == "test":
     assert "--test_env=GO_TEST_WRAP_TESTV=1" in args
-    labels = ("//pkg:pkg_test", "//consumer:consumer_test", "//libraryconsumer:library_test", "//tools/lexicon:lexicon_gate")
+    assert [arg for arg in args if arg.startswith("--test_timeout=")] == ["--test_timeout=900,900,900,9000"], args
+    assert not any(arg.startswith(("--test_tag_filters", "--test_size_filters", "--test_timeout_filters", "--test_filter", "--build_tag_filters")) for arg in args), args
+    if cp7:
+        assert set(cp7).issubset(args), args
+    labels = test_labels
     events = [{"id": {"configuration": {"id": "fixture"}}, "configuration": {"cpu": "k8", "platformName": "host"}}]
     for i, label in enumerate(labels):
         logs = execution / "bazel-out/k8-fastbuild/testlogs" / str(i)
@@ -171,7 +179,7 @@ else:
     assert len(list((out / "tests").glob("*/test.xml"))) == 4
     args = json.loads((out / "commands/tests/argv.json").read_text())
     assert all(flag in args for flag in ("--nocache_test_results", "--lockfile_mode=error",
-               "--jobs=2", "--test_timeout=900", "--local_resources=memory=8192", "--test_env=GO_TEST_WRAP_TESTV=1"))
+               "--jobs=2", "--test_timeout=900,900,900,9000", "--local_resources=memory=8192", "--test_env=GO_TEST_WRAP_TESTV=1"))
     (out / "tests.json").write_text("tampered")
     phase("verify", out, 86)
 
@@ -245,5 +253,19 @@ else:
     assert (out / "selection/full-graph.txt").read_text().strip() == "1"
     assert (out / "selection/seeds.txt").read_text().splitlines() == ["//pkg:cmd/nested/main.go"]
 
-print("plug-ci-delivery: bundle, accounting, secrets exclusion, tamper/escape, query/test/collector/shutdown first-failure and cleanup fixtures passed")
+    # Model the new harness BUILD change through the real full-graph resolver.
+    # The ordinary delivery command must retain both eternal latency targets
+    # and default-class correctness without manual/size/tag/timeout filters.
+    out, result = exercise("cp7-graph-pass", {"cp7": True})
+    cp7 = {"//internal/integration/cp7latency:" + name for name in
+           ("cp7_correctness_test", "cp7_latency_sqlite_test", "cp7_latency_postgres_test")}
+    selected = set((out / "selection/command-targets.txt").read_text().splitlines())
+    assert selected == {"//:lexicon_gate", "//pkg:pkg_test", "//consumer:consumer_test", "//libraryconsumer:library_test", *cp7}
+    assert set((out / "selection/resolved-test-targets.txt").read_text().splitlines()) == {
+        "//tools/lexicon:lexicon_gate", "//pkg:pkg_test", "//consumer:consumer_test", "//libraryconsumer:library_test", *cp7}
+    tests = json.loads((out / "tests.json").read_text())
+    assert not tests["unreported_tests"] and tests["accounting"]["executed_attempts"] == 6
+    assert cp7.issubset({attempt["identity"]["label"] for attempt in tests["attempts"] if not attempt["cached"]})
+
+print("plug-ci-delivery: bundle, accounting, secrets exclusion, tamper/escape, query/test/collector/shutdown first-failure and cleanup fixtures and unfiltered CP7 timeout-map delivery passed")
 PY
