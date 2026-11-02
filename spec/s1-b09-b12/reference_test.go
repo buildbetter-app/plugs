@@ -114,7 +114,7 @@ func referenceBytesDigest(data []byte) string {
 
 func readRecording(t *testing.T, card string) (referenceRecording, []byte) {
 	t.Helper()
-	data, err := referenceFiles.ReadFile("reference/" + card + ".json")
+	data, err := referenceFiles.ReadFile("reference/" + cardToFile(card))
 	if err != nil {
 		t.Fatal(err)
 	}
