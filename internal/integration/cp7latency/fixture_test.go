@@ -488,7 +488,7 @@ func (f *fixture) resetClaim(t *testing.T, ref model.Ref) {
 	if _, err := fmt.Sscanf(ref.ID, "00000000-0000-4000-8000-%012d", &n); err != nil || n < 1 || n > f.n {
 		t.Fatalf("claim identity outside corpus: %s", ref.ID)
 	}
-	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpUpdate, Body: body(t, n), ChangedPaths: []string{"lease"}}}); err != nil {
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: body(t, n), ChangedPaths: []string{"/lease"}}}); err != nil {
 		t.Fatal(err)
 	}
 }
