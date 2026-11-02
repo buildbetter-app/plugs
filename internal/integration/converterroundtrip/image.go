@@ -159,6 +159,12 @@ func retainArchive(plan *restorePlan, archive *dumpformat.Archive, add func(mode
 	}
 	evidence.Members["manifest.json"] = dumpformat.File{SHA256: hashBytes(raw), Size: int64(len(raw))}
 	plan.blobs = map[string][]byte{}
+	if envelope := archive.TarBytes(); len(envelope) != 0 {
+		if hashBytes(envelope) != archive.SHA256() {
+			return fmt.Errorf("archive envelope changed")
+		}
+		plan.blobs[archive.SHA256()] = envelope
+	}
 	for name, expected := range evidence.Members {
 		data, ok := archive.Member(name)
 		if !ok || hashBytes(data) != expected.SHA256 || int64(len(data)) != expected.Size {

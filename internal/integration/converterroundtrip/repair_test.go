@@ -25,7 +25,7 @@ const (
 	idC = "pl-cccccccccccccccccccccccccccccccc"
 	// Fixed digest of an independently constructed builtin-head/1 image with
 	// each bead's required self ancestor at depth zero.
-	supportedDerived = "9611fb51234ff87fd0cbb76772c77ebe7bd975db8444894d95a43652901f8492"
+	supportedDerived = "89f6eb61310b4f9193e9925e2a2305101b126f763e870986bc7ca51f6043d28a"
 )
 
 // This is a separately constructed head-only input, NOT the pinned exporter

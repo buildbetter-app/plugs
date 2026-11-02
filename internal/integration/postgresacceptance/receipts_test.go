@@ -111,7 +111,11 @@ func TestB22CASNoopAndReplayRetainOriginalRevision(t *testing.T) {
 	fieldCAS := map[string]any{"id": ref("pl-a"), "fields": map[string]any{"description": "new description"}, "expect": []model.Precondition{model.PreconditionByHash(ref("pl-a"), "fields.description", hash)}}
 	committed(t, h.call(t, "bead.update", fieldCAS, key("field-current")), 4)
 	before = graph(t, h.store)
-	refused(t, h.call(t, "bead.update", fieldCAS, key("field-stale")), "precondition_failed")
+	fieldMiss := h.call(t, "bead.update", fieldCAS, key("field-stale"))
+	refused(t, fieldMiss, "precondition_failed")
+	if fieldMiss.Error.Data.Details["reason"] != "hash" || len(fieldMiss.Error.Data.Details) != 1 {
+		t.Fatalf("B22 PostgreSQL field CAS lost its typed hash reason: %+v", fieldMiss.Error.Data.Details)
+	}
 	unchanged(t, before, graph(t, h.store))
 	committed(t, h.call(t, "bead.update", map[string]any{"id": ref("pl-b"), "fields": map[string]any{"title": "other 2"}}, key("other-2")), 5)
 	before = graph(t, h.store)
@@ -333,6 +337,9 @@ func TestB17MetadataCASRealPostgresReceiptsAndReopen(t *testing.T) {
 		params := map[string]any{"id": target, "fields": map[string]any{"title": "must not publish"}, "expect": []model.Precondition{model.PreconditionByHash(target, miss.field, metadataSHA(miss.canonical))}}
 		r := h.call(t, "bead.update", params, requestKey)
 		refused(t, r, "precondition_failed")
+		if r.Error.Data.Details["reason"] != "hash" || len(r.Error.Data.Details) != 1 {
+			t.Fatalf("PostgreSQL metadata CAS lost its typed hash reason: %+v", r.Error.Data.Details)
+		}
 		if r.Error.Data.Retryable || receipt(t, other, "bead.update", requestKey, agent) != nil || post.calls.Load() != posts || !reflect.DeepEqual(sqlBefore, metadataSQLState(t, db)) {
 			t.Fatal("PostgreSQL metadata refusal mutated SQL/receipt/post state or was retryable")
 		}

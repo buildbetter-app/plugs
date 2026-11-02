@@ -51,6 +51,31 @@ RunsOn receipts for that bounded count behavior; they do not turn the
 older grouped summary into ordinary-count proof or certify all of B23/S1.
 Full S1 remains 0/28 and E3 remains 4/5 until their separate proof exists.
 
+The B22 hash-CAS regressions exercise field, metadata and memory mismatches,
+absent expectation targets, corrected-key reuse and committed-response replay.
+Authorized refusals report `details.reason` as `hash` or `revision`; absent
+records do not invent a revision token. Expectation-only guards must pass the
+existing pre-image authorization decision before any refusal details are
+released. Denied or hidden expectations keep their refusal boundary, and no
+CAS refusal publishes data, history or a successful receipt. These are direct
+Plug contract checks, with real PostgreSQL field/metadata cases in
+`internal/integration/postgresacceptance`; they add no Beads recording or
+full-card parity claim.
+
+The separately authorized B21 `CloseOp` (`kind: "close"`, `target`, optional
+`reason` and `expect`) enters the ordinary close slot at its operation position.
+Its preconditions read the ordered in-request image; a revision guard refuses
+a row written earlier in the request. The enclosing ChangeSet's expectations
+keep their existing pinned-snapshot semantics. Core selects the slot without
+running subscribers; after mutators, ontology checks every request prefix and
+the complete final graph. Later unlink/patch operations cannot rescue an
+earlier refused close. Every required expectation target and the per-op close
+permission must be authorized before private CAS details are released. A
+refusal leaves no durable row, history or successful receipt; accepted batches
+publish one revision and per-op results. Replays return the stored commit,
+including after SQLite/PostgreSQL reopen. No new reference capture or full B21
+card qualification is inferred from these direct Plug regressions.
+
 Run the focused target with:
 
 ```sh
