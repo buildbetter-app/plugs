@@ -4,6 +4,7 @@ go_test(
     name = "acceptance",
     srcs = [
         "acceptance_test.go",
+        "cas_contract_test.go",
         "fixture_test.go",
         "reference_test.go",
     ],
