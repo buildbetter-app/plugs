@@ -329,13 +329,45 @@ try {
     if (visibleLabels.length !== 5 || new Set(visibleLabels).size !== 5) outcome.missingFields.push("displayName consumer is not exposed as five distinct visible Client label (untrusted) rows");
   });
 
-  await task(4, ["persisted parent relation", "authorized epic child membership", "done/total/active/blocked/ready counts", "bounded scope/trend signal", "epic browser surface"], async (outcome) => {
+  await task(4, ["persisted parent relation", "authorized direct-child membership", "visible child status counts", "exact hidden remainder", "fresh snapshot binding", "epic browser surface"], async (outcome) => {
     outcome.startedAt = performance.now();
     const navigation = await evaluate("Array.from(document.querySelectorAll('[data-view]')).map(x=>({view:x.dataset.view,text:x.textContent}))");
-    const result = await direct("view.run", { definition: { filter: { resources: [fixture.blockedId] }, fields: [], groupBy: ["parent"], budgetTokens: 25 }, _meta: meta() });
-    outcome.observations.push({ navigation, actualRPCRefusal: calls.at(-1) });
-    assert(result.error, "Epic parent grouping unexpectedly became available; update the exact task instead of keeping a stale block");
-    outcome.missingFields.push("pipeline.Document has no parent relation; Create(parent)/Reparent refuse; viewops supports groupBy type only, no parent/assignee projection; no epic UI path");
+    assert(navigation.some((entry) => entry.view === "epic"), "the embedded UI has no epic progress view");
+    await select("epic");
+    await evaluate(`document.querySelector('#epic-id').value=${JSON.stringify(fixture.epicID)};document.querySelector('#epic-form').requestSubmit()`);
+    await settled();
+    await Promise.allSettled([...pendingBodies]);
+    const rendered = await evaluate(`({state:document.querySelector('#epic-state')?.textContent || '',visible:document.querySelector('#epic-counts')?.textContent || '',counts:Array.from(document.querySelectorAll('#epic-counts dd')).map(node=>({label:node.previousElementSibling?.textContent || '',count:node.textContent})),remainder:document.querySelector('#epic-remainder')?.textContent || '',snapshot:document.querySelector('#epic-snapshot')?.textContent || ''})`);
+    assert.equal(rendered.state, "Counts include only children you can see.");
+    assert.match(rendered.visible, /50 visible children/);
+    assert.deepEqual(rendered.counts, [{ label: "in_progress", count: "50" }]);
+    assert.equal(rendered.remainder, "1 more you cannot see");
+    assert.match(rendered.snapshot, /^Snapshot rev [0-9]+$/);
+    const epicRequests = browserWire.map((entry, index) => ({ entry, index })).filter(({ entry }) => {
+      if (entry.request.url !== base + "/rpc/v1") return false;
+      try {
+        const request = JSON.parse(entry.request.postData || "{}");
+        return request.method === "view.run" && request.params?.definition?.groupBy?.length === 1 && request.params.definition.groupBy[0] === "epic-progress";
+      } catch { return false; }
+    });
+    assert(epicRequests.length > 0, "the UI did not issue the canonical epic-progress view.run");
+    const epicRequest = epicRequests.at(-1);
+    const request = JSON.parse(epicRequest.entry.request.postData);
+    assert.equal(request.params.definition.filter.query, "parent=" + fixture.epicID);
+    assert.deepEqual(request.params.definition.fields, []);
+    assert.deepEqual(request.params.definition.groupBy, ["epic-progress"]);
+    const response = JSON.parse(epicRequest.entry.rawResponse || "{}");
+    assert.equal(response.error, undefined, JSON.stringify(response));
+    const groups = response.result?.groups || [];
+    assert.deepEqual(groups.map((group) => [group.key, group.count]), [["total", 50], ["status:in_progress", 50]]);
+    assert.equal(groups[0]?.elided?.count, 1);
+    assert.equal(groups[0]?.elided?.reason, "authorization");
+    assert.equal(groups[0]?.items?.length, 0);
+    assert.equal(response.result?.items?.length, 0);
+    assert(!String(epicRequest.entry.rawResponse).includes(fixture.epicHiddenChildID), "hidden epic child identity escaped the count-only response");
+    assert(!String(epicRequest.entry.rawResponse).includes("E3 stored bead 00060"), "hidden epic child body escaped the count-only response");
+    outcome.observations.push({ navigation, rendered, request, response, wireIndex: epicRequest.index });
+    outcome.answer = "50 visible direct children (in_progress); 1 more you cannot see; fresh snapshot bound to the stored parent graph.";
   });
 
   // Qualification control: prove a CURRENT stored denial revokes the saved
