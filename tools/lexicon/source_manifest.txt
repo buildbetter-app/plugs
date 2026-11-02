@@ -406,6 +406,10 @@ internal/integration/httpcancel/httpcancel_test.go
 internal/integration/httpconformance/BUILD.bazel
 internal/integration/httpconformance/fixture_test.go
 internal/integration/httpconformance/protocol_test.go
+internal/integration/labelcontract/BUILD.bazel
+internal/integration/labelcontract/README.md
+internal/integration/labelcontract/fixture_test.go
+internal/integration/labelcontract/labels_test.go
 internal/integration/localclisession/BUILD.bazel
 internal/integration/localclisession/session_test.go
 internal/integration/memorycontract/BUILD.bazel
