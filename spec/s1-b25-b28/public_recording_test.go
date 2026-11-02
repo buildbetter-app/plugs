@@ -31,6 +31,7 @@ import (
 const (
 	publicBeadsCommit = "682ca798dab448803ea9b74f7da3715c21d8c3ae"
 	publicBeadsTree   = "9d026de307ee915953b247cf42758d0c53303574"
+	publicChildID     = "pub-root.1"
 )
 
 var requirePublicRecording = flag.Bool("public-recording", false, "Require the independently delivered public Beads recording artifact")
@@ -335,9 +336,9 @@ func recordPublicRun(t *testing.T, root, name string, artifact publicArtifact, f
 	}
 	commandBD("source-remember", "source", source, []string{"--json", "remember", "paired-store memory", "--key", fixture.MemoryKey}, nil)
 	commandBD("source-create-root", "source", source, []string{"--json", "create", "--id", "pub-root", "--type", "task", "--title", "Public root", "--description", "relational root", "--metadata", `{"card":"B27","public":true}`, "--labels", "alpha,beta", "--spec-id", "s1/b27"}, nil)
-	commandBD("source-create-child", "source", source, []string{"--json", "create", "--id", "pub-child", "--type", "bug", "--title", "Public child", "--description", "parented child", "--parent", "pub-root", "--metadata", `{"child":true}`, "--labels", "child,public", "--priority", "1"}, nil)
+	commandBD("source-create-child", "source", source, []string{"--json", "create", "--type", "bug", "--title", "Public child", "--description", "parented child", "--parent", "pub-root", "--metadata", `{"child":true}`, "--labels", "child,public", "--priority", "1"}, nil)
 	commandBD("source-create-dependency", "source", source, []string{"--json", "create", "--id", "pub-dependency", "--type", "task", "--title", "Public dependency", "--description", "dependency row"}, nil)
-	commandBD("source-dependency", "source", source, []string{"--json", "dep", "add", "pub-child", "pub-dependency"}, nil)
+	commandBD("source-dependency", "source", source, []string{"--json", "dep", "add", publicChildID, "pub-dependency"}, nil)
 	commandBD("source-label", "source", source, []string{"--json", "label", "add", "pub-root", "reviewed"}, nil)
 	commandBD("source-comment", "source", source, []string{"--json", "comment", "pub-root", "preserve this public comment"}, nil)
 	commandBD("source-close", "source", source, []string{"--json", "close", "pub-dependency", "--reason", "dependency complete"}, nil)
