@@ -15,6 +15,7 @@ import tarfile
 import tempfile
 import urllib.request
 from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin, urlsplit
 import zipfile
 
 
@@ -41,6 +42,78 @@ EXPECTED_FILES = {
     "plug-help.txt",
     "receipt.json",
 }
+ARTIFACT_OBJECT_HOSTS = {
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    *(f"productionresultssa{index}.blob.core.windows.net" for index in range(10)),
+}
+REDIRECT_CODES = {301, 302, 303, 307, 308}
+
+
+def artifact_destination(url: str) -> str:
+    """Admit only the pinned API route and trusted public artifact origins."""
+    if any(character.isspace() or ord(character) < 32 or ord(character) == 127
+           for character in url) or "\\" in url:
+        raise RuntimeError("unsupported artifact destination")
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme != "https" or parsed.username is not None or parsed.password is not None
+                or parsed.fragment or parsed.port not in (None, 443)):
+            raise ValueError("unsupported route")
+    except ValueError:
+        raise RuntimeError("unsupported artifact destination") from None
+    if parsed.hostname == "api.github.com" and parsed.path == urlsplit(ARTIFACT_URLS[0]).path and not parsed.query:
+        return "api"
+    if parsed.hostname == "github.com" and not parsed.query and parsed.path in {
+        urlsplit(value).path for value in ARTIFACT_URLS[1:]
+    }:
+        return "public"
+    if parsed.hostname in ARTIFACT_OBJECT_HOSTS:
+        return "public"
+    raise RuntimeError("unsupported artifact destination")
+
+
+class NoArtifactRedirect(urllib.request.HTTPRedirectHandler):
+    def http_error_302(self, request, fp, code, msg, headers):
+        # Return the untouched response; urllib must never construct the next request.
+        return fp
+
+    http_error_301 = http_error_302
+    http_error_303 = http_error_302
+    http_error_307 = http_error_302
+    http_error_308 = http_error_302
+
+
+def artifact_response(opener, url: str, token: str | None):
+    for hop in range(6):
+        route = artifact_destination(url)
+        if hop and route == "api":
+            raise RuntimeError("artifact redirect to the authenticated API is unsupported")
+        request = urllib.request.Request(url, headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "plug-s1-b13-b16-reference-capture",
+        })
+        if route == "api" and token:
+            request.add_unredirected_header("Authorization", f"Bearer {token}")
+        try:
+            response = opener.open(request, timeout=180)
+        except HTTPError as error:
+            if error.code not in REDIRECT_CODES:
+                raise
+            response = error
+        status = response.code
+        if status not in REDIRECT_CODES:
+            return response
+        try:
+            location = response.headers.get("Location")
+            if not location:
+                raise RuntimeError("artifact redirect has no destination")
+            next_url = urljoin(url, location)
+            artifact_destination(next_url)
+        finally:
+            response.close()
+        url = next_url
+    raise RuntimeError("artifact redirect limit exceeded")
 
 
 def digest(payload: bytes) -> str:
@@ -92,25 +165,18 @@ def locate_recorder() -> Path:
 def download_bundle(root: Path, provided_url: str | None) -> tuple[Path, dict[str, object]]:
     archive_zip = root / "public-artifact.zip"
     download_attempts = []
-    auth_env_names = [name for name in ("GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_RUNTIME_TOKEN") if os.environ.get(name)]
-    url_entries = []
-    if provided_url:
-        url_entries.append(("provided-immutable-url", provided_url))
-    url_entries.extend(("public-url", url) for url in ARTIFACT_URLS)
+    # The Actions runtime bearer belongs to a different service and is never used here.
+    auth_env_name = next((name for name in ("GITHUB_TOKEN", "GH_TOKEN") if os.environ.get(name)), None)
+    token = os.environ[auth_env_name] if auth_env_name else None
+    url_entries = ([("provided-immutable-url", provided_url)] if provided_url is not None
+                   else [("public-url", url) for url in ARTIFACT_URLS])
+    # Disable environment-selected proxies and automatic redirect/header propagation.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoArtifactRedirect())
     for url_ref, url in url_entries:
-        headers = {
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "plug-s1-b13-b16-reference-capture",
-        }
-        for name in auth_env_names:
-            headers["Authorization"] = f"Bearer {os.environ[name]}"
-            break
-        request = urllib.request.Request(
-            url,
-            headers=headers,
-        )
+        route = artifact_destination(url)
+        auth_env_names = [auth_env_name] if auth_env_name and route == "api" else []
         try:
-            with urllib.request.urlopen(request, timeout=180) as response, archive_zip.open("wb") as stream:
+            with artifact_response(opener, url, token) as response, archive_zip.open("wb") as stream:
                 shutil.copyfileobj(response, stream)
             download_attempts.append({"urlRef": url_ref, "status": "downloaded", "authEnvNames": auth_env_names})
             break
@@ -140,15 +206,15 @@ def download_bundle(root: Path, provided_url: str | None) -> tuple[Path, dict[st
             if relative in normalized or relative not in EXPECTED_FILES:
                 raise RuntimeError(f"public artifact ZIP members are not the expected exact set: {names}")
             mode = (item.external_attr >> 16) & 0o170000
-            if mode == stat.S_IFLNK:
-                raise RuntimeError(f"public artifact ZIP contains a symlink: {item.filename}")
+            if mode not in (0, stat.S_IFREG):
+                raise RuntimeError(f"public artifact ZIP contains a non-regular file: {item.filename}")
             normalized[relative] = item
         if set(normalized) != EXPECTED_FILES:
             raise RuntimeError(f"public artifact ZIP members are incomplete: {sorted(normalized)}")
         for relative, item in normalized.items():
             destination = extracted / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            with bundle.open(item) as source, destination.open("wb") as target:
+            with bundle.open(item) as source, destination.open("xb") as target:
                 shutil.copyfileobj(source, target)
 
     manifest_bytes = (extracted / "manifest.json").read_bytes()
@@ -168,15 +234,24 @@ def download_bundle(root: Path, provided_url: str | None) -> tuple[Path, dict[st
         raise RuntimeError(f"public artifact archive manifest is {archive_record}")
     if digest(archive.read_bytes()) != ARCHIVE_SHA256 or archive.stat().st_size != ARCHIVE_SIZE:
         raise RuntimeError("public artifact archive digest or size mismatch")
-    artifact_record = manifest.get("artifacts", {}).get("bin/bd", {})
-    if artifact_record.get("sha256") != BINARY_SHA256 or artifact_record.get("size") != BINARY_SIZE or artifact_record.get("mode") != "0o755":
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != {"bin/bd", "bin/plug"}:
+        raise RuntimeError("public artifact executable manifest set is not exact")
+    artifact_record = artifacts.get("bin/bd", {})
+    if (not isinstance(artifact_record, dict) or artifact_record.get("sha256") != BINARY_SHA256
+            or artifact_record.get("size") != BINARY_SIZE or artifact_record.get("mode") != "0o755"):
         raise RuntimeError(f"public artifact binary manifest is {artifact_record}")
     binary = extracted / "bin" / "bd"
-    mode = stat.S_IMODE(binary.stat().st_mode)
-    if binary.is_symlink() or not binary.is_file() or mode != 0o755:
-        raise RuntimeError("public artifact loose bd is not a regular 0755 executable")
-    if digest(binary.read_bytes()) != BINARY_SHA256 or binary.stat().st_size != BINARY_SIZE:
-        raise RuntimeError("public artifact loose bd digest or size mismatch")
+    # Artifact ZIPs strip executable mode. Validate their bytes, then reconstruct
+    # modes only from the independently hash-pinned tar, never from ZIP metadata.
+    for name, record in artifacts.items():
+        destination = extracted / name
+        if (not isinstance(record, dict) or record.get("mode") != "0o755"
+                or destination.is_symlink() or not destination.is_file()
+                or destination.stat().st_size != record.get("size")
+                or digest(destination.read_bytes()) != record.get("sha256")):
+            raise RuntimeError(f"public artifact loose executable hash, size or mode record mismatch: {name}")
+    executable_payloads = {}
     with tarfile.open(archive, "r") as stream:
         members = stream.getmembers()
         if {item.name for item in members} != {"bin/bd", "bin/plug"} or len(members) != 2:
@@ -188,8 +263,10 @@ def download_bundle(root: Path, provided_url: str | None) -> tuple[Path, dict[st
             if payload is None:
                 raise RuntimeError(f"archive member has no payload: {item.name}")
             member_bytes = payload.read()
-            if item.name == "bin/bd" and digest(member_bytes) != BINARY_SHA256:
-                raise RuntimeError("archive bd payload digest mismatch")
+            record = artifacts[item.name]
+            if len(member_bytes) != record.get("size") or digest(member_bytes) != record.get("sha256"):
+                raise RuntimeError(f"archive executable hash or size mismatch: {item.name}")
+            executable_payloads[item.name] = member_bytes
     version = json.loads((extracted / "bd-version.json").read_bytes())
     if version.get("commit") != PINNED_COMMIT:
         raise RuntimeError(f"bd version metadata is {version}")
@@ -198,6 +275,13 @@ def download_bundle(root: Path, provided_url: str | None) -> tuple[Path, dict[st
         raise RuntimeError("bd version metadata digest mismatch")
     if digest((extracted / "plug-help.txt").read_bytes()) != resolution.get("plug_help_sha256"):
         raise RuntimeError("plug help digest mismatch")
+    # All member, source, archive, binary and resolver checks precede any execute bit.
+    for name, payload in executable_payloads.items():
+        destination = extracted / name
+        destination.write_bytes(payload)
+        destination.chmod(0o755)
+        if destination.is_symlink() or not destination.is_file() or stat.S_IMODE(destination.stat().st_mode) != 0o755:
+            raise RuntimeError("public artifact executable reconstruction failed")
     return binary, {
         "runId": ARTIFACT_RUN,
         "artifactId": ARTIFACT_ID,

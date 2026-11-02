@@ -40,3 +40,14 @@ Postgres parity, reverse import/readback, and B1 are not claimed.
 The tests intentionally use fixed IDs, actors, request keys, cursor key,
 store identity (memory), and UTC clock values. The SQLite driver supplies the
 real SQL clock/storage boundary; these cases do not claim Postgres coverage.
+
+`//spec/s1-b13-b16:capture_regressions` executes the downloader through an
+intercepted urllib transport with fake credentials and blocked sockets. Its
+synthetic ZIP/tar cases test destination and redirect authorization, pin/hash
+refusals, containment, and executable reconstruction after mode stripping.
+GitHub credentials are allowed only on the exact pinned HTTPS API endpoint;
+public/signed object routes receive none, redirects are checked individually,
+and unsupported routes refuse. The runner runtime token is never used.
+Only the verified regular 0755 tar members receive execute bits after all
+bundle guards pass. These source regressions do not record Beads behavior or
+authorize an actual reference capture.
