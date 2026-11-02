@@ -3,7 +3,13 @@ package cp7latency_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/service"
@@ -263,5 +269,132 @@ func TestIndependentOracleRejectsMembershipParentAndPartialCount(t *testing.T) {
 	got.Groups[0].Items[0].Parent = beadRef(999).ID
 	if err := validateGrouped(got, 1000, 1000); err == nil {
 		t.Fatal("grouped oracle accepted a hidden parent identity")
+	}
+}
+
+func boundaryError(name string) error {
+	switch name {
+	case "invalid_params", "internal_error":
+		return &model.Error{Data: model.ErrorData{Code: model.ErrorCode(name)}}
+	case "untyped":
+		return errors.New("unexpected query failure")
+	case "mixed_deadline":
+		return errors.Join(errors.New("unexpected query failure"), context.DeadlineExceeded)
+	case "deadline":
+		return fmt.Errorf("query: %w", context.DeadlineExceeded)
+	case "mapped_deadline":
+		return &model.Error{Data: model.ErrorData{Code: "busy", Retryable: true, Hint: "view read was canceled or exceeded its deadline"}}
+	case "cap":
+		return &model.Error{Data: model.ErrorData{Code: "authz_postfilter_cap"}}
+	case "scope":
+		return &model.Error{Data: model.ErrorData{Code: "scope_too_large"}}
+	case "write_pre":
+		return &model.Error{Message: "write pre phases exceeded their deadline", Data: model.ErrorData{Code: "busy"}}
+	default:
+		panic("unknown boundary error")
+	}
+}
+
+func TestClassifierKeepsUnexpectedErrorsAtExpiredRequest(t *testing.T) {
+	for _, name := range []string{"invalid_params", "internal_error", "untyped", "mixed_deadline"} {
+		t.Run(name, func(t *testing.T) {
+			status, _ := classify(boundaryError(name), context.DeadlineExceeded)
+			if status != "correctness_error" {
+				t.Fatalf("unexpected error at expired request classified %q", status)
+			}
+		})
+	}
+	for name, want := range map[string]string{"deadline": "request_deadline", "mapped_deadline": "request_deadline", "cap": "cap_refusal", "scope": "cap_refusal", "write_pre": "write_pre_deadline"} {
+		t.Run(name, func(t *testing.T) {
+			status, _ := classify(boundaryError(name), context.DeadlineExceeded)
+			if status != want {
+				t.Fatalf("permitted refusal classified %q, want %q", status, want)
+			}
+		})
+	}
+	for _, requestErr := range []error{nil, context.Canceled} {
+		if status, _ := classify(boundaryError("mapped_deadline"), requestErr); status != "correctness_error" {
+			t.Fatalf("mapped busy without a request deadline classified %q", status)
+		}
+	}
+}
+
+// The fault is below the real guarded Ready service and above the real SQL
+// reader. Meta, snapshots, authority setup and storage remain real. It waits
+// for the benchmark's unchanged request deadline before returning zero rows.
+type boundaryStore struct {
+	driver.Store
+	name    string
+	expired atomic.Bool
+}
+
+type boundaryReader struct {
+	driver.Reader
+	driver.AllocatorReader
+	store *boundaryStore
+}
+
+func (s *boundaryStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	r, err := s.Store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	return &boundaryReader{Reader: r, AllocatorReader: r.(driver.AllocatorReader), store: s}, nil
+}
+
+func (r *boundaryReader) Query(ctx context.Context, _ driver.Query) (driver.Page[driver.Record], error) {
+	<-ctx.Done()
+	r.store.expired.Store(errors.Is(ctx.Err(), context.DeadlineExceeded))
+	return driver.Page[driver.Record]{}, boundaryError(r.store.name)
+}
+
+func TestObservationBoundary(t *testing.T) {
+	const childEnv = "PLUG_CP7_OBSERVATION_BOUNDARY"
+	if name := os.Getenv(childEnv); name != "" {
+		f := newFixture(t, "sqlite", 11)
+		fault := &boundaryStore{Store: f.store.Store, name: name}
+		f.store.Store = fault
+		before, err := f.store.Meta(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			after, err := f.store.Meta(context.Background())
+			if err != nil || after.Head.String() != before.Head.String() || !fault.expired.Load() || f.store.counts.value().Queries != 1 {
+				t.Fatalf("boundary did not reach expired real call without a commit: %v", err)
+			}
+			t.Logf("CP7_BOUNDARY fault=%s expired=true query_calls=1 head_unchanged=true", name)
+		}()
+		s := f.observe(t, "sqlite", 1, "Q4Ready", "boundary", 0)
+		if s.TargetPass || s.Status == "success" {
+			t.Fatal("failed request counted as latency success")
+		}
+		return
+	}
+	for _, name := range []string{"invalid_params", "internal_error", "untyped", "mixed_deadline", "deadline", "mapped_deadline", "cap", "write_pre"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			binary, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, binary, "-test.run=^TestObservationBoundary$", "-test.v")
+			cmd.Env = append(os.Environ(), childEnv+"="+name)
+			out, err := cmd.CombinedOutput()
+			t.Logf("actual observation child %s:\n%s", name, out)
+			if ctx.Err() != nil || !strings.Contains(string(out), "expired=true query_calls=1 head_unchanged=true") {
+				t.Fatal("child did not establish the expired, zero-result, no-commit boundary")
+			}
+			unexpected := name == "invalid_params" || name == "internal_error" || name == "untyped" || name == "mixed_deadline"
+			if unexpected {
+				if err == nil || !strings.Contains(string(out), "unexpected product error retained above") || !strings.Contains(string(out), `"status":"correctness_error"`) {
+					t.Fatal("actual observe accepted an unexpected error at request expiry")
+				}
+			} else if err != nil || !strings.Contains(string(out), `"target_pass":false`) {
+				t.Fatalf("permitted refusal must remain visible performance RED: %v", err)
+			}
+		})
 	}
 }
