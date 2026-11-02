@@ -218,6 +218,11 @@ func TestEmbeddedPlugNativeInventoryActualCLI(t *testing.T) {
 	}
 	t.Logf("NATIVE_PUBLIC_BD_SHA256=%x", sha256.Sum256(binary))
 	workspace, home := t.TempDir(), t.TempDir()
+	for _, path := range []string{workspace, home} {
+		if err := os.Chmod(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	initGitRepoAt(t, workspace)
 	env := bdEnv(home)
 	for _, key := range []string{"XDG_CONFIG_HOME", "BEADS_DIR", "BD_DOLT_MODE", "BD_EVENTS_JOURNAL", "DOLT_ROOT_PATH"} {
@@ -235,6 +240,16 @@ func TestEmbeddedPlugNativeInventoryActualCLI(t *testing.T) {
 		}
 		return out
 	}
+	refuse := func(want string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(bd, args...)
+		cmd.Dir, cmd.Env = workspace, env
+		out, err := cmd.CombinedOutput()
+		t.Logf("NATIVE_PUBLIC_REFUSAL args=%q exit_error=%v output=%s", args, err, out)
+		if err == nil || !bytes.Contains(out, []byte(want)) {
+			t.Fatalf("actual bd refusal %q: %v: %s", args, err, out)
+		}
+	}
 	run("version", "--json")
 	run("init", "--prefix", "native", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet")
 	input := filepath.Join(workspace, "public.jsonl")
@@ -243,6 +258,36 @@ func TestEmbeddedPlugNativeInventoryActualCLI(t *testing.T) {
 	}
 	run("import", input, "--json")
 	capture := t.TempDir()
+	if err := os.Chmod(capture, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, args := range map[string][]string{
+		"public-declaration": {"--readonly", "export", "--format", "beads-inventory/1"},
+		"readonly":           {"export", "--format", "beads-inventory/1", "--plug-capture-public"},
+		"selection":          {"--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--all"},
+		"wrong-format":       {"--readonly", "export", "--plug-capture-public"},
+	} {
+		path := filepath.Join(capture, name+".json")
+		want := "requires --readonly and explicit --plug-capture-public"
+		if name == "selection" {
+			want = "requires only --output and public capture flags"
+		} else if name == "wrong-format" {
+			want = "requires --format beads-inventory/1"
+		}
+		refuse(want, append(args, "--output", path)...)
+		for _, output := range []string{path, path + ".sources"} {
+			if _, err := os.Lstat(output); !os.IsNotExist(err) {
+				t.Fatalf("refused capture published %s: %v", output, err)
+			}
+		}
+	}
+	if err := os.Chmod(capture, 0755); err != nil {
+		t.Fatal(err)
+	}
+	refuse("output parent must be an existing private directory", "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", filepath.Join(capture, "nonprivate.json"))
+	if err := os.Chmod(capture, 0700); err != nil {
+		t.Fatal(err)
+	}
 	inventoryPath := filepath.Join(capture, "inventory.json")
 	run("--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryPath)
 	raw, err := os.ReadFile(inventoryPath)
@@ -256,15 +301,33 @@ func TestEmbeddedPlugNativeInventoryActualCLI(t *testing.T) {
 	if len(inventory.External) != 26 || len(inventory.ConfigPolicy) == 0 || len(inventory.Projects) != 1 || inventory.Projects[0].Prefix != "native" {
 		t.Fatalf("incomplete actual native inventory: %s", raw)
 	}
+	for path, mode := range map[string]os.FileMode{inventoryPath: 0600, inventoryPath + ".sources": 0700} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != mode {
+			t.Fatalf("native output permissions %s: %v %v", path, info, err)
+		}
+	}
+	physicalCapture, err := filepath.EvalSymlinks(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, input := range inventory.External {
-		if input.State != "json-config" {
+		if input.State != "json-config" || input.Path != filepath.Join(physicalCapture, "inventory.json.sources", input.Family+".json") {
 			t.Fatalf("native source falsely omitted: %+v", input)
+		}
+		info, err := os.Stat(input.Path)
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("native sidecar permissions: %v %v", info, err)
 		}
 		data, err := os.ReadFile(input.Path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Logf("NATIVE_PUBLIC_EXTERNAL family=%s sha256=%x data=%s", input.Family, sha256.Sum256(data), data)
+	}
+	refuse("refuses existing output or sidecars", "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryPath)
+	if after, err := os.ReadFile(inventoryPath); err != nil || !bytes.Equal(raw, after) {
+		t.Fatal("refused overwrite changed the inventory")
 	}
 	archivePath := filepath.Join(capture, "readback.tar")
 	run("--readonly", "export", "--format", plugdump.Format, "--plug-inventory", inventoryPath, "--output", archivePath)
