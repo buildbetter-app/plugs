@@ -63,12 +63,16 @@ func TestS1B01ReplayReadyMembershipOrderAndDeferredParent(t *testing.T) {
 				t.Fatalf("close refused: %s", code)
 			}
 			got := f.readyIDs("b01-filtered", owner)
-			want := referenceIDs(t, "B01", "readyIds")
+			reference := referenceIDs(t, "B01", "readyIds")
+			if !reflect.DeepEqual(reference, []string{"b01-p0", "b01-tie-a", "b01-tie-b", "b01-child"}) {
+				t.Fatalf("retained B01 reference observation changed: %v", reference)
+			}
+			// B01's canonical membership excludes deferred-parent descendants.
+			// Preserve the recorded reference's historical gap as an observation,
+			// while asserting the adopted Plug behavior independently of it.
+			want := []string{"b01-p0", "b01-tie-a", "b01-tie-b"}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("deferred/closed ready = %v, want %v", got, want)
-			}
-			if reflect.DeepEqual(got, []string{"b01-p0", "b01-tie-a", "b01-tie-b", "b01-child"}) {
-				t.Logf("B01 canonical deferred-parent suppression remains an explicit hierarchy gap; reference and Plug both observed child-ready decision=P74")
 			}
 			if f.document("b01-parent").Fields["status"] != "backlog" || f.document("b01-closed").Fields["status"] != "done" {
 				t.Fatalf("category projection lost: parent=%+v closed=%+v", f.document("b01-parent"), f.document("b01-closed"))
@@ -81,7 +85,7 @@ func TestS1B01ReplayReadyMembershipOrderAndDeferredParent(t *testing.T) {
 			}
 			// The retained reference and Plug order are intentionally separate:
 			// Plug stores category/rank keys and records P74 as a bounded deviation.
-			t.Logf("B01 projection backend=%s ready=%v decision=A3/D3/P74", backend.name, got)
+			t.Logf("B01 projection backend=%s referenceReady=%v adoptedReady=%v canonical deferred-parent suppression decision=A3/D3/P74", backend.name, reference, got)
 		})
 	}
 }
