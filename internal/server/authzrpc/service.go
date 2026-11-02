@@ -73,7 +73,7 @@ func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req ser
 func (s *GuardedService) AuthorizeReadBatch(ctx context.Context, by model.PrincipalRef, resources []model.ResourceRef) ([]bool, error) {
 	refs := make([]model.Ref, len(resources))
 	for i, resource := range resources {
-		if resource.Kind != "bead" || resource.Ref.Validate() != nil || !resource.Ref.IsID() || !resource.Ref.Branch.IsZero() {
+		if resource.Kind != "bead" || authz.CanonicalRef(resource.Ref) != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "batch read requires resolved bead references"}}
 		}
 		refs[i] = resource.Ref
@@ -107,12 +107,26 @@ func (s *GuardedService) AuthorizeReadBatch(ctx context.Context, by model.Princi
 			present[row.Ref.ID] = true
 		}
 	}
+	// Match still validates context, facts and caveats for every resource. The
+	// four common dependencies join this same immutable authority snapshot once;
+	// repeating their SQL observations cannot add another snapshot guarantee.
+	facts := &countReadSlice{slice: authority, dependencies: [4]authz.Dependency{
+		authz.ContextDependency(s.checker.chain.Namespace),
+		authz.ACLDependency(s.checker.chain.Namespace),
+		{Kind: "sentinel", Key: "plugins"},
+		{Kind: "sentinel", Key: "ontology"},
+	}}
+	for _, dep := range facts.dependencies {
+		if err := authority.Record(ctx, dep); err != nil {
+			return nil, &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+		}
+	}
 	allowed := make([]bool, len(resources))
 	for i, ref := range refs {
 		if !present[ref.ID] {
 			continue
 		}
-		allowed[i], err = template.Match(ctx, authority, authz.Resource{Kind: authz.Bead, Ref: ref})
+		allowed[i], err = template.Match(ctx, facts, authz.Resource{Kind: authz.Bead, Ref: ref})
 		if err != nil {
 			return nil, authzError(err)
 		}
@@ -125,6 +139,26 @@ func (s *GuardedService) AuthorizeReadBatch(ctx context.Context, by model.Princi
 		return nil, err
 	}
 	return allowed, nil
+}
+
+// countReadSlice exists only during one batch against one current snapshot.
+// It retains no effective grants or decisions. Every other dependency remains
+// a real source read, and the caller's final fresh authority fence is unchanged.
+type countReadSlice struct {
+	*slice
+	dependencies [4]authz.Dependency
+}
+
+func (s *countReadSlice) Record(ctx context.Context, dep authz.Dependency) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for _, recorded := range s.dependencies {
+		if dep == recorded {
+			return nil
+		}
+	}
+	return s.slice.Record(ctx, dep)
 }
 
 func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {

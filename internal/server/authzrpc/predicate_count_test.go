@@ -3,12 +3,14 @@ package authzrpc_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
@@ -604,5 +606,112 @@ func TestB23CountBatchAuthorizationMatchesGuardedGetAcrossDrivers(t *testing.T) 
 				t.Fatalf("invalid batch resource admitted: %v %v", allowed, err)
 			}
 		}
+	})
+}
+
+// These hooks inject source failures and an actual authority-generation change
+// at the adapter boundary; they do not replace either driver or policy logic.
+type countAuthorityStore struct {
+	driver.Store
+	failKey    string
+	reads      int
+	beforeRead func(int) error
+}
+
+func (s *countAuthorityStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	s.reads++
+	if s.beforeRead != nil {
+		if err := s.beforeRead(s.reads); err != nil {
+			return nil, err
+		}
+	}
+	reader, err := s.Store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	return &countAuthorityReader{Reader: reader, store: s}, nil
+}
+
+type countAuthorityReader struct {
+	driver.Reader
+	store *countAuthorityStore
+}
+
+func (r *countAuthorityReader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
+	for _, key := range keys {
+		encoded, err := driver.EncodeLockKey(key)
+		if err != nil {
+			return nil, err
+		}
+		if encoded == r.store.failKey {
+			return nil, errors.New("count test dependency unavailable")
+		}
+	}
+	return r.Reader.Observe(ctx, keys)
+}
+
+func TestB23CountBatchCurrentAuthorityGuardsAcrossDrivers(t *testing.T) {
+	countDrivers(t, func(t *testing.T, open storeFactory) {
+		store := &countAuthorityStore{Store: open(t)}
+		f := ordinaryCountFixture(t, func(*testing.T) driver.Store { return store })
+		resources := []model.ResourceRef{{Kind: "bead", Ref: fixtureRef(2)}}
+		for _, dep := range []authz.Dependency{
+			authz.ContextDependency(f.server.Namespace), authz.ACLDependency(f.server.Namespace),
+			{Kind: "sentinel", Key: "plugins"}, {Kind: "sentinel", Key: "ontology"},
+		} {
+			t.Run(dep.Kind+"_"+dep.Key, func(t *testing.T) {
+				var key driver.LockKey
+				if dep.Kind == "read_fact" {
+					fact, err := driver.NewReadFact(dep.Key)
+					if err != nil {
+						t.Fatal(err)
+					}
+					key = driver.LockKey{Kind: driver.LockReadFact, Fact: fact}
+				} else {
+					sentinel, err := driver.NewSentinel(dep.Key)
+					if err != nil {
+						t.Fatal(err)
+					}
+					key = driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}
+				}
+				var err error
+				store.failKey, err = driver.EncodeLockKey(key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { store.failKey = "" }()
+				allowed, err := f.server.Service.AuthorizeReadBatch(context.Background(), countReader(), resources)
+				if allowed != nil || err == nil {
+					t.Fatalf("source failure returned decisions: %v %v", allowed, err)
+				}
+			})
+		}
+		t.Run("canceled", func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			allowed, err := f.server.Service.AuthorizeReadBatch(ctx, countReader(), resources)
+			if allowed != nil || err == nil {
+				t.Fatalf("canceled batch returned decisions: %v %v", allowed, err)
+			}
+		})
+		t.Run("fresh_final_authority", func(t *testing.T) {
+			store.reads = 0
+			changed := false
+			store.beforeRead = func(n int) error {
+				if n != 2 {
+					return nil
+				}
+				store.beforeRead = nil
+				next := f.base
+				next.Grants = nil
+				changed = true
+				return f.facts.Replace(next)
+			}
+			defer func() { store.beforeRead = nil }()
+			allowed, err := f.server.Service.AuthorizeReadBatch(context.Background(), countReader(), resources)
+			if !changed || allowed != nil || err == nil {
+				t.Fatalf("changed current authority returned decisions: changed=%t %v %v", changed, allowed, err)
+			}
+		})
 	})
 }
