@@ -32,6 +32,12 @@ reader's as-of revision.
 Reverse alone ends in `WAIT` with `beads_reimport=WAIT` and
 `beads_readback=WAIT`, exit 2. Real reimport additionally requires
 `--beads-binary`, `--beads-sha256` and `--beads-build-run`.
+`--beads-inventory auto` asks that same verified executable to produce
+`beads-inventory/1` after the fresh target completes `version`, `init`, and
+`import`; the generated census and its sidecars are retained as private output
+evidence. An explicit inventory path remains supported for independently
+prepared captures. Omitting the flag still ends at `beads_inventory_required`
+with `beads_reimport=PASS` and `beads_readback=WAIT`.
 The artifact's hosted build receipt and digest must be independently verified
 before invoking the harness; a supplied run ID is provenance to record, not
 independent attestation. The supported executable pin is Beads
@@ -43,8 +49,10 @@ retry or PATH-selected `bd` is performed.
 
 The real executable runs `version --json`, then `init --prefix ... --skip-hooks
 --skip-agents --non-interactive --quiet` in a fresh isolated Beads workspace,
-then `import reverse-live.jsonl --json`. After successful import, missing
-`--beads-inventory` returns `WAIT` at `beads_inventory`, reason
+then `import reverse-live.jsonl --json`. With `--beads-inventory auto`, a
+fourth real subprocess runs `--readonly export --format beads-inventory/1
+--plug-capture-public --output ...` against that new target. After successful
+import, missing `--beads-inventory` returns `WAIT` at `beads_inventory`, reason
 `beads_inventory_required`, with `beads_reimport=PASS` and
 `beads_readback=WAIT`. Invalid executable provenance and bytes are checked
 even when inventory is absent. A separate process runs the supported
@@ -92,8 +100,10 @@ artifact-backed runtime coverage must also name it explicitly.
 The runtime target imports the unchanged public complete-root and partial
 fixtures in full/partial/snapshot modes across memory, SQLite and disposable
 PostgreSQL, with the normal claim/release and live-edit workload. It requires
-three actual successful Beads subprocesses for each admitted case and retains
-their raw output in the test log. Its current assertion ends at real reimport
-with inventory-required WAIT. It does not certify independent native readback
-or full roundtrip fidelity; those require a truthful census of the actual new
-Beads target and the supported exporter's raw archive.
+four actual successful Beads subprocesses for each admitted case when using
+`--beads-inventory auto`, including the native census, and retains their raw
+output in the test log. The raw exporter then reads that truthful target census
+and the runtime compares its archive against the submitted reverse JSONL plus
+every native opaque field. A final `PASS` remains bounded to public head-state
+reimport/readback; it does not certify source-history replay, private stores,
+or production migration.
