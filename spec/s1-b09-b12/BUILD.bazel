@@ -10,9 +10,8 @@ go_test(
         "provenance.json",
         "projection.py",
         "record_reference.py",
-        "reference/*.json",
         "vectors.json",
-    ],
+    ] + glob(["reference/*.json"]),
     args = ["-test.v"],
     deps = [
         "//internal/core/model",
