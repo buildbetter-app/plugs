@@ -92,21 +92,26 @@ def locate_recorder() -> Path:
 def download_bundle(root: Path) -> tuple[Path, dict[str, object]]:
     archive_zip = root / "public-artifact.zip"
     download_attempts = []
+    auth_env_names = [name for name in ("GITHUB_TOKEN", "GH_TOKEN", "ACTIONS_RUNTIME_TOKEN") if os.environ.get(name)]
     for url in ARTIFACT_URLS:
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "plug-s1-b13-b16-reference-capture",
+        }
+        for name in auth_env_names:
+            headers["Authorization"] = f"Bearer {os.environ[name]}"
+            break
         request = urllib.request.Request(
             url,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "User-Agent": "plug-s1-b13-b16-reference-capture",
-            },
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(request, timeout=180) as response, archive_zip.open("wb") as stream:
                 shutil.copyfileobj(response, stream)
-            download_attempts.append({"url": url, "status": "downloaded"})
+            download_attempts.append({"url": url, "status": "downloaded", "authEnvNames": auth_env_names})
             break
         except (HTTPError, URLError) as error:
-            download_attempts.append({"url": url, "status": "refused", "error": str(error)})
+            download_attempts.append({"url": url, "status": "refused", "error": str(error), "authEnvNames": auth_env_names})
     else:
         raise RuntimeError(f"all immutable public artifact download URLs refused: {download_attempts}")
     zip_bytes = archive_zip.read_bytes()
