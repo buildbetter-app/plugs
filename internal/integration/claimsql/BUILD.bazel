@@ -12,6 +12,7 @@ go_test(
         "//internal/storage/driver",
         "//internal/storage/postgres",
         "//internal/storage/sqlite",
+        "//internal/testclock",
     ],
     size = "large",
     tags = ["local", "requires-network"],

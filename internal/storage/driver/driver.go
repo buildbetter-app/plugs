@@ -617,6 +617,16 @@ type ActiveLease interface {
 	Lost() <-chan struct{}
 	Release(context.Context) error
 }
+
+// DerivedPrefixReader optionally enumerates the union of opaque key prefixes
+// in one table at the same snapshot as Reader.DerivedRows. Rows are live,
+// duplicate-free, sorted bytewise and caller-owned, including staged changes.
+// Empty input selects no rows; an empty prefix selects the whole table. The
+// caller still guards predicate sentinels and observes consumed exact keys.
+type DerivedPrefixReader interface {
+	DerivedRowsForPrefixes(context.Context, DerivedTable, []string) ([]DerivedRow, error)
+}
+
 type Reader interface {
 	// Snapshot returns the bound branch, incarnation and revision (At is
 	// always non-nil), without another store lookup. It is caller-owned.
