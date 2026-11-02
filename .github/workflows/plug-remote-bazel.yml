@@ -96,7 +96,7 @@ jobs:
           # Pin the reviewed public-reference helper atom independently of
           # the workflow file's own revision. The companion helper is fetched
           # from the same immutable commit because the reference helper imports it.
-          PUBLIC_REFERENCE_HELPER_SHA: 9f9007cd605aec7a793096aa3e86c0dec9397859
+          PUBLIC_REFERENCE_HELPER_SHA: f6835b8832d96b39a6fb40daedf3ec79e2b4a435
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
