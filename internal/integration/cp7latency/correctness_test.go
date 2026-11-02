@@ -8,6 +8,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 func TestRealCP7MembershipCountsParentsAndCurrentAuthority(t *testing.T) {
@@ -97,6 +98,11 @@ func TestRealCP7MembershipCountsParentsAndCurrentAuthority(t *testing.T) {
 				if err := f.facts.Replace(next); err != nil {
 					t.Fatal(err)
 				}
+				defer func() {
+					if err := f.facts.Replace(f.base); err != nil {
+						t.Error(err)
+					}
+				}()
 				_, err = f.app.Service.Ready(ctx, f.user(1), service.ReadyRequest{Project: projectName, Limit: pageSize, Position: first.Next})
 				requireCode(t, err, "cursor_invalid")
 				_, err = f.app.Service.ClaimNextWithOutcome(ctx, p, service.ClaimNextRequest{Project: projectName}, meta)
@@ -105,14 +111,66 @@ func TestRealCP7MembershipCountsParentsAndCurrentAuthority(t *testing.T) {
 				if _, err := f.app.Service.Get(ctx, f.user(1), service.GetRequest{ID: beadRef(100)}); err != nil {
 					t.Fatal(err)
 				}
-				// A fresh no-permit walk must commit a terminal receipt, not claim.
+				// The existing Checker also requires the project permit for a
+				// terminal receipt. Revocation must publish no fresh receipt.
 				meta.IdempotencyKey = requestKey("correctness", 100, "terminal", 0)
-				empty, err := f.app.Service.ClaimNextWithOutcome(ctx, p, service.ClaimNextRequest{Project: projectName}, meta)
-				if err != nil || empty == nil || !empty.NullResult || empty.Commit.Revision.IsZero() || len(empty.Commit.Results) != 0 {
-					t.Fatalf("terminal claim proof failed: %v", err)
-				}
-				if err := f.facts.Replace(f.base); err != nil {
+				before, err := f.store.Meta(ctx)
+				if err != nil {
 					t.Fatal(err)
+				}
+				empty, err := f.app.Service.ClaimNextWithOutcome(ctx, p, service.ClaimNextRequest{Project: projectName}, meta)
+				requireCode(t, err, "forbidden")
+				after, err := f.store.Meta(ctx)
+				if err != nil || empty != nil || before.Head.String() != after.Head.String() {
+					t.Fatalf("revoked terminal request published state: %v", err)
+				}
+				principal, err := driver.PrincipalKey(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := f.reader(t, nil)
+				defer r.Close()
+				receipt, err := r.IdempotencyByKey(ctx, principal, "", "bead.claimNext", meta.IdempotencyKey)
+				if err != nil || receipt != nil {
+					t.Fatalf("revoked terminal request minted a receipt: %v", err)
+				}
+			})
+			t.Run("AuthorizedExhaustedSelectorCommitsTerminalReceipt", func(t *testing.T) {
+				p := f.agent(1, false)
+				req := service.ClaimNextRequest{Project: projectName, Filter: &service.Filter{Resources: []string{beadRef(100).ID}}}
+				meta := model.WriteMeta{Project: projectName, Return: "full", IdempotencyKey: requestKey("correctness", 1, "drain", 0)}
+				claimed, err := f.app.Service.ClaimNextWithOutcome(ctx, p, req, meta)
+				if err != nil || claimed == nil || claimed.NullResult || len(claimed.Commit.Results) != 1 || claimed.Commit.Results[0].Ref.ID != beadRef(100).ID {
+					t.Fatalf("authorized selector control did not claim its one bead: %v", err)
+				}
+				defer f.resetClaim(t, beadRef(100))
+				before, err := f.store.Meta(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				meta.IdempotencyKey = requestKey("correctness", 1, "empty", 0)
+				empty, err := f.app.Service.ClaimNextWithOutcome(ctx, p, req, meta)
+				if err != nil || empty == nil || !empty.NullResult || empty.Replayed || len(empty.Commit.Results) != 0 {
+					t.Fatalf("authorized terminal outcome: %v", err)
+				}
+				after, err := f.store.Meta(ctx)
+				beforeRevision, numberErr := before.Head.Uint64()
+				if err != nil || numberErr != nil || after.Head.String() != model.Natural64(beforeRevision+1).String() || empty.Commit.Revision.String() != after.Head.String() {
+					t.Fatal("authorized terminal receipt did not publish exactly H+1")
+				}
+				principal, err := driver.PrincipalKey(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := f.reader(t, nil)
+				receipt, err := r.IdempotencyByKey(ctx, principal, "", "bead.claimNext", meta.IdempotencyKey)
+				r.Close()
+				if err != nil || receipt == nil || receipt.Commit.Revision.String() != after.Head.String() || len(receipt.Changeset.Changes) != 0 || len(receipt.Changeset.Events) != 0 {
+					t.Fatalf("terminal receipt is not durable zero-change state: %v", err)
+				}
+				replayed, err := f.app.Service.ClaimNextWithOutcome(ctx, p, req, meta)
+				if err != nil || replayed == nil || !replayed.Replayed || !replayed.NullResult || replayed.Commit.Revision.String() != after.Head.String() {
+					t.Fatalf("terminal receipt replay drifted: %v", err)
 				}
 			})
 			t.Run("PinnedContentUsesCurrentPrincipalAndCompleteQuery", func(t *testing.T) {

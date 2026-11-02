@@ -491,6 +491,12 @@ func (f *fixture) resetClaim(t *testing.T, ref model.Ref) {
 	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: body(t, n), ChangedPaths: []string{"/lease"}}}); err != nil {
 		t.Fatal(err)
 	}
+	r := f.reader(t, nil)
+	defer r.Close()
+	rows, err := r.Get(context.Background(), []model.Ref{ref})
+	if err != nil || len(rows) != 1 || !bytes.Equal(rows[0].Body, body(t, n)) {
+		t.Fatalf("claim reset did not restore the exact original body: %v", err)
+	}
 }
 
 func groupedRequest() viewops.RunRequest {
