@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 )
 
@@ -28,6 +29,7 @@ func TestB12MissingSummaryProviderRefusesWithoutPublication(t *testing.T) {
 			}
 			f.call("admin.compact", "missing-provider", map[string]any{"beforeRevision": meta.Head, "dryRun": false}, "compaction_unavailable")
 			f.assertSameHead(meta)
+			f.assertNoReceipt("admin.compact", "missing-provider")
 			after := f.call("bead.get", "get-after", map[string]any{"id": ref}, "")
 			if !reflect.DeepEqual(before, after) {
 				t.Fatalf("unavailable compaction changed original: before=%v after=%v", before, after)
@@ -40,7 +42,7 @@ func TestB12PublicTierBoundariesHistoryReplayReversalAndReopen(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			var summaries atomic.Int32
-			var proofs atomic.Int32
+			authority := &presenceAuthority{}
 			intermediate := strings.Repeat("Tier one supplied summary. ", 60)
 			config := service.CompactionConfig{
 				Summary: service.CompactionSummaryFunc(func(_ context.Context, in service.CompactionInput) (string, error) {
@@ -53,13 +55,7 @@ func TestB12PublicTierBoundariesHistoryReplayReversalAndReopen(t *testing.T) {
 					}
 					return "Tier two summary.", nil
 				}),
-				VerifyPresence: func(_ context.Context, method, digest string, proof map[string]any) error {
-					proofs.Add(1)
-					if method != "history.revert" || len(digest) != 64 || proof["proof"] != "b12-issued-proof" {
-						return fmt.Errorf("unissued or unbound test proof")
-					}
-					return nil
-				},
+				VerifyPresence: authority.verify,
 			}
 			f := newFixture(t, engine, service.WithCompaction(config))
 			original := strings.Repeat("Original long Unicode text λ. ", 400)
@@ -79,8 +75,10 @@ func TestB12PublicTierBoundariesHistoryReplayReversalAndReopen(t *testing.T) {
 				t.Fatalf("dry run called summary or lost candidate: %v calls=%d", dry, summaries.Load())
 			}
 			f.assertSameHead(before)
+			f.assertNoReceipt("admin.compact", "dry-run")
 			first := f.call("admin.compact", "tier-one", params, "")
 			assertCommitTarget(t, first, ref)
+			assertKind(t, f, first["revision"], model.ChangesetWrite)
 			if summaries.Load() != 1 {
 				t.Fatalf("summaries=%d", summaries.Load())
 			}
@@ -110,14 +108,19 @@ func TestB12PublicTierBoundariesHistoryReplayReversalAndReopen(t *testing.T) {
 			second := f.call("admin.compact", "tier-two", map[string]any{"dryRun": false}, "")
 			assertTextAndTier(t, f, ref, "Tier two summary.", 2)
 			assertHistoricalText(t, f, ref, first["revision"], intermediate)
-			proof := map[string]any{"mode": "presence_check", "challenge": "b12-issued-challenge", "proof": "b12-issued-proof"}
-			revert := map[string]any{"ref": ref, "baseRevision": second["revision"], "expect": []any{}, "humanPresence": proof}
+			revert := map[string]any{"ref": ref, "baseRevision": second["revision"], "expect": []any{}}
+			proof := authority.issue(f, revert, "restore-tier-two")
+			revert["humanPresence"] = proof
 			before = f.meta()
+			f.call("history.revert", "missing-proof", map[string]any{"ref": ref, "baseRevision": second["revision"], "expect": []any{}}, "invalid_params")
+			f.assertNoReceipt("history.revert", "missing-proof")
 			badProof := map[string]any{"mode": "presence_check", "challenge": "b12-issued-challenge", "proof": "forged"}
 			f.call("history.revert", "forged-revert", map[string]any{"ref": ref, "baseRevision": second["revision"], "expect": []any{}, "humanPresence": badProof}, "human_presence_required")
 			f.assertSameHead(before)
+			f.assertNoReceipt("history.revert", "forged-revert")
 			restored := f.call("history.revert", "restore-tier-two", revert, "")
 			assertCommitTarget(t, restored, ref)
+			assertKind(t, f, restored["revision"], model.ChangesetRevert)
 			assertTextAndTier(t, f, ref, intermediate, 1)
 			assertHistoricalText(t, f, ref, second["revision"], "Tier two summary.")
 			if len(f.versions(ref)) != 5 {
@@ -131,13 +134,15 @@ func TestB12PublicTierBoundariesHistoryReplayReversalAndReopen(t *testing.T) {
 			f.assertSameHead(stable)
 			assertReplayed(t, f)
 			f.call("bead.update", "unrelated-title", map[string]any{"id": ref, "fields": map[string]any{"title": "Keep this newer title"}}, "")
-			f.call("history.revert", "restore-tier-one", map[string]any{"ref": ref, "baseRevision": first["revision"], "expect": []any{}, "humanPresence": proof}, "")
+			revertOne := map[string]any{"ref": ref, "baseRevision": first["revision"], "expect": []any{}}
+			revertOne["humanPresence"] = authority.issue(f, revertOne, "restore-tier-one")
+			f.call("history.revert", "restore-tier-one", revertOne, "")
 			got := f.call("bead.get", "get-final", map[string]any{"id": ref}, "")["bead"].(map[string]any)
 			fields := got["fields"].(map[string]any)
 			if fields["description"] != original || fields["title"] != "Keep this newer title" {
 				t.Fatalf("reversal clobbered unrelated data or lost original: %v", fields)
 			}
-			if metadata := got["metadata"].(map[string]any); metadata["plug.compaction"] != nil {
+			if metadata, _ := got["metadata"].(map[string]any); metadata["plug.compaction"] != nil {
 				t.Fatalf("tier one restore retained active compaction state: %v", metadata)
 			}
 			if engine != "memory" {
@@ -145,8 +150,8 @@ func TestB12PublicTierBoundariesHistoryReplayReversalAndReopen(t *testing.T) {
 				f.open()
 				assertHistoricalText(t, f, ref, boundary, original)
 			}
-			if proofs.Load() < 4 {
-				t.Fatalf("D32 not checked on every revert, including replay: %d", proofs.Load())
+			if authority.calls.Load() < 4 {
+				t.Fatalf("D32 not checked on every revert, including replay: %d", authority.calls.Load())
 			}
 		})
 	}
@@ -159,8 +164,10 @@ func assertCommitTarget(t *testing.T, commit, ref map[string]any) {
 		t.Fatal("compaction returned no selected record")
 	}
 	for _, value := range rows {
-		if !reflect.DeepEqual(value.(map[string]any)["ref"], ref) {
-			t.Fatalf("one call affected another record: %v", rows)
+		actual := value.(map[string]any)["ref"].(map[string]any)
+		wantRef, gotRef := decodedRef(t, ref), decodedRef(t, actual)
+		if gotRef.ID != wantRef.ID || gotRef.Branch.String() != wantRef.Branch.String() {
+			t.Fatalf("one call affected another record: got=%v want=%v", actual, ref)
 		}
 	}
 }
@@ -195,4 +202,17 @@ func assertReplayed(t *testing.T, f *fixture) {
 	if meta["replayed"] != true {
 		t.Fatalf("missing exact replay metadata: %s", f.trace[len(f.trace)-1])
 	}
+}
+
+func decodedRef(t *testing.T, value map[string]any) model.Ref {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ref model.Ref
+	if err = json.Unmarshal(raw, &ref); err != nil {
+		t.Fatal(err)
+	}
+	return ref
 }
