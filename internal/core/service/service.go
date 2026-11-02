@@ -605,7 +605,7 @@ func (s *Service) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, r
 }
 
 func workflowClaimCommit(item workflowplugin.ItemView) model.Commit {
-	commit := model.Commit{Revision: model.Natural64(0), Results: []model.OpResult{{Ref: model.RefByID(item.ID, model.Natural64(0)), Revision: item.Revision}}}
+	commit := model.Commit{Revision: model.Natural64(0), Results: []model.OpResult{{Ref: model.RefByID(item.ID, model.Natural64(0)), Revision: item.Revision}}, Warnings: []model.Warning{}}
 	if item.Claim != nil {
 		ttl := item.Claim.ExpiresAt.Sub(time.Now())
 		if ttl > 0 {

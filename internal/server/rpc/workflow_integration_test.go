@@ -16,7 +16,7 @@ import (
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
-func openWorkflowSQLiteServer(t *testing.T, path string) (*rpc.Server, *service.Service, driver.Store, driver.ActiveLease) {
+func openWorkflowSQLiteServer(t *testing.T, path string) (*rpc.Server, driver.Store, driver.ActiveLease) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := (sqlite.Driver{}).Open(ctx, driver.Config{DSN: path})
@@ -70,7 +70,7 @@ func openWorkflowSQLiteServer(t *testing.T, path string) (*rpc.Server, *service.
 		_ = store.Close()
 		t.Fatal(err)
 	}
-	return server, domain, store, lease
+	return server, store, lease
 }
 
 func workflowMeta(key, agent string) map[string]any {
@@ -80,7 +80,7 @@ func workflowMeta(key, agent string) map[string]any {
 func TestEphemeralWorkflowUsesStandardToolsAcrossRestartAndLeavesNoHistory(t *testing.T) {
 	ctx := rpc.WithPrincipal(context.Background(), model.PrincipalRef{Kind: "anonymous", ID: "anonymous"})
 	path := filepath.Join(t.TempDir(), "workflow.db")
-	server, domain, store, lease := openWorkflowSQLiteServer(t, path)
+	server, store, lease := openWorkflowSQLiteServer(t, path)
 	closeStore := func() {
 		t.Helper()
 		if lease != nil {
@@ -132,8 +132,7 @@ func TestEphemeralWorkflowUsesStandardToolsAcrossRestartAndLeavesNoHistory(t *te
 		"id": map[string]any{"id": itemID}, "body": "private workflow comment", "_meta": workflowMeta(strings.Repeat("5", 64), "owner-agent"),
 	}))
 	if _, ok := commentResponse["error"]; ok {
-		_, directErr := domain.CommentWithOutcome(ctx, model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, service.CommentRequest{ID: model.RefByID(itemID, model.Natural64(0)), Body: "private workflow comment"}, model.WriteMeta{Method: "bead.comment", Project: "workflow-project", Agent: "owner-agent", AgentLabel: "owner-agent", IdempotencyKey: strings.Repeat("c", 64)})
-		t.Fatalf("standard bead.comment response=%v; direct service error=%v", commentResponse, directErr)
+		t.Fatalf("standard bead.comment response=%v", commentResponse)
 	}
 	commented := result(t, commentResponse)
 	if len(commented["results"].([]any)) != 1 {
@@ -144,7 +143,7 @@ func TestEphemeralWorkflowUsesStandardToolsAcrossRestartAndLeavesNoHistory(t *te
 	// provider instance must see the live item and its comment from the
 	// plugin-owned checkpoint.
 	closeStore()
-	server, domain, store, lease = openWorkflowSQLiteServer(t, path)
+	server, store, lease = openWorkflowSQLiteServer(t, path)
 	reopened := result(t, call(t, server, ctx, "bead.get", paramsJSON(t, map[string]any{
 		"id": map[string]any{"id": itemID}, "_meta": workflowMeta(strings.Repeat("6", 64), "owner-agent"),
 	})))

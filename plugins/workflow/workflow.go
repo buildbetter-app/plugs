@@ -774,7 +774,7 @@ func (p *Provider) sanitizeTerminalReceipts(value persisted, runID, itemID strin
 }
 
 func workflowCommit(id string, generation uint64) model.Commit {
-	return model.Commit{Revision: model.Natural64(0), Results: []model.OpResult{{Ref: model.RefByID(id, model.Natural64(0)), Revision: model.Natural64(generation)}}}
+	return model.Commit{Revision: model.Natural64(0), Results: []model.OpResult{{Ref: model.RefByID(id, model.Natural64(0)), Revision: model.Natural64(generation)}}, Warnings: []model.Warning{}}
 }
 
 // GC removes only expired terminal receipts. It deliberately never deletes an
