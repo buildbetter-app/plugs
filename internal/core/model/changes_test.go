@@ -16,10 +16,11 @@ var operationCorpus = []string{
 	`{"kind":"attach","target":{"id":"a"},"attachment":{"kind":"blob","contentRef":"b","mediaType":"","summary":""}}`,
 	`{"kind":"delete","target":{"id":"a"}}`,
 	`{"kind":"setMeta","target":{"id":"a"},"key":"","value":null}`,
+	`{"kind":"close","target":{"key":"new"},"reason":"completed","expect":[{"ref":{"id":"a"},"revision":0},{"ref":{"key":"new"},"field":"fields.title","hash":"abc"}]}`,
 }
 
 func TestAllOperationsAgainstOpenRPC(t *testing.T) {
-	kinds := []OpKind{OpCreate, OpPatch, OpReparent, OpLink, OpUnlink, OpComment, OpAttach, OpDelete, OpSetMeta}
+	kinds := []OpKind{OpCreate, OpPatch, OpReparent, OpLink, OpUnlink, OpComment, OpAttach, OpDelete, OpSetMeta, OpClose}
 	for i, raw := range operationCorpus {
 		t.Run(string(kinds[i]), func(t *testing.T) {
 			var cs ChangeSet
@@ -45,6 +46,10 @@ func TestAllOperationsAgainstOpenRPC(t *testing.T) {
 
 func TestInvalidOperationUnions(t *testing.T) {
 	cases := []string{
+		`{"ops":[{"kind":"close"}]}`,
+		`{"ops":[{"kind":"close","target":{"id":"a"},"force":true}]}`,
+		`{"ops":[{"kind":"close","target":{"id":"a"},"status":"done"}]}`,
+		`{"ops":[{"kind":"close","target":{"id":"a"},"expect":[{"ref":{"id":"a"},"revision":1,"hash":"x"}]}]}`,
 		`{"ops":[{}]}`, `{"ops":[null]}`, `{"ops":[{"kind":"future"}]}`,
 		`{"ops":[{"kind":"delete","target":{"id":"a"},"body":"extra"}]}`,
 		`{"ops":[{"kind":"create","type":"task"}]}`,

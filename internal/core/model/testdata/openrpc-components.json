@@ -1,6 +1,6 @@
 {
   "source": "contracts/openrpc.json",
-  "sourceSHA256": "a02eb474d11c48a03be45fbfe0be55f336a36991bfc562d0a22f6804bebb7263",
+  "sourceSHA256": "a1526ff907601720282714ddefef0f2550f9ff79ae6b8360ea6dec48d7e9c457",
   "schemas": {
     "ChangeSet": {
       "type": "object",
@@ -32,6 +32,9 @@
               },
               {
                 "$ref": "#/components/schemas/SetMetaOp"
+              },
+              {
+                "$ref": "#/components/schemas/CloseOp"
               }
             ]
           },
@@ -1903,6 +1906,33 @@
         }
       ],
       "x-validation": "Index equals array position. Exactly one ordinary event for every ChangeRecord in ChangeIndex order, followed immediately by notices sorted uniquely by dependent ID. Notices retain ordinary close/cancel slot event and identical provenance, anchor the changed blocker and from/current revisions. Chain matches the changeset header. Event/resource kind, operation and slot must agree."
+    },
+    "CloseOp": {
+      "type": "object",
+      "description": "Enter the canonical close slot at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or status shortcut.",
+      "properties": {
+        "kind": {
+          "const": "close"
+        },
+        "target": {
+          "$ref": "#/components/schemas/Ref"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "expect": {
+          "type": "array",
+          "description": "Preconditions against the ordered in-request image before this close. Revision guards refuse a record written earlier in this request. ChangeSet.expect keeps its pinned-snapshot semantics.",
+          "items": {
+            "$ref": "#/components/schemas/Expect"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "target"
+      ],
+      "additionalProperties": false
     }
   }
 }

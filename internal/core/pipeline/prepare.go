@@ -55,6 +55,9 @@ type prepared struct {
 	snapshot *snapshotReader
 	writes   map[string]*pending
 	proposal port.ProposedChange
+	// Ordered images are private core input for typed close guard validation.
+	ordered []port.Change
+	closes  map[string]bool
 	// refusal is deliberately kept out of ProposedChange. It may contain a
 	// current revision token and can be released only after AuthorizeBefore has
 	// covered every disclosed expectation target.
@@ -170,6 +173,15 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	}
 	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}, allocatorCursors: map[string]uint64{}, allocatorSeen: map[string]bool{}}
 	aliases := map[string]model.Ref{}
+	for _, op := range cs.Ops {
+		if op.Kind == model.OpClose {
+			if meta.Method != "tx.apply" {
+				return nil, failure("invalid_params", "close operation requires tx.apply")
+			}
+			p.closes = map[string]bool{}
+			break
+		}
+	}
 	slotRef := ""
 	if len(cs.Ops) == 0 {
 		if meta.Method != "bead.claimNext" {
@@ -185,6 +197,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 		}
 	}
 	for _, op := range cs.Ops {
+		if op.Kind == model.OpClose {
+			value := *op.Close
+			value.Expect = append([]model.Precondition{}, value.Expect...)
+			op.Close = &value
+		}
 		var target model.Ref
 		var current *pending
 		var before json.RawMessage
@@ -246,6 +263,8 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			switch op.Kind {
 			case model.OpPatch:
 				target = op.Patch.Target
+			case model.OpClose:
+				target = op.Close.Target
 			case model.OpComment:
 				target = op.Comment.Target
 			case model.OpLink, model.OpUnlink:
@@ -316,6 +335,12 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, parent: parentID(parent)})
 			case model.OpPatch:
 				if err = applyFields(current, op.Patch.Fields, "request"); err != nil {
+					return nil, err
+				}
+			case model.OpClose:
+				op.Close.Target = target
+				before, err = w.prepareClose(ctx, p, current, op.Close, aliases)
+				if err != nil {
 					return nil, err
 				}
 			case model.OpComment:
@@ -389,7 +414,17 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 		}
 		p.refs = append(p.refs, target)
-		p.proposal.Changes = append(p.proposal.Changes, port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: target}, Op: op, Before: before})
+		change := port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: target}, Op: op, Before: before}
+		if p.closes != nil {
+			if !current.deleted {
+				change.After, err = current.body()
+				if err != nil {
+					return nil, err
+				}
+			}
+			p.ordered = append(p.ordered, change)
+		}
+		p.proposal.Changes = append(p.proposal.Changes, change)
 	}
 	// Only actual operation targets belong to the write set. Reads of link
 	// endpoints remain guarded but do not gain spurious versions or revisions.
@@ -979,7 +1014,7 @@ func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta
 		}
 	} else {
 		for _, pending := range p.writes {
-			method := gateLifecycleMethod(meta.Method, pending)
+			method := p.lifecycleMethod(pending)
 			if !isSlot(method) || isClaim(method) {
 				continue
 			}

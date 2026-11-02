@@ -261,6 +261,7 @@ internal/core/pipeline/lease_overlay.go
 internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
 internal/core/pipeline/options.go
+internal/core/pipeline/ordered_close.go
 internal/core/pipeline/pipeline_test.go
 internal/core/pipeline/post.go
 internal/core/pipeline/precondition_test.go
@@ -310,6 +311,7 @@ internal/core/service/i1_acceptance_test.go
 internal/core/service/lease.go
 internal/core/service/memories.go
 internal/core/service/ontology.go
+internal/core/service/ordered_close.go
 internal/core/service/reads.go
 internal/core/service/rpc_reads.go
 internal/core/service/service.go

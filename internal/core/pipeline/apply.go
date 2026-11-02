@@ -371,8 +371,14 @@ func replayExpectations(cs model.ChangeSet, results []model.OpResult) []model.Pr
 		}
 		aliases[op.Create.Key] = results[i].Ref
 	}
-	expects := make([]model.Precondition, 0, len(cs.Expect))
-	for _, expect := range cs.Expect {
+	all := append([]model.Precondition{}, cs.Expect...)
+	for _, op := range cs.Ops {
+		if op.Kind == model.OpClose && op.Close != nil {
+			all = append(all, op.Close.Expect...)
+		}
+	}
+	expects := make([]model.Precondition, 0, len(all))
+	for _, expect := range all {
 		canonical := expect
 		if !expect.Ref.IsID() {
 			if ref, ok := aliases[expect.Ref.Key]; ok {

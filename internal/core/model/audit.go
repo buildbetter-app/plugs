@@ -330,6 +330,9 @@ func validateOrdinaryOp(event DurableEventType, op OpKind) error {
 	if err := op.Validate(); err != nil {
 		return err
 	}
+	if op == OpClose && (event == EventBeadClosed || event == EventBeadCommented) {
+		return nil
+	}
 	expected := map[DurableEventType]OpKind{EventBeadCreated: OpCreate, EventBeadReparented: OpReparent, EventBeadLinked: OpLink, EventBeadUnlinked: OpUnlink, EventBeadCommented: OpComment, EventBeadAttached: OpAttach, EventBeadDeleted: OpDelete, EventBeadClaimed: OpPatch, EventBeadReleased: OpPatch, EventBeadClosed: OpPatch, EventBeadFailed: OpPatch, EventBeadCanceled: OpPatch, EventBeadReopened: OpPatch, EventBeadDeferred: OpPatch, EventBeadLeaseReclaimed: OpPatch}
 	if kind, ok := expected[event]; ok && op != kind {
 		return fmt.Errorf("ordinary event/operation mismatch")

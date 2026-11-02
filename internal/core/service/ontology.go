@@ -58,6 +58,23 @@ func violationsError(violations []ontology.Violation) error {
 	return &model.Error{Data: model.ErrorData{Code: violations[0].Code, Details: map[string]any{"violations": violations}}}
 }
 
+// CloseSlots is pure trusted lowering context, not a permission or guard.
+// The Writer tracks the ontology sentinel and validates ordered guards only
+// after mutators, against prefix and final images.
+func (o *Ontology) CloseSlots(project, beadType string) (string, string, bool) {
+	e := o.effective(project)
+	initial, hasInitial := e.InitialStatus(beadType)
+	target, hasTarget := e.SlotStatus(beadType, ontology.Close)
+	return initial, target, hasInitial && hasTarget
+}
+
+func operationMethod(proposal port.ProposedChange, change port.Change) string {
+	if proposal.Meta.Method == "tx.apply" && change.Op.Kind == model.OpClose {
+		return "bead.close"
+	}
+	return proposal.Meta.Method
+}
+
 func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, _ port.SnapshotReader) ([]port.Patch, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -108,7 +125,7 @@ func (o *Ontology) Normalize(ctx context.Context, proposal port.ProposedChange, 
 			if err := violationsError(violations); err != nil {
 				return nil, err
 			}
-		} else if slot, lifecycle := ontology.SlotForMethod(proposal.Meta.Method); lifecycle && !proposal.SameClaim && change.Op.Kind == model.OpPatch {
+		} else if slot, lifecycle := ontology.SlotForMethod(operationMethod(proposal, change)); lifecycle && !proposal.SameClaim && (change.Op.Kind == model.OpPatch || change.Op.Kind == model.OpClose) {
 			target, ok := e.SlotStatus(doc.Type, slot)
 			if !ok {
 				return nil, failure("invalid_params", "lifecycle slot is unavailable for this type")
@@ -256,6 +273,10 @@ func (o *Ontology) normalizeGate(proposal port.ProposedChange, resource model.Re
 }
 
 func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, reader port.SnapshotReader) error {
+	return o.validate(ctx, proposal, reader, nil)
+}
+
+func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, reader port.SnapshotReader, prefix map[string]storedBead) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -271,6 +292,11 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 	}
 	settlement := o.closeSettlement(proposal)
 	_, lifecycle := ontology.SlotForMethod(proposal.Meta.Method)
+	for _, change := range proposal.Changes {
+		if change.Op.Kind == model.OpClose {
+			lifecycle = true
+		}
+	}
 	if !lifecycle && isGateMethod(proposal.Meta.Method) {
 		// A resolved gate lowers to the close/fail slot inside Normalize. The
 		// public method remains gate.* so the service must still collect the
@@ -292,9 +318,12 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 	var graph map[string]storedBead
 	if lifecycle || hierarchyGraphNeeded(proposal) {
 		var err error
-		graph, err = scanBeads(ctx, reader)
-		if err != nil {
-			return err
+		graph = prefix
+		if graph == nil {
+			graph, err = scanBeads(ctx, reader)
+			if err != nil {
+				return err
+			}
 		}
 		// Guards evaluate the whole atomic post-image, including dependencies
 		// changed in the same changeset. The query tracks graph/blocking, so a
@@ -359,11 +388,22 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 		}
 		// The slot patch and optional reason comment share the final target
 		// post-image; neither introduces an independent status transition.
+		effectiveMethod := method
+		closeSettlement := settlement
+		if change.Op.Kind == model.OpClose {
+			if proposal.Meta.Method != "tx.apply" {
+				return failure("invalid_params", "close operation requires tx.apply")
+			}
+			effectiveMethod = "bead.close"
+			single := proposal
+			single.Changes = []port.Change{change}
+			closeSettlement = o.closeSettlement(single)
+		}
 		var violations []ontology.Violation
-		if settlement {
+		if closeSettlement {
 			violations = ontology.ValidateCloseSettlement(o.effective(doc.Project), before, &after, facts)
 		} else {
-			violations = ontology.Validate(o.effective(doc.Project), before, &after, method, facts)
+			violations = ontology.Validate(o.effective(doc.Project), before, &after, effectiveMethod, facts)
 		}
 		if err := violationsError(violations); err != nil {
 			return err
@@ -376,6 +416,18 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 // Before comes from the pipeline's guarded read; mutators cannot supply it.
 // The core still owns lease admission, CAS and final change/no-op detection.
 func (o *Ontology) closeSettlement(p port.ProposedChange) bool {
+	if p.Meta.Method == "tx.apply" && len(p.Changes) == 1 && p.Changes[0].Op.Kind == model.OpClose && p.Changes[0].Op.Close != nil {
+		c := p.Changes[0]
+		if c.Resource.Kind != "bead" || !hasDocument(c.Before) {
+			return false
+		}
+		before, err := decodeDocument(c.Before)
+		if err != nil {
+			return false
+		}
+		target, ok := o.effective(before.Project).SlotStatus(before.Type, ontology.Close)
+		return ok && state(before).Status == target
+	}
 	if p.Meta.Method != "bead.close" || len(p.Changes) < 1 || len(p.Changes) > 2 {
 		return false
 	}
