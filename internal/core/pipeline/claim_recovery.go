@@ -37,11 +37,18 @@ func (w *Writer) ApplyClaimRelease(ctx context.Context, by model.PrincipalRef, r
 	return w.applyWithOutcome(ctx, by, model.ChangeSet{Ops: ops}, meta, mode, nil)
 }
 
-func (w *Writer) checkClaimRelease(doc Document, by model.PrincipalRef, meta model.WriteMeta, mode *claimReleaseMode) error {
-	if doc.Lease == nil {
+func (w *Writer) checkClaimRelease(ctx context.Context, doc Document, by model.PrincipalRef, meta model.WriteMeta, mode *claimReleaseMode) error {
+	lease := doc.Lease
+	if overlayStore, ok := w.store.(driver.CheckpointStore); ok && lease != nil {
+		effective, err := EffectiveLease(ctx, overlayStore, doc.ID, lease)
+		if err != nil {
+			return err
+		}
+		lease = effective
+	}
+	if lease == nil {
 		return failure("lease_not_held", "bead has no active claim")
 	}
-	lease := doc.Lease
 	epoch, err := lease.Epoch.Uint64()
 	if err != nil || epoch == 0 || epoch > w.lease.Epoch() {
 		return failure("lease_not_held", "claim has an invalid storage lease epoch")

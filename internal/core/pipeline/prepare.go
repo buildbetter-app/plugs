@@ -272,13 +272,20 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				return nil, err
 			}
 			if release != nil {
-				if err = w.checkClaimRelease(current.doc, by, meta, release); err != nil {
+				if err = w.checkClaimRelease(ctx, current.doc, by, meta, release); err != nil {
 					return nil, err
 				}
-			} else if err = w.checkLease(current.doc, by, meta); err != nil {
+			} else if err = w.checkLease(ctx, current.doc, by, meta); err != nil {
 				return nil, err
 			}
-			if isClaim(meta.Method) && current.doc.Lease != nil && w.cfg.now().Before(current.doc.Lease.ExpiresAt) {
+			liveLease := current.doc.Lease
+			if overlayStore, ok := w.store.(driver.CheckpointStore); ok && liveLease != nil {
+				liveLease, err = EffectiveLease(ctx, overlayStore, current.doc.ID, liveLease)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if isClaim(meta.Method) && liveLease != nil && w.cfg.now().Before(liveLease.ExpiresAt) {
 				if len(cs.Ops) != 1 || op.Kind != model.OpPatch || len(op.Patch.Fields) != 0 {
 					return nil, failure("invalid_params", "an already-owned claim requires one empty patch")
 				}
@@ -323,7 +330,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				current.setBy["comments"] = "request"
 			case model.OpLink, model.OpUnlink:
 				kind := op.Link.LinkKind
-				if kind != "blocks" && kind != "conditional-blocks" && kind != "relates-to" {
+				if !validDependencyKind(kind) {
 					return nil, failure("invalid_params", "unsupported link kind")
 				}
 				to, e := p.resolve(op.Link.To, aliases)
@@ -339,9 +346,19 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				// The endpoint is read, not written, unless another op targets it.
 				found := -1
 				for i, link := range current.doc.Links {
-					if link.To.ID == to.ID && link.Kind == kind {
+					if link.To.ID != to.ID {
+						continue
+					}
+					if link.Kind == kind {
 						found = i
 						break
+					}
+					// Association links are independent annotations and may coexist
+					// with a workflow edge for the same endpoints. Other kinds share
+					// one dependency identity, so a type change remains a typed
+					// refusal (B07).
+					if op.Kind == model.OpLink && kind != "relates-to" && link.Kind != "relates-to" {
+						return nil, failure("invalid_params", "dependency endpoint already has a different type")
 					}
 				}
 				if op.Kind == model.OpLink && found < 0 {
@@ -904,7 +921,7 @@ func isSlot(method string) bool {
 
 func isClaim(method string) bool { return method == "bead.claim" || method == "bead.claimNext" }
 
-func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.WriteMeta) error {
+func (w *Writer) checkLease(ctx context.Context, doc Document, by model.PrincipalRef, meta model.WriteMeta) error {
 	if isGateMethod(meta.Method) && meta.Method == "gate."+meta.GateAction {
 		// Approval and resolver authority are independent of claim ownership.
 		// Normalization and authorization still validate the gate operation;
@@ -912,6 +929,13 @@ func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.Writ
 		return nil
 	}
 	lease := doc.Lease
+	if overlayStore, ok := w.store.(driver.CheckpointStore); ok && lease != nil {
+		effective, err := EffectiveLease(ctx, overlayStore, doc.ID, lease)
+		if err != nil {
+			return err
+		}
+		lease = effective
+	}
 	if lease == nil {
 		return nil
 	}
@@ -1075,8 +1099,13 @@ func (p *prepared) graph(ctx context.Context) error {
 			return nil
 		}
 		visiting[id] = true
+		if parent := docs[id].Parent; parent != nil {
+			if err := walk(parent.ID); err != nil {
+				return err
+			}
+		}
 		for _, link := range docs[id].Links {
-			if link.Kind == "blocks" || link.Kind == "conditional-blocks" {
+			if dependencyIsScheduling(link.Kind) {
 				if err := walk(link.To.ID); err != nil {
 					return err
 				}
