@@ -68,6 +68,29 @@ func TestB12BeforeRevisionIsStrict(t *testing.T) {
 	}
 }
 
+func TestB12RuntimeCompactionBoundaryDescription(t *testing.T) {
+	f := newFixture(t, "memory")
+	discovery := f.call("rpc.discover", "strict-description", map[string]any{}, "")
+	for _, raw := range discovery["methods"].([]any) {
+		method := raw.(map[string]any)
+		if method["name"] != "admin.compact" {
+			continue
+		}
+		for _, raw := range method["params"].([]any) {
+			param := raw.(map[string]any)
+			if param["name"] != "beforeRevision" {
+				continue
+			}
+			schema := param["schema"].(map[string]any)
+			if text, _ := schema["description"].(string); !strings.Contains(text, "strictly less than beforeRevision") {
+				t.Fatalf("runtime discovery lost exclusive boundary: %v", param)
+			}
+			return
+		}
+	}
+	t.Fatal("runtime discovery omitted compaction revision boundary")
+}
+
 func TestB12DeterministicSelectionBeforeRevisionAndNonAtomicCalls(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
@@ -94,7 +117,7 @@ func TestB12DeterministicSelectionBeforeRevisionAndNonAtomicCalls(t *testing.T) 
 			open := f.create("select-open", text)
 			f.clock = f.clock.Add(30 * 24 * time.Hour)
 			before := f.meta()
-			// Inclusive boundary must still exclude all rows when it precedes close.
+			// A boundary before close excludes all current rows.
 			f.call("admin.compact", "before-first", map[string]any{"beforeRevision": 1}, "compaction_unavailable")
 			f.assertSameHead(before)
 			f.assertNoReceipt("admin.compact", "before-first")
@@ -105,7 +128,7 @@ func TestB12DeterministicSelectionBeforeRevisionAndNonAtomicCalls(t *testing.T) 
 			}
 			f.assertSameHead(before)
 			f.assertNoReceipt("admin.compact", "select-preview")
-			first := f.call("admin.compact", "compact-a", map[string]any{"beforeRevision": closeA["revision"]}, "")
+			first := f.call("admin.compact", "compact-a", map[string]any{"beforeRevision": revisionAfter(t, closeA["revision"])}, "")
 			assertCommitTarget(t, first, a)
 			stable := f.meta()
 			f.call("admin.compact", "compact-b", map[string]any{}, "compaction_unavailable")
@@ -120,7 +143,7 @@ func TestB12DeterministicSelectionBeforeRevisionAndNonAtomicCalls(t *testing.T) 
 			failSecond = false
 			second := f.call("admin.compact", "compact-b", map[string]any{}, "")
 			assertCommitTarget(t, second, b)
-			third := f.call("admin.compact", "compact-c", map[string]any{"beforeRevision": closeC["revision"]}, "")
+			third := f.call("admin.compact", "compact-c", map[string]any{"beforeRevision": revisionAfter(t, closeC["revision"])}, "")
 			assertCommitTarget(t, third, c)
 			stable = f.meta()
 			f.call("admin.compact", "no-more", map[string]any{}, "compaction_unavailable")
