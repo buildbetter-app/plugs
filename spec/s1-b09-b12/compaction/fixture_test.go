@@ -98,17 +98,19 @@ func docker(args ...string) ([]byte, error) {
 }
 
 type fixture struct {
-	t       *testing.T
-	engine  string
-	dsn     string
-	store   driver.Store
-	lease   driver.ActiveLease
-	domain  *service.Service
-	server  *rpc.Server
-	clock   time.Time
-	ids     int
-	options []service.Option
-	trace   [][]byte
+	t               *testing.T
+	engine          string
+	dsn             string
+	store           driver.Store
+	lease           driver.ActiveLease
+	domain          *service.Service
+	server          *rpc.Server
+	clock           time.Time
+	ids             int
+	options         []service.Option
+	pipelineOptions []pipeline.Option
+	writer          *pipeline.Writer
+	trace           []json.RawMessage
 }
 
 func newFixture(t *testing.T, engine string, options ...service.Option) *fixture {
@@ -163,7 +165,7 @@ func (f *fixture) open() {
 	var err error
 	switch f.engine {
 	case "memory":
-		f.store, err = memory.NewWithOptions(memory.Options{Clock: func() time.Time { return f.clock }, StoreID: "b12-memory", Incarnation: "b12-memory-incarnation"})
+		f.store, err = memory.NewWithOptions(memory.Options{Clock: func() time.Time { return time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC) }, StoreID: "b12-memory", Incarnation: "b12-memory-incarnation"})
 	case "sqlite":
 		f.store, err = (sqlite.Driver{}).Open(ctx, driver.Config{DSN: f.dsn})
 	case "postgres":
@@ -178,11 +180,20 @@ func (f *fixture) open() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
+	f.bind()
+}
+
+func (f *fixture) bind() {
+	f.t.Helper()
+	ctx := context.Background()
 	o := service.NewOntology(nil)
-	w := pipeline.New(f.store, f.lease, pipeline.WithOntology(o), pipeline.WithClock(func() time.Time { return f.clock }), pipeline.WithIDGenerator(func() (string, error) {
+	optsWriter := []pipeline.Option{pipeline.WithOntology(o), pipeline.WithClock(func() time.Time { return f.clock }), pipeline.WithIDGenerator(func() (string, error) {
 		f.ids++
 		return fmt.Sprintf("b12-%04d", f.ids), nil
-	}))
+	})}
+	optsWriter = append(optsWriter, f.pipelineOptions...)
+	w := pipeline.New(f.store, f.lease, optsWriter...)
+	f.writer = w
 	opts := append([]service.Option{service.WithOntology(o), service.WithClock(func() time.Time { return f.clock })}, f.options...)
 	f.domain = service.New(f.store, f.lease, w, opts...)
 	r, err := rpc.NewRegistry()
