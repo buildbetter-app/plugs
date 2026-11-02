@@ -222,7 +222,7 @@ func TestS1B23TitleSearchAndFullTypeSummaryCount(t *testing.T) {
 }
 
 func TestS1B24UntimedDeferRequiresExplicitReopen(t *testing.T) {
-	for _, engine := range engines() {
+	for _, engine := range append(engines(), "postgres") {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
 			id, _ := f.create(t, "b24-item", "defer me")
@@ -243,7 +243,7 @@ func TestS1B24UntimedDeferRequiresExplicitReopen(t *testing.T) {
 			if len(page.Items) != 0 {
 				t.Fatalf("deferred item remained ready: %s", ready.Result)
 			}
-			// Keep the memory lease live while still proving that a positive
+			// Keep the writer lease live while still proving that a positive
 			// controlled-clock advance does not wake an untimed defer.
 			f.advance(t, 5*time.Second)
 			advanced := f.call("bead.ready", "b24-ready-after-clock", map[string]any{"limit": 100})
