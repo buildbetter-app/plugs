@@ -32,7 +32,10 @@ jobs:
         format('runs-on={0}/runner=bb-x64-16', github.run_id) ||
         'ubuntu-latest'
       }}
-    timeout-minutes: 45
+    # Keep the existing 45-minute envelope plus both 150-minute CP7 targets
+    # even if they run serially, with 15 minutes to finalize evidence. This
+    # stays within the six-hour GitHub-hosted fallback job limit.
+    timeout-minutes: 360
     permissions:
       contents: read
     env:
@@ -115,7 +118,7 @@ jobs:
           common --repo_contents_cache=
           test --nocache_test_results
           test --test_output=errors
-          test --test_timeout=900
+          test --test_timeout=900,900,900,9000
           test --test_env=PLUG_SOURCE_MODULE_ROOT=$GITHUB_WORKSPACE
           EOF
           export BAZELISK_HOME="$RUNNER_TEMP/plug-bazelisk-home"
