@@ -247,3 +247,40 @@ Historical images may use a
 subset of the head's explicit type directives; every custom historical type
 still requires an exact project/type/optional issue match. Other migration
 checks, including source-principal attribution, remain unperformed.
+
+## Native public inventory
+
+For a quiesced, disposable public native workspace, the supported `bd` executable
+can measure the inventory needed for raw readback without a fixture census:
+
+```sh
+mkdir -m 700 capture
+bd --readonly export --format beads-inventory/1 --plug-capture-public -o capture/inventory.json
+bd --readonly export --format plug-dump/1 --plug-inventory capture/inventory.json -o capture/readback.tar
+```
+
+`--plug-capture-public` explicitly declares the target disposable and quiesced
+and all unclassified source values public. Config and DB metadata policy keys
+come from the actual complete driver read set; recognized credentials remain
+secret references. The first command requires a fresh inventory destination in
+an existing private directory, writes private normalized source JSON sidecars,
+and publishes the existing `beads-inventory/1` file last. Both reads use the
+supported read-only Serializable driver scope. No database handle escapes.
+
+All 26 external families have actual normalized observations. Present YAML,
+JSON, hooks and formula paths retain file bytes and hashes; directories retain
+their bounded source entries. Missing paths are reported as observed absence
+inside the JSON evidence. Symlinks, special files, raw structured credentials,
+oversized captures and unknown schema refuse. Storage directories are located
+without reading engine contents. Public SQL measures ignore/nonlocal rules,
+working state, reachable commits, remotes and conflicts. This first producer
+requires one native hash-prefix project, a clean source, no Dolt remotes or
+conflicts, and supported source mappings. Custom ontology still requires an
+explicit operator inventory.
+
+The DB transaction does not make the filesystem atomic. External evidence is a
+capture of the resolved paths and process inputs, not a global filesystem,
+backup, source-history completeness or Plug restore certificate. Native sources
+whose ignored events or old schema images cannot prove continuity retain
+partial or unverified history. The existing complete-root producer, raw stored
+JSON/BIGINT/time values, history refusal controls and dump formats are unchanged.

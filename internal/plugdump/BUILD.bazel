@@ -8,6 +8,7 @@ go_library(
         "catalog.go",
         "map.go",
         "migration_hashes.go",
+        "native_inventory.go",
         "read.go",
         "source_history.go",
         "source_history_sql.go",
@@ -16,13 +17,14 @@ go_library(
     ],
     importpath = "github.com/steveyegge/beads/internal/plugdump",
     visibility = ["//:__subpackages__"],
-    deps = ["//internal/config"],
+    deps = ["//internal/config", "//internal/storage/issueops", "@in_gopkg_yaml_v3//:yaml_v3"],
 )
 
 go_test(
     name = "plugdump_test",
     srcs = [
         "plugdump_test.go",
+        "native_inventory_test.go",
         "source_history_sql_test.go",
         "source_history_test.go",
     ],
