@@ -113,7 +113,7 @@ func (s *Session) Run(ctx context.Context, args []string) error {
 			}
 		}
 	}
-	if s.JSON {
+	if s.JSON || cmd.Method == "agent.brief" || strings.HasPrefix(cmd.Method, "memory.") {
 		_, err := fmt.Fprintln(s.Out, string(result.JSON))
 		return err
 	}

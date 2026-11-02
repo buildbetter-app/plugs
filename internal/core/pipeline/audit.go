@@ -49,7 +49,7 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 	// that final comment as the whole transition. Same-status comments retain
 	// the legacy path, and conditional notices still require the audit source.
 	ordinaryClose := p.proposal.Meta.Method == "bead.close" && len(p.proposal.Changes) == 2 && statusChanged(p.writes[p.proposal.Changes[0].Resource.Ref.ID])
-	if len(p.changed) == 0 || (!w.cfg.auditSet && p.release == nil && !gate && !ordinaryClose) {
+	if len(p.changed) == 0 || (!w.cfg.auditSet && p.release == nil && !gate && !ordinaryClose && len(p.closes) == 0) {
 		return nil
 	}
 	coreRecovery := p.release != nil && p.release.reclaim
@@ -154,7 +154,7 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 		if !decision.After.Terminal || decision.After.Satisfied {
 			continue
 		}
-		method := gateLifecycleMethod(p.proposal.Meta.Method, pending)
+		method := p.lifecycleMethod(pending)
 		if method != "bead.close" && method != "bead.cancel" || method == "bead.close" && (decision.After.Category != "completed" || decision.After.Outcome != "success") || method == "bead.cancel" && decision.After.Category != "canceled" {
 			return failure("invalid_params", "unsatisfied terminal decision requires its trusted close or cancel slot")
 		}
@@ -251,7 +251,7 @@ func (p *prepared) events(revision model.Revision, changes []model.ChangeRecord)
 		}
 		slot := ""
 		if p.release == nil {
-			method := gateLifecycleMethod(p.proposal.Meta.Method, pending)
+			method := p.lifecycleMethod(pending)
 			if isSlot(method) {
 				slot = strings.TrimPrefix(method, "bead.")
 			}
@@ -307,7 +307,7 @@ func (p *prepared) ordinaryEvent(pending *pending, op model.OpKind) (model.Durab
 		return model.EventBeadReleased, nil
 	}
 	if statusChanged(pending) {
-		method := gateLifecycleMethod(p.proposal.Meta.Method, pending)
+		method := p.lifecycleMethod(pending)
 		if event, ok := map[string]model.DurableEventType{"bead.claim": model.EventBeadClaimed, "bead.claimNext": model.EventBeadClaimed, "bead.close": model.EventBeadClosed, "bead.fail": model.EventBeadFailed, "bead.cancel": model.EventBeadCanceled, "bead.reopen": model.EventBeadReopened, "bead.defer": model.EventBeadDeferred}[method]; ok {
 			return event, nil
 		}
@@ -321,7 +321,7 @@ func (p *prepared) ordinaryEvent(pending *pending, op model.OpKind) (model.Durab
 		}
 		return "", fmt.Errorf("unsupported memory event operation %q", op)
 	}
-	event, ok := map[model.OpKind]model.DurableEventType{model.OpCreate: model.EventBeadCreated, model.OpPatch: model.EventBeadUpdated, model.OpSetMeta: model.EventBeadUpdated, model.OpComment: model.EventBeadCommented, model.OpLink: model.EventBeadLinked, model.OpUnlink: model.EventBeadUnlinked, model.OpDelete: model.EventBeadDeleted}[op]
+	event, ok := map[model.OpKind]model.DurableEventType{model.OpCreate: model.EventBeadCreated, model.OpPatch: model.EventBeadUpdated, model.OpSetMeta: model.EventBeadUpdated, model.OpReparent: model.EventBeadReparented, model.OpComment: model.EventBeadCommented, model.OpLink: model.EventBeadLinked, model.OpUnlink: model.EventBeadUnlinked, model.OpDelete: model.EventBeadDeleted, model.OpClose: model.EventBeadCommented}[op]
 	if !ok {
 		return "", fmt.Errorf("unsupported ordinary event operation %q", op)
 	}

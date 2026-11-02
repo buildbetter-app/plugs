@@ -159,6 +159,9 @@ type RestoreImportProfile struct {
 	HistoryMode RestoreHistoryMode `json:"historyMode,omitempty"`
 	// HistoryDigest binds the exact optional verified replay payload.
 	HistoryDigest string `json:"historyDigest,omitempty"`
+	// HistoryTime binds the actual restore time before historical imported
+	// comment images are lowered and hashed. It is never a source timestamp.
+	HistoryTime string `json:"historyTime,omitempty"`
 }
 
 type RestoreImportTx interface {
@@ -175,6 +178,12 @@ func (p RestoreImportProfile) Detached() (RestoreImportProfile, error) {
 	}
 	if p.HistoryDigest != "" && !importDigest(p.HistoryDigest) {
 		return RestoreImportProfile{}, fmt.Errorf("invalid history payload digest")
+	}
+	if p.HistoryTime != "" {
+		when, err := time.Parse(time.RFC3339Nano, p.HistoryTime)
+		if err != nil || when.IsZero() || when.UTC().Format(time.RFC3339Nano) != p.HistoryTime {
+			return RestoreImportProfile{}, fmt.Errorf("invalid canonical history restore time")
+		}
 	}
 	historyMode, err := ParseRestoreHistoryMode(string(p.HistoryMode))
 	if err != nil {

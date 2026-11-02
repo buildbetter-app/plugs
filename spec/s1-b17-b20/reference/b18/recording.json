@@ -1,0 +1,113 @@
+{
+  "card": "B18",
+  "status": "RECORDED",
+  "comparisonStatus": "PASS_WITH_ADOPTED_DEVIATION",
+  "sourceCommit": "9d6fff760b7a314b476539198504d77ce0959656",
+  "sourceTree": "cde121d6e4119e454857ad1c3ca293e2791be840",
+  "referenceAsset": {
+    "path": "/tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/reference-build/reference-engine",
+    "sha256": "33cdadbe3bd7a82e2c3c40f4b5da4403d822acc00d544a321df24e277c0836a3",
+    "version": "bd version 1.3.0 (dev)",
+    "buildTag": "gms_pure_go",
+    "buildInfoSha256": "2edc35ea3a2f0d50f708bda2271742494191f3288466ba246f6a8d0502f64d50",
+    "assetValidationEvidence": "/tmp/plug-swarm/ci-local/B18-REFERENCE-CONTINUATION-f52e85b235864137be001d5dda00d441c4d4366b/asset-validation",
+    "validation": "binary metadata, exact build argv, build-info, toolchain, source commit/tree, all regular source bytes and symlink targets independently matched; the shared asset stayed read-only"
+  },
+  "selectedCases": [
+    "version versus revision identity",
+    "pinned as-of content after later writes",
+    "no-op versus changing update effects",
+    "same-store reopen"
+  ],
+  "referenceVector": {
+    "surface": "supported pinned CLI over embedded Dolt",
+    "sequence": "enable versioned history; create original; same-value update; change to second and third; list versions/history; reopen on every invocation; read original by the full first Dolt commit hash",
+    "freshStores": 2,
+    "semanticProjectionSha256": "9feb526c61d6b987368ab770eea30e603d813da3041c626027c8603b2a719a15",
+    "recorder": {
+      "path": "spec/cardb18/reference/record.py",
+      "sha256": "375c516727d1dac47c395a7b117171e638f25a1e1f7b95a1c78f61d0552f973f"
+    }
+  },
+  "runs": [
+    {
+      "path": "spec/cardb18/reference/run-a.json",
+      "workspace": "/tmp/plug-swarm/work/b18-reference-ifnewa30",
+      "artifactSha256": "ffef669733aeafa7bf2c5bf6e72d5ec5631a89c153ed5ab20c0c70e758fe8344",
+      "rawCommandsSha256": "bcffe04563c9f4312c40c2261ee57b0eec97edf89eff3b234e79e799d2879c55",
+      "projectionSha256": "9feb526c61d6b987368ab770eea30e603d813da3041c626027c8603b2a719a15",
+      "commands": 15
+    },
+    {
+      "path": "spec/cardb18/reference/run-b.json",
+      "workspace": "/tmp/plug-swarm/work/b18-reference-rztxxq7p",
+      "artifactSha256": "ad9fc171d75c08c96e7d964307932a1f2b61a003879a04359e18bfb692124669",
+      "rawCommandsSha256": "501f9c68c2872741ee079f0b4124ccab17df68e94c103c3d7ff02e8781aaa973",
+      "projectionSha256": "9feb526c61d6b987368ab770eea30e603d813da3041c626027c8603b2a719a15",
+      "commands": 15
+    }
+  ],
+  "comparison": {
+    "versionAndRevisionIdentity": {
+      "reference": "bd show publishes an issue revision while bd versions publishes distinct per-record local_revision values",
+      "plug": "record, version, and changeset share the one global committed revision",
+      "result": "ADOPTED_DEVIATION",
+      "decisions": ["P6", "P7", "P30"]
+    },
+    "asOfAfterLaterWrites": {
+      "reference": "bd show --as-of uses a full Dolt commit hash and retains original while head is third",
+      "plug": "history.query uses the driver-log revision and retains original while head is third",
+      "result": "MATCHING_STABLE_MEANING_WITH_ADOPTED_ADDRESS_DEVIATION",
+      "decisions": ["P6", "P7", "P30"]
+    },
+    "noOpAndChange": {
+      "reference": "version counts are 1 after create, 1 after the same-value update, and 3 after two changing updates",
+      "plug": "the same-value update preserves the revision and adds no version/changeset; each changing update advances once",
+      "result": "MATCH"
+    },
+    "sameStoreReopen": {
+      "reference": "15 independent CLI processes reopen one embedded-Dolt store and retain current and historical content plus three local versions",
+      "plug": "the explicit same-file SQLite close/reopen retains current and historical content plus two accepted versions for its create/no-op/change sequence",
+      "result": "MATCHING_PERSISTENCE_MEANING_NOT_DRIVER_PARITY"
+    }
+  },
+  "sourceSymbols": [
+    {"path": "internal/storage/issueops/version_history.go", "sha256": "63ffe88e5f8c70e710cc1f36a7fd39b1dafa63691304bca553ddea46aacfb7e7"},
+    {"path": "internal/storage/issueops/asof_read.go", "sha256": "e5b4376f456b34ed3dfd90b37ef4f80ce415e97f8e31723234be1c596eb352ff"},
+    {"path": "internal/storage/issueops/as_of.go", "sha256": "fdc275261773f253d607c56282dedd574237115bdfc0c767b3e546e8e249ec49"},
+    {"path": "internal/storage/issueops/version_list.go", "sha256": "5c64c58c8ac225708f45f76ded6ab126f626003499f890921cf2061cc6b5c68a"},
+    {"path": "cmd/bd/versions.go", "sha256": "883406960294b0dfb19026238d4afa570d700d0f9ec0cea9f1667599495872ef"},
+    {"path": "cmd/bd/versions_test.go", "sha256": "49022069284ca889cdfda7430dcdf8324eb5edb72ab6968af77e44e65926a590"},
+    {"path": "cmd/bd/show.go", "sha256": "cdccb0df4c22c14a50061653119f3f8a129610f0357d9e7340fe08bb19c45342"},
+    {"path": "internal/storage/leg_contract_wiring_test.go", "sha256": "0f71f6ca0335d8830d11a23df3c8fe3e7ccb92a08048df21d99eb0326a9b756a"}
+  ],
+  "historicalUnrun": {
+    "checkpoint": "f52e85b235864137be001d5dda00d441c4d4366b",
+    "recordingSha256": "6991b5bd905fb1f503a5b267742fba0bf12cab7feff7707c104d2d8c17a1d734",
+    "reportSha256": "a468ec39cb1b993ba89b9902306ea2bafb5f3c4b0fe35e495c8f210db91d4da5",
+    "attempts": [
+      {
+        "status": "UNRUN",
+        "command": "CGO_ENABLED=1 go build -o /tmp/plug-swarm/work/b18-bd ./cmd/bd",
+        "error": "fatal error: unicode/uregex.h: No such file or directory",
+        "evidencePath": "/tmp/plug-swarm/B18-reference-build-1.full",
+        "evidenceSha256": "5eb21c5a4a1aff92c4c21819492be687b77eea1d17fec433011ca447035a0d46"
+      },
+      {
+        "status": "UNRUN",
+        "command": "CGO_ENABLED=1 go build -o /tmp/plug-swarm/work/b18-bd ./cmd/bd",
+        "error": "fatal error: unicode/uregex.h: No such file or directory",
+        "evidencePath": "/tmp/plug-swarm/B18-reference-build-2.full",
+        "evidenceSha256": "5eb21c5a4a1aff92c4c21819492be687b77eea1d17fec433011ca447035a0d46"
+      }
+    ]
+  },
+  "limits": [
+    "the pinned internal issue_versions as-of API has no public wire, so no internal substitute was used",
+    "Dolt commit addressing is reference evidence, not a Plug contract or expected revision identity",
+    "historical allocator limits are not exercised",
+    "no temporal query or performance qualification",
+    "no full B18 command/card parity",
+    "no PostgreSQL or cross-driver parity"
+  ]
+}

@@ -160,6 +160,9 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 				// applies to the exact proposed change.
 				phaseStarted = time.Now()
 				err = w.authorize(preCtx, port.AuthorizeBefore, p.proposal, p.snapshot)
+				if err == nil && p.refusal != nil {
+					err = p.refusal
+				}
 				if err == nil {
 					err = w.authorize(preCtx, port.AuthorizeAfter, p.proposal, p.snapshot)
 				}
@@ -250,12 +253,15 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 		}
 		if len(p.changed) != 0 && len(w.cfg.posts) > 0 {
 			phaseStarted = time.Now()
-			warnings := w.post(ctx, p, commit)
+			warnings, postErr := w.post(ctx, p, commit)
 			postResult := ResultSuccess
 			if len(warnings) != 0 {
 				postResult = ResultWarning
 			}
 			w.observePhaseResult(PhasePost, time.Since(phaseStarted), postResult)
+			if postErr != nil {
+				return port.WriteOutcome{}, responseUnavailable(meta, commit.Revision, true)
+			}
 			phaseStarted = time.Now()
 			commit, err = w.finalizeResponse(ctx, principal, meta, hash, commit.Revision, warnings)
 			w.observePhaseSince(ctx, PhaseResponse, phaseStarted, err)
@@ -339,7 +345,7 @@ func (w *Writer) replay(ctx context.Context, reader driver.Reader, principal str
 }
 
 func (w *Writer) replayReceipt(ctx context.Context, reader driver.Reader, entry *driver.IdempotencyRecord, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (model.Commit, error) {
-	p := port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, Meta: meta, BaseRevision: *reader.Snapshot().At, Changes: []port.Change{}}
+	p := port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, Meta: meta, BaseRevision: *reader.Snapshot().At, Changes: []port.Change{}, Expect: replayExpectations(cs, entry.Commit.Results)}
 	for i, result := range entry.Commit.Results {
 		if i >= len(cs.Ops) {
 			return model.Commit{}, failure("internal_error", "stored response does not match original request")
@@ -355,6 +361,33 @@ func (w *Writer) replayReceipt(ctx context.Context, reader driver.Reader, entry 
 		return model.Commit{}, err
 	}
 	return clone(entry.Commit)
+}
+
+func replayExpectations(cs model.ChangeSet, results []model.OpResult) []model.Precondition {
+	aliases := make(map[string]model.Ref)
+	for i, op := range cs.Ops {
+		if i >= len(results) || op.Kind != model.OpCreate || op.Create == nil || op.Create.Key == "" {
+			continue
+		}
+		aliases[op.Create.Key] = results[i].Ref
+	}
+	all := append([]model.Precondition{}, cs.Expect...)
+	for _, op := range cs.Ops {
+		if op.Kind == model.OpClose && op.Close != nil {
+			all = append(all, op.Close.Expect...)
+		}
+	}
+	expects := make([]model.Precondition, 0, len(all))
+	for _, expect := range all {
+		canonical := expect
+		if !expect.Ref.IsID() {
+			if ref, ok := aliases[expect.Ref.Key]; ok {
+				canonical.Ref = ref
+			}
+		}
+		expects = append(expects, canonical)
+	}
+	return expects
 }
 
 func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (model.Commit, error) {
@@ -402,6 +435,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		allocatorKeys = append(allocatorKeys, key)
 		allocatorPrefixes[pending.allocatorPrefix] = true
 	}
+	if p.hierarchyDelta != nil {
+		allocatorKeys = append(allocatorKeys, p.hierarchyDelta.locks...)
+	}
 	locks, err := p.snapshot.locks(writes, sentinels, allocatorKeys...)
 	if err != nil {
 		return model.Commit{}, err
@@ -425,6 +461,22 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	head, err := tx.Head(ctx)
 	if err != nil {
 		return model.Commit{}, err
+	}
+	if len(p.checkpointReads) != 0 {
+		guard, ok := tx.(driver.CheckpointGuardTx)
+		if !ok {
+			return model.Commit{}, driver.ErrUnsupported
+		}
+		keys := make([]string, 0, len(p.checkpointReads))
+		for key := range p.checkpointReads {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if err := guard.ExpectCheckpoint(ctx, key, p.checkpointReads[key]); err != nil {
+				return model.Commit{}, err
+			}
+		}
 	}
 	// Two callers may prepare the same random key concurrently. Recheck after
 	// serialization, before staging anything, and replay outside the transaction.
@@ -511,6 +563,11 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			return model.Commit{}, err
 		}
 	}
+	if p.hierarchyDelta != nil && (len(p.hierarchyDelta.remove) != 0 || len(p.hierarchyDelta.add) != 0) {
+		if err := tx.PutDerived(ctx, driver.DerivedAncestorClosure, p.hierarchyDelta.remove, p.hierarchyDelta.add); err != nil {
+			return model.Commit{}, err
+		}
+	}
 	changes := p.changeRecords()
 	events, chain, err := p.events(revision, changes)
 	if err != nil {
@@ -521,6 +578,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	}
 	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(p.changed) != 0 && len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
 	if err != nil {
+		if errors.Is(err, driver.ErrCheckpointConflict) {
+			return model.Commit{}, errStale
+		}
 		return model.Commit{}, err
 	}
 	if entry.Revision.String() != revision.String() {
@@ -554,11 +614,21 @@ func (p *prepared) changeRecords() []model.ChangeRecord {
 		}
 		if pending.deleted {
 			kind = model.OpDelete
+		} else if kind != model.OpCreate && pending.kind != "memory" && len(pending.before) != 0 {
+			before, err := DecodeDocument(pending.before)
+			if err == nil && parentID(before.Parent) != parentID(pending.doc.Parent) {
+				kind = model.OpReparent
+			}
 		}
-		// A slot patch plus its optional reason comment is one transition.
-		// Keep the changed blocker anchored to the patch, not the comment.
-		if p.audit != nil && isSlot(p.proposal.Meta.Method) && statusChanged(pending) {
-			kind = model.OpPatch
+		// Keep a real typed close transition anchored to its lifecycle arm,
+		// including when another operation reparents the same stored target.
+		// statusChanged excludes creates, deletes and same-slot settlements.
+		if p.audit != nil && statusChanged(pending) {
+			if p.closes[id] {
+				kind = model.OpClose
+			} else if isSlot(p.proposal.Meta.Method) {
+				kind = model.OpPatch
+			}
 		}
 		changes = append(changes, model.ChangeRecord{Ref: pending.ref, Op: kind, FromRevision: pending.revision, ChangedPaths: paths})
 	}

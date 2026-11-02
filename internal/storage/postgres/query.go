@@ -158,21 +158,25 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	// Reuse the reader's call-local batch reconstruction in the same key
+	// order. Per-key calls repeat SQL for every row on every query page;
+	// get already preserves historical content, tombstones and staged writes.
+	ordered := make([]driver.Ref, len(keys))
+	for i, key := range keys {
+		ordered[i] = refs[key]
+	}
+	values, err := r.get(ctx, ordered)
+	if err != nil {
+		return empty, err
+	}
 	items := make([]driver.Record, 0)
-	for _, key := range keys {
-		values, err := r.get(ctx, []driver.Ref{refs[key]})
-		if err != nil {
-			return empty, err
-		}
-		if len(values) == 0 {
-			continue
-		}
-		match, err := matches(values[0], q.Filter)
+	for _, value := range values {
+		match, err := matches(value, q.Filter)
 		if err != nil {
 			return empty, err
 		}
 		if match {
-			items = append(items, values[0])
+			items = append(items, value)
 		}
 	}
 	if start > uint64(len(items)) {

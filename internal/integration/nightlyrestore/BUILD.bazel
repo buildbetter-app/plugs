@@ -6,10 +6,14 @@ go_test(
     srcs = [
         "engine_test.go",
         "fixture_test.go",
+        "history_diff_test.go",
         "restore_diff_test.go",
     ],
     args = ["-test.v"],
-    data = ["//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar"],
+    data = [
+        "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
+        "//internal/integration/offlinehistory:lexicon_files",
+    ],
     tags = ["local", "requires-network"],
     deps = [
         "//internal/core/dumpformat",

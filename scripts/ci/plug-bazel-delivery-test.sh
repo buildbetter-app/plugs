@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 python3 - "$repo_root" <<'PY'
 import json
+import hashlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -26,8 +27,10 @@ with tempfile.TemporaryDirectory(prefix="plug-bazel-delivery-test.") as temporar
     (repo / "scripts/ci").mkdir(parents=True)
     for name in ("plug-bazel-delivery.py", "plug-bazel-targets.sh"):
         shutil.copyfile(source / "scripts/ci" / name, repo / "scripts/ci" / name)
-    (repo / "pkg").mkdir()
+    (repo / "pkg/cmd/nested").mkdir(parents=True)
     (repo / "pkg/file.go").write_text("package pkg\n")
+    (repo / "pkg/cmd/nested/main.go").write_text("package main\nfunc main() {}\n")
+    (repo / "pkg/BUILD.bazel").write_text('go_library(name="pkg", srcs=["file.go"])\ngo_binary(name="nested", srcs=["cmd/nested/main.go"])\n')
     (repo / "MODULE.bazel.lock").write_text("{}\n")
     (repo / ".bazelversion").write_text("9.3.0\n")
     git("add", ".")
@@ -50,6 +53,7 @@ root = Path(__file__).parent
 config = json.loads((root / "control.json").read_text())
 args = sys.argv[1:]
 assert not any(k in os.environ for k in ("GH_TOKEN", "DATABASE_URL", "ACTIONS_RUNTIME_TOKEN"))
+assert "PLUG_PUBLIC_BEADS_EXTRA" not in os.environ
 with (root / "calls.jsonl").open("a") as out:
     out.write(json.dumps(args) + "\n")
 # Bazel accepts the standalone launcher --version form only before startup
@@ -57,6 +61,11 @@ with (root / "calls.jsonl").open("a") as out:
 assert "--version" not in args
 command = next(x for x in args if not x.startswith("--"))
 execution = root / "execution"
+cp7 = ("//internal/integration/cp7latency:cp7_correctness_test",
+       "//internal/integration/cp7latency:cp7_latency_sqlite_test",
+       "//internal/integration/cp7latency:cp7_latency_postgres_test") if config.get("cp7") else ()
+public_target = ("//tools/roundtrip:public_beads_runtime_test",) if config.get("public_runtime") else ()
+test_labels = ("//pkg:pkg_test", "//consumer:consumer_test", "//libraryconsumer:library_test", "//tools/lexicon:lexicon_gate", *cp7, *public_target)
 if command == "version":
     assert "--gnu_format" in args
     if not config.get("direct_bazel"):
@@ -71,19 +80,32 @@ elif command == "query":
         print("query failed", file=sys.stderr)
         sys.exit(config["query_exit"])
     expression = args[args.index("query") + 1]
-    if '.*_library rule' in expression:
+    if expression == 'kind("source file", deps(//...))':
+        print("//pkg:file.go\n//pkg:cmd/nested/main.go")
+    elif '.*_library rule' in expression:
+        # A directory without a BUILD is not a Bazel package. Reproduce the
+        # real owning-libraries failure if the selector invents one.
+        assert expression == 'kind(".*_library rule", set(//pkg:all))', expression
         print("//pkg:pkg")
     elif 'set(//pkg:pkg)' in expression:
         print("//libraryconsumer:library_test")
     elif 'rdeps(' in expression:
         print("//consumer:consumer_test")
     elif 'tests(set(' in expression:
-        print("\n".join(("//pkg:pkg_test", "//consumer:consumer_test", "//libraryconsumer:library_test", "//tools/lexicon:lexicon_gate")))
+        print("\n".join(test_labels))
+    elif expression == 'kind(".*_test rule", //...)':
+        print("\n".join(("//pkg:pkg_test", "//consumer:consumer_test", *cp7)))
     else:
         print("//pkg:pkg_test")
 elif command == "test":
     assert "--test_env=GO_TEST_WRAP_TESTV=1" in args
-    labels = ("//pkg:pkg_test", "//consumer:consumer_test", "//libraryconsumer:library_test", "//tools/lexicon:lexicon_gate")
+    assert [arg for arg in args if arg.startswith("--test_timeout=")] == ["--test_timeout=900,900,900,9000"], args
+    assert not any(arg.startswith(("--test_tag_filters", "--test_size_filters", "--test_timeout_filters", "--test_filter", "--build_tag_filters")) for arg in args), args
+    if cp7:
+        assert set(cp7).issubset(args), args
+    public_args = [arg for arg in args if arg.startswith("--test_env=PLUG_PUBLIC_BEADS_")]
+    assert public_args == config.get("public_env", []), (public_args, config.get("public_env", []))
+    labels = test_labels
     events = [{"id": {"configuration": {"id": "fixture"}}, "configuration": {"cpu": "k8", "platformName": "host"}}]
     for i, label in enumerate(labels):
         logs = execution / "bazel-out/k8-fastbuild/testlogs" / str(i)
@@ -121,7 +143,8 @@ else:
     fake.chmod(0o755)
     # Marker values are fake and must never reach a child process or artifacts.
     env.update(BAZEL_BIN=str(fake), GH_TOKEN="fixture-secret-marker",
-               DATABASE_URL="fixture-dsn-marker", ACTIONS_RUNTIME_TOKEN="fixture-capability-marker")
+               DATABASE_URL="fixture-dsn-marker", ACTIONS_RUNTIME_TOKEN="fixture-capability-marker",
+               PLUG_PUBLIC_BEADS_EXTRA="fixture-extra-marker")
     collector = repo / "scripts/ci/plug-bazel-delivery.py"
 
     def phase(name, out, expected=0, *extra):
@@ -129,27 +152,67 @@ else:
                                 cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         assert result.returncode == expected, (name, result.returncode, expected, result.stdout.decode())
 
-    def exercise(name, config, run_exit=0, finish_exit=0, corrupt_state=False):
+    public_descriptor = "41398730774:13120521766:66de7c070d365bbd7fc2bd39ed822e5bf72c21efabe0add9a5e26d07bf170a62"
+    public_names = ("PLUG_PUBLIC_BEADS_BINARY", "PLUG_PUBLIC_BEADS_SHA256",
+                    "PLUG_PUBLIC_BEADS_BUILD_RUN", "PLUG_PUBLIC_BEADS_MANIFEST")
+
+    def exercise(name, config, run_exit=0, finish_exit=0, corrupt_state=False, public_mode=None):
         out = fixture / name
+        original_public = {key: env.get(key) for key in public_names}
         (fixture / "control.json").write_text(json.dumps(config))
         (fixture / "calls.jsonl").write_text("")
-        phase("begin", out, 0, "--base", base, "--head", head)
-        phase("run", out, run_exit)
-        if corrupt_state:
-            (out / "state.json").write_text("broken state\n")
-        phase("finish", out, finish_exit)
-        phase("verify", out)
-        result = json.loads((out / "result.json").read_text())
-        assert result["exit"] == finish_exit
-        assert result["result"] == ("PASS" if finish_exit == 0 else "FAIL")
-        assert result["shutdown"]["exit"] == config.get("shutdown_exit", 0)
-        assert result["post"]["head"] == head and result["post"]["clean"]
-        assert any("shutdown" in json.loads(line) for line in (fixture / "calls.jsonl").read_text().splitlines())
-        for path in out.rglob("*"):
-            if path.is_file():
-                assert not any(marker in path.read_bytes() for marker in
-                               (b"fixture-secret-marker", b"fixture-dsn-marker", b"fixture-capability-marker"))
-        return out, result
+        try:
+            phase("begin", out, 0, "--base", base, "--head", head)
+            phase("selection", out, config.get("selection_exit", config.get("query_exit", 0)))
+            if public_mode in {"valid", "malformed"}:
+                runtime = fixture / (name + "-runtime")
+                (runtime / "bin").mkdir(parents=True)
+                binary = runtime / "bin/bd-export"
+                binary.write_bytes(b"fixture public exporter\n")
+                binary.chmod(0o755)
+                manifest = runtime / "manifest.json"
+                manifest.write_text("{}\n")
+                values = {
+                    "PLUG_PUBLIC_BEADS_BINARY": str(binary),
+                    "PLUG_PUBLIC_BEADS_SHA256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                    "PLUG_PUBLIC_BEADS_BUILD_RUN": "41398730774",
+                    "PLUG_PUBLIC_BEADS_MANIFEST": str(manifest),
+                }
+                (out / "public-bundle.json").write_text(json.dumps({
+                    "status": "PASS", "descriptor": public_descriptor,
+                    "manifest_sha256": public_descriptor.rsplit(":", 1)[1],
+                    "environment": values,
+                }) + "\n")
+                env.update(values)
+                config["public_env"] = [f"--test_env={key}={values[key]}" for key in public_names]
+                if public_mode == "malformed":
+                    env["PLUG_PUBLIC_BEADS_SHA256"] = "0" * 64
+            elif public_mode == "stray":
+                env.update({key: "fixture-stray-value" for key in public_names})
+            (fixture / "control.json").write_text(json.dumps(config))
+            phase("run", out, run_exit)
+            if corrupt_state:
+                (out / "state.json").write_text("broken state\n")
+            phase("finish", out, finish_exit)
+            phase("verify", out)
+            result = json.loads((out / "result.json").read_text())
+            assert result["exit"] == finish_exit
+            assert result["result"] == ("PASS" if finish_exit == 0 else "FAIL")
+            assert result["shutdown"]["exit"] == config.get("shutdown_exit", 0)
+            assert result["post"]["head"] == head and result["post"]["clean"]
+            assert any("shutdown" in json.loads(line) for line in (fixture / "calls.jsonl").read_text().splitlines())
+            for path in out.rglob("*"):
+                if path.is_file():
+                    assert not any(marker in path.read_bytes() for marker in
+                                   (b"fixture-secret-marker", b"fixture-dsn-marker", b"fixture-capability-marker",
+                                    b"fixture-extra-marker"))
+            return out, result
+        finally:
+            for key, value in original_public.items():
+                if value is None:
+                    env.pop(key, None)
+                else:
+                    env[key] = value
 
     out, result = exercise("pass", {})
     assert result["source_unchanged"] and result["pre"]["tree"] == result["post"]["tree"]
@@ -162,12 +225,12 @@ else:
     assert len(list((out / "tests").glob("*/test.xml"))) == 4
     args = json.loads((out / "commands/tests/argv.json").read_text())
     assert all(flag in args for flag in ("--nocache_test_results", "--lockfile_mode=error",
-               "--jobs=2", "--test_timeout=900", "--local_resources=memory=8192", "--test_env=GO_TEST_WRAP_TESTV=1"))
+               "--jobs=2", "--test_timeout=900,900,900,9000", "--local_resources=memory=8192", "--test_env=GO_TEST_WRAP_TESTV=1"))
     (out / "tests.json").write_text("tampered")
     phase("verify", out, 86)
 
     exercise("direct-bazel", {"direct_bazel": True})
-    out, result = exercise("query-failure", {"query_exit": 37}, 37, 37)
+    out, result = exercise("query-failure", {"query_exit": 37, "selection_exit": 37}, 37, 37)
     assert result["first_failure"]["stage"] == "target-resolution"
     assert list((out / "selection/queries").glob("*/exit.txt"))[0].read_text().strip() == "37"
     assert json.loads((out / "tests.json").read_text())["state"] == "not-run"
@@ -192,6 +255,7 @@ else:
     (fixture / "control.json").write_text("{}")
     out = fixture / "seal-failure"
     phase("begin", out, 0, "--base", base, "--head", head)
+    phase("selection", out)
     phase("run", out)
     (out / "bad-link").symlink_to(fixture / "control.json")
     phase("finish", out, 86)
@@ -210,6 +274,7 @@ else:
     # though the immutable commit SHA itself did not change.
     out = fixture / "source-mutation"
     phase("begin", out, 0, "--base", base, "--head", head)
+    phase("selection", out)
     phase("run", out)
     original = (repo / "pkg/file.go").read_text()
     (repo / "pkg/file.go").write_text(original + "// unexpected mutation\n")
@@ -222,5 +287,45 @@ else:
     phase("begin", repo / "inside-source", 2)
     assert not (repo / "inside-source").exists()
 
-print("plug-ci-delivery: bundle, accounting, secrets exclusion, tamper/escape, query/test/collector/shutdown first-failure and cleanup fixtures passed")
+    # Keep the package-only delivery/failure cases above and separately cover
+    # the graph-plus-nested-source path that failed in the hosted workflow.
+    base = head
+    (repo / "pkg/cmd/nested/main.go").write_text("package main\nfunc main() {}\n// changed\n")
+    with (repo / "pkg/BUILD.bazel").open("a") as out:
+        out.write("# graph change with nested source\n")
+    git("add", ".")
+    git("commit", "-qm", "nested-source-graph-change")
+    head = git("rev-parse", "HEAD")
+    out, result = exercise("nested-graph-pass", {})
+    assert (out / "selection/packages.txt").read_text().splitlines() == ["//pkg"]
+    assert (out / "selection/full-graph.txt").read_text().strip() == "1"
+    assert (out / "selection/seeds.txt").read_text().splitlines() == ["//pkg:cmd/nested/main.go"]
+
+    # Model the new harness BUILD change through the real full-graph resolver.
+    # The ordinary delivery command must retain both eternal latency targets
+    # and default-class correctness without manual/size/tag/timeout filters.
+    out, result = exercise("cp7-graph-pass", {"cp7": True})
+    cp7 = {"//internal/integration/cp7latency:" + name for name in
+           ("cp7_correctness_test", "cp7_latency_sqlite_test", "cp7_latency_postgres_test")}
+    selected = set((out / "selection/command-targets.txt").read_text().splitlines())
+    assert selected == {"//:lexicon_gate", "//pkg:pkg_test", "//consumer:consumer_test", "//libraryconsumer:library_test", *cp7}
+    assert set((out / "selection/resolved-test-targets.txt").read_text().splitlines()) == {
+        "//tools/lexicon:lexicon_gate", "//pkg:pkg_test", "//consumer:consumer_test", "//libraryconsumer:library_test", *cp7}
+    tests = json.loads((out / "tests.json").read_text())
+    assert not tests["unreported_tests"] and tests["accounting"]["executed_attempts"] == 6
+    assert cp7.issubset({attempt["identity"]["label"] for attempt in tests["attempts"] if not attempt["cached"]})
+
+    public_config = {"public_runtime": True}
+    out, result = exercise("public-runtime", public_config, public_mode="valid")
+    public_args = [arg for arg in json.loads((out / "commands/tests/argv.json").read_text())
+                   if arg.startswith("--test_env=PLUG_PUBLIC_BEADS_")]
+    assert public_args == public_config["public_env"]
+    out, result = exercise("public-missing", {"public_runtime": True}, 86, 86, public_mode="missing")
+    assert result["first_failure"]["stage"] == "collector-run"
+    out, result = exercise("public-malformed", {"public_runtime": True}, 86, 86, public_mode="malformed")
+    assert result["first_failure"]["stage"] == "collector-run"
+    out, result = exercise("public-stray", {}, 86, 86, public_mode="stray")
+    assert result["first_failure"]["stage"] == "collector-run"
+
+print("plug-ci-delivery: bundle, accounting, secrets exclusion, tamper/escape, query/test/collector/shutdown first-failure and cleanup fixtures and unfiltered CP7 timeout-map delivery passed")
 PY

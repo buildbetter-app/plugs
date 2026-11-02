@@ -85,7 +85,7 @@ func (s *Store) fence(ctx context.Context, q queryer, l *activeLease) error {
 		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: r.epoch}
 	default:
 	}
-	if l.store != s || r.epoch != l.epoch || r.token != l.token || time.Now().UnixNano() >= r.expires {
+	if l.store != s || r.epoch != l.epoch || r.token != l.token || s.now().UnixNano() >= r.expires {
 		l.signalLost()
 		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: r.epoch}
 	}
@@ -126,15 +126,15 @@ func (s *Store) Lease(ctx context.Context, holder string, ttl time.Duration) (dr
 			if err != nil {
 				return err
 			}
-			now := time.Now()
+			now, deadline := s.leaseTimes(ttl)
 			if r.token != "" && now.UnixNano() < r.expires {
 				return nil
 			}
 			if r.epoch == math.MaxUint64 {
 				return fmt.Errorf("sqlite: lease epoch exhausted")
 			}
-			l := &activeLease{store: s, epoch: r.epoch + 1, token: randomID(), ttl: ttl, deadline: now.Add(ttl), lost: make(chan struct{})}
-			_, err = c.ExecContext(ctx, `UPDATE active_lease SET epoch=?,token=?,holder=?,expires=? WHERE singleton=1`, revKey(l.epoch), l.token, holder, l.deadline.UnixNano())
+			l := &activeLease{store: s, epoch: r.epoch + 1, token: randomID(), ttl: ttl, deadline: deadline, lost: make(chan struct{})}
+			_, err = c.ExecContext(ctx, `UPDATE active_lease SET epoch=?,token=?,holder=?,expires=? WHERE singleton=1`, revKey(l.epoch), l.token, holder, now.Add(ttl).UnixNano())
 			if err == nil {
 				acquired = l
 			}
@@ -175,8 +175,8 @@ func (l *activeLease) Renew(ctx context.Context) error {
 	// Do not hold l.mu while fencing: the fence may signal Lost.
 	updated := false
 	err := l.store.immediate(ctx, l, func(c *sql.Conn) error {
-		deadline := time.Now().Add(l.ttl)
-		_, err := c.ExecContext(ctx, `UPDATE active_lease SET expires=? WHERE singleton=1`, deadline.UnixNano())
+		now, deadline := l.store.leaseTimes(l.ttl)
+		_, err := c.ExecContext(ctx, `UPDATE active_lease SET expires=? WHERE singleton=1`, now.Add(l.ttl).UnixNano())
 		if err != nil {
 			return err
 		}

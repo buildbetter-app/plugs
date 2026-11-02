@@ -10,6 +10,7 @@ go_library(
 go_test(
     name = "viewpermissions_test",
     srcs = ["viewpermissions_test.go"],
+    tags = ["exclusive"],
     deps = [
         "//internal/core/authz",
         "//internal/core/model",

@@ -162,27 +162,90 @@ func state(doc pipeline.Document) ontology.BeadState {
 }
 
 func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
+	terminal := func(target storedBead) bool {
+		effective := o.effective(target.doc.Project)
+		return effective.SatisfiesBlocks(state(target.doc).Status)
+	}
 	for _, link := range doc.Links {
 		switch link.Kind {
-		case "relates-to":
+		case "relates-to", "related", "discovered-from", "replies-to", "duplicates", "supersedes", "authored-by", "assigned-to", "approved-by", "attests", "tracks", "until", "caused-by", "validates", "delegated-from":
 			continue
-		case "blocks", "conditional-blocks":
+		case "blocks", "conditional-blocks", "waits-for":
 			blocker, exists := graph[link.To.ID]
 			if !exists || !link.To.IsID() || !link.To.Branch.IsZero() {
 				return false, nil
 			}
 			s := state(blocker.doc)
 			effective := o.effective(s.Project)
-			satisfied := effective.SatisfiesBlocks(s.Status)
+			satisfied := terminal(blocker)
 			if link.Kind == "conditional-blocks" {
 				satisfied = effective.SatisfiesConditionalBlocks(s.Status)
+			}
+			if link.Kind == "waits-for" && !satisfied {
+				// A waits-for edge is a fanout gate. With no gate metadata on
+				// the compact Plug link envelope, an open target is satisfied
+				// once all of its explicit or linked children are terminal.
+				satisfied = o.noOpenChildren(blocker.doc, graph)
 			}
 			if !satisfied {
 				return false, nil
 			}
 		default:
-			return false, failure("invalid_params", "dependency kind is not supported by the local slice")
+			// Valid custom dependency kinds are retained but have no core
+			// scheduling or blocker effect.
+			continue
 		}
+	}
+	return true, nil
+}
+
+// readyDependencies extends the close-guard blocker predicate with the
+// scheduling-only hierarchy edges. Parent-child and an explicit parent affect
+// ready membership, but they are not blockers for closing the child itself.
+func (o *Ontology) readyDependencies(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
+	ready, err := o.noOpenBlockers(doc, graph)
+	if err != nil || !ready {
+		return ready, err
+	}
+	terminal := func(target storedBead) bool {
+		effective := o.effective(target.doc.Project)
+		return effective.SatisfiesBlocks(state(target.doc).Status)
+	}
+	for _, link := range doc.Links {
+		if link.Kind != "parent-child" {
+			continue
+		}
+		target, exists := graph[link.To.ID]
+		if !exists || !link.To.IsID() || !link.To.Branch.IsZero() || !terminal(target) {
+			return false, nil
+		}
+	}
+	return o.readyAncestors(doc, graph)
+}
+
+// readyAncestors applies canonical parent scheduling to ready and fresh claims.
+// It deliberately leaves close and settlement's direct blocker guard unchanged.
+func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
+	seen := map[string]bool{doc.ID: true}
+	for doc.Parent != nil {
+		parent := doc.Parent
+		row, exists := graph[parent.ID]
+		if !exists || !parent.IsID() || !parent.Branch.IsZero() || seen[parent.ID] {
+			return false, nil
+		}
+		// An open parent alone is not a blocker. Deferred/backlog ancestors
+		// and their live blockers suppress the entire subtree, using each
+		// ancestor's own project ontology from the same complete snapshot.
+		category, known := o.effective(row.doc.Project).Category(state(row.doc).Status)
+		if !known || category == ontology.Backlog {
+			return false, nil
+		}
+		unblocked, err := o.noOpenBlockers(row.doc, graph)
+		if err != nil || !unblocked {
+			return unblocked, err
+		}
+		seen[parent.ID] = true
+		doc = row.doc
 	}
 	return true, nil
 }

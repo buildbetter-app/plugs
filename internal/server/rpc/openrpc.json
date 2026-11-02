@@ -124,7 +124,7 @@
       },
       "Filter": {
         "type": "object",
-        "description": "The one filter shape shared by list, event, and view methods.",
+        "description": "The shared filter envelope is unchanged. The opt-in epic-progress view uses exactly query=parent=\u003cbare branch-zero bead ID\u003e with no additional query clauses, resources, types or events; it selects canonical direct children only, across their own projects.",
         "properties": {
           "query": {
             "type": "string",
@@ -501,6 +501,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/SetMetaOp"
+                },
+                {
+                  "$ref": "#/components/schemas/CloseOp"
                 }
               ]
             },
@@ -1078,7 +1081,8 @@
         "required": [
           "filter"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "The trusted epic-progress capability admits groupBy=[\"epic-progress\"], explicitly present fields=[], and exactly filter.query=\"parent=\u003cbare bead ID\u003e\". No sort or additional filters are admitted. budgetTokens must be absent or zero: this complete count is not token-budgeted or paged. The ordinary authorized input cap is 20,000, never the 100,000 type-summary exception; at most 100 groups including total are returned. Refusals return no partial counts."
       },
       "View": {
         "type": "object",
@@ -1153,7 +1157,8 @@
               "reason",
               "continueWith"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "An output bound. Epic progress reports hidden direct children only on the total group: count is the exact hidden remainder and reason is authorization. Render the literal “N more you can’t see”; never infer hidden statuses. Its required continueWith refreshes the same authorized request without cursor/asOf and cannot reveal or page hidden children. Ordinary output_budget elision retains its signed continuation semantics."
           }
         },
         "required": [
@@ -1182,10 +1187,17 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ViewGroup"
-            }
+            },
+            "description": "Existing grouped output. Epic progress returns key=total with the visible direct-child count and status:\u003ccanonical status ID\u003e groups counting visible children only; every items array is empty. Keys identify statuses in the ontology read from the same asOf content snapshot; they do not infer labels, readiness or completion policy. Only total may carry authorization elision. MaxGroups=100 includes total; incomplete or over-limit results refuse without truncation."
           },
           "projection": {
             "$ref": "#/components/schemas/ProjectionStatus"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20000,
+            "description": "Exact authorized ordinary predicate total, present including zero only for countOnly=true. Items is empty; groups, elisions and nextCursor are absent. The ordinary 20,000 authorized-candidate cap applies; overflow refuses scope_too_large without a partial count."
           }
         },
         "required": [
@@ -3741,6 +3753,33 @@
         ],
         "additionalProperties": false,
         "description": "Transaction-local prepared import profile. The trusted host creates it after admission; ordinary JSON-RPC callers cannot submit or forge it."
+      },
+      "CloseOp": {
+        "type": "object",
+        "description": "Enter the canonical close slot at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or status shortcut.",
+        "properties": {
+          "kind": {
+            "const": "close"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "expect": {
+            "type": "array",
+            "description": "Preconditions against the ordered in-request image before this close. Revision guards refuse a record written earlier in this request. ChangeSet.expect keeps its pinned-snapshot semantics.",
+            "items": {
+              "$ref": "#/components/schemas/Expect"
+            }
+          }
+        },
+        "required": [
+          "kind",
+          "target"
+        ],
+        "additionalProperties": false
       }
     },
     "errors": {

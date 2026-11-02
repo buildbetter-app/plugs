@@ -1,0 +1,4 @@
+exports_files(
+    ["plug-beads-bazel.yml"],
+    visibility = ["//.github/scripts:__pkg__"],
+)

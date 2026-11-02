@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -80,12 +81,30 @@ func invoke[T any](ctx context.Context, timeout time.Duration, fn func(context.C
 	}
 }
 
+// invokeTimedPost keeps the host-owned queue/execution budget while retaining
+// the same panic boundary as the legacy callback path. A timed adapter is still
+// an untrusted post subscriber: a panic is a post failure, not a process exit.
+func invokeTimedPost(ctx context.Context, timeout time.Duration, fn func(context.Context, time.Duration) error) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = fmt.Errorf("subscriber panicked")
+		}
+	}()
+	return fn(ctx, timeout)
+}
+
 func (w *Writer) pre(ctx context.Context, p *prepared) error {
-	if w.cfg.ontology == nil {
-		return failure("invalid_params", "pipeline requires an ontology hook for bead writes")
-	}
 	if err := w.authorize(ctx, port.AuthorizeBefore, p.proposal, p.snapshot); err != nil {
 		return err
+	}
+	// A stale expectation can carry a current revision token. Release it only
+	// after the pre-image visibility decision, before any callback or ontology
+	// code can observe the proposed write.
+	if p.refusal != nil {
+		return p.refusal
+	}
+	if w.cfg.ontology == nil {
+		return failure("invalid_params", "pipeline requires an ontology hook for bead writes")
 	}
 	for _, binding := range w.cfg.mutators {
 		proposal, err := clone(p.proposal)
@@ -139,7 +158,19 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 	if p.release != nil {
 		proposal.Meta.Method = "bead.reopen"
 	}
-	if err := w.cfg.ontology.Validate(ctx, proposal, p.snapshot); err != nil {
+	if p.closes != nil {
+		ordered, ok := w.cfg.ontology.(orderedCloseOntology)
+		if !ok {
+			return failure("invalid_params", "ontology does not support ordered close validation")
+		}
+		images, err := clone(p.ordered)
+		if err != nil {
+			return err
+		}
+		if err := ordered.ValidateOrdered(ctx, images, proposal, p.snapshot); err != nil {
+			return err
+		}
+	} else if err := w.cfg.ontology.Validate(ctx, proposal, p.snapshot); err != nil {
 		return err
 	}
 	if err := w.authorize(ctx, port.AuthorizeAfter, p.proposal, p.snapshot); err != nil {
@@ -212,9 +243,9 @@ func (w *Writer) authorize(ctx context.Context, stage port.AuthorizationStage, p
 	return err
 }
 
-func (w *Writer) post(ctx context.Context, p *prepared, commit model.Commit) []model.Warning {
+func (w *Writer) post(ctx context.Context, p *prepared, commit model.Commit) ([]model.Warning, error) {
 	if len(w.cfg.posts) == 0 {
-		return nil
+		return nil, nil
 	}
 	// The caller may disconnect immediately after commit; committed callbacks
 	// still receive their bounded window and read precisely the commit revision.
@@ -243,7 +274,9 @@ func (w *Writer) post(ctx context.Context, p *prepared, commit model.Commit) []m
 			snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}, bounded: true}
 			var err error
 			if timed, ok := binding.Subscriber.(port.TimedPostSubscriber); ok {
-				err = timed.AfterWithTimeout(ctx, 500*time.Millisecond, change, snapshot)
+				err = invokeTimedPost(ctx, 500*time.Millisecond, func(call context.Context, timeout time.Duration) error {
+					return timed.AfterWithTimeout(call, timeout, change, snapshot)
+				})
 			} else {
 				_, err = invoke(ctx, 500*time.Millisecond, func(call context.Context) (struct{}, error) {
 					return struct{}{}, binding.Subscriber.After(call, change, snapshot)
@@ -253,10 +286,25 @@ func (w *Writer) post(ctx context.Context, p *prepared, commit model.Commit) []m
 		}(binding)
 	}
 	warnings := []model.Warning{}
+	failures := make(chan error, len(w.cfg.posts))
+	var persisted sync.WaitGroup
 	for i, binding := range w.cfg.posts {
 		if err := <-results[i]; err != nil {
 			warnings = append(warnings, model.Warning{Code: "post_subscriber_failed", Message: "post subscriber failed after commit", Details: map[string]any{"binding": binding.ID, "revision": commit.Revision}})
+			persisted.Add(1)
+			go func(id string) {
+				defer persisted.Done()
+				if err := w.deadLetterPost(ctx, view.Incarnation, commit.Revision, id); err != nil {
+					failures <- err
+				}
+			}(binding.ID)
 		}
 	}
-	return warnings
+	persisted.Wait()
+	select {
+	case err := <-failures:
+		return warnings, err
+	default:
+		return warnings, nil
+	}
 }

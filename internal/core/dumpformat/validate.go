@@ -25,11 +25,12 @@ var knownKinds = map[string]bool{
 	"config": true, "beads-archive": true,
 }
 
-// Native records use the same closed v1 kind registry as the offline
-// converter. Unknown kinds must refuse before a restore can write anything.
+// Native records include the protected ontology source stored by Plug. The
+// offline converter has its own registry; unknown native kinds still refuse.
 var knownNativeKinds = map[string]bool{
 	"bead": true, "edge": true, "comment": true, "memory": true,
-	"config": true, "beads-archive": true,
+	"config": true, "beads-archive": true, "ontology": true,
+	"instance_config": true, "restore-archive": true,
 }
 
 var externalFamilies = []string{
@@ -125,7 +126,7 @@ func Read(reader io.Reader) (*Archive, error) {
 		if err := validateNativeArchive(manifest, members, paths); err != nil {
 			return nil, err
 		}
-		return &Archive{manifest: manifest, members: members, native: true}, nil
+		return &Archive{sha256: digest(data), manifest: manifest, members: members, native: true}, nil
 	}
 	if err := validateManifest(manifest, members); err != nil {
 		return nil, err
@@ -134,7 +135,11 @@ func Read(reader io.Reader) (*Archive, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Archive{sha256: digest(data), manifest: manifest, members: members, byKind: byKind}, nil
+	archive := &Archive{sha256: digest(data), tarBytes: append([]byte(nil), data...), manifest: manifest, members: members, byKind: byKind}
+	if err := validateSourceHistory(archive); err != nil {
+		return nil, err
+	}
+	return archive, nil
 }
 
 func Validate(reader io.Reader) (Manifest, error) {
@@ -146,7 +151,7 @@ func Validate(reader io.Reader) (Manifest, error) {
 }
 
 func allowedMember(name string) bool {
-	if name == "manifest.json" || name == "config/sources.json" {
+	if name == "manifest.json" || name == "config/sources.json" || name == SourceHistoryMember {
 		return true
 	}
 	if name == "records/native.ndjson" || name == "versions.ndjson" || name == "changesets.ndjson" {
@@ -274,18 +279,30 @@ func validateManifest(manifest Manifest, members map[string][]byte) error {
 		manifest.Machine == "" || manifest.Scope != Scope {
 		return fmt.Errorf("unsupported manifest schema, source or scope")
 	}
-	if manifest.History != "unavailable" && manifest.History != "available-unverified" {
+	if manifest.History != "unavailable" && manifest.History != "available-unverified" && manifest.History != "verified" {
 		return fmt.Errorf("unsupported history claim %q", manifest.History)
 	}
 	if len(manifest.Warnings) != 2 || manifest.Warnings[0] != "not a complete store migration or Plug restore certificate" || manifest.Warnings[1] != "source history and attribution are unverified; no Plug versions, changesets or live leases invented" {
 		return fmt.Errorf("missing incomplete-conversion disclosures")
 	}
-	wantVerification, _ := json.Marshal(verificationLimits)
+	expectedVerification := make(map[string]string, len(verificationLimits))
+	for key, value := range verificationLimits {
+		expectedVerification[key] = value
+	}
+	if manifest.Verification["ontology"] == explicitOntologyVerification {
+		expectedVerification["ontology"] = explicitOntologyVerification
+	} else if len(manifest.Ontology) != 0 {
+		return fmt.Errorf("explicit ontology directives require their verification disclosure")
+	}
+	wantVerification, _ := json.Marshal(expectedVerification)
 	gotVerification, _ := json.Marshal(manifest.Verification)
 	if !bytes.Equal(append(wantVerification, '\n'), append(gotVerification, '\n')) {
 		return fmt.Errorf("unsupported verification claim")
 	}
 	if err := validateProjects(manifest.Projects); err != nil {
+		return err
+	}
+	if err := validateOntology(manifest.Ontology, manifest.Projects); err != nil {
 		return err
 	}
 	if len(manifest.Files) != len(members)-1 {
@@ -378,8 +395,11 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 	if err := validateDispositions(manifest.Sources, counts, members["config/sources.json"]); err != nil {
 		return nil, err
 	}
+	if err := validateIssueOntology(manifest.Ontology, byKind["bead"], true); err != nil {
+		return nil, err
+	}
 	historyRows := counts["issue_versions"] + counts["issue_snapshots"] + counts["compaction_snapshots"]
-	if (historyRows != 0) != (manifest.History == "available-unverified") {
+	if _, captured := members[SourceHistoryMember]; !captured && (historyRows != 0) != (manifest.History == "available-unverified") {
 		return nil, fmt.Errorf("history declaration does not match archived source rows")
 	}
 	if err := validateRelations(manifest.Projects, byKind); err != nil {

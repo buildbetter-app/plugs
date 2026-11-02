@@ -24,6 +24,15 @@ type WriteOutcome struct {
 	NullResult bool
 }
 
+// HeartbeatOutcome is the response-only result of a quiet lease refresh. A
+// heartbeat never publishes a graph commit, version, event, or ordinary
+// idempotency receipt; its replay bit belongs to the checkpoint-backed lease
+// receipt and is therefore kept separate from WriteOutcome.
+type HeartbeatOutcome struct {
+	LeaseExpiresAt time.Time
+	Replayed       bool
+}
+
 // OutcomeWriter is an additive host seam. model.Writer.Apply remains available
 // for callers that do not need transport replay metadata.
 type OutcomeWriter interface {
@@ -68,6 +77,9 @@ type ProposedChange struct {
 	SameClaim bool
 	Meta      model.WriteMeta
 	Changes   []Change
+	// Expect carries canonical precondition targets into the authorization
+	// boundary. A stale result stays private until those targets are allowed.
+	Expect []model.Precondition
 }
 
 type CommittedChange struct {

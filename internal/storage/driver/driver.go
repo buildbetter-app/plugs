@@ -544,6 +544,26 @@ type CheckpointStore interface {
 	SaveCheckpoint(context.Context, ActiveLease, string, uint64, []byte) (Checkpoint, error)
 }
 
+// CheckpointGuardTx stages an unversioned metadata observation for Commit.
+// Commit checks every expected generation atomically with graph publication,
+// serialized against SaveCheckpoint even when the key is absent. A changed
+// generation returns ErrCheckpointConflict and publishes nothing. The guard
+// never bumps a graph sentinel or changes the checkpoint. Callers fail closed
+// with ErrUnsupported if a transaction lacks this capability.
+type CheckpointGuardTx interface {
+	ExpectCheckpoint(context.Context, string, uint64) error
+}
+
+// RecordGuardedCheckpointStore publishes metadata only while the named live
+// record still has the observed revision in the supplied incarnation. The
+// record/incarnation check, checkpoint CAS,
+// lease fence and publication are atomic; a changed/deleted record returns
+// ErrConflict without writing. This closes the opposite side of the
+// heartbeat/reclaim race without turning a quiet heartbeat into a graph write.
+type RecordGuardedCheckpointStore interface {
+	SaveCheckpointIfRecord(context.Context, ActiveLease, string, uint64, []byte, Ref, model.Revision, string) (Checkpoint, error)
+}
+
 // ResponseFinalizer is an optional capability for durable post-subscriber
 // outcomes; callers must return ErrUnsupported when absent. FinalizeResponse
 // atomically checks the active lease, full G4 scope and Commit.Revision, appends
@@ -617,6 +637,16 @@ type ActiveLease interface {
 	Lost() <-chan struct{}
 	Release(context.Context) error
 }
+
+// DerivedPrefixReader optionally enumerates the union of opaque key prefixes
+// in one table at the same snapshot as Reader.DerivedRows. Rows are live,
+// duplicate-free, sorted bytewise and caller-owned, including staged changes.
+// Empty input selects no rows; an empty prefix selects the whole table. The
+// caller still guards predicate sentinels and observes consumed exact keys.
+type DerivedPrefixReader interface {
+	DerivedRowsForPrefixes(context.Context, DerivedTable, []string) ([]DerivedRow, error)
+}
+
 type Reader interface {
 	// Snapshot returns the bound branch, incarnation and revision (At is
 	// always non-nil), without another store lookup. It is caller-owned.
@@ -631,6 +661,12 @@ type Reader interface {
 	// duplicate-free. It never acquires transaction locks. The pipeline
 	// compares these observations to Lock's current committed state.
 	Observe(context.Context, []LockKey) ([]LockState, error)
+	// DerivedRows enumerates the live rows of one opaque table/key prefix in
+	// bytewise key order at this snapshot (including a transaction's staged
+	// changes). Empty prefix selects the whole table. Callers must guard the
+	// corresponding predicate sentinel and Observe the consumed exact keys;
+	// enumeration itself does not acquire locks or infer semantic scopes.
+	DerivedRows(context.Context, DerivedTable, string) ([]DerivedRow, error)
 	Query(context.Context, Query) (Page[Record], error)
 	Versions(context.Context, Ref, PageReq) (Page[Version], error)
 	// Changesets returns complete committed changesets strictly after the
