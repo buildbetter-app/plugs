@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -464,11 +465,19 @@ func (p *instancePool) construct(ctx context.Context, key string, state *affinit
 		return nil, poolBusy(ctx)
 	}
 	fresh, err := p.newMember(constructionCtx)
-	if constructionCtx.Err() != nil {
-		// A queue-only construction deadline is pool pressure, not a broken
-		// subscriber. Preserve the caller's parent context so an actual caller
-		// cancellation/deadline still returns that original error.
-		err = poolBusy(ctx)
+	if constructionCtx.Err() != nil && (err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		// Only a context-shaped construction result can be reclassified as
+		// queue pressure. Preserve real constructor/manifest failures even when
+		// the queue deadline races their return; caller and owner cancellation
+		// retain their own semantics.
+		switch {
+		case ctx.Err() != nil:
+			err = ctx.Err()
+		case p.ctx.Err() != nil:
+			err = failure(ErrInactive, "plugin runtime pool is closed")
+		default:
+			err = poolBusy(ctx)
+		}
 	}
 	if err != nil {
 		if fresh != nil {

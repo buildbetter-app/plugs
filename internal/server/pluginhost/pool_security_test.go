@@ -420,3 +420,32 @@ func TestPoolSecurityCanceledConstructionRespectsFourLiveCeiling(t *testing.T) {
 		t.Fatal("capacity was not recovered after canceled construction")
 	}
 }
+
+func TestPoolConstructionPreservesManifestErrorAfterQueueExpiry(t *testing.T) {
+	native := conformance.Native(conformance.Options{})
+	original := native.New
+	var constructions atomic.Int32
+	native.NewWithContext = func(ctx context.Context, host pluginapi.Host) (sdk.Registration, error) {
+		if constructions.Add(1) != maxRuntimeInstances+2 {
+			return original(host)
+		}
+		<-ctx.Done()
+		return sdk.Registration{}, failure(ErrManifest, "constructor manifest failure")
+	}
+	h, err := New(Config{Natives: []sdk.Native{native}, Bindings: fixtureBindings()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	p := h.bindings[0].pool
+	for _, key := range []string{"manifest-a", "manifest-b", "manifest-c", "manifest-d"} {
+		lease, err := p.acquire(context.Background(), time.Second, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.finish(lease)
+	}
+	if _, err := p.acquire(context.Background(), 20*time.Millisecond, "manifest-e"); code(err) != ErrManifest {
+		t.Fatalf("queue expiry replaced a real constructor failure: %v", err)
+	}
+}

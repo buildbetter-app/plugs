@@ -697,12 +697,20 @@ func TestWASIQueueConstructionDeadlineIsRetryableBusy(t *testing.T) {
 	}
 	original := native.NewWithContext
 	var constructions atomic.Int32
+	replacementStarted := make(chan struct{})
 	native.NewWithContext = func(ctx context.Context, host pluginapi.Host) (sdk.Registration, error) {
-		if constructions.Add(1) <= 5 {
+		if constructions.Add(1) != 6 {
 			return original(ctx, host)
 		}
+		registration, err := original(ctx, host)
+		if err != nil {
+			return sdk.Registration{}, err
+		}
+		close(replacementStarted)
 		<-ctx.Done()
-		return sdk.Registration{}, ctx.Err()
+		// Return the fully initialized registration so construct can retire the
+		// actual guest and exercise its bounded replacement/refill path.
+		return registration, nil
 	}
 	host, err := pluginhost.New(pluginhost.Config{Natives: []sdk.Native{native}, Bindings: []pluginhost.Binding{{
 		ID: "wasi-normalize", Alias: "wasi", Instance: "default", Subscriber: "normalize", Phase: pluginapi.PhaseMutate,
@@ -718,11 +726,35 @@ func TestWASIQueueConstructionDeadlineIsRetryableBusy(t *testing.T) {
 			t.Fatalf("initial source WASI principal %s failed: %v", principal, err)
 		}
 	}
-	_, err = mutator.Mutate(context.Background(), wasiStateChange("queue-e", "pool-state:queue-e"), &wasiSnapshot{revision: model.Natural64(1)})
-	if !hasPluginHostCode(err, pluginhost.ErrPluginBusy) {
-		t.Fatalf("queue-only construction expiry was not retryable busy: %v", err)
+	result := make(chan error, 1)
+	go func() {
+		_, mutateErr := mutator.Mutate(context.Background(), wasiStateChange("queue-e", "pool-state:queue-e"), &wasiSnapshot{revision: model.Natural64(1)})
+		result <- mutateErr
+	}()
+	select {
+	case <-replacementStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queue replacement did not initialize a real WASI guest")
 	}
-	t.Log("actual source-built WASI replacement construction deadline mapped to plugin_busy; caller context remained active")
+	if got := <-result; !hasPluginHostCode(got, pluginhost.ErrPluginBusy) {
+		t.Fatalf("queue-only construction expiry was not retryable busy: %v", got)
+	}
+	deadline := time.After(2 * time.Second)
+	for {
+		_, recoveredErr := mutator.Mutate(context.Background(), wasiStateChange("queue-recovered", "pool-state:queue-recovered"), &wasiSnapshot{revision: model.Natural64(1)})
+		if recoveredErr == nil {
+			break
+		}
+		if !hasPluginHostCode(recoveredErr, pluginhost.ErrPluginBusy) {
+			t.Fatalf("real WASI replacement recovery failed: %v", recoveredErr)
+		}
+		select {
+		case <-deadline:
+			t.Fatal("real WASI replacement did not recover its bounded pool")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	t.Log("actual source-built WASI replacement construction deadline mapped to plugin_busy after guest initialization; caller context remained active")
 }
 
 func wasiStateChange(principal, title string) port.ProposedChange {

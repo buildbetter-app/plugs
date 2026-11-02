@@ -309,6 +309,12 @@ type wasmResponse struct {
 	Error   string             `json:"error,omitempty"`
 }
 
+type wasmReadOutcome struct {
+	value      any
+	err        error
+	panicValue any
+}
+
 // hostCall is the env.plug.call implementation. Invalid guest memory or
 // malformed envelopes are traps: the surrounding invoke call disposes of the
 // module, preserving the E5 fail-closed rule. Typed reader refusals are
@@ -334,7 +340,32 @@ func (r *wasmRuntime) hostCall(ctx context.Context, module api.Module, ptr, leng
 	if request.reader == nil {
 		panic("WASM outbound host calls are unsupported outside snapshot callbacks")
 	}
-	result, err := r.read(ctx, request.reader, data)
+	readResult := make(chan wasmReadOutcome, 1)
+	go func() {
+		outcome := wasmReadOutcome{}
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				outcome.panicValue = recovered
+			}
+			readResult <- outcome
+		}()
+		outcome.value, outcome.err = r.read(ctx, request.reader, data)
+	}()
+	var result any
+	var err error
+	select {
+	case <-ctx.Done():
+		// A reader is allowed to be slow or to ignore its context. Return from
+		// the guest import immediately so wazero can unwind the canceled guest;
+		// the bounded outcome channel keeps a late reader from touching guest
+		// memory after the module is retired.
+		panic(ctx.Err())
+	case outcome := <-readResult:
+		if outcome.panicValue != nil {
+			panic(outcome.panicValue)
+		}
+		result, err = outcome.value, outcome.err
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			panic(ctx.Err())
