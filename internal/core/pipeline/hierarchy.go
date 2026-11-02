@@ -238,7 +238,10 @@ func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 		complex = complex || !edit.create || edit.parent != ""
 	}
 	for _, pending := range p.writes {
-		complex = complex || (len(pending.before) != 0 && pending.doc.Parent != nil)
+		// Ordinary field/lease updates preserve an existing parent and do not
+		// need to rescan the complete graph. Create/Reparent mark the parent
+		// path in setBy, so only those edits retain the full hierarchy check.
+		complex = complex || (len(pending.before) != 0 && pending.setBy["parent"] != "")
 	}
 	stored := map[string]Document{}
 	if complex {
