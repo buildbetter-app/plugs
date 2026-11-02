@@ -142,3 +142,54 @@ func nativeEnvelopeWithKind(t *testing.T, kind string) []byte {
 	}
 	return data.Bytes()
 }
+
+func TestHarnessGenuinePublicCompleteAndPartialProducerControls(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "plug-roundtrip-producer-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	for _, engine := range []string{"memory", "sqlite"} {
+		for _, test := range publicProducerCases() {
+			t.Run(engine+"/"+test.name, func(t *testing.T) {
+				args := []string{"--input", "../../internal/integration/converterroundtrip/testdata/" + test.file, "--output-dir", filepath.Join(root, engine+"-"+test.name), "--engine", engine}
+				if test.mode != "" {
+					args = append(args, "--history-mode", test.mode)
+				}
+				assertPublicProducerOutcome(t, test, run(args))
+			})
+		}
+	}
+}
+
+type publicProducerCase struct {
+	name, file, mode, head, floor string
+	complete                      bool
+	first, sourceHead             uint64
+	gaps                          int
+}
+
+func publicProducerCases() []publicProducerCase {
+	return []publicProducerCase{
+		{"complete-default", "public-complete-root-990eb800.tar", "", "8", "0", true, 1, 7, 0},
+		{"complete-snapshot", "public-complete-root-990eb800.tar", "snapshot", "1", "1", true, 1, 7, 0},
+		{"partial-default-refused", "public-partial-990eb800.tar", "", "", "", false, 4, 4, 3},
+		{"partial", "public-partial-990eb800.tar", "partial", "3", "1", false, 4, 4, 3},
+		{"partial-snapshot", "public-partial-990eb800.tar", "snapshot", "1", "1", false, 4, 4, 3},
+	}
+}
+
+func assertPublicProducerOutcome(t *testing.T, test publicProducerCase, got outcome) {
+	t.Helper()
+	if test.name == "partial-default-refused" {
+		if got.Status != "BLOCK" || got.Stage != "history" || got.Reason != "history_non-contiguous" || got.ReverseSHA256 != "" || got.RestoredIncarnation != "" {
+			t.Fatalf("strict genuine partial boundary: %+v", got)
+		}
+		return
+	}
+	if got.Status != "WAIT" || got.Reason != "pinned_beads_artifact_required" || got.BeadsReimport != "WAIT" || got.BeadsReadback != "WAIT" || got.Claims != 1 || got.Writes != 1 || got.RestoredHead != test.head || got.HistoryFloor != test.floor || got.SourceHistoryComplete != test.complete || got.SourceHistoryFirst != test.first || got.SourceHistoryHead != test.sourceHead || len(got.SourceHistoryGaps) != test.gaps || got.RestoredIncarnation == "" || got.RestoredIncarnation != got.ReverseIncarnation || got.ReverseAt == "" || got.BaselineSHA256 == got.ReverseSHA256 || got.HistoryLossItems == 0 {
+		t.Fatalf("genuine producer runtime boundary: %+v", got)
+	}
+	encoded, _ := json.Marshal(got)
+	t.Logf("PUBLIC_PRODUCER_RUNTIME %s", encoded)
+}

@@ -15,8 +15,16 @@ folder. The caller owns creation and disposal of the PostgreSQL database.
 
 Full remains the strict default. Partial requires a verified suffix, baseline,
 exact gaps and floor; snapshot is explicit. Source-event identity order is not
-interpreted as chronology. Neither a synthetic full fixture nor the genuine
-public partial fixture proves complete-root history. The output records source
+interpreted as chronology. Neither a synthetic full fixture nor a genuine
+public partial fixture proves complete-root history. The distinct unchanged
+990eb800 public complete-root archive proves only its paired public synthetic
+SQL source: seven actual Dolt commits, empty root and four real audit events.
+It has no portable comment row; a comment audit event does not create one.
+The sibling partial archive retains exact gaps 1 not-retained, 2 unmappable,
+3 not-retained and never inherits the complete archive's status.
+Actual JSON payload.n is 9007199254740992; BIGINT timeout_ns is 9007199254740993.
+The converter accepts only exact SQL pinned encodings 0/1 (numeric or textual)
+and booleans; textual source encoding is also retained in source metadata. The output records source
 range/gaps, target floor/incarnation and the reverse reader's as-of revision.
 `--exercise=false` checks the unmodified imported head.
 

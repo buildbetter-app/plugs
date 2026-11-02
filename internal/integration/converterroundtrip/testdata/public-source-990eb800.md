@@ -1,7 +1,7 @@
 These unchanged public archives came from the supported Beads exporter on
 RunsOn at source 990eb8006a7e3979fef2e4e1b1fbda1324677704, tree
 9d026de307ee915953b247cf42758d0c53303574, based on the assigned
- a8a2a629e6f774928b190f3b9751d6bf95f21ea2. They are paired public synthetic SQL
+a8a2a629e6f774928b190f3b9751d6bf95f21ea2. They are paired public synthetic SQL
 schema fixtures, with real Dolt commits and Beads-driver actions. They contain
 no private or original ledger data. The canonical format is plug-dump/1,
 schema 1, with history/source.json in beads-dolt-images/1.
