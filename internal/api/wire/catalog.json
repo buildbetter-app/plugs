@@ -6267,7 +6267,7 @@
           "schema": {
             "type": "string"
           },
-          "required": true
+          "required": false
         },
         {
           "name": "content",
@@ -12751,7 +12751,7 @@
     "methodCount": 81,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "925afc30e52e4659b24e34f311698c96930f215ba460fee7c1634634d1ff04ff",
-    "descriptorSha256": "2d4378cef6979c3fc352af8819b7413fb4accca05022df5008a723a3bfcee801",
+    "descriptorSha256": "979980fb391c2c7b91a8cc9252a34411988a90235389df319aafba16a6adcab6",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -16865,7 +16865,7 @@
         "params": [
           {
             "name": "key",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }

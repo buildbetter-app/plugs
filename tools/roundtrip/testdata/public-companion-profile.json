@@ -1,0 +1,9 @@
+{
+  "schema": "plug-public-companion/1",
+  "exporter": {
+    "target_key": "beads_exporter",
+    "label": "//cmd/bd:bd",
+    "binary": "bin/bd-export"
+  },
+  "version_key": "bd_export_version"
+}

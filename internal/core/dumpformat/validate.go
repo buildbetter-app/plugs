@@ -135,7 +135,7 @@ func Read(reader io.Reader) (*Archive, error) {
 	if err != nil {
 		return nil, err
 	}
-	archive := &Archive{sha256: digest(data), manifest: manifest, members: members, byKind: byKind}
+	archive := &Archive{sha256: digest(data), tarBytes: append([]byte(nil), data...), manifest: manifest, members: members, byKind: byKind}
 	if err := validateSourceHistory(archive); err != nil {
 		return nil, err
 	}

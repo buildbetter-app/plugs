@@ -1,10 +1,6 @@
 package pipeline
 
-import (
-	"strings"
-	"unicode"
-	"unicode/utf8"
-)
+import "unicode/utf8"
 
 // The Beads dependency column is VARCHAR(32). Plug keeps the v1 vocabulary
 // closed for known workflow/graph/entity/tracker meanings while retaining
@@ -21,15 +17,7 @@ var wellKnownDependencyKinds = map[string]struct{}{
 }
 
 func validDependencyKind(kind string) bool {
-	if kind == "" || strings.TrimSpace(kind) != kind || len([]byte(kind)) > maxDependencyKindBytes || !utf8.ValidString(kind) {
-		return false
-	}
-	for _, r := range kind {
-		if unicode.IsControl(r) || unicode.IsSpace(r) {
-			return false
-		}
-	}
-	return true
+	return kind != "" && len(kind) <= maxDependencyKindBytes && utf8.ValidString(kind)
 }
 
 func dependencyAffectsReady(kind string) bool {

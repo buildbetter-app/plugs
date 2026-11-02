@@ -570,7 +570,7 @@ func linkChangeSet(req LinkRequest, kind model.OpKind) (model.ChangeSet, error) 
 	if err := namedRef(req.To); err != nil {
 		return model.ChangeSet{}, err
 	}
-	if strings.TrimSpace(req.Kind) == "" {
+	if req.Kind == "" {
 		return model.ChangeSet{}, failure("invalid_params", "link kind must not be empty")
 	}
 	return model.ChangeSet{
