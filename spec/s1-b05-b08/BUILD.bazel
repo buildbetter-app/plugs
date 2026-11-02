@@ -8,6 +8,7 @@ go_test(
         "engines_test.go",
         "fixture_test.go",
         "heartbeat_repair_test.go",
+        "opaque_kinds_test.go",
         "projection_test.go",
         "provenance_test.go",
         "reclaim_race_test.go",

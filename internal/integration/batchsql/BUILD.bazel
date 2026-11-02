@@ -5,7 +5,7 @@ go_test(
     size = "large",
     srcs = glob(["*_test.go"]),
     args = ["-test.v"],
-    tags = ["local", "requires-network"],
+    tags = ["exclusive", "local", "requires-network"],
     deps = [
         "//internal/core/authz",
         "//internal/core/model",

@@ -280,7 +280,7 @@ func TestPairedCensusReadsActualMemoryAndReopenedSQLite(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	const derived = "9611fb51234ff87fd0cbb76772c77ebe7bd975db8444894d95a43652901f8492"
+	const derived = "89f6eb61310b4f9193e9925e2a2305101b126f763e870986bc7ca51f6043d28a"
 	check := converterroundtrip.Verification{ArchiveSHA256: bytesDigest(data), DerivedSHA256: derived}
 	var first []Metric
 	for _, engine := range []string{"memory", "sqlite"} {
@@ -430,7 +430,7 @@ func TestCensusBlobRefusalIsReadOnlyAndClosesReader(t *testing.T) {
 	}
 	store := memory.New()
 	defer store.Close()
-	if _, e = converterroundtrip.Restore(context.Background(), bytes.NewReader(data), store, converterroundtrip.Verification{ArchiveSHA256: bytesDigest(data), DerivedSHA256: "9611fb51234ff87fd0cbb76772c77ebe7bd975db8444894d95a43652901f8492"}); e != nil {
+	if _, e = converterroundtrip.Restore(context.Background(), bytes.NewReader(data), store, converterroundtrip.Verification{ArchiveSHA256: bytesDigest(data), DerivedSHA256: "89f6eb61310b4f9193e9925e2a2305101b126f763e870986bc7ca51f6043d28a"}); e != nil {
 		t.Fatal(e)
 	}
 	wrapped := &observedCensusStore{Store: store, failBlob: true}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -25,6 +26,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 	"github.com/buildbetter-app/plugs/pluginapi"
 	sdk "github.com/buildbetter-app/plugs/sdk/go"
 )
@@ -411,5 +413,46 @@ func TestConfiguredMutatorFailurePublishesNothing(t *testing.T) {
 	doc, err := pipeline.DecodeDocument(rows[0].Body)
 	if err != nil || doc.Fields["title"] != "seed" {
 		t.Fatal("mutator failure published a partial update")
+	}
+}
+
+// The finite ordinary adapter deliberately has no close permit. A new union
+// member must reach that fail-closed authorization boundary before exposing a
+// stale guard, invoking a configured mutator, or changing any durable image.
+func TestAtomicCloseCannotBorrowTxApplyOrUpdateAuthority(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			var open storeFactory
+			switch engine {
+			case "memory":
+				open = func(*testing.T) driver.Store { return memory.New() }
+			case "sqlite":
+				open = func(t *testing.T) driver.Store {
+					s, err := (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: filepath.Join(t.TempDir(), "close-authz.db")})
+					if err != nil {
+						t.Fatal(err)
+					}
+					return s
+				}
+			case "postgres":
+				open = postgresFactory(t)
+			}
+			var calls atomic.Int32
+			f := newFixtureOn(t, open(t), hostMutators(t, &calls, false))
+			before := *f.reader(t).Snapshot().At
+			for i, by := range []model.PrincipalRef{worker("user:operator"), worker("user:outsider")} {
+				params := map[string]any{"changeSet": map[string]any{"ops": []any{map[string]any{
+					"kind": "close", "target": model.RefByID(beadID, model.Natural64(0)), "reason": "must not append",
+					"expect": []model.Precondition{model.PreconditionByRevision(model.RefByID(beadID, model.Natural64(0)), model.Natural64(0))},
+				}}}}
+				got := f.call(t, by, "tx.apply", params, 9900+i)
+				if got.Error == nil || got.Error.Data.Code != "forbidden" || len(got.Error.Data.Details) != 0 || len(got.Result) != 0 || got.Meta.Replayed {
+					t.Fatalf("close borrowed batch/update authority or disclosed CAS: %+v", got)
+				}
+				if f.receipt(t, by, "tx.apply", 9900+i) != nil || f.reader(t).Snapshot().At.String() != before.String() || calls.Load() != 0 {
+					t.Fatal("denied close changed receipt/head or invoked a mutator")
+				}
+			}
+		})
 	}
 }

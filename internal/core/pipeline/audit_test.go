@@ -357,3 +357,88 @@ func TestAuditPostFinalizationRetainsPlanAndReplayBytes(t *testing.T) {
 		t.Fatalf("audit post/replay changed receipt or plan: first=%+v replay=%+v stored=%+v posts=%d", first, again, stored, posts.Load())
 	}
 }
+
+func TestAtomicCloseCoalescedHistoryKeepsLifecycleProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		name                                 string
+		ops                                  []model.OpKind
+		before, after                        string
+		create, deleted, closed, moved, noop bool
+		method                               string
+		wantOp                               model.OpKind
+		wantEvent                            model.DurableEventType
+	}{
+		{name: "reparent-close", ops: []model.OpKind{model.OpReparent, model.OpClose}, before: "todo", after: "done", closed: true, moved: true, wantOp: model.OpClose, wantEvent: model.EventBeadClosed},
+		{name: "close-reparent", ops: []model.OpKind{model.OpClose, model.OpReparent}, before: "todo", after: "done", closed: true, moved: true, wantOp: model.OpClose, wantEvent: model.EventBeadClosed},
+		{name: "create-precedence", ops: []model.OpKind{model.OpCreate, model.OpClose}, after: "done", create: true, closed: true, wantOp: model.OpCreate, wantEvent: model.EventBeadCreated},
+		{name: "delete-precedence", ops: []model.OpKind{model.OpClose, model.OpDelete}, before: "todo", after: "done", deleted: true, closed: true, wantOp: model.OpDelete, wantEvent: model.EventBeadDeleted},
+		{name: "same-slot-reason", ops: []model.OpKind{model.OpClose}, before: "done", after: "done", closed: true, wantOp: model.OpClose, wantEvent: model.EventBeadCommented},
+		{name: "same-slot-reparent", ops: []model.OpKind{model.OpReparent, model.OpClose}, before: "done", after: "done", closed: true, moved: true, wantOp: model.OpReparent, wantEvent: model.EventBeadReparented},
+		{name: "reparent-only", ops: []model.OpKind{model.OpReparent}, before: "todo", after: "todo", moved: true, wantOp: model.OpReparent, wantEvent: model.EventBeadReparented},
+		{name: "same-slot-noop", ops: []model.OpKind{model.OpClose}, before: "done", after: "done", closed: true, noop: true},
+		{name: "named-close", ops: []model.OpKind{model.OpPatch}, before: "todo", after: "done", method: "bead.close", wantOp: model.OpPatch, wantEvent: model.EventBeadClosed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ref := model.RefByID("child", model.Natural64(0))
+			parent := model.RefByID("old", model.Natural64(0))
+			doc := Document{ID: ref.ID, Type: "issue", Project: "p", Parent: &parent, Fields: map[string]any{"title": "child", "status": tc.before}}
+			var before json.RawMessage
+			if !tc.create {
+				var err error
+				before, err = json.Marshal(doc)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			doc.Fields["status"] = tc.after
+			if tc.moved {
+				next := model.RefByID("new", model.Natural64(0))
+				doc.Parent = &next
+			}
+			value := &pending{ref: ref, kind: "bead", doc: doc, before: before, revision: model.Natural64(1), deleted: tc.deleted, setBy: map[string]string{"fields.status": "request"}}
+			if tc.moved {
+				value.setBy["parent"] = "request"
+			}
+			method := tc.method
+			if method == "" {
+				method = "tx.apply"
+			}
+			p := &prepared{writes: map[string]*pending{ref.ID: value}, changed: map[string]bool{}, closes: map[string]bool{ref.ID: tc.closed}, proposal: port.ProposedChange{Meta: model.WriteMeta{Method: method}}, audit: &auditPlan{context: port.EventContext{Cause: model.EventCause{Root: "audit-close", Depth: model.Natural64(0), Chain: []string{}}, Chain: []string{}}}}
+			if !tc.noop {
+				p.changed[ref.ID] = true
+			}
+			for _, op := range tc.ops {
+				p.proposal.Changes = append(p.proposal.Changes, port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: ref}, Op: model.Op{Kind: op}})
+			}
+			changes := p.changeRecords()
+			if tc.noop {
+				if len(changes) != 0 {
+					t.Fatalf("no-op fabricated history: %+v", changes)
+				}
+				return
+			}
+			if len(changes) != 1 || changes[0].Op != tc.wantOp {
+				t.Fatalf("coalesced history=%+v want=%s", changes, tc.wantOp)
+			}
+			if tc.moved {
+				found := false
+				for _, path := range changes[0].ChangedPaths {
+					found = found || path == "/parent"
+				}
+				if !found {
+					t.Fatal("history lost parent path")
+				}
+			}
+			events, _, err := p.events(model.Natural64(2), changes)
+			if err != nil || len(events) != 1 || events[0].Type != tc.wantEvent {
+				t.Fatalf("event=%+v err=%v want=%s", events, err, tc.wantEvent)
+			}
+			if events[0].ChangeIndex.String() != "0" || events[0].Resource.Ref.ID != ref.ID || events[0].Provenance.Method != method {
+				t.Fatalf("event lost source provenance: %+v", events[0])
+			}
+			if tc.wantEvent == model.EventBeadClosed && events[0].Provenance.Slot != "close" {
+				t.Fatal("typed close lost lifecycle provenance")
+			}
+		})
+	}
+}

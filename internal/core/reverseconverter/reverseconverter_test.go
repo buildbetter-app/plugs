@@ -567,7 +567,7 @@ func TestReadUsesCanonicalArchiveValidator(t *testing.T) {
 	}
 }
 
-func TestReadConvertCanonicalArchiveMapsPinnedNumbers(t *testing.T) {
+func TestReadConvertCanonicalArchiveMapsPinnedSQLRepresentations(t *testing.T) {
 	tests := []struct {
 		name  string
 		value any
@@ -575,6 +575,8 @@ func TestReadConvertCanonicalArchiveMapsPinnedNumbers(t *testing.T) {
 	}{
 		{name: "numeric zero", value: json.Number("0"), want: false},
 		{name: "numeric one", value: json.Number("1"), want: true},
+		{name: "textual zero", value: "0", want: false},
+		{name: "textual one", value: "1", want: true},
 		{name: "boolean false", value: false, want: false},
 		{name: "boolean true", value: true, want: true},
 		{name: "explicit null retains omission", value: nil, want: false},
@@ -623,6 +625,13 @@ func TestReadConvertCanonicalArchiveMapsPinnedNumbers(t *testing.T) {
 			if got.ID != "demo-7" || got.Pinned != test.want {
 				t.Fatalf("converted pinned=%v, want %v; JSONL=%s", got.Pinned, test.want, result.JSONL)
 			}
+			if raw, textual := test.value.(string); textual {
+				var archive map[string]any
+				encoded, ok := got.Metadata["_plug_source_fields"].(string)
+				if !ok || json.Unmarshal([]byte(encoded), &archive) != nil || archive["pinned"] != raw {
+					t.Fatal("textual SQL encoding disappeared from source metadata")
+				}
+			}
 			if test.want && !bytes.Contains(result.JSONL, []byte(`"pinned":true`)) {
 				t.Fatalf("numeric 1 did not emit pinned:true: %s", result.JSONL)
 			}
@@ -640,8 +649,13 @@ func TestReadConvertCanonicalArchiveRejectsUnsupportedPinnedValues(t *testing.T)
 		{name: "fraction", value: json.Number("0.5")},
 		{name: "long near one", value: json.Number("1.0000000000000000001")},
 		{name: "exponent", value: json.Number("1e0")},
-		{name: "string zero", value: "0"},
-		{name: "string one", value: "1"},
+		{name: "string leading zero", value: "01"},
+		{name: "string double zero", value: "00"},
+		{name: "string leading whitespace", value: " 1"},
+		{name: "string trailing whitespace", value: "1 "},
+		{name: "string decimal", value: "1.0"},
+		{name: "string exponent", value: "1e0"},
+		{name: "string false", value: "false"},
 		{name: "string true", value: "true"},
 		{name: "object", value: map[string]any{"value": 1}},
 		{name: "array", value: []any{1}},

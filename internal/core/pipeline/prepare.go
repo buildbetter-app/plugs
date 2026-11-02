@@ -55,6 +55,9 @@ type prepared struct {
 	snapshot *snapshotReader
 	writes   map[string]*pending
 	proposal port.ProposedChange
+	// Ordered images are private core input for typed close guard validation.
+	ordered []port.Change
+	closes  map[string]bool
 	// refusal is deliberately kept out of ProposedChange. It may contain a
 	// current revision token and can be released only after AuthorizeBefore has
 	// covered every disclosed expectation target.
@@ -76,16 +79,18 @@ func failure(code model.ErrorCode, message string) error {
 	return &model.Error{Message: message, Data: model.ErrorData{Code: code, Retryable: code == "write_conflict" || code == "subscriber_unavailable" || code == "busy"}}
 }
 
-// preconditionFailure keeps CAS refusals useful to a caller that has lost a
-// race. The typed code remains stable, while details identify the resource
-// and the current token observed by the pinned pre-read. A failed guard never
-// reaches publication, so this is diagnostic data only and cannot be used as
-// an implicit authorization or write.
+// preconditionFailure describes the selected CAS arm. Preparation keeps this
+// refusal private until AuthorizeBefore covers its expectation target.
+func preconditionFailure(reason, message string) *model.Error {
+	return &model.Error{Message: message, Data: model.ErrorData{Code: "precondition_failed", Details: map[string]any{"reason": reason}}}
+}
+
+// preconditionRevisionFailure adds the token from the pinned pre-read only
+// when the expected record exists.
 func preconditionRevisionFailure(current model.Revision) error {
-	return &model.Error{Message: "precondition failed", Data: model.ErrorData{Code: "precondition_failed", Details: map[string]any{
-		"reason":          "revision",
-		"currentRevision": current,
-	}}}
+	err := preconditionFailure("revision", "precondition failed")
+	err.Data.Details["currentRevision"] = current
+	return err
 }
 
 func fieldName(path string) (string, error) {
@@ -169,6 +174,15 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	}
 	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}, allocatorCursors: map[string]uint64{}, allocatorSeen: map[string]bool{}}
 	aliases := map[string]model.Ref{}
+	for _, op := range cs.Ops {
+		if op.Kind == model.OpClose {
+			if meta.Method != "tx.apply" {
+				return nil, failure("invalid_params", "close operation requires tx.apply")
+			}
+			p.closes = map[string]bool{}
+			break
+		}
+	}
 	slotRef := ""
 	if len(cs.Ops) == 0 {
 		if meta.Method != "bead.claimNext" {
@@ -184,6 +198,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 		}
 	}
 	for _, op := range cs.Ops {
+		if op.Kind == model.OpClose {
+			value := *op.Close
+			value.Expect = append([]model.Precondition{}, value.Expect...)
+			op.Close = &value
+		}
 		var target model.Ref
 		var current *pending
 		var before json.RawMessage
@@ -238,6 +257,9 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if err = applyFields(current, c.Fields, "request"); err != nil {
 				return nil, err
 			}
+			if err = p.inheritLabels(ctx, current); err != nil {
+				return nil, err
+			}
 			if c.Key != "" {
 				aliases[c.Key] = target
 			}
@@ -245,6 +267,8 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			switch op.Kind {
 			case model.OpPatch:
 				target = op.Patch.Target
+			case model.OpClose:
+				target = op.Close.Target
 			case model.OpComment:
 				target = op.Comment.Target
 			case model.OpLink, model.OpUnlink:
@@ -315,6 +339,12 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, parent: parentID(parent)})
 			case model.OpPatch:
 				if err = applyFields(current, op.Patch.Fields, "request"); err != nil {
+					return nil, err
+				}
+			case model.OpClose:
+				op.Close.Target = target
+				before, err = w.prepareClose(ctx, p, current, op.Close, aliases)
+				if err != nil {
 					return nil, err
 				}
 			case model.OpComment:
@@ -388,7 +418,17 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 		}
 		p.refs = append(p.refs, target)
-		p.proposal.Changes = append(p.proposal.Changes, port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: target}, Op: op, Before: before})
+		change := port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: target}, Op: op, Before: before}
+		if p.closes != nil {
+			if !current.deleted {
+				change.After, err = current.body()
+				if err != nil {
+					return nil, err
+				}
+			}
+			p.ordered = append(p.ordered, change)
+		}
+		p.proposal.Changes = append(p.proposal.Changes, change)
 	}
 	// Only actual operation targets belong to the write set. Reads of link
 	// endpoints remain guarded but do not gain spurious versions or revisions.
@@ -415,7 +455,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 		}
 		if len(records) != 1 {
 			if p.refusal == nil {
-				p.refusal = failure("precondition_failed", "expected record is absent")
+				reason := "hash"
+				if expect.Revision != nil {
+					reason = "revision"
+				}
+				p.refusal = preconditionFailure(reason, "expected record is absent")
 			}
 			continue
 		}
@@ -445,7 +489,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 			if hash != expect.Hash {
 				if p.refusal == nil {
-					p.refusal = failure("precondition_failed", "field hash changed")
+					p.refusal = preconditionFailure("hash", "field hash changed")
 				}
 			}
 		}
@@ -572,7 +616,11 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		}
 		if len(rows) != 1 {
 			if p.refusal == nil {
-				p.refusal = failure("precondition_failed", "expected record is absent")
+				reason := "hash"
+				if expect.Revision != nil {
+					reason = "revision"
+				}
+				p.refusal = preconditionFailure(reason, "expected record is absent")
 			}
 			continue
 		}
@@ -608,7 +656,7 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		hash, err := FieldHash(value)
 		if err != nil || hash != expect.Hash {
 			if p.refusal == nil {
-				p.refusal = failure("precondition_failed", "field hash changed")
+				p.refusal = preconditionFailure("hash", "field hash changed")
 			}
 		}
 	}
@@ -729,6 +777,12 @@ func applyFields(p *pending, fields map[string]any, setter string) error {
 		if name == "" || strings.ContainsAny(name, "./\x00") {
 			return failure("invalid_params", "field names must be nonempty unqualified keys")
 		}
+		if name == "labels" {
+			if err := setLabels(p, value, setter); err != nil {
+				return err
+			}
+			continue
+		}
 		if value == nil {
 			delete(p.doc.Fields, name)
 		} else {
@@ -823,11 +877,11 @@ func expectationHash(doc Document, selector string) (string, error) {
 		if !present {
 			// The admitted string hash arm has no absence discriminator. Never
 			// treat a missing metadata key as the digest of JSON null.
-			return "", failure("precondition_failed", "metadata key is absent")
+			return "", preconditionFailure("hash", "metadata key is absent")
 		}
 		canonical, err := canonicalMetadataJSON(raw)
 		if err != nil {
-			return "", failure("precondition_failed", "metadata value is invalid JSON")
+			return "", preconditionFailure("hash", "metadata value is invalid JSON")
 		}
 		digest := sha256.Sum256(canonical)
 		return hex.EncodeToString(digest[:]), nil
@@ -970,7 +1024,7 @@ func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta
 		}
 	} else {
 		for _, pending := range p.writes {
-			method := gateLifecycleMethod(meta.Method, pending)
+			method := p.lifecycleMethod(pending)
 			if !isSlot(method) || isClaim(method) {
 				continue
 			}
