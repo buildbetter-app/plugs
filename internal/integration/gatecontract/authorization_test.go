@@ -92,9 +92,15 @@ func TestB14PublicMetadataFiniteFixedPolicyKeepsLinksRefused(t *testing.T) {
 		if err = facts.Replace(base); err != nil {
 			t.Fatal(err)
 		}
+		// Replacing installed facts publishes a derived ACL revision. The
+		// refused request must publish nothing after that policy change.
+		if before.Head.String() == f.meta().Head.String() {
+			t.Fatal("policy replacement did not advance its ACL revision")
+		}
+		before = f.meta()
 		call(spawner, "00000000000000000000000000002002", "forbidden")
 		if !reflect.DeepEqual(before, f.meta()) {
-			t.Fatal("revoked metadata replay changed content")
+			t.Fatal("revoked repeated link request changed content")
 		}
 	})
 }
