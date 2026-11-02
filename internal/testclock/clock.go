@@ -5,7 +5,6 @@ package testclock
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"net/url"
 	"sync"
 	"testing"
@@ -13,7 +12,7 @@ import (
 )
 
 // Clock advances explicitly. SQL sessions read the same instant from an owned
-// database row; neither query results nor driver responses are substituted.
+// SQL sequence; neither query results nor driver responses are substituted.
 type Clock struct {
 	mu       sync.RWMutex
 	now      time.Time
@@ -22,8 +21,8 @@ type Clock struct {
 
 func New(t testing.TB, at time.Time) *Clock {
 	t.Helper()
-	if at.IsZero() || at.Nanosecond()%1000 != 0 {
-		t.Fatal("paired SQL clock requires an explicit, microsecond-aligned instant")
+	if at.IsZero() {
+		t.Fatal("controlled clock requires an explicit instant")
 	}
 	return &Clock{now: at.UTC()}
 }
@@ -36,14 +35,17 @@ func (c *Clock) Now() time.Time {
 
 func (c *Clock) Advance(t testing.TB, delta time.Duration) {
 	t.Helper()
-	if delta < 0 || delta%time.Microsecond != 0 {
-		t.Fatal("paired SQL clock advances must be nonnegative whole microseconds")
+	if delta < 0 {
+		t.Fatal("controlled clock cannot move backward")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	next := c.now.Add(delta)
 	if c.postgres != nil {
-		if _, err := c.postgres.ExecContext(context.Background(), `UPDATE plug_test_clock.instant SET at=$1 WHERE singleton`, next); err != nil {
+		if next.Nanosecond()%1000 != 0 {
+			t.Fatal("PostgreSQL clock cannot represent sub-microsecond time")
+		}
+		if _, err := c.postgres.ExecContext(context.Background(), `SELECT setval('plug_test_clock.micros',$1,true)`, next.UnixMicro()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -54,10 +56,13 @@ func (c *Clock) Advance(t testing.TB, delta time.Duration) {
 // Explicitly listing pg_catalog after the test schema makes unqualified
 // clock_timestamp() in the unchanged driver resolve to this SQL function on
 // every pooled/reserved connection. pg_catalog.clock_timestamp() stays real.
+// Sequence state is not MVCC: even a pinned repeatable-read snapshot observes
+// clock advances, as it must for the production wall clock. Integer seconds
+// and microseconds avoid floating-point Unix timestamp rounding.
 func (c *Clock) BindPostgres(t testing.TB, dsn string) string {
 	t.Helper()
-	if c.postgres != nil {
-		t.Fatal("SQL clock is already bound")
+	if c.postgres != nil || c.Now().Nanosecond()%1000 != 0 || c.Now().UnixMicro() <= 0 {
+		t.Fatal("SQL clock requires one binding and a positive microsecond-aligned seed")
 	}
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -70,13 +75,14 @@ func (c *Clock) BindPostgres(t testing.TB, dsn string) string {
 	})
 	_, err = db.ExecContext(context.Background(), `
 CREATE SCHEMA plug_test_clock;
-CREATE TABLE plug_test_clock.instant (singleton boolean PRIMARY KEY CHECK(singleton), at timestamptz NOT NULL);
+CREATE SEQUENCE plug_test_clock.micros AS bigint;
 CREATE FUNCTION plug_test_clock.clock_timestamp() RETURNS timestamptz LANGUAGE sql VOLATILE
-AS 'SELECT at FROM plug_test_clock.instant WHERE singleton';`)
+AS 'SELECT timestamptz ''epoch'' + (last_value / 1000000) * interval ''1 second''
+        + (last_value % 1000000) * interval ''1 microsecond'' FROM plug_test_clock.micros';`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.ExecContext(context.Background(), `INSERT INTO plug_test_clock.instant VALUES (true,$1)`, c.Now()); err != nil {
+	if _, err = db.ExecContext(context.Background(), `SELECT setval('plug_test_clock.micros',$1,true)`, c.Now().UnixMicro()); err != nil {
 		t.Fatal(err)
 	}
 	u, err := url.Parse(dsn)
@@ -113,8 +119,4 @@ func PostgresNow(t testing.TB, dsn string) time.Time {
 		t.Fatal("controlled SQL clock unexpectedly equals catalog wall time")
 	}
 	return at.UTC()
-}
-
-func (c *Clock) String() string {
-	return fmt.Sprintf("controlled UTC %s", c.Now().Format(time.RFC3339Nano))
 }
