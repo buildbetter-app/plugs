@@ -1,6 +1,10 @@
 (function () {
   "use strict";
 
+  // A supplied credential is deliberately held only in this page closure.
+  // Never persist it, expose it to plugin frames, or send it with static assets.
+  let accessToken = "";
+  const authenticatedSeen = new Map();
   const state = { config: null, hello: null, methods: new Set(), activeView: "home", work: null, live: null, sequence: 0, home: null, next: null, blocked: null, bridges: [] };
   const $ = (id) => document.getElementById(id);
   const text = (node, value) => { node.textContent = value == null ? "" : String(value); };
@@ -51,12 +55,13 @@
     const response = await fetch(state.config.rpcPath, {
       method: "POST", mode: "same-origin", credentials: "omit", redirect: "error", cache: "no-store", signal,
       keepalive: method === "event.unsubscribe" || method === "session.close",
-      headers: Object.assign({ "Accept": "application/json", "Content-Type": "application/json", "Plug-RPC": "1" }, session ? { "Plug-Session": session } : {}),
+      headers: Object.assign({ "Accept": "application/json", "Content-Type": "application/json", "Plug-RPC": "1" }, accessToken ? { "Authorization": "Bearer " + accessToken } : {}, session ? { "Plug-Session": session } : {}),
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params: input }),
     });
     const raw = await response.text();
     signal.throwIfAborted();
     if (raw.length > 2 * 1024 * 1024) throw new RPCError("The response exceeds this page's read limit.", "response_too_large");
+    if (response.status === 401) throw new RPCError("Sign in with a current key for this server.", "unauthenticated");
     let envelope;
     try { envelope = parseJSON(raw); } catch (error) {
       if (error instanceof RPCError) throw error;
@@ -75,12 +80,16 @@
     state.config = await response.json();
     if (!state.config || !Number.isInteger(state.config.maxRows) || state.config.maxRows < 1 || state.config.maxRows > 100) throw new RPCError("The row budget is not configured.", "unconfigured");
     const hello = await rpc("server.hello", { clientVersion: "plug-web-ui/0.1", protocolVersion: "1" }, signal);
-    if (hello.authMode !== "anonymous") throw new RPCError("Interactive browser sessions are not configured in this UI.", "sessions_unconfigured");
+    if (!["anonymous", "authenticated"].includes(hello.authMode)) throw new RPCError("The server authentication mode is unavailable.", "unavailable");
+    if (hello.authMode === "authenticated" && !accessToken) throw new RPCError("Sign in with a current key for this server.", "unauthenticated");
     const discovery = await rpc("rpc.methods", {}, signal);
     if (!Array.isArray(discovery.methods)) throw new RPCError("Server capabilities are unreadable.", "invalid_response");
     state.hello = hello; state.methods = new Set(discovery.methods);
     text($("budget-number"), state.config.maxRows); text($("next-budget-number"), state.config.maxRows);
-    text($("footer-project"), "Project " + state.config.project); text($("footer-auth"), "Anonymous · loopback only");
+    text($("footer-project"), "Project " + state.config.project); text($("footer-auth"), hello.authMode === "authenticated" ? "Authenticated · bearer credential" : "Anonymous · loopback only");
+    $("authentication").hidden = hello.authMode !== "authenticated";
+    $("sign-out").hidden = hello.authMode !== "authenticated";
+    if (hello.authMode === "authenticated") text($("auth-state"), "Connected. The key stays in this tab until sign-out or reload.");
     text($("capability-note"), "Only the rows in this page are compared with your previous read. Continue the snapshot to inspect the next page.");
     text($("home-boundary"), "Refresh reads a new snapshot. Live watches are unavailable in this UI; rows stay in server order.");
     renderCatalog(state.config.catalog || {});
@@ -248,6 +257,7 @@
   // project, and store incarnation. A page cut never marks unseen rows read.
   function seenKey(at) { return "plug:seen:" + JSON.stringify([state.config.rpcPath, state.config.project, at.incarnation]); }
   function readSeen(at) {
+    if (state.hello && state.hello.authMode === "authenticated") return new Map(authenticatedSeen.get(seenKey(at)) || []);
     try {
       const value = JSON.parse(localStorage.getItem(seenKey(at)) || "[]");
       return new Map(Array.isArray(value) ? value.slice(-1000).filter((x) => Array.isArray(x) && typeof x[0] === "string" && integer(x[1])) : []);
@@ -255,6 +265,9 @@
   }
   function markSeen(rows, seen, at) {
     rows.forEach((item) => { seen.delete(item.id); seen.set(item.id, String(item.revision)); });
+    if (state.hello && state.hello.authMode === "authenticated") {
+      authenticatedSeen.set(seenKey(at), Array.from(seen.entries()).slice(-1000)); return;
+    }
     try { localStorage.setItem(seenKey(at), JSON.stringify(Array.from(seen.entries()).slice(-1000))); } catch (_) { /* private/disabled storage remains usable */ }
   }
   async function home(nextPage, signal) {
@@ -419,7 +432,7 @@
   async function streamWatch(live, received, allowBootstrap) {
     const response = await fetch(state.config.watchPath, {
       method: "POST", mode: "same-origin", credentials: "omit", redirect: "error", cache: "no-store", signal: live.controller.signal,
-      headers: { "Content-Type": "application/json", "Accept": "application/x-ndjson", "Plug-RPC": "1", "Plug-Session": live.session },
+      headers: Object.assign({ "Content-Type": "application/json", "Accept": "application/x-ndjson", "Plug-RPC": "1", "Plug-Session": live.session }, accessToken ? { "Authorization": "Bearer " + accessToken } : {}),
       body: JSON.stringify({ subscriptionId: live.subscription }),
     });
     if (!response.ok || !response.headers.get("Content-Type")?.startsWith("application/x-ndjson") || !response.body) throw new RPCError("The server refused the live stream.", "watch_unavailable");
@@ -670,6 +683,7 @@
       setConnection("ok", "Connected"); setMessage("");
     } catch (error) {
       if (state.work !== work) return;
+      if (error && ["unauthenticated", "token_expired"].includes(error.code)) forgetIdentity(false);
       if (view === "epic") {
         PlugEpicProgress.clear();
         // Parent refusal details are not presentation data. Do not copy a
@@ -690,6 +704,39 @@
       if (state.work === work) { state.work = null; $("cancel").hidden = true; $("refresh").disabled = false; if (state.live) void drainWatch(state.live); }
     }
   }
+  function forgetIdentity(abort = true) {
+    if (abort && state.work) { state.work.controller.abort(); state.work = null; }
+    stopWatch();
+    state.bridges.forEach((revoke) => revoke()); state.bridges = [];
+    accessToken = ""; authenticatedSeen.clear(); $("auth-token").value = "";
+    state.hello = null; state.methods = new Set();
+    state.home = null; state.next = null; state.blocked = null;
+    PlugEpicProgress.clear();
+    ["changed-rows", "next-rows", "blocked-state", "explain-state", "comment-state", "presence-rows", "plugin-frames", "catalog-entries"].forEach((id) => clear($(id)));
+    ["changed-more", "next-more", "blocked-more"].forEach((id) => { clear($(id)); $(id).hidden = true; });
+    ["changed-count", "ready-count", "revision-count", "presence-count"].forEach((id) => text($(id), "—"));
+    ["changed-caption", "ready-caption", "revision-caption", "presence-caption", "snapshot-state"].forEach((id) => text($(id), "Sign-in required"));
+    text($("epic-progress-heading"), "Epic progress unavailable.");
+    text($("epic-progress-state"), "Sign in to read epic progress.");
+    text($("footer-auth"), "Sign-in required");
+    $("authentication").hidden = false; $("auth-form").hidden = false; $("sign-out").hidden = true;
+    text($("auth-state"), "Sign in with a current key for this server. The key stays in this tab until sign-out or reload.");
+    if (abort) { $("cancel").hidden = true; $("refresh").disabled = false; }
+  }
+  $("auth-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const credential = $("auth-token").value;
+    forgetIdentity();
+    if (!credential || credential.length > 4096 || /\s/.test(credential)) {
+      text($("auth-state"), "Enter a valid key for this server."); return;
+    }
+    accessToken = credential;
+    load(false);
+  });
+  $("sign-out").addEventListener("click", () => {
+    forgetIdentity(); text($("epic-state"), "Sign in to read epic progress.");
+    setConnection("loading", "Signed out"); setMessage("Signed out.");
+  });
   function selectView(name) {
     state.activeView = name;
     document.querySelectorAll(".tab").forEach((tab) => { const active = tab.dataset.view === name; tab.classList.toggle("is-active", active); tab.setAttribute("aria-selected", String(active)); });
@@ -699,7 +746,7 @@
   $("refresh").addEventListener("click", () => load(false));
   $("cancel").addEventListener("click", () => { if (state.work) state.work.controller.abort(); });
   $("stop-watch").addEventListener("click", () => { stopWatch(); watchStatus("Live changes cancelled. Refresh to reconnect."); });
-  window.addEventListener("pagehide", () => { state.bridges.forEach((revoke) => revoke()); if (state.work) state.work.controller.abort(); stopWatch(); PlugEpicProgress.clear(); watchStatus("Live changes stopped. Refresh to reconnect."); });
+  window.addEventListener("pagehide", () => { forgetIdentity(); watchStatus("Live changes stopped. Refresh to reconnect."); });
   $("explain-form").addEventListener("submit", (event) => { event.preventDefault(); load(false); });
   $("epic-form").addEventListener("submit", (event) => { event.preventDefault(); load(false); });
   document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => selectView(tab.dataset.view)));

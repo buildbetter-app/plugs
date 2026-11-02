@@ -37,6 +37,18 @@
 
       <div id="global-message" class="global-message" role="status" aria-live="polite"></div>
 
+      <section id="authentication" class="panel panel-note" aria-label="Server sign-in" hidden>
+        <form id="auth-form">
+          <label for="auth-token">API key</label>
+          <div class="explain-controls">
+            <input id="auth-token" name="apiKey" type="password" autocomplete="off" spellcheck="false" aria-describedby="auth-state">
+            <button class="button button-primary" type="submit">Connect</button>
+            <button id="sign-out" class="button button-quiet" type="button" hidden>Sign out</button>
+          </div>
+        </form>
+        <p id="auth-state" class="muted" role="status">Sign in with a key for this server. The key stays in this tab until sign-out or reload.</p>
+      </section>
+
       <main>
         <section class="view-panel is-visible" data-panel="home" role="tabpanel">
           <div class="view-heading">

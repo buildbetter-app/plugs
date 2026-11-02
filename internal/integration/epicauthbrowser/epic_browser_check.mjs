@@ -181,7 +181,7 @@ try {
   // Preserve the actual assertion even if Chrome profile cleanup also fails.
   console.error(error.stack); process.exitCode = 1;
 } finally {
-  if (send && ws?.readyState === WebSocket.OPEN) await send("Browser.close").catch(() => {});
+  if (send && ws?.readyState === WebSocket.OPEN) await Promise.race([send("Browser.close").catch(() => {}), delay(2000)]);
   if (ws) ws.close();
   if (chrome.exitCode === null && chrome.signalCode === null) { const stopped = once(chrome, "exit").catch(() => {}); try { process.kill(-chrome.pid, "SIGKILL"); } catch {} await stopped; }
   await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
