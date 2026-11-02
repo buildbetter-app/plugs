@@ -157,7 +157,13 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 			if !json.Valid(record.Body) {
 				return nil, dumpformat.Manifest{}, fmt.Errorf("record %v has invalid JSON body", record.Ref)
 			}
-			records = append(records, nativeRecord{Ref: record.Ref, Kind: record.Kind, Revision: record.Revision, Body: append(json.RawMessage(nil), record.Body...)})
+			// Omitted and explicit zero branches name the same ID. Emit one
+			// spelling whether the driver serves current or replayed content.
+			ref := record.Ref
+			if ref.IsID() && ref.Branch.IsZero() {
+				ref.Branch = model.Natural64(0)
+			}
+			records = append(records, nativeRecord{Ref: ref, Kind: record.Kind, Revision: record.Revision, Body: append(json.RawMessage(nil), record.Body...)})
 		}
 		if page.NextCursor == nil {
 			break

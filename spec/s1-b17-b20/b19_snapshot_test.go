@@ -88,7 +88,7 @@ func TestB19DumpRetainsDeclaredSnapshotAcrossAConcurrentWrite(t *testing.T) {
 						t.Fatal("archive identity/digest no longer binds the captured source snapshot")
 					}
 					rows := b19SnapshotMember[b19SnapshotRecord](t, archive, "records/native.ndjson")
-					if len(rows) != 1 || rows[0].Ref != ref || rows[0].Revision.String() != "2" || !bytes.Equal(rows[0].Body, before.Body) {
+					if len(rows) != 1 || rows[0].Ref != model.RefByID(ref.ID, model.Natural64(0)) || rows[0].Kind != "bead" || rows[0].Revision.String() != "2" || !bytes.Equal(rows[0].Body, before.Body) {
 						t.Fatalf("archive body differs from the real earlier state: %+v", rows)
 					}
 					versions := b19SnapshotMember[driver.Version](t, archive, "versions.ndjson")
@@ -97,9 +97,8 @@ func TestB19DumpRetainsDeclaredSnapshotAcrossAConcurrentWrite(t *testing.T) {
 					if history == "head" {
 						wantVersions, wantChanges = before.Versions[len(before.Versions)-1:], nil
 					}
-					if !reflect.DeepEqual(versions, wantVersions) || !reflect.DeepEqual(changes, wantChanges) {
-						t.Fatal("archive changed the captured version bodies/patches, attribution or ordered changesets")
-					}
+					b19AssertSnapshotMember(t, archive, "versions.ndjson", wantVersions)
+					b19AssertSnapshotMember(t, archive, "changesets.ndjson", wantChanges)
 					projection := b19SnapshotProjection{Body: string(rows[0].Body), Revision: rows[0].Revision.String()}
 					for _, version := range versions {
 						projection.Versions = append(projection.Versions, version.Revision.String())
@@ -171,7 +170,7 @@ func TestB19DumpEmptySnapshotDoesNotResolveAsLatest(t *testing.T) {
 				if len(b19SnapshotMember[b19SnapshotRecord](t, archive, "records/native.ndjson")) != 0 || len(b19SnapshotMember[driver.Version](t, archive, "versions.ndjson")) != 0 || len(b19SnapshotMember[model.Changeset](t, archive, "changesets.ndjson")) != 0 {
 					t.Fatal("empty snapshot invented records or history")
 				}
-				// A separate unpinned dump must observe the real committed create.
+				// A separate fresh dump must observe the real committed create.
 				// Thus the empty result above cannot pass because the write failed.
 				latestData, latest, err := restore.Dump(h.ctx, h.store, history)
 				if err != nil || latest.NativeHead != "1" || latest.RecordCount != 1 || latest.VersionCount != 1 || bytes.Equal(data, latestData) {
@@ -179,6 +178,23 @@ func TestB19DumpEmptySnapshotDoesNotResolveAsLatest(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func b19AssertSnapshotMember[T any](t *testing.T, archive *dumpformat.Archive, member string, rows []T) {
+	t.Helper()
+	var expected bytes.Buffer
+	for _, row := range rows {
+		data, err := json.Marshal(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected.Write(data)
+		expected.WriteByte('\n')
+	}
+	actual, ok := archive.NativeMember(member)
+	if !ok || !bytes.Equal(actual, expected.Bytes()) {
+		t.Fatalf("archive changed captured %s bytes, including version bodies/patches, attribution or changeset order", member)
 	}
 }
 
