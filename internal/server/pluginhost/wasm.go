@@ -82,12 +82,12 @@ func NewWASMNative(wasm []byte, manifest pluginapi.PluginManifest, instance stri
 // linear memory, globals, allocators and invocation capabilities remain
 // private while compilation/link setup is paid only once.
 type wasmFactory struct {
-	mu       sync.Mutex
-	wasm     []byte
-	runtime  wazero.Runtime
-	compiled wazero.CompiledModule
-	modules  map[api.Module]*wasmRuntime
-	closed   bool
+	mu           sync.Mutex
+	wasm         []byte
+	runtime      wazero.Runtime
+	compiled     wazero.CompiledModule
+	modules      map[api.Module]*wasmRuntime
+	constructing int
 }
 
 type wasmRuntime struct {
@@ -149,19 +149,16 @@ func newWASMRuntime(wasm []byte, host pluginapi.Host) (*wasmRuntime, error) {
 	return factory.newRuntime(context.Background(), host)
 }
 
-func (f *wasmFactory) ensure(ctx context.Context) error {
+func (f *wasmFactory) ensureLocked(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.closed {
-		return failure(ErrInactive, "WASM factory is closed")
 	}
 	if f.runtime != nil && f.compiled != nil {
 		return nil
 	}
-	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter().WithCloseOnContextDone(true).WithMemoryLimitPages(maxWASMPages))
+	// The factory owns this shared runtime. Its owner context is stable while
+	// the caller context still bounds setup, linking and compilation below.
+	runtime := wazero.NewRuntimeWithConfig(context.Background(), wazero.NewRuntimeConfigInterpreter().WithMemoryLimitPages(maxWASMPages))
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, runtime); err != nil {
 		_ = runtime.Close(context.Background())
 		return failure(ErrManifest, "WASI runtime setup failed: %v", err)
@@ -188,16 +185,49 @@ func (f *wasmFactory) ensure(ctx context.Context) error {
 	return nil
 }
 
-func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*wasmRuntime, error) {
-	if err := f.ensure(ctx); err != nil {
-		return nil, err
+func closeWASMResources(compiled wazero.CompiledModule, runtime wazero.Runtime) {
+	if compiled != nil {
+		_ = compiled.Close(context.Background())
 	}
+	if runtime != nil {
+		_ = runtime.Close(context.Background())
+	}
+}
+
+func (f *wasmFactory) detachResourcesLocked() (wazero.CompiledModule, wazero.Runtime) {
+	if f.constructing != 0 || len(f.modules) != 0 {
+		return nil, nil
+	}
+	compiled, runtime := f.compiled, f.runtime
+	f.compiled, f.runtime = nil, nil
+	return compiled, runtime
+}
+
+func (f *wasmFactory) endConstruction() {
+	f.mu.Lock()
+	f.constructing--
+	compiled, runtime := f.detachResourcesLocked()
+	f.mu.Unlock()
+	closeWASMResources(compiled, runtime)
+}
+
+func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*wasmRuntime, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	f.mu.Lock()
+	f.constructing++
+	if err := f.ensureLocked(ctx); err != nil {
+		f.constructing--
+		f.mu.Unlock()
+		return nil, err
+	}
 	runtime, compiled := f.runtime, f.compiled
 	f.mu.Unlock()
+	defer f.endConstruction()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	initCtx, cancel := context.WithTimeout(ctx, wasmInitTimeout)
 	defer cancel()
 	module, err := runtime.InstantiateModule(initCtx, compiled, wazero.NewModuleConfig().WithStartFunctions())
@@ -213,11 +243,6 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 		return nil, failure(ErrManifest, "WASM module does not expose the required ABI")
 	}
 	f.mu.Lock()
-	if f.closed {
-		f.mu.Unlock()
-		result.close()
-		return nil, failure(ErrInactive, "WASM factory is closed")
-	}
 	f.modules[module] = result
 	f.mu.Unlock()
 	// c-shared wasip1 modules expose `_initialize` instead of an exiting
@@ -254,12 +279,18 @@ func (r *wasmRuntime) closeLocked() {
 	}
 	r.closed = true
 	if r.module != nil {
+		module := r.module
+		r.module = nil
+		var compiled wazero.CompiledModule
+		var runtime wazero.Runtime
 		if r.factory != nil {
 			r.factory.mu.Lock()
-			delete(r.factory.modules, r.module)
+			delete(r.factory.modules, module)
+			compiled, runtime = r.factory.detachResourcesLocked()
 			r.factory.mu.Unlock()
 		}
-		_ = r.module.Close(context.Background())
+		_ = module.Close(context.Background())
+		closeWASMResources(compiled, runtime)
 	}
 }
 

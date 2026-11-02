@@ -31,6 +31,7 @@ go_test(
         "//pluginapi",
         "//sdk/go:sdk_go",
         "//sdk/go/conformance",
+        "@com_github_tetratelabs_wazero//api",
     ],
 )
 

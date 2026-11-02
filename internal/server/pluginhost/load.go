@@ -53,6 +53,7 @@ type Binding struct {
 }
 
 type Host struct {
+	mu                       sync.Mutex
 	instances                map[string]*instance
 	natives                  map[string]sdk.Native
 	bindings                 []*bound
@@ -60,6 +61,7 @@ type Host struct {
 	dispatcher               Dispatcher
 	authorize                func(context.Context, string, []pluginapi.Ref) error
 	authenticationConfigured bool
+	closed                   bool
 }
 
 const (
@@ -121,6 +123,8 @@ type instancePool struct {
 	generation   uint64
 	slots        int
 	constructing int
+	waiters      int
+	constructWG  sync.WaitGroup
 	ctx          context.Context
 	cancel       context.CancelFunc
 	closed       bool
@@ -147,12 +151,12 @@ func newInstancePool(native sdk.Native, owner *Host, source *instance) (*instanc
 	for n := 0; n < maxRuntimeInstances; n++ {
 		member, err := newInstanceWithContext(context.Background(), native, source.manifest, owner, source.state)
 		if err != nil {
-			cancel()
+			pool.close()
 			return nil, err
 		}
 		if err := validateRegistration(member); err != nil {
 			member.dispose()
-			cancel()
+			pool.close()
 			return nil, err
 		}
 		pool.available <- member
@@ -228,11 +232,93 @@ func (p *instancePool) idleAffinityLocked() (string, *instance) {
 }
 
 func (p *instancePool) wait(queueCtx context.Context, done <-chan struct{}) error {
+	p.mu.Lock()
+	p.waiters++
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.waiters--
+		p.mu.Unlock()
+	}()
 	select {
 	case <-done:
 		return nil
 	case <-queueCtx.Done():
 		return queueCtx.Err()
+	}
+}
+
+func closeAffinityLocked(state *affinityState) {
+	if state == nil || state.done == nil {
+		return
+	}
+	close(state.done)
+	state.done = nil
+}
+
+// constructionContext combines the caller's acquisition bound with the
+// pool-owned shutdown context. A host close must cancel both foreground
+// replacement and background refill without changing the callback budget.
+func (p *instancePool) constructionContext(parent context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	stop := context.AfterFunc(p.ctx, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
+}
+
+func (p *instancePool) scheduleRefill() {
+	p.mu.Lock()
+	if p.closed || p.slots >= maxRuntimeInstances {
+		p.mu.Unlock()
+		return
+	}
+	p.constructWG.Add(1)
+	p.mu.Unlock()
+	go p.refillSlot()
+}
+
+func (p *instancePool) close() {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.closed = true
+	p.cancel()
+	members := map[*instance]struct{}{}
+	for _, state := range p.affinity {
+		closeAffinityLocked(state)
+		if state.member != nil {
+			members[state.member] = struct{}{}
+		}
+	}
+	for member := range p.leased {
+		members[member] = struct{}{}
+	}
+	for member := range p.retiring {
+		members[member] = struct{}{}
+	}
+	for {
+		select {
+		case member := <-p.available:
+			if member != nil {
+				members[member] = struct{}{}
+			}
+		default:
+			p.affinity = map[string]*affinityState{}
+			p.leased = map[*instance]bool{}
+			p.retiring = map[*instance]bool{}
+			p.broadcastLocked()
+			p.mu.Unlock()
+			for member := range members {
+				member.dispose()
+				member.waitIdle()
+			}
+			p.constructWG.Wait()
+			return
+		}
 	}
 }
 
@@ -298,6 +384,7 @@ func (p *instancePool) acquire(ctx context.Context, wait time.Duration, key stri
 			}
 			p.slots++
 			p.constructing++
+			p.constructWG.Add(1)
 			p.mu.Unlock()
 			lease, err := p.construct(queueCtx, key, state, nil, queueCtx)
 			if err == nil {
@@ -310,13 +397,17 @@ func (p *instancePool) acquire(ctx context.Context, wait time.Duration, key stri
 		// replaced, but its private guest state is never reassigned.
 		owner, member := p.idleAffinityLocked()
 		if member != nil {
+			oldState := p.affinity[owner]
 			delete(p.affinity, owner)
+			closeAffinityLocked(oldState)
 			p.retiring[member] = true
 			var state *affinityState
 			if key != "" {
 				state = p.newPendingLocked()
 				p.affinity[key] = state
 			}
+			p.constructing++
+			p.constructWG.Add(1)
 			p.mu.Unlock()
 			lease, err := p.construct(queueCtx, key, state, member, queueCtx)
 			if err == nil {
@@ -338,22 +429,28 @@ func (p *instancePool) acquire(ctx context.Context, wait time.Duration, key stri
 // live guest. queueCtx bounds caller-driven construction; a canceled caller
 // leaves capacity recovery to the pool's bounded background refill.
 func (p *instancePool) construct(ctx context.Context, key string, state *affinityState, old *instance, queueCtx context.Context) (*poolLease, error) {
+	defer p.constructWG.Done()
 	if old != nil {
 		old.dispose()
 		old.waitIdle()
 		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			return nil, failure(ErrInactive, "plugin runtime pool is closed")
+		}
 		delete(p.retiring, old)
 		p.slots--
 		p.slots++
-		p.constructing++
 		p.mu.Unlock()
 	}
-	if err := queueCtx.Err(); err != nil {
+	constructionCtx, stop := p.constructionContext(queueCtx)
+	defer stop()
+	if err := constructionCtx.Err(); err != nil {
 		if state != nil {
 			p.mu.Lock()
 			if p.affinity[key] == state {
 				delete(p.affinity, key)
-				close(state.done)
+				closeAffinityLocked(state)
 				p.broadcastLocked()
 			}
 			p.mu.Unlock()
@@ -363,27 +460,27 @@ func (p *instancePool) construct(ctx context.Context, key string, state *affinit
 		p.slots--
 		p.broadcastLocked()
 		p.mu.Unlock()
-		go p.refillSlot()
+		p.scheduleRefill()
 		return nil, poolBusy(ctx)
 	}
-	fresh, err := p.newMember(ctx)
-	if err != nil || ctx.Err() != nil {
+	fresh, err := p.newMember(constructionCtx)
+	if err == nil && constructionCtx.Err() != nil {
+		err = constructionCtx.Err()
+	}
+	if err != nil {
 		if fresh != nil {
 			fresh.dispose()
-		}
-		if err == nil {
-			err = ctx.Err()
 		}
 		p.mu.Lock()
 		p.constructing--
 		p.slots--
 		if state != nil && p.affinity[key] == state {
 			delete(p.affinity, key)
-			close(state.done)
+			closeAffinityLocked(state)
 		}
 		p.broadcastLocked()
 		p.mu.Unlock()
-		go p.refillSlot()
+		p.scheduleRefill()
 		return nil, err
 	}
 
@@ -397,15 +494,18 @@ func (p *instancePool) construct(ctx context.Context, key string, state *affinit
 	}
 	if state != nil {
 		if p.affinity[key] != state {
+			closeAffinityLocked(state)
 			p.slots--
+			p.broadcastLocked()
 			p.mu.Unlock()
 			fresh.dispose()
+			p.scheduleRefill()
 			return nil, failure(ErrPluginBusy, "plugin runtime affinity reservation was superseded")
 		}
 		state.member = fresh
 		state.leased = true
 		p.leased[fresh] = true
-		close(state.done)
+		closeAffinityLocked(state)
 		state.done = make(chan struct{})
 		p.broadcastLocked()
 		lease := &poolLease{member: fresh, key: key, generation: state.generation, state: state}
@@ -420,6 +520,7 @@ func (p *instancePool) construct(ctx context.Context, key string, state *affinit
 }
 
 func (p *instancePool) refillSlot() {
+	defer p.constructWG.Done()
 	ctx, cancel := context.WithTimeout(p.ctx, wasmInitTimeout)
 	defer cancel()
 	p.mu.Lock()
@@ -431,7 +532,10 @@ func (p *instancePool) refillSlot() {
 	p.constructing++
 	p.mu.Unlock()
 	fresh, err := p.newMember(ctx)
-	if err != nil || ctx.Err() != nil {
+	if err == nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	if err != nil {
 		if fresh != nil {
 			fresh.dispose()
 		}
@@ -463,7 +567,7 @@ func (p *instancePool) fail(lease *poolLease) {
 		delete(p.leased, member)
 		if lease.state != nil && p.affinity[lease.key] == lease.state {
 			delete(p.affinity, lease.key)
-			close(lease.state.done)
+			closeAffinityLocked(lease.state)
 		}
 		p.retiring[member] = true
 		p.broadcastLocked()
@@ -487,11 +591,16 @@ func (p *instancePool) refillRetired(member *instance) {
 	p.slots--
 	p.slots++
 	p.constructing++
+	p.constructWG.Add(1)
 	p.mu.Unlock()
+	defer p.constructWG.Done()
 	ctx, cancel := context.WithTimeout(p.ctx, wasmInitTimeout)
 	defer cancel()
 	fresh, err := p.newMember(ctx)
-	if err != nil || ctx.Err() != nil {
+	if err == nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	if err != nil {
 		if fresh != nil {
 			fresh.dispose()
 		}
@@ -533,7 +642,7 @@ func (p *instancePool) finish(lease *poolLease) {
 	keep := lease.state != nil && p.affinity[lease.key] == lease.state && lease.state.generation == lease.generation && !member.isDisposed() && !p.retiring[member]
 	if keep {
 		lease.state.leased = false
-		close(lease.state.done)
+		closeAffinityLocked(lease.state)
 		lease.state.done = make(chan struct{})
 		p.broadcastLocked()
 		p.mu.Unlock()
@@ -584,8 +693,49 @@ type registeredMethod struct {
 	grant    pluginapi.MethodGrant
 }
 
-func New(config Config) (*Host, error) {
+// Close retires every binding pool and source instance owned by the host. It
+// is safe to call repeatedly; pool shutdown cancels queued/refill work before
+// disposing members, and source instances are drained before returning.
+func (h *Host) Close() error {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return nil
+	}
+	h.closed = true
+	pools := make([]*instancePool, 0, len(h.bindings))
+	for _, binding := range h.bindings {
+		if binding != nil && binding.pool != nil {
+			pools = append(pools, binding.pool)
+		}
+	}
+	instances := make([]*instance, 0, len(h.instances))
+	for _, instance := range h.instances {
+		instances = append(instances, instance)
+	}
+	h.bindings = nil
+	h.instances = map[string]*instance{}
+	h.natives = map[string]sdk.Native{}
+	h.methods = map[string]registeredMethod{}
+	h.mu.Unlock()
+
+	for _, pool := range pools {
+		pool.close()
+	}
+	for _, instance := range instances {
+		instance.dispose()
+		instance.waitIdle()
+	}
+	return nil
+}
+
+func New(config Config) (result *Host, err error) {
 	h := &Host{instances: map[string]*instance{}, natives: map[string]sdk.Native{}, methods: map[string]registeredMethod{}, dispatcher: config.Dispatcher, authorize: config.Authorize, authenticationConfigured: config.AuthenticationConfigured}
+	defer func() {
+		if err != nil {
+			_ = h.Close()
+		}
+	}()
 	aliases, ids := map[string]string{}, map[string]string{}
 	for _, native := range config.Natives {
 		if err := native.Manifest.Validate(); err != nil {
@@ -610,11 +760,13 @@ func New(config Config) (*Host, error) {
 		if err != nil {
 			return nil, fmt.Errorf("initialize %s: %w", key, err)
 		}
+		// Publish ownership before registration so a partially registered
+		// instance is included in the rollback path if validation fails.
+		h.instances[key] = i
+		h.natives[key] = native
 		if err := h.register(i); err != nil {
 			return nil, err
 		}
-		h.instances[key] = i
-		h.natives[key] = native
 	}
 	seen := map[string]bool{}
 	for _, binding := range config.Bindings {
