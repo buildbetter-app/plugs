@@ -152,17 +152,20 @@ func deliveredPublicBeads(t *testing.T) beadsOptions {
 		Build struct {
 			Run string `json:"run_id"`
 		} `json:"build"`
-		Resolution map[string]struct {
-			Commit string `json:"commit"`
-			Build  string `json:"build"`
-		} `json:"resolution"`
+		Resolution map[string]json.RawMessage `json:"resolution"`
 	}
 	if err := json.Unmarshal(data, &identity); err != nil {
-		t.Fatal("verified public artifact manifest is invalid")
+		t.Fatalf("verified public artifact manifest is invalid: %v", err)
 	}
 	artifact := identity.Artifacts[profile.Exporter.Binary]
 	target := identity.Targets[profile.Exporter.TargetKey]
-	version := identity.Resolution[profile.VersionKey]
+	var version struct {
+		Commit string `json:"commit"`
+		Build  string `json:"build"`
+	}
+	if err := json.Unmarshal(identity.Resolution[profile.VersionKey], &version); err != nil {
+		t.Fatalf("verified public artifact version is invalid: %v", err)
+	}
 	if identity.Schema != profile.Schema || identity.Source["beads"].Commit != beadsCommit || identity.Source["beads"].Tree != beadsTree || target.Label != profile.Exporter.Label || target.Binary != profile.Exporter.Binary || artifact.SHA256 != options.SHA256 || artifact.Mode != "0o755" || artifact.Size <= 0 || identity.Build.Run != options.BuildRun || version.Commit != beadsCommit || version.Build != "public-"+beadsCommit {
 		t.Fatal("prepared public artifact identity does not match its manifest")
 	}
