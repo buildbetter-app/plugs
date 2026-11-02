@@ -321,8 +321,16 @@ func recordPublicRun(t *testing.T, root, name string, artifact publicArtifact, f
 	commandBD("source-init", "source", source, []string{"init", "--prefix", "pub", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, nil)
 	commandBD("source-config", "source", source, []string{"--json", "config", "set", fixture.ConfigKey, "paired-public"}, nil)
 	configOutput := commandBD("source-config-list", "source", source, []string{"--json", "config", "list"}, nil)
-	var settings map[string]string
-	if err := json.Unmarshal(bytes.TrimSpace(configOutput), &settings); err != nil || settings[fixture.ConfigKey] != "paired-public" {
+	var settings map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimSpace(configOutput), &settings); err != nil {
+		t.Fatalf("real config list is invalid JSON: %v %s", err, configOutput)
+	}
+	rawSetting, ok := settings[fixture.ConfigKey]
+	if !ok {
+		t.Fatalf("real config list omitted %s: key is absent %s", fixture.ConfigKey, configOutput)
+	}
+	var configured string
+	if err := json.Unmarshal(rawSetting, &configured); err != nil || configured != "paired-public" {
 		t.Fatalf("real config list omitted %s: %v %s", fixture.ConfigKey, err, configOutput)
 	}
 	commandBD("source-remember", "source", source, []string{"--json", "remember", "paired-store memory", "--key", fixture.MemoryKey}, nil)
