@@ -38,7 +38,7 @@ func Native() sdk.Native {
 			if err := json.Unmarshal(params, &req); err != nil {
 				return nil, err
 			}
-			result, err := provider.Invoke(ctx, pluginapi.PrincipalRef{Kind: "plugin", ID: "buildbetter.workflow/default"}, req, model.WriteMeta{Method: "x.workflow.invoke", IdempotencyKey: "native-workflow-invoke", Project: req.Project})
+			result, err := provider.Invoke(ctx, model.PrincipalRef{Kind: "plugin", ID: "buildbetter.workflow/default"}, req, model.WriteMeta{Method: "x.workflow.invoke", IdempotencyKey: "native-workflow-invoke", Project: req.Project})
 			if err != nil {
 				return nil, err
 			}

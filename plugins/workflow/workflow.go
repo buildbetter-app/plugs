@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -408,9 +407,9 @@ func receiptKeyForInvoke(p *Provider, by model.PrincipalRef, meta model.WriteMet
 }
 
 func (p *Provider) itemView(item itemState) ItemView {
-	view := ItemView{ID: item.ID, RunID: item.RunID, Label: item.Label, Title: item.Title, Type: item.Type, Project: item.Project, Status: item.Status, Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: pluginapi.Natural64(item.Generation)}
+	view := ItemView{ID: item.ID, RunID: item.RunID, Label: item.Label, Title: item.Title, Type: item.Type, Project: item.Project, Status: item.Status, Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: model.Natural64(item.Generation)}
 	if item.Claim != nil && !p.now().After(item.Claim.ExpiresAt) {
-		view.Claim = &ClaimView{Principal: item.Claim.Principal, Agent: item.Claim.Agent, ExpiresAt: item.Claim.ExpiresAt, Generation: pluginapi.Natural64(item.Claim.Generation)}
+		view.Claim = &ClaimView{Principal: item.Claim.Principal, Agent: item.Claim.Agent, ExpiresAt: item.Claim.ExpiresAt, Generation: model.Natural64(item.Claim.Generation)}
 	}
 	for _, comment := range item.Comments {
 		view.Comments = append(view.Comments, CommentView{Body: comment.Body, Principal: comment.Principal, Time: comment.Time})
