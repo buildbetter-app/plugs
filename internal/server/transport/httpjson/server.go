@@ -74,8 +74,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) Close() error {
+	// Close active HTTP connections before canceling request roots. Otherwise a
+	// cooperative handler can observe cancellation, publish an RPC response,
+	// and win the race with the forced connection close.
+	err := errors.Join(s.server.Close(), closeListener(s.listener))
 	s.cancel()
-	return errors.Join(s.server.Close(), closeListener(s.listener))
+	return err
 }
 
 func closeListener(listener net.Listener) error {

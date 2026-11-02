@@ -21,6 +21,7 @@ go_test(
     size = "medium",
     srcs = ["integration_test.go"],
     args = ["-test.v"],
+    tags = ["exclusive"],
     deps = [
         ":migrationpre",
         "//internal/api/wire",
