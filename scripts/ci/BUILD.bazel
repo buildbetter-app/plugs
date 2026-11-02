@@ -6,3 +6,13 @@ sh_test(
     data = ["prepare-public-bundle.py"],
     size = "small",
 )
+
+sh_test(
+    name = "prepare_public_reference_test",
+    srcs = ["prepare-public-reference-test.py"],
+    data = [
+        "prepare-public-bundle.py",
+        "prepare-public-reference.py",
+    ],
+    size = "small",
+)
