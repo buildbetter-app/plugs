@@ -683,6 +683,7 @@ internal/server/transport/httpjson/BUILD.bazel
 internal/server/transport/httpjson/README.md
 internal/server/transport/httpjson/admission_test.go
 internal/server/transport/httpjson/bounds_test.go
+internal/server/transport/httpjson/close_test.go
 internal/server/transport/httpjson/config.go
 internal/server/transport/httpjson/fixture_test.go
 internal/server/transport/httpjson/handler.go

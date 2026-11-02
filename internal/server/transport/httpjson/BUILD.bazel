@@ -15,8 +15,8 @@ go_library(
 go_test(
     name = "httpjson_test",
     srcs = glob(["*_test.go"]),
+    embed = [":httpjson"],
     deps = [
-        ":httpjson",
         "//internal/api/wire",
         "//internal/core/model",
         "//internal/core/pipeline",
