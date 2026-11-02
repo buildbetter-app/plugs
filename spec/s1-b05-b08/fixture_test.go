@@ -209,3 +209,12 @@ func (f *fixture) state(t *testing.T, ref model.Ref) durableState {
 	}
 	return durableState{Head: meta.Head.String(), Record: append([]byte(nil), rows[0].Body...), Versions: len(versions.Items), Changes: len(changes)}
 }
+
+func (f *fixture) document(t *testing.T, ref model.Ref) pipeline.Document {
+	t.Helper()
+	doc, err := pipeline.DecodeDocument(f.state(t, ref).Record)
+	if err != nil {
+		t.Fatalf("decode %s: %v", ref.ID, err)
+	}
+	return doc
+}

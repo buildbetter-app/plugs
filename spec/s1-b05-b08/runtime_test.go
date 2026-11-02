@@ -114,6 +114,27 @@ func TestB06B07B08DependencyLifecycleEdges(t *testing.T) {
 	if linked.Error != nil {
 		t.Fatalf("parent-child link refused: %s", linked.Error.Data.Code)
 	}
+	// Re-adding the exact existing endpoints and type is an idempotent no-op.
+	// Assert the stored edge itself, rather than accepting any response that
+	// happens to be an error, so this proves B07 edge identity and history
+	// suppression independently of the later close guards.
+	beforeEdge := f.state(t, child)
+	beforeDoc := f.document(t, child)
+	same := f.call(t, f.ctx, "bead.link", map[string]any{"from": child, "to": parent, "kind": "parent-child"}, key("same-type"), actor)
+	if same.Error != nil {
+		t.Fatalf("same-type re-add refused: %s", same.Error.Data.Code)
+	}
+	if len(beforeDoc.Links) != 1 || beforeDoc.Links[0].To.ID != parent.ID || beforeDoc.Links[0].Kind != "parent-child" {
+		t.Fatalf("seed edge missing before re-add: %+v", beforeDoc.Links)
+	}
+	afterEdge := f.state(t, child)
+	afterDoc := f.document(t, child)
+	if beforeEdge.Head != afterEdge.Head || beforeEdge.Versions != afterEdge.Versions || beforeEdge.Changes != afterEdge.Changes || string(beforeEdge.Record) != string(afterEdge.Record) {
+		t.Fatalf("same-type re-add changed durable graph: before=%+v after=%+v", beforeEdge, afterEdge)
+	}
+	if len(afterDoc.Links) != 1 || afterDoc.Links[0].To.ID != parent.ID || afterDoc.Links[0].Kind != "parent-child" {
+		t.Fatalf("same-type re-add changed edge image: %+v", afterDoc.Links)
+	}
 	blockedClose := f.call(t, f.ctx, "bead.close", map[string]any{"id": parent}, key("parent-close"), actor)
 	if blockedClose.Error == nil || blockedClose.Error.Data.Code != "ontology_guard_failed" {
 		t.Fatalf("open-child close=%+v", blockedClose)
@@ -151,14 +172,5 @@ func TestB06B07B08DependencyLifecycleEdges(t *testing.T) {
 	}
 	if _, err := f.service.Close(f.ctx, anonymous, service.CloseRequest{ID: parent}, model.WriteMeta{Project: project, IdempotencyKey: key("parent-close-after"), Agent: actor, AgentLabel: actor, Method: "bead.close"}); err != nil {
 		t.Fatal(err)
-	}
-	// A same-type re-add is a no-op and must not mint another graph revision.
-	before := f.state(t, parent)
-	same := f.call(t, f.ctx, "bead.link", map[string]any{"from": parent, "to": child, "kind": "parent-child"}, key("same-type"), actor)
-	if same.Error == nil {
-		after := f.state(t, parent)
-		if before.Head != after.Head || before.Versions != after.Versions {
-			t.Fatalf("same-type re-add changed graph: before=%+v after=%+v", before, after)
-		}
 	}
 }

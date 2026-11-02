@@ -13,14 +13,19 @@ def canonical(value):
 def project(vectors):
     projection = []
     for vector in vectors:
+        observations = vector.get("observations", {})
+        probes = observations.get("probeResults", [])
+        if not probes or not any("stdout" in command or "stdoutBase64" in command for command in probes):
+            raise RuntimeError(f"{vector.get('card', '<unknown>')} has no retained probe output")
         projection.append({
             "card": vector["card"],
             "ids": vector["ids"],
+            "prefix": vector["configuration"]["prefix"],
             "commands": [
                 {k: command[k] for k in ("argv", "exitCode", "errorCode") if k in command}
                 for command in vector["commands"]
             ],
-            "observations": vector["observations"],
+            "observations": observations,
         })
     return projection
 

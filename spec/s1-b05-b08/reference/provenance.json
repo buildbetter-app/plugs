@@ -21,7 +21,12 @@
     {
       "stage": "clock-provenance",
       "code": "go-sql-clock-control-required",
-      "message": "B05 lease deadlines and B08 lifecycle timestamps require controlled Go and SQL clocks before qualification."
+      "message": "B05 lease deadlines and B08 lifecycle timestamps require generated proof of controlled Go and SQL clocks; an environment label is insufficient."
+    },
+    {
+      "stage": "recorder-input",
+      "code": "clean-source-and-probe-output-required",
+      "message": "The recorder must verify the clean pinned source checkout and retain actual command outputs; descriptive placeholders cannot produce a twin."
     }
   ],
   "requiredDimensions": [

@@ -18,9 +18,12 @@ The historical B07 reference bytes under `spec/recorded/extension/` remain
 unchanged and are not relabeled as full-card evidence. The reference twin
 recordings in this package are deliberately typed as unavailable until the
 pinned executable has been run twice in disposable public stores on RunsOn.
-The Plug runtime tests therefore record the executable behavior and their
-stable semantic projection without inventing Beads receipts or private-store
-observations.
+`record_reference.py` fails closed unless the source checkout is the exact
+clean pin and a generated proof binds the executable to controlled Go and SQL
+clocks; each operation retains its actual JSON or byte output, executable
+version digest, and probe projection. The Plug runtime tests therefore record
+the executable behavior and their stable semantic projection without inventing
+Beads receipts or private-store observations.
 
 Run the focused target through the swarm wrapper:
 
