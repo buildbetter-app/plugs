@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import base64
 from contextlib import ExitStack
 import hashlib
 import importlib.util
@@ -348,10 +349,13 @@ class ReferenceTest(unittest.TestCase):
         self.assertIn("--depth=1", args)
         self.assertIn("--no-tags", args)
         self.assertEqual(args[-2:], [helper.SOURCE_URL, helper.SOURCE_SHA])
-        self.assertNotIn("--depth=1", fallback_args)
-        self.assertEqual(fallback_args, [arg for arg in args if arg != "--depth=1"])
+        self.assertEqual(fallback_args, args)
         self.assertEqual(fallback_args[-2:], [helper.SOURCE_URL, helper.SOURCE_SHA])
-        self.assertIn("fixture-token-not-a-secret", env["GIT_CONFIG_VALUE_0"])
+        self.assertEqual(
+            base64.b64decode(env["GIT_CONFIG_VALUE_0"].split("AUTHORIZATION: Basic ", 1)[1]).decode(),
+            "x-access-token:fixture-token-not-a-secret",
+        )
+        self.assertNotIn("fixture-token-not-a-secret", " ".join(fallback_env.values()))
         self.assertEqual(fallback_env, helper.git_environment())
         for arguments, environment in calls:
             self.assertNotIn("GH_TOKEN", environment)

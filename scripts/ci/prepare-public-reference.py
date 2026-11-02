@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import importlib.util
 import json
@@ -260,9 +261,10 @@ def fetch_source(source: Path) -> dict:
     if not token:
         raise ValueError("reference preparation requires its step-local read token")
     fetch_environment = git_environment()
+    basic_credentials = base64.b64encode(("x-access-token:" + token).encode("utf-8")).decode("ascii")
     fetch_environment.update({
         "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
-        "GIT_CONFIG_VALUE_0": "AUTHORIZATION: bearer " + token,
+        "GIT_CONFIG_VALUE_0": "AUTHORIZATION: Basic " + basic_credentials,
     })
     # Retrieve only the exact pinned object. A trusted workflow token gets the
     # first attempt; a public repository may reject that bearer-authenticated
@@ -272,12 +274,10 @@ def fetch_source(source: Path) -> dict:
     try:
         git(source, fetch_arguments, fetch_environment)
     except ValueError:
-        # GitHub's public endpoint can reject a shallow request for a
-        # historical commit even though the exact object is publicly
-        # reachable. Keep the credential-free retry bound to the same URL and
-        # SHA, but allow Git to walk the public history to retrieve it.
-        public_fetch_arguments = [arg for arg in fetch_arguments if arg != "--depth=1"]
-        git(source, public_fetch_arguments, git_environment())
+        # Retry the identical URL/SHA request without any credentials. The
+        # source may be public, and no bearer or Basic header may cross this
+        # boundary.
+        git(source, fetch_arguments, git_environment())
     finally:
         del fetch_environment
         del token
