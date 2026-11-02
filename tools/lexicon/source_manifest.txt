@@ -854,6 +854,9 @@ internal/storage/sqlite/clock_test.go
 internal/storage/sqlite/derived_prefix_test.go
 internal/storage/sqlite/derived_reader.go
 internal/storage/sqlite/engine_test.go
+internal/storage/sqlite/guard_descriptor_linux_test.go
+internal/storage/sqlite/guard_linux.go
+internal/storage/sqlite/guard_nonlinux.go
 internal/storage/sqlite/lease.go
 internal/storage/sqlite/locks_other.go
 internal/storage/sqlite/locks_unix.go

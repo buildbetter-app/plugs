@@ -29,6 +29,7 @@ type transaction struct {
 	importRestore   *driver.RestoreImportProfile
 	acquired        driver.LockSet
 	files           []*os.File
+	guards          []guardHandle
 	done            chan struct{}
 	records         map[string]*driver.Record
 	derived         map[string]driver.LockState
@@ -76,6 +77,8 @@ func (t *transaction) finish() {
 	t.closed = true
 	_ = t.tx.Rollback()
 	t.tx = nil
+	releaseGuards(t.guards)
+	t.guards = nil
 	for _, f := range t.files {
 		unlockFile(f)
 	}
@@ -117,12 +120,12 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 			return nil, err
 		}
 		selected := make(driver.LockSet, 0, len(requests))
-		files := make([]*os.File, 0, len(requests))
+		guards := make([]guardHandle, 0, len(requests))
 		blocked := false
 		var acquireErr error
 		for _, r := range requests {
 			hash := sha256.Sum256([]byte("guard:" + keyID(r.Key)))
-			f, ok, err := tryFileLock(filepath.Join(t.store.lockDir, hex.EncodeToString(hash[:])), r.Mode == driver.LockShare)
+			guard, ok, err := tryGuardLock(filepath.Join(t.store.lockDir, hex.EncodeToString(hash[:])), r.Mode == driver.LockShare)
 			if err != nil {
 				acquireErr = err
 				break
@@ -136,12 +139,10 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 			}
 			r.Key = copyKey(r.Key)
 			selected = append(selected, r)
-			files = append(files, f)
+			guards = append(guards, guard)
 		}
 		if acquireErr != nil || blocked {
-			for _, f := range files {
-				unlockFile(f)
-			}
+			releaseGuards(guards)
 			if acquireErr != nil {
 				return nil, acquireErr
 			}
@@ -160,24 +161,20 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 		// Every requested non-skipped key is held before reading any state. Failed
 		// acquisition retains no partial lock set; different processes obey this too.
 		if err := t.pin(ctx, driver.View{Incarnation: t.meta.Incarnation}); err != nil {
-			for _, f := range files {
-				unlockFile(f)
-			}
+			releaseGuards(guards)
 			return nil, err
 		}
 		states := make([]driver.LockState, 0, len(selected))
 		for _, r := range selected {
 			state, err := t.observe(ctx, r.Key)
 			if err != nil {
-				for _, f := range files {
-					unlockFile(f)
-				}
+				releaseGuards(guards)
 				return nil, err
 			}
 			states = append(states, state)
 		}
 		t.acquired = selected
-		t.files = files
+		t.guards = guards
 		t.locked = true
 		return states, nil
 	}
