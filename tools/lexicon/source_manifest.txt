@@ -291,6 +291,7 @@ internal/core/reverseconverter/BUILD.bazel
 internal/core/reverseconverter/README.md
 internal/core/reverseconverter/archive.go
 internal/core/reverseconverter/convert.go
+internal/core/reverseconverter/public_archive_test.go
 internal/core/reverseconverter/reverseconverter_test.go
 internal/core/reverseconverter/types.go
 internal/core/service/BUILD.bazel
