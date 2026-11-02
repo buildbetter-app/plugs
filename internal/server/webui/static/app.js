@@ -16,6 +16,14 @@
     constructor(message, code) { super(message); this.name = "RPCError"; this.code = code || "unavailable"; }
   }
   function failure(error) { return error && error.code ? error.code + ": " + error.message : (error && error.message || "The server could not complete this read."); }
+  function authenticationFailure(error) {
+    if (!error || !["unauthenticated", "token_expired"].includes(error.code)) return false;
+    forgetIdentity();
+    watchStatus("Live changes stopped · sign-in required.");
+    setConnection("error", "Sign-in required");
+    setMessage("Sign in with a current key for this server.", "error");
+    return true;
+  }
   function setConnection(kind, label) { $("connection-state").className = "status-pill status-" + kind; text($("connection-state"), label); }
   function setMessage(message, kind) { $("global-message").className = "global-message" + (kind ? " is-" + kind : ""); text($("global-message"), message); }
   function message(node, kind, title, detail) {
@@ -171,7 +179,7 @@
         const result = await rpc(request.method, forwarded, controller.signal, project);
         if (active) bridgeResponse(event.source, { jsonrpc: "2.0", id: request.id, result });
       } catch (error) {
-        if (active) bridgeFailure(event.source, request.id, error && error.code || "bridge_refused", failure(error));
+        if (active && !authenticationFailure(error)) bridgeFailure(event.source, request.id, error && error.code || "bridge_refused", failure(error));
       } finally {
         pending.delete(controller);
       }
@@ -348,6 +356,7 @@
   }
   function liveFailure(live, error) {
     if (state.live !== live) return;
+    if (authenticationFailure(error)) return;
     if (state.work) { state.work.liveFailure = true; state.work.controller.abort(); }
     stopWatch(); state.home = null;
     clear($("changed-more")); $("changed-more").hidden = true;
@@ -435,6 +444,7 @@
       headers: Object.assign({ "Content-Type": "application/json", "Accept": "application/x-ndjson", "Plug-RPC": "1", "Plug-Session": live.session }, accessToken ? { "Authorization": "Bearer " + accessToken } : {}),
       body: JSON.stringify({ subscriptionId: live.subscription }),
     });
+    if (response.status === 401) throw new RPCError("Sign in with a current key for this server.", "unauthenticated");
     if (!response.ok || !response.headers.get("Content-Type")?.startsWith("application/x-ndjson") || !response.body) throw new RPCError("The server refused the live stream.", "watch_unavailable");
     const reader = response.body.getReader();
     const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -683,7 +693,7 @@
       setConnection("ok", "Connected"); setMessage("");
     } catch (error) {
       if (state.work !== work) return;
-      if (error && ["unauthenticated", "token_expired"].includes(error.code)) forgetIdentity(false);
+      if (authenticationFailure(error)) return;
       if (view === "epic") {
         PlugEpicProgress.clear();
         // Parent refusal details are not presentation data. Do not copy a

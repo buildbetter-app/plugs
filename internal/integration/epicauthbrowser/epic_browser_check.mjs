@@ -235,11 +235,17 @@ try {
       const native = nativeStreams.find(entry => entry.request === row.request);
       assert(native); assert.equal(row.status, native.status); assert.equal(row.principal, native.principal);
       if (typeof row.rawResponse === "string") assert.equal(row.rawResponse, native.body, "actual native stream response-byte parity");
-      else assert(row.cancelled && row.status === 200, "only client-cancelled successful streams may omit Chrome body bytes");
+      else {
+        // The app also aborts unread error bodies when a watch is refused.
+        // Match the actual status/principal, and claim no unavailable bytes.
+        assert(row.cancelled && [200, 401, 404].includes(row.status), "missing Chrome body requires actual cancellation with the correlated native status");
+        if (row.status === 401) assert.equal(native.body, "unauthenticated\n");
+        if (row.status === 404) assert.equal(native.body, "session not found\n");
+      }
       assert(row.authorizationPresent && !row.cookiePresent);
     }
     assert(streams.some(row => row.status === (fixture.background === "watch-stream-401" ? 401 : fixture.background === "non-auth-and-switch" ? 404 : 200)));
-    step("Actual Chrome/native watch attachment request/status/principal correlation complete; complete response bytes match, cancelled successful streams explicitly recorded");
+    step("Actual Chrome/native watch attachment request/status/principal correlation complete; complete response bytes match, cancelled bodies explicitly recorded without byte-parity claims");
   } else {
   await navigate();
   step("Navigated real embedded epic page; anonymous native admission refused; sign-in offered");
