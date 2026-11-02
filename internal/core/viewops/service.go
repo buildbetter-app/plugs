@@ -22,6 +22,9 @@ func New(store ReadStore, lease driver.ActiveLease, cfg Config) (*Service, error
 	if store == nil || lease == nil {
 		return nil, fmt.Errorf("view operations require a read store and active lease")
 	}
+	if cfg.AuthorizeReadBatch != nil && cfg.AuthorizeRead == nil {
+		return nil, fmt.Errorf("batch read authorization requires the ordinary read authorizer")
+	}
 	if err := cfg.OntologyRevision.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid ontology revision: %w", err)
 	}

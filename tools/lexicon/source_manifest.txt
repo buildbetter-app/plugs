@@ -548,6 +548,7 @@ internal/server/authzrpc/drivers_test.go
 internal/server/authzrpc/hierarchy.go
 internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
+internal/server/authzrpc/predicate_count_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
 internal/server/claimrpc/BUILD.bazel
