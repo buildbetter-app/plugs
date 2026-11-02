@@ -1,0 +1,33 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "acceptance",
+    srcs = [
+        "acceptance_test.go",
+        "fixture_test.go",
+        "reference_test.go",
+    ],
+    embedsrcs = [
+        "reference-a.json",
+        "reference-b.json",
+        "record_reference.py",
+    ],
+    args = ["-test.v"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/core/viewops",
+        "//internal/server/rpc",
+        "//internal/server/viewrpc",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/sqlite",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

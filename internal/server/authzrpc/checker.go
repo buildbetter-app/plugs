@@ -106,11 +106,22 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 	if err != nil {
 		return &model.Error{Message: "authorization facts unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
-	requests := make([]authz.CheckRequest, 0, len(proposal.Changes))
+	requests := make([]authz.CheckRequest, 0, len(proposal.Changes)+len(proposal.Expect)+1)
 	for _, change := range proposal.Changes {
 		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: change.Resource.Ref}, Method: proposal.Meta.Method})
 	}
-	if len(requests) == 0 {
+	changeCount := len(proposal.Changes)
+	for _, expect := range proposal.Expect {
+		if err := authz.CanonicalRef(expect.Ref); err != nil {
+			return forbidden("invalid expectation target")
+		}
+		// Expectations disclose the pre-image only as part of an already
+		// admitted write. Use the write permit, not a user read permit: CP7
+		// agents may write their sponsor's project while user reads are a
+		// separate surface.
+		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: expect.Ref}, Method: proposal.Meta.Method})
+	}
+	if changeCount == 0 {
 		if proposal.Meta.Method != "bead.claimNext" {
 			return forbidden("authorization requires a concrete resource")
 		}
@@ -134,7 +145,7 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 		if decision.Effect != authz.Allow {
 			return forbidden(strings.Join(decision.Reasons, ","))
 		}
-		if stage == port.AuthorizeAfter && len(proposal.Changes) != 0 {
+		if stage == port.AuthorizeAfter && i < changeCount {
 			if err := c.validateExistingWrite(ctx, reader, proposal, proposal.Changes[i], caller); err != nil {
 				return err
 			}

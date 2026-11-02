@@ -15,6 +15,19 @@ type queryTerm struct {
 	value string
 }
 
+// queryMatches applies the small, deliberately closed view grammar. Scalar
+// identity/status terms retain exact equality; title is the text-search arm
+// and therefore matches a case-sensitive substring, as the source behavior
+// does. Keeping this distinction here prevents callers from mistaking a text
+// predicate for an identifier predicate while preserving deterministic scans.
+func queryMatches(row stored, term queryTerm) bool {
+	if term.key == "title" {
+		value, _ := row.doc.Fields["title"].(string)
+		return strings.Contains(value, term.value)
+	}
+	return sortValue(row, term.key) == term.value
+}
+
 func parseQuery(query string) ([]queryTerm, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -42,7 +55,7 @@ func parseQuery(query string) ([]queryTerm, error) {
 			return nil, failure("invalid_params", "unsupported view query; use equality clauses joined by AND")
 		}
 		switch key {
-		case "id", "type", "project", "status":
+		case "id", "type", "project", "status", "title":
 		default:
 			return nil, &model.Error{Data: model.ErrorData{Code: "unknown_field", Hint: "view query field is not supported: " + key}}
 		}
@@ -87,7 +100,7 @@ func matches(row stored, filter Filter, project string, terms []queryTerm) bool 
 		}
 	}
 	for _, term := range terms {
-		if sortValue(row, term.key) != term.value {
+		if !queryMatches(row, term) {
 			return false
 		}
 	}
@@ -106,7 +119,7 @@ func filterReason(row stored, filter Filter, project string, terms []queryTerm) 
 		reasons = append(reasons, "type")
 	}
 	for _, term := range terms {
-		if sortValue(row, term.key) != term.value {
+		if !queryMatches(row, term) {
 			reasons = append(reasons, term.key)
 		}
 	}
