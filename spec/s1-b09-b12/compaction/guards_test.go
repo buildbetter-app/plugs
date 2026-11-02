@@ -177,6 +177,8 @@ func TestB12RevertAllTextPermanentHistoryProofCASAndProtectedRecords(t *testing.
 				return "summary", nil
 			}), VerifyPresence: authority.verify}
 			f := newFixture(t, engine, service.WithCompaction(config))
+			f.extendedOntology = true
+			f.bind()
 			made := f.call("bead.create", "all-text-create", map[string]any{"type": "issue", "fields": original}, "")
 			ref := made["results"].([]any)[0].(map[string]any)["ref"].(map[string]any)
 			closed := f.call("bead.close", "all-text-close", map[string]any{"id": ref}, "")

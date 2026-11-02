@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
@@ -98,19 +99,21 @@ func docker(args ...string) ([]byte, error) {
 }
 
 type fixture struct {
-	t               *testing.T
-	engine          string
-	dsn             string
-	store           driver.Store
-	lease           driver.ActiveLease
-	domain          *service.Service
-	server          *rpc.Server
-	clock           time.Time
-	ids             int
-	options         []service.Option
-	pipelineOptions []pipeline.Option
-	writer          *pipeline.Writer
-	trace           []json.RawMessage
+	t                *testing.T
+	engine           string
+	dsn              string
+	store            driver.Store
+	lease            driver.ActiveLease
+	domain           *service.Service
+	server           *rpc.Server
+	clock            time.Time
+	ids              int
+	options          []service.Option
+	pipelineOptions  []pipeline.Option
+	writer           *pipeline.Writer
+	extendedOntology bool
+	initialStatus    string
+	trace            []json.RawMessage
 }
 
 func newFixture(t *testing.T, engine string, options ...service.Option) *fixture {
@@ -187,6 +190,25 @@ func (f *fixture) bind() {
 	f.t.Helper()
 	ctx := context.Background()
 	o := service.NewOntology(nil)
+	if f.extendedOntology || f.initialStatus != "" {
+		doc := ontology.DefaultDocument()
+		if f.extendedOntology {
+			for _, name := range []string{"design", "notes", "acceptance_criteria", "closed_at"} {
+				doc.Types["issue"].Fields[name] = ontology.Field{Type: "string"}
+			}
+			doc.Types["issue"].Fields["compaction_level"] = ontology.Field{Type: "integer"}
+		}
+		if f.initialStatus != "" {
+			workflow := doc.Workflows["issue"]
+			workflow.Initial = f.initialStatus
+			doc.Workflows["issue"] = workflow
+		}
+		snapshot, problems := ontology.Compile(doc, nil, nil)
+		if len(problems) != 0 {
+			f.t.Fatalf("invalid declared test ontology: %v", problems)
+		}
+		o.Refresh(snapshot)
+	}
 	optsWriter := []pipeline.Option{pipeline.WithOntology(o), pipeline.WithClock(func() time.Time { return f.clock }), pipeline.WithIDGenerator(func() (string, error) {
 		f.ids++
 		return fmt.Sprintf("b12-%04d", f.ids), nil

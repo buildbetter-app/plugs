@@ -95,10 +95,12 @@ func TestB12EligibilityAndThresholdConfiguration(t *testing.T) {
 						config.ThresholdDays = map[int]int{1: 7}
 					}
 					f := newFixture(t, engine, service.WithCompaction(config))
-					fields := map[string]any{"title": "Eligibility", "description": strings.Repeat("Long retained source. ", 20)}
+					f.extendedOntology = true
 					if scenario == "missing-close-time" {
-						fields["status"] = "done"
+						f.initialStatus = "done"
 					}
+					f.bind()
+					fields := map[string]any{"title": "Eligibility", "description": strings.Repeat("Long retained source. ", 20)}
 					made := f.call("bead.create", "eligible-create", map[string]any{"type": "issue", "fields": fields}, "")
 					ref := made["results"].([]any)[0].(map[string]any)["ref"].(map[string]any)
 					if scenario != "open" && scenario != "missing-close-time" {
@@ -190,7 +192,7 @@ func TestB12SuppliedSummaryValidationAndStagedFailureRollback(t *testing.T) {
 					}
 					assertHistoricalText(t, f, ref, closed["revision"], text)
 					got := f.call("bead.get", "rollback-current", map[string]any{"id": ref}, "")["bead"].(map[string]any)
-					if got["fields"].(map[string]any)["description"] != text || got["metadata"] != nil {
+					if got["fields"].(map[string]any)["description"] != text || len(got["metadata"].(map[string]any)) != 0 {
 						t.Fatalf("failure lost source or published state: %v", got["metadata"])
 					}
 				})
