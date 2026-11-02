@@ -23,8 +23,15 @@ func prefixWrite(t *testing.T, ctx context.Context, s *Store, lease driver.Activ
 	}
 	t.Cleanup(func() { _ = tx.Close() })
 	keys := map[string]driver.LockKey{}
-	key := testKey("pl-prefix-witness")
+	key := testKey("pl-prefix")
 	encoded, _ := driver.EncodeLockKey(key)
+	keys[encoded] = key
+	sentinel, err := driver.NewClosureSentinel("pl-prefix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key = driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}
+	encoded, _ = driver.EncodeLockKey(key)
 	keys[encoded] = key
 	for _, rows := range [][]driver.DerivedRow{del, add} {
 		for _, row := range rows {
@@ -54,13 +61,16 @@ func prefixWrite(t *testing.T, ctx context.Context, s *Store, lease driver.Activ
 	if err := tx.PutDerived(ctx, driver.DerivedAttribute, del, add); err != nil {
 		t.Fatal(err)
 	}
+	if err := tx.BumpSentinels(ctx, []driver.Sentinel{sentinel}); err != nil {
+		t.Fatal(err)
+	}
 	return tx
 }
 
 func prefixCommit(t *testing.T, ctx context.Context, s *Store, lease driver.ActiveLease, step int, del, add []driver.DerivedRow) {
 	t.Helper()
 	tx := prefixWrite(t, ctx, s, lease, del, add)
-	ref := testRef("pl-prefix-witness")
+	ref := testRef("pl-prefix")
 	states, err := tx.Observe(ctx, []driver.LockKey{testKey(ref.ID)})
 	if err != nil {
 		t.Fatal(err)
