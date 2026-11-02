@@ -36,6 +36,7 @@ type transaction struct {
 	blobs                   map[driver.Hash][]byte
 	bumps                   map[string]driver.LockKey
 	allocators              map[string]driver.OfflineAllocator
+	parentCounters          map[string]driver.ParentCounter
 	allocated               map[string]bool
 	checkpointGuards        map[string]uint64
 }
@@ -87,6 +88,7 @@ func (t *transaction) finish() {
 	t.blobs = nil
 	t.bumps = nil
 	t.allocators = nil
+	t.parentCounters = nil
 	t.allocated = nil
 	s.signal()
 }
@@ -499,6 +501,12 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	next := s.state.fork()
 	for prefix, allocator := range t.allocators {
 		next.allocators[prefix] = allocator.Clone()
+	}
+	if len(t.parentCounters) > 0 && next.parentCounters == nil {
+		next.parentCounters = make(map[string]driver.ParentCounter)
+	}
+	for key, counter := range t.parentCounters {
+		next.parentCounters[key] = counter
 	}
 	for id, record := range t.records {
 		ref := t.recordRef(id)

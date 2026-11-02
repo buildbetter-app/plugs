@@ -42,16 +42,17 @@ type blob struct {
 	revision uint64
 }
 type state struct {
-	meta       driver.Meta
-	records    map[string]driver.Record
-	kinds      map[string]string
-	versions   map[string][]driver.Version
-	keys       map[string]driver.LockState
-	keyHistory map[string][]driver.LockState
-	blobs      map[driver.Hash]blob
-	log        []model.Changeset
-	replays    map[scope]replay
-	allocators map[string]driver.OfflineAllocator
+	meta           driver.Meta
+	records        map[string]driver.Record
+	kinds          map[string]string
+	versions       map[string][]driver.Version
+	keys           map[string]driver.LockState
+	keyHistory     map[string][]driver.LockState
+	blobs          map[driver.Hash]blob
+	log            []model.Changeset
+	replays        map[scope]replay
+	allocators     map[string]driver.OfflineAllocator
+	parentCounters map[string]driver.ParentCounter
 }
 
 func (s *state) fork() *state {
@@ -63,6 +64,7 @@ func (s *state) fork() *state {
 	n.keyHistory = maps.Clone(s.keyHistory)
 	n.blobs = maps.Clone(s.blobs)
 	n.replays = maps.Clone(s.replays)
+	n.parentCounters = maps.Clone(s.parentCounters)
 	n.allocators = make(map[string]driver.OfflineAllocator, len(s.allocators))
 	for prefix, allocator := range s.allocators {
 		n.allocators[prefix] = allocator.Clone()

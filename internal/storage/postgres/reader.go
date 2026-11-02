@@ -119,6 +119,7 @@ func (r *reader) finish() error {
 		r.writer.derived = nil
 		r.writer.blobs = nil
 		r.writer.allocators = nil
+		r.writer.parentCounters = nil
 		r.writer.bumps = nil
 		r.writer.allocated = nil
 		r.writer.acquired = nil

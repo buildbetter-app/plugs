@@ -322,6 +322,10 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			return zero, err
 		}
 	}
+	if err = t.publishParentCounters(ctx, t.sql); err != nil {
+		_ = t.finish()
+		return zero, err
+	}
 	for hash, data := range t.blobs {
 		if _, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.blobs VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, string(hash), revision.String(), data); err != nil {
 			_ = t.finish()

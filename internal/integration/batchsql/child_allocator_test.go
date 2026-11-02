@@ -1,6 +1,7 @@
 package batchsql_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -366,6 +367,322 @@ func TestChildAllocatorNoProfileNeverReusesDeletedNumberAcrossStores(t *testing.
 					}
 					t.Logf("%s/%s: deleted .1 retained; .2-.5, replay, atomic refusal, SQL reopen and unchanged roots proven", engine, name)
 				})
+			}
+		})
+	}
+}
+
+var errChildAllocationDenied = errors.New("child allocation denied after preparation")
+var errChildAllocationPut = errors.New("child allocation second Put failed")
+
+type childAllocationDeny struct{}
+
+func (childAllocationDeny) Authorize(_ context.Context, stage port.AuthorizationStage, _ port.ProposedChange, _ port.SnapshotReader) error {
+	if stage == port.AuthorizeAfter {
+		return errChildAllocationDenied
+	}
+	return nil
+}
+
+type childAllocationFailStore struct {
+	driver.Store
+	consumes, puts int
+}
+
+type childAllocationFailTx struct {
+	driver.WriteTx
+	driver.HashAllocatorContinuation
+	driver.ParentCounterContinuation
+	owner *childAllocationFailStore
+}
+
+func (s *childAllocationFailStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	tx, err := s.Store.Write(ctx, lease)
+	if err != nil {
+		return nil, err
+	}
+	return &childAllocationFailTx{WriteTx: tx, HashAllocatorContinuation: tx.(driver.HashAllocatorContinuation), ParentCounterContinuation: tx.(driver.ParentCounterContinuation), owner: s}, nil
+}
+
+func (t *childAllocationFailTx) AllocateChild(ctx context.Context, parent, expected string) error {
+	err := t.HashAllocatorContinuation.AllocateChild(ctx, parent, expected)
+	if err == nil {
+		t.owner.consumes++
+	}
+	return err
+}
+
+func (t *childAllocationFailTx) ConsumeParentChild(ctx context.Context, parent, expected string) error {
+	err := t.ParentCounterContinuation.ConsumeParentChild(ctx, parent, expected)
+	if err == nil {
+		t.owner.consumes++
+	}
+	return err
+}
+
+func (t *childAllocationFailTx) Put(ctx context.Context, record driver.Record) error {
+	t.owner.puts++
+	if t.owner.puts == 2 {
+		return errChildAllocationPut
+	}
+	return t.WriteTx.Put(ctx, record)
+}
+
+func childInventory(t *testing.T, f *fixture) driver.AllocatorInventory {
+	t.Helper()
+	r := hierarchyReader(t, f)
+	defer r.Close()
+	inventory, err := r.(driver.AllocatorInventoryReader).AllocatorInventory(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inventory
+}
+
+func TestChildAllocatorAtomicConsumptionAndConcurrentRetryAcrossStores(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			for _, mode := range []string{"no-profile", driver.AllocatorSequential, driver.AllocatorHash} {
+				t.Run(mode, func(t *testing.T) {
+					f := newFixture(t, engine)
+					project := ""
+					if mode != "no-profile" {
+						project = "demo"
+						profile := driver.OfflineAllocator{Prefix: "demo", Mode: driver.AllocatorSequential}
+						if mode == driver.AllocatorHash {
+							profile = driver.NewHashAllocator("demo", 3, 8, 0.25)
+						}
+						seedChildAllocatorFixture(t, f, profile, false)
+					}
+					parent := hierarchyApply(t, f, hierarchyCreate("parent", nil, project)).Results[0].Ref
+					cs := model.ChangeSet{Ops: []model.Op{hierarchyCreate("one", &parent, project), hierarchyCreate("two", &parent, project)}}
+					before, rows, inventory := childAllocatorDurableState(t, f), hierarchyRows(t, f), childInventory(t, f)
+					assertUnchanged := func(t *testing.T, meta model.WriteMeta) {
+						t.Helper()
+						requireSameState(t, before, childAllocatorDurableState(t, f))
+						if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || !reflect.DeepEqual(inventory, childInventory(t, f)) || f.receipt(t, meta) != nil {
+							t.Fatal("refusal/dry-run published graph, counter or receipt")
+						}
+					}
+					dryMeta := f.meta("dry-run")
+					dryMeta.DryRun = true
+					dry, err := childAllocatorApply(f, cs, dryMeta)
+					if err != nil || !dry.Commit.WouldCommit || dry.Replayed {
+						t.Fatalf("dry-run child preview=%+v err=%v", dry, err)
+					}
+					assertUnchanged(t, dryMeta)
+					ordinary := f.writer
+					f.writer = pipeline.New(f.store, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now), pipeline.WithAuthorizer(childAllocationDeny{}))
+					denyMeta := f.meta("authorization-refusal")
+					_, err = childAllocatorApply(f, cs, denyMeta)
+					if !errors.Is(err, errChildAllocationDenied) {
+						t.Fatalf("after-authorization refusal=%v", err)
+					}
+					assertUnchanged(t, denyMeta)
+					faultStore := &childAllocationFailStore{Store: f.store}
+					f.writer = pipeline.New(faultStore, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now))
+					faultMeta := f.meta("transaction-rollback")
+					_, err = childAllocatorApply(f, cs, faultMeta)
+					if !errors.Is(err, errChildAllocationPut) || faultStore.consumes != 2 || faultStore.puts != 2 {
+						t.Fatalf("real consumption/late-Put rollback: consumes=%d puts=%d err=%v", faultStore.consumes, faultStore.puts, err)
+					}
+					assertUnchanged(t, faultMeta)
+					f.writer = ordinary
+					meta := f.meta("commit-after-refusals")
+					out, err := childAllocatorApply(f, cs, meta)
+					if err != nil || out.Commit.Results[0].Ref.ID != parent.ID+".1" || out.Commit.Results[1].Ref.ID != parent.ID+".2" {
+						t.Fatalf("rollback consumed child numbers: %+v err=%v", out, err)
+					}
+					assertChildAllocatorReplay(t, f, cs, meta, out.Commit)
+
+					// Hold one fully prepared .3 preview. A second Writer commits
+					// .3, so the first must replan through the normal retry protocol.
+					pause := &hierarchyPause{entered: make(chan struct{}), release: make(chan struct{})}
+					concurrent := pipeline.New(f.store, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now), pipeline.WithValidators(pipeline.ValidatorBinding{ID: "child-allocation-race", Validator: pause}))
+					one := model.ChangeSet{Ops: []model.Op{hierarchyCreate("next", &parent, project)}}
+					pausedMeta := f.meta("stale-preview")
+					type result struct {
+						out port.WriteOutcome
+						err error
+					}
+					done := make(chan result, 1)
+					go func() {
+						out, err := concurrent.ApplyWithOutcome(f.ctx, batchPrincipal, one, pausedMeta)
+						done <- result{out, err}
+					}()
+					select {
+					case <-pause.entered:
+					case <-f.ctx.Done():
+						t.Fatal("concurrent Writer never prepared")
+					}
+					winnerMeta := f.meta("concurrent-winner")
+					winner, err := childAllocatorApply(f, one, winnerMeta)
+					close(pause.release)
+					if err != nil || winner.Commit.Results[0].Ref.ID != parent.ID+".3" {
+						t.Fatalf("concurrent winner=%+v err=%v", winner, err)
+					}
+					var retried result
+					select {
+					case retried = <-done:
+					case <-f.ctx.Done():
+						t.Fatal("concurrent child allocation deadlocked")
+					}
+					if retried.err != nil || retried.out.Replayed || retried.out.Commit.Results[0].Ref.ID != parent.ID+".4" {
+						t.Fatalf("stale child preview did not replan: %+v err=%v", retried.out, retried.err)
+					}
+					assertChildAllocatorReplay(t, f, one, winnerMeta, winner.Commit)
+					assertChildAllocatorReplay(t, f, one, pausedMeta, retried.out.Commit)
+					transient := model.ChangeSet{Ops: []model.Op{hierarchyCreate("temporary", &parent, project), childDelete(model.RefByKey("temporary")), hierarchyCreate("survivor", &parent, project)}}
+					transientMeta := f.meta("ordered-create-delete-create")
+					last, err := childAllocatorApply(f, transient, transientMeta)
+					if err != nil || len(last.Commit.Results) != 3 || last.Commit.Results[0].Ref.ID != parent.ID+".5" || last.Commit.Results[2].Ref.ID != parent.ID+".6" {
+						t.Fatalf("same-batch deleted preview reused: %+v err=%v", last, err)
+					}
+					assertChildAllocatorReplay(t, f, transient, transientMeta, last.Commit)
+					verifyHierarchy(t, f)
+					t.Logf("%s/%s: dry-run, after-auth refusal, two real consumes rolled back after Put, stale-preview retry, ordered deletion and exact replay proven", engine, mode)
+				})
+			}
+		})
+	}
+}
+
+func TestParentCounterSnapshotStagingAndLockGuardsAcrossStores(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			root := hierarchyApply(t, f, hierarchyCreate("parent", nil, ""))
+			parent := root.Results[0].Ref
+			old := hierarchyReader(t, f)
+			defer old.Close()
+			if _, err := old.(driver.ParentCounterReader).LoadParentCounter(f.ctx, parent.ID); !errors.Is(err, driver.ErrNotFound) {
+				t.Fatalf("uninitialized counter=%v", err)
+			}
+			hierarchyApply(t, f, hierarchyCreate("child", &parent, ""))
+			if _, err := old.(driver.ParentCounterReader).LoadParentCounter(f.ctx, parent.ID); !errors.Is(err, driver.ErrNotFound) {
+				t.Fatalf("old snapshot observed new counter: %v", err)
+			}
+			before, inventory := childAllocatorDurableState(t, f), childInventory(t, f)
+			if len(inventory.Projects) != 0 || len(inventory.Parents) != 1 || inventory.Parents[0].LastChild != 1 {
+				t.Fatalf("typed counter inventory=%+v", inventory)
+			}
+			historical, err := f.store.Read(f.ctx, driver.View{Incarnation: before.Meta.Incarnation, At: &root.Revision})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = historical.(driver.ParentCounterReader).LoadParentCounter(f.ctx, parent.ID)
+			historical.Close()
+			if !errors.Is(err, driver.ErrUnsupported) {
+				t.Fatalf("historical current-only counter read=%v", err)
+			}
+			counterKey, err := driver.ParentCounterLock(before.Meta.Incarnation, parent.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			candidate := model.Ref{ID: parent.ID + ".2"}
+			recordKey := driver.LockKey{Kind: driver.LockRecord, Ref: &candidate}
+			for _, scenario := range []string{"staging-and-rollback", "missing-counter-lock", "shared-counter-lock", "missing-candidate-lock", "shared-candidate-lock"} {
+				t.Run(scenario, func(t *testing.T) {
+					locks := driver.LockSet{{Key: recordKey, Mode: driver.LockUpdate}, {Key: counterKey, Mode: driver.LockUpdate}}
+					switch scenario {
+					case "missing-counter-lock":
+						locks = locks[:1]
+					case "shared-counter-lock":
+						locks[1].Mode = driver.LockShare
+					case "missing-candidate-lock":
+						locks = locks[1:]
+					case "shared-candidate-lock":
+						locks[0].Mode = driver.LockShare
+					}
+					tx, err := f.store.Write(f.ctx, f.lease)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Close()
+					if _, err = tx.Lock(f.ctx, locks); err != nil {
+						t.Fatal(err)
+					}
+					if _, err = tx.Head(f.ctx); err != nil {
+						t.Fatal(err)
+					}
+					counter := tx.(driver.ParentCounterContinuation)
+					initial, err := counter.LoadParentCounter(f.ctx, parent.ID)
+					if err != nil || initial.LastChild != 1 {
+						t.Fatalf("transaction initial counter=%+v %v", initial, err)
+					}
+					err = counter.ConsumeParentChild(f.ctx, parent.ID, candidate.ID)
+					if scenario == "staging-and-rollback" {
+						if err != nil {
+							t.Fatal(err)
+						}
+						staged, err := counter.LoadParentCounter(f.ctx, parent.ID)
+						if err != nil || staged.LastChild != 2 {
+							t.Fatalf("transaction missed staged counter: %+v %v", staged, err)
+						}
+						if err = counter.ConsumeParentChild(f.ctx, parent.ID, candidate.ID); !errors.Is(err, driver.ErrConflict) {
+							t.Fatalf("duplicate consumption=%v", err)
+						}
+						cancelled, cancel := context.WithCancel(f.ctx)
+						cancel()
+						if _, err = counter.LoadParentCounter(cancelled, parent.ID); !errors.Is(err, context.Canceled) {
+							t.Fatalf("cancelled counter read=%v", err)
+						}
+						if err = counter.ConsumeParentChild(cancelled, parent.ID, candidate.ID); !errors.Is(err, context.Canceled) {
+							t.Fatalf("cancelled counter consume=%v", err)
+						}
+					} else if err == nil {
+						t.Fatal("counter mutation accepted without both strongest Update locks")
+					}
+					if err = tx.Rollback(f.ctx); err != nil {
+						t.Fatal(err)
+					}
+					if _, err = counter.LoadParentCounter(f.ctx, parent.ID); err == nil {
+						t.Fatal("closed transaction read counter")
+					}
+					requireSameState(t, before, childAllocatorDurableState(t, f))
+					if !reflect.DeepEqual(inventory, childInventory(t, f)) {
+						t.Fatal("rollback/refusal published counter")
+					}
+				})
+			}
+		})
+	}
+}
+
+type childNoHistoryStore struct{ driver.Store }
+type childNoHistoryReader struct {
+	driver.Reader
+	driver.AllocatorReader
+	driver.ParentCounterReader
+}
+
+func (s childNoHistoryStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	r, err := s.Store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	return childNoHistoryReader{Reader: r, AllocatorReader: r.(driver.AllocatorReader), ParentCounterReader: r.(driver.ParentCounterReader)}, nil
+}
+func (childNoHistoryReader) Versions(context.Context, driver.Ref, driver.PageReq) (driver.Page[driver.Version], error) {
+	return driver.Page[driver.Version]{}, driver.ErrTruncated{}
+}
+func (childNoHistoryReader) Changesets(context.Context, *driver.Cursor, int) ([]model.Changeset, error) {
+	return nil, driver.ErrTruncated{}
+}
+
+func TestParentCounterContinuationWithoutAvailableHistoryAcrossStores(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			parent := hierarchyApply(t, f, hierarchyCreate("parent", nil, "")).Results[0].Ref
+			child := hierarchyApply(t, f, hierarchyCreate("child", &parent, "")).Results[0].Ref
+			hierarchyApply(t, f, childDelete(child))
+			// History is deliberately unavailable to the production Writer.
+			// This proves counter independence; it is not a public compaction run.
+			f.writer = pipeline.New(childNoHistoryStore{f.store}, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now))
+			next := hierarchyApply(t, f, hierarchyCreate("continued", &parent, ""))
+			if next.Results[0].Ref.ID != parent.ID+".2" {
+				t.Fatalf("continuation relied on compactable history: %+v", next)
 			}
 		})
 	}
