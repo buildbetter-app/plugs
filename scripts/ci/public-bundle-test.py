@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -114,6 +115,45 @@ def main() -> None:
         receipt = helper.read_json(companion_output / "receipt.json")
         assert receipt["schema"] == helper.COMPANION_SCHEMA
         assert receipt["workflow"]["profile"] == helper.COMPANION_SCHEMA
+        assert (companion_output / "source/beads.manifest").read_bytes() == (root / "beads.manifest").read_bytes()
+        assert (companion_output / "source/plug.manifest").read_bytes() == (root / "plug.manifest").read_bytes()
+
+        expected = {
+            field: copy.deepcopy(companion_manifest[field])
+            for field in ("schema", "source", "targets", "workflow", "source_refs")
+        }
+        expected["source"] = {
+            name: {field: record[field] for field in ("commit", "tree")}
+            for name, record in expected["source"].items()
+        }
+        expected_path = root / "expected-provenance.json"
+        helper.write_json(expected_path, expected)
+        pinned_check = type("Args", (), {"directory": companion_output, "expected_provenance": expected_path})()
+        helper.verify(pinned_check)
+
+        # A workflow commit is not an interchangeable roundtrip source. Keep
+        # source SHA/tree, refs, target and workflow binding checks independent
+        # of the payload/archive digest checks.
+        for field, name, key, value in (
+            ("source", "plug", "commit", "a" * 40),
+            ("source", "beads", "tree", "b" * 40),
+            ("workflow", None, "sha", "c" * 40),
+            ("source_refs", None, "plug", "wrong-source-ref"),
+            ("targets", "plug_roundtrip", "label", "//cmd/plug:plug"),
+        ):
+            altered = copy.deepcopy(companion_manifest)
+            destination = altered[field] if name is None else altered[field][name]
+            destination[key] = value
+            helper.write_json(companion_output / "manifest.json", altered)
+            expect_refusal(lambda: helper.verify(pinned_check), f"{field} binding mutation was accepted")
+        helper.write_json(companion_output / "manifest.json", companion_manifest)
+        helper.verify(pinned_check)
+
+        source_manifest = companion_output / "source/beads.manifest"
+        source_manifest.write_bytes(b"wrong canonical source\n")
+        expect_refusal(lambda: helper.verify(pinned_check), "canonical source manifest mutation was accepted")
+        source_manifest.write_bytes((root / "beads.manifest").read_bytes())
+        helper.verify(pinned_check)
 
         loose = output / "bin" / "plug"
         original = loose.read_bytes()

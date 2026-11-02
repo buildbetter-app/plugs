@@ -41,7 +41,14 @@ jobs:
     env:
       BUNDLE_PROFILE: ${{ inputs.profile }}
       BEADS_COMMIT: 9d6fff760b7a314b476539198504d77ce0959656
-      BEADS_COMPANION_COMMIT: 444fb0623bc46c941f81983cea87020c1002a96c
+      # The current public readback consumer needs this complete-root exporter
+      # with scoped RawDBTxAccessor support. Historical 444fb/e4f delivery
+      # failed; these explicit source pins do not change the importer profile.
+      BEADS_COMPANION_COMMIT: 682ca798dab448803ea9b74f7da3715c21d8c3ae
+      BEADS_COMPANION_TREE: 9d026de307ee915953b247cf42758d0c53303574
+      PLUG_COMPANION_COMMIT: 83fe6cd8efdbbc6a06194d3fc8b675a4b713baa1
+      PLUG_COMPANION_TREE: 79bff38788a8470d1bee30043884ca37c095307b
+      PLUG_COMPANION_REF: codex/b1c-roundtrip-source-83fe6cd8-20261102
       PLUG_COMMIT: ${{ inputs.sha }}
       PLUG_SOURCE_REF: ${{ inputs.source_ref }}
       PLUG_TARGET: ${{ inputs.plug_target }}
@@ -65,6 +72,8 @@ jobs:
               BEADS_COMMIT="$BEADS_COMPANION_COMMIT"
               export BEADS_COMMIT
               printf '%s\n' "BEADS_COMMIT=$BEADS_COMMIT" >> "$GITHUB_ENV"
+              test "$PLUG_COMMIT" = "$PLUG_COMPANION_COMMIT"
+              test "$PLUG_SOURCE_REF" = "$PLUG_COMPANION_REF"
               test "$PLUG_TARGET" = //tools/roundtrip:roundtrip
               ;;
             *)
@@ -76,12 +85,15 @@ jobs:
       - name: Checkout exact Plug revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Run public bundle boundary regression
-        run: python3 scripts/ci/public-bundle-test.py
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 scripts/ci/public-bundle-test.py
 
       - name: Fetch and verify canonical Beads source
         run: |
@@ -103,6 +115,11 @@ jobs:
           plug_tree="$(git rev-parse "$PLUG_COMMIT^{tree}")"
           source_tree="$(git rev-parse "$source_ref^{tree}")"
           test "$source_tree" = "$plug_tree"
+          git merge-base --is-ancestor "$BEADS_COMMIT" "$beads_source_ref"
+          if [[ "$BUNDLE_PROFILE" == plug-public-companion/1 ]]; then
+            test "$beads_tree" = "$BEADS_COMPANION_TREE"
+            test "$plug_tree" = "$PLUG_COMPANION_TREE"
+          fi
           git ls-tree -r --full-tree "$BEADS_COMMIT" > "$RUNNER_TEMP/beads-source-manifest"
           git ls-tree -r --full-tree "$PLUG_COMMIT" > "$RUNNER_TEMP/plug-source-manifest"
           mkdir -p "$RUNNER_TEMP/beads-source"
@@ -162,8 +179,16 @@ jobs:
             export BAZELISK_HOME="$RUNNER_TEMP/bazel-home"
             export BAZELISK_VERIFY_SHA256=d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8
             bazel=("$RUNNER_TEMP/bazelisk" --nosystem_rc --nohome_rc --noworkspace_rc --bazelrc="$RUNNER_TEMP/public.bazelrc")
-            "${bazel[@]}" build --jobs=2 --local_resources=memory=8192 //cmd/bd:bd
-            mapfile -t outputs < <("${bazel[@]}" cquery --output=files //cmd/bd:bd)
+            # --noworkspace_rc intentionally excludes mutable host/cache config.
+            # Carry the pinned source .bazelrc's ICU policy explicitly into both
+            # build and output resolution. Keep canonical Nogo validation on.
+            grep -Fxq -- 'build --@rules_go//go/config:tags=gms_pure_go' .bazelrc
+            beads_config=(
+              --@rules_go//go/config:tags=gms_pure_go
+              "--@rules_go//go/config:gc_linkopts=-X=main.Commit=$BEADS_COMMIT,-X=main.Build=public-$BEADS_COMMIT"
+            )
+            "${bazel[@]}" build --jobs=2 --local_resources=memory=8192 "${beads_config[@]}" //cmd/bd:bd
+            mapfile -t outputs < <("${bazel[@]}" cquery "${beads_config[@]}" --output=files //cmd/bd:bd)
             [[ "${#outputs[@]}" -eq 1 && -f "${outputs[0]}" ]] || { echo "Beads exporter target did not resolve to one file" >&2; exit 1; }
             cp --dereference "${outputs[0]}" "$RUNNER_TEMP/built/bin/bd-export"
             chmod 755 "$RUNNER_TEMP/built/bin/bd-export"
@@ -173,7 +198,18 @@ jobs:
             set -e
             [[ "$help_rc" -eq 0 ]] || { echo "Beads exporter help probe failed" >&2; exit 1; }
             grep -Fq 'plug-dump/1' "$RUNNER_TEMP/bd-export-help" || { echo "Beads exporter lacks plug-dump/1 support" >&2; exit 1; }
+            grep -Fq -- '--plug-inventory' "$RUNNER_TEMP/bd-export-help"
             printf '%s\n' "$help_rc" > "$RUNNER_TEMP/bd-export-help-exit"
+            "$RUNNER_TEMP/built/bin/bd-export" version --json > "$RUNNER_TEMP/bd-export-version.json"
+            "$RUNNER_TEMP/built/bin/bd-export" init --help > "$RUNNER_TEMP/bd-init-help" 2>&1
+            "$RUNNER_TEMP/built/bin/bd-export" import --help > "$RUNNER_TEMP/bd-import-help" 2>&1
+            python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          version = json.loads((Path(os.environ["RUNNER_TEMP"]) / "bd-export-version.json").read_text())
+          if version.get("commit") != os.environ["BEADS_COMMIT"] or version.get("build") != "public-" + os.environ["BEADS_COMMIT"]:
+              raise SystemExit("canonical Beads executable identity mismatch")
+          PY
           fi
 
       - name: Build exact Plug runtime target
@@ -226,10 +262,19 @@ jobs:
               resolution = {
                   "bd_export_help_sha256": hashlib.sha256((root / "bd-export-help").read_bytes()).hexdigest(),
                   "bd_export_help_exit": int((root / "bd-export-help-exit").read_text()),
+                  "bd_export_version": json.loads((root / "bd-export-version.json").read_text()),
+                  "bd_export_version_sha256": hashlib.sha256((root / "bd-export-version.json").read_bytes()).hexdigest(),
+                  "bd_init_help_sha256": hashlib.sha256((root / "bd-init-help").read_bytes()).hexdigest(),
+                  "bd_import_help_sha256": hashlib.sha256((root / "bd-import-help").read_bytes()).hexdigest(),
                   "roundtrip_help_sha256": hashlib.sha256((root / "roundtrip-help").read_bytes()).hexdigest(),
                   "roundtrip_help_exit": int((root / "roundtrip-help-exit").read_text()),
               }
-              beads_build = "bazel build --jobs=2 --local_resources=memory=8192 //cmd/bd:bd"
+              beads_build = (
+                  "bazel build --jobs=2 --local_resources=memory=8192 "
+                  "--@rules_go//go/config:tags=gms_pure_go "
+                  "--@rules_go//go/config:gc_linkopts=-X=main.Commit=" + os.environ["BEADS_COMMIT"]
+                  + ",-X=main.Build=public-" + os.environ["BEADS_COMMIT"] + " //cmd/bd:bd"
+              )
           metadata = {
               "workflow": {
                   "ref": os.environ.get("GITHUB_REF", ""),
@@ -253,6 +298,24 @@ jobs:
               },
           }
           (root / "bundle-metadata.json").write_text(json.dumps(metadata, sort_keys=True) + "\n")
+          targets = {
+              "beads_importer": {"label": "./cmd/bd", "binary": "bin/bd"},
+              "plug_runtime": {"label": os.environ["PLUG_TARGET"], "binary": "bin/plug"},
+          } if profile == "plug-public-bundle/1" else {
+              "beads_exporter": {"label": "//cmd/bd:bd", "binary": "bin/bd-export"},
+              "plug_roundtrip": {"label": "//tools/roundtrip:roundtrip", "binary": "bin/roundtrip"},
+          }
+          expected = {
+              "schema": profile,
+              "workflow": metadata["workflow"],
+              "source_refs": metadata["source_refs"],
+              "targets": targets,
+              "source": {
+                  "beads": {"commit": os.environ["BEADS_COMMIT"], "tree": os.environ["BEADS_TREE"]},
+                  "plug": {"commit": os.environ["PLUG_COMMIT"], "tree": os.environ["PLUG_TREE"]},
+              },
+          }
+          (root / "bundle-expected-provenance.json").write_text(json.dumps(expected, sort_keys=True) + "\n")
           PY
           if [[ "$BUNDLE_PROFILE" == plug-public-bundle/1 ]]; then
             python3 scripts/ci/public-bundle.py create \
@@ -275,7 +338,8 @@ jobs:
               --plug-commit "$PLUG_COMMIT" --plug-tree "$PLUG_TREE" --plug-manifest "$PLUG_MANIFEST" \
               --plug-target "$PLUG_TARGET"
           fi
-          python3 scripts/ci/public-bundle.py verify --directory "$RUNNER_TEMP/public-bundle"
+          python3 scripts/ci/public-bundle.py verify --directory "$RUNNER_TEMP/public-bundle" \
+            --expected-provenance "$RUNNER_TEMP/bundle-expected-provenance.json"
 
       - name: Upload public executables and provenance
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -364,7 +428,8 @@ jobs:
           if set(manifest.get("artifacts", {})) != set(os.environ["EXPECTED_MEMBERS"].split()):
               raise SystemExit("downloaded bundle profile artifact set mismatch")
           PY
-          python3 scripts/ci/public-bundle.py verify --directory "$bundle"
+          python3 scripts/ci/public-bundle.py verify --directory "$bundle" \
+            --expected-provenance "$RUNNER_TEMP/bundle-expected-provenance.json"
           if [[ "$BUNDLE_PROFILE" == plug-public-bundle/1 ]]; then
             "$bundle/bin/bd" version --json > "$RUNNER_TEMP/downloaded-bd-version.json"
             "$bundle/bin/plug" --help > "$RUNNER_TEMP/downloaded-plug-help" 2>&1
@@ -377,6 +442,58 @@ jobs:
             set -e
             [[ "$export_help_rc" -eq 0 ]] || { echo "downloaded exporter help probe failed" >&2; exit 1; }
             grep -Fq 'plug-dump/1' "$RUNNER_TEMP/downloaded-bd-export-help" || { echo "downloaded exporter lacks plug-dump/1 support" >&2; exit 1; }
+            grep -Fq -- '--plug-inventory' "$RUNNER_TEMP/downloaded-bd-export-help"
             [[ "$roundtrip_help_rc" -eq 2 ]] || { echo "downloaded roundtrip capability probe returned an unexpected status" >&2; exit 1; }
             grep -Fq 'invalid_arguments' "$RUNNER_TEMP/downloaded-roundtrip-help" || { echo "downloaded roundtrip capability probe is not the fixed contract" >&2; exit 1; }
+            "$bundle/bin/bd-export" version --json > "$RUNNER_TEMP/downloaded-bd-export-version.json"
+            "$bundle/bin/bd-export" init --help > "$RUNNER_TEMP/downloaded-bd-init-help" 2>&1
+            "$bundle/bin/bd-export" import --help > "$RUNNER_TEMP/downloaded-bd-import-help" 2>&1
+            python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          manifest = json.loads((root / "public-bundle-downloaded/manifest.json").read_text())
+          version = json.loads((root / "downloaded-bd-export-version.json").read_text())
+          if version.get("commit") != os.environ["BEADS_COMMIT"] or version.get("build") != "public-" + os.environ["BEADS_COMMIT"]:
+              raise SystemExit("downloaded canonical Beads executable identity mismatch")
+          if version != manifest["resolution"]["bd_export_version"]:
+              raise SystemExit("downloaded Beads version probe differs from sealed probe")
+          for probe, key in (
+              ("downloaded-bd-export-help", "bd_export_help_sha256"),
+              ("downloaded-bd-export-version.json", "bd_export_version_sha256"),
+              ("downloaded-bd-init-help", "bd_init_help_sha256"),
+              ("downloaded-bd-import-help", "bd_import_help_sha256"),
+              ("downloaded-roundtrip-help", "roundtrip_help_sha256"),
+          ):
+              if hashlib.sha256((root / probe).read_bytes()).hexdigest() != manifest["resolution"][key]:
+                  raise SystemExit("downloaded executable probe differs from sealed probe: " + key)
+          receipt = {
+              "status": "PASS", "profile": manifest["schema"],
+              "workflow": manifest["workflow"], "source": manifest["source"],
+              "source_refs": manifest["source_refs"], "targets": manifest["targets"],
+              "artifacts": manifest["artifacts"], "archive": manifest["archive"],
+              "bd_export_version": version, "build_run": os.environ["GITHUB_RUN_ID"],
+              "bd_export_help_exit": 0, "roundtrip_help_exit": 2,
+              "canonical_source_manifests_verified": True,
+              "downloaded_modes_digests_and_probes_verified": True,
+          }
+          payload = json.dumps(receipt, sort_keys=True) + "\n"
+          (root / "public-download-verification.json").write_text(payload)
+          print(payload, end="")
+          PY
           fi
+
+      - name: Retain public companion download verification
+        if: ${{ success() && inputs.profile == 'plug-public-companion/1' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: plug-public-bundle-verification-${{ inputs.label }}-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/public-download-verification.json
+            ${{ runner.temp }}/downloaded-bd-export-version.json
+            ${{ runner.temp }}/downloaded-bd-export-help
+            ${{ runner.temp }}/downloaded-bd-init-help
+            ${{ runner.temp }}/downloaded-bd-import-help
+            ${{ runner.temp }}/downloaded-roundtrip-help

@@ -42,6 +42,8 @@ def profile_config(profile: str, plug_target: str) -> dict[str, object]:
             },
         }
     if profile == COMPANION_SCHEMA:
+        if plug_target != "//tools/roundtrip:roundtrip":
+            raise ValueError("companion target must be the canonical roundtrip executable")
         return {
             "artifacts": PROFILE_ARTIFACTS[COMPANION_SCHEMA],
             "inputs": {"bin/bd-export": "bd_export", "bin/roundtrip": "roundtrip"},
@@ -137,6 +139,9 @@ def create(args: argparse.Namespace) -> None:
             "manifest_sha256": digest(manifest_path),
             "manifest_entries": sum(1 for line in manifest_path.read_text(encoding="utf-8").splitlines() if line),
         }
+        if profile == COMPANION_SCHEMA:
+            (output / "source").mkdir(exist_ok=True)
+            (output / "source" / f"{name}.manifest").write_bytes(manifest_path.read_bytes())
 
     manifest: dict[str, object] = {
         "schema": profile,
@@ -182,6 +187,26 @@ def create(args: argparse.Namespace) -> None:
     )
 
 
+def verify_provenance(manifest: dict[str, object], expected_path: Path) -> None:
+    """Compare downloaded provenance with the dispatch's independent pins."""
+    expected = read_json(expected_path)
+    fields = {"schema", "source", "targets", "workflow", "source_refs"}
+    if not isinstance(expected, dict) or set(expected) != fields:
+        raise ValueError("expected provenance must name every source binding")
+    for field in fields - {"source"}:
+        if manifest.get(field) != expected[field]:
+            raise ValueError(f"bundle provenance mismatch: {field}")
+    sources = expected["source"]
+    actual = manifest.get("source")
+    if not isinstance(sources, dict) or set(sources) != {"beads", "plug"} or not isinstance(actual, dict):
+        raise ValueError("expected provenance must name both canonical sources")
+    for name, record in sources.items():
+        if not isinstance(record, dict) or set(record) != {"commit", "tree"}:
+            raise ValueError("expected source must contain commit and tree")
+        if not isinstance(actual.get(name), dict) or any(actual[name].get(key) != value for key, value in record.items()):
+            raise ValueError(f"bundle source binding mismatch: {name}")
+
+
 def verify(args: argparse.Namespace) -> None:
     root = Path(args.directory).resolve()
     manifest_path = root / "manifest.json"
@@ -192,6 +217,22 @@ def verify(args: argparse.Namespace) -> None:
     profile = manifest.get("schema")
     if not isinstance(profile, str) or profile not in PROFILE_ARTIFACTS:
         raise ValueError("unsupported bundle manifest")
+    if profile == COMPANION_SCHEMA:
+        if manifest.get("targets") != profile_config(profile, "//tools/roundtrip:roundtrip")["targets"]:
+            raise ValueError("companion executable targets are not exact")
+        sources = manifest.get("source")
+        if not isinstance(sources, dict) or set(sources) != {"beads", "plug"}:
+            raise ValueError("companion canonical source manifests are missing")
+        for name, record in sources.items():
+            path = contained(root, f"source/{name}.manifest")
+            if not isinstance(record, dict) or digest(path) != record.get("manifest_sha256"):
+                raise ValueError(f"canonical source manifest digest mismatch: {name}")
+            entries = sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line)
+            if entries != record.get("manifest_entries"):
+                raise ValueError(f"canonical source manifest entry count mismatch: {name}")
+    expected_provenance = getattr(args, "expected_provenance", None)
+    if expected_provenance is not None:
+        verify_provenance(manifest, Path(expected_provenance))
     artifacts_expected = PROFILE_ARTIFACTS[profile]
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict) or set(artifacts) != artifacts_expected:
@@ -250,6 +291,7 @@ def parser() -> argparse.ArgumentParser:
     make.set_defaults(function=create)
     check = subparsers.add_parser("verify")
     check.add_argument("--directory", type=Path, required=True)
+    check.add_argument("--expected-provenance", type=Path)
     check.set_defaults(function=verify)
     return root
 
