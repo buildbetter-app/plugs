@@ -231,6 +231,10 @@ func (p *prepared) hierarchyAffected(parents map[string]string) (map[string]bool
 // with missing/extra/wrong-depth rows fails closed.
 func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 	if len(p.hierarchyEdits) == 0 {
+		// Field, metadata, comment and lease updates leave the parent graph
+		// unchanged. They already observe their target record in prepare, so
+		// avoid enumerating every bead merely to revalidate an untouched
+		// hierarchy.
 		return nil, nil
 	}
 	complex := false

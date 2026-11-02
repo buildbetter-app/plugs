@@ -1,12 +1,25 @@
 package pipeline
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+type hierarchyQueryReader struct {
+	driver.Reader
+	records []driver.Record
+	queries int
+}
+
+func (r *hierarchyQueryReader) Query(context.Context, driver.Query) (driver.Page[driver.Record], error) {
+	r.queries++
+	return driver.Page[driver.Record]{Items: r.records}, nil
+}
 
 func TestAncestorCodecAndParentEnvelope(t *testing.T) {
 	for _, pair := range [][2]string{{"pl-a", "pl-a"}, {"pl-a", "pl-b"}, {"a.b", "ab"}, {"ab", "a.b"}} {
@@ -55,4 +68,57 @@ func TestHierarchyOrderedWorkCannotCancelTheBound(t *testing.T) {
 	p := &prepared{hierarchyEdits: []hierarchyEdit{{id: "subtree", parent: "ancestor-9"}, {id: "subtree", parent: ""}}}
 	_, err := p.hierarchyAffected(parents)
 	code(t, err, "closure_too_large")
+}
+
+func TestParentedFieldUpdatesSkipGraphScanButParentEditsValidate(t *testing.T) {
+	parent := model.Ref{ID: "parent"}
+	child := model.Ref{ID: "child"}
+	parentDoc := Document{ID: parent.ID, Type: "issue", Fields: map[string]any{"status": "todo"}}
+	childDoc := Document{ID: child.ID, Type: "issue", Parent: &parent, Fields: map[string]any{"status": "todo"}}
+	parentBody, err := json.Marshal(parentDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childBody, err := json.Marshal(childDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := []driver.Record{
+		{Ref: parent, Kind: "bead", Revision: model.Natural64(1), Body: parentBody},
+		{Ref: child, Kind: "bead", Revision: model.Natural64(2), Body: childBody},
+	}
+	newSnapshot := func(reader driver.Reader) *snapshotReader {
+		return &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}}
+	}
+
+	t.Run("field-update-does-not-enumerate", func(t *testing.T) {
+		reader := &hierarchyQueryReader{records: records}
+		p := &prepared{
+			snapshot: newSnapshot(reader),
+			writes:   map[string]*pending{child.ID: {ref: child, kind: "bead", doc: childDoc, before: childBody, setBy: map[string]string{"fields.title": "request"}}},
+		}
+		if docs, err := p.hierarchy(context.Background()); err != nil || docs != nil {
+			t.Fatalf("untouched parent graph returned docs=%v err=%v", docs, err)
+		}
+		if reader.queries != 0 {
+			t.Fatalf("ordinary parented update enumerated %d graph pages", reader.queries)
+		}
+	})
+
+	t.Run("parent-edit-still-validates", func(t *testing.T) {
+		reader := &hierarchyQueryReader{records: records}
+		missing := model.Ref{ID: "missing"}
+		changed := childDoc
+		changed.Parent = &missing
+		p := &prepared{
+			snapshot:       newSnapshot(reader),
+			hierarchyEdits: []hierarchyEdit{{id: child.ID, parent: missing.ID}},
+			writes:         map[string]*pending{child.ID: {ref: child, kind: "bead", doc: changed, before: childBody, setBy: map[string]string{"parent": "request"}}},
+		}
+		_, err := p.hierarchy(context.Background())
+		code(t, err, "ontology_guard_failed")
+		if reader.queries != 1 {
+			t.Fatalf("parent edit did not enumerate the stored graph once: %d", reader.queries)
+		}
+	})
 }
