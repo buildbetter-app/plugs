@@ -308,7 +308,7 @@ func compareRawReadback(expected []byte, actual *dumpformat.Archive) string {
 		}
 		wantPinned := line["pinned"] == true
 		gotPinned := stored.Source.Fields["pinned"]
-		if wantPinned != (gotPinned == true || gotPinned == json.Number("1")) {
+		if !samePinnedValue(wantPinned, gotPinned) {
 			return "beads_raw_pinned_changed"
 		}
 		for _, raw := range array(line["dependencies"]) {
@@ -480,4 +480,10 @@ func openDisposablePostgres(ctx context.Context, dsn string) (driver.Store, erro
 		return nil, fmt.Errorf("empty disposable database required")
 	}
 	return (postgres.Driver{}).Open(ctx, driver.Config{DSN: dsn})
+}
+
+// samePinnedValue validates the raw SQL representation independently of the
+// converter. Unknown stored values must not collapse into an expected false.
+func samePinnedValue(want bool, raw any) bool {
+	return want == (raw == true || raw == json.Number("1"))
 }

@@ -148,3 +148,21 @@ func TestPublicPostgresPartialSnapshotReverseAndMissingBeadsBoundary(t *testing.
 		})
 	}
 }
+
+func TestIndependentRawReadbackPinnedDomain(t *testing.T) {
+	for _, raw := range []any{nil, "unexpected", "false", "00", "01", " 0", "1.0", json.Number("2"), json.Number("1e0")} {
+		if samePinnedValue(false, raw) || samePinnedValue(true, raw) {
+			t.Errorf("unsupported raw SQL pinned value certified: %#v", raw)
+		}
+	}
+	for _, raw := range []any{true, json.Number("1"), "1"} {
+		if !samePinnedValue(true, raw) || samePinnedValue(false, raw) {
+			t.Errorf("actual SQL true encoding changed: %#v", raw)
+		}
+	}
+	for _, raw := range []any{false, json.Number("0"), "0"} {
+		if !samePinnedValue(false, raw) || samePinnedValue(true, raw) {
+			t.Errorf("actual SQL false encoding changed: %#v", raw)
+		}
+	}
+}
