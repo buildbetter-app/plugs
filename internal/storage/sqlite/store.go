@@ -345,10 +345,12 @@ func (s *Store) immediate(ctx context.Context, l *activeLease, fn func(*sql.Conn
 		return err
 	}
 	defer c.Close()
+	// Cancellation may be reported after native BEGIN acquired the writer.
+	// Roll back before returning that connection to the pool on every path.
+	defer func() { _, _ = c.ExecContext(context.Background(), `ROLLBACK`) }()
 	if _, err = c.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
 		return err
 	}
-	defer func() { _, _ = c.ExecContext(context.Background(), `ROLLBACK`) }()
 	if l != nil {
 		if err = s.fence(ctx, c, l); err != nil {
 			return err

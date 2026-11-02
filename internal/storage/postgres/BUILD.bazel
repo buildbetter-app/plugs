@@ -25,5 +25,5 @@ go_test(
         "//internal/testclock",
     ],
     size = "large",
-    tags = ["local", "requires-network"],
+    tags = ["exclusive", "local", "requires-network"],
 )

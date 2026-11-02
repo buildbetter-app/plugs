@@ -307,7 +307,8 @@ def run(capture):
             # rules_go needs verbose wrapper events to emit passing/skipped
             # test cases in XML rather than an empty <testsuites> stub.
             "--test_env=GO_TEST_WRAP_TESTV=1",
-            "--test_output=all", "--test_timeout=900", "--jobs=2", "--local_resources=memory=8192",
+            # Preserve short/moderate/long budgets; CP7's eternal tests need 150m.
+            "--test_output=all", "--test_timeout=900,900,900,9000", "--jobs=2", "--local_resources=memory=8192",
             "--remote_cache=", "--remote_executor=", "--repo_contents_cache=",
             "--build_event_publish_all_actions", "--build_event_json_file=" + str(capture.output / "raw.bep.json")]
     if os.environ.get("PLUG_BAZEL_DISK_CACHE"):
