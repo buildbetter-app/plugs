@@ -360,3 +360,52 @@ func TestActualFailedTransitionRecoveryAndRollbackRemainBlocked(t *testing.T) {
 		})
 	}
 }
+
+func TestOwnedCleanupLeavesDifferentOwnerNetwork(t *testing.T) {
+	if err := ensureWorkRoot(); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.MkdirTemp(workRoot, "plug-swarm-cleanup-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherRoot, err := os.MkdirTemp(workRoot, "plug-swarm-untouched-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned, other := newOwnedDocker(root), newOwnedDocker(otherRoot)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := owned.cleanup(cleanupCtx); err != nil {
+			t.Error(err)
+		}
+		if err := other.cleanup(cleanupCtx); err != nil {
+			t.Error(err)
+		}
+		if err := os.RemoveAll(root); err != nil {
+			t.Error(err)
+		}
+		if err := os.RemoveAll(otherRoot); err != nil {
+			t.Error(err)
+		}
+	})
+	if err = owned.createNetwork(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = other.createNetwork(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = owned.owned(ctx, "network", other.network); err == nil {
+		t.Fatal("other owner accepted")
+	}
+	if err = owned.cleanup(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = other.owned(ctx, "network", other.network); err != nil {
+		t.Fatal("cleanup removed another owner's network")
+	}
+	t.Log("I8_OWNED_CLEANUP own selection empty; different-owner internal network remains")
+}

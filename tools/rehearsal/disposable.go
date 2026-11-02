@@ -1118,38 +1118,45 @@ func (d *ownedDocker) createNetwork(ctx context.Context) error {
 
 func (d *ownedDocker) cleanup(ctx context.Context) error {
 	var result error
-	for _, id := range d.containers {
-		if err := d.owned(ctx, "container", id); err != nil {
+	// Discover only this unguessable owner's labels. This also covers a create
+	// that reached the daemon but lost its acknowledgement; no unrelated
+	// container/image/network is inspected or removed.
+	for _, kind := range []string{"container", "image", "network"} {
+		args := []string{kind, "ls", "--quiet", "--filter", "label=" + runtimeOwnerLabel + "=" + d.owner}
+		if kind == "container" {
+			args = append(args, "--all")
+		}
+		out, err := d.command(ctx, nil, args...)
+		if err != nil {
 			result = errors.Join(result, err)
 			continue
 		}
-		if _, err := d.command(ctx, nil, "container", "rm", "--force", id); err != nil {
-			result = errors.Join(result, err)
+		seen := map[string]bool{}
+		for _, id := range strings.Fields(string(out)) {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			if err = d.owned(ctx, kind, id); err != nil {
+				result = errors.Join(result, err)
+				continue
+			}
+			remove := []string{kind, "rm", id}
+			if kind == "container" {
+				remove = []string{kind, "rm", "--force", id}
+			}
+			if _, err = d.command(ctx, nil, remove...); err != nil {
+				result = errors.Join(result, err)
+			}
 		}
 	}
-	for _, id := range d.images {
-		if err := d.owned(ctx, "image", id); err != nil {
-			result = errors.Join(result, err)
-			continue
+	// A successful daemon query and an empty owner selection prove absence;
+	// an inspect failure by itself never does.
+	for _, kind := range []string{"container", "image", "network"} {
+		args := []string{kind, "ls", "--quiet", "--filter", "label=" + runtimeOwnerLabel + "=" + d.owner}
+		if kind == "container" {
+			args = append(args, "--all")
 		}
-		if _, err := d.command(ctx, nil, "image", "rm", id); err != nil {
-			result = errors.Join(result, err)
-		}
-	}
-	if d.network != "" {
-		if err := d.owned(ctx, "network", d.network); err != nil {
-			result = errors.Join(result, err)
-		} else if _, err = d.command(ctx, nil, "network", "rm", d.network); err != nil {
-			result = errors.Join(result, err)
-		}
-	}
-	// Query the daemon successfully, then prove none of our labeled objects
-	// remain. An inspect failure alone does not prove absence.
-	for _, args := range [][]string{
-		{"container", "ls", "--all", "--quiet", "--filter", "label=" + runtimeOwnerLabel + "=" + d.owner},
-		{"image", "ls", "--quiet", "--filter", "label=" + runtimeOwnerLabel + "=" + d.owner},
-		{"network", "ls", "--quiet", "--filter", "label=" + runtimeOwnerLabel + "=" + d.owner},
-	} {
 		out, err := d.command(ctx, nil, args...)
 		if err != nil || len(bytes.TrimSpace(out)) != 0 {
 			result = errors.Join(result, fmt.Errorf("owned resource cleanup not verified"))
@@ -1319,6 +1326,11 @@ func installRuntimeFiles(root string, b RuntimeBundle, kind string, fault func(s
 		}
 		if err = writeRollbackArtifact(filepath.Join(stage, item.name), content); err != nil {
 			return err
+		}
+		if item.name == runtimeExecutableName {
+			if err = os.Chmod(filepath.Join(stage, item.name), 0500); err != nil {
+				return err
+			}
 		}
 		if fault != nil {
 			if err = fault(item.name); err != nil {
@@ -1810,15 +1822,24 @@ func publicState(ctx context.Context, c *client.Client) (string, error) {
 	return strings.Join(rows, "\n"), nil
 }
 
-func currentRuntimeIncarnation(ctx context.Context, c *client.Client) (string, error) {
-	hello, err := c.Call(ctx, "server.hello", map[string]any{}, "")
+func currentRuntimeIncarnation(ctx context.Context, h *ownedRuntime) (string, error) {
+	// server.hello takes no _meta. The generic command client always adds it,
+	// so use the exact public frame through the same authenticated TLS transport.
+	hello, err := h.transport.RoundTrip(ctx, []byte(`{"jsonrpc":"2.0","id":"hello","method":"server.hello","params":{}}`))
 	if err != nil {
 		return "", err
 	}
-	var identity struct{ Incarnation, AuthMode string }
-	if json.Unmarshal(hello.JSON, &identity) != nil || identity.Incarnation == "" || identity.AuthMode != "authenticated" {
+	var envelope struct {
+		JSONRPC string
+		ID      string
+		Error   json.RawMessage
+		Result  struct{ Incarnation, AuthMode string }
+	}
+	if json.Unmarshal(hello, &envelope) != nil || envelope.JSONRPC != "2.0" || envelope.ID != "hello" || len(envelope.Error) != 0 || envelope.Result.Incarnation == "" || envelope.Result.AuthMode != "authenticated" {
 		return "", fmt.Errorf("public runtime identity invalid")
 	}
+	identity := envelope.Result
+	c := h.rpc
 	ready, err := c.Call(ctx, "bead.ready", map[string]any{"limit": 1}, "")
 	if err != nil {
 		return "", err
@@ -1865,7 +1886,7 @@ func restoreAndReadRuntime(ctx context.Context, h *ownedRuntime, b RuntimeBundle
 	if err = restoreDump(ctx, h.adminRPC, data, archive); err != nil {
 		return observation, fmt.Errorf("public native snapshot restore failed: %w", err)
 	}
-	observation.RestoredIncarnation, err = currentRuntimeIncarnation(ctx, h.rpc)
+	observation.RestoredIncarnation, err = currentRuntimeIncarnation(ctx, h)
 	if err != nil {
 		return observation, err
 	}
@@ -2304,14 +2325,17 @@ func (f *runtimeForwarder) close() error {
 		return nil
 	}
 	f.closed = true
-	err := f.listener.Close()
+	var err error
+	addClose := func(e error) {
+		if e != nil && !errors.Is(e, net.ErrClosed) {
+			err = errors.Join(err, e)
+		}
+	}
+	addClose(f.listener.Close())
 	for connection := range f.connections {
-		err = errors.Join(err, connection.Close())
+		addClose(connection.Close())
 	}
 	f.mu.Unlock()
 	f.group.Wait()
-	if errors.Is(err, net.ErrClosed) {
-		return nil
-	}
 	return err
 }
