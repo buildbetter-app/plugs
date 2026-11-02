@@ -260,6 +260,7 @@ internal/core/pipeline/hierarchy.go
 internal/core/pipeline/hierarchy_prefix_guard_test.go
 internal/core/pipeline/hierarchy_scope_test.go
 internal/core/pipeline/hierarchy_test.go
+internal/core/pipeline/labels.go
 internal/core/pipeline/lease_overlay.go
 internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
@@ -323,6 +324,7 @@ internal/core/service/service_test.go
 internal/core/service/types.go
 internal/core/viewops/BUILD.bazel
 internal/core/viewops/epic_progress.go
+internal/core/viewops/label_predicate.go
 internal/core/viewops/parent_projection.go
 internal/core/viewops/run.go
 internal/core/viewops/service.go
@@ -416,6 +418,12 @@ internal/integration/httpcancel/httpcancel_test.go
 internal/integration/httpconformance/BUILD.bazel
 internal/integration/httpconformance/fixture_test.go
 internal/integration/httpconformance/protocol_test.go
+internal/integration/labelcontract/BUILD.bazel
+internal/integration/labelcontract/README.md
+internal/integration/labelcontract/authorization_test.go
+internal/integration/labelcontract/fixture_test.go
+internal/integration/labelcontract/labels_test.go
+internal/integration/labelcontract/query_test.go
 internal/integration/localclisession/BUILD.bazel
 internal/integration/localclisession/session_test.go
 internal/integration/memorycontract/BUILD.bazel
