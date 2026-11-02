@@ -425,7 +425,15 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	allocatorKeys := make([]driver.LockKey, 0)
 	allocatorPrefixes := map[string]bool{}
 	parentCounters := map[string]bool{}
-	for _, pending := range writes {
+	for _, pending := range p.writes {
+		// Receipt-only no-ops consume no previews. In an ordinary commit,
+		// include transient creates too: deleting a preview later in the
+		// batch removes its final row, not its consumed number.
+		if len(writes) == 0 || (pending.allocatorPrefix == "" && pending.allocatorChild == "") {
+			continue
+		}
+		ref := pending.ref
+		allocatorKeys = append(allocatorKeys, driver.LockKey{Kind: driver.LockRecord, Ref: &ref})
 		if pending.allocatorPrefix == "" && pending.allocatorChild != "" {
 			if !parentCounters[pending.allocatorChild] {
 				key, e := driver.ParentCounterLock(p.snapshot.Snapshot().Incarnation, pending.allocatorChild)

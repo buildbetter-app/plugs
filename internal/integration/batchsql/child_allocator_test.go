@@ -23,11 +23,19 @@ func seedChildAllocatorFixture(t *testing.T, f *fixture, profile driver.OfflineA
 	if profile.Children != nil || profile.Validate() != nil {
 		t.Fatal("fixture must be a valid profile with omitted child counters")
 	}
-	key, err := driver.AllocatorLock(profile.Prefix)
-	if err != nil {
-		t.Fatal(err)
+	seedChildFixture(t, f, &profile, observed)
+}
+
+func seedChildFixture(t *testing.T, f *fixture, profile *driver.OfflineAllocator, observed bool) {
+	t.Helper()
+	var locks driver.LockSet
+	if profile != nil {
+		key, err := driver.AllocatorLock(profile.Prefix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		locks = append(locks, driver.LockRequest{Key: key, Mode: driver.LockUpdate})
 	}
-	locks := driver.LockSet{{Key: key, Mode: driver.LockUpdate}}
 	var records []driver.Record
 	var rows []driver.DerivedRow
 	var sentinels []driver.Sentinel
@@ -89,8 +97,10 @@ func seedChildAllocatorFixture(t *testing.T, f *fixture, profile driver.OfflineA
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = tx.(driver.AllocatorContinuation).RestoreAllocators(f.ctx, []driver.OfflineAllocator{profile}); err != nil {
-		t.Fatal(err)
+	if profile != nil {
+		if err = tx.(driver.AllocatorContinuation).RestoreAllocators(f.ctx, []driver.OfflineAllocator{*profile}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, record := range records {
 		if err = tx.Put(f.ctx, record); err != nil {
@@ -179,7 +189,7 @@ func childAllocatorApply(f *fixture, cs model.ChangeSet, meta model.WriteMeta) (
 
 func assertChildAllocatorReplay(t *testing.T, f *fixture, cs model.ChangeSet, meta model.WriteMeta, commit model.Commit) {
 	t.Helper()
-	before, rows := childAllocatorDurableState(t, f), hierarchyRows(t, f)
+	before, rows, inventory := childAllocatorDurableState(t, f), hierarchyRows(t, f), childInventory(t, f)
 	got, err := childAllocatorApply(f, cs, meta)
 	if err != nil || !got.Replayed || !reflect.DeepEqual(got.Commit, commit) {
 		t.Fatalf("exact child replay: %+v err=%v want=%+v", got, err, commit)
@@ -187,6 +197,9 @@ func assertChildAllocatorReplay(t *testing.T, f *fixture, cs model.ChangeSet, me
 	requireSameState(t, before, childAllocatorDurableState(t, f))
 	if !reflect.DeepEqual(rows, hierarchyRows(t, f)) {
 		t.Fatal("replay changed closure rows")
+	}
+	if !reflect.DeepEqual(inventory, childInventory(t, f)) {
+		t.Fatal("replay consumed allocator continuation")
 	}
 	if receipt := f.receipt(t, meta); receipt == nil || !reflect.DeepEqual(receipt.Commit, commit) {
 		t.Fatalf("child receipt differs: %+v", receipt)
@@ -455,6 +468,20 @@ func TestChildAllocatorAtomicConsumptionAndConcurrentRetryAcrossStores(t *testin
 						seedChildAllocatorFixture(t, f, profile, false)
 					}
 					parent := hierarchyApply(t, f, hierarchyCreate("parent", nil, project)).Results[0].Ref
+					// A batch with no final graph change remains a receipt-only
+					// no-op. These IDs are previews, never consumed allocations.
+					noopCS := model.ChangeSet{Ops: []model.Op{hierarchyCreate("preview", &parent, project), childDelete(model.RefByKey("preview"))}}
+					noopMeta := f.meta("receipt-only-preview")
+					noopBefore, noopInventory := childAllocatorDurableState(t, f), childInventory(t, f)
+					noop, err := childAllocatorApply(f, noopCS, noopMeta)
+					if err != nil || noop.Commit.Revision.String() != noopBefore.Meta.Head.String() || len(noop.Commit.Results) != 2 {
+						t.Fatalf("receipt-only child preview changed no-op semantics: %+v err=%v", noop, err)
+					}
+					requireSameState(t, noopBefore, childAllocatorDurableState(t, f))
+					if !reflect.DeepEqual(noopInventory, childInventory(t, f)) {
+						t.Fatal("receipt-only no-op consumed child preview")
+					}
+					assertChildAllocatorReplay(t, f, noopCS, noopMeta, noop.Commit)
 					cs := model.ChangeSet{Ops: []model.Op{hierarchyCreate("one", &parent, project), hierarchyCreate("two", &parent, project)}}
 					before, rows, inventory := childAllocatorDurableState(t, f), hierarchyRows(t, f), childInventory(t, f)
 					assertUnchanged := func(t *testing.T, meta model.WriteMeta) {
@@ -539,6 +566,10 @@ func TestChildAllocatorAtomicConsumptionAndConcurrentRetryAcrossStores(t *testin
 						t.Fatalf("same-batch deleted preview reused: %+v err=%v", last, err)
 					}
 					assertChildAllocatorReplay(t, f, transient, transientMeta, last.Commit)
+					continued := hierarchyApply(t, f, hierarchyCreate("after-transient", &parent, project))
+					if continued.Results[0].Ref.ID != parent.ID+".7" {
+						t.Fatalf("transient consumed number did not advance continuation: %+v", continued)
+					}
 					verifyHierarchy(t, f)
 					t.Logf("%s/%s: dry-run, after-auth refusal, two real consumes rolled back after Put, stale-preview retry, ordered deletion and exact replay proven", engine, mode)
 				})
@@ -645,6 +676,42 @@ func TestParentCounterSnapshotStagingAndLockGuardsAcrossStores(t *testing.T) {
 					}
 				})
 			}
+		})
+	}
+}
+
+func TestParentCounterReconcilesRestoredDirectChildrenAcrossStores(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			seedChildFixture(t, f, nil, true)
+			parent := model.Ref{ID: "demo-root"}
+			if inventory := childInventory(t, f); len(inventory.Projects) != 0 || len(inventory.Parents) != 0 {
+				t.Fatalf("record-only restore installed continuation: %+v", inventory)
+			}
+			cs := model.ChangeSet{Ops: []model.Op{hierarchyCreate("nine", &parent, "demo"), hierarchyCreate("ten", &parent, "demo")}}
+			meta := f.meta("observed-no-profile")
+			out, err := childAllocatorApply(f, cs, meta)
+			if err != nil || len(out.Commit.Results) != 2 || out.Commit.Results[0].Ref.ID != "demo-root.9" || out.Commit.Results[1].Ref.ID != "demo-root.10" {
+				t.Fatalf("no-profile direct-child repair: %+v err=%v", out, err)
+			}
+			assertChildAllocatorReplay(t, f, cs, meta, out.Commit)
+			// Remove the restored grandchild first, then every direct child.
+			// The retained counter, rather than live rows or history, owns .11.
+			hierarchyApply(t, f, childDelete(model.Ref{ID: "demo-root.8.2"}), childDelete(model.Ref{ID: "demo-root.8"}), childDelete(out.Commit.Results[0].Ref), childDelete(out.Commit.Results[1].Ref))
+			if engine != "memory" {
+				f.reopen(t)
+			}
+			continued := hierarchyApply(t, f, hierarchyCreate("eleven", &parent, "demo"))
+			if continued.Results[0].Ref.ID != "demo-root.11" {
+				t.Fatalf("reconciled no-profile continuation reset: %+v", continued)
+			}
+			inventory := childInventory(t, f)
+			if len(inventory.Projects) != 0 || len(inventory.Parents) != 1 || inventory.Parents[0].LastChild != 11 {
+				t.Fatalf("parent-only durable high-water: %+v", inventory)
+			}
+			verifyHierarchy(t, f)
+			t.Logf("%s: restored .8/.8.2 without profile reconciled .9/.10; all children deleted; continuation .11 with SQL reopen", engine)
 		})
 	}
 }
