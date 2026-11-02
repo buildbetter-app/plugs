@@ -3,11 +3,81 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	sqldriver "database/sql/driver"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// modernc's statement exec replaces its result with ctx.Err when the
+// cancellation watcher wins, including after sqlite3_step has finished. This
+// connector makes that boundary deterministic AFTER the real native BEGIN;
+// it neither invents SQLITE_BUSY nor substitutes a database or lock.
+type canceledBeginConnector struct {
+	driver sqldriver.Driver
+	dsn    string
+	cancel context.CancelFunc
+	armed  atomic.Bool
+	steps  atomic.Int32
+}
+
+func (c *canceledBeginConnector) Driver() sqldriver.Driver { return c.driver }
+func (c *canceledBeginConnector) Connect(context.Context) (sqldriver.Conn, error) {
+	conn, err := c.driver.Open(c.dsn)
+	if err != nil {
+		return nil, err
+	}
+	return &canceledBeginConn{Conn: conn, connector: c}, nil
+}
+
+type canceledBeginConn struct {
+	sqldriver.Conn
+	connector *canceledBeginConnector
+}
+
+func (c *canceledBeginConn) ExecContext(ctx context.Context, query string, args []sqldriver.NamedValue) (sqldriver.Result, error) {
+	result, err := c.Conn.(sqldriver.ExecerContext).ExecContext(ctx, query, args)
+	if query == "BEGIN IMMEDIATE" && err == nil && c.connector.armed.CompareAndSwap(true, false) {
+		c.connector.steps.Add(1)
+		c.connector.cancel()
+		return nil, ctx.Err()
+	}
+	return result, err
+}
+
+func TestCanceledSuccessfulBeginReleasesNativeWriter(t *testing.T) {
+	ctx := testContext(t)
+	path := filepath.Join(t.TempDir(), "successful-canceled-begin.db")
+	a := openStore(t, ctx, path)
+	b := openStore(t, ctx, path)
+	call, cancel := context.WithCancel(ctx)
+	defer cancel()
+	connector := &canceledBeginConnector{driver: a.db.Driver(), dsn: path, cancel: cancel}
+	if err := a.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	a.db = sql.OpenDB(connector)
+	a.db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _, _ = a.db.ExecContext(context.Background(), "ROLLBACK") })
+	connector.armed.Store(true)
+	bodyCalled := false
+	err := a.immediate(call, nil, func(*sql.Conn) error {
+		bodyCalled = true
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) || bodyCalled || connector.steps.Load() != 1 {
+		t.Fatalf("actual-BEGIN cancellation seam: err=%v body=%v nativeBegins=%d", err, bodyCalled, connector.steps.Load())
+	}
+	if err := b.immediate(ctx, nil, func(c *sql.Conn) error {
+		_, err := readLease(ctx, c)
+		return err
+	}); err != nil {
+		t.Fatalf("native writer retained after failed BEGIN returned its connection: %T %v", err, err)
+	}
+	t.Log("real native BEGIN completed once, cancellation error returned, separate handle acquired native writer without retry")
+}
 
 // Exercise the actual driver's cancellation boundary, not a simulated busy
 // error. A failed BEGIN must not leave the pooled connection owning SQLite's
