@@ -346,6 +346,7 @@ internal/integration/auditsql/faults_test.go
 internal/integration/auditsql/fixture_test.go
 internal/integration/batchsql/BUILD.bazel
 internal/integration/batchsql/README.md
+internal/integration/batchsql/b01_close_ancestry_test.go
 internal/integration/batchsql/b01_public_hierarchy_test.go
 internal/integration/batchsql/batch_test.go
 internal/integration/batchsql/fixture_test.go

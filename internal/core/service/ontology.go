@@ -345,6 +345,9 @@ func (o *Ontology) Validate(ctx context.Context, proposal port.ProposedChange, r
 		}
 		if graph != nil {
 			noBlockers, err := o.noOpenBlockers(doc, graph)
+			if err == nil && noBlockers && (method == "bead.claim" || method == "bead.claimNext") {
+				noBlockers, err = o.readyAncestors(doc, graph)
+			}
 			if err != nil {
 				return err
 			}

@@ -36,3 +36,10 @@ Deferred ancestors suppress ready descendants and direct/next claims; public
 reparent and reopen update that membership. Fixed policy continues to refuse
 lifecycle verbs: a separate supported no-plugin public host supplies the real
 status observations and lifecycle guards. No hierarchy permit is fabricated.
+
+`TestB01PublicAncestorSchedulingPreservesChildCloseAcrossDrivers` keeps the
+scheduling and close predicates separate. A deferred parent or a parent's live
+blocker suppresses ready and fresh direct claim, while child close and fresh
+close settlement still succeed after the child's own direct blocker is removed.
+The public regression checks unchanged parent records/versions and all three
+drivers without changing the original hierarchy assertions.
