@@ -46,7 +46,7 @@ func TestB16PublicLabelFixedAuthorizationAndCurrentReplay(t *testing.T) {
 		}
 		call := func(fields map[string]any, key string, code string) map[string]any {
 			t.Helper()
-			raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "bead.update", "params": map[string]any{"id": id, "fields": fields, "_meta": map[string]any{"idempotencyKey": key}}})
+			raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "bead.update", "params": map[string]any{"id": map[string]any{"id": id}, "fields": fields, "_meta": map[string]any{"idempotencyKey": key}}})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -116,6 +117,9 @@ func (f *fixture) request(method string, params map[string]any, key, code string
 	copyParams := make(map[string]any, len(params)+1)
 	for k, v := range params {
 		copyParams[k] = v
+	}
+	if id, ok := copyParams["id"].(string); ok && strings.HasPrefix(method, "bead.") {
+		copyParams["id"] = map[string]any{"id": id}
 	}
 	if key != "" {
 		copyParams["_meta"] = map[string]any{"agent": "label-contract", "idempotencyKey": key}
