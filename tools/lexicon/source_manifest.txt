@@ -1096,6 +1096,7 @@ tools/rehearsal/three_rehearsals.sh
 tools/roundtrip/BUILD.bazel
 tools/roundtrip/README.md
 tools/roundtrip/beads.go
+tools/roundtrip/beads_runtime_test.go
 tools/roundtrip/beads_test.go
 tools/roundtrip/main.go
 tools/roundtrip/main_test.go
