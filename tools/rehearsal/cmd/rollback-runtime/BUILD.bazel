@@ -1,0 +1,33 @@
+load("@rules_go//go:def.bzl", "go_binary")
+
+go_binary(
+    name = "old-runtime",
+    srcs = ["main.go"],
+    importpath = "github.com/buildbetter-app/plugs/tools/rehearsal/cmd/rollback-runtime",
+    pure = "on",
+    visibility = ["//tools/rehearsal:__pkg__"],
+    x_defs = {"github.com/buildbetter-app/plugs/tools/rehearsal.RuntimeEdition": "old"},
+    deps = ["//tools/rehearsal"],
+)
+
+go_binary(
+    name = "candidate-runtime",
+    srcs = ["main.go"],
+    importpath = "github.com/buildbetter-app/plugs/tools/rehearsal/cmd/rollback-runtime",
+    pure = "on",
+    visibility = ["//tools/rehearsal:__pkg__"],
+    x_defs = {"github.com/buildbetter-app/plugs/tools/rehearsal.RuntimeEdition": "candidate"},
+    deps = ["//tools/rehearsal"],
+)
+
+filegroup(
+    name = "source",
+    srcs = ["main.go", "BUILD.bazel"],
+    visibility = ["//tools/rehearsal:__pkg__"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
