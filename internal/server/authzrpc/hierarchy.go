@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -14,50 +15,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
 )
 
-type hierarchyRoute uint8
-
-const (
-	hierarchyOrdinary hierarchyRoute = iota
-	hierarchyDirect
-	hierarchyLifecycle
-	hierarchyUnsupported
-)
-
 func hierarchyMethod(method string) bool {
 	return method == "bead.create" || method == "bead.reparent" || method == "tx.apply"
-}
-
-func hierarchyRouteFor(proposal port.ProposedChange) hierarchyRoute {
-	switch proposal.Meta.Method {
-	case "bead.create", "bead.reparent":
-		return hierarchyDirect
-	case "tx.apply":
-		var hierarchy, close, other bool
-		for _, change := range proposal.Changes {
-			switch change.Op.Kind {
-			case model.OpCreate, model.OpReparent:
-				hierarchy = true
-			case model.OpClose:
-				close = true
-			case model.OpPatch, model.OpComment, model.OpLink, model.OpUnlink, model.OpDelete, model.OpSetMeta:
-				other = true
-			default:
-				return hierarchyUnsupported
-			}
-		}
-		if hierarchy && other {
-			return hierarchyUnsupported
-		}
-		if hierarchy && close {
-			return hierarchyLifecycle
-		}
-		if hierarchy {
-			return hierarchyDirect
-		}
-		return hierarchyOrdinary
-	default:
-		return hierarchyOrdinary
-	}
 }
 
 // AuthorizeHierarchy is the opt-in EP2 Writer seam. The ordered operation and
@@ -70,17 +29,6 @@ func hierarchyRouteFor(proposal port.ProposedChange) hierarchyRoute {
 // adapter remains unchanged. Ontology, child guards, cycles, alias allocation,
 // closure bounds and atomic publication remain the hierarchy Writer's work.
 func (c *Checker) AuthorizeHierarchy(ctx context.Context, stage port.AuthorizationStage, proposal port.ProposedChange, reader port.SnapshotReader) error {
-	return c.authorizeHierarchy(ctx, stage, proposal, reader, false)
-}
-
-// AuthorizeHierarchyLifecycle composes the existing hierarchy create/reparent
-// adapter with the typed close slot. It keeps hierarchy parent/project checks
-// and adds an independent bead.close decision for each close operation.
-func (c *Checker) AuthorizeHierarchyLifecycle(ctx context.Context, stage port.AuthorizationStage, proposal port.ProposedChange, reader port.SnapshotReader) error {
-	return c.authorizeHierarchy(ctx, stage, proposal, reader, true)
-}
-
-func (c *Checker) authorizeHierarchy(ctx context.Context, stage port.AuthorizationStage, proposal port.ProposedChange, reader port.SnapshotReader, allowClose bool) error {
 	if reader == nil {
 		return hierarchyUnavailable()
 	}
@@ -89,9 +37,6 @@ func (c *Checker) authorizeHierarchy(ctx context.Context, stage port.Authorizati
 	}
 	if !hierarchyMethod(proposal.Meta.Method) || len(proposal.Changes) == 0 || len(proposal.Changes) > 1000 {
 		return forbidden("unsupported hierarchy write")
-	}
-	if allowClose && proposal.Meta.Method != "tx.apply" {
-		return forbidden("hierarchy lifecycle requires tx.apply")
 	}
 	if proposal.Meta.Method != "tx.apply" && (len(proposal.Changes) != 1 ||
 		(proposal.Meta.Method == "bead.create" && proposal.Changes[0].Op.Kind != model.OpCreate) ||
@@ -142,7 +87,7 @@ func (c *Checker) authorizeHierarchy(ctx context.Context, stage port.Authorizati
 		if _, err := json.Marshal(change.Op); err != nil {
 			return forbidden("invalid hierarchy operation")
 		}
-		if change.Op.Kind != model.OpCreate && change.Op.Kind != model.OpReparent && (!allowClose || change.Op.Kind != model.OpClose) {
+		if change.Op.Kind != model.OpCreate && change.Op.Kind != model.OpReparent {
 			return forbidden("unmapped hierarchy operation")
 		}
 		ref := change.Resource.Ref
@@ -154,17 +99,9 @@ func (c *Checker) authorizeHierarchy(ctx context.Context, stage port.Authorizati
 			if source == nil {
 				return forbidden("hierarchy write not authorized")
 			}
-			if change.Op.Kind == model.OpClose {
-				if err := c.hierarchyReplayClose(ctx, s, caller, proposal, change, *source, aliases, batch); err != nil {
-					return err
-				}
-			} else if err := c.hierarchyReplay(ctx, s, caller, proposal, change, *source, aliases, load, batch); err != nil {
-				return err
-			}
-			continue
-		}
-		if change.Op.Kind == model.OpClose {
-			if err := c.authorizeHierarchyClose(ctx, s, caller, proposal, change, source, states, load, batch); err != nil {
+			// A receipt is never a grant. Current child assignment and the
+			// original requested destination are checked; an old parent is not.
+			if err := c.hierarchyReplay(ctx, s, caller, proposal, change, *source, aliases, load, batch); err != nil {
 				return err
 			}
 			continue
@@ -227,7 +164,7 @@ func (c *Checker) authorizeHierarchy(ctx context.Context, stage port.Authorizati
 		}
 		target, err := authz.ValidateHierarchyWrite(change.Op.Kind, before, staged, proposal.Principal, caller)
 		if err != nil {
-			return forbidden("invalid hierarchy write image (" + string(change.Op.Kind) + "): " + err.Error())
+			return forbidden("invalid hierarchy write image")
 		}
 		// Only this validated, tracked-missing new child may use a staged
 		// project binding. Existing beads always keep their stored assignment.
@@ -258,94 +195,6 @@ func (c *Checker) authorizeHierarchy(ctx context.Context, stage port.Authorizati
 		}
 	}
 	return nil
-}
-
-func (c *Checker) authorizeHierarchyClose(ctx context.Context, s *hierarchySlice, caller authz.Caller, proposal port.ProposedChange, change port.Change, source *model.Record, states map[string]model.Record, load func(model.Ref) (*model.Record, error), batch *hierarchyCheckBatch) error {
-	ref := change.Resource.Ref
-	before := model.Record{}
-	if source != nil {
-		before = *source
-	} else if staged, ok := states[ref.ID]; ok {
-		before = staged
-	} else {
-		return forbidden("hierarchy close requires a bound source")
-	}
-	beforeImage, err := hierarchyRaw(ref, before.Revision, change.Before)
-	if err != nil || !reflect.DeepEqual(beforeImage.Body, before.Body) {
-		return forbidden("hierarchy close source mismatch")
-	}
-	after, err := hierarchyRaw(ref, model.Natural64(0), change.After)
-	if err != nil {
-		return forbidden("invalid hierarchy close image")
-	}
-	if source != nil {
-		if err := authz.ValidateBeadWrite("bead.update", beforeImage, after, proposal.Principal, caller, []authz.Action{authz.Modify}); err != nil {
-			return forbidden("invalid hierarchy close image")
-		}
-	} else if !validStagedHierarchyClose(beforeImage, after, proposal.Principal, caller) {
-		return forbidden("invalid hierarchy close image")
-	}
-	target, err := authz.HierarchyImage(after)
-	if err != nil {
-		return forbidden("invalid hierarchy close image")
-	}
-	return c.checkHierarchyCloseRights(ctx, s, caller, target, proposal.Meta.Method, load, batch)
-}
-
-func validStagedHierarchyClose(before, after model.Record, setter model.PrincipalRef, caller authz.Caller) bool {
-	if caller.Principal.Kind != "agent" || !reflect.DeepEqual(setter, caller.Principal) || before.Kind != "bead" || after.Kind != "bead" || before.Ref.ID != after.Ref.ID {
-		return false
-	}
-	if _, err := authz.HierarchyImage(before); err != nil {
-		return false
-	}
-	if _, err := authz.HierarchyImage(after); err != nil {
-		return false
-	}
-	for _, key := range []string{"project", "parent", "owner", "assignee", "type", "labels", "restricted"} {
-		old, had := before.Body[key]
-		next, has := after.Body[key]
-		if had != has || !reflect.DeepEqual(old, next) {
-			return false
-		}
-	}
-	return true
-}
-
-func (c *Checker) checkHierarchyCloseRights(ctx context.Context, s *hierarchySlice, caller authz.Caller, target authz.HierarchyTarget, method string, load func(model.Ref) (*model.Record, error), batch *hierarchyCheckBatch) error {
-	_ = load // close has no parent/project dependency; create already checked those bindings.
-	requests := []authz.CheckRequest{
-		{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: target.Ref}, Method: method},
-		{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: target.Ref}, Method: "bead.close"},
-	}
-	if batch != nil {
-		indices := make([]int, 0, len(requests))
-		for _, request := range requests {
-			indices = append(indices, batch.add(request))
-		}
-		batch.groups = append(batch.groups, hierarchyCheckGroup{indices: indices})
-		return nil
-	}
-	return c.checkHierarchyRequests(ctx, s, requests)
-}
-
-func (c *Checker) hierarchyReplayClose(ctx context.Context, s *hierarchySlice, caller authz.Caller, proposal port.ProposedChange, change port.Change, source model.Record, aliases map[string]model.Ref, batch *hierarchyCheckBatch) error {
-	if change.Op.Close == nil {
-		return forbidden("invalid hierarchy close operation")
-	}
-	if target, err := hierarchyResolve(change.Op.Close.Target, aliases); err != nil || target.ID != source.Ref.ID {
-		// Replay aliases are represented by the resolved resource ref in the
-		// proposal; an ID target must still agree with the stored result.
-		if change.Op.Close.Target.IsID() && change.Op.Close.Target.ID == source.Ref.ID {
-			// continue
-		} else {
-			return forbidden("hierarchy replay close target mismatch")
-		}
-	}
-	if _, err := authz.HierarchyImage(source); err != nil {
-		return forbidden("hierarchy replay close source invalid")
-	}
-	return c.checkHierarchyCloseRights(ctx, s, caller, authz.HierarchyTarget{Ref: source.Ref}, proposal.Meta.Method, nil, batch)
 }
 
 func (c *Checker) authorizeExpectations(ctx context.Context, s authz.Slice, caller authz.Caller, proposal port.ProposedChange) error {
@@ -718,4 +567,258 @@ func hierarchyRef(ref model.Ref) error {
 
 func hierarchyUnavailable() error {
 	return &model.Error{Message: "hierarchy authorization source unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+}
+
+// Routing depends on the complete operation set, never on the enclosing
+// tx.apply method alone. An unsupported mixed batch is refused as a whole.
+type hierarchyRoute uint8
+
+const (
+	hierarchyOrdinary hierarchyRoute = iota
+	hierarchyDirect
+	hierarchyLifecycle
+	hierarchyUnsupported
+)
+
+func hierarchyRouteFor(proposal port.ProposedChange) hierarchyRoute {
+	if proposal.Meta.Method == "bead.create" || proposal.Meta.Method == "bead.reparent" {
+		return hierarchyDirect
+	}
+	if proposal.Meta.Method != "tx.apply" {
+		return hierarchyOrdinary
+	}
+	var hierarchy, close, other bool
+	for _, change := range proposal.Changes {
+		switch change.Op.Kind {
+		case model.OpCreate, model.OpReparent:
+			hierarchy = true
+		case model.OpClose:
+			close = true
+		default:
+			other = true
+		}
+	}
+	if hierarchy && other {
+		return hierarchyUnsupported
+	}
+	if hierarchy && close {
+		return hierarchyLifecycle
+	}
+	if hierarchy {
+		return hierarchyDirect
+	}
+	return hierarchyOrdinary
+}
+
+// AuthorizeHierarchyLifecycle checks every operation in the original batch.
+// Hierarchy operations retain the existing parent/project adapter. The entire
+// batch, its expectations and each close also require the ORIGINAL installed
+// chain's tx.apply/bead.close permits; hierarchy membership is never a close
+// permit. All reads remain on the Writer's tracked snapshot and callback budget.
+func (c *Checker) AuthorizeHierarchyLifecycle(ctx context.Context, stage port.AuthorizationStage, proposal port.ProposedChange, reader port.SnapshotReader) error {
+	if reader == nil {
+		return hierarchyUnavailable()
+	}
+	if hierarchyRouteFor(proposal) != hierarchyLifecycle || len(proposal.Changes) > 1000 {
+		return forbidden("unsupported hierarchy lifecycle composition")
+	}
+	aliases := map[string]model.Ref{}
+	creates := map[string]port.Change{}
+	moves := map[string]bool{}
+	reasons := map[string][]string{}
+	for _, change := range proposal.Changes {
+		ref := change.Resource.Ref
+		if change.Resource.Kind != "bead" || hierarchyRef(ref) != nil {
+			return forbidden("invalid hierarchy lifecycle target")
+		}
+		if _, err := json.Marshal(change.Op); err != nil {
+			return forbidden("invalid hierarchy lifecycle operation")
+		}
+		var target model.Ref
+		switch change.Op.Kind {
+		case model.OpCreate:
+			if _, exists := creates[ref.ID]; exists {
+				return forbidden("duplicate hierarchy create")
+			}
+			creates[ref.ID] = change
+			if key := change.Op.Create.Key; key != "" {
+				if _, exists := aliases[key]; exists {
+					return forbidden("duplicate hierarchy alias")
+				}
+				aliases[key] = ref
+			}
+			continue
+		case model.OpReparent:
+			target = change.Op.Reparent.Target
+			moves[ref.ID] = true
+		case model.OpClose:
+			target = change.Op.Close.Target
+			if change.Op.Close.Reason != "" {
+				reasons[ref.ID] = append(reasons[ref.ID], change.Op.Close.Reason)
+			}
+		default:
+			return forbidden("unsupported hierarchy lifecycle operation")
+		}
+		resolved, err := hierarchyResolve(target, aliases)
+		if err != nil || resolved.ID != ref.ID {
+			return forbidden("hierarchy lifecycle target mismatch")
+		}
+	}
+
+	// Every Change describes the same stored Before and final After for its
+	// target. A create followed by close therefore already contains the reason
+	// comments in After. Remove ONLY verified same-batch close reasons from the
+	// create adapter's image; all permission-bearing and unknown members remain
+	// subject to its unchanged strict validation. The complete final image is
+	// still checked by Writer's ordered and final ontology guards.
+	hierarchy := proposal
+	hierarchy.Changes = nil
+	// The original chain below covers all expectation-only resources, including
+	// staged creates. Do not substitute the hierarchy membership adapter here.
+	hierarchy.Expect = nil
+	staged := map[string]model.Record{}
+	finals := map[string]model.Record{}
+	for _, change := range proposal.Changes {
+		if change.Op.Kind == model.OpClose {
+			continue
+		}
+		if stage != port.AuthorizeReplay {
+			final, err := hierarchyRaw(change.Resource.Ref, model.Natural64(0), change.After)
+			if err != nil {
+				return forbidden("invalid hierarchy lifecycle final image")
+			}
+			finals[change.Resource.Ref.ID] = final
+		}
+		if _, created := creates[change.Resource.Ref.ID]; created && stage != port.AuthorizeReplay {
+			image, err := hierarchyRaw(change.Resource.Ref, model.Natural64(0), change.After)
+			if err != nil {
+				return forbidden("invalid hierarchy lifecycle final image")
+			}
+			if err := hierarchyCloseCreateImage(&image, reasons[change.Resource.Ref.ID], proposal.Principal); err != nil {
+				return err
+			}
+			change.After, err = json.Marshal(image.Body)
+			if err != nil {
+				return hierarchyUnavailable()
+			}
+			staged[change.Resource.Ref.ID] = image
+		}
+		hierarchy.Changes = append(hierarchy.Changes, change)
+	}
+	if err := c.AuthorizeHierarchy(ctx, stage, hierarchy, reader); err != nil {
+		return err
+	}
+	caller, err := c.callerFor(ctx, proposal.Principal)
+	if err != nil {
+		return authzError(err)
+	}
+	base, err := c.load(ctx, reader, caller)
+	if err != nil {
+		return hierarchyUnavailable()
+	}
+	s := &hierarchySlice{slice: base, staged: staged}
+	requests := make([]authz.CheckRequest, 0, len(proposal.Changes)*2+len(proposal.Expect))
+	for _, change := range proposal.Changes {
+		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: change.Resource.Ref}, Method: "tx.apply"})
+		if change.Op.Kind == model.OpClose {
+			requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: change.Resource.Ref}, Method: "bead.close"})
+		}
+	}
+	for _, expect := range proposal.Expect {
+		if err := authz.CanonicalRef(expect.Ref); err != nil {
+			return forbidden("invalid expectation target")
+		}
+		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: expect.Ref}, Method: "tx.apply"})
+	}
+	decisions, err := c.chain.Check(ctx, s, requests)
+	if err != nil {
+		return authzError(err)
+	}
+	if len(decisions) != len(requests) {
+		return hierarchyUnavailable()
+	}
+	for _, decision := range decisions {
+		if decision.Effect != authz.Allow {
+			return forbidden(strings.Join(decision.Reasons, ","))
+		}
+	}
+	for _, change := range proposal.Changes {
+		if change.Op.Kind != model.OpClose {
+			continue
+		}
+		source, err := hierarchySource(ctx, reader, change.Resource.Ref)
+		if err != nil {
+			return err
+		}
+		if stage == port.AuthorizeReplay {
+			if source == nil {
+				return forbidden("hierarchy replay close source absent")
+			}
+			continue // current source and rights checked; return the stored response.
+		}
+		after, err := hierarchyRaw(change.Resource.Ref, model.Natural64(0), change.After)
+		if err != nil {
+			return forbidden("invalid hierarchy close image")
+		}
+		if final, exists := finals[change.Resource.Ref.ID]; exists && !reflect.DeepEqual(final.Body, after.Body) {
+			return forbidden("inconsistent hierarchy close final image")
+		}
+		if source == nil {
+			_, exists := creates[change.Resource.Ref.ID]
+			before := bytes.TrimSpace(change.Before)
+			if !exists || len(before) != 0 && !bytes.Equal(before, []byte("null")) {
+				return forbidden("hierarchy close requires a tracked source")
+			}
+			continue // strict create validation plus verified close reasons above.
+		}
+		before, err := hierarchyRaw(change.Resource.Ref, source.Revision, change.Before)
+		if err != nil || !reflect.DeepEqual(source.Body, before.Body) {
+			return forbidden("hierarchy close source mismatch")
+		}
+		if moves[change.Resource.Ref.ID] {
+			// The hierarchy adapter already checked the ordered parent changes
+			// and the final parent. Close adds no parent or project authority.
+			target, _ := authz.HierarchyImage(after)
+			before = withHierarchyParent(before, target.Parent)
+			after = withHierarchyParent(after, target.Parent)
+		}
+		if err := authz.ValidateBeadWrite("bead.update", before, after, proposal.Principal, caller, []authz.Action{authz.Modify}); err != nil {
+			return forbidden("invalid hierarchy close assignment")
+		}
+	}
+	return nil
+}
+
+func hierarchyCloseCreateImage(image *model.Record, reasons []string, principal model.PrincipalRef) error {
+	raw, hasComments := image.Body["comments"]
+	if !hasComments {
+		if len(reasons) != 0 {
+			return forbidden("missing hierarchy close reasons")
+		}
+		return nil
+	}
+	comments, ok := raw.([]any)
+	if !ok || len(comments) != len(reasons) || len(comments) == 0 {
+		return forbidden("invalid hierarchy close reasons")
+	}
+	for i, value := range comments {
+		comment, ok := value.(map[string]any)
+		if !ok || len(comment) != 3 || comment["body"] != reasons[i] {
+			return forbidden("invalid hierarchy close reason")
+		}
+		by, err := json.Marshal(comment["principal"])
+		var actor model.PrincipalRef
+		if err != nil || json.Unmarshal(by, &actor) != nil || !reflect.DeepEqual(actor, principal) {
+			return forbidden("invalid hierarchy close reason principal")
+		}
+		stamp, ok := comment["time"].(string)
+		if !ok {
+			return forbidden("invalid hierarchy close reason time")
+		}
+		if _, err := time.Parse(time.RFC3339Nano, stamp); err != nil {
+			return forbidden("invalid hierarchy close reason time")
+		}
+	}
+	delete(image.Body, "comments")
+	return nil
 }

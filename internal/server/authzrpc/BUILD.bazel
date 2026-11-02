@@ -44,7 +44,7 @@ go_test(
 
 go_test(
     name = "hierarchy_test",
-    srcs = ["hierarchy_test.go", "atomic_close_test.go", "hierarchy_lifecycle_test.go"],
+    srcs = ["hierarchy_test.go", "atomic_close_test.go", "hierarchy_lifecycle_test.go", "hierarchy_lifecycle_guards_test.go"],
     embed = [":authzrpc"],
     deps = [
         "//internal/core/authz",

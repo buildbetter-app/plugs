@@ -117,3 +117,21 @@ The shared canonical Parent read codec does not itself enable lifecycle child
 status qualification. Until EP3 installs that complete guard, a tracked direct
 child leaves `NoOpenChildren` unknown, refusing guarded parent close/fail rather
 than claiming observed absence. Unrelated roots retain their lifecycle behavior.
+
+## Atomic close with hierarchy enabled
+
+A close-only `tx.apply` retains the ordinary adapter and requires separate
+`tx.apply` and `bead.close` permits. A mixed batch of create, reparent and close
+composes the existing hierarchy child/parent/project checks with the original
+policy chain for every operation, expectation-only target and close. The fixed
+CP7 policy itself gains no additional verbs. Other mixed hierarchy operation
+kinds remain unsupported and refuse the complete batch.
+
+The Writer supplies the same stored Before and final After for each operation
+on a target. For an earlier created target, the hierarchy adapter checks its
+tracked miss and strict create assignment, accounting only for verified reason
+comments from the typed close operations. Close then checks the same final
+image; it cannot acquire another parent or project assignment. Replay checks
+current authority and returns the stored response without reapplying a slot.
+Ordered ontology guards, rollback, provenance and one-revision publication
+remain in the existing Writer.
