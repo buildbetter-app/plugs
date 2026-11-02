@@ -6,6 +6,37 @@ import (
 	"testing"
 )
 
+func TestParentCounterConsumesFinalValue(t *testing.T) {
+	for _, source := range []string{"retained", "observed"} {
+		t.Run(source, func(t *testing.T) {
+			counter := ParentCounter{Incarnation: "inc", Parent: "arbitrary"}
+			observed := uint64(0)
+			if source == "retained" {
+				counter.LastChild = ^uint64(0) - 1
+			} else {
+				observed = ^uint64(0) - 1
+			}
+			expected, err := counter.Next(observed)
+			if err != nil || expected != "arbitrary.18446744073709551615" {
+				t.Fatalf("final valid preview=%q err=%v", expected, err)
+			}
+			consumed, err := counter.Consume(expected)
+			if err != nil || consumed.LastChild != ^uint64(0) {
+				t.Fatalf("final valid consumption=%+v err=%v", consumed, err)
+			}
+			if counter.LastChild == ^uint64(0) {
+				t.Fatal("consumption mutated the input value")
+			}
+			if id, err := consumed.Next(0); id != "" || !errors.Is(err, ErrUnsupported) {
+				t.Fatalf("terminal continuation wrapped: id=%q err=%v", id, err)
+			}
+			if _, err := consumed.Consume(expected); !errors.Is(err, ErrConflict) {
+				t.Fatalf("terminal value consumed twice: %v", err)
+			}
+		})
+	}
+}
+
 func TestParentCounterIdentityInventoryAndExhaustion(t *testing.T) {
 	seen := map[string]bool{}
 	for _, identity := range [][2]string{{"inc-a", "arbitrary"}, {"inc-b", "arbitrary"}, {"inc-a", "arbitrary.1"}, {"inc", "a-b"}} {
