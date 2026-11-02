@@ -19,7 +19,7 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 		if s.workflow == nil {
 			return GetResult{}, failure("not_found", "workflow item was not found")
 		}
-		item, err := s.workflow.Get(ctx, by, req.ID, workflowMeta(by, "bead.get", ""))
+		item, err := s.workflow.Get(ctx, by, req.ID, workflowMeta(by, "bead.get", "", req.Agent))
 		if err != nil {
 			return GetResult{}, err
 		}
@@ -286,7 +286,7 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 		if req.Filter != nil {
 			types = req.Filter.Types
 		}
-		items, err := s.workflow.Ready(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project))
+		items, err := s.workflow.Ready(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent))
 		if err != nil {
 			return BeadPage{}, err
 		}
@@ -325,7 +325,7 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	if req.Filter != nil {
 		types = req.Filter.Types
 	}
-	items, err := s.workflow.Ready(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project))
+	items, err := s.workflow.Ready(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent))
 	if err != nil {
 		return BeadPage{}, err
 	}

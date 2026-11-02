@@ -200,7 +200,7 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		if err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 		}
-		v, err := svc.Get(ctx, c.Principal, service.GetRequest{ID: id, AsOf: p.AsOf.domain()})
+		v, err := svc.Get(ctx, c.Principal, service.GetRequest{ID: id, AsOf: p.AsOf.domain(), Agent: c.Meta.Agent})
 		if err != nil {
 			return nil, err
 		}
@@ -235,7 +235,7 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		v, err := svc.Ready(ctx, c.Principal, service.ReadyRequest{Project: c.Meta.Project, ViewID: p.ViewID, Filter: p.Filter.domain(), Limit: int(limit), Position: position})
+		v, err := svc.Ready(ctx, c.Principal, service.ReadyRequest{Project: c.Meta.Project, Agent: c.Meta.Agent, ViewID: p.ViewID, Filter: p.Filter.domain(), Limit: int(limit), Position: position})
 		if err != nil {
 			return nil, err
 		}

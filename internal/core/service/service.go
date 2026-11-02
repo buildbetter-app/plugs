@@ -167,8 +167,8 @@ func (s *Service) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, c
 	return s.apply(ctx, by, "tx.apply", cs, meta, true)
 }
 
-func workflowMeta(by model.PrincipalRef, method, project string) model.WriteMeta {
-	return model.WriteMeta{Method: method, Project: project, Agent: by.ID, AgentLabel: ""}
+func workflowMeta(by model.PrincipalRef, method, project, agent string) model.WriteMeta {
+	return model.WriteMeta{Method: method, Project: project, Agent: agent, AgentLabel: agent}
 }
 
 func workflowRef(ref model.Ref) bool {
@@ -188,7 +188,7 @@ func workflowTypes(filter *Filter) []string {
 func (s *Service) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req workflowplugin.InvokeRequest, meta model.WriteMeta) (workflowplugin.InvokeResult, error) {
 	if req.Mode == "ephemeral" {
 		if s.workflow == nil {
-			return workflowplugin.InvokeResult{}, failure("unsupported", "workflow plugin is not configured")
+			return workflowplugin.InvokeResult{}, failure("method_not_found", "workflow plugin is not configured")
 		}
 		meta.Method = "x.workflow.invoke"
 		meta.Project = req.Project
@@ -378,7 +378,7 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 	repeatedConflictThisPass := false
 	conflictRestarts := 0
 	for {
-		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
+		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, Agent: meta.Agent, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
 		if err != nil {
 			return nil, err
 		}

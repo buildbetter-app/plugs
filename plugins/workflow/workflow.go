@@ -340,10 +340,10 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if req.Mode != "ephemeral" {
-		return InvokeResult{}, fail("unsupported", "workflow provider only owns ephemeral invocation")
+		return InvokeResult{}, fail("invalid_params", "workflow provider only owns ephemeral invocation")
 	}
 	if !p.persistent {
-		return InvokeResult{}, fail("unsupported", "ephemeral workflows require persistent checkpoint storage")
+		return InvokeResult{}, fail("invalid_params", "ephemeral workflows require persistent checkpoint storage")
 	}
 	if strings.TrimSpace(req.Template) == "" || strings.TrimSpace(req.Project) == "" || len(req.Checklist) == 0 || len(req.Checklist) > 100 {
 		return InvokeResult{}, fail("invalid_params", "template, project and one to one hundred checklist items are required")
@@ -422,7 +422,10 @@ func effectiveAgent(by model.PrincipalRef, meta model.WriteMeta) string {
 		return meta.AgentLabel
 	}
 	if by.Kind == "anonymous" {
-		return meta.Agent
+		if meta.Agent != "" {
+			return meta.Agent
+		}
+		return by.ID
 	}
 	return ""
 }
