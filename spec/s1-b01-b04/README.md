@@ -70,3 +70,38 @@ Run the focused targets through the RunsOn wrapper:
 
 The whole-tree exact-head gate remains separate. This package does not certify
 latency, 200-agent contention rates, or unrelated cards.
+
+## B04 public claim assertions
+
+`//spec/s1-b01-b04:claim_acceptance` adds real JSON-RPC assertions on memory,
+file-backed SQLite, and disposable PostgreSQL. It preserves the original
+replay and both reference recordings. The new checks require:
+
+* the documented `results[0].record` to contain exactly the committed winning
+  postimage, with its holder, epoch, five-minute lease and one claim version;
+  the recorded B04 winner's identity, title, priority and status are compared
+  directly, and the ready remainder is compared to the same reference;
+* same-holder claims to preserve rows, head, history and lease while retaining
+  a durable no-op receipt, including after SQLite closes and reopens;
+* foreign-holder, custom non-ready category, blocked-source and malformed
+  selector refusals to leave rows, head, changesets and versions unchanged and
+  create no successful receipt;
+* a resource/type selector to reach qualifying work beyond 1,001 ineligible
+  prefix rows in a 1,004-row real store, preserve unrelated ready work, and
+  replay equivalent set selectors without a second claim;
+* an actually empty front to return JSON null with exactly one empty H+1
+  changeset and durable receipt; retrying that key after a later arrival
+  (and SQLite reopen) must still return null without claiming the arrival;
+* two concurrent public claim-next requests to return distinct hydrated
+  winners, each with exactly one claim version and changeset.
+
+The front traversal uses fifty-row seed writes to establish all 1,004 rows
+and renews the host's existing ten-second store lease between batches and
+claim stages. It does not replace the separate 1,000-operation atomic-write
+boundary gate or increase a lease TTL or write deadline.
+Claims use the existing no-plugin public host and anonymous agent labels
+(P60). Full installed-policy authorization, actor spelling/pool aliases,
+ephemeral workflow producers, SQL-generated clocks and the 200-agent
+contention benchmark remain separate obligations. A claim version's controlled
+Go timestamp is checked; no new `started_at` field or public result contract is
+introduced. These assertions do not qualify a complete B01-B04 card or S1.
