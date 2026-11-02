@@ -280,6 +280,14 @@ type nativeOntologyBranchReader struct {
 	branch model.Natural
 }
 
+func (r nativeOntologyBranchReader) AllocatorInventory(ctx context.Context) (driver.AllocatorInventory, error) {
+	inventory, ok := r.Reader.(driver.AllocatorInventoryReader)
+	if !ok {
+		return driver.AllocatorInventory{}, driver.ErrUnsupported
+	}
+	return inventory.AllocatorInventory(ctx)
+}
+
 func (r nativeOntologyBranchReader) Query(ctx context.Context, query driver.Query) (driver.Page[driver.Record], error) {
 	page, err := r.Reader.Query(ctx, query)
 	for i := range page.Items {

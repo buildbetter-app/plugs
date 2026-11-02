@@ -48,11 +48,15 @@ func TestNativeDumpRefusesRetainedAllocatorStateAcrossStores(t *testing.T) {
 						store = allocatorInventoryHiddenStore{f.store}
 					}
 					before := childAllocatorDurableState(t, f)
-					data, manifest, err := restore.Dump(f.ctx, store, "head")
-					if !errors.Is(err, driver.ErrUnsupported) || len(data) != 0 || manifest.Format != "" {
-						t.Fatalf("native snapshot silently omitted %s continuation state: bytes=%d format=%q err=%v", kind, len(data), manifest.Format, err)
+					for _, history := range []string{"head", "full"} {
+						t.Run(history, func(t *testing.T) {
+							data, manifest, err := restore.Dump(f.ctx, store, history)
+							if !errors.Is(err, driver.ErrUnsupported) || len(data) != 0 || manifest.Format != "" {
+								t.Fatalf("native snapshot silently omitted %s continuation state: bytes=%d format=%q err=%v", kind, len(data), manifest.Format, err)
+							}
+							requireSameState(t, before, childAllocatorDurableState(t, f))
+						})
 					}
-					requireSameState(t, before, childAllocatorDurableState(t, f))
 				})
 			}
 		})
