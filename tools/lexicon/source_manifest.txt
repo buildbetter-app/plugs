@@ -988,6 +988,7 @@ spec/s1-b09-b12/compaction/continuation_test.go
 spec/s1-b09-b12/compaction/fixture_test.go
 spec/s1-b09-b12/compaction/guards_test.go
 spec/s1-b09-b12/compaction/presence_test.go
+spec/s1-b09-b12/compaction/publication_test.go
 spec/s1-b09-b12/compaction/selection_test.go
 spec/s1-b17-b20/BUILD.bazel
 spec/s1-b17-b20/README.md
