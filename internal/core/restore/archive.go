@@ -138,7 +138,9 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 	if err != nil {
 		return nil, dumpformat.Manifest{}, err
 	}
-	reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	// Bind the record image and retained history to the same head advertised
+	// by the manifest. A writer may advance the store after Meta returns.
+	reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation, At: &meta.Head})
 	if err != nil {
 		return nil, dumpformat.Manifest{}, err
 	}

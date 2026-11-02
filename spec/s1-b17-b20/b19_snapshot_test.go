@@ -123,6 +123,46 @@ func TestB19DumpRetainsDeclaredSnapshotAcrossAConcurrentWrite(t *testing.T) {
 	}
 }
 
+func TestB19DumpEmptySnapshotDoesNotResolveAsLatest(t *testing.T) {
+	for _, history := range []string{"full", "head"} {
+		for _, engine := range []string{"memory", "sqlite"} {
+			t.Run(history+"/"+engine, func(t *testing.T) {
+				h := openB17Harness(t, engine)
+				baseline, manifest, err := restore.Dump(h.ctx, h.store, history)
+				if err != nil || manifest.NativeHead != "0" {
+					t.Fatalf("empty source archive=%+v err=%v", manifest, err)
+				}
+				scheduled := &b19WriteBeforeReadStore{Store: h.store, write: func() {
+					commit := b17Commit(t, h, model.ChangeSet{Ops: []model.Op{b17Create()}}, 104)
+					if commit.Revision.String() != "1" {
+						t.Fatalf("interleaved create revision=%s", commit.Revision)
+					}
+				}}
+				data, actualManifest, err := restore.Dump(h.ctx, scheduled, history)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if scheduled.write != nil || !bytes.Equal(data, baseline) || !reflect.DeepEqual(actualManifest, manifest) {
+					t.Fatalf("declared empty head 0 resolved as later state: %+v", actualManifest)
+				}
+				archive, err := dumpformat.Read(bytes.NewReader(data))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(b19SnapshotMember[b19SnapshotRecord](t, archive, "records/native.ndjson")) != 0 || len(b19SnapshotMember[driver.Version](t, archive, "versions.ndjson")) != 0 || len(b19SnapshotMember[model.Changeset](t, archive, "changesets.ndjson")) != 0 {
+					t.Fatal("empty snapshot invented records or history")
+				}
+				// A separate unpinned dump must observe the real committed create.
+				// Thus the empty result above cannot pass because the write failed.
+				latestData, latest, err := restore.Dump(h.ctx, h.store, history)
+				if err != nil || latest.NativeHead != "1" || latest.RecordCount != 1 || latest.VersionCount != 1 || bytes.Equal(data, latestData) {
+					t.Fatalf("latest dump did not observe the concurrent create: %+v err=%v", latest, err)
+				}
+			})
+		}
+	}
+}
+
 func b19SnapshotMember[T any](t *testing.T, archive *dumpformat.Archive, member string) []T {
 	t.Helper()
 	data, ok := archive.NativeMember(member)
