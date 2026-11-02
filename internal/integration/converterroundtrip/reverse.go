@@ -328,6 +328,8 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 		}
 	}
 	source.Source.Fields["status"] = status
+	originalOutcome := stringValue(source.Body["result"])
+	originalCompleted := source.Body["status_category"] == "completed"
 	delete(source.Body, "result")
 	switch stringValue(doc.Fields["status"]) {
 	case "todo":
@@ -336,6 +338,9 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 		source.Body["status_category"] = "started"
 	case "done":
 		source.Body["status_category"], source.Body["result"] = "completed", "success"
+		if originalCompleted && (originalOutcome == "success" || originalOutcome == "failure") {
+			source.Body["result"] = originalOutcome
+		}
 	default:
 		source.Body["status_category"] = "backlog"
 	}

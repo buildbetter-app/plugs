@@ -74,13 +74,25 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 		result.Status, result.Reason = "BLOCK", "beads_artifact_refused"
 		return
 	}
+	// Execute only the verified copy in the owned 0700 directory, so a later
+	// replacement of the delivered path cannot change the bytes being run.
+	pinned := filepath.Join(output, "beads-pinned")
+	copy, err := os.OpenFile(pinned, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o500)
+	if err != nil {
+		_ = f.Close()
+		result.Status, result.Reason = "BLOCK", "beads_artifact_refused"
+		return
+	}
 	h := sha256.New()
-	_, err = io.Copy(h, f)
+	_, err = io.Copy(io.MultiWriter(copy, h), f)
 	_ = f.Close()
-	if err != nil || hex.EncodeToString(h.Sum(nil)) != options.SHA256 {
+	closeErr := copy.Close()
+	if err != nil || closeErr != nil || hex.EncodeToString(h.Sum(nil)) != options.SHA256 {
+		_ = os.Remove(pinned)
 		result.Status, result.Reason = "BLOCK", "beads_artifact_digest_mismatch"
 		return
 	}
+	binary = pinned
 	// The inventory must describe the newly initialized Beads target, including
 	// all actual config keys. It is operator evidence consumed by the supported
 	// exporter, never an invented adapter around an unsupported native dump.
@@ -93,6 +105,12 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 		result.Status, result.Reason = "BLOCK", "beads_inventory_required"
 		return
 	}
+	inventoryBytes, err := os.ReadFile(inventory)
+	if err != nil || len(inventoryBytes) > 1<<20 || writePrivate(output, "beads-inventory.json", inventoryBytes) != nil {
+		result.Status, result.Reason = "BLOCK", "beads_inventory_required"
+		return
+	}
+	inventory = filepath.Join(output, "beads-inventory.json")
 	projects := source.Manifest().Projects
 	if len(projects) != 1 {
 		result.Status, result.Reason = "BLOCK", "beads_single_project_required"
@@ -115,7 +133,7 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 		cmd := exec.CommandContext(ctx, binary, args...)
 		cmd.Dir = workspace
 		// Do not inherit a user's workspace, credentials, config or plugins.
-		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + childHome, "XDG_CONFIG_HOME=" + filepath.Join(childHome, ".config"), "BEADS_DIR=" + filepath.Join(workspace, ".beads"), "BD_NON_INTERACTIVE=1", "BD_NO_HOOKS=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Public roundtrip", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public roundtrip", "GIT_COMMITTER_EMAIL=public@example.invalid"}
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + childHome, "XDG_CONFIG_HOME=" + filepath.Join(childHome, ".config"), "BEADS_DIR=" + filepath.Join(workspace, ".beads"), "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Public roundtrip", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public roundtrip", "GIT_COMMITTER_EMAIL=public@example.invalid"}
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		err := cmd.Run()
@@ -173,6 +191,7 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 		return
 	}
 	result.BeadsReadbackSHA256 = actual.SHA256()
+	result.SourceFieldLosses = nativeOpaqueLosses(source, actual)
 	if reason := compareRawReadback(live.JSONL, actual); reason != "" {
 		result.Status, result.Reason, result.BeadsReadback = "BLOCK", reason, "FAIL"
 		return
@@ -180,7 +199,6 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 	result.BeadsReadback = "PASS"
 	// Native opaque column fidelity is a separate assertion from retaining the
 	// same values as beads.* metadata. Never silently certify that relocation.
-	result.SourceFieldLosses = nativeOpaqueLosses(source, actual)
 	if len(result.SourceFieldLosses) != 0 {
 		result.Status, result.Reason, result.BeadsReadback = "BLOCK", "beads_native_opaque_fields_changed", "FAIL"
 		return

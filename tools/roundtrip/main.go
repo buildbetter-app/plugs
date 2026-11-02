@@ -76,8 +76,8 @@ func run(args []string) outcome {
 	engine := flags.String("engine", "memory", "memory, sqlite or postgres")
 	postgresDSN := flags.String("postgres-dsn", "", "Empty disposable loopback PostgreSQL database named plug_roundtrip_*")
 	beads := beadsOptions{}
-	flags.StringVar(&beads.Binary, "beads-binary", "", "Remotely built pinned public bd artifact")
-	flags.StringVar(&beads.SHA256, "beads-sha256", "", "Independently verified bd artifact SHA256")
+	flags.StringVar(&beads.Binary, "beads-binary", "", "Remotely built pinned public Beads executable")
+	flags.StringVar(&beads.SHA256, "beads-sha256", "", "Independently verified Beads executable SHA256")
 	flags.StringVar(&beads.BuildRun, "beads-build-run", "", "Independently verified RunsOn build receipt ID")
 	flags.StringVar(&beads.Inventory, "beads-inventory", "", "Actual disposable Beads target inventory for supported raw export")
 	exercise := flags.Bool("exercise", true, "Exercise claim/release and an idempotent live edit")
