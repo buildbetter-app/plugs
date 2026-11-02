@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -236,7 +237,7 @@ func (f *fixture) write(method, label string, params map[string]any) model.Commi
 	f.t.Helper()
 	got := f.call(method, label, params)
 	if got.Error != nil {
-		f.t.Fatalf("%s refused: %s", method, got.Error.Data.Code)
+		f.t.Fatalf("%s refused: %s; raw=%s", method, got.Error.Data.Code, f.frames[len(f.frames)-1].Response)
 	}
 	var commit model.Commit
 	if err := json.Unmarshal(got.Result, &commit); err != nil {
@@ -327,4 +328,13 @@ func (f *fixture) receipt(method, label string) *driver.IdempotencyRecord {
 		f.t.Fatal(err)
 	}
 	return got
+}
+
+func equalReceipt(t *testing.T, want, got *driver.IdempotencyRecord) {
+	t.Helper()
+	// No-op receipts intentionally carry no changeset. Marshaling that zero
+	// model as a standalone wire changeset would manufacture an invalid kind.
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("durable receipt differs:\nwant %+v\n got %+v", want, got)
+	}
 }

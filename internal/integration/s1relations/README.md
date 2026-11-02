@@ -25,6 +25,14 @@ close/reopen both store and server; memory cases reconstruct the server and
 Writer against the same store. PostgreSQL is a mandatory pinned disposable
 container with an independent database per fixture; absence fails the target.
 
+Deletion follows the existing explicit-unlink policy. A bare delete with an
+outbound edge refuses without changes; one `tx.apply` then unlinks and deletes
+the owner atomically, removes its reference rows and retains its versions.
+B27 uses the unchanged hash-pinned exporter archive to verify empty-target
+unverified-history refusal and populated-target refusal on all three stores.
+The populated case contains the same labels, parent, metadata, comments,
+close provenance, history and final receipt exercised by the other cases.
+
 SQL engine time remains the driver's real time. The reference projection is
 non-temporal and makes no clock, lease-expiry, or performance claim. Existing
 PR #245 assertions, reference data, and attribution remain unchanged. B26

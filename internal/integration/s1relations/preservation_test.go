@@ -130,7 +130,7 @@ func TestB25ScalarPreservationAndExplicitLabelReplacementHaveDistinctPublicHisto
 			t.Fatalf("equal replacement lacked a final no-op receipt: %+v", receipt)
 		}
 		f.reopen()
-		equalJSON(t, receipt, f.receipt("bead.update", "equal-labels"))
+		equalReceipt(t, receipt, f.receipt("bead.update", "equal-labels"))
 		sameRelations(t, before, f.historical(child, closed.Revision), []string{"alpha", "beta"})
 		sameRelations(t, before, f.document(child.ID), []string{"gamma"})
 	})
@@ -180,7 +180,7 @@ func TestB25AuxiliaryRefusalPreservesLabelsCloseProvenanceAndSameKeyRetry(t *tes
 	})
 }
 
-func TestB25DirectDeleteRemovesOwnedRelationsAndRetainsHistoryAcrossAllStores(t *testing.T) {
+func TestB25AtomicUnlinkDeleteRemovesOwnedRelationsAndRetainsHistoryAcrossAllStores(t *testing.T) {
 	stores(t, func(t *testing.T, kind string) {
 		f := newFixture(t, kind, []string{"s1-parent", "s1-target", "s1-child"})
 		child, _, _ := seedRelations(t, f)
@@ -195,11 +195,20 @@ func TestB25DirectDeleteRemovesOwnedRelationsAndRetainsHistoryAcrossAllStores(t 
 		if err != nil || len(beforeClosure) != 2 {
 			t.Fatalf("delete setup did not include child self/parent references: %+v err=%v", beforeClosure, err)
 		}
-		// Delete with labels, metadata, comments, parent and an outbound
-		// association still present. No preliminary unlink or field cleanup.
-		ops := []model.Op{{Kind: model.OpDelete, Delete: &model.DeleteOp{Kind: model.OpDelete, Target: child}}}
+		// The admitted policy requires explicit edge removals in the event log.
+		// A bare delete must refuse without changing any stored plane.
+		before := f.image()
+		deletion := model.Op{Kind: model.OpDelete, Delete: &model.DeleteOp{Kind: model.OpDelete, Target: child}}
+		bare := f.call("tx.apply", "bare-delete", map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{deletion}}})
+		if bare.Error == nil || bare.Error.Data.Code != "ontology_guard_failed" || len(bare.Result) != 0 || f.receipt("tx.apply", "bare-delete") != nil || !bytes.Equal(before, f.image()) {
+			t.Fatalf("bare delete bypassed explicit-unlink policy or changed state: %+v", bare)
+		}
+		// Remove the edge and its owner in one public transaction, preserving
+		// operation order and a single revision; no separate cleanup commit.
+		unlink := model.Op{Kind: model.OpUnlink, Link: &model.LinkOp{Kind: model.OpUnlink, From: child, To: ref("s1-target"), LinkKind: "relates-to"}}
+		ops := []model.Op{unlink, deletion}
 		deleted := f.batch("delete", ops...)
-		if deleted.Revision.String() != "6" || len(deleted.Results) != 1 || len(deleted.Results[0].Record) != 0 {
+		if deleted.Revision.String() != "6" || len(deleted.Results) != 2 || len(deleted.Results[0].Record) != 0 || len(deleted.Results[1].Record) != 0 {
 			t.Fatalf("direct delete did not return its tombstone: %+v", deleted)
 		}
 		got := f.call("bead.get", "deleted-get", map[string]any{"id": child})
@@ -241,7 +250,7 @@ func TestB25DirectDeleteRemovesOwnedRelationsAndRetainsHistoryAcrossAllStores(t 
 			t.Fatal("delete replay after reopen recreated state or removed more history")
 		}
 		equalJSON(t, json.RawMessage(jsonBytes(t, deleted)), replay.Result)
-		missing := f.call("tx.apply", "missing-delete", map[string]any{"changeSet": model.ChangeSet{Ops: ops}})
+		missing := f.call("tx.apply", "missing-delete", map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{deletion}}})
 		if missing.Error == nil || missing.Error.Data.Code != "not_found" || len(missing.Result) != 0 || f.receipt("tx.apply", "missing-delete") != nil || !bytes.Equal(image, f.image()) {
 			t.Fatalf("fresh delete of missing owner was not a state-preserving typed refusal: %+v", missing)
 		}

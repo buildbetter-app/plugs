@@ -87,7 +87,7 @@ func TestB28TimedPostWarningAndDeadLetterReplayThroughPublicRPCAcrossAllStores(t
 				t.Fatalf("reopened wire replay changed graph or redelivered the post: %+v timed=%d", replay, post.timed.Load())
 			}
 			equalJSON(t, first.Result, replay.Result)
-			equalJSON(t, receipt, f.receipt("bead.create", "warning"))
+			equalReceipt(t, receipt, f.receipt("bead.create", "warning"))
 			reloaded, err := f.store.(driver.CheckpointStore).LoadCheckpoint(f.ctx, deadKey)
 			if err != nil || reloaded.Generation != dead.Generation || !bytes.Equal(reloaded.Payload, dead.Payload) {
 				t.Fatalf("reopened dead letter changed: %+v err=%v", reloaded, err)

@@ -5,10 +5,14 @@ go_test(
     srcs = glob(["*_test.go"]),
     size = "large",
     args = [
+        "-archive=$(rlocationpath //internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar)",
         "-reference=$(rlocationpath //spec/recorded/extension:extension.json)",
         "-test.v",
     ],
-    data = ["//spec/recorded/extension:extension.json"],
+    data = [
+        "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
+        "//spec/recorded/extension:extension.json",
+    ],
     tags = ["local", "requires-network"],
     deps = [
         "//internal/core/model",
@@ -16,6 +20,7 @@ go_test(
         "//internal/core/pipeline",
         "//internal/core/port",
         "//internal/core/service",
+        "//internal/integration/converterroundtrip",
         "//internal/server/rpc",
         "//internal/server/transport/inprocess",
         "//internal/storage/driver",
