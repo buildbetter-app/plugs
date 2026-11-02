@@ -35,7 +35,7 @@ SQL-generated timestamps, so SQLite/PostgreSQL driver wall-clock paths remain
 an explicit qualification blocker rather than an asserted seam.
 
 I5 authorization is qualified by the existing exact-head
-`internal/server/authzrpc:drivers_test` fixture. It checks compiled list
+`internal/server/authzrpc:authzrpc_test` target (which embeds `drivers_test.go`). It checks compiled list
 membership against independent point decisions on memory, SQLite, and
 PostgreSQL, no-plugin user allow, forbidden/error refusal, current permission
 on history, post-image checks, dependency changes, and missing-data races. The

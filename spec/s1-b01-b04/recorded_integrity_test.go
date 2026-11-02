@@ -144,7 +144,7 @@ func TestReferenceTwinsHaveStablePinnedProvenance(t *testing.T) {
 	if !ok || len(omitted) < 10 {
 		t.Fatalf("runtime omissions are not explicit: %+v", clock)
 	}
-	if stringField(t, mapField(t, manifest, "i5Evidence"), "target") != "//internal/server/authzrpc:drivers_test" {
+	if stringField(t, mapField(t, manifest, "i5Evidence"), "target") != "//internal/server/authzrpc:authzrpc_test" {
 		t.Fatal("I5 exact-head target is missing")
 	}
 
