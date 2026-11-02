@@ -471,3 +471,83 @@ func TestRunConsumesPinnedReadinessAndProjectionStatus(t *testing.T) {
 		t.Fatalf("projection status was not copied: %+v", projection)
 	}
 }
+
+func TestCountOnlyFailsClosedOnAuthorizationAndFinalAdmission(t *testing.T) {
+	by := model.PrincipalRef{Kind: "user", ID: "reader"}
+	for _, code := range []model.ErrorCode{"forbidden", "not_found", "busy", "internal_error", "canceled", "lease_lost"} {
+		t.Run(string(code), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			lease := &testLease{lost: make(chan struct{})}
+			store := &syntheticStore{
+				rows: []driver.Record{{Ref: model.RefByID("candidate", model.Natural64(0)), Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, "candidate", "p")}},
+				meta: driver.Meta{StoreID: "store", Incarnation: "inc", Head: model.Natural64(1)},
+			}
+			svc, err := New(store, lease, Config{AuthorizeRead: func(context.Context, model.PrincipalRef, model.ResourceRef, string) error {
+				switch code {
+				case "canceled":
+					cancel()
+					return nil
+				case "lease_lost":
+					close(lease.lost)
+					return nil
+				default:
+					return &model.Error{Data: model.ErrorData{Code: code}}
+				}
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := svc.Run(ctx, by, RunRequest{CountOnly: true, Definition: &Definition{Filter: &Filter{}}})
+			if code == "forbidden" || code == "not_found" {
+				if err != nil || result.Count == nil || *result.Count != 0 {
+					t.Fatalf("denied candidate must contribute zero: result=%+v err=%v", result, err)
+				}
+				return
+			}
+			want := code
+			if code == "canceled" || code == "lease_lost" {
+				want = "busy"
+			}
+			var typed *model.Error
+			if !errors.As(err, &typed) || typed.Data.Code != want || result.Count != nil {
+				t.Fatalf("count escaped failed authorization/admission: result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestCountOnlyKeepsProjectionWithoutPayloadDependencies(t *testing.T) {
+	dependent, blocker := model.RefByID("dependent", model.Natural64(0)), model.RefByID("blocker", model.Natural64(0))
+	store := &syntheticStore{
+		rows: []driver.Record{
+			{Ref: dependent, Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, dependent.ID, "p", pipeline.Link{To: blocker, Kind: "blocks"})},
+			{Ref: blocker, Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, blocker.ID, "p")},
+		},
+		meta: driver.Meta{StoreID: "store", Incarnation: "inc", Head: model.Natural64(1)},
+	}
+	svc, err := New(store, &testLease{lost: make(chan struct{})}, Config{
+		AuthorizeRead: func(_ context.Context, _ model.PrincipalRef, resource model.ResourceRef, _ string) error {
+			if resource.Ref.ID != dependent.ID {
+				t.Fatal("count-only authorized a payload-only blocker target")
+			}
+			return nil
+		},
+		Readiness: readinessFunc(func(context.Context, driver.Reader, []model.Ref) (map[string]ReadinessState, error) {
+			t.Fatal("count-only requested item readiness")
+			return nil, nil
+		}),
+		ProjectionStatus: projectionStatusFunc(func(context.Context, string) (coreevents.ProjectionStatus, error) {
+			return coreevents.ProjectionStatus{Binding: "core", Position: coreevents.Position{Incarnation: "inc", Revision: model.Natural64(1)}}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.Run(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, RunRequest{
+		CountOnly: true, Definition: &Definition{Filter: &Filter{Resources: []string{dependent.ID}}},
+	})
+	if err != nil || result.Count == nil || *result.Count != 1 || result.Items == nil || len(result.Items) != 0 || len(result.Groups) != 0 || result.NextCursor != nil || result.Projection == nil || result.Projection.Binding != "core" {
+		t.Fatalf("count projection=%+v err=%v", result, err)
+	}
+}

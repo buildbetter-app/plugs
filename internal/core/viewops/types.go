@@ -193,6 +193,9 @@ type Cursor struct {
 }
 
 type RunRequest struct {
+	// CountOnly counts the complete ordinary predicate set without item paging.
+	// It is an execution option and never part of a saved Definition.
+	CountOnly  bool
 	ViewID     string
 	Definition *Definition
 	Cursor     *Cursor
@@ -231,6 +234,8 @@ type Group struct {
 }
 
 type Result struct {
+	// Count is present, including zero, only for an explicit CountOnly run.
+	Count      *int                         `json:"count,omitempty"`
 	Items      []Bead                       `json:"items"`
 	NextCursor *Cursor                      `json:"nextCursor,omitempty"`
 	AsOf       AsOf                         `json:"asOf"`

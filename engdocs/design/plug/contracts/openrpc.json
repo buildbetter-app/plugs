@@ -5593,7 +5593,7 @@
     {
       "name": "view.run",
       "summary": "Run a saved or inline budgeted view.",
-      "description": "Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=<bare bead ID>\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:<canonical status ID> groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. No RPC, filter, cursor or result member is added.",
+      "description": "With countOnly=true, return the exact ordinary authorized predicate total, including zero, as {items:[],asOf,count}, plus existing projection metadata. No page, groups, elisions or nextCursor is returned; cursor/groupBy combinations refuse invalid_params. Valid fields/sort/budget cannot change or truncate membership. Historical content uses current authorization; more than 20,000 authorized candidates refuses scope_too_large. Absent/false keeps existing behavior and saved definitions unchanged. Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=<bare bead ID>\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:<canonical status ID> groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. Epic progress adds no separate RPC, filter, cursor or result member.",
       "tags": [
         {
           "name": "view"
@@ -5624,6 +5624,14 @@
           "schema": {
             "$ref": "#/components/schemas/AsOf"
           }
+        },
+        {
+          "name": "countOnly",
+          "schema": {
+            "type": "boolean",
+            "default": false
+          },
+          "description": "Optional execution flag, default false; saved definitions are unchanged. True returns the complete authorized ordinary predicate count with items=[] and asOf, without groups, elisions or nextCursor. Any supplied cursor or nonempty groupBy refuses invalid_params. Valid fields, sort and budget remain validated but do not change membership or truncate the count. Current permissions apply to historical asOf content; the ordinary 20,000 cap is exact-or-refused."
         },
         {
           "name": "_meta",
@@ -7585,6 +7593,12 @@
             "items": {
               "$ref": "#/components/schemas/ViewGroup"
             }
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20000,
+            "description": "Exact authorized ordinary predicate total, present including zero only for countOnly=true. Items is empty; groups, elisions and nextCursor are absent. The ordinary 20,000 authorized-candidate cap applies; overflow refuses scope_too_large without a partial count."
           }
         },
         "required": [
@@ -12562,7 +12576,7 @@
     "methodCount": 81,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "925afc30e52e4659b24e34f311698c96930f215ba460fee7c1634634d1ff04ff",
-    "descriptorSha256": "b73bf289e8c14af6a54040910623eed775755d6ef197f14be7e4c046d4856d1d",
+    "descriptorSha256": "2d4378cef6979c3fc352af8819b7413fb4accca05022df5008a723a3bfcee801",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -16266,6 +16280,14 @@
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/AsOf"
+            }
+          },
+          {
+            "name": "countOnly",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
             }
           },
           {

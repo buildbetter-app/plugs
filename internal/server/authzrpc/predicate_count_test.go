@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/service"
@@ -455,6 +456,7 @@ func TestB23OrdinaryCountWireValidationAcrossDrivers(t *testing.T) {
 			{"invalid_fields", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{}, "fields": []string{"unknown"}}}, "unknown_field"},
 			{"invalid_sort", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{}, "sort": []string{"unknown"}}}, "invalid_params"},
 			{"invalid_budget", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{}, "budgetTokens": -1}}, "invalid_params"},
+			{"unrepresentable_page_budget", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{}, "budgetTokens": "18446744073709551615"}}, "invalid_params"},
 			{"overflow_budget", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{}, "budgetTokens": "18446744073709551616"}}, "invalid_params"},
 			{"conflicting_project", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{"query": "project=other"}}}, "invalid_params"},
 		} {
@@ -466,5 +468,88 @@ func TestB23OrdinaryCountWireValidationAcrossDrivers(t *testing.T) {
 				t.Logf("count typed refusal: %s", got.Error.Data.Code)
 			})
 		}
+	})
+}
+
+// Keep the large disposable fixture's lease at the production renewal cadence.
+// A renewal failure is a test failure; this neither extends the lease TTL nor
+// retries a failed operation, and changes no shared driver/test lifecycle.
+func renewCountFixtureLease(t *testing.T, lease driver.ActiveLease) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	failed := make(chan error, 1)
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(driver.LeaseRenewEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := lease.Renew(ctx); err != nil {
+					if ctx.Err() == nil {
+						failed <- err
+					}
+					return
+				}
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		select {
+		case err := <-failed:
+			t.Errorf("count fixture lease renewal failed: %v", err)
+		default:
+		}
+	})
+}
+
+func TestB23OrdinaryExactCountCapAndRefusalAcrossDrivers(t *testing.T) {
+	countDrivers(t, func(t *testing.T, open storeFactory) {
+		f := ordinaryCountFixture(t, open)
+		renewCountFixtureLease(t, f.lease)
+		for start := 0; start <= viewops.OrdinaryCandidateCap; start += 1000 {
+			end := min(start+1000, viewops.OrdinaryCandidateCap+1)
+			changes := make([]conformance.FixtureChange, 0, end-start)
+			for i := start; i < end; i++ {
+				ref := fixtureRef(100 + i)
+				status := "todo"
+				if i == viewops.OrdinaryCandidateCap {
+					status = "done"
+				}
+				body, err := json.Marshal(map[string]any{"id": ref.ID, "type": "issue", "project": "project", "fields": map[string]any{"title": "countcap", "status": status}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				changes = append(changes, conformance.FixtureChange{Ref: ref, Kind: "bead", Op: model.OpCreate, Body: body})
+			}
+			if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, changes); err != nil {
+				t.Fatal(err)
+			}
+		}
+		reader := model.PrincipalRef{Kind: "user", ID: "user:cap-reader"}
+		t.Run("at_cap_exact_before_budget", func(t *testing.T) {
+			exactCountPage(t, f.call(t, reader, "view.run", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{"query": "title=countcap AND status=todo"}, "budgetTokens": 1}}, 20000), viewops.OrdinaryCandidateCap)
+		})
+		for i, fields := range []any{nil, []string{}} {
+			t.Run(fmt.Sprintf("over_cap_refused_%d", i), func(t *testing.T) {
+				definition := map[string]any{"filter": map[string]any{"query": "title=countcap"}, "budgetTokens": 1}
+				if fields != nil {
+					definition["fields"] = fields
+				}
+				got := f.call(t, reader, "view.run", map[string]any{"countOnly": true, "definition": definition}, 20001+i)
+				if got.Error == nil || got.Error.Data.Code != "scope_too_large" || len(got.Result) != 0 || fmt.Sprint(got.Error.Data.Details["cap"]) != "20000" {
+					t.Fatalf("ordinary count cap returned a partial/incorrect result: %+v", got)
+				}
+				t.Logf("count typed refusal: scope_too_large cap=%v", got.Error.Data.Details["cap"])
+			})
+		}
+		t.Run("denied_rows_do_not_consume_cap", func(t *testing.T) {
+			exactCountPage(t, f.call(t, countReader(), "view.run", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{"query": "title=countcap"}}}, 20003), 0)
+		})
 	})
 }
