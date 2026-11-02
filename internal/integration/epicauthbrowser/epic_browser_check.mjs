@@ -110,11 +110,11 @@ try {
   await navigate();
   step("Navigated real embedded epic page; anonymous native admission refused; sign-in offered");
   await signIn(fixture.token);
-  const baseline = await checkProgress(fixture.visible, fixture.hidden, fixture.full ? [["done", "1"], ["todo", "29"]] : [["todo", "1"]]);
+  const baseline = await checkProgress(fixture.visible, fixture.hidden, fixture.lifecycle ? [["done", "1"], ["todo", "29"]] : [["todo", "1"]]);
   assert.match(await evaluate("document.querySelector('#footer-auth').textContent"), /Authenticated/);
   step("Entered disposable API key in password field; real authenticated hello/discovery/view.run; visible counts plus exact hidden remainder");
   await screenshot();
-  if (fixture.full) {
+  if (fixture.lifecycle) {
     phase = "denied-and-parent-disclosure";
     const visibleRead = await probe(fixture.token, "bead.get", get(fixture.child));
     assert(visibleRead.body.result?.bead, "visible child readback failed");
@@ -166,7 +166,7 @@ try {
     await control("detach"); await fresh(); await checkProgress(29, 20, [["todo", "29"]]);
     step("Restored real Writer atomically rejected descendant cycle and detached completed child; UI fresh count=29 remainder=20 with no stale done bucket");
   }
-  if (!fixture.full) {
+  if (!fixture.lifecycle) {
     await click('.tab[data-view="home"]'); await settled(); await completeWire();
     assert(await evaluate("localStorage.length === 0 && sessionStorage.length === 0"), "authenticated displayed-row markers must stay in tab memory");
     step("Opened actual authenticated home rows; displayed-row markers remain in tab memory");
@@ -178,7 +178,7 @@ try {
   step("Signed out using the page; progress, credentials and browser storage cleared");
   await delay(500); await completeWire(); assert.deepEqual(exceptions, []);
   assert(wire.every(row => !row.cookiePresent));
-  const evidence = { scope: "disposable authenticated API-key Chrome/native fixture; E3 remains 4/5", steps, wire, console: consoleEntries, exceptions };
+  const evidence = { population: fixture.population || 3, scope: "disposable authenticated API-key Chrome/native fixture; E3 remains 4/5", steps, wire, console: consoleEntries, exceptions };
   const encoded = JSON.stringify(evidence);
   for (const token of credentials) assert(!encoded.includes(token), "credential leaked into evidence");
   emit({ event: "evidence", data: Buffer.from(encoded).toString("base64") });
@@ -186,7 +186,7 @@ try {
   // Preserve the actual assertion even if Chrome profile cleanup also fails.
   console.error(error.stack); process.exitCode = 1;
   await delay(100);
-  const partial = JSON.stringify({ scope: "failed disposable authenticated browser fixture; no qualification", steps, wire, console: consoleEntries, exceptions });
+  const partial = JSON.stringify({ population: fixture.population || 3, scope: "failed disposable authenticated browser fixture; no qualification", steps, wire, console: consoleEntries, exceptions });
   if (credentials.every(token => !partial.includes(token))) emit({ event: "evidence", data: Buffer.from(partial).toString("base64") });
 } finally {
   if (send && ws?.readyState === WebSocket.OPEN) await Promise.race([send("Browser.close").catch(() => {}), delay(2000)]);

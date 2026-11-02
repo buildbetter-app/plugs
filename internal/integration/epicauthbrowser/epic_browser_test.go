@@ -63,6 +63,17 @@ func hostTraces(fixtures ...*fixture) []hostTrace {
 // This is a browser/agent fixture, not a promotion of the whole E3 card. All
 // source writes cross API-key admission and the unchanged fixed-policy Writer.
 func TestAuthenticatedChromeFifthTaskTwentyThousandNativeRestoreReopen(t *testing.T) {
+	qualifyBrowserLifecycle(t, 20000)
+}
+
+// Supplemental UI/native orchestration proof. The unmodified 20k test above
+// remains mandatory; this bounded case can never qualify its workload.
+func TestAuthenticatedChromeBoundedLifecycleNativeRestoreReopen(t *testing.T) {
+	qualifyBrowserLifecycle(t, 52)
+}
+
+func qualifyBrowserLifecycle(t *testing.T, population int) {
+	t.Helper()
 	dir := t.TempDir()
 	f := newFixture(t, "sqlite", filepath.Join(dir, "source.db"), true)
 	source := f
@@ -87,10 +98,10 @@ func TestAuthenticatedChromeFifthTaskTwentyThousandNativeRestoreReopen(t *testin
 	// Keep the original 51..20000 schedule, every complete 100-op request and
 	// the final 49-op request. One unrelated record is instead a grandchild.
 	var grandchild model.Ref
-	for start := 51; start < 20000; start += 100 {
+	for start := 51; start < population; start += 100 {
 		end := start + 100
-		if end > 20000 {
-			end = 20000
+		if end > population {
+			end = population
 		}
 		ops := make([]model.Op, 0, end-start)
 		for i := start; i < end; i++ {
@@ -106,8 +117,8 @@ func TestAuthenticatedChromeFifthTaskTwentyThousandNativeRestoreReopen(t *testin
 		}
 	}
 	images := persistedImages(t, f.store)
-	if len(images) != 20001 {
-		t.Fatalf("durable census=%d, want exactly 20000 beads plus protected ontology", len(images))
+	if len(images) != population+1 {
+		t.Fatalf("durable census=%d, want exactly %d beads plus protected ontology", len(images), population)
 	}
 	unique := map[string]bool{}
 	for _, id := range direct {
@@ -120,7 +131,7 @@ func TestAuthenticatedChromeFifthTaskTwentyThousandNativeRestoreReopen(t *testin
 		t.Fatal("parent/grandchild missing from durable corpus")
 	}
 	f.observed.mu.Lock()
-	if len(f.observed.agents) != 50 || f.observed.fullBatches != 199 {
+	if len(f.observed.agents) != 50 || f.observed.fullBatches != (population-51)/100 {
 		t.Fatalf("actual admitted Writer agents=%d full100op=%d", len(f.observed.agents), f.observed.fullBatches)
 	}
 	for id, sponsor := range f.observed.agents {
@@ -129,7 +140,11 @@ func TestAuthenticatedChromeFifthTaskTwentyThousandNativeRestoreReopen(t *testin
 		}
 	}
 	f.observed.mu.Unlock()
-	t.Log("EP6_BROWSER_WORKLOAD PASS durable_beads=20000 distinct_authenticated_agents=50 distinct_credentials=50 direct_children=50 full100op_commits=199 final_ops=49; default authn/rule/authorizer/Writer/HTTP budgets unchanged")
+	if population == 20000 {
+		t.Log("EP6_BROWSER_WORKLOAD PASS durable_beads=20000 distinct_authenticated_agents=50 distinct_credentials=50 direct_children=50 full100op_commits=199 final_ops=49; default authn/rule/authorizer/Writer/HTTP budgets unchanged")
+	} else {
+		t.Log("EP6_BROWSER_BOUNDED_ONLY durable_beads=52 distinct_authenticated_agents=50 direct_children=50; supplemental lifecycle orchestration, never20k qualification")
+	}
 	f.status(t, direct[0], "done", visible)
 	viewer := readerKey(t, f, "user:browser-reader", epics, visible)
 	narrow := readerKey(t, f, "user:browser-child-only", visible)
@@ -137,7 +152,7 @@ func TestAuthenticatedChromeFifthTaskTwentyThousandNativeRestoreReopen(t *testin
 	denied := f.issue(t, agent("owner"))
 	var reopened *fixture
 	var restoreIncarnation string
-	input := map[string]any{"full": true, "base": base(f), "token": viewer.Token, "principal": "user:browser-reader", "narrowToken": narrow.Token, "restrictedToken": restricted.Token, "deniedToken": denied.Token, "parent": parent.ID, "child": direct[0], "secret": direct[30], "hiddenProject": hidden, "parentTitle": "epic parent content canary", "visible": 30, "hidden": 20}
+	input := map[string]any{"lifecycle": true, "population": population, "base": base(f), "token": viewer.Token, "principal": "user:browser-reader", "narrowToken": narrow.Token, "restrictedToken": restricted.Token, "deniedToken": denied.Token, "parent": parent.ID, "child": direct[0], "secret": direct[30], "hiddenProject": hidden, "parentTitle": "epic parent content canary", "visible": 30, "hidden": 20}
 	control := func(action string) map[string]any {
 		switch action {
 		case "hidden-status":
@@ -151,7 +166,7 @@ func TestAuthenticatedChromeFifthTaskTwentyThousandNativeRestoreReopen(t *testin
 		case "restore":
 			beforeImages := persistedImages(t, f.store)
 			beforeClosure := persistedClosure(t, f.store)
-			if len(beforeImages) != 20001 || len(beforeClosure) != 20052 {
+			if len(beforeImages) != population+1 || len(beforeClosure) != population+52 {
 				t.Fatalf("pre-restore census images=%d closure=%d", len(beforeImages), len(beforeClosure))
 			}
 			sourceAdmin := admin(t, f.store, f.lease)
@@ -179,7 +194,7 @@ func TestAuthenticatedChromeFifthTaskTwentyThousandNativeRestoreReopen(t *testin
 				t.Fatal("nonseeding physical reopen changed restored state")
 			}
 			key := readerKey(t, f, "user:browser-reader", epics, visible)
-			t.Logf("EP6_BROWSER_NATIVE_RESTORE PASS actual admin.dump/admin.restore.begin/chunk/finish; head history; bytes=%d images=20001 canonical_closure=20052; physical SQLite close/nonseed reopen; incarnation=%s", len(data), restoreIncarnation)
+			t.Logf("EP6_BROWSER_NATIVE_RESTORE PASS actual admin.dump/admin.restore.begin/chunk/finish; head history; bytes=%d images=%d canonical_closure=%d; physical SQLite close/nonseed reopen; incarnation=%s", len(data), population+1, population+52, restoreIncarnation)
 			return map[string]any{"base": base(f), "token": key.Token, "incarnation": restoreIncarnation}
 		case "detach":
 			head := f.head(t)
@@ -190,7 +205,7 @@ func TestAuthenticatedChromeFifthTaskTwentyThousandNativeRestoreReopen(t *testin
 			}
 			detach := model.ChangeSet{Ops: []model.Op{{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: direct[0]}}}}
 			committed(t, f.write(t, f.owner, "tx.apply", visible, map[string]any{"changeSet": detach}))
-			if len(persistedClosure(t, f.store)) != 20051 {
+			if len(persistedClosure(t, f.store)) != population+51 {
 				t.Fatal("restored detach did not maintain descendant closure")
 			}
 			return map[string]any{"ok": true}
