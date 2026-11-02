@@ -124,6 +124,15 @@ func TestPostgresAllocatorSnapshotReadsAreBounded(t *testing.T) {
 			if _, err := r.LoadAllocator(cancelled, prefix); !errors.Is(err, context.Canceled) {
 				t.Fatalf("cached allocator ignored cancellation: %v", err)
 			}
+			if _, err := r.LoadAllocator(ctx, ""); err == nil {
+				t.Fatal("cached snapshot accepted an invalid allocator prefix")
+			}
+			if err := r.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.LoadAllocator(ctx, prefix); !errors.Is(err, driver.ErrTxClosed) {
+				t.Fatalf("cached allocator ignored closed snapshot: %v", err)
+			}
 		})
 	}
 }
@@ -137,6 +146,9 @@ func TestPostgresAllocatorHistoricalReadsRefuse(t *testing.T) {
 		t.Fatal(err)
 	}
 	beforeRestore := testRead(t, s, nil)
+	if _, err := beforeRestore.(driver.AllocatorReader).LoadAllocator(ctx, "demo"); !errors.Is(err, driver.ErrNotFound) {
+		t.Fatalf("initial snapshot did not observe missing allocator: %v", err)
+	}
 	restoreAllocator(t, s, lease, driver.OfflineAllocator{Prefix: "demo", Mode: driver.AllocatorSequential, LastID: 8, Children: map[string]uint64{"demo-8": 3}})
 
 	assertHistorical := func(name string, at uint64, present bool, factRevision uint64) {
@@ -169,6 +181,11 @@ func TestPostgresAllocatorHistoricalReadsRefuse(t *testing.T) {
 		}
 	}
 	tx, header := beginTest(t, s, lease, key)
+	for _, r := range []driver.AllocatorReader{tx.(driver.AllocatorReader), tx.(*transaction).reader} {
+		if value, err := r.LoadAllocator(ctx, "demo"); err != nil || value.LastID != 8 {
+			t.Fatalf("initial transaction allocator=%+v err=%v", value, err)
+		}
+	}
 	if err := tx.(driver.AllocatorContinuation).AllocateTopLevel(ctx, "demo", "demo-9"); err != nil {
 		t.Fatal(err)
 	}

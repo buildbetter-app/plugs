@@ -63,8 +63,31 @@ func (r *reader) LoadAllocator(ctx context.Context, prefix string) (driver.Offli
 		if value, ok := r.writer.allocators[prefix]; ok {
 			return value.Clone(), nil
 		}
+		// A transaction is read-committed and can stage an allocator after a
+		// prior lookup. It must never reuse the read-only snapshot memo.
+		return loadAllocator(ctx, r.sql, prefix)
 	}
-	return loadAllocator(ctx, r.sql, prefix)
+	if _, err := driver.AllocatorFact(prefix); err != nil {
+		return driver.OfflineAllocator{}, err
+	}
+	if value, ok := r.allocatorSnapshots[prefix]; ok {
+		if value.Prefix == "" {
+			return driver.OfflineAllocator{}, driver.ErrNotFound
+		}
+		if err := value.Validate(); err != nil {
+			return driver.OfflineAllocator{}, err
+		}
+		return value.Clone(), nil
+	}
+	value, err := loadAllocator(ctx, r.sql, prefix)
+	if err != nil && !errors.Is(err, driver.ErrNotFound) {
+		return driver.OfflineAllocator{}, err
+	}
+	if r.allocatorSnapshots == nil {
+		r.allocatorSnapshots = make(map[string]driver.OfflineAllocator)
+	}
+	r.allocatorSnapshots[prefix] = value.Clone()
+	return value, err
 }
 
 func (t *transaction) LoadAllocator(ctx context.Context, prefix string) (driver.OfflineAllocator, error) {
