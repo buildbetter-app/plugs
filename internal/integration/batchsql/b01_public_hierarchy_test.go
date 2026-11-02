@@ -221,8 +221,33 @@ func (h *b01Public) call(t *testing.T, endpoint *httptest.Server, token, method 
 
 func (h *b01Public) write(t *testing.T, token, method, project string, params map[string]any) b01Reply {
 	t.Helper()
-	params["_meta"] = map[string]any{"project": project, "idempotencyKey": h.f.meta("b01").IdempotencyKey}
-	return h.call(t, h.api, token, method, params)
+	key := h.f.meta("b01").IdempotencyKey
+	params["_meta"] = map[string]any{"project": project, "idempotencyKey": key}
+	reply := h.call(t, h.api, token, method, params)
+	if reply.Error != nil {
+		by, err := h.keys.Authenticate(h.f.ctx, token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		principal, err := driver.PrincipalKey(by)
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta, err := h.f.store.Meta(h.f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := h.f.store.Read(h.f.ctx, driver.View{Incarnation: meta.Incarnation})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		receipt, err := r.IdempotencyByKey(h.f.ctx, principal, "", method, key)
+		if err != nil || receipt != nil {
+			t.Fatalf("refused public write left a receipt: %+v (%v)", receipt, err)
+		}
+	}
+	return reply
 }
 
 func b01Result(t *testing.T, reply b01Reply) map[string]any {
@@ -546,6 +571,18 @@ func TestB01PublicDeferredAncestorsAcrossDrivers(t *testing.T) {
 			t.Run("public-reopen-releases-deferred-descendants", func(t *testing.T) {
 				h.slot(t, "bead.reopen", b01Epic, parent)
 				h.ready(t, viewer, child, grandchild, free, aliasChild, aliasGrandchild)
+			})
+			t.Run("blocked-ancestor-suppresses-descendants-until-unlinked", func(t *testing.T) {
+				for _, kind := range []model.OpKind{model.OpLink, model.OpUnlink} {
+					op := model.Op{Kind: kind, Link: &model.LinkOp{Kind: kind, From: parent, To: other, LinkKind: "blocks"}}
+					params := map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{op}}, "_meta": map[string]any{"project": b01Epic, "idempotencyKey": f.meta("ancestor-blocker").IdempotencyKey}}
+					b01Committed(t, h.call(t, h.slots, "", "tx.apply", params))
+					if kind == model.OpLink {
+						h.ready(t, viewer, free)
+					} else {
+						h.ready(t, viewer, child, grandchild, free, aliasChild, aliasGrandchild)
+					}
+				}
 			})
 			if engine != "memory" {
 				t.Run("sql-reopen-preserves-suppression-and-history", func(t *testing.T) {
