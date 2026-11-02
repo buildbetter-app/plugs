@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -78,6 +79,85 @@ class ReferenceTest(unittest.TestCase):
             artifact[field] = value
             with self.subTest(field=field), self.assertRaises(ValueError):
                 helper.validate_metadata(self.run, artifact)
+
+    def prepared_environment(self):
+        return {
+            "PLUG_PUBLIC_REFERENCE_ZIP": str(self.root / "prepared public" / "reference.zip"),
+            "PLUG_PUBLIC_REFERENCE_SOURCE": str(self.root / "prepared public" / "beads-source"),
+            "PLUG_PUBLIC_REFERENCE_MANIFEST": str(self.root / "prepared public" / "manifest.json"),
+            "PLUG_PUBLIC_REFERENCE_BUILD_RUN": helper.RUN,
+        }
+
+    def test_capture_routes_literal_prepared_paths_after_program_separator(self):
+        environment = self.prepared_environment()
+        marker = helper.MARKER + helper.DESCRIPTOR
+        for separator in ("", " --"):
+            arguments = "run " + helper.CAPTURE_TARGET + " --jobs=2 " + marker + separator
+            self.assertEqual(helper.descriptor_from_args(arguments), helper.DESCRIPTOR)
+            actual = helper.route_arguments(arguments, environment)
+            self.assertEqual(actual, [
+                "run", helper.CAPTURE_TARGET, "--jobs=2", "--",
+                "--prepared-artifact", environment["PLUG_PUBLIC_REFERENCE_ZIP"],
+                "--prepared-source", environment["PLUG_PUBLIC_REFERENCE_SOURCE"],
+            ])
+            self.assertFalse(any(arg.startswith("--test_env") for arg in actual))
+
+    def test_capture_refuses_other_targets_program_args_or_ambiguous_routing(self):
+        marker = helper.MARKER + helper.DESCRIPTOR
+        prefix = "run " + helper.CAPTURE_TARGET + " " + marker
+        for arguments in (
+            "run //other:capture " + marker,
+            "run " + helper.CAPTURE_TARGET + " //other:capture " + marker,
+            "run " + helper.CAPTURE_TARGET + " -- " + marker,
+            prefix + " -- --",
+            prefix + " -- --prepared-artifact /unverified",
+            prefix + " -- --prepared-source=/unverified",
+            prefix + " --prepared-artifact=/unverified",
+            prefix + " --prepared-source /unverified",
+            prefix + " --test_arg=--prepared-source=/unverified",
+            prefix + " --test_env=PLUG_PUBLIC_REFERENCE_ZIP=/unverified",
+            prefix + " --test_env=OTHER=value",
+            prefix + " -- --output=/unapproved",
+            prefix + " --jobs 2 --",
+        ):
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                helper.route_arguments(arguments, self.prepared_environment())
+
+    def test_prepared_route_preserves_default_tests_and_only_explicit_public_env(self):
+        self.assertEqual(helper.route_arguments("run //other:binary -- --help", {}),
+                         ["run", "//other:binary", "--", "--help"])
+        self.assertEqual(helper.route_arguments("test //...", {}), ["test", "//..."])
+        environment = self.prepared_environment()
+        environment["GH_TOKEN"] = "fixture-token-not-a-secret"
+        marker = helper.MARKER + helper.DESCRIPTOR
+        for command in ("test", "coverage"):
+            self.assertEqual(helper.route_arguments(command + " //... " + marker, environment),
+                             [command, "//...", marker] + [
+                                 "--test_env=" + name + "=" + environment[name]
+                                 for name in helper.ENVIRONMENT_NAMES
+                             ])
+
+    def test_prepared_route_requires_all_absolute_paths_and_exact_build_run(self):
+        arguments = "run " + helper.CAPTURE_TARGET + " " + helper.MARKER + helper.DESCRIPTOR
+        for name in helper.ENVIRONMENT_NAMES:
+            for value in ("", "unexpected\nvalue", "unexpected\0value", "relative/path"):
+                environment = self.prepared_environment()
+                environment[name] = value
+                with self.subTest(name=name, value=value), self.assertRaises(ValueError):
+                    helper.route_arguments(arguments, environment)
+
+    def test_route_cli_outputs_only_nul_delimited_literal_arguments(self):
+        environment = {**helper.os.environ, **self.prepared_environment(),
+                       "GH_TOKEN": "fixture-token-not-a-secret"}
+        arguments = "run " + helper.CAPTURE_TARGET + " " + helper.MARKER + helper.DESCRIPTOR + " --"
+        result = subprocess.run(
+            [sys.executable, str(Path(helper.__file__)), "route", "--args", arguments],
+            env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
+        )
+        expected = helper.route_arguments(arguments, environment)
+        self.assertEqual(result.stdout, b"".join(helper.os.fsencode(arg) + b"\0" for arg in expected))
+        self.assertEqual(result.stderr, b"")
+        self.assertNotIn(b"fixture-token-not-a-secret", result.stdout)
 
     def fixture(self, mutate_manifest=None, mutate_tar=None, mutate_files=None):
         self.index += 1

@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tarfile
 import zipfile
 
@@ -23,6 +24,11 @@ bundle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bundle)
 
 MARKER = "--test_env=PLUG_PUBLIC_REFERENCE="
+CAPTURE_TARGET = "//spec/s1-b13-b16:reference_capture"
+ENVIRONMENT_NAMES = (
+    "PLUG_PUBLIC_REFERENCE_ZIP", "PLUG_PUBLIC_REFERENCE_SOURCE",
+    "PLUG_PUBLIC_REFERENCE_MANIFEST", "PLUG_PUBLIC_REFERENCE_BUILD_RUN",
+)
 RUN = "41399124974"
 ARTIFACT = "13121145530"
 MANIFEST_SHA256 = "8c3d155f3940d21bd270fb14fe0292de0db1b3f377214756db59edf53eec5fa2"
@@ -74,9 +80,46 @@ def descriptor_from_args(value: str) -> str:
     if descriptor != DESCRIPTOR:
         raise ValueError("reference descriptor differs from the fixed public9d6 delivery")
     command = next((arg for arg in arguments if not arg.startswith("-")), "")
-    if command not in {"test", "coverage"}:
-        raise ValueError("public reference preparation is available only to test or coverage")
+    if command == "run":
+        capture_build_arguments(arguments)
+    elif command not in {"test", "coverage"}:
+        raise ValueError("public reference preparation requires test, coverage or the exact capture run")
     return descriptor
+
+
+def capture_build_arguments(arguments: list[str]) -> list[str]:
+    if arguments.count("--") > 1:
+        raise ValueError("capture run has ambiguous program separators")
+    separator = arguments.index("--") if "--" in arguments else len(arguments)
+    build = arguments[:separator]
+    if arguments[separator + 1:]:
+        raise ValueError("capture program arguments must come only from verified preparation")
+    if [arg for arg in build if not arg.startswith("-")] != ["run", CAPTURE_TARGET]:
+        raise ValueError("public reference run requires exactly the fixed capture binary target")
+    if (MARKER + DESCRIPTOR not in build
+            or any(arg.startswith(("--prepared-", "--test_arg", "--test_env"))
+                   and arg != MARKER + DESCRIPTOR for arg in build)):
+        raise ValueError("capture prepared paths and environment cannot be supplied by the caller")
+    return [arg for arg in build if arg != MARKER + DESCRIPTOR]
+
+
+def route_arguments(value: str, environment: dict[str, str]) -> list[str]:
+    arguments = value.split()
+    if not descriptor_from_args(value):
+        return arguments
+    values = {name: environment.get(name, "") for name in ENVIRONMENT_NAMES}
+    if any(not value or any(char in value for char in "\r\n\0") for value in values.values()):
+        raise ValueError("verified public reference environment is incomplete or malformed")
+    if (any(not Path(values[name]).is_absolute() for name in ENVIRONMENT_NAMES[:3])
+            or values["PLUG_PUBLIC_REFERENCE_BUILD_RUN"] != RUN):
+        raise ValueError("verified public reference paths or build run differ from preparation")
+    command = next(arg for arg in arguments if not arg.startswith("-"))
+    if command == "run":
+        return capture_build_arguments(arguments) + [
+            "--", "--prepared-artifact", values["PLUG_PUBLIC_REFERENCE_ZIP"],
+            "--prepared-source", values["PLUG_PUBLIC_REFERENCE_SOURCE"],
+        ]
+    return arguments + ["--test_env=" + name + "=" + values[name] for name in ENVIRONMENT_NAMES]
 
 
 def validate_metadata(run: dict, artifact: dict) -> None:
@@ -281,6 +324,8 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     request = commands.add_parser("request")
     request.add_argument("--args", required=True)
+    route = commands.add_parser("route")
+    route.add_argument("--args", required=True)
     make = commands.add_parser("prepare")
     make.add_argument("--descriptor", required=True)
     make.add_argument("--output", type=Path, required=True)
@@ -289,6 +334,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "request":
         print(descriptor_from_args(args.args))
+    elif args.command == "route":
+        # NUL-delimited argv preserves runner paths without shell evaluation.
+        for argument in route_arguments(args.args, os.environ):
+            sys.stdout.buffer.write(os.fsencode(argument) + b"\0")
     else:
         prepare(args.descriptor, args.output, args.github_env, args.evidence)
 

@@ -221,6 +221,13 @@ jobs:
         run: |
           set -euo pipefail
           read -ra USER_ARGS <<< "$ARGS_INPUT"
+          if [[ -n "$PUBLIC_REFERENCE_DESCRIPTOR" ]]; then
+            # This trusted helper has no token here. It routes the prepared
+            # paths to tests or the single capture binary as literal argv.
+            python3 "$RUNNER_TEMP/prepare-public-reference.py" route --args "$ARGS_INPUT" \
+              > "$RUNNER_TEMP/plug-public-reference-argv"
+            mapfile -d '' -t USER_ARGS < "$RUNNER_TEMP/plug-public-reference-argv"
+          fi
           for arg in "${USER_ARGS[@]}"; do
             case "$arg" in
               --ignore_all_rc_files|--ignore_all_rc_files=*|--noignore_all_rc_files|\
@@ -249,13 +256,6 @@ jobs:
             for name in PLUG_PUBLIC_BEADS_BINARY PLUG_PUBLIC_BEADS_SHA256 \
               PLUG_PUBLIC_BEADS_BUILD_RUN PLUG_PUBLIC_BEADS_MANIFEST; do
               [[ -n "${!name}" ]] || { echo "missing prepared public executable value" >&2; exit 1; }
-              ARGS+=("--test_env=$name=${!name}")
-            done
-          fi
-          if [[ -n "$PUBLIC_REFERENCE_DESCRIPTOR" ]]; then
-            for name in PLUG_PUBLIC_REFERENCE_ZIP PLUG_PUBLIC_REFERENCE_SOURCE \
-              PLUG_PUBLIC_REFERENCE_MANIFEST PLUG_PUBLIC_REFERENCE_BUILD_RUN; do
-              [[ -n "${!name}" ]] || { echo "missing prepared public reference value" >&2; exit 1; }
               ARGS+=("--test_env=$name=${!name}")
             done
           fi
@@ -292,6 +292,7 @@ jobs:
           retention-days: 14
           path: |
             ${{ runner.temp }}/remote-bazel-evidence/bazel.log
+            ${{ runner.temp }}/remote-bazel-evidence/command.txt
             ${{ runner.temp }}/remote-bazel-evidence/exit_code
             ${{ runner.temp }}/remote-bazel-evidence/toolchain.txt
             ${{ runner.temp }}/remote-bazel-evidence/bazel-testlogs.tgz
