@@ -3,12 +3,19 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/steveyegge/beads/internal/plugdump"
@@ -192,4 +199,280 @@ func TestEmbeddedPlugDumpCommandEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("embedded driver exported one synthetic issue in %d archive bytes without a server; repeated export identical and source clean", len(first))
+}
+
+// A standalone supported bd process must census its actual native init/import
+// target. Handler fixtures cannot prove environment/path resolution or deliver
+// the production executable that the reverse consumer needs.
+func TestEmbeddedPlugNativeInventoryActualCLI(t *testing.T) {
+	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
+		t.Skip("requires the explicit native public exporter lane")
+	}
+	bd, err := findPrebuiltBDBinary()
+	if err != nil || bd == "" {
+		t.Fatalf("canonical bd runfile required: %v", err)
+	}
+	binary, err := os.ReadFile(bd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("NATIVE_PUBLIC_BD_SHA256=%x", sha256.Sum256(binary))
+	workspace, home := t.TempDir(), t.TempDir()
+	for _, path := range []string{workspace, home} {
+		if err := os.Chmod(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	initGitRepoAt(t, workspace)
+	env := bdEnv(home)
+	for _, key := range []string{"XDG_CONFIG_HOME", "BEADS_DIR", "BD_DOLT_MODE", "BD_EVENTS_JOURNAL", "DOLT_ROOT_PATH"} {
+		env = envWithout(env, key)
+	}
+	env = append(env, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "BEADS_DIR="+filepath.Join(workspace, ".beads"), "BD_DOLT_MODE=embedded", "BD_EVENTS_JOURNAL=false", "DOLT_ROOT_PATH="+home)
+	run := func(args ...string) []byte {
+		t.Helper()
+		cmd := exec.Command(bd, args...)
+		cmd.Dir, cmd.Env = workspace, env
+		out, err := cmd.CombinedOutput()
+		t.Logf("NATIVE_PUBLIC_COMMAND args=%q exit_error=%v output=%s", args, err, out)
+		if err != nil {
+			t.Fatalf("actual bd %q: %v: %s", args, err, out)
+		}
+		return out
+	}
+	refuse := func(want string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(bd, args...)
+		cmd.Dir, cmd.Env = workspace, env
+		out, err := cmd.CombinedOutput()
+		t.Logf("NATIVE_PUBLIC_REFUSAL args=%q exit_error=%v output=%s", args, err, out)
+		if err == nil || !bytes.Contains(out, []byte(want)) {
+			t.Fatalf("actual bd refusal %q: %v: %s", args, err, out)
+		}
+	}
+	run("version", "--json")
+	run("init", "--prefix", "native", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet")
+	input := filepath.Join(workspace, "public.jsonl")
+	if err := os.WriteFile(input, []byte(`{"id":"native-abc","title":"Actual public native import","status":"open","priority":2,"issue_type":"task","created_at":"2026-11-02T00:00:00Z","updated_at":"2026-11-02T00:00:00Z"}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("import", input, "--json")
+	capture := t.TempDir()
+	if err := os.Chmod(capture, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, args := range map[string][]string{
+		"public-declaration": {"--readonly", "export", "--format", "beads-inventory/1"},
+		"readonly":           {"export", "--format", "beads-inventory/1", "--plug-capture-public"},
+		"selection":          {"--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--all"},
+		"wrong-format":       {"--readonly", "export", "--plug-capture-public"},
+	} {
+		path := filepath.Join(capture, name+".json")
+		want := "requires --readonly and explicit --plug-capture-public"
+		if name == "selection" {
+			want = "requires only --output and public capture flags"
+		} else if name == "wrong-format" {
+			want = "requires --format beads-inventory/1"
+		}
+		refuse(want, append(args, "--output", path)...)
+		for _, output := range []string{path, path + ".sources"} {
+			if _, err := os.Lstat(output); !os.IsNotExist(err) {
+				t.Fatalf("refused capture published %s: %v", output, err)
+			}
+		}
+	}
+	if err := os.Chmod(capture, 0755); err != nil {
+		t.Fatal(err)
+	}
+	refuse("output parent must be an existing private directory", "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", filepath.Join(capture, "nonprivate.json"))
+	if err := os.Chmod(capture, 0700); err != nil {
+		t.Fatal(err)
+	}
+	inventoryPath := filepath.Join(capture, "inventory.json")
+	run("--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryPath)
+	raw, err := os.ReadFile(inventoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := plugdump.ReadInventory(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.External) != 26 || len(inventory.ConfigPolicy) == 0 || len(inventory.Projects) != 1 || inventory.Projects[0].Prefix != "native" {
+		t.Fatalf("incomplete actual native inventory: %s", raw)
+	}
+	for path, mode := range map[string]os.FileMode{inventoryPath: 0600, inventoryPath + ".sources": 0700} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != mode {
+			t.Fatalf("native output permissions %s: %v %v", path, info, err)
+		}
+	}
+	physicalCapture, err := filepath.EvalSymlinks(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, input := range inventory.External {
+		if input.State != "json-config" || input.Path != filepath.Join(physicalCapture, "inventory.json.sources", input.Family+".json") {
+			t.Fatalf("native source falsely omitted: %+v", input)
+		}
+		info, err := os.Stat(input.Path)
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("native sidecar permissions: %v %v", info, err)
+		}
+		data, err := os.ReadFile(input.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("NATIVE_PUBLIC_EXTERNAL family=%s sha256=%x data=%s", input.Family, sha256.Sum256(data), data)
+	}
+	refuse("refuses existing output or sidecars", "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryPath)
+	if after, err := os.ReadFile(inventoryPath); err != nil || !bytes.Equal(raw, after) {
+		t.Fatal("refused overwrite changed the inventory")
+	}
+	archivePath := filepath.Join(capture, "readback.tar")
+	run("--readonly", "export", "--format", plugdump.Format, "--plug-inventory", inventoryPath, "--output", archivePath)
+	archive, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := plugdump.Validate(bytes.NewReader(archive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, kind := range manifest.Kinds {
+		if kind.Name == "bead" && kind.Count == 1 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("actual imported issue absent from native raw archive")
+	}
+
+	// Compare the delivered raw archive and exact policy set to fresh stored SQL
+	// readbacks, independently of the producer's inventory construction.
+	nativeStore, err := embeddeddolt.OpenReadOnly(context.Background(), filepath.Join(workspace, ".beads"), "native", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nativeStore.Close()
+	records := map[string][]plugdump.Record{}
+	reader := tar.NewReader(bytes.NewReader(archive))
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(header.Name, "records/") {
+			continue
+		}
+		decoder := json.NewDecoder(reader)
+		decoder.UseNumber()
+		for {
+			var record plugdump.Record
+			err := decoder.Decode(&record)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			records[record.Source.Table] = append(records[record.Source.Table], record)
+		}
+	}
+	if err := nativeStore.WithRawDBTx(context.Background(), &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable}, func(tx *sql.Tx) error {
+		source := plugdump.SQLSource{DB: tx}
+		policies := 0
+		for _, name := range []string{"issues", "config", "metadata"} {
+			table, err := source.ReadTable(context.Background(), name)
+			if err != nil {
+				return err
+			}
+			t.Logf("NATIVE_PUBLIC_STORED_%s=%s", name, mustNativeJSON(t, table))
+			if len(table.Rows) != len(records[name]) {
+				return fmt.Errorf("raw %s row census changed", name)
+			}
+			for _, row := range table.Rows {
+				key := "id"
+				if name != "issues" {
+					key = "key"
+					policies++
+					if inventory.ConfigPolicy[name+"/"+fmt.Sprint(row[key])] == "" {
+						return fmt.Errorf("native policy omitted stored %s key", name)
+					}
+				}
+				found := false
+				for _, record := range records[name] {
+					if record.Source.Fields[key] != row[key] {
+						continue
+					}
+					found = true
+					if name == "issues" {
+						delete(row, "row_lock")
+						delete(row, "is_blocked")
+					}
+					if !bytes.Equal(mustNativeJSON(t, row), mustNativeJSON(t, record.Source.Fields)) {
+						return fmt.Errorf("raw %s source values changed", name)
+					}
+				}
+				if !found {
+					return fmt.Errorf("raw %s source row missing", name)
+				}
+			}
+		}
+		if policies != len(inventory.ConfigPolicy) {
+			return fmt.Errorf("native policy contains unmeasured keys")
+		}
+		log, err := source.ReadSourceCommits(context.Background())
+		if err != nil {
+			return err
+		}
+		if !log.Clean {
+			return fmt.Errorf("native capture dirtied its source")
+		}
+		t.Logf("NATIVE_PUBLIC_SOURCE_COMMITS=%s", mustNativeJSON(t, log))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("NATIVE_PUBLIC_INVENTORY=%s", raw)
+	t.Logf("NATIVE_PUBLIC_ARCHIVE bytes=%d sha256=%x history=%s", len(archive), sha256.Sum256(archive), manifest.History)
+	if os.Getenv("PLUG_TEST_EXPORT_PUBLIC_HISTORY") == "1" {
+		t.Logf("NATIVE_PUBLIC_ARCHIVE_BASE64=%s", base64.StdEncoding.EncodeToString(archive))
+	}
+	// A later imported legacy ID may be shorter than the native generator's
+	// configured floor. Census the stored IDs without changing that generator.
+	shortInput := filepath.Join(workspace, "public-short.jsonl")
+	if err := os.WriteFile(shortInput, []byte(`{"id":"native-a","title":"Imported short source ID","status":"open","priority":2,"issue_type":"task","created_at":"2026-11-02T00:00:00Z","updated_at":"2026-11-02T00:00:00Z"}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Release the read-only handle before invoking a writer process.
+	if err := nativeStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	run("import", shortInput, "--json")
+	shortInventoryPath := filepath.Join(capture, "short-inventory.json")
+	run("--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", shortInventoryPath)
+	shortRaw, err := os.ReadFile(shortInventoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortInventory, err := plugdump.ReadInventory(bytes.NewReader(shortRaw))
+	if err != nil || len(shortInventory.Projects) != 1 || shortInventory.Projects[0].HashLength != 1 {
+		t.Fatalf("actual imported short ID floor not measured: %s %v", shortRaw, err)
+	}
+	run("--readonly", "export", "--format", plugdump.Format, "--plug-inventory", shortInventoryPath, "--output", filepath.Join(capture, "short-readback.tar"))
+
+}
+
+func mustNativeJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }

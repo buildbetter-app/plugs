@@ -2483,18 +2483,25 @@ bd export
     |   bd export --include-memories           # Export issues + memories
     |   bd export --all -o full.jsonl          # Include infra + templates + gates + memories
     |   bd export --scrub -o clean.jsonl       # Exclude test/pollution records
+    |   bd --readonly export --format beads-inventory/1 --plug-capture-public -o capture/inventory.json
     |   bd --readonly export --format plug-dump/1 --plug-inventory inventory.json -o dump.tar
     |
     | plug-dump/1 is an offline head-state and source-archive exporter. It requires
     | an explicit paired source/configuration inventory and refuses unsupported
-    | inputs. It does not certify a complete store migration or Plug restore.
+    | inputs. beads-inventory/1 observes a disposable public native target and writes
+    | an inventory plus source JSON sidecars in an existing private output directory.
+    | It requires --readonly and --plug-capture-public, an explicit operator declaration
+    | that the target is quiesced and disposable and its unclassified values are public.
+    | Filesystem observations are not an atomic snapshot or full-history proof.
+    | These formats do not certify a complete store migration or Plug restore.
   flag --all type=bool default="false" usage="Include all records (infra, templates, gates, memories)"
   flag --exclude-owner type=stringArray default="[]" usage="Exclude issues created by this identity (repeatable; also reads export.exclude_owners config)"
-  flag --format type=string default="jsonl" usage="Export format: jsonl or plug-dump/1 (offline source archive)"
+  flag --format type=string default="jsonl" usage="Export format: jsonl, plug-dump/1, or beads-inventory/1"
   flag --include-infra type=bool default="false" usage="Include infrastructure beads (agents, roles, messages)"
   flag --include-memories type=bool default="false" usage="Include persistent memories (from 'bd remember') in the export"
   flag --no-memories type=bool default="false" hidden usage="Exclude persistent memories (deprecated: now the default)"
   flag --output -o type=string default="" usage="Output file path (default: stdout)"
+  flag --plug-capture-public type=bool default="false" usage="Declare a quiesced disposable native capture and all unclassified source values public"
   flag --plug-inventory type=string default="" usage="Required source/configuration census JSON for plug-dump/1"
   flag --scrub type=bool default="false" usage="Exclude test/pollution records"
   flag --verbose type=bool default="false" usage="Print filtered issue count when owners are excluded"

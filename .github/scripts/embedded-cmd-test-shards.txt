@@ -209,6 +209,7 @@
 100 53 TestEmbeddedIfRevisionOrdinaryCAS
 100 53 TestEmbeddedImportChunkedMixedRegularWispCrossBucketEdgesWired
 100 53 TestEmbeddedInitSelectedExcludeRoutingStealthDecoyQuiet
+100 53 TestEmbeddedPlugNativeInventoryActualCLI
 
 100 54 TestEmbeddedDiscoveryPinsEnvFileReadonly
 100 54 TestEmbeddedFormatJSONAliasMatchesJSON
