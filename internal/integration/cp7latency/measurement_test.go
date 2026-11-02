@@ -79,6 +79,28 @@ func classify(err, requestErr error) (string, model.ErrorCode) {
 	if err == nil {
 		return "success", ""
 	}
+	// A joined deadline must not hide an independent failure. Ordinary
+	// wrapping preserves the classification of the returned cause.
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		status, code := "", model.ErrorCode("")
+		for _, cause := range joined.Unwrap() {
+			next, nextCode := classify(cause, requestErr)
+			if next == "correctness_error" {
+				return next, nextCode
+			}
+			if status != "" && (status != next || code != nextCode) {
+				return "correctness_error", code
+			}
+			status, code = next, nextCode
+		}
+		if status != "" {
+			return status, code
+		}
+		return "correctness_error", ""
+	}
+	if cause := errors.Unwrap(err); cause != nil {
+		return classify(cause, requestErr)
+	}
 	var value *model.Error
 	if errors.As(err, &value) {
 		if value.Data.Code == "authz_postfilter_cap" || value.Data.Code == "scope_too_large" {
@@ -87,12 +109,15 @@ func classify(err, requestErr error) (string, model.ErrorCode) {
 		if value.Data.Code == "busy" && value.Message == "write pre phases exceeded their deadline" {
 			return "write_pre_deadline", value.Data.Code
 		}
-		if requestErr != nil || errors.Is(err, context.DeadlineExceeded) {
+		// viewops maps a real canceled/deadline cause to this exact busy
+		// form. Require the request deadline as well; unrelated typed errors
+		// remain correctness failures even when the context has expired.
+		if value.Data.Code == "busy" && value.Message == "" && value.Data.Retryable && value.Data.Hint == "view read was canceled or exceeded its deadline" && errors.Is(requestErr, context.DeadlineExceeded) {
 			return "request_deadline", value.Data.Code
 		}
 		return "correctness_error", value.Data.Code
 	}
-	if requestErr != nil || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.DeadlineExceeded) {
 		return "request_deadline", ""
 	}
 	return "correctness_error", ""
