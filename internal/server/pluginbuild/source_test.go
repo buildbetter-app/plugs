@@ -526,7 +526,7 @@ func TestWASIArtifactOwnsPooledHostsAndRealGuestState(t *testing.T) {
 		release:      lateRelease,
 		drained:      lateDrained,
 	}
-	lateCtx, cancelLate := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	lateCtx, cancelLate := context.WithCancel(context.Background())
 	go func() {
 		_, err := callStateWithContext(lateCtx, mutator, "principal-late", "pool-state:late", lateReader)
 		lateDone <- err
@@ -537,17 +537,15 @@ func TestWASIArtifactOwnsPooledHostsAndRealGuestState(t *testing.T) {
 		cancelLate()
 		t.Fatal("real WASI late callback did not reach its host-read barrier")
 	}
+	cancelLate()
 	select {
 	case err := <-lateDone:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			cancelLate()
-			t.Fatalf("canceled real WASI callback returned %v, want deadline", err)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled real WASI callback returned %v, want cancellation", err)
 		}
 	case <-time.After(2 * time.Second):
-		cancelLate()
 		t.Fatal("canceled real WASI callback did not return")
 	}
-	cancelLate()
 	if got, err := callState(mutator, "principal-late", "pool-state:replacement", &wasiSnapshot{revision: model.Natural64(1)}); err != nil || !strings.HasSuffix(got, "#1") {
 		t.Fatalf("replacement guest was not fresh after canceled generation: value=%q err=%v", got, err)
 	}
