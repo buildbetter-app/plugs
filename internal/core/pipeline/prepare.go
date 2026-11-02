@@ -361,8 +361,26 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 						return nil, failure("invalid_params", "dependency endpoint already has a different type")
 					}
 				}
-				if op.Kind == model.OpLink && found < 0 {
-					current.doc.Links = append(current.doc.Links, Link{To: to, Kind: kind})
+				var metadata *model.LinkMetadata
+				if op.Link.Metadata != nil {
+					if op.Kind != model.OpLink || kind != "waits-for" {
+						return nil, failure("invalid_params", "metadata is only valid on a waits-for link")
+					}
+					value, err := op.Link.Metadata.Normalized()
+					if err != nil {
+						return nil, failure("invalid_params", err.Error())
+					}
+					metadata = &value
+				}
+				if op.Kind == model.OpLink {
+					if found < 0 {
+						current.doc.Links = append(current.doc.Links, Link{To: to, Kind: kind, Metadata: metadata})
+					} else if metadata != nil {
+						// Omission preserves the stored predicate. An explicit
+						// replacement participates in ordinary final-image CAS,
+						// no-op detection and the single history/version commit.
+						current.doc.Links[found].Metadata = metadata
+					}
 				}
 				if op.Kind == model.OpUnlink && found >= 0 {
 					current.doc.Links = append(current.doc.Links[:found], current.doc.Links[found+1:]...)

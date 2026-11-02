@@ -574,7 +574,7 @@ func linkChangeSet(req LinkRequest, kind model.OpKind) (model.ChangeSet, error) 
 		return model.ChangeSet{}, failure("invalid_params", "link kind must not be empty")
 	}
 	return model.ChangeSet{
-		Ops:    []model.Op{{Kind: kind, Link: &model.LinkOp{Kind: kind, From: req.From, To: req.To, LinkKind: req.Kind}}},
+		Ops:    []model.Op{{Kind: kind, Link: &model.LinkOp{Kind: kind, From: req.From, To: req.To, LinkKind: req.Kind, Metadata: req.Metadata}}},
 		Expect: req.Expect,
 	}, nil
 }
