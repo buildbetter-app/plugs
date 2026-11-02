@@ -15,14 +15,259 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/plugdump"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/dolt"
+	"github.com/steveyegge/beads/internal/testutil"
 	"github.com/steveyegge/beads/internal/testutil/bazeltest"
+	"github.com/steveyegge/beads/internal/types"
 )
+
+// This public fixture has a deliberately complete paired SQL census, with
+// history tracking opted in before its first source action. It is not a
+// native-schema or pre-existing-ledger completeness claim. Every business
+// record, event identity, event time and later Dolt commit comes from the
+// supported Beads storage operations; none is filled in by the exporter.
+func TestPlugDumpCompleteRootFromPublicDoltActions(t *testing.T) {
+	if os.Getenv("BEADS_TEST_SKIP") == "dolt" {
+		t.Skip("requires the explicit public source-history Dolt lane")
+	}
+	cmd := plugExportTestCommand(t)
+	t.Setenv("BEADS_TEST_SERVER", "1")
+	server := testutil.StartIsolatedDoltContainerHandle(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db, err := sql.Open("mysql", fmt.Sprintf("root@tcp(127.0.0.1:%s)/beads_test?parseTime=true", server.Port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	path, err := bazeltest.RunfileEnv("BEADS_TEST_PLUG_SOURCE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var template map[string]plugdump.Table
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&template); err != nil {
+		t.Fatal(err)
+	}
+	seedPublicHistoryCensus(t, ctx, db, template)
+	// Dolt honors explicit operator tracking overrides. This new disposable
+	// source retains events from inception; an old ignored event table cannot
+	// obtain historical coverage by making this choice after the fact.
+	for _, query := range []string{
+		"INSERT INTO dolt_ignore (pattern, ignored) VALUES ('events', 0), ('ignored_schema_migrations', 0)",
+		"CALL DOLT_ADD('-A')",
+		"CALL DOLT_COMMIT('-m', 'public complete census before source actions')",
+	} {
+		if _, err := db.ExecContext(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(server.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &dolt.Config{Path: t.TempDir(), Database: "beads_test", ServerHost: "127.0.0.1", ServerPort: port, ServerUser: "root", DisableAutoStart: true, CommitterName: "Public source", CommitterEmail: "source@example.test"}
+	s, err := dolt.New(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	issue := &types.Issue{Title: "Public source created through Beads", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask, Payload: `{"n":9007199254740993,"null":null}`, Timeout: time.Duration(9007199254740993)}
+	if err := s.CreateIssue(ctx, issue, "public-source-author"); err != nil {
+		t.Fatal(err)
+	}
+	if issue.ID == "" {
+		t.Fatal("source driver did not assign the issue identity")
+	}
+	if err := s.UpdateIssue(ctx, issue.ID, map[string]interface{}{"title": "Public source updated through Beads"}, "public-source-author"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddLabel(ctx, issue.ID, "public-source-label", "public-source-author"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddComment(ctx, issue.ID, "public-source-author", "Public source comment through Beads"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.ReadOnly = true
+	s, err = dolt.New(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err = bazeltest.RunfileEnv("BEADS_TEST_PLUG_INVENTORY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	data = bytes.ReplaceAll(data, []byte("$FIXTURE_ROOT"), []byte(filepath.ToSlash(root)))
+	inventory, err := plugdump.ReadInventory(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory.History = "unavailable"
+	inventory.Projects = []plugdump.Project{{Prefix: "demo", IDMode: "hash", HashLength: 3, ChildCounters: map[string]uint64{}}}
+	inventory.ConfigPolicy = map[string]string{"config/issue_prefix": "public"}
+	data, err = json.Marshal(inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exportPlugInventory = filepath.Join(root, "inventory.json")
+	if err := os.WriteFile(exportPlugInventory, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, rootCtx, readonlyMode, jsonOutput = s, ctx, true, false
+	exportFormat, exportOutput = plugdump.Format, filepath.Join(root, "complete-root.tar")
+	exportAll, exportIncludeInfra, exportScrub, exportNoMemories, exportIncludeMemories, exportVerbose = false, false, false, false, false, false
+	exportExcludeOwners = nil
+	if err := exportCmd.RunE(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(exportOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := plugdump.Validate(bytes.NewReader(first))
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := plugExportHistory(t, first)
+	logPublicHistoryReadbacks(t, ctx, s, history)
+	if manifest.History != "verified" || history.Range.Status != "verified" || !history.Range.Complete || history.Range.First != 1 || history.Range.Head != uint64(len(history.Commits)) || len(history.Range.Frames) != len(history.Commits) || len(history.Range.Gaps)+len(history.Range.Baseline)+len(history.Range.BaselineEvents) != 0 {
+		t.Fatalf("actual source root/event coverage incomplete: status=%s reason=%s complete=%t first=%d head=%d commits=%d gaps=%+v", history.Range.Status, history.Range.Reason, history.Range.Complete, history.Range.First, history.Range.Head, len(history.Commits), history.Range.Gaps)
+	}
+	if len(history.Commits[0].Parents) != 0 || len(history.Range.Frames[0].Records)+len(history.Range.Frames[0].Events) != 0 || len(history.Events) < 4 {
+		t.Fatal("source root was not empty or actual Beads action events are missing")
+	}
+	if err := exportCmd.RunE(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(exportOutput)
+	if err != nil || !bytes.Equal(first, second) {
+		t.Fatal("same actual source did not produce byte-identical archives")
+	}
+	reader := tar.NewReader(bytes.NewReader(first))
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("PUBLIC_SOURCE_MEMBER name=%s bytes=%d sha256=%x", header.Name, len(body), sha256.Sum256(body))
+	}
+	t.Logf("PUBLIC_SOURCE_COMPLETE issue_id=%s commits=%d events=%d archive_bytes=%d archive_sha256=%x", issue.ID, len(history.Commits), len(history.Events), len(first), sha256.Sum256(first))
+	if os.Getenv("PLUG_TEST_EXPORT_PUBLIC_HISTORY") == "1" {
+		t.Logf("PUBLIC_COMPLETE_SOURCE_ARCHIVE_BASE64=%s", base64.StdEncoding.EncodeToString(first))
+	}
+}
+
+func seedPublicHistoryCensus(t *testing.T, ctx context.Context, db *sql.DB, template map[string]plugdump.Table) {
+	t.Helper()
+	names := make([]string, 0, len(template))
+	for name := range template {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		table := template[name]
+		definitions := make([]string, len(table.Columns))
+		for i, column := range table.Columns {
+			typeName := "TEXT"
+			for _, row := range table.Rows {
+				switch row[column].(type) {
+				case json.Number:
+					typeName = "BIGINT"
+				case map[string]any, []any:
+					typeName = "JSON"
+				}
+			}
+			if name == "issues" || name == "events" {
+				switch column {
+				case "created_at", "updated_at", "closed_at", "started_at", "due_at", "defer_until", "compacted_at", "last_activity":
+					typeName = "DATETIME(6)"
+				case "timeout_ns":
+					typeName = "BIGINT"
+				case "payload":
+					typeName = "JSON"
+				}
+			}
+			definitions[i] = "`" + column + "` " + typeName
+		}
+		if _, err := db.ExecContext(ctx, "CREATE TABLE `"+name+"` ("+strings.Join(definitions, ",")+")"); err != nil {
+			t.Fatal(err)
+		}
+		// Only the paired migration cursor is seeded. Business/event/identity
+		// fixture rows are deliberately not copied into this new source.
+		if name == "schema_migrations" || name == "ignored_schema_migrations" {
+			for _, row := range table.Rows {
+				if _, err := db.ExecContext(ctx, "INSERT INTO `"+name+"` (version, content_hash) VALUES (?, ?)", fmt.Sprint(row["version"]), row["content_hash"]); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO config (`key`, value) VALUES ('issue_prefix', 'demo')"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func logPublicHistoryReadbacks(t *testing.T, ctx context.Context, s storage.RawDBTxAccessor, history plugdump.SourceHistory) {
+	t.Helper()
+	if err := s.WithRawDBTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelSerializable}, func(tx *sql.Tx) error {
+		source := plugdump.SQLSource{DB: tx}
+		log, err := source.ReadSourceCommits(ctx)
+		if err != nil {
+			return err
+		}
+		if !log.Clean {
+			return fmt.Errorf("export changed the actual source working set")
+		}
+		for _, commit := range history.Commits {
+			image, err := source.ReadSourceImage(ctx, commit.ID)
+			if err != nil {
+				return err
+			}
+			body, err := json.Marshal(struct {
+				Commit plugdump.SourceCommit     `json:"commit"`
+				Tables map[string]plugdump.Table `json:"tables"`
+			}{commit, image})
+			if err != nil {
+				return err
+			}
+			t.Logf("PUBLIC_SOURCE_STORED_IMAGE=%s", body)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // This is a database/sql protocol fixture, not a database engine. All rows are
 // synthetic; the real RunE, SQLSource reads, mapping, tar validation and atomic
