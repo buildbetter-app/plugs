@@ -28,3 +28,9 @@ filegroup(
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
 )
+
+sh_binary(
+    name = "reference_capture",
+    srcs = ["reference_capture.py"],
+    data = ["record_reference.py"],
+)

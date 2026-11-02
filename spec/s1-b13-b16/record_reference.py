@@ -109,11 +109,25 @@ def one_run(binary: Path, root: Path, number: int, env: dict[str, str]) -> dict[
         "gateId": gate_id,
         "commands": [{"label": item["label"], "exitCode": item["exitCode"]} for item in commands],
     }
-    (evidence / "commands.json").write_bytes(canonical(commands) + b"\n")
+    commands_bytes = canonical(commands) + b"\n"
+    (evidence / "commands.json").write_bytes(commands_bytes)
+    evidence_files = []
+    for path in sorted(evidence.iterdir()):
+        if not path.is_file():
+            continue
+        payload = path.read_bytes()
+        evidence_files.append({
+            "path": path.name,
+            "size": len(payload),
+            "sha256": digest(payload),
+        })
     return {
+        "runId": f"s1-b13-b16-run-{number}",
         "workspace": str(workspace),
         "evidence": str(evidence),
-        "commandsSha256": digest((evidence / "commands.json").read_bytes()),
+        "evidenceFiles": evidence_files,
+        "commands": commands,
+        "commandsSha256": digest(commands_bytes),
         "projection": projection,
         "projectionSha256": digest(canonical(projection)),
     }
