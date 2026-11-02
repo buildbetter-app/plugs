@@ -785,13 +785,15 @@ func TestParentCounterTerminalValueAcrossStores(t *testing.T) {
 					}
 					cs := model.ChangeSet{Ops: []model.Op{
 						hierarchyCreate("terminal-child", &parent, "demo"),
-						patchOp(parent, map[string]any{"title": "terminal child committed"}),
+						// A fresh root gives the rollback control two actual Puts
+						// without patching a record-only restored ontology image.
+						hierarchyCreate("atomic-peer", nil, "demo"),
 					}}
 					meta := f.meta("terminal-child")
 					if scenario == "rollback-then-commit" {
 						ordinary := f.writer
 						fault := &childAllocationFailStore{Store: f.store}
-						f.writer = pipeline.New(fault, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now))
+						f.writer = pipeline.New(fault, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now), pipeline.WithIDGenerator(f.nextID))
 						_, err := childAllocatorApply(f, cs, meta)
 						requireSameState(t, before, childAllocatorDurableState(t, f))
 						if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || !reflect.DeepEqual(inventory, childInventory(t, f)) || f.receipt(t, meta) != nil {
@@ -810,19 +812,20 @@ func TestParentCounterTerminalValueAcrossStores(t *testing.T) {
 						}
 						t.Fatalf("Writer refused final valid child %s: %v", finalID, err)
 					}
-					if out.Replayed || len(out.Commit.Results) != 2 || out.Commit.Results[0].Ref.ID != finalID || out.Commit.Results[1].Ref.ID != parent.ID {
+					if out.Replayed || len(out.Commit.Results) != 2 || out.Commit.Results[0].Ref.ID != finalID || out.Commit.Results[1].Ref.ID == finalID {
 						t.Fatalf("terminal batch result=%+v", out)
 					}
 					state := childAllocatorDurableState(t, f)
 					child, exists := state.Records[finalID]
-					if !exists || len(state.Records) != len(before.Records)+1 || child.Revision.String() != out.Commit.Revision.String() || len(state.Versions[finalID]) != 1 || len(state.Log) != len(before.Log)+1 {
+					if !exists || len(state.Records) != len(before.Records)+2 || child.Revision.String() != out.Commit.Revision.String() || len(state.Versions[finalID]) != 1 || len(state.Log) != len(before.Log)+1 {
 						t.Fatalf("terminal child publication: record=%+v records=%d versions=%d log=%d", child, len(state.Records), len(state.Versions[finalID]), len(state.Log))
 					}
 					if doc := decodeDocument(t, child); doc.Parent == nil || doc.Parent.ID != parent.ID {
 						t.Fatalf("terminal child parent=%+v", doc.Parent)
 					}
-					if doc := decodeDocument(t, state.Records[parent.ID]); doc.Fields["title"] != "terminal child committed" {
-						t.Fatalf("terminal batch parent patch missing: %+v", doc)
+					peer, exists := state.Records[out.Commit.Results[1].Ref.ID]
+					if !exists || peer.Revision.String() != out.Commit.Revision.String() || decodeDocument(t, peer).Fields["title"] != "atomic-peer" || decodeDocument(t, peer).Parent != nil {
+						t.Fatalf("terminal batch peer not published atomically: %+v", peer)
 					}
 					inventory = childInventory(t, f)
 					if len(inventory.Projects) != 0 || len(inventory.Parents) != 1 || inventory.Parents[0] != (driver.ParentCounter{Incarnation: state.Meta.Incarnation, Parent: parent.ID, LastChild: ^uint64(0)}) {
@@ -846,7 +849,7 @@ func TestParentCounterTerminalValueAcrossStores(t *testing.T) {
 					assertExhausted("after-terminal-commit")
 					hierarchyApply(t, f, childDelete(model.Ref{ID: priorID}), childDelete(model.Ref{ID: finalID}))
 					before = childAllocatorDurableState(t, f)
-					if len(before.Records) != 1 || !reflect.DeepEqual(inventory, childInventory(t, f)) {
+					if len(before.Records) != 2 || !reflect.DeepEqual(inventory, childInventory(t, f)) {
 						t.Fatal("all-child deletion lost terminal high-water")
 					}
 					if engine != "memory" {
