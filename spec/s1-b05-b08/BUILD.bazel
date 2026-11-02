@@ -4,6 +4,7 @@ go_test(
     name = "acceptance",
     srcs = [
         "fixture_test.go",
+        "heartbeat_repair_test.go",
         "projection_test.go",
         "provenance_test.go",
         "runtime_test.go",
@@ -17,6 +18,7 @@ go_test(
     deps = [
         "//internal/core/model",
         "//internal/core/pipeline",
+        "//internal/core/port",
         "//internal/core/service",
         "//internal/server/claimrpc",
         "//internal/server/rpc",

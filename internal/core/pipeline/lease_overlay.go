@@ -33,20 +33,36 @@ type heartbeatReceipt struct {
 	ID             string    `json:"id"`
 	RequestHash    string    `json:"requestHash"`
 	LeaseExpiresAt time.Time `json:"leaseExpiresAt"`
+	// State makes receipt publication a durable two-phase operation. A
+	// reserved receipt owns the idempotency key while its overlay is being
+	// published; only the published state may be returned as a replay.
+	// An empty state is the pre-reservation format and remains final for
+	// receipts written by an earlier host.
+	State string `json:"state,omitempty"`
 }
+
+const (
+	heartbeatReceiptReserved  = "reserved"
+	heartbeatReceiptPublished = "published"
+)
 
 func leaseCheckpointKey(id string) string {
 	digest := sha256.Sum256([]byte("plug/lease/" + id))
 	return "plug/lease/" + hex.EncodeToString(digest[:])
 }
 
-func heartbeatReceiptKey(id, principal, agent, method, idempotencyKey string) string {
-	digest := sha256.Sum256([]byte(id + "\x00" + principal + "\x00" + agent + "\x00" + method + "\x00" + idempotencyKey))
+func heartbeatReceiptKey(principal, agent, method, idempotencyKey string) string {
+	// The target is deliberately absent from the lookup scope. It belongs in
+	// the request hash below, so reusing a key on another target is refused
+	// rather than selecting another receipt namespace.
+	digest := sha256.Sum256([]byte(principal + "\x00" + agent + "\x00" + method + "\x00" + idempotencyKey))
 	return "plug/heartbeat/" + hex.EncodeToString(digest[:])
 }
 
-func heartbeatRequestHash(id, principal, agent string) string {
-	digest := sha256.Sum256([]byte(id + "\x00" + principal + "\x00" + agent + "\x00bead.heartbeat"))
+func heartbeatRequestHash(id, principal, agent, project string) string {
+	// Target and all request parameters remain in the digest even though the
+	// idempotency lookup scope is principal/agent/method/key.
+	digest := sha256.Sum256([]byte(id + "\x00" + principal + "\x00" + agent + "\x00bead.heartbeat\x00" + project))
 	return hex.EncodeToString(digest[:])
 }
 
@@ -143,12 +159,20 @@ func loadHeartbeatReceipt(ctx context.Context, store driver.CheckpointStore, key
 	return value, checkpoint.Generation, true, nil
 }
 
-func saveHeartbeatReceipt(ctx context.Context, store driver.CheckpointStore, lease driver.ActiveLease, key string, expected uint64, value heartbeatReceipt) error {
+func saveHeartbeatReceipt(ctx context.Context, store driver.CheckpointStore, lease driver.ActiveLease, key string, expected uint64, value heartbeatReceipt) (uint64, error) {
 	payload, err := json.Marshal(value)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	_, err = store.SaveCheckpoint(ctx, lease, key, expected, payload)
+	saved, err := store.SaveCheckpoint(ctx, lease, key, expected, payload)
+	if err != nil {
+		return 0, err
+	}
+	return saved.Generation, nil
+}
+
+func clearHeartbeatReceipt(ctx context.Context, store driver.CheckpointStore, lease driver.ActiveLease, key string, expected uint64) error {
+	_, err := store.SaveCheckpoint(ctx, lease, key, expected, nil)
 	return err
 }
 
@@ -161,6 +185,33 @@ func leaseDuration(ttl model.Natural, fallback time.Duration) (time.Duration, er
 		return 0, failure("lease_not_held", "claim has an invalid lease TTL")
 	}
 	return time.Duration(ms) * time.Millisecond, nil
+}
+
+// HeartbeatAuthorizationAvailable exposes only the capability needed by the
+// service seam to fail closed when the host reports an installed authorizer but
+// this writer was composed without one. A nil authorizer remains the explicit
+// no-plugin mode and is allowed by the adopted contract.
+func (w *Writer) HeartbeatAuthorizationAvailable() bool {
+	return w != nil && w.cfg.authorizer != nil
+}
+
+func heartbeatProposal(by model.PrincipalRef, ref model.Ref, meta model.WriteMeta) port.ProposedChange {
+	meta.Method = "bead.heartbeat"
+	return port.ProposedChange{
+		Principal: by,
+		Meta:      meta,
+		Changes:   []port.Change{{Resource: model.ResourceRef{Kind: "bead", Ref: ref}}},
+	}
+}
+
+func heartbeatReceiptMatches(receipt heartbeatReceipt, id, hash string) bool {
+	return receipt.ID == id && receipt.RequestHash == hash
+}
+
+func heartbeatReceiptIsPublished(receipt heartbeatReceipt) bool {
+	// State was added after the first recorder head. An absent state is the
+	// old final format, never an in-flight reservation.
+	return receipt.State == "" || receipt.State == heartbeatReceiptPublished
 }
 
 // Heartbeat is the protected writer seam for bead.heartbeat. It validates the
@@ -193,16 +244,64 @@ func (w *Writer) Heartbeat(ctx context.Context, by model.PrincipalRef, ref model
 	} else if agent == "" {
 		agent = meta.Agent
 	}
-	checkpoints, ok := w.store.(driver.CheckpointStore)
-	if !ok {
-		return port.HeartbeatOutcome{}, failure("internal_error", "heartbeat requires durable checkpoint metadata")
-	}
+	meta.Method = "bead.heartbeat"
+	hash := heartbeatRequestHash(ref.ID, principal, agent, meta.Project)
+	receiptKey := heartbeatReceiptKey(principal, agent, meta.Method, meta.IdempotencyKey)
+
+	// Authorization is the first target-sensitive operation. The tracked
+	// snapshot is handed to the installed chain before the writer reads the
+	// target or learns whether its lease exists. With no authorizer this is a
+	// deliberate no-plugin allow.
 	reader, err := w.reader(ctx)
 	if err != nil {
 		return port.HeartbeatOutcome{}, err
 	}
-	rows, err := reader.Get(ctx, []model.Ref{ref})
-	_ = reader.Close()
+	defer reader.Close()
+	snapshot := &snapshotReader{reader: reader, reads: &readSet{states: map[string]driver.LockState{}}}
+	proposal := heartbeatProposal(by, ref, meta)
+	if err := w.authorize(ctx, port.AuthorizeBefore, proposal, snapshot); err != nil {
+		return port.HeartbeatOutcome{}, err
+	}
+
+	checkpoints, ok := w.store.(driver.CheckpointStore)
+	if !ok {
+		return port.HeartbeatOutcome{}, failure("internal_error", "heartbeat requires durable checkpoint metadata")
+	}
+
+	// Look up the target-free receipt before existence or lease details. A
+	// changed target therefore gets idempotency_key_reused even if that target
+	// is absent, unclaimed, hidden or expired.
+	receipt, receiptGeneration, receiptPresent, err := loadHeartbeatReceipt(ctx, checkpoints, receiptKey)
+	if err != nil {
+		return port.HeartbeatOutcome{}, err
+	}
+	ownsReservation := false
+	reservationPublished := false
+	defer func() {
+		if ownsReservation && !reservationPublished {
+			_ = clearHeartbeatReceipt(context.Background(), checkpoints, w.lease, receiptKey, receiptGeneration)
+		}
+	}()
+	replay := false
+	if receiptPresent {
+		if err := w.authorize(ctx, port.AuthorizeReplay, proposal, snapshot); err != nil {
+			return port.HeartbeatOutcome{}, err
+		}
+		if !heartbeatReceiptMatches(receipt, ref.ID, hash) {
+			return port.HeartbeatOutcome{}, failure("idempotency_key_reused", "idempotency key was used with different parameters")
+		}
+		if heartbeatReceiptIsPublished(receipt) {
+			return port.HeartbeatOutcome{LeaseExpiresAt: receipt.LeaseExpiresAt, Replayed: true}, nil
+		}
+		if receipt.State != heartbeatReceiptReserved || receipt.LeaseExpiresAt.IsZero() {
+			return port.HeartbeatOutcome{}, failure("internal_error", "invalid heartbeat receipt state")
+		}
+		// A reserved receipt is completed below by whichever concurrent caller
+		// reaches the target and overlay first. Its stored expiry is immutable.
+		replay = true
+	}
+
+	rows, err := snapshot.Get(ctx, []model.Ref{ref})
 	if err != nil {
 		return port.HeartbeatOutcome{}, err
 	}
@@ -233,66 +332,122 @@ func (w *Writer) Heartbeat(ctx context.Context, by model.PrincipalRef, ref model
 	if err != nil {
 		return port.HeartbeatOutcome{}, err
 	}
-	hash := heartbeatRequestHash(ref.ID, principal, agent)
-	receiptKey := heartbeatReceiptKey(ref.ID, principal, agent, "bead.heartbeat", meta.IdempotencyKey)
-	if receipt, _, present, receiptErr := loadHeartbeatReceipt(ctx, checkpoints, receiptKey); receiptErr != nil {
-		return port.HeartbeatOutcome{}, receiptErr
-	} else if present {
-		if receipt.ID != ref.ID || receipt.RequestHash != hash {
-			return port.HeartbeatOutcome{}, failure("idempotency_key_reused", "idempotency key was used with different parameters")
-		}
-		return port.HeartbeatOutcome{LeaseExpiresAt: receipt.LeaseExpiresAt, Replayed: true}, nil
-	}
 
-	// A second heartbeat in the same controlled second is intentionally quiet:
-	// it observes the already armed expiry and only records its own replayable
-	// response. This preserves the Beads same-second no-rearm boundary.
-	overlay, generation, present, err := loadLeaseOverlay(ctx, checkpoints, ref.ID)
+	// Compute one response expiry without writing. If another caller already
+	// reserved this key, its stored expiry is authoritative and this call must
+	// not arm a competing overlay.
+	overlay, overlayGeneration, overlayPresent, err := loadLeaseOverlay(ctx, checkpoints, ref.ID)
 	if err != nil {
 		return port.HeartbeatOutcome{}, err
 	}
 	resultExpiry := effective.ExpiresAt
-	if !present || !sameLeaseIdentity(base, overlay) || now.After(overlay.LastHeartbeat.Add(time.Second)) {
-		overlay = leaseOverlay{Principal: effective.Principal, Agent: effective.Agent, ExpiresAt: now.Add(ttl), TtlMs: effective.TtlMs, Epoch: effective.Epoch, LastHeartbeat: now}
+	if receiptPresent {
+		resultExpiry = receipt.LeaseExpiresAt
+	} else if !overlayPresent || !sameLeaseIdentity(base, overlay) || now.After(overlay.LastHeartbeat.Add(time.Second)) {
+		resultExpiry = now.Add(ttl)
+	}
+	if resultExpiry.IsZero() {
+		return port.HeartbeatOutcome{}, failure("internal_error", "heartbeat response has no expiry")
+	}
+
+	if !receiptPresent {
+		candidate := heartbeatReceipt{ID: ref.ID, RequestHash: hash, LeaseExpiresAt: resultExpiry, State: heartbeatReceiptReserved}
 		for attempt := 0; attempt < 8; attempt++ {
-			next, saveErr := saveLeaseOverlay(ctx, checkpoints, w.lease, ref.ID, generation, overlay)
+			current, generation, present, loadErr := loadHeartbeatReceipt(ctx, checkpoints, receiptKey)
+			if loadErr != nil {
+				return port.HeartbeatOutcome{}, loadErr
+			}
+			if present {
+				if !heartbeatReceiptMatches(current, ref.ID, hash) {
+					return port.HeartbeatOutcome{}, failure("idempotency_key_reused", "idempotency key was used with different parameters")
+				}
+				if heartbeatReceiptIsPublished(current) {
+					return port.HeartbeatOutcome{LeaseExpiresAt: current.LeaseExpiresAt, Replayed: true}, nil
+				}
+				if current.State != heartbeatReceiptReserved || current.LeaseExpiresAt.IsZero() {
+					return port.HeartbeatOutcome{}, failure("internal_error", "invalid heartbeat receipt state")
+				}
+				receipt, receiptGeneration, receiptPresent, replay = current, generation, true, true
+				resultExpiry = current.LeaseExpiresAt
+				break
+			}
+			savedGeneration, saveErr := saveHeartbeatReceipt(ctx, checkpoints, w.lease, receiptKey, generation, candidate)
 			if saveErr == nil {
-				generation = next
-				resultExpiry = overlay.ExpiresAt
+				receipt, receiptGeneration, receiptPresent = candidate, savedGeneration, true
+				ownsReservation = true
 				break
 			}
 			if !errors.Is(saveErr, driver.ErrCheckpointConflict) {
 				return port.HeartbeatOutcome{}, saveErr
 			}
-			overlay, generation, present, err = loadLeaseOverlay(ctx, checkpoints, ref.ID)
+		}
+		if !receiptPresent {
+			return port.HeartbeatOutcome{}, failure("busy", "heartbeat response changed concurrently")
+		}
+	}
+
+	// Publish the overlay only for the reserved expiry. A newer overlay from a
+	// different idempotency key is already at least as fresh and must win; an
+	// older one is advanced with CAS. Same-key duplicates cannot rearm it.
+	overlayReady := overlayPresent && sameLeaseIdentity(base, overlay) && !overlay.ExpiresAt.Before(resultExpiry)
+	if !overlayReady {
+		armed := leaseOverlay{Principal: effective.Principal, Agent: effective.Agent, ExpiresAt: resultExpiry, TtlMs: effective.TtlMs, Epoch: effective.Epoch, LastHeartbeat: now}
+		for attempt := 0; attempt < 8; attempt++ {
+			next, saveErr := saveLeaseOverlay(ctx, checkpoints, w.lease, ref.ID, overlayGeneration, armed)
+			if saveErr == nil {
+				overlayGeneration = next
+				overlayReady = true
+				break
+			}
+			if !errors.Is(saveErr, driver.ErrCheckpointConflict) {
+				return port.HeartbeatOutcome{}, saveErr
+			}
+			overlay, overlayGeneration, overlayPresent, err = loadLeaseOverlay(ctx, checkpoints, ref.ID)
 			if err != nil {
 				return port.HeartbeatOutcome{}, err
 			}
-			if present && sameLeaseIdentity(base, overlay) && !now.After(overlay.LastHeartbeat.Add(time.Second)) {
-				resultExpiry = overlay.ExpiresAt
+			if overlayPresent && sameLeaseIdentity(base, overlay) && !overlay.ExpiresAt.Before(resultExpiry) {
+				overlayReady = true
 				break
 			}
 		}
-		if resultExpiry.IsZero() {
-			return port.HeartbeatOutcome{}, failure("busy", "heartbeat lease overlay changed concurrently")
-		}
 	}
-	receipt := heartbeatReceipt{ID: ref.ID, RequestHash: hash, LeaseExpiresAt: resultExpiry}
+	if !overlayReady {
+		return port.HeartbeatOutcome{}, failure("busy", "heartbeat lease overlay changed concurrently")
+	}
+
+	// Turn the reservation into the durable response. Every retry reloads the
+	// actual stored receipt; a loser never returns its local expiry.
+	published := receipt
+	published.State = heartbeatReceiptPublished
 	for attempt := 0; attempt < 8; attempt++ {
-		_, receiptGeneration, receiptPresent, receiptErr := loadHeartbeatReceipt(ctx, checkpoints, receiptKey)
-		if receiptErr != nil {
-			return port.HeartbeatOutcome{}, receiptErr
+		current, generation, present, loadErr := loadHeartbeatReceipt(ctx, checkpoints, receiptKey)
+		if loadErr != nil {
+			return port.HeartbeatOutcome{}, loadErr
 		}
-		if receiptPresent {
-			if receipt.RequestHash != hash || receipt.ID != ref.ID {
-				return port.HeartbeatOutcome{}, failure("idempotency_key_reused", "idempotency key was used with different parameters")
-			}
-			return port.HeartbeatOutcome{LeaseExpiresAt: receipt.LeaseExpiresAt, Replayed: true}, nil
+		if !present {
+			return port.HeartbeatOutcome{}, failure("busy", "heartbeat response reservation disappeared")
 		}
-		if err := saveHeartbeatReceipt(ctx, checkpoints, w.lease, receiptKey, receiptGeneration, receipt); err == nil {
-			return port.HeartbeatOutcome{LeaseExpiresAt: resultExpiry}, nil
-		} else if !errors.Is(err, driver.ErrCheckpointConflict) {
-			return port.HeartbeatOutcome{}, err
+		if !heartbeatReceiptMatches(current, ref.ID, hash) {
+			return port.HeartbeatOutcome{}, failure("idempotency_key_reused", "idempotency key was used with different parameters")
+		}
+		if heartbeatReceiptIsPublished(current) {
+			reservationPublished = true
+			return port.HeartbeatOutcome{LeaseExpiresAt: current.LeaseExpiresAt, Replayed: true}, nil
+		}
+		if current.State != heartbeatReceiptReserved {
+			return port.HeartbeatOutcome{}, failure("internal_error", "invalid heartbeat receipt state")
+		}
+		published = current
+		published.State = heartbeatReceiptPublished
+		savedGeneration, saveErr := saveHeartbeatReceipt(ctx, checkpoints, w.lease, receiptKey, generation, published)
+		if saveErr == nil {
+			reservationPublished = true
+			_ = savedGeneration
+			return port.HeartbeatOutcome{LeaseExpiresAt: published.LeaseExpiresAt, Replayed: replay}, nil
+		}
+		if !errors.Is(saveErr, driver.ErrCheckpointConflict) {
+			return port.HeartbeatOutcome{}, saveErr
 		}
 	}
 	return port.HeartbeatOutcome{}, failure("busy", "heartbeat response changed concurrently")
