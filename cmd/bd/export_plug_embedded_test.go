@@ -5,9 +5,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -192,4 +195,95 @@ func TestEmbeddedPlugDumpCommandEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("embedded driver exported one synthetic issue in %d archive bytes without a server; repeated export identical and source clean", len(first))
+}
+
+// A standalone supported bd process must census its actual native init/import
+// target. Handler fixtures cannot prove environment/path resolution or deliver
+// the production executable that the reverse consumer needs.
+func TestEmbeddedPlugNativeInventoryActualCLI(t *testing.T) {
+	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
+		t.Skip("requires the explicit native public exporter lane")
+	}
+	bd, err := findPrebuiltBDBinary()
+	if err != nil || bd == "" {
+		t.Fatalf("canonical bd runfile required: %v", err)
+	}
+	binary, err := os.ReadFile(bd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("NATIVE_PUBLIC_BD_SHA256=%x", sha256.Sum256(binary))
+	workspace, home := t.TempDir(), t.TempDir()
+	initGitRepoAt(t, workspace)
+	env := bdEnv(home)
+	for _, key := range []string{"XDG_CONFIG_HOME", "BEADS_DIR", "BD_DOLT_MODE", "BD_EVENTS_JOURNAL", "DOLT_ROOT_PATH"} {
+		env = envWithout(env, key)
+	}
+	env = append(env, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"), "BEADS_DIR="+filepath.Join(workspace, ".beads"), "BD_DOLT_MODE=embedded", "BD_EVENTS_JOURNAL=false", "DOLT_ROOT_PATH="+home)
+	run := func(args ...string) []byte {
+		t.Helper()
+		cmd := exec.Command(bd, args...)
+		cmd.Dir, cmd.Env = workspace, env
+		out, err := cmd.CombinedOutput()
+		t.Logf("NATIVE_PUBLIC_COMMAND args=%q exit_error=%v output=%s", args, err, out)
+		if err != nil {
+			t.Fatalf("actual bd %q: %v: %s", args, err, out)
+		}
+		return out
+	}
+	run("version", "--json")
+	run("init", "--prefix", "native", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet")
+	input := filepath.Join(workspace, "public.jsonl")
+	if err := os.WriteFile(input, []byte(`{"id":"native-abc","title":"Actual public native import","status":"open","priority":2,"issue_type":"task","created_at":"2026-11-02T00:00:00Z","updated_at":"2026-11-02T00:00:00Z"}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run("import", input, "--json")
+	capture := t.TempDir()
+	inventoryPath := filepath.Join(capture, "inventory.json")
+	run("--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryPath)
+	raw, err := os.ReadFile(inventoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := plugdump.ReadInventory(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.External) != 26 || len(inventory.ConfigPolicy) == 0 || len(inventory.Projects) != 1 || inventory.Projects[0].Prefix != "native" {
+		t.Fatalf("incomplete actual native inventory: %s", raw)
+	}
+	for _, input := range inventory.External {
+		if input.State != "json-config" {
+			t.Fatalf("native source falsely omitted: %+v", input)
+		}
+		data, err := os.ReadFile(input.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("NATIVE_PUBLIC_EXTERNAL family=%s sha256=%x data=%s", input.Family, sha256.Sum256(data), data)
+	}
+	archivePath := filepath.Join(capture, "readback.tar")
+	run("--readonly", "export", "--format", plugdump.Format, "--plug-inventory", inventoryPath, "--output", archivePath)
+	archive, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := plugdump.Validate(bytes.NewReader(archive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, kind := range manifest.Kinds {
+		if kind.Name == "bead" && kind.Count == 1 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("actual imported issue absent from native raw archive")
+	}
+	t.Logf("NATIVE_PUBLIC_INVENTORY=%s", raw)
+	t.Logf("NATIVE_PUBLIC_ARCHIVE bytes=%d sha256=%x history=%s", len(archive), sha256.Sum256(archive), manifest.History)
+	if os.Getenv("PLUG_TEST_EXPORT_PUBLIC_HISTORY") == "1" {
+		t.Logf("NATIVE_PUBLIC_ARCHIVE_BASE64=%s", base64.StdEncoding.EncodeToString(archive))
+	}
 }
