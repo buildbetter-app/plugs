@@ -1,0 +1,6 @@
+sh_test(
+    name = "prepare_public_bundle_test",
+    srcs = ["prepare-public-bundle-test.py"],
+    data = ["prepare-public-bundle.py"],
+    size = "small",
+)
