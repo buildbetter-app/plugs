@@ -14,11 +14,7 @@ import (
 )
 
 func TestThreeDisposableRehearsals(t *testing.T) {
-	sha, tree := os.Getenv("R1_SOURCE_SHA"), os.Getenv("R1_SOURCE_TREE")
-	if sha == "" || tree == "" {
-		sha, tree = strings.Repeat("a", 40), strings.Repeat("b", 40)
-		t.Log("provenance=synthetic unit markers; hosted wrapper receipt binds test source")
-	}
+	sha, tree := testSourcePins(t)
 	for _, kind := range []string{"memory", "sqlite"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
