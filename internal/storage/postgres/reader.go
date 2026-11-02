@@ -21,6 +21,9 @@ type reader struct {
 	at     uint64
 	closed bool
 	writer *transaction
+	// Only read-only repeatable-read snapshots memoize allocator lookups.
+	// An empty value records a validated miss in that snapshot.
+	allocatorSnapshots map[string]driver.OfflineAllocator
 	// Writers reserve their connection so cancellation cleanup can wait for
 	// pgx's asynchronous server termination before another lock probe starts.
 	conn        *sql.Conn
@@ -90,6 +93,7 @@ func (r *reader) finish() error {
 		return nil
 	}
 	r.closed = true
+	r.allocatorSnapshots = nil
 	err := r.sql.Rollback()
 	if errors.Is(err, sql.ErrTxDone) {
 		err = nil
