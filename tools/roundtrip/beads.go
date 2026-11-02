@@ -35,6 +35,8 @@ type beadsOptions struct {
 	Binary, SHA256, BuildRun, Inventory string
 }
 
+const autoBeadsInventory = "auto"
+
 type commandEvidence struct {
 	Args         []string `json:"args"`
 	Exit         int      `json:"exit"`
@@ -43,6 +45,30 @@ type commandEvidence struct {
 }
 
 func hash(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
+
+// captureAutoInventory asks the verified Beads executable to census the target
+// it just initialized and imported. The producer writes sidecars next to its
+// inventory; those paths remain valid while the output directory is retained
+// as private runtime evidence. The copied inventory gives the roundtrip output
+// a stable, private record of the exact census consumed by the raw exporter.
+func captureAutoInventory(output string, run func(...string) ([]byte, error)) (string, error) {
+	generated := filepath.Join(output, "beads-generated-inventory.json")
+	if _, err := run("--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", generated); err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(generated)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return "", fmt.Errorf("generated beads inventory unavailable")
+	}
+	data, err := os.ReadFile(generated)
+	if err != nil || len(data) > 1<<20 {
+		return "", fmt.Errorf("generated beads inventory unreadable")
+	}
+	if err := writePrivate(output, "beads-inventory.json", data); err != nil {
+		return "", err
+	}
+	return filepath.Join(output, "beads-inventory.json"), nil
+}
 
 // runBeads has no build, download, workflow or PATH fallback. It consumes an
 // independently delivered, hash-pinned public executable on the runtime host.
@@ -168,21 +194,30 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 	if options.Inventory == "" {
 		return
 	}
-	inventory, err := filepath.Abs(options.Inventory)
-	if err != nil {
-		result.Status = "BLOCK"
-		return
+	var inventory string
+	if options.Inventory == autoBeadsInventory {
+		inventory, err = captureAutoInventory(output, run)
+		if err != nil {
+			result.Status, result.Reason = "BLOCK", "beads_inventory_capture_refused"
+			return
+		}
+	} else {
+		inventory, err = filepath.Abs(options.Inventory)
+		if err != nil {
+			result.Status = "BLOCK"
+			return
+		}
+		if stat, statErr := os.Lstat(inventory); statErr != nil || !stat.Mode().IsRegular() || stat.Size() > 1<<20 {
+			result.Status = "BLOCK"
+			return
+		}
+		inventoryBytes, readErr := os.ReadFile(inventory)
+		if readErr != nil || len(inventoryBytes) > 1<<20 || writePrivate(output, "beads-inventory.json", inventoryBytes) != nil {
+			result.Status = "BLOCK"
+			return
+		}
+		inventory = filepath.Join(output, "beads-inventory.json")
 	}
-	if stat, err := os.Stat(inventory); err != nil || !stat.Mode().IsRegular() || stat.Size() > 1<<20 {
-		result.Status = "BLOCK"
-		return
-	}
-	inventoryBytes, err := os.ReadFile(inventory)
-	if err != nil || len(inventoryBytes) > 1<<20 || writePrivate(output, "beads-inventory.json", inventoryBytes) != nil {
-		result.Status = "BLOCK"
-		return
-	}
-	inventory = filepath.Join(output, "beads-inventory.json")
 	result.Stage = "beads_readback"
 	readback := filepath.Join(output, "beads-raw-readback.tar")
 	if _, err = run("--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventory, "--output", readback); err != nil {

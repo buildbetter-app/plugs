@@ -45,7 +45,7 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 			t.Run(engine+"/"+test.name, func(t *testing.T) {
 				output := filepath.Join(root, engine+"-"+test.name)
 				args := []string{"--input", "../../internal/integration/converterroundtrip/testdata/" + test.file, "--output-dir", output, "--engine", engine, "--history-mode", test.mode,
-					"--beads-binary", options.Binary, "--beads-sha256", options.SHA256, "--beads-build-run", options.BuildRun}
+					"--beads-binary", options.Binary, "--beads-sha256", options.SHA256, "--beads-build-run", options.BuildRun, "--beads-inventory", autoBeadsInventory}
 				if engine == "postgres" {
 					database := "plug_roundtrip_" + strings.ReplaceAll(test.name, "-", "_")
 					if _, err := postgres.db.ExecContext(context.Background(), "CREATE DATABASE "+database); err != nil {
@@ -60,18 +60,39 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 				}
 				t.Logf("PUBLIC_BEADS_REIMPORT_OUTCOME %s", encoded)
 				commands := logPublicBeadsCommands(t, output)
-				if got.Status != "WAIT" || got.Stage != "beads_inventory" || got.Reason != "beads_inventory_required" || got.BeadsReimport != "PASS" || got.BeadsReadback != "WAIT" || got.BeadsReadbackSHA256 != "" {
-					t.Fatalf("actual import and unqualified readback: %+v", got)
+				if got.Status != "PASS" || got.Stage != "public_snapshot_roundtrip_complete" || got.Reason != "" || got.BeadsReimport != "PASS" || got.BeadsReadback != "PASS" || got.BeadsReadbackSHA256 == "" {
+					t.Fatalf("actual import and native readback: %+v", got)
 				}
 				if got.BeadsCommit != beadsCommit || got.BeadsTree != beadsTree || got.BeadsBinarySHA256 != options.SHA256 || got.BeadsBuildRun != options.BuildRun || got.Claims != 1 || got.Writes != 1 || got.HistoryMode != test.mode || got.RestoredHead != test.head || got.HistoryFloor != test.floor || got.SourceHistoryComplete != test.complete || got.SourceHistoryFirst != test.first || got.SourceHistoryHead != test.sourceHead || len(got.SourceHistoryGaps) != test.gaps || got.RestoredIncarnation == "" || got.RestoredIncarnation != got.ReverseIncarnation || got.ReverseAt == "" || got.BaselineSHA256 == got.ReverseSHA256 || got.HistoryLossItems == 0 {
 					t.Fatalf("actual import changed provenance or restore/workload assertions: %+v", got)
 				}
-				if len(commands) != 3 || len(commands[0].Args) != 2 || commands[0].Args[0] != "version" || commands[0].Args[1] != "--json" || len(commands[1].Args) == 0 || commands[1].Args[0] != "init" || len(commands[2].Args) != 3 || commands[2].Args[0] != "import" || commands[2].Args[1] != filepath.Join(output, "reverse-live.jsonl") || commands[2].Args[2] != "--json" {
-					t.Fatal("actual version/init/import command evidence is incomplete")
+				if len(commands) != 4 || len(commands[0].Args) != 2 || commands[0].Args[0] != "version" || commands[0].Args[1] != "--json" || len(commands[1].Args) == 0 || commands[1].Args[0] != "init" || len(commands[2].Args) != 3 || commands[2].Args[0] != "import" || commands[2].Args[1] != filepath.Join(output, "reverse-live.jsonl") || commands[2].Args[2] != "--json" || len(commands[3].Args) != 7 || commands[3].Args[0] != "--readonly" || commands[3].Args[1] != "export" || commands[3].Args[2] != "--format" || commands[3].Args[3] != "beads-inventory/1" || commands[3].Args[4] != "--plug-capture-public" || commands[3].Args[5] != "--output" || commands[3].Args[6] != filepath.Join(output, "beads-generated-inventory.json") {
+					t.Fatal("actual version/init/import/inventory command evidence is incomplete")
 				}
 				for _, command := range commands {
 					if command.Exit != 0 {
 						t.Fatal("a required real Beads command failed")
+					}
+				}
+				inventoryData, err := os.ReadFile(filepath.Join(output, "beads-inventory.json"))
+				var inventory struct {
+					Version  string `json:"version"`
+					External []struct {
+						Family string `json:"family"`
+						Path   string `json:"path"`
+						State  string `json:"state"`
+					} `json:"external"`
+					ConfigPolicy map[string]string `json:"config_policy"`
+				}
+				if err != nil || json.Unmarshal(inventoryData, &inventory) != nil || inventory.Version != "beads-inventory/1" || len(inventory.External) != 26 || len(inventory.ConfigPolicy) == 0 {
+					t.Fatalf("auto inventory census is incomplete: %v %s", err, inventoryData)
+				}
+				for _, input := range inventory.External {
+					if input.Family == "" || input.State != "json-config" || input.Path == "" {
+						t.Fatalf("auto inventory external entry is incomplete: %+v", input)
+					}
+					if info, err := os.Stat(input.Path); err != nil || !info.Mode().IsRegular() {
+						t.Fatalf("auto inventory sidecar is unavailable: %+v %v", input, err)
 					}
 				}
 				var imported struct {

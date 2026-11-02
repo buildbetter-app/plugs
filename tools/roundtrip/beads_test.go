@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -15,6 +17,45 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 )
+
+func TestAutoInventoryUsesRealProducerCommandAndPrivateCopy(t *testing.T) {
+	root := t.TempDir()
+	want := []byte(`{"version":"beads-inventory/1","external":[]}`)
+	var got []string
+	path, err := captureAutoInventory(root, func(args ...string) ([]byte, error) {
+		got = append([]string(nil), args...)
+		if len(args) != 7 || args[0] != "--readonly" || args[1] != "export" || args[2] != "--format" || args[3] != "beads-inventory/1" || args[4] != "--plug-capture-public" || args[5] != "--output" {
+			t.Fatalf("auto inventory command=%q", args)
+		}
+		if err := os.WriteFile(args[6], want, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return nil, nil
+	})
+	if err != nil || path != filepath.Join(root, "beads-inventory.json") || len(got) != 7 {
+		t.Fatalf("auto inventory capture path=%q command=%q err=%v", path, got, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(data, want) {
+		t.Fatalf("private inventory copy=%q err=%v", data, err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("private inventory mode=%v err=%v", info, err)
+	}
+}
+
+func TestAutoInventoryProducerFailureDoesNotPublishCopy(t *testing.T) {
+	root := t.TempDir()
+	path, err := captureAutoInventory(root, func(args ...string) ([]byte, error) {
+		return nil, errors.New("producer refused")
+	})
+	if err == nil || path != "" {
+		t.Fatalf("producer refusal was certified: path=%q err=%v", path, err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "beads-inventory.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("producer refusal published inventory: %v", statErr)
+	}
+}
 
 func TestMissingPinnedBeadsCannotPassOrUsePATH(t *testing.T) {
 	result := outcome{BeadsReimport: "WAIT", BeadsReadback: "WAIT"}
