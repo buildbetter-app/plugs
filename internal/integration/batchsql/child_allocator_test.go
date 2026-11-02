@@ -769,6 +769,103 @@ func TestParentCounterReconcilesRestoredDirectChildrenAcrossStores(t *testing.T)
 	}
 }
 
+func TestParentCounterTerminalValueAcrossStores(t *testing.T) {
+	const priorID = "demo-root.18446744073709551614"
+	const finalID = "demo-root.18446744073709551615"
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			for _, scenario := range []string{"commit", "rollback-then-commit"} {
+				t.Run(scenario, func(t *testing.T) {
+					f := newFixture(t, engine)
+					seedChildFixture(t, f, nil, true, "demo-root", priorID)
+					parent := model.Ref{ID: "demo-root"}
+					before, rows, inventory := childAllocatorDurableState(t, f), hierarchyRows(t, f), childInventory(t, f)
+					if len(inventory.Projects) != 0 || len(inventory.Parents) != 0 {
+						t.Fatalf("record-only restore installed continuation: %+v", inventory)
+					}
+					cs := model.ChangeSet{Ops: []model.Op{
+						hierarchyCreate("terminal-child", &parent, "demo"),
+						patchOp(parent, map[string]any{"title": "terminal child committed"}),
+					}}
+					meta := f.meta("terminal-child")
+					if scenario == "rollback-then-commit" {
+						ordinary := f.writer
+						fault := &childAllocationFailStore{Store: f.store}
+						f.writer = pipeline.New(fault, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now))
+						_, err := childAllocatorApply(f, cs, meta)
+						requireSameState(t, before, childAllocatorDurableState(t, f))
+						if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || !reflect.DeepEqual(inventory, childInventory(t, f)) || f.receipt(t, meta) != nil {
+							t.Fatal("terminal consumption leaked through failed transaction")
+						}
+						if !errors.Is(err, errChildAllocationPut) || fault.consumes != 1 || fault.puts != 2 {
+							t.Fatalf("terminal rollback never reached second Put: consumes=%d puts=%d err=%v", fault.consumes, fault.puts, err)
+						}
+						f.writer = ordinary
+					}
+					out, err := childAllocatorApply(f, cs, meta)
+					if err != nil {
+						requireSameState(t, before, childAllocatorDurableState(t, f))
+						if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || !reflect.DeepEqual(inventory, childInventory(t, f)) || f.receipt(t, meta) != nil {
+							t.Fatal("refused terminal create partially published")
+						}
+						t.Fatalf("Writer refused final valid child %s: %v", finalID, err)
+					}
+					if out.Replayed || len(out.Commit.Results) != 2 || out.Commit.Results[0].Ref.ID != finalID || out.Commit.Results[1].Ref.ID != parent.ID {
+						t.Fatalf("terminal batch result=%+v", out)
+					}
+					state := childAllocatorDurableState(t, f)
+					child, exists := state.Records[finalID]
+					if !exists || len(state.Records) != len(before.Records)+1 || child.Revision.String() != out.Commit.Revision.String() || len(state.Versions[finalID]) != 1 || len(state.Log) != len(before.Log)+1 {
+						t.Fatalf("terminal child publication: record=%+v records=%d versions=%d log=%d", child, len(state.Records), len(state.Versions[finalID]), len(state.Log))
+					}
+					if doc := decodeDocument(t, child); doc.Parent == nil || doc.Parent.ID != parent.ID {
+						t.Fatalf("terminal child parent=%+v", doc.Parent)
+					}
+					if doc := decodeDocument(t, state.Records[parent.ID]); doc.Fields["title"] != "terminal child committed" {
+						t.Fatalf("terminal batch parent patch missing: %+v", doc)
+					}
+					inventory = childInventory(t, f)
+					if len(inventory.Projects) != 0 || len(inventory.Parents) != 1 || inventory.Parents[0] != (driver.ParentCounter{Incarnation: state.Meta.Incarnation, Parent: parent.ID, LastChild: ^uint64(0)}) {
+						t.Fatalf("terminal high-water not persisted: %+v", inventory)
+					}
+					verifyHierarchy(t, f)
+					assertChildAllocatorReplay(t, f, cs, meta, out.Commit)
+					assertExhausted := func(label string) {
+						t.Helper()
+						before, rows, inventory := childAllocatorDurableState(t, f), hierarchyRows(t, f), childInventory(t, f)
+						meta := f.meta(label)
+						_, err := childAllocatorApply(f, model.ChangeSet{Ops: []model.Op{hierarchyCreate("exhausted", &parent, "demo")}}, meta)
+						if !errors.Is(err, driver.ErrUnsupported) {
+							t.Fatalf("allocation after terminal child did not refuse: %v", err)
+						}
+						requireSameState(t, before, childAllocatorDurableState(t, f))
+						if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || !reflect.DeepEqual(inventory, childInventory(t, f)) || f.receipt(t, meta) != nil {
+							t.Fatal("terminal exhaustion partially published")
+						}
+					}
+					assertExhausted("after-terminal-commit")
+					hierarchyApply(t, f, childDelete(model.Ref{ID: priorID}), childDelete(model.Ref{ID: finalID}))
+					before = childAllocatorDurableState(t, f)
+					if len(before.Records) != 1 || !reflect.DeepEqual(inventory, childInventory(t, f)) {
+						t.Fatal("all-child deletion lost terminal high-water")
+					}
+					if engine != "memory" {
+						f.reopen(t)
+						requireSameState(t, before, childAllocatorDurableState(t, f))
+						if !reflect.DeepEqual(inventory, childInventory(t, f)) {
+							t.Fatal("SQL reopen lost terminal high-water")
+						}
+					}
+					assertChildAllocatorReplay(t, f, cs, meta, out.Commit)
+					assertExhausted("after-deletion-reopen")
+					verifyHierarchy(t, f)
+					t.Logf("%s/%s: restored max-1 committed max atomically; terminal counter, exact replay, deletion/reopen and typed exhaustion proven", engine, scenario)
+				})
+			}
+		})
+	}
+}
+
 func TestChildAllocatorObservedExhaustionRefusesAtomicallyAcrossStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
