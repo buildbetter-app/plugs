@@ -483,6 +483,11 @@ type Host interface {
 // restart observes either the old map or the new map. List is bounded and
 // returns detached values.
 type DurableState interface {
+	// Read returns one value and its namespace revision from the same
+	// checkpoint snapshot. Providers must use this atomic read before a CAS;
+	// separate Get and Revision calls can pair a stale value with a newer
+	// generation during restart or takeover.
+	Read(ctx context.Context, key string, dst any) (found bool, revision Revision, err error)
 	Get(ctx context.Context, key string, dst any) (found bool, err error)
 	Put(ctx context.Context, key string, value any, expect Revision) (Revision, error)
 	Delete(ctx context.Context, key string, expect Revision) error

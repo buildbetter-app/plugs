@@ -115,25 +115,31 @@ func (d *durableAccess) load(ctx context.Context) (driver.Checkpoint, durableNam
 	return checkpoint, namespace, nil
 }
 
-func (d *durableAccess) Get(ctx context.Context, key string, dst any) (bool, error) {
+func (d *durableAccess) Read(ctx context.Context, key string, dst any) (bool, pluginapi.Revision, error) {
 	if err := driver.ValidateCheckpointKey(key); err != nil {
-		return false, err
+		return false, "", err
 	}
 	_, namespace, err := d.load(ctx)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	value, ok := namespace.Values[key]
+	revision := pluginapi.Natural64(value.Revision)
 	if !ok || len(value.Value) == 0 {
-		return false, nil
+		return false, revision, nil
 	}
 	if dst == nil {
-		return false, failure(ErrDurable, "destination is nil")
+		return false, revision, failure(ErrDurable, "destination is nil")
 	}
 	if err := json.Unmarshal(value.Value, dst); err != nil {
-		return false, fmt.Errorf("decode durable value %q: %w", key, err)
+		return false, revision, fmt.Errorf("decode durable value %q: %w", key, err)
 	}
-	return true, nil
+	return true, revision, nil
+}
+
+func (d *durableAccess) Get(ctx context.Context, key string, dst any) (bool, error) {
+	found, _, err := d.Read(ctx, key, dst)
+	return found, err
 }
 
 func (d *durableAccess) Revision(ctx context.Context, key string) (pluginapi.Revision, error) {

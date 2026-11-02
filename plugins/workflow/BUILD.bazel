@@ -8,6 +8,13 @@ go_library(
     deps = ["//internal/core/model", "//internal/storage/driver", "//pluginapi", "//sdk/go:sdk_go"],
 )
 
+go_test(
+    name = "workflow_test",
+    srcs = ["workflow_test.go"],
+    embed = [":workflow"],
+    deps = ["//internal/core/model", "//internal/storage/driver", "//pluginapi"],
+)
+
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),

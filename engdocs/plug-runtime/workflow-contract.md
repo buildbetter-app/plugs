@@ -12,9 +12,12 @@ an explicit `mode` of `permanent` or `ephemeral`. Omitting `mode` is refused;
 callers must choose the plane at the invocation boundary. A checklist item has
 an opaque client label, title, and optional type. The request is authenticated
 with the current principal and project in `_meta` and requires an idempotency
-key. The manifest declares `x.workflow.invoke` with `permission: write` and
-`resource: params.project`; the canonical OpenRPC/catalog descriptor has the
-same parameter/result schemas and idempotency declaration.
+key. The manifest grammar is the existing `manifest_version: 1` form with a
+plugin provision `{kind: "methods", prefix: "x.workflow", methods: {invoke:
+{permission: "write", resource: "params.project"}}}`; the canonical
+OpenRPC/catalog descriptor has the same parameter/result schemas and
+idempotency declaration. The host rejects a workflow instance that lacks the
+durable capability rather than silently creating process-local state.
 
 Permanent invocation lowers each checklist item through the ordinary
 `bead.create` writer. The returned items are ordinary durable beads with the
@@ -52,13 +55,14 @@ comments, or run identity.
 
 Closing the final checklist item atomically marks the run complete and deletes
 the run, item, comment, and claim payloads in the same plugin-state CAS. A
-canonical terminal receipt remains for the existing 24-hour idempotency window:
-it contains only the scoped operation identity, digest, terminal marker, item
-or run ID, expiry, and a response-safe identity/commit result. It never retains
-titles, fields, comments, claims, or a run body. Replaying an equal request
-returns that terminal receipt and never recreates a live run; a changed request
-or scope returns `idempotency_key_reused`. Completed ephemeral items are absent
-from `bead.ready`, `bead.get`, and all permanent history/as-of/export reads.
+canonical terminal receipt starts a fresh 24-hour completion-based replay
+window: it contains only the scoped operation identity, digest, terminal
+marker, item or run ID, expiry, and a response-safe identity/commit result. It
+never retains titles, fields, comments, claims, or a run body. Replaying an
+equal request returns that identity/commit-only terminal receipt and never
+recreates a live run; a changed request or scope returns
+`idempotency_key_reused`. Completed ephemeral items are absent from
+`bead.ready`, `bead.get`, and all permanent history/as-of/export reads.
 There is no promotion, demotion, mixed-plane dependency, or relationship
 bridge in this contract; those operations return typed `unsupported`.
 
@@ -74,10 +78,13 @@ remove expired receipts only when their run is already ended (or the receipt
 does not reference a run), and never deletes an unfinished run.
 
 `bead.ready` uses a stable ID-ascending workflow phase after the core ready
-phase. Its signed continuation cursor binds method, principal (including
-anonymous agent label), project, filter, store incarnation, and authorization
-generation; a workflow-phase bit keeps the offset from being confused with a
-core offset. `bead.claimNext` uses that same order and binding. `bead.get`,
+phase. Its signed continuation cursor binds method, the complete effective
+principal (including the anonymous-agent label when present), project, filter,
+store incarnation, ontology and authorization generation; a workflow-phase bit
+keeps the offset from being confused with a core offset. The workflow phase is
+bounded by the standard page limit and ordered by immutable item ID, so a
+continuation offset cannot reorder or skip an item within one authorization
+scope. `bead.claimNext` uses that same order and binding. `bead.get`,
 `bead.comment`, and `bead.close` accept the typed workflow ID through the
 ordinary service dispatcher and apply the current principal/project ownership
 check before exposing or mutating plugin state.

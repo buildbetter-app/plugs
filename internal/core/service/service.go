@@ -168,7 +168,11 @@ func (s *Service) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, c
 }
 
 func workflowMeta(by model.PrincipalRef, method, project, agent string) model.WriteMeta {
-	return model.WriteMeta{Method: method, Project: project, Agent: agent, AgentLabel: agent}
+	meta := model.WriteMeta{Method: method, Project: project, Agent: agent}
+	if by.Kind == "anonymous" {
+		meta.AgentLabel = agent
+	}
+	return meta
 }
 
 func workflowRef(ref model.Ref) bool {

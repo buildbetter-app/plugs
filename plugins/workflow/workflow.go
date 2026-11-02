@@ -196,7 +196,7 @@ func (p *Provider) WithIdentity(plugin, instance, incarnation string) *Provider 
 
 func (p *Provider) load(ctx context.Context) (persisted, pluginapi.Revision, error) {
 	var value persisted
-	found, err := p.state.Get(ctx, stateKey, &value)
+	found, revision, err := p.state.Read(ctx, stateKey, &value)
 	if err != nil {
 		return persisted{}, "", err
 	}
@@ -212,8 +212,7 @@ func (p *Provider) load(ctx context.Context) (persisted, pluginapi.Revision, err
 	if value.Receipts == nil {
 		value.Receipts = map[string]receiptState{}
 	}
-	revision, err := p.state.Revision(ctx, stateKey)
-	return value, revision, err
+	return value, revision, nil
 }
 
 func (p *Provider) save(ctx context.Context, value persisted, revision pluginapi.Revision) error {
@@ -289,7 +288,7 @@ func (p *Provider) checkReplay(value persisted, by model.PrincipalRef, meta mode
 	if receipt.Principal != principal || receipt.PrincipalHash != principalHash || receipt.Agent != agent || receipt.Project != project || receipt.Plugin != p.plugin || receipt.Instance != p.instance || receipt.Incarnation != p.incarnation || receipt.Method != meta.Method || receipt.Key != meta.IdempotencyKey {
 		return false, fail("idempotency_key_reused", "idempotency receipt scope changed")
 	}
-	if !p.now().Before(receipt.ExpiresAt) {
+	if !p.now().Before(receipt.ExpiresAt) && (receipt.RunID == "" || value.Runs[receipt.RunID].ID == "") {
 		return false, nil
 	}
 	if receipt.Digest != d {
@@ -388,22 +387,13 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 		result.Items = append(result.Items, p.itemView(item))
 	}
 	value.Runs[runID] = run
-	resultBytes, err := json.Marshal(result)
-	if err != nil {
+	if err := p.storeReceipt(value, by, meta, req, result, runID, ""); err != nil {
 		return InvokeResult{}, err
 	}
-	value.Receipts[receiptKeyForInvoke(p, by, meta)] = receiptState{Principal: principal, Agent: agent, Project: req.Project, Plugin: p.plugin, Instance: p.instance, Incarnation: p.incarnation, Method: meta.Method, Key: meta.IdempotencyKey, Digest: mustDigest(req), RunID: runID, ExpiresAt: p.now().Add(driver.IdempotencyWindow), Result: resultBytes}
 	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 		return InvokeResult{}, err
 	}
 	return result, nil
-}
-
-func mustDigest(value any) string { result, _ := digest(value); return result }
-
-func receiptKeyForInvoke(p *Provider, by model.PrincipalRef, meta model.WriteMeta) string {
-	key, _, _, _, _, _ := receiptKey(p, by, meta)
-	return key
 }
 
 func (p *Provider) itemView(item itemState) ItemView {
@@ -418,7 +408,7 @@ func (p *Provider) itemView(item itemState) ItemView {
 }
 
 func effectiveAgent(by model.PrincipalRef, meta model.WriteMeta) string {
-	if meta.AgentLabel != "" {
+	if by.Kind == "anonymous" && meta.AgentLabel != "" {
 		return meta.AgentLabel
 	}
 	if by.Kind == "anonymous" {
@@ -750,6 +740,7 @@ func (p *Provider) sanitizeTerminalReceipts(value persisted, runID, itemID strin
 			continue
 		}
 		receipt.Terminal = true
+		receipt.ExpiresAt = p.now().Add(driver.IdempotencyWindow)
 		if receipt.Method == "x.workflow.invoke" {
 			terminalInvoke := InvokeResult{Plane: "ephemeral", Run: &RunView{ID: runID, Mode: "ephemeral", State: "completed"}, Items: []ItemView{}}
 			receipt.Result, _ = json.Marshal(terminalInvoke)
@@ -777,8 +768,8 @@ func workflowCommit(id string, generation uint64) model.Commit {
 	return model.Commit{Revision: model.Natural64(0), Results: []model.OpResult{{Ref: model.RefByID(id, model.Natural64(0)), Revision: model.Natural64(generation)}}, Warnings: []model.Warning{}}
 }
 
-// GC removes only expired terminal receipts. It deliberately never deletes an
-// unfinished run, regardless of age.
+// GC removes expired receipts whose run is already gone. It deliberately
+// never deletes an unfinished run or its bounded operation receipts.
 func (p *Provider) GC(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
