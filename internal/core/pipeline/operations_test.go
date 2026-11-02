@@ -42,7 +42,9 @@ func TestConditionalLinksAreAtomicGuardedAndDoNotWriteEndpoints(t *testing.T) {
 		_, err := w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{patch(blocker, map[string]any{"title": "must roll back"}), link(blocker, dependent, kind)}}, meta(i+3))
 		code(t, err, "ontology_guard_failed")
 	}
-	_, err = w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{link(dependent, blocker, "invented")}}, meta(5))
+	// Unknown but well-formed dependency kinds remain import-compatible; an
+	// empty kind is the malformed wire case for this refusal assertion.
+	_, err = w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{link(dependent, blocker, "")}}, meta(5))
 	code(t, err, "invalid_params")
 	_, err = w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{{Kind: model.OpDelete, Delete: &model.DeleteOp{Target: blocker}}}}, meta(6))
 	code(t, err, "ontology_guard_failed")
