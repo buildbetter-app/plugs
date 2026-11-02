@@ -38,6 +38,21 @@ const listPostfilterCap = 20000
 const claimNextConflictRestartBudget = 1
 
 func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req service.GetRequest) (service.GetResult, error) {
+	if batch := service.ReadBatchFromContext(ctx); batch != nil {
+		allowed, handled, batchErr := batch.Resolve(ctx, by, s.AuthorizeReadBatch, model.ResourceRef{Kind: "bead", Ref: req.ID})
+		if handled {
+			if batchErr != nil {
+				return service.GetResult{}, batchErr
+			}
+			if !allowed {
+				return service.GetResult{}, notFound()
+			}
+			// The point callback installed by viewops asks only for the decision.
+			// The view already owns the pinned row and separately projects parents;
+			// avoid reopening one SQL reader per candidate after the batch fence.
+			return service.GetResult{}, nil
+		}
+	}
 	allowed, err := s.checkRead(ctx, by, "bead.get", req.ID)
 	if err != nil {
 		return service.GetResult{}, err

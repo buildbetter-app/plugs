@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	coreservice "github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -196,6 +197,21 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	rows, err := scan(ctx, reader)
 	if err != nil {
 		return Result{}, err
+	}
+	// The legacy point authorizer remains the public view configuration seam.
+	// Install a request-local candidate set so an authz-backed point callback can
+	// resolve the whole set through one current-authority batch without changing
+	// the view contract or carrying decisions into another request.
+	if s.cfg.AuthorizeRead != nil {
+		resources := make([]model.ResourceRef, 0, len(rows))
+		for _, row := range rows {
+			if matches(row, filter, project, terms) {
+				resources = append(resources, model.ResourceRef{Kind: "bead", Ref: row.record.Ref})
+			}
+		}
+		if len(resources) != 0 {
+			ctx, _ = coreservice.WithReadBatchSession(ctx, resources)
+		}
 	}
 	// Cache the current authorization result for candidates and blockers. This
 	// still evaluates on every page request, so a revoked grant cannot reuse an

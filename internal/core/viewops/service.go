@@ -125,7 +125,7 @@ func scan(ctx context.Context, r driver.Reader) ([]stored, error) {
 	var cursor *driver.Cursor
 	rows := make([]stored, 0)
 	for {
-		page, err := r.Query(ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Cursor: cursor, Limit: 1000})
+		page, err := r.Query(ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Cursor: cursor, Limit: 10000})
 		if err != nil {
 			return nil, mapped(err)
 		}
