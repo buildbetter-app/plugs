@@ -29,6 +29,7 @@ from pathlib import Path
 import ast
 import re
 import sys
+import tempfile
 
 workflow = Path(sys.argv[1]).read_text(encoding="utf-8")
 remote_workflow = Path(sys.argv[4]).read_text(encoding="utf-8")
@@ -44,6 +45,77 @@ workflow_code = "\n".join(line for line in workflow.splitlines() if not line.lst
 collector_literals = {node.value for node in ast.walk(ast.parse(collector))
                       if isinstance(node, ast.Constant) and isinstance(node.value, str)}
 
+required_workflows = {
+    "plug-bazel.yml", "plug-nightly-restore-diffs.yml", "plug-remote-bazel.yml", "plug-runs-on-smoke.yml",
+}
+allowed_workflows = required_workflows | {"plug-public-bundle.yml", "plug-beads-bazel.yml", "plug-cp7-latency.yml"}
+
+def check_workflow_inventory(directory):
+    workflow_files = {
+        path.name
+        for pattern in ("*.yml", "*.yaml")
+        for path in directory.glob(pattern)
+    }
+    missing = sorted(required_workflows - workflow_files)
+    unexpected = sorted(workflow_files - allowed_workflows)
+    if missing:
+        raise SystemExit("config: required workflow files are missing: " + ", ".join(missing))
+    if unexpected:
+        raise SystemExit("config: inherited workflow files remain: " + ", ".join(unexpected))
+
+# Exercise the actual inventory guard with disposable names, independently of
+# PR260 source. CP7 is optional; similarly named additions remain refused.
+with tempfile.TemporaryDirectory(prefix="plug-ci-workflow-inventory.") as temporary:
+    fixture = Path(temporary)
+    for name in required_workflows | {"plug-public-bundle.yml", "plug-beads-bazel.yml"}:
+        (fixture / name).touch()
+    check_workflow_inventory(fixture)
+    cp7_workflow = fixture / "plug-cp7-latency.yml"
+    cp7_workflow.touch()
+    check_workflow_inventory(fixture)
+    for name, message in (
+        ("plug-cp7-latency-extra.yml", "config: inherited workflow files remain: plug-cp7-latency-extra.yml"),
+        ("unexpected.yaml", "config: inherited workflow files remain: unexpected.yaml"),
+    ):
+        unknown = fixture / name
+        unknown.touch()
+        try:
+            check_workflow_inventory(fixture)
+        except SystemExit as error:
+            if str(error) != message:
+                raise
+        else:
+            raise SystemExit("config: inventory accepted an unapproved workflow: " + name)
+        unknown.unlink()
+    cp7_workflow.unlink()
+    check_workflow_inventory(fixture)
+    (fixture / "plug-bazel.yml").unlink()
+    try:
+        check_workflow_inventory(fixture)
+    except SystemExit as error:
+        if str(error) != "config: required workflow files are missing: plug-bazel.yml":
+            raise
+    else:
+        raise SystemExit("config: inventory accepted a missing required workflow")
+print("plug-ci-config: CP7 optional workflow admission and inventory refusal fixtures passed")
+
+# Preserve the old 45-minute job envelope even if the two new 150-minute
+# latency targets run serially. Leave 15 minutes for finalization within the
+# six-hour GitHub-hosted fallback limit; test-class budgets stay unchanged.
+expected_timeout_map = "900,900,900,9000"
+job_minutes = [int(value) for value in re.findall(r"(?m)^    timeout-minutes: (\d+)\s*$", workflow_code)]
+workflow_timeout_maps = re.findall(r"(?m)^\s*test --test_timeout=(\S+)\s*$", workflow_code)
+timeout_errors = []
+if job_minutes != [360] or not 45 + 2 * 150 + 15 <= job_minutes[0] <= 360:
+    timeout_errors.append("ordinary PR job needs the explicit 360-minute envelope (45 + 150 + 150 + 15)")
+if workflow_timeout_maps != [expected_timeout_map]:
+    timeout_errors.append("workflow must use only --test_timeout=" + expected_timeout_map)
+collector_timeout_maps = {value for value in collector_literals if value.startswith("--test_timeout=")}
+if collector_timeout_maps != {"--test_timeout=" + expected_timeout_map}:
+    timeout_errors.append("delivery must preserve 900s for short/moderate/long and allow 9000s only for eternal")
+if timeout_errors:
+    raise SystemExit("config: " + "; ".join(timeout_errors))
+
 required_workflow = {
     "name: Plug Bazel",
     "pull_request:",
@@ -54,7 +126,6 @@ required_workflow = {
     "actions/setup-node@",
     "node-version: 24",
     "command -v google-chrome",
-    "timeout-minutes: 45",
     "permissions:\n  contents: read",
     "actions/cache/restore@",
     "actions/upload-artifact@",
@@ -71,7 +142,7 @@ if missing:
     raise SystemExit("config: workflow is missing: " + ", ".join(missing))
 required_collector = {
     "//:lexicon_gate", "touched-targets.txt", "reverse-targets.txt",
-    "--lockfile_mode=error", "--nocache_test_results", "--test_timeout=900",
+    "--lockfile_mode=error", "--nocache_test_results", "--test_timeout=900,900,900,9000",
     "--nosystem_rc", "--nohome_rc", "--noworkspace_rc", "--remote_cache=", "--remote_executor=",
     "--repo_contents_cache=", "--jobs=2", "--local_resources=memory=8192", "--test_env=GO_TEST_WRAP_TESTV=1",
 }
@@ -287,21 +358,7 @@ if "eval " in remote_code or "set -x" in remote_code or "pull_request_target:" i
 remote_actions = re.findall(r"uses: (\S+)", remote_code)
 if len(remote_actions) != 5 or any(not re.fullmatch(r"(?:actions|runs-on)/[a-z/-]+@[0-9a-f]{40}", action) for action in remote_actions):
     raise SystemExit("config: every remote Bazel action must retain its full immutable pin")
-workflow_files = sorted(
-    path.name
-    for pattern in ("*.yml", "*.yaml")
-    for path in Path(".github/workflows").glob(pattern)
-)
-required_workflows = {
-    "plug-bazel.yml", "plug-nightly-restore-diffs.yml", "plug-remote-bazel.yml", "plug-runs-on-smoke.yml",
-}
-allowed_workflows = required_workflows | {"plug-public-bundle.yml", "plug-beads-bazel.yml"}
-missing = sorted(required_workflows - set(workflow_files))
-unexpected = sorted(set(workflow_files) - allowed_workflows)
-if missing:
-    raise SystemExit("config: required workflow files are missing: " + ", ".join(missing))
-if unexpected:
-    raise SystemExit("config: inherited workflow files remain: " + ", ".join(unexpected))
+check_workflow_inventory(Path(".github/workflows"))
 print("plug-ci-config: workflow, permissions, cache, lock, targets, and retirement checks passed")
 PYTHON
 

@@ -7,6 +7,7 @@
     <title>Plug · shared server</title>
     <link rel="icon" type="image/svg+xml" href="./favicon.svg">
     <link rel="stylesheet" href="./styles.css">
+    <script defer src="./epic-progress.js"></script>
     <script defer src="./app.js"></script>
   </head>
   <body>
@@ -30,6 +31,7 @@
         <button class="tab" type="button" role="tab" aria-selected="false" data-view="next">What next</button>
         <button class="tab" type="button" role="tab" aria-selected="false" data-view="blocked">Why blocked</button>
         <button class="tab" type="button" role="tab" aria-selected="false" data-view="explain">Explain an item</button>
+        <button class="tab" type="button" role="tab" aria-selected="false" data-view="epic">Epic progress</button>
         <button class="tab" type="button" role="tab" aria-selected="false" data-view="presence">Presence</button>
       </nav>
 
@@ -104,6 +106,18 @@
         <section class="view-panel" data-panel="presence" role="tabpanel" hidden>
           <div class="view-heading"><div><div class="section-kicker">COLLABORATION / COMPACT</div><h2>Who is on what?</h2><p>Presence is ephemeral and shown only when the actual method is admitted by this server.</p></div></div>
           <section class="panel panel-focal"><div class="panel-heading"><div><div class="section-kicker">LIVE PRESENCE</div><h3>Small enough to scan</h3></div><span class="panel-mark" aria-hidden="true">•</span></div><div id="presence-rows" class="presence-list"></div></section>
+        </section>
+
+        <section class="view-panel" data-panel="epic" role="tabpanel" hidden>
+          <div class="view-heading"><div><div class="section-kicker">EPIC / VISIBLE CHILDREN</div><h2>Progress you can see.</h2><p>Direct-child counts from one server snapshot. Unreadable children contribute only a remainder.</p></div></div>
+          <section class="panel explanation-panel" aria-labelledby="epic-heading">
+            <h3 id="epic-heading">Read an epic’s progress</h3>
+            <form id="epic-form"><label for="epic-id">Epic ID</label><div class="explain-controls"><input id="epic-id" name="epicId" type="text" autocomplete="off" spellcheck="false" placeholder="pl-…"><button class="button button-primary" type="submit">Read progress</button></div></form>
+            <div id="epic-state" class="explain-state" role="status" aria-live="polite">Enter an epic ID to read its progress.</div>
+            <div id="epic-counts" aria-live="polite"></div>
+            <p id="epic-remainder" class="epic-remainder"></p>
+            <p id="epic-snapshot" class="muted"></p>
+          </section>
         </section>
 
         <section id="plugin-frames" class="plugin-frames" hidden aria-label="Sandboxed plugin views"></section>

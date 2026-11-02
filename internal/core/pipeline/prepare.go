@@ -52,9 +52,13 @@ func memoryMethod(method string) bool {
 }
 
 type prepared struct {
-	snapshot         *snapshotReader
-	writes           map[string]*pending
-	proposal         port.ProposedChange
+	snapshot *snapshotReader
+	writes   map[string]*pending
+	proposal port.ProposedChange
+	// refusal is deliberately kept out of ProposedChange. It may contain a
+	// current revision token and can be released only after AuthorizeBefore has
+	// covered every disclosed expectation target.
+	refusal          error
 	release          *claimReleaseMode
 	warnings         []model.Warning
 	mutators         []string
@@ -69,6 +73,18 @@ type prepared struct {
 
 func failure(code model.ErrorCode, message string) error {
 	return &model.Error{Message: message, Data: model.ErrorData{Code: code, Retryable: code == "write_conflict" || code == "subscriber_unavailable" || code == "busy"}}
+}
+
+// preconditionFailure keeps CAS refusals useful to a caller that has lost a
+// race. The typed code remains stable, while details identify the resource
+// and the current token observed by the pinned pre-read. A failed guard never
+// reaches publication, so this is diagnostic data only and cannot be used as
+// an implicit authorization or write.
+func preconditionRevisionFailure(current model.Revision) error {
+	return &model.Error{Message: "precondition failed", Data: model.ErrorData{Code: "precondition_failed", Details: map[string]any{
+		"reason":          "revision",
+		"currentRevision": current,
+	}}}
 }
 
 func fieldName(path string) (string, error) {
@@ -256,13 +272,20 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				return nil, err
 			}
 			if release != nil {
-				if err = w.checkClaimRelease(current.doc, by, meta, release); err != nil {
+				if err = w.checkClaimRelease(ctx, current.doc, by, meta, release); err != nil {
 					return nil, err
 				}
-			} else if err = w.checkLease(current.doc, by, meta); err != nil {
+			} else if err = w.checkLease(ctx, current.doc, by, meta); err != nil {
 				return nil, err
 			}
-			if isClaim(meta.Method) && current.doc.Lease != nil && w.cfg.now().Before(current.doc.Lease.ExpiresAt) {
+			liveLease := current.doc.Lease
+			if overlayStore, ok := w.store.(driver.CheckpointStore); ok && liveLease != nil {
+				liveLease, err = EffectiveLease(ctx, overlayStore, current.doc.ID, liveLease)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if isClaim(meta.Method) && liveLease != nil && w.cfg.now().Before(liveLease.ExpiresAt) {
 				if len(cs.Ops) != 1 || op.Kind != model.OpPatch || len(op.Patch.Fields) != 0 {
 					return nil, failure("invalid_params", "an already-owned claim requires one empty patch")
 				}
@@ -307,7 +330,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				current.setBy["comments"] = "request"
 			case model.OpLink, model.OpUnlink:
 				kind := op.Link.LinkKind
-				if kind != "blocks" && kind != "conditional-blocks" && kind != "relates-to" {
+				if !validDependencyKind(kind) {
 					return nil, failure("invalid_params", "unsupported link kind")
 				}
 				to, e := p.resolve(op.Link.To, aliases)
@@ -323,9 +346,19 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				// The endpoint is read, not written, unless another op targets it.
 				found := -1
 				for i, link := range current.doc.Links {
-					if link.To.ID == to.ID && link.Kind == kind {
+					if link.To.ID != to.ID {
+						continue
+					}
+					if link.Kind == kind {
 						found = i
 						break
+					}
+					// Association links are independent annotations and may coexist
+					// with a workflow edge for the same endpoints. Other kinds share
+					// one dependency identity, so a type change remains a typed
+					// refusal (B07).
+					if op.Kind == model.OpLink && kind != "relates-to" && link.Kind != "relates-to" {
+						return nil, failure("invalid_params", "dependency endpoint already has a different type")
 					}
 				}
 				if op.Kind == model.OpLink && found < 0 {
@@ -372,19 +405,27 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 		if err != nil {
 			return nil, err
 		}
+		canonical := expect
+		canonical.Ref = ref
+		p.proposal.Expect = append(p.proposal.Expect, canonical)
 		records, err := snapshot.Get(ctx, []model.Ref{ref})
 		if err != nil {
 			return nil, err
 		}
 		if len(records) != 1 {
-			return nil, failure("precondition_failed", "expected record is absent")
+			if p.refusal == nil {
+				p.refusal = failure("precondition_failed", "expected record is absent")
+			}
+			continue
 		}
 		if expect.Revision != nil {
 			if expect.Field != "" || expect.Hash != "" {
 				return nil, failure("invalid_params", "precondition must select revision or field hash")
 			}
 			if expect.Revision.String() != records[0].Revision.String() {
-				return nil, failure("precondition_failed", "record revision changed")
+				if p.refusal == nil {
+					p.refusal = preconditionRevisionFailure(records[0].Revision)
+				}
 			}
 		} else {
 			if expect.Field == "" || expect.Hash == "" {
@@ -396,10 +437,15 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 			hash, err := expectationHash(doc, expect.Field)
 			if err != nil {
-				return nil, err
+				if p.refusal == nil {
+					p.refusal = err
+				}
+				continue
 			}
 			if hash != expect.Hash {
-				return nil, failure("precondition_failed", "field hash changed")
+				if p.refusal == nil {
+					p.refusal = failure("precondition_failed", "field hash changed")
+				}
 			}
 		}
 	}
@@ -516,16 +562,27 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		if err != nil {
 			return nil, err
 		}
+		canonical := expect
+		canonical.Ref = ref
+		p.proposal.Expect = append(p.proposal.Expect, canonical)
 		rows, err := snapshot.Get(ctx, []model.Ref{ref})
 		if err != nil {
 			return nil, err
 		}
 		if len(rows) != 1 {
-			return nil, failure("precondition_failed", "expected record is absent")
+			if p.refusal == nil {
+				p.refusal = failure("precondition_failed", "expected record is absent")
+			}
+			continue
 		}
 		if expect.Revision != nil {
-			if expect.Field != "" || expect.Hash != "" || expect.Revision.String() != rows[0].Revision.String() {
-				return nil, failure("precondition_failed", "record revision changed")
+			if expect.Field != "" || expect.Hash != "" {
+				return nil, failure("invalid_params", "precondition must select revision or field hash")
+			}
+			if expect.Revision.String() != rows[0].Revision.String() {
+				if p.refusal == nil {
+					p.refusal = preconditionRevisionFailure(rows[0].Revision)
+				}
 			}
 			continue
 		}
@@ -549,7 +606,9 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		}
 		hash, err := FieldHash(value)
 		if err != nil || hash != expect.Hash {
-			return nil, failure("precondition_failed", "field hash changed")
+			if p.refusal == nil {
+				p.refusal = failure("precondition_failed", "field hash changed")
+			}
 		}
 	}
 	if err := p.refresh(); err != nil {
@@ -862,7 +921,7 @@ func isSlot(method string) bool {
 
 func isClaim(method string) bool { return method == "bead.claim" || method == "bead.claimNext" }
 
-func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.WriteMeta) error {
+func (w *Writer) checkLease(ctx context.Context, doc Document, by model.PrincipalRef, meta model.WriteMeta) error {
 	if isGateMethod(meta.Method) && meta.Method == "gate."+meta.GateAction {
 		// Approval and resolver authority are independent of claim ownership.
 		// Normalization and authorization still validate the gate operation;
@@ -870,6 +929,13 @@ func (w *Writer) checkLease(doc Document, by model.PrincipalRef, meta model.Writ
 		return nil
 	}
 	lease := doc.Lease
+	if overlayStore, ok := w.store.(driver.CheckpointStore); ok && lease != nil {
+		effective, err := EffectiveLease(ctx, overlayStore, doc.ID, lease)
+		if err != nil {
+			return err
+		}
+		lease = effective
+	}
 	if lease == nil {
 		return nil
 	}
@@ -1033,8 +1099,13 @@ func (p *prepared) graph(ctx context.Context) error {
 			return nil
 		}
 		visiting[id] = true
+		if parent := docs[id].Parent; parent != nil {
+			if err := walk(parent.ID); err != nil {
+				return err
+			}
+		}
 		for _, link := range docs[id].Links {
-			if link.Kind == "blocks" || link.Kind == "conditional-blocks" {
+			if dependencyIsScheduling(link.Kind) {
 				if err := walk(link.To.ID); err != nil {
 					return err
 				}

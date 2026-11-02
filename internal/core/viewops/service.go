@@ -22,6 +22,9 @@ func New(store ReadStore, lease driver.ActiveLease, cfg Config) (*Service, error
 	if store == nil || lease == nil {
 		return nil, fmt.Errorf("view operations require a read store and active lease")
 	}
+	if cfg.AuthorizeReadBatch != nil && cfg.AuthorizeRead == nil {
+		return nil, fmt.Errorf("batch read authorization requires the ordinary read authorizer")
+	}
 	if err := cfg.OntologyRevision.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid ontology revision: %w", err)
 	}
@@ -428,7 +431,7 @@ func validateFilter(filter Filter) error {
 
 func supportedSort(key string) bool {
 	switch key {
-	case "id", "type", "project", "status", "revision":
+	case "id", "type", "project", "status", "title", "revision":
 		return true
 	default:
 		return false
@@ -557,6 +560,10 @@ func sortValue(row stored, key string) string {
 		return row.doc.Project
 	case "status":
 		if value, ok := row.doc.Fields["status"].(string); ok {
+			return value
+		}
+	case "title":
+		if value, ok := row.doc.Fields["title"].(string); ok {
 			return value
 		}
 	case "revision":

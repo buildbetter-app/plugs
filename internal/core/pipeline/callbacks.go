@@ -94,11 +94,17 @@ func invokeTimedPost(ctx context.Context, timeout time.Duration, fn func(context
 }
 
 func (w *Writer) pre(ctx context.Context, p *prepared) error {
-	if w.cfg.ontology == nil {
-		return failure("invalid_params", "pipeline requires an ontology hook for bead writes")
-	}
 	if err := w.authorize(ctx, port.AuthorizeBefore, p.proposal, p.snapshot); err != nil {
 		return err
+	}
+	// A stale expectation can carry a current revision token. Release it only
+	// after the pre-image visibility decision, before any callback or ontology
+	// code can observe the proposed write.
+	if p.refusal != nil {
+		return p.refusal
+	}
+	if w.cfg.ontology == nil {
+		return failure("invalid_params", "pipeline requires an ontology hook for bead writes")
 	}
 	for _, binding := range w.cfg.mutators {
 		proposal, err := clone(p.proposal)

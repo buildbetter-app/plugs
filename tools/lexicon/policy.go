@@ -40,9 +40,13 @@ const (
 // its owner to update this policy before the blocking gate can pass.
 func DefaultTreePolicy() TreePolicy {
 	return TreePolicy{
-		ReferencePrefixes: []string{"spec/recorded/goldens.json"},
+		ReferencePrefixes: []string{
+			"spec/recorded/goldens.json",
+			"spec/s1-b17-b20/reference/b18/record.py",
+		},
 		ReferenceSHA256: map[string]string{
-			"spec/recorded/goldens.json": "26a086334357d55ea847daa301f45c9435a71bba75fb6c324456aebf459fbf32",
+			"spec/recorded/goldens.json":              "26a086334357d55ea847daa301f45c9435a71bba75fb6c324456aebf459fbf32",
+			"spec/s1-b17-b20/reference/b18/record.py": "375c516727d1dac47c395a7b117171e638f25a1e1f7b95a1c78f61d0552f973f",
 		},
 		ProtectedPrefixes:       []string{".github/", "engdocs/design/plug/"},
 		StrictProtectedPrefixes: []string{".github/", "engdocs/design/plug/"},
