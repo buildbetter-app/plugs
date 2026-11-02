@@ -30,7 +30,7 @@ func hierarchyGraphNeeded(proposal port.ProposedChange) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if before.parent != after.parent || before.status != after.status || before.project != after.project || before.typ != after.typ {
+		if before.parent != after.parent || before.hasDocument && after.hasDocument && (before.status != after.status || before.project != after.project || before.typ != after.typ) {
 			return true, nil
 		}
 		if changeTouchesStatus(change) {
@@ -41,10 +41,11 @@ func hierarchyGraphNeeded(proposal port.ProposedChange) (bool, error) {
 }
 
 type proposalImage struct {
-	parent  string
-	status  string
-	project string
-	typ     string
+	hasDocument bool
+	parent      string
+	status      string
+	project     string
+	typ         string
 }
 
 func changeTouchesStatus(change port.Change) bool {
@@ -74,7 +75,7 @@ func proposedImage(raw []byte) (proposalImage, error) {
 	if err != nil {
 		return proposalImage{}, err
 	}
-	image := proposalImage{status: state(doc).Status, project: doc.Project, typ: doc.Type}
+	image := proposalImage{hasDocument: true, status: state(doc).Status, project: doc.Project, typ: doc.Type}
 	if doc.Parent == nil {
 		return image, nil
 	}
