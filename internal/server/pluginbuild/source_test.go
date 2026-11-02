@@ -428,7 +428,7 @@ func TestWASIArtifactOwnsPooledHostsAndRealGuestState(t *testing.T) {
 	defer func() { _ = artifact.Close() }()
 	host := wasiGuestHost(t, artifact, 0)
 	secondHost := wasiGuestHost(t, artifact, 0)
-	callState := func(mutator pluginapi.Mutator, principal, title string, reader port.SnapshotReader) (string, error) {
+	callState := func(mutator port.Mutator, principal, title string, reader port.SnapshotReader) (string, error) {
 		after, _ := json.Marshal(map[string]any{"type": "issue", "fields": map[string]any{"title": title}})
 		patches, err := mutator.Mutate(context.Background(), port.ProposedChange{
 			RequestID:    principal + ":" + title,
