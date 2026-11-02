@@ -120,6 +120,20 @@ func deliveredPublicBeads(t *testing.T) beadsOptions {
 	if err != nil || len(data) > 1<<20 {
 		t.Fatal("verified public artifact manifest is unavailable or invalid")
 	}
+	// External manifest wire names are source-controlled protocol data.
+	profileData, err := os.ReadFile("testdata/public-companion-profile.json")
+	var profile struct {
+		Schema   string `json:"schema"`
+		Exporter struct {
+			TargetKey string `json:"target_key"`
+			Label     string `json:"label"`
+			Binary    string `json:"binary"`
+		} `json:"exporter"`
+		VersionKey string `json:"version_key"`
+	}
+	if err != nil || json.Unmarshal(profileData, &profile) != nil || profile.Schema == "" || profile.Exporter.TargetKey == "" || profile.Exporter.Label == "" || profile.Exporter.Binary == "" || profile.VersionKey == "" {
+		t.Fatal("public companion protocol data is unavailable or invalid")
+	}
 	var identity struct {
 		Schema string `json:"schema"`
 		Source map[string]struct {
@@ -138,19 +152,18 @@ func deliveredPublicBeads(t *testing.T) beadsOptions {
 		Build struct {
 			Run string `json:"run_id"`
 		} `json:"build"`
-		Resolution struct {
-			Version struct {
-				Commit string `json:"commit"`
-				Build  string `json:"build"`
-			} `json:"bd_export_version"`
+		Resolution map[string]struct {
+			Commit string `json:"commit"`
+			Build  string `json:"build"`
 		} `json:"resolution"`
 	}
 	if err := json.Unmarshal(data, &identity); err != nil {
 		t.Fatal("verified public artifact manifest is invalid")
 	}
-	artifact := identity.Artifacts["bin/bd-export"]
-	target := identity.Targets["beads_exporter"]
-	if identity.Schema != "plug-public-companion/1" || identity.Source["beads"].Commit != beadsCommit || identity.Source["beads"].Tree != beadsTree || target.Label != "//cmd/bd:bd" || target.Binary != "bin/bd-export" || artifact.SHA256 != options.SHA256 || artifact.Mode != "0o755" || artifact.Size <= 0 || identity.Build.Run != options.BuildRun || identity.Resolution.Version.Commit != beadsCommit || identity.Resolution.Version.Build != "public-"+beadsCommit {
+	artifact := identity.Artifacts[profile.Exporter.Binary]
+	target := identity.Targets[profile.Exporter.TargetKey]
+	version := identity.Resolution[profile.VersionKey]
+	if identity.Schema != profile.Schema || identity.Source["beads"].Commit != beadsCommit || identity.Source["beads"].Tree != beadsTree || target.Label != profile.Exporter.Label || target.Binary != profile.Exporter.Binary || artifact.SHA256 != options.SHA256 || artifact.Mode != "0o755" || artifact.Size <= 0 || identity.Build.Run != options.BuildRun || version.Commit != beadsCommit || version.Build != "public-"+beadsCommit {
 		t.Fatal("prepared public artifact identity does not match its manifest")
 	}
 	info, err := os.Lstat(options.Binary)

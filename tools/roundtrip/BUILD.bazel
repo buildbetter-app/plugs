@@ -39,6 +39,7 @@ go_test(
     srcs = ["main.go", "beads.go", "beads_runtime_test.go"],
     args = ["-public-beads-runtime"],
     data = [
+        "testdata/public-companion-profile.json",
         "//internal/integration/converterroundtrip:public_source_fixtures",
         "//internal/integration/offlinehistory:lexicon_files",
     ],
