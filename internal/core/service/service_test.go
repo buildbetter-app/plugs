@@ -1555,7 +1555,7 @@ func TestHierarchyGraphNeededOnlyForParentRelationChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, err := json.Marshal(pipeline.Document{ID: "pl-root", Type: "issue", Fields: map[string]any{"title": "root"}})
+	root, err := json.Marshal(pipeline.Document{ID: "pl-root", Type: "issue", Fields: map[string]any{"title": "root", "status": "todo"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1575,7 +1575,7 @@ func TestHierarchyGraphNeededOnlyForParentRelationChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	childCreate, err := json.Marshal(pipeline.Document{ID: "pl-new", Type: "issue", Parent: &parent, Fields: map[string]any{"title": "new"}})
+	childCreate, err := json.Marshal(pipeline.Document{ID: "pl-new", Type: "issue", Parent: &parent, Fields: map[string]any{"title": "new", "status": "todo"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1585,11 +1585,14 @@ func TestHierarchyGraphNeededOnlyForParentRelationChanges(t *testing.T) {
 	for name, tc := range map[string]struct {
 		change port.Change
 		want   bool
+		setBy  map[string]string
 	}{
 		"ordinary-parented-field-update": {change: bead(model.OpPatch, before, unchanged), want: false},
 		"actual-parent-edit":             {change: bead(model.OpPatch, before, changed), want: true},
 		"parented-create":                {change: bead(model.OpCreate, nil, childCreate), want: true},
+		"parented-create-status-touch":   {change: bead(model.OpCreate, nil, childCreate), want: true, setBy: map[string]string{"fields.status": "request"}},
 		"root-create":                    {change: bead(model.OpCreate, nil, root), want: false},
+		"root-create-status-touch":       {change: bead(model.OpCreate, nil, root), want: false, setBy: map[string]string{"fields.status": "request"}},
 		"parented-delete":                {change: bead(model.OpDelete, before, nil), want: true},
 		"root-delete":                    {change: bead(model.OpDelete, root, nil), want: false},
 		"existing-status-drift":          {change: bead(model.OpPatch, statusBefore, statusAfter), want: true},
@@ -1597,6 +1600,7 @@ func TestHierarchyGraphNeededOnlyForParentRelationChanges(t *testing.T) {
 		"existing-type-drift":            {change: bead(model.OpPatch, before, typeAfter), want: true},
 	} {
 		t.Run(name, func(t *testing.T) {
+			tc.change.SetBy = tc.setBy
 			got, err := hierarchyGraphNeeded(port.ProposedChange{Changes: []port.Change{tc.change}})
 			if err != nil {
 				t.Fatal(err)
