@@ -17,6 +17,19 @@ type hierarchyQueryReader struct {
 	queries int
 }
 
+func (r *hierarchyQueryReader) Snapshot() driver.View {
+	revision := model.Natural64(3)
+	return driver.View{Incarnation: "hierarchy-test", At: &revision}
+}
+
+func (r *hierarchyQueryReader) Observe(_ context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
+	states := make([]driver.LockState, 0, len(keys))
+	for _, key := range keys {
+		states = append(states, driver.LockState{Key: key, Revision: model.Natural64(3)})
+	}
+	return states, nil
+}
+
 func (r *hierarchyQueryReader) Query(context.Context, driver.Query) (driver.Page[driver.Record], error) {
 	r.queries++
 	return driver.Page[driver.Record]{Items: r.records}, nil
@@ -122,4 +135,25 @@ func TestParentedFieldUpdatesSkipGraphScanButParentEditsValidate(t *testing.T) {
 			t.Fatalf("parent edit did not enumerate the stored graph once: %d", reader.queries)
 		}
 	})
+}
+
+func TestMixedRootCreateAndParentedFieldUpdateRetainsGraphValidation(t *testing.T) {
+	h := setup(t)
+	w := h.writer()
+	parentCommit := apply(t, w, model.ChangeSet{Ops: []model.Op{create("parent")}}, meta(100))
+	parent := parentCommit.Results[0].Ref
+	childCommit := apply(t, w, model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Key: "child", Type: "issue", Parent: &parent, Fields: map[string]any{"title": "child"}}}}}, meta(101))
+	child := childCommit.Results[0].Ref
+
+	commit := apply(t, w, model.ChangeSet{Ops: []model.Op{create("root"), patch(child, map[string]any{"title": "updated"})}}, meta(102))
+	if len(commit.Results) != 2 {
+		t.Fatalf("mixed root/parented update returned %d results", len(commit.Results))
+	}
+	updated, err := DecodeDocument(commit.Results[1].Record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Parent == nil || updated.Parent.ID != parent.ID || updated.Fields["title"] != "updated" {
+		t.Fatalf("mixed batch lost parent or field update: %+v", updated)
+	}
 }

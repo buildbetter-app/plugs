@@ -244,8 +244,10 @@ func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 	for _, pending := range p.writes {
 		// Ordinary field/lease updates preserve an existing parent and do not
 		// need to rescan the complete graph. Create/Reparent mark the parent
-		// path in setBy, so only those edits retain the full hierarchy check.
-		complex = complex || (len(pending.before) != 0 && pending.setBy["parent"] != "")
+		// path in the hierarchy edits. A mixed batch can still contain a
+		// parent-preserving update alongside a root create, so retain the full
+		// check whenever that batch already requires a graph.
+		complex = complex || (len(pending.before) != 0 && pending.doc.Parent != nil)
 	}
 	stored := map[string]Document{}
 	if complex {
