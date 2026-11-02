@@ -89,6 +89,38 @@ jobs:
           printf '%s\n' "sha=${{ inputs.sha }}" "label=${{ inputs.label }}" \
             "args=$ARGS_INPUT" > "$REMOTE_BAZEL_EVIDENCE_DIR/request.txt"
 
+      - name: Select opt-in public reference
+        id: public_reference
+        if: ${{ contains(inputs.args, 'PLUG_PUBLIC_REFERENCE') }}
+        env:
+          TRUSTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = buildbetter-app/plugs
+          [[ "$TRUSTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          # Both privileged helpers come from this workflow-control commit.
+          for name in prepare-public-bundle.py prepare-public-reference.py; do
+            gh api -H 'Accept: application/vnd.github.raw+json' \
+              "repos/buildbetter-app/plugs/contents/scripts/ci/$name?ref=$TRUSTED_WORKFLOW_SHA" \
+              > "$RUNNER_TEMP/$name"
+          done
+          descriptor="$(python3 "$RUNNER_TEMP/prepare-public-reference.py" request --args "$ARGS_INPUT")"
+          printf 'descriptor=%s\n' "$descriptor" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare verified public reference and source
+        if: ${{ steps.public_reference.outputs.descriptor != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLIC_REFERENCE_DESCRIPTOR: ${{ steps.public_reference.outputs.descriptor }}
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/prepare-public-reference.py" prepare \
+            --descriptor "$PUBLIC_REFERENCE_DESCRIPTOR" \
+            --output "$RUNNER_TEMP/plug-public-reference" \
+            --github-env "$GITHUB_ENV" \
+            --evidence "$REMOTE_BAZEL_EVIDENCE_DIR/public-reference.json"
+
       - name: Select opt-in public executable bundle
         id: public_bundle
         if: ${{ contains(inputs.args, 'PLUG_PUBLIC_BUNDLE') }}
@@ -185,9 +217,17 @@ jobs:
         id: bazel
         env:
           PUBLIC_BUNDLE_DESCRIPTOR: ${{ steps.public_bundle.outputs.descriptor }}
+          PUBLIC_REFERENCE_DESCRIPTOR: ${{ steps.public_reference.outputs.descriptor }}
         run: |
           set -euo pipefail
           read -ra USER_ARGS <<< "$ARGS_INPUT"
+          if [[ -n "$PUBLIC_REFERENCE_DESCRIPTOR" ]]; then
+            # This trusted helper has no token here. It routes the prepared
+            # paths to tests or the single capture binary as literal argv.
+            python3 "$RUNNER_TEMP/prepare-public-reference.py" route --args "$ARGS_INPUT" \
+              > "$RUNNER_TEMP/plug-public-reference-argv"
+            mapfile -d '' -t USER_ARGS < "$RUNNER_TEMP/plug-public-reference-argv"
+          fi
           for arg in "${USER_ARGS[@]}"; do
             case "$arg" in
               --ignore_all_rc_files|--ignore_all_rc_files=*|--noignore_all_rc_files|\
@@ -252,10 +292,12 @@ jobs:
           retention-days: 14
           path: |
             ${{ runner.temp }}/remote-bazel-evidence/bazel.log
+            ${{ runner.temp }}/remote-bazel-evidence/command.txt
             ${{ runner.temp }}/remote-bazel-evidence/exit_code
             ${{ runner.temp }}/remote-bazel-evidence/toolchain.txt
             ${{ runner.temp }}/remote-bazel-evidence/bazel-testlogs.tgz
             ${{ runner.temp }}/remote-bazel-evidence/public-bundle.json
+            ${{ runner.temp }}/remote-bazel-evidence/public-reference.json
 
       - name: Set job result to Bazel exit code
         if: always()

@@ -915,6 +915,8 @@ scripts/ci/plug-bazel-targets-test.sh
 scripts/ci/plug-bazel-targets.sh
 scripts/ci/prepare-public-bundle-test.py
 scripts/ci/prepare-public-bundle.py
+scripts/ci/prepare-public-reference-test.py
+scripts/ci/prepare-public-reference.py
 scripts/ci/public-bundle-test.py
 scripts/ci/public-bundle.py
 scripts/ci/reconcile-openrpc.py

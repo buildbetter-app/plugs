@@ -17,10 +17,27 @@ var captureTests []byte
 func runCaptureRegression(t *testing.T, name string) {
 	t.Helper()
 	root := t.TempDir()
-	source := filepath.Join(root, "reference_capture.py")
+	source := filepath.Join(root, "spec", "s1-b13-b16", "reference_capture.py")
 	harness := filepath.Join(root, "capture_regressions_test.py")
 	for path, content := range map[string][]byte{source: captureSource, harness: captureTests} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(path, content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"prepare-public-reference.py", "prepare-public-bundle.py"} {
+		path := filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), "scripts", "ci", name)
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		destination := filepath.Join(root, "scripts", "ci", name)
+		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(destination, content, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -67,5 +84,25 @@ func TestCaptureExtraction(t *testing.T) {
 		"test_source_pin_manifest_and_resolver_refusals_never_grant_execute",
 	} {
 		t.Run(name, func(t *testing.T) { runCaptureRegression(t, "CaptureExtractionTests."+name) })
+	}
+}
+
+func TestPreparedCaptureConsumer(t *testing.T) {
+	for _, name := range []string{
+		"test_producer_route_reaches_consumer_with_verified_local_inputs",
+		"test_original_mutation_after_validation_preserves_private_source",
+		"test_original_replacement_after_validation_preserves_private_source",
+		"test_pinned_source_links_resolve_only_inside_private_snapshot",
+		"test_prepared_recorder_cannot_reopen_ambient_git_state",
+		"test_inconsistent_snapshot_refuses_before_execute_or_capture",
+		"test_snapshot_rejects_external_git_state_before_execute",
+		"test_malformed_duplicate_missing_and_mixed_flags_refuse",
+		"test_untrusted_local_paths_refuse_before_execute_or_capture",
+		"test_altered_zip_refuses_without_network_or_execute",
+		"test_altered_source_and_incomplete_identity_refuse_before_execute",
+		"test_prepared_recorder_assertions_remain_fail_closed",
+		"test_legacy_default_and_artifact_url_routes_are_unchanged",
+	} {
+		t.Run(name, func(t *testing.T) { runCaptureRegression(t, "PreparedConsumerTests."+name) })
 	}
 }

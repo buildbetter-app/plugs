@@ -1,8 +1,27 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
+filegroup(
+    name = "public_reference_validation",
+    srcs = [
+        "prepare-public-bundle.py",
+        "prepare-public-reference.py",
+    ],
+    visibility = ["//spec/s1-b13-b16:__pkg__"],
+)
+
 sh_test(
     name = "prepare_public_bundle_test",
     srcs = ["prepare-public-bundle-test.py"],
     data = ["prepare-public-bundle.py"],
+    size = "small",
+)
+
+sh_test(
+    name = "prepare_public_reference_test",
+    srcs = ["prepare-public-reference-test.py"],
+    data = [
+        "prepare-public-bundle.py",
+        "prepare-public-reference.py",
+    ],
     size = "small",
 )

@@ -2,7 +2,8 @@
 """Synthetic transport/extraction tests; never downloads or executes a reference."""
 from __future__ import annotations
 
-from contextlib import contextmanager
+import copy
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from email.message import Message
 import hashlib
 import importlib.util
@@ -341,6 +342,472 @@ class CaptureExtractionTests(CaptureCase):
                 else:
                     self.bundle.files["receipt.json"] = encoded({"schema": "different"})
                 self.assert_refused(OBJECT, {OBJECT: [self.ok()]})
+
+
+class PreparedConsumerTests(unittest.TestCase):
+    """Real CLI/validators with tiny pins; stop at a synthetic recorder boundary."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="prepared-consumer-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.validator = capture.prepared_validator()
+        self.index = 0
+        self.recorder = self.root / "synthetic-recorder.py"
+        self.recorder.write_text("# Synthetic recorder boundary; never executed.\n")
+
+    def fixture(self, *, source_link=False):
+        self.index += 1
+        root = self.root / str(self.index) / "prepared inputs"
+        root.mkdir(parents=True)
+        source = root / "source"
+        source.mkdir()
+        validator = self.validator
+        env = {**validator.git_environment(), "GIT_AUTHOR_NAME": "Public fixture",
+               "GIT_AUTHOR_EMAIL": "fixture@example.invalid", "GIT_COMMITTER_NAME": "Public fixture",
+               "GIT_COMMITTER_EMAIL": "fixture@example.invalid"}
+        validator.git(source, ["init", "--quiet", "--template="], env)
+        (source / "source.txt").write_text("synthetic source; never a reference store\n")
+        (source / ".gitignore").write_text("ignored.txt\n")
+        if source_link:
+            (source / "source-link").symlink_to("source.txt")
+        validator.git(source, ["add", "."], env)
+        validator.git(source, ["commit", "--quiet", "-m", "public consumer fixture"], env)
+        tree_manifest = validator.git(source, ["ls-tree", "-r", "--full-tree", "HEAD"])
+        source_record = {
+            "commit": validator.git(source, ["rev-parse", "HEAD"]).decode().strip(),
+            "tree": validator.git(source, ["rev-parse", "HEAD^{tree}"]).decode().strip(),
+            "manifest_sha256": sha(tree_manifest), "manifest_entries": 2 + int(source_link),
+        }
+        sources = copy.deepcopy(validator.SOURCES)
+        sources["beads"] = source_record
+        payloads = {"bin/bd": BD_BYTES, "bin/plug": PLUG_BYTES}
+        binaries = {name: {"mode": "0o755", "size": len(payload), "sha256": sha(payload)}
+                    for name, payload in payloads.items()}
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w", format=tarfile.USTAR_FORMAT) as stream:
+            for name, payload in payloads.items():
+                member = tarfile.TarInfo(name)
+                member.mode, member.size = 0o755, len(payload)
+                stream.addfile(member, io.BytesIO(payload))
+        archive = buffer.getvalue()
+        archive_record = {"name": "bundle.tar", "size": len(archive), "sha256": sha(archive)}
+        manifest = {
+            "schema": validator.PROFILE, "source": sources, "targets": validator.TARGETS,
+            "artifacts": binaries, "archive": archive_record,
+            "source_refs": {"beads": "refs/remotes/origin/beads", "plug": "codex/b1c-runtime-source-cb74bf48-20261102"},
+            "workflow": {"ref": "refs/heads/" + validator.WORKFLOW_BRANCH,
+                         "sha": validator.WORKFLOW_SHA, "profile": validator.PROFILE},
+            "build": {"run_id": validator.RUN, "beads": "CGO_ENABLED=0 go build -tags gms_pure_go -trimpath ./cmd/bd",
+                      "plug": "bazel build --jobs=2 --local_resources=memory=8192 //cmd/plug:plug"},
+            "resolution": {"beads_version_sha256": "affb43505816fa697a866678b7f0b22024508c6f78cb97ce2d4b6c6369fcacb6",
+                           "plug_help_exit": 0, "plug_help_sha256": "6168f272cf1bc8e6a9437ff8859eaf54294153b7976f15c9795af9dd48c9d0f5"},
+            "toolchain": {"bazel": "bazel 9.3.0", "go": "go version go1.26.10 linux/amd64",
+                          "bazelisk_sha256": "5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992"},
+        }
+        manifest_bytes = encoded(manifest)
+        artifact = root / "reference.zip"
+        with zipfile.ZipFile(artifact, "w") as stream:
+            for name, payload in {**payloads, "bundle.tar": archive,
+                                  "manifest.json": manifest_bytes, "receipt.json": manifest_bytes}.items():
+                stream.writestr(name, payload)
+        constants = {
+            "SOURCES": sources, "SOURCE_SHA": source_record["commit"], "SOURCE_TREE": source_record["tree"],
+            "SOURCE_MANIFEST_SHA256": source_record["manifest_sha256"], "SOURCE_ENTRIES": 2 + int(source_link),
+            "BINARIES": binaries, "ARCHIVE": archive_record, "MANIFEST_SHA256": sha(manifest_bytes),
+            "ZIP_SHA256": sha(artifact.read_bytes()), "ZIP_SIZE": artifact.stat().st_size,
+        }
+        self.source = source
+        return artifact, source, constants
+
+    def source_state(self, source):
+        return {
+            "files": {name: (source / name).read_bytes() for name in ("source.txt", ".gitignore")},
+            "link": os.readlink(source / "source-link") if (source / "source-link").is_symlink() else None,
+            "link_target": (source / "source-link").resolve() if (source / "source-link").is_symlink() else None,
+            "link_bytes": (source / "source-link").read_bytes() if (source / "source-link").is_symlink() else None,
+            "manifest": self.validator.git(source, ["ls-tree", "-r", "--full-tree", "HEAD"]),
+            "index": (source / ".git/index").read_bytes(),
+            "config": (source / ".git/config").read_bytes(),
+            "flags": self.validator.git(source, ["ls-files", "-v"]),
+        }
+
+    def invoke(self, arguments, *, legacy=False, mutate_record=None, after_source_validation=None):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        self.recorder_calls = []
+        self.validated_sources = []
+        self.validated_states = []
+        self.recorded_states = []
+        real_run = capture.subprocess.run
+        real_validate_source = self.validator.validate_source
+
+        def validate(source):
+            record = real_validate_source(source)
+            self.assertNotEqual(source, self.source)
+            for name in ("source.txt", ".gitignore", ".git/index", ".git/config"):
+                self.assertFalse(os.path.samefile(source / name, self.source / name))
+            self.validated_sources.append(source)
+            self.validated_states.append(self.source_state(source))
+            if after_source_validation:
+                after_source_validation(source)
+            return record
+
+        def run(argv, **kwargs):
+            if argv[0] == "git":
+                return real_run(argv, **kwargs)
+            self.assertEqual(argv[:2], [sys.executable, str(self.recorder)], "unexpected executable reached consumer")
+            self.recorder_calls.append(argv)
+            binary = Path(argv[argv.index("--reference-binary") + 1])
+            self.assertEqual(binary.read_bytes(), BD_BYTES)
+            self.assertEqual(stat.S_IMODE(binary.stat().st_mode), 0o755)
+            self.assertEqual(argv[argv.index("--binary-sha256") + 1], capture.BINARY_SHA256 if legacy else sha(BD_BYTES))
+            recorded_source = Path(argv[argv.index("--source") + 1])
+            if legacy:
+                self.assertEqual(recorded_source, self.source)
+            else:
+                self.assertEqual(recorded_source, Path(kwargs["cwd"]) / "prepared-source")
+                self.assertEqual(self.validated_sources, [recorded_source])
+                recorded_state = self.source_state(recorded_source)
+                self.assertEqual(recorded_state, self.validated_states[0])
+                self.recorded_states.append(recorded_state)
+                self.assertEqual(real_validate_source(recorded_source), self.validator.SOURCES["beads"])
+                self.assertEqual(
+                    {name: value for name, value in kwargs["env"].items() if name.startswith("GIT_")},
+                    {name: value for name, value in self.validator.git_environment().items() if name.startswith("GIT_")},
+                )
+            projection = {"synthetic": "consumer boundary only"}
+            record = {
+                "cards": [], "sourceCommit": "synthetic", "sourceTree": "synthetic",
+                "recordings": [{"projection": copy.deepcopy(projection), "projectionSha256": sha(encoded(projection)),
+                                "commands": [{"exitCode": 0}]} for _ in range(2)],
+                "limits": {"synthetic": True},
+            }
+            if mutate_record:
+                mutate_record(record)
+            Path(argv[argv.index("--output") + 1]).write_bytes(encoded(record))
+            return capture.subprocess.CompletedProcess(argv, 0, "", "")
+
+        binary = self.root / "legacy-bd"
+        if legacy:
+            binary.write_bytes(BD_BYTES)
+            binary.chmod(0o755)
+        with (mock.patch.object(sys, "argv", ["reference_capture.py", *arguments]),
+              redirect_stdout(stdout), redirect_stderr(stderr),
+              mock.patch.object(socket, "socket", side_effect=AssertionError("real network forbidden")),
+              mock.patch.object(socket, "create_connection", side_effect=AssertionError("real network forbidden")),
+              mock.patch.object(capture, "download_bundle", return_value=(binary, {})) as download,
+              mock.patch.object(capture, "fetch_source", return_value=getattr(self, "source", None)) as fetch,
+              mock.patch.object(capture, "locate_recorder", return_value=self.recorder) as locate,
+              mock.patch.object(self.validator, "validate_source", side_effect=validate),
+              mock.patch.object(capture.subprocess, "run", side_effect=run)):
+            status = capture.main()
+        if legacy:
+            download.assert_called_once()
+            fetch.assert_called_once()
+            self.assertEqual(download.call_args.args[1], arguments[1] if arguments else None)
+        else:
+            download.assert_not_called()
+            fetch.assert_not_called()
+        self.assertEqual(locate.call_count, len(self.recorder_calls))
+        return status, stdout.getvalue(), stderr.getvalue()
+
+    def test_producer_route_reaches_consumer_with_verified_local_inputs(self):
+        artifact, source, constants = self.fixture()
+        environment = {
+            "PLUG_PUBLIC_REFERENCE_ZIP": str(artifact), "PLUG_PUBLIC_REFERENCE_SOURCE": str(source),
+            "PLUG_PUBLIC_REFERENCE_MANIFEST": str(artifact.parent / "manifest.json"),
+            "PLUG_PUBLIC_REFERENCE_BUILD_RUN": self.validator.RUN,
+        }
+        routed = self.validator.route_arguments(
+            "run " + self.validator.CAPTURE_TARGET + " " + self.validator.MARKER + self.validator.DESCRIPTOR,
+            environment,
+        )
+        program_arguments = routed[routed.index("--") + 1:]
+        with mock.patch.multiple(self.validator, **constants):
+            for arguments in (program_arguments, ["--prepared-source", str(source), "--prepared-artifact", str(artifact)]):
+                with self.subTest(order=arguments[0]):
+                    status, output, error = self.invoke(arguments)
+                    self.assertEqual(status, 0, output + error)
+                    self.assertEqual(len(self.recorder_calls), 1)
+                    packet = json.loads(output.split("S1_REFERENCE_PACKET_BEGIN\n")[1].split("\nS1_REFERENCE_PACKET_END")[0])
+                    self.assertEqual(packet["bundle"]["runId"], self.validator.RUN)
+                    self.assertEqual(packet["bundle"]["artifactId"], self.validator.ARTIFACT)
+                    self.assertEqual(packet["bundle"]["preparedSource"], constants["SOURCES"]["beads"])
+                    self.assertEqual(packet["bundle"]["downloadAttempts"], [])
+                    self.assertEqual(packet["source"]["fetchReceipts"], [])
+                    self.assertTrue(packet["projectionEqual"])
+
+    def test_original_mutation_after_validation_preserves_private_source(self):
+        for variant in ("bytes", "ignored", "hidden", "sparse", "config", "index", "head", "mode"):
+            artifact, source, constants = self.fixture()
+
+            def mutate(snapshot):
+                self.assertNotEqual(snapshot, source)
+                if variant == "bytes":
+                    (source / "source.txt").write_text("changed after full validation\n")
+                elif variant == "ignored":
+                    (source / "ignored.txt").write_text("late ignored input\n")
+                elif variant in {"hidden", "sparse"}:
+                    flag = "--assume-unchanged" if variant == "hidden" else "--skip-worktree"
+                    self.validator.git(source, ["update-index", flag, "source.txt"])
+                elif variant == "config":
+                    self.validator.git(source, ["config", "--local", "remote.origin.url", self.validator.SOURCE_URL])
+                elif variant == "index":
+                    (source / ".git/index").write_bytes(b"replaced original index")
+                elif variant == "head":
+                    (source / ".git/HEAD").write_text("0" * 40 + "\n")
+                else:
+                    os.chmod(source / "source.txt", 0o755)
+
+            with self.subTest(variant=variant), mock.patch.multiple(self.validator, **constants):
+                status, output, error = self.invoke(
+                    ["--prepared-artifact", str(artifact), "--prepared-source", str(source)],
+                    after_source_validation=mutate,
+                )
+                self.assertEqual(status, 0, output + error)
+                self.assertEqual(len(self.recorder_calls), 1)
+                self.assertEqual(self.recorded_states[0]["files"]["source.txt"],
+                                 b"synthetic source; never a reference store\n")
+
+    def test_original_replacement_after_validation_preserves_private_source(self):
+        for variant in ("directory", "symlink"):
+            artifact, source, constants = self.fixture()
+
+            def replace(snapshot):
+                self.assertNotEqual(snapshot, source)
+                source.rename(source.with_name("retired-source"))
+                if variant == "directory":
+                    source.mkdir()
+                    (source / "source.txt").write_text("replacement input\n")
+                else:
+                    replacement = source.with_name("replacement")
+                    replacement.mkdir()
+                    (replacement / "source.txt").write_text("replacement link input\n")
+                    source.symlink_to(replacement, target_is_directory=True)
+
+            with self.subTest(variant=variant), mock.patch.multiple(self.validator, **constants):
+                status, output, error = self.invoke(
+                    ["--prepared-artifact", str(artifact), "--prepared-source", str(source)],
+                    after_source_validation=replace,
+                )
+                self.assertEqual(status, 0, output + error)
+                self.assertEqual(len(self.recorder_calls), 1)
+
+    def test_pinned_source_links_resolve_only_inside_private_snapshot(self):
+        artifact, source, constants = self.fixture(source_link=True)
+
+        def mutate(snapshot):
+            self.assertEqual(os.readlink(snapshot / "source-link"), "source.txt")
+            (source / "source.txt").write_text("changed original link target\n")
+            (source / "source-link").unlink()
+            (source / "source-link").symlink_to(self.recorder)
+
+        with mock.patch.multiple(self.validator, **constants):
+            status, output, error = self.invoke(
+                ["--prepared-artifact", str(artifact), "--prepared-source", str(source)],
+                after_source_validation=mutate,
+            )
+            self.assertEqual(status, 0, output + error)
+            snapshot = self.validated_sources[0]
+            self.assertEqual(self.recorded_states[0]["link_target"], snapshot / "source.txt")
+            self.assertEqual(self.recorded_states[0]["link_bytes"],
+                             b"synthetic source; never a reference store\n")
+
+    def test_prepared_recorder_cannot_reopen_ambient_git_state(self):
+        artifact, source, constants = self.fixture()
+        ambient = {
+            "GIT_DIR": str(source / ".git"), "GIT_WORK_TREE": str(source),
+            "GIT_INDEX_FILE": str(source / ".git/index"), "GIT_COMMON_DIR": str(source / ".git"),
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.worktree",
+            "GIT_CONFIG_VALUE_0": str(source),
+        }
+
+        def mutate(snapshot):
+            self.assertNotEqual(snapshot, source)
+            (source / ".git/index").write_bytes(b"unusable ambient original index")
+
+        with mock.patch.multiple(self.validator, **constants), mock.patch.dict(os.environ, ambient):
+            status, output, error = self.invoke(
+                ["--prepared-artifact", str(artifact), "--prepared-source", str(source)],
+                after_source_validation=mutate,
+            )
+            self.assertEqual(status, 0, output + error)
+            self.assertEqual(len(self.recorder_calls), 1)
+
+    def test_inconsistent_snapshot_refuses_before_execute_or_capture(self):
+        real_copytree = capture.shutil.copytree
+        for variant in ("bytes", "ignored", "mode", "hidden", "config", "escaping-link"):
+            artifact, source, constants = self.fixture()
+
+            def inconsistent_copy(supplied, destination, *args, **kwargs):
+                result = real_copytree(supplied, destination, *args, **kwargs)
+                if Path(supplied) == source:
+                    snapshot = Path(destination)
+                    if variant == "bytes":
+                        (snapshot / "source.txt").write_text("inconsistent copy\n")
+                    elif variant == "ignored":
+                        (snapshot / "ignored.txt").write_text("unexpected ignored copy\n")
+                    elif variant == "mode":
+                        os.chmod(snapshot / "source.txt", 0o755)
+                    elif variant == "hidden":
+                        self.validator.git(snapshot, ["update-index", "--assume-unchanged", "source.txt"])
+                    elif variant == "config":
+                        self.validator.git(snapshot, ["config", "--local", "remote.origin.url", self.validator.SOURCE_URL])
+                    else:
+                        (snapshot / "source.txt").unlink()
+                        (snapshot / "source.txt").symlink_to(source / "source.txt")
+                return result
+
+            with (self.subTest(variant=variant), mock.patch.multiple(self.validator, **constants),
+                  mock.patch.object(capture.shutil, "copytree", side_effect=inconsistent_copy),
+                  mock.patch.object(Path, "chmod") as chmod):
+                status, output, _ = self.invoke(
+                    ["--prepared-artifact", str(artifact), "--prepared-source", str(source)],
+                )
+                self.assertEqual(status, 1, output)
+                self.assertEqual(self.recorder_calls, [])
+                self.assertIn("S1_REFERENCE_BLOCKER_BEGIN", output)
+                chmod.assert_not_called()
+
+    def test_snapshot_rejects_external_git_state_before_execute(self):
+        for variant in ("git-link", "index-link", "objects-link", "commondir", "alternates"):
+            artifact, source, constants = self.fixture()
+            git_dir = source / ".git"
+            if variant in {"git-link", "index-link", "objects-link"}:
+                path = git_dir if variant == "git-link" else git_dir / ("index" if variant == "index-link" else "objects")
+                outside = source.with_name("external-git-state")
+                path.rename(outside)
+                path.symlink_to(outside, target_is_directory=variant != "index-link")
+            elif variant == "commondir":
+                (git_dir / "commondir").write_text(str(git_dir) + "\n")
+            else:
+                (git_dir / "objects/info/alternates").write_text(str(git_dir / "objects") + "\n")
+            with (self.subTest(variant=variant), mock.patch.multiple(self.validator, **constants),
+                  mock.patch.object(Path, "chmod") as chmod):
+                status, output, _ = self.invoke(
+                    ["--prepared-artifact", str(artifact), "--prepared-source", str(source)],
+                )
+                self.assertEqual(status, 1, output)
+                self.assertEqual(self.recorder_calls, [])
+                self.assertIn("S1_REFERENCE_BLOCKER_BEGIN", output)
+                chmod.assert_not_called()
+
+    def test_malformed_duplicate_missing_and_mixed_flags_refuse(self):
+        for arguments in (
+            ["--prepared-artifact", "/artifact"], ["--prepared-source", "/source"],
+            ["--prepared-artifact", "/a", "--prepared-artifact", "/b"],
+            ["--prepared-source", "/a", "--prepared-source", "/b"],
+            ["--prepared-artifact=/a", "--prepared-source=/b"],
+            ["--artifact-url", OBJECT, "--prepared-source", "/source"],
+            ["--prepared-artifact", "/a", "--prepared-source", "/b", "--artifact-url", OBJECT],
+            ["--prepared-artifact", "/a", "--unknown", "/b"], ["--"],
+        ):
+            with self.subTest(arguments=arguments), mock.patch.object(capture.tempfile, "mkdtemp") as temporary:
+                status, output, error = self.invoke(arguments)
+                self.assertEqual(status, 64)
+                temporary.assert_not_called()
+                self.assertEqual(output, "")
+                self.assertIn("usage:", error)
+                self.assertEqual(self.recorder_calls, [])
+
+    def test_untrusted_local_paths_refuse_before_execute_or_capture(self):
+        artifact, source, constants = self.fixture()
+        artifact_link = artifact.with_name("zip-link")
+        artifact_link.symlink_to(artifact)
+        source_link = source.with_name("source-link")
+        source_link.symlink_to(source, target_is_directory=True)
+        parent_link = self.root / "parent-link"
+        parent_link.symlink_to(artifact.parent, target_is_directory=True)
+        variants = [("relative.zip", str(source)), (str(artifact), "relative-source"),
+                    (str(artifact_link), str(source)), (str(artifact), str(source_link)),
+                    (str(parent_link / artifact.name), str(source)),
+                    (str(source), str(source)), (str(artifact), str(artifact)),
+                    (str(artifact.with_name("missing.zip")), str(source)),
+                    ("", str(source)), (str(artifact) + "\n", str(source))]
+        with mock.patch.multiple(self.validator, **constants):
+            for zip_path, source_path in variants:
+                with self.subTest(artifact=zip_path, source=source_path), mock.patch.object(Path, "chmod") as chmod:
+                    status, output, _ = self.invoke(["--prepared-artifact", zip_path, "--prepared-source", source_path])
+                    self.assertEqual(status, 1, output)
+                    self.assertIn("S1_REFERENCE_BLOCKER_BEGIN", output)
+                    self.assertEqual(self.recorder_calls, [])
+                    chmod.assert_not_called()
+
+    def test_altered_zip_refuses_without_network_or_execute(self):
+        for variant in ("zip-bytes", "loose-binary", "canonical-archive", "manifest", "receipt"):
+            artifact, source, constants = self.fixture()
+            if variant == "zip-bytes":
+                artifact.write_bytes(artifact.read_bytes() + b"tampered")
+            else:
+                with zipfile.ZipFile(artifact) as stream:
+                    files = {member.filename: stream.read(member) for member in stream.infolist()}
+                name = {"loose-binary": "bin/bd", "canonical-archive": "bundle.tar",
+                        "manifest": "manifest.json", "receipt": "receipt.json"}[variant]
+                files[name] += b"tampered"
+                with zipfile.ZipFile(artifact, "w") as stream:
+                    for name, payload in files.items():
+                        stream.writestr(name, payload)
+                # Exercise inner guards with a fixture-only matching outer ZIP pin.
+                constants.update(ZIP_SHA256=sha(artifact.read_bytes()), ZIP_SIZE=artifact.stat().st_size)
+            with (self.subTest(variant=variant), mock.patch.multiple(self.validator, **constants),
+                  mock.patch.object(Path, "chmod") as chmod):
+                status, output, _ = self.invoke(["--prepared-artifact", str(artifact), "--prepared-source", str(source)])
+                self.assertEqual(status, 1, output)
+                self.assertEqual(self.recorder_calls, [])
+                chmod.assert_not_called()
+
+    def test_altered_source_and_incomplete_identity_refuse_before_execute(self):
+        for variant in ("dirty", "ignored", "hidden", "config", "commit", "tree", "manifest", "entries"):
+            artifact, source, constants = self.fixture()
+            if variant == "dirty":
+                (source / "source.txt").write_text("altered source\n")
+            elif variant == "ignored":
+                (source / "ignored.txt").write_text("ignored source\n")
+            elif variant == "hidden":
+                self.validator.git(source, ["update-index", "--assume-unchanged", "source.txt"])
+            elif variant == "config":
+                self.validator.git(source, ["config", "--local", "remote.origin.url", self.validator.SOURCE_URL])
+            else:
+                key = {"commit": "SOURCE_SHA", "tree": "SOURCE_TREE", "manifest": "SOURCE_MANIFEST_SHA256",
+                       "entries": "SOURCE_ENTRIES"}[variant]
+                constants[key] = 1 if variant == "entries" else "0" * len(constants[key])
+            with (self.subTest(variant=variant), mock.patch.multiple(self.validator, **constants),
+                  mock.patch.object(Path, "chmod") as chmod):
+                status, output, _ = self.invoke(["--prepared-artifact", str(artifact), "--prepared-source", str(source)])
+                self.assertEqual(status, 1, output)
+                self.assertEqual(self.recorder_calls, [])
+                chmod.assert_not_called()
+
+    def test_prepared_recorder_assertions_remain_fail_closed(self):
+        artifact, source, constants = self.fixture()
+        for mutate in (
+            lambda record: record.update(recordings=[]),
+            lambda record: record["recordings"][0].update(projection={"different": True}),
+            lambda record: record["recordings"][0].update(projectionSha256="0" * 64),
+            lambda record: record["recordings"][0]["commands"][0].update(exitCode=1),
+        ):
+            with self.subTest(mutation=mutate), mock.patch.multiple(self.validator, **constants):
+                status, output, _ = self.invoke(
+                    ["--prepared-artifact", str(artifact), "--prepared-source", str(source)], mutate_record=mutate,
+                )
+                self.assertEqual(status, 1, output)
+                self.assertEqual(len(self.recorder_calls), 1)
+                self.assertIn("S1_REFERENCE_BLOCKER_BEGIN", output)
+
+    def test_legacy_default_and_artifact_url_routes_are_unchanged(self):
+        self.fixture()
+        for arguments in ([], ["--artifact-url", OBJECT]):
+            with self.subTest(arguments=arguments), mock.patch.object(capture, "consume_prepared") as prepared:
+                status, output, error = self.invoke(arguments, legacy=True)
+                self.assertEqual(status, 0, output + error)
+                self.assertEqual(len(self.recorder_calls), 1)
+                prepared.assert_not_called()
+        with (mock.patch.object(sys, "argv", ["reference_capture.py"]), redirect_stdout(io.StringIO()) as output,
+              mock.patch.object(capture, "download_bundle", side_effect=RuntimeError("synthetic legacy refusal")),
+              mock.patch.object(capture, "fetch_source") as fetch):
+            self.assertEqual(capture.main(), 1)
+            fetch.assert_not_called()
+            self.assertIn("synthetic legacy refusal", output.getvalue())
 
 
 if __name__ == "__main__":
