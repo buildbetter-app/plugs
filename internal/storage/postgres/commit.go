@@ -255,6 +255,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			return value, nil
 		}
 	}
+	if err = t.checkCheckpointGuards(ctx); err != nil {
+		return zero, err
+	}
 	if err = t.validateChanges(ctx, h.Changes); err != nil {
 		return zero, err
 	}

@@ -5,6 +5,7 @@ go_test(
     size = "large",
     srcs = [
         "blocking_hierarchy_test.go",
+        "checkpoint_guards_test.go",
         "engines_test.go",
         "fixture_test.go",
         "heartbeat_repair_test.go",

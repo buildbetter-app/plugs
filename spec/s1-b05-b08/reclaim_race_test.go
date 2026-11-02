@@ -30,6 +30,11 @@ type reclaimRaceStore struct {
 }
 
 func (s *reclaimRaceStore) SaveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, generation uint64, payload []byte) (driver.Checkpoint, error) {
+	s.pauseOverlay(ctx, key)
+	return s.CheckpointStore.SaveCheckpoint(ctx, lease, key, generation, payload)
+}
+
+func (s *reclaimRaceStore) pauseOverlay(ctx context.Context, key string) {
 	if key == s.overlayKey {
 		s.overlayOnce.Do(func() {
 			close(s.overlayPaused)
@@ -39,7 +44,11 @@ func (s *reclaimRaceStore) SaveCheckpoint(ctx context.Context, lease driver.Acti
 			}
 		})
 	}
-	return s.CheckpointStore.SaveCheckpoint(ctx, lease, key, generation, payload)
+}
+
+func (s *reclaimRaceStore) SaveCheckpointIfRecord(ctx context.Context, lease driver.ActiveLease, key string, generation uint64, payload []byte, ref driver.Ref, revision model.Revision, incarnation string) (driver.Checkpoint, error) {
+	s.pauseOverlay(ctx, key)
+	return s.Store.(driver.RecordGuardedCheckpointStore).SaveCheckpointIfRecord(ctx, lease, key, generation, payload, ref, revision, incarnation)
 }
 
 func (s *reclaimRaceStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
@@ -53,6 +62,10 @@ func (s *reclaimRaceStore) Write(ctx context.Context, lease driver.ActiveLease) 
 type reclaimRaceTx struct {
 	driver.WriteTx
 	store *reclaimRaceStore
+}
+
+func (tx *reclaimRaceTx) ExpectCheckpoint(ctx context.Context, key string, generation uint64) error {
+	return tx.WriteTx.(driver.CheckpointGuardTx).ExpectCheckpoint(ctx, key, generation)
 }
 
 func (tx *reclaimRaceTx) Commit(ctx context.Context, header driver.ChangesetHeader) (model.Changeset, error) {

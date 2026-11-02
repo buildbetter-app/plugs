@@ -19,20 +19,21 @@ import (
 
 type transaction struct {
 	*reader
-	lease           *activeLease
-	locked, hasHead bool
-	restore         *driver.Meta
-	nativeRestore   *driver.NativeRestoreProfile
-	importRestore   *driver.RestoreImportProfile
-	offlineHistory  *driver.PreparedOfflineHistory
-	acquired        driver.LockSet
-	records         map[string]*driver.Record
-	identities      map[string]driver.Record
-	derived         map[string]driver.LockState
-	blobs           map[driver.Hash][]byte
-	allocators      map[string]driver.OfflineAllocator
-	bumps           map[string]driver.LockKey
-	done            chan struct{}
+	lease            *activeLease
+	locked, hasHead  bool
+	restore          *driver.Meta
+	nativeRestore    *driver.NativeRestoreProfile
+	importRestore    *driver.RestoreImportProfile
+	offlineHistory   *driver.PreparedOfflineHistory
+	acquired         driver.LockSet
+	records          map[string]*driver.Record
+	identities       map[string]driver.Record
+	derived          map[string]driver.LockState
+	blobs            map[driver.Hash][]byte
+	allocators       map[string]driver.OfflineAllocator
+	bumps            map[string]driver.LockKey
+	done             chan struct{}
+	checkpointGuards map[string]uint64
 }
 
 func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
