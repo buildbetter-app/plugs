@@ -105,6 +105,7 @@ type persisted struct {
 	Runs     map[string]runState     `json:"runs"`
 	Items    map[string]itemState    `json:"items"`
 	Receipts map[string]receiptState `json:"receipts"`
+	Audit    []auditState            `json:"audit,omitempty"`
 }
 type ownerState struct {
 	Principal string `json:"principal"`
@@ -162,6 +163,26 @@ type receiptState struct {
 	Result        json.RawMessage `json:"result"`
 }
 
+// auditState is the durable, identity-only lifecycle ledger. It carries no
+// title, field, comment, claim, or run body, so ephemeral deletion remains
+// outside permanent bead history while P45 deletion/GC provenance survives.
+type auditState struct {
+	Event         string    `json:"event"`
+	At            time.Time `json:"at"`
+	Principal     string    `json:"principal"`
+	PrincipalHash string    `json:"principalHash"`
+	Agent         string    `json:"agent,omitempty"`
+	Project       string    `json:"project"`
+	Plugin        string    `json:"plugin"`
+	Instance      string    `json:"instance"`
+	Incarnation   string    `json:"incarnation"`
+	Method        string    `json:"method"`
+	Key           string    `json:"key"`
+	Digest        string    `json:"digest"`
+	RunID         string    `json:"runId,omitempty"`
+	ItemID        string    `json:"itemId,omitempty"`
+}
+
 func New(state pluginapi.DurableState) (*Provider, error) {
 	if state == nil {
 		return nil, errors.New("workflow: durable state is required")
@@ -213,6 +234,16 @@ func (p *Provider) load(ctx context.Context) (persisted, pluginapi.Revision, err
 		value.Receipts = map[string]receiptState{}
 	}
 	return value, revision, nil
+}
+
+func (p *Provider) appendAudit(value *persisted, event string, receipt receiptState) {
+	value.Audit = append(value.Audit, auditState{
+		Event: event, At: p.now().UTC(), Principal: receipt.Principal,
+		PrincipalHash: receipt.PrincipalHash, Agent: receipt.Agent, Project: receipt.Project,
+		Plugin: receipt.Plugin, Instance: receipt.Instance, Incarnation: receipt.Incarnation,
+		Method: receipt.Method, Key: receipt.Key, Digest: receipt.Digest,
+		RunID: receipt.RunID, ItemID: receipt.ItemID,
+	})
 }
 
 func (p *Provider) save(ctx context.Context, value persisted, revision pluginapi.Revision) error {
@@ -390,6 +421,11 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 	if err := p.storeReceipt(value, by, meta, req, result, runID, ""); err != nil {
 		return InvokeResult{}, err
 	}
+	if key, _, _, _, _, keyErr := p.receiptScope(by, meta); keyErr == nil {
+		if receipt, ok := value.Receipts[key]; ok {
+			p.appendAudit(&value, "workflow.run.created", receipt)
+		}
+	}
 	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 		return InvokeResult{}, err
 	}
@@ -545,6 +581,11 @@ func (p *Provider) ClaimNext(ctx context.Context, by model.PrincipalRef, project
 		if err := p.storeReceipt(value, by, meta, request, replay, "", ""); err != nil {
 			return ItemView{}, false, false, err
 		}
+		if key, _, _, _, _, keyErr := p.receiptScope(by, meta); keyErr == nil {
+			if receipt, ok := value.Receipts[key]; ok {
+				p.appendAudit(&value, "workflow.claim_next.empty", receipt)
+			}
+		}
 		if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 			return ItemView{}, false, false, err
 		}
@@ -561,6 +602,11 @@ func (p *Provider) ClaimNext(ctx context.Context, by model.PrincipalRef, project
 	}{Found: true, Item: item}
 	if err := p.storeReceipt(value, by, meta, request, replay, selected.RunID, selected.ID); err != nil {
 		return ItemView{}, false, false, err
+	}
+	if key, _, _, _, _, keyErr := p.receiptScope(by, meta); keyErr == nil {
+		if receipt, ok := value.Receipts[key]; ok {
+			p.appendAudit(&value, "workflow.claim_next", receipt)
+		}
 	}
 	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 		return ItemView{}, false, false, err
@@ -622,6 +668,11 @@ func (p *Provider) Claim(ctx context.Context, by model.PrincipalRef, req model.R
 	if err := p.storeReceipt(value, by, meta, req, view, item.RunID, item.ID); err != nil {
 		return ItemView{}, err
 	}
+	if key, _, _, _, _, keyErr := p.receiptScope(by, meta); keyErr == nil {
+		if receipt, ok := value.Receipts[key]; ok {
+			p.appendAudit(&value, "workflow.claim", receipt)
+		}
+	}
 	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 		return ItemView{}, err
 	}
@@ -663,6 +714,11 @@ func (p *Provider) Comment(ctx context.Context, by model.PrincipalRef, req model
 		Body string    `json:"body"`
 	}{req, body}, commit, item.RunID, item.ID); err != nil {
 		return model.Commit{}, err
+	}
+	if key, _, _, _, _, keyErr := p.receiptScope(by, meta); keyErr == nil {
+		if receipt, ok := value.Receipts[key]; ok {
+			p.appendAudit(&value, "workflow.comment", receipt)
+		}
 	}
 	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 		return model.Commit{}, err
@@ -728,6 +784,14 @@ func (p *Provider) Close(ctx context.Context, by model.PrincipalRef, req model.R
 	if complete {
 		p.sanitizeTerminalReceipts(value, run.ID, item.ID)
 	}
+	if key, _, _, _, _, keyErr := p.receiptScope(by, meta); keyErr == nil {
+		if receipt, ok := value.Receipts[key]; ok {
+			p.appendAudit(&value, "workflow.close", receipt)
+			if complete {
+				p.appendAudit(&value, "workflow.run.completed", receipt)
+			}
+		}
+	}
 	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 		return model.Commit{}, err
 	}
@@ -780,6 +844,7 @@ func (p *Provider) GC(ctx context.Context) error {
 	changed := false
 	for key, receipt := range value.Receipts {
 		if !p.now().Before(receipt.ExpiresAt) && (receipt.RunID == "" || value.Runs[receipt.RunID].ID == "") {
+			p.appendAudit(&value, "workflow.receipt.gc", receipt)
 			delete(value.Receipts, key)
 			changed = true
 		}

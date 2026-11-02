@@ -32,6 +32,12 @@ type Config struct {
 	Natives    []sdk.Native
 	Bindings   []Binding
 	Dispatcher Dispatcher
+	// CheckpointStore and CheckpointLease are the canonical host-owned
+	// persistence capability. DurableStore/DurableLease below are retained as
+	// composition vocabulary aliases for this same capability.
+	CheckpointStore     driver.CheckpointStore
+	CheckpointLease     driver.ActiveLease
+	RequireDurableState bool
 	// AuthenticationConfigured is trusted host configuration, never a plugin
 	// grant or caller-supplied principal. Leave it false in anonymous mode:
 	// even declared egress is disabled without an authentication provider.
@@ -68,6 +74,7 @@ type Host struct {
 	authenticationConfigured bool
 	durableStore             driver.CheckpointStore
 	durableLease             driver.ActiveLease
+	durablePersistent        bool
 }
 
 const (
@@ -293,10 +300,33 @@ type registeredMethod struct {
 }
 
 func New(config Config) (*Host, error) {
-	if (config.DurableStore == nil) != (config.DurableLease == nil) {
-		return nil, failure(ErrManifest, "durable store and lease must be supplied together")
+	if config.CheckpointStore != nil && config.DurableStore != nil {
+		return nil, failure(ErrDurableState, "checkpoint store supplied more than once")
 	}
-	h := &Host{instances: map[string]*instance{}, natives: map[string]sdk.Native{}, methods: map[string]registeredMethod{}, dispatcher: config.Dispatcher, authorize: config.Authorize, authenticationConfigured: config.AuthenticationConfigured, durableStore: config.DurableStore, durableLease: config.DurableLease}
+	if config.CheckpointLease != nil && config.DurableLease != nil {
+		return nil, failure(ErrDurableState, "checkpoint lease supplied more than once")
+	}
+	checkpointStore := config.CheckpointStore
+	if checkpointStore == nil {
+		checkpointStore = config.DurableStore
+	}
+	checkpointLease := config.CheckpointLease
+	if checkpointLease == nil {
+		checkpointLease = config.DurableLease
+	}
+	hasCheckpoint := checkpointStore != nil || checkpointLease != nil
+	if hasCheckpoint && (checkpointStore == nil || checkpointLease == nil) {
+		return nil, failure(ErrDurableState, "checkpoint store and active lease must be supplied together")
+	}
+	persistentCheckpoint := false
+	if checkpointStore != nil {
+		persistent, ok := checkpointStore.(driver.PersistentCheckpointStore)
+		persistentCheckpoint = ok && persistent.Persistent()
+	}
+	if config.RequireDurableState && !persistentCheckpoint {
+		return nil, failure(ErrDurableState, "persistent checkpoint capability is required")
+	}
+	h := &Host{instances: map[string]*instance{}, natives: map[string]sdk.Native{}, methods: map[string]registeredMethod{}, dispatcher: config.Dispatcher, authorize: config.Authorize, authenticationConfigured: config.AuthenticationConfigured, durableStore: checkpointStore, durableLease: checkpointLease, durablePersistent: persistentCheckpoint}
 	aliases, ids := map[string]string{}, map[string]string{}
 	for _, native := range config.Natives {
 		if err := native.Manifest.Validate(); err != nil {
@@ -316,6 +346,9 @@ func New(config Config) (*Host, error) {
 		key := p.Alias + "/" + native.Instance
 		if h.instances[key] != nil {
 			return nil, failure(ErrManifest, "duplicate instance %s", key)
+		}
+		if p.Requires.State == pluginapi.StateDurable && !persistentCheckpoint {
+			return nil, failure(ErrDurableState, "plugin %s requires restart-durable state", p.Alias)
 		}
 		i, err := newInstance(native, p, h, newStateStore(), h.durableFor(p.Alias, native.Instance))
 		if err != nil {
@@ -431,9 +464,9 @@ func newInstance(native sdk.Native, manifest pluginapi.PluginManifest, owner *Ho
 
 func (h *Host) durableFor(alias, instance string) *durableAccess {
 	if h.durableStore == nil || h.durableLease == nil {
-		return &durableAccess{}
+		return newDurableAccessWithPersistence(nil, nil, alias, instance, false)
 	}
-	return newDurableAccess(h.durableStore, h.durableLease, alias, instance)
+	return newDurableAccessWithPersistence(h.durableStore, h.durableLease, alias, instance, h.durablePersistent)
 }
 
 func (i *instance) isDisposed() bool {

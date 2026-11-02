@@ -35,10 +35,18 @@ type durableValue struct {
 }
 
 func newDurableAccess(store driver.CheckpointStore, lease driver.ActiveLease, alias, instance string) *durableAccess {
-	return newDurableAccessWithPersistence(store, lease, alias, instance, true)
+	return newDurableAccessWithPersistence(store, lease, alias, instance, false)
 }
 
-func newDurableAccessWithPersistence(store driver.CheckpointStore, lease driver.ActiveLease, alias, instance string, persistent bool) *durableAccess {
+func newDurableAccessWithPersistence(store driver.CheckpointStore, lease driver.ActiveLease, alias, instance string, _ bool) *durableAccess {
+	// The final argument is retained for the composition seam's source
+	// compatibility, but persistence is never caller-asserted. A checkpoint is
+	// restart-durable only when the selected driver advertises the stronger
+	// capability and reports it as persistent.
+	persistent := false
+	if capability, ok := store.(driver.PersistentCheckpointStore); ok {
+		persistent = capability.Persistent()
+	}
 	return &durableAccess{store: store, lease: lease, key: "plugin/" + alias + "/" + instance + "/durable", persistent: persistent}
 }
 
@@ -48,8 +56,9 @@ func NewDurableState(store driver.CheckpointStore, lease driver.ActiveLease, ali
 	return newDurableAccess(store, lease, alias, instance)
 }
 
-// NewDurableStateWithPersistence is used by composition to make the process
-// restart guarantee explicit. The memory driver is intentionally marked false.
+// NewDurableStateWithPersistence is retained for composition source
+// compatibility. Its legacy boolean is ignored: the process restart guarantee
+// is derived from the selected driver's PersistentCheckpointStore capability.
 func NewDurableStateWithPersistence(store driver.CheckpointStore, lease driver.ActiveLease, alias, instance string, persistent bool) pluginapi.DurableState {
 	return newDurableAccessWithPersistence(store, lease, alias, instance, persistent)
 }

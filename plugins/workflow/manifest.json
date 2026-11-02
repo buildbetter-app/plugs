@@ -6,6 +6,7 @@
     "version": "1.0.0",
     "plugin_api": "1.0",
     "runtime": "native",
+    "requires": {"state": "durable"},
     "provides": [{
       "kind": "methods",
       "prefix": "x.workflow",

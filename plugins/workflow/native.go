@@ -16,6 +16,7 @@ import (
 func Native() sdk.Native {
 	manifest := pluginapi.PluginManifest{
 		ID: "buildbetter.workflow", Alias: Alias, Version: "1.0.0", PluginAPI: pluginapi.APIVersion, Runtime: pluginapi.RuntimeNative,
+		Requires: pluginapi.Requirements{State: pluginapi.StateDurable},
 		Provides: []pluginapi.Provision{{Kind: "methods", Prefix: "x.workflow", Methods: map[string]pluginapi.MethodGrant{
 			"invoke": {Permission: "write", Resource: "params.project"},
 		}}},

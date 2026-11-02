@@ -63,6 +63,11 @@ equal request returns that identity/commit-only terminal receipt and never
 recreates a live run; a changed request or scope returns
 `idempotency_key_reused`. Completed ephemeral items are absent from
 `bead.ready`, `bead.get`, and all permanent history/as-of/export reads.
+The plugin retains identity-only lifecycle audit entries for invocation,
+completion, lifecycle operations, and receipt GC. These entries contain the
+receipt scope and typed run/item IDs but never titles, fields, comments, claims,
+or body; they are operational provenance and do not make an ephemeral item
+part of permanent bead history.
 There is no promotion, demotion, mixed-plane dependency, or relationship
 bridge in this contract; those operations return typed `unsupported`.
 
@@ -75,7 +80,9 @@ fences a lost storage lease. The provider does not apply an arbitrary active
 run TTL: unfinished checklists remain live until explicitly completed. Receipt
 retention is bounded by the existing 24-hour idempotency window; receipt GC may
 remove expired receipts only when their run is already ended (or the receipt
-does not reference a run), and never deletes an unfinished run.
+does not reference a run), and never deletes an unfinished run. The workflow
+provider's `workflow/state` document is the single checkpoint-CAS unit for
+these maps and its identity-only audit ledger.
 
 `bead.ready` uses a stable ID-ascending workflow phase after the core ready
 phase. Its signed continuation cursor binds method, the complete effective

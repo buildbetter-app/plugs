@@ -34,6 +34,10 @@ type Store struct {
 	leases    map[*activeLease]struct{}
 }
 
+// Persistent reports that PostgreSQL checkpoint bytes survive Store.Close and
+// a subsequent open of the same database.
+func (*Store) Persistent() bool { return true }
+
 // SupportsRestore advertises the only restore mode this store can publish
 // through its existing lease-fenced transaction path. Full-history injection
 // requires a separately qualified offline-history port.

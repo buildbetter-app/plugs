@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,7 +97,7 @@ func TestReceiptsStayLiveUntilCompletionAndResetTerminalWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider.WithClock(func() time.Time { return clock })
+	provider.WithClock(func() time.Time { return clock }).WithIdentity(Alias, "default", "inc-1")
 	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
 	invokeMeta := model.WriteMeta{Method: "x.workflow.invoke", Project: "project", Agent: "agent", AgentLabel: "agent", IdempotencyKey: "1111111111111111111111111111111111111111111111111111111111111111"}
 	req := InvokeRequest{Template: "template", Project: "project", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "one", Title: "private title", Type: "task"}}}
@@ -145,6 +146,30 @@ func TestReceiptsStayLiveUntilCompletionAndResetTerminalWindow(t *testing.T) {
 	}
 	if replayedTerminal.Run.Template != "" || replayedTerminal.Run.Project != "" {
 		t.Fatalf("terminal replay retained private run fields: %+v", replayedTerminal.Run)
+	}
+	var saved persisted
+	if err := json.Unmarshal(state.value, &saved); err != nil {
+		t.Fatalf("decode saved workflow state: %v", err)
+	}
+	if len(saved.Runs) != 0 || len(saved.Items) != 0 {
+		t.Fatalf("completion retained operational payloads: runs=%d items=%d", len(saved.Runs), len(saved.Items))
+	}
+	if len(saved.Audit) < 3 {
+		t.Fatalf("completion audit entries=%d, want invocation and completion entries", len(saved.Audit))
+	}
+	auditBytes, err := json.Marshal(saved.Audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"private title", "comments", "claims", "private workflow"} {
+		if strings.Contains(string(auditBytes), forbidden) {
+			t.Fatalf("audit ledger retained private payload %q: %s", forbidden, auditBytes)
+		}
+	}
+	for _, entry := range saved.Audit {
+		if entry.Principal == "" || entry.PrincipalHash == "" || entry.Project != "project" || entry.Plugin != Alias || entry.Instance != "default" || entry.Incarnation != "inc-1" || entry.Method == "" || entry.Key == "" || entry.Digest == "" {
+			t.Fatalf("audit entry omitted receipt scope: %+v", entry)
+		}
 	}
 
 	clock = clock.Add(24*time.Hour - time.Second)

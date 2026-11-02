@@ -17,10 +17,14 @@ capability carries an explicit persistence marker: SQLite/PostgreSQL adapters
 are restart-capable, while the memory adapter refuses ephemeral creation rather
 than claiming that process-local checkpoints survive a process restart.
 
-Workflow keys are namespaced below `run/` and `receipt/`. A run value contains
-the typed run identity, project, template, checklist item state, comments,
-claim generation, and lifecycle state. No run value is written as a core
-record, version, event body, lease row, dump record, or history version.
+The provider stores one JSON document at its capability key `workflow/state`
+inside the host's plugin/alias/instance checkpoint namespace. Its `runs`,
+`items`, `receipts`, and identity-only `audit` maps/slices contain the typed run
+identity, project, template, checklist item state, comments, claim generation,
+and lifecycle state. Run and item IDs use the `workflow:run/` and
+`workflow:item/` typed prefixes; receipt keys remain opaque scoped operation
+keys. No value is written as a core record, version, event body, lease row,
+dump record, or history version.
 
 Writes carry the current principal key and canonical-principal SHA-256 digest,
 anonymous-agent label (empty for authenticated principals), project, plugin
@@ -36,7 +40,11 @@ Completion atomically replaces body-bearing invocation/claim results with
 identity-only terminal results and deletes all run/item/comment/claim payloads.
 Replay after completion therefore returns only the bounded identity/commit
 receipt (never title, fields, comments, claims or body) and cannot resurrect the
-deleted run.
+deleted run. The same checkpoint retains an identity-only audit ledger for
+workflow lifecycle operations, completion, and receipt GC. Audit entries carry
+full receipt scope and typed IDs but no work-item payload; they remain plugin
+audit provenance and are not core versions, events, dumps, or permanent item
+history.
 
 The host's checkpoint lease and the provider's run/item generations fence
 takeover. Read and write paths fail closed when the store lease is lost or the
@@ -54,5 +62,6 @@ Later GC removes expired receipts whose run is already ended or absent. It
 retains receipts attached to an unfinished run so that the run remains
 idempotent and durable regardless of age; it never deletes that run or its
 current task, comment, or claim state. It does not erase the core durable
-audit/history retained by P45. Completion starts a fresh bounded 24-hour
-terminal replay window and does not preserve the run body.
+audit/history retained by P45; the plugin audit ledger records its own
+completion and GC boundary in the same CAS. Completion starts a fresh bounded
+24-hour terminal replay window and does not preserve the run body.
