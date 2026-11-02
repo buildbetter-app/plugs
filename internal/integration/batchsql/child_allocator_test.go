@@ -117,6 +117,43 @@ func seedChildAllocatorFixture(t *testing.T, f *fixture, profile driver.OfflineA
 	}
 }
 
+// A restored fixture has an explicit floor. Observe all available live data
+// and the complete log above that floor without requesting discarded history.
+func childAllocatorDurableState(t *testing.T, f *fixture) durableState {
+	t.Helper()
+	meta, err := f.store.Meta(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.store.Read(f.ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	page, err := r.Query(f.ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 1000})
+	if err != nil || page.NextCursor != nil {
+		t.Fatalf("complete child fixture query: %+v %v", page, err)
+	}
+	state := durableState{Meta: meta, Records: map[string]driver.Record{}, Versions: map[string][]driver.Version{}}
+	for _, record := range page.Items {
+		state.Records[record.Ref.ID] = record
+		versions, err := r.Versions(f.ctx, record.Ref, driver.PageReq{Limit: 1000})
+		if err != nil || versions.NextCursor != nil {
+			t.Fatalf("complete child fixture versions: %+v %v", versions, err)
+		}
+		state.Versions[record.Ref.ID] = versions.Items
+	}
+	var cursor *driver.Cursor
+	if !meta.HistoryFloor.IsZero() {
+		cursor = &driver.Cursor{Incarnation: meta.Incarnation, Revision: meta.HistoryFloor, Method: "changesets"}
+	}
+	state.Log, err = r.Changesets(f.ctx, cursor, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
 func childAllocatorState(t *testing.T, f *fixture) driver.OfflineAllocator {
 	t.Helper()
 	r := hierarchyReader(t, f)
@@ -141,12 +178,12 @@ func childAllocatorApply(f *fixture, cs model.ChangeSet, meta model.WriteMeta) (
 
 func assertChildAllocatorReplay(t *testing.T, f *fixture, cs model.ChangeSet, meta model.WriteMeta, commit model.Commit) {
 	t.Helper()
-	before, rows := f.state(t), hierarchyRows(t, f)
+	before, rows := childAllocatorDurableState(t, f), hierarchyRows(t, f)
 	got, err := childAllocatorApply(f, cs, meta)
 	if err != nil || !got.Replayed || !reflect.DeepEqual(got.Commit, commit) {
 		t.Fatalf("exact child replay: %+v err=%v want=%+v", got, err, commit)
 	}
-	requireSameState(t, before, f.state(t))
+	requireSameState(t, before, childAllocatorDurableState(t, f))
 	if !reflect.DeepEqual(rows, hierarchyRows(t, f)) {
 		t.Fatal("replay changed closure rows")
 	}
@@ -184,10 +221,10 @@ func TestChildAllocatorOmittedCountersAcrossStores(t *testing.T) {
 							}
 							cs := model.ChangeSet{Ops: []model.Op{hierarchyCreate("first", &parent, "demo"), hierarchyCreate("second", &parent, "demo"), hierarchyCreate("third", &parent, "demo")}}
 							meta := f.meta("omitted-counters")
-							before, rows := f.state(t), hierarchyRows(t, f)
+							before, rows := childAllocatorDurableState(t, f), hierarchyRows(t, f)
 							out, err := childAllocatorApply(f, cs, meta)
 							if err != nil {
-								requireSameState(t, before, f.state(t))
+								requireSameState(t, before, childAllocatorDurableState(t, f))
 								if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || f.receipt(t, meta) != nil || childAllocatorState(t, f).Children != nil {
 									t.Fatal("failed allocation partially published")
 								}
@@ -210,13 +247,13 @@ func TestChildAllocatorOmittedCountersAcrossStores(t *testing.T) {
 								f.reopen(t)
 								assertChildAllocatorReplay(t, f, cs, meta, out.Commit)
 							}
-							before, rows = f.state(t), hierarchyRows(t, f)
+							before, rows = childAllocatorDurableState(t, f), hierarchyRows(t, f)
 							counter := childAllocatorState(t, f)
 							badMeta := f.meta("late-failure")
 							bad := model.ChangeSet{Ops: []model.Op{hierarchyCreate("rollback-a", &parent, "demo"), hierarchyCreate("rollback-b", &parent, "demo"), patchOp(model.Ref{ID: "missing-late"}, map[string]any{"title": "refuse"})}}
 							_, err = childAllocatorApply(f, bad, badMeta)
 							requireCode(t, err, "not_found")
-							requireSameState(t, before, f.state(t))
+							requireSameState(t, before, childAllocatorDurableState(t, f))
 							if !reflect.DeepEqual(counter, childAllocatorState(t, f)) || !reflect.DeepEqual(rows, hierarchyRows(t, f)) || f.receipt(t, badMeta) != nil {
 								t.Fatal("late refusal consumed counter, closure or receipt")
 							}
@@ -284,13 +321,13 @@ func TestChildAllocatorNoProfileNeverReusesDeletedNumberAcrossStores(t *testing.
 						t.Fatalf("consumed child number reused after deletion/reopen: got=%+v err=%v want=%s.2", next, err, parent.ID)
 					}
 					assertChildAllocatorReplay(t, f, childCS, nextMeta, next.Commit)
-					before, rows := f.state(t), hierarchyRows(t, f)
+					before, rows := childAllocatorDurableState(t, f), hierarchyRows(t, f)
 					badMeta := f.meta("rollback")
 					badMeta.Project = project
 					bad := model.ChangeSet{Ops: []model.Op{hierarchyCreate("a", &parent, project), hierarchyCreate("b", &parent, project), patchOp(model.Ref{ID: "missing-late"}, map[string]any{"title": "refuse"})}}
 					_, err = childAllocatorApply(f, bad, badMeta)
 					requireCode(t, err, "not_found")
-					requireSameState(t, before, f.state(t))
+					requireSameState(t, before, childAllocatorDurableState(t, f))
 					if f.receipt(t, badMeta) != nil || !reflect.DeepEqual(rows, hierarchyRows(t, f)) {
 						t.Fatal("late refusal partially published")
 					}
