@@ -90,6 +90,12 @@ func TestCaptureExtraction(t *testing.T) {
 func TestPreparedCaptureConsumer(t *testing.T) {
 	for _, name := range []string{
 		"test_producer_route_reaches_consumer_with_verified_local_inputs",
+		"test_original_mutation_after_validation_preserves_private_source",
+		"test_original_replacement_after_validation_preserves_private_source",
+		"test_pinned_source_links_resolve_only_inside_private_snapshot",
+		"test_prepared_recorder_cannot_reopen_ambient_git_state",
+		"test_inconsistent_snapshot_refuses_before_execute_or_capture",
+		"test_snapshot_rejects_external_git_state_before_execute",
 		"test_malformed_duplicate_missing_and_mixed_flags_refuse",
 		"test_untrusted_local_paths_refuse_before_execute_or_capture",
 		"test_altered_zip_refuses_without_network_or_execute",

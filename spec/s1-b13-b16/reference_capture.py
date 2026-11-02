@@ -341,9 +341,54 @@ def prepared_path(value: str, *, directory: bool) -> Path:
     return path
 
 
+def snapshot_prepared_source(root: Path, supplied: Path, validator) -> tuple[Path, dict[str, object]]:
+    if root.resolve().is_relative_to(supplied):
+        raise ValueError("prepared source cannot contain the private capture directory")
+    source = root / "prepared-source"
+    # Copy bytes and metadata, never hardlink Git objects or follow source links.
+    # Every subsequent source check and the recorder use only this private copy.
+    shutil.copytree(supplied, source, symlinks=True)
+    git_dir = source / ".git"
+    if (git_dir.is_symlink() or not git_dir.is_dir()
+            or any(path.is_symlink() for path in git_dir.rglob("*"))
+            or any((git_dir / name).exists() for name in (
+                "commondir", "gitdir", "objects/info/alternates", "objects/info/http-alternates",
+            ))):
+        raise ValueError("prepared source snapshot must not share external Git state")
+    record = validator.validate_source(source)
+    # A copied index's stat cache is not proof of copied worktree bytes. Compare
+    # every raw file/link and executable flag with the fully pinned tree too.
+    private_root = source.resolve(strict=True)
+    manifest = validator.git(source, ["ls-tree", "-rz", "--full-tree", "HEAD"])
+    for entry in manifest.split(b"\0"):
+        if not entry:
+            continue
+        metadata, name = entry.split(b"\t", 1)
+        mode, kind, object_id = metadata.split()
+        relative = os.fsdecode(name)
+        if kind != b"blob" or not safe_zip_name(relative):
+            raise ValueError("prepared source snapshot contains an unsupported tree entry")
+        path = source / relative
+        actual_mode = path.lstat().st_mode
+        if not path.resolve(strict=True).is_relative_to(private_root):
+            raise ValueError("prepared source snapshot link escapes its private checkout")
+        if mode in {b"100644", b"100755"} and stat.S_ISREG(actual_mode):
+            if bool(actual_mode & 0o111) != (mode == b"100755"):
+                raise ValueError("prepared source snapshot executable flag differs from its tree")
+            contents = path.read_bytes()
+        elif mode == b"120000" and stat.S_ISLNK(actual_mode):
+            contents = os.fsencode(os.readlink(path))
+        else:
+            raise ValueError("prepared source snapshot file type differs from its tree")
+        header = b"blob " + str(len(contents)).encode("ascii") + b"\0"
+        if hashlib.sha1(header + contents).hexdigest().encode("ascii") != object_id:
+            raise ValueError("prepared source snapshot bytes differ from its pinned tree")
+    return source, record
+
+
 def consume_prepared(root: Path, artifact: str, source_path: str, validator) -> tuple[Path, dict[str, object], Path]:
     archive_input = prepared_path(artifact, directory=False)
-    source = prepared_path(source_path, directory=True)
+    source_input = prepared_path(source_path, directory=True)
     if archive_input.stat().st_size != validator.ZIP_SIZE:
         raise ValueError("reference ZIP differs from the independently pinned bytes")
     # Snapshot the ZIP into the private capture directory. Validate and consume
@@ -351,7 +396,7 @@ def consume_prepared(root: Path, artifact: str, source_path: str, validator) -> 
     archive = root / "prepared-artifact.zip"
     shutil.copyfile(archive_input, archive)
     manifest = validator.validate_zip(archive, root / "prepared-manifest.json")
-    source_record = validator.validate_source(source)
+    source, source_record = snapshot_prepared_source(root, source_input, validator)
     # Both complete validators must succeed before reconstructing any execute bit.
     payloads = {}
     with zipfile.ZipFile(archive) as bundle, bundle.open("bundle.tar") as payload, tarfile.open(fileobj=payload, mode="r|") as canonical_archive:
@@ -418,6 +463,10 @@ def main() -> int:
                 root, prepared["--prepared-artifact"], prepared["--prepared-source"], validator,
             )
             binary_sha256 = validator.BINARIES["bin/bd"]["sha256"]
+            # The recorder's Git checks must address this snapshot even when the
+            # caller's environment names a different Git directory or index.
+            env = {name: value for name, value in env.items() if not name.startswith("GIT_")}
+            env.update(validator.git_environment())
         else:
             binary, bundle = download_bundle(root, provided_url)
             source = fetch_source(root, receipts, env)
