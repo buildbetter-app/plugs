@@ -1053,13 +1053,13 @@ func runHelper(t *testing.T, root string, source pluginmanifest.Checkout) map[st
 	moduleCache := strings.TrimSpace(string(mustCommand(t, goBinary, "env", "GOMODCACHE")))
 	if home, err := os.UserHomeDir(); err == nil {
 		candidate := filepath.Join(home, "go", "pkg", "mod")
-		if _, statErr := os.Stat(filepath.Join(candidate, "github.com", "tetratelabs", "wazero@v1.9.0")); statErr == nil {
+		if _, statErr := os.Stat(filepath.Join(candidate, "github.com", "tetratelabs", "wazero@v1.12.0")); statErr == nil {
 			moduleCache = candidate
 		}
 	}
-	wazeroRoot := offlineModule(t, filepath.Join(moduleCache, "github.com", "tetratelabs", "wazero@v1.9.0"), "com_github_tetratelabs_wazero")
+	wazeroRoot := offlineModule(t, filepath.Join(moduleCache, "github.com", "tetratelabs", "wazero@v1.12.0"), "com_github_tetratelabs_wazero")
 	sysRoot := offlineModule(t, filepath.Join(moduleCache, "golang.org", "x", "sys@v0.49.0"), "org_golang_x_sys")
-	goMod := fmt.Sprintf("module github.com/buildbetter-app/plugs/runner\n\ngo 1.26.5\n\ntoolchain go1.26.10\n\nrequire (\n\tgithub.com/buildbetter-app/plugs v0.0.0\n\tgithub.com/tetratelabs/wazero v1.9.0\n\tgolang.org/x/sys v0.49.0\n)\n\nreplace github.com/buildbetter-app/plugs => %s\nreplace github.com/tetratelabs/wazero => %s\nreplace golang.org/x/sys => %s\n", root, wazeroRoot, sysRoot)
+	goMod := fmt.Sprintf("module github.com/buildbetter-app/plugs/runner\n\ngo 1.26.5\n\ntoolchain go1.26.10\n\nrequire (\n\tgithub.com/buildbetter-app/plugs v0.0.0\n\tgithub.com/tetratelabs/wazero v1.12.0\n\tgolang.org/x/sys v0.49.0\n)\n\nreplace github.com/buildbetter-app/plugs => %s\nreplace github.com/tetratelabs/wazero => %s\nreplace golang.org/x/sys => %s\n", root, wazeroRoot, sysRoot)
 	if err := os.WriteFile(filepath.Join(helper, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
 	}
