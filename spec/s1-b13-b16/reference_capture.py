@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+from urllib.error import HTTPError, URLError
 import zipfile
 
 
@@ -21,7 +22,11 @@ PINNED_COMMIT = "9d6fff760b7a314b476539198504d77ce0959656"
 PINNED_TREE = "cde121d6e4119e454857ad1c3ca293e2791be840"
 ARTIFACT_RUN = "41361573924"
 ARTIFACT_ID = "13105007501"
-ARTIFACT_URL = f"https://api.github.com/repos/buildbetter-app/plugs/actions/artifacts/{ARTIFACT_ID}/zip"
+ARTIFACT_URLS = [
+    f"https://api.github.com/repos/buildbetter-app/plugs/actions/artifacts/{ARTIFACT_ID}/zip",
+    f"https://github.com/buildbetter-app/plugs/actions/artifacts/{ARTIFACT_ID}/zip",
+    f"https://github.com/buildbetter-app/plugs/actions/runs/{ARTIFACT_RUN}/artifacts/{ARTIFACT_ID}/zip",
+]
 BINARY_SHA256 = "3c6bbb888431751adce98dfebc8cbeeb5869300698e8b069a4d7438fabfb3af4"
 BINARY_SIZE = 112341314
 ARCHIVE_SHA256 = "63f31a9cec53d7fd0ef538795814822c809b0398627c1c4c4ed5bca1258b95dc"
@@ -86,15 +91,24 @@ def locate_recorder() -> Path:
 
 def download_bundle(root: Path) -> tuple[Path, dict[str, object]]:
     archive_zip = root / "public-artifact.zip"
-    request = urllib.request.Request(
-        ARTIFACT_URL,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "plug-s1-b13-b16-reference-capture",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=180) as response, archive_zip.open("wb") as stream:
-        shutil.copyfileobj(response, stream)
+    download_attempts = []
+    for url in ARTIFACT_URLS:
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "plug-s1-b13-b16-reference-capture",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=180) as response, archive_zip.open("wb") as stream:
+                shutil.copyfileobj(response, stream)
+            download_attempts.append({"url": url, "status": "downloaded"})
+            break
+        except (HTTPError, URLError) as error:
+            download_attempts.append({"url": url, "status": "refused", "error": str(error)})
+    else:
+        raise RuntimeError(f"all immutable public artifact download URLs refused: {download_attempts}")
     zip_bytes = archive_zip.read_bytes()
     extracted = root / "public-bundle"
     extracted.mkdir()
@@ -174,9 +188,10 @@ def download_bundle(root: Path) -> tuple[Path, dict[str, object]]:
     return binary, {
         "runId": ARTIFACT_RUN,
         "artifactId": ARTIFACT_ID,
-        "downloadUrl": ARTIFACT_URL,
+        "downloadUrls": ARTIFACT_URLS,
         "downloadSha256": digest(zip_bytes),
         "downloadSize": len(zip_bytes),
+        "downloadAttempts": download_attempts,
         "manifestSha256": digest(manifest_bytes),
         "receiptSha256": digest(receipt_bytes),
         "archive": archive_record,
@@ -276,7 +291,7 @@ def main() -> int:
     except Exception as error:
         blocker = {
             "schema": "plug.s1-b13-b16.reference-blocker.v1",
-            "artifact": {"runId": ARTIFACT_RUN, "artifactId": ARTIFACT_ID, "downloadUrl": ARTIFACT_URL},
+            "artifact": {"runId": ARTIFACT_RUN, "artifactId": ARTIFACT_ID, "downloadUrls": ARTIFACT_URLS},
             "commands": receipts,
             "error": str(error),
         }
