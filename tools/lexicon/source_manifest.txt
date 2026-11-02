@@ -264,6 +264,7 @@ internal/core/pipeline/lease_overlay.go
 internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
 internal/core/pipeline/options.go
+internal/core/pipeline/ordered_close.go
 internal/core/pipeline/pipeline_test.go
 internal/core/pipeline/post.go
 internal/core/pipeline/precondition_test.go
@@ -314,6 +315,7 @@ internal/core/service/i1_acceptance_test.go
 internal/core/service/lease.go
 internal/core/service/memories.go
 internal/core/service/ontology.go
+internal/core/service/ordered_close.go
 internal/core/service/reads.go
 internal/core/service/rpc_reads.go
 internal/core/service/service.go
@@ -465,6 +467,7 @@ internal/integration/plugingrants/BUILD.bazel
 internal/integration/plugingrants/integration_test.go
 internal/integration/postgresacceptance/BUILD.bazel
 internal/integration/postgresacceptance/README.md
+internal/integration/postgresacceptance/atomic_close_test.go
 internal/integration/postgresacceptance/atomic_test.go
 internal/integration/postgresacceptance/engine_test.go
 internal/integration/postgresacceptance/fixture_test.go
@@ -562,11 +565,14 @@ internal/server/authn/session.go
 internal/server/authn/session_test.go
 internal/server/authzrpc/BUILD.bazel
 internal/server/authzrpc/README.md
+internal/server/authzrpc/atomic_close_test.go
 internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/drivers_test.go
 internal/server/authzrpc/hierarchy.go
+internal/server/authzrpc/hierarchy_lifecycle_guards_test.go
+internal/server/authzrpc/hierarchy_lifecycle_test.go
 internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/predicate_count_test.go
@@ -1027,6 +1033,7 @@ spec/s1-b21-b24/README.md
 spec/s1-b21-b24/acceptance_test.go
 spec/s1-b21-b24/cas_contract_test.go
 spec/s1-b21-b24/clock_boundary_test.go
+spec/s1-b21-b24/close_contract_test.go
 spec/s1-b21-b24/fixture_test.go
 spec/s1-b21-b24/record_reference.py
 spec/s1-b21-b24/reference-a.json

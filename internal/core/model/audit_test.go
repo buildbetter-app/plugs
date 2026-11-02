@@ -637,3 +637,33 @@ func TestAuditIntegralSpellingsAndReferenceDiscriminators(t *testing.T) {
 		rejectComponent(t, "EventDescriptor", string(encoded), &EventDescriptor{})
 	}
 }
+
+func TestCloseAuditOperationIsRestrictedToItsSlotAndReason(t *testing.T) {
+	for _, event := range []DurableEventType{EventBeadClosed, EventBeadCommented} {
+		t.Run(string(event), func(t *testing.T) {
+			c := auditFixture()
+			c.Changes[0].Op = OpClose
+			c.Events = c.Events[:1]
+			c.Events[0].Type = event
+			raw, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded Changeset
+			if err := json.Unmarshal(raw, &decoded); err != nil || !reflect.DeepEqual(c, decoded) {
+				t.Fatalf("close audit did not round trip: %s %v", raw, err)
+			}
+		})
+	}
+	for _, event := range []DurableEventType{EventBeadCreated, EventBeadUpdated, EventBeadDeleted, EventBeadReparented, EventBeadLinked, EventBeadUnlinked, EventBeadAttached, EventBeadClaimed, EventBeadReleased, EventBeadFailed, EventBeadCanceled, EventBeadReopened, EventBeadDeferred, EventBeadLeaseReclaimed, EventMemorySaved, EventMemoryDeleted, EventGateApproved, EventGateReported} {
+		t.Run("refuse-"+string(event), func(t *testing.T) {
+			c := auditFixture()
+			c.Changes[0].Op = OpClose
+			c.Events = c.Events[:1]
+			c.Events[0].Type = event
+			if _, err := json.Marshal(c); err == nil {
+				t.Fatal("close fabricated another operation's event")
+			}
+		})
+	}
+}

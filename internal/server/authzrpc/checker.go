@@ -92,8 +92,15 @@ func (c *Checker) decision(ctx context.Context, snapshot Snapshot, principal mod
 // cannot be smuggled through a permitted update. Replay rechecks the current
 // chain only and never trusts a receipt as a grant.
 func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, proposal port.ProposedChange, reader port.SnapshotReader) error {
-	if c != nil && c.hierarchy && hierarchyMethod(proposal.Meta.Method) {
-		return c.AuthorizeHierarchy(ctx, stage, proposal, reader)
+	if c != nil && c.hierarchy {
+		switch hierarchyRouteFor(proposal) {
+		case hierarchyDirect:
+			return c.AuthorizeHierarchy(ctx, stage, proposal, reader)
+		case hierarchyLifecycle:
+			return c.AuthorizeHierarchyLifecycle(ctx, stage, proposal, reader)
+		case hierarchyUnsupported:
+			return forbidden("unsupported hierarchy operation composition")
+		}
 	}
 	if reader == nil {
 		return &model.Error{Message: "authorization snapshot unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
@@ -120,6 +127,17 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 		// agents may write their sponsor's project while user reads are a
 		// separate surface.
 		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: expect.Ref}, Method: proposal.Meta.Method})
+	}
+	// A permit for the enclosing transaction is not a close permit. Keep
+	// both requests so either an outer tx.apply forbid or a per-op close
+	// refusal remains authoritative, including receipt replay.
+	for _, change := range proposal.Changes {
+		if change.Op.Kind == model.OpClose {
+			if proposal.Meta.Method != "tx.apply" {
+				return forbidden("close operation requires tx.apply")
+			}
+			requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Bead, Ref: change.Resource.Ref}, Method: "bead.close"})
+		}
 	}
 	if changeCount == 0 {
 		if proposal.Meta.Method != "bead.claimNext" {
@@ -180,7 +198,13 @@ func (c *Checker) validateExistingWrite(ctx context.Context, reader Snapshot, pr
 	if err != nil {
 		return forbidden("invalid proposed bead image")
 	}
-	if err := authz.ValidateBeadWrite(proposal.Meta.Method, before, after, proposal.Principal, caller, []authz.Action{authz.Modify}); err != nil {
+	method := proposal.Meta.Method
+	if method == "tx.apply" && change.Op.Kind == model.OpClose {
+		// Policy already checked both tx.apply and bead.close. This existing
+		// image adapter only checks immutable permission-bearing assignment.
+		method = "bead.update"
+	}
+	if err := authz.ValidateBeadWrite(method, before, after, proposal.Principal, caller, []authz.Action{authz.Modify}); err != nil {
 		return forbidden(err.Error())
 	}
 	return nil
