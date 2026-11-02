@@ -82,8 +82,10 @@ replay and both reference recordings. The new checks require:
 * two concurrent public claim-next requests to return distinct hydrated
   winners, each with exactly one claim version and changeset.
 
-The front traversal uses fifty-row seed writes to establish all 1,004 rows;
-it does not replace the separate 1,000-operation atomic-write boundary gate.
+The front traversal uses fifty-row seed writes to establish all 1,004 rows
+and renews the host's existing ten-second store lease between batches and
+claim stages. It does not replace the separate 1,000-operation atomic-write
+boundary gate or increase a lease TTL or write deadline.
 Claims use the existing no-plugin public host and anonymous agent labels
 (P60). Full installed-policy authorization, actor spelling/pool aliases,
 ephemeral workflow producers, SQL-generated clocks and the 200-agent

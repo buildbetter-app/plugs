@@ -50,7 +50,7 @@ func b04Receipt(f *fixture, label, method, agent string) *driver.IdempotencyReco
 	f.t.Helper()
 	r := b04Reader(f)
 	defer r.Close()
-	principal, err := driver.PrincipalKey(model.PrincipalRef{Kind: "anonymous"})
+	principal, err := driver.PrincipalKey(model.PrincipalRef{Kind: "anonymous", ID: "anonymous"})
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -257,13 +257,21 @@ func TestS1B04PublicClaimContractAcrossStores(t *testing.T) {
 					createOp("target-a", project, map[string]any{"title": "selected lower-priority work", "priority": 2}, ""),
 					createOp("target-b", project, map[string]any{"title": "selected remaining work", "priority": 3}, ""))
 				f := fresh(t, ids)
+				renew := func() {
+					t.Helper()
+					if err := f.lease.Renew(f.ctx); err != nil {
+						t.Fatalf("maintain the host's existing ten-second lease: %v", err)
+					}
+				}
 				// This is a new traversal workload, not a replacement for any
 				// existing 1000-op atomic-write/deadline gate. All 1004 rows remain
 				// in the same real store when the public selector runs.
 				for start := 0; start < len(ops); start += 50 {
+					renew()
 					f.apply(fmt.Sprintf("seed-%d", start), "tx.apply", ops[start:min(start+50, len(ops))]...)
 				}
 				selector := map[string]any{"filter": map[string]any{"types": []string{"issue"}, "resources": []string{"b04-target-b", "b04-target-a"}}}
+				renew()
 				b04Winner(f, f.call("filtered", "bead.claimNext", owner, selector), "b04-target-a", "in_progress", owner)
 				if got := f.readyIDs("unfiltered", owner); !reflect.DeepEqual(got, []string{"b04-local-outside-filter", "b04-target-b"}) {
 					t.Fatalf("front/project/selector excluded qualifying rows or claimed unrelated work: %v", got)
@@ -272,11 +280,14 @@ func TestS1B04PublicClaimContractAcrossStores(t *testing.T) {
 				// changing the selector must refuse without choosing target-b.
 				image := f.imageDigest()
 				reordered := map[string]any{"filter": map[string]any{"resources": []string{"b04-target-a", "b04-target-b", "b04-target-a"}, "types": []string{"issue", "issue"}}}
+				renew()
 				b04Winner(f, f.call("filtered", "bead.claimNext", owner, reordered), "b04-target-a", "in_progress", owner)
 				if f.imageDigest() != image {
 					t.Fatal("equivalent selector replay changed the store")
 				}
+				renew()
 				b04Winner(f, f.call("filtered-second", "bead.claimNext", owner, selector), "b04-target-b", "in_progress", owner)
+				renew()
 				b04Null(t, f.call("filtered-empty", "bead.claimNext", owner, selector))
 				if f.document("b04-local-outside-filter").Lease != nil {
 					t.Fatal("empty selected front claimed work outside its filter")
