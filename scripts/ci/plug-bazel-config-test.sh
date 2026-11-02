@@ -44,6 +44,23 @@ workflow_code = "\n".join(line for line in workflow.splitlines() if not line.lst
 collector_literals = {node.value for node in ast.walk(ast.parse(collector))
                       if isinstance(node, ast.Constant) and isinstance(node.value, str)}
 
+# Preserve the old 45-minute job envelope even if the two new 150-minute
+# latency targets run serially. Leave 15 minutes for finalization within the
+# six-hour GitHub-hosted fallback limit; test-class budgets stay unchanged.
+expected_timeout_map = "900,900,900,9000"
+job_minutes = [int(value) for value in re.findall(r"(?m)^    timeout-minutes: (\d+)\s*$", workflow_code)]
+workflow_timeout_maps = re.findall(r"(?m)^\s*test --test_timeout=(\S+)\s*$", workflow_code)
+timeout_errors = []
+if job_minutes != [360] or not 45 + 2 * 150 + 15 <= job_minutes[0] <= 360:
+    timeout_errors.append("ordinary PR job needs the explicit 360-minute envelope (45 + 150 + 150 + 15)")
+if workflow_timeout_maps != [expected_timeout_map]:
+    timeout_errors.append("workflow must use only --test_timeout=" + expected_timeout_map)
+collector_timeout_maps = {value for value in collector_literals if value.startswith("--test_timeout=")}
+if collector_timeout_maps != {"--test_timeout=" + expected_timeout_map}:
+    timeout_errors.append("delivery must preserve 900s for short/moderate/long and allow 9000s only for eternal")
+if timeout_errors:
+    raise SystemExit("config: " + "; ".join(timeout_errors))
+
 required_workflow = {
     "name: Plug Bazel",
     "pull_request:",
@@ -54,7 +71,6 @@ required_workflow = {
     "actions/setup-node@",
     "node-version: 24",
     "command -v google-chrome",
-    "timeout-minutes: 45",
     "permissions:\n  contents: read",
     "actions/cache/restore@",
     "actions/upload-artifact@",
@@ -71,7 +87,7 @@ if missing:
     raise SystemExit("config: workflow is missing: " + ", ".join(missing))
 required_collector = {
     "//:lexicon_gate", "touched-targets.txt", "reverse-targets.txt",
-    "--lockfile_mode=error", "--nocache_test_results", "--test_timeout=900",
+    "--lockfile_mode=error", "--nocache_test_results", "--test_timeout=900,900,900,9000",
     "--nosystem_rc", "--nohome_rc", "--noworkspace_rc", "--remote_cache=", "--remote_executor=",
     "--repo_contents_cache=", "--jobs=2", "--local_resources=memory=8192", "--test_env=GO_TEST_WRAP_TESTV=1",
 }
