@@ -4,11 +4,14 @@ package epicauthbrowser_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -111,7 +114,10 @@ type reply struct {
 // second write, retry, policy hook or substitute authorization decision.
 type observedService struct {
 	*authzrpc.GuardedService
-	t *testing.T
+	t           *testing.T
+	mu          sync.Mutex
+	agents      map[string]string
+	fullBatches int
 }
 
 var _ rpc.Service = (*observedService)(nil)
@@ -119,6 +125,20 @@ var _ rpc.Service = (*observedService)(nil)
 func (s *observedService) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
 	started := time.Now()
 	out, err := s.GuardedService.ApplyWithOutcome(ctx, by, cs, meta)
+	if err == nil {
+		s.mu.Lock()
+		if len(cs.Ops) == 100 {
+			s.fullBatches++
+		}
+		if strings.HasPrefix(by.ID, "agent:ep6-") {
+			if by.Sponsor == nil {
+				s.t.Error("authenticated agent lost sponsor")
+			} else {
+				s.agents[by.ID] = by.Sponsor.ID
+			}
+		}
+		s.mu.Unlock()
+	}
 	var domain *model.Error
 	if errors.As(err, &domain) && domain.Data.Code == "authz_unavailable" {
 		s.t.Logf("EP6 real service refusal: code=%s message=%q operations=%d elapsed_ms=%.3f", domain.Data.Code, domain.Message, len(cs.Ops), float64(time.Since(started))/float64(time.Millisecond))
@@ -188,6 +208,8 @@ type fixture struct {
 	facts     *authzrpc.MutableFacts
 	base      authzfixed.Facts
 	app       *authzrpc.Composition
+	observed  *observedService
+	trace     *traceLog
 	api       *endpoint
 	lifecycle *endpoint
 	sequence  int
@@ -292,7 +314,9 @@ func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology b
 		t.Fatal(err)
 	}
 	f.keys = authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
-	f.app, err = authzrpc.New(ctx, authzrpc.Config{Store: store, Lease: lease, Provider: f.keys, Facts: f.facts, Namespace: ns, DefaultProject: epics, Hierarchy: true})
+	f.trace = &traceLog{}
+	provider := &recordingProvider{Provider: f.keys}
+	f.app, err = authzrpc.New(ctx, authzrpc.Config{Store: store, Lease: lease, Provider: provider, Facts: f.facts, Namespace: ns, DefaultProject: epics, Hierarchy: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +338,8 @@ func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology b
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rpc.BindService(registry, &observedService{GuardedService: f.app.Service, t: t}); err != nil {
+	f.observed = &observedService{GuardedService: f.app.Service, t: t, agents: map[string]string{}}
+	if err := rpc.BindService(registry, f.observed); err != nil {
 		t.Fatal(err)
 	}
 	if err := viewrpc.BindWithConfig(registry, views, viewrpc.Config{CursorKey: []byte("ep6-disposable-cursor-key-0123456789")}); err != nil {
@@ -325,7 +350,7 @@ func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology b
 	if err != nil {
 		t.Fatal(err)
 	}
-	admission, err := authn.New(authn.Config{Provider: f.keys, AuthorizationInstalled: func() bool { return true }})
+	admission, err := authn.New(authn.Config{Provider: provider, AuthorizationInstalled: func() bool { return true }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +364,7 @@ func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology b
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/ui/", ui)
-	mux.Handle("/rpc/v1", handler)
+	mux.Handle("/rpc/v1", f.trace.handler(handler))
 	f.api = listenRoot(t, handler, mux)
 	f.owner = f.issue(t, agent("owner")).Token
 	return f
@@ -449,4 +474,83 @@ func (f *fixture) head(t *testing.T) string {
 		t.Fatal(e)
 	}
 	return m.Head.String()
+}
+
+// Observers delegate once to the real provider/transport and retain no bearer.
+// The request and response bodies below are actual native bytes, not fixtures.
+type traceKey struct{}
+type nativeTrace struct {
+	ID             string          `json:"id"`
+	Method         string          `json:"method"`
+	Params         json.RawMessage `json:"params"`
+	Principal      string          `json:"principal"`
+	Kind           string          `json:"kind"`
+	Status         int             `json:"status"`
+	Response       json.RawMessage `json:"response"`
+	ResponseSHA256 string          `json:"responseSha256"`
+}
+type traceLog struct {
+	mu   sync.Mutex
+	rows []nativeTrace
+}
+type recordingProvider struct{ *authnapikey.Provider }
+
+func (p *recordingProvider) Authenticate(ctx context.Context, token string) (model.PrincipalRef, error) {
+	by, err := p.Provider.Authenticate(ctx, token)
+	if row, ok := ctx.Value(traceKey{}).(*nativeTrace); ok && err == nil {
+		row.Principal = by.ID
+		row.Kind = by.Kind
+	}
+	return by, err
+}
+
+type traceWriter struct {
+	http.ResponseWriter
+	body   bytes.Buffer
+	status int
+}
+
+func (w *traceWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *traceWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+func (w *traceWriter) Write(data []byte) (int, error) {
+	if w.status == 0 {
+		w.status = 200
+	}
+	w.body.Write(data)
+	return w.ResponseWriter.Write(data)
+}
+func (log *traceLog) handler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only this disposable composition has an observer. Leave native admission,
+		// authorization, deadlines, Writer bodies and errors completely unchanged.
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read refused", 400)
+			return
+		}
+		r.Body.Close()
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		row := nativeTrace{}
+		_ = json.Unmarshal(raw, &row)
+		capture := &traceWriter{ResponseWriter: w}
+		next.ServeHTTP(capture, r.WithContext(context.WithValue(r.Context(), traceKey{}, &row)))
+		if !strings.HasPrefix(row.ID, "web-ui-") && !strings.HasPrefix(row.ID, "chrome-probe-") {
+			return
+		}
+		row.Status = capture.status
+		row.Response = append(json.RawMessage(nil), capture.body.Bytes()...)
+		sum := sha256.Sum256(row.Response)
+		row.ResponseSHA256 = hex.EncodeToString(sum[:])
+		log.mu.Lock()
+		defer log.mu.Unlock()
+		log.rows = append(log.rows, row)
+	})
+}
+func (log *traceLog) snapshot() []nativeTrace {
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	return append([]nativeTrace(nil), log.rows...)
 }

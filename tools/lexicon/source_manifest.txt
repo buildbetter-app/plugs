@@ -382,6 +382,7 @@ internal/integration/epicauthbrowser/BUILD.bazel
 internal/integration/epicauthbrowser/epic_browser_check.mjs
 internal/integration/epicauthbrowser/epic_browser_test.go
 internal/integration/epicauthbrowser/fixture_test.go
+internal/integration/epicauthbrowser/restore_test.go
 internal/integration/epicprogress/BUILD.bazel
 internal/integration/epicprogress/README.md
 internal/integration/epicprogress/epic_progress_test.go
