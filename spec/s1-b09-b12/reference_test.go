@@ -44,12 +44,16 @@ type referenceRun struct {
 }
 
 type referenceRecording struct {
-	Schema       string `json:"schema"`
-	Card         string `json:"card"`
-	SourceCommit string `json:"sourceCommit"`
-	SourceTree   string `json:"sourceTree"`
-	BinarySHA256 string `json:"binarySha256"`
-	Recorder     struct {
+	Schema string `json:"schema"`
+	Card   string `json:"card"`
+	Source struct {
+		Commit string `json:"commit"`
+		Tree   string `json:"tree"`
+	} `json:"source"`
+	Binary struct {
+		SHA256 string `json:"sha256"`
+	} `json:"binary"`
+	Recorder struct {
 		SHA256 string `json:"sha256"`
 	} `json:"recorder"`
 	First            referenceRun   `json:"first"`
@@ -142,8 +146,8 @@ func assertRecording(t *testing.T, card string, recording referenceRecording, ra
 	if recording.Schema != "plug.s1-b09-b12.reference-recording.v1" || recording.Card != card {
 		t.Fatalf("reference identity changed: %+v", recording)
 	}
-	if recording.SourceCommit != referenceSourceCommit || recording.SourceTree != referenceSourceTree || recording.BinarySHA256 != referenceBinarySHA256 {
-		t.Fatalf("reference pins changed: commit=%s tree=%s binary=%s", recording.SourceCommit, recording.SourceTree, recording.BinarySHA256)
+	if recording.Source.Commit != referenceSourceCommit || recording.Source.Tree != referenceSourceTree || recording.Binary.SHA256 != referenceBinarySHA256 {
+		t.Fatalf("reference pins changed: commit=%s tree=%s binary=%s", recording.Source.Commit, recording.Source.Tree, recording.Binary.SHA256)
 	}
 	if recording.Recorder.SHA256 != referenceBytesDigest(recorder) {
 		t.Fatalf("recorder digest changed for %s: got %s want %s", card, recording.Recorder.SHA256, referenceBytesDigest(recorder))
