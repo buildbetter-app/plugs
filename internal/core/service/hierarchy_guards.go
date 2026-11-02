@@ -14,14 +14,6 @@ func hierarchyGraphNeeded(proposal port.ProposedChange) (bool, error) {
 		if change.Resource.Kind != "bead" {
 			continue
 		}
-		if change.Op.Kind == model.OpReparent {
-			return true, nil
-		}
-		if change.Op.Kind == model.OpLink || change.Op.Kind == model.OpUnlink {
-			// Link mutations can change parent-child or blocker facts used by
-			// lifecycle guards even when the explicit Parent field is stable.
-			return true, nil
-		}
 		before, err := proposedImage(change.Before)
 		if err != nil {
 			return false, err
@@ -30,10 +22,18 @@ func hierarchyGraphNeeded(proposal port.ProposedChange) (bool, error) {
 		if err != nil {
 			return false, err
 		}
+		if change.Op.Kind == model.OpReparent {
+			return true, nil
+		}
+		if change.Op.Kind == model.OpLink || change.Op.Kind == model.OpUnlink {
+			// Link mutations can change parent-child or blocker facts used by
+			// lifecycle guards even when the explicit Parent field is stable.
+			return true, nil
+		}
 		if before.parent != after.parent || before.hasDocument && after.hasDocument && (before.status != after.status || before.project != after.project || before.typ != after.typ) {
 			return true, nil
 		}
-		if changeTouchesStatus(change) {
+		if before.hasDocument && after.hasDocument && changeTouchesStatus(change) {
 			return true, nil
 		}
 	}
