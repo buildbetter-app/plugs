@@ -22,7 +22,7 @@ three kinds of evidence in one reviewable package:
 The pinned source is Beads `9d6fff760b7a314b476539198504d77ce0959656` with
 tree `cde121d6e4119e454857ad1c3ca293e2791be840`. The executable is the retained
 pure-Go reference build with SHA-256
-`3c6bbb888431751adce98dfebc8beeb5869300698e8b069a4d7438fabfb3af4`.
+`3c6bbb888431751adce98dfebc8cbeeb5869300698e8b069a4d7438fabfb3af4`.
 
 The card projections retain the old/reference outcome and the adopted Plug
 outcome side by side. B01/B02 use `A3/D3/P74` and `A3/P22` respectively for
