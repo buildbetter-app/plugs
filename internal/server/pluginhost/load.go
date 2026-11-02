@@ -130,7 +130,7 @@ type instancePool struct {
 	closed       bool
 }
 
-func newInstancePool(native sdk.Native, owner *Host, source *instance) (*instancePool, error) {
+func newInstancePool(ctx context.Context, native sdk.Native, owner *Host, source *instance) (*instancePool, error) {
 	poolCtx, cancel := context.WithCancel(context.Background())
 	pool := &instancePool{
 		available: make(chan *instance, maxRuntimeInstances),
@@ -149,7 +149,7 @@ func newInstancePool(native sdk.Native, owner *Host, source *instance) (*instanc
 	// The source instance owns extension methods. Each binding gets four fresh
 	// callback guests; only the host-side state store crosses that boundary.
 	for n := 0; n < maxRuntimeInstances; n++ {
-		member, err := newInstanceWithContext(context.Background(), native, source.manifest, owner, source.state)
+		member, err := newInstanceWithContext(ctx, native, source.manifest, owner, source.state)
 		if err != nil {
 			pool.close()
 			return nil, err
@@ -386,7 +386,7 @@ func (p *instancePool) acquire(ctx context.Context, wait time.Duration, key stri
 			p.constructing++
 			p.constructWG.Add(1)
 			p.mu.Unlock()
-			lease, err := p.construct(queueCtx, key, state, nil, queueCtx)
+			lease, err := p.construct(ctx, key, state, nil, queueCtx)
 			if err == nil {
 				return lease, nil
 			}
@@ -409,7 +409,7 @@ func (p *instancePool) acquire(ctx context.Context, wait time.Duration, key stri
 			p.constructing++
 			p.constructWG.Add(1)
 			p.mu.Unlock()
-			lease, err := p.construct(queueCtx, key, state, member, queueCtx)
+			lease, err := p.construct(ctx, key, state, member, queueCtx)
 			if err == nil {
 				return lease, nil
 			}
@@ -464,8 +464,11 @@ func (p *instancePool) construct(ctx context.Context, key string, state *affinit
 		return nil, poolBusy(ctx)
 	}
 	fresh, err := p.newMember(constructionCtx)
-	if err == nil && constructionCtx.Err() != nil {
-		err = constructionCtx.Err()
+	if constructionCtx.Err() != nil {
+		// A queue-only construction deadline is pool pressure, not a broken
+		// subscriber. Preserve the caller's parent context so an actual caller
+		// cancellation/deadline still returns that original error.
+		err = poolBusy(ctx)
 	}
 	if err != nil {
 		if fresh != nil {
@@ -729,7 +732,18 @@ func (h *Host) Close() error {
 	return nil
 }
 
-func New(config Config) (result *Host, err error) {
+func New(config Config) (*Host, error) {
+	return NewWithContext(context.Background(), config)
+}
+
+// NewWithContext admits a host while retaining the caller's cancellation
+// bound through source construction, WASI linking and initial pool members.
+// Once admission returns, replacement construction uses the pool's own
+// bounded queue and shutdown contexts.
+func NewWithContext(ctx context.Context, config Config) (result *Host, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	h := &Host{instances: map[string]*instance{}, natives: map[string]sdk.Native{}, methods: map[string]registeredMethod{}, dispatcher: config.Dispatcher, authorize: config.Authorize, authenticationConfigured: config.AuthenticationConfigured}
 	defer func() {
 		if err != nil {
@@ -756,7 +770,7 @@ func New(config Config) (result *Host, err error) {
 		if h.instances[key] != nil {
 			return nil, failure(ErrManifest, "duplicate instance %s", key)
 		}
-		i, err := newInstance(native, p, h, newStateStore())
+		i, err := newInstanceWithContext(ctx, native, p, h, newStateStore())
 		if err != nil {
 			return nil, fmt.Errorf("initialize %s: %w", key, err)
 		}
@@ -824,7 +838,7 @@ func New(config Config) (result *Host, err error) {
 		}
 		binding.Reads = append([]string(nil), binding.Reads...)
 		binding.Owns = append([]string(nil), binding.Owns...)
-		pool, err := newInstancePool(h.natives[binding.Alias+"/"+binding.Instance], h, i)
+		pool, err := newInstancePool(ctx, h.natives[binding.Alias+"/"+binding.Instance], h, i)
 		if err != nil {
 			return nil, fmt.Errorf("initialize binding %s runtime pool: %w", binding.ID, err)
 		}
