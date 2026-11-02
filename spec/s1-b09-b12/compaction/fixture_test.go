@@ -337,3 +337,13 @@ func (f *fixture) versions(ref map[string]any) []driver.Version {
 	}
 	return page.Items
 }
+
+// Fixture revisions are small, but refuse overflow rather than wrapping a cutoff.
+func revisionAfter(t *testing.T, value any) model.Revision {
+	t.Helper()
+	n, err := model.Revision(fmt.Sprint(value)).Uint64()
+	if err != nil || n == ^uint64(0) {
+		t.Fatalf("invalid fixture revision %v: %v", value, err)
+	}
+	return model.Natural64(n + 1)
+}

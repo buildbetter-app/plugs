@@ -13,6 +13,61 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/service"
 )
 
+// The binding beforeRevision contract excludes equality and includes a row
+// exactly one revision below the cutoff, through the ordinary RPC and Writer.
+func TestB12BeforeRevisionIsStrict(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			var calls atomic.Int32
+			config := service.CompactionConfig{Summary: service.CompactionSummaryFunc(func(context.Context, service.CompactionInput) (string, error) {
+				calls.Add(1)
+				return "strict boundary summary", nil
+			})}
+			f := newFixture(t, engine, service.WithCompaction(config))
+			ref := f.create("strict-create", strings.Repeat("Original permanent boundary source. ", 40))
+			closed := f.call("bead.close", "strict-close", map[string]any{"id": ref}, "")
+			f.clock = f.clock.Add(30 * 24 * time.Hour)
+			before := f.meta()
+			versions := f.versions(ref)
+			for _, dry := range []bool{true, false} {
+				key := fmt.Sprintf("strict-equality-%t", dry)
+				f.call("admin.compact", key, map[string]any{"beforeRevision": closed["revision"], "dryRun": dry}, "compaction_unavailable")
+				f.assertSameHead(before)
+				f.assertNoReceipt("admin.compact", key)
+				if calls.Load() != 0 || !reflect.DeepEqual(versions, f.versions(ref)) {
+					t.Fatal("equal revision called provider or changed permanent history")
+				}
+			}
+			cutoff := revisionAfter(t, closed["revision"])
+			preview := f.call("admin.compact", "strict-one-below-preview", map[string]any{"beforeRevision": cutoff, "dryRun": true}, "")
+			assertCommitTarget(t, preview, ref)
+			f.assertSameHead(before)
+			f.assertNoReceipt("admin.compact", "strict-one-below-preview")
+			if calls.Load() != 0 {
+				t.Fatal("one-below preview called provider")
+			}
+			params := map[string]any{"beforeRevision": cutoff}
+			commit := f.call("admin.compact", "strict-one-below", params, "")
+			assertCommitTarget(t, commit, ref)
+			assertTextAndTier(t, f, ref, "strict boundary summary", 1)
+			if calls.Load() != 1 || len(f.versions(ref)) != len(versions)+1 {
+				t.Fatal("one-below did not publish exactly one summary/version")
+			}
+			if engine != "memory" {
+				f.close()
+				f.open()
+			}
+			stable := f.meta()
+			replay := f.call("admin.compact", "strict-one-below", params, "")
+			if !reflect.DeepEqual(commit, replay) || calls.Load() != 1 {
+				t.Fatal("boundary replay changed result or reran provider")
+			}
+			f.assertSameHead(stable)
+			assertReplayed(t, f)
+		})
+	}
+}
+
 func TestB12DeterministicSelectionBeforeRevisionAndNonAtomicCalls(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
