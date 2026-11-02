@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -17,42 +16,6 @@ import (
 )
 
 const scanLimit = 20000
-
-var memoryNonSlugChars = regexp.MustCompile(`[^a-z0-9]+`)
-
-// deriveMemoryKey is the compatibility key used when a memory caller omits
-// its key. The memory card deliberately preserves Beads' byte-visible rules:
-// lowercase, collapse each run of non-ASCII-alphanumeric characters to one
-// hyphen, keep the first eight segments, then cap the result at 60 bytes.
-func deriveMemoryKey(content string) string {
-	slug := strings.Trim(memoryNonSlugChars.ReplaceAllString(strings.ToLower(content), "-"), "-")
-	parts := strings.SplitN(slug, "-", 10)
-	if len(parts) > 8 {
-		parts = parts[:8]
-	}
-	slug = strings.Join(parts, "-")
-	if len(slug) > 60 {
-		slug = strings.TrimRight(slug[:60], "-")
-	}
-	return slug
-}
-
-func resolveMemoryKey(key, content string) (string, error) {
-	if strings.TrimSpace(content) == "" {
-		return "", failure("invalid_params", "memory content must be nonempty")
-	}
-	if key != "" {
-		if strings.TrimSpace(key) == "" {
-			return "", failure("invalid_params", "memory key must be nonempty")
-		}
-		return key, nil
-	}
-	derived := deriveMemoryKey(content)
-	if derived == "" {
-		return "", failure("invalid_params", "memory content cannot derive a key; supply an explicit key")
-	}
-	return derived, nil
-}
 
 func memoryRef(ref model.Ref) error {
 	if err := ref.Validate(); err != nil || !ref.IsID() || ref.ID == "" || !ref.Branch.IsZero() {
@@ -294,15 +257,17 @@ func (s *Service) MemorySaveWithOutcome(ctx context.Context, by model.PrincipalR
 }
 
 func (s *Service) memorySave(ctx context.Context, by model.PrincipalRef, req MemorySaveRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
-	key, err := resolveMemoryKey(req.Key, req.Content)
-	if err != nil {
-		return port.WriteOutcome{}, err
+	if strings.TrimSpace(req.Key) == "" {
+		return port.WriteOutcome{}, failure("invalid_params", "memory key must be nonempty")
+	}
+	if strings.TrimSpace(req.Content) == "" {
+		return port.WriteOutcome{}, failure("invalid_params", "memory content must be nonempty")
 	}
 	metadata, err := cloneMemoryMetadata(req.Metadata)
 	if err != nil {
 		return port.WriteOutcome{}, failure("invalid_params", "memory metadata must be a JSON object")
 	}
-	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "memory", Fields: map[string]any{"key": key, "content": req.Content, "metadata": metadata}}}}, Expect: req.Expect}
+	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "memory", Fields: map[string]any{"key": req.Key, "content": req.Content, "metadata": metadata}}}}, Expect: req.Expect}
 	return s.applyMemory(ctx, by, "memory.save", cs, meta, outcomeRequired)
 }
 

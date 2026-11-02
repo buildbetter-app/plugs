@@ -920,10 +920,6 @@ spec/recorded/goldens_test.go
 spec/recorded/provenance.py
 spec/recorded_test.go
 spec/rpc_test.go
-spec/s1-b13-b16/BUILD.bazel
-spec/s1-b13-b16/README.md
-spec/s1-b13-b16/record_reference.py
-spec/s1-b13-b16/slice_test.go
 spec/s1-b17-b20/BUILD.bazel
 spec/s1-b17-b20/README.md
 spec/s1-b17-b20/b17_test.go
