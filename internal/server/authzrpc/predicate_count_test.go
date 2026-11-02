@@ -317,3 +317,154 @@ func TestB23OrdinarySavedViewPredicateAcrossDrivers(t *testing.T) {
 		}
 	})
 }
+
+func exactCountPage(t *testing.T, got reply, want int) ordinaryCountPage {
+	t.Helper()
+	page := ordinaryPage(t, got)
+	if page.Count == nil || *page.Count != want || len(page.Items) != 0 || page.NextCursor != "" {
+		t.Fatalf("exact ordinary count=%s want count=%d and no item page", got.Result, want)
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(got.Result, &members); err != nil {
+		t.Fatal(err)
+	}
+	for name := range members {
+		if name != "items" && name != "asOf" && name != "count" && name != "projection" {
+			t.Fatalf("count-only returned payload member %q: %s", name, got.Result)
+		}
+	}
+	return page
+}
+
+func TestB23OrdinaryExactPredicateCountWireAcrossDrivers(t *testing.T) {
+	countDrivers(t, func(t *testing.T, open storeFactory) {
+		f := ordinaryCountFixture(t, open)
+		for i, tc := range []struct {
+			name       string
+			definition map[string]any
+			want       int
+		}{
+			{"empty_query_default_fields", map[string]any{"filter": map[string]any{}}, 5},
+			{"blank_query", map[string]any{"filter": map[string]any{"query": " \t\n "}}, 5},
+			{"full_predicate_before_page_budget", map[string]any{"filter": map[string]any{"query": "title=needle AND status=todo and type=issue"}, "budgetTokens": 1}, 2},
+			{"zero_is_present", map[string]any{"filter": map[string]any{"query": "title=absent"}}, 0},
+			{"unknown_status", map[string]any{"filter": map[string]any{"query": "status=absent"}}, 0},
+			{"unknown_type", map[string]any{"filter": map[string]any{"query": "type=absent"}}, 0},
+			{"case_sensitive_title", map[string]any{"filter": map[string]any{"query": "title=Needle"}}, 1},
+			{"unique_resource_type_query_intersection", map[string]any{"filter": map[string]any{"query": "title=needle AND status=todo", "resources": []string{fixtureRef(2).ID, fixtureRef(2).ID, fixtureRef(3).ID, fixtureRef(4).ID}, "types": []string{"issue"}}}, 2},
+			{"hidden_resource_zero", map[string]any{"filter": map[string]any{"resources": []string{fixtureRef(4).ID}}}, 0},
+			{"project_intersection_zero", map[string]any{"filter": map[string]any{"resources": []string{fixtureRef(6).ID}}}, 0},
+			{"type_intersection_zero", map[string]any{"filter": map[string]any{"query": "type=issue", "types": []string{"absent"}}}, 0},
+			{"fields_sort_budget_independent", map[string]any{"filter": map[string]any{"query": "title=needle AND status=todo"}, "fields": []string{"id", "parent", "fields.title"}, "sort": []string{"-title", "id"}, "budgetTokens": 1}, 2},
+			{"explicit_empty_fields_is_ordinary", map[string]any{"filter": map[string]any{"query": "title=needle AND status=todo"}, "fields": []string{}, "groupBy": []string{}, "budgetTokens": 0}, 2},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				exactCountPage(t, f.call(t, countReader(), "view.run", map[string]any{"countOnly": true, "definition": tc.definition}, 16000+i), tc.want)
+			})
+		}
+		t.Run("saved_definition_same_predicate", func(t *testing.T) {
+			exactCountPage(t, f.call(t, countReader(), "view.run", map[string]any{"countOnly": true, "viewId": "ordinary-count"}, 16100), 2)
+		})
+		for i, by := range []model.PrincipalRef{
+			{Kind: "user", ID: "user:empty-count", Caveats: map[string]any{"refs": []model.Ref{}}},
+			worker("user:operator"),
+		} {
+			t.Run(fmt.Sprintf("current_read_permission_zero_%d", i), func(t *testing.T) {
+				exactCountPage(t, f.call(t, by, "view.run", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{}}}, 16101+i), 0)
+			})
+		}
+	})
+}
+
+func TestB23OrdinaryCountOptInCompatibilityAcrossDrivers(t *testing.T) {
+	countDrivers(t, func(t *testing.T, open storeFactory) {
+		f := ordinaryCountFixture(t, open)
+		for i, source := range []map[string]any{
+			{"definition": map[string]any{"filter": map[string]any{"query": "title=needle AND status=todo"}, "budgetTokens": 1}},
+			{"viewId": "ordinary-count"},
+		} {
+			first := f.call(t, countReader(), "view.run", source, 17000+i*10)
+			page := ordinaryPage(t, first)
+			if page.Count != nil || len(page.Items) != 1 || page.NextCursor == "" {
+				t.Fatalf("existing page changed: %s", first.Result)
+			}
+			source["countOnly"] = false
+			explicitFalse := f.call(t, countReader(), "view.run", source, 17001+i*10)
+			ordinaryPage(t, explicitFalse)
+			if string(first.Result) != string(explicitFalse.Result) {
+				t.Fatalf("absent and false differ: absent=%s false=%s", first.Result, explicitFalse.Result)
+			}
+			source["cursor"] = page.NextCursor
+			last := ordinaryPage(t, f.call(t, countReader(), "view.run", source, 17002+i*10))
+			if last.Count != nil || len(last.Items) != 1 || last.Items[0].ID != fixtureRef(3).ID || last.NextCursor != "" {
+				t.Fatalf("false changed existing continuation: %+v", last)
+			}
+		}
+	})
+}
+
+func TestB23OrdinaryExactCountCurrentAsOfAcrossDrivers(t *testing.T) {
+	countDrivers(t, func(t *testing.T, open storeFactory) {
+		f := ordinaryCountFixture(t, open)
+		definition := map[string]any{"filter": map[string]any{"query": "status=todo AND title=needle"}, "budgetTokens": 1}
+		first := exactCountPage(t, f.call(t, countReader(), "view.run", map[string]any{"countOnly": true, "definition": definition}, 18000), 2)
+		success(t, f.call(t, worker("user:operator"), "bead.update", map[string]any{"id": fixtureRef(3), "fields": map[string]any{"title": "changed"}}, 18001))
+		fresh := exactCountPage(t, f.call(t, countReader(), "view.run", map[string]any{"countOnly": true, "definition": definition}, 18002), 1)
+		if reflect.DeepEqual(fresh.AsOf, first.AsOf) {
+			t.Fatal("fresh count reused the old snapshot")
+		}
+		old := exactCountPage(t, f.call(t, countReader(), "view.run", map[string]any{"countOnly": true, "definition": definition, "asOf": first.AsOf}, 18003), 2)
+		if !reflect.DeepEqual(old.AsOf, first.AsOf) {
+			t.Fatal("historical count changed the selected content snapshot")
+		}
+		narrow := countReader()
+		narrow.Caveats = map[string]any{"refs": []model.Ref{fixtureRef(2)}}
+		exactCountPage(t, f.call(t, narrow, "view.run", map[string]any{"countOnly": true, "definition": definition, "asOf": first.AsOf}, 18004), 1)
+		f.base.Projects[0].Active = false
+		if err := f.facts.Replace(f.base); err != nil {
+			t.Fatal(err)
+		}
+		exactCountPage(t, f.call(t, countReader(), "view.run", map[string]any{"countOnly": true, "definition": definition, "asOf": first.AsOf}, 18005), 0)
+	})
+}
+
+func TestB23OrdinaryCountWireValidationAcrossDrivers(t *testing.T) {
+	countDrivers(t, func(t *testing.T, open storeFactory) {
+		f := ordinaryCountFixture(t, open)
+		page := ordinaryPage(t, f.call(t, countReader(), "view.run", map[string]any{"viewId": "ordinary-count"}, 19000))
+		for i, tc := range []struct {
+			name   string
+			params map[string]any
+			code   model.ErrorCode
+		}{
+			{"cursor_valid", map[string]any{"countOnly": true, "viewId": "ordinary-count", "cursor": page.NextCursor}, "invalid_params"},
+			{"cursor_malformed", map[string]any{"countOnly": true, "viewId": "ordinary-count", "cursor": "not-a-cursor"}, "invalid_params"},
+			{"cursor_empty", map[string]any{"countOnly": true, "viewId": "ordinary-count", "cursor": ""}, "invalid_params"},
+			{"group_type_no_cap_exception", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{}, "fields": []string{}, "groupBy": []string{"type"}}}, "invalid_params"},
+			{"group_epic_progress", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{"query": "parent=" + fixtureRef(2).ID}, "fields": []string{}, "groupBy": []string{"epic-progress"}}}, "invalid_params"},
+			{"flag_string", map[string]any{"countOnly": "true", "viewId": "ordinary-count"}, "invalid_params"},
+			{"flag_number", map[string]any{"countOnly": 1, "viewId": "ordinary-count"}, "invalid_params"},
+			{"flag_null", map[string]any{"countOnly": nil, "viewId": "ordinary-count"}, "invalid_params"},
+			{"flag_object", map[string]any{"countOnly": map[string]any{}, "viewId": "ordinary-count"}, "invalid_params"},
+			{"flag_in_definition_refused", map[string]any{"definition": map[string]any{"filter": map[string]any{}, "countOnly": true}}, "invalid_params"},
+			{"missing_definition", map[string]any{"countOnly": true}, "invalid_params"},
+			{"two_definitions", map[string]any{"countOnly": true, "viewId": "ordinary-count", "definition": map[string]any{"filter": map[string]any{}}}, "invalid_params"},
+			{"saved_missing", map[string]any{"countOnly": true, "viewId": "missing"}, "not_found"},
+			{"malformed_query", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{"query": "title=needle AND"}}}, "invalid_params"},
+			{"unsupported_query", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{"query": "unknown=value"}}}, "unknown_field"},
+			{"invalid_fields", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{}, "fields": []string{"unknown"}}}, "unknown_field"},
+			{"invalid_sort", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{}, "sort": []string{"unknown"}}}, "invalid_params"},
+			{"invalid_budget", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{}, "budgetTokens": -1}}, "invalid_params"},
+			{"overflow_budget", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{}, "budgetTokens": "18446744073709551616"}}, "invalid_params"},
+			{"conflicting_project", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{"query": "project=other"}}}, "invalid_params"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := f.call(t, countReader(), "view.run", tc.params, 19001+i)
+				if got.Error == nil || got.Error.Data.Code != tc.code || len(got.Result) != 0 {
+					t.Fatalf("count refusal=%+v want=%s, no partial count", got, tc.code)
+				}
+				t.Logf("count typed refusal: %s", got.Error.Data.Code)
+			})
+		}
+	})
+}
