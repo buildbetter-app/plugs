@@ -2,7 +2,8 @@
 
 This package is the dedicated paired-store acceptance surface for the four
 cards assigned to the S1 B21–B24 lane. It uses the production Writer, service,
-RPC registry, view binding and real memory or file-backed SQLite drivers. IDs,
+RPC registry, view binding and real memory or file-backed SQLite drivers. The
+batch receipt-window and untimed-defer cases also use real PostgreSQL. IDs,
 UTC clock, project, actor and cursor key are fixed; every RPC exchange is
 retained as an undeclared-output trace. SQLite is closed and reopened before
 the replay assertions.
@@ -27,7 +28,7 @@ ordinary exact-count qualification.
 The connected cases cover ordered atomic batches and late refusal (B21), a
 single current-revision CAS winner with typed loser details (B22), title
 substring search and an unpaged type-summary count (B23), untimed defer across
-a controlled Go clock advance and explicit reopen (B24), and memory save/list
+a controlled application/driver clock advance and explicit reopen (B24), and memory save/list
 with durable replay after SQLite reopen (I1). The B23 type summary is the
 existing explicit `groupBy:["type"], fields:[]` surface; an ordinary exact
 predicate-count wire is the separately adopted 2026-11-02 OPT_IN contract:
@@ -58,3 +59,7 @@ bazel test //spec/s1-b21-b24:acceptance --test_output=all
 
 All qualification commands for this package are dispatched through the
 RunsOn `remote-bazel` wrapper; no local Bazel result is a certificate.
+
+The runtime clock controls and their limits are documented in
+[the clock boundary scope](../sqlclock-coverage.md). The retained Beads reference
+bytes are unchanged and are not upgraded to controlled-SQL twin evidence.

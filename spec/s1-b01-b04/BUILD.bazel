@@ -16,6 +16,7 @@ go_test(
     name = "replay",
     srcs = [
         "fixture_test.go",
+        "clock_boundary_test.go",
         "replay_test.go",
         "replay_support_test.go",
     ],
@@ -36,6 +37,7 @@ go_test(
         "//internal/storage/memory",
         "//internal/storage/postgres",
         "//internal/storage/sqlite",
+        "//internal/testclock",
     ],
     tags = ["local", "requires-network"],
 )

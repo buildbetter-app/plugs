@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +15,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/claimrpc"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
+	"github.com/buildbetter-app/plugs/internal/testclock"
 )
 
 const claimProject = "claim-sql-project"
@@ -28,7 +29,8 @@ var (
 type fixture struct {
 	ctx     context.Context
 	engine  engine
-	clock   atomic.Int64
+	clock   *testclock.Clock
+	t       *testing.T
 	store   driver.Store
 	lease   driver.ActiveLease
 	inc     string
@@ -41,8 +43,13 @@ func newFixture(t *testing.T, e engine) *fixture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
-	f := &fixture{ctx: ctx, engine: e}
-	f.clock.Store(time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC).UnixNano())
+	f := &fixture{ctx: ctx, engine: e, t: t, clock: testclock.New(t, time.Date(2026, 10, 29, 9, 0, 0, 123456000, time.UTC))}
+	if e.name == "sqlite_wal" {
+		f.engine.storage = sqlite.Driver{Clock: f.now}
+	}
+	if e.name == "postgres" {
+		f.engine.dsn = f.clock.BindPostgres(t, e.dsn)
+	}
 	f.open(t)
 	t.Cleanup(func() { f.close(t) })
 	if e.name == "sqlite_wal" {
@@ -60,11 +67,21 @@ func newFixture(t *testing.T, e engine) *fixture {
 }
 
 func (f *fixture) now() time.Time {
-	return time.Unix(0, f.clock.Load()).UTC()
+	return f.clock.Now()
 }
 
 func (f *fixture) advance(delta time.Duration) {
-	f.clock.Add(delta.Nanoseconds())
+	f.t.Helper()
+	if err := f.lease.Release(f.ctx); err != nil {
+		f.t.Fatal(err)
+	}
+	f.clock.Advance(f.t, delta)
+	lease, err := f.store.Lease(f.ctx, "claim-sql-clock-advance", driver.LeaseTTL)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.lease = lease
+	f.compose(f.t)
 }
 
 func (f *fixture) open(t *testing.T) {
@@ -359,4 +376,11 @@ func (f *fixture) assertBead(t *testing.T, ref model.Ref, wantStatus string, wan
 	if hasLease != wantLease {
 		t.Fatalf("bead %s lease presence=%t want %t: %+v", ref.ID, hasLease, got)
 	}
+}
+
+func (f *fixture) tick() time.Duration {
+	if f.engine.name == "postgres" {
+		return time.Microsecond
+	}
+	return time.Nanosecond
 }

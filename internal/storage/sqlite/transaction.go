@@ -410,7 +410,7 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		revision := model.Natural64(head + 1)
 		when := h.Time
 		if when.IsZero() {
-			when = time.Now().UTC()
+			when = t.store.now().UTC()
 		}
 		entry := model.Changeset{Revision: revision, Branch: model.Natural64(0), Incarnation: h.Incarnation, Kind: h.Kind, Time: when, Principal: h.Principal, Chain: h.Chain, IdempotencyKey: h.IdempotencyKey, Mutators: h.Mutators, Changes: h.Changes, Events: model.CloneEventDescriptors(h.Events)}
 		// Validate the complete plan against the actual changes and allocated
@@ -522,7 +522,7 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 				return err
 			}
 		}
-		return saveReplay(ctx, c, h, revision, data)
+		return t.store.saveReplay(ctx, c, h, revision, data)
 	})
 	if err == nil {
 		t.finish()
