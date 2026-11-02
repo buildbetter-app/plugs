@@ -382,20 +382,10 @@ func runB13(t *testing.T, engine string) []byte {
 		t.Fatalf("memory IDs did not use declared sequence: alpha=%s spaced=%s", alphaID, spacedID)
 	}
 
-	// The byte-RPC descriptor still marks key as required on this frozen head.
-	// Exercise the new derivation through the real service/Writer seam instead
-	// of treating a schema refusal as a successful RPC recording.
 	derivedContent := "always run tests with -race flag and preserve exact body"
-	derived, err := f.domain.MemorySave(f.ctx, anonymous, service.MemorySaveRequest{Content: derivedContent}, f.meta("derived", "memory.save"))
-	if err != nil || len(derived.Results) != 1 {
-		t.Fatalf("service omitted-key save failed: commit=%+v err=%v", derived, err)
-	}
-	derivedRef := derived.Results[0].Ref
-	gotDerived, err := f.domain.MemoryGet(f.ctx, anonymous, service.MemoryGetRequest{ID: derivedRef})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotDerived.Key != "always-run-tests-with-race-flag-and-preserve" || gotDerived.Content != derivedContent {
+	derived := result(t, f.call(t, context.Background(), "derived", "memory.save", map[string]any{"content": derivedContent}, true))
+	gotDerived := result(t, f.call(t, context.Background(), "derived-get", "memory.get", map[string]any{"id": createdID(t, derived)}, false))
+	if gotDerived["key"] != "always-run-tests-with-race-flag-and-preserve" || gotDerived["content"] != derivedContent {
 		t.Fatalf("derived memory changed key/content: %+v", gotDerived)
 	}
 
@@ -433,14 +423,14 @@ func runB13(t *testing.T, engine string) []byte {
 		t.Fatal("punctuation-only memory content was accepted")
 	}
 	before := head(t, f)
-	wireMissingKey := f.call(t, context.Background(), "wire-missing-key", "memory.save", map[string]any{"content": "wire omitted key"}, true)
-	if got := code(wireMissingKey); got != "invalid_params" {
-		t.Fatalf("wire omitted-key boundary code=%q response=%v", got, wireMissingKey)
+	wireMissingMeta := f.call(t, context.Background(), "wire-missing-idempotency", "memory.save", map[string]any{"content": "wire omitted key"}, false)
+	if got := code(wireMissingMeta); got != "invalid_params" {
+		t.Fatalf("wire required-idempotency boundary code=%q response=%v", got, wireMissingMeta)
 	}
 	if head(t, f) != before {
 		t.Fatal("wire descriptor refusal advanced memory head")
 	}
-	refusals = append(refusals, "wire:"+code(wireMissingKey))
+	refusals = append(refusals, "wire:"+code(wireMissingMeta))
 
 	if engine == "sqlite" {
 		f.reopen(t)
@@ -449,7 +439,7 @@ func runB13(t *testing.T, engine string) []byte {
 	if got := memoryKeys(t, reopened); !reflect.DeepEqual(got, []string{"alpha", "always-run-tests-with-race-flag-and-preserve"}) {
 		t.Fatalf("reopened memory rows=%v", got)
 	}
-	return canonical(memoryProjection{Engine: engine, DerivedKey: gotDerived.Key, ExplicitKey: "  Explicit Key/Ω  ", SearchKeys: memoryKeys(t, search), VisibleKeys: []string{"  Explicit Key/Ω  ", "alpha", "always-run-tests-with-race-flag-and-preserve"}, AfterDelete: memoryKeys(t, afterDelete), ReopenedKeys: memoryKeys(t, reopened), Replacement: createdID(t, replaced) == alphaID, Refusals: refusals})
+	return canonical(memoryProjection{Engine: engine, DerivedKey: gotDerived["key"].(string), ExplicitKey: "  Explicit Key/Ω  ", SearchKeys: memoryKeys(t, search), VisibleKeys: []string{"  Explicit Key/Ω  ", "alpha", "always-run-tests-with-race-flag-and-preserve"}, AfterDelete: memoryKeys(t, afterDelete), ReopenedKeys: memoryKeys(t, reopened), Replacement: createdID(t, replaced) == alphaID, Refusals: refusals})
 }
 
 func errorCode(err error) string {
@@ -641,9 +631,10 @@ func runB14(t *testing.T, engine string) []byte {
 
 	before := head(t, f)
 	waitsFor := f.call(t, ctx, "waits-for", "bead.link", map[string]any{"from": ref("b14-subject"), "to": ref("b14-blocker"), "kind": "waits-for"}, true)
-	refused(t, waitsFor, "invalid_params")
-	if head(t, f) != before {
-		t.Fatal("unsupported waits-for link advanced head")
+	result(t, waitsFor)
+	links := document(t, f, "b14-subject").Links
+	if head(t, f) == before || len(links) != 1 || links[0].Kind != "waits-for" || links[0].To.ID != "b14-blocker" {
+		t.Fatalf("waits-for link was not persisted through the public Writer: %+v", links)
 	}
 	if engine == "sqlite" {
 		f.reopen(t)
@@ -652,7 +643,10 @@ func runB14(t *testing.T, engine string) []byte {
 	if reopened["status"] != "done" || reopened["gate_state"] != "resolved" {
 		t.Fatalf("reopened gate changed terminal state: %v", reopened)
 	}
-	return canonical(gateProjection{Engine: engine, FirstState: firstState, FirstApprovals: firstApprovals, DuplicateState: duplicateState, DuplicateCounts: duplicateApprovals, ResolvedState: resolvedState, ResolvedCounts: resolvedApprovals, FinalStatus: "done", WaitsFor: code(waitsFor), ReopenedStatus: reopened["status"].(string)})
+	if got := document(t, f, "b14-subject").Links; !reflect.DeepEqual(got, links) {
+		t.Fatalf("reopen changed waits-for link: before=%+v after=%+v", links, got)
+	}
+	return canonical(gateProjection{Engine: engine, FirstState: firstState, FirstApprovals: firstApprovals, DuplicateState: duplicateState, DuplicateCounts: duplicateApprovals, ResolvedState: resolvedState, ResolvedCounts: resolvedApprovals, FinalStatus: "done", WaitsFor: "persisted", ReopenedStatus: reopened["status"].(string)})
 }
 
 type labelBoundaryProjection struct {
