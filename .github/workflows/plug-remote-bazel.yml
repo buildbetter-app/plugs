@@ -93,16 +93,19 @@ jobs:
         id: public_reference
         if: ${{ contains(inputs.args, 'PLUG_PUBLIC_REFERENCE') }}
         env:
-          TRUSTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          # Pin the reviewed public-reference helper atom independently of
+          # the workflow file's own revision. The companion helper is fetched
+          # from the same immutable commit because the reference helper imports it.
+          PUBLIC_REFERENCE_HELPER_SHA: 26167722fa0c0d4db42272981c4f24639712d820
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = buildbetter-app/plugs
-          [[ "$TRUSTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
-          # Both privileged helpers come from this workflow-control commit.
+          [[ "$PUBLIC_REFERENCE_HELPER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          # Both privileged reference helpers come from this reviewed atom.
           for name in prepare-public-bundle.py prepare-public-reference.py; do
             gh api -H 'Accept: application/vnd.github.raw+json' \
-              "repos/buildbetter-app/plugs/contents/scripts/ci/$name?ref=$TRUSTED_WORKFLOW_SHA" \
+              "repos/buildbetter-app/plugs/contents/scripts/ci/$name?ref=$PUBLIC_REFERENCE_HELPER_SHA" \
               > "$RUNNER_TEMP/$name"
           done
           descriptor="$(python3 "$RUNNER_TEMP/prepare-public-reference.py" request --args "$ARGS_INPUT")"
