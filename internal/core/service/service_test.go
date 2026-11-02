@@ -1564,7 +1564,7 @@ func TestHierarchyGraphNeededOnlyForParentRelationChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	bead := func(op model.OpKind, old, next []byte) port.Change {
-		return port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: model.RefByID("pl-child")}, Op: model.Op{Kind: op}, Before: old, After: next}
+		return port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: model.RefByID("pl-child", model.Natural64(0))}, Op: model.Op{Kind: op}, Before: old, After: next}
 	}
 	for name, tc := range map[string]struct {
 		change port.Change
@@ -1589,7 +1589,7 @@ func TestHierarchyGraphNeededOnlyForParentRelationChanges(t *testing.T) {
 	wantCode(t, err, "invalid_params")
 	statusTouch := bead(model.OpPatch, before, unchanged)
 	statusTouch.SetBy = map[string]string{"fields.status": "request"}
-	got, err = hierarchyGraphNeeded(port.ProposedChange{Changes: []port.Change{statusTouch}})
+	got, err := hierarchyGraphNeeded(port.ProposedChange{Changes: []port.Change{statusTouch}})
 	if err != nil || !got {
 		t.Fatalf("same-value status touch lost lifecycle graph validation: needed=%v err=%v", got, err)
 	}
