@@ -476,10 +476,10 @@ func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRe
 		}
 		item, found, _, err := s.workflow.ClaimNext(ctx, by, req.Project, types, meta)
 		if err != nil {
-			return nil, err
+			return port.WriteOutcome{}, err
 		}
 		if found {
-			return &port.WriteOutcome{Commit: workflowClaimCommit(item)}, nil
+			return port.WriteOutcome{Commit: workflowClaimCommit(item)}, nil
 		}
 	}
 	if by.Kind != "anonymous" {
