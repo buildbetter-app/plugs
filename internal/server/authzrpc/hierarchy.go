@@ -227,7 +227,7 @@ func (c *Checker) authorizeHierarchy(ctx context.Context, stage port.Authorizati
 		}
 		target, err := authz.ValidateHierarchyWrite(change.Op.Kind, before, staged, proposal.Principal, caller)
 		if err != nil {
-			return forbidden("invalid hierarchy write image")
+			return forbidden("invalid hierarchy write image (" + string(change.Op.Kind) + ")")
 		}
 		// Only this validated, tracked-missing new child may use a staged
 		// project binding. Existing beads always keep their stored assignment.
