@@ -396,6 +396,9 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	if err != nil {
 		return driver.Page[driver.Record]{}, err
 	}
+	if r.owner == nil && r.at == mustUint(r.meta.Head) && (len(q.Filter) == 0 || len(q.Filter) == 1 && q.Filter["kind"] != nil) {
+		return r.queryCurrentIndex(ctx, q, digest, start, limit)
+	}
 	rows, err := r.tx.QueryContext(ctx, `SELECT key FROM objects ORDER BY key`)
 	if err != nil {
 		return driver.Page[driver.Record]{}, err

@@ -385,6 +385,13 @@ internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.t
 internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-source-990eb800.md
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
+internal/integration/cp7latency/BUILD.bazel
+internal/integration/cp7latency/README.md
+internal/integration/cp7latency/correctness_test.go
+internal/integration/cp7latency/fixture_test.go
+internal/integration/cp7latency/latency_test.go
+internal/integration/cp7latency/measurement_test.go
+internal/integration/cp7latency/workload.json
 internal/integration/cursorhttp/BUILD.bazel
 internal/integration/cursorhttp/cursor_test.go
 internal/integration/cursorhttp/fixture_test.go
@@ -787,6 +794,7 @@ internal/server/webui/view_watch_test.go
 internal/server/webui/watch_bootstrap_check.mjs
 internal/server/webui/webui.go
 internal/server/webui/webui_test.go
+internal/storage/README.md
 internal/storage/conformance/BUILD.bazel
 internal/storage/conformance/atomic.go
 internal/storage/conformance/audit.go
@@ -865,6 +873,8 @@ internal/storage/postgres/offline_restore.go
 internal/storage/postgres/pending_test.go
 internal/storage/postgres/persistence_test.go
 internal/storage/postgres/query.go
+internal/storage/postgres/query_index.go
+internal/storage/postgres/query_index_test.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
 internal/storage/postgres/schema.go
@@ -889,6 +899,8 @@ internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/pending_test.go
 internal/storage/sqlite/process_test.go
 internal/storage/sqlite/publication_cancel_test.go
+internal/storage/sqlite/query_index.go
+internal/storage/sqlite/query_index_test.go
 internal/storage/sqlite/reader.go
 internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/schema.go

@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS plug_postgres.records (
  revision numeric(20,0) NOT NULL, body bytea, deleted boolean NOT NULL,
  version_count numeric(20,0) NOT NULL
 );
+CREATE INDEX IF NOT EXISTS records_live_kind_key
+ ON plug_postgres.records(kind, key) WHERE NOT deleted;
 CREATE TABLE IF NOT EXISTS plug_postgres.versions (
  key bytea NOT NULL, revision numeric(20,0) NOT NULL,
  is_base boolean NOT NULL, value bytea NOT NULL,

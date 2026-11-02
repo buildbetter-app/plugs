@@ -121,6 +121,13 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	if err != nil {
 		return empty, err
 	}
+	head, err := r.meta.Head.Uint64()
+	if err != nil {
+		return empty, err
+	}
+	if r.writer == nil && r.at == head && (len(q.Filter) == 0 || len(q.Filter) == 1 && q.Filter["kind"] != nil) {
+		return r.queryCurrentIndex(ctx, q, filter, start, limit)
+	}
 	rows, err := r.sql.QueryContext(ctx, `SELECT key,ref FROM plug_postgres.records ORDER BY key`)
 	if err != nil {
 		return empty, err
