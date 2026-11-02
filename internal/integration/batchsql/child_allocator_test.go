@@ -798,7 +798,7 @@ func TestParentCounterTerminalValueAcrossStores(t *testing.T) {
 							t.Fatal("terminal consumption leaked through failed transaction")
 						}
 						if !errors.Is(err, errChildAllocationPut) || fault.consumes != 1 || fault.puts != 2 {
-							t.Fatalf("terminal rollback never reached second Put: consumes=%d puts=%d err=%v", fault.consumes, fault.puts, err)
+							t.Fatalf("terminal rollback never reached second Put: consumes=%d puts=%d err=%#v", fault.consumes, fault.puts, err)
 						}
 						f.writer = ordinary
 					}
@@ -808,7 +808,7 @@ func TestParentCounterTerminalValueAcrossStores(t *testing.T) {
 						if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || !reflect.DeepEqual(inventory, childInventory(t, f)) || f.receipt(t, meta) != nil {
 							t.Fatal("refused terminal create partially published")
 						}
-						t.Fatalf("Writer refused final valid child %s: %v", finalID, err)
+						t.Fatalf("Writer refused final valid child %s: %#v", finalID, err)
 					}
 					if out.Replayed || len(out.Commit.Results) != 2 || out.Commit.Results[0].Ref.ID != finalID || out.Commit.Results[1].Ref.ID != parent.ID {
 						t.Fatalf("terminal batch result=%+v", out)
