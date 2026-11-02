@@ -91,6 +91,9 @@ func (t *transaction) Query(ctx context.Context, q driver.Query) (driver.Page[dr
 		return driver.Page[driver.Record]{}, err
 	}
 	defer r.Close()
+	if q.ReadSelection != nil {
+		return driver.Page[driver.Record]{}, driver.ErrUnsupported
+	}
 	return r.Query(ctx, q)
 }
 func (t *transaction) Versions(ctx context.Context, ref driver.Ref, req driver.PageReq) (driver.Page[driver.Version], error) {

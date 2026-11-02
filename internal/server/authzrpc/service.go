@@ -22,6 +22,7 @@ type GuardedService struct {
 	commitEmpty     func(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta, port.ClaimNextReadyProbe) (port.WriteOutcome, error)
 	claimNextPage   func(context.Context, model.PrincipalRef, service.ReadyRequest) (service.BeadPage, error)
 	readyCandidates func(context.Context, service.ReadyRequest, driver.Reader) ([]service.Bead, error)
+	readyComplete   func(context.Context, model.PrincipalRef, service.ReadyRequest) (service.BeadPage, error)
 }
 
 var _ rpc.Service = (*GuardedService)(nil)
@@ -164,6 +165,17 @@ func (s *countReadSlice) Record(ctx context.Context, dep authz.Dependency) error
 func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
 	if s == nil || s.delegate == nil || s.checker == nil {
 		return service.BeadPage{}, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+	}
+	if s.readyComplete != nil {
+		full := req
+		full.Limit = 1000
+		full.Cursor = ""
+		full.Position = nil
+		page, err := s.readyComplete(ctx, by, full)
+		if err != nil {
+			return service.BeadPage{}, err
+		}
+		return s.filterReadyPage(ctx, by, req.Limit, req.Position, page)
 	}
 	// Ask the real service for a complete bounded candidate page, then apply
 	// the compiled fixed filter before pagination. A truncated candidate set is

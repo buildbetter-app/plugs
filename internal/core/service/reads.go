@@ -257,6 +257,32 @@ func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyReq
 	return s.readyPage(ctx, by, req, false)
 }
 
+// ReadyForAuthorization supplies the guarded list boundary with the complete
+// ready set from one immutable snapshot. The guard retains candidate limits,
+// current authorization and final pagination; no public pager uses this port.
+func (s *Service) ReadyForAuthorization(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
+	if _, err := pageOptions(req.Project, req.ViewID, req.Cursor, req.Filter, req.Limit); err != nil {
+		return BeadPage{}, err
+	}
+	if err := validatePosition(req.Position); err != nil {
+		return BeadPage{}, err
+	}
+	r, err := s.reader(ctx, by, nil)
+	if err != nil {
+		return BeadPage{}, err
+	}
+	defer r.Close()
+	items, err := s.readyItems(ctx, req, r)
+	if err != nil {
+		return BeadPage{}, err
+	}
+	if err := s.admit(ctx, by); err != nil {
+		return BeadPage{}, err
+	}
+	view := r.Snapshot()
+	return BeadPage{Items: items, AsOf: AsOf{Revision: *view.At, Incarnation: view.Incarnation}}, nil
+}
+
 // ClaimNextReadyPage is the queue-specific live pager. A revision change
 // restarts its offset from the beginning of the newly observed ready set.
 func (s *Service) ClaimNextReadyPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {

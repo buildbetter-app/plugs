@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -372,6 +373,9 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 			return driver.Page[driver.Record]{}, fmt.Errorf("sqlite: query as-of differs from reader")
 		}
 	}
+	if q.ReadSelection != nil {
+		return r.queryReadSelection(ctx, q)
+	}
 	for field, want := range q.Filter {
 		switch field {
 		case "kind", "id", "key", "type", "project", "status":
@@ -395,6 +399,15 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	limit, err := pageLimit(q.Limit)
 	if err != nil {
 		return driver.Page[driver.Record]{}, err
+	}
+	// Compile only the closed empty/kind predicate. Staged overlays and
+	// body predicates retain the reference reconstruction below.
+	kind, hasKind := q.Filter["kind"]
+	if r.owner == nil && (len(q.Filter) == 0 || len(q.Filter) == 1 && hasKind) {
+		if r.at == mustUint(r.meta.Head) {
+			return r.queryHead(ctx, kind, hasKind, digest, start, limit)
+		}
+		return r.queryHistorical(ctx, kind, hasKind, digest, start, limit)
 	}
 	rows, err := r.tx.QueryContext(ctx, `SELECT key FROM objects ORDER BY key`)
 	if err != nil {
@@ -449,6 +462,149 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	page := driver.Page[driver.Record]{Items: items[start:end], AsOf: model.Natural64(r.at)}
 	if end < uint64(len(items)) {
 		page.NextCursor = r.nextCursor("query", digest, end)
+	}
+	return page, nil
+}
+
+// queryHead uses the already pinned WAL transaction. objects.kind is immutable
+// and published atomically with each current record. Deletions remove records,
+// so the join excludes tombstones while retaining the same bytewise key order.
+// LIMIT+1 establishes continuation without fetching/deserializing every object
+// again for each page. This is content selection, not an authorization filter.
+func (r *reader) queryHead(ctx context.Context, kind any, hasKind bool, digest string, start uint64, limit int) (driver.Page[driver.Record], error) {
+	empty := driver.Page[driver.Record]{}
+	if start > math.MaxInt64 {
+		return empty, fmt.Errorf("sqlite: cursor index exceeds page")
+	}
+	from := ` FROM records r`
+	args := []any{}
+	if hasKind {
+		from += ` JOIN objects o ON o.key=r.key WHERE o.kind=?`
+		args = append(args, kind)
+	}
+	pageArgs := append(append([]any(nil), args...), limit+1, int64(start))
+	rows, err := r.tx.QueryContext(ctx, `SELECT r.data`+from+` ORDER BY r.key LIMIT ? OFFSET ?`, pageArgs...)
+	if err != nil {
+		return empty, err
+	}
+	items := make([]driver.Record, 0, limit+1)
+	for rows.Next() {
+		var data []byte
+		var record driver.Record
+		if err = rows.Scan(&data); err == nil {
+			err = json.Unmarshal(data, &record)
+		}
+		if err != nil {
+			break
+		}
+		items = append(items, record)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	closeErr := rows.Close()
+	if err != nil {
+		return empty, err
+	}
+	if closeErr != nil {
+		return empty, closeErr
+	}
+	if len(items) == 0 && start != 0 {
+		// Exactly at the end is a valid empty page. A position beyond it
+		// remains an error, including a forged but otherwise bound cursor.
+		var count uint64
+		if err = r.tx.QueryRowContext(ctx, `SELECT count(*)`+from, args...).Scan(&count); err != nil {
+			return empty, err
+		}
+		if start > count {
+			return empty, fmt.Errorf("sqlite: cursor index exceeds page")
+		}
+	}
+	page := driver.Page[driver.Record]{Items: items, AsOf: model.Natural64(r.at)}
+	if len(items) > limit {
+		page.Items = items[:limit]
+		page.NextCursor = r.nextCursor("query", digest, start+uint64(limit))
+	}
+	return page, nil
+}
+
+// queryHistorical selects the last live version at the requested revision
+// before paging. objects retains immutable kinds through delete/recreate, and
+// the fixed-width revision keys preserve the complete uint64 revision order.
+// Base versions carry the exact historical bytes. Non-base versions use the
+// existing bounded replay, whose patch Value bytes can differ from a current
+// post-image even when both have the same record revision.
+func (r *reader) queryHistorical(ctx context.Context, kind any, hasKind bool, digest string, start uint64, limit int) (driver.Page[driver.Record], error) {
+	empty := driver.Page[driver.Record]{}
+	if start > math.MaxInt64 {
+		return empty, fmt.Errorf("sqlite: cursor index exceeds page")
+	}
+	from := ` FROM objects o JOIN versions v ON v.key=o.key AND v.rev=(SELECT max(h.rev) FROM versions h WHERE h.key=o.key AND h.rev<=?) WHERE json_type(v.data,'$.Deleted') IS NOT 'true'`
+	args := []any{revKey(r.at)}
+	if hasKind {
+		from += ` AND o.kind=?`
+		args = append(args, kind)
+	}
+	pageArgs := append(append([]any(nil), args...), limit+1, int64(start))
+	rows, err := r.tx.QueryContext(ctx, `SELECT o.key,o.kind,v.data`+from+` ORDER BY o.key LIMIT ? OFFSET ?`, pageArgs...)
+	if err != nil {
+		return empty, err
+	}
+	type selectedVersion struct {
+		key, kind string
+		version   []byte
+	}
+	selected := make([]selectedVersion, 0, limit+1)
+	for rows.Next() {
+		var row selectedVersion
+		if err = rows.Scan(&row.key, &row.kind, &row.version); err != nil {
+			break
+		}
+		selected = append(selected, row)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	closeErr := rows.Close()
+	if err != nil {
+		return empty, err
+	}
+	if closeErr != nil {
+		return empty, closeErr
+	}
+	if len(selected) == 0 && start != 0 {
+		var count uint64
+		if err = r.tx.QueryRowContext(ctx, `SELECT count(*)`+from, args...).Scan(&count); err != nil {
+			return empty, err
+		}
+		if start > count {
+			return empty, fmt.Errorf("sqlite: cursor index exceeds page")
+		}
+	}
+	items := make([]driver.Record, 0, len(selected))
+	for _, row := range selected {
+		var last driver.Version
+		if err = json.Unmarshal(row.version, &last); err != nil {
+			return empty, err
+		}
+		if last.Base {
+			items = append(items, driver.Record{Ref: last.Ref, Kind: row.kind, Revision: last.Revision, Body: bytes.Clone(last.Body)})
+			continue
+		}
+		// Selection rows are closed before replay uses the transaction.
+		record, found, err := r.recordAt(ctx, row.key)
+		if err != nil {
+			return empty, err
+		}
+		if !found {
+			return empty, fmt.Errorf("sqlite: selected historical record is missing")
+		}
+		items = append(items, record)
+	}
+	page := driver.Page[driver.Record]{Items: items, AsOf: model.Natural64(r.at)}
+	if len(items) > limit {
+		page.Items = items[:limit]
+		page.NextCursor = r.nextCursor("query", digest, start+uint64(limit))
 	}
 	return page, nil
 }

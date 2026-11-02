@@ -156,6 +156,7 @@ internal/core/authz/identity.go
 internal/core/authz/identity_test.go
 internal/core/authz/mutation.go
 internal/core/authz/mutation_test.go
+internal/core/authz/read_preparation.go
 internal/core/authz/types.go
 internal/core/dumpformat/BUILD.bazel
 internal/core/dumpformat/README.md
@@ -561,6 +562,12 @@ internal/server/authzrpc/hierarchy.go
 internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/predicate_count_test.go
+internal/server/authzrpc/ready_activation_internal_test.go
+internal/server/authzrpc/ready_activation_test.go
+internal/server/authzrpc/ready_compiled.go
+internal/server/authzrpc/ready_compiled_contract_test.go
+internal/server/authzrpc/ready_scan_test.go
+internal/server/authzrpc/ready_selection_binding.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
 internal/server/claimrpc/BUILD.bazel
@@ -792,6 +799,9 @@ internal/storage/driver/keys_test.go
 internal/storage/driver/offline_history.go
 internal/storage/driver/offline_history_test.go
 internal/storage/driver/offline_restore.go
+internal/storage/driver/read_selection.go
+internal/storage/driver/read_selection_sql.go
+internal/storage/driver/read_selection_test.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
 internal/storage/driver/restore_test.go
@@ -811,6 +821,8 @@ internal/storage/memory/noop.go
 internal/storage/memory/noop_test.go
 internal/storage/memory/offline_history.go
 internal/storage/memory/offline_restore.go
+internal/storage/memory/read_selection.go
+internal/storage/memory/read_selection_test.go
 internal/storage/memory/reader.go
 internal/storage/memory/staged_reads_test.go
 internal/storage/memory/store.go
@@ -839,6 +851,9 @@ internal/storage/postgres/offline_restore.go
 internal/storage/postgres/pending_test.go
 internal/storage/postgres/persistence_test.go
 internal/storage/postgres/query.go
+internal/storage/postgres/query_paging_test.go
+internal/storage/postgres/read_selection.go
+internal/storage/postgres/read_selection_test.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
 internal/storage/postgres/schema.go
@@ -863,6 +878,9 @@ internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/pending_test.go
 internal/storage/sqlite/process_test.go
 internal/storage/sqlite/publication_cancel_test.go
+internal/storage/sqlite/query_paging_test.go
+internal/storage/sqlite/read_selection.go
+internal/storage/sqlite/read_selection_test.go
 internal/storage/sqlite/reader.go
 internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/schema.go

@@ -286,6 +286,9 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	if q.AsOf != nil && q.AsOf.String() != model.Natural64(r.at).String() {
 		return driver.Page[driver.Record]{}, fmt.Errorf("memory: query as-of differs from reader snapshot")
 	}
+	if q.ReadSelection != nil {
+		return r.queryReadSelection(ctx, q)
+	}
 	for field := range q.Filter {
 		switch field {
 		case "kind", "id", "key", "type", "project", "status":

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -99,6 +100,9 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 			return empty, fmt.Errorf("postgres: query as-of differs from snapshot")
 		}
 	}
+	if q.ReadSelection != nil {
+		return r.queryReadSelection(ctx, q)
+	}
 	for field, value := range q.Filter {
 		switch field {
 		case "kind", "id", "key", "type", "project", "status":
@@ -120,6 +124,14 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	limit, err := limitValue(q.Limit)
 	if err != nil {
 		return empty, err
+	}
+	// Read pinned and validated meta.Head in this repeatable-read transaction.
+	// Only compile the closed empty/kind predicate for its current post-images;
+	// historical, staged and body-filter queries keep the reference path below.
+	head, _ := r.meta.Head.Uint64()
+	kind, hasKind := q.Filter["kind"]
+	if r.writer == nil && r.at == head && (len(q.Filter) == 0 || len(q.Filter) == 1 && hasKind) {
+		return r.queryHead(ctx, kind, hasKind, filter, start, limit)
 	}
 	rows, err := r.sql.QueryContext(ctx, `SELECT key,ref FROM plug_postgres.records ORDER BY key`)
 	if err != nil {
@@ -189,6 +201,74 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	page := driver.Page[driver.Record]{Items: items[start:end], AsOf: model.Natural64(r.at)}
 	if end < uint64(len(items)) {
 		page.NextCursor = r.next("query", filter, end)
+	}
+	return page, nil
+}
+
+// queryHead reads only one ordered current page and a continuation row. The
+// snapshot is already pinned; records retains tombstones, so deleted rows must
+// be excluded before the limit. Bytea key order matches the reference Go order.
+// This selects content only and does not compile an authorization decision.
+func (r *reader) queryHead(ctx context.Context, kind any, hasKind bool, filter string, start uint64, limit int) (driver.Page[driver.Record], error) {
+	empty := driver.Page[driver.Record]{}
+	if start > math.MaxInt64 {
+		return empty, fmt.Errorf("postgres: query cursor index beyond results")
+	}
+	from := ` FROM plug_postgres.records WHERE NOT deleted AND revision<=$1`
+	args := []any{decimal(r.at)}
+	if hasKind {
+		from += ` AND kind=$2`
+		args = append(args, kind)
+	}
+	query := `SELECT ref,kind,revision::text,body` + from + fmt.Sprintf(` ORDER BY key LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2)
+	pageArgs := append(append([]any(nil), args...), limit+1, int64(start))
+	rows, err := r.sql.QueryContext(ctx, query, pageArgs...)
+	if err != nil {
+		return empty, err
+	}
+	items := make([]driver.Record, 0, limit+1)
+	for rows.Next() {
+		var raw []byte
+		var revision string
+		var record driver.Record
+		if err = rows.Scan(&raw, &record.Kind, &revision, &record.Body); err == nil {
+			err = decode(raw, &record.Ref)
+		}
+		if err != nil {
+			break
+		}
+		var n uint64
+		if n, err = parseCounter(revision); err != nil {
+			break
+		}
+		record.Revision = model.Natural64(n)
+		items = append(items, record)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	closeErr := rows.Close()
+	if err != nil {
+		return empty, err
+	}
+	if closeErr != nil {
+		return empty, closeErr
+	}
+	if len(items) == 0 && start != 0 {
+		// Retain the reference distinction between exactly at the end and a
+		// forged, otherwise bound cursor beyond the complete result set.
+		var count uint64
+		if err = r.sql.QueryRowContext(ctx, `SELECT count(*)`+from, args...).Scan(&count); err != nil {
+			return empty, err
+		}
+		if start > count {
+			return empty, fmt.Errorf("postgres: query cursor index beyond results")
+		}
+	}
+	page := driver.Page[driver.Record]{Items: items, AsOf: model.Natural64(r.at)}
+	if len(items) > limit {
+		page.Items = items[:limit]
+		page.NextCursor = r.next("query", filter, start+uint64(limit))
 	}
 	return page, nil
 }

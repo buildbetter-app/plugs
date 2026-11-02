@@ -47,19 +47,21 @@ type Record struct {
 	Body     []byte
 }
 type Query struct {
-	Filter map[string]any
-	Cursor *Cursor
-	Limit  int
-	AsOf   *model.Revision
+	ReadSelection *ReadSelection
+	Filter        map[string]any
+	Cursor        *Cursor
+	Limit         int
+	AsOf          *model.Revision
 }
 type PageReq struct {
 	Cursor *Cursor
 	Limit  int
 }
 type Page[T any] struct {
-	Items      []T
-	NextCursor *Cursor
-	AsOf       model.Revision
+	ReadSelection *ReadSelectionPage
+	Items         []T
+	NextCursor    *Cursor
+	AsOf          model.Revision
 }
 type Version struct {
 	Ref       Ref
