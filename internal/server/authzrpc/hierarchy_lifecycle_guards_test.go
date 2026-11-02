@@ -131,48 +131,89 @@ func TestHierarchyMixedCloseRechecksCurrentMembershipAndPreservesFinitePolicy(t 
 
 func TestHierarchyMixedCloseExpectationOnlyPrivacyAndReparentedTarget(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite"} {
-		t.Run(engine, func(t *testing.T) {
-			f := newHierarchyLifecycleFixture(t, engine)
-			rules := &hierarchyLifecycleRules{}
-			f.app.Checker.chain.Rules = []authz.RuleSet{rules}
-			params := hierarchyLifecycleMixedParams(2120, nil)
-			ops := params["changeSet"].(map[string]any)["ops"].([]any)
-			close := ops[2].(map[string]any)
-			close["target"] = hRef("child") // same stored target reparented in slot 1.
-			hidden := hRef("hidden-one")
-			close["expect"] = []model.Precondition{model.PreconditionByRevision(hidden, model.Natural64(0))}
-			rules.setRef(hidden.ID, true)
-			head, rows := hierarchyLifecycleState(t, f, hRef("child"))
-			hierarchyLifecycleForbidden(t, f.callRPC(t, hAgent(), "tx.apply", params))
-			hierarchyLifecycleSameState(t, f, head, rows, hRef("child"))
-			hierarchyLifecycleNoReceipt(t, f, params)
-			rules.setRef(hidden.ID, false)
-			stale := f.callRPC(t, hAgent(), "tx.apply", params)
-			if stale.Error == nil || stale.Error.Data.Code != "precondition_failed" || stale.Error.Data.Details["reason"] != "revision" || fmt.Sprint(stale.Error.Data.Details["currentRevision"]) != hierarchyLifecycleRevision(t, f, hidden).String() {
-				t.Fatalf("allowed stale close expectation=%+v", stale)
-			}
-			hierarchyLifecycleSameState(t, f, head, rows, hRef("child"))
-			hierarchyLifecycleNoReceipt(t, f, params)
-			close["expect"] = []model.Precondition{model.PreconditionByRevision(hidden, hierarchyLifecycleRevision(t, f, hidden))}
-			first := f.callRPC(t, hAgent(), "tx.apply", params)
-			if first.Error != nil || first.Meta.Replayed {
-				t.Fatalf("reparent then close failed: %+v", first)
-			}
-			var commit model.Commit
-			if err := json.Unmarshal(first.Result, &commit); err != nil || len(commit.Results) != 3 || commit.Results[1].Ref.ID != "child" || commit.Results[2].Ref.ID != "child" {
-				t.Fatalf("mixed result=%s err=%v", first.Result, err)
-			}
-			head, rows = hierarchyLifecycleState(t, f, hRef("child"))
-			rules.setRef(hidden.ID, true)
-			hierarchyLifecycleForbidden(t, f.callRPC(t, hAgent(), "tx.apply", params))
-			hierarchyLifecycleSameState(t, f, head, rows, hRef("child"))
-			rules.setRef(hidden.ID, false)
-			replay := f.callRPC(t, hAgent(), "tx.apply", params)
-			if replay.Error != nil || !replay.Meta.Replayed || !bytes.Equal(first.Result, replay.Result) {
-				t.Fatalf("restored close expectation replay=%+v", replay)
-			}
-			hierarchyLifecycleSameState(t, f, head, rows, hRef("child"))
-		})
+		for _, order := range []string{"reparent-close", "close-reparent"} {
+			t.Run(engine+"/"+order, func(t *testing.T) {
+				f := newHierarchyLifecycleFixture(t, engine)
+				rules := &hierarchyLifecycleRules{}
+				f.app.Checker.chain.Rules = []authz.RuleSet{rules}
+				params := hierarchyLifecycleMixedParams(2120, nil)
+				ops := params["changeSet"].(map[string]any)["ops"].([]any)
+				close := ops[2].(map[string]any)
+				close["target"] = hRef("child")
+				if order == "close-reparent" {
+					ops[1], ops[2] = ops[2], ops[1]
+				}
+				hidden := hRef("hidden-one")
+				close["expect"] = []model.Precondition{model.PreconditionByRevision(hidden, model.Natural64(0))}
+				rules.setRef(hidden.ID, true)
+				head, rows := hierarchyLifecycleState(t, f, hRef("child"))
+				hierarchyLifecycleForbidden(t, f.callRPC(t, hAgent(), "tx.apply", params))
+				hierarchyLifecycleSameState(t, f, head, rows, hRef("child"))
+				hierarchyLifecycleNoReceipt(t, f, params)
+				rules.setRef(hidden.ID, false)
+				stale := f.callRPC(t, hAgent(), "tx.apply", params)
+				if stale.Error == nil || stale.Error.Data.Code != "precondition_failed" || stale.Error.Data.Details["reason"] != "revision" || fmt.Sprint(stale.Error.Data.Details["currentRevision"]) != hierarchyLifecycleRevision(t, f, hidden).String() {
+					t.Fatalf("allowed stale close expectation=%+v", stale)
+				}
+				hierarchyLifecycleSameState(t, f, head, rows, hRef("child"))
+				hierarchyLifecycleNoReceipt(t, f, params)
+				close["expect"] = []model.Precondition{model.PreconditionByRevision(hidden, hierarchyLifecycleRevision(t, f, hidden))}
+				first := f.callRPC(t, hAgent(), "tx.apply", params)
+				if first.Error != nil || first.Meta.Replayed {
+					t.Fatalf("reparent then close failed: %+v", first)
+				}
+				var commit model.Commit
+				if err := json.Unmarshal(first.Result, &commit); err != nil || len(commit.Results) != 3 || commit.Results[1].Ref.ID != "child" || commit.Results[2].Ref.ID != "child" {
+					t.Fatalf("mixed result=%s err=%v", first.Result, err)
+				}
+				entries, err := f.snapshot(t).Changesets(context.Background(), nil, 100)
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, entry := range entries {
+					if entry.Revision.String() != commit.Revision.String() {
+						continue
+					}
+					for index, change := range entry.Changes {
+						if change.Ref.ID != "child" {
+							continue
+						}
+						found = true
+						parent, status := false, false
+						for _, path := range change.ChangedPaths {
+							parent = parent || path == "/parent"
+							status = status || path == "/fields/status"
+						}
+						if change.Op != model.OpClose || !parent || !status {
+							t.Fatalf("coalesced close lost parent/status history: %+v", change)
+						}
+						eventFound := false
+						for _, event := range entry.Events {
+							if event.ChangeIndex.String() == fmt.Sprint(index) && event.Type == model.EventBeadClosed && event.Resource.Ref.ID == "child" && event.Provenance.Method == "tx.apply" && event.Provenance.Slot == "close" {
+								eventFound = true
+							}
+						}
+						if !eventFound {
+							t.Fatalf("coalesced close lost typed slot provenance: %+v", entry.Events)
+						}
+					}
+				}
+				if !found {
+					t.Fatal("committed close history missing")
+				}
+				head, rows = hierarchyLifecycleState(t, f, hRef("child"))
+				rules.setRef(hidden.ID, true)
+				hierarchyLifecycleForbidden(t, f.callRPC(t, hAgent(), "tx.apply", params))
+				hierarchyLifecycleSameState(t, f, head, rows, hRef("child"))
+				rules.setRef(hidden.ID, false)
+				replay := f.callRPC(t, hAgent(), "tx.apply", params)
+				if replay.Error != nil || !replay.Meta.Replayed || !bytes.Equal(first.Result, replay.Result) {
+					t.Fatalf("restored close expectation replay=%+v", replay)
+				}
+				hierarchyLifecycleSameState(t, f, head, rows, hRef("child"))
+			})
+		}
 	}
 }
 

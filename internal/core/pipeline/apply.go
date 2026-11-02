@@ -601,10 +601,15 @@ func (p *prepared) changeRecords() []model.ChangeRecord {
 				kind = model.OpReparent
 			}
 		}
-		// A slot patch plus its optional reason comment is one transition.
-		// Keep the changed blocker anchored to the patch, not the comment.
-		if p.audit != nil && isSlot(p.proposal.Meta.Method) && statusChanged(pending) {
-			kind = model.OpPatch
+		// Keep a real typed close transition anchored to its lifecycle arm,
+		// including when another operation reparents the same stored target.
+		// statusChanged excludes creates, deletes and same-slot settlements.
+		if p.audit != nil && statusChanged(pending) {
+			if p.closes[id] {
+				kind = model.OpClose
+			} else if isSlot(p.proposal.Meta.Method) {
+				kind = model.OpPatch
+			}
 		}
 		changes = append(changes, model.ChangeRecord{Ref: pending.ref, Op: kind, FromRevision: pending.revision, ChangedPaths: paths})
 	}
