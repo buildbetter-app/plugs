@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -281,4 +284,230 @@ CREATE TRIGGER reject_batch_receipt BEFORE INSERT ON plug_postgres.receipts FOR 
 			t.Logf("fault=%s attempts=%d; all publication families rolled back, next revision=1", fault, attempts)
 		})
 	}
+}
+
+// Statement transition tables count actual engine publications, independently
+// of the SQL spelling or the driver's chosen batch size.
+func TestCommitLargeBatchStatementsAndHistory(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	if _, err := s.db.ExecContext(ctx, `
+	 CREATE TABLE publication_probe (relation text NOT NULL, rows bigint NOT NULL);
+	 CREATE FUNCTION observe_publication() RETURNS trigger LANGUAGE plpgsql AS $$
+	 BEGIN
+	   INSERT INTO publication_probe SELECT TG_TABLE_NAME,count(*) FROM published_rows;
+	   RETURN NULL;
+	 END $$;
+	 CREATE TRIGGER observe_records AFTER INSERT ON plug_postgres.records
+	 REFERENCING NEW TABLE AS published_rows FOR EACH STATEMENT EXECUTE FUNCTION observe_publication();
+	 CREATE TRIGGER observe_versions AFTER INSERT ON plug_postgres.versions
+	 REFERENCING NEW TABLE AS published_rows FOR EACH STATEMENT EXECUTE FUNCTION observe_publication();
+	 CREATE TRIGGER observe_states AFTER INSERT ON plug_postgres.states
+	 REFERENCING NEW TABLE AS published_rows FOR EACH STATEMENT EXECUTE FUNCTION observe_publication()`); err != nil {
+		t.Fatal(err)
+	}
+	tx, h, refs, states := stageLargePublication(t, s, lease)
+	entry, err := tx.Commit(ctx, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, relation := range []string{"records", "versions", "states"} {
+		var statements, rows int
+		if err := s.db.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(rows),0) FROM publication_probe WHERE relation=$1`, relation).Scan(&statements, &rows); err != nil {
+			t.Fatal(err)
+		}
+		wantRows := 1000
+		if relation == "states" {
+			wantRows = 3001
+		}
+		if rows != wantRows {
+			t.Errorf("%s published %d rows, want %d", relation, rows, wantRows)
+		}
+		// A coarse round-trip bound, deliberately independent of batch size:
+		// thousands of serial INSERTs cannot satisfy the shared write budget.
+		if statements > 32 {
+			t.Errorf("%s used %d publication statements for %d rows; want at most 32", relation, statements, rows)
+		}
+		t.Logf("actual PostgreSQL %s: statements=%d rows=%d", relation, statements, rows)
+	}
+	r := testRead(t, s, nil)
+	records, err := r.Get(ctx, refs)
+	if err != nil || len(records) != len(refs) {
+		t.Fatalf("durable records=%d: %v", len(records), err)
+	}
+	for _, record := range records {
+		if record.Revision.String() != "1" || record.Kind != "test" || string(record.Body) != `{"value":1}` {
+			t.Fatalf("durable image: %+v", record)
+		}
+	}
+	observed, err := r.Observe(ctx, states)
+	if err != nil || len(observed) != len(states) {
+		t.Fatalf("durable states=%d: %v", len(observed), err)
+	}
+	for _, state := range observed {
+		if !state.Present || state.Revision.String() != "1" {
+			t.Fatalf("durable state: %+v", state)
+		}
+		if state.Key.Kind == driver.LockDerived && (state.Derived == nil || string(state.Derived.Value) != "rank") {
+			t.Fatalf("durable derived row: %+v", state)
+		}
+	}
+	receipt, err := r.IdempotencyByKey(ctx, "system:postgres-test", "", h.Method, h.IdempotencyKey)
+	if err != nil || receipt == nil || !reflect.DeepEqual(receipt.Changeset, entry) || len(receipt.Commit.Results) != 1000 {
+		t.Fatalf("durable receipt: %+v %v", receipt, err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Replay must return the exact original publication, even when a retry
+	// proposes a different body. It must not add a row, version, or changeset.
+	retry, retryHeader := beginTest(t, s, lease, testLock(refs[0]))
+	if err := retry.Put(ctx, driver.Record{Ref: refs[0], Kind: "test", Body: []byte(`{"value":99}`)}); err != nil {
+		t.Fatal(err)
+	}
+	retryHeader.IdempotencyKey, retryHeader.Method, retryHeader.RequestHash = h.IdempotencyKey, h.Method, h.RequestHash
+	if replay, err := retry.Commit(ctx, retryHeader); err != nil || !reflect.DeepEqual(replay, entry) {
+		t.Fatalf("exact replay: %+v %v", replay, err)
+	}
+	for _, table := range []string{"versions", "changesets", "receipts"} {
+		var n int
+		if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM plug_postgres.`+table).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		want := 1
+		if table == "versions" {
+			want = 1000
+		}
+		if n != want {
+			t.Fatalf("replay %s=%d, want %d", table, n, want)
+		}
+	}
+	// Patch, deletion, resurrection, and the next periodic base retain their
+	// original version rules after publication changes from scalar to batches.
+	for i := 2; i <= 33; i++ {
+		change := conformance.FixtureChange{Ref: refs[0], Kind: "test", Op: model.OpPatch, Body: []byte(fmt.Sprintf(`{"value":%d}`, i))}
+		if i == 3 {
+			change.Op, change.Body = model.OpDelete, nil
+		}
+		if _, err := conformance.Seed(ctx, s, lease, driver.ChangesetHeader{}, []conformance.FixtureChange{change}); err != nil {
+			t.Fatalf("revision %d: %v", i, err)
+		}
+	}
+	reader := testRead(t, s, nil)
+	versions, err := reader.Versions(ctx, refs[0], driver.PageReq{})
+	if err != nil || len(versions.Items) != 33 {
+		t.Fatalf("version history=%d %v", len(versions.Items), err)
+	}
+	for _, version := range versions.Items {
+		n, _ := version.Revision.Uint64()
+		wantBase := n == 1 || n == 4 || n == 33
+		if version.Base != wantBase || version.Deleted != (n == 3) || version.Principal.ID != "postgres-test" && n == 1 {
+			t.Fatalf("version flags: %+v", version)
+		}
+		if n == 2 && (len(version.Patch) == 0 || len(version.Body) != 0) {
+			t.Fatalf("patch replaced by base: %+v", version)
+		}
+	}
+	for _, n := range []uint64{1, 2, 3, 4, 32, 33} {
+		revision := model.Natural64(n)
+		historical := testRead(t, s, &revision)
+		got, err := historical.Get(ctx, refs[:1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n == 3 {
+			if len(got) != 0 {
+				t.Fatalf("deleted historical image: %+v", got)
+			}
+		} else if len(got) != 1 || string(got[0].Body) != fmt.Sprintf(`{"value":%d}`, n) {
+			t.Fatalf("historical revision %d: %+v", n, got)
+		}
+		if err := historical.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Log("1000 durable records/base versions, 3001 states, exact receipt/replay, patch/delete/resurrection/periodic base and historical reconstruction PASS")
+}
+
+func TestCommitLargeBatchRollsBackLaterStateFailure(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	// A sequence survives rollback, proving that an earlier state statement
+	// succeeded before a later one failed. The trigger is disposable test DDL.
+	if _, err := s.db.ExecContext(ctx, `
+	 CREATE SEQUENCE publication_attempt;
+	 CREATE FUNCTION fail_later_publication() RETURNS trigger LANGUAGE plpgsql AS $$
+	 BEGIN
+	   IF nextval('publication_attempt')=2 THEN
+	     RAISE EXCEPTION 'injected later state publication failure';
+	   END IF;
+	   RETURN NULL;
+	 END $$;
+	 CREATE TRIGGER fail_later_states AFTER INSERT ON plug_postgres.states
+	 FOR EACH STATEMENT EXECUTE FUNCTION fail_later_publication()`); err != nil {
+		t.Fatal(err)
+	}
+	tx, h, _, _ := stageLargePublication(t, s, lease)
+	if _, err := tx.Commit(ctx, h); err == nil || !strings.Contains(err.Error(), "injected later state publication failure") {
+		t.Fatalf("late publication failure: %v", err)
+	}
+	var attempts int
+	if err := s.db.QueryRowContext(ctx, `SELECT last_value FROM publication_attempt`).Scan(&attempts); err != nil || attempts != 2 {
+		t.Fatalf("state publication attempts=%d %v", attempts, err)
+	}
+	for _, table := range []string{"records", "versions", "states", "changesets", "receipts"} {
+		var n int
+		if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM plug_postgres.`+table).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("partial %s publication=%d %v", table, n, err)
+		}
+	}
+	meta, err := s.Meta(ctx)
+	if err != nil || !meta.Head.IsZero() {
+		t.Fatalf("failed publication advanced head: %+v %v", meta, err)
+	}
+	t.Log("later state statement failure rolled back all 1000 records/versions, prior states, receipt, changeset and head")
+}
+
+func stageLargePublication(t *testing.T, s *Store, lease driver.ActiveLease) (driver.WriteTx, driver.ChangesetHeader, []driver.Ref, []driver.LockKey) {
+	t.Helper()
+	ctx := context.Background()
+	refs := make([]driver.Ref, 1000)
+	states := make([]driver.LockKey, 0, 3001)
+	keys := make([]driver.LockKey, 0, 4001)
+	rows := make([]driver.DerivedRow, 1000)
+	facts := make([]driver.ReadFact, 2001)
+	for i := range refs {
+		refs[i] = testRef(fmt.Sprintf("pl-publication-%04d", i))
+		keys = append(keys, testLock(refs[i]))
+		rows[i] = driver.DerivedRow{Key: fmt.Sprintf("rank-%04d", i), Value: []byte("rank")}
+		states = append(states, driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: rows[i].Key}})
+	}
+	for i := range facts {
+		facts[i] = driver.ReadFact(fmt.Sprintf("publication/fact/%04d", i))
+		states = append(states, driver.LockKey{Kind: driver.LockReadFact, Fact: facts[i]})
+	}
+	sort.Slice(states, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(states[i])
+		b, _ := driver.EncodeLockKey(states[j])
+		return a < b
+	})
+	keys = append(keys, states...)
+	tx, h := beginTest(t, s, lease, keys...)
+	for _, ref := range refs {
+		if err := tx.Put(ctx, driver.Record{Ref: ref, Kind: "test", Body: []byte(`{"value":1}`)}); err != nil {
+			t.Fatal(err)
+		}
+		h.Changes = append(h.Changes, model.ChangeRecord{Ref: ref, Op: model.OpCreate})
+		h.Response.Results = append(h.Response.Results, model.OpResult{Ref: ref, Revision: model.Natural64(1)})
+	}
+	if err := tx.PutDerived(ctx, driver.DerivedSortKey, nil, rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.BumpReadFacts(ctx, facts); err != nil {
+		t.Fatal(err)
+	}
+	h.IdempotencyKey, h.Method, h.RequestHash = "large-publication", "test.commit", "same-request"
+	return tx, h, refs, states
 }

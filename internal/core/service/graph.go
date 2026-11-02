@@ -254,9 +254,33 @@ func (o *Ontology) readyDependencies(doc pipeline.Document, graph map[string]sto
 			return false, nil
 		}
 	}
-	// The explicit parent field is hierarchy/disclosure metadata. It is
-	// checked by close guards, while ready membership is governed by graph
-	// dependency edges so a child remains visible when its parent is hidden.
+	return o.readyAncestors(doc, graph)
+}
+
+// readyAncestors applies canonical parent scheduling to ready and fresh claims.
+// It deliberately leaves close and settlement's direct blocker guard unchanged.
+func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
+	seen := map[string]bool{doc.ID: true}
+	for doc.Parent != nil {
+		parent := doc.Parent
+		row, exists := graph[parent.ID]
+		if !exists || !parent.IsID() || !parent.Branch.IsZero() || seen[parent.ID] {
+			return false, nil
+		}
+		// An open parent alone is not a blocker. Deferred/backlog ancestors
+		// and their live blockers suppress the entire subtree, using each
+		// ancestor's own project ontology from the same complete snapshot.
+		category, known := o.effective(row.doc.Project).Category(state(row.doc).Status)
+		if !known || category == ontology.Backlog {
+			return false, nil
+		}
+		unblocked, err := o.noOpenBlockers(row.doc, graph)
+		if err != nil || !unblocked {
+			return unblocked, err
+		}
+		seen[parent.ID] = true
+		doc = row.doc
+	}
 	return true, nil
 }
 
