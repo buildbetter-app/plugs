@@ -401,6 +401,15 @@ func TestB23OrdinaryCountOptInCompatibilityAcrossDrivers(t *testing.T) {
 				t.Fatalf("false changed existing continuation: %+v", last)
 			}
 		}
+		grouped := map[string]any{"definition": map[string]any{"filter": map[string]any{}, "fields": []string{}, "groupBy": []string{"type"}}}
+		first := f.call(t, countReader(), "view.run", grouped, 17100)
+		success(t, first)
+		grouped["countOnly"] = false
+		second := f.call(t, countReader(), "view.run", grouped, 17101)
+		success(t, second)
+		if string(first.Result) != string(second.Result) {
+			t.Fatalf("false changed existing grouped response: absent=%s false=%s", first.Result, second.Result)
+		}
 	})
 }
 
@@ -421,11 +430,15 @@ func TestB23OrdinaryExactCountCurrentAsOfAcrossDrivers(t *testing.T) {
 		narrow := countReader()
 		narrow.Caveats = map[string]any{"refs": []model.Ref{fixtureRef(2)}}
 		exactCountPage(t, f.call(t, narrow, "view.run", map[string]any{"countOnly": true, "definition": definition, "asOf": first.AsOf}, 18004), 1)
+		// CP7 user reads do not depend on project activity. Preserve that
+		// adopted rule; current caller caveats still constrain old content.
 		f.base.Projects[0].Active = false
 		if err := f.facts.Replace(f.base); err != nil {
 			t.Fatal(err)
 		}
-		exactCountPage(t, f.call(t, countReader(), "view.run", map[string]any{"countOnly": true, "definition": definition, "asOf": first.AsOf}, 18005), 0)
+		exactCountPage(t, f.call(t, countReader(), "view.run", map[string]any{"countOnly": true, "definition": definition, "asOf": first.AsOf}, 18005), 2)
+		narrow.Caveats = map[string]any{"refs": []model.Ref{}}
+		exactCountPage(t, f.call(t, narrow, "view.run", map[string]any{"countOnly": true, "definition": definition, "asOf": first.AsOf}, 18006), 0)
 	})
 }
 
