@@ -131,6 +131,13 @@ h3 { margin-top: 5px; font-size: 16px; font-weight: 700; letter-spacing: -.015em
 
 .explanation-panel { max-width: 720px; padding: 24px; }
 .explanation-panel label { display: block; color: var(--ink-soft); font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.epic-visible-total { margin-top: 16px; color: var(--ink); font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.epic-status-counts { margin: 16px 0; }
+.epic-status-counts > div { display: flex; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line-soft); }
+.epic-status-counts dt { color: var(--ink-soft); overflow-wrap: anywhere; min-width: 0; }
+.epic-status-counts dd { margin: 0; color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+.epic-remainder { margin: 16px 0; color: var(--ink-soft); font-size: 13px; }
+#epic-form { margin-top: 20px; }
 .explain-controls { display: flex; gap: 10px; margin-top: 10px; }
 .explain-controls input { min-width: 0; flex: 1; height: 38px; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 0 11px; color: var(--ink); background: var(--paper); font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; }
 .explain-state { min-height: 58px; margin-top: 18px; color: var(--ink-soft); font-size: 13px; line-height: 1.5; }
