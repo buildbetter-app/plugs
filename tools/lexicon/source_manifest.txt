@@ -412,6 +412,7 @@ internal/integration/labelcontract/README.md
 internal/integration/labelcontract/authorization_test.go
 internal/integration/labelcontract/fixture_test.go
 internal/integration/labelcontract/labels_test.go
+internal/integration/labelcontract/query_test.go
 internal/integration/localclisession/BUILD.bazel
 internal/integration/localclisession/session_test.go
 internal/integration/memorycontract/BUILD.bazel
