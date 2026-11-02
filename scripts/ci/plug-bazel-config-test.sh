@@ -48,7 +48,7 @@ collector_literals = {node.value for node in ast.walk(ast.parse(collector))
 required_workflows = {
     "plug-bazel.yml", "plug-nightly-restore-diffs.yml", "plug-remote-bazel.yml", "plug-runs-on-smoke.yml",
 }
-allowed_workflows = required_workflows | {"plug-public-bundle.yml", "plug-beads-bazel.yml"}
+allowed_workflows = required_workflows | {"plug-public-bundle.yml", "plug-beads-bazel.yml", "plug-cp7-latency.yml"}
 
 def check_workflow_inventory(directory):
     workflow_files = {
