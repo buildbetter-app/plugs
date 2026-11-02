@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_test")
+
+_DEPS = [
+    "//internal/core/dumpformat",
+    "//internal/core/model",
+    "//internal/core/pipeline",
+    "//internal/core/service",
+    "//internal/integration/converterroundtrip",
+    "//internal/storage/driver",
+    "//internal/storage/memory",
+]
+
+go_binary(
+    name = "roundtrip",
+    srcs = ["main.go"],
+    importpath = "github.com/buildbetter-app/plugs/tools/roundtrip",
+    visibility = ["//visibility:public"],
+    deps = _DEPS,
+)
+
+go_test(
+    name = "roundtrip_test",
+    srcs = ["main.go", "main_test.go"],
+    data = ["//internal/integration/offlinehistory:lexicon_files"],
+    deps = _DEPS,
+)
