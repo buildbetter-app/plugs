@@ -90,6 +90,9 @@ type Config struct {
 	// RestoreImportPlanner is converter-owned inspection of the exact archive;
 	// composition never derives or accepts a caller-supplied derived digest.
 	RestoreImportPlanner RestoreImportPlanner
+	// Compaction supplies a host-owned summary and trusted D32 verifier. Nil
+	// keeps summary generation and reversal unavailable; there is no egress.
+	Compaction *service.CompactionConfig
 
 	// ViewReader and Readiness are optional host-owned read projections. When
 	// ViewReader is present, view.run/view.explain and view.watch are composed
@@ -289,7 +292,11 @@ func (r *Runtime) bind(config Config) error {
 	ontology := service.NewOntology(nil)
 	writer, metrics := newPipelineWriter(r.Store, r.Lease, pipeline.WithOntology(ontology))
 	r.Metrics = metrics
-	r.Service = service.New(r.Store, r.Lease, writer, service.WithOntology(ontology))
+	serviceOptions := []service.Option{service.WithOntology(ontology)}
+	if config.Compaction != nil {
+		serviceOptions = append(serviceOptions, service.WithCompaction(*config.Compaction))
+	}
+	r.Service = service.New(r.Store, r.Lease, writer, serviceOptions...)
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		return fmt.Errorf("composition: create RPC registry: %w", err)
