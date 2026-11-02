@@ -128,9 +128,13 @@ func TestEphemeralWorkflowUsesStandardToolsAcrossRestartAndLeavesNoHistory(t *te
 		"id": map[string]any{"id": itemID}, "_meta": workflowMeta(strings.Repeat("3", 64), "other-agent"),
 	})), "forbidden")
 
-	commented := result(t, call(t, server, ctx, "bead.comment", paramsJSON(t, map[string]any{
+	commentResponse := call(t, server, ctx, "bead.comment", paramsJSON(t, map[string]any{
 		"id": map[string]any{"id": itemID}, "body": "private workflow comment", "_meta": workflowMeta(strings.Repeat("5", 64), "owner-agent"),
-	})))
+	}))
+	if _, ok := commentResponse["error"]; ok {
+		t.Fatalf("standard bead.comment response=%v", commentResponse)
+	}
+	commented := result(t, commentResponse)
 	if len(commented["results"].([]any)) != 1 {
 		t.Fatalf("standard bead.comment result=%v", commented)
 	}
