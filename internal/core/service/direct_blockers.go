@@ -91,7 +91,7 @@ func ReadDirectBlockers(ctx context.Context, reader driver.Reader, req DirectBlo
 	}
 	links := make([]pipeline.Link, 0, len(dependent.Links))
 	for _, link := range dependent.Links {
-		if link.Kind != "blocks" && link.Kind != "conditional-blocks" {
+		if link.Kind != "blocks" && link.Kind != "conditional-blocks" && link.Kind != "waits-for" {
 			continue
 		}
 		if len(links) == limit {
@@ -184,6 +184,8 @@ func ReadDirectBlockers(ctx context.Context, reader driver.Reader, req DirectBlo
 			edge.State = DirectBlockerUnsatisfied
 			if link.Kind == "conditional-blocks" {
 				edge.Reason = "blocker status does not satisfy conditional-blocks"
+			} else if link.Kind == "waits-for" {
+				edge.Reason = "blocker status does not satisfy waits-for"
 			} else {
 				edge.Reason = "blocker status does not satisfy blocks"
 			}
