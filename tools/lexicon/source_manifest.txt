@@ -16,6 +16,7 @@
 .github/workflows/BUILD.bazel
 .github/workflows/plug-bazel.yml
 .github/workflows/plug-beads-bazel.yml
+.github/workflows/plug-cp7-latency.yml
 .github/workflows/plug-nightly-restore-diffs.yml
 .github/workflows/plug-public-bundle.yml
 .github/workflows/plug-remote-bazel.yml
@@ -395,6 +396,13 @@ internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.t
 internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-source-990eb800.md
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
+internal/integration/cp7latency/BUILD.bazel
+internal/integration/cp7latency/README.md
+internal/integration/cp7latency/correctness_test.go
+internal/integration/cp7latency/fixture_test.go
+internal/integration/cp7latency/latency_test.go
+internal/integration/cp7latency/measurement_test.go
+internal/integration/cp7latency/workload.json
 internal/integration/cursorhttp/BUILD.bazel
 internal/integration/cursorhttp/cursor_test.go
 internal/integration/cursorhttp/fixture_test.go
