@@ -4,15 +4,18 @@ _DEPS = [
     "//internal/core/dumpformat",
     "//internal/core/model",
     "//internal/core/pipeline",
+    "//internal/core/reverseconverter",
     "//internal/core/service",
     "//internal/integration/converterroundtrip",
     "//internal/storage/driver",
     "//internal/storage/memory",
+    "//internal/storage/postgres",
+    "//internal/storage/sqlite",
 ]
 
 go_binary(
     name = "roundtrip",
-    srcs = ["main.go"],
+    srcs = ["main.go", "beads.go"],
     importpath = "github.com/buildbetter-app/plugs/tools/roundtrip",
     visibility = ["//visibility:public"],
     deps = _DEPS,
@@ -20,7 +23,9 @@ go_binary(
 
 go_test(
     name = "roundtrip_test",
-    srcs = ["main.go", "main_test.go"],
+    size = "large",
+    tags = ["local", "requires-network"],
+    srcs = ["main.go", "beads.go", "main_test.go", "beads_test.go"],
     data = ["//internal/integration/offlinehistory:lexicon_files"],
     deps = _DEPS,
 )

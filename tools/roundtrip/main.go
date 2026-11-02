@@ -1,5 +1,5 @@
 // Command roundtrip runs the trusted offline converter against a disposable
-// memory store. It never prints source values, identifiers or error strings.
+// store. It never prints source values, source identifiers or error strings.
 package main
 
 import (
@@ -22,25 +22,40 @@ import (
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
 type outcome struct {
-	Status           string         `json:"status"`
-	Stage            string         `json:"stage"`
-	Reason           string         `json:"reason,omitempty"`
-	HistoryMode      string         `json:"history_mode"`
-	ArchiveSHA256    string         `json:"archive_sha256,omitempty"`
-	Counts           map[string]int `json:"counts,omitempty"`
-	RestoredHead     string         `json:"restored_head,omitempty"`
-	HistoryFloor     string         `json:"history_floor,omitempty"`
-	ReverseSHA256    string         `json:"reverse_sha256,omitempty"`
-	BaselineSHA256   string         `json:"baseline_sha256,omitempty"`
-	ReverseBytes     int            `json:"reverse_bytes,omitempty"`
-	HistoryLossItems int            `json:"history_loss_items,omitempty"`
-	BeadsReimport    string         `json:"beads_reimport"`
-	BeadsReadback    string         `json:"beads_readback"`
-	Claims           int            `json:"claims"`
-	Writes           int            `json:"writes"`
+	Status                string                  `json:"status"`
+	Stage                 string                  `json:"stage"`
+	Reason                string                  `json:"reason,omitempty"`
+	HistoryMode           string                  `json:"history_mode"`
+	ArchiveSHA256         string                  `json:"archive_sha256,omitempty"`
+	Counts                map[string]int          `json:"counts,omitempty"`
+	RestoredHead          string                  `json:"restored_head,omitempty"`
+	HistoryFloor          string                  `json:"history_floor,omitempty"`
+	ReverseSHA256         string                  `json:"reverse_sha256,omitempty"`
+	BaselineSHA256        string                  `json:"baseline_sha256,omitempty"`
+	ReverseBytes          int                     `json:"reverse_bytes,omitempty"`
+	HistoryLossItems      int                     `json:"history_loss_items,omitempty"`
+	BeadsReimport         string                  `json:"beads_reimport"`
+	BeadsReadback         string                  `json:"beads_readback"`
+	BeadsBinarySHA256     string                  `json:"beads_binary_sha256,omitempty"`
+	BeadsBuildRun         string                  `json:"beads_build_run,omitempty"`
+	BeadsCommit           string                  `json:"beads_commit,omitempty"`
+	BeadsTree             string                  `json:"beads_tree,omitempty"`
+	BeadsReadbackSHA256   string                  `json:"beads_readback_sha256,omitempty"`
+	Engine                string                  `json:"engine"`
+	RestoredIncarnation   string                  `json:"restored_incarnation,omitempty"`
+	ReverseIncarnation    string                  `json:"reverse_incarnation,omitempty"`
+	ReverseAt             string                  `json:"reverse_at,omitempty"`
+	SourceHistoryComplete bool                    `json:"source_history_complete"`
+	SourceHistoryFirst    uint64                  `json:"source_history_first,omitempty"`
+	SourceHistoryHead     uint64                  `json:"source_history_head,omitempty"`
+	SourceHistoryGaps     []dumpformat.HistoryGap `json:"source_history_gaps,omitempty"`
+	SourceFieldLosses     []string                `json:"source_field_losses,omitempty"`
+	Claims                int                     `json:"claims"`
+	Writes                int                     `json:"writes"`
 }
 
 func main() {
@@ -58,6 +73,13 @@ func run(args []string) outcome {
 	input := flags.String("input", "", "Source archive path")
 	output := flags.String("output-dir", "", "New disposable directory below /tmp")
 	mode := flags.String("history-mode", "full", "full, partial or snapshot")
+	engine := flags.String("engine", "memory", "memory, sqlite or postgres")
+	postgresDSN := flags.String("postgres-dsn", "", "Empty disposable loopback PostgreSQL database named plug_roundtrip_*")
+	beads := beadsOptions{}
+	flags.StringVar(&beads.Binary, "beads-binary", "", "Remotely built pinned public bd artifact")
+	flags.StringVar(&beads.SHA256, "beads-sha256", "", "Independently verified bd artifact SHA256")
+	flags.StringVar(&beads.BuildRun, "beads-build-run", "", "Independently verified RunsOn build receipt ID")
+	flags.StringVar(&beads.Inventory, "beads-inventory", "", "Actual disposable Beads target inventory for supported raw export")
 	exercise := flags.Bool("exercise", true, "Exercise claim/release and an idempotent live edit")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || *input == "" || *output == "" {
 		result.Reason = "invalid_arguments"
@@ -69,6 +91,7 @@ func run(args []string) outcome {
 		return result
 	}
 	result.HistoryMode = string(historyMode)
+	result.Engine = *engine
 	parent, err := filepath.EvalSymlinks(filepath.Dir(*output))
 	if err != nil || parent != "/tmp" && !strings.HasPrefix(parent, "/tmp/") || filepath.Base(*output) == "." || filepath.Base(*output) == ".." {
 		result.Reason = "disposable_output_required"
@@ -114,6 +137,11 @@ func run(args []string) outcome {
 	for _, kind := range []string{"bead", "edge", "comment", "memory", "config", "beads-archive"} {
 		result.Counts[kind] = len(archive.Records(kind))
 	}
+	if history, ok := archive.SourceHistory(); ok {
+		result.SourceHistoryComplete = history.Range.Complete
+		result.SourceHistoryFirst, result.SourceHistoryHead = history.Range.First, history.Range.Head
+		result.SourceHistoryGaps = history.Range.Gaps
+	}
 	profile := driver.RestoreImportProfile{
 		Admission:     driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "offline-roundtrip-owner"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)},
 		SourceStoreID: inspection.SourceStoreID, Method: "offline.restore.import", IdempotencyKey: "offline-roundtrip-import", ArchiveDigest: inspection.ArchiveSHA256, DerivedDigest: inspection.DerivedSHA256, HistoryMode: historyMode,
@@ -126,7 +154,11 @@ func run(args []string) outcome {
 			return result
 		}
 	}
-	store := memory.New()
+	store, err := openRuntimeStore(ctx, *engine, *postgresDSN, outputDir)
+	if err != nil {
+		result.Stage, result.Reason = "target", "disposable_target_refused"
+		return result
+	}
 	defer store.Close()
 	lease, err := store.Lease(ctx, "offline-roundtrip", driver.LeaseTTL)
 	if err != nil {
@@ -141,6 +173,7 @@ func run(args []string) outcome {
 		return result
 	}
 	result.RestoredHead, result.HistoryFloor = report.Restored.Head.String(), report.Restored.HistoryFloor.String()
+	result.RestoredIncarnation = string(report.Restored.Incarnation)
 	result.Stage = "baseline_reverse"
 	baseline, err := converterroundtrip.ReverseRestored(ctx, store)
 	if err != nil {
@@ -209,8 +242,17 @@ func run(args []string) outcome {
 		return result
 	}
 	result.ReverseSHA256, result.ReverseBytes = live.Result.Digest, len(live.Result.JSONL)
+	result.ReverseIncarnation = string(live.Snapshot.Incarnation)
+	if live.Snapshot.At != nil {
+		result.ReverseAt = live.Snapshot.At.String()
+	}
 	result.HistoryLossItems = len(live.Result.Report.LostPostSwitchHistory)
-	result.Status, result.Stage, result.Reason = "WAIT", "beads_reimport", "pinned_beads_artifact_required"
+	lossReport, err := json.Marshal(live.Result.Report)
+	if err != nil || writePrivate(outputDir, "reverse-report.json", lossReport) != nil {
+		result.Reason = "private_output_refused"
+		return result
+	}
+	runBeads(ctx, beads, outputDir, archive, live.Result, &result)
 	return result
 }
 
@@ -241,4 +283,23 @@ func writePrivate(dir, name string, data []byte) error {
 		return err
 	}
 	return closeErr
+}
+
+func openRuntimeStore(ctx context.Context, engine, dsn, output string) (driver.Store, error) {
+	switch engine {
+	case "memory":
+		if dsn != "" {
+			return nil, errors.New("unexpected DSN")
+		}
+		return memory.New(), nil
+	case "sqlite":
+		if dsn != "" {
+			return nil, errors.New("unexpected DSN")
+		}
+		return (sqlite.Driver{}).Open(ctx, driver.Config{DSN: filepath.Join(output, "plug.db")})
+	case "postgres":
+		return openDisposablePostgres(ctx, dsn)
+	default:
+		return nil, errors.New("unsupported engine")
+	}
 }

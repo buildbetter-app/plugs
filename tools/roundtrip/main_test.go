@@ -21,30 +21,37 @@ func TestHarnessHistoryModesAndPrivateOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(root)
-	for _, mode := range []string{"full", "partial", "snapshot"} {
-		t.Run(mode, func(t *testing.T) {
-			output := filepath.Join(root, mode)
-			result := run([]string{"--input", "../../internal/integration/offlinehistory/testdata/dolt-source-partial.tar", "--output-dir", output, "--history-mode", mode})
-			if mode == "full" {
-				if result.Status != "BLOCK" || result.Stage != "history" || result.Reason != "history_non-contiguous" {
-					t.Fatalf("strict incomplete history: %+v", result)
+	for _, engine := range []string{"memory", "sqlite"} {
+		for _, mode := range []string{"full", "partial", "snapshot"} {
+			t.Run(engine+"/"+mode, func(t *testing.T) {
+				output := filepath.Join(root, engine+"-"+mode)
+				result := run([]string{"--input", "../../internal/integration/offlinehistory/testdata/dolt-source-partial.tar", "--output-dir", output, "--history-mode", mode, "--engine", engine})
+				if mode == "full" {
+					if result.Status != "BLOCK" || result.Stage != "history" || result.Reason != "history_non-contiguous" {
+						t.Fatalf("strict incomplete history: %+v", result)
+					}
+					entries, err := os.ReadDir(output)
+					if err != nil || len(entries) != 0 {
+						t.Fatal("refused history produced output")
+					}
+					return
 				}
-				entries, err := os.ReadDir(output)
-				if err != nil || len(entries) != 0 {
-					t.Fatal("refused history produced output")
+				if result.Status != "WAIT" || result.Stage != "beads_artifact" || result.Reason != "pinned_beads_artifact_required" || result.BeadsReimport != "WAIT" || result.BeadsReadback != "WAIT" || result.Writes != 1 || result.Claims != 1 || result.BaselineSHA256 == result.ReverseSHA256 || result.HistoryLossItems == 0 {
+					t.Fatalf("public runtime workload: %+v", result)
 				}
-				return
-			}
-			if result.Status != "WAIT" || result.Stage != "beads_reimport" || result.Reason != "pinned_beads_artifact_required" || result.BeadsReimport != "WAIT" || result.BeadsReadback != "WAIT" || result.Writes != 1 || result.Claims != 1 || result.BaselineSHA256 == result.ReverseSHA256 || result.HistoryLossItems == 0 {
-				t.Fatalf("public runtime workload: %+v", result)
-			}
-			for path, want := range map[string]os.FileMode{output: 0o700, filepath.Join(output, "reverse-baseline.jsonl"): 0o600, filepath.Join(output, "reverse-live.jsonl"): 0o600} {
-				info, err := os.Stat(path)
-				if err != nil || info.Mode().Perm() != want {
-					t.Fatal("runtime output permissions changed")
+				encoded, _ := json.Marshal(result)
+				t.Logf("PUBLIC_CONVERTER_OUTCOME %s", encoded)
+				if result.SourceHistoryComplete || result.SourceHistoryFirst != 3 || result.SourceHistoryHead != 3 || len(result.SourceHistoryGaps) != 2 || result.RestoredIncarnation == "" || result.ReverseIncarnation != result.RestoredIncarnation || result.ReverseAt == "" || result.HistoryFloor != "1" {
+					t.Fatalf("history boundary: %+v", result)
 				}
-			}
-		})
+				for path, want := range map[string]os.FileMode{output: 0o700, filepath.Join(output, "reverse-baseline.jsonl"): 0o600, filepath.Join(output, "reverse-live.jsonl"): 0o600} {
+					info, err := os.Stat(path)
+					if err != nil || info.Mode().Perm() != want {
+						t.Fatal("runtime output permissions changed")
+					}
+				}
+			})
+		}
 	}
 }
 

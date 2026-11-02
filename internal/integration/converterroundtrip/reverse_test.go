@@ -18,6 +18,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/postgres"
@@ -448,5 +449,64 @@ func TestLiveReverseRetainsExactValidatedEnvelope(t *testing.T) {
 	got, err := ReverseRestored(context.Background(), store)
 	if err != nil || len(got.Result.JSONL) == 0 {
 		t.Fatalf("exact padded source reverse: %v", err)
+	}
+}
+
+func TestProjectLiveBeadPreservesUnchangedFailureOutcome(t *testing.T) {
+	ctx := context.Background()
+	data := admittedFixtureBytes(t)
+	profile, _ := admittedImportProfile(t, data)
+	store, lease, cleanup := openTarget(t, "memory")
+	defer cleanup()
+	if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
+		t.Fatal(err)
+	}
+	dump, err := reverseconverter.ReadBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source reverseconverter.Record
+	for _, row := range dump.Records["bead"] {
+		if row.Body["status_category"] == "completed" {
+			source = row
+			break
+		}
+	}
+	if source.ID == "" {
+		t.Fatal("unit fixture needs a completed bead")
+	}
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	rows, err := r.Get(ctx, []model.Ref{model.RefByID(source.ID, model.Natural64(0))})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("completed fixture: %v", err)
+	}
+	doc, err := pipeline.DecodeDocument(rows[0].Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A unit-level failure variant of the validated fixture. This is not a
+	// claim that its source was exported or reimported by a Beads executable.
+	source.Body["result"] = "failure"
+	source.Source.Fields["close_reason"] = "failed"
+	doc.Metadata["beads.source.result"] = json.RawMessage(`"failure"`)
+	doc.Metadata["beads.source_fields"], err = json.Marshal(source.Source.Fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows[0].Body, err = json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := projectLiveBead(source, rows[0], dump)
+	if err != nil || got.Body["result"] != "failure" {
+		t.Fatalf("unchanged imported failure was rewritten: result=%v err=%v", got.Body["result"], err)
 	}
 }
