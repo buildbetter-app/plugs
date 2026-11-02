@@ -61,6 +61,22 @@ func TestB05RecordGuardedCheckpointConservesStateOnRefusal(t *testing.T) {
 			if got, err := f.store.(driver.CheckpointStore).LoadCheckpoint(f.ctx, checkpointKey); err != nil || !reflect.DeepEqual(saved, got) {
 				t.Fatalf("guarded checkpoint did not survive reopen: got=%+v err=%v", got, err)
 			}
+			latest, err := f.store.Meta(f.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldLease := f.lease
+			if err := oldLease.Release(f.ctx); err != nil {
+				t.Fatal(err)
+			}
+			var fenced driver.ErrFenced
+			_, err = f.store.(driver.RecordGuardedCheckpointStore).SaveCheckpointIfRecord(f.ctx, oldLease, checkpointKey, 1, []byte("stale host"), ref, latest.Head, latest.Incarnation)
+			if !errors.As(err, &fenced) {
+				t.Fatalf("lost storage lease published metadata: %v", err)
+			}
+			if got, err := f.store.(driver.CheckpointStore).LoadCheckpoint(f.ctx, checkpointKey); err != nil || !reflect.DeepEqual(saved, got) {
+				t.Fatalf("fenced guard changed checkpoint: got=%+v err=%v", got, err)
+			}
 		})
 	}
 }

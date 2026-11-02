@@ -178,6 +178,7 @@ func TestB05ReclaimRechecksHeartbeatAtRealCommit(t *testing.T) {
 			if after := f.state(t, ref); !reflect.DeepEqual(before, after) {
 				t.Fatalf("refused reclaim changed graph/history: before=%+v after=%+v", before, after)
 			}
+			assertNoReceipt(t, f, model.PrincipalRef{Kind: "system", ID: "core"}, "", "bead.release", key("race-reclaim"))
 			row, err := f.service.Get(f.ctx, anonymous, service.GetRequest{ID: ref})
 			if err != nil || row.Lease == nil || !row.Lease.ExpiresAt.Equal(beat.outcome.LeaseExpiresAt) {
 				t.Fatalf("heartbeat claim not retained: row=%+v err=%v", row, err)
@@ -214,6 +215,79 @@ func TestB05LateHeartbeatCannotPublishAfterReclaim(t *testing.T) {
 			row, err := f.service.Get(f.ctx, anonymous, service.GetRequest{ID: ref})
 			if err != nil || row.Lease != nil || row.Bead.Status != "todo" {
 				t.Fatalf("reclaimed state did not survive reopen: row=%+v err=%v", row, err)
+			}
+		})
+	}
+}
+
+func TestB05LateHeartbeatCannotPublishAfterClose(t *testing.T) {
+	for _, engine := range testEngines {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			ref := claimForRace(t, f)
+			store, heartbeat, ctx := pausedHeartbeat(t, f, ref, false)
+			f.now = f.now.Add(4 * time.Minute)
+			closed := f.call(t, ctx, "bead.close", map[string]any{"id": ref}, key("close-before-heartbeat"), actor)
+			if closed.Error != nil {
+				t.Fatalf("close failed: %s", closed.Error.Data.Code)
+			}
+			before := f.state(t, ref)
+			close(store.overlayResume)
+			beat := awaitRace(t, ctx, heartbeat)
+			requireErrorCode(t, beat.err, "lease_not_held")
+			if after := f.state(t, ref); !reflect.DeepEqual(before, after) {
+				t.Fatalf("late heartbeat changed closed graph/history: before=%+v after=%+v", before, after)
+			}
+			if cp := loadHeartbeatCheckpoint(t, f, heartbeatCheckpointKey(ref.ID)); cp.Generation != 0 {
+				t.Fatalf("late heartbeat published a closed claim overlay: %+v", cp)
+			}
+			f.reopen(t)
+			row, err := f.service.Get(f.ctx, anonymous, service.GetRequest{ID: ref})
+			if err != nil || row.Bead.Status != "done" || row.Lease != nil {
+				t.Fatalf("closed result did not survive reopen: row=%+v err=%v", row, err)
+			}
+		})
+	}
+}
+
+func TestB05CancelledHeartbeatRetainsOnlyRecoverableReservation(t *testing.T) {
+	for _, engine := range testEngines {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			ref := claimForRace(t, f)
+			before := f.state(t, ref)
+			original := f.ctx
+			request, cancel := context.WithCancel(original)
+			defer cancel()
+			f.ctx = request
+			store, heartbeat, ctx := pausedHeartbeat(t, f, ref, false)
+			f.ctx = original
+			cancel()
+			close(store.overlayResume)
+			// The request context is cancelled; the observation context remains
+			// live so the test waits for the actual producer's error.
+			observation, stop := context.WithTimeout(original, 10*time.Second)
+			defer stop()
+			beat := awaitRace(t, observation, heartbeat)
+			if !errors.Is(beat.err, context.Canceled) || ctx.Err() == nil {
+				t.Fatalf("cancelled heartbeat returned %+v err=%v", beat.outcome, beat.err)
+			}
+			if cp := loadHeartbeatCheckpoint(t, f, heartbeatCheckpointKey(ref.ID)); cp.Generation != 0 {
+				t.Fatalf("cancelled heartbeat published overlay: %+v", cp)
+			}
+			if after := f.state(t, ref); !reflect.DeepEqual(before, after) {
+				t.Fatalf("cancellation changed graph/history: before=%+v after=%+v", before, after)
+			}
+			f.now = f.now.Add(4 * time.Minute)
+			f.reopen(t)
+			meta := model.WriteMeta{Project: project, Agent: actor, AgentLabel: actor, IdempotencyKey: key("paused-heartbeat")}
+			recovered, err := f.service.HeartbeatWithOutcome(f.ctx, anonymous, service.HeartbeatRequest{ID: ref}, meta)
+			if err != nil || !recovered.Replayed || !recovered.LeaseExpiresAt.Equal(f.now.Add(5*time.Minute)) {
+				t.Fatalf("retry lost reservation: %+v err=%v", recovered, err)
+			}
+			replay, err := f.service.HeartbeatWithOutcome(f.ctx, anonymous, service.HeartbeatRequest{ID: ref}, meta)
+			if err != nil || !replay.Replayed || !replay.LeaseExpiresAt.Equal(recovered.LeaseExpiresAt) {
+				t.Fatalf("completed retry was not exact: %+v err=%v", replay, err)
 			}
 		})
 	}

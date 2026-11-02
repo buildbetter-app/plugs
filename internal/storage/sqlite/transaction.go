@@ -21,21 +21,22 @@ import (
 
 type transaction struct {
 	*reader
-	lease            *activeLease
-	locked, hasHead  bool
-	restore          *driver.Meta
-	offlineHistory   *driver.PreparedOfflineHistory
-	nativeRestore    *driver.NativeRestoreProfile
-	importRestore    *driver.RestoreImportProfile
-	acquired         driver.LockSet
-	files            []*os.File
-	done             chan struct{}
-	records          map[string]*driver.Record
-	derived          map[string]driver.LockState
-	blobs            map[driver.Hash][]byte
-	bumps            map[string]driver.LockKey
-	allocators       map[string]driver.OfflineAllocator
-	allocated        map[string]bool
+	lease           *activeLease
+	locked, hasHead bool
+	restore         *driver.Meta
+	offlineHistory  *driver.PreparedOfflineHistory
+	nativeRestore   *driver.NativeRestoreProfile
+	importRestore   *driver.RestoreImportProfile
+	acquired        driver.LockSet
+	files           []*os.File
+	done            chan struct{}
+	records         map[string]*driver.Record
+	derived         map[string]driver.LockState
+	blobs           map[driver.Hash][]byte
+	bumps           map[string]driver.LockKey
+	allocators      map[string]driver.OfflineAllocator
+	allocated       map[string]bool
+
 	checkpointGuards map[string]uint64
 }
 

@@ -2,7 +2,6 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "acceptance",
-    size = "large",
     srcs = [
         "blocking_hierarchy_test.go",
         "checkpoint_guards_test.go",

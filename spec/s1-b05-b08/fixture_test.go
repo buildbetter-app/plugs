@@ -185,10 +185,11 @@ func (f *fixture) create(t *testing.T, title string) model.Ref {
 }
 
 type durableState struct {
-	Head     string
-	Record   []byte
-	Versions int
-	Changes  int
+	Head          string
+	Record        []byte
+	Versions      int
+	Changes       int
+	GraphSentinel string
 }
 
 func (f *fixture) state(t *testing.T, ref model.Ref) durableState {
@@ -214,7 +215,11 @@ func (f *fixture) state(t *testing.T, ref model.Ref) durableState {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return durableState{Head: meta.Head.String(), Record: append([]byte(nil), rows[0].Body...), Versions: len(versions.Items), Changes: len(changes)}
+	states, err := r.Observe(f.ctx, []driver.LockKey{{Kind: driver.LockSentinel, Sentinel: driver.SentinelGraphBlocking}})
+	if err != nil || len(states) != 1 {
+		t.Fatalf("graph sentinel: states=%+v err=%v", states, err)
+	}
+	return durableState{Head: meta.Head.String(), Record: append([]byte(nil), rows[0].Body...), Versions: len(versions.Items), Changes: len(changes), GraphSentinel: states[0].Revision.String()}
 }
 
 func (f *fixture) document(t *testing.T, ref model.Ref) pipeline.Document {

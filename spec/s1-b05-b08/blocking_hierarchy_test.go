@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 func (f *fixture) createWithParent(t *testing.T, title string, parent model.Ref) model.Ref {
@@ -52,6 +53,7 @@ func TestB06BlockingHierarchyRefusesBothDirectionsAcrossStores(t *testing.T) {
 							if after := []durableState{f.state(t, root), f.state(t, parent), f.state(t, child)}; !reflect.DeepEqual(before, after) {
 								t.Fatalf("hierarchy refusal changed records/history: before=%+v after=%+v", before, after)
 							}
+							assertNoReceipt(t, f, anonymous, actor, "bead.link", key("ancestor-blocker"))
 							// Association annotations remain legal over the same hierarchy.
 							associated := f.call(t, f.ctx, "bead.link", map[string]any{"from": from, "to": to, "kind": "relates-to"}, key("ancestor-association"), actor)
 							if associated.Error != nil {
@@ -65,6 +67,53 @@ func TestB06BlockingHierarchyRefusesBothDirectionsAcrossStores(t *testing.T) {
 					}
 				})
 			}
+		})
+	}
+}
+
+func assertNoReceipt(t *testing.T, f *fixture, principal model.PrincipalRef, agent, method, key string) {
+	t.Helper()
+	meta, err := f.store.Meta(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.store.Read(f.ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	identity, err := driver.PrincipalKey(principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := r.IdempotencyByKey(f.ctx, identity, agent, method, key)
+	if err != nil || receipt != nil {
+		t.Fatalf("refused operation retained a receipt: receipt=%+v err=%v", receipt, err)
+	}
+}
+
+func TestB06ReparentAndEarlierBatchPatchCannotBypassHierarchyGuard(t *testing.T) {
+	for _, engine := range testEngines {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			root, child := f.create(t, "unrelated-root"), f.create(t, "unrelated-child")
+			if got := f.call(t, f.ctx, "bead.link", map[string]any{"from": child, "to": root, "kind": "blocks"}, key("unrelated-blocker"), actor); got.Error != nil {
+				t.Fatalf("unrelated blocker refused: %s", got.Error.Data.Code)
+			}
+			before := []durableState{f.state(t, root), f.state(t, child)}
+			meta := model.WriteMeta{Project: project, Agent: actor, IdempotencyKey: key("reparent-blocker"), Method: "tx.apply"}
+			ops := model.ChangeSet{Ops: []model.Op{
+				{Kind: model.OpPatch, Patch: &model.PatchOp{Target: root, Fields: map[string]any{"title": "must roll back"}}},
+				{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: child, Parent: &root}},
+			}}
+			got := f.call(t, f.ctx, "tx.apply", map[string]any{"changeSet": ops}, meta.IdempotencyKey, actor)
+			if got.Error == nil || got.Error.Data.Code != "ontology_guard_failed" {
+				t.Fatalf("reparent batch bypassed hierarchy guard: %+v", got)
+			}
+			if after := []durableState{f.state(t, root), f.state(t, child)}; !reflect.DeepEqual(before, after) {
+				t.Fatalf("refused batch changed graph/history/sentinel: before=%+v after=%+v", before, after)
+			}
+			assertNoReceipt(t, f, anonymous, actor, "tx.apply", meta.IdempotencyKey)
 		})
 	}
 }
