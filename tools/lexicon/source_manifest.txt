@@ -892,6 +892,7 @@ scripts/ci/prepare-public-bundle-test.py
 scripts/ci/prepare-public-bundle.py
 scripts/ci/public-bundle-test.py
 scripts/ci/public-bundle.py
+scripts/ci/reconcile-openrpc.py
 scripts/demo.sh
 sdk/go/BUILD.bazel
 sdk/go/conformance/BUILD.bazel
