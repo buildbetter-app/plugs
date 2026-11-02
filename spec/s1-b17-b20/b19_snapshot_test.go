@@ -77,6 +77,7 @@ func TestB19DumpRetainsDeclaredSnapshotAcrossAConcurrentWrite(t *testing.T) {
 						t.Fatalf("real concurrent write did not land exactly once: %+v", after.Meta)
 					}
 					if !bytes.Equal(data, baseline) || !reflect.DeepEqual(actualManifest, manifest) {
+						b19LogSnapshotDifference(t, baseline, data)
 						t.Fatalf("dump mixed a later write into declared head %s: before records/versions/changes=%d/%d/%d, actual=%d/%d/%d; native digests=%s/%s", manifest.NativeHead, manifest.RecordCount, manifest.VersionCount, manifest.ChangesetCount, actualManifest.RecordCount, actualManifest.VersionCount, actualManifest.ChangesetCount, manifest.NativeDigest, actualManifest.NativeDigest)
 					}
 					archive, err := dumpformat.Read(bytes.NewReader(data))
@@ -120,6 +121,24 @@ func TestB19DumpRetainsDeclaredSnapshotAcrossAConcurrentWrite(t *testing.T) {
 				t.Fatalf("paired stores exported different snapshot/history projections: %+v", projections)
 			}
 		})
+	}
+}
+
+func b19LogSnapshotDifference(t *testing.T, before, after []byte) {
+	t.Helper()
+	left, leftErr := dumpformat.Read(bytes.NewReader(before))
+	right, rightErr := dumpformat.Read(bytes.NewReader(after))
+	if leftErr != nil || rightErr != nil {
+		t.Logf("archive validation before=%v after=%v", leftErr, rightErr)
+		return
+	}
+	for _, path := range []string{"records/native.ndjson", "versions.ndjson", "changesets.ndjson"} {
+		a, _ := left.NativeMember(path)
+		b, _ := right.NativeMember(path)
+		if !bytes.Equal(a, b) {
+			t.Logf("first changed snapshot member %s: before=%s after=%s", path, a, b)
+			return
+		}
 	}
 }
 
