@@ -44,6 +44,7 @@ func seedRelations(t *testing.T, f *fixture) (model.Ref, model.Commit, pipeline.
 func sameRelations(t *testing.T, before, after pipeline.Document, labels any) {
 	t.Helper()
 	equalJSON(t, labels, after.Fields["labels"])
+	equalJSON(t, labels, after.Labels)
 	equalJSON(t, before.Parent, after.Parent)
 	equalJSON(t, before.Metadata, after.Metadata)
 	equalJSON(t, before.Comments, after.Comments)
@@ -97,7 +98,7 @@ func TestB25ScalarPreservationAndExplicitLabelReplacementHaveDistinctPublicHisto
 		sameRelations(t, before, f.historical(child, updated.Revision), []string{"alpha", "beta"})
 		replaced := f.write("bead.update", "replace-labels", map[string]any{"id": child, "fields": map[string]any{"labels": []string{"gamma"}}})
 		sameRelations(t, before, f.document(child.ID), []string{"gamma"})
-		equalJSON(t, []string{"/fields/labels"}, f.changedPaths(child, updated.Revision, replaced.Revision))
+		equalJSON(t, []string{"/fields/labels", "/labels"}, f.changedPaths(child, updated.Revision, replaced.Revision))
 		for _, version := range []struct {
 			at     model.Revision
 			labels []string
