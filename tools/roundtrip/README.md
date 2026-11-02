@@ -31,19 +31,23 @@ reader's as-of revision.
 
 Reverse alone ends in `WAIT` with `beads_reimport=WAIT` and
 `beads_readback=WAIT`, exit 2. Real reimport additionally requires
-`--beads-binary`, `--beads-sha256`, `--beads-build-run` and `--beads-inventory`.
+`--beads-binary`, `--beads-sha256` and `--beads-build-run`.
 The artifact's hosted build receipt and digest must be independently verified
 before invoking the harness; a supplied run ID is provenance to record, not
 independent attestation. The supported executable pin is Beads
-`a8a2a629e6f774928b190f3b9751d6bf95f21ea2`, tree
-`8471e1477993f2a9c9de7e3b7b5cbe195afc765d`. Its reported runtime commit and
+`682ca798dab448803ea9b74f7da3715c21d8c3ae`, tree
+`9d026de307ee915953b247cf42758d0c53303574`. Its reported runtime commit and
 actual binary hash must match. The archive's `beads_reference` is the schema
 reference, not executable provenance. No build, download, workflow dispatch,
 retry or PATH-selected `bd` is performed.
 
 The real executable runs `version --json`, then `init --prefix ... --skip-hooks
 --skip-agents --non-interactive --quiet` in a fresh isolated Beads workspace,
-then `import reverse-live.jsonl --json`. A separate process runs the supported
+then `import reverse-live.jsonl --json`. After successful import, missing
+`--beads-inventory` returns `WAIT` at `beads_inventory`, reason
+`beads_inventory_required`, with `beads_reimport=PASS` and
+`beads_readback=WAIT`. Invalid executable provenance and bytes are checked
+even when inventory is absent. A separate process runs the supported
 raw exporter: `--readonly export --format plug-dump/1 --plug-inventory ...
 --output beads-raw-readback.tar`. The inventory must truthfully describe that
 new target's actual config/external census; missing schema, source families or
@@ -67,3 +71,29 @@ projection, original archive or command construction never substitutes for it.
 Only public disposable data is authorized for this lane. No executable artifact
 is bundled here, and tests never substitute a successful Beads factory. Without
 real pinned executable evidence, actual Beads reimport/readback remains WAIT.
+
+The explicit `//tools/roundtrip:public_beads_runtime_test` target requires a
+delivered `plug-public-companion/1` artifact. Its `-public-beads-runtime` flag
+is set by the target; missing artifact environment or identity fails the test.
+It checks `PLUG_PUBLIC_BEADS_BINARY`, `PLUG_PUBLIC_BEADS_SHA256`,
+`PLUG_PUBLIC_BEADS_BUILD_RUN` and `PLUG_PUBLIC_BEADS_MANIFEST` against the
+manifest's source pin, canonical exporter target, build identity, executable
+size/mode and digest. The production path then verifies the copied bytes and
+reported runtime commit before any init/import. No artifact is built by tests.
+
+After the trusted preparation workflow has landed, select the runtime target
+explicitly through `remote-bazel` and provide exactly one
+`--test_env=PLUG_PUBLIC_BUNDLE=RUN_ID:ARTIFACT_ID:MANIFEST_SHA256`. The trusted
+workflow independently verifies and extracts the immutable same-repository
+artifact before forwarding the four runner-local values. Ordinary `//...`
+does not select this manual target; whole-tree qualification that claims
+artifact-backed runtime coverage must also name it explicitly.
+
+The runtime target imports the unchanged public complete-root and partial
+fixtures in full/partial/snapshot modes across memory, SQLite and disposable
+PostgreSQL, with the normal claim/release and live-edit workload. It requires
+three actual successful Beads subprocesses for each admitted case and retains
+their raw output in the test log. Its current assertion ends at real reimport
+with inventory-required WAIT. It does not certify independent native readback
+or full roundtrip fidelity; those require a truthful census of the actual new
+Beads target and the supported exporter's raw archive.

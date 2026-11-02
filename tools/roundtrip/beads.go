@@ -28,8 +28,8 @@ import (
 // These identify the supported importer/exporter interface inspected for this
 // integration. The archive's older beads_reference is its schema pin, not the
 // executable's build provenance. A future executable requires a new review.
-const beadsCommit = "a8a2a629e6f774928b190f3b9751d6bf95f21ea2"
-const beadsTree = "8471e1477993f2a9c9de7e3b7b5cbe195afc765d"
+const beadsCommit = "682ca798dab448803ea9b74f7da3715c21d8c3ae"
+const beadsTree = "9d026de307ee915953b247cf42758d0c53303574"
 
 type beadsOptions struct {
 	Binary, SHA256, BuildRun, Inventory string
@@ -51,7 +51,7 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 	result.Stage = "beads_artifact"
 	result.Status = "WAIT"
 	result.Reason = "pinned_beads_artifact_required"
-	if options.Binary == "" || options.SHA256 == "" || options.BuildRun == "" || options.Inventory == "" {
+	if options.Binary == "" || options.SHA256 == "" || options.BuildRun == "" {
 		return
 	}
 	buildRun, err := strconv.ParseUint(options.BuildRun, 10, 64)
@@ -93,24 +93,6 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 		return
 	}
 	binary = pinned
-	// The inventory must describe the newly initialized Beads target, including
-	// all actual config keys. It is operator evidence consumed by the supported
-	// exporter, never an invented adapter around an unsupported native dump.
-	inventory, err := filepath.Abs(options.Inventory)
-	if err != nil {
-		result.Status, result.Reason = "BLOCK", "beads_inventory_required"
-		return
-	}
-	if stat, err := os.Stat(inventory); err != nil || !stat.Mode().IsRegular() || stat.Size() > 1<<20 {
-		result.Status, result.Reason = "BLOCK", "beads_inventory_required"
-		return
-	}
-	inventoryBytes, err := os.ReadFile(inventory)
-	if err != nil || len(inventoryBytes) > 1<<20 || writePrivate(output, "beads-inventory.json", inventoryBytes) != nil {
-		result.Status, result.Reason = "BLOCK", "beads_inventory_required"
-		return
-	}
-	inventory = filepath.Join(output, "beads-inventory.json")
 	projects := source.Manifest().Projects
 	if len(projects) != 1 {
 		result.Status, result.Reason = "BLOCK", "beads_single_project_required"
@@ -179,6 +161,28 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 		return
 	}
 	result.BeadsReimport = "PASS"
+	// Readback inventory describes this actual initialized/imported target.
+	// Its absence must not hide artifact failures or discard a real import.
+	result.Stage = "beads_inventory"
+	result.Reason = "beads_inventory_required"
+	if options.Inventory == "" {
+		return
+	}
+	inventory, err := filepath.Abs(options.Inventory)
+	if err != nil {
+		result.Status = "BLOCK"
+		return
+	}
+	if stat, err := os.Stat(inventory); err != nil || !stat.Mode().IsRegular() || stat.Size() > 1<<20 {
+		result.Status = "BLOCK"
+		return
+	}
+	inventoryBytes, err := os.ReadFile(inventory)
+	if err != nil || len(inventoryBytes) > 1<<20 || writePrivate(output, "beads-inventory.json", inventoryBytes) != nil {
+		result.Status = "BLOCK"
+		return
+	}
+	inventory = filepath.Join(output, "beads-inventory.json")
 	result.Stage = "beads_readback"
 	readback := filepath.Join(output, "beads-raw-readback.tar")
 	if _, err = run("--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventory, "--output", readback); err != nil {

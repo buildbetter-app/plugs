@@ -32,3 +32,16 @@ go_test(
     ],
     deps = _DEPS,
 )
+
+go_test(
+    name = "public_beads_runtime_test",
+    size = "large",
+    srcs = ["main.go", "beads.go", "beads_runtime_test.go"],
+    args = ["-public-beads-runtime"],
+    data = [
+        "//internal/integration/converterroundtrip:public_source_fixtures",
+        "//internal/integration/offlinehistory:lexicon_files",
+    ],
+    tags = ["local", "manual", "requires-network"],
+    deps = _DEPS,
+)
