@@ -56,6 +56,22 @@ TARGETS = {
     "beads_importer": {"label": "./cmd/bd", "binary": "bin/bd"},
     "plug_runtime": {"label": "//cmd/plug:plug", "binary": "bin/plug"},
 }
+
+
+class GitAuthenticationError(ValueError):
+    """The fixed Git operation failed because authentication was rejected."""
+
+
+def authentication_failure(stderr: bytes) -> bool:
+    message = stderr.lower()
+    return any(marker in message for marker in (
+        b"authentication failed",
+        b"could not read username",
+        b"invalid username or password",
+        b"the requested url returned error: 401",
+    ))
+
+
 BINARIES = {
     "bin/bd": {"mode": "0o755", "size": 112341314,
                "sha256": "3c6bbb888431751adce98dfebc8cbeeb5869300698e8b069a4d7438fabfb3af4"},
@@ -223,7 +239,10 @@ def git(source: Path, arguments: list[str], environment: dict | None = None) -> 
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
     )
     if result.returncode != 0:
-        # Git's captured output is never printed; it may describe auth failure.
+        # Git's captured output is never printed. Only explicit authentication
+        # failures may trigger the credential-free public retry.
+        if authentication_failure(result.stderr):
+            raise GitAuthenticationError()
         raise ValueError("fixed public reference Git operation failed")
     return result.stdout
 
@@ -267,13 +286,13 @@ def fetch_source(source: Path) -> dict:
         "GIT_CONFIG_VALUE_0": "AUTHORIZATION: Basic " + basic_credentials,
     })
     # Retrieve only the exact pinned object. A trusted workflow token gets the
-    # first attempt; a public repository may reject that bearer-authenticated
+    # first attempt; a public repository may reject that authenticated
     # request, so retry the identical URL/SHA without any credentials.
     fetch_arguments = ["fetch", "--quiet", "--depth=1", "--no-tags", "--no-write-fetch-head",
                        "--no-auto-maintenance", SOURCE_URL, SOURCE_SHA]
     try:
         git(source, fetch_arguments, fetch_environment)
-    except ValueError:
+    except GitAuthenticationError:
         # Retry the identical URL/SHA request without any credentials. The
         # source may be public, and no bearer or Basic header may cross this
         # boundary.
