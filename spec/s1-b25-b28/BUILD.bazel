@@ -27,6 +27,21 @@ go_test(
     ],
 )
 
+# This target is intentionally manual: RunsOn prepares the pinned public
+# companion executable only when the caller supplies PLUG_PUBLIC_BUNDLE.
+go_test(
+    name = "public_recording_test",
+    srcs = ["public_recording_test.go"],
+    args = ["-test.v", "-public-recording"],
+    data = [
+        "testdata/public-companion-profile.json",
+        "testdata/public-recording-fixture.json",
+    ],
+    tags = ["manual"],
+    timeout = "long",
+    deps = ["//internal/core/dumpformat"],
+)
+
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
