@@ -94,9 +94,10 @@ type Config struct {
 	// ViewReader and Readiness are optional host-owned read projections. When
 	// ViewReader is present, view.run/view.explain and view.watch are composed
 	// over the same store, lease and projection status source.
-	ViewReader    viewops.ViewReader
-	Readiness     viewops.ReadinessReader
-	AuthorizeRead viewops.AuthorizeRead
+	ViewReader         viewops.ViewReader
+	Readiness          viewops.ReadinessReader
+	AuthorizeRead      viewops.AuthorizeRead
+	AuthorizeReadBatch viewops.AuthorizeReadBatch
 	// EpicProgress opts into the separately authorized, count-only parent view.
 	// Nil keeps the capability unavailable; no hierarchy write is enabled here.
 	EpicProgress *viewops.EpicProgressConfig
@@ -394,15 +395,16 @@ func (r *Runtime) bind(config Config) error {
 		}
 	}
 	r.Views, err = viewops.New(r.Store, r.Lease, viewops.Config{
-		Views:             config.ViewReader,
-		Readiness:         config.Readiness,
-		AuthorizeRead:     config.AuthorizeRead,
-		EpicProgress:      config.EpicProgress,
-		ParentProjection:  config.ParentProjection,
-		DirectBlockers:    directBlockers,
-		ProjectionStatus:  r.ProjectionStatus,
-		ProjectionBinding: viewBinding,
-		OntologyRevision:  model.Natural64(1),
+		Views:              config.ViewReader,
+		Readiness:          config.Readiness,
+		AuthorizeRead:      config.AuthorizeRead,
+		AuthorizeReadBatch: config.AuthorizeReadBatch,
+		EpicProgress:       config.EpicProgress,
+		ParentProjection:   config.ParentProjection,
+		DirectBlockers:     directBlockers,
+		ProjectionStatus:   r.ProjectionStatus,
+		ProjectionBinding:  viewBinding,
+		OntologyRevision:   model.Natural64(1),
 	})
 	if err != nil {
 		return fmt.Errorf("composition: create view service: %w", err)

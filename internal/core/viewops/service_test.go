@@ -471,3 +471,153 @@ func TestRunConsumesPinnedReadinessAndProjectionStatus(t *testing.T) {
 		t.Fatalf("projection status was not copied: %+v", projection)
 	}
 }
+
+func TestCountOnlyFailsClosedOnAuthorizationAndFinalAdmission(t *testing.T) {
+	by := model.PrincipalRef{Kind: "user", ID: "reader"}
+	for _, code := range []model.ErrorCode{"forbidden", "not_found", "busy", "internal_error", "canceled", "lease_lost"} {
+		t.Run(string(code), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			lease := &testLease{lost: make(chan struct{})}
+			store := &syntheticStore{
+				rows: []driver.Record{{Ref: model.RefByID("candidate", model.Natural64(0)), Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, "candidate", "p")}},
+				meta: driver.Meta{StoreID: "store", Incarnation: "inc", Head: model.Natural64(1)},
+			}
+			svc, err := New(store, lease, Config{AuthorizeRead: func(context.Context, model.PrincipalRef, model.ResourceRef, string) error {
+				switch code {
+				case "canceled":
+					cancel()
+					return nil
+				case "lease_lost":
+					close(lease.lost)
+					return nil
+				default:
+					return &model.Error{Data: model.ErrorData{Code: code}}
+				}
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := svc.Run(ctx, by, RunRequest{CountOnly: true, Definition: &Definition{Filter: &Filter{}}})
+			if code == "forbidden" || code == "not_found" {
+				if err != nil || result.Count == nil || *result.Count != 0 {
+					t.Fatalf("denied candidate must contribute zero: result=%+v err=%v", result, err)
+				}
+				return
+			}
+			want := code
+			if code == "canceled" || code == "lease_lost" {
+				want = "busy"
+			}
+			var typed *model.Error
+			if !errors.As(err, &typed) || typed.Data.Code != want || result.Count != nil {
+				t.Fatalf("count escaped failed authorization/admission: result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestCountOnlyKeepsProjectionWithoutPayloadDependencies(t *testing.T) {
+	dependent, blocker := model.RefByID("dependent", model.Natural64(0)), model.RefByID("blocker", model.Natural64(0))
+	store := &syntheticStore{
+		rows: []driver.Record{
+			{Ref: dependent, Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, dependent.ID, "p", pipeline.Link{To: blocker, Kind: "blocks"})},
+			{Ref: blocker, Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, blocker.ID, "p")},
+		},
+		meta: driver.Meta{StoreID: "store", Incarnation: "inc", Head: model.Natural64(1)},
+	}
+	svc, err := New(store, &testLease{lost: make(chan struct{})}, Config{
+		AuthorizeRead: func(_ context.Context, _ model.PrincipalRef, resource model.ResourceRef, _ string) error {
+			if resource.Ref.ID != dependent.ID {
+				t.Fatal("count-only authorized a payload-only blocker target")
+			}
+			return nil
+		},
+		Readiness: readinessFunc(func(context.Context, driver.Reader, []model.Ref) (map[string]ReadinessState, error) {
+			t.Fatal("count-only requested item readiness")
+			return nil, nil
+		}),
+		ProjectionStatus: projectionStatusFunc(func(context.Context, string) (coreevents.ProjectionStatus, error) {
+			return coreevents.ProjectionStatus{Binding: "core", Position: coreevents.Position{Incarnation: "inc", Revision: model.Natural64(1)}}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.Run(context.Background(), model.PrincipalRef{Kind: "user", ID: "reader"}, RunRequest{
+		CountOnly: true, Definition: &Definition{Filter: &Filter{Resources: []string{dependent.ID}}},
+	})
+	if err != nil || result.Count == nil || *result.Count != 1 || result.Items == nil || len(result.Items) != 0 || len(result.Groups) != 0 || result.NextCursor != nil || result.Projection == nil || result.Projection.Binding != "core" {
+		t.Fatalf("count projection=%+v err=%v", result, err)
+	}
+}
+
+func TestCountBatchAuthorizationIsCompleteAndFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		decisions []bool
+		want      int
+		code      model.ErrorCode
+	}{
+		{"allowed", []bool{true}, 1, ""},
+		{"denied", []bool{false}, 0, ""},
+		{"missing", []bool{}, 0, "authz_unavailable"},
+		{"extra", []bool{true, true}, 0, "authz_unavailable"},
+		{"error", nil, 0, "busy"},
+		{"canceled", []bool{true}, 0, "busy"},
+		{"lease_lost", []bool{true}, 0, "busy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			lease := &testLease{lost: make(chan struct{})}
+			store := &syntheticStore{
+				rows: []driver.Record{{Ref: model.RefByID("candidate", model.Natural64(0)), Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, "candidate", "p")}},
+				meta: driver.Meta{StoreID: "store", Incarnation: "inc", Head: model.Natural64(1)},
+			}
+			pointCalls, batchCalls := 0, 0
+			svc, err := New(store, lease, Config{
+				AuthorizeRead: func(context.Context, model.PrincipalRef, model.ResourceRef, string) error { pointCalls++; return nil },
+				AuthorizeReadBatch: func(_ context.Context, _ model.PrincipalRef, refs []model.ResourceRef) ([]bool, error) {
+					batchCalls++
+					if len(refs) != 1 || refs[0].Kind != "bead" || refs[0].Ref.ID != "candidate" {
+						t.Fatalf("batch changed candidate membership: %+v", refs)
+					}
+					switch tc.name {
+					case "error":
+						return nil, failure("busy", "unavailable authority")
+					case "canceled":
+						cancel()
+					case "lease_lost":
+						close(lease.lost)
+					}
+					return tc.decisions, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := RunRequest{CountOnly: true, Definition: &Definition{Filter: &Filter{Resources: []string{"candidate"}}}}
+			by := model.PrincipalRef{Kind: "user", ID: "reader"}
+			result, err := svc.Run(ctx, by, req)
+			if pointCalls != 0 || batchCalls != 1 {
+				t.Fatalf("count authorization calls: point=%d batch=%d", pointCalls, batchCalls)
+			}
+			if tc.code != "" {
+				var typed *model.Error
+				if !errors.As(err, &typed) || typed.Data.Code != tc.code || result.Count != nil {
+					t.Fatalf("batch count escaped failure: result=%+v err=%v", result, err)
+				}
+				return
+			}
+			if err != nil || result.Count == nil || *result.Count != tc.want {
+				t.Fatalf("batch count=%+v err=%v want=%d", result, err, tc.want)
+			}
+			req.CountOnly = false
+			page, err := svc.Run(ctx, by, req)
+			if err != nil || page.Count != nil || len(page.Items) != 1 || pointCalls != 1 || batchCalls != 1 {
+				t.Fatalf("ordinary path changed: result=%+v err=%v point=%d batch=%d", page, err, pointCalls, batchCalls)
+			}
+		})
+	}
+}

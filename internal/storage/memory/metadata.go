@@ -28,6 +28,36 @@ func (s *Store) LoadCheckpoint(ctx context.Context, key string) (driver.Checkpoi
 func (s *Store) SaveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte) (driver.Checkpoint, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.saveCheckpoint(ctx, lease, key, expected, payload)
+}
+
+func (s *Store) SaveCheckpointIfRecord(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, ref driver.Ref, revision model.Revision, incarnation string) (driver.Checkpoint, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.check(ctx); err != nil {
+		return driver.Checkpoint{}, err
+	}
+	if err := s.checkLease(lease); err != nil {
+		return driver.Checkpoint{}, err
+	}
+	if incarnation == "" || incarnation != s.state.meta.Incarnation {
+		return driver.Checkpoint{}, driver.ErrIncarnationChanged{From: incarnation, To: s.state.meta.Incarnation}
+	}
+	id, err := recordKey(ref)
+	if err != nil {
+		return driver.Checkpoint{}, err
+	}
+	if err := revision.Validate(); err != nil {
+		return driver.Checkpoint{}, err
+	}
+	row, present := s.state.records[id]
+	if !present || row.Revision.String() != revision.String() {
+		return driver.Checkpoint{}, driver.ErrConflict
+	}
+	return s.saveCheckpoint(ctx, lease, key, expected, payload)
+}
+
+func (s *Store) saveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte) (driver.Checkpoint, error) {
 	if err := s.check(ctx); err != nil {
 		return driver.Checkpoint{}, err
 	}
@@ -53,6 +83,8 @@ func (s *Store) SaveCheckpoint(ctx context.Context, lease driver.ActiveLease, ke
 	value.Payload = bytes.Clone(value.Payload)
 	return value, nil
 }
+
+var _ driver.RecordGuardedCheckpointStore = (*Store)(nil)
 
 func (s *Store) FinalizeResponse(ctx context.Context, lease driver.ActiveLease, principal, agent, method, key string, revision model.Revision, warnings []model.Warning) error {
 	s.mu.Lock()

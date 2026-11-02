@@ -96,7 +96,7 @@ func requireErrorCode(t *testing.T, err error, code model.ErrorCode) {
 }
 
 func TestHeartbeatAuthorizationDenialRevocationAndHiddenNoWrite(t *testing.T) {
-	for _, engine := range []string{"memory", "sqlite"} {
+	for _, engine := range testEngines {
 		t.Run(engine, func(t *testing.T) { testHeartbeatAuthorizationNoWrite(t, engine) })
 	}
 }
@@ -212,7 +212,7 @@ func testHeartbeatAuthorizationNoWrite(t *testing.T, engine string) {
 }
 
 func TestHeartbeatSameKeyDifferentTargetRefusesAndLeavesSecondTarget(t *testing.T) {
-	for _, engine := range []string{"memory", "sqlite"} {
+	for _, engine := range testEngines {
 		t.Run(engine, func(t *testing.T) { testHeartbeatSameKeyDifferentTarget(t, engine) })
 	}
 }
@@ -308,6 +308,10 @@ func (s *delayedHeartbeatStore) LoadCheckpoint(ctx context.Context, key string) 
 	return value, err
 }
 
+func (s *delayedHeartbeatStore) SaveCheckpointIfRecord(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, ref driver.Ref, revision model.Revision, incarnation string) (driver.Checkpoint, error) {
+	return s.Store.(driver.RecordGuardedCheckpointStore).SaveCheckpointIfRecord(ctx, lease, key, expected, payload, ref, revision, incarnation)
+}
+
 func (s *delayedHeartbeatStore) SaveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte) (driver.Checkpoint, error) {
 	if ctx.Value(delayedHeartbeatKey{}) == true && strings.HasPrefix(key, "plug/heartbeat/") {
 		var receipt struct {
@@ -330,7 +334,7 @@ func (s *delayedHeartbeatStore) SaveCheckpoint(ctx context.Context, lease driver
 }
 
 func TestHeartbeatConcurrentSameKeyReturnsStoredExpiry(t *testing.T) {
-	for _, engine := range []string{"memory", "sqlite"} {
+	for _, engine := range testEngines {
 		t.Run(engine, func(t *testing.T) {
 			for _, phase := range []string{"lookup", "reserve", "publish"} {
 				t.Run(phase, func(t *testing.T) { testHeartbeatConcurrentSameKey(t, engine, phase) })
@@ -421,7 +425,7 @@ func testHeartbeatConcurrentSameKey(t *testing.T, engine, phase string) {
 	if err := json.Unmarshal(receipt.Payload, &stored); err != nil || stored.State != "published" || !stored.LeaseExpiresAt.Equal(first.LeaseExpiresAt) {
 		t.Fatalf("durable receipt=%s err=%v", receipt.Payload, err)
 	}
-	if engine == "sqlite" {
+	if engine != "memory" {
 		f.reopen(t)
 	}
 	replay, err := f.service.HeartbeatWithOutcome(f.ctx, anonymous, service.HeartbeatRequest{ID: id}, meta)
@@ -439,6 +443,13 @@ type interruptedHeartbeatStore struct {
 	driver.CheckpointStore
 	phase string
 	err   error
+}
+
+func (s *interruptedHeartbeatStore) SaveCheckpointIfRecord(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, ref driver.Ref, revision model.Revision, incarnation string) (driver.Checkpoint, error) {
+	if s.phase == "overlay" && strings.HasPrefix(key, "plug/lease/") {
+		return driver.Checkpoint{}, s.err
+	}
+	return s.Store.(driver.RecordGuardedCheckpointStore).SaveCheckpointIfRecord(ctx, lease, key, expected, payload, ref, revision, incarnation)
 }
 
 func (s *interruptedHeartbeatStore) SaveCheckpoint(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte) (driver.Checkpoint, error) {
@@ -459,7 +470,7 @@ func (s *interruptedHeartbeatStore) SaveCheckpoint(ctx context.Context, lease dr
 }
 
 func TestHeartbeatInterruptedPublicationKeepsReservedOutcome(t *testing.T) {
-	for _, engine := range []string{"memory", "sqlite"} {
+	for _, engine := range testEngines {
 		t.Run(engine, func(t *testing.T) {
 			for _, phase := range []string{"overlay", "publish"} {
 				t.Run(phase, func(t *testing.T) {
@@ -494,7 +505,7 @@ func TestHeartbeatInterruptedPublicationKeepsReservedOutcome(t *testing.T) {
 					}
 					beforeOverlay := loadHeartbeatCheckpoint(t, f, heartbeatCheckpointKey(id.ID))
 					f.now = f.now.Add(2 * time.Second)
-					if engine == "sqlite" {
+					if engine != "memory" {
 						f.reopen(t)
 					}
 					recovered, err := f.service.HeartbeatWithOutcome(f.ctx, anonymous, service.HeartbeatRequest{ID: id}, meta)
@@ -527,7 +538,7 @@ func TestHeartbeatInterruptedPublicationKeepsReservedOutcome(t *testing.T) {
 }
 
 func TestHeartbeatInstalledAuthorizationUnavailableFailsClosed(t *testing.T) {
-	for _, engine := range []string{"memory", "sqlite"} {
+	for _, engine := range testEngines {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
 			id := f.create(t, "unsupported installed policy")

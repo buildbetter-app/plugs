@@ -69,6 +69,7 @@ type prepared struct {
 	allocatorSeen    map[string]bool
 	hierarchyEdits   []hierarchyEdit
 	hierarchyDelta   *hierarchyDelta
+	checkpointReads  map[string]uint64
 }
 
 func failure(code model.ErrorCode, message string) error {
@@ -274,7 +275,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				return nil, err
 			}
 			if release != nil {
-				if err = w.checkClaimRelease(ctx, current.doc, by, meta, release); err != nil {
+				if err = w.checkClaimRelease(ctx, p, current.doc, by, meta, release); err != nil {
 					return nil, err
 				}
 			} else if err = w.checkLease(ctx, current.doc, by, meta); err != nil {
@@ -1063,7 +1064,7 @@ func (p *prepared) graph(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	need := false
+	need := docs != nil
 	for _, c := range p.proposal.Changes {
 		if c.Op.Kind == model.OpLink || c.Op.Kind == model.OpUnlink || c.Op.Kind == model.OpDelete {
 			need = true
@@ -1130,5 +1131,5 @@ func (p *prepared) graph(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	return checkBlockingHierarchy(docs)
 }
