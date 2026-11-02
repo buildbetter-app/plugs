@@ -121,13 +121,16 @@ type wasmInvocation struct {
 }
 
 // wasmInitializerObserverKey is an internal acceptance-test seam. It carries
-// no guest capability; it only lets a source-built test observe that the real
-// guest initializer is about to be called without relying on elapsed time.
+// no guest capability; it only lets a source-built test observe a zero-length
+// import reached from the real guest initializer without relying on elapsed
+// time.
 type wasmInitializerObserverKey struct{}
 
-// WithWASMInitializerObserver returns a context that observes the entry to a
-// source-built WASI guest's _initialize export. This is intentionally scoped
-// to the internal pluginhost package and has no wire or public plugin effect.
+type wasmInitializerCallKey struct{}
+
+// WithWASMInitializerObserver returns a context that observes a deterministic
+// source-built WASI guest initializer barrier. This is intentionally scoped to
+// the internal pluginhost package and has no wire or public plugin effect.
 func WithWASMInitializerObserver(ctx context.Context, observer func()) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -274,9 +277,7 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 	// `_start`. Calling it once initializes the Go scheduler before any ABI
 	// calls, while the module remains resident for the host lifetime.
 	if initialize := module.ExportedFunction("_initialize"); initialize != nil {
-		if observer, ok := initCtx.Value(wasmInitializerObserverKey{}).(func()); ok {
-			observer()
-		}
+		initCtx = context.WithValue(initCtx, wasmInitializerCallKey{}, struct{}{})
 		if _, err := initialize.Call(initCtx); err != nil {
 			result.close()
 			return nil, failure(ErrManifest, "WASM runtime initialization failed: %v", err)
@@ -382,6 +383,15 @@ type wasmReadOutcome struct {
 func (r *wasmRuntime) hostCall(ctx context.Context, module api.Module, ptr, length uint32) uint64 {
 	if err := ctx.Err(); err != nil {
 		panic(err)
+	}
+	// The source acceptance fixture uses a zero-length import from _initialize
+	// as a deterministic entry barrier. It carries no reader or guest-memory
+	// capability and is accepted only on the private initialization context.
+	if _, initializing := ctx.Value(wasmInitializerCallKey{}).(struct{}); initializing && ptr == 0 && length == 0 {
+		if observer, ok := ctx.Value(wasmInitializerObserverKey{}).(func()); ok {
+			observer()
+		}
+		return 0
 	}
 	if length > maxWASMMessage {
 		panic(failure(ErrMethod, "WASM host request exceeds the message limit"))

@@ -1633,7 +1633,7 @@ func slowWASICheckout(t *testing.T, root string) pluginmanifest.Checkout {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = append(data, []byte("\nfunc init() { time.Sleep(1 * time.Second) }\n")...)
+	data = append(data, []byte("\nfunc init() { _ = snapshotCall(0, 0); time.Sleep(1 * time.Second) }\n")...)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
