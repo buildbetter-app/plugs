@@ -47,11 +47,17 @@ EXAMPLES:
   bd export --include-memories           # Export issues + memories
   bd export --all -o full.jsonl          # Include infra + templates + gates + memories
   bd export --scrub -o clean.jsonl       # Exclude test/pollution records
+  bd --readonly export --format beads-inventory/1 --plug-capture-public -o capture/inventory.json
   bd --readonly export --format plug-dump/1 --plug-inventory inventory.json -o dump.tar
 
 plug-dump/1 is an offline head-state and source-archive exporter. It requires
 an explicit paired source/configuration inventory and refuses unsupported
-inputs. It does not certify a complete store migration or Plug restore.`,
+inputs. beads-inventory/1 observes a disposable public native target and writes
+an inventory plus source JSON sidecars in an existing private output directory.
+It requires --readonly and --plug-capture-public, an explicit operator declaration
+that the target is quiesced and disposable and its unclassified values are public.
+Filesystem observations are not an atomic snapshot or full-history proof.
+These formats do not certify a complete store migration or Plug restore.`,
 	GroupID:       "sync",
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -59,20 +65,22 @@ inputs. It does not certify a complete store migration or Plug restore.`,
 }
 
 var (
-	exportOutput          string
-	exportAll             bool
-	exportIncludeInfra    bool
-	exportScrub           bool
-	exportNoMemories      bool
-	exportIncludeMemories bool
-	exportExcludeOwners   []string
-	exportVerbose         bool
-	exportFormat          string
-	exportPlugInventory   string
+	exportOutput            string
+	exportAll               bool
+	exportIncludeInfra      bool
+	exportScrub             bool
+	exportNoMemories        bool
+	exportIncludeMemories   bool
+	exportExcludeOwners     []string
+	exportVerbose           bool
+	exportFormat            string
+	exportPlugInventory     string
+	exportPlugCapturePublic bool
 )
 
 func init() {
-	exportCmd.Flags().StringVar(&exportFormat, "format", "jsonl", "Export format: jsonl or plug-dump/1 (offline source archive)")
+	exportCmd.Flags().StringVar(&exportFormat, "format", "jsonl", "Export format: jsonl, plug-dump/1, or beads-inventory/1")
+	exportCmd.Flags().BoolVar(&exportPlugCapturePublic, "plug-capture-public", false, "Declare a quiesced disposable native capture and all unclassified source values public")
 	exportCmd.Flags().StringVar(&exportPlugInventory, "plug-inventory", "", "Required source/configuration census JSON for plug-dump/1")
 	exportCmd.Flags().StringVarP(&exportOutput, "output", "o", "", "Output file path (default: stdout)")
 	exportCmd.Flags().BoolVar(&exportAll, "all", false, "Include all records (infra, templates, gates, memories)")
@@ -87,6 +95,12 @@ func init() {
 }
 
 func runExport(cmd *cobra.Command, args []string) error {
+	if exportFormat == "beads-inventory/1" {
+		return runNativePlugInventory(cmd)
+	}
+	if exportPlugCapturePublic {
+		return HandleErrorRespectJSON("--plug-capture-public requires --format beads-inventory/1")
+	}
 	if exportFormat == "plug-dump/1" {
 		return runPlugExport(cmd)
 	}
