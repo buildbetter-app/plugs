@@ -39,6 +39,12 @@ type ReadStore interface {
 // stored body.project value, never an inferred parent or caller default.
 type AuthorizeRead func(context.Context, model.PrincipalRef, model.ResourceRef, string) error
 
+// AuthorizeReadBatch is an optional trusted count adapter for the same current
+// read policy as AuthorizeRead. It returns one decision per input, in order,
+// and must fail closed on unavailable authority. Historical content must not
+// select historical authority. No decision may survive this call.
+type AuthorizeReadBatch func(context.Context, model.PrincipalRef, []model.ResourceRef) ([]bool, error)
+
 // ViewReader resolves saved definitions for read-only execution. Save/delete
 // are intentionally not part of this package until their protected write path
 // is implemented.
@@ -93,11 +99,12 @@ type DirectBlockerSource func(context.Context, driver.Reader, model.Ref, int) (D
 const DirectBlockerExplainLimit = 100
 
 type Config struct {
-	AuthorizeRead    AuthorizeRead
-	Views            ViewReader
-	Readiness        ReadinessReader
-	DirectBlockers   DirectBlockerSource
-	ProjectionStatus coreevents.ProjectionStatusReader
+	AuthorizeRead      AuthorizeRead
+	AuthorizeReadBatch AuthorizeReadBatch
+	Views              ViewReader
+	Readiness          ReadinessReader
+	DirectBlockers     DirectBlockerSource
+	ProjectionStatus   coreevents.ProjectionStatusReader
 	// ProjectionBinding is the durable checkpoint binding whose status is
 	// surfaced with view results and view.watch frames. "core" is the stable
 	// default used by the projection composition root.

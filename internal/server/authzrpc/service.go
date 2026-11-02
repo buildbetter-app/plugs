@@ -66,6 +66,67 @@ func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req ser
 	return result, nil
 }
 
+// AuthorizeReadBatch is a count producer adapter to the existing finite read
+// filter. It keeps one fresh current authority snapshot for this call, verifies
+// current row existence, and fences the authority before returning decisions.
+// It never loads item payload projections or retains decisions across calls.
+func (s *GuardedService) AuthorizeReadBatch(ctx context.Context, by model.PrincipalRef, resources []model.ResourceRef) ([]bool, error) {
+	refs := make([]model.Ref, len(resources))
+	for i, resource := range resources {
+		if resource.Kind != "bead" || resource.Ref.Validate() != nil || !resource.Ref.IsID() || !resource.Ref.Branch.IsZero() {
+			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "batch read requires resolved bead references"}}
+		}
+		refs[i] = resource.Ref
+	}
+	current, snapshot, closeReader, err := s.current(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer closeReader()
+	caller, err := s.checker.callerFor(ctx, by)
+	if err != nil {
+		return nil, authzError(err)
+	}
+	authority, err := s.checker.load(ctx, snapshot, caller)
+	if err != nil {
+		return nil, &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+	}
+	// This is the same existing compiled read path as filterPage. Unsupported
+	// compilation refuses; it never falls back to an unprotected driver count.
+	template, err := s.checker.chain.Compile(authz.ListRequest{Caller: caller, Action: authz.Read, ResourceKind: authz.Bead, Method: "bead.get"})
+	if err != nil {
+		return nil, authzError(err)
+	}
+	rows, err := current.Get(ctx, refs)
+	if err != nil {
+		return nil, err
+	}
+	present := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if row.Kind == "bead" {
+			present[row.Ref.ID] = true
+		}
+	}
+	allowed := make([]bool, len(resources))
+	for i, ref := range refs {
+		if !present[ref.ID] {
+			continue
+		}
+		allowed[i], err = template.Match(ctx, authority, authz.Resource{Kind: authz.Bead, Ref: ref})
+		if err != nil {
+			return nil, authzError(err)
+		}
+	}
+	binding, err := s.checker.readAuthorityBinding(ctx, caller, authority, snapshot)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
+		return nil, err
+	}
+	return allowed, nil
+}
+
 func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
 	if s == nil || s.delegate == nil || s.checker == nil {
 		return service.BeadPage{}, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}

@@ -680,6 +680,9 @@ func TestB23CountContractCanonicalAndEmbedded(t *testing.T) {
 					t.Fatalf("valid ordinary result refused: count=%s: %v", count, err)
 				}
 			}
+			if err := c.ValidateResult(d, []byte(`{"items":[],"asOf":{"revision":1},"count":0,"projection":{"binding":"core","checkpoint":{"incarnation":"inc","revision":1,"index":0}}}`)); err != nil {
+				t.Fatalf("count with existing projection metadata refused: %v", err)
+			}
 			for _, count := range []string{"-1", "20001", "null", "true", `"0"`, "0.5"} {
 				if err := c.ValidateResult(d, []byte(`{"items":[],"asOf":{"revision":1},"count":`+count+`}`)); err == nil {
 					t.Fatalf("invalid ordinary count admitted: %s", count)

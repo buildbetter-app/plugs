@@ -25,7 +25,7 @@ import (
 
 // This fixture reuses the real fixed-permission composition, HTTP admission,
 // and owned PostgreSQL engine. Only disposable source rows are seeded through
-// conformance; every assertion calls the schema-checked public JSON-RPC wire.
+// conformance; count assertions call the schema-checked public JSON-RPC wire.
 func ordinaryCountFixture(t *testing.T, open storeFactory) *fixture {
 	t.Helper()
 	f := newFixtureOn(t, open(t), nil)
@@ -66,7 +66,8 @@ func ordinaryCountFixture(t *testing.T, open storeFactory) *fixture {
 	}
 	views, err := viewops.New(f.store, f.lease, viewops.Config{
 		OntologyRevision: model.Natural64(1), ParentProjection: parents,
-		Views: ordinarySavedView{},
+		AuthorizeReadBatch: f.server.Service.AuthorizeReadBatch,
+		Views:              ordinarySavedView{},
 		AuthorizeRead: func(ctx context.Context, by model.PrincipalRef, resource model.ResourceRef, _ string) error {
 			_, err := f.server.Service.Get(ctx, by, service.GetRequest{ID: resource.Ref})
 			return err
@@ -564,5 +565,44 @@ func TestB23OrdinaryExactCountCapAndRefusalAcrossDrivers(t *testing.T) {
 		t.Run("denied_rows_do_not_consume_cap", func(t *testing.T) {
 			exactCountPage(t, f.call(t, countReader(), "view.run", map[string]any{"countOnly": true, "definition": map[string]any{"filter": map[string]any{"query": "title=countcap"}}}, 20003), 0)
 		})
+	})
+}
+
+func TestB23CountBatchAuthorizationMatchesGuardedGetAcrossDrivers(t *testing.T) {
+	countDrivers(t, func(t *testing.T, open storeFactory) {
+		f := ordinaryCountFixture(t, open)
+		refs := []model.ResourceRef{}
+		for _, n := range []int{1, 2, 3, 4, 5, 6, 7, 8, 999, 2} {
+			refs = append(refs, model.ResourceRef{Kind: "bead", Ref: fixtureRef(n)})
+		}
+		for i, by := range []model.PrincipalRef{
+			countReader(),
+			{Kind: "user", ID: "user:all-reader"},
+			{Kind: "user", ID: "user:empty-reader", Caveats: map[string]any{"refs": []model.Ref{}}},
+			{Kind: "user", ID: "user:project-reader", Caveats: map[string]any{"projects": []model.Ref{model.RefByID("other", model.Natural64(0))}}},
+			worker("user:operator"),
+		} {
+			t.Run(fmt.Sprintf("principal_%d", i), func(t *testing.T) {
+				allowed, err := f.server.Service.AuthorizeReadBatch(context.Background(), by, refs)
+				if err != nil || len(allowed) != len(refs) {
+					t.Fatalf("batch result=%v err=%v", allowed, err)
+				}
+				for j, resource := range refs {
+					got := f.call(t, by, "bead.get", map[string]any{"id": resource.Ref}, 21000+i*100+j)
+					if got.Error != nil && got.Error.Data.Code != "not_found" {
+						t.Fatalf("point read failed unexpectedly: %+v", got.Error.Data)
+					}
+					if allowed[j] != (got.Error == nil) {
+						t.Fatalf("batch/guarded Get differ: ref=%s batch=%t point=%+v", resource.Ref.ID, allowed[j], got)
+					}
+				}
+			})
+		}
+		for _, resource := range []model.ResourceRef{{Kind: "view", Ref: fixtureRef(1)}, {Kind: "bead", Ref: model.RefByID("", model.Natural64(0))}} {
+			allowed, err := f.server.Service.AuthorizeReadBatch(context.Background(), countReader(), []model.ResourceRef{resource})
+			if err == nil || allowed != nil {
+				t.Fatalf("invalid batch resource admitted: %v %v", allowed, err)
+			}
+		}
 	})
 }

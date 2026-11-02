@@ -551,3 +551,73 @@ func TestCountOnlyKeepsProjectionWithoutPayloadDependencies(t *testing.T) {
 		t.Fatalf("count projection=%+v err=%v", result, err)
 	}
 }
+
+func TestCountBatchAuthorizationIsCompleteAndFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		decisions []bool
+		want      int
+		code      model.ErrorCode
+	}{
+		{"allowed", []bool{true}, 1, ""},
+		{"denied", []bool{false}, 0, ""},
+		{"missing", []bool{}, 0, "authz_unavailable"},
+		{"extra", []bool{true, true}, 0, "authz_unavailable"},
+		{"error", nil, 0, "busy"},
+		{"canceled", []bool{true}, 0, "busy"},
+		{"lease_lost", []bool{true}, 0, "busy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			lease := &testLease{lost: make(chan struct{})}
+			store := &syntheticStore{
+				rows: []driver.Record{{Ref: model.RefByID("candidate", model.Natural64(0)), Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, "candidate", "p")}},
+				meta: driver.Meta{StoreID: "store", Incarnation: "inc", Head: model.Natural64(1)},
+			}
+			pointCalls, batchCalls := 0, 0
+			svc, err := New(store, lease, Config{
+				AuthorizeRead: func(context.Context, model.PrincipalRef, model.ResourceRef, string) error { pointCalls++; return nil },
+				AuthorizeReadBatch: func(_ context.Context, _ model.PrincipalRef, refs []model.ResourceRef) ([]bool, error) {
+					batchCalls++
+					if len(refs) != 1 || refs[0].Kind != "bead" || refs[0].Ref.ID != "candidate" {
+						t.Fatalf("batch changed candidate membership: %+v", refs)
+					}
+					switch tc.name {
+					case "error":
+						return nil, failure("busy", "unavailable authority")
+					case "canceled":
+						cancel()
+					case "lease_lost":
+						close(lease.lost)
+					}
+					return tc.decisions, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := RunRequest{CountOnly: true, Definition: &Definition{Filter: &Filter{Resources: []string{"candidate"}}}}
+			by := model.PrincipalRef{Kind: "user", ID: "reader"}
+			result, err := svc.Run(ctx, by, req)
+			if pointCalls != 0 || batchCalls != 1 {
+				t.Fatalf("count authorization calls: point=%d batch=%d", pointCalls, batchCalls)
+			}
+			if tc.code != "" {
+				var typed *model.Error
+				if !errors.As(err, &typed) || typed.Data.Code != tc.code || result.Count != nil {
+					t.Fatalf("batch count escaped failure: result=%+v err=%v", result, err)
+				}
+				return
+			}
+			if err != nil || result.Count == nil || *result.Count != tc.want {
+				t.Fatalf("batch count=%+v err=%v want=%d", result, err, tc.want)
+			}
+			req.CountOnly = false
+			page, err := svc.Run(ctx, by, req)
+			if err != nil || page.Count != nil || len(page.Items) != 1 || pointCalls != 1 || batchCalls != 1 {
+				t.Fatalf("ordinary path changed: result=%+v err=%v point=%d batch=%d", page, err, pointCalls, batchCalls)
+			}
+		})
+	}
+}

@@ -192,15 +192,36 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	// still evaluates on every page request, so a revoked grant cannot reuse an
 	// earlier page's decision.
 	authorized := make(map[string]bool, len(rows))
-	for _, row := range rows {
-		if !matches(row, filter, project, terms) {
-			continue
+	if req.CountOnly && s.cfg.AuthorizeReadBatch != nil {
+		refs := make([]model.ResourceRef, 0, len(rows))
+		for _, row := range rows {
+			if matches(row, filter, project, terms) {
+				refs = append(refs, model.ResourceRef{Kind: "bead", Ref: row.record.Ref})
+			}
 		}
-		ok, err := s.authorize(ctx, by, row)
-		if err != nil {
-			return Result{}, mapped(err)
+		if len(refs) != 0 {
+			decisions, err := s.cfg.AuthorizeReadBatch(ctx, by, refs)
+			if err != nil {
+				return Result{}, mapped(err)
+			}
+			if len(decisions) != len(refs) {
+				return Result{}, failure("authz_unavailable", "batch read authorization returned incomplete decisions")
+			}
+			for i, ref := range refs {
+				authorized[ref.Ref.ID] = decisions[i]
+			}
 		}
-		authorized[row.doc.ID] = ok
+	} else {
+		for _, row := range rows {
+			if !matches(row, filter, project, terms) {
+				continue
+			}
+			ok, err := s.authorize(ctx, by, row)
+			if err != nil {
+				return Result{}, mapped(err)
+			}
+			authorized[row.doc.ID] = ok
+		}
 	}
 	candidates := make([]stored, 0, len(rows))
 	for _, row := range rows {

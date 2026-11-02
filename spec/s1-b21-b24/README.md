@@ -43,7 +43,9 @@ The named `TestB23OrdinaryExactPredicateCountWireAcrossDrivers`,
 `TestB23OrdinaryExactCountCapAndRefusalAcrossDrivers` in
 `internal/server/authzrpc/predicate_count_test.go` exercise the ordinary count
 through authenticated, schema-checked HTTP on memory, SQLite and Postgres with
-the installed fixed-permission policy. Qualification requires exact-head focused and whole-tree
+the installed fixed-permission policy. The count batch adapter also has a
+named comparison against actual guarded `bead.get` responses for current fixed
+principals and caveats. Qualification requires exact-head focused and whole-tree
 RunsOn receipts for that bounded count behavior; they do not turn the
 older grouped summary into ordinary-count proof or certify all of B23/S1.
 Full S1 remains 0/28 and E3 remains 4/5 until their separate proof exists.
