@@ -378,6 +378,10 @@ internal/integration/e5acceptance/local_fixture_test.go
 internal/integration/e5acceptance/local_wasi_test.go
 internal/integration/e5acceptance/postgres_failover_test.go
 internal/integration/e5acceptance/public_contention_test.go
+internal/integration/epicauthbrowser/BUILD.bazel
+internal/integration/epicauthbrowser/epic_browser_check.mjs
+internal/integration/epicauthbrowser/epic_browser_test.go
+internal/integration/epicauthbrowser/fixture_test.go
 internal/integration/epicprogress/BUILD.bazel
 internal/integration/epicprogress/README.md
 internal/integration/epicprogress/epic_progress_test.go
