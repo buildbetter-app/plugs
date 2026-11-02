@@ -41,6 +41,7 @@ go_test(
         "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
         "//internal/server/composition:testdata/server-representative-plug-dump-1.tar",
     ],
+    tags = ["exclusive"],
     deps = [
         "//internal/api/wire",
         "//internal/client",

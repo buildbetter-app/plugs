@@ -24,6 +24,7 @@ go_test(
     name = "authzrpc_test",
     srcs = ["authzrpc_test.go", "drivers_test.go", "predicate_count_test.go", "ready_activation_internal_test.go", "ready_activation_test.go", "ready_compiled_contract_test.go", "ready_scan_test.go"],
     embed = [":authzrpc"],
+    tags = ["exclusive"],
     deps = [
         "//internal/core/authz",
         "//internal/core/model",
@@ -49,11 +50,12 @@ go_test(
 
 go_test(
     name = "hierarchy_test",
-    srcs = ["hierarchy_test.go"],
+    srcs = ["hierarchy_test.go", "atomic_close_test.go", "hierarchy_lifecycle_test.go", "hierarchy_lifecycle_guards_test.go"],
     embed = [":authzrpc"],
     deps = [
         "//internal/core/authz",
         "//internal/core/model",
+        "//internal/core/pipeline",
         "//internal/core/port",
         "//internal/plugins/authnapikey",
         "//internal/plugins/authzfixed",

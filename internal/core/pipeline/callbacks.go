@@ -158,7 +158,19 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 	if p.release != nil {
 		proposal.Meta.Method = "bead.reopen"
 	}
-	if err := w.cfg.ontology.Validate(ctx, proposal, p.snapshot); err != nil {
+	if p.closes != nil {
+		ordered, ok := w.cfg.ontology.(orderedCloseOntology)
+		if !ok {
+			return failure("invalid_params", "ontology does not support ordered close validation")
+		}
+		images, err := clone(p.ordered)
+		if err != nil {
+			return err
+		}
+		if err := ordered.ValidateOrdered(ctx, images, proposal, p.snapshot); err != nil {
+			return err
+		}
+	} else if err := w.cfg.ontology.Validate(ctx, proposal, p.snapshot); err != nil {
 		return err
 	}
 	if err := w.authorize(ctx, port.AuthorizeAfter, p.proposal, p.snapshot); err != nil {

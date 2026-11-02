@@ -11,8 +11,9 @@ import (
 )
 
 type queryTerm struct {
-	key   string
-	value string
+	key    string
+	value  string
+	labels *labelPredicate
 }
 
 // queryMatches applies the small, deliberately closed view grammar. Scalar
@@ -21,6 +22,9 @@ type queryTerm struct {
 // does. Keeping this distinction here prevents callers from mistaking a text
 // predicate for an identifier predicate while preserving deterministic scans.
 func queryMatches(row stored, term queryTerm) bool {
+	if term.labels != nil {
+		return term.labels.matches(row.doc.Labels)
+	}
 	if term.key == "title" {
 		value, _ := row.doc.Fields["title"].(string)
 		return strings.Contains(value, term.value)
@@ -29,6 +33,11 @@ func queryMatches(row stored, term queryTerm) bool {
 }
 
 func parseQuery(query string) ([]queryTerm, error) {
+	return parseLabelQuery(query)
+}
+
+// Scalar token validation retains the existing equality-only grammar.
+func parseScalarQuery(query string) ([]queryTerm, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, nil

@@ -73,17 +73,19 @@ type fixture struct {
 	clock   *testclock.Clock
 	ids     []string
 	idIndex int
+	options []pipeline.Option
 	frames  []frame
 	mu      sync.Mutex
 }
 
-func newFixture(t *testing.T, engine string) *fixture {
+func newFixture(t *testing.T, engine string, options ...pipeline.Option) *fixture {
 	t.Helper()
 	f := &fixture{
-		t:      t,
-		ctx:    context.Background(),
-		engine: engine,
-		clock:  testclock.New(t, time.Date(2026, 11, 1, 23, 0, 0, 123456000, time.UTC)),
+		t:       t,
+		ctx:     context.Background(),
+		engine:  engine,
+		options: append([]pipeline.Option(nil), options...),
+		clock:   testclock.New(t, time.Date(2026, 11, 1, 23, 0, 0, 123456000, time.UTC)),
 		ids: []string{
 			"s1-b21-anchor", "s1-b21-created", "s1-b22-anchor",
 			"s1-b23-alpha", "s1-b23-beta", "s1-b23-closed", "s1-b24-item",
@@ -144,11 +146,13 @@ func (f *fixture) bind(t *testing.T) {
 		t.Fatal(err)
 	}
 	ontology := service.NewOntology(nil)
-	f.writer = pipeline.New(f.store, f.lease,
+	options := []pipeline.Option{
 		pipeline.WithOntology(ontology),
 		pipeline.WithClock(f.clock.Now),
 		pipeline.WithIDGenerator(f.nextID),
-	)
+	}
+	options = append(options, f.options...)
+	f.writer = pipeline.New(f.store, f.lease, options...)
 	f.service = service.New(f.store, f.lease, f.writer,
 		service.WithOntology(ontology),
 		service.WithClock(f.clock.Now),
