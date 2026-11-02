@@ -11,6 +11,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -143,7 +144,7 @@ func TestS1B04PublicClaimContractAcrossStores(t *testing.T) {
 				if backend == "postgres" {
 					dsn = h.dsn(t)
 				}
-				return newFixture(t, backend, dsn, defaultOntology(), ids)
+				return newFixture(t, backend, dsn, service.NewOntology(nil), ids)
 			}
 			t.Run("reference-hydration-history-and-noop", func(t *testing.T) {
 				f := fresh(t, []string{"b04-next", "b04-direct", "b04-empty"})
@@ -300,6 +301,9 @@ func TestS1B04PublicClaimContractAcrossStores(t *testing.T) {
 				result(t, f.call("block", "bead.link", owner, map[string]any{"from": ref("b04-blocked"), "to": ref("b04-blocker"), "kind": "blocks"}))
 				for _, id := range []string{"b04-parked", "b04-finished", "b04-abandoned", "b04-broken", "b04-blocked"} {
 					t.Run(id, func(t *testing.T) {
+						parentT := f.t
+						f.t = t
+						defer func() { f.t = parentT }()
 						before, versions := f.imageDigest(), b04Versions(f, id)
 						code := "invalid_params"
 						if id == "b04-blocked" {
