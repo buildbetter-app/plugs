@@ -76,16 +76,18 @@ func failure(code model.ErrorCode, message string) error {
 	return &model.Error{Message: message, Data: model.ErrorData{Code: code, Retryable: code == "write_conflict" || code == "subscriber_unavailable" || code == "busy"}}
 }
 
-// preconditionFailure keeps CAS refusals useful to a caller that has lost a
-// race. The typed code remains stable, while details identify the resource
-// and the current token observed by the pinned pre-read. A failed guard never
-// reaches publication, so this is diagnostic data only and cannot be used as
-// an implicit authorization or write.
+// preconditionFailure describes the selected CAS arm. Preparation keeps this
+// refusal private until AuthorizeBefore covers its expectation target.
+func preconditionFailure(reason, message string) *model.Error {
+	return &model.Error{Message: message, Data: model.ErrorData{Code: "precondition_failed", Details: map[string]any{"reason": reason}}}
+}
+
+// preconditionRevisionFailure adds the token from the pinned pre-read only
+// when the expected record exists.
 func preconditionRevisionFailure(current model.Revision) error {
-	return &model.Error{Message: "precondition failed", Data: model.ErrorData{Code: "precondition_failed", Details: map[string]any{
-		"reason":          "revision",
-		"currentRevision": current,
-	}}}
+	err := preconditionFailure("revision", "precondition failed")
+	err.Data.Details["currentRevision"] = current
+	return err
 }
 
 func fieldName(path string) (string, error) {
@@ -418,7 +420,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 		}
 		if len(records) != 1 {
 			if p.refusal == nil {
-				p.refusal = failure("precondition_failed", "expected record is absent")
+				reason := "hash"
+				if expect.Revision != nil {
+					reason = "revision"
+				}
+				p.refusal = preconditionFailure(reason, "expected record is absent")
 			}
 			continue
 		}
@@ -448,7 +454,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 			if hash != expect.Hash {
 				if p.refusal == nil {
-					p.refusal = failure("precondition_failed", "field hash changed")
+					p.refusal = preconditionFailure("hash", "field hash changed")
 				}
 			}
 		}
@@ -575,7 +581,11 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		}
 		if len(rows) != 1 {
 			if p.refusal == nil {
-				p.refusal = failure("precondition_failed", "expected record is absent")
+				reason := "hash"
+				if expect.Revision != nil {
+					reason = "revision"
+				}
+				p.refusal = preconditionFailure(reason, "expected record is absent")
 			}
 			continue
 		}
@@ -611,7 +621,7 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		hash, err := FieldHash(value)
 		if err != nil || hash != expect.Hash {
 			if p.refusal == nil {
-				p.refusal = failure("precondition_failed", "field hash changed")
+				p.refusal = preconditionFailure("hash", "field hash changed")
 			}
 		}
 	}
@@ -832,11 +842,11 @@ func expectationHash(doc Document, selector string) (string, error) {
 		if !present {
 			// The admitted string hash arm has no absence discriminator. Never
 			// treat a missing metadata key as the digest of JSON null.
-			return "", failure("precondition_failed", "metadata key is absent")
+			return "", preconditionFailure("hash", "metadata key is absent")
 		}
 		canonical, err := canonicalMetadataJSON(raw)
 		if err != nil {
-			return "", failure("precondition_failed", "metadata value is invalid JSON")
+			return "", preconditionFailure("hash", "metadata value is invalid JSON")
 		}
 		digest := sha256.Sum256(canonical)
 		return hex.EncodeToString(digest[:]), nil
