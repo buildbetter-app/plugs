@@ -139,6 +139,27 @@ func TestB16PublicLabelQueryAllAnyExcludePrecedenceAndGrouping(t *testing.T) {
 		empty := create("empty")
 		closed := create("closed", "red")
 		f.call("bead.close", map[string]any{"id": closed}, true, "")
+		for _, tc := range []struct{ name, id, status string }{
+			{"red", red, "todo"},
+			{"both", both, "todo"},
+			{"blue", blue, "todo"},
+			{"red_green", redGreen, "todo"},
+			{"green", green, "todo"},
+			{"empty", empty, "todo"},
+			{"closed", closed, "done"},
+		} {
+			t.Run("stored_status_"+tc.name, func(t *testing.T) {
+				prior := f.t
+				f.t = t
+				defer func() { f.t = prior }()
+				bead := f.bead(tc.id)
+				got, ok := bead["status"].(string)
+				t.Logf("public bead.get engine=%s id=%s status=%#v want=%q", f.engine, tc.id, bead["status"], tc.status)
+				if !ok || got != tc.status {
+					t.Fatalf("public bead.get %s status=%#v want=%q", tc.id, bead["status"], tc.status)
+				}
+			})
+		}
 		cases := []struct {
 			name, query string
 			want        []string
@@ -146,7 +167,8 @@ func TestB16PublicLabelQueryAllAnyExcludePrecedenceAndGrouping(t *testing.T) {
 			{"all_aliases", "label=red AND labels=blue", []string{both}},
 			{"any", "(label=red OR labels=blue)", []string{red, both, blue, redGreen, closed}},
 			{"exclude_includes_empty", "NOT label=red", []string{blue, green, empty}},
-			{"scalar_conjunction", "status=open AND (label=red OR label=blue)", []string{red, both, blue, redGreen}},
+			{"scalar_conjunction", "status=open AND (label=red OR label=blue)", []string{}},
+			{"scalar_conjunction_todo", "status=todo AND (label=red OR label=blue)", []string{red, both, blue, redGreen}},
 			{"root_project_conjunction", "project=local AND label=red", []string{red, both, redGreen, closed}},
 			{"independent_any_groups", "(label=red OR label=blue) AND (label=green OR label=blue)", []string{both, blue, redGreen}},
 			{"and_before_or", "label=red OR label=blue AND label=green", []string{red, both, redGreen, closed}},
