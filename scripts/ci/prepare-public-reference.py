@@ -267,7 +267,7 @@ def fetch_source(source: Path) -> dict:
     # Retrieve only the exact pinned object. A trusted workflow token gets the
     # first attempt; a public repository may reject that bearer-authenticated
     # request, so retry the identical URL/SHA without any credentials.
-    fetch_arguments = ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
+    fetch_arguments = ["fetch", "--quiet", "--depth=1", "--no-tags", "--no-write-fetch-head",
                        "--no-auto-maintenance", SOURCE_URL, SOURCE_SHA]
     try:
         git(source, fetch_arguments, fetch_environment)

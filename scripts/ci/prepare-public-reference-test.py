@@ -345,6 +345,7 @@ class ReferenceTest(unittest.TestCase):
         args, env = fetches[0]
         fallback_args, fallback_env = fetches[1]
         self.assertIn("--no-write-fetch-head", args)
+        self.assertIn("--depth=1", args)
         self.assertIn("--no-tags", args)
         self.assertEqual(args[-2:], [helper.SOURCE_URL, helper.SOURCE_SHA])
         self.assertEqual(fallback_args, args)
