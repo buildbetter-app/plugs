@@ -405,6 +405,8 @@ internal/integration/httpconformance/fixture_test.go
 internal/integration/httpconformance/protocol_test.go
 internal/integration/localclisession/BUILD.bazel
 internal/integration/localclisession/session_test.go
+internal/integration/memorycontract/BUILD.bazel
+internal/integration/memorycontract/memory_test.go
 internal/integration/migrationpre/BUILD.bazel
 internal/integration/migrationpre/README.md
 internal/integration/migrationpre/compose.go
