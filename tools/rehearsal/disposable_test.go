@@ -324,3 +324,39 @@ func TestSourcePinsFailClosed(t *testing.T) {
 		t.Fatal("wrong expected source pin accepted")
 	}
 }
+
+func TestActualFailedTransitionRecoveryAndRollbackRemainBlocked(t *testing.T) {
+	sha, tree := testSourcePins(t)
+	for _, phase := range []string{"candidate-canary", "rollback-canary"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			corrupted := false
+			report, err := runDeployableRollback(ctx, "memory", sha, tree, func(stage string, h *ownedRuntime) error {
+				if stage != phase {
+					return nil
+				}
+				corrupted = true
+				// Corrupt the actual active generation after the real restore. The
+				// public canary must refuse this digest, and recovery must reinstall the
+				// untouched old bundle before any recovery readback can pass.
+				return os.WriteFile(filepath.Join(h.root, "current", runtimePromptName), []byte("corrupt installed prompt"), 0600)
+			})
+			if !corrupted || err == nil || report.Software != "BLOCK" || report.Complete != "BLOCK" || report.Data != "BLOCK" || !report.CleanupVerified {
+				t.Fatalf("real failed transition hidden: err=%v report=%+v", err, report)
+			}
+			if phase == "candidate-canary" {
+				if !report.RecoveryAttempted || !report.RecoveryVerified || report.RecoveredObservation == nil || !report.RecoveredObservation.PublicDataReadback || !report.RecoveredObservation.PromptCanary || !report.RecoveredObservation.PluginCanary {
+					t.Fatalf("real old recovery missing: %+v", report)
+				}
+			} else if report.RollbackPublicReadback || report.CandidateToOld || !report.CandidateStopped {
+				t.Fatalf("failed final rollback qualified: %+v", report)
+			}
+			raw, e := json.Marshal(report)
+			if e != nil {
+				t.Fatal(e)
+			}
+			t.Logf("I8_EXPECTED_RUNTIME_FAILURE phase=%s %s", phase, raw)
+		})
+	}
+}

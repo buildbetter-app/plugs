@@ -110,6 +110,9 @@ type Rollback struct {
 	RollbackBundle          RuntimeBundle        `json:"rollback_bundle"`
 	Observations            []RuntimeObservation `json:"runtime_observations,omitempty"`
 	Failure                 string               `json:"failure,omitempty"`
+	RecoveryAttempted       bool                 `json:"recovery_attempted"`
+	RecoveryVerified        bool                 `json:"recovery_verified"`
+	RecoveredObservation    *RuntimeObservation  `json:"recovered_observation,omitempty"`
 }
 
 // RuntimeBundle pins real Bazel-built edition artifacts from one tested tree.
@@ -1573,6 +1576,8 @@ type ownedRuntime struct {
 	rpc, adminRPC             *client.Client
 	bootstrap                 runtimeBootstrap
 	stopped                   bool
+	stopAttempted             bool
+	forwarder                 *runtimeForwarder
 }
 
 func startOwnedRuntime(ctx context.Context, d *ownedDocker, root string, b RuntimeBundle) (h *ownedRuntime, err error) {
@@ -1595,7 +1600,7 @@ func startOwnedRuntime(ctx context.Context, d *ownedDocker, root string, b Runti
 	}
 	name := d.owner + "-" + b.Role + "-" + strconv.Itoa(len(d.containers))
 	out, err = d.command(ctx, nil, "container", "create", "--name", name, "--label", runtimeOwnerLabel+"="+d.owner,
-		"--network", d.network, "--publish", "127.0.0.1::8077", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec",
+		"--network", d.network, "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec",
 		"--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"--mount", "type=bind,source="+root+",target=/owned", id)
 	if err != nil {
@@ -1612,24 +1617,26 @@ func startOwnedRuntime(ctx context.Context, d *ownedDocker, root string, b Runti
 		Image           string
 		State           struct{ Running bool }
 		NetworkSettings struct {
-			Ports map[string][]struct {
-				HostIP   string `json:"HostIp"`
-				HostPort string
-			}
+			Networks map[string]struct{ IPAddress, NetworkID string }
 		}
 	}
 	if err != nil || json.Unmarshal(inspected, &state) != nil || len(state) != 1 || !state[0].State.Running || state[0].Image != id {
 		return h, fmt.Errorf("running image pin mismatch")
 	}
-	ports := state[0].NetworkSettings.Ports["8077/tcp"]
-	if len(ports) != 1 || ports[0].HostIP != "127.0.0.1" {
-		return h, fmt.Errorf("owned loopback port missing")
+	network, ok := state[0].NetworkSettings.Networks[d.network]
+	ip := net.ParseIP(network.IPAddress)
+	if !ok || ip == nil || !ip.IsPrivate() {
+		return h, fmt.Errorf("owned internal container address missing")
 	}
-	port, err := strconv.Atoi(ports[0].HostPort)
-	if err != nil || port < 1 || port > 65535 {
-		return h, fmt.Errorf("invalid owned port")
+	networkInfo, e := d.command(ctx, nil, "network", "inspect", "--format", "{{.Id}}|{{.Internal}}", d.network)
+	if e != nil || strings.TrimSpace(string(networkInfo)) != network.NetworkID+"|true" {
+		return h, fmt.Errorf("runtime network is not owned/internal")
 	}
-	h.endpoint = "https://127.0.0.1:" + strconv.Itoa(port)
+	h.forwarder, err = newRuntimeForwarder(ctx, net.JoinHostPort(ip.String(), "8077"))
+	if err != nil {
+		return h, err
+	}
+	h.endpoint = "https://" + h.forwarder.listener.Addr().String()
 	// Only readiness of the private bootstrap is polled. RPC writes, restore,
 	// build and failed transitions are never retried.
 	ready, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -1672,9 +1679,10 @@ func startOwnedRuntime(ctx context.Context, d *ownedDocker, root string, b Runti
 }
 
 func (h *ownedRuntime) stop(ctx context.Context) error {
-	if h == nil || h.stopped {
+	if h == nil || h.stopped || h.stopAttempted {
 		return fmt.Errorf("runtime stop requires an active owned service")
 	}
+	h.stopAttempted = true
 	if err := h.docker.owned(ctx, "container", h.id); err != nil {
 		return err
 	}
@@ -1687,6 +1695,11 @@ func (h *ownedRuntime) stop(ctx context.Context) error {
 	}
 	if h.transport != nil {
 		h.transport.http.CloseIdleConnections()
+	}
+	if h.forwarder != nil {
+		if err = h.forwarder.close(); err != nil {
+			return err
+		}
 	}
 	address := strings.TrimPrefix(h.endpoint, "https://")
 	connection, dialErr := net.DialTimeout("tcp", address, time.Second)
@@ -1959,7 +1972,13 @@ func runtimeCanary(ctx context.Context, h *ownedRuntime, b RuntimeBundle, observ
 // RunDeployableRollback performs only the approved local-on-RunsOn drill.
 // Both editions are built from this same tested SHA/tree; this does not prove
 // compatibility with any historical release or any Beads reverse/reimport.
-func RunDeployableRollback(ctx context.Context, kind, sha, tree string) (report Rollback, err error) {
+func RunDeployableRollback(ctx context.Context, kind, sha, tree string) (Rollback, error) {
+	return runDeployableRollback(ctx, kind, sha, tree, nil)
+}
+
+// fault exists only inside this package for destructive, owned failure tests;
+// no public runner accepts a command, endpoint or external resource adapter.
+func runDeployableRollback(ctx context.Context, kind, sha, tree string, fault func(string, *ownedRuntime) error) (report Rollback, err error) {
 	report.Software = "BLOCK"
 	report.Complete = "BLOCK"
 	report.Data = "BLOCK"
@@ -1983,8 +2002,11 @@ func RunDeployableRollback(ctx context.Context, kind, sha, tree string) (report 
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		var closeErr error
-		if active != nil && !active.stopped {
+		if active != nil && !active.stopAttempted {
 			closeErr = active.stop(cleanupCtx)
+		}
+		if active != nil && active.forwarder != nil {
+			closeErr = errors.Join(closeErr, active.forwarder.close())
 		}
 		cleanupErr := d.cleanup(cleanupCtx)
 		removeErr := os.RemoveAll(root)
@@ -2098,6 +2120,7 @@ func RunDeployableRollback(ctx context.Context, kind, sha, tree string) (report 
 	// Recovery is attempted once after a failed candidate transition. The
 	// original failure remains BLOCK; failure of recovery is also preserved.
 	recoverOld := func() error {
+		report.RecoveryAttempted = true
 		if active != nil && !active.stopped {
 			if e := active.stop(ctx); e != nil {
 				return fmt.Errorf("rollback owned stop failed: %w", e)
@@ -2111,10 +2134,15 @@ func RunDeployableRollback(ctx context.Context, kind, sha, tree string) (report 
 		if e != nil {
 			return fmt.Errorf("rollback start failed: %w", e)
 		}
-		_, e = restoreAndReadRuntime(ctx, active, rollback, oldState, "")
+		recovery, e := restoreAndReadRuntime(ctx, active, rollback, oldState, "")
 		if e != nil {
 			return fmt.Errorf("rollback readback failed: %w", e)
 		}
+		if e = runtimeCanary(ctx, active, rollback, &recovery); e != nil {
+			return fmt.Errorf("rollback canary failed: %w", e)
+		}
+		report.RecoveryVerified = true
+		report.RecoveredObservation = &recovery
 		return nil
 	}
 	var candidateObservation RuntimeObservation
@@ -2127,6 +2155,11 @@ func RunDeployableRollback(ctx context.Context, kind, sha, tree string) (report 
 			candidateObservation, e = restoreAndReadRuntime(ctx, active, candidate, oldState, oldCursor)
 			if e != nil {
 				return e
+			}
+			if fault != nil {
+				if e = fault("candidate-canary", active); e != nil {
+					return e
+				}
 			}
 			return runtimeCanary(ctx, active, candidate, &candidateObservation)
 		}, recoverOld,
@@ -2158,6 +2191,11 @@ func RunDeployableRollback(ctx context.Context, kind, sha, tree string) (report 
 			rollbackObservation, e = restoreAndReadRuntime(ctx, active, rollback, oldState, candidateCursor)
 			if e != nil {
 				return e
+			}
+			if fault != nil {
+				if e = fault("rollback-canary", active); e != nil {
+					return e
+				}
 			}
 			return runtimeCanary(ctx, active, rollback, &rollbackObservation)
 		}, func() error { return fmt.Errorf("rollback transition failed; qualification blocked") },
@@ -2193,6 +2231,87 @@ func finishRuntimeReport(report *Rollback, runErr, stopErr, cleanupErr, removeEr
 		report.Software = "PASS_digest_verified_old_candidate_old"
 		report.Data = "PASS_snapshot_restore_public_readback"
 		report.Complete = "PASS_executable_image_prompt_plugin_data_transition"
+	}
+	return err
+}
+
+// Docker internal bridges do not publish ports on every supported daemon.
+// This owned byte forwarder binds only loopback and dials only the inspected
+// address of our labeled container. TLS and authenticated public HTTP still
+// terminate in the real container; no request authority is rewritten here.
+type runtimeForwarder struct {
+	listener    net.Listener
+	mu          sync.Mutex
+	connections map[net.Conn]bool
+	closed      bool
+	group       sync.WaitGroup
+}
+
+func newRuntimeForwarder(ctx context.Context, target string) (*runtimeForwarder, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	f := &runtimeForwarder{listener: listener, connections: map[net.Conn]bool{}}
+	f.group.Add(1)
+	go func() {
+		defer f.group.Done()
+		for {
+			incoming, e := listener.Accept()
+			if e != nil {
+				return
+			}
+			f.mu.Lock()
+			if f.closed {
+				f.mu.Unlock()
+				incoming.Close()
+				return
+			}
+			f.connections[incoming] = true
+			f.group.Add(1)
+			f.mu.Unlock()
+			go func() {
+				defer f.group.Done()
+				defer func() { incoming.Close(); f.mu.Lock(); delete(f.connections, incoming); f.mu.Unlock() }()
+				outgoing, e := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "tcp", target)
+				if e != nil {
+					return
+				}
+				f.mu.Lock()
+				if f.closed {
+					f.mu.Unlock()
+					outgoing.Close()
+					return
+				}
+				f.connections[outgoing] = true
+				f.mu.Unlock()
+				defer func() { outgoing.Close(); f.mu.Lock(); delete(f.connections, outgoing); f.mu.Unlock() }()
+				copied := make(chan struct{}, 1)
+				go func() { _, _ = io.Copy(outgoing, incoming); copied <- struct{}{} }()
+				_, _ = io.Copy(incoming, outgoing)
+				incoming.Close()
+				outgoing.Close()
+				<-copied
+			}()
+		}
+	}()
+	return f, nil
+}
+func (f *runtimeForwarder) close() error {
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		return nil
+	}
+	f.closed = true
+	err := f.listener.Close()
+	for connection := range f.connections {
+		err = errors.Join(err, connection.Close())
+	}
+	f.mu.Unlock()
+	f.group.Wait()
+	if errors.Is(err, net.ErrClosed) {
+		return nil
 	}
 	return err
 }
