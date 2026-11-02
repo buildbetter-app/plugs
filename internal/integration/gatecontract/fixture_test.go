@@ -49,13 +49,19 @@ func (f *fixture) open() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
+	f.bind()
+}
+
+func (f *fixture) bind(extra ...pipeline.Option) {
+	f.t.Helper()
 	// The built-in ontology and real named service are the public host path.
 	// No test-only schema compilation, record seed or visibility bypass.
 	ontology := service.NewOntology(nil)
-	writer := pipeline.New(f.store, f.lease, pipeline.WithOntology(ontology), pipeline.WithIDGenerator(func() (string, error) {
+	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithIDGenerator(func() (string, error) {
 		f.nextID++
 		return fmt.Sprintf("gc-%06d", f.nextID), nil
-	}))
+	})}
+	writer := pipeline.New(f.store, f.lease, append(options, extra...)...)
 	domain := service.New(f.store, f.lease, writer, service.WithOntology(ontology))
 	registry, err := rpc.NewRegistry()
 	if err != nil {

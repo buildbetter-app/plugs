@@ -608,6 +608,10 @@
           },
           "linkKind": {
             "type": "string"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/LinkMetadata",
+            "description": "Only valid for a waits-for link. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
           }
         },
         "required": [
@@ -3744,6 +3748,22 @@
         ],
         "additionalProperties": false,
         "description": "Transaction-local prepared import profile. The trusted host creates it after admission; ordinary JSON-RPC callers cannot submit or forge it."
+      },
+      "LinkMetadata": {
+        "type": "object",
+        "properties": {
+          "gate": {
+            "type": "string",
+            "enum": [
+              "all-children",
+              "any-children"
+            ]
+          },
+          "also_blocks": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       }
     },
     "errors": {
