@@ -14,8 +14,11 @@ go_library(
 
 go_test(
     name = "reverseconverter_test",
-    srcs = ["reverseconverter_test.go"],
-    data = ["//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar"],
+    srcs = ["reverseconverter_test.go", "public_archive_test.go"],
+    data = [
+        "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
+        "//internal/integration/offlinehistory:lexicon_files",
+    ],
     deps = ["//internal/core/dumpformat"],
     embed = [":reverseconverter"],
     size = "small",
