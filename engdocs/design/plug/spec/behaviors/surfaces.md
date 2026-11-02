@@ -35,6 +35,35 @@ natural numeric sort, and keyset positions are separate projections.
 with category-based statuses and stored ready bucket/rank (P74). Drop Beads
 CLI formatting and public Go role API (P46/P47).
 
+**Adopted ordinary count wire (2026-11-02, OPT_IN).** `view.run` accepts an
+optional request-level Boolean `countOnly`, default false. Missing/false keeps
+existing requests, responses, saved definitions and paging unchanged. True
+resolves the same saved or inline definition and returns
+`{items:[], asOf, count:N}` plus existing projection metadata, with `count:0`
+present for an empty answer. It emits no item page, groups, elisions or
+`nextCursor`. Any supplied cursor or nonempty `groupBy` refuses `invalid_params`;
+wrong-type/null flags also refuse. This flag is not a `ViewDefinition` member.
+
+Count membership is the same unique project/resources/types/query intersection
+as ordinary listing, after current read authorization on the pinned content
+snapshot. Historical `asOf` selects old content with current permissions; it
+never restores an old grant. Empty/blank queries match the admitted ordinary
+set, unknown status/type matches nothing, and malformed/unsupported queries
+retain their typed refusals. Existing title matching and sorting stay unchanged.
+Valid fields, sort and output budget remain validated but cannot change or
+truncate a count. More than 20,000 authorized ordinary candidates refuses
+`scope_too_large` without a partial total; `fields:[]` does not grant the grouped
+type-summary exception. Denied rows leave no count or cap trace. This decision
+adds no query grammar, method, saved-definition flag, budget rule or cap exception.
+
+Done = ordinary exact predicate count is returned through the authenticated
+public wire on memory, SQLite and Postgres under fixed permissions, proven by
+named count regressions and exact-head focused plus whole-tree uncached RunsOn;
+a grouped type-summary or fields-only projection does not count. Scope = the
+count producer, request/result schemas and their direct query/authorization
+boundaries. This does not qualify the full B23 card, S1, arbitrary grouping or
+mutable-policy/latency behavior.
+
 ## B24 — stale, defer, wake, and due-time semantics
 
 **Behavior.** Stale work is selected by age and status without mutating rows;
