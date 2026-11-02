@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -32,7 +34,7 @@ func TestHierarchyMixedLifecycleIndependentPermitsAndLateGuardRollback(t *testin
 	for _, engine := range []string{"memory", "sqlite"} {
 		for _, refusal := range []string{"tx.apply", "bead.close", "late-template"} {
 			t.Run(engine+"/"+refusal, func(t *testing.T) {
-				f := newHFixtureStore(t, true, hierarchyLifecycleStore(t, engine))
+				f := newHierarchyLifecycleFixture(t, engine)
 				rules := &hierarchyLifecycleRules{denyTx: refusal == "tx.apply", denyClose: refusal == "bead.close"}
 				f.app.Checker.chain.Rules = []authz.RuleSet{rules}
 				params := hierarchyLifecycleMixedParams(2100, nil)
@@ -82,7 +84,7 @@ func (hierarchyLifecycleMembership) Compile(authz.ListRequest) (authz.FilterTemp
 func TestHierarchyMixedCloseRechecksCurrentMembershipAndPreservesFinitePolicy(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite"} {
 		t.Run(engine, func(t *testing.T) {
-			f := newHFixtureStore(t, true, hierarchyLifecycleStore(t, engine))
+			f := newHierarchyLifecycleFixture(t, engine)
 			params := hierarchyLifecycleMixedParams(2110, nil)
 			head, rows := hierarchyLifecycleState(t, f, hRef("child"))
 			hierarchyLifecycleForbidden(t, f.callRPC(t, hAgent(), "tx.apply", params))
@@ -130,7 +132,7 @@ func TestHierarchyMixedCloseRechecksCurrentMembershipAndPreservesFinitePolicy(t 
 func TestHierarchyMixedCloseExpectationOnlyPrivacyAndReparentedTarget(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite"} {
 		t.Run(engine, func(t *testing.T) {
-			f := newHFixtureStore(t, true, hierarchyLifecycleStore(t, engine))
+			f := newHierarchyLifecycleFixture(t, engine)
 			rules := &hierarchyLifecycleRules{}
 			f.app.Checker.chain.Rules = []authz.RuleSet{rules}
 			params := hierarchyLifecycleMixedParams(2120, nil)
@@ -209,5 +211,92 @@ func TestHierarchyLifecycleFinalImagesRemainBoundToHierarchyChecks(t *testing.T)
 	}
 	if !reflect.DeepEqual(create.After, close.After) {
 		t.Fatal("authorization mutated the caller's image")
+	}
+}
+
+// The older authorization fixture deliberately seeds only source records.
+// Real parented Writer operations also require a complete derived closure;
+// installing those fixture rows does not change any product validation.
+func newHierarchyLifecycleFixture(t *testing.T, engine string) *hFixture {
+	t.Helper()
+	f := newHFixtureStore(t, true, hierarchyLifecycleStore(t, engine))
+	ctx := context.Background()
+	parents := map[string]string{"child": "old", "old": "", "new": "", "visible": "new", "hidden-one": "new", "hidden-two": "new"}
+	var rows []driver.DerivedRow
+	var keys []driver.LockKey
+	var sentinels []driver.Sentinel
+	for id := range parents {
+		sentinel, err := driver.NewClosureSentinel(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sentinels = append(sentinels, sentinel)
+		keys = append(keys, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+		var depth uint64
+		for ancestor := id; ancestor != ""; ancestor = parents[ancestor] {
+			row, err := pipeline.AncestorRow(id, ancestor, depth)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows = append(rows, row)
+			keys = append(keys, driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: row.Key}})
+			depth++
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(keys[i])
+		b, _ := driver.EncodeLockKey(keys[j])
+		return a < b
+	})
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Key < rows[j].Key })
+	locks := make([]driver.LockRequest, len(keys))
+	for i, key := range keys {
+		locks[i] = driver.LockRequest{Key: key, Mode: driver.LockUpdate}
+	}
+	meta, err := f.store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := f.store.Write(ctx, f.lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	if _, err := tx.Lock(ctx, locks); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Head(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutDerived(ctx, driver.DerivedAncestorClosure, nil, rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetDerived, Principal: model.PrincipalRef{Kind: "system", ID: "hierarchy-fixture"}, LockKeys: keys}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.snapshot(t).DerivedRows(ctx, driver.DerivedAncestorClosure, "")
+	if err != nil || !reflect.DeepEqual(stored, rows) {
+		t.Fatalf("fixture closure rows=%+v want=%+v err=%v", stored, rows, err)
+	}
+	return f
+}
+
+func TestHierarchyMixedLifecycleRefusesMissingClosure(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newHFixtureStore(t, true, hierarchyLifecycleStore(t, engine))
+			f.app.Checker.chain.Rules = []authz.RuleSet{&hierarchyLifecycleRules{}}
+			head, rows := hierarchyLifecycleState(t, f, hRef("child"))
+			params := hierarchyLifecycleMixedParams(2130, nil)
+			reply := f.callRPC(t, hAgent(), "tx.apply", params)
+			if reply.Error == nil || reply.Error.Data.Code != "ontology_guard_failed" || len(reply.Result) != 0 || reply.Meta.Replayed {
+				t.Fatalf("missing closure refusal=%+v", reply)
+			}
+			hierarchyLifecycleSameState(t, f, head, rows, hRef("child"))
+			hierarchyLifecycleNoReceipt(t, f, params)
+		})
 	}
 }

@@ -171,7 +171,7 @@ func hierarchyLifecycleForbidden(t *testing.T, reply hReply) {
 func TestHierarchyEnabledCloseOnlyUsesOrdinaryCloseAuthorization(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite"} {
 		t.Run(engine, func(t *testing.T) {
-			f := newHFixtureStore(t, true, hierarchyLifecycleStore(t, engine))
+			f := newHierarchyLifecycleFixture(t, engine)
 			rules := &hierarchyLifecycleRules{}
 			f.app.Checker.chain.Rules = []authz.RuleSet{rules}
 			child := hRef("child")
@@ -223,7 +223,7 @@ func TestHierarchyEnabledMixedLifecyclePreservesHierarchyAuthorityAndRollback(t 
 	for _, engine := range []string{"memory", "sqlite"} {
 		t.Run(engine, func(t *testing.T) {
 			for _, deniedRef := range []string{"new", "child-project"} {
-				f := newHFixtureStore(t, true, hierarchyLifecycleStore(t, engine))
+				f := newHierarchyLifecycleFixture(t, engine)
 				rules := &hierarchyLifecycleRules{}
 				f.app.Checker.chain.Rules = []authz.RuleSet{rules}
 				rules.setRef(deniedRef, true)
@@ -236,7 +236,7 @@ func TestHierarchyEnabledMixedLifecyclePreservesHierarchyAuthorityAndRollback(t 
 				}
 			}
 
-			f := newHFixtureStore(t, true, hierarchyLifecycleStore(t, engine))
+			f := newHierarchyLifecycleFixture(t, engine)
 			rules := &hierarchyLifecycleRules{}
 			f.app.Checker.chain.Rules = []authz.RuleSet{rules}
 			beforeHead, beforeRows := hierarchyLifecycleState(t, f, hRef("child"), hRef("visible"))
@@ -297,7 +297,7 @@ func TestHierarchyEnabledMixedLifecyclePreservesHierarchyAuthorityAndRollback(t 
 func TestHierarchyEnabledMixedLifecycleAuthorizesExpectationOnlyTargetsBeforeDisclosureAndReplay(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite"} {
 		t.Run(engine, func(t *testing.T) {
-			f := newHFixtureStore(t, true, hierarchyLifecycleStore(t, engine))
+			f := newHierarchyLifecycleFixture(t, engine)
 			rules := &hierarchyLifecycleRules{}
 			f.app.Checker.chain.Rules = []authz.RuleSet{rules}
 			hidden := hRef("hidden-one")
@@ -313,7 +313,7 @@ func TestHierarchyEnabledMixedLifecycleAuthorizesExpectationOnlyTargetsBeforeDis
 			}
 			hierarchyLifecycleSameState(t, f, beforeHead, beforeRows, hRef("child"), hRef("visible"))
 
-			f = newHFixtureStore(t, true, hierarchyLifecycleStore(t, engine))
+			f = newHierarchyLifecycleFixture(t, engine)
 			rules = &hierarchyLifecycleRules{}
 			f.app.Checker.chain.Rules = []authz.RuleSet{rules}
 			hiddenRevision := hierarchyLifecycleRevision(t, f, hidden)

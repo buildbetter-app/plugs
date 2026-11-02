@@ -49,6 +49,7 @@ go_test(
     deps = [
         "//internal/core/authz",
         "//internal/core/model",
+        "//internal/core/pipeline",
         "//internal/core/port",
         "//internal/plugins/authnapikey",
         "//internal/plugins/authzfixed",
