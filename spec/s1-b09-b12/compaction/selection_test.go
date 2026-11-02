@@ -3,6 +3,7 @@ package compaction_test
 import (
 	"context"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -80,7 +81,7 @@ func TestB12DeterministicSelectionBeforeRevisionAndNonAtomicCalls(t *testing.T) 
 func TestB12EligibilityAndThresholdConfiguration(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
-			for _, scenario := range []string{"open", "recent", "missing-close-time", "invalid-close-time", "future-close-time", "already-tier-two", "bad-tier", "zero-threshold", "negative-threshold", "unknown-tier", "positive-threshold"} {
+			for _, scenario := range []string{"open", "recent", "missing-close-time", "invalid-close-time", "future-close-time", "already-tier-two", "bad-tier", "zero-threshold", "negative-threshold", "unknown-tier", "overflow-threshold", "positive-threshold"} {
 				t.Run(scenario, func(t *testing.T) {
 					var calls atomic.Int32
 					config := service.CompactionConfig{Summary: service.CompactionSummaryFunc(func(context.Context, service.CompactionInput) (string, error) { calls.Add(1); return "small", nil })}
@@ -91,6 +92,8 @@ func TestB12EligibilityAndThresholdConfiguration(t *testing.T) {
 						config.ThresholdDays = map[int]int{1: -1}
 					case "unknown-tier":
 						config.ThresholdDays = map[int]int{3: 30}
+					case "overflow-threshold":
+						config.ThresholdDays = map[int]int{1: math.MaxInt}
 					case "positive-threshold":
 						config.ThresholdDays = map[int]int{1: 7}
 					}

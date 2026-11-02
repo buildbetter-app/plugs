@@ -984,6 +984,7 @@ spec/s1-b09-b12/compaction/BUILD.bazel
 spec/s1-b09-b12/compaction/audit_test.go
 spec/s1-b09-b12/compaction/b12_test.go
 spec/s1-b09-b12/compaction/composition_test.go
+spec/s1-b09-b12/compaction/continuation_test.go
 spec/s1-b09-b12/compaction/fixture_test.go
 spec/s1-b09-b12/compaction/guards_test.go
 spec/s1-b09-b12/compaction/presence_test.go

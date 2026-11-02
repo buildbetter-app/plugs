@@ -257,7 +257,13 @@ func (f *fixture) call(method, key string, params map[string]any, code string) m
 		p[k] = v
 	}
 	sum := sha256.Sum256([]byte(key))
-	p["_meta"] = map[string]any{"project": "b12", "agent": "b12-public-recorder", "idempotencyKey": hex.EncodeToString(sum[:])}
+	meta := map[string]any{"project": "b12", "agent": "b12-public-recorder", "idempotencyKey": hex.EncodeToString(sum[:])}
+	if extra, ok := params["_meta"].(map[string]any); ok {
+		for key, value := range extra {
+			meta[key] = value
+		}
+	}
+	p["_meta"] = meta
 	request, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": key, "method": method, "params": p})
 	if err != nil {
 		f.t.Fatal(err)
