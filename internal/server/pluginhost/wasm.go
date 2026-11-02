@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -290,7 +291,9 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 // canceled callback can return while its reader is still blocked, so the slot
 // remains held until the worker's defer runs. This bounds retention across
 // retired guest instances instead of treating maxRuntimeInstances as a worker
-// limit.
+// limit. When all slots are retained, refuse immediately as typed queue
+// pressure; waiting for the callback deadline would turn a retryable busy
+// condition into a caller cancellation and can deadlock guest retirement.
 func (f *wasmFactory) acquireReaderWorker(ctx context.Context) (func(), error) {
 	f.mu.Lock()
 	if f.readerSlots == nil {
@@ -312,8 +315,8 @@ func (f *wasmFactory) acquireReaderWorker(ctx context.Context) (func(), error) {
 				f.mu.Unlock()
 			})
 		}, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	default:
+		return nil, poolBusy(ctx)
 	}
 }
 
@@ -632,6 +635,14 @@ func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest, readers .
 	}
 	packed, err := r.handle.Call(ctx, uint64(input), uint64(len(data)))
 	if err != nil {
+		var busy *Error
+		if errors.As(err, &busy) && busy.CallbackBusy() {
+			// wazero wraps a host panic with the original error. Preserve the
+			// typed reader-admission refusal so the callback pipeline can map it
+			// to retryable busy instead of subscriber_unavailable.
+			r.closeLocked()
+			return wasmResponse{}, busy
+		}
 		r.closeLocked()
 	}
 	if err != nil || len(packed) != 1 {

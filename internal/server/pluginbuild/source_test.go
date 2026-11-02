@@ -618,10 +618,15 @@ func TestWASIArtifactOwnsPooledHostsAndRealGuestState(t *testing.T) {
 	overflowCtx, cancelOverflow := context.WithTimeout(context.Background(), 2*time.Second)
 	startedOverflow := time.Now()
 	_, overflowErr := callStateWithContext(overflowCtx, mutator, "principal-overflow", "pool-state:overflow", overflowReader)
-	cancelOverflow()
-	if overflowErr == nil || time.Since(startedOverflow) > 2*time.Second {
-		t.Fatalf("reader-worker admission was unbounded: err=%v elapsed=%s", overflowErr, time.Since(startedOverflow))
+	if overflowErr == nil || !hasPluginHostCode(overflowErr, pluginhost.ErrPluginBusy) {
+		cancelOverflow()
+		t.Fatalf("reader-worker admission did not return typed busy: err=%v elapsed=%s", overflowErr, time.Since(startedOverflow))
 	}
+	if overflowCtx.Err() != nil || time.Since(startedOverflow) > 2*time.Second {
+		cancelOverflow()
+		t.Fatalf("reader-worker admission consumed the live caller context: err=%v context=%v elapsed=%s", overflowErr, overflowCtx.Err(), time.Since(startedOverflow))
+	}
+	cancelOverflow()
 	select {
 	case <-overflowEntered:
 		close(overflowRelease)
