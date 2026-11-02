@@ -172,7 +172,15 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 		}
 		name := family + ".json"
 		sidecars[name] = data
-		inventory.External = append(inventory.External, ExternalInput{Family: family, Path: filepath.Join(capture.SidecarDir, name), State: "json-config", Precedence: len(inventory.External)})
+		precedence := len(inventory.External)
+		// Native user config is merged before the documented ~/.config/bd
+		// location, even on systems where those paths differ.
+		if family == "user-native-config" {
+			precedence = 1
+		} else if family == "user-xdg-config" {
+			precedence = 2
+		}
+		inventory.External = append(inventory.External, ExternalInput{Family: family, Path: filepath.Join(capture.SidecarDir, name), State: "json-config", Precedence: precedence})
 	}
 	finalLog, err := s.ReadSourceCommits(ctx)
 	if err != nil {
@@ -185,10 +193,13 @@ func (s SQLSource) NativeInventory(ctx context.Context, capture NativeCapture) (
 }
 
 func nativeFileFamily(family string) bool {
-	for _, f := range externalFamilies[:18] {
-		if family == f && family != "environment-and-flags" {
-			return true
-		}
+	switch family {
+	case "user-legacy-config", "user-xdg-config", "user-native-config",
+		"project-config", "beads-dir-config", "project-local-config",
+		"metadata-json", "legacy-config-json", "beads-hooks", "legacy-hooks",
+		"git-hooks", "external-hook-managers", "routes-jsonl", "formulas",
+		"formula-search-paths", "issues-jsonl", "interactions-jsonl":
+		return true
 	}
 	return false
 }

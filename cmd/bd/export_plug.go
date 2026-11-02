@@ -217,7 +217,7 @@ func runNativePlugInventory(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(staging)
+	defer func() { _ = os.RemoveAll(staging) }()
 	for name, body := range sidecars {
 		if err := os.WriteFile(filepath.Join(staging, name), body, 0600); err != nil {
 			return err

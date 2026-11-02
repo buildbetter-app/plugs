@@ -266,6 +266,10 @@ secret references. The first command requires a fresh inventory destination in
 an existing private directory, writes private normalized source JSON sidecars,
 and publishes the existing `beads-inventory/1` file last. Both reads use the
 supported read-only Serializable driver scope. No database handle escapes.
+Sidecar paths are absolute, under the resolved physical
+`<inventory-path>.sources` directory. Keep the inventory and that directory in
+place: the later dump export reads those exact sidecars, without re-observing
+the original filesystem paths.
 
 All 26 external families have actual normalized observations. Present YAML,
 JSON, hooks and formula paths retain file bytes and hashes; directories retain
