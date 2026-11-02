@@ -115,7 +115,7 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 		cmd := exec.CommandContext(ctx, binary, args...)
 		cmd.Dir = workspace
 		// Do not inherit a user's workspace, credentials, config or plugins.
-		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + childHome, "XDG_CONFIG_HOME=" + filepath.Join(childHome, ".config"), "BEADS_DIR=" + filepath.Join(workspace, ".beads"), "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Public roundtrip", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public roundtrip", "GIT_COMMITTER_EMAIL=public@example.invalid"}
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + childHome, "XDG_CONFIG_HOME=" + filepath.Join(childHome, ".config"), "BEADS_DIR=" + filepath.Join(workspace, ".beads"), "DO_NOT_TRACK=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Public roundtrip", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public roundtrip", "GIT_COMMITTER_EMAIL=public@example.invalid"}
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		err := cmd.Run()

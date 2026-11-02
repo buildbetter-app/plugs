@@ -85,7 +85,10 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 					DryRun              bool     `json:"dry_run"`
 				}
 				data, err := os.ReadFile(filepath.Join(output, "beads-3.stdout"))
-				if err != nil || json.Unmarshal(data, &imported) != nil || imported.Created != got.Counts["bead"] || len(imported.IDs) != got.Counts["bead"] || imported.Memories != got.Counts["memory"] || imported.Updated != 0 || imported.Unchanged != 0 || imported.Skipped != 0 || len(imported.SkippedDependencies) != 0 || imported.DryRun {
+				// The reverse protocol emits each config reference as one
+				// additional memory, independently of ordinary memory records.
+				expectedMemories := got.Counts["memory"] + got.Counts["config"]
+				if err != nil || json.Unmarshal(data, &imported) != nil || imported.Created != got.Counts["bead"] || len(imported.IDs) != got.Counts["bead"] || imported.Memories != expectedMemories || imported.Updated != 0 || imported.Unchanged != 0 || imported.Skipped != 0 || len(imported.SkippedDependencies) != 0 || imported.DryRun {
 					t.Fatal("real Beads import did not create every expected issue/memory in the fresh target")
 				}
 			})
