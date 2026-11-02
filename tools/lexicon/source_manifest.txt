@@ -453,6 +453,7 @@ internal/integration/plugingrants/BUILD.bazel
 internal/integration/plugingrants/integration_test.go
 internal/integration/postgresacceptance/BUILD.bazel
 internal/integration/postgresacceptance/README.md
+internal/integration/postgresacceptance/atomic_close_test.go
 internal/integration/postgresacceptance/atomic_test.go
 internal/integration/postgresacceptance/engine_test.go
 internal/integration/postgresacceptance/fixture_test.go
@@ -972,6 +973,7 @@ spec/s1-b21-b24/BUILD.bazel
 spec/s1-b21-b24/README.md
 spec/s1-b21-b24/acceptance_test.go
 spec/s1-b21-b24/cas_contract_test.go
+spec/s1-b21-b24/close_contract_test.go
 spec/s1-b21-b24/fixture_test.go
 spec/s1-b21-b24/record_reference.py
 spec/s1-b21-b24/reference-a.json
