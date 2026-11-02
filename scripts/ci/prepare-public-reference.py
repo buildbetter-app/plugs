@@ -264,11 +264,18 @@ def fetch_source(source: Path) -> dict:
         "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
         "GIT_CONFIG_VALUE_0": "AUTHORIZATION: bearer " + token,
     })
-    # Direct fixed URL, no remote config, no FETCH_HEAD or credential file.
-    git(source, ["fetch", "--quiet", "--depth=1", "--no-write-fetch-head",
-                 "--no-auto-maintenance", SOURCE_URL, SOURCE_SHA], fetch_environment)
-    del fetch_environment
-    del token
+    # Retrieve only the exact pinned object. A trusted workflow token gets the
+    # first attempt; a public repository may reject that bearer-authenticated
+    # request, so retry the identical URL/SHA without any credentials.
+    fetch_arguments = ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
+                       "--no-auto-maintenance", SOURCE_URL, SOURCE_SHA]
+    try:
+        git(source, fetch_arguments, fetch_environment)
+    except ValueError:
+        git(source, fetch_arguments, git_environment())
+    finally:
+        del fetch_environment
+        del token
     # Checkout and all source inspection run without the retrieval credential.
     git(source, ["checkout", "--quiet", "--detach", SOURCE_SHA])
     return validate_source(source)
