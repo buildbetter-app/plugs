@@ -12,12 +12,19 @@ SQLite store. The projection helper preserves ordered outcomes and decision
 IDs independently from the raw fixture. B11 also carries the pinned UUIDv5
 endpoint vectors in `internal/storage/depid`.
 
-The JSON files intentionally do not claim full-card qualification. The
-source-vector cases are copied from the pinned source tests; they are not a
-Beads executable recording. `record_reference.py` is a fail-closed recorder
-wrapper: it requires an exact source-built executable and exact source
-commit/tree, runs independent disposable stores twice, and emits nothing when
-those prerequisites are absent. No private or production store is accessed.
+The retained `vectors.json` and root `provenance.json` are the earlier
+synthetic/replay boundary and remain unchanged. The `reference/` directory is
+the separate real pinned-Beads recording: `record_reference.py` requires an
+exact source-built executable and exact source commit/tree, runs two
+independent disposable Git-backed stores, normalizes only declared runtime
+fields, and emits a card projection only when both runs agree. No private or
+production store is accessed.
+
+The recordings are evidence for the selected B09–B12 cases, not full-card
+qualification. B12 records the embedded reference's honest `--apply` and
+restore refusals; Plug's adopted permanent diff history and `history.revert`
+contract remains a documented deviation until a producer and replay proof are
+admitted.
 
 B12 remains explicitly `full-card-unqualified`: this head has no admitted
 public Plug compaction producer or reversible-snapshot replay. Its accepted

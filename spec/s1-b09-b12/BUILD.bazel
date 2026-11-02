@@ -2,11 +2,15 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "s1_b09_b12_test",
-    srcs = ["replay_test.go"],
+    srcs = [
+        "reference_test.go",
+        "replay_test.go",
+    ],
     embedsrcs = [
         "provenance.json",
         "projection.py",
         "record_reference.py",
+        "reference/*.json",
         "vectors.json",
     ],
     args = ["-test.v"],

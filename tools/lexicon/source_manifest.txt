@@ -1037,6 +1037,12 @@ spec/s1-b09-b12/compaction/selection_test.go
 spec/s1-b09-b12/projection.py
 spec/s1-b09-b12/provenance.json
 spec/s1-b09-b12/record_reference.py
+spec/s1-b09-b12/reference/b09.json
+spec/s1-b09-b12/reference/b10.json
+spec/s1-b09-b12/reference/b11.json
+spec/s1-b09-b12/reference/b12.json
+spec/s1-b09-b12/reference/provenance.json
+spec/s1-b09-b12/reference_test.go
 spec/s1-b09-b12/replay_test.go
 spec/s1-b09-b12/vectors.json
 spec/s1-b13-b16/BUILD.bazel
