@@ -11,9 +11,20 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest) (GetResult, error) {
+	if workflowRef(req.ID) {
+		if s.workflow == nil {
+			return GetResult{}, failure("not_found", "workflow item was not found")
+		}
+		item, err := s.workflow.Get(ctx, by, req.ID, workflowMeta(by, "bead.get", ""))
+		if err != nil {
+			return GetResult{}, err
+		}
+		return workflowGetResult(item), nil
+	}
 	if err := namedRef(req.ID); err != nil {
 		return GetResult{}, err
 	}
@@ -254,13 +265,111 @@ func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
 }
 
 func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
-	return s.readyPage(ctx, by, req, false)
+	return s.readyCombined(ctx, by, req, false)
+}
+
+func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (BeadPage, error) {
+	if s.workflow == nil {
+		return s.readyPage(ctx, by, req, restartOnRevision)
+	}
+	if req.Position != nil && req.Position.Workflow {
+		// The signed cursor has entered the plugin phase. Refresh the core
+		// incarnation/as-of observation, but do not re-emit core rows.
+		coreReq := req
+		coreReq.Position = nil
+		coreReq.Limit = 1
+		corePage, err := s.readyPage(ctx, by, coreReq, restartOnRevision)
+		if err != nil {
+			return BeadPage{}, err
+		}
+		types := []string(nil)
+		if req.Filter != nil {
+			types = req.Filter.Types
+		}
+		items, err := s.workflow.Ready(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project))
+		if err != nil {
+			return BeadPage{}, err
+		}
+		limit := req.Limit
+		if limit == 0 {
+			limit = 100
+		}
+		offset := req.Position.Offset
+		if offset > len(items) {
+			return BeadPage{}, failure("cursor_invalid", "workflow cursor is beyond the current ready set")
+		}
+		end := offset + limit
+		if end > len(items) {
+			end = len(items)
+		}
+		page := BeadPage{AsOf: corePage.AsOf}
+		for _, item := range items[offset:end] {
+			page.Items = append(page.Items, workflowBead(item))
+		}
+		if end < len(items) {
+			page.Next = &PagePosition{Offset: end, AsOf: page.AsOf, Workflow: true}
+		}
+		return page, nil
+	}
+	page, err := s.readyPage(ctx, by, req, restartOnRevision)
+	if err != nil || s.workflow == nil {
+		return page, err
+	}
+	// Core rows occupy the first phase. A core continuation must be consumed
+	// before plugin rows are appended, so one signed offset cannot skip or
+	// duplicate a workflow item.
+	if page.Next != nil {
+		return page, nil
+	}
+	types := []string(nil)
+	if req.Filter != nil {
+		types = req.Filter.Types
+	}
+	items, err := s.workflow.Ready(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project))
+	if err != nil {
+		return BeadPage{}, err
+	}
+	limit := req.Limit
+	if limit == 0 {
+		limit = 100
+	}
+	if len(page.Items) >= limit {
+		if len(items) != 0 {
+			page.Next = &PagePosition{Offset: 0, AsOf: page.AsOf, Workflow: true}
+		}
+		return page, nil
+	}
+	remaining := limit - len(page.Items)
+	if len(items) > remaining {
+		for _, item := range items[:remaining] {
+			page.Items = append(page.Items, workflowBead(item))
+		}
+		page.Next = &PagePosition{Offset: remaining, AsOf: page.AsOf, Workflow: true}
+		return page, nil
+	}
+	for _, item := range items {
+		page.Items = append(page.Items, workflowBead(item))
+	}
+	return page, nil
+}
+
+func workflowBead(item workflowplugin.ItemView) Bead {
+	fields := map[string]any{"title": item.Title}
+	return Bead{ID: item.ID, Type: item.Type, Project: item.Project, Revision: item.Revision, Status: item.Status, Fields: fields, Plane: item.Plane, Kind: item.Kind, Plugin: item.Plugin, WorkflowRunID: item.RunID}
+}
+
+func workflowGetResult(item workflowplugin.ItemView) GetResult {
+	result := GetResult{Bead: workflowBead(item), Comments: []Comment{}}
+	for _, comment := range item.Comments {
+		result.Comments = append(result.Comments, Comment{Body: comment.Body, Principal: comment.Principal, Time: comment.Time})
+	}
+	return result
 }
 
 // ClaimNextReadyPage is the queue-specific live pager. A revision change
 // restarts its offset from the beginning of the newly observed ready set.
 func (s *Service) ClaimNextReadyPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
-	return s.readyPage(ctx, by, req, true)
+	return s.readyCombined(ctx, by, req, true)
 }
 
 // ReadyCandidates evaluates the complete ready set on a supplied snapshot.

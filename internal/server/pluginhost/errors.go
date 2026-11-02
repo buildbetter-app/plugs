@@ -28,6 +28,7 @@ const (
 	ErrReentrant  = "plugin_reentrant_write"
 	ErrHotEgress  = "plugin_egress_in_hot_path"
 	ErrEgress     = "plugin_egress_denied"
+	ErrDurable    = "plugin_durable_unavailable"
 	ErrInactive   = "plugin_host_inactive"
 	ErrPluginBusy = "plugin_busy"
 )

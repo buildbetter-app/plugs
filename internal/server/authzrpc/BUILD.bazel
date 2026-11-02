@@ -17,6 +17,7 @@ go_library(
         "//internal/server/rpc",
         "//internal/server/transport/httpjson",
         "//internal/storage/driver",
+		"//plugins/workflow",
     ],
 )
 

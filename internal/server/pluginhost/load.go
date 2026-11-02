@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/pluginapi"
 	sdk "github.com/buildbetter-app/plugs/sdk/go"
 )
@@ -38,6 +39,11 @@ type Config struct {
 	// Authorize checks a caller's permission to invoke extension methods. With
 	// no authorization plugin nil permits, matching core's optional chain.
 	Authorize func(context.Context, string, []pluginapi.Ref) error
+	// DurableStore and DurableLease enable the plugin-owned unversioned
+	// capability. Both must be supplied together; without them DurableState
+	// fails closed instead of falling back to process memory.
+	DurableStore driver.CheckpointStore
+	DurableLease driver.ActiveLease
 }
 
 // Binding is an effective ontology binding; its grants may only narrow the
@@ -60,6 +66,8 @@ type Host struct {
 	dispatcher               Dispatcher
 	authorize                func(context.Context, string, []pluginapi.Ref) error
 	authenticationConfigured bool
+	durableStore             driver.CheckpointStore
+	durableLease             driver.ActiveLease
 }
 
 const (
@@ -82,6 +90,7 @@ type instance struct {
 	mu           sync.Mutex
 	active       *invocation
 	state        *stateStore
+	durable      *durableAccess
 	disposed     bool
 	disposeFn    func()
 }
@@ -116,7 +125,7 @@ func newInstancePool(native sdk.Native, owner *Host, source *instance) (*instanc
 	// The source instance owns extension methods. Each binding gets four fresh
 	// callback guests; only the host-side state store crosses that boundary.
 	for n := 0; n < maxRuntimeInstances; n++ {
-		member, err := newInstance(native, source.manifest, owner, source.state)
+		member, err := newInstance(native, source.manifest, owner, source.state, source.durable)
 		if err != nil {
 			return nil, err
 		}
@@ -129,7 +138,7 @@ func newInstancePool(native sdk.Native, owner *Host, source *instance) (*instanc
 }
 
 func (p *instancePool) newMember() (*instance, error) {
-	member, err := newInstance(p.native, p.manifest, p.owner, p.state)
+	member, err := newInstance(p.native, p.manifest, p.owner, p.state, p.owner.durableFor(p.manifest.Alias, p.manifest.ID))
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +293,10 @@ type registeredMethod struct {
 }
 
 func New(config Config) (*Host, error) {
-	h := &Host{instances: map[string]*instance{}, natives: map[string]sdk.Native{}, methods: map[string]registeredMethod{}, dispatcher: config.Dispatcher, authorize: config.Authorize, authenticationConfigured: config.AuthenticationConfigured}
+	if (config.DurableStore == nil) != (config.DurableLease == nil) {
+		return nil, failure(ErrManifest, "durable store and lease must be supplied together")
+	}
+	h := &Host{instances: map[string]*instance{}, natives: map[string]sdk.Native{}, methods: map[string]registeredMethod{}, dispatcher: config.Dispatcher, authorize: config.Authorize, authenticationConfigured: config.AuthenticationConfigured, durableStore: config.DurableStore, durableLease: config.DurableLease}
 	aliases, ids := map[string]string{}, map[string]string{}
 	for _, native := range config.Natives {
 		if err := native.Manifest.Validate(); err != nil {
@@ -305,7 +317,7 @@ func New(config Config) (*Host, error) {
 		if h.instances[key] != nil {
 			return nil, failure(ErrManifest, "duplicate instance %s", key)
 		}
-		i, err := newInstance(native, p, h, newStateStore())
+		i, err := newInstance(native, p, h, newStateStore(), h.durableFor(p.Alias, native.Instance))
 		if err != nil {
 			return nil, fmt.Errorf("initialize %s: %w", key, err)
 		}
@@ -401,12 +413,12 @@ func (h *Host) register(i *instance) error {
 	return nil
 }
 
-func newInstance(native sdk.Native, manifest pluginapi.PluginManifest, owner *Host, state *stateStore) (*instance, error) {
+func newInstance(native sdk.Native, manifest pluginapi.PluginManifest, owner *Host, state *stateStore, durable *durableAccess) (*instance, error) {
 	copyManifest, err := pluginapi.CloneJSON(manifest)
 	if err != nil {
 		return nil, err
 	}
-	i := &instance{manifest: copyManifest, name: native.Instance, owner: owner, gate: make(chan struct{}, 1), state: state}
+	i := &instance{manifest: copyManifest, name: native.Instance, owner: owner, gate: make(chan struct{}, 1), state: state, durable: durable}
 	host := &capabilities{instance: i}
 	registration, err := native.New(host)
 	if err != nil {
@@ -415,6 +427,13 @@ func newInstance(native sdk.Native, manifest pluginapi.PluginManifest, owner *Ho
 	i.registration = registration
 	i.disposeFn = host.onDispose
 	return i, nil
+}
+
+func (h *Host) durableFor(alias, instance string) *durableAccess {
+	if h.durableStore == nil || h.durableLease == nil {
+		return &durableAccess{}
+	}
+	return newDurableAccess(h.durableStore, h.durableLease, alias, instance)
 }
 
 func (i *instance) isDisposed() bool {

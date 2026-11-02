@@ -1,0 +1,17 @@
+{
+  "manifest_version": 1,
+  "plugins": [{
+    "id": "buildbetter.workflow",
+    "alias": "workflow",
+    "version": "1.0.0",
+    "plugin_api": "1.0",
+    "runtime": "native",
+    "provides": [{
+      "kind": "methods",
+      "prefix": "x.workflow",
+      "methods": {
+        "invoke": {"permission": "write", "resource": "params.project"}
+      }
+    }]
+  }]
+}

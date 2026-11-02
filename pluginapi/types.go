@@ -469,8 +469,31 @@ type Host interface {
 	// manifest prefix, owned-field and bridge/egress grants before dispatch.
 	Call(ctx context.Context, method string, params, result any) error
 	State() StateStore
+	// DurableState is the plugin-owned unversioned persistence plane. It is
+	// backed by the host's durable checkpoint capability; plugins never receive
+	// a driver, transaction, SQL handle, or filesystem path.
+	DurableState() DurableState
 	HTTP() *http.Client                                  // host egress proxy; unavailable in hot calls
 	Secret(context.Context, string) (SecretValue, error) // audited injection
+}
+
+// DurableState is a narrow JSON capability for plugin-owned operational state.
+// Values are addressed by opaque keys and protected by per-key revisions. The
+// host adapter persists the complete namespace with one checkpoint CAS, so a
+// restart observes either the old map or the new map. List is bounded and
+// returns detached values.
+type DurableState interface {
+	Get(ctx context.Context, key string, dst any) (found bool, err error)
+	Put(ctx context.Context, key string, value any, expect Revision) (Revision, error)
+	Delete(ctx context.Context, key string, expect Revision) error
+	Revision(ctx context.Context, key string) (Revision, error)
+	List(ctx context.Context, prefix string, limit int) ([]DurableEntry, error)
+}
+
+type DurableEntry struct {
+	Key      string          `json:"key"`
+	Revision Revision        `json:"revision"`
+	Value    json.RawMessage `json:"value"`
 }
 
 type StateStore interface {

@@ -12,7 +12,9 @@ an explicit `mode` of `permanent` or `ephemeral`. Omitting `mode` is refused;
 callers must choose the plane at the invocation boundary. A checklist item has
 an opaque client label, title, and optional type. The request is authenticated
 with the current principal and project in `_meta` and requires an idempotency
-key.
+key. The manifest declares `x.workflow.invoke` with `permission: write` and
+`resource: params.project`; the canonical OpenRPC/catalog descriptor has the
+same parameter/result schemas and idempotency declaration.
 
 Permanent invocation lowers each checklist item through the ordinary
 `bead.create` writer. The returned items are ordinary durable beads with the
@@ -20,12 +22,14 @@ existing revisions, leases, history, and permission behavior. A permanent run
 has no workflow-state row.
 
 Ephemeral invocation allocates an opaque typed run identity and one typed item
-identity per checklist item. The run and items are stored in the workflow
-plugin's durable state capability. Their bodies, comments, claims, and
-receipts never enter the core record/version/history tables. The result carries
-`plane: "ephemeral"`, `kind: "workflow.run"` or `"workflow.item"`, the plugin
-alias, project, run identity, and lifecycle state so a caller cannot mistake an
-item for an ordinary bead.
+identity per checklist item. Workflow references are valid only as
+`workflow:item/<opaque-id>` branch-zero ID references; they cannot be supplied
+as keys, parents, links, history refs, or ordinary bead IDs. The run and items
+are stored in the workflow plugin's durable state capability. Their bodies,
+comments, claims, and receipts never enter the core record/version/history
+tables. The result carries `plane: "ephemeral"`, `kind: "workflow.run"` or
+`"workflow.item"`, the plugin alias, project, run identity, and lifecycle state
+so a caller cannot mistake an item for an ordinary bead.
 
 ## Ordinary tool behavior while live
 
@@ -37,16 +41,23 @@ it is never looked up in the durable bead record table. A claim is a workflow
 lease in plugin state, not a core bead lease.
 
 Comments and claim state are durable in the plugin plane and survive process
-restart. A stale generation or lease cannot overwrite a newer state. A denied
-read or mutation fails closed without disclosing the item body, comments, or
-run identity.
+restart when the selected store is SQLite or PostgreSQL (or another
+composition-admitted persistent `CheckpointStore`). The process-local memory
+driver refuses new ephemeral invocations because it cannot make a process
+restart guarantee. A stale generation or lease cannot overwrite a newer state.
+A denied read or mutation fails closed without disclosing the item body,
+comments, or run identity.
 
 ## Completion and history boundary
 
 Closing the final checklist item atomically marks the run complete and deletes
-the run, item, comment, claim, and receipt payloads from plugin state. A
-replayed receipt may return the original terminal response for its retention
-window, but it never recreates a live run. Completed ephemeral items are absent
+the run, item, comment, and claim payloads in the same plugin-state CAS. A
+canonical terminal receipt remains for the existing 24-hour idempotency window:
+it contains only the scoped operation identity, digest, terminal marker, item
+or run ID, expiry, and a response-safe identity/commit result. It never retains
+titles, fields, comments, claims, or a run body. Replaying an equal request
+returns that terminal receipt and never recreates a live run; a changed request
+or scope returns `idempotency_key_reused`. Completed ephemeral items are absent
 from `bead.ready`, `bead.get`, and all permanent history/as-of/export reads.
 There is no promotion, demotion, mixed-plane dependency, or relationship
 bridge in this contract; those operations return typed `unsupported`.
@@ -55,9 +66,18 @@ bridge in this contract; those operations return typed `unsupported`.
 
 The plugin state capability is backed by the selected driver's durable
 checkpoint store. Restart restores live runs and their generation. Every
-mutation compares the state generation and the item generation, and the host
+mutation compares the namespace generation and item generation, and the host
 fences a lost storage lease. The provider does not apply an arbitrary active
 run TTL: unfinished checklists remain live until explicitly completed. Receipt
 retention is bounded by the existing 24-hour idempotency window; receipt GC may
-remove only receipts for ended runs and never deletes an unfinished run.
+remove expired receipts only when their run is already ended (or the receipt
+does not reference a run), and never deletes an unfinished run.
 
+`bead.ready` uses a stable ID-ascending workflow phase after the core ready
+phase. Its signed continuation cursor binds method, principal (including
+anonymous agent label), project, filter, store incarnation, and authorization
+generation; a workflow-phase bit keeps the offset from being confused with a
+core offset. `bead.claimNext` uses that same order and binding. `bead.get`,
+`bead.comment`, and `bead.close` accept the typed workflow ID through the
+ordinary service dispatcher and apply the current principal/project ownership
+check before exposing or mutating plugin state.

@@ -12,6 +12,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 type Service struct {
@@ -23,6 +24,7 @@ type Service struct {
 	memoryReadAuthorizer   MemoryReadAuthorizer
 	authorizationInstalled func() bool
 	events                 EventProvider
+	workflow               *workflowplugin.Provider
 }
 
 // claimNextConflictRestartBudget bounds only the extra full-walk restart used
@@ -54,6 +56,13 @@ func WithAuthorizationInstalled(installed func() bool) Option {
 
 func WithEventProvider(provider EventProvider) Option {
 	return func(s *Service) { s.events = provider }
+}
+
+// WithWorkflow installs the compiled-in workflow plugin's Option C provider.
+// The service keeps the standard bead tools as the public adapter while the
+// provider owns only its unversioned active-run state.
+func WithWorkflow(provider *workflowplugin.Provider) Option {
+	return func(s *Service) { s.workflow = provider }
 }
 
 // New never opens a transaction or storage driver. The composition root owns
@@ -158,6 +167,58 @@ func (s *Service) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, c
 	return s.apply(ctx, by, "tx.apply", cs, meta, true)
 }
 
+func workflowMeta(by model.PrincipalRef, method, project string) model.WriteMeta {
+	return model.WriteMeta{Method: method, Project: project, Agent: by.ID, AgentLabel: ""}
+}
+
+func workflowRef(ref model.Ref) bool {
+	return ref.IsID() && strings.HasPrefix(ref.ID, workflowplugin.ItemPrefix)
+}
+
+func workflowTypes(filter *Filter) []string {
+	if filter == nil {
+		return nil
+	}
+	return filter.Types
+}
+
+// WorkflowInvoke is the typed extension binding used by x.workflow.invoke.
+// Permanent invocations lower through the ordinary bead writer; ephemeral
+// invocations remain entirely in the workflow provider.
+func (s *Service) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req workflowplugin.InvokeRequest, meta model.WriteMeta) (workflowplugin.InvokeResult, error) {
+	if req.Mode == "ephemeral" {
+		if s.workflow == nil {
+			return workflowplugin.InvokeResult{}, failure("unsupported", "workflow plugin is not configured")
+		}
+		meta.Method = "x.workflow.invoke"
+		meta.Project = req.Project
+		return s.workflow.Invoke(ctx, by, req, meta)
+	}
+	if req.Mode != "permanent" {
+		return workflowplugin.InvokeResult{}, failure("invalid_params", "workflow invocation mode is required")
+	}
+	if strings.TrimSpace(req.Template) == "" || strings.TrimSpace(req.Project) == "" || len(req.Checklist) == 0 {
+		return workflowplugin.InvokeResult{}, failure("invalid_params", "template, project and checklist are required")
+	}
+	result := workflowplugin.InvokeResult{Plane: "permanent", Items: []workflowplugin.ItemView{}}
+	for index, item := range req.Checklist {
+		key := meta.IdempotencyKey
+		if key != "" {
+			key = fmt.Sprintf("%s-%d", key, index)
+		}
+		commit, err := s.Create(ctx, by, CreateRequest{Type: item.Type, Fields: map[string]any{"title": item.Title}}, model.WriteMeta{Method: "bead.create", Project: req.Project, IdempotencyKey: key, Agent: meta.Agent, AgentLabel: meta.AgentLabel})
+		if err != nil {
+			return workflowplugin.InvokeResult{}, err
+		}
+		if len(commit.Results) != 1 {
+			return workflowplugin.InvokeResult{}, failure("internal_error", "permanent workflow item did not return one result")
+		}
+		ref := commit.Results[0].Ref
+		result.Items = append(result.Items, workflowplugin.ItemView{ID: ref.ID, Label: item.Label, Title: item.Title, Type: item.Type, Project: req.Project, Status: "open", Plane: "permanent", Kind: "bead", Revision: commit.Results[0].Revision})
+	}
+	return result, nil
+}
+
 func (s *Service) Create(ctx context.Context, by model.PrincipalRef, req CreateRequest, meta model.WriteMeta) (model.Commit, error) {
 	v, err := s.create(ctx, by, req, meta, false)
 	return v.Commit, err
@@ -209,6 +270,16 @@ func (s *Service) Claim(ctx context.Context, by model.PrincipalRef, req ClaimReq
 }
 
 func (s *Service) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowRef(req.ID) {
+		if s.workflow == nil {
+			return port.WriteOutcome{}, failure("not_found", "workflow item was not found")
+		}
+		item, err := s.workflow.Claim(ctx, by, req.ID, meta)
+		if err != nil {
+			return port.WriteOutcome{}, err
+		}
+		return port.WriteOutcome{Commit: workflowClaimCommit(item)}, nil
+	}
 	method := ""
 	if meta.Method == "bead.claimNext" {
 		method = meta.Method
@@ -286,6 +357,19 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 			return &out, nil
 		}
 	}
+	if s.workflow != nil {
+		workflowMeta := meta
+		workflowMeta.Method = "bead.claimNext"
+		if item, found, replayed, replayErr := s.workflow.ReplayClaimNext(ctx, by, req.Project, workflowTypes(req.Filter), workflowMeta); replayErr != nil {
+			return nil, replayErr
+		} else if replayed {
+			if !found {
+				return &port.WriteOutcome{Replayed: true, NullResult: true}, nil
+			}
+			out := port.WriteOutcome{Commit: workflowClaimCommit(item), Replayed: true}
+			return &out, nil
+		}
+	}
 
 	position := (*PagePosition)(nil)
 	fresh := false
@@ -299,7 +383,15 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 			return nil, err
 		}
 		for _, bead := range page.Items {
-			out, claimErr := s.claimWithMethod(ctx, by, ClaimRequest{ID: model.RefByID(bead.ID, model.Natural64(0))}, meta, true, "bead.claimNext")
+			candidateMeta := meta
+			candidateMeta.Method = "bead.claimNext"
+			var out port.WriteOutcome
+			var claimErr error
+			if workflowRef(model.RefByID(bead.ID, model.Natural64(0))) {
+				out, claimErr = s.ClaimWithOutcome(ctx, by, ClaimRequest{ID: model.RefByID(bead.ID, model.Natural64(0))}, candidateMeta)
+			} else {
+				out, claimErr = s.claimWithMethod(ctx, by, ClaimRequest{ID: model.RefByID(bead.ID, model.Natural64(0))}, candidateMeta, true, "bead.claimNext")
+			}
 			if claimErr == nil {
 				return &out, nil
 			}
@@ -377,6 +469,19 @@ func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRe
 	}
 	meta.ClaimNextIdentity = identity
 	meta.Method = "bead.claimNext"
+	if s.workflow != nil {
+		types := []string(nil)
+		if req.Filter != nil {
+			types = req.Filter.Types
+		}
+		item, found, _, err := s.workflow.ClaimNext(ctx, by, req.Project, types, meta)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return &port.WriteOutcome{Commit: workflowClaimCommit(item)}, nil
+		}
+	}
 	if by.Kind != "anonymous" {
 		meta.AgentLabel = ""
 	} else if meta.AgentLabel == "" {
@@ -462,6 +567,13 @@ func (s *Service) Comment(ctx context.Context, by model.PrincipalRef, req Commen
 }
 
 func (s *Service) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, req CommentRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowRef(req.ID) {
+		if s.workflow == nil {
+			return port.WriteOutcome{}, failure("not_found", "workflow item was not found")
+		}
+		commit, err := s.workflow.Comment(ctx, by, req.ID, req.Body, meta)
+		return port.WriteOutcome{Commit: commit}, err
+	}
 	return s.comment(ctx, by, req, meta, true)
 }
 
@@ -482,7 +594,27 @@ func (s *Service) Close(ctx context.Context, by model.PrincipalRef, req CloseReq
 }
 
 func (s *Service) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowRef(req.ID) {
+		if s.workflow == nil {
+			return port.WriteOutcome{}, failure("not_found", "workflow item was not found")
+		}
+		commit, err := s.workflow.Close(ctx, by, req.ID, req.Reason, meta)
+		return port.WriteOutcome{Commit: commit}, err
+	}
 	return s.close(ctx, by, req, meta, true)
+}
+
+func workflowClaimCommit(item workflowplugin.ItemView) model.Commit {
+	commit := model.Commit{Revision: model.Natural64(0), Results: []model.OpResult{{Ref: model.RefByID(item.ID, model.Natural64(0)), Revision: item.Revision}}}
+	if item.Claim != nil {
+		ttl := item.Claim.ExpiresAt.Sub(time.Now())
+		if ttl > 0 {
+			commit.LeaseExpiresAt = &item.Claim.ExpiresAt
+			value := model.Natural64(uint64(ttl / time.Millisecond))
+			commit.LeaseTtlMs = &value
+		}
+	}
+	return commit
 }
 
 func (s *Service) close(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {

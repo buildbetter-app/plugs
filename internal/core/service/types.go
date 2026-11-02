@@ -109,6 +109,10 @@ type PagePosition struct {
 	AsOf                  AsOf
 	AuthorizationRevision model.Revision
 	AuthorizationBound    bool
+	// Workflow marks the second phase of bead.ready pagination. Core beads are
+	// emitted first; the signed transport cursor then continues through the
+	// stable plugin-owned workflow ordering without resetting the core offset.
+	Workflow bool
 }
 
 type Filter struct {
@@ -370,6 +374,12 @@ type Bead struct {
 	ReadinessPending bool
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	// Workflow fields are present only for plugin-owned ephemeral items. They
+	// make the plane and kind explicit at the standard-tool boundary.
+	Plane         string
+	Kind          string
+	Plugin        string
+	WorkflowRunID string
 }
 
 type Lease struct {

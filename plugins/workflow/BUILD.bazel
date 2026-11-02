@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "workflow",
+    srcs = ["native.go", "workflow.go"],
+    importpath = "github.com/buildbetter-app/plugs/plugins/workflow",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/core/model", "//internal/storage/driver", "//pluginapi", "//sdk/go:sdk_go"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

@@ -33,6 +33,7 @@ type cursorPayload struct {
 	AsOf                  asOf           `json:"asOf"`
 	AuthorizationRevision model.Revision `json:"authorizationRevision,omitempty"`
 	AuthorizationBound    bool           `json:"authorizationBound,omitempty"`
+	Workflow              bool           `json:"workflow,omitempty"`
 }
 
 func newPageCodec(config Config) (*pageCodec, error) {
@@ -161,6 +162,7 @@ func (c *pageCodec) decode(call Call, p serviceParams) (*service.PagePosition, e
 		AsOf:                  service.AsOf{Revision: payload.AsOf.Revision, Incarnation: payload.AsOf.Incarnation},
 		AuthorizationRevision: payload.AuthorizationRevision,
 		AuthorizationBound:    payload.AuthorizationBound,
+		Workflow:              payload.Workflow,
 	}, nil
 }
 
@@ -195,6 +197,7 @@ func (c *pageCodec) encode(call Call, p serviceParams, position service.PagePosi
 		AsOf:                  asOf{position.AsOf.Revision, position.AsOf.Incarnation},
 		AuthorizationRevision: position.AuthorizationRevision,
 		AuthorizationBound:    position.AuthorizationBound,
+		Workflow:              position.Workflow,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -240,7 +243,7 @@ func (c *pageCodec) page(call Call, p serviceParams, previous *service.PagePosit
 	if previous != nil {
 		before = previous.Offset
 	}
-	if position.Offset <= before {
+	if position.Offset <= before && !(position.Workflow && (previous == nil || !previous.Workflow)) {
 		return nil, fmt.Errorf("service page does not advance")
 	}
 	token, err := c.encode(call, p, position)

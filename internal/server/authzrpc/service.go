@@ -3,6 +3,7 @@ package authzrpc
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -10,6 +11,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 // GuardedService keeps the domain service intact while adding the read-side
@@ -37,6 +39,9 @@ const listPostfilterCap = 20000
 const claimNextConflictRestartBudget = 1
 
 func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req service.GetRequest) (service.GetResult, error) {
+	if workflowItemRef(req.ID) {
+		return s.delegate.Get(ctx, by, req)
+	}
 	allowed, err := s.checkRead(ctx, by, "bead.get", req.ID)
 	if err != nil {
 		return service.GetResult{}, err
@@ -246,7 +251,22 @@ func (s *GuardedService) UnlinkWithOutcome(ctx context.Context, by model.Princip
 	return s.delegate.UnlinkWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowItemRef(req.ID) {
+		return s.delegate.ClaimWithOutcome(ctx, by, req, meta)
+	}
 	return s.delegate.ClaimWithOutcome(ctx, by, req, meta)
+}
+
+func (s *GuardedService) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req workflowplugin.InvokeRequest, meta model.WriteMeta) (workflowplugin.InvokeResult, error) {
+	workflow, ok := s.delegate.(rpc.WorkflowService)
+	if !ok {
+		return workflowplugin.InvokeResult{}, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
+	}
+	return workflow.WorkflowInvoke(ctx, by, req, meta)
+}
+
+func workflowItemRef(ref model.Ref) bool {
+	return ref.IsID() && strings.HasPrefix(ref.ID, workflowplugin.ItemPrefix)
 }
 
 // ClaimNextWithOutcome keeps queue candidates visible to an Agent by applying
@@ -304,6 +324,18 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 		}
 		for _, bead := range page.Items {
 			ref := model.RefByID(bead.ID, model.Natural64(0))
+			if workflowItemRef(ref) {
+				candidateMeta := meta
+				candidateMeta.Method = "bead.claimNext"
+				out, claimErr := s.delegate.ClaimWithOutcome(ctx, by, service.ClaimRequest{ID: ref}, candidateMeta)
+				if claimErr == nil {
+					return &out, nil
+				}
+				if !claimNextRace(claimErr) {
+					return nil, claimErr
+				}
+				continue
+			}
 			_, snapshot, closeReader, err := s.current(ctx, &service.AsOf{Revision: page.AsOf.Revision, Incarnation: page.AsOf.Incarnation})
 			if err != nil {
 				return nil, err
@@ -525,6 +557,10 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	}
 	filtered := make([]service.Bead, 0, len(page.Items))
 	for _, bead := range page.Items {
+		if bead.Kind == "workflow.item" {
+			filtered = append(filtered, bead)
+			continue
+		}
 		ok, err := template.Match(ctx, facts, authz.Resource{Kind: authz.Bead, Ref: model.RefByID(bead.ID, model.Natural64(0))})
 		if err != nil {
 			return service.BeadPage{}, authzError(err)
@@ -559,13 +595,18 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 		return service.BeadPage{}, err
 	}
 	defer closeContent()
-	refs := make([]model.Ref, len(out.Items))
+	refs := make([]model.Ref, 0, len(out.Items))
 	for i, bead := range out.Items {
-		refs[i] = model.RefByID(bead.ID, model.Natural64(0))
+		if bead.Kind != "workflow.item" {
+			refs = append(refs, model.RefByID(bead.ID, model.Natural64(0)))
+		}
 	}
-	parents, err := s.checker.parentProjections(ctx, caller, authorization, content, refs)
-	if err != nil {
-		return service.BeadPage{}, err
+	parents := map[string]ParentDisclosure{}
+	if len(refs) != 0 {
+		parents, err = s.checker.parentProjections(ctx, caller, authorization, content, refs)
+		if err != nil {
+			return service.BeadPage{}, err
+		}
 	}
 	for i := range out.Items {
 		projectBeadParent(&out.Items[i], parents[out.Items[i].ID])
@@ -575,6 +616,7 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 			Offset: end, AsOf: page.AsOf,
 			AuthorizationRevision: authorization.authorizationRevision,
 			AuthorizationBound:    authorization.authorizationBound,
+			Workflow:              page.Next != nil && page.Next.Workflow,
 		}
 	}
 	binding, err := s.checker.readAuthorityBinding(ctx, caller, authorization, snapshot)
