@@ -91,6 +91,45 @@ func TestExportSourceHistoryFullUsesActualCommitImages(t *testing.T) {
 	}
 }
 
+func TestExportSourceHistoryProvesEmptyRoot(t *testing.T) {
+	s, inventory := historyFixture(t)
+	root := s.log.Commits[0].ID
+	// The reader has successfully enumerated every table at the actual root.
+	// No schema, records, or events existed yet; this is not a failed read.
+	s.images[root] = map[string]Table{}
+	m, h := sourceCapture(t, buildFixture(t, s, inventory))
+	if m.History != "verified" || !h.Range.Complete || h.Range.First != 1 || h.Range.Head != 4 || len(h.Range.Frames) != 4 || len(h.Range.Gaps) != 0 {
+		t.Fatalf("observed empty root was not proven: %+v", h.Range)
+	}
+	frame := h.Range.Frames[0]
+	if frame.CommitID != root || frame.Sequence != 1 || frame.Records == nil || frame.Events == nil || len(frame.Records)+len(frame.Events) != 0 {
+		t.Fatalf("empty root acquired invented source state: %+v", frame)
+	}
+}
+
+func TestExportSourceHistoryEmptyRootDoesNotFillMissingImages(t *testing.T) {
+	for _, mode := range []string{"nil-root", "non-root", "incomplete-schema", "unknown-table"} {
+		t.Run(mode, func(t *testing.T) {
+			s, inventory := historyFixture(t)
+			root := s.log.Commits[0].ID
+			switch mode {
+			case "nil-root":
+				s.images[root] = nil
+			case "non-root":
+				s.images[s.log.Commits[1].ID] = map[string]Table{}
+			case "incomplete-schema":
+				s.images[root] = map[string]Table{"issues": {Columns: columnsFor("issues"), Rows: []Row{}}}
+			case "unknown-table":
+				s.images[root] = map[string]Table{"unknown": {Columns: []string{"id"}, Rows: []Row{}}}
+			}
+			m, h := sourceCapture(t, buildFixture(t, s, inventory))
+			if m.History != "available-unverified" || h.Range.Complete || len(h.Range.Gaps) == 0 || h.Range.First == 1 {
+				t.Fatalf("missing or unsupported source image became complete: %+v", h.Range)
+			}
+		})
+	}
+}
+
 func TestExportSourceHistoryPartialRecordsExactPrefixGaps(t *testing.T) {
 	s, inventory := historyFixture(t)
 	delete(s.images, s.log.Commits[0].ID)

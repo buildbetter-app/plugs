@@ -216,6 +216,12 @@ error; operator inventory declarations cannot turn missing history into proof.
 A complete linear graph, every representable image, unchanged earlier events,
 an exact current-head comparison and a stable final head/clean/commit census
 are required for `history=verified`.
+An explicitly observed tableless root is a complete empty source image: it
+contains no invented schema, business records or events. This exception requires
+a successful non-nil complete census at the proven root. A failed/nil read,
+tableless non-root or partially initialized schema still uses the ordinary
+unavailable/unmappable path. Event retention must actually cover the source
+commits; opting into tracking later cannot recover an ignored event history.
 Missing images or unsupported older schemas permit only a proven contiguous
 suffix with a complete baseline. Exact inclusive prefix gaps distinguish
 `unavailable`, `unmappable` and `not-retained`; the manifest remains
