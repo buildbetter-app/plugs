@@ -21,11 +21,11 @@ The selected bounded evidence is:
   one durable changeset/event per accepted comment, untouched anchor fields,
   typed refusals with no receipt/head advance, and SQLite reopen. A public
   comment-list/keyset producer and the ephemeral plane remain unqualified.
-* **B16** — no parity claim is made. The admitted ontology rejects the typed
-  `labels` field and the public filters have no label selector. The test keeps
-  those refusals typed and checks that they do not write; add/remove/rename,
-  label patch ordering, durable/ephemeral rename, and label filters remain
-  **UNQUALIFIED**.
+* **B16** — public typed label creation and persistence, plus typed no-write
+  refusals for invalid values and the unsupported filter shape. The separate
+  `internal/integration/labelcontract` package exercises the default public
+  producer and revision-guarded whole-set patch composition. Full filters,
+  durable/ephemeral rename and paired qualification remain **UNQUALIFIED**.
 
 Reference recording is deliberately separate from these Plug projections. The
 `record_reference.py` runner requires an exact Beads executable and exact

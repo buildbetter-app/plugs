@@ -260,6 +260,7 @@ internal/core/pipeline/hierarchy.go
 internal/core/pipeline/hierarchy_prefix_guard_test.go
 internal/core/pipeline/hierarchy_scope_test.go
 internal/core/pipeline/hierarchy_test.go
+internal/core/pipeline/labels.go
 internal/core/pipeline/lease_overlay.go
 internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
@@ -408,6 +409,7 @@ internal/integration/httpconformance/fixture_test.go
 internal/integration/httpconformance/protocol_test.go
 internal/integration/labelcontract/BUILD.bazel
 internal/integration/labelcontract/README.md
+internal/integration/labelcontract/authorization_test.go
 internal/integration/labelcontract/fixture_test.go
 internal/integration/labelcontract/labels_test.go
 internal/integration/localclisession/BUILD.bazel

@@ -18,5 +18,10 @@ Reference source is Beads `9d6fff760b7a314b476539198504d77ce0959656`,
 `internal/storage/issueops/{labels,aggregate,execution}.go`,
 `internal/types/types.go:CheckFieldLen`, and `cmd/bd/create.go` default
 parent-label inheritance. These source-derived expectations are not genuine
-paired Beads recordings. Full B16 filter/view, wisp isolation, and paired-store
+paired Beads recordings. Full B16 filter/view, ephemeral isolation, and paired-store
 qualification remain separate until their real public paths are proven.
+
+The real authenticated fixed-permission HTTP composition is also exercised.
+Its recorded finite slice permits assigned-bead scalar updates and equal label
+sets, refuses permission-bearing label reassignment, and rechecks current
+authority on receipt replay. This producer does not widen that policy.

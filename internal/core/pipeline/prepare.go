@@ -238,6 +238,9 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if err = applyFields(current, c.Fields, "request"); err != nil {
 				return nil, err
 			}
+			if err = p.inheritLabels(ctx, current); err != nil {
+				return nil, err
+			}
 			if c.Key != "" {
 				aliases[c.Key] = target
 			}
@@ -728,6 +731,12 @@ func applyFields(p *pending, fields map[string]any, setter string) error {
 	for name, value := range fields {
 		if name == "" || strings.ContainsAny(name, "./\x00") {
 			return failure("invalid_params", "field names must be nonempty unqualified keys")
+		}
+		if name == "labels" {
+			if err := setLabels(p, value, setter); err != nil {
+				return err
+			}
+			continue
 		}
 		if value == nil {
 			delete(p.doc.Fields, name)
