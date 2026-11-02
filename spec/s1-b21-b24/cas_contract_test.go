@@ -62,7 +62,7 @@ func TestS1B22TypedCASRefusalsLeaveNoDurableDelta(t *testing.T) {
 			f := newFixture(t, engine)
 			target, _ := f.create(t, "typed-cas-target", "target")
 			guard, _ := f.create(t, "typed-cas-guard", "guard")
-			commit(t, f.call("tx.apply", "typed-cas-metadata", map[string]any{"changeSet": map[string]any{"ops": []any{
+			commit(t, f.call("tx.apply", "typed-cas-seed-metadata", map[string]any{"changeSet": map[string]any{"ops": []any{
 				map[string]any{"kind": "setMeta", "target": guard, "key": "plugin.compare", "value": map[string]any{"n": 1}},
 			}}}))
 			memory := commit(t, f.call("memory.save", "typed-cas-memory", map[string]any{"key": "runbook", "content": "stored", "metadata": map[string]any{"source": "test"}})).Results[0].Ref
