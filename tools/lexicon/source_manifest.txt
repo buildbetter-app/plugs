@@ -255,6 +255,7 @@ internal/core/pipeline/document.go
 internal/core/pipeline/gate.go
 internal/core/pipeline/guard_test.go
 internal/core/pipeline/hierarchy.go
+internal/core/pipeline/hierarchy_scope_test.go
 internal/core/pipeline/hierarchy_test.go
 internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
