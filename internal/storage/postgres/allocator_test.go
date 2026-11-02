@@ -85,6 +85,49 @@ func pipelineCreate(t *testing.T, w *pipeline.Writer, n int) model.Commit {
 	return commit
 }
 
+func TestPostgresAllocatorSnapshotReadsAreBounded(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	restoreAllocator(t, s, lease, driver.OfflineAllocator{Prefix: "demo", Mode: driver.AllocatorSequential, LastID: 8, Children: map[string]uint64{"demo-8": 3}})
+
+	for _, prefix := range []string{"missing", "demo"} {
+		t.Run(prefix, func(t *testing.T) {
+			r := testRead(t, s, nil).(*reader)
+			scans := func() int64 {
+				t.Helper()
+				var count int64
+				if err := r.sql.QueryRowContext(ctx, `SELECT seq_scan + COALESCE(idx_scan, 0) FROM pg_stat_xact_user_tables WHERE relid = 'plug_postgres.allocator_states'::regclass`).Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				return count
+			}
+			before := scans()
+			for i := 0; i < 4; i++ {
+				value, err := r.LoadAllocator(ctx, prefix)
+				if prefix == "missing" {
+					if !errors.Is(err, driver.ErrNotFound) {
+						t.Fatalf("missing allocator: %+v err=%v", value, err)
+					}
+					continue
+				}
+				if err != nil || value.LastID != 8 || value.Children["demo-8"] != 3 {
+					t.Fatalf("snapshot allocator: %+v err=%v", value, err)
+				}
+				value.Children["demo-8"] = 99
+			}
+			if got := scans() - before; got != 1 {
+				t.Fatalf("four allocator reads in one pinned snapshot scanned the allocator table %d times, want 1", got)
+			}
+			cancelled, cancel := context.WithCancel(ctx)
+			cancel()
+			if _, err := r.LoadAllocator(cancelled, prefix); !errors.Is(err, context.Canceled) {
+				t.Fatalf("cached allocator ignored cancellation: %v", err)
+			}
+		})
+	}
+}
+
 func TestPostgresAllocatorHistoricalReadsRefuse(t *testing.T) {
 	ctx := context.Background()
 	s := openTest(t, freshDSN(t))
