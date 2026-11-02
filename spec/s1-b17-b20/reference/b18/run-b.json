@@ -1,0 +1,328 @@
+{
+  "format": "plug-b18-reference-run/1",
+  "card": "B18",
+  "status": "RECORDED",
+  "commands": [
+    {
+      "name": "init",
+      "args": [
+        "init",
+        "--prefix",
+        "b18",
+        "--non-interactive",
+        "--quiet",
+        "--skip-agents",
+        "--skip-hooks"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": "Thanks for using bd! Quick heads-up: bd shares anonymous usage metrics —\n   just which commands get run (plus the bd version and OS platform), never your\n   issues, paths, remotes, identity, or anything you type. Seeing how people use\n   bd is how we decide what to improve next, so it genuinely makes bd better for\n   everyone.\n      Curious what's sent?   bd metrics example\n      Prefer to opt out?     bd metrics off    (one command, no restart needed)\n\n"
+    },
+    {
+      "name": "enable-history",
+      "args": [
+        "config",
+        "set",
+        "versioned-history.enabled",
+        "true"
+      ],
+      "exit": 0,
+      "stdout": "Set versioned-history.enabled = true\n",
+      "stderr": "Thanks for using bd! Quick heads-up: bd shares anonymous usage metrics —\n   just which commands get run (plus the bd version and OS platform), never your\n   issues, paths, remotes, identity, or anything you type. Seeing how people use\n   bd is how we decide what to improve next, so it genuinely makes bd better for\n   everyone.\n      Curious what's sent?   bd metrics example\n      Prefer to opt out?     bd metrics off    (one command, no restart needed)\n\n\nHint: Versioned history now records for this store. The setting replicates on 'bd dolt push' and 'bd dolt pull', so every clone that pulls it records too, and it is safe with a single writer only: keep one writer at a time per store (docs/reference/configuration.md#versioned-issue-history).\n"
+    },
+    {
+      "name": "create",
+      "args": [
+        "create",
+        "--id",
+        "b18-reference",
+        "--type",
+        "task",
+        "--title",
+        "original",
+        "--priority",
+        "2",
+        "--json"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"created_at\": \"2026-10-30T08:54:41.741454411Z\",\n  \"created_by\": \"b18-reference-recorder\",\n  \"id\": \"b18-reference\",\n  \"issue_type\": \"task\",\n  \"owner\": \"b18@example.invalid\",\n  \"priority\": 2,\n  \"schema_version\": 1,\n  \"status\": \"open\",\n  \"title\": \"original\",\n  \"updated_at\": \"2026-10-30T08:54:41.741454411Z\"\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "show-created",
+      "args": [
+        "show",
+        "b18-reference",
+        "--json"
+      ],
+      "exit": 0,
+      "stdout": "[\n  {\n    \"id\": \"b18-reference\",\n    \"title\": \"original\",\n    \"status\": \"open\",\n    \"priority\": 2,\n    \"issue_type\": \"task\",\n    \"owner\": \"b18@example.invalid\",\n    \"created_at\": \"2026-10-30T08:54:42Z\",\n    \"created_by\": \"b18-reference-recorder\",\n    \"updated_at\": \"2026-10-30T08:54:42Z\",\n    \"dependent_count\": 0,\n    \"dependency_count\": 0,\n    \"comment_count\": 0,\n    \"revision\": \"-4016446138451678529\"\n  }\n]\n",
+      "stderr": ""
+    },
+    {
+      "name": "versions-created",
+      "args": [
+        "versions",
+        "b18-reference",
+        "--json"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"recording\": true,\n  \"schema_version\": 1,\n  \"versions\": [\n    {\n      \"attribution_status\": \"claimed\",\n      \"change_actor\": \"b18-reference-recorder\",\n      \"change_at\": \"2026-10-30T08:54:41.751404Z\",\n      \"change_message\": \"\",\n      \"epoch\": 1,\n      \"issue_id\": \"b18-reference\",\n      \"local_revision\": 1,\n      \"removed_at\": null,\n      \"removed_reason\": \"\",\n      \"removed_restriction\": \"\",\n      \"state_bytes\": 230\n    }\n  ]\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "noop-update",
+      "args": [
+        "update",
+        "b18-reference",
+        "--title",
+        "original",
+        "--json"
+      ],
+      "exit": 0,
+      "stdout": "[\n  {\n    \"id\": \"b18-reference\",\n    \"title\": \"original\",\n    \"status\": \"open\",\n    \"priority\": 2,\n    \"issue_type\": \"task\",\n    \"owner\": \"b18@example.invalid\",\n    \"created_at\": \"2026-10-30T08:54:42Z\",\n    \"created_by\": \"b18-reference-recorder\",\n    \"updated_at\": \"2026-10-30T08:54:42Z\"\n  }\n]\n",
+      "stderr": ""
+    },
+    {
+      "name": "show-noop",
+      "args": [
+        "show",
+        "b18-reference",
+        "--json"
+      ],
+      "exit": 0,
+      "stdout": "[\n  {\n    \"id\": \"b18-reference\",\n    \"title\": \"original\",\n    \"status\": \"open\",\n    \"priority\": 2,\n    \"issue_type\": \"task\",\n    \"owner\": \"b18@example.invalid\",\n    \"created_at\": \"2026-10-30T08:54:42Z\",\n    \"created_by\": \"b18-reference-recorder\",\n    \"updated_at\": \"2026-10-30T08:54:42Z\",\n    \"dependent_count\": 0,\n    \"dependency_count\": 0,\n    \"comment_count\": 0,\n    \"revision\": \"-4016446138451678529\"\n  }\n]\n",
+      "stderr": ""
+    },
+    {
+      "name": "versions-noop",
+      "args": [
+        "versions",
+        "b18-reference",
+        "--json"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"recording\": true,\n  \"schema_version\": 1,\n  \"versions\": [\n    {\n      \"attribution_status\": \"claimed\",\n      \"change_actor\": \"b18-reference-recorder\",\n      \"change_at\": \"2026-10-30T08:54:41.751404Z\",\n      \"change_message\": \"\",\n      \"epoch\": 1,\n      \"issue_id\": \"b18-reference\",\n      \"local_revision\": 1,\n      \"removed_at\": null,\n      \"removed_reason\": \"\",\n      \"removed_restriction\": \"\",\n      \"state_bytes\": 230\n    }\n  ]\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "history-noop",
+      "args": [
+        "history",
+        "b18-reference",
+        "--json"
+      ],
+      "exit": 0,
+      "stdout": "[\n  {\n    \"CommitHash\": \"9pk1b5s5qij6g17o76n1pvd5es6q9up2\",\n    \"Committer\": \"beads\",\n    \"CommitDate\": \"2026-10-30T08:54:41.791Z\",\n    \"Issue\": {\n      \"id\": \"b18-reference\",\n      \"title\": \"original\",\n      \"status\": \"open\",\n      \"priority\": 2,\n      \"issue_type\": \"task\",\n      \"owner\": \"b18@example.invalid\",\n      \"created_at\": \"2026-10-30T08:54:42Z\",\n      \"created_by\": \"b18-reference-recorder\",\n      \"updated_at\": \"2026-10-30T08:54:42Z\"\n    }\n  }\n]\n",
+      "stderr": ""
+    },
+    {
+      "name": "update-second",
+      "args": [
+        "update",
+        "b18-reference",
+        "--title",
+        "second",
+        "--json"
+      ],
+      "exit": 0,
+      "stdout": "[\n  {\n    \"id\": \"b18-reference\",\n    \"title\": \"second\",\n    \"status\": \"open\",\n    \"priority\": 2,\n    \"issue_type\": \"task\",\n    \"owner\": \"b18@example.invalid\",\n    \"created_at\": \"2026-10-30T08:54:42Z\",\n    \"created_by\": \"b18-reference-recorder\",\n    \"updated_at\": \"2026-10-30T08:54:43Z\"\n  }\n]\n",
+      "stderr": ""
+    },
+    {
+      "name": "update-third",
+      "args": [
+        "update",
+        "b18-reference",
+        "--title",
+        "third",
+        "--json"
+      ],
+      "exit": 0,
+      "stdout": "[\n  {\n    \"id\": \"b18-reference\",\n    \"title\": \"third\",\n    \"status\": \"open\",\n    \"priority\": 2,\n    \"issue_type\": \"task\",\n    \"owner\": \"b18@example.invalid\",\n    \"created_at\": \"2026-10-30T08:54:42Z\",\n    \"created_by\": \"b18-reference-recorder\",\n    \"updated_at\": \"2026-10-30T08:54:43Z\"\n  }\n]\n",
+      "stderr": ""
+    },
+    {
+      "name": "history-final",
+      "args": [
+        "history",
+        "b18-reference",
+        "--json"
+      ],
+      "exit": 0,
+      "stdout": "[\n  {\n    \"CommitHash\": \"pk6tcgqolk48g8pukoiqk8u91fh57tbm\",\n    \"Committer\": \"beads\",\n    \"CommitDate\": \"2026-10-30T08:54:43.256Z\",\n    \"Issue\": {\n      \"id\": \"b18-reference\",\n      \"title\": \"third\",\n      \"status\": \"open\",\n      \"priority\": 2,\n      \"issue_type\": \"task\",\n      \"owner\": \"b18@example.invalid\",\n      \"created_at\": \"2026-10-30T08:54:42Z\",\n      \"created_by\": \"b18-reference-recorder\",\n      \"updated_at\": \"2026-10-30T08:54:43Z\"\n    }\n  },\n  {\n    \"CommitHash\": \"7finp6h32f71b0e4qklp9udpv0d7io3f\",\n    \"Committer\": \"beads\",\n    \"CommitDate\": \"2026-10-30T08:54:43.046Z\",\n    \"Issue\": {\n      \"id\": \"b18-reference\",\n      \"title\": \"second\",\n      \"status\": \"open\",\n      \"priority\": 2,\n      \"issue_type\": \"task\",\n      \"owner\": \"b18@example.invalid\",\n      \"created_at\": \"2026-10-30T08:54:42Z\",\n      \"created_by\": \"b18-reference-recorder\",\n      \"updated_at\": \"2026-10-30T08:54:43Z\"\n    }\n  },\n  {\n    \"CommitHash\": \"9pk1b5s5qij6g17o76n1pvd5es6q9up2\",\n    \"Committer\": \"beads\",\n    \"CommitDate\": \"2026-10-30T08:54:41.791Z\",\n    \"Issue\": {\n      \"id\": \"b18-reference\",\n      \"title\": \"original\",\n      \"status\": \"open\",\n      \"priority\": 2,\n      \"issue_type\": \"task\",\n      \"owner\": \"b18@example.invalid\",\n      \"created_at\": \"2026-10-30T08:54:42Z\",\n      \"created_by\": \"b18-reference-recorder\",\n      \"updated_at\": \"2026-10-30T08:54:42Z\"\n    }\n  }\n]\n",
+      "stderr": ""
+    },
+    {
+      "name": "show-current",
+      "args": [
+        "show",
+        "b18-reference",
+        "--json"
+      ],
+      "exit": 0,
+      "stdout": "[\n  {\n    \"id\": \"b18-reference\",\n    \"title\": \"third\",\n    \"status\": \"open\",\n    \"priority\": 2,\n    \"issue_type\": \"task\",\n    \"owner\": \"b18@example.invalid\",\n    \"created_at\": \"2026-10-30T08:54:42Z\",\n    \"created_by\": \"b18-reference-recorder\",\n    \"updated_at\": \"2026-10-30T08:54:43Z\",\n    \"dependent_count\": 0,\n    \"dependency_count\": 0,\n    \"comment_count\": 0,\n    \"revision\": \"-473579579865455660\"\n  }\n]\n",
+      "stderr": ""
+    },
+    {
+      "name": "versions-final",
+      "args": [
+        "versions",
+        "b18-reference",
+        "--json"
+      ],
+      "exit": 0,
+      "stdout": "{\n  \"recording\": true,\n  \"schema_version\": 1,\n  \"versions\": [\n    {\n      \"attribution_status\": \"claimed\",\n      \"change_actor\": \"b18-reference-recorder\",\n      \"change_at\": \"2026-10-30T08:54:43.223377Z\",\n      \"change_message\": \"\",\n      \"epoch\": 1,\n      \"issue_id\": \"b18-reference\",\n      \"local_revision\": 3,\n      \"removed_at\": null,\n      \"removed_reason\": \"\",\n      \"removed_restriction\": \"\",\n      \"state_bytes\": 227\n    },\n    {\n      \"attribution_status\": \"claimed\",\n      \"change_actor\": \"b18-reference-recorder\",\n      \"change_at\": \"2026-10-30T08:54:43.013333Z\",\n      \"change_message\": \"\",\n      \"epoch\": 1,\n      \"issue_id\": \"b18-reference\",\n      \"local_revision\": 2,\n      \"removed_at\": null,\n      \"removed_reason\": \"\",\n      \"removed_restriction\": \"\",\n      \"state_bytes\": 228\n    },\n    {\n      \"attribution_status\": \"claimed\",\n      \"change_actor\": \"b18-reference-recorder\",\n      \"change_at\": \"2026-10-30T08:54:41.751404Z\",\n      \"change_message\": \"\",\n      \"epoch\": 1,\n      \"issue_id\": \"b18-reference\",\n      \"local_revision\": 1,\n      \"removed_at\": null,\n      \"removed_reason\": \"\",\n      \"removed_restriction\": \"\",\n      \"state_bytes\": 230\n    }\n  ]\n}\n",
+      "stderr": ""
+    },
+    {
+      "name": "show-as-of-create",
+      "args": [
+        "show",
+        "b18-reference",
+        "--as-of",
+        "9pk1b5s5qij6g17o76n1pvd5es6q9up2",
+        "--json"
+      ],
+      "exit": 0,
+      "stdout": "[\n  {\n    \"id\": \"b18-reference\",\n    \"title\": \"original\",\n    \"status\": \"open\",\n    \"priority\": 2,\n    \"issue_type\": \"task\",\n    \"owner\": \"b18@example.invalid\",\n    \"created_at\": \"2026-10-30T08:54:42Z\",\n    \"created_by\": \"b18-reference-recorder\",\n    \"updated_at\": \"2026-10-30T08:54:42Z\"\n  }\n]\n",
+      "stderr": ""
+    }
+  ],
+  "projection": {
+    "format": "plug-b18-reference-projection/1",
+    "card": "B18",
+    "engine": "embedded-dolt",
+    "observations": {
+      "versionCounts": {
+        "afterCreate": 1,
+        "afterSameValue": 1,
+        "afterTwoChanges": 3
+      },
+      "localRevisionsNewestFirst": [
+        3,
+        2,
+        1
+      ],
+      "issueRevision": {
+        "present": true,
+        "sameValuePreserved": true,
+        "changingUpdateChanged": true,
+        "relationToLocalRevision": "separate-identities"
+      },
+      "asOf": {
+        "selector": "full-dolt-commit-hash",
+        "historicalTitle": "original",
+        "currentTitle": "third",
+        "retainedAcrossLaterWrites": true
+      },
+      "sameStoreAcrossProcesses": {
+        "independentCLIInvocations": 15,
+        "finalTitle": "third",
+        "retainedVersionCount": 3
+      }
+    }
+  },
+  "provenance": {
+    "format": "plug-b18-reference-provenance/1",
+    "card": "B18",
+    "recordedAt": "2026-10-30T08:54:43.920977+00:00",
+    "workspace": "/tmp/plug-swarm/work/b18-reference-rztxxq7p",
+    "referenceAsset": {
+      "root": "/tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/reference-build",
+      "binary": "/tmp/plug-swarm/ci-local/B07-B25-RECORDED-ACCEPTANCE-20261030-964a377f/reference-build/reference-engine",
+      "binarySha256": "33cdadbe3bd7a82e2c3c40f4b5da4403d822acc00d544a321df24e277c0836a3",
+      "metadataSha256": "8e748f6f69c62a2a04cc505ede4202d7d346018c7ae78ef7b7d4f27626720a9b",
+      "buildCommandSha256": "9ad766be28a628287fb305ada6a038cb930f96f591da2e611fb35b8841c531af",
+      "buildInfoSha256": "2edc35ea3a2f0d50f708bda2271742494191f3288466ba246f6a8d0502f64d50",
+      "toolchainSha256": "19e5d35abb16621313ab2c3b9c107578eb3bf6d9f4a82bc9a00a592de9b6a000",
+      "versionSha256": "089850c5597ef244242b3d8952a41baf3e4990853314ba385a2c622c04868229",
+      "source": "/tmp/plug-swarm/work/build50-beads-base.5aHZvH",
+      "sourceCommit": "9d6fff760b7a314b476539198504d77ce0959656",
+      "sourceTree": "cde121d6e4119e454857ad1c3ca293e2791be840",
+      "sourceSymbols": [
+        {
+          "path": "internal/storage/issueops/version_history.go",
+          "sha256": "63ffe88e5f8c70e710cc1f36a7fd39b1dafa63691304bca553ddea46aacfb7e7"
+        },
+        {
+          "path": "internal/storage/issueops/asof_read.go",
+          "sha256": "e5b4376f456b34ed3dfd90b37ef4f80ce415e97f8e31723234be1c596eb352ff"
+        },
+        {
+          "path": "internal/storage/issueops/as_of.go",
+          "sha256": "fdc275261773f253d607c56282dedd574237115bdfc0c767b3e546e8e249ec49"
+        },
+        {
+          "path": "internal/storage/issueops/version_list.go",
+          "sha256": "5c64c58c8ac225708f45f76ded6ab126f626003499f890921cf2061cc6b5c68a"
+        },
+        {
+          "path": "cmd/bd/versions.go",
+          "sha256": "883406960294b0dfb19026238d4afa570d700d0f9ec0cea9f1667599495872ef"
+        },
+        {
+          "path": "cmd/bd/versions_test.go",
+          "sha256": "49022069284ca889cdfda7430dcdf8324eb5edb72ab6968af77e44e65926a590"
+        },
+        {
+          "path": "cmd/bd/show.go",
+          "sha256": "cdccb0df4c22c14a50061653119f3f8a129610f0357d9e7340fe08bb19c45342"
+        },
+        {
+          "path": "internal/storage/leg_contract_wiring_test.go",
+          "sha256": "0f71f6ca0335d8830d11a23df3c8fe3e7ccb92a08048df21d99eb0326a9b756a"
+        }
+      ],
+      "buildTag": "gms_pure_go",
+      "version": "bd version 1.3.0 (dev)"
+    },
+    "assetValidation": {
+      "fullSourceComparison": "PASS",
+      "evidence": "/tmp/plug-swarm/ci-local/B18-REFERENCE-CONTINUATION-f52e85b235864137be001d5dda00d441c4d4366b/asset-validation",
+      "comparison": "local beads-base archive and bound extracted source matched all regular paths, bytes, and symlink targets"
+    },
+    "recorder": {
+      "path": "spec/cardb18/reference/record.py",
+      "sha256": "375c516727d1dac47c395a7b117171e638f25a1e1f7b95a1c78f61d0552f973f"
+    },
+    "configuration": {
+      "actor": "b18-reference-recorder",
+      "owner": "b18@example.invalid",
+      "prefix": "b18",
+      "history": "store setting versioned-history.enabled=true before create",
+      "ambient": "PATH only; no inherited application configuration",
+      "engine": "embedded-dolt"
+    },
+    "inputs": {
+      "id": "b18-reference",
+      "titles": [
+        "original",
+        "original",
+        "second",
+        "third"
+      ],
+      "clock": "runtime; timestamps excluded from semantic comparison",
+      "allocator": "explicit ID; historical allocator limits not exercised"
+    },
+    "disposition": {
+      "status": "deviate",
+      "decisions": [
+        "P6",
+        "P7",
+        "P30"
+      ],
+      "reference": "per-record local revisions plus Dolt commit-addressed CLI as-of",
+      "plug": "global changeset revision identity plus driver-log history.query"
+    },
+    "limits": [
+      "no internal issue_versions as-of substitute: the pinned source states that API has no public wire",
+      "no temporal selector or performance qualification",
+      "no historical allocator qualification",
+      "no full B18 command/card parity",
+      "reference persistence is embedded Dolt across processes, not SQLite parity"
+    ],
+    "rawCommandsSha256": "501f9c68c2872741ee079f0b4124ccab17df68e94c103c3d7ff02e8781aaa973",
+    "projectionSha256": "9feb526c61d6b987368ab770eea30e603d813da3041c626027c8603b2a719a15"
+  }
+}
