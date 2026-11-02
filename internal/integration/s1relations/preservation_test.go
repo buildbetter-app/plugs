@@ -7,6 +7,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 func patch(target model.Ref, fields map[string]any) model.Op {
@@ -176,5 +177,73 @@ func TestB25AuxiliaryRefusalPreservesLabelsCloseProvenanceAndSameKeyRetry(t *tes
 			t.Fatal("same-key successful retry did not remain a callback-free stored replay")
 		}
 		equalJSON(t, json.RawMessage(jsonBytes(t, retried)), replay.Result)
+	})
+}
+
+func TestB25DirectDeleteRemovesOwnedRelationsAndRetainsHistoryAcrossAllStores(t *testing.T) {
+	stores(t, func(t *testing.T, kind string) {
+		f := newFixture(t, kind, []string{"s1-parent", "s1-target", "s1-child"})
+		child, _, _ := seedRelations(t, f)
+		parent, target := f.document("s1-parent"), f.document("s1-target")
+		prefix, err := pipeline.AncestorPrefix(child.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := f.reader()
+		beforeClosure, err := r.DerivedRows(f.ctx, driver.DerivedAncestorClosure, prefix)
+		_ = r.Close()
+		if err != nil || len(beforeClosure) != 2 {
+			t.Fatalf("delete setup did not include child self/parent references: %+v err=%v", beforeClosure, err)
+		}
+		// Delete with labels, metadata, comments, parent and an outbound
+		// association still present. No preliminary unlink or field cleanup.
+		ops := []model.Op{{Kind: model.OpDelete, Delete: &model.DeleteOp{Kind: model.OpDelete, Target: child}}}
+		deleted := f.batch("delete", ops...)
+		if deleted.Revision.String() != "6" || len(deleted.Results) != 1 || len(deleted.Results[0].Record) != 0 {
+			t.Fatalf("direct delete did not return its tombstone: %+v", deleted)
+		}
+		got := f.call("bead.get", "deleted-get", map[string]any{"id": child})
+		if got.Error == nil || got.Error.Data.Code != "not_found" || len(got.Result) != 0 {
+			t.Fatalf("deleted relation owner remained publicly readable: %+v", got)
+		}
+		r = f.reader()
+		rows, err := r.Get(f.ctx, []model.Ref{child})
+		if err != nil || len(rows) != 0 {
+			t.Fatalf("delete retained current owner bytes: %+v err=%v", rows, err)
+		}
+		closure, err := r.DerivedRows(f.ctx, driver.DerivedAncestorClosure, prefix)
+		if err != nil || len(closure) != 0 {
+			t.Fatalf("delete retained owned reference index rows: %+v err=%v", closure, err)
+		}
+		versions, err := r.Versions(f.ctx, child, driver.PageReq{})
+		_ = r.Close()
+		if err != nil || versions.NextCursor != nil || len(versions.Items) != 4 {
+			t.Fatalf("delete discarded prior relation history: %+v err=%v", versions, err)
+		}
+		var tombstones int
+		for _, version := range versions.Items {
+			if version.Deleted {
+				tombstones++
+				if version.Revision != deleted.Revision {
+					t.Fatalf("wrong tombstone revision: %+v", version)
+				}
+			}
+		}
+		if tombstones != 1 {
+			t.Fatalf("delete history has %d tombstones", tombstones)
+		}
+		equalJSON(t, parent, f.document("s1-parent"))
+		equalJSON(t, target, f.document("s1-target"))
+		image := f.image()
+		f.reopen()
+		replay := f.call("tx.apply", "delete", map[string]any{"changeSet": model.ChangeSet{Ops: ops}})
+		if replay.Error != nil || !replay.Meta.Replayed || !bytes.Equal(image, f.image()) {
+			t.Fatal("delete replay after reopen recreated state or removed more history")
+		}
+		equalJSON(t, json.RawMessage(jsonBytes(t, deleted)), replay.Result)
+		missing := f.call("tx.apply", "missing-delete", map[string]any{"changeSet": model.ChangeSet{Ops: ops}})
+		if missing.Error == nil || missing.Error.Data.Code != "not_found" || len(missing.Result) != 0 || f.receipt("tx.apply", "missing-delete") != nil || !bytes.Equal(image, f.image()) {
+			t.Fatalf("fresh delete of missing owner was not a state-preserving typed refusal: %+v", missing)
+		}
 	})
 }

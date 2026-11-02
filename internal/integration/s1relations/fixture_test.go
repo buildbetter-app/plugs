@@ -301,12 +301,17 @@ func (f *fixture) image() []byte {
 	if err != nil || len(changes) >= 100 {
 		f.t.Fatalf("complete changeset image: n=%d err=%v", len(changes), err)
 	}
+	ancestors, err := r.DerivedRows(f.ctx, driver.DerivedAncestorClosure, "")
+	if err != nil {
+		f.t.Fatal(err)
+	}
 	return jsonBytes(f.t, struct {
-		Head     *model.Revision
-		Rows     []driver.Record
-		Versions map[string][]driver.Version
-		Changes  []model.Changeset
-	}{r.Snapshot().At, rows, versions, changes})
+		Head      *model.Revision
+		Rows      []driver.Record
+		Versions  map[string][]driver.Version
+		Changes   []model.Changeset
+		Ancestors []driver.DerivedRow
+	}{r.Snapshot().At, rows, versions, changes, ancestors})
 }
 
 func (f *fixture) receipt(method, label string) *driver.IdempotencyRecord {
