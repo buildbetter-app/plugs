@@ -39,6 +39,19 @@ is not applicable. These cases do not back-certify the old Beads twins, the
 missing hybrid-order boundary, PR251 heartbeat, or a full card. See
 [the clock boundary scope](../sqlclock-coverage.md).
 
+The B01 recording retains the historical child-ready observation and its
+`hierarchy-gap-unqualified` marker byte for byte. The Plug replay now separately
+asserts canonical deferred-ancestor suppression. The public HTTP regressions
+`TestB01PublicHierarchyFivePermissionRulesAcrossDrivers` and
+`TestB01PublicDeferredAncestorsAcrossDrivers` in `internal/integration/batchsql`
+exercise the existing authorized parented-create/reparent path, all five
+permission rules, atomic refusals, aliases/final images, current authority and
+history, and readiness/direct-claim/claim-next agreement on memory, SQLite and
+PostgreSQL, including SQL reopen. This closes that specific hierarchy behavior
+gap; it does not turn the old recording into parity evidence or qualify the
+whole B01 card. SQL clock instrumentation remains separate and full S1 remains
+`0/28`.
+
 I5 authorization is qualified by the existing exact-head
 `internal/server/authzrpc:authzrpc_test` target (which embeds `drivers_test.go`). It checks compiled list
 membership against independent point decisions on memory, SQLite, and

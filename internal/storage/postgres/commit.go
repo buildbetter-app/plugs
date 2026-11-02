@@ -408,7 +408,36 @@ func (t *transaction) writeState(ctx context.Context, id string, state driver.Lo
 	return err
 }
 
+// Bound record and version publication within the existing fenced transaction.
+const publicationBatchRows = 256
+
 func (t *transaction) writeRecords(ctx context.Context, entry model.Changeset) error {
+	keys := make([][]byte, 0, publicationBatchRows)
+	refs := make([][]byte, 0, publicationBatchRows)
+	kinds := make([]string, 0, publicationBatchRows)
+	bodies := make([][]byte, 0, publicationBatchRows)
+	deleted := make([]bool, 0, publicationBatchRows)
+	counts := make([]string, 0, publicationBatchRows)
+	bases := make([]bool, 0, publicationBatchRows)
+	versions := make([][]byte, 0, publicationBatchRows)
+	flush := func() error {
+		if len(keys) == 0 {
+			return nil
+		}
+		if _, err := t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.records (key,ref,kind,revision,body,deleted,version_count)
+		 SELECT key,ref,kind,$4::numeric(20,0),body,deleted,version_count::numeric(20,0)
+		 FROM unnest($1::bytea[],$2::bytea[],$3::text[],$5::bytea[],$6::boolean[],$7::text[]) AS record_rows(key,ref,kind,body,deleted,version_count)
+		 ON CONFLICT (key) DO UPDATE SET revision=EXCLUDED.revision,body=EXCLUDED.body,deleted=EXCLUDED.deleted,version_count=EXCLUDED.version_count`, keys, refs, kinds, entry.Revision.String(), bodies, deleted, counts); err != nil {
+			return err
+		}
+		if _, err := t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.versions (key,revision,is_base,value)
+		 SELECT key,$2::numeric(20,0),is_base,value FROM unnest($1::bytea[],$3::boolean[],$4::bytea[]) AS version_rows(key,is_base,value)`, keys, entry.Revision.String(), bases, versions); err != nil {
+			return err
+		}
+		keys, refs, kinds, bodies = keys[:0], refs[:0], kinds[:0], bodies[:0]
+		deleted, counts, bases, versions = deleted[:0], counts[:0], bases[:0], versions[:0]
+		return nil
+	}
 	for id, record := range t.records {
 		previous, exists, err := t.recordAt(ctx, id)
 		if err != nil {
@@ -445,14 +474,21 @@ func (t *transaction) writeRecords(ctx context.Context, entry model.Changeset) e
 		if err != nil {
 			return err
 		}
-		if _, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.records VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (key) DO UPDATE SET revision=EXCLUDED.revision,body=EXCLUDED.body,deleted=EXCLUDED.deleted,version_count=EXCLUDED.version_count`, []byte(id), refRaw, kind, entry.Revision.String(), body, record == nil, decimal(count+1)); err != nil {
-			return err
-		}
-		if _, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.versions VALUES ($1,$2,$3,$4)`, []byte(id), entry.Revision.String(), version.Base, raw); err != nil {
-			return err
+		keys = append(keys, []byte(id))
+		refs = append(refs, refRaw)
+		kinds = append(kinds, kind)
+		bodies = append(bodies, body)
+		deleted = append(deleted, record == nil)
+		counts = append(counts, decimal(count+1))
+		bases = append(bases, version.Base)
+		versions = append(versions, raw)
+		if len(keys) == publicationBatchRows {
+			if err := flush(); err != nil {
+				return err
+			}
 		}
 	}
-	return nil
+	return flush()
 }
 
 func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) (model.Commit, error) {
