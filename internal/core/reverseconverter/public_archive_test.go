@@ -41,3 +41,23 @@ func TestCheckedHistoryHeadReverseDoesNotClaimReplay(t *testing.T) {
 		t.Fatal("head-state conversion must disclose that source history is not replayed")
 	}
 }
+
+// The actual supported exporter ran against public Dolt source actions. This
+// checks its exact bytes, never a consumer-generated complete-root substitute.
+func TestPublicDoltCompleteRootArchiveHeadReverse(t *testing.T) {
+	data, err := os.ReadFile("../../integration/converterroundtrip/testdata/public-complete-root-990eb800.tar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != "a2d933a7a54b53303d33a20d5b96eaac0a85c079c5b08cae553aa2a654d820b5" {
+		t.Fatal("public complete-root source bytes changed")
+	}
+	result, err := ConvertArchive(data)
+	if err != nil {
+		t.Fatalf("genuine public complete-root head cannot reverse: %v", err)
+	}
+	if len(result.JSONL) == 0 || len(result.Report.LostPostSwitchHistory) == 0 {
+		t.Fatal("head-state reverse must disclose unreplayed complete source history")
+	}
+}

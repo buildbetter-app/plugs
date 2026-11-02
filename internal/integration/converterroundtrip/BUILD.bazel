@@ -20,6 +20,7 @@ go_test(
     srcs = glob(["*_test.go"]),
     data = [
         "testdata/synthetic-plug-dump-1.tar",
+        ":public_source_fixtures",
         "//internal/integration/offlinehistory:lexicon_files",
     ],
     size = "large",
@@ -45,3 +46,12 @@ filegroup(
 )
 
 exports_files(["testdata/synthetic-plug-dump-1.tar"], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "public_source_fixtures",
+    srcs = [
+        "testdata/public-complete-root-990eb800.tar",
+        "testdata/public-partial-990eb800.tar",
+    ],
+    visibility = ["//visibility:public"],
+)

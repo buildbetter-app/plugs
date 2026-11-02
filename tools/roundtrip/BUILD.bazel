@@ -26,6 +26,9 @@ go_test(
     size = "large",
     tags = ["local", "requires-network"],
     srcs = ["main.go", "beads.go", "main_test.go", "beads_test.go"],
-    data = ["//internal/integration/offlinehistory:lexicon_files"],
+    data = [
+        "//internal/integration/converterroundtrip:public_source_fixtures",
+        "//internal/integration/offlinehistory:lexicon_files",
+    ],
     deps = _DEPS,
 )
