@@ -1,0 +1,149 @@
+{
+  "binarySha256": "174083f0816e08f94e65c05362d713b913dac036e7a6c0cea2ab0b054f3ee083",
+  "commands": [
+    {
+      "argv": [
+        "bd",
+        "init",
+        "--non-interactive",
+        "--skip-hooks",
+        "--skip-agents",
+        "--prefix",
+        "b20"
+      ],
+      "stderrSha256": "eceb01abeafed21a718cf22df5996c8d8cca8a6f31c96a9189129b2d64632336",
+      "stdoutSha256": "ff9b170b9aad715c3cb9c87e2973187a0fee2e4ec4dbdf340b908d24009dbdbb"
+    },
+    {
+      "argv": [
+        "bd",
+        "--actor",
+        "b20-recorder",
+        "create",
+        "--id",
+        "b20-1",
+        "--title",
+        "journal anchor",
+        "--silent"
+      ],
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdoutSha256": "3d6bda677adf34ac7e677c8eb902c94c11120e500f6b734af7e9e781974976ff"
+    },
+    {
+      "argv": [
+        "bd",
+        "--actor",
+        "b20-recorder",
+        "update",
+        "b20-1",
+        "--title",
+        "journal edited",
+        "--json"
+      ],
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdoutSha256": "fa5b2a01e5a1f20ece1d12716f8b4164da944b7c40c0d5b99c3e28b6d8cf4528"
+    },
+    {
+      "argv": [
+        "bd",
+        "--actor",
+        "b20-recorder",
+        "events",
+        "export",
+        "--json"
+      ],
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdoutSha256": "3e6d426a12237f7c42fc618890bb26f1012e92cc9b6c723c8d1e596fa6f61e1d"
+    },
+    {
+      "argv": [
+        "bd",
+        "--actor",
+        "b20-recorder",
+        "update",
+        "b20-1",
+        "--title",
+        "journal edited",
+        "--json"
+      ],
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdoutSha256": "fa5b2a01e5a1f20ece1d12716f8b4164da944b7c40c0d5b99c3e28b6d8cf4528"
+    },
+    {
+      "argv": [
+        "bd",
+        "--actor",
+        "b20-recorder",
+        "events",
+        "export",
+        "--json"
+      ],
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdoutSha256": "3e6d426a12237f7c42fc618890bb26f1012e92cc9b6c723c8d1e596fa6f61e1d"
+    },
+    {
+      "argv": [
+        "bd",
+        "--actor",
+        "b20-recorder",
+        "close",
+        "b20-1",
+        "--reason",
+        "complete",
+        "--json"
+      ],
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdoutSha256": "9d5f998d6165110ee8c6445b3acc0537d144b0f3b948ff2c267728ab8aeb5057"
+    },
+    {
+      "argv": [
+        "bd",
+        "--actor",
+        "b20-recorder",
+        "events",
+        "export",
+        "--json"
+      ],
+      "stderrSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdoutSha256": "f95cb2432859ea55c6d740f382e4aef6d7996a13c1025e0480bdbdd8fbab5e9d"
+    }
+  ],
+  "observations": {
+    "afterNoOpRows": 2,
+    "beforeNoOpRows": 2,
+    "finalRows": 3,
+    "projectionSha256": "7edcaae886dcc6941527f0d7cde85e932f58360f3a259b9ce43833f26783021f",
+    "rawFinalJournalSha256": "f95cb2432859ea55c6d740f382e4aef6d7996a13c1025e0480bdbdd8fbab5e9d"
+  },
+  "projection": [
+    {
+      "actor": "b20-recorder",
+      "issueId": "b20-1",
+      "op": "create",
+      "seq": 1,
+      "status": "open",
+      "title": "journal anchor"
+    },
+    {
+      "actor": "b20-recorder",
+      "issueId": "b20-1",
+      "op": "update",
+      "seq": 2,
+      "status": "open",
+      "title": "journal edited"
+    },
+    {
+      "actor": "b20-recorder",
+      "closeReason": "complete",
+      "issueId": "b20-1",
+      "op": "close",
+      "seq": 3,
+      "status": "closed",
+      "title": "journal edited"
+    }
+  ],
+  "recordedAtUtc": "2026-10-30T08:29:21.347928+00:00",
+  "recording": "fresh-b",
+  "schema": "plug.cardb20.beads-reference.v1",
+  "sourceCommit": "9d6fff760b7a314b476539198504d77ce0959656"
+}

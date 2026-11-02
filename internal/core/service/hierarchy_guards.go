@@ -28,7 +28,19 @@ func hierarchyGraphNeeded(proposal port.ProposedChange) bool {
 
 func (o *Ontology) noOpenChildren(parent pipeline.Document, graph map[string]storedBead) bool {
 	for _, child := range graph {
-		if child.doc.Parent == nil || child.doc.Parent.ID != parent.ID {
+		linked := false
+		if child.doc.Parent != nil && child.doc.Parent.ID == parent.ID {
+			linked = true
+		}
+		if !linked {
+			for _, edge := range child.doc.Links {
+				if edge.Kind == "parent-child" && edge.To.ID == parent.ID {
+					linked = true
+					break
+				}
+			}
+		}
+		if !linked {
 			continue
 		}
 		category, known := o.effective(child.doc.Project).Category(state(child.doc).Status)
