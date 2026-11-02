@@ -907,6 +907,8 @@ spec/rpc_test.go
 spec/s1-b13-b16/BUILD.bazel
 spec/s1-b13-b16/README.md
 spec/s1-b13-b16/record_reference.py
+spec/s1-b13-b16/reference_capture.py
+spec/s1-b13-b16/reference_capture_main.go
 spec/s1-b13-b16/slice_test.go
 spikes/authz/evidence-v6/current-status.md
 spikes/authz/evidence-v6/postgres-result.json
