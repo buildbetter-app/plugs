@@ -936,11 +936,14 @@ spec/s1-b01-b04/run-1.json
 spec/s1-b01-b04/run-2.json
 spec/s1-b05-b08/BUILD.bazel
 spec/s1-b05-b08/README.md
+spec/s1-b05-b08/blocking_hierarchy_test.go
+spec/s1-b05-b08/engines_test.go
 spec/s1-b05-b08/fixture_test.go
 spec/s1-b05-b08/heartbeat_repair_test.go
 spec/s1-b05-b08/project_reference.py
 spec/s1-b05-b08/projection_test.go
 spec/s1-b05-b08/provenance_test.go
+spec/s1-b05-b08/reclaim_race_test.go
 spec/s1-b05-b08/record_reference.py
 spec/s1-b05-b08/reference/provenance.json
 spec/s1-b05-b08/runtime_test.go

@@ -33,6 +33,7 @@ type fixture struct {
 	engine  string
 	dsn     string
 	store   driver.Store
+	storage driver.Driver
 	lease   driver.ActiveLease
 	writer  *pipeline.Writer
 	service *service.Service
@@ -48,9 +49,15 @@ func newFixture(t *testing.T, engine string) *fixture {
 	if engine == "memory" {
 		f.store = memory.New()
 	} else {
+		f.storage = sqlite.Driver{}
 		f.dsn = filepath.Join(t.TempDir(), "s1-b05-b08.db")
+		if engine == "postgres" {
+			f.storage, f.dsn = postgresFixture(t)
+		} else if engine != "sqlite" {
+			t.Fatalf("unknown fixture engine %q", engine)
+		}
 		var err error
-		f.store, err = (sqlite.Driver{}).Open(f.ctx, driver.Config{DSN: f.dsn})
+		f.store, err = f.storage.Open(f.ctx, driver.Config{DSN: f.dsn})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -111,11 +118,11 @@ func (f *fixture) close() {
 
 func (f *fixture) reopen(t *testing.T) {
 	t.Helper()
-	if f.engine != "sqlite" {
+	if f.storage == nil {
 		return
 	}
 	f.close()
-	store, err := (sqlite.Driver{}).Open(f.ctx, driver.Config{DSN: f.dsn})
+	store, err := f.storage.Open(f.ctx, driver.Config{DSN: f.dsn})
 	if err != nil {
 		t.Fatal(err)
 	}
