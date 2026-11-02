@@ -272,7 +272,12 @@ def fetch_source(source: Path) -> dict:
     try:
         git(source, fetch_arguments, fetch_environment)
     except ValueError:
-        git(source, fetch_arguments, git_environment())
+        # GitHub's public endpoint can reject a shallow request for a
+        # historical commit even though the exact object is publicly
+        # reachable. Keep the credential-free retry bound to the same URL and
+        # SHA, but allow Git to walk the public history to retrieve it.
+        public_fetch_arguments = [arg for arg in fetch_arguments if arg != "--depth=1"]
+        git(source, public_fetch_arguments, git_environment())
     finally:
         del fetch_environment
         del token

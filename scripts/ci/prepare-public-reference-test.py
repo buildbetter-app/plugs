@@ -348,7 +348,9 @@ class ReferenceTest(unittest.TestCase):
         self.assertIn("--depth=1", args)
         self.assertIn("--no-tags", args)
         self.assertEqual(args[-2:], [helper.SOURCE_URL, helper.SOURCE_SHA])
-        self.assertEqual(fallback_args, args)
+        self.assertNotIn("--depth=1", fallback_args)
+        self.assertEqual(fallback_args, [arg for arg in args if arg != "--depth=1"])
+        self.assertEqual(fallback_args[-2:], [helper.SOURCE_URL, helper.SOURCE_SHA])
         self.assertIn("fixture-token-not-a-secret", env["GIT_CONFIG_VALUE_0"])
         self.assertEqual(fallback_env, helper.git_environment())
         for arguments, environment in calls:
