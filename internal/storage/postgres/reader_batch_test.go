@@ -20,6 +20,33 @@ func TestBatchedReaderPreservesHistoryMissesAndStagedOverlays(t *testing.T) {
 	derived := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedSortKey, Key: "batch"}}
 	keys := []driver.LockKey{testLock(a), testLock(b), testLock(missing), fact, driver.GraphBlockingSentinelLock, derived}
 	sort.Slice(keys, func(i, j int) bool { left, _ := keyID(keys[i]); right, _ := keyID(keys[j]); return left < right })
+	assertQuery := func(reader driver.Reader, wantIDs []string, wantBody string) {
+		t.Helper()
+		var cursor *driver.Cursor
+		var ids []string
+		for pageNumber := 0; ; pageNumber++ {
+			if pageNumber > 3 {
+				t.Fatal("query paging did not terminate")
+			}
+			page, err := reader.Query(ctx, driver.Query{Filter: map[string]any{"kind": "test"}, Limit: 1, Cursor: cursor})
+			if err != nil || page.AsOf.String() != reader.Snapshot().At.String() {
+				t.Fatalf("query lost its snapshot: page=%+v err=%v", page, err)
+			}
+			for _, row := range page.Items {
+				ids = append(ids, row.Ref.ID)
+				if string(row.Body) != wantBody {
+					t.Fatalf("query reconstructed wrong content: %+v", row)
+				}
+			}
+			cursor = page.NextCursor
+			if cursor == nil {
+				break
+			}
+		}
+		if !reflect.DeepEqual(ids, wantIDs) {
+			t.Fatalf("query membership/order=%v want=%v", ids, wantIDs)
+		}
+	}
 	initial := driver.DerivedRow{Key: "batch", Value: []byte("old")}
 	tx, header := beginTest(t, s, lease, keys...)
 	for _, ref := range []model.Ref{a, b} {
@@ -27,6 +54,7 @@ func TestBatchedReaderPreservesHistoryMissesAndStagedOverlays(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	assertQuery(tx, []string{a.ID, b.ID}, `{"value":1}`)
 	// A revision-zero backing snapshot is empty, but the transaction must
 	// retain its own staged records and observations before its first commit.
 	if rows, err := tx.Get(ctx, []model.Ref{a, missing, b}); err != nil || len(rows) != 2 || rows[0].Ref.ID != a.ID || rows[1].Ref.ID != b.ID {
@@ -78,6 +106,7 @@ func TestBatchedReaderPreservesHistoryMissesAndStagedOverlays(t *testing.T) {
 	}
 	zero := model.Natural64(0)
 	empty := testRead(t, s, &zero)
+	assertQuery(empty, nil, "")
 	if rows, err := empty.Get(ctx, []model.Ref{a, b, missing}); err != nil || len(rows) != 0 {
 		t.Fatalf("revision zero disclosed a later record: %+v %v", rows, err)
 	}
@@ -107,6 +136,11 @@ func TestBatchedReaderPreservesHistoryMissesAndStagedOverlays(t *testing.T) {
 		if len(rows) != wantCount || string(rows[len(rows)-1].Body) != wantBody || rows[len(rows)-1].Ref.ID != a.ID {
 			t.Fatalf("history=%t rows=%+v", historical, rows)
 		}
+		wantIDs := []string{a.ID}
+		if historical {
+			wantIDs = append(wantIDs, b.ID)
+		}
+		assertQuery(r, wantIDs, wantBody)
 		rows[len(rows)-1].Body[0] = '!'
 		if rows[len(rows)-2].Body[0] != '{' {
 			t.Fatal("duplicate result bodies alias")
@@ -150,6 +184,7 @@ func TestBatchedReaderPreservesHistoryMissesAndStagedOverlays(t *testing.T) {
 	if err := tx.PutDerived(ctx, driver.DerivedSortKey, nil, []driver.DerivedRow{staged}); err != nil {
 		t.Fatal(err)
 	}
+	assertQuery(tx, []string{b.ID, missing.ID}, `{"staged":true}`)
 	rows, err := tx.Get(ctx, []model.Ref{b, a, missing, b})
 	if err != nil || len(rows) != 3 || rows[0].Ref.ID != b.ID || rows[1].Ref.ID != missing.ID || rows[2].Ref.ID != b.ID {
 		t.Fatalf("staged Get=%+v err=%v", rows, err)
@@ -173,6 +208,9 @@ func TestBatchedReaderPreservesHistoryMissesAndStagedOverlays(t *testing.T) {
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
+	if _, err := tx.Query(canceled, driver.Query{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Query: %v", err)
+	}
 	if _, err := tx.Get(canceled, []model.Ref{a, b}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled Get: %v", err)
 	}
