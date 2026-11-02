@@ -26,7 +26,7 @@ func seedChildAllocatorFixture(t *testing.T, f *fixture, profile driver.OfflineA
 	seedChildFixture(t, f, &profile, observed)
 }
 
-func seedChildFixture(t *testing.T, f *fixture, profile *driver.OfflineAllocator, observed bool) {
+func seedChildFixture(t *testing.T, f *fixture, profile *driver.OfflineAllocator, observed bool, ids ...string) {
 	t.Helper()
 	var locks driver.LockSet
 	if profile != nil {
@@ -40,7 +40,9 @@ func seedChildFixture(t *testing.T, f *fixture, profile *driver.OfflineAllocator
 	var rows []driver.DerivedRow
 	var sentinels []driver.Sentinel
 	if observed {
-		ids := []string{"demo-root", "demo-root.8", "demo-root.8.2"}
+		if len(ids) == 0 {
+			ids = []string{"demo-root", "demo-root.8", "demo-root.8.2"}
+		}
 		for i, id := range ids {
 			doc := pipeline.Document{ID: id, Type: "issue", Project: "demo", Fields: map[string]any{"title": id}}
 			if i > 0 {
@@ -712,6 +714,42 @@ func TestParentCounterReconcilesRestoredDirectChildrenAcrossStores(t *testing.T)
 			}
 			verifyHierarchy(t, f)
 			t.Logf("%s: restored .8/.8.2 without profile reconciled .9/.10; all children deleted; continuation .11 with SQL reopen", engine)
+		})
+	}
+}
+
+func TestChildAllocatorObservedExhaustionRefusesAtomicallyAcrossStores(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			for _, mode := range []string{"no-profile", driver.AllocatorSequential, driver.AllocatorHash} {
+				t.Run(mode, func(t *testing.T) {
+					for _, suffix := range []string{"18446744073709551615", "18446744073709551616"} {
+						t.Run(suffix, func(t *testing.T) {
+							f := newFixture(t, engine)
+							var profile *driver.OfflineAllocator
+							switch mode {
+							case driver.AllocatorSequential:
+								profile = &driver.OfflineAllocator{Prefix: "demo", Mode: driver.AllocatorSequential}
+							case driver.AllocatorHash:
+								value := driver.NewHashAllocator("demo", 3, 8, 0.25)
+								profile = &value
+							}
+							seedChildFixture(t, f, profile, true, "demo-root", "demo-root."+suffix)
+							before, inventory := childAllocatorDurableState(t, f), childInventory(t, f)
+							parent := model.Ref{ID: "demo-root"}
+							meta := f.meta("observed-exhaustion")
+							out, err := childAllocatorApply(f, model.ChangeSet{Ops: []model.Op{hierarchyCreate("exhausted", &parent, "demo")}}, meta)
+							if !errors.Is(err, driver.ErrUnsupported) {
+								t.Fatalf("decimal direct-child exhaustion did not refuse: suffix=%s outcome=%+v err=%v", suffix, out, err)
+							}
+							requireSameState(t, before, childAllocatorDurableState(t, f))
+							if !reflect.DeepEqual(inventory, childInventory(t, f)) || f.receipt(t, meta) != nil {
+								t.Fatal("exhausted preview published continuation or receipt")
+							}
+						})
+					}
+				})
+			}
 		})
 	}
 }
