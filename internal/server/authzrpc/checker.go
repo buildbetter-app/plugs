@@ -92,8 +92,15 @@ func (c *Checker) decision(ctx context.Context, snapshot Snapshot, principal mod
 // cannot be smuggled through a permitted update. Replay rechecks the current
 // chain only and never trusts a receipt as a grant.
 func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, proposal port.ProposedChange, reader port.SnapshotReader) error {
-	if c != nil && c.hierarchy && hierarchyMethod(proposal.Meta.Method) {
-		return c.AuthorizeHierarchy(ctx, stage, proposal, reader)
+	if c != nil && c.hierarchy {
+		switch hierarchyRouteFor(proposal) {
+		case hierarchyDirect:
+			return c.AuthorizeHierarchy(ctx, stage, proposal, reader)
+		case hierarchyLifecycle:
+			return c.AuthorizeHierarchyLifecycle(ctx, stage, proposal, reader)
+		case hierarchyUnsupported:
+			return forbidden("unsupported hierarchy operation composition")
+		}
 	}
 	if reader == nil {
 		return &model.Error{Message: "authorization snapshot unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
