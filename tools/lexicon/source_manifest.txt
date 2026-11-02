@@ -783,6 +783,7 @@ internal/storage/memory/allocator.go
 internal/storage/memory/audit_test.go
 internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_test.go
+internal/storage/memory/clock_test.go
 internal/storage/memory/derived_reader.go
 internal/storage/memory/lease.go
 internal/storage/memory/lifetimes_test.go
@@ -802,6 +803,7 @@ internal/storage/postgres/README.md
 internal/storage/postgres/allocator.go
 internal/storage/postgres/allocator_test.go
 internal/storage/postgres/boundaries_test.go
+internal/storage/postgres/clock_test.go
 internal/storage/postgres/commit.go
 internal/storage/postgres/conformance_test.go
 internal/storage/postgres/derived_reader.go
@@ -826,6 +828,8 @@ internal/storage/sqlite/BUILD.bazel
 internal/storage/sqlite/README.md
 internal/storage/sqlite/allocator.go
 internal/storage/sqlite/boundaries_test.go
+internal/storage/sqlite/clock.go
+internal/storage/sqlite/clock_test.go
 internal/storage/sqlite/derived_reader.go
 internal/storage/sqlite/engine_test.go
 internal/storage/sqlite/lease.go
@@ -844,6 +848,9 @@ internal/storage/sqlite/staged_reads_test.go
 internal/storage/sqlite/store.go
 internal/storage/sqlite/transaction.go
 internal/storage/sqlite/validation.go
+internal/testclock/BUILD.bazel
+internal/testclock/clock.go
+internal/testclock/postgres.go
 pluginapi/BUILD.bazel
 pluginapi/doc.go
 pluginapi/manifest.go
@@ -922,6 +929,7 @@ spec/recorded_test.go
 spec/rpc_test.go
 spec/s1-b01-b04/BUILD.bazel
 spec/s1-b01-b04/README.md
+spec/s1-b01-b04/clock_boundary_test.go
 spec/s1-b01-b04/fixture_test.go
 spec/s1-b01-b04/manifest.json
 spec/s1-b01-b04/record_reference.py
@@ -933,6 +941,7 @@ spec/s1-b01-b04/run-2.json
 spec/s1-b21-b24/BUILD.bazel
 spec/s1-b21-b24/README.md
 spec/s1-b21-b24/acceptance_test.go
+spec/s1-b21-b24/clock_boundary_test.go
 spec/s1-b21-b24/fixture_test.go
 spec/s1-b21-b24/record_reference.py
 spec/s1-b21-b24/reference-a.json
@@ -956,6 +965,7 @@ spec/s1-b25-b28/testdata/run1/target-export.jsonl
 spec/s1-b25-b28/testdata/run2/commands.json
 spec/s1-b25-b28/testdata/run2/source-export.jsonl
 spec/s1-b25-b28/testdata/run2/target-export.jsonl
+spec/sqlclock-coverage.md
 spikes/authz/evidence-v6/current-status.md
 spikes/authz/evidence-v6/postgres-result.json
 spikes/authz/evidence-v6/provenance-manifest.json
