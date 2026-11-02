@@ -99,7 +99,11 @@ func TestB12PublicTierBoundariesHistoryReplayReversalAndReopen(t *testing.T) {
 			}
 			f.assertSameHead(stable)
 			assertReplayed(t, f)
-			f.call("admin.compact", "tier-one", map[string]any{"beforeRevision": first["revision"], "dryRun": false}, "idempotency_key_reused")
+			changedBoundary := revisionAfter(t, first["revision"])
+			if reflect.DeepEqual(changedBoundary, params["beforeRevision"]) {
+				t.Fatal("changed-boundary fixture did not change the request")
+			}
+			f.call("admin.compact", "tier-one", map[string]any{"beforeRevision": changedBoundary, "dryRun": false}, "idempotency_key_reused")
 			f.assertSameHead(stable)
 			f.clock = closedAt.Add(90*24*time.Hour - time.Nanosecond)
 			f.call("admin.compact", "tier-two-recent", map[string]any{"dryRun": false}, "compaction_unavailable")
