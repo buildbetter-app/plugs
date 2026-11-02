@@ -922,6 +922,8 @@ spec/recorded_test.go
 spec/rpc_test.go
 spec/s1-b13-b16/BUILD.bazel
 spec/s1-b13-b16/README.md
+spec/s1-b13-b16/capture_regressions_test.go
+spec/s1-b13-b16/capture_regressions_test.py
 spec/s1-b13-b16/record_reference.py
 spec/s1-b13-b16/reference_capture.py
 spec/s1-b13-b16/reference_capture_main.go

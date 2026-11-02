@@ -23,6 +23,16 @@ go_test(
     ],
 )
 
+go_test(
+    name = "capture_regressions",
+    srcs = ["capture_regressions_test.go"],
+    embedsrcs = [
+        "capture_regressions_test.py",
+        "reference_capture.py",
+    ],
+    args = ["-test.v"],
+)
+
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
