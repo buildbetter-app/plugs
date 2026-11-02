@@ -2,6 +2,7 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "local_wasi_test",
+    tags = ["exclusive"],
     srcs = ["local_fixture_test.go", "local_wasi_test.go", "postgres_failover_test.go", "public_contention_test.go"],
     embedsrcs = ["//internal/integration/e5acceptance/fixture-local-wasi:sources"],
     deps = [
