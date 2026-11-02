@@ -372,3 +372,72 @@ func TestHierarchyLifecycleEventContextRetainsBoundedTrackedReads(t *testing.T) 
 		}
 	}
 }
+
+func TestHierarchyLifecycleSnapshotReadsStayDetachedAndFresh(t *testing.T) {
+	f := newHFixture(t, true)
+	source := f.snapshot(t)
+	ctx := context.Background()
+	memo := &hierarchyLifecycleSnapshot{SnapshotReader: source, reads: map[string][]byte{}}
+	child := hRef("child")
+	first, err := memo.Get(ctx, []model.Ref{child})
+	if err != nil || len(first) != 1 {
+		t.Fatalf("initial read=%+v err=%v", first, err)
+	}
+	original := bytes.Clone(first[0].Body)
+	first[0].Body[0] = '!'
+	second, err := memo.Get(ctx, []model.Ref{child})
+	if err != nil || len(second) != 1 || !bytes.Equal(second[0].Body, original) || source.gets[child.ID] != 1 {
+		t.Fatalf("retained read mutated or repeated: rows=%+v reads=%d err=%v", second, source.gets[child.ID], err)
+	}
+	missing := hRef("absent")
+	for i := 0; i < 2; i++ {
+		rows, err := memo.Get(ctx, []model.Ref{missing})
+		if err != nil || len(rows) != 0 {
+			t.Fatalf("miss=%+v err=%v", rows, err)
+		}
+	}
+	if source.gets[missing.ID] != 1 {
+		t.Fatal("missing source did not retain its first tracked observation")
+	}
+	key := driver.LockKey{Kind: driver.LockRecord, Ref: &child}
+	state, err := memo.Observe(ctx, []driver.LockKey{key})
+	if err != nil || len(state) != 1 || !state[0].Present {
+		t.Fatalf("observation=%+v err=%v", state, err)
+	}
+	state[0].Key.Ref.ID = "corrupted"
+	if state[0].Record != nil {
+		state[0].Record.Body[0] = '!'
+	}
+	state, err = memo.Observe(ctx, []driver.LockKey{key})
+	if err != nil || len(state) != 1 || state[0].Key.Ref.ID != child.ID || state[0].Record != nil && !bytes.Equal(state[0].Record.Body, original) {
+		t.Fatalf("observation was not detached: %+v err=%v", state, err)
+	}
+	source.failGet = "new"
+	if _, err := memo.Get(ctx, []model.Ref{hRef("new")}); err == nil {
+		t.Fatal("read failure allowed")
+	}
+	source.failGet = ""
+	if rows, err := memo.Get(ctx, []model.Ref{hRef("new")}); err != nil || len(rows) != 1 {
+		t.Fatalf("failed read was cached: %+v err=%v", rows, err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := memo.Get(canceled, []model.Ref{child}); err == nil {
+		t.Fatal("cached read ignored cancellation")
+	}
+	fresh := &hierarchyLifecycleSnapshot{SnapshotReader: source, reads: map[string][]byte{}}
+	if _, err := fresh.Get(ctx, []model.Ref{child}); err != nil || source.gets[child.ID] != 2 {
+		t.Fatalf("new pass reused a prior observation: reads=%d err=%v", source.gets[child.ID], err)
+	}
+	bounded := &hierarchyLifecycleBoundedReader{SnapshotReader: f.snapshot(t)}
+	limited := &hierarchyLifecycleSnapshot{SnapshotReader: bounded, reads: map[string][]byte{}}
+	for i := 0; i < 33; i++ {
+		_, err := limited.Get(ctx, []model.Ref{hRef(fmt.Sprintf("distinct-miss-%d", i))})
+		if (err != nil) != (i == 32) {
+			t.Fatalf("distinct read %d changed the original 32-point limit: %v", i+1, err)
+		}
+	}
+	if bounded.points != 33 || len(bounded.unique) != 33 || !bounded.exceeded {
+		t.Fatal("distinct dependencies bypassed the wrapped budget")
+	}
+}

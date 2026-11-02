@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 func hierarchyMethod(method string) bool {
@@ -622,6 +624,11 @@ func (c *Checker) AuthorizeHierarchyLifecycle(ctx context.Context, stage port.Au
 	if hierarchyRouteFor(proposal) != hierarchyLifecycle || len(proposal.Changes) > 1000 {
 		return forbidden("unsupported hierarchy lifecycle composition")
 	}
+	// Both adapters use one immutable Writer snapshot. Re-observing identical
+	// requests must not exhaust the existing event-context child read budget.
+	// Every first read, including a miss, still joins the underlying guard.
+	// A fresh memo is allocated for each Before/After/Replay invocation.
+	reader = &hierarchyLifecycleSnapshot{SnapshotReader: reader, reads: map[string][]byte{}}
 	aliases := map[string]model.Ref{}
 	creates := map[string]port.Change{}
 	moves := map[string]bool{}
@@ -821,4 +828,55 @@ func hierarchyCloseCreateImage(image *model.Record, reasons []string, principal 
 	}
 	delete(image.Body, "comments")
 	return nil
+}
+
+// Only identical successful point-read requests are memoized, and only within
+// this one authorization invocation. Query is deliberately forwarded unchanged.
+// JSON detaches every returned byte slice and pointer; plugins cannot change a
+// retained observation. Errors and decisions are never cached. The wrapped
+// reader still enforces its original point/query limits and records all misses,
+// source images and dependency generations used by the eventual commit guard.
+type hierarchyLifecycleSnapshot struct {
+	port.SnapshotReader
+	mu    sync.Mutex
+	reads map[string][]byte
+}
+
+func hierarchyLifecycleRead[T any](ctx context.Context, r *hierarchyLifecycleSnapshot, kind string, request any, read func() (T, error)) (T, error) {
+	var value T
+	if err := ctx.Err(); err != nil {
+		return value, err
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return value, err
+	}
+	key := kind + string(encoded)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return value, err
+	}
+	raw, ok := r.reads[key]
+	if !ok {
+		observed, err := read()
+		if err != nil {
+			return value, err
+		}
+		raw, err = json.Marshal(observed)
+		if err != nil {
+			return value, err
+		}
+		r.reads[key] = raw
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return value, err
+	}
+	return value, nil
+}
+func (r *hierarchyLifecycleSnapshot) Get(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
+	return hierarchyLifecycleRead(ctx, r, "get", refs, func() ([]driver.Record, error) { return r.SnapshotReader.Get(ctx, refs) })
+}
+func (r *hierarchyLifecycleSnapshot) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
+	return hierarchyLifecycleRead(ctx, r, "observe", keys, func() ([]driver.LockState, error) { return r.SnapshotReader.Observe(ctx, keys) })
 }
