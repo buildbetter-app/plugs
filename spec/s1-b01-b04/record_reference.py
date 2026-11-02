@@ -196,7 +196,9 @@ class Recorder:
                 "ordering": "priority,created,ID",
                 "difference": {
                     "referenceObserved": "child-of-deferred-parent-is-ready",
-                    "plugRule": "child-of-deferred-parent-is-excluded",
+                    "plugObserved": "child-of-deferred-parent-is-ready",
+                    "canonicalRule": "child-of-deferred-parent-is-excluded",
+                    "status": "hierarchy-gap-unqualified",
                     "decisionId": "P74",
                 },
             },
