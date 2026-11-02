@@ -30,6 +30,13 @@ refusals preserve earlier batch images, history, graph sentinel, and receipts.
 Association links remain legal. These tests do not certify the missing public
 cycle-report producer or B14's waits-for metadata/fanout behavior.
 
+B07 opaque-kind regressions exercise public link and unlink with exact custom
+bytes, including whitespace-only values and the 32-byte UTF-8 boundary, across
+all three engines. Replay, duplicate edges, retype refusal, reopen, and history
+are checked alongside empty/over-limit batch rollback. Custom loops remain inert
+for ready membership, cycle checks, and close guards. This bounded admission
+repair does not qualify the full B07 card or controlled-clock reference twins.
+
 The historical B07 reference bytes under `spec/recorded/extension/` remain
 unchanged and are not relabeled as full-card evidence. The reference twin
 recordings in this package are deliberately typed as unavailable until the

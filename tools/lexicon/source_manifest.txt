@@ -975,6 +975,7 @@ spec/s1-b05-b08/checkpoint_guards_test.go
 spec/s1-b05-b08/engines_test.go
 spec/s1-b05-b08/fixture_test.go
 spec/s1-b05-b08/heartbeat_repair_test.go
+spec/s1-b05-b08/opaque_kinds_test.go
 spec/s1-b05-b08/project_reference.py
 spec/s1-b05-b08/projection_test.go
 spec/s1-b05-b08/provenance_test.go
