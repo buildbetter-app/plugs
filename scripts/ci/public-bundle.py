@@ -342,7 +342,8 @@ def verify_provenance(manifest: dict[str, object], expected_path: Path) -> None:
     actual = manifest.get("source")
     if not isinstance(sources, dict) or not isinstance(actual, dict):
         raise ValueError("expected provenance must name canonical sources")
-    if set(sources) != set(actual):
+    expected_sources = {"beads"} if manifest.get("schema") == NATIVE_SCHEMA else {"beads", "plug"}
+    if set(sources) != expected_sources or set(actual) != expected_sources:
         raise ValueError("expected provenance source set does not match the profile")
     for name, record in sources.items():
         if not isinstance(record, dict) or set(record) != {"commit", "tree"}:

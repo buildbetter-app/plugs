@@ -124,8 +124,9 @@ def main() -> None:
             f"100644 blob {index:040x}\tpath/{index}\n"
             for index in range(helper.NATIVE_BEADS_MANIFEST_ENTRIES)
         )
-        (root / "beads.manifest").write_text(native_fixture, encoding="utf-8")
-        helper.NATIVE_BEADS_MANIFEST_SHA256 = helper.digest(root / "beads.manifest")
+        native_manifest_path = root / "native-beads.manifest"
+        native_manifest_path.write_text(native_fixture, encoding="utf-8")
+        helper.NATIVE_BEADS_MANIFEST_SHA256 = helper.digest(native_manifest_path)
         native_output = root / "native"
         native_metadata = root / "native-metadata.json"
         native_metadata.write_text(
@@ -165,7 +166,7 @@ def main() -> None:
             "metadata": str(native_metadata),
             "beads_commit": helper.NATIVE_BEADS_COMMIT,
             "beads_tree": helper.NATIVE_BEADS_TREE,
-            "beads_manifest": str(root / "beads.manifest"),
+            "beads_manifest": str(native_manifest_path),
         })()
         helper.create(native_args)
         helper.verify(type("Args", (), {"directory": native_output})())
@@ -177,7 +178,7 @@ def main() -> None:
             "beads_exporter": {"label": "//cmd/bd:bd", "binary": "bin/bd-export"},
         }
         assert native_manifest["build"]["run_id"] == "12345"
-        assert (native_output / "source/beads.manifest").read_bytes() == (root / "beads.manifest").read_bytes()
+        assert (native_output / "source/beads.manifest").read_bytes() == native_manifest_path.read_bytes()
         native_expected = {
             field: copy.deepcopy(native_manifest[field])
             for field in ("schema", "source", "targets", "workflow", "source_refs")
@@ -202,7 +203,7 @@ def main() -> None:
             "metadata": str(native_metadata),
             "beads_commit": helper.NATIVE_BEADS_COMMIT,
             "beads_tree": helper.NATIVE_BEADS_TREE,
-            "beads_manifest": str(root / "beads.manifest"),
+            "beads_manifest": str(native_manifest_path),
         })()
         expect_refusal(lambda: helper.create(native_with_plug_arg), "native profile accepted a dummy Plug target")
         for field, value in (
@@ -225,7 +226,7 @@ def main() -> None:
         native_source_manifest = native_output / "source/beads.manifest"
         native_source_manifest.write_bytes(b"wrong native source\n")
         expect_refusal(lambda: helper.verify(native_pinned), "native source manifest mutation was accepted")
-        native_source_manifest.write_bytes((root / "beads.manifest").read_bytes())
+        native_source_manifest.write_bytes(native_manifest_path.read_bytes())
         helper.verify(native_pinned)
         helper.NATIVE_BEADS_MANIFEST_SHA256 = "6c2e549b54b472790d57a27370821d69159d4d6dc817e5bf38dbc56c856c8420"
 
