@@ -18,6 +18,7 @@ go_test(
     deps = [
         "//internal/core/model",
         "//internal/core/pipeline",
+        "//internal/core/port",
         "//internal/core/service",
         "//internal/core/viewops",
         "//internal/server/rpc",

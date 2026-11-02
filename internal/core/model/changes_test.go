@@ -124,7 +124,7 @@ func TestChangeSetLimit(t *testing.T) {
 }
 
 func TestEachOperationRequiredMembersAreStrict(t *testing.T) {
-	components := []string{"CreateOp", "PatchOp", "ReparentOp", "LinkOp", "LinkOp", "CommentOp", "AttachOp", "DeleteOp", "SetMetaOp"}
+	components := []string{"CreateOp", "PatchOp", "ReparentOp", "LinkOp", "LinkOp", "CommentOp", "AttachOp", "DeleteOp", "SetMetaOp", "CloseOp"}
 	schemas := componentSchemas(t)
 	for i, raw := range operationCorpus {
 		t.Run(string(components[i])+string(rune('0'+i)), func(t *testing.T) {

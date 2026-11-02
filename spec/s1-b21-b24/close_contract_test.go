@@ -2,11 +2,15 @@ package s1b21b24
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 )
 
 func closeOp(target model.Ref, reason string, expect ...model.Precondition) map[string]any {
@@ -202,6 +206,145 @@ func TestS1B21RepeatedCloseNoopAndLeaseSettlement(t *testing.T) {
 				t.Fatalf("no-op close receipt changed on reopen: %+v", replay)
 			}
 			sameState(t, before, f.state(t))
+		})
+	}
+}
+
+type closeAuthorizer func(context.Context, port.AuthorizationStage, port.ProposedChange, port.SnapshotReader) error
+
+func (f closeAuthorizer) Authorize(ctx context.Context, stage port.AuthorizationStage, p port.ProposedChange, r port.SnapshotReader) error {
+	return f(ctx, stage, p, r)
+}
+
+type closeMutator func(context.Context, port.ProposedChange, port.SnapshotReader) ([]port.Patch, error)
+
+func (f closeMutator) Mutate(ctx context.Context, p port.ProposedChange, r port.SnapshotReader) ([]port.Patch, error) {
+	return f(ctx, p, r)
+}
+
+func TestS1B21CloseRevalidatesFinalGraphAndMutatedImage(t *testing.T) {
+	for _, engine := range engines() {
+		t.Run(engine+"/later-blocker", func(t *testing.T) {
+			f := newFixture(t, engine)
+			target, _ := f.create(t, "final-target", "target")
+			blocker, _ := f.create(t, "final-blocker", "blocker")
+			closeRefusal(t, f, "final-graph", batchParams(closeOp(target, "must rollback"), map[string]any{"kind": "link", "from": target, "to": blocker, "linkKind": "blocks"}), "ontology_guard_failed")
+		})
+		t.Run(engine+"/mutator-template", func(t *testing.T) {
+			f := newFixture(t, engine, pipeline.WithMutators(pipeline.MutatorBinding{ID: "template-owner", Owns: []string{"fields.template"}, Mutator: closeMutator(func(_ context.Context, p port.ProposedChange, _ port.SnapshotReader) ([]port.Patch, error) {
+				if p.Meta.Method != "tx.apply" {
+					return nil, nil
+				}
+				return []port.Patch{{Resource: p.Changes[0].Resource, Paths: map[string]json.RawMessage{"fields.template": json.RawMessage(`true`)}}}, nil
+			})}))
+			target, _ := f.create(t, "mutated-target", "target")
+			closeRefusal(t, f, "mutated-image", batchParams(closeOp(target, "must rollback")), "ontology_guard_failed")
+		})
+	}
+}
+
+func TestS1B21CloseExpectationsAuthorizeBeforeDisclosureAndCurrentReplay(t *testing.T) {
+	for _, engine := range engines() {
+		t.Run(engine, func(t *testing.T) {
+			var hidden atomic.Bool
+			var mutators, beforeCalls, replayCalls atomic.Int32
+			var guard model.Ref
+			f := newFixture(t, engine,
+				pipeline.WithAuthorizer(closeAuthorizer(func(ctx context.Context, stage port.AuthorizationStage, p port.ProposedChange, reader port.SnapshotReader) error {
+					if p.Meta.Method != "tx.apply" {
+						return nil
+					}
+					if stage == port.AuthorizeBefore {
+						beforeCalls.Add(1)
+					}
+					if stage == port.AuthorizeReplay {
+						replayCalls.Add(1)
+					}
+					for _, expect := range p.Expect {
+						if !expect.Ref.IsID() {
+							return fmt.Errorf("noncanonical close expectation: %+v", expect.Ref)
+						}
+						if expect.Ref.ID != guard.ID {
+							continue
+						}
+						rows, err := reader.Get(ctx, []model.Ref{guard})
+						if err != nil {
+							return err
+						}
+						if len(rows) != 1 {
+							return fmt.Errorf("expectation-only guard disappeared")
+						}
+						if hidden.Load() {
+							return &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+						}
+					}
+					return nil
+				})),
+				pipeline.WithMutators(pipeline.MutatorBinding{ID: "close-counter", Mutator: closeMutator(func(_ context.Context, p port.ProposedChange, _ port.SnapshotReader) ([]port.Patch, error) {
+					if p.Meta.Method == "tx.apply" {
+						mutators.Add(1)
+					}
+					return nil, nil
+				})}),
+			)
+			target, _ := f.create(t, "visible-target", "target")
+			guard, _ = f.create(t, "hidden-guard", "guard")
+			stale := batchParams(closeOp(target, "private", model.PreconditionByRevision(guard, model.Natural64(0))))
+			hidden.Store(true)
+			state := f.state(t)
+			denied := f.call("tx.apply", "close-private", stale)
+			if denied.Error == nil || denied.Error.Data.Code != "forbidden" || len(denied.Error.Data.Details) != 0 || len(denied.Result) != 0 {
+				t.Fatalf("private close disclosure: %+v", denied)
+			}
+			sameState(t, state, f.state(t))
+			if f.casReceipt(t, "tx.apply", "close-private") != nil || mutators.Load() != 0 || beforeCalls.Load() != 1 {
+				t.Fatal("denied guard crossed pre-image authorization")
+			}
+			hidden.Store(false)
+			allowed := f.call("tx.apply", "close-private", stale)
+			if allowed.Error == nil || allowed.Error.Data.Code != "precondition_failed" || allowed.Error.Data.Details["reason"] != "revision" || allowed.Error.Data.Details["currentRevision"] != "2" {
+				t.Fatalf("allowed guard lost typed current revision: %+v", allowed)
+			}
+			sameState(t, state, f.state(t))
+			if f.casReceipt(t, "tx.apply", "close-private") != nil || mutators.Load() != 0 {
+				t.Fatal("stale guard invoked mutator or stored receipt")
+			}
+			valid := batchParams(closeOp(target, "authorized", model.PreconditionByRevision(guard, model.Natural64(2))))
+			first := f.call("tx.apply", "close-private", valid)
+			commit(t, first)
+			if mutators.Load() != 1 {
+				t.Fatal("authorized close did not run mutator exactly once")
+			}
+			state = f.state(t)
+			hidden.Store(true)
+			for _, reopen := range []bool{false, true} {
+				if reopen {
+					f.reopen(t)
+				}
+				replay := f.call("tx.apply", "close-private", valid)
+				if replay.Error == nil || replay.Error.Data.Code != "forbidden" || len(replay.Error.Data.Details) != 0 || len(replay.Result) != 0 || replay.Meta.Replayed {
+					t.Fatalf("replay disclosed revoked expectation: %+v", replay)
+				}
+				sameState(t, state, f.state(t))
+			}
+			if replayCalls.Load() != 2 || mutators.Load() != 1 {
+				t.Fatal("replay skipped current guard authority or reran mutator")
+			}
+			hidden.Store(false)
+			replay := f.call("tx.apply", "close-private", valid)
+			if replay.Error != nil || !replay.Meta.Replayed || !bytes.Equal(first.Result, replay.Result) {
+				t.Fatalf("allowed stored close replay: %+v", replay)
+			}
+			sameState(t, state, f.state(t))
+			aliases := batchParams(map[string]any{"kind": "create", "key": "alias", "type": "issue", "fields": map[string]any{"title": "alias"}}, closeOp(model.RefByKey("alias"), "", model.PreconditionByHash(model.RefByKey("alias"), "fields.title", casHash(`"alias"`))))
+			first = f.call("tx.apply", "close-alias-security", aliases)
+			commit(t, first)
+			f.reopen(t)
+			replay = f.call("tx.apply", "close-alias-security", aliases)
+			if replay.Error != nil || !replay.Meta.Replayed || !bytes.Equal(first.Result, replay.Result) {
+				t.Fatalf("canonical alias expectation replay: %+v", replay)
+			}
+			t.Logf("B21 authorized close %s: hidden expectation denies before CAS/mutators, allow releases typed stale token, corrected same-key commit, current replay revocation and canonical alias replay", engine)
 		})
 	}
 }

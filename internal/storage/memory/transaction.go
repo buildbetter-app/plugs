@@ -576,7 +576,7 @@ func (t *transaction) validateChanges(changes []model.ChangeRecord) error {
 	seen := make(map[string]bool)
 	for _, change := range changes {
 		switch change.Op {
-		case model.OpCreate, model.OpPatch, model.OpReparent, model.OpLink, model.OpUnlink, model.OpComment, model.OpAttach, model.OpDelete, model.OpSetMeta:
+		case model.OpCreate, model.OpPatch, model.OpReparent, model.OpLink, model.OpUnlink, model.OpComment, model.OpAttach, model.OpDelete, model.OpSetMeta, model.OpClose:
 		default:
 			return fmt.Errorf("memory: unknown change operation")
 		}
