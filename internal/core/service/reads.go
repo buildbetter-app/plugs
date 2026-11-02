@@ -137,13 +137,14 @@ func validatePosition(position *PagePosition) error {
 }
 
 func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r queryReader) ([]Bead, error) {
-	graph, err := scanBeads(ctx, r)
+	graph, err := scanBeadsWithRewrite(ctx, r, req.QueryRewrite)
 	if err != nil {
 		return nil, err
 	}
 	items := []Bead{}
 	now := s.now()
 	ids := sortedIDs(graph)
+	allowed := queryRewriteSet(req.QueryRewrite)
 	priorities := map[string]int{}
 	for _, id := range ids {
 		p, err := priority(graph[id].doc)
@@ -175,8 +176,10 @@ func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r queryReade
 		if !unblocked {
 			continue
 		}
-		if req.QueryRewrite != nil && req.QueryRewrite.IDs != nil && !containsQueryRewriteID(req.QueryRewrite, row.doc.ID) {
-			continue
+		if allowed != nil {
+			if _, ok := allowed[row.doc.ID]; !ok {
+				continue
+			}
 		}
 		bead, err := beadValue(row)
 		if err != nil {
@@ -187,16 +190,15 @@ func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r queryReade
 	return items, nil
 }
 
-func containsQueryRewriteID(rewrite *driver.QueryRewrite, id string) bool {
+func queryRewriteSet(rewrite *driver.QueryRewrite) map[string]struct{} {
 	if rewrite == nil || rewrite.IDs == nil {
-		return true
+		return nil
 	}
+	allowed := make(map[string]struct{}, len(rewrite.IDs))
 	for _, candidate := range rewrite.IDs {
-		if candidate == id {
-			return true
-		}
+		allowed[candidate] = struct{}{}
 	}
-	return false
+	return allowed
 }
 
 func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (BeadPage, error) {

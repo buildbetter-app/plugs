@@ -262,11 +262,7 @@ func (r *reader) queryCurrent(ctx context.Context, q driver.Query, filter string
 	}
 	offset := int64(start)
 	if resume := r.headPage; start != 0 && resume != nil && resume.digest == filter && resume.next == start {
-		join := " WHERE "
-		if len(where) != 0 {
-			join = " AND "
-		}
-		from += join + fmt.Sprintf("key>$%d", len(args)+1)
+		from += " AND " + fmt.Sprintf("key>$%d", len(args)+1)
 		args = append(args, resume.key)
 		offset = 0
 	}

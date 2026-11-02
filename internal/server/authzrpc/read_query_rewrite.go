@@ -92,6 +92,9 @@ func fastUserReadPage(ctx context.Context, caller authz.Caller, facts *slice, te
 	}
 	filtered := make([]service.Bead, 0, len(items))
 	for _, item := range items {
+		if err := ctx.Err(); err != nil {
+			return nil, true, err
+		}
 		if refs != nil {
 			if _, ok := refs[item.ID]; !ok {
 				continue

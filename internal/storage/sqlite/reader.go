@@ -151,6 +151,9 @@ func (r *reader) Get(ctx context.Context, refs []driver.Ref) ([]driver.Record, e
 	if err := r.check(ctx); err != nil {
 		return nil, err
 	}
+	if r.at == mustUint(r.meta.Head) {
+		return r.currentGet(ctx, refs)
+	}
 	result := make([]driver.Record, 0, len(refs))
 	for _, ref := range refs {
 		id, err := recordKey(ref)
@@ -167,6 +170,75 @@ func (r *reader) Get(ctx context.Context, refs []driver.Ref) ([]driver.Record, e
 	}
 	return result, nil
 }
+
+// currentGet resolves a request's refs with one SQL round trip while keeping
+// staged transaction rows authoritative. The result is reconstructed in the
+// caller's ref order, including duplicate refs, just like the point path.
+func (r *reader) currentGet(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
+	ids := make([]string, len(refs))
+	keys := make([]string, 0, len(refs))
+	seen := make(map[string]struct{}, len(refs))
+	values := make(map[string]driver.Record, len(refs))
+	for i, ref := range refs {
+		id, err := recordKey(ref)
+		if err != nil {
+			return nil, err
+		}
+		ids[i] = id
+		if r.owner != nil {
+			if staged, ok := r.owner.records[id]; ok {
+				if staged != nil {
+					values[id] = copyRecord(*staged)
+				}
+				continue
+			}
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		keys = append(keys, id)
+	}
+	if len(keys) != 0 {
+		encoded, err := json.Marshal(keys)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := r.tx.QueryContext(ctx, `SELECT key,data FROM records WHERE key IN (SELECT value FROM json_each(?))`, string(encoded))
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id string
+			var data []byte
+			var record driver.Record
+			if err := rows.Scan(&id, &data); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			if err := json.Unmarshal(data, &record); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			values[id] = record
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	result := make([]driver.Record, 0, len(refs))
+	for _, id := range ids {
+		if record, ok := values[id]; ok {
+			result = append(result, copyRecord(record))
+		}
+	}
+	return result, nil
+}
+
 func (r *reader) recordAt(ctx context.Context, id string) (driver.Record, bool, error) {
 	if r.owner != nil {
 		if v, ok := r.owner.records[id]; ok {

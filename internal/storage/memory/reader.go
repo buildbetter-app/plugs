@@ -238,7 +238,7 @@ func (r *reader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.L
 	return result, nil
 }
 
-func filterDigest(filter map[string]any) (string, error) {
+func filterDigest(filter any) (string, error) {
 	encoded, err := json.Marshal(filter)
 	if err != nil {
 		return "", err
@@ -296,11 +296,20 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 			return driver.Page[driver.Record]{}, fmt.Errorf("memory: equality filter %q requires string", field)
 		}
 	}
-	digest, err := filterDigest(q.Filter)
+	var digest any = q.Filter
+	if q.Rewrite != nil {
+		ids := append([]string(nil), q.Rewrite.IDs...)
+		sort.Strings(ids)
+		digest = struct {
+			Filter map[string]any `json:"filter"`
+			IDs    []string       `json:"ids"`
+		}{Filter: q.Filter, IDs: ids}
+	}
+	digestValue, err := filterDigest(digest)
 	if err != nil {
 		return driver.Page[driver.Record]{}, err
 	}
-	start, err := r.cursor(q.Cursor, "query", digest)
+	start, err := r.cursor(q.Cursor, "query", digestValue)
 	if err != nil {
 		return driver.Page[driver.Record]{}, err
 	}
@@ -314,6 +323,7 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	}
 	sort.Strings(keys)
 	items := make([]driver.Record, 0)
+	allowed := memoryRewriteIDSet(q.Rewrite)
 	for _, key := range keys {
 		if err := ctx.Err(); err != nil {
 			return driver.Page[driver.Record]{}, err
@@ -324,6 +334,11 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 		}
 		if !exists {
 			continue
+		}
+		if allowed != nil {
+			if _, ok := allowed[record.Ref.ID]; !ok {
+				continue
+			}
 		}
 		match, err := matches(record, q.Filter)
 		if err != nil {
@@ -345,9 +360,20 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 		page.Items = append(page.Items, copyRecord(record))
 	}
 	if end < uint64(len(items)) {
-		page.NextCursor = &driver.Cursor{Incarnation: r.state.meta.Incarnation, Revision: page.AsOf, Index: model.Natural64(end), Method: "query", FilterDigest: digest}
+		page.NextCursor = &driver.Cursor{Incarnation: r.state.meta.Incarnation, Revision: page.AsOf, Index: model.Natural64(end), Method: "query", FilterDigest: digestValue}
 	}
 	return page, nil
+}
+
+func memoryRewriteIDSet(rewrite *driver.QueryRewrite) map[string]struct{} {
+	if rewrite == nil || rewrite.IDs == nil {
+		return nil
+	}
+	set := make(map[string]struct{}, len(rewrite.IDs))
+	for _, id := range rewrite.IDs {
+		set[id] = struct{}{}
+	}
+	return set
 }
 
 func matches(record driver.Record, filter map[string]any) (bool, error) {

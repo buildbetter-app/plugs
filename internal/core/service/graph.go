@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -14,6 +15,10 @@ import (
 
 type queryReader interface {
 	Query(context.Context, driver.Query) (driver.Page[driver.Record], error)
+}
+
+type recordGetter interface {
+	Get(context.Context, []driver.Ref) ([]driver.Record, error)
 }
 
 type storedBead struct {
@@ -121,10 +126,25 @@ func priority(doc pipeline.Document) (int, error) {
 // a partial graph as complete. ClaimNext relies on this uncapped lazy walk so
 // large ready sets remain traversable without a hidden terminal null.
 func scanBeads(ctx context.Context, r queryReader) (map[string]storedBead, error) {
+	return scanBeadsWithRewrite(ctx, r, nil)
+}
+
+// scanBeadsWithRewrite narrows the initial candidate query when a trusted
+// deny-only rewrite is present, then loads the complete dependency closure
+// needed by readiness (parents and every referenced edge). Missing closure
+// rows remain absent and therefore retain the ordinary not-ready result.
+func scanBeadsWithRewrite(ctx context.Context, r queryReader, rewrite *driver.QueryRewrite) (map[string]storedBead, error) {
+	getter, canGet := r.(recordGetter)
+	if rewrite != nil && rewrite.IDs != nil && !canGet {
+		// A query-only test reader cannot supply the dependency closure that
+		// readiness needs after candidate narrowing. Use the complete query path
+		// rather than treating an absent parent or blocker as an observed row.
+		return scanBeads(ctx, r)
+	}
 	graph := map[string]storedBead{}
 	var cursor *driver.Cursor
 	for {
-		page, err := r.Query(ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 1000, Cursor: cursor})
+		page, err := r.Query(ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Rewrite: rewrite, Cursor: cursor, Limit: 10000})
 		if err != nil {
 			return nil, mapped(err)
 		}
@@ -146,7 +166,97 @@ func scanBeads(ctx context.Context, r queryReader) (map[string]storedBead, error
 		}
 		cursor = page.NextCursor
 	}
+	if rewrite == nil || rewrite.IDs == nil || len(graph) == 0 {
+		return graph, nil
+	}
+	for _, row := range graph {
+		if hasWaitsFor(row.doc) {
+			// waits-for evaluates the complete reverse child set through
+			// noOpenChildren. Keep that graph-wide fact exact instead of
+			// approximating it from a narrowed candidate query.
+			return scanBeads(ctx, r)
+		}
+	}
+	// A ready candidate can depend on a parent, blocker, or parent-child edge;
+	// ancestors can have blockers of their own. Walk that finite reference
+	// closure in batches so the candidate rewrite never changes readiness facts.
+	queue := make([]model.Ref, 0, len(graph))
+	seen := make(map[string]struct{}, len(graph))
+	for id, row := range graph {
+		seen[id] = struct{}{}
+		for _, ref := range appendReadyRefs(nil, row.doc) {
+			if _, exists := seen[ref.ID]; exists {
+				continue
+			}
+			seen[ref.ID] = struct{}{}
+			queue = append(queue, ref)
+		}
+	}
+	for len(queue) != 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		batchSize := len(queue)
+		if batchSize > 1000 {
+			batchSize = 1000
+		}
+		batch := queue[:batchSize]
+		queue = queue[batchSize:]
+		records, err := getter.Get(ctx, batch)
+		if err != nil {
+			return nil, mapped(err)
+		}
+		for _, record := range records {
+			if record.Kind != "bead" {
+				continue
+			}
+			doc, err := decodeDocument(record.Body)
+			if err != nil || doc.ID != record.Ref.ID || !record.Ref.Branch.IsZero() {
+				return nil, failure("internal_error", "invalid persisted bead")
+			}
+			if _, exists := graph[doc.ID]; exists {
+				continue
+			}
+			graph[doc.ID] = storedBead{record, doc}
+			if hasWaitsFor(doc) {
+				return scanBeads(ctx, r)
+			}
+			for _, ref := range appendReadyRefs(nil, doc) {
+				if _, exists := seen[ref.ID]; exists {
+					continue
+				}
+				seen[ref.ID] = struct{}{}
+				queue = append(queue, ref)
+			}
+		}
+	}
 	return graph, nil
+}
+
+func appendReadyRefs(refs []model.Ref, doc pipeline.Document) []model.Ref {
+	if doc.Parent != nil && doc.Parent.IsID() && doc.Parent.Branch.IsZero() {
+		refs = append(refs, *doc.Parent)
+	}
+	for _, link := range doc.Links {
+		switch link.Kind {
+		case "blocks", "conditional-blocks", "waits-for", "parent-child":
+		default:
+			continue
+		}
+		if link.To.IsID() && link.To.Branch.IsZero() {
+			refs = append(refs, link.To)
+		}
+	}
+	return refs
+}
+
+func hasWaitsFor(doc pipeline.Document) bool {
+	for _, link := range doc.Links {
+		if link.Kind == "waits-for" {
+			return true
+		}
+	}
+	return false
 }
 
 func state(doc pipeline.Document) ontology.BeadState {
