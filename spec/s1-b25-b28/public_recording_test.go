@@ -222,14 +222,20 @@ func verifyPublicArtifact(t *testing.T, profile recordingProfile) publicArtifact
 		Build struct {
 			RunID string `json:"run_id"`
 		} `json:"build"`
-		Resolution map[string]struct{ Commit, Build string } `json:"resolution"`
+		Resolution map[string]json.RawMessage `json:"resolution"`
 	}
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
 		t.Fatalf("public artifact manifest is invalid: %v", err)
 	}
 	target := manifest.Targets[profile.Exporter.TargetKey]
 	binaryInfo := manifest.Artifacts[profile.Exporter.Binary]
-	version := manifest.Resolution[profile.VersionKey]
+	var version struct {
+		Commit string `json:"commit"`
+		Build  string `json:"build"`
+	}
+	if rawVersion, ok := manifest.Resolution[profile.VersionKey]; !ok || json.Unmarshal(rawVersion, &version) != nil {
+		t.Fatal("public artifact version probe is missing or malformed")
+	}
 	beadsSource := manifest.Source["beads"]
 	if manifest.Schema != profile.Schema || beadsSource.Commit != publicBeadsCommit || beadsSource.Tree != publicBeadsTree || target.Label != profile.Exporter.Label || target.Binary != profile.Exporter.Binary || binaryInfo.SHA256 != artifact.SHA256 || binaryInfo.Mode != "0o755" || binaryInfo.Size <= 0 || manifest.Build.RunID != artifact.BuildRun || version.Commit != publicBeadsCommit || version.Build != "public-"+publicBeadsCommit {
 		t.Fatalf("public artifact identity does not match profile: schema=%q source=%+v target=%+v binary=%+v build=%+v version=%+v", manifest.Schema, beadsSource, target, binaryInfo, manifest.Build, version)
