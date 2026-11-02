@@ -112,6 +112,7 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 		}
 	}
 	var filter string
+	var err error
 	if q.Rewrite == nil {
 		filter, err = digest(q.Filter)
 	} else {
