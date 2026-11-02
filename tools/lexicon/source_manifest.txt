@@ -1014,7 +1014,11 @@ spec/s1-b05-b08/runtime_test.go
 spec/s1-b09-b12/compaction/BUILD.bazel
 spec/s1-b09-b12/compaction/audit_test.go
 spec/s1-b09-b12/compaction/b12_test.go
+spec/s1-b09-b12/compaction/composition_test.go
 spec/s1-b09-b12/compaction/fixture_test.go
+spec/s1-b09-b12/compaction/guards_test.go
+spec/s1-b09-b12/compaction/presence_test.go
+spec/s1-b09-b12/compaction/selection_test.go
 spec/s1-b13-b16/BUILD.bazel
 spec/s1-b13-b16/README.md
 spec/s1-b13-b16/capture_regressions_test.go
