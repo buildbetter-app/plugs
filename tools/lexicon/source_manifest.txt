@@ -342,6 +342,7 @@ internal/integration/batchsql/batch_test.go
 internal/integration/batchsql/fixture_test.go
 internal/integration/batchsql/hierarchy_authorization_test.go
 internal/integration/batchsql/hierarchy_test.go
+internal/integration/batchsql/thousand_diagnostic_test.go
 internal/integration/claimsql/BUILD.bazel
 internal/integration/claimsql/README.md
 internal/integration/claimsql/claim_sql_test.go
@@ -377,6 +378,11 @@ internal/integration/e5acceptance/local_fixture_test.go
 internal/integration/e5acceptance/local_wasi_test.go
 internal/integration/e5acceptance/postgres_failover_test.go
 internal/integration/e5acceptance/public_contention_test.go
+internal/integration/epicprogress/BUILD.bazel
+internal/integration/epicprogress/README.md
+internal/integration/epicprogress/epic_progress_test.go
+internal/integration/epicprogress/fixture_test.go
+internal/integration/epicprogress/restore_test.go
 internal/integration/eventsqlpaging/BUILD.bazel
 internal/integration/eventsqlpaging/integration_test.go
 internal/integration/graphacceptance/BUILD.bazel
@@ -718,6 +724,9 @@ internal/server/webui/browser_test.go
 internal/server/webui/catalog.go
 internal/server/webui/comment_check.mjs
 internal/server/webui/direct_blocker_check.mjs
+internal/server/webui/epic_progress_check.mjs
+internal/server/webui/epic_progress_runtime_test.go
+internal/server/webui/epic_progress_test.go
 internal/server/webui/frame_digest.go
 internal/server/webui/frame_host.go
 internal/server/webui/presence_display_check.mjs
@@ -725,6 +734,7 @@ internal/server/webui/presence_display_test.go
 internal/server/webui/sandbox_check.mjs
 internal/server/webui/sandbox_test.go
 internal/server/webui/static/app.js
+internal/server/webui/static/epic-progress.js
 internal/server/webui/static/favicon.svg
 internal/server/webui/static/frame-host.js
 internal/server/webui/static/index.html
@@ -827,9 +837,10 @@ internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/pending_test.go
 internal/storage/sqlite/process_test.go
 internal/storage/sqlite/reader.go
+internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/schema.go
-internal/storage/sqlite/staged_reads_test.go
 internal/storage/sqlite/sqlite_test.go
+internal/storage/sqlite/staged_reads_test.go
 internal/storage/sqlite/store.go
 internal/storage/sqlite/transaction.go
 internal/storage/sqlite/validation.go
