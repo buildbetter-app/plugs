@@ -16,6 +16,7 @@
 .github/workflows/BUILD.bazel
 .github/workflows/plug-bazel.yml
 .github/workflows/plug-beads-bazel.yml
+.github/workflows/plug-cp7-latency.yml
 .github/workflows/plug-nightly-restore-diffs.yml
 .github/workflows/plug-public-bundle.yml
 .github/workflows/plug-remote-bazel.yml
@@ -318,6 +319,7 @@ internal/core/service/memories.go
 internal/core/service/ontology.go
 internal/core/service/ordered_close.go
 internal/core/service/reads.go
+internal/core/service/query_rewrite.go
 internal/core/service/rpc_reads.go
 internal/core/service/service.go
 internal/core/service/service_test.go
@@ -385,6 +387,13 @@ internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.t
 internal/integration/converterroundtrip/testdata/public-partial-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-source-990eb800.md
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
+internal/integration/cp7latency/BUILD.bazel
+internal/integration/cp7latency/README.md
+internal/integration/cp7latency/correctness_test.go
+internal/integration/cp7latency/fixture_test.go
+internal/integration/cp7latency/latency_test.go
+internal/integration/cp7latency/measurement_test.go
+internal/integration/cp7latency/workload.json
 internal/integration/cursorhttp/BUILD.bazel
 internal/integration/cursorhttp/cursor_test.go
 internal/integration/cursorhttp/fixture_test.go
@@ -586,6 +595,7 @@ internal/server/authzrpc/hierarchy_lifecycle_test.go
 internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/predicate_count_test.go
+internal/server/authzrpc/read_query_rewrite.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
 internal/server/claimrpc/BUILD.bazel

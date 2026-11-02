@@ -22,6 +22,7 @@ type GuardedService struct {
 	commitEmpty     func(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta, port.ClaimNextReadyProbe) (port.WriteOutcome, error)
 	claimNextPage   func(context.Context, model.PrincipalRef, service.ReadyRequest) (service.BeadPage, error)
 	readyCandidates func(context.Context, service.ReadyRequest, driver.Reader) ([]service.Bead, error)
+	readyQuery      func(context.Context, model.PrincipalRef, service.ReadyRequest) (service.BeadPage, error)
 }
 
 var _ rpc.Service = (*GuardedService)(nil)
@@ -165,6 +166,21 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 	if s == nil || s.delegate == nil || s.checker == nil {
 		return service.BeadPage{}, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
+	if s.readyQuery != nil {
+		full := req
+		full.Limit = 1000
+		full.Cursor = ""
+		full.Position = nil
+		full.QueryRewrite = service.QueryRewriteForPrincipal(by)
+		page, err := s.readyQuery(ctx, by, full)
+		if err != nil {
+			return service.BeadPage{}, err
+		}
+		if len(page.Items) > listPostfilterCap {
+			return service.BeadPage{}, postfilterCap()
+		}
+		return s.filterPage(ctx, by, "bead.ready", req.Limit, req.Position, page, false)
+	}
 	// Ask the real service for a complete bounded candidate page, then apply
 	// the compiled fixed filter before pagination. A truncated candidate set is
 	// refused; it never becomes a short page or an uncounted hidden tail.
@@ -298,7 +314,7 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	repeatedConflictThisPass := false
 	conflictRestarts := 0
 	for {
-		page, err := s.claimPage(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
+		page, err := s.claimPage(ctx, by, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed, QueryRewrite: service.QueryRewriteForPrincipal(by)})
 		if err != nil {
 			return nil, err
 		}
@@ -385,7 +401,7 @@ func (s *GuardedService) claimNextReadyProbe(by model.PrincipalRef, req service.
 		if s.readyCandidates == nil {
 			return false, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 		}
-		items, err := s.readyCandidates(ctx, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter}, reader)
+		items, err := s.readyCandidates(ctx, service.ReadyRequest{Project: req.Project, ViewID: req.ViewID, Filter: req.Filter, QueryRewrite: service.QueryRewriteForPrincipal(by)}, reader)
 		if err != nil {
 			return false, err
 		}
@@ -524,13 +540,20 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 		return service.BeadPage{}, authzError(err)
 	}
 	filtered := make([]service.Bead, 0, len(page.Items))
-	for _, bead := range page.Items {
-		ok, err := template.Match(ctx, facts, authz.Resource{Kind: authz.Bead, Ref: model.RefByID(bead.ID, model.Natural64(0))})
+	if fast, handled, err := fastUserReadPage(ctx, caller, facts, template, page.Items); handled {
 		if err != nil {
 			return service.BeadPage{}, authzError(err)
 		}
-		if ok {
-			filtered = append(filtered, bead)
+		filtered = fast
+	} else {
+		for _, bead := range page.Items {
+			ok, err := template.Match(ctx, facts, authz.Resource{Kind: authz.Bead, Ref: model.RefByID(bead.ID, model.Natural64(0))})
+			if err != nil {
+				return service.BeadPage{}, authzError(err)
+			}
+			if ok {
+				filtered = append(filtered, bead)
+			}
 		}
 	}
 	if limit == 0 {

@@ -175,6 +175,9 @@ func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r queryReade
 		if !unblocked {
 			continue
 		}
+		if req.QueryRewrite != nil && req.QueryRewrite.IDs != nil && !containsQueryRewriteID(req.QueryRewrite, row.doc.ID) {
+			continue
+		}
 		bead, err := beadValue(row)
 		if err != nil {
 			return nil, err
@@ -182,6 +185,18 @@ func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r queryReade
 		items = append(items, bead)
 	}
 	return items, nil
+}
+
+func containsQueryRewriteID(rewrite *driver.QueryRewrite, id string) bool {
+	if rewrite == nil || rewrite.IDs == nil {
+		return true
+	}
+	for _, candidate := range rewrite.IDs {
+		if candidate == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (BeadPage, error) {
@@ -255,6 +270,34 @@ func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
 
 func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
 	return s.readyPage(ctx, by, req, false)
+}
+
+// ReadyQuery evaluates one complete ready snapshot for an authorization
+// caller. It is an internal query route: the guarded service performs current
+// authorization, pagination, parent disclosure and the final authority fence.
+// Keeping the complete graph scan here preserves dependency semantics while
+// avoiding one full rescan per public authorization page.
+func (s *Service) ReadyQuery(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
+	if _, err := pageOptions(req.Project, req.ViewID, req.Cursor, req.Filter, req.Limit); err != nil {
+		return BeadPage{}, err
+	}
+	if err := validatePosition(req.Position); err != nil {
+		return BeadPage{}, err
+	}
+	r, err := s.reader(ctx, by, nil)
+	if err != nil {
+		return BeadPage{}, err
+	}
+	defer r.Close()
+	items, err := s.readyItems(ctx, req, r)
+	if err != nil {
+		return BeadPage{}, err
+	}
+	if err := s.admit(ctx, by); err != nil {
+		return BeadPage{}, err
+	}
+	view := r.Snapshot()
+	return BeadPage{Items: items, AsOf: AsOf{Revision: *view.At, Incarnation: view.Incarnation}}, nil
 }
 
 // ClaimNextReadyPage is the queue-specific live pager. A revision change

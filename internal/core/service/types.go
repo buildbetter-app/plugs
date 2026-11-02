@@ -212,6 +212,10 @@ type ReadyRequest struct {
 	// from the wire; claimNext derives it from the selector and request key so
 	// equal-priority candidates can spread without changing bead.ready order.
 	ClaimNextSeed string
+	// QueryRewrite is an internal deny-only candidate narrowing. The complete
+	// graph is still built before readiness is evaluated, so dependency and
+	// parent semantics never depend on an authorization subset.
+	QueryRewrite *driver.QueryRewrite
 }
 
 type CreateRequest struct {

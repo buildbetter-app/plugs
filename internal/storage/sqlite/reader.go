@@ -27,6 +27,13 @@ type reader struct {
 	at     uint64
 	closed bool
 	owner  *transaction
+	// A single sequential current-head query can seek from its last key.
+	// This is request-local state only; it retains no record or decision.
+	headPage *struct {
+		digest string
+		next   uint64
+		key    string
+	}
 }
 
 func (s *Store) Read(ctx context.Context, v driver.View) (driver.Reader, error) {
@@ -386,6 +393,17 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	if err != nil {
 		return driver.Page[driver.Record]{}, err
 	}
+	if q.Rewrite != nil {
+		ids := append([]string(nil), q.Rewrite.IDs...)
+		sort.Strings(ids)
+		encoded, err = json.Marshal(struct {
+			Filter map[string]any `json:"filter"`
+			IDs    []string       `json:"ids"`
+		}{Filter: q.Filter, IDs: ids})
+		if err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+	}
 	hash := sha256.Sum256(encoded)
 	digest := hex.EncodeToString(hash[:])
 	start, err := r.cursor(q.Cursor, "query", digest)
@@ -395,6 +413,9 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	limit, err := pageLimit(q.Limit)
 	if err != nil {
 		return driver.Page[driver.Record]{}, err
+	}
+	if r.owner == nil && r.at == mustUint(r.meta.Head) && sqliteCurrentQuery(q) {
+		return r.queryCurrent(ctx, q, digest, start, limit)
 	}
 	rows, err := r.tx.QueryContext(ctx, `SELECT key FROM objects ORDER BY key`)
 	if err != nil {
@@ -426,12 +447,16 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	}
 	sort.Strings(ordered)
 	items := make([]driver.Record, 0)
+	allowed := rewriteIDSet(q.Rewrite)
 	for _, id := range ordered {
 		record, found, err := r.recordAt(ctx, id)
 		if err != nil {
 			return driver.Page[driver.Record]{}, err
 		}
 		if !found {
+			continue
+		}
+		if allowed != nil && !allowed[record.Ref.ID] {
 			continue
 		}
 		match, err := matches(record, q.Filter)
@@ -449,6 +474,110 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	page := driver.Page[driver.Record]{Items: items[start:end], AsOf: model.Natural64(r.at)}
 	if end < uint64(len(items)) {
 		page.NextCursor = r.nextCursor("query", digest, end)
+	}
+	return page, nil
+}
+
+func rewriteIDSet(rewrite *driver.QueryRewrite) map[string]bool {
+	if rewrite == nil || rewrite.IDs == nil {
+		return nil
+	}
+	set := make(map[string]bool, len(rewrite.IDs))
+	for _, id := range rewrite.IDs {
+		set[id] = true
+	}
+	return set
+}
+
+func sqliteCurrentQuery(q driver.Query) bool {
+	for field := range q.Filter {
+		switch field {
+		case "kind":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func (r *reader) queryCurrent(ctx context.Context, q driver.Query, digest string, start uint64, limit int) (driver.Page[driver.Record], error) {
+	where := make([]string, 0, 3)
+	args := make([]any, 0, 3)
+	if value, ok := q.Filter["kind"]; ok {
+		where = append(where, "o.kind=?")
+		args = append(args, value)
+	}
+	if rewrite := q.Rewrite; rewrite != nil && rewrite.IDs != nil {
+		keys := make([]string, 0, len(rewrite.IDs))
+		for _, id := range rewrite.IDs {
+			key, err := recordKey(model.RefByID(id, model.Natural64(0)))
+			if err != nil {
+				return driver.Page[driver.Record]{}, err
+			}
+			keys = append(keys, key)
+		}
+		encoded, err := json.Marshal(keys)
+		if err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		where = append(where, "r.key IN (SELECT value FROM json_each(?))")
+		args = append(args, string(encoded))
+	}
+	from := " FROM records r JOIN objects o ON o.key=r.key"
+	if len(where) != 0 {
+		from += " WHERE " + strings.Join(where, " AND ")
+	}
+	offset := int64(start)
+	if resume := r.headPage; start != 0 && resume != nil && resume.digest == digest && resume.next == start {
+		join := " WHERE "
+		if len(where) != 0 {
+			join = " AND "
+		}
+		from += join + "r.key>?"
+		args = append(args, resume.key)
+		offset = 0
+	}
+	args = append(args, limit+1, offset)
+	rows, err := r.tx.QueryContext(ctx, "SELECT r.key,r.data"+from+" ORDER BY r.key LIMIT ? OFFSET ?", args...)
+	if err != nil {
+		return driver.Page[driver.Record]{}, err
+	}
+	defer rows.Close()
+	items := make([]driver.Record, 0, limit+1)
+	keys := make([]string, 0, limit+1)
+	for rows.Next() {
+		var key string
+		var data []byte
+		var record driver.Record
+		if err := rows.Scan(&key, &data); err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		if err := json.Unmarshal(data, &record); err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		match, err := matches(record, q.Filter)
+		if err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		if match {
+			items = append(items, record)
+			keys = append(keys, key)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return driver.Page[driver.Record]{}, err
+	}
+	page := driver.Page[driver.Record]{Items: items, AsOf: model.Natural64(r.at)}
+	if len(items) > limit {
+		page.Items = items[:limit]
+		page.NextCursor = r.nextCursor("query", digest, start+uint64(limit))
+	}
+	if len(page.Items) != 0 {
+		r.headPage = &struct {
+			digest string
+			next   uint64
+			key    string
+		}{digest: digest, next: start + uint64(len(page.Items)), key: keys[len(page.Items)-1]}
 	}
 	return page, nil
 }

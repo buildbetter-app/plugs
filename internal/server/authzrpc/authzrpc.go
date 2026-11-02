@@ -176,6 +176,7 @@ func New(ctx context.Context, config Config) (*Composition, error) {
 		commitEmpty:     domain.CommitClaimNextEmpty,
 		claimNextPage:   domain.ClaimNextReadyPage,
 		readyCandidates: domain.ReadyCandidates,
+		readyQuery:      domain.ReadyQuery,
 	}
 	registry, err := rpc.NewRegistry()
 	if err != nil {

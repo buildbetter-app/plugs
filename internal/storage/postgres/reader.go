@@ -21,6 +21,13 @@ type reader struct {
 	at     uint64
 	closed bool
 	writer *transaction
+	// A single sequential current-head query can seek from its last key.
+	// This request-local checkpoint retains no record or authorization state.
+	headPage *struct {
+		digest string
+		next   uint64
+		key    []byte
+	}
 	// Writers reserve their connection so cancellation cleanup can wait for
 	// pgx's asynchronous server termination before another lock probe starts.
 	conn        *sql.Conn

@@ -46,11 +46,23 @@ type Record struct {
 	Revision model.Revision
 	Body     []byte
 }
+
+// QueryRewrite is an optional, deny-only candidate narrowing supplied by a
+// trusted caller after it has interpreted an authenticated caveat. A nil ID
+// slice means that no narrowing is requested; a non-nil empty slice means the
+// request has no candidates. Drivers must apply this before pagination while
+// retaining ordinary Query filter semantics. It never grants access and is
+// deliberately ignored by historical/staged fast paths only after the same
+// ID test is applied in their existing Go matcher.
+type QueryRewrite struct {
+	IDs []string
+}
 type Query struct {
-	Filter map[string]any
-	Cursor *Cursor
-	Limit  int
-	AsOf   *model.Revision
+	Filter  map[string]any
+	Cursor  *Cursor
+	Limit   int
+	AsOf    *model.Revision
+	Rewrite *QueryRewrite
 }
 type PageReq struct {
 	Cursor *Cursor

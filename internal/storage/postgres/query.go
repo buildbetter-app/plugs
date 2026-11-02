@@ -1,12 +1,14 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -109,7 +111,17 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 			return empty, fmt.Errorf("postgres: equality filter %q requires string", field)
 		}
 	}
-	filter, err := digest(q.Filter)
+	var filter string
+	if q.Rewrite == nil {
+		filter, err = digest(q.Filter)
+	} else {
+		ids := append([]string(nil), q.Rewrite.IDs...)
+		sort.Strings(ids)
+		filter, err = digest(struct {
+			Filter map[string]any `json:"filter"`
+			IDs    []string       `json:"ids"`
+		}{Filter: q.Filter, IDs: ids})
+	}
 	if err != nil {
 		return empty, err
 	}
@@ -120,6 +132,9 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	limit, err := limitValue(q.Limit)
 	if err != nil {
 		return empty, err
+	}
+	if head, headErr := r.meta.Head.Uint64(); headErr == nil && r.writer == nil && r.at == head && postgresCurrentQuery(q) {
+		return r.queryCurrent(ctx, q, filter, start, limit)
 	}
 	rows, err := r.sql.QueryContext(ctx, `SELECT key,ref FROM plug_postgres.records ORDER BY key`)
 	if err != nil {
@@ -170,7 +185,11 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 		return empty, err
 	}
 	items := make([]driver.Record, 0)
+	allowed := rewriteIDSet(q.Rewrite)
 	for _, value := range values {
+		if allowed != nil && !allowed[value.Ref.ID] {
+			continue
+		}
 		match, err := matches(value, q.Filter)
 		if err != nil {
 			return empty, err
@@ -189,6 +208,114 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	page := driver.Page[driver.Record]{Items: items[start:end], AsOf: model.Natural64(r.at)}
 	if end < uint64(len(items)) {
 		page.NextCursor = r.next("query", filter, end)
+	}
+	return page, nil
+}
+
+func rewriteIDSet(rewrite *driver.QueryRewrite) map[string]bool {
+	if rewrite == nil || rewrite.IDs == nil {
+		return nil
+	}
+	set := make(map[string]bool, len(rewrite.IDs))
+	for _, id := range rewrite.IDs {
+		set[id] = true
+	}
+	return set
+}
+
+func postgresCurrentQuery(q driver.Query) bool {
+	for field := range q.Filter {
+		if field != "kind" {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *reader) queryCurrent(ctx context.Context, q driver.Query, filter string, start uint64, limit int) (driver.Page[driver.Record], error) {
+	args := make([]any, 0, 4)
+	where := make([]string, 0, 2)
+	if value, ok := q.Filter["kind"]; ok {
+		args = append(args, value)
+		where = append(where, fmt.Sprintf("kind=$%d", len(args)))
+	}
+	if rewrite := q.Rewrite; rewrite != nil && rewrite.IDs != nil {
+		keys := make([]string, 0, len(rewrite.IDs))
+		for _, id := range rewrite.IDs {
+			key, err := recordKey(model.RefByID(id, model.Natural64(0)))
+			if err != nil {
+				return driver.Page[driver.Record]{}, err
+			}
+			keys = append(keys, string(key))
+		}
+		raw, err := json.Marshal(keys)
+		if err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		args = append(args, string(raw))
+		where = append(where, fmt.Sprintf("key IN (SELECT convert_to(value,'UTF8') FROM jsonb_array_elements_text($%d::jsonb))", len(args)))
+	}
+	from := " FROM plug_postgres.records WHERE NOT deleted"
+	if len(where) != 0 {
+		from += " AND " + strings.Join(where, " AND ")
+	}
+	offset := int64(start)
+	if resume := r.headPage; start != 0 && resume != nil && resume.digest == filter && resume.next == start {
+		join := " WHERE "
+		if len(where) != 0 {
+			join = " AND "
+		}
+		from += join + fmt.Sprintf("key>$%d", len(args)+1)
+		args = append(args, resume.key)
+		offset = 0
+	}
+	args = append(args, limit+1, offset)
+	query := "SELECT key,ref,kind,revision::text,body" + from + fmt.Sprintf(" ORDER BY key LIMIT $%d OFFSET $%d", len(args)-1, len(args))
+	rows, err := r.sql.QueryContext(ctx, query, args...)
+	if err != nil {
+		return driver.Page[driver.Record]{}, err
+	}
+	defer rows.Close()
+	items := make([]driver.Record, 0, limit+1)
+	keys := make([][]byte, 0, limit+1)
+	for rows.Next() {
+		var key, raw []byte
+		var revision string
+		var record driver.Record
+		if err := rows.Scan(&key, &raw, &record.Kind, &revision, &record.Body); err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		if err := decode(raw, &record.Ref); err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		n, err := parseCounter(revision)
+		if err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		record.Revision = model.Natural64(n)
+		match, err := matches(record, q.Filter)
+		if err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		if match {
+			items = append(items, record)
+			keys = append(keys, bytes.Clone(key))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return driver.Page[driver.Record]{}, err
+	}
+	page := driver.Page[driver.Record]{Items: items, AsOf: model.Natural64(r.at)}
+	if len(items) > limit {
+		page.Items = items[:limit]
+		page.NextCursor = r.next("query", filter, start+uint64(limit))
+	}
+	if len(page.Items) != 0 {
+		r.headPage = &struct {
+			digest string
+			next   uint64
+			key    []byte
+		}{digest: filter, next: start + uint64(len(page.Items)), key: bytes.Clone(keys[len(page.Items)-1])}
 	}
 	return page, nil
 }

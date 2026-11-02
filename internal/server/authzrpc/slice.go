@@ -20,6 +20,15 @@ type slice struct {
 	authorizationBound    bool
 }
 
+func (s *slice) dependencies() [4]authz.Dependency {
+	return [4]authz.Dependency{
+		authz.ContextDependency(s.facts.Namespace),
+		authz.ACLDependency(s.facts.Namespace),
+		{Kind: "sentinel", Key: "plugins"},
+		{Kind: "sentinel", Key: "ontology"},
+	}
+}
+
 var _ authz.Slice = (*slice)(nil)
 
 func (s *slice) Namespace() authz.Namespace { return s.facts.Namespace }
