@@ -6,6 +6,7 @@ go_test(
     timeout = "long",
     srcs = glob(["*_test.go"]),
     args = ["-test.v"],
+    tags = ["exclusive"],
     deps = [
         "//internal/core/authz",
         "//internal/core/dumpformat",
