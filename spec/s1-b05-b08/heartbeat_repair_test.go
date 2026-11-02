@@ -131,7 +131,7 @@ func TestHeartbeatAuthorizationDenialRevocationAndHiddenNoWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cp := loadHeartbeatCheckpoint(t, f, heartbeatCheckpointKey(id)); cp.Generation != 0 || len(cp.Payload) != 0 {
+	if cp := loadHeartbeatCheckpoint(t, f, heartbeatCheckpointKey(id.ID)); cp.Generation != 0 || len(cp.Payload) != 0 {
 		t.Fatalf("denied heartbeat wrote lease checkpoint: %+v", cp)
 	}
 	if cp := loadHeartbeatCheckpoint(t, f, heartbeatReceiptCheckpointKey(principal, actor, "bead.heartbeat", meta.IdempotencyKey)); cp.Generation != 0 || len(cp.Payload) != 0 {
