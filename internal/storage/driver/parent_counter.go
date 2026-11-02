@@ -79,9 +79,8 @@ func (value ParentCounter) Consume(expected string) (ParentCounter, error) {
 	if n <= value.LastChild {
 		return ParentCounter{}, fmt.Errorf("%w: child counter already consumed %s", ErrConflict, expected)
 	}
-	if n == ^uint64(0) {
-		return ParentCounter{}, fmt.Errorf("%w: child counter exhausted", ErrUnsupported)
-	}
+	// Consumption only retains the candidate. Next refuses further allocation
+	// once the final uint64 value is stored; no increment happens here.
 	value.LastChild = n
 	return value, nil
 }
