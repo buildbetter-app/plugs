@@ -89,7 +89,9 @@ func TestDependencyEndpointIdentityRefusesRetypeAndWrongKindUnlink(t *testing.T)
 	seed := apply(t, w, model.ChangeSet{Ops: []model.Op{create("source"), create("target")}}, meta(21))
 	source, target := seed.Results[0].Ref, seed.Results[1].Ref
 	apply(t, w, model.ChangeSet{Ops: []model.Op{link(source, target, "blocks")}}, meta(22))
-	retype := link(source, target, "relates-to")
+	// Association annotations may coexist with a workflow edge. Use a second
+	// workflow kind to exercise the typed endpoint conflict contract.
+	retype := link(source, target, "waits-for")
 	_, err := w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{retype}}, meta(23))
 	code(t, err, "ontology_guard_failed")
 	wrongKind := retype

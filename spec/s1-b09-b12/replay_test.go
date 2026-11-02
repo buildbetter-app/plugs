@@ -425,9 +425,11 @@ func TestB11EndpointIdentityAndTypedLinkConflict(t *testing.T) {
 	if _, err = w.Apply(context.Background(), recorderPrincipal, model.ChangeSet{Ops: []model.Op{link(model.OpLink, "blocks")}}, meta(706)); err != nil {
 		t.Fatal(err)
 	}
-	_, err = w.Apply(context.Background(), recorderPrincipal, model.ChangeSet{Ops: []model.Op{link(model.OpLink, "relates-to")}}, meta(707))
+	// Association annotations are allowed alongside workflow edges; a second
+	// workflow kind is the typed-conflict case for this card.
+	_, err = w.Apply(context.Background(), recorderPrincipal, model.ChangeSet{Ops: []model.Op{link(model.OpLink, "waits-for")}}, meta(707))
 	requireCode(t, err, "ontology_guard_failed")
-	_, err = w.Apply(context.Background(), recorderPrincipal, model.ChangeSet{Ops: []model.Op{link(model.OpUnlink, "relates-to")}}, meta(708))
+	_, err = w.Apply(context.Background(), recorderPrincipal, model.ChangeSet{Ops: []model.Op{link(model.OpUnlink, "waits-for")}}, meta(708))
 	requireCode(t, err, "not_found")
 }
 
