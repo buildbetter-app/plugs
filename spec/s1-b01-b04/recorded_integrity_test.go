@@ -31,7 +31,7 @@ var recorderBytes []byte
 const (
 	pinnedCommit = "9d6fff760b7a314b476539198504d77ce0959656"
 	pinnedTree   = "cde121d6e4119e454857ad1c3ca293e2791be840"
-	pinnedBinary = "33cdadbe3bd7a82e2c3c40f4b5da4403d822acc00d544a321df24e277c0836a3"
+	pinnedBinary = "3c6bbb888431751adce98dfebc8beeb5869300698e8b069a4d7438fabfb3af4"
 )
 
 func sha256Hex(data []byte) string {

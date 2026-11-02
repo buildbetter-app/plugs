@@ -13,6 +13,13 @@ go_test(
 )
 
 go_test(
+    name = "reference_recording",
+    srcs = ["reference_recording_test.go"],
+    embedsrcs = ["record_reference.py"],
+    args = ["-test.v"],
+)
+
+go_test(
     name = "replay",
     srcs = [
         "fixture_test.go",
