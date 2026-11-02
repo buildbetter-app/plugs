@@ -24,8 +24,9 @@ The sibling partial archive retains exact gaps 1 not-retained, 2 unmappable,
 3 not-retained and never inherits the complete archive's status.
 Actual JSON payload.n is 9007199254740992; BIGINT timeout_ns is 9007199254740993.
 The converter accepts only exact SQL pinned encodings 0/1 (numeric or textual)
-and booleans; textual source encoding is also retained in source metadata. The output records source
-range/gaps, target floor/incarnation and the reverse reader's as-of revision.
+and booleans; textual source encoding is also retained in source metadata.
+The output records source range/gaps, target floor/incarnation and the reverse
+reader's as-of revision.
 `--exercise=false` checks the unmodified imported head.
 
 Reverse alone ends in `WAIT` with `beads_reimport=WAIT` and

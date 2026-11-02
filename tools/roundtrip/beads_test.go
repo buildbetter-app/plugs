@@ -135,12 +135,12 @@ func TestPublicPostgresPartialSnapshotReverseAndMissingBeadsBoundary(t *testing.
 		})
 	}
 	for _, test := range publicProducerCases() {
-		t.Run(test.name, func(t *testing.T) {
-			database := "plug_roundtrip_" + strings.ReplaceAll(test.name, "-", "_")
+		t.Run("producer-"+test.name, func(t *testing.T) {
+			database := "plug_roundtrip_producer_" + strings.ReplaceAll(test.name, "-", "_")
 			if _, err := db.ExecContext(ctx, "CREATE DATABASE "+database); err != nil {
 				t.Fatal(err)
 			}
-			args := []string{"--input", "../../internal/integration/converterroundtrip/testdata/" + test.file, "--output-dir", filepath.Join(root, test.name), "--engine", "postgres", "--postgres-dsn", base + database + "?sslmode=disable"}
+			args := []string{"--input", "../../internal/integration/converterroundtrip/testdata/" + test.file, "--output-dir", filepath.Join(root, "producer-"+test.name), "--engine", "postgres", "--postgres-dsn", base + database + "?sslmode=disable"}
 			if test.mode != "" {
 				args = append(args, "--history-mode", test.mode)
 			}
