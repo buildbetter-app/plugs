@@ -24,7 +24,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if got := len(c.ErrorCatalog()); got != 61 {
 		t.Fatalf("error inventory = %d", got)
 	}
-	if digest(catalogJSON) != "7a231adc108fc109d9e1f9b3bdc8273bace7d36f4003be41118a1c5d7108e0ec" {
+	if digest(catalogJSON) != "dbe8d219d5007dcac94d6e6e06f03038531de61dc686398ac646966cd77616ac" {
 		t.Fatal("bounded source snapshot changed; reconcile approved contract")
 	}
 	// These changes affect one of two independent descriptor representations.
@@ -649,5 +649,45 @@ func TestBeadParentExistenceOnlyResultSchema(t *testing.T) {
 	}
 	if err := c.ValidateParams(create, []byte(`{"type":"issue","fields":{},"parent":{"exists":true}}`)); err == nil {
 		t.Fatal("response-only existence object accepted as a parent request")
+	}
+}
+
+func TestB23CountContractCanonicalAndEmbedded(t *testing.T) {
+	canonicalPath := filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), "engdocs/design/plug/contracts/openrpc.json")
+	canonical, err := os.ReadFile(canonicalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, raw := range map[string][]byte{"canonical": canonical, "embedded": catalogJSON} {
+		t.Run(name, func(t *testing.T) {
+			c, err := ParseCatalog(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d, _ := c.Descriptor("view.run")
+			for _, params := range []string{`{"definition":{"filter":{}}}`, `{"countOnly":false,"viewId":"saved"}`, `{"countOnly":true,"definition":{"filter":{}}}`} {
+				if err := c.ValidateParams(d, []byte(params)); err != nil {
+					t.Fatalf("valid count option refused: %s: %v", params, err)
+				}
+			}
+			for _, params := range []string{`{"countOnly":null}`, `{"countOnly":1}`, `{"countOnly":"true"}`, `{"definition":{"filter":{},"countOnly":true}}`} {
+				if err := c.ValidateParams(d, []byte(params)); err == nil {
+					t.Fatalf("invalid count option admitted: %s", params)
+				}
+			}
+			for _, count := range []string{"", `,"count":0`, `,"count":20000`} {
+				if err := c.ValidateResult(d, []byte(`{"items":[],"asOf":{"revision":1}`+count+`}`)); err != nil {
+					t.Fatalf("valid ordinary result refused: count=%s: %v", count, err)
+				}
+			}
+			if err := c.ValidateResult(d, []byte(`{"items":[],"asOf":{"revision":1},"count":0,"projection":{"binding":"core","checkpoint":{"incarnation":"inc","revision":1,"index":0}}}`)); err != nil {
+				t.Fatalf("count with existing projection metadata refused: %v", err)
+			}
+			for _, count := range []string{"-1", "20001", "null", "true", `"0"`, "0.5"} {
+				if err := c.ValidateResult(d, []byte(`{"items":[],"asOf":{"revision":1},"count":`+count+`}`)); err == nil {
+					t.Fatalf("invalid ordinary count admitted: %s", count)
+				}
+			}
+		})
 	}
 }

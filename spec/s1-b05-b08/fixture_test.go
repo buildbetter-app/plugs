@@ -33,6 +33,7 @@ type fixture struct {
 	engine  string
 	dsn     string
 	store   driver.Store
+	storage driver.Driver
 	lease   driver.ActiveLease
 	writer  *pipeline.Writer
 	service *service.Service
@@ -48,9 +49,15 @@ func newFixture(t *testing.T, engine string) *fixture {
 	if engine == "memory" {
 		f.store = memory.New()
 	} else {
+		f.storage = sqlite.Driver{}
 		f.dsn = filepath.Join(t.TempDir(), "s1-b05-b08.db")
+		if engine == "postgres" {
+			f.storage, f.dsn = postgresFixture(t)
+		} else if engine != "sqlite" {
+			t.Fatalf("unknown fixture engine %q", engine)
+		}
 		var err error
-		f.store, err = (sqlite.Driver{}).Open(f.ctx, driver.Config{DSN: f.dsn})
+		f.store, err = f.storage.Open(f.ctx, driver.Config{DSN: f.dsn})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -111,11 +118,11 @@ func (f *fixture) close() {
 
 func (f *fixture) reopen(t *testing.T) {
 	t.Helper()
-	if f.engine != "sqlite" {
+	if f.storage == nil {
 		return
 	}
 	f.close()
-	store, err := (sqlite.Driver{}).Open(f.ctx, driver.Config{DSN: f.dsn})
+	store, err := f.storage.Open(f.ctx, driver.Config{DSN: f.dsn})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,10 +185,11 @@ func (f *fixture) create(t *testing.T, title string) model.Ref {
 }
 
 type durableState struct {
-	Head     string
-	Record   []byte
-	Versions int
-	Changes  int
+	Head          string
+	Record        []byte
+	Versions      int
+	Changes       int
+	GraphSentinel string
 }
 
 func (f *fixture) state(t *testing.T, ref model.Ref) durableState {
@@ -207,7 +215,11 @@ func (f *fixture) state(t *testing.T, ref model.Ref) durableState {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return durableState{Head: meta.Head.String(), Record: append([]byte(nil), rows[0].Body...), Versions: len(versions.Items), Changes: len(changes)}
+	states, err := r.Observe(f.ctx, []driver.LockKey{{Kind: driver.LockSentinel, Sentinel: driver.SentinelGraphBlocking}})
+	if err != nil || len(states) != 1 {
+		t.Fatalf("graph sentinel: states=%+v err=%v", states, err)
+	}
+	return durableState{Head: meta.Head.String(), Record: append([]byte(nil), rows[0].Body...), Versions: len(versions.Items), Changes: len(changes), GraphSentinel: states[0].Revision.String()}
 }
 
 func (f *fixture) document(t *testing.T, ref model.Ref) pipeline.Document {

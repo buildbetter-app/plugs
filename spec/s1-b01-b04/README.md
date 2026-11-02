@@ -29,10 +29,15 @@ outcome side by side. B01/B02 use `A3/D3/P74` and `A3/P22` respectively for
 category and stored-order differences. B03 uses `P10/P41/D24/A3`; B04 keeps
 claim semantics with `A4/P60`. The decisions are data in the manifest, not
 comments hidden in assertions. Timestamps, generated revisions, random leases,
-and Dolt commit IDs are omitted only where the manifest names them. Plug's Go
-pipeline clock is fixed and checked; the B01-B04 trace does not reach
-SQL-generated timestamps, so SQLite/PostgreSQL driver wall-clock paths remain
-an explicit qualification blocker rather than an asserted seam.
+and Dolt commit IDs are omitted only where the manifest names them. The retained
+reference clock provenance remains `controlled-go; sql-driver-clock-unreached`.
+New runtime boundary cases bind the application and actual driver clocks:
+SQLite's optional Go clock, and a real SQL `clock_timestamp()` function in an
+owned PostgreSQL database. They cross claim and receipt expiry without sleeps.
+SQLite has no production SQL time calls, so native SQLite SQL-clock interception
+is not applicable. These cases do not back-certify the old Beads twins, the
+missing hybrid-order boundary, PR251 heartbeat, or a full card. See
+[the clock boundary scope](../sqlclock-coverage.md).
 
 I5 authorization is qualified by the existing exact-head
 `internal/server/authzrpc:authzrpc_test` target (which embeds `drivers_test.go`). It checks compiled list

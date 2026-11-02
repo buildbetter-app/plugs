@@ -11,7 +11,7 @@ import (
 )
 
 func TestB05HeartbeatIsQuietReplayedAndReclaimableAcrossStores(t *testing.T) {
-	for _, engine := range []string{"memory", "sqlite"} {
+	for _, engine := range testEngines {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
 			id := f.create(t, "heartbeat")
@@ -38,7 +38,7 @@ func TestB05HeartbeatIsQuietReplayedAndReclaimableAcrossStores(t *testing.T) {
 			if before.Head != after.Head || before.Versions != after.Versions || before.Changes != after.Changes || string(before.Record) != string(after.Record) {
 				t.Fatalf("quiet heartbeat changed durable graph: before=%+v after=%+v", before, after)
 			}
-			if engine == "sqlite" {
+			if engine != "memory" {
 				f.reopen(t)
 			}
 			// A retry with the same key is a response replay.  Keep the
@@ -105,7 +105,13 @@ func TestB05HeartbeatIsQuietReplayedAndReclaimableAcrossStores(t *testing.T) {
 }
 
 func TestB06B07B08DependencyLifecycleEdges(t *testing.T) {
-	f := newFixture(t, "memory")
+	for _, engine := range testEngines {
+		t.Run(engine, func(t *testing.T) { testDependencyLifecycleEdges(t, engine) })
+	}
+}
+
+func testDependencyLifecycleEdges(t *testing.T, engine string) {
+	f := newFixture(t, engine)
 	parent := f.create(t, "parent")
 	child := f.create(t, "child")
 	// The explicit parent field drives close-child guards and the linked form

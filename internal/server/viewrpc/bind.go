@@ -60,6 +60,7 @@ func BindWithConfig(registry *rpc.Registry, service Service, cfg Config) error {
 }
 
 type params struct {
+	CountOnly  bool            `json:"countOnly,omitempty"`
 	ViewID     string          `json:"viewId,omitempty"`
 	Definition *definitionWire `json:"definition,omitempty"`
 	Cursor     *string         `json:"cursor,omitempty"`
@@ -118,6 +119,9 @@ func dispatch(ctx context.Context, service Service, codec *CursorCodec, call rpc
 	}
 	switch call.Method {
 	case "view.run":
+		if p.CountOnly && p.Cursor != nil {
+			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "countOnly does not accept a cursor"}}
+		}
 		var cursor *viewops.Cursor
 		var err error
 		if p.Cursor != nil {
@@ -126,7 +130,7 @@ func dispatch(ctx context.Context, service Service, codec *CursorCodec, call rpc
 				return nil, err
 			}
 		}
-		result, err := service.Run(ctx, call.Principal, viewops.RunRequest{ViewID: p.ViewID, Definition: p.Definition.domain(), Cursor: cursor, AsOf: p.AsOf.domain(), Project: call.Meta.Project, Agent: call.Meta.Agent})
+		result, err := service.Run(ctx, call.Principal, viewops.RunRequest{CountOnly: p.CountOnly, ViewID: p.ViewID, Definition: p.Definition.domain(), Cursor: cursor, AsOf: p.AsOf.domain(), Project: call.Meta.Project, Agent: call.Meta.Agent})
 		if err != nil {
 			return nil, err
 		}
@@ -149,6 +153,9 @@ func encodeResult(codec *CursorCodec, call rpc.Call, p params, result viewops.Re
 	items := make([]viewops.Bead, 0, len(result.Items))
 	items = append(items, result.Items...)
 	out := map[string]any{"items": items, "asOf": map[string]any{"revision": result.AsOf.Revision}}
+	if result.Count != nil {
+		out["count"] = *result.Count
+	}
 	if result.Projection != nil {
 		// Projection health is response metadata, not part of the signed
 		// paging cursor. Preserve the exact status observed with this pinned

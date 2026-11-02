@@ -121,17 +121,21 @@ func EffectiveLease(ctx context.Context, store driver.CheckpointStore, id string
 		}
 		return nil, err
 	}
+	return effectiveLease(base, overlay, present), nil
+}
+
+func effectiveLease(base *ClaimLease, overlay leaseOverlay, present bool) *ClaimLease {
 	// A reclaimed bead can be claimed again under the same principal, agent,
 	// and storage epoch.  Its new durable expiry is the claim boundary; an
 	// older checkpoint must never resurrect the prior lease image.
 	if !present || !sameLeaseIdentity(base, overlay) || !overlay.ExpiresAt.After(base.ExpiresAt) {
-		return cloneLease(base), nil
+		return cloneLease(base)
 	}
 	value := cloneLease(base)
 	value.ExpiresAt = overlay.ExpiresAt
 	value.TtlMs = overlay.TtlMs
 	value.Epoch = overlay.Epoch
-	return value, nil
+	return value
 }
 
 func sameLeaseIdentity(base *ClaimLease, overlay leaseOverlay) bool {
@@ -141,12 +145,12 @@ func sameLeaseIdentity(base *ClaimLease, overlay leaseOverlay) bool {
 		base.Agent == overlay.Agent && base.Epoch.String() == overlay.Epoch.String()
 }
 
-func saveLeaseOverlay(ctx context.Context, store driver.CheckpointStore, lease driver.ActiveLease, id string, expected uint64, value leaseOverlay) (uint64, error) {
+func saveLeaseOverlay(ctx context.Context, store driver.RecordGuardedCheckpointStore, lease driver.ActiveLease, ref model.Ref, revision model.Revision, incarnation string, expected uint64, value leaseOverlay) (uint64, error) {
 	payload, err := json.Marshal(value)
 	if err != nil {
 		return 0, err
 	}
-	saved, err := store.SaveCheckpoint(ctx, lease, leaseCheckpointKey(id), expected, payload)
+	saved, err := store.SaveCheckpointIfRecord(ctx, lease, leaseCheckpointKey(ref.ID), expected, payload, ref, revision, incarnation)
 	if err != nil {
 		return 0, err
 	}
@@ -278,6 +282,10 @@ func (w *Writer) Heartbeat(ctx context.Context, by model.PrincipalRef, ref model
 	if !ok {
 		return port.HeartbeatOutcome{}, failure("internal_error", "heartbeat requires durable checkpoint metadata")
 	}
+	guarded, ok := w.store.(driver.RecordGuardedCheckpointStore)
+	if !ok {
+		return port.HeartbeatOutcome{}, failure("internal_error", "heartbeat requires record-guarded checkpoint metadata")
+	}
 
 	// Look up the target-free receipt before existence or lease details. A
 	// changed target therefore gets idempotency_key_reused before inspecting
@@ -408,11 +416,14 @@ func (w *Writer) Heartbeat(ctx context.Context, by model.PrincipalRef, ref model
 	if !overlayReady {
 		armed := *receipt.Overlay
 		for attempt := 0; attempt < 8; attempt++ {
-			next, saveErr := saveLeaseOverlay(ctx, checkpoints, w.lease, ref.ID, overlayGeneration, armed)
+			next, saveErr := saveLeaseOverlay(ctx, guarded, w.lease, ref, rows[0].Revision, snapshot.Snapshot().Incarnation, overlayGeneration, armed)
 			if saveErr == nil {
 				overlayGeneration = next
 				overlayReady = true
 				break
+			}
+			if errors.Is(saveErr, driver.ErrConflict) {
+				return port.HeartbeatOutcome{}, failure("lease_not_held", "claim changed before heartbeat publication")
 			}
 			if !errors.Is(saveErr, driver.ErrCheckpointConflict) {
 				return port.HeartbeatOutcome{}, saveErr

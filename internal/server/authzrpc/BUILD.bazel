@@ -22,16 +22,22 @@ go_library(
 
 go_test(
     name = "authzrpc_test",
-    srcs = ["authzrpc_test.go", "drivers_test.go"],
+    srcs = ["authzrpc_test.go", "drivers_test.go", "predicate_count_test.go"],
     embed = [":authzrpc"],
+    tags = ["exclusive"],
     deps = [
         "//internal/core/authz",
         "//internal/core/model",
         "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/core/viewops",
         "//internal/plugins/authnapikey",
         "//internal/plugins/authzfixed",
+        "//internal/server/authn",
         "//internal/server/pluginhost",
+        "//internal/server/rpc",
         "//internal/server/transport/httpjson",
+        "//internal/server/viewrpc",
         "//internal/storage/conformance",
         "//internal/storage/driver",
         "//internal/storage/memory",

@@ -37,14 +37,26 @@ func (w *Writer) ApplyClaimRelease(ctx context.Context, by model.PrincipalRef, r
 	return w.applyWithOutcome(ctx, by, model.ChangeSet{Ops: ops}, meta, mode, nil)
 }
 
-func (w *Writer) checkClaimRelease(ctx context.Context, doc Document, by model.PrincipalRef, meta model.WriteMeta, mode *claimReleaseMode) error {
+func (w *Writer) checkClaimRelease(ctx context.Context, p *prepared, doc Document, by model.PrincipalRef, meta model.WriteMeta, mode *claimReleaseMode) error {
 	lease := doc.Lease
-	if overlayStore, ok := w.store.(driver.CheckpointStore); ok && lease != nil {
-		effective, err := EffectiveLease(ctx, overlayStore, doc.ID, lease)
+	if lease != nil {
+		overlayStore, ok := w.store.(driver.CheckpointStore)
+		if !ok {
+			return driver.ErrUnsupported
+		}
+		overlay, generation, present, err := loadLeaseOverlay(ctx, overlayStore, doc.ID)
 		if err != nil {
 			return err
 		}
-		lease = effective
+		lease = effectiveLease(lease, overlay, present)
+		if p.checkpointReads == nil {
+			p.checkpointReads = make(map[string]uint64)
+		}
+		key := leaseCheckpointKey(doc.ID)
+		if prior, exists := p.checkpointReads[key]; exists && prior != generation {
+			return errStale
+		}
+		p.checkpointReads[key] = generation
 	}
 	if lease == nil {
 		return failure("lease_not_held", "bead has no active claim")
