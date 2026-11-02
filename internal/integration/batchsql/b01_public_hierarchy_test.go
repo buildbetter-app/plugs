@@ -145,6 +145,7 @@ func (h *b01Public) open(t *testing.T) {
 	}
 	h.slots = h.listen(t, registry, authn.Config{}, "anonymous")
 	h.owner = h.issue(t, b01Agent("owner")).Token
+	t.Logf("B01 public boundary: engine=%s; real loopback HTTP, API-key/fixed hierarchy writes and separate no-plugin lifecycle host", f.engine)
 }
 
 func (h *b01Public) listen(t *testing.T, registry *rpc.Registry, config authn.Config, mode string) *httptest.Server {
@@ -455,7 +456,7 @@ func TestB01PublicHierarchyFivePermissionRulesAcrossDrivers(t *testing.T) {
 					return h.write(t, mover, "tx.apply", b01Child, map[string]any{"changeSet": batch})
 				}, "forbidden")
 				h.unchanged(t, func() b01Reply {
-					return h.write(t, h.owner, "bead.create", b01Child, map[string]any{"type": "issue", "parent": model.RefByKey("unresolved")})
+					return h.write(t, h.owner, "bead.create", b01Child, map[string]any{"type": "issue", "fields": map[string]any{"title": "unresolved parent"}, "parent": model.RefByKey("unresolved")})
 				}, "invalid_params")
 				h.unchanged(t, func() b01Reply { return h.move(t, h.owner, child, &child) }, "ontology_guard_failed")
 				op := hierarchyMove(child, &parent)
@@ -478,7 +479,7 @@ func TestB01PublicHierarchyFivePermissionRulesAcrossDrivers(t *testing.T) {
 				h.progress(t, h.viewer(t, b01Projects...), parent, nil, map[string]int{"total": 3, "status:todo": 2, "status:backlog": 1}, 0)
 			})
 			t.Run("stored-receipt-rechecks-current-child-and-parent-permission", func(t *testing.T) {
-				params := map[string]any{"type": "issue", "parent": parent}
+				params := map[string]any{"type": "issue", "fields": map[string]any{"title": "current-authority receipt"}, "parent": parent}
 				accepted := h.write(t, h.owner, "bead.create", b01Child, params)
 				b01Committed(t, accepted)
 				replayed := h.call(t, h.api, h.owner, "bead.create", params)
@@ -542,12 +543,46 @@ func TestB01PublicDeferredAncestorsAcrossDrivers(t *testing.T) {
 			})
 			t.Run("claim-next-fresh-probe-excludes-deferred-tree", func(t *testing.T) {
 				before := f.state(t)
-				params := map[string]any{"filter": map[string]any{"resources": []string{child.ID, grandchild.ID}}, "_meta": map[string]any{"project": b01Child, "idempotencyKey": f.meta("claim-next").IdempotencyKey}}
+				key := f.meta("claim-next").IdempotencyKey
+				params := map[string]any{"filter": map[string]any{"resources": []string{child.ID, grandchild.ID}}, "_meta": map[string]any{"project": b01Child, "idempotencyKey": key}}
 				reply := h.call(t, h.slots, "", "bead.claimNext", params)
 				if reply.Error != nil || string(reply.Result) != "null" {
 					t.Fatalf("claimNext selected deferred descendant: result=%s error=%+v", reply.Result, reply.Error)
 				}
-				requireSameState(t, before, f.state(t))
+				// Successful terminal null has a durable H+1 receipt. It must
+				// leave every bead/version unchanged and replay without H+2.
+				after := f.state(t)
+				head, err := before.Meta.Head.Uint64()
+				if err != nil {
+					t.Fatal(err)
+				}
+				expectedMeta := before.Meta
+				expectedMeta.Head = model.Natural64(head + 1)
+				if !reflect.DeepEqual(before.Records, after.Records) || !reflect.DeepEqual(before.Versions, after.Versions) || !reflect.DeepEqual(expectedMeta, after.Meta) || len(after.Log) != len(before.Log)+1 || !reflect.DeepEqual(before.Log, after.Log[:len(before.Log)]) {
+					t.Fatal("terminal null changed beads/history beyond its H+1 receipt")
+				}
+				last := after.Log[len(before.Log)]
+				if len(last.Changes) != 0 || last.IdempotencyKey != key || last.Revision != after.Meta.Head {
+					t.Fatalf("terminal null lacks an empty H+1 changeset: %+v", last)
+				}
+				r, err := f.store.Read(f.ctx, driver.View{Incarnation: after.Meta.Incarnation})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer r.Close()
+				principal, err := driver.PrincipalKey(model.PrincipalRef{Kind: "anonymous", ID: "anonymous"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				receipt, err := r.IdempotencyByKey(f.ctx, principal, "", "bead.claimNext", key)
+				if err != nil || receipt == nil || receipt.ResponsePending || receipt.Commit.Revision != after.Meta.Head || len(receipt.Commit.Results) != 0 || receipt.Commit.LeaseExpiresAt != nil || receipt.Changeset.Revision != last.Revision {
+					t.Fatalf("terminal null receipt mismatch: %+v (%v)", receipt, err)
+				}
+				replay := h.call(t, h.slots, "", "bead.claimNext", params)
+				if replay.Error != nil || !replay.Meta.Replayed || string(replay.Result) != "null" {
+					t.Fatalf("terminal null did not replay: %+v", replay)
+				}
+				requireSameState(t, after, f.state(t))
 			})
 			t.Run("public-reparent-releases-and-resuppresses-entire-subtree", func(t *testing.T) {
 				b01Committed(t, h.move(t, h.owner, child, &other))
