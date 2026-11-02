@@ -35,6 +35,7 @@ type transaction struct {
 	blobs           map[driver.Hash][]byte
 	bumps           map[string]driver.LockKey
 	allocators      map[string]driver.OfflineAllocator
+	parentCounters  map[string]driver.ParentCounter
 	allocated       map[string]bool
 }
 
@@ -83,6 +84,7 @@ func (t *transaction) finish() {
 	t.blobs = nil
 	t.bumps = nil
 	t.allocators = nil
+	t.parentCounters = nil
 	t.allocated = nil
 	t.store.untrack(t)
 	close(t.done)
@@ -498,6 +500,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			if _, err = c.ExecContext(ctx, `INSERT INTO allocator_states(prefix,data) VALUES(?,?) ON CONFLICT(prefix) DO UPDATE SET data=excluded.data`, prefix, allocatorData); err != nil {
 				return err
 			}
+		}
+		if err = t.publishParentCounters(ctx, c); err != nil {
+			return err
 		}
 		for hash, blob := range t.blobs {
 			if blob == nil {

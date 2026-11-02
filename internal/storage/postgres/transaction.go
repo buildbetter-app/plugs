@@ -31,6 +31,7 @@ type transaction struct {
 	derived         map[string]driver.LockState
 	blobs           map[driver.Hash][]byte
 	allocators      map[string]driver.OfflineAllocator
+	parentCounters  map[string]driver.ParentCounter
 	bumps           map[string]driver.LockKey
 	allocated       map[string]bool
 	done            chan struct{}

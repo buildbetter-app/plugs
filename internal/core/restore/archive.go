@@ -144,6 +144,18 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 	}
 	defer reader.Close()
 
+	inventoryReader, ok := reader.(driver.AllocatorInventoryReader)
+	if !ok {
+		return nil, dumpformat.Manifest{}, fmt.Errorf("%w: native snapshot requires complete allocator inventory", driver.ErrUnsupported)
+	}
+	inventory, err := inventoryReader.AllocatorInventory(ctx)
+	if err != nil {
+		return nil, dumpformat.Manifest{}, err
+	}
+	if len(inventory.Projects) != 0 || len(inventory.Parents) != 0 {
+		return nil, dumpformat.Manifest{}, fmt.Errorf("%w: native snapshot cannot preserve allocator continuation state", driver.ErrUnsupported)
+	}
+
 	var records []nativeRecord
 	var cursor *driver.Cursor
 	for {

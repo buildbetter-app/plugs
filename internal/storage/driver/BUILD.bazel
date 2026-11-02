@@ -4,6 +4,7 @@ go_library(
     name = "driver",
     srcs = [
         "allocator.go",
+        "parent_counter.go",
         "driver.go",
         "errors.go",
         "keys.go",
@@ -20,6 +21,7 @@ go_test(
     name = "driver_test",
     srcs = [
         "allocator_contract_test.go",
+        "parent_counter_test.go",
         "audit_contract_test.go",
         "errors_test.go",
         "keys_test.go",

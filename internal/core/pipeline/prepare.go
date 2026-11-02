@@ -29,7 +29,8 @@ type pending struct {
 	deleted  bool
 	setBy    map[string]string
 	// allocatorPrefix/Expected are set only for IDs previewed from a
-	// transaction-capable restored allocator. The expected value is checked
+	// transaction-capable allocator. A parent with no prefix uses its internal
+	// parent-only counter. The expected value is checked
 	// again after the allocator fact lock is acquired before publication.
 	allocatorPrefix   string
 	allocatorExpected string
@@ -685,6 +686,13 @@ func (p *prepared) allocatorObservations(ctx context.Context, prefix, parent str
 	occupied := map[string]bool{}
 	maxChild := uint64(0)
 	add := func(id string, project string, deleted bool) {
+		// A number previewed by an earlier create remains consumed within
+		// this batch even if a later operation deletes that pending child.
+		if parent != "" {
+			if n, err := driver.ChildNumber(parent, id); err == nil && n > maxChild {
+				maxChild = n
+			}
+		}
 		if deleted {
 			return
 		}
@@ -693,11 +701,6 @@ func (p *prepared) allocatorObservations(ctx context.Context, prefix, parent str
 			tail := strings.TrimPrefix(id, prefix+"-")
 			if tail != "" && !strings.ContainsRune(tail, '.') {
 				count++
-			}
-		}
-		if parent != "" {
-			if n, err := driver.ChildNumber(parent, id); err == nil && n > maxChild {
-				maxChild = n
 			}
 		}
 	}
@@ -718,14 +721,29 @@ func (p *prepared) allocatorObservations(ctx context.Context, prefix, parent str
 }
 
 func (p *prepared) fallbackChildID(ctx context.Context, parent string) (string, error) {
-	_, _, maxChild, err := p.allocatorObservations(ctx, "", parent)
+	incarnation := p.snapshot.Snapshot().Incarnation
+	key, err := driver.ParentCounterLock(incarnation, parent)
 	if err != nil {
 		return "", err
 	}
-	if maxChild == ^uint64(0) {
-		return "", fmt.Errorf("%w: child counter exhausted", driver.ErrUnsupported)
+	if _, err = p.snapshot.observe(ctx, []driver.LockKey{key}); err != nil {
+		return "", err
 	}
-	return fmt.Sprintf("%s.%d", parent, maxChild+1), nil
+	reader, ok := p.snapshot.reader.(driver.ParentCounterReader)
+	if !ok {
+		return "", driver.ErrUnsupported
+	}
+	state, err := reader.LoadParentCounter(ctx, parent)
+	if errors.Is(err, driver.ErrNotFound) {
+		state = driver.ParentCounter{Incarnation: incarnation, Parent: parent}
+	} else if err != nil {
+		return "", err
+	}
+	_, _, observed, err := p.allocatorObservations(ctx, "", parent)
+	if err != nil {
+		return "", err
+	}
+	return state.Next(observed)
 }
 
 // nextAllocatorID previews a restored allocator on the immutable preparation
@@ -809,18 +827,19 @@ func (p *prepared) nextAllocatorID(ctx context.Context, project string, input dr
 }
 
 // nextChildAllocatorID keeps the dotted ID contract even when no restored
-// allocator exists by reconciling the direct-child scan. A restored random
-// allocator retains its opaque suffix; sequential/hash allocators repair a
+// allocator exists by reconciling a durable parent-only counter and direct
+// IDs. A restored random allocator retains its opaque suffix; sequential/hash
+// allocators repair a
 // stale counter to the observed maximum before consuming the candidate.
 func (p *prepared) nextChildAllocatorID(ctx context.Context, project, parent string, fallback func() (string, error), mint func(driver.OfflineAllocator, string) (string, error)) (string, string, string, string, error) {
 	if project == "" {
 		id, err := p.fallbackChildID(ctx, parent)
-		return id, "", "", "", err
+		return id, "", id, parent, err
 	}
 	reader, ok := p.snapshot.reader.(driver.AllocatorReader)
 	if !ok {
 		id, err := p.fallbackChildID(ctx, parent)
-		return id, "", "", "", err
+		return id, "", id, parent, err
 	}
 	if !p.allocatorSeen[project] {
 		key, err := driver.AllocatorLock(project)
@@ -835,7 +854,7 @@ func (p *prepared) nextChildAllocatorID(ctx context.Context, project, parent str
 	state, err := reader.LoadAllocator(ctx, project)
 	if errors.Is(err, driver.ErrNotFound) {
 		id, fallbackErr := p.fallbackChildID(ctx, parent)
-		return id, "", "", "", fallbackErr
+		return id, "", id, parent, fallbackErr
 	}
 	if err != nil {
 		return "", "", "", "", err
@@ -854,14 +873,14 @@ func (p *prepared) nextChildAllocatorID(ctx context.Context, project, parent str
 	if err != nil {
 		return "", "", "", "", err
 	}
-	if current := state.Children[parent]; observed > current {
+	current := state.Children[parent]
+	if observed > current {
 		current = observed
-		state.Children[parent] = current
 	}
-	if state.Children[parent] == ^uint64(0) {
+	if current == ^uint64(0) {
 		return "", "", "", "", fmt.Errorf("%w: child counter exhausted", driver.ErrUnsupported)
 	}
-	next := state.Children[parent] + 1
+	next := current + 1
 	id := fmt.Sprintf("%s.%d", parent, next)
 	if occupied[id] {
 		return "", "", "", "", errStale

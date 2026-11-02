@@ -766,6 +766,8 @@ internal/storage/driver/keys_test.go
 internal/storage/driver/offline_history.go
 internal/storage/driver/offline_history_test.go
 internal/storage/driver/offline_restore.go
+internal/storage/driver/parent_counter.go
+internal/storage/driver/parent_counter_test.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
 internal/storage/driver/restore_test.go
@@ -783,6 +785,7 @@ internal/storage/memory/noop.go
 internal/storage/memory/noop_test.go
 internal/storage/memory/offline_history.go
 internal/storage/memory/offline_restore.go
+internal/storage/memory/parent_counter.go
 internal/storage/memory/reader.go
 internal/storage/memory/staged_reads_test.go
 internal/storage/memory/store.go
@@ -805,6 +808,7 @@ internal/storage/postgres/lock_batch_test.go
 internal/storage/postgres/metadata.go
 internal/storage/postgres/offline_history.go
 internal/storage/postgres/offline_restore.go
+internal/storage/postgres/parent_counter.go
 internal/storage/postgres/pending_test.go
 internal/storage/postgres/persistence_test.go
 internal/storage/postgres/query.go
@@ -825,6 +829,7 @@ internal/storage/sqlite/locks_unix.go
 internal/storage/sqlite/metadata.go
 internal/storage/sqlite/offline_history.go
 internal/storage/sqlite/offline_restore.go
+internal/storage/sqlite/parent_counter.go
 internal/storage/sqlite/pending_test.go
 internal/storage/sqlite/process_test.go
 internal/storage/sqlite/reader.go

@@ -394,7 +394,19 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	}
 	allocatorKeys := make([]driver.LockKey, 0)
 	allocatorPrefixes := map[string]bool{}
+	parentCounters := map[string]bool{}
 	for _, pending := range writes {
+		if pending.allocatorPrefix == "" && pending.allocatorChild != "" {
+			if !parentCounters[pending.allocatorChild] {
+				key, e := driver.ParentCounterLock(p.snapshot.Snapshot().Incarnation, pending.allocatorChild)
+				if e != nil {
+					return model.Commit{}, e
+				}
+				allocatorKeys = append(allocatorKeys, key)
+				parentCounters[pending.allocatorChild] = true
+			}
+			continue
+		}
 		if pending.allocatorPrefix == "" || allocatorPrefixes[pending.allocatorPrefix] {
 			continue
 		}
@@ -452,19 +464,22 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			return model.Commit{}, port.ErrClaimNextReady
 		}
 	}
-	if len(allocatorPrefixes) > 0 {
-		allocator, ok := tx.(driver.AllocatorContinuation)
-		if !ok {
+	if len(allocatorPrefixes) > 0 || len(parentCounters) > 0 {
+		allocator, supportsProfiles := tx.(driver.AllocatorContinuation)
+		parentAllocator, supportsParents := tx.(driver.ParentCounterContinuation)
+		if (len(allocatorPrefixes) > 0 && !supportsProfiles) || (len(parentCounters) > 0 && !supportsParents) {
 			return model.Commit{}, driver.ErrUnsupported
 		}
 		consumed := map[string]bool{}
 		for _, ref := range p.refs {
 			pending := p.writes[ref.ID]
-			if pending == nil || pending.allocatorPrefix == "" || consumed[ref.ID] {
+			if pending == nil || (pending.allocatorPrefix == "" && pending.allocatorChild == "") || consumed[ref.ID] {
 				continue
 			}
 			var allocationErr error
 			switch {
+			case pending.allocatorPrefix == "" && pending.allocatorChild != "":
+				allocationErr = parentAllocator.ConsumeParentChild(ctx, pending.allocatorChild, pending.allocatorExpected)
 			case pending.allocatorChild != "":
 				allocationErr = allocator.AllocateChild(ctx, pending.allocatorChild, pending.allocatorExpected)
 			case pending.allocatorHash != nil:
