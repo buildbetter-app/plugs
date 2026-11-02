@@ -977,6 +977,14 @@ spec/s1-b05-b08/reclaim_race_test.go
 spec/s1-b05-b08/record_reference.py
 spec/s1-b05-b08/reference/provenance.json
 spec/s1-b05-b08/runtime_test.go
+spec/s1-b13-b16/BUILD.bazel
+spec/s1-b13-b16/README.md
+spec/s1-b13-b16/capture_regressions_test.go
+spec/s1-b13-b16/capture_regressions_test.py
+spec/s1-b13-b16/record_reference.py
+spec/s1-b13-b16/reference_capture.py
+spec/s1-b13-b16/reference_capture_main.go
+spec/s1-b13-b16/slice_test.go
 spec/s1-b17-b20/BUILD.bazel
 spec/s1-b17-b20/README.md
 spec/s1-b17-b20/b17_test.go
