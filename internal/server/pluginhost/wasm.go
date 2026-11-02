@@ -399,9 +399,9 @@ func (r *wasmRuntime) hostCall(ctx context.Context, module api.Module, ptr, leng
 	if request.reader == nil {
 		panic("WASM outbound host calls are unsupported outside snapshot callbacks")
 	}
-	releaseReader, err := r.factory.acquireReaderWorker(ctx)
-	if err != nil {
-		panic(err)
+	releaseReader, admissionErr := r.factory.acquireReaderWorker(ctx)
+	if admissionErr != nil {
+		panic(admissionErr)
 	}
 	readResult := make(chan wasmReadOutcome, 1)
 	go func() {
