@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
 func hRef(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
@@ -39,7 +41,7 @@ func hBody(id, project, parent, status string) []byte {
 }
 
 type hFixture struct {
-	store *memory.Store
+	store driver.Store
 	lease driver.ActiveLease
 	keys  *authnapikey.Provider
 	facts *MutableFacts
@@ -49,8 +51,13 @@ type hFixture struct {
 
 func newHFixture(t *testing.T, enabled bool) *hFixture {
 	t.Helper()
+	return newHFixtureStore(t, enabled, memory.New())
+}
+
+func newHFixtureStore(t *testing.T, enabled bool, store driver.Store) *hFixture {
+	t.Helper()
 	ctx := context.Background()
-	f := &hFixture{store: memory.New()}
+	f := &hFixture{store: store}
 	t.Cleanup(func() { _ = f.store.Close() })
 	var err error
 	f.lease, err = f.store.Lease(ctx, "hierarchy-authz", driver.LeaseTTL)
@@ -102,10 +109,11 @@ func hAgent() model.PrincipalRef {
 
 type hSnapshot struct {
 	driver.Reader
-	mu      sync.Mutex
-	gets    map[string]int
-	locks   []driver.LockKey
-	failGet string
+	mu          sync.Mutex
+	gets        map[string]int
+	locks       []driver.LockKey
+	failGet     string
+	failObserve string
 }
 
 func (f *hFixture) snapshot(t *testing.T) *hSnapshot {
@@ -138,6 +146,13 @@ func (s *hSnapshot) Get(ctx context.Context, refs []model.Ref) ([]driver.Record,
 func (s *hSnapshot) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
 	s.mu.Lock()
 	s.locks = append(s.locks, keys...)
+	for _, key := range keys {
+		encoded, err := driver.EncodeLockKey(key)
+		if err == nil && encoded == s.failObserve {
+			s.mu.Unlock()
+			return nil, errors.New("test dependency unavailable")
+		}
+	}
 	s.mu.Unlock()
 	return s.Reader.Observe(ctx, keys)
 }
@@ -269,6 +284,214 @@ func TestHierarchyOrderedCreatesAndFinalImages(t *testing.T) {
 		mutate(&bad)
 		err := f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", epic, bad), f.snapshot(t))
 		requireHCode(t, err, "forbidden")
+	}
+}
+
+func TestHierarchyFixedPolicyBatchesHundredOperationAuthorization(t *testing.T) {
+	f := newHFixture(t, true)
+	if !f.app.Checker.canBatchHierarchyChecks() {
+		t.Fatal("fixed-policy hierarchy chain did not select aggregate authorization")
+	}
+	changes := make([]port.Change, 100)
+	for i := range changes {
+		id := fmt.Sprintf("batch-%03d", i)
+		changes[i] = hCreate(id, "", "child-project", nil, "")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := f.app.Checker.AuthorizeHierarchy(ctx, port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", changes...), f.snapshot(t)); err != nil {
+		t.Fatalf("100-operation fixed-policy batch exceeded the unchanged authorization deadline: %v", err)
+	}
+}
+
+func TestHierarchyFixedPolicyCoalescesEquivalentPermissionRequests(t *testing.T) {
+	caller := authz.Caller{Principal: hAgent(), VerificationID: "verification", CapturedEpoch: model.Natural64(1)}
+	batch := &hierarchyCheckBatch{caller: caller}
+	request := authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Project, Ref: hRef("child-project")}, Method: "tx.apply"}
+	first := batch.add(request)
+	if repeated := batch.add(request); repeated != first {
+		t.Fatalf("equivalent fixed-policy request was not coalesced: first=%d repeated=%d", first, repeated)
+	}
+	if got, want := len(batch.requests), 1; got != want {
+		t.Fatalf("coalesced request count = %d, want %d", got, want)
+	}
+	for _, edit := range []func(*authz.CheckRequest){
+		func(q *authz.CheckRequest) { q.Resource.Ref = hRef("parent-project") },
+		func(q *authz.CheckRequest) { q.Method = "bead.reparent" },
+		func(q *authz.CheckRequest) { q.Caller.VerificationID = "different-verification" },
+	} {
+		changed := request
+		edit(&changed)
+		if got := batch.add(changed); got == first {
+			t.Fatalf("non-equivalent request reused fixed-policy decision: %+v", changed)
+		}
+	}
+	if got, want := len(batch.requests), 4; got != want {
+		t.Fatalf("non-equivalent request count = %d, want %d", got, want)
+	}
+}
+
+func TestHierarchyFixedPolicyObservesDependenciesOncePerPass(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite"} {
+		t.Run(engine, func(t *testing.T) {
+			var store driver.Store
+			if engine == "sqlite" {
+				var err error
+				store, err = (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: t.TempDir() + "/hierarchy.db"})
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				store = memory.New()
+			}
+			f := newHFixtureStore(t, true, store)
+			changes := make([]port.Change, 100)
+			for i := range changes {
+				changes[i] = hCreate(fmt.Sprintf("observed-%03d", i), "", "child-project", nil, "")
+			}
+			s := f.snapshot(t)
+			started := time.Now()
+			if err := f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", changes...), s); err != nil {
+				t.Fatal(err)
+			}
+			counts := map[string]int{}
+			for _, key := range s.locks {
+				encoded, err := driver.EncodeLockKey(key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				counts[encoded]++
+			}
+			t.Logf("100-operation authorization: engine=%s elapsed_ms=%.3f source_reads=%d dependency_observations=%d unique_dependencies=%d", engine, float64(time.Since(started))/float64(time.Millisecond), len(s.gets), len(s.locks), len(counts))
+			if got, want := len(counts), 2*len(changes)+5; got != want {
+				t.Fatalf("first-touch dependency set changed: got=%d want=%d", got, want)
+			}
+			acl, _ := driver.NewReadFact(authz.ACLDependency(f.base.Namespace).Key)
+			aclKey, _ := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockReadFact, Fact: acl})
+			for key, count := range counts {
+				// FactsSource.Load and Checker.load separately fence the ACL.
+				// The finite policy may observe each dependency only once more.
+				limit := 1
+				if key == aclKey {
+					limit = 3
+				}
+				if count > limit {
+					t.Errorf("snapshot dependency repeatedly read: key=%s observations=%d limit=%d", key, count, limit)
+				}
+			}
+			for _, change := range changes {
+				if s.gets[change.Resource.Ref.ID] != 1 {
+					t.Errorf("source absence was not tracked exactly once for %s", change.Resource.Ref.ID)
+				}
+				for _, prefix := range []string{"bead/", "closure/"} {
+					sentinel, _ := driver.NewSentinel(prefix + change.Resource.Ref.ID)
+					if !s.observed(driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}) {
+						t.Errorf("first-touch dependency lost: %s%s", prefix, change.Resource.Ref.ID)
+					}
+				}
+			}
+		})
+	}
+}
+
+type hCountingLink struct{ calls atomic.Int32 }
+
+func (l *hCountingLink) Check(_ context.Context, _ authz.Slice, requests []authz.CheckRequest) ([]authz.Step, error) {
+	l.calls.Add(1)
+	out := make([]authz.Step, len(requests))
+	for i := range out {
+		out[i].Effect = authz.NoDecision
+	}
+	return out, nil
+}
+
+func (*hCountingLink) Filter(authz.ListRequest) (authz.FilterExpr, error) {
+	return authz.FilterExpr{Op: authz.False}, authz.ErrCheckOnly
+}
+
+func TestHierarchyCustomLinksRetainPerOperationFallback(t *testing.T) {
+	f := newHFixture(t, true)
+	link := &hCountingLink{}
+	f.app.Checker.chain.Links = []authz.Link{link}
+	if f.app.Checker.canBatchHierarchyChecks() {
+		t.Fatal("custom-link hierarchy chain selected aggregate authorization")
+	}
+	changes := []port.Change{
+		hCreate("custom-0", "", "child-project", nil, ""),
+		hCreate("custom-1", "", "child-project", nil, ""),
+		hCreate("custom-2", "", "child-project", nil, ""),
+	}
+	s := f.snapshot(t)
+	if err := f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", changes...), s); err != nil {
+		t.Fatalf("custom-link fallback refused a valid batch: %v", err)
+	}
+	if got, want := link.calls.Load(), int32(len(changes)); got != want {
+		t.Fatalf("custom link was batched across operations: calls=%d want=%d", got, want)
+	}
+	// A custom component also keeps fresh first-touch reads per operation.
+	pluginKey, _ := driver.EncodeLockKey(driver.PluginsSentinelLock)
+	count := 0
+	for _, key := range s.locks {
+		encoded, _ := driver.EncodeLockKey(key)
+		if encoded == pluginKey {
+			count++
+		}
+	}
+	if count <= 1 {
+		t.Fatal("custom-link fallback reused fixed-only dependency observations")
+	}
+}
+
+type hCountingRules struct{ calls atomic.Int32 }
+
+func (r *hCountingRules) Eval(_ context.Context, _ authz.Slice, requests []authz.CheckRequest) ([]authz.Decision, error) {
+	r.calls.Add(1)
+	decisions := make([]authz.Decision, len(requests))
+	for i := range decisions {
+		decisions[i].Effect = authz.NoDecision
+	}
+	return decisions, nil
+}
+
+func (*hCountingRules) Compile(authz.ListRequest) (authz.FilterTemplate, error) {
+	return authz.FilterTemplate{}, authz.ErrCheckOnly
+}
+
+func TestHierarchyCustomRulesRetainPerOperationFallback(t *testing.T) {
+	f := newHFixture(t, true)
+	rules := &hCountingRules{}
+	f.app.Checker.chain.Rules = append(f.app.Checker.chain.Rules, rules)
+	if f.app.Checker.canBatchHierarchyChecks() {
+		t.Fatal("custom rules selected aggregate authorization")
+	}
+	changes := []port.Change{
+		hCreate("custom-rule-0", "", "child-project", nil, ""),
+		hCreate("custom-rule-1", "", "child-project", nil, ""),
+		hCreate("custom-rule-2", "", "child-project", nil, ""),
+	}
+	if err := f.app.Checker.AuthorizeHierarchy(context.Background(), port.AuthorizeAfter, hProposal(hAgent(), "tx.apply", changes...), f.snapshot(t)); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := rules.calls.Load(), int32(len(changes)); got != want {
+		t.Fatalf("custom rules were batched across operations: calls=%d want=%d", got, want)
+	}
+}
+
+func TestHierarchyFixedPolicyDependencyScopeIsFresh(t *testing.T) {
+	f := newHFixture(t, true)
+	s := f.snapshot(t)
+	parent := hRef("new")
+	proposal := hProposal(hAgent(), "bead.reparent", hMove(&parent))
+	for _, stage := range []port.AuthorizationStage{port.AuthorizeBefore, port.AuthorizeAfter, port.AuthorizeReplay} {
+		if err := f.app.Checker.AuthorizeHierarchy(context.Background(), stage, proposal, s); err != nil {
+			t.Fatalf("%s: %v", stage, err)
+		}
+		// Reusing the Reader, even within the same stage, must not reuse an
+		// earlier pass's successful dependency or hide a new source failure.
+		s.failObserve, _ = driver.EncodeLockKey(driver.PluginsSentinelLock)
+		err := f.app.Checker.AuthorizeHierarchy(context.Background(), stage, proposal, s)
+		requireHCode(t, err, "authz_unavailable")
+		s.failObserve = ""
 	}
 }
 

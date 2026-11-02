@@ -66,8 +66,12 @@ enumeration retain typed truncation. A driver without the optional capability
 returns typed `not-yet-supported`; no fallback flattens a history request.
 
 Portable bead, edge, comment, memory and config images pass through the same
-closed-world conversion as the current image. Opaque source fields retain their
-JSON numbers, nulls and text in `beads.*` metadata. Current census and archive
+closed-world conversion as the current image. Original source types in every
+frame and partial baseline require the manifest's
+explicit type directives, including their project and optional issue scope. An
+earlier image may use only a subset of the directives used by the current head.
+Opaque source fields retain their JSON numbers, nulls and text in `beads.*`
+metadata. Current census and archive
 members are retained at the final restore revision; they never fill historical
 business preimages. The adapter maps each checked source commit image to an
 explicit import-order revision. This proves commit-image history, not every

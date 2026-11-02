@@ -166,9 +166,45 @@ CORS. Both use disposable loopback fixtures, not a production server.
   References and reasons use textContent. `TestBrowserDirectBlockerContractFixtures`
   covers these states and hostile text using explicit response fixtures;
   it does not qualify the producer, authorization, or full E3 workload.
-- Epic progress remains explicitly unavailable until an admitted parent-aware
-  hierarchy and authorized count query exist. Type summaries are never shown
-  as epic progress.
+- Epic progress uses only the explicitly opted-in parent-aware `view.run`
+  definition: `filter.query="parent=<bare ID>"`, `fields=[]` and
+  `groupBy=["epic-progress"]`. Ordinary `view.run` discovery is insufficient:
+  a disabled producer refuses the definition. The tab renders visible counts
+  from the `total` and `status:<canonical status>` groups, preserving the
+  producer's status semantics instead of classifying statuses in the browser.
+  Only the total group's `authorization` elision supplies the exact
+  “N more you cannot see” remainder. Its same-request `continueWith` is a
+  fresh permission check, never a hidden-child next page; the UI validates
+  its scope and never executes a response-supplied call. Refresh builds the
+  same parent request again without a cursor or `asOf`.
+  Count-only results must be complete with no payload items or `nextCursor`.
+  Unknown groups, non-authorization elisions, inconsistent totals, unsafe
+  counts, more than 20,000 visible children or too many UI status rows refuse
+  the entire read. The authorized candidate cap does not limit the exact
+  hidden remainder, which must still be a safe natural number. No count is approximated or truncated. The request leaves
+  the producer's token budget at its default; `MaxRows` is only a presentation
+  bound. The producer's 100-group ceiling includes `total`, so at most 99
+  visible status buckets fit in one accepted response. Snapshot status keys
+  come from that one result, without an extra ontology read. Type summaries are never shown as epic progress.
+  Previous counts clear before refresh, cancellation, navigation or refusal;
+  refusal details never render a parent identity from a server hint.
+  `TestBrowserEpicProgressPresentation` checks
+  visible-only counts, the exact hidden remainder, output bounds, text-only
+  status labels and mobile wrapping using explicit presentation inputs. This
+  test does not qualify the hierarchy, permissions, ontology or RPC producer.
+  `TestBrowserEpicProgressWireContract` separately drives the real reader
+  against explicit wire fixtures, including malformed payloads, foreign
+  refresh scopes, typed refusals and the 100/101-group boundary. Its hidden
+  counts certify consumer behavior only.
+  `TestBrowserEpicProgressStoredGraph` uses actual memory and SQLite stores,
+  the Writer's parent hierarchy and status mutations, a stored protected
+  ontology source, the opted-in `view.run` producer, admitted HTTP RPC and
+  Chrome. It checks direct children across projects, excludes grandchildren
+  and unrelated rows, rereads committed status/reparent changes and clears
+  results above the presentation cap. This is an anonymous host without an
+  authorization plugin; no result is fabricated. It does not qualify hidden
+  child authorization or an authenticated browser. Those remain separate
+  from the producer's fixed-policy HTTP acceptance and the EP6 workload.
 
 - Refresh, cancellation, a 15-second read deadline, empty results and RPC
   refusals have explicit states. Interactive login and remote/CORS composition
@@ -216,6 +252,7 @@ Run Go and browser checks through Bazel only:
 ```sh
 /tmp/plug-swarm/bin/remote-bazel "$PWD" HEAD webui -- test //internal/server/webui:webui_test \
   //internal/server/webui:presence_display_test \
+  //internal/server/webui:epic_progress_test \
   --cache_test_results=no --test_output=all --test_arg=-test.v
 ```
 

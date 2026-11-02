@@ -355,8 +355,12 @@ func (t *transaction) BumpReadFacts(ctx context.Context, values []driver.ReadFac
 	return t.bump(ctx, keys)
 }
 func (t *transaction) recordRef(id string) driver.Ref {
-	// Lock retains canonical order when skipped keys are omitted.
-	i := sort.Search(len(t.acquired), func(i int) bool { return keyID(t.acquired[i].Key) >= id })
+	// Lock retains the globally encoded-key-sorted acquired subset, including
+	// mixed modes and skip-locked omissions. Use the same lower-bound lookup as
+	// writable; recordRef deliberately accepts every lock mode.
+	i := sort.Search(len(t.acquired), func(i int) bool {
+		return keyID(t.acquired[i].Key) >= id
+	})
 	if i < len(t.acquired) && keyID(t.acquired[i].Key) == id && t.acquired[i].Key.Ref != nil {
 		return *t.acquired[i].Key.Ref
 	}
