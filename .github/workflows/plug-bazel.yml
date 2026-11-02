@@ -38,6 +38,7 @@ jobs:
     timeout-minutes: 360
     permissions:
       contents: read
+      actions: read
     env:
       RUNSON_TRUSTED: >-
         ${{ github.event_name != 'pull_request' ||
@@ -134,6 +135,48 @@ jobs:
           printf '%s\n' "bazel_version=$bazel_version" "bazelisk_version=v1.29.0" \
             "repository_cache=$PLUG_BAZEL_REPOSITORY_CACHE" \
             "action_cache=disabled" "remote_execution=disabled" > "$PLUG_BAZEL_EVIDENCE_DIR/toolchain.txt"
+
+      - name: Resolve complete Plug Bazel selection
+        id: public_runtime_selection
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/plug-bazel-delivery.py selection --output "$PLUG_BAZEL_EVIDENCE_DIR"
+          mandatory='//tools/roundtrip:public_beads_runtime_test'
+          resolved="$PLUG_BAZEL_EVIDENCE_DIR/selection/resolved-test-targets.txt"
+          test -f "$resolved"
+          if grep -Fxq "$mandatory" "$resolved"; then
+            echo 'selected=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'selected=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare verified public Beads executable
+        if: ${{ steps.public_runtime_selection.outputs.selected == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRUSTED_PREPARER_SHA: cdc2948fb60572b9bc694269ac8a5fdff6720de3
+          TRUSTED_PREPARER_SHA256: a4ad328f11d59bb41cdf814a47b647e4b419a67675e35c111b8c41f878f12280
+          PUBLIC_BUNDLE_DESCRIPTOR: 41398730774:13120521766:66de7c070d365bbd7fc2bd39ed822e5bf72c21efabe0add9a5e26d07bf170a62
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = buildbetter-app/plugs
+          [[ "$TRUSTED_PREPARER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/buildbetter-app/plugs/contents/scripts/ci/prepare-public-bundle.py?ref=$TRUSTED_PREPARER_SHA" \
+            > "$RUNNER_TEMP/prepare-public-bundle.py"
+          printf '%s  %s\n' "$TRUSTED_PREPARER_SHA256" "$RUNNER_TEMP/prepare-public-bundle.py" | sha256sum --check --status
+          descriptor="$(python3 "$RUNNER_TEMP/prepare-public-bundle.py" request \
+            --args "test --test_env=PLUG_PUBLIC_BUNDLE=$PUBLIC_BUNDLE_DESCRIPTOR")"
+          test "$descriptor" = "$PUBLIC_BUNDLE_DESCRIPTOR"
+          python3 "$RUNNER_TEMP/prepare-public-bundle.py" prepare \
+            --descriptor "$descriptor" \
+            --output "$RUNNER_TEMP/plug-public-bundle-runtime" \
+            --github-env "$GITHUB_ENV" \
+            --evidence "$PLUG_BAZEL_EVIDENCE_DIR/public-bundle.json"
+          printf '%s\n' \
+            "trusted_preparer_sha=$TRUSTED_PREPARER_SHA" \
+            "trusted_preparer_sha256=$TRUSTED_PREPARER_SHA256" \
+            "descriptor=$descriptor" > "$PLUG_BAZEL_EVIDENCE_DIR/public-bundle-helper-binding.txt"
 
       # Run the existing lanes as one union, retaining full per-test evidence.
       - name: Capture and run Plug Bazel lanes

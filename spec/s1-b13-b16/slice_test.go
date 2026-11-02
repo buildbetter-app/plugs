@@ -650,14 +650,15 @@ func runB14(t *testing.T, engine string) []byte {
 }
 
 type labelBoundaryProjection struct {
-	Engine        string `json:"engine"`
-	CreateRefusal string `json:"createRefusal"`
-	FilterRefusal string `json:"filterRefusal"`
-	HeadUnchanged bool   `json:"headUnchanged"`
-	Disposition   string `json:"disposition"`
+	Engine          string   `json:"engine"`
+	CreatedLabels   []string `json:"createdLabels"`
+	MutationRefusal string   `json:"mutationRefusal"`
+	FilterRefusal   string   `json:"filterRefusal"`
+	HeadUnchanged   bool     `json:"headUnchanged"`
+	Disposition     string   `json:"disposition"`
 }
 
-func TestB16LabelsRemainTypedUnqualifiedTwice(t *testing.T) {
+func TestB16PublicLabelsAndTypedFilterBoundaryTwice(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite"} {
 		t.Run(engine, func(t *testing.T) {
 			first := runB16(t, engine)
@@ -673,14 +674,17 @@ func TestB16LabelsRemainTypedUnqualifiedTwice(t *testing.T) {
 func runB16(t *testing.T, engine string) []byte {
 	t.Helper()
 	f := newFixture(t, engine, "b16", []string{"b16-normal"}, service.NewOntology(nil))
-	before := head(t, f)
 	create := f.call(t, context.Background(), "labels-create", "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "label probe", "labels": []any{"alpha"}}}, true)
-	createCode := code(create)
-	if createCode == "" {
-		t.Fatalf("typed label field unexpectedly succeeded: %v", create)
+	result(t, create)
+	stored := document(t, f, "b16-normal")
+	if !reflect.DeepEqual(stored.Labels, []string{"alpha"}) {
+		t.Fatalf("public typed labels were not persisted: %+v", stored)
 	}
+	before := head(t, f)
+	invalid := f.call(t, context.Background(), "labels-invalid", "bead.update", map[string]any{"id": ref("b16-normal"), "fields": map[string]any{"labels": []any{123}}}, true)
+	refused(t, invalid, "invalid_params")
 	if head(t, f) != before {
-		t.Fatal("unsupported labels field advanced head")
+		t.Fatal("invalid typed labels advanced head")
 	}
 	filter := f.call(t, context.Background(), "labels-filter", "bead.ready", map[string]any{"filter": map[string]any{"labels": []any{"alpha"}}}, false)
 	filterCode := code(filter)
@@ -690,7 +694,7 @@ func runB16(t *testing.T, engine string) []byte {
 	if head(t, f) != before {
 		t.Fatal("unsupported label filter advanced head")
 	}
-	return canonical(labelBoundaryProjection{Engine: engine, CreateRefusal: createCode, FilterRefusal: filterCode, HeadUnchanged: head(t, f) == before, Disposition: "UNQUALIFIED: typed label mutation/filter producers absent"})
+	return canonical(labelBoundaryProjection{Engine: engine, CreatedLabels: stored.Labels, MutationRefusal: code(invalid), FilterRefusal: filterCode, HeadUnchanged: head(t, f) == before, Disposition: "UNQUALIFIED: full filter and ephemeral-plane contract not yet proven"})
 }
 
 func TestIndependentProjectionHasNoMapOrderDependence(t *testing.T) {

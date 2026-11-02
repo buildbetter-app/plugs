@@ -22,6 +22,7 @@ type Op struct {
 	Kind     OpKind      `json:"-"`
 	Create   *CreateOp   `json:"-"`
 	Patch    *PatchOp    `json:"-"`
+	Close    *CloseOp    `json:"-"`
 	Reparent *ReparentOp `json:"-"`
 	Link     *LinkOp     `json:"-"` // carries both link and unlink
 	Comment  *CommentOp  `json:"-"`
@@ -35,6 +36,7 @@ type OpKind string
 const (
 	OpCreate   OpKind = "create"
 	OpPatch    OpKind = "patch"
+	OpClose    OpKind = "close"
 	OpReparent OpKind = "reparent"
 	OpLink     OpKind = "link"
 	OpUnlink   OpKind = "unlink"
@@ -56,6 +58,16 @@ type PatchOp struct {
 	Kind   OpKind         `json:"kind"`
 	Target Ref            `json:"target"`
 	Fields map[string]any `json:"fields"`
+}
+
+// CloseOp enters the canonical close slot at this position in tx.apply.
+// Expect observes the ordered in-request image, unlike ChangeSet.Expect,
+// which observes the pinned committed snapshot.
+type CloseOp struct {
+	Kind   OpKind         `json:"kind"`
+	Target Ref            `json:"target"`
+	Reason string         `json:"reason,omitempty"`
+	Expect []Precondition `json:"expect,omitempty"`
 }
 type ReparentOp struct {
 	Kind    OpKind `json:"kind"`
@@ -186,6 +198,13 @@ func validatePatch(value PatchOp) error {
 	return requireNonNilMap("fields", value.Fields)
 }
 
+func validateClose(value CloseOp) error {
+	if value.Kind != OpClose {
+		return fmt.Errorf("close operation has kind %q", value.Kind)
+	}
+	return nil
+}
+
 func validateReparent(value ReparentOp) error {
 	if value.Kind != OpReparent {
 		return fmt.Errorf("reparent operation has kind %q", value.Kind)
@@ -244,7 +263,7 @@ func validateSetMeta(value SetMetaOp) error {
 // wrapper. UnmarshalJSON performs the inverse discriminator selection.
 func (o Op) MarshalJSON() ([]byte, error) {
 	selected := 0
-	for _, present := range []bool{o.Create != nil, o.Patch != nil, o.Reparent != nil, o.Link != nil, o.Comment != nil, o.Attach != nil, o.Delete != nil, o.SetMeta != nil} {
+	for _, present := range []bool{o.Create != nil, o.Patch != nil, o.Close != nil, o.Reparent != nil, o.Link != nil, o.Comment != nil, o.Attach != nil, o.Delete != nil, o.SetMeta != nil} {
 		if present {
 			selected++
 		}
@@ -258,6 +277,8 @@ func (o Op) MarshalJSON() ([]byte, error) {
 		payloadKind = o.Create.Kind
 	case o.Patch != nil:
 		payloadKind = o.Patch.Kind
+	case o.Close != nil:
+		payloadKind = o.Close.Kind
 	case o.Reparent != nil:
 		payloadKind = o.Reparent.Kind
 	case o.Link != nil:
@@ -292,6 +313,16 @@ func (o Op) MarshalJSON() ([]byte, error) {
 		value := *o.Patch
 		value.Kind = OpPatch
 		if err := validatePatch(value); err != nil {
+			return nil, err
+		}
+		return json.Marshal(value)
+	case OpClose:
+		if o.Close == nil {
+			return nil, fmt.Errorf("operation %q has no payload", o.Kind)
+		}
+		value := *o.Close
+		value.Kind = OpClose
+		if err := validateClose(value); err != nil {
 			return nil, err
 		}
 		return json.Marshal(value)
@@ -396,6 +427,15 @@ func (o *Op) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		decoded.Patch = &value
+	case OpClose:
+		var value CloseOp
+		if err := decodeStrict(data, &value, "kind", "target"); err != nil {
+			return err
+		}
+		if err := validateClose(value); err != nil {
+			return err
+		}
+		decoded.Close = &value
 	case OpReparent:
 		var value ReparentOp
 		if err := decodeStrict(data, &value, "kind", "target"); err != nil {
