@@ -580,6 +580,57 @@ func TestChildAllocatorAtomicConsumptionAndConcurrentRetryAcrossStores(t *testin
 	}
 }
 
+func TestChildAllocatorRetainedCountersRollbackAcrossStores(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			for _, mode := range []string{"no-profile", driver.AllocatorSequential, driver.AllocatorHash} {
+				t.Run(mode, func(t *testing.T) {
+					f := newFixture(t, engine)
+					project := ""
+					if mode != "no-profile" {
+						project = "demo"
+						profile := driver.OfflineAllocator{Prefix: "demo", Mode: driver.AllocatorSequential}
+						if mode == driver.AllocatorHash {
+							profile = driver.NewHashAllocator("demo", 3, 8, 0.25)
+						}
+						seedChildAllocatorFixture(t, f, profile, false)
+					}
+					parent := hierarchyApply(t, f, hierarchyCreate("parent", nil, project)).Results[0].Ref
+					hierarchyApply(t, f, hierarchyCreate("committed-one", &parent, project))
+					before, inventory := childAllocatorDurableState(t, f), childInventory(t, f)
+					old := hierarchyReader(t, f)
+					defer old.Close()
+					ordinary := f.writer
+					faultStore := &childAllocationFailStore{Store: f.store}
+					f.writer = pipeline.New(faultStore, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now))
+					cs := model.ChangeSet{Ops: []model.Op{hierarchyCreate("rollback-two", &parent, project), hierarchyCreate("rollback-three", &parent, project)}}
+					meta := f.meta("retained-counter-rollback")
+					_, err := childAllocatorApply(f, cs, meta)
+					if !errors.Is(err, errChildAllocationPut) || faultStore.consumes != 2 || faultStore.puts != 2 {
+						t.Fatalf("retained counter real consumption/rollback: consumes=%d puts=%d err=%v", faultStore.consumes, faultStore.puts, err)
+					}
+					requireSameState(t, before, childAllocatorDurableState(t, f))
+					if actual := childInventory(t, f); !reflect.DeepEqual(inventory, actual) || f.receipt(t, meta) != nil {
+						t.Fatalf("retained counter leaked through failed transaction: before=%+v after=%+v", inventory, actual)
+					}
+					if mode != "no-profile" {
+						state, err := old.(driver.AllocatorReader).LoadAllocator(f.ctx, project)
+						if err != nil || state.Children[parent.ID] != 1 {
+							t.Fatalf("rollback mutated prior snapshot: %+v err=%v", state, err)
+						}
+					}
+					f.writer = ordinary
+					out := hierarchyApply(t, f, hierarchyCreate("after-rollback", &parent, project))
+					if out.Results[0].Ref.ID != parent.ID+".2" {
+						t.Fatalf("failed transaction consumed retained number: %+v", out)
+					}
+					t.Logf("%s/%s: retained .1 stayed detached after two real consumes/second-Put rollback; next .2", engine, mode)
+				})
+			}
+		})
+	}
+}
+
 func TestParentCounterSnapshotStagingAndLockGuardsAcrossStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
