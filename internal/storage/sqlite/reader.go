@@ -587,7 +587,7 @@ func (r *reader) IdempotencyByKey(ctx context.Context, principal, agent, method,
 	if err := r.check(ctx); err != nil {
 		return nil, err
 	}
-	value, err := readReplay(ctx, r.tx, scopeKey(principal, agent, method, key))
+	value, err := r.store.readReplay(ctx, r.tx, scopeKey(principal, agent, method, key))
 	if err != nil || value == nil {
 		return nil, err
 	}
@@ -610,7 +610,7 @@ type storedReplay struct {
 	post      []byte
 }
 
-func readReplay(ctx context.Context, q queryer, scope string) (*storedReplay, error) {
+func (s *Store) readReplay(ctx context.Context, q queryer, scope string) (*storedReplay, error) {
 	var data, entry, post []byte
 	var request string
 	var created int64
@@ -623,7 +623,7 @@ func readReplay(ctx context.Context, q queryer, scope string) (*storedReplay, er
 	if err != nil {
 		return nil, err
 	}
-	if !time.Now().Before(time.Unix(0, created).Add(driver.IdempotencyWindow)) {
+	if !s.now().Before(time.Unix(0, created).Add(driver.IdempotencyWindow)) {
 		return nil, nil
 	}
 	value := &storedReplay{IdempotencyRecord: driver.IdempotencyRecord{RequestHash: request, ResponsePending: pending}, finalized: finalized, post: post}

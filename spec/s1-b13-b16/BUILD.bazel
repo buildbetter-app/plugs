@@ -31,6 +31,7 @@ go_test(
         "reference_capture.py",
     ],
     args = ["-test.v"],
+    data = ["//scripts/ci:public_reference_validation"],
 )
 
 filegroup(
@@ -42,5 +43,9 @@ filegroup(
 go_binary(
     name = "reference_capture",
     srcs = ["reference_capture_main.go"],
-    data = ["record_reference.py", "reference_capture.py"],
+    data = [
+        "record_reference.py",
+        "reference_capture.py",
+        "//scripts/ci:public_reference_validation",
+    ],
 )

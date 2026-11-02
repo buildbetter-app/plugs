@@ -4,7 +4,10 @@ go_library(
     name = "viewrpc",
     srcs = ["bind.go", "cursor.go", "epic_progress.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/viewrpc",
-    visibility = ["//internal:__subpackages__"],
+    visibility = [
+        "//internal:__subpackages__",
+        "//spec/s1-b21-b24:__pkg__",
+    ],
     deps = [
         "//internal/api/wire",
         "//internal/core/model",
@@ -20,6 +23,7 @@ go_test(
     name = "viewrpc_test",
     srcs = glob(["*_test.go"]),
     embed = [":viewrpc"],
+    tags = ["exclusive"],
     deps = [
         "//internal/api/wire",
         "//internal/core/events",

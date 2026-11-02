@@ -501,6 +501,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/SetMetaOp"
+                },
+                {
+                  "$ref": "#/components/schemas/CloseOp"
                 }
               ]
             },
@@ -1189,6 +1192,12 @@
           },
           "projection": {
             "$ref": "#/components/schemas/ProjectionStatus"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20000,
+            "description": "Exact authorized ordinary predicate total, present including zero only for countOnly=true. Items is empty; groups, elisions and nextCursor are absent. The ordinary 20,000 authorized-candidate cap applies; overflow refuses scope_too_large without a partial count."
           }
         },
         "required": [
@@ -3744,6 +3753,33 @@
         ],
         "additionalProperties": false,
         "description": "Transaction-local prepared import profile. The trusted host creates it after admission; ordinary JSON-RPC callers cannot submit or forge it."
+      },
+      "CloseOp": {
+        "type": "object",
+        "description": "Enter the canonical close slot at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or status shortcut.",
+        "properties": {
+          "kind": {
+            "const": "close"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "expect": {
+            "type": "array",
+            "description": "Preconditions against the ordered in-request image before this close. Revision guards refuse a record written earlier in this request. ChangeSet.expect keeps its pinned-snapshot semantics.",
+            "items": {
+              "$ref": "#/components/schemas/Expect"
+            }
+          }
+        },
+        "required": [
+          "kind",
+          "target"
+        ],
+        "additionalProperties": false
       }
     },
     "errors": {

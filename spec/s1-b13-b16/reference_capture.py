@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -317,21 +319,158 @@ def fetch_source(root: Path, receipts: list[dict[str, object]], env: dict[str, s
     return source
 
 
+@functools.cache
+def prepared_validator():
+    # This is bundled source, never a helper selected by prepared arguments/env.
+    path = Path(__file__).resolve().parents[2] / "scripts/ci/prepare-public-reference.py"
+    spec = importlib.util.spec_from_file_location("capture_public_reference", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("public reference validation is not present in runfiles")
+    validator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(validator)
+    return validator
+
+
+def prepared_path(value: str, *, directory: bool) -> Path:
+    if not value or any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("prepared input path is malformed")
+    path = Path(value)
+    if (not path.is_absolute() or str(path) != value or path.resolve(strict=True) != path
+            or (not path.is_dir() if directory else not path.is_file())):
+        raise ValueError("prepared input must be an absolute ordinary file or directory without symlinks")
+    return path
+
+
+def snapshot_prepared_source(root: Path, supplied: Path, validator) -> tuple[Path, dict[str, object]]:
+    if root.resolve().is_relative_to(supplied):
+        raise ValueError("prepared source cannot contain the private capture directory")
+    source = root / "prepared-source"
+    # Copy bytes and metadata, never hardlink Git objects or follow source links.
+    # Every subsequent source check and the recorder use only this private copy.
+    shutil.copytree(supplied, source, symlinks=True)
+    git_dir = source / ".git"
+    if (git_dir.is_symlink() or not git_dir.is_dir()
+            or any(path.is_symlink() for path in git_dir.rglob("*"))
+            or any((git_dir / name).exists() for name in (
+                "commondir", "gitdir", "objects/info/alternates", "objects/info/http-alternates",
+            ))):
+        raise ValueError("prepared source snapshot must not share external Git state")
+    record = validator.validate_source(source)
+    # A copied index's stat cache is not proof of copied worktree bytes. Compare
+    # every raw file/link and executable flag with the fully pinned tree too.
+    private_root = source.resolve(strict=True)
+    manifest = validator.git(source, ["ls-tree", "-rz", "--full-tree", "HEAD"])
+    for entry in manifest.split(b"\0"):
+        if not entry:
+            continue
+        metadata, name = entry.split(b"\t", 1)
+        mode, kind, object_id = metadata.split()
+        relative = os.fsdecode(name)
+        if kind != b"blob" or not safe_zip_name(relative):
+            raise ValueError("prepared source snapshot contains an unsupported tree entry")
+        path = source / relative
+        actual_mode = path.lstat().st_mode
+        if not path.resolve(strict=True).is_relative_to(private_root):
+            raise ValueError("prepared source snapshot link escapes its private checkout")
+        if mode in {b"100644", b"100755"} and stat.S_ISREG(actual_mode):
+            if bool(actual_mode & 0o111) != (mode == b"100755"):
+                raise ValueError("prepared source snapshot executable flag differs from its tree")
+            contents = path.read_bytes()
+        elif mode == b"120000" and stat.S_ISLNK(actual_mode):
+            contents = os.fsencode(os.readlink(path))
+        else:
+            raise ValueError("prepared source snapshot file type differs from its tree")
+        header = b"blob " + str(len(contents)).encode("ascii") + b"\0"
+        if hashlib.sha1(header + contents).hexdigest().encode("ascii") != object_id:
+            raise ValueError("prepared source snapshot bytes differ from its pinned tree")
+    return source, record
+
+
+def consume_prepared(root: Path, artifact: str, source_path: str, validator) -> tuple[Path, dict[str, object], Path]:
+    archive_input = prepared_path(artifact, directory=False)
+    source_input = prepared_path(source_path, directory=True)
+    if archive_input.stat().st_size != validator.ZIP_SIZE:
+        raise ValueError("reference ZIP differs from the independently pinned bytes")
+    # Snapshot the ZIP into the private capture directory. Validate and consume
+    # that same snapshot; never download a replacement for invalid local input.
+    archive = root / "prepared-artifact.zip"
+    shutil.copyfile(archive_input, archive)
+    manifest = validator.validate_zip(archive, root / "prepared-manifest.json")
+    source, source_record = snapshot_prepared_source(root, source_input, validator)
+    # Both complete validators must succeed before reconstructing any execute bit.
+    payloads = {}
+    with zipfile.ZipFile(archive) as bundle, bundle.open("bundle.tar") as payload, tarfile.open(fileobj=payload, mode="r|") as canonical_archive:
+        for member in canonical_archive:
+            if member.name not in validator.BINARIES or member.name in payloads:
+                raise ValueError("reference canonical member set is not exact")
+            record = validator.BINARIES[member.name]
+            if not member.isreg() or member.mode != 0o755 or member.size != record["size"]:
+                raise ValueError("reference canonical executable type/mode/size mismatch")
+            contents = canonical_archive.extractfile(member)
+            if contents is None:
+                raise ValueError("reference canonical executable is missing")
+            data = contents.read()
+            if len(data) != record["size"] or digest(data) != record["sha256"]:
+                raise ValueError("reference canonical executable digest mismatch")
+            payloads[member.name] = data
+        receipt_sha256 = digest(bundle.read("receipt.json"))
+    if set(payloads) != set(validator.BINARIES):
+        raise ValueError("reference canonical executable is missing")
+    extracted = root / "public-bundle"
+    for name, data in payloads.items():
+        destination = extracted / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("xb") as output:
+            output.write(data)
+        destination.chmod(0o755)
+    return extracted / "bin/bd", {
+        "runId": validator.RUN, "artifactId": validator.ARTIFACT,
+        "downloadUrls": [], "downloadAttempts": [], "providedUrlSha256": None,
+        "downloadSha256": validator.ZIP_SHA256, "downloadSize": validator.ZIP_SIZE,
+        "manifestSha256": validator.MANIFEST_SHA256, "receiptSha256": receipt_sha256,
+        "archive": manifest["archive"], "binary": manifest["artifacts"]["bin/bd"],
+        "source": manifest["source"]["beads"], "preparedSource": source_record,
+        "build": manifest["build"], "toolchain": manifest["toolchain"],
+        "mode": "public-pinned-go-packaged-prepared", "canonicalBazel": False,
+    }, source
+
+
 def main() -> int:
     args = sys.argv[1:]
+    prepared = None
+    provided_url = None
     if not args:
-        provided_url = None
+        pass
     elif len(args) == 2 and args[0] == "--artifact-url":
         provided_url = args[1]
+    elif len(args) == 4 and set(args[::2]) == {"--prepared-artifact", "--prepared-source"}:
+        prepared = dict(zip(args[::2], args[1::2]))
     else:
-        print("usage: reference_capture.py [--artifact-url IMMUTABLE_SIGNED_URL]", file=sys.stderr)
+        print("usage: reference_capture.py [--artifact-url IMMUTABLE_SIGNED_URL | --prepared-artifact ZIP --prepared-source CHECKOUT]", file=sys.stderr)
         return 64
     root = Path(tempfile.mkdtemp(prefix="s1-b13-b16-reference-"))
     receipts: list[dict[str, object]] = []
+    artifact_identity = ({"preparedInputsSupplied": True} if prepared else {
+        "runId": ARTIFACT_RUN, "artifactId": ARTIFACT_ID, "downloadUrls": ARTIFACT_URLS,
+        "providedUrlSupplied": bool(provided_url),
+    })
     try:
-        binary, bundle = download_bundle(root, provided_url)
         env = dict(os.environ)
-        source = fetch_source(root, receipts, env)
+        if prepared:
+            validator = prepared_validator()
+            artifact_identity.update({"runId": validator.RUN, "artifactId": validator.ARTIFACT})
+            binary, bundle, source = consume_prepared(
+                root, prepared["--prepared-artifact"], prepared["--prepared-source"], validator,
+            )
+            binary_sha256 = validator.BINARIES["bin/bd"]["sha256"]
+            # The recorder's Git checks must address this snapshot even when the
+            # caller's environment names a different Git directory or index.
+            env = {name: value for name, value in env.items() if not name.startswith("GIT_")}
+            env.update(validator.git_environment())
+        else:
+            binary, bundle = download_bundle(root, provided_url)
+            source = fetch_source(root, receipts, env)
+            binary_sha256 = BINARY_SHA256
         recorder = locate_recorder()
         recorder_bytes = recorder.read_bytes()
         output = root / "record.json"
@@ -342,7 +481,7 @@ def main() -> int:
             "--reference-binary",
             str(binary),
             "--binary-sha256",
-            BINARY_SHA256,
+            binary_sha256,
             "--source",
             str(source),
             "--workspace",
@@ -397,12 +536,7 @@ def main() -> int:
     except Exception as error:
         blocker = {
             "schema": "plug.s1-b13-b16.reference-blocker.v1",
-            "artifact": {
-                "runId": ARTIFACT_RUN,
-                "artifactId": ARTIFACT_ID,
-                "downloadUrls": ARTIFACT_URLS,
-                "providedUrlSupplied": bool(provided_url),
-            },
+            "artifact": artifact_identity,
             "commands": receipts,
             "error": str(error),
         }

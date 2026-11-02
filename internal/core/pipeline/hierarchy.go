@@ -381,18 +381,19 @@ func ancestorLock(key string) driver.LockKey {
 	return driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: key}}
 }
 
-// Coalesce the descendant prefixes into one snapshot enumeration. Repeating a
-// full SQL round trip for every new root would consume the fixed pre deadline
-// before any write. Unrelated rows in the common range do not become semantic
-// dependencies; every selected descendant has its own observed sentinel.
+// Enumerate only the consumed descendant prefixes when the driver supports
+// their union. The common-range fallback preserves existing driver behavior.
+// Every selected descendant retains its observed source and closure sentinel.
 func (p *prepared) checkClosures(ctx context.Context, consumed map[string]bool, expected map[string]driver.DerivedRow) error {
 	prefix := ""
+	prefixes := make([]string, 0, len(consumed))
 	first := true
 	for id := range consumed {
 		next, err := AncestorPrefix(id)
 		if err != nil {
 			return err
 		}
+		prefixes = append(prefixes, next)
 		if first {
 			prefix = next
 			first = false
@@ -402,7 +403,14 @@ func (p *prepared) checkClosures(ctx context.Context, consumed map[string]bool, 
 			prefix = prefix[:len(prefix)-1]
 		}
 	}
-	all, err := p.snapshot.reader.DerivedRows(ctx, driver.DerivedAncestorClosure, prefix)
+	var all []driver.DerivedRow
+	var err error
+	if reader, ok := p.snapshot.reader.(driver.DerivedPrefixReader); ok {
+		sort.Strings(prefixes)
+		all, err = reader.DerivedRowsForPrefixes(ctx, driver.DerivedAncestorClosure, prefixes)
+	} else {
+		all, err = p.snapshot.reader.DerivedRows(ctx, driver.DerivedAncestorClosure, prefix)
+	}
 	if err != nil {
 		return err
 	}

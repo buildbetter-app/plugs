@@ -10,22 +10,22 @@ two fresh runs byte-for-byte after selecting only declared stable fields.
 The selected bounded evidence is:
 
 * **B13** — memory content/key fidelity, Beads-compatible omitted-key
-  derivation at the service seam, replacement, search, deletion, ordinary-bead
+  derivation through public RPC, replacement, search, deletion, ordinary-bead
   plane isolation, typed blank/underivable refusals, and SQLite reopen.
 * **B14** — admitted manual-gate approval through the real RPC/Writer path,
   sponsor-resolved duplicate suppression, terminal slot settlement, and
-  SQLite reopen. `waits-for`, `also_blocks`, public gate creation/listing, and
-  the full gate-member contract remain explicitly unqualified because no
-  corresponding Plug producer is present on this head.
+  SQLite reopen, plus actual `waits-for` link persistence and reopen. Explicit
+  any/all member metadata, `also_blocks`, public gate creation/listing, and
+  the full gate-member contract remain unqualified.
 * **B15** — exact comment body/principal/order and controlled same-clock stamps,
   one durable changeset/event per accepted comment, untouched anchor fields,
   typed refusals with no receipt/head advance, and SQLite reopen. A public
   comment-list/keyset producer and the ephemeral plane remain unqualified.
-* **B16** — no parity claim is made. The admitted ontology rejects the typed
-  `labels` field and the public filters have no label selector. The test keeps
-  those refusals typed and checks that they do not write; add/remove/rename,
-  label patch ordering, durable/ephemeral rename, and label filters remain
-  **UNQUALIFIED**.
+* **B16** — public typed label creation and persistence, plus typed no-write
+  refusals for invalid values and the unsupported filter shape. The separate
+  `internal/integration/labelcontract` package exercises the default public
+  producer and revision-guarded whole-set patch composition. Full filters,
+  durable/ephemeral rename and paired qualification remain **UNQUALIFIED**.
 
 Reference recording is deliberately separate from these Plug projections. The
 `record_reference.py` runner requires an exact Beads executable and exact

@@ -30,6 +30,7 @@ var knownKinds = map[string]bool{
 var knownNativeKinds = map[string]bool{
 	"bead": true, "edge": true, "comment": true, "memory": true,
 	"config": true, "beads-archive": true, "ontology": true,
+	"instance_config": true, "restore-archive": true,
 }
 
 var externalFamilies = []string{
@@ -125,7 +126,7 @@ func Read(reader io.Reader) (*Archive, error) {
 		if err := validateNativeArchive(manifest, members, paths); err != nil {
 			return nil, err
 		}
-		return &Archive{manifest: manifest, members: members, native: true}, nil
+		return &Archive{sha256: digest(data), manifest: manifest, members: members, native: true}, nil
 	}
 	if err := validateManifest(manifest, members); err != nil {
 		return nil, err
@@ -134,7 +135,7 @@ func Read(reader io.Reader) (*Archive, error) {
 	if err != nil {
 		return nil, err
 	}
-	archive := &Archive{sha256: digest(data), manifest: manifest, members: members, byKind: byKind}
+	archive := &Archive{sha256: digest(data), tarBytes: append([]byte(nil), data...), manifest: manifest, members: members, byKind: byKind}
 	if err := validateSourceHistory(archive); err != nil {
 		return nil, err
 	}

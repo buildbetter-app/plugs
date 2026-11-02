@@ -30,7 +30,7 @@ func (t *transaction) replay(ctx context.Context, c *sql.Conn, h driver.Changese
 	if !canonicalPart(h.IdempotencyKey) || !canonicalPart(h.Method) || !canonicalPart(h.RequestHash) || strings.HasPrefix(principal, "anonymous:") && h.AgentLabel != "" && !canonicalPart(h.AgentLabel) {
 		return nil, fmt.Errorf("sqlite: invalid idempotency scope or request digest")
 	}
-	value, err := readReplay(ctx, c, scopeKey(principal, h.AgentLabel, h.Method, h.IdempotencyKey))
+	value, err := t.store.readReplay(ctx, c, scopeKey(principal, h.AgentLabel, h.Method, h.IdempotencyKey))
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func responseBytes(h driver.ChangesetHeader, revision model.Revision) ([]byte, e
 	}
 	return json.Marshal(response)
 }
-func saveReplay(ctx context.Context, c *sql.Conn, h driver.ChangesetHeader, revision model.Revision, entry []byte) error {
+func (s *Store) saveReplay(ctx context.Context, c *sql.Conn, h driver.ChangesetHeader, revision model.Revision, entry []byte) error {
 	// Validate the response even without a replay key; invalid nested values must
 	// abort the entire graph transaction rather than fabricate a response later.
 	data, err := responseBytes(h, revision)
@@ -65,7 +65,7 @@ func saveReplay(ctx context.Context, c *sql.Conn, h driver.ChangesetHeader, revi
 		return err
 	}
 	_, err = c.ExecContext(ctx, `INSERT INTO replays(scope,created,rev,request_hash,response,changeset,finalized,post,pending) VALUES(?,?,?,?,?,?,0,NULL,?)
- ON CONFLICT(scope) DO UPDATE SET created=excluded.created,rev=excluded.rev,request_hash=excluded.request_hash,response=excluded.response,changeset=excluded.changeset,finalized=0,post=NULL,pending=excluded.pending`, scopeKey(principal, h.AgentLabel, h.Method, h.IdempotencyKey), time.Now().UnixNano(), revKey(mustUint(revision)), h.RequestHash, data, entry, h.ResponsePending)
+ ON CONFLICT(scope) DO UPDATE SET created=excluded.created,rev=excluded.rev,request_hash=excluded.request_hash,response=excluded.response,changeset=excluded.changeset,finalized=0,post=NULL,pending=excluded.pending`, scopeKey(principal, h.AgentLabel, h.Method, h.IdempotencyKey), s.now().UnixNano(), revKey(mustUint(revision)), h.RequestHash, data, entry, h.ResponsePending)
 	return err
 }
 func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) (model.Commit, error) {
@@ -104,7 +104,7 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 		if err = json.Unmarshal(data, &result); err != nil {
 			return err
 		}
-		return saveReplay(ctx, c, h, m.Head, nil)
+		return t.store.saveReplay(ctx, c, h, m.Head, nil)
 	})
 	if err == nil {
 		t.finish()
@@ -143,6 +143,45 @@ func loadCheckpoint(ctx context.Context, q queryer, key string) (driver.Checkpoi
 	return value, err
 }
 func (s *Store) SaveCheckpoint(ctx context.Context, value driver.ActiveLease, key string, expected uint64, payload []byte) (driver.Checkpoint, error) {
+	return s.saveCheckpoint(ctx, value, key, expected, payload, nil)
+}
+
+func (s *Store) SaveCheckpointIfRecord(ctx context.Context, lease driver.ActiveLease, key string, expected uint64, payload []byte, ref driver.Ref, revision model.Revision, incarnation string) (driver.Checkpoint, error) {
+	id, err := recordKey(ref)
+	if err != nil {
+		return driver.Checkpoint{}, err
+	}
+	if err := revision.Validate(); err != nil {
+		return driver.Checkpoint{}, err
+	}
+	return s.saveCheckpoint(ctx, lease, key, expected, payload, func(c *sql.Conn) error {
+		meta, err := readMeta(ctx, c)
+		if err != nil {
+			return err
+		}
+		if incarnation == "" || incarnation != meta.Incarnation {
+			return driver.ErrIncarnationChanged{From: incarnation, To: meta.Incarnation}
+		}
+		var data []byte
+		err = c.QueryRowContext(ctx, `SELECT data FROM records WHERE key=?`, id).Scan(&data)
+		if errors.Is(err, sql.ErrNoRows) {
+			return driver.ErrConflict
+		}
+		if err != nil {
+			return err
+		}
+		var record driver.Record
+		if err := json.Unmarshal(data, &record); err != nil {
+			return err
+		}
+		if record.Revision.String() != revision.String() {
+			return driver.ErrConflict
+		}
+		return nil
+	})
+}
+
+func (s *Store) saveCheckpoint(ctx context.Context, value driver.ActiveLease, key string, expected uint64, payload []byte, guard func(*sql.Conn) error) (driver.Checkpoint, error) {
 	l, err := s.leaseFor(ctx, value)
 	if err != nil {
 		return driver.Checkpoint{}, err
@@ -153,6 +192,11 @@ func (s *Store) SaveCheckpoint(ctx context.Context, value driver.ActiveLease, ke
 	var result driver.Checkpoint
 	payload = bytes.Clone(payload)
 	err = s.immediate(ctx, l, func(c *sql.Conn) error {
+		if guard != nil {
+			if err := guard(c); err != nil {
+				return err
+			}
+		}
 		current, err := loadCheckpoint(ctx, c, key)
 		if err != nil {
 			return err
@@ -173,6 +217,9 @@ func (s *Store) SaveCheckpoint(ctx context.Context, value driver.ActiveLease, ke
 	result.Payload = bytes.Clone(result.Payload)
 	return result, nil
 }
+
+var _ driver.RecordGuardedCheckpointStore = (*Store)(nil)
+
 func (s *Store) FinalizeResponse(ctx context.Context, value driver.ActiveLease, principal, agent, method, key string, revision model.Revision, warnings []model.Warning) error {
 	l, err := s.leaseFor(ctx, value)
 	if err != nil {
@@ -190,7 +237,7 @@ func (s *Store) FinalizeResponse(ctx context.Context, value driver.ActiveLease, 
 	}
 	return s.immediate(ctx, l, func(c *sql.Conn) error {
 		scope := scopeKey(principal, agent, method, key)
-		previous, err := readReplay(ctx, c, scope)
+		previous, err := s.readReplay(ctx, c, scope)
 		if err != nil {
 			return err
 		}
