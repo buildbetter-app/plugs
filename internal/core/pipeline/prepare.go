@@ -685,16 +685,20 @@ func (p *prepared) allocatorObservations(ctx context.Context, prefix, parent str
 	count := uint64(0)
 	occupied := map[string]bool{}
 	maxChild := uint64(0)
-	add := func(id string, project string, deleted bool) {
+	add := func(id string, project string, deleted bool) error {
 		// A number previewed by an earlier create remains consumed within
 		// this batch even if a later operation deletes that pending child.
 		if parent != "" {
-			if n, err := driver.ChildNumber(parent, id); err == nil && n > maxChild {
+			n, err := driver.ChildNumber(parent, id)
+			if errors.Is(err, driver.ErrUnsupported) {
+				return err
+			}
+			if err == nil && n > maxChild {
 				maxChild = n
 			}
 		}
 		if deleted {
-			return
+			return nil
 		}
 		occupied[id] = true
 		if prefix != "" && project == prefix && strings.HasPrefix(id, prefix+"-") {
@@ -703,19 +707,24 @@ func (p *prepared) allocatorObservations(ctx context.Context, prefix, parent str
 				count++
 			}
 		}
+		return nil
 	}
 	for _, record := range p.beads {
 		doc, err := DecodeDocument(record.Body)
 		if err != nil {
 			return 0, nil, 0, err
 		}
-		add(record.Ref.ID, doc.Project, false)
+		if err := add(record.Ref.ID, doc.Project, false); err != nil {
+			return 0, nil, 0, err
+		}
 	}
 	for id, pending := range p.writes {
 		if pending.kind != "bead" {
 			continue
 		}
-		add(id, pending.doc.Project, pending.deleted)
+		if err := add(id, pending.doc.Project, pending.deleted); err != nil {
+			return 0, nil, 0, err
+		}
 	}
 	return count, occupied, maxChild, nil
 }

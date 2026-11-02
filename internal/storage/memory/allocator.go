@@ -180,6 +180,7 @@ func (t *transaction) AllocateChild(ctx context.Context, parent, expected string
 	if _, exists := t.base.kinds[id]; exists {
 		return fmt.Errorf("%w: allocator candidate already exists", driver.ErrConflict)
 	}
+	value = value.Clone()
 	if value.Children == nil {
 		value.Children = make(map[string]uint64)
 	}
