@@ -40,6 +40,34 @@ func TestBeadsDigestMismatchStopsBeforeAnyProcessOrTarget(t *testing.T) {
 	}
 }
 
+func TestBeadsArtifactValidationDoesNotDependOnReadbackInventory(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "untrusted-artifact")
+	if err := os.WriteFile(binary, []byte("never executed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, run, digest, reason string
+	}{
+		{"invalid build provenance", "not-a-run", hash([]byte("never executed")), "invalid_beads_provenance"},
+		{"invalid delivered bytes", "1", hash([]byte("different")), "beads_artifact_digest_mismatch"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			output := t.TempDir()
+			result := outcome{BeadsReimport: "WAIT", BeadsReadback: "WAIT"}
+			// No inventory is supplied. An unrelated missing readback census
+			// must not conceal a concrete failure in the delivered executable.
+			runBeads(context.Background(), beadsOptions{Binary: binary, SHA256: test.digest, BuildRun: test.run}, output, nil, reverseconverter.Result{}, &result)
+			if result.Status != "BLOCK" || result.Reason != test.reason || result.BeadsReimport != "WAIT" || result.BeadsReadback != "WAIT" {
+				t.Fatalf("readback inventory masked invalid executable: %+v", result)
+			}
+			if _, err := os.Stat(filepath.Join(output, "beads-target")); !os.IsNotExist(err) {
+				t.Fatal("invalid executable created a Beads target")
+			}
+		})
+	}
+}
+
 func TestOriginalSourceArchiveIsNotPostReimportReadback(t *testing.T) {
 	path := "../../internal/integration/offlinehistory/testdata/dolt-source-partial.tar"
 	source, err := dumpformat.ReadFile(path)
