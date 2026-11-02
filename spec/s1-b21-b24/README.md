@@ -33,6 +33,17 @@ existing explicit `groupBy:["type"], fields:[]` surface; an ordinary exact
 predicate-count wire member is still a separate contract and is not inferred
 from this summary.
 
+The B22 hash-CAS regressions exercise field, metadata and memory mismatches,
+absent expectation targets, corrected-key reuse and committed-response replay.
+Authorized refusals report `details.reason` as `hash` or `revision`; absent
+records do not invent a revision token. Expectation-only guards must pass the
+existing pre-image authorization decision before any refusal details are
+released. Denied or hidden expectations keep their refusal boundary, and no
+CAS refusal publishes data, history or a successful receipt. These are direct
+Plug contract checks, with real PostgreSQL field/metadata cases in
+`internal/integration/postgresacceptance`; they add no Beads recording or
+full-card parity claim.
+
 Run the focused target with:
 
 ```sh
