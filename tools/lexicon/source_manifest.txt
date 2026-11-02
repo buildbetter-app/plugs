@@ -363,6 +363,8 @@ internal/integration/converterroundtrip/import_test.go
 internal/integration/converterroundtrip/native_restore_test.go
 internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go
+internal/integration/converterroundtrip/reverse.go
+internal/integration/converterroundtrip/reverse_test.go
 internal/integration/converterroundtrip/roundtrip_test.go
 internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar
 internal/integration/cursorhttp/BUILD.bazel
@@ -1012,3 +1014,7 @@ tools/rehearsal/gate.go
 tools/rehearsal/metrics.go
 tools/rehearsal/metrics_test.go
 tools/rehearsal/three_rehearsals.sh
+tools/roundtrip/BUILD.bazel
+tools/roundtrip/README.md
+tools/roundtrip/main.go
+tools/roundtrip/main_test.go
