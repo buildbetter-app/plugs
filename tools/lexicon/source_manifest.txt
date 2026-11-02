@@ -1001,6 +1001,8 @@ tools/r1/rollback_rehearsal.sh
 tools/rehearsal/BUILD.bazel
 tools/rehearsal/README.md
 tools/rehearsal/admin_fixture.go
+tools/rehearsal/cmd/rollback-runtime/BUILD.bazel
+tools/rehearsal/cmd/rollback-runtime/main.go
 tools/rehearsal/cmd/shadow-rehearsal/BUILD.bazel
 tools/rehearsal/cmd/shadow-rehearsal/main.go
 tools/rehearsal/disposable.go

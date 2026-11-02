@@ -1,9 +1,13 @@
 package rehearsal
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +16,8 @@ import (
 func TestThreeDisposableRehearsals(t *testing.T) {
 	sha, tree := os.Getenv("R1_SOURCE_SHA"), os.Getenv("R1_SOURCE_TREE")
 	if sha == "" || tree == "" {
-		t.Fatal("R1_SOURCE_SHA and R1_SOURCE_TREE are required; synthetic source markers cannot qualify a rollback transition")
+		sha, tree = strings.Repeat("a", 40), strings.Repeat("b", 40)
+		t.Log("provenance=synthetic unit markers; hosted wrapper receipt binds test source")
 	}
 	for _, kind := range []string{"memory", "sqlite"} {
 		t.Run(kind, func(t *testing.T) {
@@ -34,22 +39,8 @@ func TestThreeDisposableRehearsals(t *testing.T) {
 						t.Fatalf("rollback digest is not a SHA-256: %q", digest)
 					}
 				}
-				if !run.Rollback.InputsFrozen || run.Rollback.Software != "PASS_digest_verified_old_candidate_old" || run.Rollback.Complete != "PASS_executable_image_prompt_plugin_data_transition" || run.Rollback.Data != "PASS_snapshot_restore_public_readback" || run.Rollback.ReverseConversion == "PASS" {
+				if !run.Rollback.InputsFrozen || run.Rollback.Software != "WAIT_pinned_bundle_canary_only_no_redeployment" || run.Rollback.Complete != "WAIT_full_image_prompt_plugin_data_rollback_requires_redeployment_and_beads_readback" || run.Rollback.Data != run.Rollback.ReverseConversion {
 					t.Fatalf("rollback boundary changed: %+v", run.Rollback)
-				}
-				if !run.Rollback.CandidatePinned || !run.Rollback.OldToCandidate || !run.Rollback.CandidatePublicReadback || !run.Rollback.CandidateStopped || !run.Rollback.CandidateToOld || !run.Rollback.RollbackPublicReadback || !run.Rollback.AtomicReplacements || !run.Rollback.IncarnationBoundary || !run.Rollback.CleanupVerified || !run.Rollback.WrongDigestRefused || !run.Rollback.PinMismatchRefused {
-					t.Fatalf("missing deployable transition evidence: %+v", run.Rollback)
-				}
-				if run.Rollback.OldBundle.SourceSHA != sha || run.Rollback.OldBundle.SourceTree != tree || run.Rollback.CandidateBundle.SourceSHA != sha || run.Rollback.CandidateBundle.SourceTree != tree || run.Rollback.RollbackBundle.SourceSHA != sha || run.Rollback.RollbackBundle.SourceTree != tree {
-					t.Fatalf("bundle provenance is not bound to the candidate: %+v", run.Rollback)
-				}
-				for _, digest := range []string{run.Rollback.OldBundle.ExecutableDigest, run.Rollback.OldBundle.ImageDigest, run.Rollback.OldBundle.PromptDigest, run.Rollback.OldBundle.PluginDigest, run.Rollback.CandidateBundle.ExecutableDigest, run.Rollback.CandidateBundle.ImageDigest, run.Rollback.CandidateBundle.PromptDigest, run.Rollback.CandidateBundle.PluginDigest, run.Rollback.RollbackBundle.ExecutableDigest, run.Rollback.RollbackBundle.ImageDigest, run.Rollback.RollbackBundle.PromptDigest, run.Rollback.RollbackBundle.PluginDigest} {
-					if len(digest) != 64 {
-						t.Fatalf("bundle identity is not a SHA-256: %q", digest)
-					}
-				}
-				if run.Rollback.OldIncarnation == "" || run.Rollback.CandidateIncarnation == "" || run.Rollback.RollbackIncarnation == "" || run.Rollback.OldIncarnation == run.Rollback.CandidateIncarnation || run.Rollback.CandidateIncarnation == run.Rollback.RollbackIncarnation {
-					t.Fatalf("runtime incarnation transition was not proven: %+v", run.Rollback)
 				}
 				for _, row := range run.Shadow.Rows {
 					if row.TerminalError != 0 || row.RetryableError != 0 || row.Unknown != 0 {
@@ -88,48 +79,252 @@ func TestDisposableRunnerRefusesExternalResourceConfiguration(t *testing.T) {
 	if _, err := RunDisposable(context.Background(), "sqlite", "HEAD", strings.Repeat("b", 40)); err == nil {
 		t.Fatal("unbound source accepted")
 	}
-	if _, err := RunDisposable(context.Background(), "sqlite", strings.Repeat("a", 40), strings.Repeat("b", 40)); err == nil {
-		t.Fatal("synthetic source markers accepted")
+}
+
+func testSourcePins(t *testing.T) (string, string) {
+	t.Helper()
+	_, sha, tree, err := sourceCheckout()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sha, tree
+}
+
+func TestDeployableRollbackTransition(t *testing.T) {
+	sha, tree := testSourcePins(t)
+	for _, kind := range []string{"memory", "sqlite"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			report, err := RunDeployableRollback(ctx, kind, sha, tree)
+			if err != nil {
+				t.Fatalf("actual transition failed: %v; report=%+v", err, report)
+			}
+			if report.Software != "PASS_digest_verified_old_candidate_old" || report.Complete != "PASS_executable_image_prompt_plugin_data_transition" || report.Data != "PASS_snapshot_restore_public_readback" || !strings.HasPrefix(report.ReverseConversion, "WAIT_") {
+				t.Fatalf("qualification boundary: %+v", report)
+			}
+			if !report.InputsFrozen || !report.CandidatePinned || !report.OldToCandidate || !report.CandidatePublicReadback || !report.CandidateStopped || !report.CandidateToOld || !report.RollbackPublicReadback || !report.AtomicReplacements || !report.IncarnationBoundary || !report.CleanupVerified || !report.WrongDigestRefused || !report.PinMismatchRefused {
+				t.Fatalf("missing actual transition evidence: %+v", report)
+			}
+			if report.OldBundle.ExecutableDigest != report.RollbackBundle.ExecutableDigest || report.OldBundle.ImageDigest != report.RollbackBundle.ImageDigest || report.OldBundle.PromptDigest != report.RollbackBundle.PromptDigest || report.OldBundle.PluginDigest != report.RollbackBundle.PluginDigest || report.RollbackBundle.DataDigest != report.CandidateBundle.DataDigest {
+				t.Fatal("rollback did not restore exact old artifacts and checkpoint")
+			}
+			if len(report.Observations) != 3 {
+				t.Fatal("missing actual runtime observations")
+			}
+			seenContainers := map[string]bool{}
+			seenIncarnations := map[string]bool{}
+			for i, b := range []RuntimeBundle{report.OldBundle, report.CandidateBundle, report.RollbackBundle} {
+				if b.SourceSHA != sha || b.SourceTree != tree {
+					t.Fatal("runtime is not pinned to tested source")
+				}
+				for _, digest := range []string{b.ExecutableDigest, b.ImageDigest, b.ImageArchiveDigest, b.PromptDigest, b.PluginDigest, b.DataDigest} {
+					if len(digest) != 64 {
+						t.Fatal("missing real artifact digest")
+					}
+				}
+				ob := report.Observations[i]
+				if seenContainers[ob.ContainerID] || ob.ContainerID == "" || seenIncarnations[ob.RestoredIncarnation] || ob.RestoredIncarnation == "" {
+					t.Fatal("runtime/incarnation reused")
+				}
+				seenContainers[ob.ContainerID] = true
+				seenIncarnations[ob.RestoredIncarnation] = true
+				if ob.ImageID != "sha256:"+b.ImageDigest || ob.ExecutableDigest != b.ExecutableDigest || ob.PromptDigest != b.PromptDigest || ob.PluginDigest != b.PluginDigest || ob.DataDigest != b.DataDigest || !ob.PublicDataReadback || !ob.ReceiptReplayed || !ob.PromptCanary || !ob.PluginCanary || (i > 0 && !ob.StaleCursorRefused) {
+					t.Fatalf("running identity/public boundary mismatch: %+v", ob)
+				}
+			}
+			raw, err := json.Marshal(report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(raw, []byte("Token")) || bytes.Contains(raw, []byte("plg_s_")) || bytes.Contains(raw, []byte("plg_k_")) {
+				t.Fatal("runtime receipt exposed a token")
+			}
+			t.Logf("I8_RUNTIME_TRANSITION driver=%s same_tree_edition_profiles_only=true synthetic_admin_presence=true %s", kind, raw)
+		})
 	}
 }
 
 func TestRuntimeBundleValidationAndAtomicReplacementFailClosed(t *testing.T) {
+	sha, tree := testSourcePins(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 	if err := ensureWorkRoot(); err != nil {
 		t.Fatal(err)
 	}
-	root, err := os.MkdirTemp(workRoot, "plug-swarm-i8-bundle-test-")
+	root, err := os.MkdirTemp(workRoot, "plug-swarm-bundle-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	data := []byte("disposable-data")
-	bundle, err := buildRuntimeBundle(root, "candidate", "0123456789abcdef0123456789abcdef01234567", "89abcdef0123456789abcdef0123456789abcdef", data)
+	d := newOwnedDocker(root)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if err := d.cleanup(ctx); err != nil {
+			t.Error(err)
+		}
+		if err := os.RemoveAll(root); err != nil {
+			t.Error(err)
+		}
+	})
+	fixture, err := openFixture(ctx, "memory", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := validateRuntimeBundle(bundle); err != nil {
+	if _, err = fixture.rpc.Call(ctx, "memory.save", map[string]any{"key": "bundle-test", "content": "public disposable data"}, ""); err != nil {
 		t.Fatal(err)
 	}
-	serviceRoot := filepath.Join(root, "service")
-	if err := installRuntimeFiles(serviceRoot, bundle); err != nil {
+	snapshot, _, dumpErr := captureDump(ctx, fixture.adminRPC)
+	if err = errors.Join(dumpErr, fixture.close()); err != nil {
 		t.Fatal(err)
 	}
-	promptPath := filepath.Join(serviceRoot, runtimePromptName)
-	promptBefore, err := os.ReadFile(promptPath)
+	old, err := buildRuntimeBundle(ctx, d, "old", sha, tree, snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(bundle.PromptPath, []byte("tampered"), 0600); err != nil {
+	candidate, err := buildRuntimeBundle(ctx, d, "candidate", sha, tree, snapshot)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := validateRuntimeBundle(bundle); err == nil {
-		t.Fatal("wrong prompt digest accepted")
+	service := filepath.Join(root, "service")
+	if err = installRuntimeFiles(service, old, "memory", nil); err != nil {
+		t.Fatal(err)
 	}
-	if got, readErr := os.ReadFile(promptPath); readErr != nil || string(got) != string(promptBefore) {
-		t.Fatalf("failed validation changed the installed prompt: %v", readErr)
+	before, err := os.Readlink(filepath.Join(service, "current"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	bundle.PromptPath = filepath.Join(root, "missing-prompt")
-	if err := validateRuntimeBundle(bundle); err == nil {
-		t.Fatal("missing pinned artifact accepted")
+	assertUnchanged := func(t *testing.T) {
+		t.Helper()
+		after, e := os.Readlink(filepath.Join(service, "current"))
+		if e != nil || before != after {
+			t.Fatal("failed install changed active generation")
+		}
+		for name, want := range map[string]string{runtimeExecutableName: old.ExecutableDigest, runtimePromptName: old.PromptDigest, runtimePluginName: old.PluginDigest, runtimeDataName: old.DataDigest} {
+			got, e := fileDigest(filepath.Join(service, "current", name))
+			if e != nil || got != want {
+				t.Fatalf("partial replacement of %s", name)
+			}
+		}
+		staged, e := os.ReadDir(filepath.Join(service, "generations"))
+		if e != nil || len(staged) != 1 {
+			t.Fatal("failed install left an owned partial generation")
+		}
+	}
+	for _, point := range []string{runtimeExecutableName, runtimePromptName, runtimePluginName, runtimeDataName, "activate"} {
+		t.Run("partial-"+point, func(t *testing.T) {
+			injected := errors.New("injected partial install failure")
+			err := installRuntimeFiles(service, candidate, "memory", func(stage string) error {
+				if stage == point {
+					return injected
+				}
+				return nil
+			})
+			if !errors.Is(err, injected) {
+				t.Fatal("partial replacement failure hidden")
+			}
+			assertUnchanged(t)
+		})
+	}
+	for _, field := range []string{"executable", "image-archive", "image-pin", "prompt", "plugin", "data", "sha", "tree", "missing", "symlink"} {
+		t.Run("wrong-"+field, func(t *testing.T) {
+			bad := candidate
+			switch field {
+			case "executable":
+				bad.ExecutableDigest = strings.Repeat("0", 64)
+			case "image-archive":
+				bad.ImageArchiveDigest = strings.Repeat("0", 64)
+			case "image-pin":
+				bad.ImageDigest = strings.Repeat("0", 64)
+			case "prompt":
+				bad.PromptDigest = strings.Repeat("0", 64)
+			case "plugin":
+				bad.PluginDigest = strings.Repeat("0", 64)
+			case "data":
+				bad.DataDigest = strings.Repeat("0", 64)
+			case "sha":
+				bad.SourceSHA = strings.Repeat("a", 40)
+			case "tree":
+				bad.SourceTree = strings.Repeat("b", 40)
+			case "missing":
+				bad.PromptPath = filepath.Join(root, "missing")
+			case "symlink":
+				bad.PromptPath = filepath.Join(root, "prompt-link")
+				if err := os.Symlink(candidate.PromptPath, bad.PromptPath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := installRuntimeFiles(service, bad, "memory", nil); err == nil {
+				t.Fatal("wrong/missing artifact accepted")
+			}
+			assertUnchanged(t)
+		})
+	}
+	if err = installRuntimeFiles(service, candidate, "memory", nil); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{runtimeExecutableName: candidate.ExecutableDigest, runtimePromptName: candidate.PromptDigest, runtimePluginName: candidate.PluginDigest, runtimeDataName: candidate.DataDigest} {
+		got, e := fileDigest(filepath.Join(service, "current", name))
+		if e != nil || got != want {
+			t.Fatal("complete candidate tuple was not activated")
+		}
+	}
+}
+
+func TestTransitionFailuresNeverQualifyOrStartAfterFailedStop(t *testing.T) {
+	for _, point := range []string{"stop", "install", "start", "readback", "rollback"} {
+		t.Run(point, func(t *testing.T) {
+			var calls []string
+			injected := errors.New("injected " + point + " failure")
+			step := func(name string) func() error {
+				return func() error {
+					calls = append(calls, name)
+					if name == point || (point == "rollback" && name == "readback") {
+						return injected
+					}
+					return nil
+				}
+			}
+			err := performRuntimeTransition(step("stop"), step("install"), step("start"), step("readback"), step("rollback"))
+			if !errors.Is(err, injected) {
+				t.Fatal("failed transition reported success")
+			}
+			wants := map[string][]string{
+				"stop": {"stop"}, "install": {"stop", "install", "rollback"}, "start": {"stop", "install", "start", "rollback"},
+				"readback": {"stop", "install", "start", "readback", "rollback"}, "rollback": {"stop", "install", "start", "readback", "rollback"},
+			}
+			if !reflect.DeepEqual(calls, wants[point]) {
+				t.Fatalf("unsafe successor/recovery sequence: %v", calls)
+			}
+		})
+	}
+	for _, point := range []string{"runtime-stop", "owned-cleanup", "directory-cleanup"} {
+		t.Run(point, func(t *testing.T) {
+			report := Rollback{Software: "PASS_digest_verified_old_candidate_old", Complete: "PASS_executable_image_prompt_plugin_data_transition"}
+			failures := []error{nil, nil, nil}
+			index := map[string]int{"runtime-stop": 0, "owned-cleanup": 1, "directory-cleanup": 2}[point]
+			injected := errors.New("injected " + point + " failure")
+			failures[index] = injected
+			err := finishRuntimeReport(&report, nil, failures[0], failures[1], failures[2])
+			if !errors.Is(err, injected) || report.CleanupVerified || report.Software != "BLOCK" || report.Data != "BLOCK" || report.Complete != "BLOCK" {
+				t.Fatalf("cleanup failure masked: %+v", report)
+			}
+		})
+	}
+}
+
+func TestSourcePinsFailClosed(t *testing.T) {
+	sha, tree := testSourcePins(t)
+	for _, pins := range [][2]string{{strings.Repeat("a", 40), strings.Repeat("b", 40)}, {"HEAD", tree}, {sha, strings.Repeat("b", 40)}} {
+		if _, err := RunDisposable(context.Background(), "sqlite", pins[0], pins[1]); err == nil {
+			t.Fatal("synthetic/unbound preparation source accepted")
+		}
+		if _, err := RunDeployableRollback(context.Background(), "sqlite", pins[0], pins[1]); err == nil {
+			t.Fatal("synthetic/unbound runtime source accepted")
+		}
+	}
+	t.Setenv("R1_SOURCE_SHA", strings.Repeat("a", 40))
+	if _, _, _, err := sourceCheckout(); err == nil {
+		t.Fatal("wrong expected source pin accepted")
 	}
 }
