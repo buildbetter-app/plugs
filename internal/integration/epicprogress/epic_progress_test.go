@@ -3,11 +3,9 @@ package epicprogress_test
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"runtime/pprof"
 	"testing"
 	"time"
 
@@ -317,14 +315,6 @@ func firstJSON(t *testing.T, value any) []byte {
 // beads, with 50 distinct sponsored agents. This is not the previous four
 // browser tasks, a human usability study, or authenticated browser support.
 func TestEpicProgressFifthTaskAtTwentyThousandBeads(t *testing.T) {
-	var cpu bytes.Buffer
-	if err := pprof.StartCPUProfile(&cpu); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		pprof.StopCPUProfile()
-		t.Logf("EP6 passive CPU profile base64=%s", base64.StdEncoding.EncodeToString(cpu.Bytes()))
-	}()
 	f := newFixture(t, "sqlite", t.TempDir()+"/e3-epic.db", true)
 	parent := f.create(t, epics, "fifth task epic", nil)
 	var direct []model.Ref

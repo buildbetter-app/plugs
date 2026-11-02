@@ -255,6 +255,7 @@ internal/core/pipeline/document.go
 internal/core/pipeline/gate.go
 internal/core/pipeline/guard_test.go
 internal/core/pipeline/hierarchy.go
+internal/core/pipeline/hierarchy_prefix_guard_test.go
 internal/core/pipeline/hierarchy_scope_test.go
 internal/core/pipeline/hierarchy_test.go
 internal/core/pipeline/noop_test.go
@@ -827,6 +828,7 @@ internal/storage/sqlite/BUILD.bazel
 internal/storage/sqlite/README.md
 internal/storage/sqlite/allocator.go
 internal/storage/sqlite/boundaries_test.go
+internal/storage/sqlite/derived_prefix_test.go
 internal/storage/sqlite/derived_reader.go
 internal/storage/sqlite/engine_test.go
 internal/storage/sqlite/lease.go
