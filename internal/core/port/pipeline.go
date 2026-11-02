@@ -68,6 +68,9 @@ type ProposedChange struct {
 	SameClaim bool
 	Meta      model.WriteMeta
 	Changes   []Change
+	// Expect carries canonical precondition targets into the authorization
+	// boundary. A stale result stays private until those targets are allowed.
+	Expect []model.Precondition
 }
 
 type CommittedChange struct {

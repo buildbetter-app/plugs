@@ -4,7 +4,10 @@ go_library(
     name = "viewops",
     srcs = glob(["*.go"], exclude = ["*_test.go"]),
     importpath = "github.com/buildbetter-app/plugs/internal/core/viewops",
-    visibility = ["//internal:__subpackages__"],
+    visibility = [
+        "//internal:__subpackages__",
+        "//spec/s1-b21-b24:__pkg__",
+    ],
     deps = [
         "//internal/core/events",
         "//internal/core/model",

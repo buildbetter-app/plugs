@@ -160,6 +160,9 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 				// applies to the exact proposed change.
 				phaseStarted = time.Now()
 				err = w.authorize(preCtx, port.AuthorizeBefore, p.proposal, p.snapshot)
+				if err == nil && p.refusal != nil {
+					err = p.refusal
+				}
 				if err == nil {
 					err = w.authorize(preCtx, port.AuthorizeAfter, p.proposal, p.snapshot)
 				}
@@ -342,7 +345,7 @@ func (w *Writer) replay(ctx context.Context, reader driver.Reader, principal str
 }
 
 func (w *Writer) replayReceipt(ctx context.Context, reader driver.Reader, entry *driver.IdempotencyRecord, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (model.Commit, error) {
-	p := port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, Meta: meta, BaseRevision: *reader.Snapshot().At, Changes: []port.Change{}}
+	p := port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, Meta: meta, BaseRevision: *reader.Snapshot().At, Changes: []port.Change{}, Expect: replayExpectations(cs, entry.Commit.Results)}
 	for i, result := range entry.Commit.Results {
 		if i >= len(cs.Ops) {
 			return model.Commit{}, failure("internal_error", "stored response does not match original request")
@@ -358,6 +361,27 @@ func (w *Writer) replayReceipt(ctx context.Context, reader driver.Reader, entry 
 		return model.Commit{}, err
 	}
 	return clone(entry.Commit)
+}
+
+func replayExpectations(cs model.ChangeSet, results []model.OpResult) []model.Precondition {
+	aliases := make(map[string]model.Ref)
+	for i, op := range cs.Ops {
+		if i >= len(results) || op.Kind != model.OpCreate || op.Create == nil || op.Create.Key == "" {
+			continue
+		}
+		aliases[op.Create.Key] = results[i].Ref
+	}
+	expects := make([]model.Precondition, 0, len(cs.Expect))
+	for _, expect := range cs.Expect {
+		canonical := expect
+		if !expect.Ref.IsID() {
+			if ref, ok := aliases[expect.Ref.Key]; ok {
+				canonical.Ref = ref
+			}
+		}
+		expects = append(expects, canonical)
+	}
+	return expects
 }
 
 func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (model.Commit, error) {

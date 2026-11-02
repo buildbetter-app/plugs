@@ -1,0 +1,20 @@
+{
+  "format": "plug-b26-ephemeral-boundary/1",
+  "card": "B26",
+  "decisionId": "engdocs/design/plug/spec/behaviors/surfaces.md#B26",
+  "disposition": "deviate",
+  "status": "unqualified",
+  "boundary": {
+    "publicProducer": "none-admitted",
+    "archiveInput": "records/bead.ndjson source.fields.storage_class=ephemeral",
+    "validator": "dumpformat.Read",
+    "refusal": "unsupported storage class",
+    "test": "TestB26EphemeralArchiveIsExplicitlyRefused"
+  },
+  "limits": [
+    "No positive ephemeral-plane producer or promotion workflow is admitted in the current public Plug contract.",
+    "No memory row or successful durable bead is used as a B26 substitute.",
+    "Mixed-plane dependency reads, labels/comments on ephemeral rows, promotion/demotion, child counters, and rollback remain unqualified.",
+    "The refusal is a typed boundary observation and does not certify full B26 parity."
+  ]
+}
