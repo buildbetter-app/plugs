@@ -335,16 +335,21 @@ class ReferenceTest(unittest.TestCase):
         calls = []
         def record(source, arguments, environment=None):
             calls.append((arguments, helper.git_environment() if environment is None else environment.copy()))
+            if arguments[0] == "fetch" and len([args for args, _ in calls if args[0] == "fetch"]) == 1:
+                raise ValueError("fixture authenticated fetch refusal")
             return b""
         with patch.dict(helper.os.environ, {"GH_TOKEN": "fixture-token-not-a-secret"}), patch.object(helper, "git", side_effect=record), patch.object(helper, "validate_source", return_value=helper.SOURCES["beads"]):
             helper.fetch_source(self.root / "retrieved-source")
         fetches = [(args, env) for args, env in calls if args[0] == "fetch"]
-        self.assertEqual(len(fetches), 1)
+        self.assertEqual(len(fetches), 2)
         args, env = fetches[0]
+        fallback_args, fallback_env = fetches[1]
         self.assertIn("--no-write-fetch-head", args)
         self.assertIn("--no-tags", args)
-        self.assertEqual(args[-2:], [helper.SOURCE_URL, helper.SOURCE_REF])
+        self.assertEqual(args[-2:], [helper.SOURCE_URL, helper.SOURCE_SHA])
+        self.assertEqual(fallback_args, args)
         self.assertIn("fixture-token-not-a-secret", env["GIT_CONFIG_VALUE_0"])
+        self.assertEqual(fallback_env, helper.git_environment())
         for arguments, environment in calls:
             self.assertNotIn("GH_TOKEN", environment)
             if arguments[0] != "fetch":

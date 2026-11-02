@@ -43,10 +43,6 @@ SOURCE_TREE = "cde121d6e4119e454857ad1c3ca293e2791be840"
 SOURCE_MANIFEST_SHA256 = "23d84a56302ad19c50d9d25af733b2da50f9137aaf9308b273cab039b6023ae3"
 SOURCE_ENTRIES = 5087
 SOURCE_URL = "https://github.com/buildbetter-app/plugs.git"
-# The pinned commit is an ancestor of the public beads branch. Fetching that
-# branch gives GitHub Actions' short-lived contents token a normal ref route;
-# the checkout and full manifest checks below still bind the exact commit/tree.
-SOURCE_REF = "refs/heads/beads"
 SOURCES = {
     "beads": {"commit": SOURCE_SHA, "tree": SOURCE_TREE,
               "manifest_sha256": SOURCE_MANIFEST_SHA256, "manifest_entries": SOURCE_ENTRIES},
@@ -268,14 +264,18 @@ def fetch_source(source: Path) -> dict:
         "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
         "GIT_CONFIG_VALUE_0": "AUTHORIZATION: bearer " + token,
     })
-    # Direct fixed public branch URL, no remote config, no FETCH_HEAD or
-    # credential file. The exact pinned commit/tree is checked after checkout;
-    # fetching the branch avoids GitHub's token-specific rejection of a raw
-    # ancestor SHA request.
-    git(source, ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
-                 "--no-auto-maintenance", SOURCE_URL, SOURCE_REF], fetch_environment)
-    del fetch_environment
-    del token
+    # Retrieve only the exact pinned object. A trusted workflow token gets the
+    # first attempt; a public repository may reject that bearer-authenticated
+    # request, so retry the identical URL/SHA without any credentials.
+    fetch_arguments = ["fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
+                       "--no-auto-maintenance", SOURCE_URL, SOURCE_SHA]
+    try:
+        git(source, fetch_arguments, fetch_environment)
+    except ValueError:
+        git(source, fetch_arguments, git_environment())
+    finally:
+        del fetch_environment
+        del token
     # Checkout and all source inspection run without the retrieval credential.
     git(source, ["checkout", "--quiet", "--detach", SOURCE_SHA])
     return validate_source(source)
