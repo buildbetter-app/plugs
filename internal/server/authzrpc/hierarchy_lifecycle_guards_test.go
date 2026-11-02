@@ -300,3 +300,75 @@ func TestHierarchyMixedLifecycleRefusesMissingClosure(t *testing.T) {
 		})
 	}
 }
+
+// Match the existing Writer event-context child budget, without changing it.
+// Counts are printed on the remote regression so budget refusals stay distinct
+// from permission, ontology and deadline failures.
+type hierarchyLifecycleBoundedReader struct {
+	port.SnapshotReader
+	points   int
+	unique   map[string]bool
+	exceeded bool
+}
+
+func (r *hierarchyLifecycleBoundedReader) budget(keys []driver.LockKey) error {
+	r.points += len(keys)
+	if r.unique == nil {
+		r.unique = map[string]bool{}
+	}
+	for _, key := range keys {
+		encoded, err := driver.EncodeLockKey(key)
+		if err != nil {
+			return err
+		}
+		r.unique[encoded] = true
+	}
+	if r.points > 32 {
+		r.exceeded = true
+		return fmt.Errorf("subscriber snapshot read budget exceeded at %d points", r.points)
+	}
+	return nil
+}
+func (r *hierarchyLifecycleBoundedReader) Get(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
+	keys := make([]driver.LockKey, len(refs))
+	for i := range refs {
+		keys[i] = driver.LockKey{Kind: driver.LockRecord, Ref: &refs[i]}
+	}
+	if err := r.budget(keys); err != nil {
+		return nil, err
+	}
+	return r.SnapshotReader.Get(ctx, refs)
+}
+func (r *hierarchyLifecycleBoundedReader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
+	if err := r.budget(keys); err != nil {
+		return nil, err
+	}
+	return r.SnapshotReader.Observe(ctx, keys)
+}
+
+func TestHierarchyLifecycleEventContextRetainsBoundedTrackedReads(t *testing.T) {
+	f := newHFixture(t, true)
+	fixed, err := authzfixed.New(f.base.Namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.app.Checker.chain.Rules = []authz.RuleSet{hierarchyLifecycleMembership{fixed}}
+	parent := hRef("new")
+	create := hCreate("fresh", "fresh", "child-project", &parent, "new")
+	close := port.Change{Resource: create.Resource, Op: model.Op{Kind: model.OpClose, Close: &model.CloseOp{Kind: model.OpClose, Target: model.RefByKey("fresh")}}, After: create.After}
+	proposal := hProposal(hAgent(), "tx.apply", create, hMove(&parent), close)
+	for pass := 0; pass < 2; pass++ {
+		reader := &hierarchyLifecycleBoundedReader{SnapshotReader: f.snapshot(t)}
+		_, err := f.app.Checker.EventContext(context.Background(), proposal, reader)
+		t.Logf("event-context pass=%d points=%d unique=%d limit=32 exceeded=%t err=%v", pass, reader.points, len(reader.unique), reader.exceeded, err)
+		if err != nil || reader.exceeded {
+			t.Fatalf("mixed lifecycle exhausted event-context reads: %v", err)
+		}
+		for _, key := range []driver.LockKey{{Kind: driver.LockRecord, Ref: &create.Resource.Ref}, {Kind: driver.LockRecord, Ref: &parent}} {
+			encoded, _ := driver.EncodeLockKey(key)
+			if !reader.unique[encoded] {
+				t.Fatalf("pass %d omitted tracked source or miss %s", pass, encoded)
+			}
+		}
+	}
+}
