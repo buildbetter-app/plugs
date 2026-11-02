@@ -295,6 +295,12 @@ func recordPublicRun(t *testing.T, root, name string, artifact publicArtifact, f
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	for _, dir := range []string{source, target} {
+		home := filepath.Join(dir, "home")
+		if err := os.MkdirAll(filepath.Join(home, ".config"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	pinned := filepath.Join(run.Root, "bd-pinned")
 	copyPinned(t, artifact.Binary, pinned, artifact.SHA256, artifact.Size)
 	env := recordingEnv(source)
