@@ -65,6 +65,7 @@ func ordinaryCountFixture(t *testing.T, open storeFactory) *fixture {
 	}
 	views, err := viewops.New(f.store, f.lease, viewops.Config{
 		OntologyRevision: model.Natural64(1), ParentProjection: parents,
+		Views: ordinarySavedView{},
 		AuthorizeRead: func(ctx context.Context, by model.PrincipalRef, resource model.ResourceRef, _ string) error {
 			_, err := f.server.Service.Get(ctx, by, service.GetRequest{ID: resource.Ref})
 			return err
@@ -100,6 +101,16 @@ func ordinaryCountFixture(t *testing.T, open storeFactory) *fixture {
 		t.Fatal(err)
 	}
 	return f
+}
+
+type ordinarySavedView struct{}
+
+func (ordinarySavedView) GetView(_ context.Context, _ model.PrincipalRef, id string) (viewops.Definition, error) {
+	if id != "ordinary-count" {
+		return viewops.Definition{}, &model.Error{Data: model.ErrorData{Code: "not_found"}}
+	}
+	budget := model.Natural64(1)
+	return viewops.Definition{Filter: &viewops.Filter{Query: "title=needle AND status=todo"}, Sort: []string{"title"}, BudgetTokens: &budget}, nil
 }
 
 func countDrivers(t *testing.T, run func(*testing.T, storeFactory)) {
@@ -241,6 +252,68 @@ func TestB23OrdinaryPredicateFoundationAcrossDrivers(t *testing.T) {
 					t.Fatalf("malformed predicate response=%+v", got)
 				}
 			})
+		}
+	})
+}
+
+func TestB23OrdinaryCurrentSnapshotAndCurrentVisibilityAcrossDrivers(t *testing.T) {
+	countDrivers(t, func(t *testing.T, open storeFactory) {
+		f := ordinaryCountFixture(t, open)
+		definition := map[string]any{"filter": map[string]any{"query": "status=todo AND title=needle"}, "sort": []string{"title"}}
+		first := ordinaryPage(t, f.call(t, countReader(), "view.run", map[string]any{"definition": definition}, 14000))
+		if len(first.Items) != 2 || first.Items[0].ID != fixtureRef(2).ID || first.Items[1].ID != fixtureRef(3).ID {
+			t.Fatalf("initial full predicate=%+v", first)
+		}
+		// A real public Writer update changes the next unpinned request. It
+		// cannot change membership in the explicitly selected old content.
+		success(t, f.call(t, worker("user:operator"), "bead.update", map[string]any{"id": fixtureRef(3), "fields": map[string]any{"title": "changed"}}, 14001))
+		fresh := ordinaryPage(t, f.call(t, countReader(), "view.run", map[string]any{"definition": definition}, 14002))
+		if len(fresh.Items) != 1 || fresh.Items[0].ID != fixtureRef(2).ID || reflect.DeepEqual(fresh.AsOf, first.AsOf) {
+			t.Fatalf("fresh request reused old membership: first=%+v fresh=%+v", first, fresh)
+		}
+		old := ordinaryPage(t, f.call(t, countReader(), "view.run", map[string]any{"definition": definition, "asOf": first.AsOf}, 14003))
+		if len(old.Items) != 2 || !reflect.DeepEqual(old.AsOf, first.AsOf) {
+			t.Fatalf("historical membership drifted: first=%+v old=%+v", first, old)
+		}
+		// Explicit old content never restores a broader caller caveat. The
+		// installed finite read policy applies to every candidate again.
+		narrow := countReader()
+		narrow.Caveats = map[string]any{"refs": []model.Ref{fixtureRef(2)}}
+		restricted := ordinaryPage(t, f.call(t, narrow, "view.run", map[string]any{"definition": definition, "asOf": first.AsOf}, 14004))
+		if len(restricted.Items) != 1 || restricted.Items[0].ID != fixtureRef(2).ID {
+			t.Fatalf("historical content bypassed current caveats: %+v", restricted)
+		}
+		for i, by := range []model.PrincipalRef{
+			{Kind: "user", ID: "user:empty-count", Caveats: map[string]any{"refs": []model.Ref{}}},
+			worker("user:operator"),
+		} {
+			denied := ordinaryPage(t, f.call(t, by, "view.run", map[string]any{"definition": definition}, 14005+i))
+			if len(denied.Items) != 0 {
+				t.Fatalf("non-readable candidates escaped: %+v", denied)
+			}
+		}
+	})
+}
+
+func TestB23OrdinarySavedViewPredicateAcrossDrivers(t *testing.T) {
+	countDrivers(t, func(t *testing.T, open storeFactory) {
+		f := ordinaryCountFixture(t, open)
+		params := map[string]any{"viewId": "ordinary-count"}
+		first := ordinaryPage(t, f.call(t, countReader(), "view.run", params, 15000))
+		if len(first.Items) != 1 || first.Items[0].ID != fixtureRef(2).ID || first.NextCursor == "" {
+			t.Fatalf("saved predicate first page=%+v", first)
+		}
+		params["cursor"] = first.NextCursor
+		second := ordinaryPage(t, f.call(t, countReader(), "view.run", params, 15001))
+		if len(second.Items) != 1 || second.Items[0].ID != fixtureRef(3).ID || second.NextCursor != "" {
+			t.Fatalf("saved predicate second page=%+v", second)
+		}
+		// A narrower current caller cannot reuse the broader cursor binding.
+		narrow := countReader()
+		narrow.Caveats = map[string]any{"refs": []model.Ref{fixtureRef(2)}}
+		got := f.call(t, narrow, "view.run", params, 15002)
+		if got.Error == nil || got.Error.Data.Code != "cursor_invalid" || len(got.Result) != 0 {
+			t.Fatalf("cursor accepted a changed caller: %+v", got)
 		}
 	})
 }
