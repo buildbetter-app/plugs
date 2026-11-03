@@ -580,18 +580,25 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 			if len(aliasAfter.Derived[driver.DerivedAncestorClosure]) != len(aliasBefore.Derived[driver.DerivedAncestorClosure])+1 {
 				t.Fatal("resolved-alias create did not publish its actual derived self-row")
 			}
-			foundDerived := false
+			retainedDerived := make(map[driver.DerivedTable][]driver.DerivedRow, len(aliasAfter.Derived))
+			for table, rows := range aliasAfter.Derived {
+				retainedDerived[table] = rows
+			}
+			retainedDerived[driver.DerivedAncestorClosure] = nil
+			foundDerived := 0
 			for _, row := range aliasAfter.Derived[driver.DerivedAncestorClosure] {
 				descendant, ancestor, depth, err := pipeline.DecodeAncestorRow(row)
 				if err != nil {
 					t.Fatal(err)
 				}
 				if descendant == aliasRow.Ref.ID && ancestor == aliasRow.Ref.ID && depth == 0 {
-					foundDerived = true
+					foundDerived++
+					continue
 				}
+				retainedDerived[driver.DerivedAncestorClosure] = append(retainedDerived[driver.DerivedAncestorClosure], row)
 			}
-			if !foundDerived {
-				t.Fatal("resolved ordinary bead's actual derived self-row is absent")
+			if foundDerived != 1 || !reflect.DeepEqual(aliasBefore.Derived, retainedDerived) {
+				t.Fatal("resolved-alias create must add exactly its self-row and preserve every other derived row/table")
 			}
 			if aliasDoc.Fields["status"] != "done" || len(aliasDoc.Comments) != 1 || aliasDoc.Comments[0].Body != "completed once" || aliasRow.Revision.String() != aliasCommit.Revision.String() || len(aliasAfter.Versions[aliasRow.Ref.ID]) != 1 {
 				t.Fatalf("resolved ordinary alias close did not commit its terminal image once: %+v", aliasDoc)
