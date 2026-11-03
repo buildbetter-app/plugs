@@ -312,7 +312,7 @@ func TestWebSocketFragmentedUTF8WithInterleavedPingExecutesOnce(t *testing.T) {
 	f := newTextFragmentFixture(t)
 	c := f.connect(t)
 	id := json.RawMessage(`"fragment-\u0069d"`)
-	const title, key = "café 🌱", "550e8400-e29b-41d4-a716-446655440000"
+	const title, key = "café \U0001F331", "550e8400-e29b-41d4-a716-446655440000"
 	request := textFragmentRequest(t, id, title, key)
 	split := bytes.Index(request, []byte("é")) + 1
 	if split < 1 || !utf8.Valid(request) || utf8.Valid(request[:split]) || utf8.Valid(request[split:]) {
@@ -347,7 +347,7 @@ func TestWebSocketInvalidCompletedUTF8DoesNotDispatchAndRecovers(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newTextFragmentFixture(t)
 			id := json.RawMessage(`"recovery-\u0069d"`)
-			const title, key = "recovered café 🌱", "550e8400-e29b-41d4-a716-446655440001"
+			const title, key = "recovered café \U0001F331", "550e8400-e29b-41d4-a716-446655440001"
 			valid := textFragmentRequest(t, id, title, key)
 			split := bytes.Index(valid, []byte("é")) + 1
 			invalid := bytes.Clone(valid)
