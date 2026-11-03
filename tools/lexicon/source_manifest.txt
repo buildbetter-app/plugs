@@ -366,6 +366,13 @@ internal/integration/auditsql/audit_sql_test.go
 internal/integration/auditsql/engine_test.go
 internal/integration/auditsql/faults_test.go
 internal/integration/auditsql/fixture_test.go
+internal/integration/b13memory/BUILD.bazel
+internal/integration/b13memory/README.md
+internal/integration/b13memory/fixture_test.go
+internal/integration/b13memory/lifecycle_test.go
+internal/integration/b13memory/manifest-proposal.patch
+internal/integration/b13memory/oracle_test.go
+internal/integration/b13memory/postgres_test.go
 internal/integration/batchsql/BUILD.bazel
 internal/integration/batchsql/README.md
 internal/integration/batchsql/allocator_archive_test.go
@@ -515,6 +522,8 @@ internal/integration/postgresacceptance/BUILD.bazel
 internal/integration/postgresacceptance/README.md
 internal/integration/postgresacceptance/atomic_close_test.go
 internal/integration/postgresacceptance/atomic_test.go
+internal/integration/postgresacceptance/b15_comments_test.go
+internal/integration/postgresacceptance/b16_labels_test.go
 internal/integration/postgresacceptance/engine_test.go
 internal/integration/postgresacceptance/fixture_test.go
 internal/integration/postgresacceptance/history_test.go
