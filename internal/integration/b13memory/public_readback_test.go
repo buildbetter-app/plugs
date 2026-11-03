@@ -146,15 +146,40 @@ func (a readbackAdmin) dump(history string) readbackArchive {
 	}
 	archive.manifest = decode[dumpformat.Manifest](f.t, archive.members["manifest.json"])
 	m := archive.manifest
-	if len(archive.members) != 5 || len(m.Files) != 4 || m.Format != "plug-dump/1" || m.Scope != "plug-native-store" || m.History != history || m.NativeStoreID != string(before.Meta.StoreID) || m.StoreID != string(before.Meta.StoreID) || m.NativeIncarnation != before.Meta.Incarnation || m.NativeHead != before.Meta.Head.String() || m.RecordCount != len(before.Records) {
+	if len(archive.members) != 6 || len(m.Files) != 5 || m.Format != "plug-dump/1" || m.Schema != 1 || m.Scope != "plug-native-store" || m.History != history || m.NativeStoreID != string(before.Meta.StoreID) || m.StoreID != string(before.Meta.StoreID) || m.NativeIncarnation != before.Meta.Incarnation || m.NativeHead != before.Meta.Head.String() || m.RecordCount != len(before.Records) {
 		f.t.Fatalf("public dump changed its source identity/history/census: %+v", m)
 	}
-	for _, name := range []string{"config/sources.json", "records/native.ndjson", "versions.ndjson", "changesets.ndjson"} {
+	archiveHash := sha256.New()
+	for _, name := range []string{"allocator/snapshot.json", "changesets.ndjson", "config/sources.json", "records/native.ndjson", "versions.ndjson"} {
 		payload, exists := archive.members[name]
 		file, registered := m.Files[name]
 		if !exists || !registered || file.SHA256 != readbackDigest(payload) || file.Size != int64(len(payload)) {
 			f.t.Fatalf("public dump member %s differs from its digest/size registration", name)
 		}
+		_, _ = io.WriteString(archiveHash, name)
+		_, _ = archiveHash.Write(payload)
+	}
+	if m.NativeDigest != hex.EncodeToString(archiveHash.Sum(nil)) {
+		f.t.Fatal("public dump native digest does not bind every non-manifest member")
+	}
+	// This fresh fixture installs no allocator and allocates no child. Assert
+	// its complete canonical payload directly, without the production codec.
+	wantAllocator := struct {
+		Version       string            `json:"version"`
+		StoreID       string            `json:"store_id"`
+		Incarnation   string            `json:"incarnation"`
+		At            model.Revision    `json:"at"`
+		CoverageFloor model.Revision    `json:"coverage_floor"`
+		Projects      []json.RawMessage `json:"projects"`
+		Parents       []json.RawMessage `json:"parents"`
+	}{
+		Version: "plug-native-allocator/1", StoreID: string(before.Meta.StoreID),
+		Incarnation: before.Meta.Incarnation, At: before.Meta.Head,
+		CoverageFloor: model.Natural64(0), Projects: []json.RawMessage{}, Parents: []json.RawMessage{},
+	}
+	allocator := archive.members["allocator/snapshot.json"]
+	if !before.Meta.HistoryFloor.IsZero() || m.NativeAllocatorProfile != "plug-native-allocator/1" || m.NativeAllocatorDigest != readbackDigest(allocator) || !bytes.Equal(allocator, encode(f.t, wantAllocator)) {
+		f.t.Fatalf("public dump allocator payload/profile/digest/source binding differs: manifest=%+v payload=%s", m, allocator)
 	}
 	images := readbackLines[struct {
 		Ref      model.Ref       `json:"ref"`
@@ -299,11 +324,17 @@ func TestB13PublicArchiveMemoryBriefReadback(t *testing.T) {
 				target.scopes[s] = true // Source receipts must not become target receipts.
 			}
 			consumer := bindReadbackAdmin(target)
-			fullFinish, fullKey, fullBefore := consumer.upload(full, "readback-full")
-			refused := consumer.call("admin.restore.finish", fullFinish, fullKey)
+			fullBeginKey := key("readback-full-begin")
+			target.scopes[scope{"admin.restore.begin", fullBeginKey}] = true
+			fullBefore, fullFrames := target.readbackState(), len(target.frames)
+			fullManifest := decode[map[string]any](t, encode(t, full.manifest))
+			refused := consumer.call("admin.restore.begin", map[string]any{"manifest": fullManifest, "history": "full", "humanPresence": readbackPresence}, fullBeginKey)
 			target.readbackRefusal(refused, "restore_violation", fullBefore)
-			if !strings.Contains(refused.Error.Data.Hint, "native full-history restore is unavailable") {
+			if refused.Error.Code != -32050 || refused.Error.Message != "restore contains an unrecorded violation" || refused.Error.Data.Retryable || refused.Error.Data.RetryAfterMS != nil || refused.Error.Data.Hint != "full-history restore is unavailable; source versions and changesets cannot be replayed by this driver" || !reflect.DeepEqual(refused.Error.Data.Details, map[string]any{"reason": "not-yet-supported", "mode": "full", "history": "full"}) {
 				t.Fatalf("full-history refusal hid the actual capability dependency: %+v", refused.Error)
+			}
+			if len(target.frames) != fullFrames+1 {
+				t.Fatal("full-history refusal must stop at Begin without chunk or finish calls")
 			}
 			target.reopenReadback("full-history-refused")
 			consumer = bindReadbackAdmin(target)
