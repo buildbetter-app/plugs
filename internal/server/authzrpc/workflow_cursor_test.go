@@ -366,7 +366,7 @@ func TestWorkflowGuardedCursorRefusesCoreMembershipChange(t *testing.T) {
 	// Change only fixture content. This is a read-pagination regression;
 	// the read-only caller and fixed CP7 policy do not permit bead.close.
 	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{
-		Ref: model.RefByID(coreID, model.Natural64(0)), Kind: "bead", Op: model.OpUpdate,
+		Ref: model.RefByID(coreID, model.Natural64(0)), Kind: "bead", Op: model.OpPatch,
 		Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","fields":{"title":"core item","status":"done","priority":0}}`, coreID)),
 	}}); err != nil {
 		t.Fatal(err)
