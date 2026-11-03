@@ -104,7 +104,7 @@ func CheckCycleReportCapability(store driver.Store, req CyclesRequest) error {
 	if !ok || !capability.Persistent() {
 		return failure("plugin_durable_state_unavailable", "ephemeral cycle reporting requires persistent workflow state")
 	}
-	return failure("unsupported", "the workflow plane does not support graph relationships or cycle reports")
+	return failure("invalid_params", "ephemeral cycle reporting requires a supported workflow plane")
 }
 
 func cycleLimit(req CyclesRequest) (int, error) {
@@ -136,7 +136,7 @@ func ReadCycles(ctx context.Context, reader driver.Reader, req CyclesRequest, re
 		return CyclesResult{}, failure("invalid_params", "cycle reporting requires a pinned snapshot")
 	}
 	if req.IncludeEphemeral {
-		return CyclesResult{}, failure("unsupported", "the workflow plane does not support graph relationships or cycle reports")
+		return CyclesResult{}, failure("invalid_params", "ephemeral cycle reporting requires a supported workflow plane")
 	}
 	rows, err := scanBeads(ctx, reader)
 	if err != nil {
