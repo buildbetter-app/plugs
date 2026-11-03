@@ -448,17 +448,22 @@ func (h *e3BrowserHost) close() {
 			h.f.t.Error(err)
 		}
 	}
-	if h.f.evidence != "" {
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		var wire strings.Builder
-		for _, line := range h.lines {
-			wire.Write(line)
-		}
-		if err := writeE3Bytes(h.f.evidence+"/watch.ndjson", []byte(wire.String())); err != nil {
-			h.f.t.Error(err)
-		}
+	if err := h.writeEvidence(); err != nil {
+		h.f.t.Error(err)
 	}
+}
+
+func (h *e3BrowserHost) writeEvidence() error {
+	if h.f.evidence == "" {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var wire strings.Builder
+	for _, line := range h.lines {
+		wire.Write(line)
+	}
+	return writeE3Bytes(h.f.evidence+"/watch.ndjson", []byte(wire.String()))
 }
 
 func (f *e3Fixture) seedBrowserMetadata() e3Grant {
