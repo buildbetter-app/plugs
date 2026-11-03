@@ -23,6 +23,7 @@ go_library(
 
 go_test(
     name = "authzrpc_test",
+    size = "large",
     srcs = ["authzrpc_test.go", "drivers_test.go", "predicate_count_test.go"],
     embed = [":authzrpc"],
     tags = ["exclusive"],
@@ -30,6 +31,7 @@ go_test(
         "//internal/core/authz",
         "//internal/core/model",
         "//internal/core/pipeline",
+        "//internal/core/port",
         "//internal/core/service",
         "//internal/core/viewops",
         "//internal/plugins/authnapikey",

@@ -1109,6 +1109,13 @@ spikes/authz/evidence-v6/postgres-result.json
 spikes/authz/evidence-v6/provenance-manifest.json
 spikes/authz/evidence-v6/readout.md
 spikes/authz/evidence-v6/sqlite-result.json
+spikes/authz/latency/BUILD.bazel
+spikes/authz/latency/closure.go
+spikes/authz/latency/latency_test.go
+spikes/authz/latency/measurement_test.go
+spikes/authz/latency/query.go
+spikes/authz/latency/query_test.go
+spikes/authz/latency/schema.go
 spikes/runtime/BUILD.bazel
 spikes/runtime/README.md
 spikes/runtime/abi.go
