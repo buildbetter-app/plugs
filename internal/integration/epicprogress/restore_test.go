@@ -307,6 +307,66 @@ func TestEpicProgressNativeRestoreReopenDetachUsesIndexedHierarchy(t *testing.T)
 	t.Logf("native restore/reopen detach indexed: incarnation=%s whole-bead queries=%d hierarchy_reads=%d inverse_reads=%d", incarnation, reads.queryCount(), reads.hierarchyCount(), reads.inverseCount())
 }
 
+func TestEpicProgressNativeRestoreDetachUsesIndexedHierarchyAcrossBackends(t *testing.T) {
+	for _, backend := range []string{"memory", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			dir := t.TempDir()
+			source := newFixture(t, backend, filepath.Join(dir, "source-large.db"), true)
+			_, child := buildLargeEpic(t, source)
+			sourceAdmin := admin(t, source.store, source.lease)
+			data, archive := dumpHead(t, sourceAdmin)
+			if !archive.Native() {
+				t.Fatal("large fixture dump was not native")
+			}
+			sourceAdmin.close(t)
+			source.close(t)
+
+			target, lease := openStore(t, backend, filepath.Join(dir, "restored-large.db"))
+			t.Cleanup(func() {
+				_ = lease.Release(context.Background())
+				_ = target.Close()
+			})
+			targetAdmin := admin(t, target, lease)
+			incarnation := restoreHead(t, targetAdmin, data, archive)
+			targetAdmin.close(t)
+
+			var targetStore driver.Store = target
+			var targetLease driver.ActiveLease = lease
+			if backend == "sqlite" {
+				if err := lease.Release(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if err := target.Close(); err != nil {
+					t.Fatal(err)
+				}
+				reopened := newFixtureMode(t, backend, filepath.Join(dir, "restored-large.db"), true, false)
+				targetStore, targetLease = reopened.store, reopened.lease
+			}
+
+			reads := &readObserver{}
+			writer := pipeline.New(&observedWriteStore{Store: targetStore, observer: reads}, targetLease, pipeline.WithOntology(service.NewOntology(nil)))
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := writer.Apply(ctx, model.PrincipalRef{Kind: "user", ID: "operator"}, model.ChangeSet{Ops: []model.Op{{
+				Kind:     model.OpReparent,
+				Reparent: &model.ReparentOp{Target: child},
+			}}}, model.WriteMeta{Project: visible, Method: "tx.apply", AgentLabel: "native-restore-detach", IdempotencyKey: "00000000000000000000000000000012"}); err != nil {
+				t.Fatalf("native restore detach failed: %v (queries=%d hierarchy_reads=%d inverse_reads=%d)", err, reads.queryCount(), reads.hierarchyCount(), reads.inverseCount())
+			}
+			if reads.queryCount() != 0 {
+				t.Fatalf("native restore detach used whole-bead Query fallback: queries=%d hierarchy_reads=%d inverse_reads=%d", reads.queryCount(), reads.hierarchyCount(), reads.inverseCount())
+			}
+			if reads.hierarchyCount() == 0 || reads.inverseCount() == 0 {
+				t.Fatalf("native restore detach did not use bounded source reads: hierarchy=%d inverse=%d", reads.hierarchyCount(), reads.inverseCount())
+			}
+			if rows := len(persistedClosure(t, targetStore)); rows != 20049 {
+				t.Fatalf("native restore detach left %d closure rows, want 20049", rows)
+			}
+			t.Logf("native %s restore detach indexed: incarnation=%s whole-bead queries=%d hierarchy_reads=%d inverse_reads=%d", backend, incarnation, reads.queryCount(), reads.hierarchyCount(), reads.inverseCount())
+		})
+	}
+}
+
 type observedWriteStore struct {
 	driver.Store
 	observer *readObserver
