@@ -1,7 +1,6 @@
 package memory
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -193,7 +192,7 @@ func selectedDerivedRow(state driver.LockState, table driver.DerivedTable, key s
 	if state.Derived == nil || state.Derived.Key != key {
 		return driver.DerivedRow{}, false, fmt.Errorf("memory: malformed present derived history row")
 	}
-	return driver.DerivedRow{Key: key, Value: bytes.Clone(state.Derived.Value)}, true, nil
+	return state.Derived.Clone(), true, nil
 }
 
 var _ driver.DerivedPrefixReader = (*reader)(nil)
