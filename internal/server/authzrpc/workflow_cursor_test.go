@@ -363,9 +363,25 @@ func TestWorkflowGuardedCursorRefusesCoreMembershipChange(t *testing.T) {
 	if err != nil || !slices.Equal(first.ids, []string{coreID, workflow[0]}) || !first.next.more() {
 		t.Fatalf("mixed page=%+v err=%v", first, err)
 	}
-	if _, err := f.domain.CloseWithOutcome(context.Background(), f.by, service.CloseRequest{ID: model.RefByID(coreID, model.Natural64(0))}, workflowClaimNextMeta("bead.close", 561)); err != nil {
+	// Change only fixture content. This is a read-pagination regression;
+	// the read-only caller and fixed CP7 policy do not permit bead.close.
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{
+		Ref: model.RefByID(coreID, model.Natural64(0)), Kind: "bead", Op: model.OpUpdate,
+		Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","fields":{"title":"core item","status":"done","priority":0}}`, coreID)),
+	}}); err != nil {
 		t.Fatal(err)
+	}
+	fresh, err := workflowCursorRead(t, f, "guarded", nil, 1, workflowContinuation{}, "project")
+	if err != nil || !slices.Equal(fresh.ids, workflow[:1]) || !fresh.next.more() {
+		t.Fatalf("core fixture did not leave Ready: page=%+v err=%v", fresh, err)
+	}
+	if !first.snapshot.Equal(fresh.snapshot) || first.next.position.AuthorizationRevision.String() != fresh.next.position.AuthorizationRevision.String() {
+		t.Fatal("core fixture changed the workflow snapshot or current ACL generation")
 	}
 	_, err = workflowCursorRead(t, f, "guarded", nil, 2, first.next, "project")
 	workflowCursorError(t, err, "cursor_invalid")
+	last, err := workflowCursorRead(t, f, "guarded", nil, 1, fresh.next, "project")
+	if err != nil || !slices.Equal(last.ids, workflow[1:]) || last.next.more() {
+		t.Fatalf("fresh traversal lost the final workflow item: page=%+v err=%v", last, err)
+	}
 }

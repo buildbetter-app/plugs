@@ -117,10 +117,14 @@ func (f *workflowClaimNextFixture) call(t *testing.T, filter *service.Filter, ke
 	}
 	params := map[string]any{"_meta": map[string]any{"project": "project", "idempotencyKey": fmt.Sprintf("%032x", key), "agent": "client-label"}}
 	if filter != nil {
-		params["filter"] = map[string]any{"types": filter.Types, "resources": filter.Resources}
-		if len(filter.Resources) == 0 {
-			params["filter"] = map[string]any{"types": filter.Types}
+		selector := map[string]any{}
+		if filter.Types != nil {
+			selector["types"] = filter.Types
 		}
+		if filter.Resources != nil {
+			selector["resources"] = filter.Resources
+		}
+		params["filter"] = selector
 	}
 	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "bead.claimNext", "params": params})
 	if err != nil {
