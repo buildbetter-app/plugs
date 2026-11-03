@@ -170,6 +170,7 @@ func TestE3ScriptedBrowserTaskReceipts(t *testing.T) {
 		"project": e3Project, "storedBeads": f.receipt.StoredBeads, "agents": f.receipt.Agents,
 		"homeViewId": e3ID(99), "blockedViewId": e3ID(98), "grantCarrierId": e3ID(100), "grantKey": e3GrantKey,
 		"grant": grant, "blockedId": e3ID(52), "blockerId": e3ID(51), "deniedId": e3ID(60),
+		"epicID": e3ID(99), "epicHiddenChildID": e3ID(60),
 		"updateKey": e3Key("browser-live-update"), "revokeKey": e3Key("browser-revoke"),
 		"sourceHead": f.receipt.SourceHead, "sourceTree": f.receipt.SourceTree,
 	})
