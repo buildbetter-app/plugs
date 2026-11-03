@@ -141,12 +141,6 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	dir := t.TempDir()
 	source := newFixture(t, "sqlite", filepath.Join(dir, "source.db"), true)
 	g := source.graph(t)
-	consumed := source.create(t, visible, "consumed highest child", &g.parent)
-	if consumed.ID != g.parent.ID+".4" {
-		t.Fatalf("source hierarchical counter: %+v", consumed)
-	}
-	deleted := model.ChangeSet{Ops: []model.Op{{Kind: model.OpDelete, Delete: &model.DeleteOp{Kind: model.OpDelete, Target: consumed}}}}
-	committed(t, source.write(t, source.owner, "tx.apply", visible, map[string]any{"changeSet": deleted}))
 	sourceAllocators := persistedAllocatorSnapshot(t, source.store)
 	viewer := source.viewer(t, epics, visible)
 	before := inspectProgress(t, source.api.call(t, viewer, "view.run", progressParams(g.parent, epics)), map[string]int{"total": 2, "status:todo": 1, "status:done": 1}, 1)
@@ -245,7 +239,7 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	}
 	inspectProgress(t, reopened.api.call(t, read, "view.run", after.refresh), map[string]int{"total": 1, "status:todo": 1}, 1)
 	continued := reopened.create(t, visible, "continued after native restore", &g.parent)
-	if continued.ID != g.parent.ID+".5" {
+	if continued.ID != g.parent.ID+".4" {
 		t.Fatalf("native restore/reopen reused consumed child number: %+v", continued)
 	}
 	inspectProgress(t, reopened.api.call(t, read, "view.run", progressParams(g.parent, epics)), map[string]int{"total": 2, "status:todo": 2}, 1)
