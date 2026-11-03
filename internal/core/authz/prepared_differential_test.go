@@ -179,6 +179,23 @@ func TestPreparedPrincipalPreservesExactNumbersAndOwnsMutableInputs(t *testing.T
 	}
 }
 
+func TestPreparedBatchCapturesCallerInputsBeforeReuse(t *testing.T) {
+	q := request()
+	q.Caller.Principal.Caveats = map[string]any{"actions": []string{"read"}}
+	want, err := FreezeList(ListRequest{Caller: q.Caller, Action: q.Action, ResourceKind: q.Resource.Kind, Method: q.Method})
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := PrepareChecks([]CheckRequest{q, q})
+	q.Caller.Principal.Caveats["actions"].([]string)[0] = "modify"
+	for i := 0; i < batch.Len(); i++ {
+		binding, err := batch.Binding(i)
+		if err != nil || !reflect.DeepEqual(binding.Request(), want) {
+			t.Fatalf("batch binding %d did not capture host input: %v/%v", i, binding, err)
+		}
+	}
+}
+
 func TestPreparedNoPluginAndMarshalFailureOrderMatchesLegacy(t *testing.T) {
 	cyclic := map[string]any{}
 	cyclic["cycle"] = cyclic

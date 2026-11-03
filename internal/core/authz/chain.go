@@ -116,7 +116,10 @@ func (c Chain) Check(ctx context.Context, s Slice, reqs []CheckRequest) ([]Decis
 	}
 	valid := make([]bool, len(reqs))
 	restrictions := make([][]FilterExpr, len(reqs))
-	state := batch.state(s)
+	state := snapshotPreparation(s)
+	if state == nil {
+		state = &Preparation{}
+	}
 	for i, r := range reqs {
 		valid[i], err = batch.bindings[i].prepare(ctx, s, c.Namespace, r.Resource, state)
 		if err != nil {

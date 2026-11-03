@@ -276,3 +276,72 @@ func TestPreparedBatchKeepsResourceFactsIndependent(t *testing.T) {
 		t.Fatalf("one resource supplied another's permit: %+v", got)
 	}
 }
+
+func TestPreparedReusedBatchFreshSnapshotDifferential(t *testing.T) {
+	for _, provider := range []bool{false, true} {
+		for _, useEval := range []bool{false, true} {
+			t.Run(fmt.Sprintf("provider=%v/eval=%v", provider, useEval), func(t *testing.T) {
+				c := caller("user", nil)
+				q := authz.CheckRequest{Caller: c, Action: authz.Read, Resource: authz.Resource{Kind: authz.Bead, Ref: ref("b")}, Method: "bead.get"}
+				batch := authz.PrepareChecks([]authz.CheckRequest{q})
+				p, err := batch.Binding(0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := rules(t)
+				filter, err := r.CompilePrepared(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, state := range []string{"active", "epoch_changed", "revoked", "context_error", "restored"} {
+					old, current := newSlice(c), newSlice(c)
+					if state == "epoch_changed" {
+						old.epoch, current.epoch = model.Natural64(2), model.Natural64(2)
+					}
+					if state == "revoked" {
+						old.contextActive, current.contextActive = false, false
+					}
+					if state == "context_error" {
+						old.fail, current.fail = "context", "context"
+					}
+					var facts authz.Slice = current
+					if provider {
+						facts = &preparedFactSlice{slice: current}
+					}
+					want, we := legacyFixedEval(ns(), context.Background(), old, []authz.CheckRequest{q})
+					var got []authz.Decision
+					var ge error
+					if useEval {
+						got, ge = r.EvalPrepared(context.Background(), facts, batch)
+					} else {
+						var allowed bool
+						allowed, ge = batch.Match(context.Background(), facts, 0, filter)
+						if ge == nil {
+							got = []authz.Decision{{Effect: authz.NoDecision}}
+							if allowed {
+								got[0] = authz.Decision{Effect: authz.Allow, Reasons: []string{"cp7.read"}}
+							}
+						}
+					}
+					if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(fixedPreparedError(ge), fixedPreparedError(we)) || !reflect.DeepEqual(current.recorded, old.recorded) {
+						t.Fatalf("%s: prepared=%+v/%v legacy=%+v/%v dependencies=%v/%v", state, got, ge, want, we, current.recorded, old.recorded)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestPreparedFixedEvalPreservesEarlierFactError(t *testing.T) {
+	c := caller("user", nil)
+	q := authz.CheckRequest{Caller: c, Action: authz.Read, Resource: authz.Resource{Kind: authz.Bead, Ref: ref("b")}, Method: "bead.get"}
+	bad := q
+	bad.Caller.Principal.Caveats = map[string]any{"bad": func() {}}
+	old, current := newSlice(c), &preparedFactSlice{slice: newSlice(c)}
+	old.fail, current.fail = "context", "context"
+	want, we := legacyFixedEval(ns(), context.Background(), old, []authz.CheckRequest{q, bad})
+	got, ge := rules(t).Eval(context.Background(), current, []authz.CheckRequest{q, bad})
+	if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(fixedPreparedError(ge), fixedPreparedError(we)) {
+		t.Fatalf("later malformed binding displaced earlier context error: prepared=%+v/%v legacy=%+v/%v", got, ge, want, we)
+	}
+}

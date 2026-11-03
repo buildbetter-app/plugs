@@ -163,3 +163,43 @@ func TestPreparedContextPreservesPrincipalAndEpochEqualityDomains(t *testing.T) 
 		})
 	}
 }
+
+func TestPreparedBatchRebindsFreshAuthoritySnapshot(t *testing.T) {
+	chain, caller, calls := preparationFixture(t)
+	q := authz.CheckRequest{Caller: caller, Action: authz.Read, Resource: authz.Resource{Kind: authz.Bead, Ref: model.RefByID("bead", model.Natural64(0))}, Method: "bead.get"}
+	batch := authz.PrepareChecks([]authz.CheckRequest{q})
+	binding, err := batch.Binding(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filter, err := chain.Rules[0].(authz.PreparedCompiler).CompilePrepared(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, useEval := range []bool{false, true} {
+		name := "batch_match"
+		if useEval {
+			name = "fixed_eval_prepared"
+		}
+		t.Run(name, func(t *testing.T) {
+			for i, epoch := range []model.Revision{model.Natural64(1), model.Natural64(2), model.Natural64(1)} {
+				expected := caller
+				expected.CapturedEpoch = epoch
+				s, snapshot := preparationSlice(chain, expected)
+				calls.Store(0)
+				var allowed bool
+				var err error
+				if useEval {
+					var decisions []authz.Decision
+					decisions, err = chain.Rules[0].(authz.PreparedRuleSet).EvalPrepared(context.Background(), s, batch)
+					allowed = len(decisions) == 1 && decisions[0].Effect == authz.Allow
+				} else {
+					allowed, err = batch.Match(context.Background(), s, 0, filter)
+				}
+				if err != nil || allowed != (i != 1) || calls.Load() != 1 || snapshot.observations != 4 {
+					t.Fatalf("snapshot %d: allowed=%v error=%v host normalizations=%d observations=%d", i, allowed, err, calls.Load(), snapshot.observations)
+				}
+			}
+		})
+	}
+}

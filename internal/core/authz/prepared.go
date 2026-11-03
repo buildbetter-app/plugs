@@ -256,13 +256,13 @@ func (p *PreparedRequest) caveatsAllow(ctx context.Context, s Slice, resource Re
 }
 
 // PreparedChecks keeps heterogeneous batches separate by the entire immutable
-// list binding. Construction is lazy so standalone finite Eval retains its
-// first-request error order; Chain freezes the complete batch before fact reads.
+// list binding. Construction captures mutable inputs immediately. Preparation
+// failures are reported at their original index, preserving standalone Eval's
+// first-request error order; Chain checks all indices before reading facts.
 type PreparedChecks struct {
-	raw         []CheckRequest
-	bindings    []*PreparedRequest
-	groups      map[preparedBatchKey][]preparedBatchBinding
-	preparation *Preparation
+	raw      []CheckRequest
+	bindings []*PreparedRequest
+	errors   []error
 }
 
 type preparedBatchKey struct {
@@ -275,10 +275,36 @@ type preparedBatchKey struct {
 type preparedBatchBinding struct {
 	raw      ListRequest
 	prepared *PreparedRequest
+	err      error
 }
 
 func PrepareChecks(requests []CheckRequest) *PreparedChecks {
-	return &PreparedChecks{raw: append([]CheckRequest(nil), requests...), bindings: make([]*PreparedRequest, len(requests)), groups: map[preparedBatchKey][]preparedBatchBinding{}}
+	b := &PreparedChecks{raw: append([]CheckRequest(nil), requests...), bindings: make([]*PreparedRequest, len(requests)), errors: make([]error, len(requests))}
+	groups := map[preparedBatchKey][]preparedBatchBinding{}
+	for i, q := range b.raw {
+		r := ListRequest{Caller: q.Caller, Action: q.Action, ResourceKind: q.Resource.Kind, Method: q.Method}
+		key := preparedBatchKey{q.Caller.VerificationID, q.Caller.CapturedEpoch.String(), q.Action, q.Resource.Kind, q.Method}
+		var binding *preparedBatchBinding
+		for j := range groups[key] {
+			group := &groups[key][j]
+			// Verification receipts alone are not equality. Shared native maps
+			// compare cheaply, while different principals/sponsors/caveats with
+			// the same receipt still require the complete binding to agree.
+			if reflect.DeepEqual(r, group.raw) {
+				binding = group
+				break
+			}
+		}
+		if binding == nil {
+			p, err := PrepareRequest(r)
+			group := preparedBatchBinding{r, p, err}
+			groups[key] = append(groups[key], group)
+			binding = &group
+		}
+		b.bindings[i], b.errors[i] = binding.prepared, binding.err
+		b.raw[i].Caller = Caller{} // Retain no caller-owned mutable JSON tree.
+	}
+	return b
 }
 
 func (b *PreparedChecks) Len() int { return len(b.raw) }
@@ -287,38 +313,7 @@ func (b *PreparedChecks) Binding(index int) (*PreparedRequest, error) {
 	if index < 0 || index >= len(b.raw) {
 		return nil, errors.New("prepared check index out of range")
 	}
-	if p := b.bindings[index]; p != nil {
-		return p, nil
-	}
-	q := b.raw[index]
-	r := ListRequest{Caller: q.Caller, Action: q.Action, ResourceKind: q.Resource.Kind, Method: q.Method}
-	key := preparedBatchKey{q.Caller.VerificationID, q.Caller.CapturedEpoch.String(), q.Action, q.Resource.Kind, q.Method}
-	for _, group := range b.groups[key] {
-		// Verification receipts alone are not equality. Shared native maps
-		// compare cheaply, while distinct callers with the same receipt still
-		// require their full principal/sponsor/caveat binding to agree.
-		if reflect.DeepEqual(r, group.raw) {
-			b.bindings[index] = group.prepared
-			return group.prepared, nil
-		}
-	}
-	p, err := PrepareRequest(r)
-	if err != nil {
-		return nil, err
-	}
-	b.groups[key] = append(b.groups[key], preparedBatchBinding{r, p})
-	b.bindings[index] = p
-	return p, nil
-}
-
-func (b *PreparedChecks) state(s Slice) *Preparation {
-	if b.preparation == nil {
-		b.preparation = snapshotPreparation(s)
-		if b.preparation == nil {
-			b.preparation = &Preparation{}
-		}
-	}
-	return b.preparation
+	return b.bindings[index], b.errors[index]
 }
 
 func (b *PreparedChecks) frozen() ([]CheckRequest, error) {
@@ -357,5 +352,7 @@ func (b *PreparedChecks) Match(ctx context.Context, s Slice, index int, t Filter
 	if t.NoPlugins {
 		return t.Match(ctx, s, b.raw[index].Resource)
 	}
-	return t.matchPrepared(ctx, s, b.raw[index].Resource, p, b.state(s))
+	// Reusable parsing must never retain a prior authority snapshot's state.
+	// Generic slices without an immutable request-owned provider revalidate.
+	return t.matchPrepared(ctx, s, b.raw[index].Resource, p, snapshotPreparation(s))
 }
