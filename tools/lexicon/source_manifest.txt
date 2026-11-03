@@ -755,6 +755,7 @@ internal/server/transport/inprocess/inprocess.go
 internal/server/transport/inprocess/inprocess_test.go
 internal/server/transport/mcp/BUILD.bazel
 internal/server/transport/mcp/README.md
+internal/server/transport/mcp/body_bounds_test.go
 internal/server/transport/mcp/config.go
 internal/server/transport/mcp/errors.go
 internal/server/transport/mcp/handler.go
