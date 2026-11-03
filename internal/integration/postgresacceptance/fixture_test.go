@@ -26,10 +26,12 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
+	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/postgres"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 const project = "postgres-acceptance"
@@ -121,6 +123,7 @@ type host struct {
 	domain  *service.Service
 	server  *httpjson.Server
 	client  *http.Client
+	token   string
 	url     string
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -133,9 +136,20 @@ type host struct {
 }
 
 func startHost(t *testing.T, store *postgres.Store, sequence *ids, record *trace, extra ...pipeline.Option) *host {
+	return startHostWithWorkflow(t, false, store, sequence, record, nil, "", extra...)
+}
+
+func startWorkflowHost(t *testing.T, store *postgres.Store, sequence *ids, record *trace, provider authn.Provider, token string, extra ...pipeline.Option) *host {
+	if provider == nil || token == "" {
+		t.Fatal("workflow HTTP acceptance requires an issued credential")
+	}
+	return startHostWithWorkflow(t, true, store, sequence, record, provider, token, extra...)
+}
+
+func startHostWithWorkflow(t *testing.T, withWorkflow bool, store *postgres.Store, sequence *ids, record *trace, provider authn.Provider, token string, extra ...pipeline.Option) *host {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &host{store: store, ctx: ctx, cancel: cancel, renewed: make(chan error, 1), served: make(chan error, 1), trace: record}
+	h := &host{store: store, token: token, ctx: ctx, cancel: cancel, renewed: make(chan error, 1), served: make(chan error, 1), trace: record}
 	leaseCtx, done := context.WithTimeout(ctx, 5*time.Second)
 	var err error
 	h.lease, err = store.Lease(leaseCtx, "v3-postgres-host", driver.LeaseTTL)
@@ -176,7 +190,24 @@ func startHost(t *testing.T, store *postgres.Store, sequence *ids, record *trace
 	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithClock(func() time.Time { return clock }), pipeline.WithIDGenerator(sequence.next)}
 	options = append(options, extra...)
 	h.writer = pipeline.New(store, h.lease, options...)
-	h.domain = service.New(store, h.lease, h.writer, service.WithOntology(ontology), service.WithClock(func() time.Time { return clock }))
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceOptions := []service.Option{service.WithOntology(ontology), service.WithClock(func() time.Time { return clock })}
+	if withWorkflow {
+		checkpoints, ok := any(store).(driver.PersistentCheckpointStore)
+		if !ok || !checkpoints.Persistent() {
+			t.Fatal("PostgreSQL workflow fixture requires persistent checkpoints")
+		}
+		state := pluginhost.NewDurableStateWithPersistence(checkpoints, h.lease, workflowplugin.Alias, "default", true)
+		workflow, err := workflowplugin.New(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		serviceOptions = append(serviceOptions, service.WithWorkflow(workflow.WithIdentity(workflowplugin.Alias, "default", meta.Incarnation)))
+	}
+	h.domain = service.New(store, h.lease, h.writer, serviceOptions...)
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -184,17 +215,17 @@ func startHost(t *testing.T, store *postgres.Store, sequence *ids, record *trace
 	if err = rpc.BindService(registry, h.domain); err != nil {
 		t.Fatal(err)
 	}
-	meta, err := store.Meta(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 	// Synthetic fixed signing material makes restart continuation observable.
 	// It is local test data, not a production credential or configuration.
-	server, err := rpc.New(registry, rpc.Config{Incarnation: meta.Incarnation, DefaultProject: project, CursorKey: bytes.Repeat([]byte{0x31}, 32)})
+	authMode := "anonymous"
+	if provider != nil {
+		authMode = "authenticated"
+	}
+	server, err := rpc.New(registry, rpc.Config{Incarnation: meta.Incarnation, DefaultProject: project, AuthMode: authMode, CursorKey: bytes.Repeat([]byte{0x31}, 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	authenticator, err := authn.New(authn.Config{})
+	authenticator, err := authn.New(authn.Config{Provider: provider})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,6 +301,9 @@ func (h *host) exchange(method string, params map[string]any, requestKey, label 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Plug-RPC", "1")
+	if h.token != "" {
+		req.Header.Set("Authorization", "Bearer "+h.token)
+	}
 	response, err := h.client.Do(req)
 	if err != nil {
 		return reply{}, err
@@ -350,10 +384,14 @@ func reader(t *testing.T, store driver.Store) driver.Reader {
 }
 
 func receipt(t *testing.T, store driver.Store, method, requestKey, label string) *driver.IdempotencyRecord {
+	return receiptFor(t, store, actor, method, requestKey, label)
+}
+
+func receiptFor(t *testing.T, store driver.Store, by model.PrincipalRef, method, requestKey, label string) *driver.IdempotencyRecord {
 	t.Helper()
 	r := reader(t, store)
 	defer r.Close()
-	principal, err := driver.PrincipalKey(actor)
+	principal, err := driver.PrincipalKey(by)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -21,13 +22,34 @@ import (
 )
 
 func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesEphemeral(t *testing.T) {
-	f := startRuntime(t, Config{Driver: "memory", Project: "workflow-memory", Address: DefaultAddress})
 	ctx := context.Background()
+	keys := authnapikey.New(authnapikey.Config{})
+	owner := model.PrincipalRef{Kind: "user", ID: "user:workflow-memory-owner"}
+	issued, err := keys.Issue(owner, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := startRuntime(t, Config{Driver: "memory", Project: "workflow-memory", Address: DefaultAddress,
+		AuthMode: "authenticated", Auth: authn.Config{Provider: keys}})
+	transport, err := client.NewHTTP(client.HTTPConfig{Server: "http://" + f.server.Addr().String(), Token: issued.Token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(transport.Close)
+	ownerClient, err := client.New(transport, "workflow-memory", "workflow-memory-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := driver.PrincipalKey(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	permanentKey, refusalKey, malformedKey := strings.Repeat("1", 64), strings.Repeat("2", 64), strings.Repeat("3", 64)
 	params := map[string]any{
 		"template": "template", "project": "workflow-memory", "mode": "permanent",
 		"checklist": []map[string]any{{"label": "one", "title": "ordinary durable item", "type": "issue"}},
 	}
-	created, err := f.client.Call(ctx, "x.workflow.invoke", params, "")
+	created, err := ownerClient.Call(ctx, "x.workflow.invoke", params, permanentKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +59,7 @@ func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesEphemeral(t *testing.T
 		t.Fatalf("memory permanent invocation=%v", invoked)
 	}
 	id := items[0].(map[string]any)["id"].(string)
-	ready, err := f.client.Call(ctx, "bead.ready", map[string]any{"limit": 10}, "")
+	ready, err := ownerClient.Call(ctx, "bead.ready", map[string]any{"limit": 10}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,14 +67,120 @@ func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesEphemeral(t *testing.T
 	if len(readyItems) != 1 || readyItems[0].(map[string]any)["id"] != id {
 		t.Fatalf("ordinary memory ready=%v", readyItems)
 	}
+	// Read every permanent family through a fresh pinned reader; a receipt can
+	// exist without a graph change, so it is observed separately from history.
+	type snapshot struct {
+		Meta       driver.Meta
+		Records    []driver.Record
+		Changesets []model.Changeset
+		Versions   []driver.Version
+		Events     int
+		Receipt    *driver.IdempotencyRecord
+		Refusal    *driver.IdempotencyRecord
+		Malformed  *driver.IdempotencyRecord
+		Checkpoint driver.Checkpoint
+	}
+	capture := func() snapshot {
+		t.Helper()
+		meta, err := f.r.Store.Meta(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := f.r.Store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		page, err := r.Query(ctx, driver.Query{Limit: 100})
+		if err != nil || page.NextCursor != nil {
+			t.Fatalf("memory graph page: %+v %v", page, err)
+		}
+		sets, err := r.Changesets(ctx, nil, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		versions, err := r.Versions(ctx, model.RefByID(id, model.Natural64(0)), driver.PageReq{Limit: 100})
+		if err != nil || versions.NextCursor != nil {
+			t.Fatalf("memory versions: %+v %v", versions, err)
+		}
+		// Authenticated principal receipts have an empty agent scope.
+		getReceipt := func(key string) *driver.IdempotencyRecord {
+			value, err := r.IdempotencyByKey(ctx, principal, "", "x.workflow.invoke", key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return value
+		}
+		checkpoint, err := f.r.Store.(driver.CheckpointStore).LoadCheckpoint(ctx, "plugin/workflow/default/durable")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := snapshot{Meta: meta, Records: page.Items, Changesets: sets, Versions: versions.Items,
+			Receipt: getReceipt(permanentKey), Refusal: getReceipt(refusalKey), Malformed: getReceipt(malformedKey), Checkpoint: checkpoint}
+		for _, set := range sets {
+			out.Events += len(set.Events)
+		}
+		return out
+	}
+	before := capture()
+	if before.Meta.Head.String() != "1" || len(before.Records) != 1 || len(before.Changesets) != 1 || len(before.Versions) != 1 || before.Receipt == nil || before.Receipt.ResponsePending || before.Refusal != nil || before.Checkpoint.Generation != 0 {
+		t.Fatalf("authenticated permanent memory baseline is incomplete: %+v", before)
+	}
 	params["mode"] = "ephemeral"
-	_, err = f.client.Call(ctx, "x.workflow.invoke", params, "")
+	_, err = f.client.Call(ctx, "x.workflow.invoke", params, refusalKey)
 	var refused *wire.Error
-	if !errors.As(err, &refused) || refused.Data.Code != "method_not_found" {
+	if !errors.As(err, &refused) || refused.Data.Code != "unauthenticated" {
+		t.Fatalf("missing bearer reached memory capability check: %v", err)
+	}
+	_, err = ownerClient.Call(ctx, "x.workflow.invoke", params, refusalKey)
+	if !errors.As(err, &refused) || refused.Data.Code != "plugin_durable_state_unavailable" {
 		t.Fatalf("memory runtime accepted ephemeral invocation: %v", err)
 	}
-	if _, err := f.client.Call(ctx, "bead.get", map[string]any{"id": map[string]any{"id": id}}, ""); err != nil {
+	_, err = ownerClient.Call(ctx, "x.workflow.invoke", params, refusalKey)
+	if !errors.As(err, &refused) || refused.Data.Code != "plugin_durable_state_unavailable" {
+		t.Fatalf("repeated memory refusal changed taxonomy: %v", err)
+	}
+	// Send the malformed request through authenticated HTTP directly so a
+	// client-side catalog rejection cannot stand in for server refusal order.
+	bad := map[string]any{"template": "template", "project": "workflow-memory", "mode": "ephemeral", "checklist": []any{},
+		"_meta": wire.Meta{Project: "workflow-memory", Agent: "workflow-memory-client", IdempotencyKey: malformedKey}}
+	request, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "memory-malformed", "method": "x.workflow.invoke", "params": bad})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := transport.RoundTrip(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var malformed struct {
+		Error  *wire.Error     `json:"error"`
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(response, &malformed); err != nil {
+		t.Fatal(err)
+	}
+	if malformed.Error == nil || malformed.Error.Data.Code != "invalid_params" || malformed.Result != nil {
+		t.Fatalf("authenticated malformed request bypassed shape refusal: %+v", malformed)
+	}
+	after := capture()
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("memory refusal published graph, event, receipt or checkpoint state: before=%+v after=%+v", before, after)
+	}
+	ready, err = ownerClient.Call(ctx, "bead.ready", map[string]any{"limit": 10}, "")
+	if err != nil || !reflect.DeepEqual(resultObject(t, ready)["items"], readyItems) {
+		t.Fatalf("memory refusal changed authenticated ready membership: %v %v", ready, err)
+	}
+	if _, err := ownerClient.Call(ctx, "bead.get", map[string]any{"id": map[string]any{"id": id}}, ""); err != nil {
 		t.Fatalf("ephemeral refusal broke ordinary memory reads: %v", err)
+	}
+	params["mode"] = "permanent"
+	params["checklist"] = []map[string]any{{"label": "after-refusal", "title": "ordinary item after capability refusal", "type": "issue"}}
+	if _, err := ownerClient.Call(ctx, "x.workflow.invoke", params, strings.Repeat("4", 64)); err != nil {
+		t.Fatalf("permanent workflow invocation after capability refusal failed: %v", err)
+	}
+	final, err := f.r.Store.Meta(ctx)
+	if err != nil || final.Head.String() != "2" {
+		t.Fatalf("permanent invocation stopped after memory refusal: meta=%+v err=%v", final, err)
 	}
 }
 

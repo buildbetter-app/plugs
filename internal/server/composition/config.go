@@ -45,6 +45,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/postgres"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
+	sdk "github.com/buildbetter-app/plugs/sdk/go"
 )
 
 const (
@@ -92,6 +93,11 @@ type Config struct {
 	// RestoreImportPlanner is converter-owned inspection of the exact archive;
 	// composition never derives or accepts a caller-supplied derived digest.
 	RestoreImportPlanner RestoreImportPlanner
+	// NativePlugins and NativeBindings configure trusted compiled-in callbacks
+	// at the same composition root as the store, lease and Writer. They are
+	// host configuration, never client-supplied code or grants.
+	NativePlugins  []sdk.Native
+	NativeBindings []pluginhost.Binding
 	// Compaction supplies a host-owned summary and trusted D32 verifier. Nil
 	// keeps summary generation and reversal unavailable; there is no egress.
 	Compaction *service.CompactionConfig
@@ -131,6 +137,7 @@ type Runtime struct {
 	Metrics          *pipeline.Collector
 	Authenticator    *authn.Authenticator
 	OIDC             *authnoidc.Provider
+	NativeHost       *pluginhost.Host
 	HTTPHandler      *httpjson.Handler
 	UIHandler        *webui.Handler
 	WatchHTTP        *watchhttp.Adapter
@@ -292,7 +299,20 @@ func (r *Runtime) bind(config Config) error {
 		return fmt.Errorf("composition: anonymous epic progress requires an explicit anonymous host without authentication or authorization plugins")
 	}
 	ontology := service.NewOntology(nil)
-	writer, metrics := newPipelineWriter(r.Store, r.Lease, pipeline.WithOntology(ontology))
+	writerOptions := []pipeline.Option{pipeline.WithOntology(ontology)}
+	if len(config.NativePlugins) != 0 || len(config.NativeBindings) != 0 {
+		nativeHost, hostErr := r.newNativeHost(config, authConfig)
+		if hostErr != nil {
+			return hostErr
+		}
+		r.NativeHost = nativeHost
+		writerOptions = append(writerOptions,
+			pipeline.WithMutators(nativeHost.Mutators()...),
+			pipeline.WithValidators(nativeHost.Validators()...),
+			pipeline.WithPostSubscribers(nativeHost.Posts()...),
+		)
+	}
+	writer, metrics := newPipelineWriter(r.Store, r.Lease, writerOptions...)
 	r.Metrics = metrics
 	serviceOptions := []service.Option{service.WithOntology(ontology)}
 	if checkpoints, ok := r.Store.(driver.PersistentCheckpointStore); ok && checkpoints.Persistent() {
@@ -658,7 +678,9 @@ func (r *Runtime) Close(ctx context.Context) error {
 		r.http = nil
 		r.httpMu.Unlock()
 		r.closeErr = errors.Join(r.closeErr, closeMCPHandler(r.mcp))
-		r.closeErr = errors.Join(r.closeErr, r.websocket.Close())
+		if r.websocket != nil {
+			r.closeErr = errors.Join(r.closeErr, r.websocket.Close())
+		}
 		if httpServer != nil {
 			r.closeErr = errors.Join(r.closeErr, httpServer.Shutdown(ctx))
 		}
@@ -668,7 +690,13 @@ func (r *Runtime) Close(ctx context.Context) error {
 		if r.Sessions != nil {
 			r.closeErr = errors.Join(r.closeErr, r.Sessions.Close())
 		}
+		// Constructors receive the runtime lifetime. Cancel it before joining
+		// callbacks that may retain that context, while the lease and store are
+		// still available for their cleanup.
 		r.cancel()
+		if r.NativeHost != nil {
+			r.closeErr = errors.Join(r.closeErr, r.NativeHost.Close())
+		}
 		<-r.renewDone
 		leaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		r.closeErr = errors.Join(r.closeErr, r.Lease.Release(leaseCtx))

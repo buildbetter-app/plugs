@@ -501,6 +501,7 @@ internal/integration/postgresacceptance/fixture_test.go
 internal/integration/postgresacceptance/history_test.go
 internal/integration/postgresacceptance/receipts_test.go
 internal/integration/postgresacceptance/refusal_test.go
+internal/integration/postgresacceptance/workflow_test.go
 internal/integration/postphase/BUILD.bazel
 internal/integration/postphase/README.md
 internal/integration/postphase/delivery_test.go
@@ -544,6 +545,7 @@ internal/integration/transports/BUILD.bazel
 internal/integration/transports/README.md
 internal/integration/transports/client_test.go
 internal/integration/transports/composition_test.go
+internal/integration/transports/configured_test.go
 internal/integration/transports/fixture_test.go
 internal/integration/transports/transports_test.go
 internal/integration/viewpermissions/BUILD.bazel
@@ -638,6 +640,8 @@ internal/server/composition/configfile_test.go
 internal/server/composition/epic_progress_test.go
 internal/server/composition/mcp.go
 internal/server/composition/mcp_lifecycle_test.go
+internal/server/composition/native.go
+internal/server/composition/native_test.go
 internal/server/composition/restore_actual_archive_test.go
 internal/server/composition/restore_import.go
 internal/server/composition/restore_import_test.go
@@ -962,6 +966,7 @@ scripts/ci/prepare-public-reference-test.py
 scripts/ci/prepare-public-reference.py
 scripts/ci/public-bundle-test.py
 scripts/ci/public-bundle.py
+scripts/ci/reconcile-openrpc-check.py
 scripts/ci/reconcile-openrpc-test.py
 scripts/ci/reconcile-openrpc.py
 scripts/demo.sh
@@ -1047,6 +1052,8 @@ spec/s1-b05-b08/cycle_fence_test.go
 spec/s1-b05-b08/cycle_oracle_test.go
 spec/s1-b05-b08/cycle_rpc_test.go
 spec/s1-b05-b08/engines_test.go
+spec/s1-b05-b08/ephemeral_cycle_oracle_test.go
+spec/s1-b05-b08/ephemeral_cycle_test.go
 spec/s1-b05-b08/fixture_test.go
 spec/s1-b05-b08/heartbeat_repair_test.go
 spec/s1-b05-b08/opaque_kinds_test.go

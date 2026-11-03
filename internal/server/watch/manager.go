@@ -961,6 +961,12 @@ func (current *watch) next(ctx context.Context, consumer *Subscription) (Frame, 
 }
 
 func (current *watch) fail(err error) error {
+	// A lifetime ending during delivery wins over the in-flight operation's
+	// context error. Keep the transport closure sentinel consistent with run,
+	// while preserving the original error for a still-live watch.
+	if current.ctx.Err() != nil {
+		err = ErrSubscriptionClosed
+	}
 	current.mu.Lock()
 	if current.closeErr == nil {
 		current.closeErr = err
