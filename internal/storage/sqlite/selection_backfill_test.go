@@ -439,12 +439,12 @@ func TestSelectionAffectedParentProofIncludesUnchangedDescendants(t *testing.T) 
 	s := selectionStore(t).(*Store)
 	t.Cleanup(func() { _ = s.Close() })
 	lease := getLease(t, ctx, s, driver.LeaseTTL)
-	root, child := testRef("selection-affected-root"), testRef("selection-affected-child")
-	tx, header := beginSourceTest(t, s, lease, root, child)
+	root, child, sibling := testRef("selection-affected-root"), testRef("selection-affected-child"), testRef("selection-affected-sibling")
+	tx, header := beginSourceTest(t, s, lease, root, child, sibling)
 	for _, item := range []struct {
 		ref    model.Ref
 		parent *model.Ref
-	}{{root, nil}, {child, &root}} {
+	}{{root, nil}, {child, &root}, {sibling, &root}} {
 		if err := tx.PutGraphRecord(ctx, driver.Record{Ref: item.ref, Kind: "bead", Body: []byte(`{}`)}, item.parent, nil); err != nil {
 			t.Fatal(err)
 		}
@@ -454,7 +454,7 @@ func TestSelectionAffectedParentProofIncludesUnchangedDescendants(t *testing.T) 
 	plainDecode, plainProject := decode, project.Decode
 	decode = func(record driver.Record) (driver.GraphSourceMetadata, error) {
 		metadata, err := plainDecode(record)
-		if err == nil && record.Ref.ID == child.ID {
+		if err == nil && (record.Ref.ID == child.ID || record.Ref.ID == sibling.ID) {
 			metadata.Selection[0].Row.Index.Bead.Parent = &root
 		}
 		return metadata, err
@@ -487,6 +487,25 @@ func TestSelectionAffectedParentProofIncludesUnchangedDescendants(t *testing.T) 
 	valid, err = verifySQLiteSelectionParentChainsAffected(ctx, s.db, meta.Incarnation, at, []string{childKey})
 	if err != nil || !valid {
 		t.Fatalf("affected proof rejected valid child-seeded component: valid=%t err=%v", valid, err)
+	}
+	// A leaf seed must not walk back to root and then down into an unrelated
+	// sibling. The sibling is still checked when root itself is the seed.
+	siblingKey := keyID(driver.LockKey{Kind: driver.LockRecord, Ref: &sibling})
+	if _, err := s.db.ExecContext(ctx, `UPDATE selection_bead_history SET parent_key=NULL
+		WHERE incarnation=? AND record_key=? AND end_revision IS NULL`, meta.Incarnation, siblingKey); err != nil {
+		t.Fatal(err)
+	}
+	valid, err = verifySQLiteSelectionParentChainsAffected(ctx, s.db, meta.Incarnation, at, []string{childKey})
+	if err != nil || !valid {
+		t.Fatalf("leaf-seeded proof expanded into unrelated sibling: valid=%t err=%v", valid, err)
+	}
+	valid, err = verifySQLiteSelectionParentChainsAffected(ctx, s.db, meta.Incarnation, at, []string{rootKey})
+	if err != nil || valid {
+		t.Fatalf("root-seeded proof missed stale sibling: valid=%t err=%v", valid, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE selection_bead_history SET parent_key=?
+		WHERE incarnation=? AND record_key=? AND end_revision IS NULL`, rootKey, meta.Incarnation, siblingKey); err != nil {
+		t.Fatal(err)
 	}
 	// The child is not a seed, but it is a current descendant of root. A stale
 	// typed Parent image must therefore invalidate the affected component.

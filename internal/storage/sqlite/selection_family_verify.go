@@ -175,9 +175,10 @@ func verifySQLiteSelectionParentChainsAffected(ctx context.Context, q queryer, i
 		args = append(args, seed)
 	}
 	// Keep the scope values as ordinary predicates instead of a correlated
-	// one-row CTE.  SQLite can then use the existing (incarnation,branch,key)
-	// indexes for every affected lookup.  The affected component is explicitly
-	// materialized so later proof branches cannot re-expand the full history.
+	// one-row CTE. SQLite can then use the existing (incarnation,branch,key)
+	// indexes for every affected lookup. Descendants are expanded only from the
+	// original seeds; a second upward walk adds their required ancestors without
+	// walking down again from a discovered parent into unrelated siblings.
 	args = append(args, incarnation, revKey(0), incarnation, revKey(0), incarnation, revKey(0),
 		incarnation, revKey(0), string(driver.DerivedAncestorClosure), string(driver.SelectionAncestorFact), at, at,
 		incarnation, revKey(0), string(driver.SelectionAncestorFact),
@@ -187,16 +188,22 @@ func verifySQLiteSelectionParentChainsAffected(ctx context.Context, q queryer, i
 	var bad int
 	err := q.QueryRowContext(ctx, `WITH RECURSIVE
 		seed(record_key) AS (VALUES `+strings.Join(values, ",")+`),
-		affected(record_key) AS MATERIALIZED (
+		descendants(record_key) AS MATERIALIZED (
 			SELECT record_key FROM seed
 			UNION
 			SELECT h.child_key FROM hierarchy_source_current h
-			JOIN affected a ON a.record_key=h.parent_key
+			JOIN descendants d ON d.record_key=h.parent_key
 			WHERE h.incarnation=? AND h.branch=?
+		),
+		ancestors(record_key) AS MATERIALIZED (
+			SELECT record_key FROM descendants
 			UNION
 			SELECT h.parent_key FROM hierarchy_source_current h
-			JOIN affected a ON a.record_key=h.child_key
+			JOIN ancestors a ON a.record_key=h.child_key
 			WHERE h.incarnation=? AND h.branch=? AND h.parent_key IS NOT NULL
+		),
+		affected(record_key) AS MATERIALIZED (
+			SELECT record_key FROM ancestors
 		),
 		beads(record_key,parent_key) AS MATERIALIZED (
 			SELECT h.child_key AS record_key,h.parent_key
