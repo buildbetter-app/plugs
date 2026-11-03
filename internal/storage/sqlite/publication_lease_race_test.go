@@ -58,7 +58,7 @@ func publicationHeartbeat(ctx context.Context, lease driver.ActiveLease, start, 
 
 // These hooks surround REAL native transactions; they do not replace an engine
 // result. They expose heartbeats during the SQL/fsync interval and after the
-// durable graph commit but before the driver's publication handoff.
+// durable graph commit but before the driver unregisters the publication.
 type publicationCommitConnector struct {
 	driver     sqldriver.Driver
 	dsn        string
@@ -143,11 +143,14 @@ func publicationHeartbeatsAcrossCommit(t *testing.T, mode string) {
 		held = time.Since(started)
 	}
 	var lateRenew error
-	connector.after = func() { lateRenew = lease.Renew(ctx) }
+	var renewal publicationHeartbeatResult
+	connector.after = func() {
+		lateRenew = lease.Renew(ctx)
+		close(stop)
+		renewal = <-done
+	}
 	var err error
 	if mode == "renewal" {
-		// A lease-only publication must not serialize other timely Renew calls
-		// behind its own SQL/fsync interval either.
 		err = lease.Renew(ctx)
 	} else {
 		err = s.immediate(ctx, lease, func(c *sql.Conn) error {
@@ -155,23 +158,18 @@ func publicationHeartbeatsAcrossCommit(t *testing.T, mode string) {
 			return err
 		})
 	}
-	close(stop)
-	renewal := <-done
 	if err != nil || lateRenew != nil || renewal.err != nil || renewal.successes == 0 || held < 2*time.Second {
 		t.Fatalf("publication=%v lateRenew=%v heartbeat=%+v held=%s", err, lateRenew, renewal, held)
 	}
-	if connector.steps.Load() < 2 {
-		t.Fatal("heartbeat racing native COMMIT was not durably published before handoff")
+	if connector.steps.Load() != 1 {
+		t.Fatalf("publication required a post-COMMIT flush: nativeCommits=%d", connector.steps.Load())
 	}
-	row, err := readLease(ctx, observer.db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lease.mu.Lock()
-	expires, deadline, publishing, lost := lease.expires, lease.deadline, lease.publishing, lease.lostFlag
-	lease.mu.Unlock()
-	if row.expires != expires || row.expires != deadline.UnixNano() || publishing || lost {
-		t.Fatalf("handoff left private heartbeat: durable=%d effective=%d deadline=%s publishing=%v lost=%v", row.expires, expires, deadline, publishing, lost)
+	assertDurableHeartbeat(t, ctx, observer, lease)
+	// The graph's SQL snapshot is necessarily older than the heartbeat accepted
+	// AFTER its real COMMIT. The independent journal, not a flush, protects it.
+	raw, err := readLease(ctx, observer.db)
+	if err != nil || raw.expires >= lease.expires {
+		t.Fatalf("did not exercise a heartbeat newer than SQLite's committed row: raw=%+v err=%v", raw, err)
 	}
 	cp, err := observer.LoadCheckpoint(ctx, "commit-heartbeats")
 	wantGeneration, wantPayload := uint64(1), "committed"
@@ -184,368 +182,278 @@ func publicationHeartbeatsAcrossCommit(t *testing.T, mode string) {
 	short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
 	if next, err := observer.Lease(short, "contender", driver.LeaseTTL); next != nil || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("handoff exposed expired durable lease: next=%v err=%v", next, err)
+		t.Fatalf("publication exposed expired durable lease: next=%v err=%v", next, err)
 	}
-	t.Logf("held real COMMIT boundary %s with %d timely heartbeats; late heartbeat flushed through %d native COMMITs; independent handle still excluded", held, renewal.successes, connector.steps.Load())
+	t.Logf("held real COMMIT boundary %s with %d timely heartbeats; post-COMMIT heartbeat independently durable after ONE native COMMIT", held, renewal.successes)
 }
 
-// A first-COMMIT-only delay misses a moving-target handoff: every flush may
-// receive yet another heartbeat before its COMMIT returns. Keep the production
-// TTL and renewal cadence, and delay EVERY real COMMIT beyond that cadence.
-func TestSQLitePublicationLeaseBoundedHandoffWithEveryCommitSlow(t *testing.T) {
-	for _, mode := range []string{"graph", "renewal"} {
-		t.Run(mode, func(t *testing.T) { publicationBoundedSlowHandoff(t, mode) })
-	}
-}
-
-func publicationBoundedSlowHandoff(t *testing.T, mode string) {
+func assertDurableHeartbeat(t *testing.T, ctx context.Context, observer *Store, lease *activeLease) {
 	t.Helper()
-	ctx := testContext(t)
-	path := filepath.Join(t.TempDir(), "every-commit-slow.db")
-	s := openStore(t, ctx, path)
-	observer := openStore(t, ctx, path)
-	lease := getLease(t, ctx, s, driver.LeaseTTL).(*activeLease)
-	connector := hookPublicationCommit(t, s, path)
-	connector.every.Store(true)
-	// Cleanup must not apply the latency harness to the final Release.
-	t.Cleanup(func() { connector.every.Store(false) })
-	const commitDelay = 4 * time.Second
-	start, stop := make(chan struct{}), make(chan struct{})
-	done := make(chan publicationHeartbeatResult, 1)
-	go func() {
-		var result publicationHeartbeatResult
-		defer func() { done <- result }()
-		select {
-		case <-start:
-		case <-ctx.Done():
-			result.err = ctx.Err()
-			return
-		}
-		ticker := time.NewTicker(driver.LeaseRenewEvery)
-		defer ticker.Stop()
-		for {
-			// An already admitted Renew must finish, but a pending tick must not
-			// start another SQL publication once the graph caller has returned.
-			select {
-			case <-stop:
-				return
-			case <-ctx.Done():
-				result.err = ctx.Err()
-				return
-			default:
-			}
-			if err := lease.Renew(ctx); err != nil {
-				result.err = err
-				return
-			}
-			result.successes++
-			select {
-			case <-stop:
-				return
-			case <-ctx.Done():
-				result.err = ctx.Err()
-				return
-			case <-ticker.C:
-			}
-		}
-	}()
-	var cutoff, advancedDuringHandoff, shortCommit atomic.Bool
-	var delayed atomic.Int32
-	connector.before = func() {
-		step := connector.steps.Load()
-		if step == 0 {
-			close(start)
-		}
-		lease.mu.Lock()
-		before := lease.heartbeatLocked()
-		if step == 1 {
-			cutoff.Store(lease.publishing)
-		}
-		lease.mu.Unlock()
-		started := time.Now()
-		timer := time.NewTimer(commitDelay)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-		}
-		delayed.Add(1)
-		if time.Since(started) < commitDelay {
-			shortCommit.Store(true)
-		}
-		if step == 1 {
-			lease.mu.Lock()
-			advancedDuringHandoff.Store(lease.heartbeatLocked() != before)
-			lease.mu.Unlock()
-		}
-	}
-	started := time.Now()
-	var publicationErr error
-	if mode == "renewal" {
-		publicationErr = lease.Renew(ctx)
-	} else {
-		publicationErr = s.immediate(ctx, lease, func(c *sql.Conn) error {
-			_, err := c.ExecContext(ctx, `INSERT INTO checkpoints VALUES(?,?,?)`, "bounded-handoff", revKey(1), []byte("committed"))
-			return err
-		})
-	}
-	elapsed := time.Since(started)
-	close(stop)
-	renewal := <-done
-	if publicationErr != nil || renewal.err != nil || renewal.successes < 3 {
-		t.Fatalf("publication=%v heartbeat=%+v elapsed=%s nativeCommits=%d", publicationErr, renewal, elapsed, connector.steps.Load())
-	}
-	if !cutoff.Load() || advancedDuringHandoff.Load() {
-		t.Fatalf("finalization did not queue later renewals: cutoff=%v heartbeatAdvanced=%v", cutoff.Load(), advancedDuringHandoff.Load())
-	}
-	// Two commits publish the graph and its cutoff heartbeat; the third is
-	// the Renew queued during handoff, which must finish after the gate opens.
-	if connector.steps.Load() != 3 || delayed.Load() != 3 || shortCommit.Load() || elapsed < 2*commitDelay {
-		t.Fatalf("unbounded or unexercised handoff: nativeCommits=%d delayed=%d short=%v elapsed=%s", connector.steps.Load(), delayed.Load(), shortCommit.Load(), elapsed)
-	}
-	row, err := readLease(ctx, observer.db)
+	row, err := observer.readLease(ctx, observer.db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	lease.mu.Lock()
 	expires, deadline, publishing, lost := lease.expires, lease.deadline, lease.publishing, lease.lostFlag
 	lease.mu.Unlock()
-	if row.expires != expires || row.expires != deadline.UnixNano() || publishing || lost {
-		t.Fatalf("handoff left private or lost lease: durable=%d effective=%d deadline=%s publishing=%v lost=%v", row.expires, expires, deadline, publishing, lost)
+	if row.epoch != lease.epoch || row.token != lease.token || row.expires != expires || row.expires != deadline.UnixNano() || publishing || lost {
+		t.Fatalf("publication left private or lost heartbeat: durable=%+v effective=%d deadline=%s publishing=%v lost=%v", row, expires, deadline, publishing, lost)
 	}
-	cp, err := observer.LoadCheckpoint(ctx, "bounded-handoff")
-	wantGeneration, wantPayload := uint64(1), "committed"
-	if mode == "renewal" {
-		wantGeneration, wantPayload = 0, ""
-	}
-	if err != nil || cp.Generation != wantGeneration || string(cp.Payload) != wantPayload {
-		t.Fatalf("native publication=%+v err=%v want generation=%d", cp, err, wantGeneration)
-	}
-	short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-	defer cancel()
-	if next, err := observer.Lease(short, "contender", driver.LeaseTTL); next != nil || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("handoff exposed expired durable lease: next=%v err=%v", next, err)
-	}
-	t.Logf("%s: publication returned in %s using two 4s COMMITs with ttl=%s renewEvery=%s; queued Renew completed a third 4s COMMIT; lease remains live and durable", mode, elapsed, driver.LeaseTTL, driver.LeaseRenewEvery)
 }
 
-func TestSQLitePublicationLeaseQueuedHandoffRenewal(t *testing.T) {
-	for _, mode := range []string{"cancellation", "expiry"} {
+// Keep the unchanged production TTL/cadence and delay EVERY native COMMIT.
+// A moving-target handoff cannot converge; the journal needs exactly one COMMIT.
+func TestSQLitePublicationLeaseBoundedHandoffWithEveryCommitSlow(t *testing.T) {
+	for _, mode := range []string{"graph", "renewal"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := testContext(t)
-			path := filepath.Join(t.TempDir(), "queued-handoff.db")
+			path := filepath.Join(t.TempDir(), "every-commit-slow.db")
+			s := openStore(t, ctx, path)
+			observer := openStore(t, ctx, path)
+			lease := getLease(t, ctx, s, driver.LeaseTTL).(*activeLease)
+			connector := hookPublicationCommit(t, s, path)
+			connector.every.Store(true)
+			t.Cleanup(func() { connector.every.Store(false) })
+			const commitDelay = 4 * time.Second
+			start, stop := make(chan struct{}), make(chan struct{})
+			done := make(chan publicationHeartbeatResult, 1)
+			go func() {
+				var result publicationHeartbeatResult
+				defer func() { done <- result }()
+				select {
+				case <-start:
+				case <-ctx.Done():
+					result.err = ctx.Err()
+					return
+				}
+				ticker := time.NewTicker(driver.LeaseRenewEvery)
+				defer ticker.Stop()
+				for {
+					if err := lease.Renew(ctx); err != nil {
+						result.err = err
+						return
+					}
+					result.successes++
+					select {
+					case <-stop:
+						return
+					case <-ctx.Done():
+						result.err = ctx.Err()
+						return
+					case <-ticker.C:
+					}
+				}
+			}()
+			var held time.Duration
+			connector.before = func() {
+				close(start)
+				started := time.Now()
+				timer := time.NewTimer(commitDelay)
+				defer timer.Stop()
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+				}
+				held = time.Since(started)
+			}
+			var renewal publicationHeartbeatResult
+			connector.after = func() { close(stop); renewal = <-done }
+			started := time.Now()
+			var err error
+			if mode == "renewal" {
+				err = lease.Renew(ctx)
+			} else {
+				err = s.immediate(ctx, lease, func(c *sql.Conn) error {
+					_, err := c.ExecContext(ctx, `INSERT INTO checkpoints VALUES(?,?,?)`, "bounded-handoff", revKey(1), []byte("committed"))
+					return err
+				})
+			}
+			elapsed := time.Since(started)
+			if err != nil || renewal.err != nil || renewal.successes < 2 || held < commitDelay || connector.steps.Load() != 1 {
+				t.Fatalf("publication=%v heartbeat=%+v held=%s elapsed=%s nativeCommits=%d", err, renewal, held, elapsed, connector.steps.Load())
+			}
+			assertDurableHeartbeat(t, ctx, observer, lease)
+			cp, err := observer.LoadCheckpoint(ctx, "bounded-handoff")
+			wantGeneration := uint64(1)
+			if mode == "renewal" {
+				wantGeneration = 0
+			}
+			if err != nil || cp.Generation != wantGeneration || wantGeneration == 1 && string(cp.Payload) != "committed" {
+				t.Fatalf("native publication=%+v err=%v want generation=%d", cp, err, wantGeneration)
+			}
+			t.Logf("%s: returned after ONE slow COMMIT in %s with ttl=%s renewEvery=%s; all %d heartbeats independently durable", mode, elapsed, driver.LeaseTTL, driver.LeaseRenewEvery, renewal.successes)
+		})
+	}
+}
+
+// This replaces the former cutoff test, which incorrectly expected a timely
+// queued owner to be fenced. Renewals must remain serviceable even AFTER the
+// primary native COMMIT throughout a final persistence interval longer than TTL.
+func TestSQLitePublicationLeasePostCommitRenewalsStayLive(t *testing.T) {
+	for _, mode := range []string{"live", "canceled-renewal", "genuine-pause"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := testContext(t)
+			path := filepath.Join(t.TempDir(), "post-commit.db")
 			s := openStore(t, ctx, path)
 			observer := openStore(t, ctx, path)
 			lease := getLease(t, ctx, s, time.Second).(*activeLease)
 			connector := hookPublicationCommit(t, s, path)
-			connector.every.Store(true)
-			t.Cleanup(func() { connector.every.Store(false) })
-			var accepted, queuedErr error
-			var queuedEarly, advanced bool
+			var accepted, canceledRenew error
 			var held time.Duration
+			var renewal publicationHeartbeatResult
 			connector.after = func() {
-				if connector.steps.Load() == 1 {
-					// Accept a heartbeat after the graph COMMIT's snapshot so
-					// finalization must enter its real lease-only transaction.
-					accepted = lease.Renew(ctx)
+				accepted = lease.Renew(ctx)
+				if mode == "canceled-renewal" {
+					lease.mu.Lock()
+					before := lease.heartbeatLocked()
+					lease.mu.Unlock()
+					canceled, cancel := context.WithCancel(ctx)
+					cancel()
+					canceledRenew = lease.Renew(canceled)
+					lease.mu.Lock()
+					unchanged := lease.heartbeatLocked() == before
+					lease.mu.Unlock()
+					if !unchanged || !errors.Is(canceledRenew, context.Canceled) {
+						t.Errorf("canceled renewal changed heartbeat: err=%v unchanged=%v", canceledRenew, unchanged)
+					}
 				}
-			}
-			connector.before = func() {
-				if connector.steps.Load() != 1 {
-					return
+				start, stop := make(chan struct{}), make(chan struct{})
+				var done <-chan publicationHeartbeatResult
+				if mode != "genuine-pause" {
+					done = publicationHeartbeat(ctx, lease, start, stop)
+					close(start)
 				}
-				lease.mu.Lock()
-				before := lease.heartbeatLocked()
-				lease.mu.Unlock()
-				renewCtx, cancel := context.WithCancel(ctx)
-				defer cancel()
-				queued := make(chan error, 1)
-				go func() { queued <- lease.Renew(renewCtx) }()
 				started := time.Now()
-				delay := 100 * time.Millisecond
-				if mode == "expiry" {
-					delay = 2 * time.Second
-				}
-				timer := time.NewTimer(delay)
+				timer := time.NewTimer(2 * time.Second)
 				defer timer.Stop()
 				select {
-				case queuedErr = <-queued:
-					// A successful return before the gate opens would falsely
-					// acknowledge an extension excluded by the cutoff.
-					queuedEarly = queuedErr == nil
-					select {
-					case <-timer.C:
-					case <-ctx.Done():
-					}
 				case <-timer.C:
-					if mode == "cancellation" {
-						cancel()
-					}
-					queuedErr = <-queued
 				case <-ctx.Done():
-					cancel()
-					queuedErr = <-queued
 				}
 				held = time.Since(started)
-				lease.mu.Lock()
-				advanced = lease.heartbeatLocked() != before
-				lease.mu.Unlock()
+				if done != nil {
+					close(stop)
+					renewal = <-done
+				}
 			}
 			err := s.immediate(ctx, lease, func(c *sql.Conn) error {
-				_, err := c.ExecContext(ctx, `INSERT INTO checkpoints VALUES(?,?,?)`, "queued-handoff", revKey(1), []byte("committed"))
+				_, err := c.ExecContext(ctx, `INSERT INTO checkpoints VALUES(?,?,?)`, "post-commit", revKey(1), []byte("committed"))
 				return err
 			})
-			if err != nil || accepted != nil || queuedEarly || advanced || connector.steps.Load() != 2 {
-				t.Fatalf("publication=%v accepted=%v queued=%v early=%v advanced=%v nativeCommits=%d", err, accepted, queuedErr, queuedEarly, advanced, connector.steps.Load())
+			if err != nil || accepted != nil || held < 2*time.Second || connector.steps.Load() != 1 {
+				t.Fatalf("publication=%v accepted=%v held=%s nativeCommits=%d", err, accepted, held, connector.steps.Load())
 			}
-			if mode == "cancellation" {
-				if !errors.Is(queuedErr, context.Canceled) {
-					t.Fatalf("queued Renew ignored cancellation: %v", queuedErr)
-				}
-				select {
-				case <-lease.Lost():
-					t.Fatal("canceling an unaccepted queued renewal lost the durable live lease")
-				default:
-				}
-			} else {
-				if held < 2*time.Second {
-					t.Fatalf("did not cross the real TTL during handoff: held=%s", held)
-				}
-				requireFenced(t, queuedErr)
-				requireFenced(t, lease.Renew(ctx))
-				select {
-				case <-lease.Lost():
-				default:
-					t.Fatal("queued renewal resurrected an expired handoff lease")
-				}
-				next := getLease(t, ctx, observer, driver.LeaseTTL)
-				if next.Epoch() <= lease.Epoch() {
-					t.Fatal("handoff expiry takeover did not advance the epoch")
-				}
-				requireFenced(t, lease.Renew(ctx))
-			}
-			cp, readErr := observer.LoadCheckpoint(ctx, "queued-handoff")
+			cp, readErr := observer.LoadCheckpoint(ctx, "post-commit")
 			if readErr != nil || cp.Generation != 1 || string(cp.Payload) != "committed" {
 				t.Fatalf("already committed graph changed: checkpoint=%+v err=%v", cp, readErr)
 			}
-			lease.mu.Lock()
-			registered := lease.publishing || lease.handoff
-			lease.mu.Unlock()
-			if registered {
-				t.Fatal("completed handoff left heartbeat admission registered")
+			if mode != "genuine-pause" {
+				if renewal.err != nil || renewal.successes < 10 {
+					t.Fatalf("timely post-COMMIT renewals blocked: %+v", renewal)
+				}
+				assertDurableHeartbeat(t, ctx, observer, lease)
+			} else {
+				requireFenced(t, lease.Renew(ctx))
+				select {
+				case <-lease.Lost():
+				default:
+					t.Fatal("genuinely paused holder revived")
+				}
+				next := getLease(t, ctx, observer, driver.LeaseTTL)
+				if next.Epoch() <= lease.Epoch() {
+					t.Fatal("takeover did not advance epoch")
+				}
+				requireFenced(t, lease.Renew(ctx))
 			}
-			t.Logf("%s: unaccepted queued Renew returned %v without advancing the heartbeat; held=%s; graph remains committed", mode, queuedErr, held)
+			t.Logf("%s: final persistence held %s after real COMMIT; %d successful timely renewals; publication success preserved", mode, held, renewal.successes)
 		})
 	}
 }
 
-// Expiry during the second COMMIT is too late to exercise a failing follow-up
-// fence. Pause after the second real BEGIN instead, and compare each public
-// checkpoint API's outcome with a separate handle's already-durable generation.
 func TestSQLitePublicationLeaseCheckpointOutcomeAfterHandoffExpiry(t *testing.T) {
 	for _, method := range []string{"SaveCheckpoint", "SaveCheckpointIfRecord"} {
-		t.Run(method, func(t *testing.T) {
-			ctx := testContext(t)
-			path := filepath.Join(t.TempDir(), "checkpoint-handoff-expiry.db")
-			s := openStore(t, ctx, path)
-			observer := openStore(t, ctx, path)
-			setup := getLease(t, ctx, s, driver.LeaseTTL)
-			ref := testRef("pl-checkpoint-handoff")
-			entry := seedRecord(t, ctx, s, setup, ref.ID, `{"value":"guard"}`)
-			meta := getMeta(t, ctx, s)
-			const key = "checkpoint-handoff"
-			initial, err := s.SaveCheckpoint(ctx, setup, key, 0, []byte("before"))
-			if err != nil || initial.Generation != 1 {
-				t.Fatalf("initial checkpoint=%+v err=%v", initial, err)
-			}
-			if err := setup.Release(ctx); err != nil {
-				t.Fatal(err)
-			}
-			const ttl = time.Second
-			lease := getLease(t, ctx, s, ttl).(*activeLease)
-			connector := hookPublicationCommit(t, s, path)
-			var accepted error
-			connector.after = func() {
-				// This real Renew advances the private heartbeat after the primary
-				// COMMIT's snapshot, requiring a lease-only follow-up transaction.
-				accepted = lease.Renew(ctx)
-			}
-			var paused, handoff bool
-			var held time.Duration
-			var during driver.Checkpoint
-			var duringErr error
-			connector.afterBegin = func() {
-				if connector.steps.Load() != 1 || paused {
-					return
+		for _, mode := range []string{"expiry", "cancellation"} {
+			t.Run(method+"/"+mode, func(t *testing.T) {
+				ctx := testContext(t)
+				path := filepath.Join(t.TempDir(), "checkpoint-outcome.db")
+				s := openStore(t, ctx, path)
+				observer := openStore(t, ctx, path)
+				setup := getLease(t, ctx, s, driver.LeaseTTL)
+				ref := testRef("pl-checkpoint-handoff")
+				entry := seedRecord(t, ctx, s, setup, ref.ID, `{"value":"guard"}`)
+				meta := getMeta(t, ctx, s)
+				const key = "checkpoint-handoff"
+				initial, err := s.SaveCheckpoint(ctx, setup, key, 0, []byte("before"))
+				if err != nil || initial.Generation != 1 {
+					t.Fatalf("initial checkpoint=%+v err=%v", initial, err)
 				}
-				paused = true
-				lease.mu.Lock()
-				handoff = lease.publishing && lease.handoff
-				lease.mu.Unlock()
-				during, duringErr = observer.LoadCheckpoint(ctx, key)
-				started := time.Now()
-				timer := time.NewTimer(2 * ttl)
-				defer timer.Stop()
-				select {
-				case <-timer.C:
-				case <-ctx.Done():
+				if err := setup.Release(ctx); err != nil {
+					t.Fatal(err)
 				}
-				held = time.Since(started)
-			}
-			payload := []byte("confirmed publication")
-			save := func(store *Store, value driver.ActiveLease, expected uint64, body []byte) (driver.Checkpoint, error) {
-				if method == "SaveCheckpointIfRecord" {
-					return store.SaveCheckpointIfRecord(ctx, value, key, expected, body, ref, entry.Revision, meta.Incarnation)
+				const ttl = time.Second
+				lease := getLease(t, ctx, s, ttl).(*activeLease)
+				call, cancel := context.WithCancel(ctx)
+				defer cancel()
+				connector := hookPublicationCommit(t, s, path)
+				var accepted, duringErr error
+				var during driver.Checkpoint
+				var held time.Duration
+				connector.after = func() {
+					accepted = lease.Renew(ctx)
+					during, duringErr = observer.LoadCheckpoint(ctx, key)
+					if mode == "cancellation" {
+						cancel()
+						return
+					}
+					started := time.Now()
+					timer := time.NewTimer(2 * ttl)
+					defer timer.Stop()
+					select {
+					case <-timer.C:
+					case <-ctx.Done():
+					}
+					held = time.Since(started)
 				}
-				return store.SaveCheckpoint(ctx, value, key, expected, body)
-			}
-			saved, saveErr := save(s, lease, initial.Generation, payload)
-			durable, readErr := observer.LoadCheckpoint(ctx, key)
-			if accepted != nil || !paused || !handoff || held < 2*ttl || connector.steps.Load() != 1 {
-				t.Fatalf("did not expire before the follow-up fence: accepted=%v paused=%v handoff=%v held=%s nativeCommits=%d", accepted, paused, handoff, held, connector.steps.Load())
-			}
-			if duringErr != nil || during.Generation != initial.Generation+1 || string(during.Payload) != string(payload) {
-				t.Fatalf("checkpoint was not durable before the pause: checkpoint=%+v err=%v", during, duringErr)
-			}
-			if readErr != nil || durable.Generation != during.Generation || string(durable.Payload) != string(payload) {
-				t.Fatalf("independent durable checkpoint=%+v err=%v", durable, readErr)
-			}
-			var fenced driver.ErrFenced
-			code, _, mapped := driver.ErrorMapping(saveErr)
-			if errors.As(saveErr, &fenced) || mapped && code == "lease_not_held" {
-				t.Errorf("confirmed checkpoint generation %d was reported as a fencing rejection: err=%v code=%s", durable.Generation, saveErr, code)
-			}
-			if saveErr != nil || saved.Generation != durable.Generation || string(saved.Payload) != string(durable.Payload) {
-				t.Errorf("confirmed publication result=%+v err=%v; want durable checkpoint=%+v and success", saved, saveErr, durable)
-			}
-			select {
-			case <-lease.Lost():
-			default:
-				t.Fatal("failed heartbeat handoff left the expired lease live")
-			}
-			lease.mu.Lock()
-			registered := lease.publishing || lease.handoff
-			lease.mu.Unlock()
-			if registered {
-				t.Fatal("failed heartbeat handoff left private renewal admission registered")
-			}
-			requireFenced(t, lease.Renew(ctx))
-			next := getLease(t, ctx, observer, driver.LeaseTTL)
-			if next.Epoch() <= lease.Epoch() {
-				t.Fatal("expiry takeover did not advance the lease epoch")
-			}
-			_, staleErr := save(s, lease, durable.Generation, []byte("stale"))
-			requireFenced(t, staleErr)
-			unchanged, err := observer.LoadCheckpoint(ctx, key)
-			if err != nil || unchanged.Generation != durable.Generation || string(unchanged.Payload) != string(durable.Payload) {
-				t.Fatalf("stale holder changed the committed checkpoint: checkpoint=%+v err=%v", unchanged, err)
-			}
-			fresh, err := save(observer, next, durable.Generation, []byte("new holder"))
-			if err != nil || fresh.Generation != durable.Generation+1 {
-				t.Fatalf("new holder checkpoint=%+v err=%v", fresh, err)
-			}
-			t.Logf("%s: generation %d was independently durable before the %s pause; returned generation=%d err=%v; expired lease stayed lost and takeover published generation %d", method, durable.Generation, held, saved.Generation, saveErr, fresh.Generation)
-		})
+				payload := []byte("confirmed publication")
+				save := func(ctx context.Context, store *Store, value driver.ActiveLease, expected uint64, body []byte) (driver.Checkpoint, error) {
+					if method == "SaveCheckpointIfRecord" {
+						return store.SaveCheckpointIfRecord(ctx, value, key, expected, body, ref, entry.Revision, meta.Incarnation)
+					}
+					return store.SaveCheckpoint(ctx, value, key, expected, body)
+				}
+				saved, saveErr := save(call, s, lease, initial.Generation, payload)
+				durable, readErr := observer.LoadCheckpoint(ctx, key)
+				if accepted != nil || connector.steps.Load() != 1 || mode == "expiry" && held < 2*ttl {
+					t.Fatalf("post-COMMIT interval unexercised: accepted=%v held=%s nativeCommits=%d", accepted, held, connector.steps.Load())
+				}
+				if duringErr != nil || during.Generation != initial.Generation+1 || string(during.Payload) != string(payload) || readErr != nil || durable.Generation != during.Generation || string(durable.Payload) != string(payload) {
+					t.Fatalf("independent durable checkpoint: during=%+v err=%v after=%+v err=%v", during, duringErr, durable, readErr)
+				}
+				if saveErr != nil || saved.Generation != durable.Generation || string(saved.Payload) != string(durable.Payload) {
+					t.Fatalf("confirmed checkpoint reported a rejection: saved=%+v err=%v durable=%+v", saved, saveErr, durable)
+				}
+				if mode == "expiry" {
+					requireFenced(t, lease.Renew(ctx))
+					next := getLease(t, ctx, observer, driver.LeaseTTL)
+					if next.Epoch() <= lease.Epoch() {
+						t.Fatal("expiry takeover did not advance lease epoch")
+					}
+					_, staleErr := save(ctx, s, lease, durable.Generation, []byte("stale"))
+					requireFenced(t, staleErr)
+					unchanged, err := observer.LoadCheckpoint(ctx, key)
+					if err != nil || unchanged.Generation != durable.Generation || string(unchanged.Payload) != string(durable.Payload) {
+						t.Fatalf("stale holder changed checkpoint: %+v err=%v", unchanged, err)
+					}
+					fresh, err := save(ctx, observer, next, durable.Generation, []byte("new holder"))
+					if err != nil || fresh.Generation != durable.Generation+1 {
+						t.Fatalf("successor checkpoint=%+v err=%v", fresh, err)
+					}
+				} else {
+					assertDurableHeartbeat(t, ctx, observer, lease)
+				}
+				t.Logf("%s/%s: generation %d independently durable before post-COMMIT interruption, returned confirmed success with no follow-up", method, mode, durable.Generation)
+			})
+		}
 	}
 }
 
@@ -564,11 +472,8 @@ func TestSQLitePublicationLeaseAbortFailsClosed(t *testing.T) {
 			var heartbeatErr error
 			if mode == "after-durable-commit" {
 				connector := hookPublicationCommit(t, s, path)
-				connector.after = func() {
-					heartbeatErr = lease.Renew(ctx)
-					cancel()
-				}
-				want = context.Canceled
+				connector.after = func() { heartbeatErr = lease.Renew(ctx); cancel() }
+				want = nil
 			}
 			err := s.immediate(call, lease, func(c *sql.Conn) error {
 				if _, err := c.ExecContext(call, `INSERT INTO checkpoints VALUES(?,?,?)`, "abort", revKey(1), []byte("graph")); err != nil {
@@ -589,22 +494,20 @@ func TestSQLitePublicationLeaseAbortFailsClosed(t *testing.T) {
 				return failure
 			})
 			if heartbeatErr != nil || !errors.Is(err, want) {
-				t.Fatalf("accepted heartbeat=%v publication=%v want=%v", heartbeatErr, err, want)
+				t.Fatalf("heartbeat=%v publication=%v want=%v", heartbeatErr, err, want)
 			}
-			select {
-			case <-lease.Lost():
-			default:
-				t.Fatal("aborted private heartbeat escaped the publication gate while live")
-			}
-			requireFenced(t, lease.Renew(ctx))
 			cp, readErr := observer.LoadCheckpoint(ctx, "abort")
 			wantGeneration := uint64(0)
 			if mode == "after-durable-commit" {
 				wantGeneration = 1
-				var uncertain commitError
-				if !errors.As(err, &uncertain) {
-					t.Fatalf("committed graph reported as determinate failure: %T %v", err, err)
+				assertDurableHeartbeat(t, ctx, observer, lease)
+			} else {
+				select {
+				case <-lease.Lost():
+				default:
+					t.Fatal("aborted heartbeat did not fail closed")
 				}
+				requireFenced(t, lease.Renew(ctx))
 			}
 			if readErr != nil || cp.Generation != wantGeneration {
 				t.Fatalf("durable graph=%+v err=%v want generation=%d", cp, readErr, wantGeneration)
@@ -613,9 +516,9 @@ func TestSQLitePublicationLeaseAbortFailsClosed(t *testing.T) {
 			publishing := lease.publishing
 			lease.mu.Unlock()
 			if publishing {
-				t.Fatal("failed publication left a registered heartbeat bridge")
+				t.Fatal("completed publication left heartbeat admission registered")
 			}
-			t.Logf("%s: accepted heartbeat failed closed; graph generation=%d; stale Renew fenced", mode, cp.Generation)
+			t.Logf("%s: graph generation=%d; confirmed publication cannot become cancellation; pre-publication failure remains fail-closed", mode, cp.Generation)
 		})
 	}
 }
@@ -712,7 +615,7 @@ func TestSQLitePublicationLeaseConcurrentSamplesCannotRegressDeadline(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	row, err := readLease(ctx, s.db)
+	row, err := s.readLease(ctx, s.db)
 	lease.mu.Lock()
 	expires, publishing := lease.expires, lease.publishing
 	lease.mu.Unlock()

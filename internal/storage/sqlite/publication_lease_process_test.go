@@ -49,6 +49,20 @@ func TestSQLitePublicationLeaseRenewalExcludesProcessUntilRealExpiry(t *testing.
 	}
 	start, stop := make(chan struct{}), make(chan struct{})
 	done := publicationHeartbeat(ctx, lease, start, stop)
+	connector := hookPublicationCommit(t, s, path)
+	var commitHeld time.Duration
+	connector.before = func() {
+		started := time.Now()
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+		commitHeld = time.Since(started)
+	}
+	var renewal publicationHeartbeatResult
+	connector.after = func() { close(stop); renewal = <-done }
 	err = s.immediate(ctx, lease, func(c *sql.Conn) error {
 		if _, err := c.ExecContext(ctx, `INSERT INTO checkpoints VALUES(?,?,?)`, "process-publication", revKey(1), []byte("parent")); err != nil {
 			return err
@@ -79,12 +93,14 @@ func TestSQLitePublicationLeaseRenewalExcludesProcessUntilRealExpiry(t *testing.
 		}
 		return nil
 	})
-	close(stop)
-	renewal := <-done
-	if err != nil || renewal.err != nil || renewal.successes == 0 {
-		t.Fatalf("long publication=%v heartbeat=%+v", err, renewal)
+	if err != nil || renewal.err != nil || renewal.successes == 0 || commitHeld < 2*time.Second || connector.steps.Load() != 1 {
+		t.Fatalf("long publication=%v heartbeat=%+v commitHeld=%s nativeCommits=%d", err, renewal, commitHeld, connector.steps.Load())
 	}
-	row, err := readLease(ctx, observer.db)
+	raw, err := readLease(ctx, observer.db)
+	if err != nil || time.Now().UnixNano() < raw.expires {
+		t.Fatalf("did not cross the committed SQLite expiry: row=%+v err=%v", raw, err)
+	}
+	row, err := observer.readLease(ctx, observer.db)
 	if err != nil || row.epoch != lease.Epoch() || row.token != original.token || row.expires <= original.expires || time.Now().UnixNano() >= row.expires {
 		t.Fatalf("handoff did not persist a fresh parent heartbeat: row=%+v err=%v", row, err)
 	}

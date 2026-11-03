@@ -29,43 +29,56 @@ Epoch/token and expiry checks occur inside that transaction, including immediate
 before COMMIT. Staging holds no SQLite write transaction, so lease release and
 expiry takeover can fence unfinished writers.
 
-During its graph transaction, a long publication does not block its own
-holder's lease heartbeats. After BEGIN IMMEDIATE validates the fresh durable
-lease, the driver registers that exact lease as the publication owner. Timely
-Renew calls can then advance a synchronized private deadline without taking the
-SQLite writer or publication lock again. Both wall-clock expiry and the real monotonic deadline are checked
-on each heartbeat and fence; a delayed expiry callback cannot resurrect a
-paused or expired holder. A publication without timely heartbeats still rolls
-back at the final fence. The TTL is unchanged.
+A long publication does not block its own holder's lease heartbeats. After
+BEGIN IMMEDIATE validates the fresh durable lease, the driver registers that
+exact lease as the publication owner. Timely Renew calls then persist their
+expiry in `<database>.plug-locks/lease-heartbeat`, independently of SQLite's
+writer and native COMMIT/fsync. Each record binds the expiry to the durable
+SQLite epoch and a digest of its owner token. An atomic replacement, file sync
+and directory sync finish before a renewal is acknowledged. Independent handles
+and processes combine only a matching journal record with the SQLite expiry;
+old epochs, released tokens and other owners' records cannot extend a lease.
+SQLite remains authoritative for identity, and checkpoints/graph state stay in
+one SQLite transaction. The journal is one fixed-size record, not another database.
 
-This bridge is safe across processes because the publication gate excludes all
-lease acquisition/release and other publications until handoff; the native
-writer is also held when ownership is registered. Matching the epoch/token is
-still mandatory, including when a WAL reader sees the older durable expiry.
-Accepted heartbeats are persisted with the graph. If a heartbeat races the
-initial COMMIT/fsync, the driver atomically stops accepting private extensions
-and flushes that fixed heartbeat in at most one lease-only transaction, retaining
-the same gate. Later Renew calls wait for the gate instead of extending a moving
-target; they renew normally after handoff, only if the lease is still live.
-Neither the lease mutex nor the store mutex is held across SQL or fsync. This
-keeps publication bounded even when every COMMIT takes longer than the renewal
-interval. The cutoff does not suspend expiry: if the final flush exhausts the
-last accepted heartbeat's wall-clock or monotonic budget, Lost closes and queued
-renewals cannot resurrect it. A graph already durably committed remains committed.
-If rollback, cancellation or an uncertain outcome prevents that handoff, the
-driver closes Lost before releasing exclusion rather than advertising an
-unpersisted live extension. In particular, an aborted publication that accepted
-a private heartbeat may require acquiring a new lease. No second connection or
-process can take the lease based on the older expiry while its publication gate
-is held; after genuine expiry, takeover advances the epoch and fences the old
-holder.
+Renewals remain serviceable through the entire native publication, including
+COMMIT's return. The driver unregisters the owner after exactly one COMMIT;
+there is no post-COMMIT lease-only flush, admission cutoff, moving target or
+loop. Both the final SQL identity fence and the publication flock remain in
+place. A contender cannot take over during publication, and after it returns
+the contender sees all acknowledged journal extensions even if SQLite's last
+expiry is older. Normal renewals outside a publication still use the same
+registration and a single lease-only SQLite transaction.
 
-Checkpoint saves return their confirmed committed generation even if a subsequent
-lease-only heartbeat handoff fails, including expiry before the follow-up fence.
-That failure still closes Lost before releasing the publication gate; success
-reports the durable checkpoint, not a promise that its lease remains live. A
-failed or unconfirmed primary COMMIT is never converted into checkpoint success,
-and a fencing rejection before publication still leaves the checkpoint unchanged.
+Both wall-clock expiry and the real monotonic deadline are checked on every
+heartbeat and fence. Journal I/O is serialized by the lease mutex, but no
+SQLite statement or database fsync holds that mutex. A delayed expiry callback
+or process paused beyond its *previous* real deadline cannot renew on resuming:
+the deadline is explicitly rechecked after journal I/O, before acceptance. A
+publication without timely heartbeats rolls back at its final fence. Lost is
+irreversible; expiry/takeover still fence the old holder, and the 10-second TTL
+is unchanged. Rollback/cancellation after an accepted heartbeat and uncertain
+native COMMIT outcomes retain the fail-closed lease-loss policy.
+
+A confirmed graph, checkpoint or response-finalization COMMIT returns success,
+even if cancellation or genuine expiry is observed after that COMMIT. Success
+reports the durable result, not a promise that its lease remains live. There is
+no fallible follow-up transaction that could turn a published result into a
+fencing/cancellation rejection. Pre-publication errors still leave that operation
+unpublished; an uncertain primary COMMIT is not converted into success.
+
+**Limits.** This removes SQLite writer/COMMIT latency from an already registered
+owner's renewal path; it does not make leases immune to scheduling pauses or
+I/O failure. The heartbeat journal's own file/directory sync and any wait for
+registration must fit within the previous lease budget. A slow or failed journal
+write fails closed rather than increasing the TTL or reviving an expired owner.
+Native SQLite COMMIT itself remains non-preemptible: a process stopped after the
+last fence, inside COMMIT, may have an uncertain or already-published outcome on
+resuming. The driver cannot roll back a confirmed native COMMIT. All processes
+must use this journal-aware driver and retain the stable lock directory; mixing
+older binaries or deleting/replacing the journal while an owner is live is not
+supported. An unacknowledged journal write interrupted by a crash can at most
+delay takeover until its timestamp expires; it cannot authorize a stale owner.
 
 Keyed writes with post work atomically publish ResponsePending. Fresh readers
 observe finalization; existing snapshots retain their original pending state.

@@ -329,7 +329,7 @@ func (s *Store) Health(ctx context.Context) (driver.StoreHealth, error) {
 	if err != nil {
 		return driver.StoreHealth{}, err
 	}
-	row, err := readLease(ctx, tx)
+	row, err := s.readLease(ctx, tx)
 	if err != nil {
 		return driver.StoreHealth{}, err
 	}
@@ -342,12 +342,8 @@ func (s *Store) Health(ctx context.Context) (driver.StoreHealth, error) {
 
 // A COMMIT error has an uncertain durable outcome. Graph callers map this to
 // ErrIndeterminate with the original request key rather than retrying blindly.
-// published distinguishes a confirmed primary COMMIT followed by a failed
-// lease-only handoff, so checkpoint callers can return their durable result.
-type commitError struct {
-	error
-	published bool
-}
+// A confirmed COMMIT has no fallible post-publication work.
+type commitError struct{ error }
 
 func (e commitError) Unwrap() error { return e.error }
 
@@ -364,9 +360,9 @@ func (s *Store) immediate(ctx context.Context, l *activeLease, fn func(*sql.Conn
 	return s.immediateLocked(ctx, l, fn)
 }
 
-// immediateLocked requires the cross-process publication gate through cleanup,
-// not just through COMMIT: a heartbeat accepted during COMMIT/fsync may still
-// need its own durable publication before another handle can acquire the lease.
+// immediateLocked requires the cross-process publication gate through cleanup.
+// Renew persists its own journal before acceptance, so COMMIT is the only native
+// publication and its confirmed success cannot turn into a handoff error.
 func (s *Store) immediateLocked(ctx context.Context, l *activeLease, fn func(*sql.Conn) error) (err error) {
 	c, err := s.db.Conn(ctx)
 	if err != nil {
@@ -400,29 +396,12 @@ func (s *Store) immediateLocked(ctx context.Context, l *activeLease, fn func(*sq
 	if err = fn(c); err != nil {
 		return err
 	}
-	durable, err = s.commitImmediate(ctx, c, l, durable)
-	if err != nil {
+	if _, err = s.commitImmediate(ctx, c, l, durable); err != nil {
 		return err
 	}
-	if l != nil && !l.finishPublication(durable) {
-		// A heartbeat raced the graph COMMIT. finishPublication has atomically
-		// stopped private renewals, so one lease-only transaction suffices even
-		// when EVERY native COMMIT takes longer than the renewal interval.
-		if _, err = c.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-			return commitError{error: err, published: true}
-		}
-		next, err := s.commitImmediate(ctx, c, l, durable)
-		if err != nil {
-			// The primary publication already committed. Failure to persist its
-			// last heartbeat must close Lost, not erase that confirmed outcome.
-			return commitError{error: err, published: true}
-		}
-		durable = next
-		if !l.finishPublication(durable) {
-			// Fail closed rather than release exclusion with an unexpected
-			// unpersisted heartbeat. This cannot occur after the cutoff.
-			return commitError{error: fmt.Errorf("sqlite: heartbeat advanced during publication handoff"), published: true}
-		}
+	if l != nil {
+		l.finishPublication()
+		registered = false
 	}
 	return nil
 }
