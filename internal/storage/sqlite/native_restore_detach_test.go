@@ -31,7 +31,7 @@ func TestNativeRestoreReopenDetachUsesCertifiedHierarchyCoverage(t *testing.T) {
 		StoreID:        "native-detach",
 		Principal:      model.PrincipalRef{Kind: "user", ID: "operator"},
 		Method:         "admin.restore.finish",
-		IdempotencyKey: "native-detach-restore",
+		IdempotencyKey: "00000000000000000000000000000001",
 		RequestHash:    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	}
 	if err := publishNativeDetachCorpus(ctx, t, s, lease, profile, records, closure); err != nil {
@@ -61,7 +61,7 @@ func TestNativeRestoreReopenDetachUsesCertifiedHierarchyCoverage(t *testing.T) {
 	_, err = writer.Apply(ctx, model.PrincipalRef{Kind: "user", ID: "operator"}, model.ChangeSet{Ops: []model.Op{{
 		Kind:     model.OpReparent,
 		Reparent: &model.ReparentOp{Target: direct[0]},
-	}}}, model.WriteMeta{Project: "local", Method: "tx.apply", AgentLabel: "native-detach", IdempotencyKey: "native-detach-write"})
+	}}}, model.WriteMeta{Project: "local", Method: "tx.apply", AgentLabel: "native-detach", IdempotencyKey: "00000000000000000000000000000002"})
 	if err != nil {
 		t.Fatal(err)
 	}
