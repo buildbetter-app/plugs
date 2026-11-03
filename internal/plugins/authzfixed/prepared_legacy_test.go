@@ -125,7 +125,7 @@ func legacyTargetProject(ctx context.Context, s authz.Slice, r authz.Resource) (
 		return model.Ref{}, false, nil
 	}
 	for _, key := range []string{"bead/" + r.Ref.ID, "closure/" + r.Ref.ID} {
-		if err := s.Record(ctx, authz.Dependency{"sentinel", key}); err != nil {
+		if err := s.Record(ctx, authz.Dependency{Kind: "sentinel", Key: key}); err != nil {
 			return model.Ref{}, false, err
 		}
 	}
