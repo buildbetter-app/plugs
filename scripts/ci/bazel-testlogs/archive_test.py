@@ -63,8 +63,23 @@ class ArchiveTransportTest(unittest.TestCase):
         destination.write_bytes(data)
         return destination
 
-    def archive(self, expected_exit=0):
+    def archive(self, expected_exit=0, resolution_error=None):
         environment = dict(os.environ, REMOTE_BAZEL_EVIDENCE_DIR=str(self.evidence))
+        if resolution_error is not None:
+            # Exercise Python 3.12's RuntimeError path on every test interpreter,
+            # while running the unchanged helper via the actual workflow block.
+            mocks = self.root / "resolution-error"
+            mocks.mkdir(exist_ok=True)
+            (mocks / "sitecustomize.py").write_text(
+                "from pathlib import Path\n"
+                "original_resolve = Path.resolve\n"
+                "def fixture_resolve(self, *args, **kwargs):\n"
+                f"    if self.absolute() == Path({str(resolution_error)!r}):\n"
+                "        raise RuntimeError('fixture Python 3.12 symlink resolution loop')\n"
+                "    return original_resolve(self, *args, **kwargs)\n"
+                "Path.resolve = fixture_resolve\n"
+            )
+            environment["PYTHONPATH"] = str(mocks)
         result = subprocess.run(
             ["bash", "-euo", "pipefail", "-c", workflow_archive_block()],
             cwd=self.root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -209,6 +224,82 @@ class ArchiveTransportTest(unittest.TestCase):
                 self.assertEqual(files[path], raw.getvalue())
                 self.assertEqual(inventory["outputs"], [])
         self.assertFalse((self.root / "escape.jsonl").exists())
+
+    def test_safe_zip_directory_metadata_is_checked_without_being_indexed(self):
+        path, original = self.zipped(B13_TEST, [("nested/", b""), ("nested/raw.bin", b"opaque\x00\xff\n")])
+        files, inventory = self.archive()
+        self.assertTrue(inventory["complete"])
+        self.assertEqual(files[path], original)
+        self.assert_original_outputs(files, inventory, {(B13_TEST, "nested/raw.bin"): b"opaque\x00\xff\n"})
+        self.assertEqual(inventory["outputs"][0]["member_index"], 1)
+
+    def test_unsafe_zip_directories_retain_bytes_and_fail_before_metadata_skip(self):
+        log = b"--- FAIL: original test result\n"
+        self.write(B13_TEST + "/test.log", log)
+        self.write(B13_TEST + "/test.xml", b'<testsuite failures="1"/>\n')
+        survivor = B13_TEST + "/test.outputs/survivor.bin"
+        self.write(survivor, b"surviving opaque output\x00\xff\n")
+        cases = (("../outside/",), ("/absolute/",), ("bad\\directory/",), ("symbolic/",), ("duplicate/", "duplicate/"))
+        for names in cases:
+            with self.subTest(directory_entries=names):
+                raw = io.BytesIO()
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    with zipfile.ZipFile(raw, "w") as archive:
+                        for name in names:
+                            info = zipfile.ZipInfo(name)
+                            info.create_system = 3
+                            info.external_attr = (0o120777 if name == "symbolic/" else 0o40755) << 16
+                            archive.writestr(info, b"")
+                path = B13_TEST + "/test.outputs/outputs.zip"
+                self.write(path, raw.getvalue())
+                for original_exit in (b"0\n", b"3\n"):
+                    with self.subTest(original_bazel_exit=original_exit):
+                        (self.evidence / "exit_code").write_bytes(original_exit)
+                        files, inventory = self.archive(expected_exit=86)
+                        self.assertFalse(inventory["complete"])
+                        self.assertEqual(files[path], raw.getvalue())
+                        self.assertEqual(files[B13_TEST + "/test.log"], log)
+                        self.assertTrue(any(row["path"] == path and "ambiguous" in row["error"] for row in inventory["errors"]))
+                        self.assert_original_outputs(files, inventory, {(B13_TEST, "survivor.bin"): b"surviving opaque output\x00\xff\n"})
+                        self.assertEqual((self.evidence / "exit_code").read_bytes(), original_exit)
+        self.assertFalse((self.root / "outside").exists())
+
+    def test_runtime_resolution_error_keeps_surviving_originals_and_incomplete_archive(self):
+        path, original = self.zipped(B13_TEST, [("raw.bin", b"original container member\x00\xff\n")])
+        log = b"--- FAIL: original test result\n"
+        xml = b'<testsuite failures="1"/>\n'
+        self.write(B13_TEST + "/test.log", log)
+        self.write(B13_TEST + "/test.xml", xml)
+        loop = self.logs / B13_TEST / "test.outputs/resolution-loop"
+        loop.symlink_to(loop.name)
+        for original_exit in (b"0\n", b"3\n"):
+            with self.subTest(original_bazel_exit=original_exit):
+                (self.evidence / "exit_code").write_bytes(original_exit)
+                files, inventory = self.archive(expected_exit=86, resolution_error=loop)
+                self.assertFalse(inventory["complete"])
+                self.assertEqual(files[path], original)
+                self.assertEqual(files[B13_TEST + "/test.log"], log)
+                self.assertEqual(files[B13_TEST + "/test.xml"], xml)
+                self.assertNotIn(loop.relative_to(self.logs).as_posix(), files)
+                self.assertTrue(any(row["path"] == loop.relative_to(self.logs).as_posix()
+                                    and "fixture Python 3.12" in row["error"] for row in inventory["errors"]))
+                self.assert_original_outputs(files, inventory, {(B13_TEST, "raw.bin"): b"original container member\x00\xff\n"})
+                self.assertEqual((self.evidence / "exit_code").read_bytes(), original_exit)
+
+    def test_root_resolution_error_publishes_an_explicit_incomplete_archive(self):
+        self.logs.symlink_to(self.logs.name, target_is_directory=True)
+        for original_exit in (b"0\n", b"3\n"):
+            with self.subTest(original_bazel_exit=original_exit):
+                (self.evidence / "exit_code").write_bytes(original_exit)
+                files, inventory = self.archive(expected_exit=86, resolution_error=self.logs)
+                self.assertEqual(set(files), {INVENTORY})
+                self.assertFalse(inventory["complete"])
+                self.assertEqual(inventory["files"], [])
+                self.assertEqual(inventory["outputs"], [])
+                self.assertEqual(inventory["errors"][0]["path"], ".")
+                self.assertIn("fixture Python 3.12", inventory["errors"][0]["error"])
+                self.assertEqual((self.evidence / "exit_code").read_bytes(), original_exit)
 
     def test_duplicate_zip_member_retains_container_and_reports_incomplete(self):
         raw = io.BytesIO()

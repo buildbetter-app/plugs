@@ -82,8 +82,6 @@ def inspect_zip(path, data, inventory):
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             for index, member in enumerate(archive.infolist()):
-                if member.is_dir():
-                    continue
                 name = PurePosixPath(member.filename)
                 if (name.is_absolute() or ".." in name.parts or
                         "\\" in member.filename or not name.parts or
@@ -91,6 +89,10 @@ def inspect_zip(path, data, inventory):
                         stat.S_ISLNK(member.external_attr >> 16)):
                     raise ValueError("ambiguous or non-file output member: " + member.filename)
                 seen.add(member.filename)
+                # Directory metadata has no bytes to index, but its name and
+                # type must pass the same safety checks as every other entry.
+                if member.is_dir():
+                    continue
                 raw = archive.read(member)  # Includes the original ZIP CRC check.
                 inventory["outputs"].append(output_record(
                     prefix + "/" + member.filename, raw,
@@ -102,8 +104,12 @@ def inspect_zip(path, data, inventory):
 
 def archive_testlogs(testlogs, output):
     # Bazel's workspace-level convenience symlink is the normal entry point.
-    root = testlogs.resolve()
     inventory = {"version": 1, "files": [], "outputs": [], "errors": []}
+    try:
+        root = testlogs.resolve()
+    except (OSError, ValueError, RuntimeError) as exc:
+        root = None
+        inventory["errors"].append({"path": ".", "error": "cannot resolve testlogs root: " + str(exc)})
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=output.parent, delete=False) as temporary:
         temporary_path = Path(temporary.name)
@@ -111,9 +117,9 @@ def archive_testlogs(testlogs, output):
         with temporary_path.open("wb") as raw_archive:
             with gzip.GzipFile(filename="", fileobj=raw_archive, mode="wb", mtime=0) as compressed:
                 with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as archive:
-                    if root.exists() and not root.is_dir():
+                    if root is not None and root.exists() and not root.is_dir():
                         inventory["errors"].append({"path": ".", "error": "testlogs is not a directory"})
-                    paths = sorted(root.rglob("*")) if root.is_dir() else []
+                    paths = sorted(root.rglob("*")) if root is not None and root.is_dir() else []
                     for source in paths:
                         relative = source.relative_to(root).as_posix()
                         parts = PurePosixPath(relative).parts
@@ -148,7 +154,7 @@ def archive_testlogs(testlogs, output):
                                 inspect_zip(relative, data, inventory)
                             else:
                                 inventory["outputs"].append(output_record(relative, data))
-                        except (OSError, ValueError) as exc:
+                        except (OSError, ValueError, RuntimeError) as exc:
                             inventory["errors"].append({"path": relative, "error": str(exc)})
                     inventory["complete"] = not inventory["errors"]
                     body = (json.dumps(inventory, ensure_ascii=False, indent=2) + "\n").encode()
