@@ -446,6 +446,96 @@ def run(capture):
     capture.command("tests", args)
 
 
+def open_confined_test_output(allowed, source):
+    # Anchor every component, including the allowed-root path, before opening
+    # the selected file. A replacement symlink is never followed at read time.
+    parts = allowed.parts[1:] + source.relative_to(allowed).parts
+    directory = os.open(allowed.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    descriptor = None
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("test output is not a regular file")
+        return os.fdopen(descriptor, "rb")
+    except Exception:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+    finally:
+        os.close(directory)
+
+
+def copy_test_outputs(capture, identity, result, destination):
+    # Keep each BEP declaration and attempt identity, even when copying fails.
+    inventory = {"identity": identity, "outputs": [
+        {"index": index, "bep": item, "state": "pending"}
+        for index, item in enumerate(result.get("testActionOutput", []))]}
+    receipt = destination / "test-action-outputs.json"
+    write_json(receipt, inventory)
+    copied, errors = [], []
+    allowed = (Path(capture.state["execution_root"]) / "bazel-out").resolve()
+    for record in inventory["outputs"]:
+        created, target = False, None
+        try:
+            item = record["bep"]
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError("test output lacks its BEP name")
+            uri = urlparse(item.get("uri", ""))
+            if uri.scheme != "file" or uri.netloc not in {"", "localhost"}:
+                raise ValueError("test output is not a local file; cannot deliver complete evidence")
+            source = Path(unquote(uri.path)).resolve(strict=True)
+            if not source.is_relative_to(allowed) or "testlogs" not in source.relative_to(allowed).parts:
+                raise ValueError("test output escapes this run's Bazel testlogs")
+            required = name in {"test.log", "test.xml"}
+            if required and source.name != name:
+                raise ValueError("test output name mismatch")
+            # Logical names and URI basenames are metadata, never destination
+            # paths. Fixed visible payload names also survive hosted upload's
+            # default exclusion of hidden files, without changing that policy.
+            target = destination / name if required else destination / "outputs" / str(record["index"]) / "payload"
+            if target.exists():
+                raise ValueError("duplicate required test output: " + name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            record.update(source=str(source), path=str(target.relative_to(capture.output)))
+            with open_confined_test_output(allowed, source) as snapshot:
+                before = os.fstat(snapshot.fileno())
+                h, size = hashlib.sha256(), 0
+                with target.open("xb") as output:
+                    created = True
+                    for block in iter(lambda: snapshot.read(1024 * 1024), b""):
+                        output.write(block)
+                        h.update(block)
+                        size += len(block)
+                after = os.fstat(snapshot.fileno())
+                if (size != before.st_size or
+                        any(getattr(before, key) != getattr(after, key) for key in
+                            ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"))):
+                    raise ValueError("test output changed during the admitted descriptor snapshot")
+            facts = {"size": size, "sha256": h.hexdigest()}
+            if target.stat().st_size != size or digest(target) != facts["sha256"]:
+                raise ValueError("test output bytes changed while copying")
+            record.update(state="copied", **facts)
+            copied.append(record["path"])
+        except Exception as error:
+            if created:
+                try:
+                    target.unlink(missing_ok=True)
+                    record["partial_removed"] = True
+                except OSError as cleanup:
+                    error = ValueError(str(error) + "; incomplete output cleanup failed: " + str(cleanup))
+            record.update(state="error", error=str(error))
+            errors.append(str(error))
+        write_json(receipt, inventory)
+    if errors:
+        raise ValueError("test output retention incomplete for " + identity["label"] + ": " + "; ".join(errors))
+    return copied
+
+
 def collect_tests(capture):
     if not capture.state.get("test_started"):
         write_json(capture.output / "tests.json", {"state": "not-run", "reason": capture.state["first_failure"]})
@@ -477,41 +567,29 @@ def collect_tests(capture):
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         destination = capture.output / "tests" / key
         destination.mkdir(parents=True, exist_ok=False)
-        copied = []
+        copied = copy_test_outputs(capture, identity, result, destination)
         counts = None
-        for item in result.get("testActionOutput", []):
-            name = item.get("name")
-            if name not in {"test.log", "test.xml"}:
-                continue
-            uri = urlparse(item.get("uri", ""))
-            if uri.scheme != "file" or uri.netloc not in {"", "localhost"}:
-                raise ValueError("test output is not a local file; cannot deliver complete evidence")
-            source = Path(unquote(uri.path)).resolve()
-            allowed = (Path(capture.state["execution_root"]) / "bazel-out").resolve()
-            if not source.is_relative_to(allowed) or "testlogs" not in source.relative_to(allowed).parts:
-                raise ValueError("test output escapes this run's Bazel testlogs")
-            if source.name != name:
-                raise ValueError("test output name mismatch")
-            shutil.copyfile(source, destination / name)
-            copied.append(str((destination / name).relative_to(capture.output)))
-            if name == "test.xml":
-                root = ET.parse(destination / name).getroot()
-                cases = list(root.iter("testcase"))
-                counts = {"cases": len(cases), "skipped": sum(x.find("skipped") is not None for x in cases),
-                          "failures": sum(x.find("failure") is not None for x in cases),
-                          "errors": sum(x.find("error") is not None for x in cases)}
-                if not cases:
-                    suites = list(root.iter("testsuite"))
-                    if not suites or any("tests" not in x.attrib for x in suites):
-                        raise ValueError("XML lacks test-case or explicit suite accounting for " + identity["label"])
-                    counts = {key: sum(int(x.get(attr, 0)) for x in suites) for key, attr in
-                              (("cases", "tests"), ("skipped", "skipped"), ("failures", "failures"), ("errors", "errors"))}
+        # Retain all opaque outputs for this attempt before XML accounting.
+        if (destination / "test.xml").is_file():
+            root = ET.parse(destination / "test.xml").getroot()
+            cases = list(root.iter("testcase"))
+            counts = {"cases": len(cases), "skipped": sum(x.find("skipped") is not None for x in cases),
+                      "failures": sum(x.find("failure") is not None for x in cases),
+                      "errors": sum(x.find("error") is not None for x in cases)}
+            if not cases:
+                suites = list(root.iter("testsuite"))
+                if not suites or any("tests" not in x.attrib for x in suites):
+                    raise ValueError("XML lacks test-case or explicit suite accounting for " + identity["label"])
+                counts = {key: sum(int(x.get(attr, 0)) for x in suites) for key, attr in
+                          (("cases", "tests"), ("skipped", "skipped"), ("failures", "failures"), ("errors", "errors"))}
         cached = bool(result.get("cachedLocally") or result.get("executionInfo", {}).get("cachedRemotely"))
         attempts.append({"identity": identity, "status": result.get("status", "UNKNOWN"),
-                         "cached": cached, "xml": counts, "files": copied})
+                         "cached": cached, "xml": counts, "files": copied,
+                         "output_inventory": str((destination / "test-action-outputs.json").relative_to(capture.output))})
         # Failed-to-build targets may have no test artifacts. Never label them
         # executed or skipped; the summary/process records the real failure.
-        if result.get("status") in {"PASSED", "FAILED", "FLAKY"} and {Path(x).name for x in copied} != {"test.log", "test.xml"}:
+        required = {str((destination / name).relative_to(capture.output)) for name in ("test.log", "test.xml")}
+        if result.get("status") in {"PASSED", "FAILED", "FLAKY"} and not required.issubset(copied):
             raise ValueError("test log/XML missing for " + identity["label"])
     reported = {x["label"] for x in summaries}
     unreported = sorted(set(capture.state["resolved_tests"]) - reported)

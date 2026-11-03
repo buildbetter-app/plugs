@@ -228,7 +228,7 @@ func TestProtectedApplyPersistsCompleteImagesAndReplays(t *testing.T) {
 	ref := commit.Results[0].Ref
 	full := pipeline.Document{ID: ref.ID, Project: "p", Type: "issue", Fields: map[string]any{"status": "todo", "title": "preserve"}, Metadata: map[string]json.RawMessage{"source": json.RawMessage(`{"keep":true}`)}, Comments: []pipeline.Comment{{Body: "keep me", Principal: anonymousCaller, Time: time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)}}, Links: []pipeline.Link{{To: model.Ref{ID: "other"}, Kind: "relates-to"}}, Attachments: []model.Attachment{{Kind: "link", MediaType: "text/plain", Summary: "keep"}}}
 	body, _ := json.Marshal(full)
-	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{Principal: anonymousCaller, Time: time.Date(2026, 10, 29, 12, 1, 0, 0, time.UTC)}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: body}}); err != nil {
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{Principal: anonymousCaller, Time: time.Date(2026, 10, 29, 12, 1, 0, 0, time.UTC)}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: body, Graph: &conformance.FixtureGraphSource{Links: []driver.SourceLink{{Kind: full.Links[0].Kind, To: full.Links[0].To}}}}}); err != nil {
 		t.Fatal(err)
 	}
 	doc := ontology.DefaultDocument()

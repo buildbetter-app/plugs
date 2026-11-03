@@ -1,11 +1,26 @@
 load("@rules_go//go:def.bzl", "go_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 go_binary(
     name = "shadow-rehearsal",
     srcs = ["main.go"],
     importpath = "github.com/buildbetter-app/plugs/tools/rehearsal/cmd/shadow-rehearsal",
     visibility = ["//visibility:public"],
+    data = [
+        "//tools/rehearsal:source",
+        "//tools/rehearsal/cmd/rollback-runtime:source",
+        "//tools/rehearsal/cmd/rollback-runtime:old-runtime",
+        "//tools/rehearsal/cmd/rollback-runtime:candidate-runtime",
+    ],
     deps = ["//tools/rehearsal"],
+)
+
+sh_test(
+    name = "shadow_rehearsal_cli_test",
+    srcs = ["cli_test.sh"],
+    args = ["$(rootpath :shadow-rehearsal)"],
+    data = [":shadow-rehearsal"],
+    size = "large",
 )
 
 filegroup(

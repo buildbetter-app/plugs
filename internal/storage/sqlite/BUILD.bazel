@@ -21,7 +21,10 @@ go_test(
     embed = [":sqlite"],
     deps = [
         "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
         "//internal/storage/conformance",
+        "//internal/storage/conformance/sourceactivation",
         "//internal/testclock",
         "//internal/storage/driver",
         "//internal/storage/sourceindex",

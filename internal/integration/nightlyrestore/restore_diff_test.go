@@ -209,6 +209,9 @@ func collect(t *testing.T, store driver.Store, archive *dumpformat.Archive, p dr
 					got.Dependencies = append(got.Dependencies, id+"/"+link.Kind+"/"+link.To.ID)
 				}
 			} else {
+				if err := snapshotArchiveContent(row.Body, source); err != nil {
+					t.Fatal(err)
+				}
 				var body map[string]json.RawMessage
 				if err := json.Unmarshal(row.Body, &body); err != nil {
 					t.Fatal(err)

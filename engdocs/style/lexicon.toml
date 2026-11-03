@@ -14,6 +14,12 @@ class = "product-term"
 match = ["witness", "crew", "rig", "sling", "hooked", "formula", "bd"]
 class = "identifier"
 
+# The pinned public companion requires this one environment assignment for
+# stored-settings readback. Its Go spelling remains visible to source review.
+[external_protocol_string]
+path = "spec/s1-b25-b28/public_recording_test.go"
+value = "BD_JSON_ENVELOPE=1"
+
 [[term]]
 regex = "[\\x{2600}-\\x{27BF}\\x{2B00}-\\x{2BFF}\\x{1F000}-\\x{1FAFF}\\x{FE0F}]"
 class = "ban"

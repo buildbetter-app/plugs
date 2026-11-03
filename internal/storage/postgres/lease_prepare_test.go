@@ -16,6 +16,8 @@ import (
 // adding a non-transactional sequence counter. Sequence increments survive a
 // rollback, so the test can distinguish the prepare observation from staging
 // and final publication checks on the same disposable PostgreSQL database.
+// Read-only clock evaluations do not increment: PostgreSQL prohibits nextval
+// in read-only transactions. Lease/write evaluations remain fully counted.
 func installLeaseClockCounter(t *testing.T, s *Store) func() int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -24,7 +26,9 @@ CREATE SEQUENCE plug_test_clock.lease_clock_calls MINVALUE 0 START 0;
 CREATE OR REPLACE FUNCTION plug_test_clock.clock_timestamp() RETURNS timestamptz
 LANGUAGE plpgsql VOLATILE AS $$
 BEGIN
-  PERFORM nextval('plug_test_clock.lease_clock_calls');
+  IF current_setting('transaction_read_only') = 'off' THEN
+    PERFORM nextval('plug_test_clock.lease_clock_calls');
+  END IF;
   RETURN (SELECT timestamptz 'epoch'
     + (last_value / 1000000) * interval '1 second'
     + (last_value % 1000000) * interval '1 microsecond'

@@ -196,9 +196,18 @@ func (t *transaction) publishSourceIndexes(next *state) error {
 	if hReady && !parentComplete || linksReady && !graphComplete {
 		return fmt.Errorf("%w: incomplete typed source publication", driver.ErrUnsupported)
 	}
-	// Head zero alone is insufficient: restoreEmpty checks every durable family.
-	// A populated/unbuilt store is never certified by its final staged images.
-	empty := t.store.restoreEmpty() == nil
+	// Source-free history (notably ontology bootstrap) is not unknown bead
+	// coverage. Prove current source absence under Head; never infer historical
+	// completeness or certify a populated graph from its staged final images.
+	empty := true
+	if !hReady || !linksReady {
+		for _, record := range current.records {
+			if record.Kind == "bead" {
+				empty = false
+				break
+			}
+		}
+	}
 	activateParent := !hReady && empty && parentComplete && parentDeclared
 	activateLinks := !linksReady && empty && graphComplete && graphDeclared
 	if t.restore != nil {
@@ -214,7 +223,7 @@ func (t *transaction) publishSourceIndexes(next *state) error {
 		} else {
 			root = newHierarchyRoot(at)
 			if t.restore == nil {
-				root = newHierarchyRoot(0)
+				root = newHierarchyRoot(head)
 				h, err = h.certify(root)
 			}
 		}
@@ -237,7 +246,7 @@ func (t *transaction) publishSourceIndexes(next *state) error {
 		} else {
 			root = newSourceLinkRoot(at)
 			if t.restore == nil {
-				root = newSourceLinkRoot(0)
+				root = newSourceLinkRoot(head)
 				links, err = links.certify(root)
 			}
 		}

@@ -62,6 +62,11 @@ func TestRestoredRandomAllocatorConsumptionGuardsAcrossStores(t *testing.T) {
 						case "shared-candidate-lock":
 							locks[0].Mode = driver.LockShare
 						}
+						if scenario == "staged" {
+							// The preceding Writer creates established ready coverage. Stage
+							// the exact root/no-links image through the typed source port.
+							locks = append(locks, driver.LockRequest{Key: driver.GraphBlockingSentinelLock, Mode: driver.LockUpdate})
+						}
 						tx, err := f.store.Write(f.ctx, f.lease)
 						if err != nil {
 							t.Fatal(err)
@@ -79,7 +84,7 @@ func TestRestoredRandomAllocatorConsumptionGuardsAcrossStores(t *testing.T) {
 							if err != nil {
 								t.Fatal(err)
 							}
-							if err = tx.Put(f.ctx, driver.Record{Ref: ref, Kind: "bead", Body: body}); err != nil {
+							if err = tx.(driver.GraphSourceWriter).PutGraphRecord(f.ctx, driver.Record{Ref: ref, Kind: "bead", Body: body}, nil, nil); err != nil {
 								t.Fatal(err)
 							}
 						}
