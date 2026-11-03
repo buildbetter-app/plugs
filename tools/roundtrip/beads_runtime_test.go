@@ -74,6 +74,7 @@ func TestPublicBeadsArtifactReimportThreeEngines(t *testing.T) {
 						t.Fatal("a required real Beads command failed")
 					}
 				}
+				assertPublicNativeCaptureReadback(t, options, output, got)
 				inventoryData, err := os.ReadFile(filepath.Join(output, "beads-inventory.json"))
 				var inventory struct {
 					Version  string `json:"version"`

@@ -1409,6 +1409,7 @@ tools/rehearsal/transcript_test.go
 tools/roundtrip/BUILD.bazel
 tools/roundtrip/README.md
 tools/roundtrip/beads.go
+tools/roundtrip/beads_inventory_refusal_test.go
 tools/roundtrip/beads_native_regression_test.go
 tools/roundtrip/beads_runtime_test.go
 tools/roundtrip/beads_test.go
