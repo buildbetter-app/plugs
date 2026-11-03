@@ -116,6 +116,9 @@ type PagePosition struct {
 	// WorkflowSnapshot also binds an authorization-filtered aggregate offset,
 	// whose position does not use the raw provider-phase Workflow flag.
 	WorkflowSnapshot *WorkflowPageSnapshot
+	// ReadyMembership binds guarded aggregate paging to the complete
+	// post-authorization order, including ordinary core rows.
+	ReadyMembership string
 }
 
 // WorkflowPageSnapshot identifies one atomic provider ready observation. Its
@@ -452,6 +455,7 @@ type BeadPage struct {
 	// Retained even on the final page so guarded aggregation can sign its own
 	// continuation after current-policy filtering.
 	WorkflowSnapshot *WorkflowPageSnapshot
+	ReadyMembership  string
 }
 
 type ClaimResult struct {

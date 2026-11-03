@@ -2,7 +2,11 @@ package authzrpc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
@@ -650,6 +654,10 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 			filtered = append(filtered, bead)
 		}
 	}
+	membership := readyMembershipDigest(filtered)
+	if method == "bead.ready" && position != nil && position.ReadyMembership != membership {
+		return service.BeadPage{}, &model.Error{Message: "ready membership changed since cursor issuance; restart paging", Data: model.ErrorData{Code: "cursor_invalid"}}
+	}
 	if limit == 0 {
 		limit = 100
 	}
@@ -670,7 +678,7 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	if end > len(filtered) {
 		end = len(filtered)
 	}
-	out := service.BeadPage{Items: append([]service.Bead(nil), filtered[offset:end]...), AsOf: page.AsOf, WorkflowSnapshot: page.WorkflowSnapshot}
+	out := service.BeadPage{Items: append([]service.Bead(nil), filtered[offset:end]...), AsOf: page.AsOf, WorkflowSnapshot: page.WorkflowSnapshot, ReadyMembership: membership}
 	content, _, closeContent, err := s.current(ctx, &page.AsOf)
 	if err != nil {
 		return service.BeadPage{}, err
@@ -698,6 +706,7 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 			AuthorizationRevision: authorization.authorizationRevision,
 			AuthorizationBound:    authorization.authorizationBound,
 			WorkflowSnapshot:      page.WorkflowSnapshot,
+			ReadyMembership:       membership,
 		}
 	}
 	binding, err := s.checker.readAuthorityBinding(ctx, caller, authorization, snapshot)
@@ -708,6 +717,42 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 		return service.BeadPage{}, err
 	}
 	return out, nil
+}
+
+// readyMembershipDigest is the signed binding for a guarded aggregate page.
+// It covers the complete authorized order, so a core row leaving Ready or
+// changing priority cannot make a later workflow offset skip an item.
+func readyMembershipDigest(items []service.Bead) string {
+	h := sha256.New()
+	for _, item := range items {
+		encoded, err := json.Marshal(struct {
+			ID            string         `json:"id"`
+			Type          string         `json:"type"`
+			Project       string         `json:"project"`
+			Status        string         `json:"status"`
+			Revision      model.Revision `json:"revision"`
+			Fields        map[string]any `json:"fields,omitempty"`
+			Plane         string         `json:"plane,omitempty"`
+			Kind          string         `json:"kind,omitempty"`
+			Plugin        string         `json:"plugin,omitempty"`
+			WorkflowRunID string         `json:"workflowRunId,omitempty"`
+		}{item.ID, item.Type, item.Project, item.Status, item.Revision, item.Fields, item.Plane, item.Kind, item.Plugin, item.WorkflowRunID})
+		if err != nil {
+			encoded = []byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s", item.ID, item.Type, item.Project, item.Status, item.Revision.String()))
+		}
+		var size [8]byte
+		size[0] = byte(len(encoded) >> 56)
+		size[1] = byte(len(encoded) >> 48)
+		size[2] = byte(len(encoded) >> 40)
+		size[3] = byte(len(encoded) >> 32)
+		size[4] = byte(len(encoded) >> 24)
+		size[5] = byte(len(encoded) >> 16)
+		size[6] = byte(len(encoded) >> 8)
+		size[7] = byte(len(encoded))
+		_, _ = h.Write(size[:])
+		_, _ = h.Write(encoded)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func postfilterCap() error {

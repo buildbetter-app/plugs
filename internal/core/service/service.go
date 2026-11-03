@@ -566,7 +566,11 @@ func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRe
 		if req.Filter != nil {
 			types = req.Filter.Types
 		}
-		item, found, replayed, err := s.workflow.ClaimNext(ctx, by, req.Project, types, meta)
+		resources := []string(nil)
+		if req.Filter != nil {
+			resources = req.Filter.Resources
+		}
+		item, found, replayed, err := s.workflow.ClaimNextWithResources(ctx, by, req.Project, types, resources, meta)
 		if err != nil {
 			return port.WriteOutcome{}, err
 		}

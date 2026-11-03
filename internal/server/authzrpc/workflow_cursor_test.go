@@ -348,3 +348,24 @@ func TestWorkflowReadyGuardedRetainsBindingAcrossProviderPages(t *testing.T) {
 		t.Fatalf("guarded continuation skipped the drained tail: count=%d err=%v", len(last.ids), err)
 	}
 }
+
+func TestWorkflowGuardedCursorRefusesCoreMembershipChange(t *testing.T) {
+	f := newWorkflowCursorFixture(t)
+	coreID := "00000000-0000-4000-8000-000000000009"
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{
+		Ref: model.RefByID(coreID, model.Natural64(0)), Kind: "bead", Op: model.OpCreate,
+		Body: []byte(fmt.Sprintf(`{"id":%q,"type":"issue","project":"project","fields":{"title":"core item","status":"todo","priority":0}}`, coreID)),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	workflow := workflowCursorIDs(f.invoke(t, 560, 2))
+	first, err := workflowCursorRead(t, f, "guarded", nil, 2, workflowContinuation{}, "project")
+	if err != nil || !slices.Equal(first.ids, []string{coreID, workflow[0]}) || !first.next.more() {
+		t.Fatalf("mixed page=%+v err=%v", first, err)
+	}
+	if _, err := f.domain.CloseWithOutcome(context.Background(), f.by, service.CloseRequest{ID: model.RefByID(coreID, model.Natural64(0))}, workflowClaimNextMeta("bead.close", 561)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = workflowCursorRead(t, f, "guarded", nil, 2, first.next, "project")
+	workflowCursorError(t, err, "cursor_invalid")
+}

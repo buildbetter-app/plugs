@@ -274,3 +274,22 @@ func TestWorkflowClaimNextServiceSelectedReplaysPriorEmpty(t *testing.T) {
 		t.Fatalf("changed empty selector: %v", err)
 	}
 }
+
+func TestWorkflowClaimNextResourcesDoNotFallBackToExcludedItem(t *testing.T) {
+	f := newWorkflowClaimNextFixture(t)
+	items := f.invoke(t, 40, 2)
+	req := service.ClaimNextRequest{Project: "project", Filter: &service.Filter{Resources: []string{"workflow:item/00000000000000000000000000000000"}}}
+	got := f.call(t, req.Filter, 41)
+	if got.Error != nil || !bytes.Equal(got.Result, []byte("null")) || got.Meta.Replayed {
+		t.Fatalf("excluded resource unexpectedly selected a workflow item: %+v result=%s", got.Error, got.Result)
+	}
+	for _, item := range items {
+		view, getErr := f.provider.Get(context.Background(), f.by, model.RefByID(item.ID, model.Natural64(0)), workflowClaimNextMeta("bead.get", 42))
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if view.Claim != nil {
+			t.Fatalf("legacy terminal fallback claimed excluded item %s", item.ID)
+		}
+	}
+}
