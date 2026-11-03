@@ -16,8 +16,9 @@ new operation. Returned bytes are copies. The
 capability carries an explicit persistence marker: SQLite/PostgreSQL adapters
 are restart-capable. An absent or false marker grants no restart guarantee;
 the memory adapter refuses every durable operation with
-`plugin_durable_state_unavailable`. The composition omits its ephemeral
-provider while retaining ordinary tools and permanent invocation.
+`plugin_durable_state_unavailable`. The composition keeps the registered
+invocation surface available for permanent calls while the absent provider
+refuses ephemeral calls with that typed capability error.
 
 The provider stores one JSON document at its capability key `workflow/state`
 inside the host's plugin/alias/instance checkpoint namespace. Its `runs`,

@@ -196,11 +196,14 @@ func workflowTypes(filter *Filter) []string {
 // invocations remain entirely in the workflow provider.
 func (s *Service) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req workflowplugin.InvokeRequest, meta model.WriteMeta) (workflowplugin.InvokeResult, error) {
 	if req.Mode == "ephemeral" {
+		if err := workflowplugin.ValidateInvokeRequest(req); err != nil {
+			return workflowplugin.InvokeResult{}, err
+		}
 		if meta.DryRun {
 			return workflowplugin.InvokeResult{}, failure("invalid_params", "ephemeral workflow invocation does not support dryRun")
 		}
 		if s.workflow == nil {
-			return workflowplugin.InvokeResult{}, failure("method_not_found", "workflow plugin is not configured")
+			return workflowplugin.InvokeResult{}, failure("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
 		}
 		meta.Method = "x.workflow.invoke"
 		meta.Project = req.Project
