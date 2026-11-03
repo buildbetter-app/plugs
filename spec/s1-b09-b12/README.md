@@ -125,3 +125,64 @@ history, restore and controlled Go/SQL clock boundaries before qualification.
 The package does not alter the seven retained reference slices or their
 goldens. It is a focused implementation/replay harness, not a census or a
 substitute for source-built Beads evidence.
+
+The original embedded public route at `b7fca102dc8747bd3d4ba8fb1fceb64a1f34e111`
+has since run once: authentic Run `41557556883` is RED, exit 3/evidence ok.
+The fixed public binary was built with `CGO_ENABLED=0`; its first default
+embedded init failed. The retained complete BLOCK packet contains the exact
+1,337-byte stderr stream. No card or pair completed, so all equality is NOT
+MEASURED. The original profile, recorder, extractor and BLOCK bytes remain
+historical evidence; their source/policy passes do not establish store support.
+
+The additional `proxied_reference_profile.py` and
+`reference_proxied_capture.py` select B09–B11 only, under profile
+`s1-b09-b11-public9d6-proxied-dolt220-v1`. B12 is explicitly NOT EXECUTED and
+UNQUALIFIED. The four-card completion contract above still applies. This route
+makes no claim about proxied compaction or equivalence to the embedded mode.
+
+Done for this bounded repair = two fresh B09–B11 captures with the fixed
+9d6fff source/tree and public 3c6 binary in declared managed-proxied Dolt 2.2.0,
+proven by complete retained raw packets, argv/runtime/lifecycle identities and
+independent source/profile/card-set/stream/projection/pair validation; policy
+tests or successful init do not count.
+
+The owned Go provisioner adapts B01's atom at `56fa6812`, with a fixed public
+HTTPS URL, no proxy/credentials, limited release-asset redirects and archive
+SHA-256 `1f7ad8c2622995789420a3fb0f2d16b4aa7430000a825dd91d5938f36480cbf6`.
+That pin comes from original9d6 `tools/bazel/dolt.bzl`, whose own source SHA-256
+is `699d49317af8c669b92ee2cc03fdaed75aeac2f873d7c1221dcd751cde20f49f`.
+The Python consumer authenticates the same-run archive again before extracting
+only the exact regular `dolt-linux-amd64/bin/dolt` member. It reconstructs
+mode 0700 and measures executable size/SHA-256 before running its exact version
+probe in a private environment. The full probe streams and digests are retained.
+The packet binds the pin, init, provider and lifecycle source blobs as well.
+The measured executable digest is not a separately pre-pinned release digest:
+its derivation also requires the original exact-source RunsOn receipt.
+
+Every selected card uses two new private Git stores and explicit
+`init --proxied-server`. Only the verified private runtime directory is added
+to the child PATH. `bd dolt stop --json` runs after success or failure, with
+exact bytes retained. Deletion requires `stopped: true` and `verified: true`;
+failed shutdown retains both workspace and runtime and yields BLOCK. The new
+independent extractor requires precisely the selected three-card set, six
+distinct workspaces, matching per-run runtime digests and verified shutdown.
+The original four-card extractor still requires B12 under its original profile.
+
+After exact retained source review, the changed-source capture command is:
+
+```sh
+export PATH=/tmp/plug-swarm/bin/worker-safe:$PATH
+/tmp/plug-swarm/bin/remote-bazel "$PWD" <reviewed-proxied-sha> s1-b09-b11-proxied-v2 -- \
+  test //spec/s1-b09-b12:reference_proxied_capture_test --nocache_test_results --test_output=all \
+  --test_env=PLUG_PUBLIC_REFERENCE=41399124974:13121145530:8c3d155f3940d21bd270fb14fe0292de0db1b3f377214756db59edf53eec5fa2
+```
+
+Use `login:false`, preserve the sole original collector and complete framed
+test.log, and use `extract_proxied_reference_packet.py` with the same arguments
+as the historical extractor. It independently computes raw/normalized/projection
+equality, rejects BLOCK and creates only a new output file. The explicit manual
+target is excluded from `//...`; the additional
+`reference_proxied_capture_policy_test` executes labelled synthetic policy
+fixtures without a product or network. No changed-source runtime evidence is
+claimed by this source successor. B12/full-card/full-S1 and whole/hosted
+qualification remain incomplete.

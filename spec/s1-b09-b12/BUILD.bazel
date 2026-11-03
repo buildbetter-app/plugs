@@ -65,3 +65,43 @@ go_test(
     size = "large",
     timeout = "long",
 )
+
+_PROXIED_EMBEDS = [
+    "extract_proxied_reference_packet.py",
+    "extract_reference_packet.py",
+    "proxied_capture_harness_test.go",
+    "proxied_reference_capture_policy_test.py",
+    "proxied_reference_profile.py",
+    "proxied_runtime.go",
+    "public_reference_profile.py",
+    "record_reference.py",
+    "reference_capture.py",
+    "reference_capture_policy_test.py",
+    "reference_proxied_capture.py",
+    "reference_proxied_capture_test.go",
+]
+
+go_test(
+    name = "reference_proxied_capture_policy_test",
+    srcs = [
+        "proxied_capture_harness_test.go",
+        "proxied_capture_policy_test.go",
+        "proxied_runtime.go",
+    ],
+    embedsrcs = _PROXIED_EMBEDS,
+    args = ["-test.v"],
+)
+
+go_test(
+    name = "reference_proxied_capture_test",
+    srcs = [
+        "proxied_capture_harness_test.go",
+        "proxied_runtime.go",
+        "reference_proxied_capture_test.go",
+    ],
+    embedsrcs = _PROXIED_EMBEDS,
+    args = ["-test.v"],
+    tags = ["local", "manual"],
+    size = "large",
+    timeout = "long",
+)

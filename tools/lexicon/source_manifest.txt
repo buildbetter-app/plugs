@@ -1036,9 +1036,15 @@ spec/s1-b09-b12/compaction/guards_test.go
 spec/s1-b09-b12/compaction/presence_test.go
 spec/s1-b09-b12/compaction/publication_test.go
 spec/s1-b09-b12/compaction/selection_test.go
+spec/s1-b09-b12/extract_proxied_reference_packet.py
 spec/s1-b09-b12/extract_reference_packet.py
 spec/s1-b09-b12/projection.py
 spec/s1-b09-b12/provenance.json
+spec/s1-b09-b12/proxied_capture_harness_test.go
+spec/s1-b09-b12/proxied_capture_policy_test.go
+spec/s1-b09-b12/proxied_reference_capture_policy_test.py
+spec/s1-b09-b12/proxied_reference_profile.py
+spec/s1-b09-b12/proxied_runtime.go
 spec/s1-b09-b12/public_reference_profile.py
 spec/s1-b09-b12/record_reference.py
 spec/s1-b09-b12/record_reference_test.py
@@ -1050,6 +1056,8 @@ spec/s1-b09-b12/reference/provenance.json
 spec/s1-b09-b12/reference_capture.py
 spec/s1-b09-b12/reference_capture_policy_test.py
 spec/s1-b09-b12/reference_capture_test.go
+spec/s1-b09-b12/reference_proxied_capture.py
+spec/s1-b09-b12/reference_proxied_capture_test.go
 spec/s1-b09-b12/reference_test.go
 spec/s1-b09-b12/replay_test.go
 spec/s1-b09-b12/vectors.json
