@@ -206,6 +206,42 @@ func (w *Writer) HeartbeatAuthorizationAvailable() bool {
 	return w != nil && w.cfg.authorizer != nil
 }
 
+// HeartbeatReplayAuthorizer is the installed host's optional admission for a
+// published heartbeat's original claim. The detached claim is nil when the
+// receipt has no complete binding. Anonymous kernel replay does not enter it.
+type HeartbeatReplayAuthorizer interface {
+	AuthorizeHeartbeatReplay(context.Context, model.PrincipalRef, model.Ref, *ClaimLease, port.SnapshotReader) error
+}
+
+func (w *Writer) authorizeHeartbeatReplayClaim(ctx context.Context, by model.PrincipalRef, ref model.Ref, receipt heartbeatReceipt, snapshot *snapshotReader) error {
+	guard, ok := w.cfg.authorizer.(HeartbeatReplayAuthorizer)
+	if !ok || by.Kind == "anonymous" {
+		return nil
+	}
+	var claim *ClaimLease
+	if receipt.Overlay != nil && receipt.Overlay.ExpiresAt.Equal(receipt.LeaseExpiresAt) {
+		bound, err := clone(ClaimLease{
+			Principal: receipt.Overlay.Principal, Agent: receipt.Overlay.Agent,
+			ExpiresAt: receipt.ClaimExpiresAt, TtlMs: receipt.Overlay.TtlMs, Epoch: receipt.Overlay.Epoch,
+		})
+		if err != nil {
+			return err
+		}
+		claim = &bound
+	}
+	principal, err := clone(by)
+	if err != nil {
+		return err
+	}
+	_, err = invoke(ctx, 100*time.Millisecond, func(call context.Context) (struct{}, error) {
+		return struct{}{}, guard.AuthorizeHeartbeatReplay(call, principal, ref, claim, snapshot)
+	})
+	if err == context.DeadlineExceeded {
+		return failure("authz_unavailable", "authorization deadline exceeded")
+	}
+	return err
+}
+
 func heartbeatProposal(by model.PrincipalRef, ref model.Ref, meta model.WriteMeta) port.ProposedChange {
 	meta.Method = "bead.heartbeat"
 	return port.ProposedChange{
@@ -303,6 +339,9 @@ func (w *Writer) Heartbeat(ctx context.Context, by model.PrincipalRef, ref model
 			return port.HeartbeatOutcome{}, failure("idempotency_key_reused", "idempotency key was used with different parameters")
 		}
 		if heartbeatReceiptIsPublished(receipt) {
+			if err := w.authorizeHeartbeatReplayClaim(ctx, by, ref, receipt, snapshot); err != nil {
+				return port.HeartbeatOutcome{}, err
+			}
 			return port.HeartbeatOutcome{LeaseExpiresAt: receipt.LeaseExpiresAt, Replayed: true}, nil
 		}
 		if receipt.State != heartbeatReceiptReserved || receipt.LeaseExpiresAt.IsZero() {
@@ -381,6 +420,9 @@ func (w *Writer) Heartbeat(ctx context.Context, by model.PrincipalRef, ref model
 					return port.HeartbeatOutcome{}, failure("idempotency_key_reused", "idempotency key was used with different parameters")
 				}
 				if heartbeatReceiptIsPublished(current) {
+					if err := w.authorizeHeartbeatReplayClaim(ctx, by, ref, current, snapshot); err != nil {
+						return port.HeartbeatOutcome{}, err
+					}
 					return port.HeartbeatOutcome{LeaseExpiresAt: current.LeaseExpiresAt, Replayed: true}, nil
 				}
 				if current.State != heartbeatReceiptReserved || current.LeaseExpiresAt.IsZero() {
@@ -457,6 +499,9 @@ func (w *Writer) Heartbeat(ctx context.Context, by model.PrincipalRef, ref model
 		}
 		if heartbeatReceiptIsPublished(current) {
 			if err := w.authorize(ctx, port.AuthorizeReplay, proposal, snapshot); err != nil {
+				return port.HeartbeatOutcome{}, err
+			}
+			if err := w.authorizeHeartbeatReplayClaim(ctx, by, ref, current, snapshot); err != nil {
 				return port.HeartbeatOutcome{}, err
 			}
 			return port.HeartbeatOutcome{LeaseExpiresAt: current.LeaseExpiresAt, Replayed: true}, nil
