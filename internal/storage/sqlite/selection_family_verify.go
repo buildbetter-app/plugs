@@ -63,6 +63,13 @@ func verifySQLiteSelectionFamilyCensus(ctx context.Context, q queryer, incarnati
 			return err
 		}
 	} else {
+		// Ancestor closures are one logical source envelope spread across one
+		// physical row per depth (or an equivalent multi-fact row).  The other
+		// families require exactly one active row per source.
+		countCheck := "<>1"
+		if family.Kind == driver.SelectionAncestorFact {
+			countCheck = "=0"
+		}
 		err := q.QueryRowContext(ctx, `WITH live AS (
 			SELECT r.key FROM records r JOIN objects o ON o.key=r.key WHERE o.kind='bead'),
 			active AS (SELECT f.source_key FROM selection_fact_sets f
@@ -70,7 +77,7 @@ func verifySQLiteSelectionFamilyCensus(ctx context.Context, q queryer, incarnati
 				WHERE f.incarnation=? AND f.branch=? AND f.row_table=? AND f.kind=?
 				AND f.source_key>='0:' AND f.source_key<'0;'
 				AND f.start_revision<=? AND (f.end_revision IS NULL OR f.end_revision>?))
-			SELECT EXISTS(SELECT 1 FROM live l WHERE (SELECT COUNT(*) FROM active a WHERE a.source_key=l.key)<>1
+			SELECT EXISTS(SELECT 1 FROM live l WHERE (SELECT COUNT(*) FROM active a WHERE a.source_key=l.key)`+countCheck+`
 				UNION ALL SELECT 1 FROM active a WHERE NOT EXISTS(SELECT 1 FROM live l WHERE l.key=a.source_key))`,
 			incarnation, revKey(0), string(family.Table), string(family.Kind), at, at).Scan(&bad)
 		if err != nil {
@@ -102,24 +109,45 @@ func verifySQLiteSelectionParentChains(ctx context.Context, q queryer, incarnati
 		facts AS (
 			SELECT s.row_key,s.start_revision,s.source_key,f.ref_key,f.target_key,f.depth
 			FROM sets s JOIN selection_facts f ON f.incarnation=? AND f.branch=?
-			AND f.row_key=s.row_key AND f.start_revision=s.start_revision AND f.kind='ancestor')
-		SELECT EXISTS(
-			SELECT 1 FROM beads b WHERE (SELECT COUNT(*) FROM sets s WHERE s.source_key=b.record_key)<>1
-			UNION ALL SELECT 1 FROM sets s WHERE NOT EXISTS(SELECT 1 FROM beads b WHERE b.record_key=s.source_key)
-			UNION ALL SELECT 1 FROM sets s WHERE (SELECT COUNT(*) FROM facts f WHERE f.row_key=s.row_key
-				AND f.start_revision=s.start_revision AND f.depth=0 AND f.ref_key=s.source_key
-				AND f.target_key=s.source_key)<>1
-			UNION ALL SELECT 1 FROM facts f GROUP BY f.row_key,f.start_revision,f.depth HAVING COUNT(*)<>1
-			UNION ALL SELECT 1 FROM facts f LEFT JOIN beads target ON target.record_key=f.target_key
-				LEFT JOIN facts prev ON prev.row_key=f.row_key AND prev.start_revision=f.start_revision AND prev.depth=f.depth-1
+			AND f.row_key=s.row_key AND f.start_revision=s.start_revision AND f.kind='ancestor'),
+		bad_rows AS (
+			-- A source may own several physical rows, one for each closure
+			-- depth, but it must own at least one complete row.
+			SELECT 1 FROM beads b
+				WHERE NOT EXISTS(SELECT 1 FROM sets s WHERE s.source_key=b.record_key)
+			UNION ALL SELECT 1 FROM sets s
+				WHERE NOT EXISTS(SELECT 1 FROM beads b WHERE b.record_key=s.source_key)
+			-- Every physical row is one complete typed envelope.
+			UNION ALL SELECT 1 FROM sets s
+				WHERE (SELECT COUNT(*) FROM facts f WHERE f.row_key=s.row_key
+					AND f.start_revision=s.start_revision)=0
+			-- The self row is unique for every source, and every source/depth
+			-- pair is unique across its physical row set.
+			UNION ALL SELECT 1 FROM beads b
+				WHERE (SELECT COUNT(*) FROM facts f WHERE f.source_key=b.record_key
+					AND f.depth=0 AND f.ref_key=b.record_key AND f.target_key=b.record_key)<>1
+			UNION ALL SELECT 1 FROM facts f
+				GROUP BY f.source_key,f.depth HAVING COUNT(*)<>1
+			-- Every typed target is live and points back to its source.
+			UNION ALL SELECT 1 FROM facts f
+				LEFT JOIN beads target ON target.record_key=f.target_key
+				WHERE f.depth<0 OR f.ref_key IS NULL OR f.ref_key<>f.source_key
+				OR target.record_key IS NULL
+			-- Every non-root depth follows the current Parent image of the
+			-- preceding target, across row boundaries.
+			UNION ALL SELECT 1 FROM facts f
+				LEFT JOIN facts prev ON prev.source_key=f.source_key AND prev.depth=f.depth-1
 				LEFT JOIN beads previous_target ON previous_target.record_key=prev.target_key
-				WHERE f.depth<0 OR f.ref_key IS NULL OR f.ref_key<>f.source_key OR target.record_key IS NULL
-				OR (f.depth>0 AND (prev.row_key IS NULL OR previous_target.parent_key IS NULL
-					OR previous_target.parent_key<>f.target_key))
-				OR (NOT EXISTS(SELECT 1 FROM facts later WHERE later.row_key=f.row_key
-					AND later.start_revision=f.start_revision AND later.depth=f.depth+1)
-					AND target.parent_key IS NOT NULL)
-		)`,
+				WHERE f.depth>0 AND (prev.source_key IS NULL OR previous_target.parent_key IS NULL
+					OR previous_target.parent_key<>f.target_key)
+			-- The last target must be a root; a non-root target requires a
+			-- subsequent depth in the same source's closure.
+			UNION ALL SELECT 1 FROM facts f
+				JOIN beads target ON target.record_key=f.target_key
+				WHERE NOT EXISTS(SELECT 1 FROM facts later WHERE later.source_key=f.source_key
+					AND later.depth=f.depth+1) AND target.parent_key IS NOT NULL
+		)
+		SELECT EXISTS(SELECT 1 FROM bad_rows)`,
 		incarnation, revKey(0), at, at,
 		incarnation, revKey(0), string(driver.DerivedAncestorClosure), at, at,
 		incarnation, revKey(0)).Scan(&bad)
@@ -162,19 +190,19 @@ func verifySQLiteSelectionParentChainsAffected(ctx context.Context, q queryer, i
 		),
 		beads AS (
 			SELECT h.child_key AS record_key,h.parent_key
-			FROM hierarchy_source_current h CROSS JOIN scope s
+			FROM hierarchy_source_current h
+			JOIN affected a ON a.record_key=h.child_key
+			CROSS JOIN scope s
 			WHERE h.incarnation=s.incarnation AND h.branch=s.branch
-		),
-		live AS (
-			SELECT b.record_key,b.parent_key FROM beads b JOIN affected a ON a.record_key=b.record_key
 		),
 		sets AS (
 			SELECT f.row_key,f.start_revision,f.source_key
-			FROM selection_fact_sets f CROSS JOIN scope s
+			FROM selection_fact_sets f
+			JOIN affected a ON a.record_key=f.source_key
+			CROSS JOIN scope s
 			WHERE f.incarnation=s.incarnation AND f.branch=s.branch
 			AND f.row_table=? AND f.kind=? AND f.start_revision<=?
 			AND (f.end_revision IS NULL OR f.end_revision>?)
-			AND EXISTS(SELECT 1 FROM affected a WHERE a.record_key=f.source_key)
 		),
 		facts AS (
 			SELECT s.row_key,s.start_revision,s.source_key,f.ref_key,f.target_key,f.depth
@@ -183,12 +211,12 @@ func verifySQLiteSelectionParentChainsAffected(ctx context.Context, q queryer, i
 			AND f.start_revision=s.start_revision AND f.kind=?
 		),
 		bad_rows AS (
-			SELECT 1 FROM live b
+			SELECT 1 FROM beads b
 				WHERE (SELECT COUNT(*) FROM selection_bead_history h CROSS JOIN scope s
 					WHERE h.incarnation=s.incarnation AND h.branch=s.branch
 					AND h.record_key=b.record_key AND h.start_revision<=s.at
 					AND (h.end_revision IS NULL OR h.end_revision>s.at))<>1
-			UNION ALL SELECT 1 FROM live b
+			UNION ALL SELECT 1 FROM beads b
 				WHERE EXISTS(SELECT 1 FROM selection_bead_history h CROSS JOIN scope s
 					WHERE h.incarnation=s.incarnation AND h.branch=s.branch
 					AND h.record_key=b.record_key AND h.start_revision<=s.at
@@ -199,27 +227,30 @@ func verifySQLiteSelectionParentChainsAffected(ctx context.Context, q queryer, i
 				WHERE h.incarnation=s.incarnation AND h.branch=s.branch
 				AND h.start_revision<=s.at AND (h.end_revision IS NULL OR h.end_revision>s.at)
 				AND NOT EXISTS(SELECT 1 FROM beads b WHERE b.record_key=h.record_key)
-			UNION ALL SELECT 1 FROM live b
-				WHERE (SELECT COUNT(*) FROM sets f WHERE f.source_key=b.record_key)<>1
+			UNION ALL SELECT 1 FROM beads b
+				WHERE NOT EXISTS(SELECT 1 FROM sets f WHERE f.source_key=b.record_key)
 			UNION ALL SELECT 1 FROM sets f
-				WHERE NOT EXISTS(SELECT 1 FROM live b WHERE b.record_key=f.source_key)
+				WHERE NOT EXISTS(SELECT 1 FROM beads b WHERE b.record_key=f.source_key)
 			UNION ALL SELECT 1 FROM sets f
 				WHERE (SELECT COUNT(*) FROM facts x WHERE x.row_key=f.row_key
-					AND x.start_revision=f.start_revision AND x.depth=0
-					AND x.ref_key=f.source_key AND x.target_key=f.source_key)<>1
+					AND x.start_revision=f.start_revision)=0
+			UNION ALL SELECT 1 FROM beads b
+				WHERE (SELECT COUNT(*) FROM facts x WHERE x.source_key=b.record_key
+					AND x.depth=0 AND x.ref_key=b.record_key AND x.target_key=b.record_key)<>1
 			UNION ALL SELECT 1 FROM facts x
-				GROUP BY x.row_key,x.start_revision,x.depth HAVING COUNT(*)<>1
+				GROUP BY x.source_key,x.depth HAVING COUNT(*)<>1
 			UNION ALL SELECT 1 FROM facts x
 				LEFT JOIN beads target ON target.record_key=x.target_key
-				LEFT JOIN facts previous ON previous.row_key=x.row_key
-					AND previous.start_revision=x.start_revision AND previous.depth=x.depth-1
-				LEFT JOIN beads previous_target ON previous_target.record_key=previous.target_key
 				WHERE x.depth<0 OR x.ref_key IS NULL OR x.ref_key<>x.source_key OR target.record_key IS NULL
-				OR (x.depth>0 AND (previous.row_key IS NULL OR previous_target.parent_key IS NULL
-					OR previous_target.parent_key<>x.target_key))
-				OR (NOT EXISTS(SELECT 1 FROM facts later WHERE later.row_key=x.row_key
-					AND later.start_revision=x.start_revision AND later.depth=x.depth+1)
-					AND target.parent_key IS NOT NULL)
+			UNION ALL SELECT 1 FROM facts x
+				LEFT JOIN facts previous ON previous.source_key=x.source_key AND previous.depth=x.depth-1
+				LEFT JOIN beads previous_target ON previous_target.record_key=previous.target_key
+				WHERE x.depth>0 AND (previous.source_key IS NULL OR previous_target.parent_key IS NULL
+					OR previous_target.parent_key<>x.target_key)
+			UNION ALL SELECT 1 FROM facts x
+				JOIN beads target ON target.record_key=x.target_key
+				WHERE NOT EXISTS(SELECT 1 FROM facts later WHERE later.source_key=x.source_key
+					AND later.depth=x.depth+1) AND target.parent_key IS NOT NULL
 		)
 		SELECT EXISTS(SELECT 1 FROM bad_rows)`,
 		args...).Scan(&bad)

@@ -138,8 +138,12 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 	if family.Kind == "" {
 		return t.selectionCompleteForCommit(ctx, c, incarnation, derived)
 	}
-	type stagedFact struct{ key string }
-	bySource := map[string]stagedFact{}
+	// Ancestor closures are represented as one physical derived row per
+	// source/depth.  The other typed families have one row per source, but an
+	// ancestor source legitimately owns several rows.  Keep the complete set
+	// of staged row keys so the source census and replacement checks do not
+	// collapse a valid multi-depth closure into a duplicate-source refusal.
+	bySource := map[string]map[string]struct{}{}
 	for id, state := range derived {
 		if state.Key.Derived == nil {
 			continue
@@ -183,10 +187,18 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 		if record, changed := t.records[sourceID]; changed && (record == nil || record.Kind != "bead") {
 			return false, nil
 		}
-		if _, duplicate := bySource[sourceID]; duplicate {
+		rows := bySource[sourceID]
+		if rows == nil {
+			rows = make(map[string]struct{})
+			bySource[sourceID] = rows
+		}
+		if _, duplicate := rows[id]; duplicate {
 			return false, nil
 		}
-		bySource[sourceID] = stagedFact{key: id}
+		if family.Kind != driver.SelectionAncestorFact && len(rows) != 0 {
+			return false, nil
+		}
+		rows[id] = struct{}{}
 		if oldKind == string(family.Kind) && oldSource != sourceID {
 			removed, changed := t.records[oldSource]
 			if !changed || removed != nil {
@@ -201,7 +213,7 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 			}
 		}
 	}
-	for source, row := range bySource {
+	for source, staged := range bySource {
 		if _, changed := t.records[source]; changed {
 			continue // source publication closes its previous fact sets
 		}
@@ -210,8 +222,15 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 			return false, err
 		}
 		for _, previous := range rows {
-			if previous != row.key {
-				if _, replaced := derived[previous]; !replaced {
+			replaced := false
+			for row := range staged {
+				if previous == row {
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				if _, replaced = derived[previous]; !replaced {
 					return false, nil
 				}
 			}

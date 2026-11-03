@@ -369,8 +369,17 @@ func TestSelectionSQLiteFinalParentChainAndExactSortCensus(t *testing.T) {
 	project.Decode = func(record driver.Record, inputs []driver.DerivedRow) ([]driver.DerivedSelectionRow, error) {
 		rows, err := plainProject(record, inputs)
 		if err == nil && record.Ref.ID == child.ID {
-			rows[0].Row.Index.Facts.Rows = append(rows[0].Row.Index.Facts.Rows,
-				driver.SelectionFact{Kind: driver.SelectionAncestorFact, Ref: &child, Target: &root, Depth: 1})
+			// Production emits one physical closure row per depth. Keep the
+			// depth-one fact in its own envelope so this test exercises the
+			// canonical multi-row-by-source representation.
+			depthOne := rows[0].Clone()
+			depthOne.Row.Key += ":depth-1"
+			depthOne.Row.Index.Row.Key = depthOne.Row.Key
+			depthOne.Row.Index.Facts.Rows = []driver.SelectionFact{{
+				Kind: driver.SelectionAncestorFact, Ref: &child, Target: &root, Depth: 1,
+			}}
+			depthOne.Row.Index.ValueDigest = driver.SelectionDigest(depthOne.Row.Value)
+			rows = append(rows, depthOne)
 		}
 		return rows, err
 	}
@@ -452,8 +461,14 @@ func TestSelectionAffectedParentProofIncludesUnchangedDescendants(t *testing.T) 
 	project.Decode = func(record driver.Record, inputs []driver.DerivedRow) ([]driver.DerivedSelectionRow, error) {
 		rows, err := plainProject(record, inputs)
 		if err == nil && record.Ref.ID == child.ID {
-			rows[0].Row.Index.Facts.Rows = append(rows[0].Row.Index.Facts.Rows,
-				driver.SelectionFact{Kind: driver.SelectionAncestorFact, Ref: &child, Target: &root, Depth: 1})
+			depthOne := rows[0].Clone()
+			depthOne.Row.Key += ":depth-1"
+			depthOne.Row.Index.Row.Key = depthOne.Row.Key
+			depthOne.Row.Index.Facts.Rows = []driver.SelectionFact{{
+				Kind: driver.SelectionAncestorFact, Ref: &child, Target: &root, Depth: 1,
+			}}
+			depthOne.Row.Index.ValueDigest = driver.SelectionDigest(depthOne.Row.Value)
+			rows = append(rows, depthOne)
 		}
 		return rows, err
 	}
