@@ -447,25 +447,48 @@ At **2026-10-31 18:00 UTC**, new scope stops and the merge queue closes except f
 
 Keep the same graph, evidence, ownership, and merge rules at normal budget. Reduce concurrency only after the evidence ledger is consistent. Finish the complete behavior and paired store census, settle the remaining gates, repeat nightly restore diffs, then complete I1-I8 in dependency order. A production candidate requires the shadow metrics, three clean rehearsals, failover and rollback evidence, platform safety, authenticated deployment, and the release publication gate. The graph may report a candidate date only after those proofs; the stop line is not a release promise.
 
-## Deferred EP1–EP6 contract-to-UX path
+## EP1–EP6 contract-to-UX path
 
-The current signed workgraph carries the parent-aware epic-progress follow-up
-as a dependency-ranked, deferred contract-to-UX path. It preserves the
-parent/child decision in [decisions-needed.md](decisions-needed.md) and adds no
-runtime support, implementation, qualification, merge, release, or deployment
-claim. The layers remain in this order:
+The dependency order recorded in [PR #207](https://github.com/buildbetter-app/plugs/pull/207)
+preserves the binding parent/child decision in
+[decisions-needed.md](decisions-needed.md). Its original deferred status is
+historical; the dated source snapshot below records the merged layers and the
+remaining qualification boundary. The required order stays:
 
-| ID | Dependency rank | Deferred layer and evidence gate |
+| ID | Dependency rank | Layer and evidence gate |
 |---|---:|---|
 | **EP1** | 2 | **Parented create/reparent contract.** Define canonical parent references and same-batch behavior; refuse missing parents and cycles; preserve project boundaries and child guards; and bound ancestor closure. The contract must be separately reviewed before implementation. |
 | **EP2** | 3 | **Parent/child authorization.** Require parent edit authorization to attach; disclose hidden parents by existence only; keep a child in its own project; require edit on both child and new parent for moves; and grant no cross-project access. |
 | **EP3** | 4 | **Issueops/storage hierarchy layer.** Atomically maintain parent and ancestor closure with the required locks and sentinels, cycle checks, and child guards across each admitted store. |
 | **EP4** | 5 | **Parent-aware epic-progress RPC.** Bind the authorized scope to one snapshot, enforce caps, define continuation/reset behavior, and return typed refusals. |
 | **EP5** | 6 | **Epic progress view.** Report visible-child counts plus the exact “N more you can’t see” remainder while preserving non-disclosure. |
-| **EP6** | 7 | **E3 fifth agent-UX task.** Qualify the epic-progress experience only after EP1–EP5 are separately implemented, reviewed, and qualified. Decision #18's accepted E3 4/5 boundary remains current until then. |
+| **EP6** | 7 | **E3 fifth agent-UX task.** Qualify the epic-progress experience only after EP1–EP5 are separately implemented, reviewed, and qualified. Preserve the historical E3 4/5 result separately from later bounded evidence. |
 
-This path is deferred contract-to-UX work. It does not reopen the historical
-#18 runtime denial boundary or imply that any EP layer is implemented today.
+### Source snapshot, 2026-11-03
+
+The EP implementation owner and independent reviewer confirmed this map at
+`fd097b437565a506220fa478b54a722b37f3765e`. Each listed commit is merged into
+that frozen base. These source references do not transfer a historical gate
+result to a later head or establish full layer qualification.
+
+| Layer | Merged source at the frozen base |
+|---|---|
+| **EP1** | [PR #206](https://github.com/buildbetter-app/plugs/pull/206), `177337b4a`: [parented-write contract](contracts/go-sketches.md). |
+| **EP2** | [PR #214](https://github.com/buildbetter-app/plugs/pull/214), `7ed093d69`: [hierarchy authorization](../../../internal/core/authz/hierarchy.go) and [RPC disclosure](../../../internal/server/authzrpc/hierarchy_read.go). Attaching requires edit on the epic plus create or edit on the child; moving requires edit on the child and new epic, with no permission on the old epic. Hidden parents reveal existence only; the child retains its own project and permissions. |
+| **EP3** | [PR #217](https://github.com/buildbetter-app/plugs/pull/217), `c044ac5db`: [Writer parent and closure maintenance](../../../internal/core/pipeline/hierarchy.go). |
+| **EP4** | [PR #225](https://github.com/buildbetter-app/plugs/pull/225), `af1be1c2e`: [direct-child summary](../../../internal/core/viewops/epic_progress.go) and [trusted RPC configuration](../../../internal/server/viewrpc/epic_progress.go). |
+| **EP5** | [PR #219](https://github.com/buildbetter-app/plugs/pull/219), `0feb6ba29`: [embedded progress UI](../../../internal/server/webui/static/epic-progress.js), including visible status counts and the separate “N more you cannot see” remainder with no hidden-child status. |
+| **EP6** | [PR #219](https://github.com/buildbetter-app/plugs/pull/219), `0feb6ba29`: [real HTTP/restore harness and its evidence limits](../../../internal/integration/epicprogress/README.md), including the 20,000-bead/50-agent fifth-task API case and the anonymous stored-graph Chrome path. |
+
+The original #18 denial and E3 4/5 records remain historical provenance. The
+controller's later **E3=5/5 bounded** score retains its recorded evidence scope.
+PR #219's fixed-policy authenticated HTTP and anonymous Chrome paths do not
+qualify the full authenticated hidden-count browser or 20,000-bead Chrome
+workload. The controller assigns that separate pending scope to
+[PR #254](https://github.com/buildbetter-app/plugs/pull/254), which awaits
+orchestrator-owned [PR #298](https://github.com/buildbetter-app/plugs/pull/298)
+landing and a rebase. Source existence, correctness gates and the bounded E3
+score supply no latency, full EP integration, production, G2 or G3 acceptance.
 
 ## Gates
 

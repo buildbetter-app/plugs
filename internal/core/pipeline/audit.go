@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -251,9 +251,8 @@ func (p *prepared) events(revision model.Revision, changes []model.ChangeRecord)
 		}
 		slot := ""
 		if p.release == nil {
-			method := p.lifecycleMethod(pending)
-			if isSlot(method) {
-				slot = strings.TrimPrefix(method, "bead.")
+			if canonical, ok := ontology.SlotForMethod(p.lifecycleMethod(pending)); ok {
+				slot = string(canonical)
 			}
 		}
 		provenance := model.EventProvenance{Method: p.proposal.Meta.Method, Slot: slot, SetBy: cloneMap(pending.setBy), Cause: p.audit.context.Cause, Chain: p.audit.context.Chain}

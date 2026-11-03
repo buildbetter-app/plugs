@@ -427,7 +427,7 @@ func TestDiscoveryVisibilityAndHash(t *testing.T) {
 	requireCode(t, call(t, s, reader, "rpc.describe", `{"method":"bead.create"}`), "method_not_found")
 	requireCode(t, call(t, s, reader, "rpc.describe", `{"method":""}`), "method_not_found")
 	description := result(t, call(t, s, reader, "rpc.describe", `{"method":"bead.get"}`))
-	if description["method"].(map[string]any)["permission"] != "read" || len(description["errors"].([]any)) != 62 || description["components"] == nil {
+	if description["method"].(map[string]any)["permission"] != "read" || len(description["errors"].([]any)) != 63 || description["components"] == nil {
 		t.Fatal("incomplete description")
 	}
 	full, err := s.OpenRPC(reader, model.PrincipalRef{Kind: "user", ID: "reader"})

@@ -55,6 +55,7 @@ type Preparation struct {
 	AdminProof       string        `json:"admin_proof"`
 	ResourcesCleaned bool          `json:"resources_cleaned"`
 	Runs             []PreparedRun `json:"runs"`
+	RuntimeRollback  *Rollback     `json:"runtime_rollback,omitempty"`
 	GateWaits        []string      `json:"gate_waits_at_execution"`
 }
 
@@ -68,6 +69,8 @@ type PreparedRun struct {
 	NewIncarnation      bool      `json:"new_restore_incarnation"`
 	FactoryWorkers      int       `json:"sampled_factory_workers"`
 	FactoryTasks        int       `json:"sampled_factory_tasks"`
+	TranscriptCompared  bool      `json:"public_transcript_compared"`
+	TranscriptExchanges int       `json:"public_transcript_exchanges"`
 	DumpDigest          string    `json:"head_dump_sha256"`
 	Baseline            Metrics   `json:"baseline"`
 	Shadow              Metrics   `json:"shadow"`
@@ -190,6 +193,7 @@ func RunDisposable(ctx context.Context, kind, sourceSHA, sourceTree string) (rep
 		cleanup := os.RemoveAll(root)
 		report.ResourcesCleaned = cleanup == nil
 		if cleanup != nil {
+			report.Preparation = "BLOCK"
 			err = errors.Join(err, fmt.Errorf("disposable directory cleanup failed"))
 		}
 	}()
@@ -203,12 +207,68 @@ func RunDisposable(ctx context.Context, kind, sourceSHA, sourceTree string) (rep
 		}
 		report.Runs = append(report.Runs, run)
 	}
+	// Consume the separately implemented complete edition transition at this
+	// runner boundary. Descriptor-only per-run rollback rows remain WAIT; this
+	// drill builds and validates actual owned artifacts and verifies cleanup.
+	rollback, rollbackErr := RunDeployableRollback(ctx, kind, sourceSHA, sourceTree)
+	report.RuntimeRollback = &rollback
+	if rollbackErr != nil || !completeRuntimeRollback(rollback, sourceSHA, sourceTree) {
+		report.Preparation = "BLOCK"
+		if rollbackErr == nil {
+			rollbackErr = fmt.Errorf("complete owned rollback evidence missing")
+		}
+		return report, rollbackErr
+	}
 	evidence := GateEvidence{SourceSHA: sourceSHA, SourceTree: sourceTree}
 	for _, run := range report.Runs {
 		evidence.Rehearsals = append(evidence.Rehearsals, Receipt{SourceSHA: sourceSHA, SourceTree: sourceTree, Digest: run.DumpDigest, Finished: run.Finished, Clean: false})
 	}
 	report.GateWaits = EvaluateGate(time.Now(), evidence)
 	return report, nil
+}
+
+func completeRuntimeRollback(r Rollback, sha, tree string) bool {
+	if r.Software != "PASS_digest_verified_old_candidate_old" ||
+		r.Complete != "PASS_executable_image_prompt_plugin_data_transition" ||
+		r.Data != "PASS_snapshot_restore_public_readback" ||
+		!r.InputsFrozen || !r.CandidatePinned || !r.OldToCandidate || !r.CandidatePublicReadback ||
+		!r.CandidateStopped || !r.CandidateToOld || !r.RollbackPublicReadback ||
+		!r.AtomicReplacements || !r.IncarnationBoundary || !r.CleanupVerified ||
+		!r.WrongDigestRefused || !r.PinMismatchRefused || len(r.Observations) != 3 ||
+		r.OldBundle.Role != "old" || r.CandidateBundle.Role != "candidate" || r.RollbackBundle.Role != "old" ||
+		r.OldIncarnation == "" || r.CandidateIncarnation == "" || r.RollbackIncarnation == "" ||
+		r.OldIncarnation == r.CandidateIncarnation || r.OldIncarnation == r.RollbackIncarnation ||
+		r.CandidateIncarnation == r.RollbackIncarnation ||
+		r.OldBundle.ExecutableDigest != r.RollbackBundle.ExecutableDigest ||
+		r.OldBundle.ImageDigest != r.RollbackBundle.ImageDigest ||
+		r.OldBundle.PromptDigest != r.RollbackBundle.PromptDigest ||
+		r.OldBundle.PluginDigest != r.RollbackBundle.PluginDigest ||
+		r.CandidateBundle.DataDigest != r.RollbackBundle.DataDigest ||
+		r.ImageDigest != r.RollbackBundle.ImageDigest ||
+		r.PromptDigest != r.RollbackBundle.PromptDigest ||
+		r.PluginDigest != r.RollbackBundle.PluginDigest ||
+		r.DataDumpDigest != r.RollbackBundle.DataDigest {
+		return false
+	}
+	for i, b := range []RuntimeBundle{r.OldBundle, r.CandidateBundle, r.RollbackBundle} {
+		if b.SourceSHA != sha || b.SourceTree != tree || len(b.ExecutableDigest) != 64 ||
+			len(b.ImageDigest) != 64 || len(b.ImageArchiveDigest) != 64 ||
+			len(b.PromptDigest) != 64 || len(b.PluginDigest) != 64 || len(b.DataDigest) != 64 {
+			return false
+		}
+		observation := r.Observations[i]
+		if observation.ImageID != "sha256:"+b.ImageDigest ||
+			observation.ExecutableDigest != b.ExecutableDigest ||
+			observation.PromptDigest != b.PromptDigest ||
+			observation.PluginDigest != b.PluginDigest ||
+			observation.DataDigest != b.DataDigest ||
+			!observation.PublicDataReadback || !observation.ReceiptReplayed ||
+			!observation.PromptCanary || !observation.PluginCanary ||
+			(i > 0 && !observation.StaleCursorRefused) {
+			return false
+		}
+	}
+	return true
 }
 
 type fixture struct {
@@ -322,9 +382,18 @@ func runDisposable(ctx context.Context, kind, root string, index int, seen map[s
 	}
 	seen[identity] = true
 	run.FreshEmptyTarget = true
+	seededID := ""
 	for i := 0; i < sampledFactoryTaskCount; i++ {
-		if _, err = source.rpc.Call(ctx, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "synthetic task", "priority": 1}}, ""); err != nil {
-			return run, err
+		created, createErr := source.rpc.Call(ctx, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "synthetic task", "priority": 1}}, "")
+		if createErr != nil {
+			return run, createErr
+		}
+		var commit model.Commit
+		if json.Unmarshal(created.JSON, &commit) != nil || len(commit.Results) != 1 || commit.Results[0].Ref.ID == "" {
+			return run, fmt.Errorf("seed create returned no public bead ID")
+		}
+		if i == 0 {
+			seededID = commit.Results[0].Ref.ID
 		}
 	}
 	if _, err = source.rpc.Call(ctx, "memory.save", map[string]any{"key": "rehearsal", "content": "synthetic caller context"}, ""); err != nil {
@@ -395,6 +464,14 @@ func runDisposable(ctx context.Context, kind, root string, index int, seen map[s
 	if before != after {
 		return run, fmt.Errorf("post-workload ready comparison differs")
 	}
+	run.TranscriptExchanges, err = compareOwnedPublicCalls(ctx, target, seededID)
+	if err != nil || run.TranscriptExchanges != 3 {
+		if err == nil {
+			err = fmt.Errorf("public caller transcript incomplete")
+		}
+		return run, err
+	}
+	run.TranscriptCompared = true
 	// Targets for the 100,000-record design workload are not inferred from this
 	// sampled pool. Missing targets are explicit WAIT rows.
 	run.ComparisonWaits = Compare(run.Baseline, run.Shadow, nil)
@@ -801,6 +878,19 @@ type mcpTransport struct {
 }
 
 func newMCPClient(ctx context.Context, f *fixture, agent string) (*client.Client, func(), error) {
+	t, close, err := openMCPTransport(ctx, f)
+	if err != nil {
+		return nil, nil, err
+	}
+	c, err := client.New(t, "rehearsal", agent)
+	if err != nil {
+		close()
+		return nil, nil, err
+	}
+	return c, close, nil
+}
+
+func openMCPTransport(ctx context.Context, f *fixture) (*mcpTransport, func(), error) {
 	t := &mcpTransport{endpoint: f.server.URL + "/mcp", token: f.token, http: &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: time.Second}).DialContext}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	close := func() { t.http.CloseIdleConnections() }
 	init, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "init", "method": "initialize", "params": map[string]any{"protocolVersion": mcp.DefaultProtocolVersion, "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "disposable-shadow", "version": "1"}}})
@@ -832,12 +922,7 @@ func newMCPClient(ctx context.Context, f *fixture, agent string) (*client.Client
 		close()
 		return nil, nil, fmt.Errorf("MCP canonical caller tool unavailable")
 	}
-	c, err := client.New(t, "rehearsal", agent)
-	if err != nil {
-		close()
-		return nil, nil, err
-	}
-	return c, close, nil
+	return t, close, nil
 }
 
 func (t *mcpTransport) exchange(ctx context.Context, data []byte) ([]byte, http.Header, error) {
@@ -870,11 +955,12 @@ func (t *mcpTransport) exchange(ctx context.Context, data []byte) ([]byte, http.
 
 func (t *mcpTransport) RoundTrip(ctx context.Context, data []byte) ([]byte, error) {
 	var request struct {
-		ID     json.RawMessage
-		Method string
-		Params map[string]any
+		JSONRPC string `json:"jsonrpc"`
+		ID      json.RawMessage
+		Method  string
+		Params  map[string]any
 	}
-	if json.Unmarshal(data, &request) != nil {
+	if wire.DecodeInto(data, &request) != nil {
 		return nil, fmt.Errorf("invalid caller bytes")
 	}
 	// The generic discovered tool preserves canonical camel-case method names
@@ -991,7 +1077,7 @@ func sourceCheckout() (root, sha, tree string, err error) {
 	}
 	// Bazel's declared source runfiles must match this exact clean checkout,
 	// tying the data binaries' build graph to the source identity we record.
-	for _, name := range []string{"tools/rehearsal/disposable.go", "tools/rehearsal/cmd/rollback-runtime/main.go"} {
+	for _, name := range []string{"tools/rehearsal/disposable.go", "tools/rehearsal/transcript.go", "tools/rehearsal/transcript_consumer.go", "tools/rehearsal/cmd/rollback-runtime/main.go"} {
 		runfile := filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), name)
 		if os.Getenv("TEST_SRCDIR") == "" {
 			err = fmt.Errorf("Bazel source runfiles required")

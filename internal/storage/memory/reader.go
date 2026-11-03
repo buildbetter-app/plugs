@@ -204,8 +204,7 @@ func copyLock(value driver.LockState) driver.LockState {
 		value.Record = &v
 	}
 	if value.Derived != nil {
-		v := *value.Derived
-		v.Value = bytes.Clone(v.Value)
+		v := value.Derived.Clone()
 		value.Derived = &v
 	}
 	return value

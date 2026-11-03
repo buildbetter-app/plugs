@@ -3,7 +3,6 @@ package converterroundtrip
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -24,12 +23,8 @@ const (
 	idA = "pl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	idB = "pl-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	idC = "pl-cccccccccccccccccccccccccccccccc"
-	// Fixed digest of an independently constructed builtin-head/1 image with
-	// each bead's required self ancestor at depth zero.
-	// Recomputed independently from the same head image with the live
-	// base64(descendant).base64(ancestor) key and scalar depth value. The
-	// independent description also reproduces the previous aggregate-image
-	// digest 89f6eb61310b4f9193e9925e2a2305101b126f763e870986bc7ca51f6043d28a.
+	// Fixed digest of an independently constructed 20-row, nine-table
+	// builtin-head/1 image with canonical self-ancestor keys and scalar zero.
 	supportedDerived = "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed"
 )
 
@@ -291,6 +286,9 @@ func TestRestoreRequiresMatchingIndependentComparison(t *testing.T) {
 				// The previous image omitted mandatory self ancestors. Its
 				// comparison must refuse before any write, even on an empty store.
 				{{ArchiveSHA256: check.ArchiveSHA256, DerivedSHA256: "76f2bbff964bca8043b9952adeb69583432b567d622a9dbca2d541cf816229eb"}},
+				// The old array-valued closure image is also incompatible with
+				// canonical hierarchy rows and must never authorize publication.
+				{{ArchiveSHA256: check.ArchiveSHA256, DerivedSHA256: "89f6eb61310b4f9193e9925e2a2305101b126f763e870986bc7ca51f6043d28a"}},
 			} {
 				if _, err := RestoreWithLease(context.Background(), bytes.NewReader(data), target, lease, checks...); !errors.Is(err, ErrRestoreUnavailable) {
 					t.Fatalf("mismatch: %v", err)
@@ -315,27 +313,30 @@ func assertRestoreSelfAncestors(t *testing.T, store driver.Store) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	ids := []string{idA, idB, idC}
-	keys := make([]driver.LockKey, len(ids))
-	identities := map[string]string{}
-	for i, id := range ids {
-		part := base64.RawURLEncoding.EncodeToString([]byte(id))
-		keys[i] = driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: part + "." + part}}
-		identities[part+"."+part] = id
+	// Observe requires encoded key order, which differs from the source ID order.
+	ids := []string{idC, idA, idB}
+	// Fixed contract bytes, independently derived without the production codec.
+	selfKeys := []string{
+		"cGwtY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M.cGwtY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M",
+		"cGwtYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE.cGwtYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE",
+		"cGwtYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI.cGwtYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI",
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, _ := driver.EncodeLockKey(keys[i])
-		b, _ := driver.EncodeLockKey(keys[j])
-		return a < b
-	})
+	keys := make([]driver.LockKey, len(ids))
+	for i, key := range selfKeys {
+		keys[i] = driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: key}}
+	}
+	rows, err := r.DerivedRows(ctx, driver.DerivedAncestorClosure, "")
+	if err != nil || len(rows) != len(ids) {
+		t.Fatalf("self ancestor census: %+v %v", rows, err)
+	}
 	states, err := r.Observe(ctx, keys)
 	if err != nil || len(states) != len(ids) {
 		t.Fatalf("ancestor rows: %+v %v", states, err)
 	}
-	for i, state := range states {
-		id := identities[keys[i].Derived.Key]
-		// This legacy fixture has no parents. Assert the canonical pair key
-		// and scalar zero independently of the production codec and plan.
+	for i, id := range ids {
+		state := states[i]
+		// The parent-free image has exactly one self row per bead. Canonical
+		// depth is the scalar integer 0, independent of status/blocking links.
 		want := "0"
 		var got string
 		if state.Derived != nil {

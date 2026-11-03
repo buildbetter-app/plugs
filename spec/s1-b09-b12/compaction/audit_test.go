@@ -28,9 +28,10 @@ type observedHeader struct {
 }
 type observedStore struct {
 	driver.Store
-	mu                  sync.Mutex
-	headers             []observedHeader
-	failPut, failCommit bool
+	mu                          sync.Mutex
+	headers                     []observedHeader
+	failPut, failCommit         bool
+	putFailures, commitFailures int
 }
 
 func (s *observedStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
@@ -52,10 +53,26 @@ type observedTx struct {
 }
 
 func (t *observedTx) Put(ctx context.Context, r driver.Record) error {
-	if err := t.WriteTx.Put(ctx, r); err != nil {
+	return t.afterPut(t.WriteTx.Put(ctx, r))
+}
+
+// Embedding WriteTx alone hides this optional capability and makes certified
+// bead publication fail before the intended fault. Keep fault injection after
+// the actual typed source image and its metadata have been staged together.
+func (t *observedTx) PutGraphRecord(ctx context.Context, r driver.Record, parent *model.Ref, links []driver.SourceLink) error {
+	writer, ok := t.WriteTx.(driver.GraphSourceWriter)
+	if !ok {
+		return driver.ErrUnsupported
+	}
+	return t.afterPut(writer.PutGraphRecord(ctx, r, parent, links))
+}
+
+func (t *observedTx) afterPut(err error) error {
+	if err != nil {
 		return err
 	}
 	if t.store.failPut {
+		t.store.putFailures++
 		return fmt.Errorf("injected failure after real staged Put")
 	}
 	return nil
@@ -63,6 +80,7 @@ func (t *observedTx) Put(ctx context.Context, r driver.Record) error {
 func (t *observedTx) Commit(ctx context.Context, h driver.ChangesetHeader) (model.Changeset, error) {
 	t.store.record(h, false)
 	if t.store.failCommit {
+		t.store.commitFailures++
 		return model.Changeset{}, fmt.Errorf("injected failure before real Commit")
 	}
 	return t.WriteTx.Commit(ctx, h)
