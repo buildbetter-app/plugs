@@ -565,6 +565,7 @@ internal/integration/sqlreadersnapshots/BUILD.bazel
 internal/integration/sqlreadersnapshots/integration_test.go
 internal/integration/transports/BUILD.bazel
 internal/integration/transports/README.md
+internal/integration/transports/authority_equivalence_test.go
 internal/integration/transports/client_test.go
 internal/integration/transports/composition_test.go
 internal/integration/transports/configured_test.go
