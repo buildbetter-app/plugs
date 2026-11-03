@@ -134,8 +134,10 @@ func (r *reader) check(ctx context.Context) error {
 		return driver.ErrTxClosed
 	}
 	if r.writer != nil {
-		if _, err := r.store.checkLease(ctx, r.sql, r.writer.lease, false); err != nil {
-			return err
+		if !r.writer.leasePrepared {
+			if _, err := r.store.checkLease(ctx, r.sql, r.writer.lease, false); err != nil {
+				return err
+			}
 		}
 		if !r.writer.hasHead {
 			m, err := readMeta(ctx, r.sql, "")

@@ -308,6 +308,8 @@ func (c *Checker) Visible(_ context.Context, p model.PrincipalRef, d wire.Method
 		switch d.Name {
 		case "bead.claim", "bead.claimNext", "bead.update", "bead.heartbeat", "bead.release":
 			return p.Kind == "agent" && p.Sponsor != nil && p.Sponsor.Kind == "user", nil
+		case "x.workflow.invoke":
+			return p.Kind == "user" || p.Kind == "agent" && p.Sponsor != nil && p.Sponsor.Kind == "user", nil
 		default:
 			return false, nil
 		}

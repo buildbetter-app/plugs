@@ -23,16 +23,19 @@ type pageCodec struct {
 	incarnation string
 }
 type cursorPayload struct {
-	Version               int            `json:"version"`
-	Method                string         `json:"method"`
-	Principal             string         `json:"principal"`
-	Scope                 string         `json:"scope"`
-	Ontology              model.Revision `json:"ontology"`
-	Incarnation           string         `json:"incarnation"`
-	Offset                int            `json:"offset"`
-	AsOf                  asOf           `json:"asOf"`
-	AuthorizationRevision model.Revision `json:"authorizationRevision,omitempty"`
-	AuthorizationBound    bool           `json:"authorizationBound,omitempty"`
+	Version               int                           `json:"version"`
+	Method                string                        `json:"method"`
+	Principal             string                        `json:"principal"`
+	Scope                 string                        `json:"scope"`
+	Ontology              model.Revision                `json:"ontology"`
+	Incarnation           string                        `json:"incarnation"`
+	Offset                int                           `json:"offset"`
+	AsOf                  asOf                          `json:"asOf"`
+	AuthorizationRevision model.Revision                `json:"authorizationRevision,omitempty"`
+	AuthorizationBound    bool                          `json:"authorizationBound,omitempty"`
+	Workflow              bool                          `json:"workflow,omitempty"`
+	WorkflowSnapshot      *service.WorkflowPageSnapshot `json:"workflowSnapshot,omitempty"`
+	ReadyMembership       string                        `json:"readyMembership,omitempty"`
 }
 
 func newPageCodec(config Config) (*pageCodec, error) {
@@ -108,6 +111,17 @@ func sameRevision(a, b model.Revision) bool {
 	return ex == nil && ey == nil && x == y
 }
 
+func validReadyMembership(value string) bool {
+	if value == "" {
+		return true
+	}
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
 func (c *pageCodec) decode(call Call, p serviceParams) (*service.PagePosition, error) {
 	if p.Cursor == "" {
 		c.defaultHistoryIncarnation(call, p)
@@ -152,6 +166,13 @@ func (c *pageCodec) decode(call Call, p serviceParams) (*service.PagePosition, e
 	if payload.AuthorizationBound && payload.AuthorizationRevision.Validate() != nil {
 		return nil, cursorInvalid()
 	}
+	if !payload.WorkflowSnapshot.Valid() || (payload.Workflow && payload.WorkflowSnapshot == nil) ||
+		(call.Method != "bead.ready" && (payload.Workflow || payload.WorkflowSnapshot != nil)) {
+		return nil, cursorInvalid()
+	}
+	if !validReadyMembership(payload.ReadyMembership) || (call.Method != "bead.ready" && payload.ReadyMembership != "") {
+		return nil, cursorInvalid()
+	}
 	if payload.Incarnation != c.incarnation {
 		return nil, incarnationChanged(payload.Incarnation, c.incarnation)
 	}
@@ -161,6 +182,9 @@ func (c *pageCodec) decode(call Call, p serviceParams) (*service.PagePosition, e
 		AsOf:                  service.AsOf{Revision: payload.AsOf.Revision, Incarnation: payload.AsOf.Incarnation},
 		AuthorizationRevision: payload.AuthorizationRevision,
 		AuthorizationBound:    payload.AuthorizationBound,
+		Workflow:              payload.Workflow,
+		WorkflowSnapshot:      payload.WorkflowSnapshot,
+		ReadyMembership:       payload.ReadyMembership,
 	}, nil
 }
 
@@ -185,6 +209,13 @@ func (c *pageCodec) encode(call Call, p serviceParams, position service.PagePosi
 	if position.AuthorizationBound && position.AuthorizationRevision.Validate() != nil {
 		return "", fmt.Errorf("service returned an invalid authorization revision")
 	}
+	if !position.WorkflowSnapshot.Valid() || (position.Workflow && position.WorkflowSnapshot == nil) ||
+		(call.Method != "bead.ready" && (position.Workflow || position.WorkflowSnapshot != nil)) {
+		return "", fmt.Errorf("service returned invalid workflow cursor state")
+	}
+	if !validReadyMembership(position.ReadyMembership) || (call.Method != "bead.ready" && position.ReadyMembership != "") {
+		return "", fmt.Errorf("service returned invalid ready membership binding")
+	}
 	principal, scope, err := c.binding(call, p)
 	if err != nil {
 		return "", err
@@ -195,6 +226,9 @@ func (c *pageCodec) encode(call Call, p serviceParams, position service.PagePosi
 		AsOf:                  asOf{position.AsOf.Revision, position.AsOf.Incarnation},
 		AuthorizationRevision: position.AuthorizationRevision,
 		AuthorizationBound:    position.AuthorizationBound,
+		Workflow:              position.Workflow,
+		WorkflowSnapshot:      position.WorkflowSnapshot,
+		ReadyMembership:       position.ReadyMembership,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -230,6 +264,12 @@ func (c *pageCodec) page(call Call, p serviceParams, previous *service.PagePosit
 		return out, nil
 	}
 	position := *value.Next
+	if !position.WorkflowSnapshot.Equal(value.WorkflowSnapshot) {
+		return nil, fmt.Errorf("service next position does not match workflow snapshot")
+	}
+	if position.ReadyMembership != value.ReadyMembership {
+		return nil, fmt.Errorf("service next position does not match ready membership")
+	}
 	if position.AsOf.Incarnation == "" {
 		position.AsOf.Incarnation = c.incarnation
 	}
@@ -240,7 +280,7 @@ func (c *pageCodec) page(call Call, p serviceParams, previous *service.PagePosit
 	if previous != nil {
 		before = previous.Offset
 	}
-	if position.Offset <= before {
+	if position.Offset <= before && !(position.Workflow && (previous == nil || !previous.Workflow)) {
 		return nil, fmt.Errorf("service page does not advance")
 	}
 	token, err := c.encode(call, p, position)

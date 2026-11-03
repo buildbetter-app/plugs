@@ -92,11 +92,16 @@ type Artifact struct {
 	runtime        string
 	files          []File
 
-	mu      sync.Mutex
-	closed  bool
-	loaded  bool
-	loadedP *plugin.Plugin
-	natives []sdk.Native
+	mu            sync.Mutex
+	closed        bool
+	hosts         map[*pluginhost.Host]struct{}
+	admitting     int
+	admissionDone chan struct{}
+	ownerCtx      context.Context
+	ownerCancel   context.CancelFunc
+	loaded        bool
+	loadedP       *plugin.Plugin
+	natives       []sdk.Native
 }
 
 // Build verifies the complete local checkout, builds its root Go package with
@@ -387,6 +392,30 @@ func (a *Artifact) Verify(ctx context.Context) error {
 // Bindings remain explicit; no subscriber, validator, ontology method,
 // migration writer, listener, or network server is created here.
 func (a *Artifact) Host(ctx context.Context, config pluginhost.Config) (*pluginhost.Host, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return nil, refusal(ErrClosed, "artifact has been closed")
+	}
+	if a.ownerCtx == nil {
+		a.ownerCtx, a.ownerCancel = context.WithCancel(context.Background())
+	}
+	ownerCtx := a.ownerCtx
+	if a.admitting == 0 {
+		a.admissionDone = make(chan struct{})
+	}
+	a.admitting++
+	a.mu.Unlock()
+	defer a.finishAdmission()
+	admissionCtx, stop := context.WithCancel(ctx)
+	stopOwner := context.AfterFunc(ownerCtx, stop)
+	defer func() {
+		stopOwner()
+		stop()
+	}()
 	if len(config.Natives) != 0 {
 		return nil, refusal(ErrConfig, "native implementations must come from the source artifact")
 	}
@@ -431,7 +460,32 @@ func (a *Artifact) Host(ctx context.Context, config pluginhost.Config) (*pluginh
 		descriptors = natives
 	}
 	config.Natives = descriptors
-	return pluginhost.New(config)
+	host, err := pluginhost.NewWithContext(admissionCtx, config)
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		_ = host.Close()
+		return nil, refusal(ErrClosed, "artifact has been closed")
+	}
+	if a.hosts == nil {
+		a.hosts = map[*pluginhost.Host]struct{}{}
+	}
+	a.hosts[host] = struct{}{}
+	a.mu.Unlock()
+	return host, nil
+}
+
+func (a *Artifact) finishAdmission() {
+	a.mu.Lock()
+	a.admitting--
+	if a.admitting == 0 && a.admissionDone != nil {
+		close(a.admissionDone)
+		a.admissionDone = nil
+	}
+	a.mu.Unlock()
 }
 
 // Close removes the disposable output directory. A loaded Go plugin has no
@@ -448,8 +502,30 @@ func (a *Artifact) Close() error {
 	}
 	a.closed = true
 	dir := a.outputDir
+	hosts := make([]*pluginhost.Host, 0, len(a.hosts))
+	for host := range a.hosts {
+		hosts = append(hosts, host)
+	}
+	a.hosts = nil
+	admissionDone := a.admissionDone
+	ownerCancel := a.ownerCancel
 	a.mu.Unlock()
-	return os.RemoveAll(dir)
+	if ownerCancel != nil {
+		ownerCancel()
+	}
+	var closeErr error
+	for _, host := range hosts {
+		if err := host.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	if admissionDone != nil {
+		<-admissionDone
+	}
+	if err := os.RemoveAll(dir); err != nil && closeErr == nil {
+		closeErr = err
+	}
+	return closeErr
 }
 
 func (a *Artifact) loadNatives(ctx context.Context) ([]sdk.Native, error) {

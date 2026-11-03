@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/pluginapi"
 	sdk "github.com/buildbetter-app/plugs/sdk/go"
+	"github.com/tetratelabs/wazero"
 )
 
 // The source checkout is deliberately committed into a disposable repository
@@ -414,6 +416,1150 @@ func (s *wasiSnapshot) Query(context.Context, driver.Query) (driver.Page[driver.
 	return driver.Page[driver.Record]{AsOf: s.revision}, nil
 }
 func (*wasiSnapshot) Observe(context.Context, []driver.LockKey) ([]driver.LockState, error) {
+	return nil, nil
+}
+
+func TestWASIArtifactOwnsPooledHostsAndRealGuestState(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
+	}
+	artifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: wasiCheckout(t, moduleRoot(t)), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = artifact.Close() }()
+	host := wasiGuestHost(t, artifact, 0)
+	secondHost := wasiGuestHost(t, artifact, 0)
+	callStateWithContext := func(ctx context.Context, mutator port.Mutator, principal, title string, reader port.SnapshotReader) (string, error) {
+		after, _ := json.Marshal(map[string]any{"type": "issue", "fields": map[string]any{"title": title}})
+		patches, err := mutator.Mutate(ctx, port.ProposedChange{
+			RequestID:    principal + ":" + title,
+			Principal:    model.PrincipalRef{Kind: "user", ID: principal},
+			BaseRevision: model.Natural64(1),
+			Changes: []port.Change{{
+				Resource: model.ResourceRef{Kind: "bead", Ref: model.RefByID("pool-state", "")},
+				Op:       model.Op{Kind: model.OpPatch, Patch: &model.PatchOp{Kind: model.OpPatch, Target: model.RefByID("pool-state", ""), Fields: map[string]any{"title": title}}},
+				After:    after,
+			}},
+		}, reader)
+		if err != nil {
+			return "", err
+		}
+		if len(patches) != 1 {
+			return "", fmt.Errorf("real WASI state callback returned %d patches", len(patches))
+		}
+		var value string
+		if err := json.Unmarshal(patches[0].Paths["fields.normalized"], &value); err != nil {
+			return "", err
+		}
+		return value, nil
+	}
+	callState := func(mutator port.Mutator, principal, title string, reader port.SnapshotReader) (string, error) {
+		return callStateWithContext(context.Background(), mutator, principal, title, reader)
+	}
+	mutator := host.Mutators()[0].Mutator
+	for _, tc := range []struct {
+		principal, title, want string
+	}{
+		{"principal-a", "pool-state:a", "POOL-STATE:A#1"},
+		{"principal-a", "pool-state:a", "POOL-STATE:A#2"},
+		{"principal-b", "pool-state:b", "POOL-STATE:B#1"},
+		{"principal-c", "pool-state:c", "POOL-STATE:C#1"},
+		{"principal-d", "pool-state:d", "POOL-STATE:D#1"},
+		// Four first claims fill the real pool; this fifth claim retires an
+		// idle affinity and constructs a fresh guest instead of reusing state.
+		{"principal-e", "pool-state:e", "POOL-STATE:E#1"},
+	} {
+		got, callErr := callState(mutator, tc.principal, tc.title, &wasiSnapshot{revision: model.Natural64(1)})
+		if callErr != nil || got != tc.want {
+			t.Fatalf("real WASI state principal=%s got=%q want=%q err=%v", tc.principal, got, tc.want, callErr)
+		}
+	}
+
+	// Let two previously absent principals overlap at the real pool boundary.
+	// The barrier is outside the guest; the calls below then execute through
+	// distinct pooled WASI modules concurrently and expose private state.
+	entered, release := make(chan struct{}, 2), make(chan struct{})
+	type stateResult struct {
+		value string
+		err   error
+	}
+	results := make(chan stateResult, 2)
+	for _, principal := range []string{"principal-f", "principal-g"} {
+		principal := principal
+		go func() {
+			reader := &wasiBarrierSnapshot{
+				wasiSnapshot: wasiSnapshot{revision: model.Natural64(1)},
+				entered:      entered,
+				release:      release,
+			}
+			value, err := callState(mutator, principal, "pool-state:"+strings.TrimPrefix(principal, "principal-"), reader)
+			results <- stateResult{value: value, err: err}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatal("real WASI overlapping claim did not reach its barrier")
+		}
+	}
+
+	close(release)
+	for i := 0; i < 2; i++ {
+		select {
+		case result := <-results:
+			if result.err != nil || !strings.HasSuffix(result.value, "#1") {
+				t.Fatalf("overlapping real WASI claim leaked guest state: value=%q err=%v", result.value, result.err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("overlapping real WASI claim did not finish")
+		}
+	}
+
+	// A canceled real guest callback retires its generation while the old
+	// module is still unwinding. A replacement may serve the same principal,
+	// but the late old result must never publish into that replacement.
+	lateEntered, lateRelease, lateDrained := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	lateDone := make(chan error, 1)
+	lateReader := &wasiLateBarrierSnapshot{
+		wasiSnapshot: wasiSnapshot{revision: model.Natural64(1)},
+		entered:      lateEntered,
+		release:      lateRelease,
+		drained:      lateDrained,
+	}
+	lateCtx, cancelLate := context.WithCancel(context.Background())
+	go func() {
+		_, err := callStateWithContext(lateCtx, mutator, "principal-late", "pool-state:late", lateReader)
+		lateDone <- err
+	}()
+	select {
+	case <-lateEntered:
+	case <-time.After(2 * time.Second):
+		cancelLate()
+		t.Fatal("real WASI late callback did not reach its host-read barrier")
+	}
+	cancelLate()
+	select {
+	case err := <-lateDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled real WASI callback returned %v, want cancellation", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled real WASI callback did not return")
+	}
+	if got, err := callState(mutator, "principal-late", "pool-state:replacement", &wasiSnapshot{revision: model.Natural64(1)}); err != nil || !strings.HasSuffix(got, "#1") {
+		t.Fatalf("replacement guest was not fresh after canceled generation: value=%q err=%v", got, err)
+	}
+	close(lateRelease)
+	select {
+	case <-lateDrained:
+	case <-time.After(2 * time.Second):
+		t.Fatal("late real WASI callback did not drain after release")
+	}
+	if got, err := callState(mutator, "principal-late", "pool-state:after-late", &wasiSnapshot{revision: model.Natural64(1)}); err != nil || !strings.HasSuffix(got, "#2") {
+		t.Fatalf("late generation changed replacement guest state: value=%q err=%v", got, err)
+	}
+
+	// A canceled callback may leave an uncooperative real guest reader blocked
+	// until the test releases it. Retain four such readers, matching the live
+	// pool ceiling, then prove a fifth admission is bounded without creating a
+	// fifth reader worker. Release every barrier only after the bound oracle so
+	// the test exercises the retired-generation resource accounting.
+	const retainedReaderLimit = 4
+	retained := make([]struct {
+		release chan struct{}
+		drained chan struct{}
+	}, 0, retainedReaderLimit)
+	for i := 0; i < retainedReaderLimit; i++ {
+		entered := make(chan struct{}, 1)
+		release := make(chan struct{})
+		drained := make(chan struct{}, 1)
+		reader := &wasiLateBarrierSnapshot{
+			wasiSnapshot: wasiSnapshot{revision: model.Natural64(1)},
+			entered:      entered,
+			release:      release,
+			drained:      drained,
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		principal := fmt.Sprintf("principal-retained-%d", i)
+		go func() {
+			_, callErr := callStateWithContext(ctx, mutator, principal, "pool-state:"+principal, reader)
+			done <- callErr
+		}()
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			cancel()
+			t.Fatal("retained real WASI callback did not reach its host-read barrier")
+		}
+		cancel()
+		select {
+		case callErr := <-done:
+			if !errors.Is(callErr, context.Canceled) {
+				t.Fatalf("retained real WASI callback returned %v, want cancellation", callErr)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("retained real WASI callback was not bounded after cancellation")
+		}
+		retained = append(retained, struct {
+			release chan struct{}
+			drained chan struct{}
+		}{release: release, drained: drained})
+	}
+	overflowEntered := make(chan struct{}, 1)
+	overflowRelease := make(chan struct{})
+	overflowDrained := make(chan struct{}, 1)
+	overflowReader := &wasiLateBarrierSnapshot{
+		wasiSnapshot: wasiSnapshot{revision: model.Natural64(1)},
+		entered:      overflowEntered,
+		release:      overflowRelease,
+		drained:      overflowDrained,
+	}
+	overflowCtx, cancelOverflow := context.WithTimeout(context.Background(), 2*time.Second)
+	startedOverflow := time.Now()
+	_, overflowErr := callStateWithContext(overflowCtx, mutator, "principal-overflow", "pool-state:overflow", overflowReader)
+	if overflowErr == nil || !hasPluginHostCode(overflowErr, pluginhost.ErrPluginBusy) {
+		cancelOverflow()
+		t.Fatalf("reader-worker admission did not return typed busy: err=%v elapsed=%s", overflowErr, time.Since(startedOverflow))
+	}
+	if overflowCtx.Err() != nil || time.Since(startedOverflow) > 2*time.Second {
+		cancelOverflow()
+		t.Fatalf("reader-worker admission consumed the live caller context: err=%v context=%v elapsed=%s", overflowErr, overflowCtx.Err(), time.Since(startedOverflow))
+	}
+	cancelOverflow()
+	select {
+	case <-overflowEntered:
+		close(overflowRelease)
+		<-overflowDrained
+		t.Fatal("reader-worker admission exceeded the four-worker bound")
+	default:
+	}
+	for _, blocked := range retained {
+		close(blocked.release)
+		select {
+		case <-blocked.drained:
+		case <-time.After(2 * time.Second):
+			t.Fatal("retained real WASI reader did not drain after cleanup release")
+		}
+	}
+	if got, err := callState(mutator, "principal-after-readers", "pool-state:after-readers", &wasiSnapshot{revision: model.Natural64(1)}); err != nil || !strings.HasSuffix(got, "#1") {
+		t.Fatalf("bounded reader recovery did not refill a fresh guest: value=%q err=%v", got, err)
+	}
+
+	// A real guest refusal disposes its member. The next same-principal call
+	// must observe a replacement module with a fresh private counter.
+	if _, err := callState(mutator, "principal-refused", "acceptance:undeclared", &wasiSnapshot{revision: model.Natural64(1)}); err == nil {
+		t.Fatal("real WASI undeclared callback unexpectedly succeeded")
+	}
+	if got, err := callState(mutator, "principal-refused", "pool-state:replacement", &wasiSnapshot{revision: model.Natural64(1)}); err != nil || !strings.HasSuffix(got, "#1") {
+		t.Fatalf("real WASI refusal did not retire private guest state: value=%q err=%v", got, err)
+	}
+
+	// Artifact.Close owns every admitted host, including the second host, and
+	// remains idempotent. The returned hosts must reject calls after ownership
+	// closes even though callers never explicitly closed either host.
+	if err := artifact.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, current := range []*pluginhost.Host{host, secondHost} {
+		if _, err := current.Invoke(context.Background(), "x.wasi.echo", json.RawMessage(`{"id":"after-artifact-close"}`)); !hasPluginHostCode(err, pluginhost.ErrInactive) {
+			t.Fatalf("artifact owner close left a usable host: %v", err)
+		}
+	}
+	if err := artifact.Close(); err != nil {
+		t.Fatalf("artifact owner close was not idempotent: %v", err)
+	}
+	requireBuildCode(t, func() error {
+		_, err := artifact.Host(context.Background(), pluginhost.Config{})
+		return err
+	}(), pluginbuild.ErrClosed)
+}
+
+type wasiBarrierSnapshot struct {
+	wasiSnapshot
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+// wasiLateBarrierSnapshot deliberately ignores callback cancellation until
+// the test releases the actual guest host import. This keeps the retired
+// module in flight while its replacement serves the same principal.
+type wasiLateBarrierSnapshot struct {
+	wasiSnapshot
+	entered chan<- struct{}
+	release <-chan struct{}
+	drained chan<- struct{}
+}
+
+func (s *wasiLateBarrierSnapshot) Get(context.Context, []model.Ref) ([]driver.Record, error) {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	<-s.release
+	select {
+	case s.drained <- struct{}{}:
+	default:
+	}
+	return nil, nil
+}
+
+func TestWASIArtifactAdmissionCancellationAndOwnerClose(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
+	}
+	root := moduleRoot(t)
+	artifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: slowWASICheckout(t, root), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := artifact.Path()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	started := time.Now()
+	_, err = artifact.Host(ctx, pluginhost.Config{})
+	cancel()
+	if err == nil || time.Since(started) > 2*time.Second {
+		t.Fatalf("source WASI admission ignored caller cancellation: err=%v elapsed=%s", err, time.Since(started))
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("canceled admission removed the still-owned artifact: %v", statErr)
+	}
+
+	// Start a second real admission, observe its actual guest initializer entry,
+	// then close its owner while the initializer is sleeping. Close must cancel
+	// and await that admission before removing the output, rather than returning
+	// with pluginhost.New in flight.
+	hostDone := make(chan error, 1)
+	initializerEntered := make(chan struct{}, 1)
+	initializerContextDone := make(chan error, 1)
+	initializerRelease := make(chan struct{})
+	initializerReleased := false
+	releaseInitializer := func() {
+		if !initializerReleased {
+			close(initializerRelease)
+			initializerReleased = true
+		}
+	}
+	defer releaseInitializer()
+	admissionCtx := pluginhost.WithWASMInitializerContextObserver(context.Background(), func(initCtx context.Context) {
+		select {
+		case initializerEntered <- struct{}{}:
+		default:
+		}
+		select {
+		case <-initCtx.Done():
+			initializerContextDone <- initCtx.Err()
+		case <-initializerRelease:
+			return
+		}
+		<-initializerRelease
+	})
+	go func() {
+		_, hostErr := artifact.Host(admissionCtx, pluginhost.Config{})
+		hostDone <- hostErr
+	}()
+	select {
+	case <-initializerEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source WASI admission did not enter the real guest initializer")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- artifact.Close() }()
+	var (
+		hostErr     error
+		closeErr    error
+		hostDoneOK  bool
+		closeDoneOK bool
+	)
+	// The observer holds the real guest initializer at its entry barrier. A
+	// close result before release is therefore an actual early-retirement bug,
+	// independent of when the Host goroutine publishes hostDone.
+	select {
+	case closeErr = <-closeDone:
+		closeDoneOK = true
+		t.Fatal("Artifact.Close returned before source WASI initializer retired")
+	case <-time.After(100 * time.Millisecond):
+		// The owner is still waiting for the in-flight initializer.
+		select {
+		case closeErr = <-closeDone:
+			closeDoneOK = true
+			t.Fatal("Artifact.Close returned before source WASI initializer retired")
+		default:
+		}
+	}
+	retirementDeadline := time.NewTimer(3 * time.Second)
+	defer retirementDeadline.Stop()
+	var initializerErr error
+	select {
+	case initializerErr = <-initializerContextDone:
+		if !errors.Is(initializerErr, context.Canceled) {
+			t.Fatalf("owner cancellation did not reach the held initializer: %v", initializerErr)
+		}
+	case closeErr = <-closeDone:
+		closeDoneOK = true
+		t.Fatal("Artifact.Close returned before source WASI initializer cancellation was observed")
+	case <-retirementDeadline.C:
+		t.Fatal("owner cancellation did not reach the held source WASI initializer")
+	}
+	select {
+	case closeErr = <-closeDone:
+		closeDoneOK = true
+		t.Fatal("Artifact.Close returned before source WASI initializer was released")
+	default:
+	}
+	releaseInitializer()
+	for !hostDoneOK || !closeDoneOK {
+		select {
+		case hostErr = <-hostDone:
+			hostDoneOK = true
+		case closeErr = <-closeDone:
+			closeDoneOK = true
+		case <-retirementDeadline.C:
+			if !hostDoneOK {
+				t.Fatal("owner cancellation did not stop source WASI admission")
+			}
+			t.Fatal("owner close did not finish after source WASI admission retired")
+		}
+	}
+	if closeErr != nil {
+		t.Fatalf("owner close failed: %v", closeErr)
+	}
+	if !errors.Is(hostErr, context.Canceled) {
+		t.Fatalf("owner cancellation did not reach source WASI admission: %v", hostErr)
+	}
+	t.Logf("source WASI owner-close admission returned: %v", hostErr)
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("owner close removed output with unexpected state: %v", statErr)
+	}
+	t.Log("real source-built WASI caller cancellation and owner-close admission ordering were bounded; output removal followed admission retirement")
+}
+
+func TestWASIGuestCallbackTimerCancellationAndRetirement(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
+	}
+	root := moduleRoot(t)
+	artifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: wasiCheckout(t, root), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = artifact.Close() }()
+	host := wasiGuestHost(t, artifact, time.Second)
+	mutator := host.Mutators()[0].Mutator
+	prime, err := mutator.Mutate(context.Background(), wasiStateChange("timer-cancel", "pool-state:prime"), &wasiSnapshot{revision: model.Natural64(1)})
+	if err != nil || len(prime) != 1 {
+		t.Fatalf("source-built guest affinity was not primed before cancellation: patches=%v err=%v", prime, err)
+	}
+	var primeValue string
+	if json.Unmarshal(prime[0].Paths["fields.normalized"], &primeValue) != nil || !strings.HasSuffix(primeValue, "#1") {
+		t.Fatalf("source-built guest did not record its pre-cancellation state: %q", primeValue)
+	}
+
+	// The fixture's timer-callback title enters time.Sleep inside the real
+	// source-built guest callback. The observer is called only at the positive
+	// WASI nanosleep boundary, so a callback result cannot satisfy this oracle
+	// without reaching the actual guest wait.
+	callerCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan context.Context, 1)
+	observedCtx := pluginhost.WithWASMCallbackTimerWaitObserver(callerCtx, func(waitCtx context.Context) {
+		entered <- waitCtx
+	})
+	callbackDone := make(chan error, 1)
+	go func() {
+		_, callbackErr := mutator.Mutate(observedCtx, wasiStateChange("timer-cancel", "timer-callback:cancel"), &wasiSnapshot{revision: model.Natural64(1)})
+		callbackDone <- callbackErr
+	}()
+	var waitCtx context.Context
+	select {
+	case waitCtx = <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source-built guest callback did not enter positive WASI nanosleep")
+	}
+	if waitCtx == nil {
+		t.Fatal("callback observer received a nil active wait context")
+	}
+	cancel()
+	select {
+	case callbackErr := <-callbackDone:
+		if !errors.Is(callbackErr, context.Canceled) {
+			t.Fatalf("canceled source-built guest callback returned %v", callbackErr)
+		}
+	case <-time.After(750 * time.Millisecond):
+		t.Fatal("canceled source-built guest callback did not unwind its WASI wait")
+	}
+	if !errors.Is(waitCtx.Err(), context.Canceled) {
+		t.Fatalf("callback wait context did not observe caller cancellation: %v", waitCtx.Err())
+	}
+
+	// The canceled generation is retired before the same principal is allowed
+	// to run again. Retry only the settled queue bound while the pool refills;
+	// no late callback result may publish into this replacement generation.
+	replacementDeadline := time.NewTimer(2 * time.Second)
+	defer replacementDeadline.Stop()
+	for {
+		patches, replacementErr := mutator.Mutate(context.Background(), wasiStateChange("timer-cancel", "pool-state:replacement"), &wasiSnapshot{revision: model.Natural64(1)})
+		if replacementErr == nil {
+			var replacementValue string
+			if len(patches) != 1 || json.Unmarshal(patches[0].Paths["fields.normalized"], &replacementValue) != nil || !strings.HasSuffix(replacementValue, "#1") {
+				t.Fatalf("replacement guest did not start with fresh state: patches=%v", patches)
+			}
+			break
+		}
+		if !hasPluginHostCode(replacementErr, pluginhost.ErrPluginBusy) {
+			t.Fatalf("replacement after canceled callback failed: %v", replacementErr)
+		}
+		select {
+		case <-replacementDeadline.C:
+			t.Fatal("canceled callback generation did not recover a bounded replacement")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	patches, err := mutator.Mutate(context.Background(), wasiStateChange("timer-cancel", "pool-state:after-callback"), &wasiSnapshot{revision: model.Natural64(1)})
+	if err != nil || len(patches) != 1 {
+		t.Fatalf("replacement callback failed after late-generation drain: patches=%v err=%v", patches, err)
+	}
+	var value string
+	if json.Unmarshal(patches[0].Paths["fields.normalized"], &value) != nil || !strings.HasSuffix(value, "#2") {
+		t.Fatalf("late callback changed replacement guest state: %q", value)
+	}
+
+	// A real owner retirement cancels the same active positive nanosleep. Close
+	// must not return before the guest callback has unwound, and the callback
+	// must finish with cancellation rather than a successful late result.
+	retireArtifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: wasiCheckout(t, root), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = retireArtifact.Close() })
+	retireHost := wasiGuestHost(t, retireArtifact, time.Second)
+	retireMutator := retireHost.Mutators()[0].Mutator
+	retireEntered := make(chan struct{}, 1)
+	retireWaitCtx := make(chan context.Context, 1)
+	retireRelease := make(chan struct{})
+	retireReleased := false
+	releaseRetire := func() {
+		if !retireReleased {
+			close(retireRelease)
+			retireReleased = true
+		}
+	}
+	defer releaseRetire()
+	retireCtx := pluginhost.WithWASMCallbackTimerWaitObserver(context.Background(), func(waitCtx context.Context) {
+		retireWaitCtx <- waitCtx
+		retireEntered <- struct{}{}
+		<-retireRelease
+	})
+	type callbackResult struct {
+		patches []port.Patch
+		err     error
+	}
+	retireDone := make(chan callbackResult, 1)
+	go func() {
+		patches, callbackErr := retireMutator.Mutate(retireCtx, wasiStateChange("timer-retire", "timer-callback:retire"), &wasiSnapshot{revision: model.Natural64(1)})
+		retireDone <- callbackResult{patches: patches, err: callbackErr}
+	}()
+	select {
+	case <-retireEntered:
+	case <-time.After(2 * time.Second):
+		releaseRetire()
+		_ = retireArtifact.Close()
+		t.Fatal("owner-retirement callback did not enter positive WASI nanosleep")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- retireArtifact.Close() }()
+	// The real positive-nanosleep host hook is still held. Close must wait for
+	// this guest to leave the active wait before retiring the artifact.
+	select {
+	case closeErr := <-closeDone:
+		t.Fatalf("owner close returned before active guest callback retired: %v", closeErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	select {
+	case closeErr := <-closeDone:
+		t.Fatalf("owner close returned before held guest callback was released: %v", closeErr)
+	default:
+	}
+	releaseRetire()
+	retirementDeadline := time.NewTimer(3 * time.Second)
+	defer retirementDeadline.Stop()
+	for closeDone != nil || retireDone != nil {
+		select {
+		case result := <-retireDone:
+			if !errors.Is(result.err, context.Canceled) || len(result.patches) != 0 {
+				t.Fatalf("owner-retired source-built callback published a late result: patches=%v err=%v", result.patches, result.err)
+			}
+			retireDone = nil
+		case closeErr := <-closeDone:
+			if closeErr != nil {
+				t.Fatalf("owner close failed after callback retirement: %v", closeErr)
+			}
+			closeDone = nil
+		case <-retirementDeadline.C:
+			t.Fatal("owner retirement did not drain the active source-built callback")
+		}
+	}
+	select {
+	case <-retireWaitCtx:
+	default:
+		t.Fatal("owner-retirement observer did not retain the actual wait context")
+	}
+	t.Log("source-built guest positive nanosleep observed; caller cancellation and owner retirement returned context.Canceled with fresh generation state")
+}
+
+func TestWASICallbackRetirementBeforeTimerBegin(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
+	}
+	artifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: wasiCheckout(t, moduleRoot(t)), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = artifact.Close() })
+	host := wasiGuestHost(t, artifact, time.Second)
+	callerCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	beginEntered := make(chan (<-chan struct{}), 1)
+	beginRelease := make(chan struct{})
+	beginReleased := false
+	releaseBegin := func() {
+		if !beginReleased {
+			close(beginRelease)
+			beginReleased = true
+		}
+	}
+	defer releaseBegin()
+	waitEntered := make(chan context.Context, 1)
+	callCtx := pluginhost.WithWASMCallbackTimerBeginObserver(callerCtx, func(_ context.Context, retired <-chan struct{}) {
+		beginEntered <- retired
+		<-beginRelease
+	})
+	callCtx = pluginhost.WithWASMCallbackTimerWaitObserver(callCtx, func(waitCtx context.Context) {
+		waitEntered <- waitCtx
+	})
+	type callbackResult struct {
+		patches []port.Patch
+		err     error
+	}
+	callbackDone := make(chan callbackResult, 1)
+	go func() {
+		patches, callErr := host.Mutators()[0].Mutator.Mutate(callCtx, wasiStateChange("prearm-retirement", "timer-callback:prearm"), &wasiSnapshot{revision: model.Natural64(1)})
+		callbackDone <- callbackResult{patches: patches, err: callErr}
+	}()
+	var retired <-chan struct{}
+	select {
+	case retired = <-beginEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source-built callback did not reach its timer pre-arm barrier")
+	}
+	if retired == nil {
+		t.Fatal("timer pre-arm observer supplied no retirement signal")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- artifact.Close() }()
+	select {
+	case <-retired:
+	case <-time.After(3 * time.Second):
+		releaseBegin()
+		t.Fatal("Artifact.Close did not retire the timer before callback arming")
+	}
+	select {
+	case closeErr := <-closeDone:
+		releaseBegin()
+		t.Fatalf("owner close returned before held callback timer arming: %v", closeErr)
+	default:
+	}
+	releaseBegin()
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	select {
+	case waitCtx := <-waitEntered:
+		if waitCtx == nil {
+			t.Fatal("retired callback reached positive nanosleep without its actual wait context")
+		}
+	case <-deadline.C:
+		t.Fatal("retired callback never reached a real positive WASI wait after pre-arm release")
+	}
+	for closeDone != nil || callbackDone != nil {
+		select {
+		case result := <-callbackDone:
+			if !errors.Is(result.err, context.Canceled) || len(result.patches) != 0 {
+				t.Fatalf("retired-before-arm callback published a result: patches=%v err=%v", result.patches, result.err)
+			}
+			callbackDone = nil
+		case closeErr := <-closeDone:
+			if closeErr != nil {
+				t.Fatalf("owner close failed after pre-arm retirement: %v", closeErr)
+			}
+			closeDone = nil
+		case <-deadline.C:
+			t.Fatal("owner retirement did not drain the source-built callback after pre-arm cancellation")
+		}
+	}
+	if callerCtx.Err() != nil {
+		t.Fatalf("owner retirement canceled the live caller context: %v", callerCtx.Err())
+	}
+}
+
+func TestWASIGuestExitCannotForgeCallerCancellation(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
+	}
+	artifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: wasiCheckout(t, moduleRoot(t)), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = artifact.Close() }()
+	host := wasiGuestHost(t, artifact, time.Second)
+	callerCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	patches, err := host.Mutators()[0].Mutator.Mutate(callerCtx, wasiStateChange("guest-exit", "guest-exit-canceled"), &wasiSnapshot{revision: model.Natural64(1)})
+	if len(patches) != 0 || !hasPluginHostCode(err, pluginhost.ErrMethod) || errors.Is(err, context.Canceled) {
+		t.Fatalf("live source-built guest exit was mistaken for trusted cancellation: patches=%v err=%v", patches, err)
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("guest did not exercise wazero's cancellation-shaped exit: %v", err)
+	}
+	if callerCtx.Err() != nil {
+		t.Fatalf("guest-selected WASI exit canceled the live caller: %v", callerCtx.Err())
+	}
+	t.Log("source-built guest proc_exit(-1) stayed ErrMethod with a live caller and unretired timer")
+}
+
+func TestWASIInitializerCancellationAtGuestStart(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
+	}
+	root := moduleRoot(t)
+	artifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: slowWASICheckout(t, root), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = artifact.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan struct{}, 1)
+	timerEntered := make(chan context.Context, 1)
+	timerRelease := make(chan struct{})
+	timerReleased := false
+	releaseTimer := func() {
+		if !timerReleased {
+			close(timerRelease)
+			timerReleased = true
+		}
+	}
+	defer releaseTimer()
+	admissionCtx := pluginhost.WithWASMInitializerContextObserver(ctx, func(context.Context) {
+		entered <- struct{}{}
+	})
+	admissionCtx = pluginhost.WithWASMInitializerTimerWaitObserver(admissionCtx, func(waitCtx context.Context) {
+		timerEntered <- waitCtx
+		<-timerRelease
+	})
+	hostDone := make(chan error, 1)
+	go func() {
+		_, hostErr := artifact.Host(admissionCtx, pluginhost.Config{})
+		hostDone <- hostErr
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source-built guest did not enter its real initializer/startup import")
+	}
+	var waitCtx context.Context
+	select {
+	case waitCtx = <-timerEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source-built guest initializer did not enter positive WASI nanosleep")
+	}
+	if waitCtx == nil {
+		t.Fatal("initializer timer observer received no execution context")
+	}
+	cancel()
+	select {
+	case <-waitCtx.Done():
+		if !errors.Is(waitCtx.Err(), context.Canceled) {
+			t.Fatalf("active initializer wait lost caller cancellation identity: %v", waitCtx.Err())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("caller cancellation did not reach the held initializer timer wait")
+	}
+	releaseTimer()
+	select {
+	case hostErr := <-hostDone:
+		if !errors.Is(hostErr, context.Canceled) {
+			t.Fatalf("source-built initializer cancellation returned %v", hostErr)
+		}
+	case <-time.After(750 * time.Millisecond):
+		t.Fatal("source-built initializer did not stop its active WASI wait before natural sleep completion")
+	}
+	t.Log("source-built WASI initializer reached guest import and active positive nanosleep, then returned context.Canceled before natural completion")
+}
+
+func TestWASIBinaryStartSectionCancellationAtActiveWait(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
+	}
+	artifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: startSleepWASICheckout(t, moduleRoot(t)), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = artifact.Close() }()
+	wasm, err := os.ReadFile(artifact.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wasm = wasiStartFromSourceInitialize(t, wasm)
+	if err := pluginhost.ValidateWASMArtifact(wasm); err != nil {
+		t.Fatalf("source-built guest with binary start section failed static admission: %v", err)
+	}
+	manifest, err := artifact.Manifest()
+	if err != nil || len(manifest.Plugins) != 1 {
+		t.Fatalf("source-built startup manifest: %v", err)
+	}
+	native, err := pluginhost.NewWASMNative(wasm, manifest.Plugins[0], "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan context.Context, 1)
+	release := make(chan struct{})
+	released := false
+	releaseWait := func() {
+		if !released {
+			close(release)
+			released = true
+		}
+	}
+	defer releaseWait()
+	observedCtx := pluginhost.WithWASMInitializerTimerWaitObserver(ctx, func(waitCtx context.Context) {
+		entered <- waitCtx
+		<-release
+	})
+	result := make(chan error, 1)
+	go func() {
+		host, hostErr := pluginhost.NewWithContext(observedCtx, pluginhost.Config{Natives: []sdk.Native{native}})
+		if host != nil {
+			_ = host.Close()
+		}
+		result <- hostErr
+	}()
+	var waitCtx context.Context
+	select {
+	case waitCtx = <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("binary start section did not enter an actual positive WASI timer wait")
+	}
+	if waitCtx == nil {
+		t.Fatal("binary start wait observer received no execution context")
+	}
+	cancel()
+	select {
+	case <-waitCtx.Done():
+		if !errors.Is(waitCtx.Err(), context.Canceled) {
+			t.Fatalf("binary start wait lost caller cancellation: %v", waitCtx.Err())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("caller cancellation did not reach binary start wait")
+	}
+	releaseWait()
+	select {
+	case hostErr := <-result:
+		if !errors.Is(hostErr, context.Canceled) {
+			t.Fatalf("binary start cancellation returned %v", hostErr)
+		}
+	case <-time.After(750 * time.Millisecond):
+		t.Fatal("binary start did not unwind before its natural one-second sleep")
+	}
+}
+
+func TestWASIQueueConstructionDeadlineIsRetryableBusy(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
+	}
+	root := moduleRoot(t)
+	artifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: wasiCheckout(t, root), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer artifact.Close()
+	wasm, err := os.ReadFile(artifact.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := artifact.Manifest()
+	if err != nil || len(manifest.Plugins) != 1 {
+		t.Fatalf("WASI manifest: %v", err)
+	}
+	native, err := pluginhost.NewWASMNative(wasm, manifest.Plugins[0], "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := native.NewWithContext
+	var constructions atomic.Int32
+	replacementStarted := make(chan struct{})
+	native.NewWithContext = func(ctx context.Context, host pluginapi.Host) (sdk.Registration, error) {
+		if constructions.Add(1) != 6 {
+			return original(ctx, host)
+		}
+		registration, err := original(ctx, host)
+		if err != nil {
+			return sdk.Registration{}, err
+		}
+		close(replacementStarted)
+		<-ctx.Done()
+		// Return the fully initialized registration so construct can retire the
+		// actual guest and exercise its bounded replacement/refill path.
+		return registration, nil
+	}
+	host, err := pluginhost.New(pluginhost.Config{Natives: []sdk.Native{native}, Bindings: []pluginhost.Binding{{
+		ID: "wasi-normalize", Alias: "wasi", Instance: "default", Subscriber: "normalize", Phase: pluginapi.PhaseMutate,
+		Reads: []string{"fields.title"}, Owns: []string{"fields.normalized"},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	mutator := host.Mutators()[0].Mutator
+	for _, principal := range []string{"queue-a", "queue-b", "queue-c", "queue-d"} {
+		if _, err := mutator.Mutate(context.Background(), wasiStateChange(principal, "pool-state:"+principal), &wasiSnapshot{revision: model.Natural64(1)}); err != nil {
+			t.Fatalf("initial source WASI principal %s failed: %v", principal, err)
+		}
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, mutateErr := mutator.Mutate(context.Background(), wasiStateChange("queue-e", "pool-state:queue-e"), &wasiSnapshot{revision: model.Natural64(1)})
+		result <- mutateErr
+	}()
+	select {
+	case <-replacementStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queue replacement did not initialize a real WASI guest")
+	}
+	if got := <-result; !hasPluginHostCode(got, pluginhost.ErrPluginBusy) {
+		t.Fatalf("queue-only construction expiry was not retryable busy: %v", got)
+	}
+	deadline := time.After(2 * time.Second)
+	for {
+		_, recoveredErr := mutator.Mutate(context.Background(), wasiStateChange("queue-recovered", "pool-state:queue-recovered"), &wasiSnapshot{revision: model.Natural64(1)})
+		if recoveredErr == nil {
+			break
+		}
+		if !hasPluginHostCode(recoveredErr, pluginhost.ErrPluginBusy) {
+			t.Fatalf("real WASI replacement recovery failed: %v", recoveredErr)
+		}
+		select {
+		case <-deadline:
+			t.Fatal("real WASI replacement did not recover its bounded pool")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	t.Log("actual source-built WASI replacement construction deadline mapped to plugin_busy after guest initialization; caller context remained active")
+}
+
+func TestWASISourceInitializerFailureSurvivesQueueExpiry(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
+	}
+	root := moduleRoot(t)
+	normalArtifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: wasiCheckout(t, root), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = normalArtifact.Close() }()
+	failingArtifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: failingWASICheckout(t, root), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = failingArtifact.Close() }()
+	normalWASM, err := os.ReadFile(normalArtifact.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	failingWASM, err := os.ReadFile(failingArtifact.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalManifest, err := normalArtifact.Manifest()
+	if err != nil || len(normalManifest.Plugins) != 1 {
+		t.Fatalf("normal WASI manifest: %v", err)
+	}
+	failingManifest, err := failingArtifact.Manifest()
+	if err != nil || len(failingManifest.Plugins) != 1 {
+		t.Fatalf("failing WASI manifest: %v", err)
+	}
+	normalNative, err := pluginhost.NewWASMNative(normalWASM, normalManifest.Plugins[0], "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failingNative, err := pluginhost.NewWASMNative(failingWASM, failingManifest.Plugins[0], "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The first source guest and four pooled members are normal WASI guests.
+	// The sixth construction runs the failing source-built initializer with the
+	// actual queue context. Its real guest error is held immediately before
+	// classification until that settled 100ms context expires.
+	native := normalNative
+	var constructions atomic.Int32
+	var constructorHost pluginapi.Host
+	native.NewWithContext = func(ctx context.Context, host pluginapi.Host) (sdk.Registration, error) {
+		if constructions.Add(1) != 6 {
+			if constructorHost == nil {
+				constructorHost = host
+			}
+			return normalNative.NewWithContext(ctx, host)
+		}
+		return failingNative.NewWithContext(ctx, host)
+	}
+	host, err := pluginhost.New(pluginhost.Config{Natives: []sdk.Native{native}, Bindings: []pluginhost.Binding{{
+		ID: "wasi-normalize", Alias: "wasi", Instance: "default", Subscriber: "normalize", Phase: pluginapi.PhaseMutate,
+		Reads: []string{"fields.title"}, Owns: []string{"fields.normalized"},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	mutator := host.Mutators()[0].Mutator
+	for _, principal := range []string{"initializer-a", "initializer-b", "initializer-c", "initializer-d"} {
+		if _, mutateErr := mutator.Mutate(context.Background(), wasiStateChange(principal, "pool-state:"+principal), &wasiSnapshot{revision: model.Natural64(1)}); mutateErr != nil {
+			t.Fatalf("normal source-built member %s failed before queued initializer race: %v", principal, mutateErr)
+		}
+	}
+	if constructorHost == nil || constructions.Load() != 5 {
+		t.Fatalf("expected source plus four normal pool members before replacement, constructed %d", constructions.Load())
+	}
+	isSourceInitializerTrap := func(guestErr error) bool {
+		if guestErr == nil || errors.Is(guestErr, context.Canceled) || errors.Is(guestErr, context.DeadlineExceeded) {
+			return false
+		}
+		message := guestErr.Error()
+		return strings.Contains(message, "wasm error: unreachable") && strings.Contains(message, ".runtime.gopanic") && strings.Contains(message, ".main.init.")
+	}
+	// Keep the failing factory's compiled module live across its real guest
+	// error. Its cold compile is outside the 100ms pool queue budget; the
+	// subsequent sixth construction still uses that unchanged queue context.
+	warmCtx, cancelWarm := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelWarm()
+	warmGuestEntered := make(chan struct{}, 1)
+	warmErrorSeen := make(chan error, 1)
+	warmRelease := make(chan struct{})
+	warmReleased := false
+	releaseWarm := func() {
+		if !warmReleased {
+			close(warmRelease)
+			warmReleased = true
+		}
+	}
+	warmCtx = pluginhost.WithWASMInitializerContextObserver(warmCtx, func(context.Context) {
+		warmGuestEntered <- struct{}{}
+	})
+	warmCtx = pluginhost.WithWASMInitializationErrorObserver(warmCtx, func(_ context.Context, guestErr error) {
+		warmErrorSeen <- guestErr
+		<-warmRelease
+	})
+	var warmGuestErr error
+	warmDone := make(chan error, 1)
+	go func() {
+		_, warmErr := failingNative.NewWithContext(warmCtx, constructorHost)
+		warmDone <- warmErr
+	}()
+	defer func() {
+		releaseWarm()
+		select {
+		case warmErr := <-warmDone:
+			if warmGuestErr != nil && (!hasPluginHostCode(warmErr, pluginhost.ErrManifest) || !strings.Contains(warmErr.Error(), warmGuestErr.Error())) {
+				t.Errorf("held source-built warm constructor did not preserve its guest failure: %v", warmErr)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("held source-built warm constructor did not finish after release")
+		}
+	}()
+	select {
+	case <-warmGuestEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("failing source-built guest did not reach its initializer import before pool replacement")
+	}
+	select {
+	case guestErr := <-warmErrorSeen:
+		warmGuestErr = guestErr
+		if !isSourceInitializerTrap(guestErr) {
+			t.Fatalf("failing source-built guest did not produce its real initializer trap: %v", guestErr)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("failing source-built guest did not reach its real classifier before pool replacement")
+	}
+	callerCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	initializerEntered := make(chan struct{}, 1)
+	type classifiedFailure struct {
+		guestErr error
+		before   error
+		after    error
+	}
+	classificationSeen := make(chan classifiedFailure, 1)
+	observedCtx := pluginhost.WithWASMInitializerContextObserver(callerCtx, func(context.Context) {
+		initializerEntered <- struct{}{}
+	})
+	observedCtx = pluginhost.WithWASMInitializationErrorObserver(observedCtx, func(constructorCtx context.Context, guestErr error) {
+		observation := classifiedFailure{guestErr: guestErr, before: constructorCtx.Err()}
+		<-constructorCtx.Done()
+		observation.after = constructorCtx.Err()
+		classificationSeen <- observation
+	})
+	_, err = mutator.Mutate(observedCtx, wasiStateChange("initializer-e", "pool-state:initializer-e"), &wasiSnapshot{revision: model.Natural64(1)})
+	var observedGuestErr error
+	select {
+	case observed := <-classificationSeen:
+		observedGuestErr = observed.guestErr
+		if observed.before != nil || !errors.Is(observed.after, context.DeadlineExceeded) || !isSourceInitializerTrap(observed.guestErr) {
+			t.Fatalf("genuine guest failure did not precede real queue-context expiry: %+v", observed)
+		}
+	default:
+		t.Fatalf("failing WASI initializer did not reach the real classifier boundary: mutate=%v constructions=%d", err, constructions.Load())
+	}
+	select {
+	case <-initializerEntered:
+	default:
+		t.Fatal("failing source-built initializer never reached its real guest import")
+	}
+	if !hasPluginHostCode(err, pluginhost.ErrManifest) || !strings.Contains(err.Error(), observedGuestErr.Error()) {
+		t.Fatalf("genuine source-built initializer failure was remapped after queue expiry: %v", err)
+	}
+	if callerCtx.Err() != nil {
+		t.Fatalf("queue-only initializer race consumed the live caller context: %v", callerCtx.Err())
+	}
+	t.Log("source-built WASI initializer returned genuine ErrManifest after queue expiry; caller remained live and plugin_busy classification was not substituted")
+}
+
+func wasiStateChange(principal, title string) port.ProposedChange {
+	after, _ := json.Marshal(map[string]any{"type": "issue", "fields": map[string]any{"title": title}})
+	return port.ProposedChange{
+		RequestID:    principal + ":" + title,
+		Principal:    model.PrincipalRef{Kind: "user", ID: principal},
+		BaseRevision: model.Natural64(1),
+		Changes: []port.Change{{
+			Resource: model.ResourceRef{Kind: "bead", Ref: model.RefByID("pool-state", "")},
+			Op:       model.Op{Kind: model.OpPatch, Patch: &model.PatchOp{Kind: model.OpPatch, Target: model.RefByID("pool-state", ""), Fields: map[string]any{"title": title}}},
+			After:    after,
+		}},
+	}
+}
+
+func (s *wasiBarrierSnapshot) Get(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
+	select {
+	case s.entered <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	return nil, nil
 }
 
@@ -1053,13 +2199,13 @@ func runHelper(t *testing.T, root string, source pluginmanifest.Checkout) map[st
 	moduleCache := strings.TrimSpace(string(mustCommand(t, goBinary, "env", "GOMODCACHE")))
 	if home, err := os.UserHomeDir(); err == nil {
 		candidate := filepath.Join(home, "go", "pkg", "mod")
-		if _, statErr := os.Stat(filepath.Join(candidate, "github.com", "tetratelabs", "wazero@v1.9.0")); statErr == nil {
+		if _, statErr := os.Stat(filepath.Join(candidate, "github.com", "tetratelabs", "wazero@v1.12.0")); statErr == nil {
 			moduleCache = candidate
 		}
 	}
-	wazeroRoot := offlineModule(t, filepath.Join(moduleCache, "github.com", "tetratelabs", "wazero@v1.9.0"), "com_github_tetratelabs_wazero")
+	wazeroRoot := offlineModule(t, filepath.Join(moduleCache, "github.com", "tetratelabs", "wazero@v1.12.0"), "com_github_tetratelabs_wazero")
 	sysRoot := offlineModule(t, filepath.Join(moduleCache, "golang.org", "x", "sys@v0.49.0"), "org_golang_x_sys")
-	goMod := fmt.Sprintf("module github.com/buildbetter-app/plugs/runner\n\ngo 1.26.5\n\ntoolchain go1.26.10\n\nrequire (\n\tgithub.com/buildbetter-app/plugs v0.0.0\n\tgithub.com/tetratelabs/wazero v1.9.0\n\tgolang.org/x/sys v0.49.0\n)\n\nreplace github.com/buildbetter-app/plugs => %s\nreplace github.com/tetratelabs/wazero => %s\nreplace golang.org/x/sys => %s\n", root, wazeroRoot, sysRoot)
+	goMod := fmt.Sprintf("module github.com/buildbetter-app/plugs/runner\n\ngo 1.26.5\n\ntoolchain go1.26.10\n\nrequire (\n\tgithub.com/buildbetter-app/plugs v0.0.0\n\tgithub.com/tetratelabs/wazero v1.12.0\n\tgolang.org/x/sys v0.49.0\n)\n\nreplace github.com/buildbetter-app/plugs => %s\nreplace github.com/tetratelabs/wazero => %s\nreplace golang.org/x/sys => %s\n", root, wazeroRoot, sysRoot)
 	if err := os.WriteFile(filepath.Join(helper, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1161,6 +2307,144 @@ func wasiCheckout(t *testing.T, root string) pluginmanifest.Checkout {
 	git(t, source, "add", "--all")
 	git(t, source, "commit", "-q", "--no-verify", "-m", "WASI source fixture")
 	return pluginmanifest.Checkout{Root: source, Commit: git(t, source, "rev-parse", "HEAD")}
+}
+
+func slowWASICheckout(t *testing.T, root string) pluginmanifest.Checkout {
+	t.Helper()
+	source := wasiCheckout(t, root)
+	path := filepath.Join(source.Root, "plugin.go")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, []byte("\nfunc init() { _ = snapshotCall(0, 0); time.Sleep(1 * time.Second) }\n")...)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, source.Root, "add", "plugin.go")
+	git(t, source.Root, "commit", "-q", "--no-verify", "-m", "test: gate WASI initializer")
+	source.Commit = git(t, source.Root, "rev-parse", "HEAD")
+	return source
+}
+
+func startSleepWASICheckout(t *testing.T, root string) pluginmanifest.Checkout {
+	t.Helper()
+	source := wasiCheckout(t, root)
+	path := filepath.Join(source.Root, "plugin.go")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The binary start section runs before plug.call can resolve the module to
+	// its host. This fixture enters a real one-second WASI sleep directly.
+	data = append(data, []byte("\nfunc init() { time.Sleep(1 * time.Second) }\n")...)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, source.Root, "add", "plugin.go")
+	git(t, source.Root, "commit", "-q", "--no-verify", "-m", "test: sleep in WASI binary start")
+	source.Commit = git(t, source.Root, "rev-parse", "HEAD")
+	return source
+}
+
+func wasiStartFromSourceInitialize(t *testing.T, wasm []byte) []byte {
+	t.Helper()
+	runtime := wazero.NewRuntimeWithConfig(context.Background(), wazero.NewRuntimeConfigInterpreter())
+	defer runtime.Close(context.Background())
+	compiled, err := runtime.CompileModule(context.Background(), wasm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compiled.Close(context.Background())
+	initialize := compiled.ExportedFunctions()["_initialize"]
+	if initialize == nil || len(initialize.ParamTypes()) != 0 || len(initialize.ResultTypes()) != 0 {
+		t.Fatal("source-built WASI _initialize is not a zero-argument, zero-result start function")
+	}
+	if len(wasm) < 8 || !bytes.Equal(wasm[:8], []byte("\x00asm\x01\x00\x00\x00")) {
+		t.Fatal("source-built guest is not a WebAssembly binary")
+	}
+	readVaruint := func(data []byte, cursor *int) uint64 {
+		if *cursor >= len(data) {
+			t.Fatal("truncated source-built WebAssembly section")
+		}
+		value, length := binary.Uvarint(data[*cursor:])
+		if length <= 0 || length > 5 {
+			t.Fatal("invalid source-built WebAssembly varuint32")
+		}
+		*cursor += length
+		return value
+	}
+	insertAt := -1
+	var startIndex uint64
+	found := false
+	for cursor := 8; cursor < len(wasm); {
+		sectionID := wasm[cursor]
+		cursor++
+		length := readVaruint(wasm, &cursor)
+		if length > uint64(len(wasm)-cursor) {
+			t.Fatal("source-built WebAssembly section length exceeds module")
+		}
+		end := cursor + int(length)
+		if sectionID == 8 {
+			t.Fatal("source-built reactor unexpectedly already has a binary start section")
+		}
+		if sectionID == 7 {
+			sectionCursor := cursor
+			count := readVaruint(wasm[:end], &sectionCursor)
+			for index := uint64(0); index < count; index++ {
+				nameLength := readVaruint(wasm[:end], &sectionCursor)
+				if nameLength > uint64(end-sectionCursor) {
+					t.Fatal("source-built WebAssembly export name exceeds section")
+				}
+				name := string(wasm[sectionCursor : sectionCursor+int(nameLength)])
+				sectionCursor += int(nameLength)
+				if sectionCursor >= end {
+					t.Fatal("source-built WebAssembly export lacks kind")
+				}
+				kind := wasm[sectionCursor]
+				sectionCursor++
+				functionIndex := readVaruint(wasm[:end], &sectionCursor)
+				if name == "_initialize" {
+					if kind != 0 {
+						t.Fatal("source-built _initialize export is not a function")
+					}
+					startIndex, found = functionIndex, true
+				}
+			}
+			if sectionCursor != end {
+				t.Fatal("source-built WebAssembly exports have trailing bytes")
+			}
+			insertAt = end
+		}
+		cursor = end
+	}
+	if !found || insertAt < 0 {
+		t.Fatal("source-built WASI reactor has no _initialize export")
+	}
+	payload := binary.AppendUvarint(nil, startIndex)
+	withStart := append([]byte(nil), wasm[:insertAt]...)
+	withStart = append(withStart, 8)
+	withStart = binary.AppendUvarint(withStart, uint64(len(payload)))
+	withStart = append(withStart, payload...)
+	return append(withStart, wasm[insertAt:]...)
+}
+
+func failingWASICheckout(t *testing.T, root string) pluginmanifest.Checkout {
+	t.Helper()
+	source := wasiCheckout(t, root)
+	path := filepath.Join(source.Root, "plugin.go")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, []byte("\nfunc init() { _ = snapshotCall(0, 0); panic(\"source-built initializer failure\") }\n")...)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, source.Root, "add", "plugin.go")
+	git(t, source.Root, "commit", "-q", "--no-verify", "-m", "test: gate WASI initializer failure")
+	source.Commit = git(t, source.Root, "rev-parse", "HEAD")
+	return source
 }
 
 func writeFixture(t *testing.T, source, root string, broken bool) {

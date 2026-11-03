@@ -10,11 +10,70 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 )
+
+func TestWorkflowCursorCarriesSnapshotAcrossPhaseTransition(t *testing.T) {
+	deadline := time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC)
+	binding := &service.WorkflowPageSnapshot{Revision: model.Natural64(12), ValidUntil: &deadline}
+	at := service.AsOf{Revision: model.Natural64(9), Incarnation: "inc"}
+	calls := 0
+	probe := &incarnationService{readyPage: func(_ context.Context, req service.ReadyRequest) (service.BeadPage, error) {
+		calls++
+		if req.Position == nil {
+			// The core phase exactly filled the first page. Its provider offset
+			// starts at zero, while the captured revision/deadline is signed.
+			return service.BeadPage{Items: []service.Bead{{ID: "core", Type: "issue"}}, AsOf: at, WorkflowSnapshot: binding,
+				Next: &service.PagePosition{Offset: 0, AsOf: at, Workflow: true, WorkflowSnapshot: binding}}, nil
+		}
+		if !req.Position.Workflow || req.Position.Offset != 0 || !binding.Equal(req.Position.WorkflowSnapshot) {
+			t.Fatalf("signed provider phase lost its snapshot: %+v", req.Position)
+		}
+		return service.BeadPage{Items: []service.Bead{{ID: "next", Type: "issue"}}, AsOf: at, WorkflowSnapshot: binding}, nil
+	}}
+	s := pagingServer(t, probe, pagingConfig())
+	params := pageParams("bead.ready")
+	params["limit"] = 1
+	first := result(t, call(t, s, context.Background(), "bead.ready", paramsJSON(t, params)))
+	params["cursor"] = first["nextCursor"]
+	last := result(t, call(t, s, context.Background(), "bead.ready", paramsJSON(t, params)))
+	if calls != 2 || last["nextCursor"] != nil || last["items"].([]any)[0].(map[string]any)["id"] != "next" {
+		t.Fatal("provider transition failed", last)
+	}
+}
+
+func TestWorkflowCursorRejectsInvalidServiceBindings(t *testing.T) {
+	for _, invalid := range []string{"unbound-phase", "different-page", "invalid-generation", "history-state"} {
+		t.Run(invalid, func(t *testing.T) {
+			binding := &service.WorkflowPageSnapshot{Revision: model.Natural64(12)}
+			at := service.AsOf{Revision: model.Natural("9007199254740993"), Incarnation: "inc"}
+			page := service.BeadPage{Items: []service.Bead{{ID: "item", Type: "issue"}}, AsOf: at, WorkflowSnapshot: binding,
+				Next: &service.PagePosition{Offset: 1, AsOf: at, Workflow: true, WorkflowSnapshot: binding}}
+			method := "bead.ready"
+			switch invalid {
+			case "unbound-phase":
+				page.WorkflowSnapshot = nil
+				page.Next.WorkflowSnapshot = nil
+			case "different-page":
+				page.Next.WorkflowSnapshot = &service.WorkflowPageSnapshot{Revision: model.Natural64(13)}
+			case "invalid-generation":
+				binding.Revision = model.Natural("-1")
+			case "history-state":
+				method = "history.query"
+			}
+			probe := &incarnationService{
+				readyPage:   func(context.Context, service.ReadyRequest) (service.BeadPage, error) { return page, nil },
+				historyPage: func(context.Context, service.HistoryRequest) (service.BeadPage, error) { return page, nil },
+			}
+			s := pagingServer(t, probe, pagingConfig())
+			requireCode(t, call(t, s, context.Background(), method, paramsJSON(t, pageParams(method))), "internal_error")
+		})
+	}
+}
 
 // A domain-only fixture checks the wire/Position seam. The real service's
 // storage ordering and live/historical semantics are verified by real tests.

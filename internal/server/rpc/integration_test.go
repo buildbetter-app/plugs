@@ -1123,10 +1123,23 @@ func TestCommentGetThroughGuardedRPCSnapshotsAndRefusals(t *testing.T) {
 	facts.Projects[0].InstallationID = "other-installation"
 	facts.Teams[0].InstallationID = "other-installation"
 	if err := mutable.Replace(facts); err == nil {
-		t.Fatal("installed source accepted an installation replacement")
+		t.Fatal("installed authority replacement was accepted")
 	}
-	// A refused registry replacement leaves the prior valid facts installed,
-	// including the current-history read permission.
-	result(t, call(t, server, reader, "bead.get", params(&service.AsOf{Revision: old.Revision})))
+	// The refused replacement leaves the valid installed policy and historical
+	// content boundary intact. An actually mismatched source must still fail
+	// closed rather than disclose the requested historical result.
+	historical = result(t, call(t, server, reader, "bead.get", params(&service.AsOf{Revision: old.Revision})))
+	if _, exists := historical["comments"]; exists {
+		t.Fatal("later comments leaked after refused authority replacement")
+	}
+	unavailable, err := authzrpc.New(ctx, authzrpc.Config{Store: store, Lease: lease, Provider: authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }}), Facts: authzrpc.StaticFacts{Facts: facts}, Namespace: ns, DefaultProject: "project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := call(t, pagingServer(t, unavailable.Service, config), reader, "bead.get", params(&service.AsOf{Revision: old.Revision}))
+	requireCode(t, denied, "authz_unavailable")
+	if _, exists := denied["result"]; exists {
+		t.Fatal("unavailable policy source leaked historical result")
+	}
 	requireCode(t, call(t, server, reader, "bead.comment", `{"id":{"id":"pl-comment-rpc","branch":0},"body":"forged","origin":"import","sourceAuthor":"forged","_meta":{"project":"project"}}`), "invalid_params")
 }
