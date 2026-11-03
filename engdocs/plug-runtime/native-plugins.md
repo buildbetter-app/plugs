@@ -26,6 +26,35 @@ post callbacks to the existing Writer. Extension methods are separate from
 the bounded RPC registry: an embedding application must supply the registry,
 schema and authorization adapter before exposing one over a network.
 
+## Compose callbacks into the configured server
+
+`composition.Open` now owns the native callback host as well as storage and
+transports. The trusted embedding application supplies `Config.NativePlugins`
+and `Config.NativeBindings`; `Runtime.bind` constructs the host and attaches its
+mutators, validators and post subscribers to the same Writer used by the
+configured HTTP, WebSocket, stdio adapter and MCP requests. A caller cannot
+install native code or change these grants through RPC or server YAML.
+
+The selected store supplies durable native state only when it implements
+`driver.PersistentCheckpointStore` and returns `Persistent() == true`. The host
+receives that exact store and the runtime's existing active lease. A memory
+checkpoint or a persistent-looking driver name cannot satisfy a plugin's
+`requires.state: durable` declaration. Constructor or binding failures close
+the acquired resources; normal shutdown drains transports, closes the native
+host, then releases the lease and closes storage.
+
+The standalone path remains `plug server` -> `LoadConfigFile` -> `Open` ->
+`Listen`. Its YAML selects storage and listener settings, while compiled-in
+callback registration belongs to the trusted embedding host. It does not
+interpret YAML as executable plugin registration or create an authentication
+provider from `auth.mode`. The merged workflow service adapter continues to
+use its existing provider and standard-tool interfaces.
+
+Configured-runtime regressions open real SQLite through this composition,
+exercise admitted native callbacks and durable checkpoints, and reopen the
+same database after shutdown. This boundary does not qualify arbitrary native
+code, source loading, WASI, PostgreSQL failover, browser login or production.
+
 ## Capabilities and callback lifetime
 
 Native plugins are trusted compiled-in code, **not runtime-isolated**. The host
