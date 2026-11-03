@@ -121,12 +121,20 @@ func snapshotArchiveMembers(body []byte, archive *dumpformat.Archive, p driver.R
 		Archive string                     `json:"archive_sha256"`
 		Derived string                     `json:"derived_sha256"`
 		Members map[string]dumpformat.File `json:"members"`
+		Profile string                     `json:"profile"`
+		Source  string                     `json:"source_store"`
 	}
 	if err := json.Unmarshal(body, &evidence); err != nil {
 		return nil, err
 	}
 	if evidence.Archive != archive.SHA256() || evidence.Derived != p.DerivedDigest {
 		return nil, fmt.Errorf("retained archive/derived digest differs")
+	}
+	if evidence.Source != string(p.SourceStoreID) {
+		return nil, fmt.Errorf("retained archive source_store differs: got %q; want %q", evidence.Source, p.SourceStoreID)
+	}
+	if evidence.Profile != "builtin-head/1" {
+		return nil, fmt.Errorf("retained archive profile differs: got %q; want builtin-head/1", evidence.Profile)
 	}
 	return evidence.Members, nil
 }
