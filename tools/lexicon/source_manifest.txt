@@ -1069,6 +1069,7 @@ internal/storage/postgres/selection_fact_sql_test.go
 internal/storage/postgres/selection_fresh.go
 internal/storage/postgres/selection_index.go
 internal/storage/postgres/selection_publication.go
+internal/storage/postgres/selection_publication_cost_test.go
 internal/storage/postgres/selection_sources.go
 internal/storage/postgres/selection_sql_test.go
 internal/storage/postgres/selection_test.go
