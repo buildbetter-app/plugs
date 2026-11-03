@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "transports_test",
-    srcs = ["client_test.go", "composition_test.go", "configured_test.go", "fixture_test.go", "transports_test.go"],
+    srcs = ["client_test.go", "composition_test.go", "configured_test.go", "fixture_test.go", "transports_test.go", "wire_equivalence_test.go"],
     args = ["-test.v"],
     deps = [
         "//internal/core/model",
