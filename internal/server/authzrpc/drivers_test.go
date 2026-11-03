@@ -449,7 +449,7 @@ type factsPublicationTx struct {
 	fault *factsPublicationFault
 }
 
-func (tx *factsPublicationTx) Lock(ctx context.Context, locks driver.LockSet) ([]driver.LockState, error) {
+func (tx *factsPublicationTx) Lock(ctx context.Context, locks []driver.LockRequest) ([]driver.LockState, error) {
 	if tx.fault.beforeLock != nil {
 		f := tx.fault.beforeLock
 		tx.fault.beforeLock = nil
