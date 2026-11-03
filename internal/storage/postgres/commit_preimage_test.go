@@ -25,6 +25,7 @@ type commitQueryEvent struct {
 	argumentTypes       []string
 	resultFormatOptions int
 	keyType             string
+	keysKnown           bool
 	keys                int
 	rows                int64
 	completed           bool
@@ -50,7 +51,7 @@ func (commitQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data 
 	if !strings.HasPrefix(sql, "SELECT ") || (!strings.Contains(sql, "FROM plug_postgres.records") && !strings.Contains(sql, "FROM plug_postgres.versions")) {
 		return ctx
 	}
-	event := &commitQueryEvent{sql: sql}
+	event := &commitQueryEvent{sql: sql, keys: -1}
 	for _, arg := range data.Args {
 		event.argumentTypes = append(event.argumentTypes, fmt.Sprintf("%T", arg))
 	}
@@ -68,8 +69,10 @@ func (commitQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data 
 		event.keyType = fmt.Sprintf("%T", args[0])
 		switch keys := args[0].(type) {
 		case [][]byte:
+			event.keysKnown = true
 			event.keys = len(keys)
 		case []byte:
+			event.keysKnown = true
 			event.keys = 1
 		}
 	}
@@ -159,6 +162,9 @@ func requireBoundedCommitQueries(t *testing.T, capture *commitQueryCapture, want
 		if strings.Contains(event.sql, "version_count") {
 			metadataQueries++
 			metadataRows += event.rows
+			if !event.keysKnown {
+				t.Fatalf("preimage bind width unknown: argument_types=%v key_type=%s", event.argumentTypes, event.keyType)
+			}
 			if event.keys < 1 || event.keys > 512 || strings.Contains(event.sql, "body") || strings.Contains(event.sql, "ref,") {
 				t.Fatalf("unbounded or body-materializing preimage query: %+v", event)
 			}
