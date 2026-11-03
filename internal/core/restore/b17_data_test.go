@@ -365,7 +365,7 @@ func TestB17ArchiveStoredNullReverseConversionAndRestore(t *testing.T) {
 func TestB17SupportedOfflineStoredNullRestoreAndReverse(t *testing.T) {
 	const id = "pl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const archiveSHA = "2f06663c3d3778f689e971398028f88cd8d6c9e85d987108abbdb92363d20b18"
-	const derivedSHA = "89f6eb61310b4f9193e9925e2a2305101b126f763e870986bc7ca51f6043d28a"
+	const derivedSHA = "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed"
 	data := b17SupportedOfflineArchive(t)
 	if got := sha(data); got != archiveSHA {
 		t.Fatalf("authored supported archive digest=%s size=%d, want %s", got, len(data), archiveSHA)

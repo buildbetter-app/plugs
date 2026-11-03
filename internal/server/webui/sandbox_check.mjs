@@ -6,7 +6,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-const [base, trap, chromePath] = process.argv.slice(2);
+const [base, trap, chromePath, configuredJSON] = process.argv.slice(2);
+const configured = configuredJSON ? JSON.parse(configuredJSON) : undefined;
 const profile = await mkdtemp(path.join(os.tmpdir(), "plug-sandbox-chrome-"));
 const chrome = spawn(chromePath, ["--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
 let stderr = "", ws;
@@ -23,7 +24,7 @@ try {
   ws = new WebSocket(target.webSocketDebuggerUrl);
   await once(ws, "open");
   let sequence = 0;
-  const pending = new Map(), frameSessions = new Map();
+  const pending = new Map(), frameSessions = new Map(), bridgeResponses = [];
   const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
     const id = ++sequence; pending.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params, sessionId }));
   });
@@ -32,6 +33,8 @@ try {
     if (event.id) {
       const promise = pending.get(event.id); pending.delete(event.id);
       if (promise) event.error ? promise.reject(new Error(JSON.stringify(event.error))) : promise.resolve(event.result);
+    } else if (event.method === "Runtime.bindingCalled" && event.params.name === "__i7ObserveBridgeReply") {
+      bridgeResponses.push(JSON.parse(event.params.payload));
     } else if (event.method === "Target.attachedToTarget" && event.params.targetInfo.type === "iframe") {
       frameSessions.set(event.params.targetInfo.targetId, event.params.sessionId);
     }
@@ -90,11 +93,12 @@ try {
   // must come from product fetch credentials mode, not an empty cookie jar.
   const cookie = await send("Network.setCookie", { name: "i7-canary", value: "test-only", url: base + "/", sameSite: "Lax" });
   assert.equal(cookie.success, true);
-  const call = (sessionId, id, method) => evaluate(`new Promise((resolve) => {
+  assert((await send("Network.getCookies", { urls: [base + "/"] })).cookies.some((value) => value.name === "i7-canary" && value.value === "test-only"));
+  const call = (sessionId, id, method, params = {}) => evaluate(`new Promise((resolve) => {
     const timer = setTimeout(() => resolve({timeout:true}), 5000);
     const listener = (event) => { if (event.source === parent && event.data?.id === ${JSON.stringify(id)}) { clearTimeout(timer); removeEventListener("message", listener); resolve(event.data); } };
     addEventListener("message", listener);
-    parent.postMessage({jsonrpc:"2.0",id:${JSON.stringify(id)},method:${JSON.stringify(method)},params:{}}, "*");
+    parent.postMessage({jsonrpc:"2.0",id:${JSON.stringify(id)},method:${JSON.stringify(method)},params:${JSON.stringify(params)}}, "*");
   })`, sessionId);
   const permitted = await call(probe, "permitted", "rpc.methods");
   assert.equal(permitted.error, undefined); assert(Array.isArray(permitted.result?.methods));
@@ -135,6 +139,111 @@ try {
     console.log("PASS original_bundle_bridge_restored_after_host_reload");
   }
 
+  if (configured) {
+    // These responses come from the actual configured RPC/SQLite store after
+    // the source-built guest's Writer callbacks, not a browser fixture result.
+    const read = await call(probe, "source-record", "bead.get", { id: configured.ref });
+    assert.equal(read.error, undefined, JSON.stringify(read));
+    assert.equal(read.result?.bead?.fields?.title, configured.title);
+    assert.equal(read.result?.bead?.ref?.id || read.result?.bead?.id, configured.ref.id);
+    console.log("PASS configured_source_Writer_record_read_through_actual_bridge");
+
+    await until(() => evaluate("document.querySelector('#cancel')?.hidden === true"), "configured UI idle");
+    const before = await stats();
+    const siblingNow = await frameSession("sibling");
+    await evaluate(`parent.parent.postMessage({jsonrpc:"2.0",id:"wrong-source",method:"bead.get",params:{id:${JSON.stringify(configured.ref)}}}, "*")`, siblingNow);
+    await evaluate(`window.postMessage({jsonrpc:"2.0",id:"host-source",method:"bead.get",params:{id:${JSON.stringify(configured.ref)}}}, "*")`);
+    await delay(150);
+    assert.deepEqual(await stats(), before, "wrong WindowProxy must never reach configured RPC");
+    for (const [id, method, params, code] of [
+      ["write", "bead.update", {id:configured.ref,fields:{title:"hostile"}}, "method_not_granted"],
+      ["cookie-field", "bead.get", {id:configured.ref,nested:{cookie:"test-canary"}}, "bridge_field_denied"],
+      ["egress-field", "bead.get", {id:configured.ref,url:trap + "/bridge-egress"}, "bridge_field_denied"],
+      ["foreign-project", "bead.get", {id:configured.ref,project:"foreign"}, "scope_denied"],
+      ["forged-lifecycle", "plugin.apply", {plugFrameLifecycle:"revoked"}, "method_not_granted"],
+      ["oversized", "bead.get", {id:configured.ref,padding:"x".repeat(300000)}, "message_too_large"],
+    ]) {
+      const refused = await call(probe, id, method, params);
+      assert.equal(refused.error?.data?.code, code, JSON.stringify(refused));
+    }
+    assert.deepEqual(await stats(), before, "capability/source refusals must happen before RPC");
+    console.log("PASS configured_wrong_source_capability_scope_credential_size_requests_never_reach_RPC");
+
+    await delay(1100);
+    const beforeRate = await stats();
+    const rate = await evaluate(`new Promise((resolve) => {
+      const replies = [];
+      const listener = (event) => {
+        if (event.source !== parent || !String(event.data?.id).startsWith("rate-")) return;
+        replies.push(event.data);
+        if (replies.length === 24) { clearTimeout(timer); removeEventListener("message", listener); resolve(replies); }
+      };
+      const timer = setTimeout(() => { removeEventListener("message", listener); resolve(replies); }, 5000);
+      addEventListener("message", listener);
+      for (let i = 0; i < 24; i++) parent.postMessage({jsonrpc:"2.0",id:"rate-"+i,method:"rpc.methods",params:{}}, "*");
+    })`, probe);
+    assert.equal(rate.length, 24);
+    assert.equal(rate.filter((reply) => reply.error?.data?.code === "rate_limited").length, 4);
+    assert.equal(rate.filter((reply) => Array.isArray(reply.result?.methods)).length, 20);
+    assert.equal((await stats()).rpcCalls - beforeRate.rpcCalls, 20);
+    console.log("PASS configured_bridge_rate_bound_20_actual_RPC_4_refusals");
+
+    await delay(1100);
+    // Observe where app.js sends actual responses: the trusted wrapper's
+    // message receiver. CDP retains these real envelopes outside documents,
+    // and installs the same observer before scripts in a reloaded wrapper.
+    await send("Runtime.addBinding", { name: "__i7ObserveBridgeReply" });
+    await send("Page.addScriptToEvaluateOnNewDocument", {
+      runImmediately: true,
+      source: `(() => {
+        if (parent === window || location.href !== ${JSON.stringify(base + "/ui/frame-hosts/probe/index.html")}) return;
+        addEventListener("message", (event) => {
+          if (event.source === parent && event.origin === location.origin && event.data?.jsonrpc === "2.0" &&
+              (Object.hasOwn(event.data, "result") || Object.hasOwn(event.data, "error"))) {
+            globalThis.__i7ObserveBridgeReply(JSON.stringify(event.data));
+          }
+        });
+      })()`,
+    });
+    const receiveControl = await call(probe, "receive-control", "bead.get", {id:configured.ref});
+    assert.equal(receiveControl.result?.bead?.fields?.title, configured.title, JSON.stringify(receiveControl));
+    await until(() => bridgeResponses.some((reply) => reply.id === "receive-control"), "real response reaches wrapper observer");
+    assert.deepEqual(bridgeResponses.filter((reply) => reply.id === "receive-control"), [receiveControl]);
+    console.log("PASS configured_wrapper_receive_observer_sees_actual_source_record_control");
+    assert.equal((await fetch(base + "/fixture/hold", {method:"POST"})).ok, true);
+    await evaluate(`parent.postMessage({jsonrpc:"2.0",id:"held",method:"bead.get",params:{id:${JSON.stringify(configured.ref)}}}, "*")`, probe);
+    await until(async () => (await stats()).heldReads === 1, "real configured read response held");
+    // The held bridge read already ran with the canary present. Ordinary
+    // frame navigations carrying cookies are deliberately refused by the UI;
+    // clear the canary to exercise the separate wrapper-reload boundary.
+    await send("Network.clearBrowserCookies");
+    await evaluate("document.querySelector('iframe').contentWindow.location.reload()");
+    await until(() => evaluate("document.querySelector('iframe').dataset.bridgeState === 'revoked'"), "wrapper reload revokes bridge");
+    await until(async () => (await stats()).canceledReads === 1, "reload aborts actual HTTP read");
+    probe = await frameSession("probe");
+    await until(() => evaluate("globalThis.safetyLoaded === true", probe), "reloaded child executes its pinned script");
+    const afterRevoke = await stats();
+    assert.deepEqual(await call(probe, "revoked", "bead.get", {id:configured.ref}), {timeout:true});
+    assert.deepEqual(await stats(), afterRevoke, "reloaded wrapper must not regain the revoked grant");
+    assert.deepEqual(bridgeResponses.filter((reply) => reply.id === "held"), [], "late response must not be transferred after revocation");
+    console.log("PASS configured_wrapper_reload_aborts_HTTP_and_stale_bridge_stays_closed");
+    await send("Network.clearBrowserCookies");
+    const oldLoader = (await send("Page.getFrameTree")).frameTree.frame.loaderId;
+    assert(oldLoader);
+    await send("Page.reload");
+    // Page.reload acknowledges before navigation commits. Wait for the real
+    // new host document before attaching, so an old child target cannot be
+    // mistaken for the new frame and then destroyed underneath the probe.
+    await until(async () => (await send("Page.getFrameTree")).frameTree.frame.loaderId !== oldLoader &&
+      await evaluate("document.readyState === 'complete' && document.querySelector('iframe') !== null"), "new host document after reload");
+    probe = await frameSession("probe");
+    await until(() => evaluate("globalThis.safetyLoaded === true", probe), "new host creates fresh bound frame");
+    const recovered = await call(probe, "fresh-host", "bead.get", {id:configured.ref});
+    assert.equal(recovered.result?.bead?.fields?.title, configured.title, JSON.stringify(recovered));
+    console.log("PASS configured_fresh_host_bridge_reads_same_source_record_after_reload");
+    await send("Network.setCookie", { name: "i7-canary", value: "test-only", url: base + "/", sameSite: "Lax" });
+  }
+
   // Direct access with credentials fails before any plugin document is served.
   await send("Page.navigate", { url: base + "/ui/frames/probe/index.html" });
   await until(() => evaluate("document.body?.textContent.includes('credentials are not configured')"), "credentialed direct open refusal");
@@ -143,6 +252,19 @@ try {
   await until(() => evaluate("globalThis.safetyLoaded === true && globalThis.safetyModuleLoaded === true"), "direct bundle classic/module script execution");
   await runtimeProof(undefined, false);
   console.log("PASS direct_open_with_credentials_refused");
+
+  if (configured) {
+    await send("Page.navigate", { url: base + "/ui/" });
+    probe = await frameSession("probe");
+    await until(() => evaluate("globalThis.safetyLoaded === true", probe), "configured host before teardown");
+    const control = await call(probe, "before-close", "bead.get", {id:configured.ref});
+    assert.equal(control.result?.bead?.fields?.title, configured.title, JSON.stringify(control));
+    assert.equal((await fetch(base + "/fixture/close", {method:"POST"})).ok, true);
+    const closed = await call(probe, "after-close", "bead.get", {id:configured.ref});
+    assert(closed.error && !Object.hasOwn(closed, "result"), JSON.stringify(closed));
+    assert.equal((await fetch(base + "/ui/config.json")).status, 502);
+    console.log("PASS configured_Runtime_teardown_refuses_live_bridge_and_UI_access");
+  }
 } finally {
   if (ws) ws.close();
   chrome.kill("SIGTERM");

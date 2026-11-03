@@ -20,15 +20,8 @@ type derivedImage struct {
 	Value json.RawMessage     `json:"value"`
 }
 
-// The derived row key is the descendant ID; each entry identifies an ancestor
-// and its distance. The parent-free restore profile still requires self.
-type ancestorMembership struct {
-	Ancestor string `json:"ancestor"`
-	Depth    uint64 `json:"depth"`
-}
-
-// This profile is deliberately restricted to the built-in ontology, no
-// authorization/plugin provider, no parents/cuts, no templates and no leases.
+// These profiles admit the built-in ontology or the validated strict-union
+// import document, with no authorization/plugin provider, cuts, templates or leases.
 // Every table participates in the digest, including empty tables. Its rows
 // are rebuilt from live documents, never copied from a source's cached flags.
 func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error {
@@ -47,6 +40,14 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 			return nil
 		}
 		visiting[id] = true
+		if parent := docs[id].Parent; parent != nil {
+			if _, exists := docs[parent.ID]; !exists {
+				return fmt.Errorf("restore parent has no restored endpoint")
+			}
+			if err := walk(parent.ID); err != nil {
+				return err
+			}
+		}
 		for _, link := range docs[id].Links {
 			if link.Kind == "blocks" {
 				if err := walk(link.To.ID); err != nil {
@@ -63,6 +64,33 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 			return err
 		}
 	}
+	// Use the live Writer's injective row codec. Aggregate arrays keyed by
+	// descendant cannot be read or guarded by ordinary hierarchy operations.
+	ancestors := make(map[string]map[string]uint64, len(docs))
+	for _, id := range ids {
+		depths := map[string]uint64{}
+		for current, depth := id, uint64(0); current != ""; depth++ {
+			depths[current] = depth
+			row, err := pipeline.AncestorRow(id, current, depth)
+			if err != nil {
+				return err
+			}
+			plan.derived = append(plan.derived, derivedImage{driver.DerivedAncestorClosure, row.Key, row.Value})
+			parent := docs[current].Parent
+			if parent == nil {
+				break
+			}
+			current = parent.ID
+		}
+		ancestors[id] = depths
+	}
+	for id, doc := range docs {
+		for _, link := range doc.Links {
+			if link.Kind == "blocks" && (ancestors[id][link.To.ID] > 0 || ancestors[link.To.ID][id] > 0) {
+				return fmt.Errorf("restore blocking link cannot join an ancestor and descendant")
+			}
+		}
+	}
 	add := func(table driver.DerivedTable, key string, value any) error {
 		data, err := json.Marshal(value)
 		if err != nil {
@@ -71,12 +99,20 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 		plan.derived = append(plan.derived, derivedImage{table, key, data})
 		return nil
 	}
-	effective := ontology.Default()
+	ontologyDocument := ontology.DefaultDocument()
+	if plan.migration != nil {
+		ontologyDocument = plan.migration.Document()
+	}
+	snapshot, problems := ontology.Compile(ontologyDocument, nil, nil)
+	if len(problems) != 0 {
+		return fmt.Errorf("invalid admitted restore ontology: %v", problems)
+	}
 	for _, id := range ids {
 		doc := docs[id]
+		effective := snapshot.Effective(doc.Project)
 		blocked := false
 		for _, link := range doc.Links {
-			if link.Kind == "blocks" && !effective.SatisfiesBlocks(stringValue(docs[link.To.ID].Fields["status"])) {
+			if blocker := docs[link.To.ID]; link.Kind == "blocks" && !snapshot.Effective(blocker.Project).SatisfiesBlocks(stringValue(blocker.Fields["status"])) {
 				blocked = true
 			}
 		}
@@ -96,7 +132,6 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 			value any
 		}{
 			{driver.DerivedReadyState, map[string]bool{"blocked": blocked, "ready": effective.ReadyEligible(doc.Type, stringValue(doc.Fields["status"])) && !blocked}},
-			{driver.DerivedAncestorClosure, []ancestorMembership{{Ancestor: id, Depth: 0}}},
 			{driver.DerivedCutClosure, []string{}},
 			{driver.DerivedAttribute, map[string]any{}},
 			{driver.DerivedSortKey, map[string]any{"priority": priority, "id": id}},
@@ -116,7 +151,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 		}
 		plan.sentinels = append(plan.sentinels, ready, closure)
 	}
-	if err := add(driver.DerivedOntology, "builtin", ontology.DefaultDocument()); err != nil {
+	if err := add(driver.DerivedOntology, "builtin", ontologyDocument); err != nil {
 		return err
 	}
 	if err := add(driver.DerivedPlugins, "builtin", []string{}); err != nil {
@@ -134,12 +169,22 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 		Profile string                `json:"profile"`
 		Tables  []driver.DerivedTable `json:"tables"`
 		Rows    []derivedImage        `json:"rows"`
-	}{"builtin-head/1", []driver.DerivedTable{driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute, driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins, driver.DerivedReadyState, driver.DerivedReferenceIndex, driver.DerivedSortKey}, plan.derived})
+	}{derivedProfile(plan), []driver.DerivedTable{driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute, driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins, driver.DerivedReadyState, driver.DerivedReferenceIndex, driver.DerivedSortKey}, plan.derived})
 	if err != nil {
 		return err
 	}
 	plan.derivedDigest = hashBytes(data)
 	return nil
+}
+
+// The strict profile binds the admitted document in the same canonical image
+// encoding. Existing built-in digests and native restore profiles are unchanged.
+// The reverse adapter's existing profile guard remains closed to this profile.
+func derivedProfile(plan *restorePlan) string {
+	if plan.migration != nil {
+		return "beads-compat-union-head/1"
+	}
+	return "builtin-head/1"
 }
 
 type archiveEvidence struct {
@@ -152,7 +197,7 @@ type archiveEvidence struct {
 
 func retainArchive(plan *restorePlan, archive *dumpformat.Archive, add func(model.Ref, string, any) error) error {
 	manifest := archive.Manifest()
-	evidence := archiveEvidence{ArchiveSHA256: archive.SHA256(), DerivedSHA256: plan.derivedDigest, Profile: "builtin-head/1", SourceStore: manifest.StoreID, Members: manifest.Files}
+	evidence := archiveEvidence{ArchiveSHA256: archive.SHA256(), DerivedSHA256: plan.derivedDigest, Profile: derivedProfile(plan), SourceStore: manifest.StoreID, Members: manifest.Files}
 	raw, ok := archive.Member("manifest.json")
 	if !ok || !validDigest(archive.SHA256()) {
 		return fmt.Errorf("archive was not validated")

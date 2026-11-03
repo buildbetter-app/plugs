@@ -168,7 +168,10 @@ internal/core/dumpformat/json.go
 internal/core/dumpformat/merge.go
 internal/core/dumpformat/merge_fixture_test.go
 internal/core/dumpformat/merge_test.go
+internal/core/dumpformat/migration.go
 internal/core/dumpformat/migration_hashes.go
+internal/core/dumpformat/migration_sources.go
+internal/core/dumpformat/migration_test.go
 internal/core/dumpformat/ontology.go
 internal/core/dumpformat/ontology_test.go
 internal/core/dumpformat/records.go
@@ -367,6 +370,7 @@ internal/integration/batchsql/fixture_test.go
 internal/integration/batchsql/hierarchy_authorization_test.go
 internal/integration/batchsql/hierarchy_test.go
 internal/integration/batchsql/native_allocator_restore_test.go
+internal/integration/batchsql/public_batch_guard_order_test.go
 internal/integration/batchsql/thousand_diagnostic_test.go
 internal/integration/claimsql/BUILD.bazel
 internal/integration/claimsql/README.md
@@ -381,6 +385,7 @@ internal/integration/collabwatch/BUILD.bazel
 internal/integration/collabwatch/integration_test.go
 internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
+internal/integration/converterroundtrip/hierarchy_import_test.go
 internal/integration/converterroundtrip/history.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
@@ -460,11 +465,13 @@ internal/integration/nightlyrestore/fixture_test.go
 internal/integration/nightlyrestore/history_diff_test.go
 internal/integration/nightlyrestore/restore_diff_test.go
 internal/integration/nightlyrestore/snapshot_archive_content_test.go
+internal/integration/nightlyrestore/snapshot_archive_metadata_test.go
 internal/integration/offlinehistory/BUILD.bazel
 internal/integration/offlinehistory/archive_test.go
 internal/integration/offlinehistory/fixture_test.go
 internal/integration/offlinehistory/history_test.go
 internal/integration/offlinehistory/producer_test.go
+internal/integration/offlinehistory/refusal_edges_test.go
 internal/integration/offlinehistory/testdata/dolt-source-partial.md
 internal/integration/offlinehistory/testdata/dolt-source-partial.tar
 internal/integration/offlinehistory/testdata/full.tar
@@ -504,6 +511,7 @@ internal/integration/postgresacceptance/fixture_test.go
 internal/integration/postgresacceptance/history_test.go
 internal/integration/postgresacceptance/receipts_test.go
 internal/integration/postgresacceptance/refusal_test.go
+internal/integration/postgresacceptance/workflow_test.go
 internal/integration/postphase/BUILD.bazel
 internal/integration/postphase/README.md
 internal/integration/postphase/delivery_test.go
@@ -517,6 +525,9 @@ internal/integration/postsql/delivery_test.go
 internal/integration/postsql/engine_test.go
 internal/integration/postsql/faults_test.go
 internal/integration/postsql/fixture_test.go
+internal/integration/postsql/gate_idp_test.go
+internal/integration/postsql/gate_session_test.go
+internal/integration/postsql/gate_test.go
 internal/integration/postsql/native_test.go
 internal/integration/postsql/receipts_test.go
 internal/integration/receiptconcurrency/BUILD.bazel
@@ -525,6 +536,7 @@ internal/integration/receiptconcurrency/receiptconcurrency_test.go
 internal/integration/restoreworkload/BUILD.bazel
 internal/integration/restoreworkload/README.md
 internal/integration/restoreworkload/restore_workload_test.go
+internal/integration/restoreworkload/restored_lifecycle_reopen_test.go
 internal/integration/rpctx/BUILD.bazel
 internal/integration/rpctx/rpc_tx_test.go
 internal/integration/s1relations/BUILD.bazel
@@ -550,6 +562,7 @@ internal/integration/transports/composition_test.go
 internal/integration/transports/configured_test.go
 internal/integration/transports/fixture_test.go
 internal/integration/transports/transports_test.go
+internal/integration/transports/wire_equivalence_test.go
 internal/integration/viewpermissions/BUILD.bazel
 internal/integration/viewpermissions/viewpermissions_test.go
 internal/integration/watchsql/BUILD.bazel
@@ -606,6 +619,7 @@ internal/server/authzrpc/hierarchy_lifecycle_guards_test.go
 internal/server/authzrpc/hierarchy_lifecycle_test.go
 internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
+internal/server/authzrpc/history_authority_test.go
 internal/server/authzrpc/predicate_count_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
@@ -640,6 +654,7 @@ internal/server/composition/mcp.go
 internal/server/composition/mcp_lifecycle_test.go
 internal/server/composition/native.go
 internal/server/composition/native_test.go
+internal/server/composition/restore_actual_archive_digest_test.go
 internal/server/composition/restore_actual_archive_test.go
 internal/server/composition/restore_import.go
 internal/server/composition/restore_import_test.go
@@ -669,6 +684,7 @@ internal/server/ontologyrpc/integration_test.go
 internal/server/pluginbuild/BUILD.bazel
 internal/server/pluginbuild/README.md
 internal/server/pluginbuild/build.go
+internal/server/pluginbuild/configured_browser_test.go
 internal/server/pluginbuild/containment_linux_amd64.go
 internal/server/pluginbuild/containment_linux_amd64_test.go
 internal/server/pluginbuild/containment_other.go
@@ -686,6 +702,7 @@ internal/server/pluginbuild/fixture/plugin.go
 internal/server/pluginbuild/persistent.go
 internal/server/pluginbuild/process_other.go
 internal/server/pluginbuild/process_unix.go
+internal/server/pluginbuild/restore_digest_test.go
 internal/server/pluginbuild/sdk_test.go
 internal/server/pluginbuild/source_test.go
 internal/server/pluginbuild/store.go
@@ -756,6 +773,7 @@ internal/server/transport/inprocess/inprocess.go
 internal/server/transport/inprocess/inprocess_test.go
 internal/server/transport/mcp/BUILD.bazel
 internal/server/transport/mcp/README.md
+internal/server/transport/mcp/body_bounds_test.go
 internal/server/transport/mcp/config.go
 internal/server/transport/mcp/errors.go
 internal/server/transport/mcp/handler.go
@@ -788,6 +806,7 @@ internal/server/viewrpc/integration_test.go
 internal/server/watch/BUILD.bazel
 internal/server/watch/authorization.go
 internal/server/watch/boundaries_test.go
+internal/server/watch/lifetime_test.go
 internal/server/watch/manager.go
 internal/server/watch/manager_test.go
 internal/server/watch/types.go
@@ -968,6 +987,10 @@ plugins/workflow/native.go
 plugins/workflow/workflow.go
 plugins/workflow/workflow_test.go
 scripts/ci/BUILD.bazel
+scripts/ci/nightly-restore-streak/BUILD.bazel
+scripts/ci/nightly-restore-streak/README.md
+scripts/ci/nightly-restore-streak/verify.py
+scripts/ci/nightly-restore-streak/verify_test.py
 scripts/ci/plug-bazel-config-test.sh
 scripts/ci/plug-bazel-delivery-test.sh
 scripts/ci/plug-bazel-delivery.py
@@ -979,6 +1002,7 @@ scripts/ci/prepare-public-reference-test.py
 scripts/ci/prepare-public-reference.py
 scripts/ci/public-bundle-test.py
 scripts/ci/public-bundle.py
+scripts/ci/reconcile-openrpc-check.py
 scripts/ci/reconcile-openrpc-test.py
 scripts/ci/reconcile-openrpc.py
 scripts/demo.sh
@@ -1160,14 +1184,20 @@ spec/s1-b25-b28/BUILD.bazel
 spec/s1-b25-b28/README.md
 spec/s1-b25-b28/acceptance_test.go
 spec/s1-b25-b28/b26-deviation.json
+spec/s1-b25-b28/config_union_test.go
 spec/s1-b25-b28/converter_test.go
 spec/s1-b25-b28/provenance.py
+spec/s1-b25-b28/public_recording_test.go
 spec/s1-b25-b28/record_reference.py
 spec/s1-b25-b28/reference_test.go
+spec/s1-b25-b28/relations_test.go
+spec/s1-b25-b28/subscribers_test.go
 spec/s1-b25-b28/testdata/existing-target.jsonl
 spec/s1-b25-b28/testdata/inputs.jsonl
 spec/s1-b25-b28/testdata/projection.json
 spec/s1-b25-b28/testdata/provenance.json
+spec/s1-b25-b28/testdata/public-companion-profile.json
+spec/s1-b25-b28/testdata/public-recording-fixture.json
 spec/s1-b25-b28/testdata/run1/commands.json
 spec/s1-b25-b28/testdata/run1/source-export.jsonl
 spec/s1-b25-b28/testdata/run1/target-export.jsonl
@@ -1238,6 +1268,7 @@ tools/rehearsal/files_test.go
 tools/rehearsal/gate.go
 tools/rehearsal/metrics.go
 tools/rehearsal/metrics_test.go
+tools/rehearsal/rollback_fault_test.go
 tools/rehearsal/three_rehearsals.sh
 tools/roundtrip/BUILD.bazel
 tools/roundtrip/README.md

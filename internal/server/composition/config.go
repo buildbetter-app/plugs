@@ -98,6 +98,10 @@ type Config struct {
 	// host configuration, never client-supplied code or grants.
 	NativePlugins  []sdk.Native
 	NativeBindings []pluginhost.Binding
+	// UIFrames is the trusted, digest-pinned inventory served by the same
+	// listener and RPC composition. The UI validates every bundle and grant;
+	// this field accepts no caller-supplied installation or credential.
+	UIFrames []webui.FrameBundle
 	// Compaction supplies a host-owned summary and trusted D32 verifier. Nil
 	// keeps summary generation and reversal unavailable; there is no egress.
 	Compaction *service.CompactionConfig
@@ -492,7 +496,7 @@ func (r *Runtime) bind(config Config) error {
 		return fmt.Errorf("composition: create WebSocket handler: %w", err)
 	}
 	if config.UI {
-		r.UIHandler, err = webui.New(webui.Config{Project: config.Project, RPCPath: httpjson.Path})
+		r.UIHandler, err = webui.New(webui.Config{Project: config.Project, RPCPath: httpjson.Path, Frames: config.UIFrames})
 		if err != nil {
 			return fmt.Errorf("composition: create web UI: %w", err)
 		}

@@ -106,6 +106,23 @@ type Provider struct {
 	mu          sync.Mutex
 }
 
+// ValidateInvokeRequest checks request shape before capability admission. A
+// missing persistent checkpoint is a capability refusal; malformed input must
+// retain the ordinary invalid_params contract even on a memory host.
+func ValidateInvokeRequest(req InvokeRequest) error {
+	if strings.TrimSpace(req.Template) == "" || strings.TrimSpace(req.Project) == "" || len(req.Checklist) == 0 || len(req.Checklist) > 100 {
+		return fail("invalid_params", "template, project and one to one hundred checklist items are required")
+	}
+	seen := make(map[string]bool, len(req.Checklist))
+	for _, input := range req.Checklist {
+		if strings.TrimSpace(input.Label) == "" || strings.TrimSpace(input.Title) == "" || seen[input.Label] {
+			return fail("invalid_params", "checklist labels and titles must be nonempty and labels unique")
+		}
+		seen[input.Label] = true
+	}
+	return nil
+}
+
 // persistentState is a required marker for ephemeral invocation. A CheckpointStore is durable
 // only when the selected driver can reopen it after a process restart; the
 // in-memory driver deliberately reports false so ephemeral mode fails closed.
@@ -403,11 +420,11 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 	if req.Mode != "ephemeral" {
 		return InvokeResult{}, fail("invalid_params", "workflow provider only owns ephemeral invocation")
 	}
-	if !p.persistent {
-		return InvokeResult{}, fail("invalid_params", "ephemeral workflows require persistent checkpoint storage")
+	if err := ValidateInvokeRequest(req); err != nil {
+		return InvokeResult{}, err
 	}
-	if strings.TrimSpace(req.Template) == "" || strings.TrimSpace(req.Project) == "" || len(req.Checklist) == 0 || len(req.Checklist) > 100 {
-		return InvokeResult{}, fail("invalid_params", "template, project and one to one hundred checklist items are required")
+	if !p.persistent {
+		return InvokeResult{}, fail("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
 	}
 	value, revision, err := p.load(ctx)
 	if err != nil {
@@ -431,9 +448,6 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 	result := InvokeResult{Plane: "ephemeral", Run: &RunView{ID: runID, Template: req.Template, Project: req.Project, Mode: req.Mode, State: run.State, Owner: principal, CreatedAt: run.CreatedAt}, Items: []ItemView{}}
 	seen := map[string]bool{}
 	for _, input := range req.Checklist {
-		if strings.TrimSpace(input.Label) == "" || strings.TrimSpace(input.Title) == "" || seen[input.Label] {
-			return InvokeResult{}, fail("invalid_params", "checklist labels and titles must be nonempty and labels unique")
-		}
 		seen[input.Label] = true
 		itemID, err := newID(ItemPrefix)
 		if err != nil {

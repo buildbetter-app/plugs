@@ -211,14 +211,19 @@ func (c *Conn) readLength(indicator byte) (uint64, error) {
 		if _, err := io.ReadFull(c.reader, value[:]); err != nil {
 			return 0, err
 		}
-		return uint64(binary.BigEndian.Uint16(value[:])), nil
+		length := uint64(binary.BigEndian.Uint16(value[:]))
+		// RFC 6455 requires the shortest possible payload-length encoding.
+		if length < 126 {
+			return 0, ErrProtocol
+		}
+		return length, nil
 	case 127:
 		var value [8]byte
 		if _, err := io.ReadFull(c.reader, value[:]); err != nil {
 			return 0, err
 		}
 		length := binary.BigEndian.Uint64(value[:])
-		if length&(1<<63) != 0 {
+		if length&(1<<63) != 0 || length < 65536 {
 			return 0, ErrProtocol
 		}
 		if length > uint64(c.cfg.MaxFrameBytes) {

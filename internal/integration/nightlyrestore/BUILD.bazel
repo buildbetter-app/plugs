@@ -9,6 +9,7 @@ go_test(
         "history_diff_test.go",
         "restore_diff_test.go",
         "snapshot_archive_content_test.go",
+        "snapshot_archive_metadata_test.go",
     ],
     args = ["-test.v"],
     data = [
