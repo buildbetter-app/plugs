@@ -94,7 +94,7 @@ func TestSelectionPublicationCensusBatchesAndFullDomain(t *testing.T) {
 	}{
 		{"missing_sort", `DELETE FROM plug_postgres.selection_rows WHERE source_key=$1 AND family_table='sort_key'`, []int{0, 3}},
 		{"duplicate_sort", `INSERT INTO plug_postgres.selection_rows(incarnation,start_revision,` + selectionColumns + `,annotation) SELECT incarnation,start_revision,row_key||decode('01','hex'),source_key,source_revision,source_present,source_digest,bead_key,ref,bead_id,bead_type,project,parent_key,status,title,template_value,priority,leaf,fact_kind,family_table,source_kind,source_table,value_digest,layout,annotation FROM plug_postgres.selection_rows WHERE source_key=$1 AND family_table='sort_key'`, []int{0, 3}},
-		{"missing_empty_fact_envelope", `DELETE FROM plug_postgres.selection_rows WHERE source_key=$1 AND family_table='attribute'`, []int{1}},
+		{"missing_empty_fact_envelope", `DELETE FROM plug_postgres.selection_rows WHERE source_key=$1 AND family_table='derived_attribute'`, []int{1}},
 		{"missing_header", `DELETE FROM plug_postgres.selection_sources WHERE key=$1`, []int{0, 1, 2, 3}},
 		{"stale_digest", `UPDATE plug_postgres.selection_sources SET digest=decode('ff','hex') WHERE key=$1`, []int{0, 1, 2, 3}},
 		{"wrong_bead_identity", `UPDATE plug_postgres.selection_rows SET bead_key=decode('ff','hex') WHERE source_key=$1 AND family_table='sort_key'`, []int{0, 3}},
