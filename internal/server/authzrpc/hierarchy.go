@@ -632,6 +632,7 @@ func (c *Checker) AuthorizeHierarchyLifecycle(ctx context.Context, stage port.Au
 	aliases := map[string]model.Ref{}
 	creates := map[string]port.Change{}
 	moves := map[string]bool{}
+	closes := map[string]bool{}
 	reasons := map[string][]string{}
 	for _, change := range proposal.Changes {
 		ref := change.Resource.Ref
@@ -660,6 +661,7 @@ func (c *Checker) AuthorizeHierarchyLifecycle(ctx context.Context, stage port.Au
 			moves[ref.ID] = true
 		case model.OpClose:
 			target = change.Op.Close.Target
+			closes[ref.ID] = true
 			if change.Op.Close.Reason != "" {
 				reasons[ref.ID] = append(reasons[ref.ID], change.Op.Close.Reason)
 			}
@@ -674,10 +676,10 @@ func (c *Checker) AuthorizeHierarchyLifecycle(ctx context.Context, stage port.Au
 
 	// Every Change describes the same stored Before and final After for its
 	// target. A create followed by close therefore already contains the reason
-	// comments in After. Remove ONLY verified same-batch close reasons from the
-	// create adapter's image; all permission-bearing and unknown members remain
-	// subject to its unchanged strict validation. The complete final image is
-	// still checked by Writer's ordered and final ontology guards.
+	// comments and core close instant in After. Project ONLY validated metadata
+	// for a same-target close out of the create adapter's image; all permission-
+	// bearing and unknown members retain its strict validation. Writer's guards
+	// and the close checks below still receive the complete final image.
 	hierarchy := proposal
 	hierarchy.Changes = nil
 	// The original chain below covers all expectation-only resources, including
@@ -701,7 +703,7 @@ func (c *Checker) AuthorizeHierarchyLifecycle(ctx context.Context, stage port.Au
 			if err != nil {
 				return forbidden("invalid hierarchy lifecycle final image")
 			}
-			if err := hierarchyCloseCreateImage(&image, reasons[change.Resource.Ref.ID], proposal.Principal); err != nil {
+			if err := hierarchyCloseCreateImage(&image, closes[change.Resource.Ref.ID], reasons[change.Resource.Ref.ID], proposal.Principal); err != nil {
 				return err
 			}
 			change.After, err = json.Marshal(image.Body)
@@ -796,7 +798,17 @@ func (c *Checker) AuthorizeHierarchyLifecycle(ctx context.Context, stage port.Au
 	return nil
 }
 
-func hierarchyCloseCreateImage(image *model.Record, reasons []string, principal model.PrincipalRef) error {
+func hierarchyCloseCreateImage(image *model.Record, hasClose bool, reasons []string, principal model.PrincipalRef) error {
+	if raw, present := image.Body["closedAt"]; present {
+		// Ordinary creates still refuse closedAt. Only a validated typed close
+		// resolved to this same target can account for this core-owned field.
+		stamp, ok := raw.(string)
+		at, err := time.Parse(time.RFC3339Nano, stamp)
+		if !hasClose || !ok || err != nil || at.IsZero() {
+			return forbidden("invalid hierarchy create close instant")
+		}
+		delete(image.Body, "closedAt")
+	}
 	raw, hasComments := image.Body["comments"]
 	if !hasComments {
 		if len(reasons) != 0 {

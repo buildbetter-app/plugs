@@ -27,10 +27,14 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
 
-//go:embed cli-rpc-trace.json
-var capturedTrace []byte
+// The historical cli-rpc-trace.json remains unchanged. This explicit
+// lifecycle expectation is a fixture, not a new public capture.
+//
+//go:embed cli-rpc-lifecycle-expected.json
+var expectedTrace []byte
 
 type trace struct {
+	WriterClock       string            `json:"writerClock"`
 	RPCRequest        json.RawMessage   `json:"rpcRequest"`
 	RPCResponse       json.RawMessage   `json:"rpcResponse"`
 	RPCReplayResponse json.RawMessage   `json:"rpcReplayResponse"`
@@ -58,7 +62,7 @@ func TestDisposableCLIAndRPCTrace(t *testing.T) {
 func runTrace(t *testing.T, authenticated bool) {
 	t.Helper()
 	var capture trace
-	if err := json.Unmarshal(capturedTrace, &capture); err != nil {
+	if err := json.Unmarshal(expectedTrace, &capture); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
@@ -70,8 +74,13 @@ func runTrace(t *testing.T, authenticated bool) {
 		t.Fatal(err)
 	}
 	defer lease.Release(context.Background())
+	stamp, err := time.Parse(time.RFC3339Nano, capture.WriterClock)
+	if err != nil || stamp.IsZero() {
+		t.Fatal("expected trace requires a valid fixed Writer clock")
+	}
 	workflow := service.NewOntology(nil)
 	writer := pipeline.New(store, lease, pipeline.WithOntology(workflow),
+		pipeline.WithClock(func() time.Time { return stamp }),
 		pipeline.WithIDGenerator(func() (string, error) { return "pl-guide-1", nil }))
 	registry, err := rpc.NewRegistry()
 	if err != nil {
@@ -173,7 +182,7 @@ func runTrace(t *testing.T, authenticated bool) {
 	}{{first, capture.RPCResponse}, {second, capture.RPCReplayResponse}} {
 		got, err := json.Marshal(pair.got)
 		if err != nil || !sameJSON(t, got, pair.want) {
-			t.Fatal("captured RPC body differs from the real response")
+			t.Fatal("expected RPC fixture differs from the real response")
 		}
 	}
 	binary := os.Getenv("PLUG_BINARY")
@@ -221,7 +230,7 @@ func runTrace(t *testing.T, authenticated bool) {
 	}
 	for i, want := range capture.CLIResults {
 		if !sameJSON(t, []byte(lines[i]), want) {
-			t.Fatal("captured CLI JSON differs from the real executable")
+			t.Fatal("expected CLI fixture differs from the real executable")
 		}
 	}
 	reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})

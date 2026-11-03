@@ -190,6 +190,9 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 			err = p.detectChanges()
 			w.observePhaseSince(preCtx, PhaseChanges, phaseStarted, err)
 		}
+		if err == nil && !memoryMethod(meta.Method) {
+			err = w.prepareReadySortKeys(p)
+		}
 		if err == nil {
 			phaseStarted = time.Now()
 			err = w.prepareAudit(preCtx, p)
@@ -458,6 +461,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if p.hierarchyDelta != nil {
 		allocatorKeys = append(allocatorKeys, p.hierarchyDelta.locks...)
 	}
+	allocatorKeys = append(allocatorKeys, p.readySort.locks()...)
 	locks, err := p.snapshot.locks(writes, sentinels, allocatorKeys...)
 	if err != nil {
 		return model.Commit{}, err
@@ -609,6 +613,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		if err := tx.PutDerived(ctx, driver.DerivedAncestorClosure, p.hierarchyDelta.remove, p.hierarchyDelta.add); err != nil {
 			return model.Commit{}, err
 		}
+	}
+	if err := p.readySort.publish(ctx, tx, revision); err != nil {
+		return model.Commit{}, err
 	}
 	changes := p.changeRecords()
 	events, chain, err := p.events(revision, changes)

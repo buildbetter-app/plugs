@@ -256,7 +256,7 @@ func TestPipelineNativeAtomicBatchImages(t *testing.T) {
 	if err != nil || len(log) != 1 || len(log[0].Changes) != 1 {
 		t.Fatalf("batch published more than one changeset/change: %+v, %v", log, err)
 	}
-	wantPaths := []string{"/fields/normalized", "/fields/private", "/fields/title"}
+	wantPaths := []string{"/createdAt", "/fields/normalized", "/fields/private", "/fields/title"}
 	if !reflect.DeepEqual(log[0].Changes[0].ChangedPaths, wantPaths) {
 		t.Fatalf("change paths are not canonical JSON Pointers: %+v", log[0].Changes[0].ChangedPaths)
 	}

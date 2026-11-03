@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"sort"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
@@ -34,6 +35,11 @@ func decodeDocument(raw []byte) (pipeline.Document, error) {
 	if err := dec.Decode(new(any)); err != io.EOF || doc.ID == "" || doc.Type == "" || doc.Fields == nil {
 		return doc, failure("invalid_params", "invalid bead document")
 	}
+	for _, at := range []*time.Time{doc.CreatedAt, doc.StartedAt, doc.ClosedAt} {
+		if at != nil && at.IsZero() {
+			return doc, failure("invalid_params", "invalid stored lifecycle time")
+		}
+	}
 	if doc.Parent != nil {
 		if err := doc.Parent.Validate(); err != nil || !doc.Parent.IsID() || doc.Parent.ID == "" || !doc.Parent.Branch.IsZero() {
 			return doc, failure("invalid_params", "invalid stored parent")
@@ -42,12 +48,25 @@ func decodeDocument(raw []byte) (pipeline.Document, error) {
 			return doc, failure("invalid_params", "invalid stored parent")
 		}
 	}
+	parent, err := pipeline.HierarchyParent(doc)
+	if err != nil {
+		return doc, err
+	}
+	doc.Parent = parent
 	// Preserve member presence before Go zero values erase null/empty provenance.
 	var envelope struct {
-		Comments json.RawMessage `json:"comments"`
+		Comments  json.RawMessage `json:"comments"`
+		CreatedAt json.RawMessage `json:"createdAt"`
+		StartedAt json.RawMessage `json:"startedAt"`
+		ClosedAt  json.RawMessage `json:"closedAt"`
 	}
 	if json.Unmarshal(raw, &envelope) != nil {
 		return doc, failure("invalid_params", "invalid bead document")
+	}
+	for _, at := range []json.RawMessage{envelope.CreatedAt, envelope.StartedAt, envelope.ClosedAt} {
+		if bytes.Equal(bytes.TrimSpace(at), []byte("null")) {
+			return doc, failure("invalid_params", "stored lifecycle time must be an instant or absent")
+		}
 	}
 	if len(envelope.Comments) != 0 {
 		var comments []map[string]json.RawMessage
@@ -241,19 +260,6 @@ func (o *Ontology) readyDependencies(doc pipeline.Document, graph map[string]sto
 	if err != nil || !ready {
 		return ready, err
 	}
-	terminal := func(target storedBead) bool {
-		effective := o.effective(target.doc.Project)
-		return effective.SatisfiesBlocks(state(target.doc).Status)
-	}
-	for _, link := range doc.Links {
-		if link.Kind != "parent-child" {
-			continue
-		}
-		target, exists := graph[link.To.ID]
-		if !exists || !link.To.IsID() || !link.To.Branch.IsZero() || !terminal(target) {
-			return false, nil
-		}
-	}
 	return o.readyAncestors(doc, graph)
 }
 
@@ -261,8 +267,14 @@ func (o *Ontology) readyDependencies(doc pipeline.Document, graph map[string]sto
 // It deliberately leaves close and settlement's direct blocker guard unchanged.
 func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
 	seen := map[string]bool{doc.ID: true}
-	for doc.Parent != nil {
-		parent := doc.Parent
+	for {
+		parent, err := pipeline.HierarchyParent(doc)
+		if err != nil {
+			return false, err
+		}
+		if parent == nil {
+			return true, nil
+		}
 		row, exists := graph[parent.ID]
 		if !exists || !parent.IsID() || !parent.Branch.IsZero() || seen[parent.ID] {
 			return false, nil
@@ -281,7 +293,6 @@ func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]stored
 		seen[parent.ID] = true
 		doc = row.doc
 	}
-	return true, nil
 }
 
 func beadValue(row storedBead) (Bead, error) {
@@ -300,7 +311,8 @@ func beadValue(row storedBead) (Bead, error) {
 	if doc.Parent != nil {
 		parent = doc.Parent.ID
 	}
-	return Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...), Parent: parent}, nil
+	createdAt, _ := doc.CreationTime()
+	return Bead{ID: doc.ID, Type: doc.Type, Project: doc.Project, Revision: row.record.Revision, Status: state(doc).Status, Fields: doc.Fields, Metadata: metadata, Labels: append([]string(nil), doc.Labels...), Parent: parent, CreatedAt: createdAt}, nil
 }
 
 func beadPriority(bead Bead) (int, error) {

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -153,24 +152,16 @@ func validatePosition(position *PagePosition) error {
 	return nil
 }
 
-func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r queryReader) ([]Bead, error) {
+func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r driver.Reader) ([]Bead, map[string]readyOrderKey, error) {
 	graph, err := scanBeads(ctx, r)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	items := []Bead{}
-	now := s.now()
-	ids := sortedIDs(graph)
-	priorities := map[string]int{}
-	for _, id := range ids {
-		p, err := priority(graph[id].doc)
-		if err != nil {
-			return nil, err
-		}
-		priorities[id] = p
-	}
-	sort.SliceStable(ids, func(i, j int) bool { return priorities[ids[i]] < priorities[ids[j]] })
-	for _, id := range ids {
+	// Membership is always evaluated against the complete current graph. P74
+	// applies only to the order of this exact set, before any page is cut.
+	now := s.now().UTC()
+	eligible := map[string]storedBead{}
+	for _, id := range sortedIDs(graph) {
 		row := graph[id]
 		st := state(row.doc)
 		if !matchesFilter(row, req.Project, req.Filter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
@@ -179,7 +170,7 @@ func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r queryReade
 		if row.doc.Lease != nil {
 			lease, err := s.effectiveLease(ctx, row.doc.ID, row.doc.Lease)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if now.Before(lease.ExpiresAt) {
 				continue
@@ -187,18 +178,30 @@ func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r queryReade
 		}
 		unblocked, err := s.ontology.readyDependencies(row.doc, graph)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !unblocked {
 			continue
 		}
+		eligible[id] = row
+	}
+	keys, err := readyOrderKeys(ctx, r, eligible, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	ids := sortedIDs(eligible)
+	sortReadyIDs(ids, keys)
+	items := make([]Bead, 0, len(ids))
+	for _, id := range ids {
+		row := eligible[id]
 		bead, err := beadValue(row)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		bead.CreatedAt = keys[id].CreatedAt
 		items = append(items, bead)
 	}
-	return items, nil
+	return items, keys, nil
 }
 
 func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (BeadPage, error) {
@@ -214,12 +217,12 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 		return BeadPage{}, err
 	}
 	defer r.Close()
-	items, err := s.readyItems(ctx, req, r)
+	items, keys, err := s.readyItems(ctx, req, r)
 	if err != nil {
 		return BeadPage{}, err
 	}
 	if restartOnRevision && req.ClaimNextSeed != "" {
-		items, err = spreadClaimNextItems(items, req.ClaimNextSeed)
+		items, err = spreadClaimNextItems(items, req.ClaimNextSeed, keys)
 		if err != nil {
 			return BeadPage{}, err
 		}
@@ -231,11 +234,12 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 	return pageResult(items, limit, req.Position, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, false, restartOnRevision)
 }
 
-// spreadClaimNextItems rotates each equal-priority group by a stable offset.
-// Priority groups stay contiguous, so the queue still drains every lower
-// priority before considering a higher one; only ID ties are spread between
-// concurrent request keys. The ordinary bead.ready path never calls this.
-func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
+// spreadClaimNextItems rotates equal hybrid-key groups by a stable offset.
+// It never crosses a bucket, rank or creation-time boundary. The optional
+// projection preserves the existing helper's priority-only test callers;
+// the live queue always supplies the complete keys from its pinned snapshot.
+// The ordinary bead.ready path never calls this.
+func spreadClaimNextItems(items []Bead, seed string, order ...map[string]readyOrderKey) ([]Bead, error) {
 	if len(items) < 2 || seed == "" {
 		return items, nil
 	}
@@ -251,7 +255,12 @@ func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
 			if err != nil {
 				return nil, err
 			}
-			if priority != groupPriority {
+			same := priority == groupPriority
+			if len(order) != 0 {
+				a, b := order[0][ordered[start].ID], order[0][ordered[end].ID]
+				same = a.Bucket == b.Bucket && a.Rank == b.Rank && a.CreatedAt.Equal(b.CreatedAt)
+			}
+			if !same {
 				break
 			}
 			end++
@@ -391,7 +400,8 @@ func (s *Service) ReadyCandidates(ctx context.Context, req ReadyRequest, reader 
 	if reader == nil {
 		return nil, failure("internal_error", "ready probe reader is unavailable")
 	}
-	return s.readyItems(ctx, req, reader)
+	items, _, err := s.readyItems(ctx, req, reader)
+	return items, err
 }
 
 func (s *Service) History(ctx context.Context, by model.PrincipalRef, req HistoryRequest) (BeadPage, error) {

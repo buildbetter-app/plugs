@@ -161,6 +161,47 @@ func TestS1B02ReplayBlockingCategoriesAndAtomicRefusal(t *testing.T) {
 	}
 }
 
+func TestS1B02ReplayConditionalFailureOutcomeAcrossDrivers(t *testing.T) {
+	h := newPostgresHarness(t)
+	rules := compileOntology(t, customDocument(), nil)
+	for _, backend := range backends(t, h) {
+		t.Run(backend.name, func(t *testing.T) {
+			ids := []string{"b02-failure-blocker", "b02-failure-dependent"}
+			f := newFixture(t, backend.name, backend.dsn, rules, ids)
+			createNodes(f,
+				createOp("b02-failure-blocker", project, map[string]any{"title": "failure blocker"}, ""),
+				createOp("b02-failure-dependent", project, map[string]any{"title": "failure dependent"}, ""),
+			)
+			if code := errorCode(t, f.call("conditional-failure-link", "bead.link", owner, map[string]any{
+				"from": ref("b02-failure-dependent"), "to": ref("b02-failure-blocker"), "kind": "conditional-blocks",
+			})); code != "" {
+				t.Fatalf("conditional link refused: %s", code)
+			}
+			if got := f.readyIDs("b02-failure-before", owner); !reflect.DeepEqual(got, []string{"b02-failure-blocker"}) {
+				t.Fatalf("conditional dependency before failure = %v", got)
+			}
+			if code := errorCode(t, f.call("b02-failure", "bead.fail", owner, map[string]any{
+				"id": ref("b02-failure-blocker"), "reason": "bounded failure outcome",
+			})); code != "" {
+				t.Fatalf("failure blocker refused: %s", code)
+			}
+			if got := f.readyIDs("b02-failure-after", owner); !reflect.DeepEqual(got, []string{"b02-failure-dependent"}) {
+				t.Fatalf("conditional failure did not release dependent = %v", got)
+			}
+			if f.document("b02-failure-blocker").Fields["status"] != "broken" {
+				t.Fatalf("failure blocker did not use the failure slot: %+v", f.document("b02-failure-blocker"))
+			}
+			if backend.name == "sqlite" {
+				f.reopenSQLite()
+				if got := f.readyIDs("b02-failure-reopen", owner); !reflect.DeepEqual(got, []string{"b02-failure-dependent"}) {
+					t.Fatalf("SQLite reopen conditional failure = %v", got)
+				}
+			}
+			t.Logf("B02 conditional failure outcome backend=%s decision=A3/P22", backend.name)
+		})
+	}
+}
+
 func TestS1B03ReplayCustomCatalogSlotsAndRefusals(t *testing.T) {
 	h := newPostgresHarness(t)
 	base := customDocument()

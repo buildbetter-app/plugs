@@ -80,6 +80,7 @@ engdocs/plug-next/BUILD.bazel
 engdocs/plug-next/README.md
 engdocs/plug-next/audit.md
 engdocs/plug-next/authn.md
+engdocs/plug-next/cli-rpc-lifecycle-expected.json
 engdocs/plug-next/cli-rpc-trace.json
 engdocs/plug-next/dump-restore.md
 engdocs/plug-next/offline-history.md
@@ -273,6 +274,8 @@ internal/core/pipeline/hierarchy_source.go
 internal/core/pipeline/hierarchy_test.go
 internal/core/pipeline/labels.go
 internal/core/pipeline/lease_overlay.go
+internal/core/pipeline/lifecycle.go
+internal/core/pipeline/lifecycle_test.go
 internal/core/pipeline/noop_test.go
 internal/core/pipeline/operations_test.go
 internal/core/pipeline/options.go
@@ -282,6 +285,8 @@ internal/core/pipeline/post.go
 internal/core/pipeline/precondition_test.go
 internal/core/pipeline/prepare.go
 internal/core/pipeline/protected.go
+internal/core/pipeline/ready_sort.go
+internal/core/pipeline/ready_sort_test.go
 internal/core/pipeline/response.go
 internal/core/pipeline/response_test.go
 internal/core/pipeline/snapshot.go
@@ -341,6 +346,7 @@ internal/core/service/memories.go
 internal/core/service/ontology.go
 internal/core/service/ordered_close.go
 internal/core/service/reads.go
+internal/core/service/ready_order.go
 internal/core/service/rpc_reads.go
 internal/core/service/service.go
 internal/core/service/service_test.go
@@ -375,6 +381,11 @@ internal/integration/auditsql/audit_sql_test.go
 internal/integration/auditsql/engine_test.go
 internal/integration/auditsql/faults_test.go
 internal/integration/auditsql/fixture_test.go
+internal/integration/b01readyorder/BUILD.bazel
+internal/integration/b01readyorder/README.md
+internal/integration/b01readyorder/connected_test.go
+internal/integration/b01readyorder/fixture_test.go
+internal/integration/b01readyorder/ready_order_test.go
 internal/integration/b13memory/BUILD.bazel
 internal/integration/b13memory/README.md
 internal/integration/b13memory/fixture_test.go
@@ -397,6 +408,8 @@ internal/integration/batchsql/README.md
 internal/integration/batchsql/allocator_archive_test.go
 internal/integration/batchsql/allocator_snapshot_test.go
 internal/integration/batchsql/b01_close_ancestry_test.go
+internal/integration/batchsql/b01_legacy_hierarchy_test.go
+internal/integration/batchsql/b01_persisted_hierarchy_test.go
 internal/integration/batchsql/b01_public_hierarchy_test.go
 internal/integration/batchsql/batch_test.go
 internal/integration/batchsql/child_allocator_test.go
@@ -412,6 +425,8 @@ internal/integration/claimsql/README.md
 internal/integration/claimsql/claim_sql_test.go
 internal/integration/claimsql/engine_test.go
 internal/integration/claimsql/fixture_test.go
+internal/integration/claimsql/lifecycle_time_test.go
+internal/integration/claimsql/ready_sort_test.go
 internal/integration/clisql/BUILD.bazel
 internal/integration/clisql/README.md
 internal/integration/clisql/fixture_test.go
@@ -1183,13 +1198,19 @@ spec/recorded_test.go
 spec/rpc_test.go
 spec/s1-b01-b04/BUILD.bazel
 spec/s1-b01-b04/README.md
+spec/s1-b01-b04/b01-hierarchy-deviation.md
+spec/s1-b01-b04/b01-hierarchy-vectors.json
 spec/s1-b01-b04/claim_acceptance_test.go
 spec/s1-b01-b04/clock_boundary_test.go
+spec/s1-b01-b04/extract_reference_packet.py
 spec/s1-b01-b04/fixture_test.go
 spec/s1-b01-b04/manifest.json
 spec/s1-b01-b04/manifest_test.go
 spec/s1-b01-b04/record_reference.py
 spec/s1-b01-b04/recorded_integrity_test.go
+spec/s1-b01-b04/reference_recording_test.go
+spec/s1-b01-b04/reference_runtime.go
+spec/s1-b01-b04/reference_runtime_test.go
 spec/s1-b01-b04/replay_support_test.go
 spec/s1-b01-b04/replay_test.go
 spec/s1-b01-b04/run-1.json

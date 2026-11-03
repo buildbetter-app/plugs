@@ -10,6 +10,7 @@ written by this program.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -17,12 +18,13 @@ import shutil
 import subprocess
 import tempfile
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 PIN = "9d6fff760b7a314b476539198504d77ce0959656"
 TREE = "cde121d6e4119e454857ad1c3ca293e2791be840"
-BINARY_SHA256 = "33cdadbe3bd7a82e2c3c40f4b5da4403d822acc00d544a321df24e277c0836a3"
+BINARY_SHA256 = "3c6bbb888431751adce98dfebc8cbeeb5869300698e8b069a4d7438fabfb3af4"
 DRIVER = "github.com/dolthub/dolt/go@v0.40.5-0.20260806213044-796d07497741"
 NORMALIZED_FIELDS = [
     "created_at",
@@ -64,12 +66,15 @@ def normalized(value: Any) -> Any:
 
 
 class Recorder:
-    def __init__(self, binary: Path, source: Path, workspace: Path):
+    def __init__(self, binary: Path, source: Path, workspace: Path,
+                 runtime: dict[str, str] | None = None, transcript: Path | None = None):
         self.binary = binary.resolve()
         self.source = source.resolve()
         self.workspace = workspace
         self.commands: list[dict[str, Any]] = []
         self.raw: dict[str, Any] = {}
+        self.runtime = runtime or {"mode": "embedded-dolt", "version": DRIVER}
+        self.transcript = transcript
         self.env = os.environ.copy()
         self.env.update(
             {
@@ -81,14 +86,27 @@ class Recorder:
                 "TZ": "UTC",
                 "GIT_CONFIG_GLOBAL": "/dev/null",
                 "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_AUTHOR_NAME": "s1-reference-recorder",
+                "GIT_AUTHOR_EMAIL": "s1-reference@example.invalid",
+                "GIT_COMMITTER_NAME": "s1-reference-recorder",
+                "GIT_COMMITTER_EMAIL": "s1-reference@example.invalid",
             }
         )
 
-    def run(self, label: str, args: list[str], expected: int = 0) -> tuple[int, bytes, bytes]:
-        proc = subprocess.run(
-            [str(self.binary), *args], cwd=self.workspace, env=self.env,
-            capture_output=True, check=False, timeout=120,
-        )
+    def run(self, label: str, args: list[str], expected: int | None = 0) -> tuple[int, bytes, bytes]:
+        timed_out = False
+        try:
+            proc = subprocess.run(
+                [str(self.binary), *args], cwd=self.workspace, env=self.env,
+                capture_output=True, check=False, timeout=120,
+            )
+            code, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
+        except subprocess.TimeoutExpired as error:
+            # subprocess retains these exact partial bytes when it kills and
+            # waits for the timed-out command. Persist them before unwinding
+            # into the owned runtime's shutdown/removal path.
+            timed_out = True
+            code, stdout, stderr = None, error.stdout or b"", error.stderr or b""
         def stable_output(data: bytes) -> Any:
             text = data.decode(errors="replace")
             try:
@@ -100,18 +118,31 @@ class Recorder:
             {
                 "label": label,
                 "argv": ["reference-engine", *args],
-                "exitCode": proc.returncode,
-                "stdout": stable_output(proc.stdout),
-                "stderr": stable_output(proc.stderr),
+                "exitCode": code,
+                "outcome": "timeout" if timed_out else "exited",
+                "stdout": stable_output(stdout),
+                "stderr": stable_output(stderr),
             }
         )
-        if proc.returncode != expected:
+        if self.transcript is not None:
+            with self.transcript.open("ab") as stream:
+                stream.write(canonical({
+                    "label": label, "argv": ["reference-engine", *args],
+                    "workspace": str(self.workspace), "exitCode": code,
+                    "outcome": "timeout" if timed_out else "exited",
+                    "timeoutSeconds": 120 if timed_out else None,
+                    "stdoutBase64": base64.b64encode(stdout).decode("ascii"),
+                    "stderrBase64": base64.b64encode(stderr).decode("ascii"),
+                }) + b"\n")
+        if timed_out:
+            raise RuntimeError(f"{label}: timed out after 120 seconds; partial streams retained")
+        if expected is not None and code != expected:
             raise RuntimeError(
-                f"{label}: exit {proc.returncode}, expected {expected}\n"
-                f"stdout={proc.stdout.decode(errors='replace')}\n"
-                f"stderr={proc.stderr.decode(errors='replace')}"
+                f"{label}: exit {code}, expected {expected}\n"
+                f"stdout={stdout.decode(errors='replace')}\n"
+                f"stderr={stderr.decode(errors='replace')}"
             )
-        return proc.returncode, proc.stdout, proc.stderr
+        return code, stdout, stderr
 
     def json(self, label: str, args: list[str], expected: int = 0) -> Any:
         _, stdout, _ = self.run(label, args, expected)
@@ -296,17 +327,34 @@ class Recorder:
             ("B04", "card_b04"),
         ):
             card_workspace = Path(tempfile.mkdtemp(prefix=f"s1-b01-b04-{name.lower()}-", dir="/tmp/plug-swarm/work"))
+            card_recorder = Recorder(self.binary, self.source, card_workspace, self.runtime, self.transcript)
+            initialized = False
             try:
-                card_recorder = Recorder(self.binary, self.source, card_workspace)
+                init_flags = ["init", "--non-interactive", "--prefix", "s1", "--skip-hooks", "--skip-agents", "--quiet"]
+                if self.runtime["mode"] == "managed-proxied-server":
+                    init_flags.append("--proxied-server")
                 card_recorder.run(
                     "init",
-                    ["init", "--non-interactive", "--prefix", "s1", "--skip-hooks", "--skip-agents", "--quiet"],
+                    init_flags,
                 )
+                initialized = True
                 card = getattr(card_recorder, method_name)()
                 cards[name] = card
-                all_commands.extend(card_recorder.commands)
             finally:
-                shutil.rmtree(card_workspace, ignore_errors=True)
+                failed = sys.exc_info()[0] is not None
+                stopped = self.runtime["mode"] != "managed-proxied-server" or not (card_workspace / ".beads").exists()
+                try:
+                    if self.runtime["mode"] == "managed-proxied-server" and (card_workspace / ".beads").exists():
+                        code, _, _ = card_recorder.run("cleanup-stop", ["dolt", "stop", "--json"], expected=None)
+                        stopped = code == 0
+                        if initialized and code != 0 and not failed:
+                            raise RuntimeError(f"{name}: managed reference runtime cleanup failed with exit {code}")
+                finally:
+                    all_commands.extend(card_recorder.commands)
+                    if stopped:
+                        shutil.rmtree(card_workspace, ignore_errors=True)
+                    else:
+                        print(f"managed runtime shutdown unverified; workspace retained: {card_workspace}", file=sys.stderr)
         self.commands = all_commands
         # Keep command outcomes inside each card and remove the global setup
         # command from the card-specific sequence.  The full command transcript
@@ -315,10 +363,10 @@ class Recorder:
         projection = {name: value["projection"] for name, value in cards.items()}
         config = {
             "actor": "s1-reference-recorder",
-            "prefixes": ["s1b01", "s1b02", "s1b03", "s1b04"],
-            "initFlags": ["--non-interactive", "--skip-hooks", "--skip-agents", "--quiet"],
+            "prefix": "s1",
+            "initFlags": init_flags[1:],
             "customStatus": "awaiting_review:active,qa_testing:wip,on_hold:frozen,archived:done",
-            "drivers": ["embedded-dolt", "memory", "sqlite", "postgres"],
+            "drivers": [self.runtime["mode"], "memory", "sqlite", "postgres"],
         }
         inputs = {
             "clock": {
@@ -346,7 +394,7 @@ class Recorder:
             "schema": "plug.s1-b01-b04.reference.v1",
             "source": {"commit": PIN, "tree": TREE, "sourceFiles": self.source_evidence()},
             "binary": {"sha256": digest(self.binary.read_bytes()), "version": "bd version 1.3.0 (dev)", "buildTags": ["gms_pure_go"]},
-            "driver": {"name": "embedded-dolt", "version": DRIVER},
+            "driver": {"name": self.runtime["mode"], "version": self.runtime["version"], "runtime": self.runtime},
             "recorder": {"identity": "s1-b01-b04-reference", "version": "1", "source": "spec/s1-b01-b04/record_reference.py"},
             "configuration": {"value": config, "digest": digest(config)},
             "inputs": {"value": inputs, "digest": digest(inputs)},
@@ -363,14 +411,24 @@ def main() -> int:
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--runtime-manifest", type=Path)
+    parser.add_argument("--transcript", type=Path)
     args = parser.parse_args()
     if digest(args.binary.read_bytes()) != BINARY_SHA256:
         raise SystemExit("reference executable SHA-256 differs from the pinned build")
     if not args.source.is_dir():
         raise SystemExit("pinned source archive is missing")
+    runtime = None
+    if args.runtime_manifest is not None:
+        runtime = json.loads(args.runtime_manifest.read_bytes())
+        dolt = shutil.which("dolt")
+        if (runtime.get("mode") != "managed-proxied-server" or runtime.get("version") != "2.2.0"
+                or runtime.get("archiveSHA256") != "1f7ad8c2622995789420a3fb0f2d16b4aa7430000a825dd91d5938f36480cbf6"
+                or dolt is None or digest(Path(dolt).read_bytes()) != runtime.get("binarySHA256")):
+            raise SystemExit("managed reference runtime identity differs from the pinned profile")
     workspace = Path(tempfile.mkdtemp(prefix="s1-b01-b04-reference-", dir="/tmp/plug-swarm/work"))
     try:
-        recorder = Recorder(args.binary, args.source, workspace)
+        recorder = Recorder(args.binary, args.source, workspace, runtime, args.transcript)
         vector = recorder.record()
         raw = canonical(vector)
         artifact = {
@@ -379,6 +437,7 @@ def main() -> int:
             "digest": digest(raw),
             "recorderSHA256": digest(Path(__file__).read_bytes()),
             "workspaceClass": "fresh-disposable",
+            "runtimeProfile": recorder.runtime["mode"],
         }
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_bytes(canonical(artifact) + b"\n")

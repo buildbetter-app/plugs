@@ -81,6 +81,7 @@ type prepared struct {
 	hierarchyDelta    *hierarchyDelta
 	hierarchySources  *hierarchySources
 	checkpointReads   map[string]uint64
+	readySort         readySortPlan
 }
 
 func failure(code model.ErrorCode, message string) error {
@@ -268,7 +269,8 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if snapshot.reads.states[key].Present {
 				return nil, errStale
 			}
-			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}}, setBy: map[string]string{}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected, allocatorChild: allocatorChild, allocatorHash: allocatorHash}
+			createdAt := w.cfg.now().UTC()
+			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}, CreatedAt: &createdAt}, setBy: map[string]string{"createdAt": "core"}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected, allocatorChild: allocatorChild, allocatorHash: allocatorHash}
 			p.writes[id] = current
 			if parent != nil {
 				current.setBy["parent"] = "request"
@@ -356,6 +358,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if e != nil {
 					return nil, e
 				}
+				next := current.doc
+				next.Parent = parent
+				if _, e := HierarchyParent(next); e != nil {
+					return nil, e
+				}
 				op.Reparent.Target, op.Reparent.Parent = target, parent
 				current.doc.Parent = parent
 				current.setBy["parent"] = "request"
@@ -396,6 +403,15 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				}
 				if _, e := p.load(ctx, to); e != nil {
 					return nil, e
+				}
+				if kind == "parent-child" && op.Kind == model.OpLink {
+					parent, e := HierarchyParent(current.doc)
+					if e != nil {
+						return nil, e
+					}
+					if parent != nil && parent.ID != to.ID {
+						return nil, failure("invalid_params", "conflicting parent representations")
+					}
 				}
 				// The endpoint is read, not written, unless another op targets it.
 				found := -1
@@ -441,7 +457,31 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 					}
 				}
 				if op.Kind == model.OpUnlink && found >= 0 {
-					current.doc.Links = append(current.doc.Links[:found], current.doc.Links[found+1:]...)
+					if kind == "parent-child" {
+						// Remove every matching legacy copy before detaching Parent.
+						links := current.doc.Links[:0]
+						for _, link := range current.doc.Links {
+							if link.Kind != kind || link.To.ID != to.ID {
+								links = append(links, link)
+							}
+						}
+						current.doc.Links = links
+					} else {
+						current.doc.Links = append(current.doc.Links[:found], current.doc.Links[found+1:]...)
+					}
+				}
+				if kind == "parent-child" {
+					if op.Kind == model.OpLink {
+						parent, e := p.resolveParent(ctx, &to, aliases, target.ID)
+						if e != nil {
+							return nil, e
+						}
+						current.doc.Parent = parent
+					} else if parentID(current.doc.Parent) == to.ID {
+						current.doc.Parent = nil
+					}
+					current.setBy["parent"] = "request"
+					p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, parent: parentID(current.doc.Parent)})
 				}
 				current.setBy["links"] = "request"
 			case model.OpDelete:
@@ -1264,10 +1304,14 @@ func (w *Writer) checkLease(ctx context.Context, doc Document, by model.Principa
 }
 
 func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta) error {
+	stamp := w.cfg.now().UTC()
+	if err := p.lifecycleTimes(stamp); err != nil {
+		return err
+	}
 	if isClaim(meta.Method) && !p.proposal.SameClaim {
 		ttl := model.Natural64(uint64(w.cfg.claimTTL / time.Millisecond))
 		for _, pending := range p.writes {
-			pending.doc.Lease = &ClaimLease{Principal: by, Agent: meta.AgentLabel, ExpiresAt: w.cfg.now().UTC().Add(w.cfg.claimTTL), TtlMs: ttl, Epoch: model.Natural64(w.lease.Epoch())}
+			pending.doc.Lease = &ClaimLease{Principal: by, Agent: meta.AgentLabel, ExpiresAt: stamp.Add(w.cfg.claimTTL), TtlMs: ttl, Epoch: model.Natural64(w.lease.Epoch())}
 			pending.setBy["lease"] = "request"
 		}
 	} else {
