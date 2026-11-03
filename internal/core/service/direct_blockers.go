@@ -255,7 +255,7 @@ func (e *directBlockerEvaluation) waitsFor(ctx context.Context, link pipeline.Li
 		}
 	}
 	// Compile every relevant child's own project before reusing the canonical
-	// graph predicate. Unknown ontology/status is not a terminal-child witness.
+	// graph predicate. Unknown ontology/status cannot satisfy a child predicate.
 	o := NewOntology(func(project string) ontology.Effective { return e.compiled[project] })
 	if o.waitsForSatisfied(link, spawner, e.graph) {
 		return DirectBlockerSatisfied, nil

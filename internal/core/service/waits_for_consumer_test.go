@@ -96,7 +96,7 @@ func TestReadDirectWaitsForPinsMetadataAndCompleteFanout(t *testing.T) {
 		}
 		verdict, err := ReadDirectBlockers(ctx, current, missingChildSource)
 		if err != nil || len(verdict.Edges) != 1 || verdict.Edges[0].State != DirectBlockerUnknown {
-			t.Fatalf("missing child ontology manufactured a terminal witness: %+v %v", verdict, err)
+			t.Fatalf("missing child ontology manufactured a satisfied predicate: %+v %v", verdict, err)
 		}
 		if _, err := f.svc.Link(ctx, anonymous, LinkRequest{From: waiter, To: spawner, Kind: "waits-for", Metadata: &model.LinkMetadata{Gate: "all-children", AlsoBlocks: true}}, directBlockerMeta(t)); err != nil {
 			t.Fatal(err)
