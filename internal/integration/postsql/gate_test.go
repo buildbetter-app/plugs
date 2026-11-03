@@ -108,7 +108,7 @@ func assertApproval(t *testing.T, out port.GateOutcome, state string, count uint
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantStatus := "open"
+	wantStatus := "todo"
 	if state == "resolved" {
 		wantStatus = "done"
 	}
