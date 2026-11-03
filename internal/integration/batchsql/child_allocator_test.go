@@ -28,6 +28,11 @@ func seedChildAllocatorFixture(t *testing.T, f *fixture, profile driver.OfflineA
 
 func seedChildFixture(t *testing.T, f *fixture, profile *driver.OfflineAllocator, observed bool, ids ...string) {
 	t.Helper()
+	seedChildSourceFixture(t, f, profile, observed, false, ids...)
+}
+
+func seedChildSourceFixture(t *testing.T, f *fixture, profile *driver.OfflineAllocator, observed, typed bool, ids ...string) {
+	t.Helper()
 	var locks driver.LockSet
 	if profile != nil {
 		key, err := driver.AllocatorLock(profile.Prefix)
@@ -39,6 +44,10 @@ func seedChildFixture(t *testing.T, f *fixture, profile *driver.OfflineAllocator
 	var records []driver.Record
 	var rows []driver.DerivedRow
 	var sentinels []driver.Sentinel
+	if typed {
+		locks = append(locks, driver.LockRequest{Key: driver.GraphBlockingSentinelLock, Mode: driver.LockUpdate})
+		sentinels = append(sentinels, driver.SentinelGraphBlocking)
+	}
 	if observed {
 		if len(ids) == 0 {
 			ids = []string{"demo-root", "demo-root.8", "demo-root.8.2"}
@@ -105,7 +114,12 @@ func seedChildFixture(t *testing.T, f *fixture, profile *driver.OfflineAllocator
 		}
 	}
 	for _, record := range records {
-		if err = tx.Put(f.ctx, record); err != nil {
+		if typed {
+			err = pipeline.PutSourceRecord(f.ctx, tx, record)
+		} else {
+			err = tx.Put(f.ctx, record)
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -443,6 +457,14 @@ func (t *childAllocationFailTx) Put(ctx context.Context, record driver.Record) e
 	return t.WriteTx.Put(ctx, record)
 }
 
+func (t *childAllocationFailTx) PutGraphRecord(ctx context.Context, record driver.Record, parent *model.Ref, links []driver.SourceLink) error {
+	t.owner.puts++
+	if t.owner.puts == 2 {
+		return errChildAllocationPut
+	}
+	return t.WriteTx.(driver.GraphSourceWriter).PutGraphRecord(ctx, record, parent, links)
+}
+
 func childInventory(t *testing.T, f *fixture) driver.AllocatorInventory {
 	t.Helper()
 	r := hierarchyReader(t, f)
@@ -452,6 +474,116 @@ func childInventory(t *testing.T, f *fixture) driver.AllocatorInventory {
 		t.Fatal(err)
 	}
 	return inventory
+}
+
+// Check the source index independently of closure rows and allocator inventory.
+// In particular, an allocator-backed create must publish the exact bead image
+// through the typed writer, and a rolled-back consume must leave no index row.
+func assertChildAllocatorSourceIndex(t *testing.T, f *fixture, parent model.Ref, want ...model.Ref) {
+	t.Helper()
+	r := hierarchyReader(t, f)
+	defer r.Close()
+	indexed, ok := r.(driver.HierarchyChildrenReader)
+	if !ok {
+		t.Fatal("allocator fixture lacks the hierarchy source reader")
+	}
+	children, more, err := indexed.HierarchyChildren(f.ctx, []model.Ref{parent}, len(want))
+	if err != nil || more || len(children) != len(want) {
+		t.Fatalf("allocator child source index: children=%+v more=%v err=%v want=%+v", children, more, err, want)
+	}
+	expected := make(map[string]bool, len(want))
+	for _, ref := range want {
+		expected[ref.ID] = true
+	}
+	previous := ""
+	for _, child := range children {
+		key, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &child.Ref})
+		if err != nil || !expected[child.Ref.ID] || previous != "" && key <= previous {
+			t.Fatalf("unexpected, duplicate or unsorted allocator child source: %+v err=%v", child, err)
+		}
+		delete(expected, child.Ref.ID)
+		previous = key
+		stored, err := r.Get(f.ctx, []model.Ref{child.Ref})
+		if err != nil || len(stored) != 1 || !reflect.DeepEqual(child, stored[0]) {
+			t.Fatalf("allocator child index differs from exact published image: indexed=%+v stored=%+v err=%v", child, stored, err)
+		}
+		if doc := decodeDocument(t, child); doc.Parent == nil || doc.Parent.ID != parent.ID {
+			t.Fatalf("allocator child index has a different parent: %+v", doc)
+		}
+	}
+}
+
+func TestChildAllocatorCertifiedSourcePublicationAcrossStores(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		for _, mode := range []string{"no-profile", driver.AllocatorSequential, driver.AllocatorHash, driver.AllocatorRandom} {
+			t.Run(engine+"/"+mode, func(t *testing.T) {
+				f := newFixture(t, engine)
+				var profile *driver.OfflineAllocator
+				switch mode {
+				case driver.AllocatorSequential:
+					profile = &driver.OfflineAllocator{Prefix: "demo", Mode: mode}
+				case driver.AllocatorHash:
+					value := driver.NewHashAllocator("demo", 3, 8, 0.25)
+					profile = &value
+				case driver.AllocatorRandom:
+					value := driver.NewRandomAllocator("demo")
+					profile = &value
+				}
+				// Certify the root and restore its allocator in the same empty-
+				// target transaction. The existing record-only fixtures above
+				// deliberately retain their separate unbuilt-index coverage.
+				seedChildSourceFixture(t, f, profile, true, true, "demo-root")
+				parent := model.Ref{ID: "demo-root"}
+				assertChildAllocatorSourceIndex(t, f, parent)
+				cs := model.ChangeSet{Ops: []model.Op{hierarchyCreate("one", &parent, "demo"), hierarchyCreate("two", &parent, "demo")}}
+				meta := f.meta("certified-children")
+				out, err := childAllocatorApply(f, cs, meta)
+				if err != nil || len(out.Commit.Results) != 2 {
+					t.Fatalf("certified allocator publication: %+v err=%v", out, err)
+				}
+				first, second := out.Commit.Results[0].Ref, out.Commit.Results[1].Ref
+				if mode != driver.AllocatorRandom && (first.ID != parent.ID+".1" || second.ID != parent.ID+".2") {
+					t.Fatalf("certified allocator skipped initial counters: %+v", out)
+				}
+				assertChildAllocatorSourceIndex(t, f, parent, first, second)
+				assertChildAllocatorReplay(t, f, cs, meta, out.Commit)
+				hierarchyApply(t, f, childDelete(first))
+				assertChildAllocatorSourceIndex(t, f, parent, second)
+
+				before, rows, inventory := childAllocatorDurableState(t, f), hierarchyRows(t, f), childInventory(t, f)
+				ordinary := f.writer
+				fault := &childAllocationFailStore{Store: f.store}
+				f.writer = pipeline.New(fault, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now))
+				faultMeta := f.meta("certified-rollback")
+				_, err = childAllocatorApply(f, cs, faultMeta)
+				f.writer = ordinary
+				if !errors.Is(err, errChildAllocationPut) || fault.consumes != 2 || fault.puts != 2 {
+					t.Fatalf("certified rollback missed real consumes/typed Puts: consumes=%d puts=%d err=%v", fault.consumes, fault.puts, err)
+				}
+				requireSameState(t, before, childAllocatorDurableState(t, f))
+				if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || !reflect.DeepEqual(inventory, childInventory(t, f)) || f.receipt(t, faultMeta) != nil {
+					t.Fatal("certified rollback published closure, allocator or receipt")
+				}
+				assertChildAllocatorSourceIndex(t, f, parent, second)
+				next := hierarchyApply(t, f, hierarchyCreate("three", &parent, "demo")).Results[0].Ref
+				if mode != driver.AllocatorRandom && next.ID != parent.ID+".3" {
+					t.Fatalf("certified rollback/deletion consumed or reused a counter: %+v", next)
+				}
+				assertChildAllocatorSourceIndex(t, f, parent, second, next)
+				verifyHierarchy(t, f)
+				if engine != "memory" {
+					before, inventory = childAllocatorDurableState(t, f), childInventory(t, f)
+					f.reopen(t)
+					requireSameState(t, before, childAllocatorDurableState(t, f))
+					if !reflect.DeepEqual(inventory, childInventory(t, f)) {
+						t.Fatal("reopen changed certified allocator continuation")
+					}
+					assertChildAllocatorSourceIndex(t, f, parent, second, next)
+				}
+				t.Logf("%s/%s: allocator and certified child sources commit, replay, delete, roll back and reopen together", engine, mode)
+			})
+		}
+	}
 }
 
 func TestChildAllocatorAtomicConsumptionAndConcurrentRetryAcrossStores(t *testing.T) {

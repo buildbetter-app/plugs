@@ -300,18 +300,26 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	if err != nil {
 		return zero, err
 	}
+	sourcePlan, err := t.prepareSourcePublication(ctx, revision)
+	if err != nil {
+		return zero, err
+	}
 	target := t.meta
 	target.Head = revision
 	if t.restore != nil {
 		target = *t.restore
 	}
-	if err := t.publishAllocatorJournal(ctx, t.sql, target, t.restore != nil); err != nil {
+	// Once database publication begins, every failure closes and rolls back
+	// the transaction, including allocator state, source indexes and records.
+	if err = t.publishAllocatorJournal(ctx, t.sql, target, t.restore != nil); err != nil {
 		_ = t.finish()
 		return zero, err
 	}
-	// Once database publication begins, every failure closes and rolls back
-	// the transaction, including all already-inserted version and blob rows.
 	if err = t.writeRecords(ctx, entry); err != nil {
+		_ = t.finish()
+		return zero, err
+	}
+	if err = sourcePlan.Publish(ctx, t.sql); err != nil {
 		_ = t.finish()
 		return zero, err
 	}

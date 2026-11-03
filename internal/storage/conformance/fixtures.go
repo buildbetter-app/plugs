@@ -17,6 +17,17 @@ type FixtureChange struct {
 	Op           model.OpKind
 	Body         []byte
 	ChangedPaths []string
+	// Graph opts this bead image or deletion into complete typed source
+	// publication. Nil retains the ordinary Put/Delete fixture behavior.
+	Graph *FixtureGraphSource
+}
+
+// FixtureGraphSource is trusted test metadata for the exact unchanged Body.
+// An empty value explicitly declares a root with no outgoing links, including
+// when unrelated malformed fields in Body are the subject of a read test.
+type FixtureGraphSource struct {
+	Parent *model.Ref
+	Links  []driver.SourceLink
 }
 
 // Seed commits real records/history through the driver. Changes retain caller
@@ -53,7 +64,14 @@ func seed(ctx context.Context, store driver.Store, lease driver.ActiveLease, hea
 	requests := map[string]driver.LockRequest{}
 	seen := map[string]bool{}
 	sentinels := []driver.Sentinel{}
+	graph := false
 	for _, change := range changes {
+		if change.Graph != nil {
+			if change.Kind != "bead" {
+				return model.Changeset{}, fmt.Errorf("graph fixture requires bead kind")
+			}
+			graph = true
+		}
 		key := driver.LockKey{Kind: driver.LockRecord, Ref: &change.Ref}
 		id, err := driver.EncodeLockKey(key)
 		if err != nil {
@@ -78,6 +96,15 @@ func seed(ctx context.Context, store driver.Store, lease driver.ActiveLease, hea
 			id, _ := driver.EncodeLockKey(key)
 			requests[id] = driver.LockRequest{Key: key, Mode: driver.LockUpdate}
 		}
+	}
+	if graph {
+		key := driver.GraphBlockingSentinelLock
+		id, err := driver.EncodeLockKey(key)
+		if err != nil {
+			return model.Changeset{}, err
+		}
+		requests[id] = driver.LockRequest{Key: key, Mode: driver.LockUpdate}
+		sentinels = append(sentinels, driver.SentinelGraphBlocking)
 	}
 	ids := make([]string, 0, len(requests))
 	for id := range requests {
@@ -113,6 +140,13 @@ func seed(ctx context.Context, store driver.Store, lease driver.ActiveLease, hea
 		id, _ := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &change.Ref})
 		if change.Op == model.OpDelete {
 			err = tx.Delete(ctx, change.Ref)
+		} else if change.Graph != nil {
+			record := driver.Record{Ref: change.Ref, Kind: change.Kind, Body: change.Body}
+			if writer, ok := tx.(driver.GraphSourceWriter); ok {
+				err = writer.PutGraphRecord(ctx, record, change.Graph.Parent, change.Graph.Links)
+			} else {
+				err = tx.Put(ctx, record)
+			}
 		} else {
 			err = tx.Put(ctx, driver.Record{Ref: change.Ref, Kind: change.Kind, Body: change.Body})
 		}
