@@ -823,6 +823,22 @@ func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest, readers .
 			r.closeLocked()
 			return wasmResponse{}, busy
 		}
+		if errors.Is(err, context.Canceled) {
+			// A guest can select a context-shaped exit code. Require caller
+			// cancellation or owner retirement before cleanup retires the timer.
+			cancellationErr := ctx.Err()
+			if cancellationErr == nil && r.timer != nil {
+				r.timer.mu.Lock()
+				if r.timer.retired {
+					cancellationErr = context.Canceled
+				}
+				r.timer.mu.Unlock()
+			}
+			if cancellationErr != nil {
+				r.closeLocked()
+				return wasmResponse{}, cancellationErr
+			}
+		}
 		r.closeLocked()
 	}
 	if err != nil || len(packed) != 1 {
