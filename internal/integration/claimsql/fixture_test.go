@@ -374,7 +374,7 @@ func (f *fixture) assertBead(t *testing.T, ref model.Ref, wantStatus string, wan
 	}
 	_, hasLease := got["lease"]
 	if hasLease != wantLease {
-		t.Fatalf("bead %s lease presence=%t want %t: %+v", ref.ID, hasLease, got)
+		t.Fatalf("bead %s lease presence=%t want %t: %+v", ref.ID, hasLease, wantLease, got)
 	}
 }
 
