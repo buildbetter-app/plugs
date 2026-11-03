@@ -16,7 +16,7 @@ import reference_capture as original
 from public_reference_profile import SOURCE_TESTS
 from proxied_reference_profile import (
     CARDS, ENGINE, MODULES, PACKET_SCHEMA, PROFILE, PUBLIC_BUILD, QUALIFICATION,
-    RUN_SCHEMA, RUNTIME, RUNTIME_SOURCE, UNEXECUTED,
+    RUN_SCHEMA, RUNTIME, RUNTIME_CONFIGURATION, RUNTIME_SOURCE, UNEXECUTED,
 )
 
 
@@ -43,6 +43,50 @@ def runtime_source(source):
             raise ValueError("pinned runtime source differs: " + path)
         result.append({"path": path, "sha256": checksum, "bytesBase64": original.encoded(data)})
     return result
+
+
+def configure_runtime(environment):
+    # Original9d6 localdoltserver.go and test_env.sh use these exact supported
+    # private config keys. Write them before spawning Dolt, so even its first
+    # command cannot perform the release check or fork an event-flush child.
+    home = Path(environment["HOME"])
+    directory = home / ".dolt"
+    directory.mkdir(mode=0o700)
+    directory.chmod(0o700)
+    path = home / RUNTIME_CONFIGURATION["relativePath"]
+    with path.open("xb") as output:
+        output.write(RUNTIME_CONFIGURATION["contents"].encode())
+    path.chmod(0o600)
+    environment.update({"DOLT_ROOT_PATH": str(home), "DOLT_DISABLE_EVENT_FLUSH": "1"})
+    data = path.read_bytes()
+    return {
+        "operation": RUNTIME_CONFIGURATION["operation"],
+        "rootPath": str(home), "path": str(path),
+        "relativePath": RUNTIME_CONFIGURATION["relativePath"],
+        "directoryMode": oct(directory.stat().st_mode & 0o777),
+        "fileMode": oct(path.stat().st_mode & 0o777),
+        "bytesBase64": original.encoded(data), "sha256": original.sha256(data),
+        "environment": {key: environment[key] for key in RUNTIME_CONFIGURATION["environment"]},
+    }
+
+
+def runtime_probe(binary, args, environment):
+    try:
+        process = subprocess.run([str(binary), *args], env=environment, capture_output=True, timeout=30)
+        stdout, stderr, code = process.stdout, process.stderr, process.returncode
+    except subprocess.TimeoutExpired as error:
+        stdout, stderr, code = error.stdout or b"", error.stderr or b"", None
+    return {
+        "argv": ["verified-runtime", *args], "exitCode": code,
+        "stdoutBase64": original.encoded(stdout), "stderrBase64": original.encoded(stderr),
+        "stdoutSha256": original.sha256(stdout), "stderrSha256": original.sha256(stderr),
+    }
+
+
+def require_probe(probe, expected_stdout, detail):
+    if (probe["exitCode"] != 0 or original.encoded(expected_stdout.encode()) != probe["stdoutBase64"]
+            or probe["stderrBase64"]):
+        raise ValueError(detail + "; exact streams retained")
 
 
 def consume_runtime(root, progress):
@@ -83,18 +127,11 @@ def consume_runtime(root, progress):
         "binary": {"sha256": original.sha256(payload), "bytes": len(payload), "mode": "0o700", "member": RUNTIME["member"]},
     })
     environment = recorder.isolated_environment(root / "version-environment", "s1-runtime-version")
-    try:
-        process = subprocess.run([str(binary), "version"], env=environment, capture_output=True, timeout=30)
-        stdout, stderr, code = process.stdout, process.stderr, process.returncode
-    except subprocess.TimeoutExpired as error:
-        stdout, stderr, code = error.stdout or b"", error.stderr or b"", None
-    progress["versionProbe"] = {
-        "argv": ["verified-runtime", "version"], "exitCode": code,
-        "stdoutBase64": original.encoded(stdout), "stderrBase64": original.encoded(stderr),
-        "stdoutSha256": original.sha256(stdout), "stderrSha256": original.sha256(stderr),
-    }
-    if code != 0 or stdout != RUNTIME["versionStdout"].encode() or stderr:
-        raise ValueError("fixed runtime version probe failed; exact streams retained")
+    progress["configuration"] = configure_runtime(environment)
+    progress["configurationProbe"] = runtime_probe(binary, RUNTIME["configurationProbe"], environment)
+    require_probe(progress["configurationProbe"], RUNTIME["configurationStdout"], "fixed runtime configuration probe failed")
+    progress["versionProbe"] = runtime_probe(binary, ["version"], environment)
+    require_probe(progress["versionProbe"], RUNTIME["versionStdout"], "fixed runtime version probe failed")
     return binary
 
 
@@ -104,6 +141,7 @@ class ProxiedRecorder(original.LosslessRecorder):
             raise ValueError("card is not in the selected proxied profile")
         super().__init__(binary, source, card)
         self.env["PATH"] = str(runtime_binary.parent) + ":/usr/bin:/bin"
+        self.runtime_configuration = configure_runtime(self.env)
 
     def init(self):
         self.run("init", [*RUNTIME["init"], "--prefix", self.card.lower(), "--quiet"])
@@ -117,7 +155,8 @@ class ProxiedRecorder(original.LosslessRecorder):
 
 def capture_one(card, binary, source, runtime_binary, progress):
     current = ProxiedRecorder(binary, source, card, runtime_binary)
-    progress.update({"card": card, "workspaceId": current.workspace.name, "engine": ENGINE})
+    progress.update({"card": card, "workspaceId": current.workspace.name, "engine": ENGINE,
+                     "runtimeConfiguration": current.runtime_configuration})
     failure, selected, stopped = None, None, False
     try:
         selected = current.selection()
@@ -146,6 +185,7 @@ def capture_one(card, binary, source, runtime_binary, progress):
         "sourceCommit": recorder.PIN, "sourceTree": recorder.TREE,
         "binarySha256": original.sha256(binary.read_bytes()),
         "runtimeBinarySha256": original.sha256(runtime_binary.read_bytes()),
+        "runtimeConfiguration": current.runtime_configuration,
         "workspaceId": current.workspace.name, "shutdownVerified": True,
         "commands": current.commands, "streams": current.streams,
         "observations": selected["observations"], "projection": selected["projection"],
@@ -180,6 +220,7 @@ def main():
                 "inheritAmbient": False, "environment": recorder.ENVIRONMENT,
                 "gitConfiguration": recorder.GIT_CONFIGURATION,
                 "runtimePath": "verified private runtime-bin prepended to /usr/bin:/bin",
+                "runtimeConfiguration": RUNTIME_CONFIGURATION,
                 "workspaces": "two new private Git-backed managed-proxied stores per selected card",
             }
             packet["configurationSha256"] = recorder.digest(packet["configuration"])

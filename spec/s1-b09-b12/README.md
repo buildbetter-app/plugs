@@ -136,7 +136,7 @@ historical evidence; their source/policy passes do not establish store support.
 
 The additional `proxied_reference_profile.py` and
 `reference_proxied_capture.py` select B09–B11 only, under profile
-`s1-b09-b11-public9d6-proxied-dolt220-v1`. B12 is explicitly NOT EXECUTED and
+`s1-b09-b11-public9d6-proxied-dolt220-v2`. B12 is explicitly NOT EXECUTED and
 UNQUALIFIED. The four-card completion contract above still applies. This route
 makes no claim about proxied compaction or equivalence to the embedded mode.
 
@@ -186,3 +186,36 @@ target is excluded from `//...`; the additional
 fixtures without a product or network. No changed-source runtime evidence is
 claimed by this source successor. B12/full-card/full-S1 and whole/hosted
 qualification remain incomplete.
+
+The original proxied v1 head `e71f09310eb5558c29230f691cc4bd5bb6afb443`
+ran once in Run `41561273036`: RED, exit 3/evidence ok. Archive authentication
+and executable extraction succeeded, but `dolt version` exited 0 with a
+177-byte stdout containing an online release warning. Strict version identity
+rejected those bytes before any store/card/init/shutdown. The complete
+1,385,352-byte BLOCK packet SHA-256
+`6d9123141e5186692381a6356f422a409b1e64d68c795bc051d314b1678de4ca`
+and exact warning streams remain retained. No card or pair completed; all
+equality is NOT MEASURED. Its source and fixture-policy PASS remain historical
+and bounded; no unchanged repeat is valid.
+
+The causal proxied v2 profile keeps the same source, public binary, Dolt
+archive/member, storage mode, card set and strict version output. Before any
+Dolt process, it exclusively creates the fixed private
+`HOME/.dolt/config_global.json` with mode 0600 under a 0700 directory. Exact
+bytes set `metrics.disabled` and `versioncheck.disabled` to true, following pinned
+`internal/testutil/localdoltserver.go`. `DOLT_ROOT_PATH` points to that same
+private HOME; `DOLT_DISABLE_EVENT_FLUSH=1` follows pinned
+`tools/bazel/test_env.sh` and prevents detached metrics children from recreating
+removed roots. Neither ambient configuration nor the host HOME is used.
+
+The runtime preparation additionally executes the supported public
+`dolt config --global --get versioncheck.disabled` before `dolt version` and
+retains both probes' exact argv, exit and stdout/stderr bytes/digests, including
+partial timeout/failure bytes. Both assertions remain strict. Each selected
+workspace receives its own fixed configuration before init. Actual file bytes,
+modes, derived environment and private paths are retained for the probe and
+each workspace and independently checked against this explicit profile and
+the workspace identities. Configuration failure or incomplete data blocks
+acceptance; warnings are never stripped from actual version output. The two
+additional original9d6 configuration source blobs are retained and Git-bound.
+Fresh authentic execution remains required for this source successor.

@@ -8,6 +8,16 @@ RUNTIME_SOURCE = {
     "cmd/bd/init_proxied_server.go": "aedda5be896a6575f4a2a0641c9a22064b06383b687cccf256c268656eb28654",
     "cmd/bd/uow_factory.go": "6e9e4264c9f77167aa7a12d78d19b5e349a465650ea78aa473b88313decd0af2",
     "cmd/bd/dolt.go": "856d86821d0131e0ca0cf5299637b8ed41f0f9e8c9c5fbfa3d4727a73bb400fb",
+    "internal/testutil/localdoltserver.go": "2515e188b89e1676921d3a7dd215b8fa824f1206a72aa81da9aa85e491f6f3df",
+    "tools/bazel/test_env.sh": "8bb3e5f57e2d8816753a4e0e9f08be5d64e51b89bde61d0d799f3bf04e1dd3d0",
+}
+RUNTIME_CONFIGURATION = {
+    "operation": "exclusive private file creation before runtime execution",
+    "relativePath": ".dolt/config_global.json",
+    "directoryMode": "0o700",
+    "fileMode": "0o600",
+    "contents": '{"metrics.disabled":"true","versioncheck.disabled":"true"}\n',
+    "environment": {"DOLT_ROOT_PATH": "private HOME", "DOLT_DISABLE_EVENT_FLUSH": "1"},
 }
 RUNTIME = {
     "mode": "managed-proxied-server",
@@ -17,12 +27,15 @@ RUNTIME = {
     "archiveSha256": "1f7ad8c2622995789420a3fb0f2d16b4aa7430000a825dd91d5938f36480cbf6",
     "member": "dolt-linux-amd64/bin/dolt",
     "versionStdout": "dolt version 2.2.0\n",
+    "configuration": RUNTIME_CONFIGURATION,
+    "configurationProbe": ["config", "--global", "--get", "versioncheck.disabled"],
+    "configurationStdout": "true\n",
     "binaryIdentity": "measured from the fixed verified archive before execution",
     "init": ["init", "--proxied-server", "--non-interactive", "--skip-hooks", "--skip-agents"],
     "shutdown": ["dolt", "stop", "--json"],
 }
 PROFILE = {
-    "id": "s1-b09-b11-public9d6-proxied-dolt220-v1",
+    "id": "s1-b09-b11-public9d6-proxied-dolt220-v2",
     "publicBuild": PUBLIC_BUILD,
     "runtime": RUNTIME,
     "runtimeSource": RUNTIME_SOURCE,

@@ -24,6 +24,26 @@ import reference_proxied_capture as capture
 RUNTIME_FIXTURE_SHA = common.digest(b"fixture-dolt-never-executed")
 
 
+def configuration_fixture(home):
+    data = profile.RUNTIME_CONFIGURATION["contents"].encode()
+    return {
+        "operation": profile.RUNTIME_CONFIGURATION["operation"],
+        "rootPath": home, "path": home + "/" + profile.RUNTIME_CONFIGURATION["relativePath"],
+        "relativePath": profile.RUNTIME_CONFIGURATION["relativePath"],
+        "directoryMode": "0o700", "fileMode": "0o600",
+        "bytesBase64": original.encoded(data), "sha256": common.digest(data),
+        "environment": {"DOLT_ROOT_PATH": home, "DOLT_DISABLE_EVENT_FLUSH": "1"},
+    }
+
+
+def probe_fixture(args, stdout, code=0, stderr=b""):
+    return {
+        "argv": ["verified-runtime", *args], "exitCode": code,
+        "stdoutBase64": original.encoded(stdout), "stderrBase64": original.encoded(stderr),
+        "stdoutSha256": common.digest(stdout), "stderrSha256": common.digest(stderr),
+    }
+
+
 class ProxiedPolicies(fixtures.PolicyTests):
     # The retained parent policy cases still run against the unchanged embedded
     # modules. The following additional cases use explicitly synthetic bytes.
@@ -31,6 +51,8 @@ class ProxiedPolicies(fixtures.PolicyTests):
         run = self.b09_run(variation)
         run.update({"schema": profile.RUN_SCHEMA, "engine": profile.ENGINE,
                     "runtimeBinarySha256": RUNTIME_FIXTURE_SHA, "shutdownVerified": True})
+        run["runtimeConfiguration"] = configuration_fixture(
+            "/tmp/plug-swarm/work/" + run["workspaceId"] + "/.recorder-env/home")
         run["commands"][0]["argv"] = ["reference-engine", *profile.RUNTIME["init"], "--prefix", "b09", "--quiet"]
         shutdown = {"stopped": True, "force": False, "verified": True}
         stdout = json.dumps(shutdown).encode()
@@ -64,15 +86,16 @@ class ProxiedPolicies(fixtures.PolicyTests):
         refs = common.validate_source(source)
         for run in (first, repeat):
             run["sourceRefs"] = refs["B09"]
-        probe = {"argv": ["verified-runtime", "version"], "exitCode": 0,
-                 "stdoutBase64": original.encoded(profile.RUNTIME["versionStdout"].encode()), "stderrBase64": "",
-                 "stdoutSha256": common.digest(profile.RUNTIME["versionStdout"].encode()), "stderrSha256": common.digest(b"")}
+        probe = probe_fixture(["version"], profile.RUNTIME["versionStdout"].encode())
         runtime = {"mode": profile.RUNTIME["mode"], "version": profile.RUNTIME["version"], "versionProbe": probe,
+                   "configuration": configuration_fixture("/tmp/plug-swarm/work/s1-proxied-capture-fixture/version-environment/home"),
+                   "configurationProbe": probe_fixture(profile.RUNTIME["configurationProbe"], b"true\n"),
                    "archive": {"sha256": profile.RUNTIME["archiveSha256"], "bytes": 123, "url": profile.RUNTIME["url"]},
                    "binary": {"sha256": RUNTIME_FIXTURE_SHA, "bytes": 456, "mode": "0o700", "member": profile.RUNTIME["member"]}}
         candidate = {"commit": "a" * 40, "tree": "b" * 40, "modules": {name: "c" * 64 for name in profile.MODULES}}
         candidate["modules"]["record_reference.py"] = profile.PUBLIC_BUILD["reviewedRecorderSha256"]
         packet["configuration"]["runtimePath"] = "verified private runtime-bin prepended to /usr/bin:/bin"
+        packet["configuration"]["runtimeConfiguration"] = profile.RUNTIME_CONFIGURATION
         packet.update({"schema": profile.PACKET_SCHEMA, "profile": copy.deepcopy(profile.PROFILE),
                        "profileSha256": common.digest(profile.PROFILE), "qualification": profile.QUALIFICATION,
                        "candidate": candidate, "runtime": runtime, "runtimeSource": proofs,
@@ -123,20 +146,40 @@ class ProxiedPolicies(fixtures.PolicyTests):
         patch.dict(profile.RUNTIME, {"archiveSha256": common.digest(data)}).start()
         result = subprocess.CompletedProcess([], 0, profile.RUNTIME["versionStdout"].encode(), b"")
         progress = {}
-        with patch.object(capture.subprocess, "run", return_value=result) as run:
+
+        def configured_before_execution(argv, **kwargs):
+            env = kwargs["env"]
+            home = Path(env["HOME"])
+            self.assertEqual(env["DOLT_ROOT_PATH"], str(home))
+            self.assertEqual(env["DOLT_DISABLE_EVENT_FLUSH"], "1")
+            self.assertEqual((home / ".dolt/config_global.json").read_bytes(), profile.RUNTIME_CONFIGURATION["contents"].encode())
+            self.assertEqual((home / ".dolt").stat().st_mode & 0o777, 0o700)
+            self.assertEqual((home / ".dolt/config_global.json").stat().st_mode & 0o777, 0o600)
+            if argv[1:] == profile.RUNTIME["configurationProbe"]:
+                return subprocess.CompletedProcess([], 0, b"true\n", b"")
+            self.assertEqual(argv[1:], ["version"])
+            return result
+
+        with patch.object(capture.subprocess, "run", side_effect=configured_before_execution) as run:
             binary = capture.consume_runtime(self.root, progress)
+        self.assertEqual([call.args[0][1:] for call in run.call_args_list], [profile.RUNTIME["configurationProbe"], ["version"]])
         self.assertEqual(binary.stat().st_mode & 0o777, 0o700)
         self.assertEqual(common.decode(progress["versionProbe"]["stdoutBase64"]), result.stdout)
         self.assertEqual(progress["binary"]["sha256"], common.digest(binary.read_bytes()))
         self.assertNotIn("S1_B09_B12_DOLT_ARCHIVE", run.call_args.kwargs["env"])
         self.assertEqual(run.call_args.kwargs["env"]["PATH"], "/usr/bin:/bin")
+        extract.validate_runtime_configuration(progress["configuration"], run.call_args.kwargs["env"]["HOME"])
 
     def test_proxied_environment_excludes_ambient_runtime_selection(self):
         with patch.dict(os.environ, {"BEADS_DOLT_BIN": "/ambient", "DOLT_ROOT_PATH": "/ambient", "GH_TOKEN": "fixture"}):
             value = capture.ProxiedRecorder(self.root / "no-product", self.root, "B09", self.root / "owned-bin/dolt")
         self.addCleanup(shutil.rmtree, value.workspace, True)
         self.assertEqual(value.env["PATH"], str(self.root / "owned-bin") + ":/usr/bin:/bin")
-        self.assertFalse(set(value.env) & {"BEADS_DOLT_BIN", "DOLT_ROOT_PATH", "GH_TOKEN"})
+        self.assertFalse(set(value.env) & {"BEADS_DOLT_BIN", "GH_TOKEN"})
+        self.assertEqual(value.env["DOLT_ROOT_PATH"], value.env["HOME"])
+        self.assertNotEqual(value.env["DOLT_ROOT_PATH"], "/ambient")
+        self.assertEqual(value.env["DOLT_DISABLE_EVENT_FLUSH"], "1")
+        extract.validate_runtime_configuration(value.runtime_configuration, value.env["HOME"])
         with self.assertRaisesRegex(ValueError, "selected"):
             capture.ProxiedRecorder(self.root / "no-product", self.root, "B12", self.root / "owned-bin/dolt")
 
@@ -145,12 +188,90 @@ class ProxiedPolicies(fixtures.PolicyTests):
         patch.dict(profile.RUNTIME, {"archiveSha256": common.digest(data)}).start()
         timeout = subprocess.TimeoutExpired("negative-policy-probe", 30, output=b"partial\xff\r\n", stderr=b"timeout\x00")
         progress = {}
-        with patch.object(capture.subprocess, "run", side_effect=timeout):
+        with patch.object(capture.subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0, b"true\n", b""), timeout]):
             with self.assertRaisesRegex(ValueError, "probe failed"):
                 capture.consume_runtime(self.root, progress)
         self.assertIsNone(progress["versionProbe"]["exitCode"])
         self.assertEqual(common.decode(progress["versionProbe"]["stdoutBase64"]), b"partial\xff\r\n")
         self.assertEqual(common.decode(progress["versionProbe"]["stderrBase64"]), b"timeout\x00")
+
+    def test_zero_exit_version_warning_stays_lossless_block(self):
+        data = self.runtime_archive(["regular"])
+        patch.dict(profile.RUNTIME, {"archiveSha256": common.digest(data)}).start()
+        # Labelled fixture transcribes the original e71 warning; it is not a
+        # replacement capture or accepted runtime output.
+        warning = (b"dolt version 2.2.0\nWarning: you are on an old version of Dolt. The newest version is 2.6.2.\n"
+                   b"To disable this warning, run 'dolt config --global --add versioncheck.disabled true'\n")
+        progress = {}
+        with patch.object(capture.subprocess, "run", side_effect=[
+                subprocess.CompletedProcess([], 0, b"true\n", b""),
+                subprocess.CompletedProcess([], 0, warning, b"")]):
+            with self.assertRaisesRegex(ValueError, "version probe failed"):
+                capture.consume_runtime(self.root, progress)
+        self.assertEqual(common.decode(progress["versionProbe"]["stdoutBase64"]), warning)
+        self.assertEqual(progress["versionProbe"]["stdoutSha256"], common.digest(warning))
+        with self.assertRaisesRegex(ValueError, "version"):
+            extract.validate_probe(progress["versionProbe"], ["version"], profile.RUNTIME["versionStdout"], "version mismatch")
+
+    def test_configuration_failure_or_timeout_retains_streams_and_never_probes_version(self):
+        for timed_out in (False, True):
+            with self.subTest(timed_out=timed_out):
+                directory = self.root / str(timed_out)
+                directory.mkdir()
+                data = self.runtime_archive(["regular"])
+                patch.dict(profile.RUNTIME, {"archiveSha256": common.digest(data)}).start()
+                failure = (subprocess.TimeoutExpired("fixture-only", 30, output=b"partial\xff", stderr=b"timeout\x00")
+                           if timed_out else subprocess.CompletedProcess([], 8, b"partial\xff", b"timeout\x00"))
+                progress = {}
+                with patch.object(capture.subprocess, "run", side_effect=[failure]) as run:
+                    with self.assertRaisesRegex(ValueError, "configuration probe failed"):
+                        capture.consume_runtime(directory, progress)
+                self.assertEqual(run.call_count, 1)
+                self.assertNotIn("versionProbe", progress)
+                self.assertEqual(common.decode(progress["configurationProbe"]["stdoutBase64"]), b"partial\xff")
+                self.assertEqual(common.decode(progress["configurationProbe"]["stderrBase64"]), b"timeout\x00")
+                self.assertEqual(progress["configurationProbe"]["exitCode"], None if timed_out else 8)
+                extract.validate_runtime_configuration(progress["configuration"],
+                                                       run.call_args.kwargs["env"]["HOME"])
+
+    def test_preexisting_private_configuration_is_not_reused_or_executed(self):
+        data = self.runtime_archive(["regular"])
+        patch.dict(profile.RUNTIME, {"archiveSha256": common.digest(data)}).start()
+        directory = self.root / "version-environment/home/.dolt"
+        directory.mkdir(parents=True)
+        (directory / "config_global.json").write_bytes(b'{"versioncheck.disabled":"false"}\n')
+        with patch.object(capture.subprocess, "run", side_effect=AssertionError("executed existing config")):
+            with self.assertRaises(FileExistsError):
+                capture.consume_runtime(self.root, {})
+        self.assertEqual((directory / "config_global.json").read_bytes(), b'{"versioncheck.disabled":"false"}\n')
+
+    def test_configuration_mutations_and_incomplete_packet_are_rejected(self):
+        packet, candidate = self.proxied_packet()
+        with patch.object(extract, "CARDS", ("B09",)):
+            extract.validate_packet(packet, candidate)
+            for mutation in ("bytes", "mode", "root", "environment", "probe", "run", "incomplete"):
+                bad = copy.deepcopy(packet)
+                config = bad["runtime"]["configuration"]
+                if mutation == "bytes":
+                    config["bytesBase64"] = original.encoded(b'{"versioncheck.disabled":"false"}\n')
+                    config["sha256"] = common.digest(common.decode(config["bytesBase64"]))
+                elif mutation == "mode":
+                    config["fileMode"] = "0o644"
+                elif mutation == "root":
+                    config["rootPath"] = "/ambient/home"
+                elif mutation == "environment":
+                    config["environment"]["DOLT_ROOT_PATH"] = "/ambient/home"
+                elif mutation == "probe":
+                    bad["runtime"]["configurationProbe"] = probe_fixture(profile.RUNTIME["configurationProbe"], b"false\n")
+                elif mutation == "run":
+                    bad["recordings"][0]["first"]["runtimeConfiguration"]["sha256"] = "0" * 64
+                else:
+                    del bad["runtime"]["configurationProbe"]
+                with self.assertRaises((ValueError, KeyError)):
+                    extract.validate_packet(bad, candidate)
+            packet["status"] = "BLOCK"
+            with self.assertRaisesRegex(ValueError, "BLOCK"):
+                extract.validate_packet(packet, candidate)
 
     def test_failed_selection_keeps_raw_streams_and_shutdown_outcome(self):
         for shutdown_ok in (True, False):

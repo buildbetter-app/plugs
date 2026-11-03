@@ -20,10 +20,32 @@ from public_reference_profile import SOURCE_TESTS
 from proxied_reference_profile import (
     CARDS, ENGINE, ENVIRONMENT_SHA256, GIT_CONFIGURATION_SHA256, MODULES,
     PACKET_SCHEMA, PROFILE, PUBLIC_BUILD, QUALIFICATION,
-    RUN_SCHEMA, RUNTIME, RUNTIME_SOURCE, UNEXECUTED,
+    RUN_SCHEMA, RUNTIME, RUNTIME_CONFIGURATION, RUNTIME_SOURCE, UNEXECUTED,
 )
 
 require, decode, digest = common.require, common.decode, common.digest
+
+
+def validate_runtime_configuration(config, home):
+    data = decode(config["bytesBase64"])
+    require(config.get("operation") == RUNTIME_CONFIGURATION["operation"]
+            and config.get("rootPath") == home
+            and config.get("path") == home + "/" + RUNTIME_CONFIGURATION["relativePath"]
+            and config.get("relativePath") == RUNTIME_CONFIGURATION["relativePath"]
+            and config.get("directoryMode") == RUNTIME_CONFIGURATION["directoryMode"]
+            and config.get("fileMode") == RUNTIME_CONFIGURATION["fileMode"]
+            and data == RUNTIME_CONFIGURATION["contents"].encode()
+            and config.get("sha256") == digest(data)
+            and config.get("environment") == {"DOLT_ROOT_PATH": home, "DOLT_DISABLE_EVENT_FLUSH": "1"},
+            "actual private runtime configuration mismatch")
+
+
+def validate_probe(probe, args, expected_stdout, detail):
+    stdout, stderr = decode(probe["stdoutBase64"]), decode(probe["stderrBase64"])
+    require(probe.get("argv") == ["verified-runtime", *args]
+            and type(probe.get("exitCode")) is int and probe["exitCode"] == 0
+            and stdout == expected_stdout.encode() and stderr == b""
+            and digest(stdout) == probe["stdoutSha256"] and digest(stderr) == probe["stderrSha256"], detail)
 
 
 def validate_runtime(runtime, source, proofs):
@@ -37,13 +59,15 @@ def validate_runtime(runtime, source, proofs):
             and re.fullmatch(r"[0-9a-f]{64}", binary.get("sha256", "")) is not None
             and type(binary.get("bytes")) is int and 0 < binary["bytes"] <= 256 * 1024 * 1024,
             "measured runtime executable identity missing")
-    probe = runtime["versionProbe"]
-    stdout, stderr = decode(probe["stdoutBase64"]), decode(probe["stderrBase64"])
-    require(probe.get("argv") == ["verified-runtime", "version"]
-            and type(probe.get("exitCode")) is int and probe["exitCode"] == 0
-            and stdout == RUNTIME["versionStdout"].encode() and stderr == b""
-            and digest(stdout) == probe["stdoutSha256"] and digest(stderr) == probe["stderrSha256"],
-            "actual runtime version streams mismatch")
+    home = runtime["configuration"]["rootPath"]
+    require(isinstance(home, str) and home.startswith("/tmp/plug-swarm/work/s1-proxied-capture-")
+            and home.endswith("/version-environment/home") and ".." not in Path(home).parts,
+            "runtime probe HOME is not private to this capture")
+    validate_runtime_configuration(runtime["configuration"], home)
+    validate_probe(runtime["configurationProbe"], RUNTIME["configurationProbe"], RUNTIME["configurationStdout"],
+                   "actual runtime configuration probe mismatch")
+    validate_probe(runtime["versionProbe"], ["version"], RUNTIME["versionStdout"],
+                   "actual runtime version streams mismatch")
     manifest = decode(source["manifestBase64"])
     entries = {line.split(b"\t", 1)[1].decode(): line.split(b"\t", 1)[0].split()[2].decode()
                for line in manifest.splitlines()}
@@ -67,6 +91,8 @@ def validate_run(run, card, refs, runtime_binary_sha256):
             and run["runtimeBinarySha256"] == runtime_binary_sha256, "run source/executable/runtime mismatch")
     require(run["sourceTests"] == SOURCE_TESTS[card] and run["sourceRefs"] == refs,
             "run source evidence mismatch")
+    validate_runtime_configuration(run["runtimeConfiguration"],
+                                   "/tmp/plug-swarm/work/" + run["workspaceId"] + "/.recorder-env/home")
     labels = common.LABELS[card] + ["cleanup-stop"]
     require([item["label"] for item in run["commands"]] == labels
             and [item["label"] for item in run["streams"]] == labels, "proxied command/stream set mismatch")
@@ -144,6 +170,7 @@ def validate_packet(packet, expected_candidate):
             and config["environment"].get("GIT_CONFIG_GLOBAL") == "/dev/null"
             and config["environment"].get("PATH") == "/usr/bin:/bin"
             and config.get("runtimePath") == "verified private runtime-bin prepended to /usr/bin:/bin"
+            and config.get("runtimeConfiguration") == RUNTIME_CONFIGURATION
             and not any("TOKEN" in key or key.endswith("_KEY") or key in {"SSH_AUTH_SOCK", "LD_PRELOAD", "GIT_DIR", "BEADS_DIR", "DOLT_ROOT_PATH"}
                         for key in config["environment"]), "configuration/isolation mismatch")
     workspaces = set()
