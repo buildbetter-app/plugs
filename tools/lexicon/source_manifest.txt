@@ -1261,6 +1261,7 @@ tools/rehearsal/metrics.go
 tools/rehearsal/metrics_test.go
 tools/rehearsal/rollback_fault_test.go
 tools/rehearsal/three_rehearsals.sh
+tools/rehearsal/transcript_test.go
 tools/roundtrip/BUILD.bazel
 tools/roundtrip/README.md
 tools/roundtrip/beads.go
