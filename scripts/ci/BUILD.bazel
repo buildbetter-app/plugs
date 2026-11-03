@@ -38,6 +38,17 @@ sh_test(
 )
 
 sh_test(
+    name = "reconcile_openrpc_checkout_test",
+    srcs = ["reconcile-openrpc-check.py"],
+    data = [
+        "reconcile-openrpc.py",
+        "//:engdocs/design/plug/contracts/openrpc.json",
+        "//internal/api/wire:reconcile_openrpc_inputs",
+    ],
+    size = "small",
+)
+
+sh_test(
     name = "plug_bazel_targets_test",
     srcs = ["plug-bazel-targets-test.sh"],
     data = ["plug-bazel-targets.sh"],

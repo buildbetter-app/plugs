@@ -64,6 +64,17 @@ func validateConfigProvenance(data []byte) error {
 }
 
 func validateDispositions(sources []Disposition, counts map[string]int, config []byte) error {
+	return validateMigratedDispositions(sources, counts, config, nil)
+}
+
+func migrationAction(table string, migration *ImportMigration) string {
+	if migration != nil && (table == "custom_statuses" || table == "custom_types") {
+		return "carry"
+	}
+	return actionFor(table)
+}
+
+func validateMigratedDispositions(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration) error {
 	var entries []externalEntry
 	if err := decodeJSON(config, &entries); err != nil {
 		return err
@@ -88,7 +99,7 @@ func validateDispositions(sources []Disposition, counts map[string]int, config [
 		}
 		lastFamily, lastReason = source.Family, source.Reason
 		if _, table := tableColumns[source.Family]; table {
-			if seen[source.Family] || source.Action != actionFor(source.Family) || source.Family != "repo_mtimes" && source.Rows != counts[source.Family] || (source.Action == "refuse-if-nonempty" || source.Family == "leases") && source.Rows != 0 {
+			if seen[source.Family] || source.Action != migrationAction(source.Family, migration) || source.Family != "repo_mtimes" && source.Rows != counts[source.Family] || (source.Action == "refuse-if-nonempty" || source.Family == "leases") && source.Rows != 0 {
 				return fmt.Errorf("source disposition/action/count mismatch")
 			}
 			seen[source.Family] = true

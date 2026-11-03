@@ -53,9 +53,11 @@ restart when the selected store is SQLite or PostgreSQL (or another
 composition-admitted persistent `CheckpointStore`). The process-local memory
 driver refuses new ephemeral invocations because it cannot make a process
 restart guarantee. A state provider without an explicit positive persistence
-marker is also refused. Memory hosts omit the ephemeral provider, preserving
-ordinary ready lists and permanent invocation. A stale generation or lease
-cannot overwrite a newer state.
+marker is also refused. Memory hosts keep the registered invocation method and
+ordinary ready lists available for permanent calls, but do not install the
+ephemeral provider; an ephemeral call returns
+`plugin_durable_state_unavailable` before publishing workflow state. A stale
+generation or lease cannot overwrite a newer state.
 A denied read or mutation fails closed without disclosing the item body,
 comments, or run identity.
 

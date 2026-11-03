@@ -3139,6 +3139,9 @@
         },
         {
           "$ref": "#/components/errors/LeaseExpired"
+        },
+        {
+          "$ref": "#/components/errors/PluginDurableStateUnavailable"
         }
       ],
       "x-effect": "write",
@@ -12719,6 +12722,40 @@
           ],
           "additionalProperties": false
         }
+      },
+      "PluginDurableStateUnavailable": {
+        "code": -32056,
+        "message": "plugin durable state unavailable",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "plugin_durable_state_unavailable"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
       }
     }
   },
@@ -13183,6 +13220,13 @@
       "retryable": true,
       "audience": "internal",
       "warningCapable": false
+    },
+    {
+      "code": "plugin_durable_state_unavailable",
+      "jsonRpc": -32056,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
     }
   ],
   "x-plugin-method-pattern": {
@@ -13201,7 +13245,7 @@
     "methodCount": 82,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "9149680634f6becbd955204e4bfa1c19b0c37911ca3c7ad3f155969a892fc7c9",
-    "descriptorSha256": "38f900c5118b2edeaa708a4168d15597718da76d21100921a95b8311c0114dfc",
+    "descriptorSha256": "23066fa00d6ae4de38f6b405b47db8519ad95625503d5c63adbd6496c5d5cd55",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -15253,7 +15297,8 @@
           "#/components/errors/ProjectRequired",
           "#/components/errors/IdempotencyKeyReused",
           "#/components/errors/LeaseNotHeld",
-          "#/components/errors/LeaseExpired"
+          "#/components/errors/LeaseExpired",
+          "#/components/errors/PluginDurableStateUnavailable"
         ]
       },
       {
