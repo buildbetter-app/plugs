@@ -51,6 +51,12 @@ equal row counts do not establish preservation. The separate manual
 `recorder_validation_test` contains authored corruption controls for those
 assertions and does not invoke Beads or qualify a behavior card.
 
+When native capture is available, each actual archive is replayed through the
+real Plug restore and reverse layers in fresh memory and SQLite stores (with
+SQLite reopen), and its lossless JSONL projection must match the source
+projection. The replay is an additional connected check; it does not convert a
+producer refusal or a missing hosted raw-output upload into a pass.
+
 The current `682ca798` companion has JSONL and `plug-dump/1` export but no
 native `beads-inventory/1` capture. Focused r8/r9 therefore remain RED at
 inventory capture; two complete new recordings and paired archive projections

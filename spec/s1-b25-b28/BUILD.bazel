@@ -39,7 +39,14 @@ go_test(
     ],
     tags = ["manual"],
     timeout = "long",
-    deps = ["//internal/core/dumpformat"],
+    deps = [
+        "//internal/core/dumpformat",
+        "//internal/core/model",
+        "//internal/integration/converterroundtrip",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/sqlite",
+    ],
 )
 
 # Measurement-only controls can run while public producer delivery is blocked.
@@ -49,7 +56,14 @@ go_test(
     srcs = ["public_recording_test.go"],
     args = ["-test.v", "-test.run=^TestPublicProjection"],
     tags = ["manual"],
-    deps = ["//internal/core/dumpformat"],
+    deps = [
+        "//internal/core/dumpformat",
+        "//internal/core/model",
+        "//internal/integration/converterroundtrip",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/sqlite",
+    ],
 )
 
 filegroup(

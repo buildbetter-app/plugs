@@ -26,6 +26,11 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
 const (
@@ -79,21 +84,23 @@ type commandReceipt struct {
 }
 
 type publicRun struct {
-	Name                string
-	Root                string
-	SourceExportPath    string
-	TargetExportPath    string
-	SourceInventoryPath string
-	TargetInventoryPath string
-	SourceArchivePath   string
-	TargetArchivePath   string
-	SourceExportSHA256  string
-	TargetExportSHA256  string
-	SourceArchiveSHA256 string
-	TargetArchiveSHA256 string
-	SourceProjectionSHA string
-	TargetProjectionSHA string
-	Commands            []commandReceipt
+	Name                 string
+	Root                 string
+	SourceExportPath     string
+	TargetExportPath     string
+	SourceInventoryPath  string
+	TargetInventoryPath  string
+	SourceArchivePath    string
+	TargetArchivePath    string
+	SourceExportSHA256   string
+	TargetExportSHA256   string
+	SourceArchiveSHA256  string
+	TargetArchiveSHA256  string
+	SourceProjectionSHA  string
+	TargetProjectionSHA  string
+	PlugSourceProjection map[string]string
+	PlugTargetProjection map[string]string
+	Commands             []commandReceipt
 }
 
 type semanticProjection struct {
@@ -139,6 +146,9 @@ func TestPublicPairedRecording(t *testing.T) {
 	run2 := recordPublicRun(t, root, storeRoot, "run2", artifact, fixture)
 	if run1.SourceProjectionSHA != run2.SourceProjectionSHA || run1.TargetProjectionSHA != run2.TargetProjectionSHA {
 		t.Fatalf("paired public projections differ: run1 source=%s target=%s, run2 source=%s target=%s", run1.SourceProjectionSHA, run1.TargetProjectionSHA, run2.SourceProjectionSHA, run2.TargetProjectionSHA)
+	}
+	if !equalJSON(run1.PlugSourceProjection, run2.PlugSourceProjection) || !equalJSON(run1.PlugTargetProjection, run2.PlugTargetProjection) {
+		t.Fatal("paired Plug replay projections differ")
 	}
 	if run1.SourceArchiveSHA256 == "" || run2.SourceArchiveSHA256 == "" || run1.TargetArchiveSHA256 == "" || run2.TargetArchiveSHA256 == "" {
 		t.Fatal("paired recording did not retain both validated archives")
@@ -436,6 +446,8 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	}
 	run.SourceProjectionSHA = hashBytes(sourceRawProjection)
 	run.TargetProjectionSHA = hashBytes(targetRawProjection)
+	run.PlugSourceProjection = replayPublicArchive(t, run.Root, storeRoot, "source", sourceArchive, sourceRawProjection, fixture)
+	run.PlugTargetProjection = replayPublicArchive(t, run.Root, storeRoot, "target", targetArchive, targetRawProjection, fixture)
 	labels := make([]string, len(run.Commands))
 	for i, receipt := range run.Commands {
 		labels[i] = receipt.Label
@@ -448,6 +460,94 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	}
 	writeCommandReceipts(t, run.Root, run.Commands)
 	return run
+}
+
+// Replay consumes the exact native producer envelope. It never manufactures an
+// archive or treats a converter refusal as success. Snapshot is an explicit
+// head-state slice under P5c/P44/P22/P46; this does not qualify source history.
+func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive *dumpformat.Archive, expected []byte, fixture recordingFixture) map[string]string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	data := archive.TarBytes()
+	inspection, err := converterroundtrip.InspectImport(ctx, bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("%s actual archive cannot enter Plug replay: %v", label, err)
+	}
+	profile := driver.RestoreImportProfile{
+		Admission: driver.RestoreImportAdmission{
+			Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "public-recorder"},
+			Authority: "restore-admin", AdmissionDigest: hashBytes([]byte("s1-b27-disposable-public-import")),
+		},
+		SourceStoreID: inspection.SourceStoreID, Method: "offline.restore.import",
+		IdempotencyKey: "s1-b27-public-" + label, ArchiveDigest: inspection.ArchiveSHA256,
+		DerivedDigest: inspection.DerivedSHA256, HistoryMode: driver.RestoreHistoryModeSnapshot,
+	}
+	hashes := map[string]string{}
+	clock := func() time.Time { return time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC) }
+	for _, engine := range []string{"memory", "sqlite"} {
+		if !t.Run(label+"-plug-"+engine, func(t *testing.T) {
+			var store driver.Store
+			path := filepath.Join(storeRoot, "plug-"+label+".sqlite")
+			var err error
+			if engine == "memory" {
+				store, err = memory.NewWithOptions(memory.Options{Clock: clock, StoreID: driver.StoreID("s1-b27-public-" + label), Incarnation: "s1-b27-public-" + label})
+			} else {
+				store, err = (sqlite.Driver{Clock: clock}).Open(ctx, driver.Config{DSN: path})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if store != nil {
+					if err := store.Close(); err != nil {
+						t.Error(err)
+					}
+				}
+			})
+			if _, err := converterroundtrip.RestoreImport(ctx, bytes.NewReader(data), store, profile); err != nil {
+				t.Fatalf("%s real Plug restore: %v", engine, err)
+			}
+			compare := func(suffix string) {
+				live, err := converterroundtrip.ReverseRestored(ctx, store)
+				if err != nil {
+					t.Fatalf("%s live Plug projection%s: %v", engine, suffix, err)
+				}
+				base := filepath.Join(output, label+"-plug-"+engine+suffix)
+				writeRecordingBytes(t, base+".jsonl", live.Result.JSONL)
+				report, err := json.MarshalIndent(live.Result.Report, "", "  ")
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeRecordingBytes(t, base+"-report.json", report)
+				projection, err := projectJSONL(live.Result.JSONL, fixture.ProjectionFields)
+				if err != nil {
+					t.Fatalf("%s actual Plug JSONL projection%s: %v", engine, suffix, err)
+				}
+				writeRecordingBytes(t, base+"-projection.json", projection)
+				if !bytes.Equal(expected, projection) {
+					t.Fatalf("%s Plug replay%s changed recorded semantics: reference=%s actual=%s", engine, suffix, hashBytes(expected), hashBytes(projection))
+				}
+				hashes[engine+suffix] = hashBytes(projection)
+			}
+			compare("")
+			if engine == "sqlite" {
+				err := store.Close()
+				store = nil
+				if err != nil {
+					t.Fatal(err)
+				}
+				store, err = (sqlite.Driver{Clock: clock}).Open(ctx, driver.Config{DSN: path})
+				if err != nil {
+					t.Fatal(err)
+				}
+				compare("-reopen")
+			}
+		}) {
+			t.Fatalf("%s Plug replay stopped at %s; no later engine qualifies", label, engine)
+		}
+	}
+	return hashes
 }
 
 func validateInventoryAndArchive(t *testing.T, run *publicRun, commandBD func(string, string, string, []string, []byte) []byte, label, store, root string, fixture recordingFixture) {
@@ -534,6 +634,7 @@ func projectJSONL(data []byte, fields []string) ([]byte, error) {
 	projection := semanticProjection{Issues: map[string]map[string]any{}, Memories: map[string]any{}, Edges: []map[string]any{}, Comments: []map[string]any{}}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
+	first := true
 	for {
 		var row map[string]any
 		if err := decoder.Decode(&row); errors.Is(err, io.EOF) {
@@ -541,6 +642,14 @@ func projectJSONL(data []byte, fields []string) ([]byte, error) {
 		} else if err != nil {
 			return nil, err
 		}
+		if _, header := row["_schema"]; header {
+			if !first || len(row) != 2 || row["_schema"] != "beads-jsonl/1" || row["_sort"] != "stable-v1" {
+				return nil, fmt.Errorf("unsupported or misplaced JSONL header")
+			}
+			first = false
+			continue
+		}
+		first = false
 		if row["_type"] == "memory" {
 			key, _ := row["key"].(string)
 			if key == "" {
@@ -569,6 +678,9 @@ func projectJSONL(data []byte, fields []string) ([]byte, error) {
 		}
 		projection.Issues[id] = item
 		projection.Edges = append(projection.Edges, projectedDependencies(row["dependencies"])...)
+		if parent, ok := row["parent"].(string); ok && parent != "" {
+			projection.Edges = append(projection.Edges, map[string]any{"from": id, "to": parent, "target_kind": "depends_on_issue_id", "type": "parent-child"})
+		}
 		projection.Comments = append(projection.Comments, projectedNested(row["comments"], []string{"id", "issue_id", "author", "created_by", "text", "body"})...)
 	}
 	sortProjection(&projection)
@@ -578,11 +690,7 @@ func projectJSONL(data []byte, fields []string) ([]byte, error) {
 func projectArchive(archive *dumpformat.Archive, fields []string) ([]byte, error) {
 	projection := semanticProjection{Issues: map[string]map[string]any{}, Memories: map[string]any{}, Edges: []map[string]any{}, Comments: []map[string]any{}}
 	for _, record := range archive.Records("bead") {
-		item := map[string]any{}
-		for _, field := range fields {
-			item[field] = record.Body[field]
-		}
-		projection.Issues[record.ID] = item
+		projection.Issues[record.ID] = projectArchiveBead(record, fields)
 	}
 	for _, record := range archive.Records("edge") {
 		projection.Edges = append(projection.Edges, projectMap(record.Body, []string{"from", "to", "target_kind", "type"}))
@@ -599,6 +707,20 @@ func projectArchive(archive *dumpformat.Archive, fields []string) ([]byte, error
 	}
 	sortProjection(&projection)
 	return json.Marshal(projection)
+}
+
+func projectArchiveBead(record dumpformat.Record, fields []string) map[string]any {
+	item := map[string]any{}
+	for _, field := range fields {
+		if field == "close_reason" {
+			// The canonical normalized body omits this column; the exact source
+			// provenance retains it. Never turn a real reason into a null match.
+			item[field] = record.Source.Fields[field]
+		} else {
+			item[field] = record.Body[field]
+		}
+	}
+	return item
 }
 
 func projectedNested(value any, fields []string) []map[string]any {
@@ -791,6 +913,51 @@ func TestPublicProjectionRejectsRelationCorruption(t *testing.T) {
 				}
 			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("corrupt import error=%v, want %s", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestPublicProjectionArchiveCloseReasonAndReverseHeader(t *testing.T) {
+	fields := []string{"title", "close_reason"}
+	raw := []byte(`{"_type":"issue","id":"pub-dependency","title":"Public dependency","close_reason":"dependency complete"}` + "\n")
+	want, err := projectJSONL(raw, fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodePublicProjection(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This is an authored projection control, not an executable recording or
+	// an archive delivered to restore. The canonical normalized body omits the
+	// close reason while its independent raw source column retains the value.
+	record := dumpformat.Record{
+		Body:   dumpformat.Row{"title": "Public dependency"},
+		Source: dumpformat.Provenance{Fields: dumpformat.Row{"close_reason": "dependency complete"}},
+	}
+	if got := projectArchiveBead(record, fields); !equalJSON(got, decoded.Issues["pub-dependency"]) {
+		t.Fatalf("archive projection lost the retained close reason: %s", canonical(got))
+	}
+	header := []byte(`{"_schema":"beads-jsonl/1","_sort":"stable-v1"}` + "\n")
+	for _, tc := range []struct {
+		name string
+		data []byte
+		ok   bool
+	}{
+		{"supported_header", append(append([]byte{}, header...), raw...), true},
+		{"unknown_schema", []byte(`{"_schema":"unknown/1","_sort":"stable-v1"}` + "\n"), false},
+		{"duplicate_header", append(append([]byte{}, header...), header...), false},
+		{"late_header", append(append([]byte{}, raw...), header...), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := projectJSONL(tc.data, fields)
+			if tc.ok {
+				if err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("versioned reverse framing changed semantics: err=%v got=%s", err, got)
+				}
+			} else if err == nil {
+				t.Fatal("unsupported framing was silently discarded")
 			}
 		})
 	}
