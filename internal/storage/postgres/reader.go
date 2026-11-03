@@ -342,7 +342,6 @@ func (r *reader) get(ctx context.Context, refs []driver.Ref) ([]driver.Record, e
 		if r.writer != nil {
 			if v, ok := r.writer.records[key]; ok {
 				if v != nil {
-					driver.ReportReadPayload(ctx, v.Body)
 					values[key] = storedRecord{record: *v}
 				}
 				continue
