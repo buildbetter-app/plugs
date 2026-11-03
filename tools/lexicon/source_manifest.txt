@@ -166,7 +166,10 @@ internal/core/dumpformat/json.go
 internal/core/dumpformat/merge.go
 internal/core/dumpformat/merge_fixture_test.go
 internal/core/dumpformat/merge_test.go
+internal/core/dumpformat/migration.go
 internal/core/dumpformat/migration_hashes.go
+internal/core/dumpformat/migration_sources.go
+internal/core/dumpformat/migration_test.go
 internal/core/dumpformat/ontology.go
 internal/core/dumpformat/ontology_test.go
 internal/core/dumpformat/records.go

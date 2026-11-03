@@ -131,11 +131,11 @@ func Read(reader io.Reader) (*Archive, error) {
 	if err := validateManifest(manifest, members); err != nil {
 		return nil, err
 	}
-	byKind, err := validateRecords(manifest, members)
+	byKind, migration, err := validateRecords(manifest, members)
 	if err != nil {
 		return nil, err
 	}
-	archive := &Archive{sha256: digest(data), tarBytes: append([]byte(nil), data...), manifest: manifest, members: members, byKind: byKind}
+	archive := &Archive{sha256: digest(data), tarBytes: append([]byte(nil), data...), manifest: manifest, members: members, byKind: byKind, migration: migration}
 	if err := validateSourceHistory(archive); err != nil {
 		return nil, err
 	}
@@ -289,8 +289,8 @@ func validateManifest(manifest Manifest, members map[string][]byte) error {
 	for key, value := range verificationLimits {
 		expectedVerification[key] = value
 	}
-	if manifest.Verification["ontology"] == explicitOntologyVerification {
-		expectedVerification["ontology"] = explicitOntologyVerification
+	if declaration := manifest.Verification["ontology"]; declaration == explicitOntologyVerification || declaration == StrictUnionOntologyVerification {
+		expectedVerification["ontology"] = declaration
 	} else if len(manifest.Ontology) != 0 {
 		return fmt.Errorf("explicit ontology directives require their verification disclosure")
 	}
@@ -302,7 +302,11 @@ func validateManifest(manifest Manifest, members map[string][]byte) error {
 	if err := validateProjects(manifest.Projects); err != nil {
 		return err
 	}
-	if err := validateOntology(manifest.Ontology, manifest.Projects); err != nil {
+	if manifest.Verification["ontology"] == StrictUnionOntologyVerification {
+		if err := validateMigrationDirectives(manifest.Ontology, manifest.Projects); err != nil {
+			return err
+		}
+	} else if err := validateOntology(manifest.Ontology, manifest.Projects); err != nil {
 		return err
 	}
 	if len(manifest.Files) != len(members)-1 {
@@ -347,40 +351,37 @@ func validateProjects(input []Project) error {
 	return nil
 }
 
-func validateRecords(manifest Manifest, members map[string][]byte) (map[string][]Record, error) {
+func validateRecords(manifest Manifest, members map[string][]byte) (map[string][]Record, *ImportMigration, error) {
 	registry := map[string]bool{}
 	byKind := map[string][]Record{}
 	counts := map[string]int{}
 	lastKind := ""
 	for _, kind := range manifest.Kinds {
 		if !knownKinds[kind.Name] || kind.Version != 1 || kind.Name <= lastKind || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 {
-			return nil, fmt.Errorf("unknown, duplicate or unordered kind registry entry")
+			return nil, nil, fmt.Errorf("unknown, duplicate or unordered kind registry entry")
 		}
 		lastKind = kind.Name
 		registry[kind.File] = true
 		member, ok := members[kind.File]
 		if !ok || len(member) == 0 || member[len(member)-1] != '\n' {
-			return nil, fmt.Errorf("missing or unterminated kind records for %s", kind.Name)
+			return nil, nil, fmt.Errorf("missing or unterminated kind records for %s", kind.Name)
 		}
 		lines := bytes.Split(member[:len(member)-1], []byte{'\n'})
 		if len(lines) != kind.Count {
-			return nil, fmt.Errorf("record count mismatch for %s", kind.Name)
+			return nil, nil, fmt.Errorf("record count mismatch for %s", kind.Name)
 		}
 		last := ""
 		rows := make([]Record, 0, len(lines))
 		for _, line := range lines {
 			var record Record
 			if err := decodeJSON(line, &record); err != nil {
-				return nil, fmt.Errorf("invalid %s record: %w", kind.Name, err)
+				return nil, nil, fmt.Errorf("invalid %s record: %w", kind.Name, err)
 			}
 			if record.Kind != kind.Name || record.ID == "" || record.Source.Table == "" || record.Source.Fields == nil || record.Body == nil {
-				return nil, fmt.Errorf("invalid typed record in %s", kind.Name)
+				return nil, nil, fmt.Errorf("invalid typed record in %s", kind.Name)
 			}
 			if key := recordKey(record); key <= last {
-				return nil, fmt.Errorf("duplicate or unordered typed record in %s", kind.Name)
-			}
-			if err := validateRecord(record, manifest.Projects, counts); err != nil {
-				return nil, err
+				return nil, nil, fmt.Errorf("duplicate or unordered typed record in %s", kind.Name)
 			}
 			last = recordKey(record)
 			rows = append(rows, record)
@@ -389,23 +390,37 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 	}
 	for path := range members {
 		if strings.HasPrefix(path, "records/") && !registry[path] {
-			return nil, fmt.Errorf("unregistered record kind %q", path)
+			return nil, nil, fmt.Errorf("unregistered record kind %q", path)
 		}
 	}
-	if err := validateDispositions(manifest.Sources, counts, members["config/sources.json"]); err != nil {
-		return nil, err
+	_, hasHistory := members[SourceHistoryMember]
+	migration, err := compileImportMigration(manifest, byKind, members["config/sources.json"], hasHistory)
+	if err != nil {
+		return nil, nil, err
 	}
-	if err := validateIssueOntology(manifest.Ontology, byKind["bead"], true); err != nil {
-		return nil, err
+	for _, kind := range manifest.Kinds {
+		for _, record := range byKind[kind.Name] {
+			if err := validateMigratedRecord(record, manifest.Projects, counts, migration); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+	if err := validateMigratedDispositions(manifest.Sources, counts, members["config/sources.json"], migration); err != nil {
+		return nil, nil, err
+	}
+	if migration == nil {
+		if err := validateIssueOntology(manifest.Ontology, byKind["bead"], true); err != nil {
+			return nil, nil, err
+		}
 	}
 	historyRows := counts["issue_versions"] + counts["issue_snapshots"] + counts["compaction_snapshots"]
 	if _, captured := members[SourceHistoryMember]; !captured && (historyRows != 0) != (manifest.History == "available-unverified") {
-		return nil, fmt.Errorf("history declaration does not match archived source rows")
+		return nil, nil, fmt.Errorf("history declaration does not match archived source rows")
 	}
 	if err := validateRelations(manifest.Projects, byKind); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return byKind, nil
+	return byKind, migration, nil
 }
 
 func recordKey(record Record) string { return record.Project + "\x00" + record.ID }

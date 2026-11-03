@@ -1,0 +1,407 @@
+package dumpformat
+
+import (
+	"bytes"
+	"encoding/base64"
+	"errors"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
+)
+
+// All inputs below are independently authored discrimination archives. They
+// are neither native producer output nor evidence of an executed public path.
+func strictUnionFixture(t *testing.T, stored string, yaml any) *mergeFixture {
+	t.Helper()
+	f := newMergeFixture(t, "pl")
+	f.manifest.Verification["ontology"] = StrictUnionOntologyVerification
+	f.addConfig("config", "status.custom", stored, "public")
+	if yaml != nil {
+		for i := range f.config {
+			if f.config[i].Input.Family == "beads-dir-config" {
+				f.config[i].Input.State = "json-config"
+				f.config[i].Values = map[string]any{"status.custom": yaml}
+			}
+		}
+	}
+	return f
+}
+
+func strictUnionBytes(t *testing.T, f *mergeFixture, mutate func(*Manifest, map[string][]byte)) []byte {
+	t.Helper()
+	return f.bytes(t, func(m *Manifest, members map[string][]byte) {
+		for i := range m.Sources {
+			if m.Sources[i].Family == "custom_statuses" || m.Sources[i].Family == "custom_types" {
+				m.Sources[i].Action = "carry"
+			}
+		}
+		if mutate != nil {
+			mutate(m, members)
+		}
+	})
+}
+
+func typeMapping(name string) OntologyDirective {
+	return OntologyDirective{ID: "map-" + name, Kind: "map_type", Target: OntologyTarget{Project: "pl", Type: name}, From: name, To: "issue"}
+}
+
+func statusMapping(name, target string) OntologyDirective {
+	return OntologyDirective{ID: "map-" + name, Kind: "map_status", Target: OntologyTarget{Project: "pl", Type: "issue"}, From: name, To: target}
+}
+
+func TestStrictConfigUnionCompleteRawAndEffectiveImage(t *testing.T) {
+	f := strictUnionFixture(t, "queued:active,shared:wip", []any{"shared:wip", "shipped:done", "cold:frozen"})
+	f.addArchive(t, "custom_statuses", Row{"name": "tableonly", "category": "active"})
+	f.addArchive(t, "custom_types", Row{"name": "decision"})
+	f.addConfig("config", "types.custom", `["proposal"]`, "public")
+	for i := range f.config {
+		if f.config[i].Input.Family == "beads-dir-config" {
+			f.config[i].Values["types"] = map[string]any{"custom": []any{"decision", "incident"}}
+		}
+	}
+	f.manifest.Ontology = []OntologyDirective{typeMapping("decision"), typeMapping("proposal"), typeMapping("incident")}
+	r := &f.records["bead"][0]
+	r.Source.Fields["status"], r.Source.Fields["issue_type"] = "queued", "decision"
+	r.Body["type"], r.Body["source_type"] = "decision", "decision"
+	a, err := Read(bytes.NewReader(strictUnionBytes(t, f, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration, ok := a.ImportMigration()
+	if !ok {
+		t.Fatal("missing validated migration")
+	}
+	doc := migration.Document()
+	gotCategories, gotOutcomes := map[string]ontology.Category{}, map[string]ontology.Outcome{}
+	for key, status := range doc.Statuses {
+		gotCategories[key], gotOutcomes[key] = status.Category, status.Outcome
+	}
+	wantCategories := map[string]ontology.Category{
+		"todo": ontology.Unstarted, "in_progress": ontology.Started, "done": ontology.Completed,
+		"failed": ontology.Completed, "canceled": ontology.Canceled, "backlog": ontology.Backlog,
+		"queued": ontology.Unstarted, "shared": ontology.Started, "shipped": ontology.Completed,
+		"cold": ontology.Backlog, "tableonly": ontology.Unstarted,
+	}
+	wantOutcomes := map[string]ontology.Outcome{
+		"todo": "", "in_progress": "", "done": ontology.Success, "failed": ontology.Failure,
+		"canceled": "", "backlog": "", "queued": "", "shared": "", "shipped": ontology.Success, "cold": "", "tableonly": "",
+	}
+	if !reflect.DeepEqual(gotCategories, wantCategories) || !reflect.DeepEqual(gotOutcomes, wantOutcomes) {
+		t.Fatalf("complete effective statuses: categories=%v outcomes=%v", gotCategories, gotOutcomes)
+	}
+	if len(doc.Types) != 4 || len(doc.Workflows) != 1 || len(doc.Workflows["issue"].Statuses) != 11 {
+		t.Fatalf("incomplete union document: %+v", doc)
+	}
+	for _, name := range []string{"issue", "decision", "proposal", "incident"} {
+		if typ, ok := doc.Types[name]; !ok || typ.Workflow != "issue" || len(typ.Fields) != 3 || typ.Fields["labels"].Type != "strings" {
+			t.Fatalf("missing effective type %s: %+v", name, typ)
+		}
+	}
+	wantDeclarations := []string{
+		"status/cold/frozen", "status/queued/active", "status/shared/wip", "status/shared/wip", "status/shipped/done", "status/tableonly/active",
+		"type/decision/", "type/decision/", "type/incident/", "type/proposal/",
+	}
+	var gotDeclarations []string
+	for _, d := range migration.Declarations() {
+		if d.Origin == "" {
+			t.Fatal("declaration lost source provenance")
+		}
+		gotDeclarations = append(gotDeclarations, d.Kind+"/"+d.Name+"/"+d.Category)
+	}
+	sort.Strings(gotDeclarations)
+	if !reflect.DeepEqual(gotDeclarations, wantDeclarations) {
+		t.Fatalf("complete raw declaration multiset: %v", gotDeclarations)
+	}
+	for _, kind := range []string{"bead", "edge", "comment", "config", "memory", "beads-archive"} {
+		want := append([]Record{}, f.records[kind]...)
+		sort.Slice(want, func(i, j int) bool { return recordKey(want[i]) < recordKey(want[j]) })
+		if !equalJSON(a.Records(kind), want) {
+			t.Fatalf("raw/typed record changed in %s", kind)
+		}
+	}
+	if target, ok := migration.Target("pl", r.ID); !ok || target != (ImportTarget{Type: "decision", Status: "queued"}) {
+		t.Fatalf("wrong typed head target: %+v", target)
+	}
+	assertUnionTransitionGuards(t, doc)
+	// Accessors must not permit a changed document, target or declaration to
+	// alter the archive's independently admitted compilation.
+	doc.Statuses["queued"] = ontology.Status{}
+	doc.Types["decision"].Fields["title"] = ontology.Field{}
+	decls := migration.Declarations()
+	decls[0].Category = "invented"
+	migration.targets["pl\x00"+r.ID] = ImportTarget{}
+	again, _ := a.ImportMigration()
+	if again.Document().Statuses["queued"].Category != ontology.Unstarted || again.Document().Types["decision"].Fields["title"].Type != "string" || again.Declarations()[0].Category == "invented" {
+		t.Fatal("migration accessor leaked mutable compilation state")
+	}
+	if target, _ := again.Target("pl", r.ID); target.Status != "queued" {
+		t.Fatal("migration target accessor was not detached")
+	}
+}
+
+func assertUnionTransitionGuards(t *testing.T, doc ontology.Document) {
+	t.Helper()
+	workflow := doc.Workflows["issue"]
+	if workflow.Slots[ontology.Close] != "done" || workflow.Slots[ontology.Claim] != "in_progress" {
+		t.Fatal("union rewrote lifecycle slots")
+	}
+	foundClaim, foundClose := false, false
+	for _, rule := range workflow.Transitions {
+		if rule.To == "shared" {
+			foundClaim = true
+			if !reflect.DeepEqual(rule.From, []string{"todo", "queued", "tableonly"}) || !reflect.DeepEqual(rule.Guards, []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}) {
+				t.Fatalf("alias claim weakened template guards: %+v", rule)
+			}
+		}
+		if rule.To == "shipped" {
+			foundClose = true
+			if len(rule.From) != 0 || !reflect.DeepEqual(rule.Guards, []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenChildren}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}) {
+				t.Fatalf("alias close weakened template guards: %+v", rule)
+			}
+		}
+	}
+	if !foundClaim || !foundClose {
+		t.Fatal("union lacks guarded incoming alias transitions")
+	}
+}
+
+func TestStrictConfigUnionStoredAndYAMLIndependent(t *testing.T) {
+	for _, test := range []struct {
+		name, stored string
+		yaml         any
+	}{
+		{"stored-only", "queued:active", nil}, {"yaml-only", "", []any{"queued:active"}},
+		{"compatible-overlap", "queued:active", []any{"queued:active"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := strictUnionFixture(t, test.stored, test.yaml)
+			a, err := Read(bytes.NewReader(strictUnionBytes(t, f, nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, _ := a.ImportMigration()
+			if len(m.Document().Statuses) != 7 || m.Document().Statuses["queued"].Category != ontology.Unstarted {
+				t.Fatal("independent layer omitted from installed union")
+			}
+		})
+	}
+}
+
+func TestStrictConfigUnionExplicitResolutionRetainsConflictingLayers(t *testing.T) {
+	for _, stored := range []string{"queued:active", "queued"} {
+		f := strictUnionFixture(t, stored, []any{"queued:wip"})
+		f.manifest.Ontology = []OntologyDirective{statusMapping("queued", "failed")}
+		a, err := Read(bytes.NewReader(strictUnionBytes(t, f, nil)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, _ := a.ImportMigration()
+		if got := m.Document().Statuses["queued"]; got.Category != ontology.Completed || got.Outcome != ontology.Failure {
+			t.Fatalf("operator-selected target was not installed: %+v", got)
+		}
+		decls := m.Declarations()
+		var categories []string
+		for _, decl := range decls {
+			categories = append(categories, decl.Category)
+		}
+		want := []string{strings.TrimPrefix(strings.TrimPrefix(stored, "queued"), ":"), "wip"}
+		sort.Strings(categories)
+		sort.Strings(want)
+		if !reflect.DeepEqual(categories, want) {
+			t.Fatalf("resolution rewrote raw layers: %+v", decls)
+		}
+		for _, r := range a.Records("config") {
+			if r.ID == "config/status.custom" && r.Source.Fields["value"] != stored {
+				t.Fatal("stored source changed")
+			}
+		}
+		data, _ := a.Member("config/sources.json")
+		if !bytes.Contains(data, []byte(`"queued:wip"`)) {
+			t.Fatal("YAML source changed")
+		}
+	}
+}
+
+func TestStrictConfigUnionNamedRefusals(t *testing.T) {
+	tests := []struct {
+		name, code, entry string
+		change            func(*mergeFixture)
+	}{
+		{"missing migration", "migration-required", "queued", func(f *mergeFixture) { f.manifest.Verification["ontology"] = verificationLimits["ontology"] }},
+		{"conflicting categories", "category-conflict", "queued", func(f *mergeFixture) { setUnionYAML(f, map[string]any{"status.custom": []any{"queued:wip"}}) }},
+		{"unspecified DB", "category-required", "queued", func(f *mergeFixture) { setStoredStatus(f, "queued") }},
+		{"unspecified YAML", "category-required", "queued", func(f *mergeFixture) { setUnionYAML(f, map[string]any{"status.custom": []any{"queued"}}) }},
+		{"normalized conflict", "category-conflict", "queued", func(f *mergeFixture) { f.addArchive(t, "custom_statuses", Row{"name": "queued", "category": "done"}) }},
+		{"absent type mapping", "mapping-required", "decision", func(f *mergeFixture) { f.addConfig("config", "types.custom", "decision", "public") }},
+		{"unknown type target", "unknown-target", "map-decision", func(f *mergeFixture) {
+			f.manifest.Ontology = []OntologyDirective{typeMapping("decision")}
+			f.manifest.Ontology[0].To = "imagined"
+		}},
+		{"unknown status target", "unknown-target", "map-queued", func(f *mergeFixture) { f.manifest.Ontology = []OntologyDirective{statusMapping("queued", "imagined")} }},
+		{"duplicate directive ID", "duplicate-directive", "map-queued", func(f *mergeFixture) {
+			d := statusMapping("queued", "todo")
+			f.manifest.Ontology = []OntologyDirective{d, d}
+		}},
+		{"ambiguous directives", "overlapping-directive", "queued", func(f *mergeFixture) {
+			d := statusMapping("queued", "todo")
+			e := statusMapping("queued", "done")
+			e.ID = "different"
+			f.manifest.Ontology = []OntologyDirective{d, e}
+		}},
+		{"narrow declaration mapping", "malformed-declaration", "map-queued", func(f *mergeFixture) {
+			d := statusMapping("queued", "todo")
+			d.Target.ID = "pl-1"
+			f.manifest.Ontology = []OntologyDirective{d}
+		}},
+		{"unused directive", "unused-directive", "map-other", func(f *mergeFixture) { f.manifest.Ontology = []OntologyDirective{statusMapping("other", "todo")} }},
+		{"invalid category", "malformed-declaration", "queued", func(f *mergeFixture) { setStoredStatus(f, "queued:invented") }},
+		{"empty category", "malformed-declaration", "queued:", func(f *mergeFixture) { setStoredStatus(f, "queued:") }},
+		{"malformed status value", "malformed-declaration", "status.custom", func(f *mergeFixture) { setStoredStatus(f, map[string]any{"category": "active"}) }},
+		{"malformed types JSON", "malformed-declaration", "types.custom", func(f *mergeFixture) { f.addConfig("config", "types.custom", `["decision",false]`, "public") }},
+		{"dotted and nested", "malformed-declaration", "status.custom", func(f *mergeFixture) {
+			setUnionYAML(f, map[string]any{"status.custom": "queued:active", "status": map[string]any{"custom": []any{"queued:active"}}})
+		}},
+		{"duplicate same-layer name", "duplicate-declaration", "queued", func(f *mergeFixture) { setStoredStatus(f, "queued:active,queued:wip") }},
+		{"duplicate normalized name", "duplicate-declaration", "dupe", func(f *mergeFixture) {
+			f.addArchive(t, "custom_statuses", Row{"name": "dupe", "category": "active"})
+			f.addArchive(t, "custom_statuses", Row{"name": "dupe", "category": "done"})
+		}},
+		{"undeclared record status", "undeclared-entry", "phantom", func(f *mergeFixture) { f.records["bead"][0].Source.Fields["status"] = "phantom" }},
+		{"undeclared record type", "undeclared-entry", "phantom", func(f *mergeFixture) { f.records["bead"][0].Source.Fields["issue_type"] = "phantom" }},
+		{"native key conflict", "ontology-conflict", "todo", func(f *mergeFixture) { setStoredStatus(f, "todo:wip") }},
+		{"project ownership absent", "project-scope", "configuration union", func(f *mergeFixture) {
+			f.manifest.Projects = append(f.manifest.Projects, Project{Prefix: "other", IDMode: "sequential", ChildCounters: map[string]uint64{}})
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			f := strictUnionFixture(t, "queued:active", nil)
+			test.change(f)
+			archive, err := Read(bytes.NewReader(strictUnionBytes(t, f, nil)))
+			var refused *MigrationRefusal
+			if archive != nil || !errors.As(err, &refused) || refused.Code != test.code || refused.Entry != test.entry {
+				t.Fatalf("named refusal: archive=%v err=%v, want %s/%s", archive, err, test.code, test.entry)
+			}
+			if test.code == "category-conflict" && (!strings.Contains(err.Error(), "active") || !strings.Contains(err.Error(), "queued")) {
+				t.Fatal("conflict did not name the affected raw entries")
+			}
+		})
+	}
+}
+
+func setStoredStatus(f *mergeFixture, value any) {
+	for i := range f.records["config"] {
+		r := &f.records["config"][i]
+		if r.ID == "config/status.custom" {
+			r.Source.Fields["value"], r.Body["value"] = value, value
+		}
+	}
+}
+
+func setUnionYAML(f *mergeFixture, values map[string]any) {
+	for i := range f.config {
+		if f.config[i].Input.Family == "beads-dir-config" {
+			f.config[i].Input.State, f.config[i].Values = "json-config", values
+		}
+	}
+}
+
+func TestStrictConfigUnionDoesNotRelaxOtherFamilyOrBodyPolicies(t *testing.T) {
+	for _, table := range []string{"routes", "interactions", "federation_peers"} {
+		t.Run(table, func(t *testing.T) {
+			f := strictUnionFixture(t, "queued:active", nil)
+			f.addArchive(t, table, Row{})
+			if a, err := Read(bytes.NewReader(strictUnionBytes(t, f, nil))); a != nil || err == nil || !strings.Contains(err.Error(), "unsupported or operational source record") {
+				t.Fatalf("strict migration weakened nonempty family %s: %v", table, err)
+			}
+		})
+	}
+	for _, name := range []string{"conditional action", "source schema", "body", "secret"} {
+		t.Run(name, func(t *testing.T) {
+			f := strictUnionFixture(t, "queued:active", nil)
+			f.addArchive(t, "custom_statuses", Row{"name": "tableonly", "category": "active"})
+			mutate := func(m *Manifest, members map[string][]byte) {
+				if name == "conditional action" {
+					for i := range m.Sources {
+						if m.Sources[i].Family == "custom_statuses" {
+							m.Sources[i].Action = "archive"
+						}
+					}
+				}
+			}
+			if name == "source schema" {
+				f.records["beads-archive"][len(f.records["beads-archive"])-1].Source.Fields["extra"] = true
+			}
+			if name == "body" {
+				f.records["bead"][0].Body["status_category"] = "started"
+			}
+			if name == "secret" {
+				f.addConfig("config", "api_key", "raw-secret-control", "public")
+			}
+			if a, err := Read(bytes.NewReader(strictUnionBytes(t, f, mutate))); a != nil || err == nil {
+				t.Fatal("strict migration waived raw mapping/census/credential validation")
+			}
+		})
+	}
+	f := strictUnionFixture(t, "queued:active", nil)
+	a, err := Read(bytes.NewReader(strictUnionBytes(t, f, func(m *Manifest, members map[string][]byte) {
+		members[SourceHistoryMember] = []byte("{}\n")
+		m.Files[SourceHistoryMember] = File{SHA256: digest(members[SourceHistoryMember]), Size: int64(len(members[SourceHistoryMember]))}
+	})))
+	var refused *MigrationRefusal
+	if a != nil || !errors.As(err, &refused) || refused.Code != "history-scope" {
+		t.Fatalf("strict union widened source-history admission: %v", err)
+	}
+}
+
+func TestStrictConfigUnionNativeObservationEnvelope(t *testing.T) {
+	raw := []byte("status:\n  custom: [queued:active]\n")
+	for _, broken := range []string{"", "hash", "size", "bytes", "parsed", "duplicate path"} {
+		t.Run(broken, func(t *testing.T) {
+			f := strictUnionFixture(t, "", nil)
+			observation := map[string]any{
+				"path": "/synthetic/.beads/config.yaml", "state": "file", "sha256": digest(raw), "size": len(raw),
+				"bytes":  map[string]any{"$bytes": base64.StdEncoding.EncodeToString(raw)},
+				"values": map[string]any{"status": map[string]any{"custom": []any{"queued:active"}}},
+			}
+			switch broken {
+			case "hash":
+				observation["sha256"] = strings.Repeat("0", 64)
+			case "size":
+				observation["size"] = len(raw) + 1
+			case "bytes":
+				observation["bytes"] = map[string]any{"$bytes": "bad!"}
+			case "parsed":
+				delete(observation, "values")
+			}
+			observations := []any{observation}
+			if broken == "duplicate path" {
+				observations = append(observations, observation)
+			}
+			setUnionYAML(f, map[string]any{"observations": observations})
+			data := strictUnionBytes(t, f, nil)
+			a, err := Read(bytes.NewReader(data))
+			if broken != "" {
+				var refused *MigrationRefusal
+				if a != nil || !errors.As(err, &refused) || refused.Code != "malformed-declaration" {
+					t.Fatalf("bad captured envelope admitted: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, _ := a.ImportMigration()
+			if m.Document().Statuses["queued"].Category != ontology.Unstarted || len(m.Declarations()) != 1 {
+				t.Fatal("captured YAML values omitted")
+			}
+			retained, _ := a.Member("config/sources.json")
+			if !bytes.Contains(retained, []byte(base64.StdEncoding.EncodeToString(raw))) {
+				t.Fatal("raw YAML byte envelope lost")
+			}
+		})
+	}
+}

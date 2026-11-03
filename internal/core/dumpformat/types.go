@@ -87,13 +87,29 @@ type Record struct {
 // Archive owns validated data. Accessors return detached copies; a caller
 // cannot turn a validated record into an unchecked restore request.
 type Archive struct {
-	sha256   string
-	tarBytes []byte
-	manifest Manifest
-	members  map[string][]byte
-	byKind   map[string][]Record
-	native   bool
-	history  *SourceHistory
+	sha256    string
+	tarBytes  []byte
+	manifest  Manifest
+	members   map[string][]byte
+	byKind    map[string][]Record
+	native    bool
+	history   *SourceHistory
+	migration *ImportMigration
+}
+
+// ImportMigration returns the admitted non-native head migration, when its
+// explicit strict-union disclosure is present. Legacy/native paths are unchanged.
+func (a *Archive) ImportMigration() (*ImportMigration, bool) {
+	if a == nil || a.migration == nil {
+		return nil, false
+	}
+	m := *a.migration
+	m.declarations = m.Declarations()
+	m.targets = make(map[string]ImportTarget, len(a.migration.targets))
+	for key, target := range a.migration.targets {
+		m.targets[key] = target
+	}
+	return &m, true
 }
 
 // Native reports whether this is an archive emitted by Plug's admin.dump

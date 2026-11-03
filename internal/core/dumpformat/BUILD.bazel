@@ -5,12 +5,14 @@ go_library(
     srcs = glob(["*.go"], exclude = ["*_test.go"]),
     importpath = "github.com/buildbetter-app/plugs/internal/core/dumpformat",
     visibility = ["//:__subpackages__"],
+    deps = ["//internal/core/ontology"],
 )
 
 go_test(
     name = "dumpformat_test",
     srcs = glob(["*_test.go"]),
     embed = [":dumpformat"],
+    deps = ["//internal/core/ontology"],
 )
 
 filegroup(
