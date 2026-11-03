@@ -2,3 +2,8 @@ exports_files(
     ["plug-beads-bazel.yml"],
     visibility = ["//.github/scripts:__pkg__"],
 )
+
+exports_files(
+    ["plug-remote-bazel.yml"],
+    visibility = ["//scripts/ci/bazel-testlogs:__pkg__"],
+)

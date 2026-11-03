@@ -17,6 +17,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from reference_inputs import verify_clock_proof, verify_source
+
 
 COMMIT = "9d6fff760b7a314b476539198504d77ce0959656"
 TREE = "cde121d6e4119e454857ad1c3ca293e2791be840"
@@ -41,38 +43,11 @@ def require_pin(binary_digest):
     source_path = os.environ.get("PLUG_REFERENCE_SOURCE_DIR")
     if not source_path:
         raise RuntimeError("PLUG_REFERENCE_SOURCE_DIR must identify the clean pinned source checkout")
-    source = Path(source_path)
-    try:
-        actual_commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
-        actual_tree = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD^{tree}"], text=True).strip()
-        dirty = subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError(f"cannot verify pinned reference source: {exc}") from exc
-    if actual_commit != COMMIT or actual_tree != TREE or dirty:
-        raise RuntimeError("reference source is not the exact clean pinned commit/tree")
+    verify_source(Path(source_path))
     proof_path = os.environ.get("PLUG_REFERENCE_CLOCK_PROOF")
     if not proof_path:
         raise RuntimeError("PLUG_REFERENCE_CLOCK_PROOF must identify generated Go+SQL clock evidence")
-    try:
-        proof_bytes = Path(proof_path).read_bytes()
-        proof = json.loads(proof_bytes)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"invalid PLUG_REFERENCE_CLOCK_PROOF: {exc}") from exc
-    if proof.get("sourceCommit") != COMMIT or proof.get("sourceTree") != TREE:
-        raise RuntimeError("clock proof is not bound to the pinned source")
-    if proof.get("binarySha256") != binary_digest:
-        raise RuntimeError("clock proof is not bound to the reference executable")
-    if proof.get("mode") != "go-sql-controlled":
-        raise RuntimeError("clock proof does not declare Go+SQL control")
-    for name in ("go", "sql"):
-        clock = proof.get(name)
-        reads = clock.get("controlledReads", 0) if isinstance(clock, dict) else 0
-        if not isinstance(reads, int) or reads <= 0:
-            raise RuntimeError(f"clock proof has no controlled {name} clock reads")
-    schedule_digest = proof.get("scheduleSha256", "")
-    if len(schedule_digest) != 64 or any(c not in "0123456789abcdef" for c in schedule_digest):
-        raise RuntimeError("clock proof has no schedule digest")
-    return proof, sha(proof_bytes)
+    return verify_clock_proof(proof_path, binary_digest)
 
 
 def run(binary, root, commands, args, expected=None, env=None):
@@ -91,6 +66,8 @@ def run(binary, root, commands, args, expected=None, env=None):
         "exitCode": result.returncode,
         "stdoutSha256": sha(result.stdout),
         "stderrSha256": sha(result.stderr),
+        "stdoutBase64": base64.b64encode(result.stdout).decode("ascii"),
+        "stderrBase64": base64.b64encode(result.stderr).decode("ascii"),
     }
     try:
         payload = json.loads(result.stdout.decode("utf-8"))
@@ -100,10 +77,6 @@ def run(binary, root, commands, args, expected=None, env=None):
         outcome["errorCode"] = payload["error"].get("code")
     if payload is not None:
         outcome["stdout"] = payload
-    else:
-        outcome["stdoutBase64"] = base64.b64encode(result.stdout).decode("ascii")
-    if result.stderr:
-        outcome["stderrBase64"] = base64.b64encode(result.stderr).decode("ascii")
     commands.append(outcome)
     return result.stdout
 
@@ -264,6 +237,7 @@ def project(vectors):
         projection.append({
             "card": vector["card"],
             "ids": vector["ids"],
+            "prefix": vector["configuration"]["prefix"],
             "commands": [
                 {k: command[k] for k in ("argv", "exitCode", "errorCode") if k in command}
                 for command in vector["commands"]

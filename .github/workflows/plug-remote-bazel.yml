@@ -279,12 +279,8 @@ jobs:
         run: |
           set -euo pipefail
           archive="$REMOTE_BAZEL_EVIDENCE_DIR/bazel-testlogs.tgz"
-          if [[ -d bazel-testlogs ]]; then
-            (cd bazel-testlogs && find . -type f \( -name test.xml -o -name test.log \) -print0 |
-              tar --null --create --gzip --file="$archive" --files-from=-)
-          else
-            tar --create --gzip --file="$archive" --files-from=/dev/null
-          fi
+          python3 scripts/ci/bazel-testlogs/archive.py \
+            --testlogs bazel-testlogs --output "$archive"
 
       - name: Upload remote Bazel evidence
         if: always()

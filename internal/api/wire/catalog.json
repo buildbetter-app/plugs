@@ -2115,6 +2115,9 @@
         },
         {
           "$ref": "#/components/errors/LeaseExpired"
+        },
+        {
+          "$ref": "#/components/errors/Unsupported"
         }
       ],
       "x-effect": "write",
@@ -6527,6 +6530,90 @@
       "x-agent-core": false,
       "x-stability": "v1",
       "x-inferred": true
+    },
+    {
+      "name": "bead.cycles",
+      "summary": "Report deterministic current durable-plane dependency cycles.",
+      "description": "Default follows blocks and conditional-blocks only. Optional tracks retains the default report and adds a shortest-return cycle per blocking edge. Parent-child and waits-for are excluded. A visible project member anchors each item; hidden members retain placeholders. includeEphemeral=true returns plugin_durable_state_unavailable without persistent workflow state; the current persistent workflow plane has no graph relationships and retains invalid_params refusal.",
+      "tags": [
+        {
+          "name": "core"
+        }
+      ],
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "includeTracks",
+          "schema": {
+            "type": "boolean"
+          },
+          "description": "Add the canonical mixed report; pure tracks loops are excluded."
+        },
+        {
+          "name": "includeEphemeral",
+          "schema": {
+            "type": "boolean"
+          },
+          "description": "True returns plugin_durable_state_unavailable without persistent workflow state. The current persistent workflow plane has no graph relationships and retains invalid_params refusal."
+        },
+        {
+          "name": "limit",
+          "schema": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "description": "Maximum returned items, default100; cycleCount remains the complete visible-project count."
+        },
+        {
+          "name": "_meta",
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "description": "Transport project scope and deadlines; no application actor field."
+        }
+      ],
+      "result": {
+        "name": "result",
+        "description": "Result",
+        "schema": {
+          "$ref": "#/components/schemas/CyclesResult"
+        }
+      },
+      "errors": [
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/Unauthenticated"
+        },
+        {
+          "$ref": "#/components/errors/AuthzUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/Busy"
+        },
+        {
+          "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        },
+        {
+          "$ref": "#/components/errors/PluginDurableStateUnavailable"
+        }
+      ],
+      "x-effect": "read",
+      "x-idempotency": "none",
+      "x-permission": "read",
+      "x-agent-core": true,
+      "x-stability": "v1"
     }
   ],
   "components": {
@@ -8937,7 +9024,9 @@
           "authz_verify_failed",
           "invalid_cursor",
           "compaction_unavailable",
-          "stale_snapshot"
+          "stale_snapshot",
+          "plugin_durable_state_unavailable",
+          "unsupported"
         ],
         "description": "Closed Plug wire error-code registry."
       },
@@ -10665,6 +10754,97 @@
             "type": "boolean"
           }
         },
+        "additionalProperties": false
+      },
+      "CycleMember": {
+        "description": "One member in directed cycle order; an unreadable member discloses no reference.",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "ref": {
+                "$ref": "#/components/schemas/Ref"
+              }
+            },
+            "required": [
+              "ref"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "unreadable": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "unreadable"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "Cycle": {
+        "type": "object",
+        "description": "A path rotated to its lowest internal ID; the closing endpoint is implied.",
+        "properties": {
+          "path": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CycleMember"
+            },
+            "minItems": 1
+          },
+          "memberCount": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "unreadableCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "partial": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "memberCount",
+          "unreadableCount",
+          "partial"
+        ],
+        "additionalProperties": false
+      },
+      "CyclesResult": {
+        "type": "object",
+        "description": "Current durable-plane cycles anchored by a readable member in the selected project. Wholly hidden cycles contribute no items or count.",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Cycle"
+            },
+            "maxItems": 1000
+          },
+          "cycleCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/AsOf"
+          }
+        },
+        "required": [
+          "items",
+          "cycleCount",
+          "truncated",
+          "asOf"
+        ],
         "additionalProperties": false
       }
     },
@@ -12772,6 +12952,41 @@
           ],
           "additionalProperties": false
         }
+      },
+      "Unsupported": {
+        "code": -32057,
+        "message": "operation is unsupported",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "unsupported"
+            },
+            "retryable": {
+              "type": "boolean",
+              "const": false
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
       }
     }
   },
@@ -13243,6 +13458,13 @@
       "retryable": false,
       "audience": "client",
       "warningCapable": false
+    },
+    {
+      "code": "unsupported",
+      "jsonRpc": -32057,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
     }
   ],
   "x-plugin-method-pattern": {
@@ -13258,10 +13480,10 @@
     "format": "plug-method-registry/1",
     "status": "bounded-contract-artifact",
     "purpose": "Human-maintained bounded contract artifact, read independently of methods at validation time; validates the closed method inventory, descriptor fields and wire inventories before an implementation generator exists.",
-    "methodCount": 82,
+    "methodCount": 83,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
-    "nameSha256": "9149680634f6becbd955204e4bfa1c19b0c37911ca3c7ad3f155969a892fc7c9",
-    "descriptorSha256": "23066fa00d6ae4de38f6b405b47db8519ad95625503d5c63adbd6496c5d5cd55",
+    "nameSha256": "0ce6a0ee3927753ec8622351c1337c1de3922a1662eae667196e447fd9c170ef",
+    "descriptorSha256": "ec91cb342987cefd6444981ef37523cc9238da2a0af168b13a4999c7964f3ba2",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -14642,7 +14864,8 @@
           "#/components/errors/ProtectedRecord",
           "#/components/errors/ClosureTooLarge",
           "#/components/errors/LeaseNotHeld",
-          "#/components/errors/LeaseExpired"
+          "#/components/errors/LeaseExpired",
+          "#/components/errors/Unsupported"
         ]
       },
       {
@@ -17551,6 +17774,60 @@
           "#/components/errors/LeaseNotHeld",
           "#/components/errors/LeaseExpired"
         ]
+      },
+      {
+        "name": "bead.cycles",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "includeTracks",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "includeEphemeral",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/CyclesResult"
+        },
+        "errors": [
+          "#/components/errors/InvalidParams",
+          "#/components/errors/Unauthenticated",
+          "#/components/errors/AuthzUnavailable",
+          "#/components/errors/Forbidden",
+          "#/components/errors/Busy",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IncarnationChanged",
+          "#/components/errors/InternalError",
+          "#/components/errors/PluginDurableStateUnavailable"
+        ]
       }
     ],
     "wireInventory": {
@@ -17664,7 +17941,9 @@
         "authz_verify_failed",
         "invalid_cursor",
         "compaction_unavailable",
-        "stale_snapshot"
+        "stale_snapshot",
+        "plugin_durable_state_unavailable",
+        "unsupported"
       ],
       "warningCodes": [
         "ontology_drifted",

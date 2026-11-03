@@ -479,6 +479,9 @@ func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable,
 	}
 	for _, rows := range [][]driver.DerivedRow{del, add} {
 		for _, row := range rows {
+			if row.Index != nil {
+				return fmt.Errorf("%w: PostgreSQL selection indexes are not implemented", driver.ErrUnsupported)
+			}
 			if err := t.writable(driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}); err != nil {
 				return err
 			}

@@ -26,8 +26,11 @@ func TestThreeDisposableRehearsals(t *testing.T) {
 			if !report.ResourcesCleaned || report.Preparation != "PASS" || report.Qualification != "WAIT" || report.FactoryWorkers != sampledFactoryWorkers || report.FactoryTasks != sampledFactoryTaskCount || len(report.Runs) != 3 {
 				t.Fatalf("invalid prep state: %+v", report)
 			}
+			if report.RuntimeRollback == nil || !completeRuntimeRollback(*report.RuntimeRollback, sha, tree) {
+				t.Fatal("caller runner did not consume the complete owned rollback and cleanup")
+			}
 			for _, run := range report.Runs {
-				if !run.FreshEmptyTarget || !run.RestoredComparison || !run.NewIncarnation || !run.AuthenticatedMCP || !run.ServiceAdminRefused || run.FactoryWorkers != sampledFactoryWorkers || run.FactoryTasks != sampledFactoryTaskCount || run.Baseline.Completed != sampledFactoryTaskCount || run.Shadow.Completed != sampledFactoryTaskCount || len(run.Baseline.Rows) != 8 || len(run.Shadow.Rows) != 8 {
+				if !run.FreshEmptyTarget || !run.RestoredComparison || !run.NewIncarnation || !run.AuthenticatedMCP || !run.ServiceAdminRefused || !run.TranscriptCompared || run.TranscriptExchanges != 3 || run.FactoryWorkers != sampledFactoryWorkers || run.FactoryTasks != sampledFactoryTaskCount || run.Baseline.Completed != sampledFactoryTaskCount || run.Shadow.Completed != sampledFactoryTaskCount || len(run.Baseline.Rows) != 8 || len(run.Shadow.Rows) != 8 {
 					t.Fatalf("missing functional evidence: %+v", run)
 				}
 				for _, digest := range []string{run.Rollback.ImageDigest, run.Rollback.PromptDigest, run.Rollback.PluginDigest, run.Rollback.DataDumpDigest} {
