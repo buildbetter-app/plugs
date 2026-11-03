@@ -252,7 +252,18 @@ func (s *GuardedService) UnlinkWithOutcome(ctx context.Context, by model.Princip
 }
 func (s *GuardedService) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	if workflowItemRef(req.ID) {
-		return s.delegate.ClaimWithOutcome(ctx, by, req, meta)
+		binding, err := s.workflowClaimAuthority(ctx, by, meta.Project)
+		if err != nil {
+			return port.WriteOutcome{}, err
+		}
+		out, err := s.delegate.ClaimWithOutcome(ctx, by, req, meta)
+		if err != nil {
+			return port.WriteOutcome{}, err
+		}
+		if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
+			return port.WriteOutcome{}, err
+		}
+		return out, nil
 	}
 	return s.delegate.ClaimWithOutcome(ctx, by, req, meta)
 }
@@ -318,6 +329,13 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			return nil, replayErr
 		}
 		if replayed {
+			binding, err := s.workflowClaimAuthority(ctx, by, req.Project)
+			if err != nil {
+				return nil, err
+			}
+			if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
+				return nil, err
+			}
 			return out, nil
 		}
 	}
@@ -337,7 +355,7 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			if workflowItemRef(ref) {
 				candidateMeta := meta
 				candidateMeta.Method = "bead.claimNext"
-				out, claimErr := s.delegate.ClaimWithOutcome(ctx, by, service.ClaimRequest{ID: ref}, candidateMeta)
+				out, claimErr := s.ClaimWithOutcome(ctx, by, service.ClaimRequest{ID: ref}, candidateMeta)
 				if claimErr == nil {
 					return &out, nil
 				}
@@ -388,6 +406,12 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			if s.commitEmpty == nil {
 				return nil, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 			}
+			// The provider may select a workflow item after the final live page.
+			// Apply the same current project permit before entering that seam.
+			binding, err := s.workflowClaimAuthority(ctx, by, req.Project)
+			if err != nil {
+				return nil, err
+			}
 			out, err := s.commitEmpty(ctx, by, req, meta, s.claimNextReadyProbe(by, req))
 			if err != nil {
 				if errors.Is(err, port.ErrClaimNextReady) {
@@ -403,6 +427,13 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 					continue
 				}
 				return nil, err
+			}
+			if out.Commit.Revision.IsZero() {
+				// Provider results do not advance the core head. Core null
+				// commits use the Writer's own transactional policy guard.
+				if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
+					return nil, err
+				}
 			}
 			if len(out.Commit.Results) == 0 {
 				out.NullResult = true

@@ -33,6 +33,8 @@ type workflowClaimNextFixture struct {
 	app      *Composition
 	keys     *authnapikey.Provider
 	by       model.PrincipalRef
+	facts    authzfixed.Facts
+	source   *MutableFacts
 	now      time.Time
 }
 
@@ -61,12 +63,17 @@ func newWorkflowClaimNextFixture(t *testing.T) *workflowClaimNextFixture {
 	f.provider.WithClock(func() time.Time { return f.now }).WithIdentity(workflowplugin.Alias, "default", meta.Incarnation)
 	f.keys = authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
 	ns := authz.Namespace{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}
-	project := model.RefByID("project", model.Natural64(0))
+	project := model.RefByID("project:immutable-claimnext", model.Natural64(0))
 	facts := authzfixed.Facts{Namespace: ns,
 		Projects: []authzfixed.Project{{Ref: project, Name: "project", InstallationID: "fixed", Active: true}},
 		Grants:   []authz.Grant{{Subject: authz.SubjectRef{Kind: "user", ID: "user:sponsor"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: project}, Role: "involved"}},
 	}
-	f.app, err = New(ctx, Config{Store: store, Lease: f.lease, Provider: f.keys, Facts: StaticFacts{Facts: facts}, Namespace: ns, DefaultProject: "project", Workflow: f.provider})
+	f.facts = facts
+	f.source, err = NewMutableFacts(facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.app, err = New(ctx, Config{Store: store, Lease: f.lease, Provider: f.keys, Facts: f.source, Namespace: ns, DefaultProject: "project", Workflow: f.provider})
 	if err != nil {
 		t.Fatal(err)
 	}

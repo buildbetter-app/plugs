@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "authzrpc",
-    srcs = ["authzrpc.go", "checker.go", "hierarchy.go", "hierarchy_read.go", "service.go", "slice.go", "workflow_reads.go"],
+    srcs = ["authzrpc.go", "checker.go", "hierarchy.go", "hierarchy_read.go", "service.go", "slice.go", "workflow_claimnext.go", "workflow_reads.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/authzrpc",
     visibility = ["//:__subpackages__"],
     deps = [
@@ -51,12 +51,14 @@ go_test(
 
 go_test(
     name = "workflow_claimnext_test",
-    srcs = ["workflow_claimnext_test.go"],
+    srcs = ["workflow_claimnext_test.go", "workflow_claimnext_auth_test.go"],
     embed = [":authzrpc"],
     tags = ["block-network"],
     deps = [
         "//internal/core/authz",
         "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/port",
         "//internal/core/service",
         "//internal/plugins/authnapikey",
         "//internal/plugins/authzfixed",

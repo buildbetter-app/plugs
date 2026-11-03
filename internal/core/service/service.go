@@ -403,7 +403,9 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 		if entry != nil {
 			// A stored null is terminal for this exact selector. Replay must not
 			// probe today's ready set and accidentally claim a later candidate.
-			out, err := s.CommitClaimNextEmpty(ctx, by, req, meta, nil)
+			// Re-enter only the core Writer that owns this retained receipt;
+			// the provider fallback may now contain a different live candidate.
+			out, err := s.commitCoreClaimNextEmpty(ctx, by, meta, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -537,6 +539,13 @@ func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRe
 			return port.WriteOutcome{Commit: workflowClaimCommit(item)}, nil
 		}
 	}
+	return s.commitCoreClaimNextEmpty(ctx, by, meta, probe)
+}
+
+// commitCoreClaimNextEmpty never visits the provider queue. In particular, a
+// retained core null must replay through its original Writer and authorization
+// boundary even when a workflow provider was installed or gained items later.
+func (s *Service) commitCoreClaimNextEmpty(ctx context.Context, by model.PrincipalRef, meta model.WriteMeta, probe port.ClaimNextReadyProbe) (port.WriteOutcome, error) {
 	if by.Kind != "anonymous" {
 		meta.AgentLabel = ""
 	} else if meta.AgentLabel == "" {
