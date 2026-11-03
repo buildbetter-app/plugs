@@ -33,20 +33,22 @@ type PostBinding struct {
 }
 
 type config struct {
-	ontology       port.Ontology
-	audit          port.OntologyAudit
-	auditSet       bool
-	eventContext   port.EventContextSource
-	authorizer     port.Authorizer
-	mutators       []MutatorBinding
-	validators     []ValidatorBinding
-	posts          []PostBinding
-	postFailures   driver.CheckpointStore
-	now            func() time.Time
-	newID          func() (string, error)
-	newAllocatorID func(driver.OfflineAllocator) (string, error)
-	claimTTL       time.Duration
-	observer       Observer
+	ontology            port.Ontology
+	audit               port.OntologyAudit
+	auditSet            bool
+	eventContext        port.EventContextSource
+	authorizer          port.Authorizer
+	mutators            []MutatorBinding
+	validators          []ValidatorBinding
+	posts               []PostBinding
+	postFailures        driver.CheckpointStore
+	now                 func() time.Time
+	newID               func() (string, error)
+	newAllocatorID      func(driver.OfflineAllocator) (string, error)
+	newAllocatorChildID func(driver.OfflineAllocator, string) (string, error)
+	hierarchyMaxDepth   int
+	claimTTL            time.Duration
+	observer            Observer
 }
 
 type Option func(*config)
@@ -88,6 +90,21 @@ func WithClock(now func() time.Time) Option { return func(c *config) { c.now = n
 func WithIDGenerator(generate func() (string, error)) Option {
 	return func(c *config) { c.newID = generate }
 }
+
+// WithAllocatorChildGenerator is a host seam for the opaque random child
+// profile. Sequential and hash child IDs are derived from observed counters;
+// this callback is used only when a restored random allocator mints a child.
+func WithAllocatorChildGenerator(generate func(driver.OfflineAllocator, string) (string, error)) Option {
+	return func(c *config) { c.newAllocatorChildID = generate }
+}
+
+// WithHierarchyMaxDepth sets the exclusive dotted depth limit. A root has
+// depth zero; with the default of three, root.1.2 is valid and root.1.2.3
+// cannot receive another child. Nonpositive values are rejected at configure
+// time rather than silently changing the host's contract.
+func WithHierarchyMaxDepth(depth int) Option {
+	return func(c *config) { c.hierarchyMaxDepth = depth }
+}
 func WithClaimTTL(ttl time.Duration) Option { return func(c *config) { c.claimTTL = ttl } }
 
 // WithObserver replaces the default bounded in-process collector. Hosts may
@@ -108,7 +125,7 @@ var _ port.OutcomeWriter = (*Writer)(nil)
 // New uses an already active storage lease. It never creates a second store.
 // Invalid callback configuration is refused by Apply before any storage write.
 func New(store driver.Store, lease driver.ActiveLease, options ...Option) *Writer {
-	w := &Writer{store: store, lease: lease, cfg: config{now: time.Now, newID: newID, newAllocatorID: func(a driver.OfflineAllocator) (string, error) { return a.NextID() }, claimTTL: 5 * time.Minute}}
+	w := &Writer{store: store, lease: lease, cfg: config{now: time.Now, newID: newID, newAllocatorID: func(a driver.OfflineAllocator) (string, error) { return a.NextID() }, newAllocatorChildID: func(a driver.OfflineAllocator, parent string) (string, error) { return a.NextChildID(parent) }, hierarchyMaxDepth: 3, claimTTL: 5 * time.Minute}}
 	for _, option := range options {
 		option(&w.cfg)
 	}
@@ -120,7 +137,7 @@ func New(store driver.Store, lease driver.ActiveLease, options ...Option) *Write
 }
 
 func (w *Writer) configure() error {
-	if w.store == nil || w.lease == nil || w.cfg.now == nil || w.cfg.newID == nil || w.cfg.claimTTL < time.Millisecond {
+	if w.store == nil || w.lease == nil || w.cfg.now == nil || w.cfg.newID == nil || w.cfg.newAllocatorID == nil || w.cfg.newAllocatorChildID == nil || w.cfg.claimTTL < time.Millisecond || w.cfg.hierarchyMaxDepth < 1 {
 		return fmt.Errorf("pipeline requires a store, active lease, clock and positive claim TTL")
 	}
 	if w.cfg.auditSet && (w.cfg.audit == nil || w.cfg.authorizer != nil && w.cfg.eventContext == nil) {

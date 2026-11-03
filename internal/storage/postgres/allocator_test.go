@@ -85,7 +85,59 @@ func pipelineCreate(t *testing.T, w *pipeline.Writer, n int) model.Commit {
 	return commit
 }
 
-func TestPostgresAllocatorHistoricalReadsRefuse(t *testing.T) {
+func TestPostgresAllocatorSnapshotReadsAreBounded(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	restoreAllocator(t, s, lease, driver.OfflineAllocator{Prefix: "demo", Mode: driver.AllocatorSequential, LastID: 8, Children: map[string]uint64{"demo-8": 3}})
+
+	for _, prefix := range []string{"missing", "demo"} {
+		t.Run(prefix, func(t *testing.T) {
+			r := testRead(t, s, nil).(*reader)
+			scans := func() int64 {
+				t.Helper()
+				var count int64
+				if err := r.sql.QueryRowContext(ctx, `SELECT seq_scan + COALESCE(idx_scan, 0) FROM pg_stat_xact_user_tables WHERE relid = 'plug_postgres.allocator_states'::regclass`).Scan(&count); err != nil {
+					t.Fatal(err)
+				}
+				return count
+			}
+			before := scans()
+			for i := 0; i < 4; i++ {
+				value, err := r.LoadAllocator(ctx, prefix)
+				if prefix == "missing" {
+					if !errors.Is(err, driver.ErrNotFound) {
+						t.Fatalf("missing allocator: %+v err=%v", value, err)
+					}
+					continue
+				}
+				if err != nil || value.LastID != 8 || value.Children["demo-8"] != 3 {
+					t.Fatalf("snapshot allocator: %+v err=%v", value, err)
+				}
+				value.Children["demo-8"] = 99
+			}
+			if got := scans() - before; got != 1 {
+				t.Fatalf("four allocator reads in one pinned snapshot scanned the allocator table %d times, want 1", got)
+			}
+			cancelled, cancel := context.WithCancel(ctx)
+			cancel()
+			if _, err := r.LoadAllocator(cancelled, prefix); !errors.Is(err, context.Canceled) {
+				t.Fatalf("cached allocator ignored cancellation: %v", err)
+			}
+			if _, err := r.LoadAllocator(ctx, ""); err == nil {
+				t.Fatal("cached snapshot accepted an invalid allocator prefix")
+			}
+			if err := r.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.LoadAllocator(ctx, prefix); !errors.Is(err, driver.ErrTxClosed) {
+				t.Fatalf("cached allocator ignored closed snapshot: %v", err)
+			}
+		})
+	}
+}
+
+func TestPostgresAllocatorHistoricalReadsAtCoveredRevision(t *testing.T) {
 	ctx := context.Background()
 	s := openTest(t, freshDSN(t))
 	lease := testLease(t, s)
@@ -94,6 +146,9 @@ func TestPostgresAllocatorHistoricalReadsRefuse(t *testing.T) {
 		t.Fatal(err)
 	}
 	beforeRestore := testRead(t, s, nil)
+	if _, err := beforeRestore.(driver.AllocatorReader).LoadAllocator(ctx, "demo"); !errors.Is(err, driver.ErrNotFound) {
+		t.Fatalf("initial snapshot did not observe missing allocator: %v", err)
+	}
 	restoreAllocator(t, s, lease, driver.OfflineAllocator{Prefix: "demo", Mode: driver.AllocatorSequential, LastID: 8, Children: map[string]uint64{"demo-8": 3}})
 
 	assertHistorical := func(name string, at uint64, present bool, factRevision uint64) {
@@ -111,8 +166,12 @@ func TestPostgresAllocatorHistoricalReadsRefuse(t *testing.T) {
 				t.Fatalf("allocator fact=%+v, want present=%t revision=%d", facts[0], present, factRevision)
 			}
 			value, err := r.(driver.AllocatorReader).LoadAllocator(ctx, "demo")
-			if !errors.Is(err, driver.ErrUnsupported) || value.Prefix != "" || value.LastID != 0 || value.Children != nil {
-				t.Fatalf("historical allocator at %s returned %+v err=%v; want empty state and ErrUnsupported", revision, value, err)
+			if !present {
+				if !errors.Is(err, driver.ErrNotFound) || value.Prefix != "" {
+					t.Fatalf("historical missing allocator at %s: %+v %v", revision, value, err)
+				}
+			} else if err != nil || value.Prefix != "demo" || value.LastID != 8 || value.Children["demo-8"] != 3 {
+				t.Fatalf("historical allocator at %s lost its exact state: %+v %v", revision, value, err)
 			}
 		})
 	}
@@ -126,6 +185,11 @@ func TestPostgresAllocatorHistoricalReadsRefuse(t *testing.T) {
 		}
 	}
 	tx, header := beginTest(t, s, lease, key)
+	for _, r := range []driver.AllocatorReader{tx.(driver.AllocatorReader), tx.(*transaction).reader} {
+		if value, err := r.LoadAllocator(ctx, "demo"); err != nil || value.LastID != 8 {
+			t.Fatalf("initial transaction allocator=%+v err=%v", value, err)
+		}
+	}
 	if err := tx.(driver.AllocatorContinuation).AllocateTopLevel(ctx, "demo", "demo-9"); err != nil {
 		t.Fatal(err)
 	}

@@ -21,21 +21,23 @@ import (
 
 type transaction struct {
 	*reader
-	lease           *activeLease
-	locked, hasHead bool
-	restore         *driver.Meta
-	offlineHistory  *driver.PreparedOfflineHistory
-	nativeRestore   *driver.NativeRestoreProfile
-	importRestore   *driver.RestoreImportProfile
-	acquired        driver.LockSet
-	files           []*os.File
-	done            chan struct{}
-	records         map[string]*driver.Record
-	derived         map[string]driver.LockState
-	blobs           map[driver.Hash][]byte
-	bumps           map[string]driver.LockKey
-	allocators      map[string]driver.OfflineAllocator
-	allocated       map[string]bool
+	lease            *activeLease
+	locked, hasHead  bool
+	restore          *driver.Meta
+	offlineHistory   *driver.PreparedOfflineHistory
+	nativeRestore    *driver.NativeRestoreProfile
+	nativeAllocators bool
+	importRestore    *driver.RestoreImportProfile
+	acquired         driver.LockSet
+	files            []*os.File
+	done             chan struct{}
+	records          map[string]*driver.Record
+	derived          map[string]driver.LockState
+	blobs            map[driver.Hash][]byte
+	bumps            map[string]driver.LockKey
+	allocators       map[string]driver.OfflineAllocator
+	parentCounters   map[string]driver.ParentCounter
+	allocated        map[string]bool
 
 	checkpointGuards map[string]uint64
 }
@@ -85,6 +87,7 @@ func (t *transaction) finish() {
 	t.blobs = nil
 	t.bumps = nil
 	t.allocators = nil
+	t.parentCounters = nil
 	t.allocated = nil
 	t.store.untrack(t)
 	close(t.done)
@@ -374,6 +377,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	if t.offlineHistory != nil {
 		return model.Changeset{}, fmt.Errorf("prepared history requires CommitOfflineHistory")
 	}
+	if t.nativeRestore != nil && !t.nativeAllocators {
+		return model.Changeset{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorBindingRequired, nil)
+	}
 	if err := t.validateHeader(ctx, h); err != nil {
 		return model.Changeset{}, err
 	}
@@ -430,6 +436,14 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		}
 		// Decode now so the result never aliases header-owned slices or maps.
 		if err = json.Unmarshal(data, &result); err != nil {
+			return err
+		}
+		target := meta
+		target.Head = revision
+		if t.restore != nil {
+			target = *t.restore
+		}
+		if err := t.publishAllocatorJournal(ctx, c, target, t.restore != nil); err != nil {
 			return err
 		}
 		for id, record := range t.records {
@@ -507,6 +521,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			if _, err = c.ExecContext(ctx, `INSERT INTO allocator_states(prefix,data) VALUES(?,?) ON CONFLICT(prefix) DO UPDATE SET data=excluded.data`, prefix, allocatorData); err != nil {
 				return err
 			}
+		}
+		if err = t.publishParentCounters(ctx, c); err != nil {
+			return err
 		}
 		for hash, blob := range t.blobs {
 			if blob == nil {

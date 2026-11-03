@@ -66,12 +66,13 @@ func ValidateOfflineRestoreHeader(h ChangesetHeader) error {
 // Manifest.StoreID. RequestHash covers the complete uploaded archive bytes.
 // This is transaction-local state; Commit still publishes the durable receipt.
 type NativeRestoreProfile struct {
-	StoreID        StoreID
-	Principal      model.PrincipalRef
-	Method         string
-	AgentLabel     string
-	IdempotencyKey string
-	RequestHash    string
+	StoreID          StoreID
+	AllocatorBinding NativeAllocatorBinding
+	Principal        model.PrincipalRef
+	Method           string
+	AgentLabel       string
+	IdempotencyKey   string
+	RequestHash      string
 }
 
 // NativeRestoreTx uses the same empty-target fence and atomic metadata
@@ -86,6 +87,13 @@ type NativeRestoreTx interface {
 // it. It never repairs identity, normalizes keys, or selects a caller profile
 // from a commit header. The source identity is also checked by metadata staging.
 func (p NativeRestoreProfile) Detached() (NativeRestoreProfile, error) {
+	if err := p.AllocatorBinding.Validate(); err != nil {
+		return NativeRestoreProfile{}, err
+	}
+	if p.AllocatorBinding.StoreID != p.StoreID {
+		return NativeRestoreProfile{}, NewNativeAllocatorSnapshotError(NativeAllocatorSourceMismatch, nil)
+	}
+	p.AllocatorBinding.Projects = append([]string{}, p.AllocatorBinding.Projects...)
 	if p.Method != "admin.restore.finish" || p.IdempotencyKey == "" || strings.TrimSpace(p.IdempotencyKey) != p.IdempotencyKey || strings.ContainsRune(p.IdempotencyKey, '\x00') || len(p.RequestHash) != 64 {
 		return NativeRestoreProfile{}, fmt.Errorf("native restore requires a final keyed admin.restore.finish receipt")
 	}

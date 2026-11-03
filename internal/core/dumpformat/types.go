@@ -8,6 +8,13 @@ const (
 	BeadsReference  = "9d6fff760b7a314b476539198504d77ce0959656"
 	Scope           = "offline-head-and-source-archives"
 	MaxArchiveBytes = 128 << 20
+	// NativeAllocatorMember is the engine-neutral member carrying the complete
+	// allocator image captured at the archive's pinned incarnation/head.  It is
+	// intentionally separate from the legacy manifest Projects field: the
+	// latter belongs to the offline Beads converter and cannot prove native
+	// continuation state.
+	NativeAllocatorMember  = "allocator/snapshot.json"
+	NativeAllocatorVersion = "plug-native-allocator/1"
 )
 
 // Row retains source JSON values, including explicit nulls and lossless
@@ -62,13 +69,15 @@ type Manifest struct {
 	// Native store fields are present only for archives produced by Plug's
 	// engine-neutral admin.dump path. The offline Beads exporter leaves these
 	// fields absent and continues to use the source census above.
-	NativeStoreID     string `json:"native_store_id,omitempty"`
-	NativeIncarnation string `json:"native_incarnation,omitempty"`
-	NativeHead        string `json:"native_head,omitempty"`
-	NativeDigest      string `json:"native_digest,omitempty"`
-	RecordCount       int    `json:"record_count,omitempty"`
-	VersionCount      int    `json:"version_count,omitempty"`
-	ChangesetCount    int    `json:"changeset_count,omitempty"`
+	NativeStoreID          string `json:"native_store_id,omitempty"`
+	NativeIncarnation      string `json:"native_incarnation,omitempty"`
+	NativeHead             string `json:"native_head,omitempty"`
+	NativeDigest           string `json:"native_digest,omitempty"`
+	NativeAllocatorProfile string `json:"native_allocator_profile,omitempty"`
+	NativeAllocatorDigest  string `json:"native_allocator_digest,omitempty"`
+	RecordCount            int    `json:"record_count,omitempty"`
+	VersionCount           int    `json:"version_count,omitempty"`
+	ChangesetCount         int    `json:"changeset_count,omitempty"`
 }
 
 type Provenance struct {
