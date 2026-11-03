@@ -1173,6 +1173,13 @@ func comparePublicImport(source, target []byte, fixture recordingFixture) error 
 			return fmt.Errorf("target import changed source issue %s", id)
 		}
 	}
+	for id := range right.Issues {
+		if id != "pub-keep" {
+			if _, source := left.Issues[id]; !source {
+				return fmt.Errorf("target import introduced issue %s", id)
+			}
+		}
+	}
 	if !equalJSON(left.Memories, right.Memories) {
 		return fmt.Errorf("target import changed source memories")
 	}
@@ -1231,6 +1238,9 @@ func TestPublicProjectionRejectsRelationCorruption(t *testing.T) {
 		{"dependency_type", func(p *semanticProjection) { p.Edges[0]["type"] = "relates-to" }, "dependency/parent relations"},
 		{"parent_endpoint", func(p *semanticProjection) { p.Edges[1]["to"] = "pub-keep" }, "dependency/parent relations"},
 		{"duplicate_edge", func(p *semanticProjection) { p.Edges = append(p.Edges, p.Edges[0]) }, "dependency/parent relations"},
+		{"extra_issue", func(p *semanticProjection) {
+			p.Issues["pub-extra"] = map[string]any{"title": "unexpected target issue"}
+		}, "target import introduced issue"},
 		{"comment_text", func(p *semanticProjection) { p.Comments[0]["text"] = "replaced" }, "comment contents"},
 		{"comment_author", func(p *semanticProjection) { p.Comments[0]["author"] = "another-actor" }, "comment contents"},
 		{"comment_issue", func(p *semanticProjection) { p.Comments[0]["issue_id"] = publicChildID }, "comment contents"},
