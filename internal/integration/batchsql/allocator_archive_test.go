@@ -1,8 +1,11 @@
 package batchsql_test
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/restore"
@@ -21,7 +24,7 @@ func (s allocatorInventoryHiddenStore) Read(ctx context.Context, view driver.Vie
 	return struct{ driver.Reader }{r}, nil
 }
 
-func TestNativeDumpRefusesRetainedAllocatorStateAcrossStores(t *testing.T) {
+func TestNativeDumpPreservesRetainedAllocatorStateAcrossStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			for _, kind := range []string{"deleted-child", "sequential", "hash", "random", "missing-inventory"} {
@@ -51,8 +54,40 @@ func TestNativeDumpRefusesRetainedAllocatorStateAcrossStores(t *testing.T) {
 					for _, history := range []string{"head", "full"} {
 						t.Run(history, func(t *testing.T) {
 							data, manifest, err := restore.Dump(f.ctx, store, history)
-							if !errors.Is(err, driver.ErrUnsupported) || len(data) != 0 || manifest.Format != "" {
-								t.Fatalf("native snapshot silently omitted %s continuation state: bytes=%d format=%q err=%v", kind, len(data), manifest.Format, err)
+							if kind == "missing-inventory" {
+								if !errors.Is(err, driver.ErrUnsupported) || len(data) != 0 || manifest.Format != "" {
+									t.Fatalf("missing capability admitted: bytes=%d manifest=%+v err=%v", len(data), manifest, err)
+								}
+							} else {
+								if err != nil || len(data) == 0 {
+									t.Fatalf("complete native snapshot refused: %s %s %v", kind, history, err)
+								}
+								tr := tar.NewReader(bytes.NewReader(data))
+								var payload []byte
+								for {
+									h, e := tr.Next()
+									if e == io.EOF {
+										break
+									}
+									if e != nil {
+										t.Fatal(e)
+									}
+									if h.Name == "allocator/snapshot.json" {
+										payload, e = io.ReadAll(tr)
+										if e != nil {
+											t.Fatal(e)
+										}
+									}
+								}
+								got, e := driver.DecodeAllocatorSnapshot(payload)
+								if e != nil {
+									t.Fatalf("native allocator payload: %v", e)
+								}
+								want := observedAllocatorSnapshot(t, f, nil)
+								requireAllocatorSnapshotBytes(t, want, got)
+								if got.At.String() != manifest.NativeHead || got.Incarnation != manifest.NativeIncarnation || string(got.StoreID) != manifest.NativeStoreID {
+									t.Fatal("allocator source is not bound to native manifest")
+								}
 							}
 							requireSameState(t, before, childAllocatorDurableState(t, f))
 						})

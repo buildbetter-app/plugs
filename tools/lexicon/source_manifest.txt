@@ -353,6 +353,7 @@ internal/integration/auditsql/fixture_test.go
 internal/integration/batchsql/BUILD.bazel
 internal/integration/batchsql/README.md
 internal/integration/batchsql/allocator_archive_test.go
+internal/integration/batchsql/allocator_snapshot_test.go
 internal/integration/batchsql/b01_close_ancestry_test.go
 internal/integration/batchsql/b01_public_hierarchy_test.go
 internal/integration/batchsql/batch_test.go
@@ -836,6 +837,8 @@ internal/storage/driver/restore.go
 internal/storage/driver/restore_test.go
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/allocator.go
+internal/storage/memory/allocator_snapshot.go
+internal/storage/memory/allocator_snapshot_test.go
 internal/storage/memory/audit_test.go
 internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_guard.go
@@ -859,6 +862,7 @@ internal/storage/memory/transaction_reader.go
 internal/storage/postgres/BUILD.bazel
 internal/storage/postgres/README.md
 internal/storage/postgres/allocator.go
+internal/storage/postgres/allocator_snapshot.go
 internal/storage/postgres/allocator_test.go
 internal/storage/postgres/boundaries_test.go
 internal/storage/postgres/checkpoint_guard.go
@@ -888,6 +892,7 @@ internal/storage/postgres/transaction.go
 internal/storage/sqlite/BUILD.bazel
 internal/storage/sqlite/README.md
 internal/storage/sqlite/allocator.go
+internal/storage/sqlite/allocator_snapshot.go
 internal/storage/sqlite/boundaries_test.go
 internal/storage/sqlite/checkpoint_guard.go
 internal/storage/sqlite/clock.go

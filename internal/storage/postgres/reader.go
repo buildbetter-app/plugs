@@ -14,16 +14,14 @@ import (
 )
 
 type reader struct {
-	mu     sync.Mutex
-	store  *Store
-	sql    *sql.Tx
-	meta   driver.Meta
-	at     uint64
-	closed bool
-	writer *transaction
-	// Only read-only repeatable-read snapshots memoize allocator lookups.
-	// An empty value records a validated miss in that snapshot.
-	allocatorSnapshots map[string]driver.OfflineAllocator
+	allocatorImage *driver.AllocatorSnapshot
+	mu             sync.Mutex
+	store          *Store
+	sql            *sql.Tx
+	meta           driver.Meta
+	at             uint64
+	closed         bool
+	writer         *transaction
 	// Writers reserve their connection so cancellation cleanup can wait for
 	// pgx's asynchronous server termination before another lock probe starts.
 	conn        *sql.Conn
@@ -93,7 +91,7 @@ func (r *reader) finish() error {
 		return nil
 	}
 	r.closed = true
-	r.allocatorSnapshots = nil
+	r.allocatorImage = nil
 	err := r.sql.Rollback()
 	if errors.Is(err, sql.ErrTxDone) {
 		err = nil

@@ -3,7 +3,6 @@ package memory
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -30,10 +29,19 @@ func (r *reader) LoadParentCounter(ctx context.Context, parent string) (driver.P
 	if err := r.check(ctx); err != nil {
 		return driver.ParentCounter{}, err
 	}
-	if r.state.meta.Head.String() != model.Natural64(r.at).String() {
-		return driver.ParentCounter{}, fmt.Errorf("%w: historical parent counters", driver.ErrUnsupported)
+	if _, err := driver.ParentCounterKey(r.incarnation, parent); err != nil {
+		return driver.ParentCounter{}, err
 	}
-	return parentCounterValue(nil, r.state.parentCounters, r.incarnation, parent)
+	snapshot, err := r.state.allocatorSnapshot(r.at)
+	if err != nil {
+		return driver.ParentCounter{}, err
+	}
+	for _, value := range snapshot.Inventory.Parents {
+		if value.Parent == parent {
+			return value, nil
+		}
+	}
+	return driver.ParentCounter{}, driver.ErrNotFound
 }
 
 func (t *transaction) LoadParentCounter(ctx context.Context, parent string) (driver.ParentCounter, error) {
@@ -99,34 +107,8 @@ func (t *transaction) ConsumeParentChild(ctx context.Context, parent, expected s
 }
 
 func (r *reader) AllocatorInventory(ctx context.Context) (driver.AllocatorInventory, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if err := r.check(ctx); err != nil {
-		return driver.AllocatorInventory{}, err
-	}
-	if r.state.meta.Head.String() != model.Natural64(r.at).String() {
-		return driver.AllocatorInventory{}, fmt.Errorf("%w: historical allocator inventory", driver.ErrUnsupported)
-	}
-	inventory := driver.AllocatorInventory{}
-	for _, value := range r.state.allocators {
-		if err := value.Validate(); err != nil {
-			return driver.AllocatorInventory{}, err
-		}
-		inventory.Projects = append(inventory.Projects, value.Clone())
-	}
-	for key, value := range r.state.parentCounters {
-		expected, err := driver.ParentCounterKey(r.incarnation, value.Parent)
-		if err != nil || expected != key {
-			return driver.AllocatorInventory{}, fmt.Errorf("invalid parent counter inventory key")
-		}
-		if err := value.Validate(r.incarnation, value.Parent); err != nil {
-			return driver.AllocatorInventory{}, err
-		}
-		inventory.Parents = append(inventory.Parents, value)
-	}
-	sort.Slice(inventory.Projects, func(i, j int) bool { return inventory.Projects[i].Prefix < inventory.Projects[j].Prefix })
-	sort.Slice(inventory.Parents, func(i, j int) bool { return inventory.Parents[i].Parent < inventory.Parents[j].Parent })
-	return inventory, nil
+	snapshot, err := r.AllocatorSnapshot(ctx)
+	return snapshot.Inventory, err
 }
 
 var _ driver.ParentCounterReader = (*reader)(nil)

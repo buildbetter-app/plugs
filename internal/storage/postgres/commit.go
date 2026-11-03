@@ -26,6 +26,9 @@ func (t *transaction) header(h driver.ChangesetHeader) ([]byte, error) {
 	if t.restore != nil {
 		validate := driver.ValidateOfflineRestoreHeader
 		if t.nativeRestore != nil {
+			if !t.nativeAllocators {
+				return nil, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorBindingRequired, nil)
+			}
 			validate = t.nativeRestore.ValidateHeader
 		}
 		if t.importRestore != nil {
@@ -295,6 +298,15 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	}
 	response, err := responseAt(h.Response, revision)
 	if err != nil {
+		return zero, err
+	}
+	target := t.meta
+	target.Head = revision
+	if t.restore != nil {
+		target = *t.restore
+	}
+	if err := t.publishAllocatorJournal(ctx, t.sql, target, t.restore != nil); err != nil {
+		_ = t.finish()
 		return zero, err
 	}
 	// Once database publication begins, every failure closes and rolls back

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -54,40 +53,25 @@ func (r *reader) LoadAllocator(ctx context.Context, prefix string) (driver.Offli
 	if err := r.check(ctx); err != nil {
 		return driver.OfflineAllocator{}, err
 	}
-	// Allocator rows hold only the SQL snapshot's current payload, not the
-	// state at an earlier revision requested through View.At.
-	if r.writer == nil && r.meta.Head.String() != model.Natural64(r.at).String() {
-		return driver.OfflineAllocator{}, fmt.Errorf("%w: postgres historical allocator reads", driver.ErrUnsupported)
-	}
-	if r.writer != nil {
-		if value, ok := r.writer.allocators[prefix]; ok {
-			return value.Clone(), nil
-		}
-		// A transaction is read-committed and can stage an allocator after a
-		// prior lookup. It must never reuse the read-only snapshot memo.
-		return loadAllocator(ctx, r.sql, prefix)
-	}
 	if _, err := driver.AllocatorFact(prefix); err != nil {
 		return driver.OfflineAllocator{}, err
 	}
-	if value, ok := r.allocatorSnapshots[prefix]; ok {
-		if value.Prefix == "" {
-			return driver.OfflineAllocator{}, driver.ErrNotFound
+	if r.writer != nil {
+		if a, ok := r.writer.allocators[prefix]; ok {
+			return a.Clone(), nil
 		}
-		if err := value.Validate(); err != nil {
-			return driver.OfflineAllocator{}, err
-		}
-		return value.Clone(), nil
+		return loadAllocator(ctx, r.sql, prefix)
 	}
-	value, err := loadAllocator(ctx, r.sql, prefix)
-	if err != nil && !errors.Is(err, driver.ErrNotFound) {
+	snapshot, err := r.allocatorSnapshot(ctx)
+	if err != nil {
 		return driver.OfflineAllocator{}, err
 	}
-	if r.allocatorSnapshots == nil {
-		r.allocatorSnapshots = make(map[string]driver.OfflineAllocator)
+	for _, a := range snapshot.Inventory.Projects {
+		if a.Prefix == prefix {
+			return a.Clone(), nil
+		}
 	}
-	r.allocatorSnapshots[prefix] = value.Clone()
-	return value, err
+	return driver.OfflineAllocator{}, driver.ErrNotFound
 }
 
 func (t *transaction) LoadAllocator(ctx context.Context, prefix string) (driver.OfflineAllocator, error) {
@@ -103,6 +87,9 @@ func (t *transaction) LoadAllocator(ctx context.Context, prefix string) (driver.
 }
 
 func (t *transaction) allocatorWritable(prefix string) (driver.LockKey, string, error) {
+	if t.nativeRestore != nil {
+		return driver.LockKey{}, "", driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorBindingRequired, nil)
+	}
 	key, id, err := allocatorKey(prefix)
 	if err != nil {
 		return driver.LockKey{}, "", err

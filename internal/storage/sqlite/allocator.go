@@ -55,12 +55,25 @@ func (r *reader) LoadAllocator(ctx context.Context, prefix string) (driver.Offli
 	if err := r.check(ctx); err != nil {
 		return driver.OfflineAllocator{}, err
 	}
+	if _, err := driver.AllocatorFact(prefix); err != nil {
+		return driver.OfflineAllocator{}, err
+	}
 	if r.owner != nil {
-		if value, ok := r.owner.allocators[prefix]; ok {
-			return value.Clone(), nil
+		if a, ok := r.owner.allocators[prefix]; ok {
+			return a.Clone(), nil
+		}
+		return loadAllocator(ctx, r.tx, prefix)
+	}
+	snapshot, err := r.allocatorSnapshot(ctx)
+	if err != nil {
+		return driver.OfflineAllocator{}, err
+	}
+	for _, a := range snapshot.Inventory.Projects {
+		if a.Prefix == prefix {
+			return a.Clone(), nil
 		}
 	}
-	return loadAllocator(ctx, r.tx, prefix)
+	return driver.OfflineAllocator{}, driver.ErrNotFound
 }
 
 func (t *transaction) LoadAllocator(ctx context.Context, prefix string) (driver.OfflineAllocator, error) {
@@ -76,6 +89,9 @@ func (t *transaction) LoadAllocator(ctx context.Context, prefix string) (driver.
 }
 
 func (t *transaction) allocatorWritable(prefix string) (driver.LockKey, string, error) {
+	if t.nativeRestore != nil {
+		return driver.LockKey{}, "", driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorBindingRequired, nil)
+	}
 	key, id, err := allocatorKey(prefix)
 	if err != nil {
 		return driver.LockKey{}, "", err

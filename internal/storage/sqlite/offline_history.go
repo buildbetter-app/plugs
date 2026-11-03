@@ -66,6 +66,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 		if err := restoreEmpty(ctx, c); err != nil {
 			return err
 		}
+		if err := t.publishAllocatorJournal(ctx, c, plan.Meta, true); err != nil {
+			return err
+		}
 		for i, row := range plan.Rows {
 			r := row.Record
 			id, _ := recordKey(r.Ref)

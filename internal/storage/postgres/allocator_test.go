@@ -137,7 +137,7 @@ func TestPostgresAllocatorSnapshotReadsAreBounded(t *testing.T) {
 	}
 }
 
-func TestPostgresAllocatorHistoricalReadsRefuse(t *testing.T) {
+func TestPostgresAllocatorHistoricalReadsAtCoveredRevision(t *testing.T) {
 	ctx := context.Background()
 	s := openTest(t, freshDSN(t))
 	lease := testLease(t, s)
@@ -166,8 +166,12 @@ func TestPostgresAllocatorHistoricalReadsRefuse(t *testing.T) {
 				t.Fatalf("allocator fact=%+v, want present=%t revision=%d", facts[0], present, factRevision)
 			}
 			value, err := r.(driver.AllocatorReader).LoadAllocator(ctx, "demo")
-			if !errors.Is(err, driver.ErrUnsupported) || value.Prefix != "" || value.LastID != 0 || value.Children != nil {
-				t.Fatalf("historical allocator at %s returned %+v err=%v; want empty state and ErrUnsupported", revision, value, err)
+			if !present {
+				if !errors.Is(err, driver.ErrNotFound) || value.Prefix != "" {
+					t.Fatalf("historical missing allocator at %s: %+v %v", revision, value, err)
+				}
+			} else if err != nil || value.Prefix != "demo" || value.LastID != 8 || value.Children["demo-8"] != 3 {
+				t.Fatalf("historical allocator at %s lost its exact state: %+v %v", revision, value, err)
 			}
 		})
 	}

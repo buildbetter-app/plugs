@@ -3,7 +3,6 @@ package driver
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -115,7 +114,7 @@ type AllocatorInventoryReader interface {
 func (inventory *AllocatorInventory) AddRow(key string, data []byte, incarnation string) error {
 	if strings.HasPrefix(key, parentCounterNamespace) {
 		var value ParentCounter
-		if err := json.Unmarshal(data, &value); err != nil {
+		if err := strictAllocatorJSON(data, &value); err != nil {
 			return err
 		}
 		expected, err := ParentCounterKey(incarnation, value.Parent)
@@ -132,7 +131,7 @@ func (inventory *AllocatorInventory) AddRow(key string, data []byte, incarnation
 		return nil
 	}
 	var value OfflineAllocator
-	if err := json.Unmarshal(data, &value); err != nil {
+	if err := strictAllocatorJSON(data, &value); err != nil {
 		return err
 	}
 	if value.Prefix != key {

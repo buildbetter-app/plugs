@@ -30,7 +30,18 @@ func (r *reader) LoadAllocator(ctx context.Context, prefix string) (driver.Offli
 	if _, err := driver.AllocatorFact(prefix); err != nil {
 		return driver.OfflineAllocator{}, err
 	}
-	value, ok := r.state.allocators[prefix]
+	snapshot, err := r.state.allocatorSnapshot(r.at)
+	if err != nil {
+		return driver.OfflineAllocator{}, err
+	}
+	var value driver.OfflineAllocator
+	ok := false
+	for _, candidate := range snapshot.Inventory.Projects {
+		if candidate.Prefix == prefix {
+			value, ok = candidate, true
+			break
+		}
+	}
 	if !ok {
 		return driver.OfflineAllocator{}, driver.ErrNotFound
 	}
@@ -58,6 +69,9 @@ func (t *transaction) LoadAllocator(ctx context.Context, prefix string) (driver.
 }
 
 func (t *transaction) allocatorWritable(prefix string) (driver.LockKey, string, error) {
+	if t.nativeRestore != nil {
+		return driver.LockKey{}, "", driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorBindingRequired, nil)
+	}
 	key, id, err := allocatorKey(prefix)
 	if err != nil {
 		return driver.LockKey{}, "", err

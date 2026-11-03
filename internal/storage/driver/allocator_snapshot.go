@@ -10,6 +10,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
@@ -103,7 +104,7 @@ func (s AllocatorSnapshot) Validate() error {
 	if s.Version != NativeAllocatorVersion {
 		return NewNativeAllocatorSnapshotError(NativeAllocatorProfileUnsupported, nil)
 	}
-	if s.StoreID == "" || strings.TrimSpace(string(s.StoreID)) != string(s.StoreID) || strings.ContainsRune(string(s.StoreID), '\x00') {
+	if !utf8.ValidString(string(s.StoreID)) || !utf8.ValidString(s.Incarnation) || s.StoreID == "" || strings.TrimSpace(string(s.StoreID)) != string(s.StoreID) || strings.ContainsRune(string(s.StoreID), '\x00') {
 		return invalid(fmt.Errorf("invalid source store identity"))
 	}
 	if err := canonicalAllocatorPart("incarnation", s.Incarnation); err != nil {
@@ -124,6 +125,14 @@ func (s AllocatorSnapshot) Validate() error {
 		return invalid(fmt.Errorf("both complete inventories are required"))
 	}
 	for i, a := range s.Inventory.Projects {
+		if !utf8.ValidString(a.Prefix) {
+			return invalid(fmt.Errorf("project prefix is not UTF-8"))
+		}
+		for parent := range a.Children {
+			if !utf8.ValidString(parent) {
+				return invalid(fmt.Errorf("child counter identity is not UTF-8"))
+			}
+		}
 		if err := a.Validate(); err != nil {
 			return invalid(err)
 		}
