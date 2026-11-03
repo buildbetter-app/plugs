@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +31,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/pluginapi"
 	sdk "github.com/buildbetter-app/plugs/sdk/go"
+	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/sys"
 )
 
 // The source checkout is deliberately committed into a disposable repository
@@ -1007,6 +1010,100 @@ func TestWASIGuestCallbackTimerCancellationAndRetirement(t *testing.T) {
 	t.Log("source-built guest positive nanosleep observed; caller cancellation and owner retirement returned context.Canceled with fresh generation state")
 }
 
+func TestWASICallbackRetirementBeforeTimerBegin(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
+	}
+	artifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: wasiCheckout(t, moduleRoot(t)), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = artifact.Close() })
+	host := wasiGuestHost(t, artifact, time.Second)
+	callerCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	beginEntered := make(chan (<-chan struct{}), 1)
+	beginRelease := make(chan struct{})
+	beginReleased := false
+	releaseBegin := func() {
+		if !beginReleased {
+			close(beginRelease)
+			beginReleased = true
+		}
+	}
+	defer releaseBegin()
+	waitEntered := make(chan context.Context, 1)
+	callCtx := pluginhost.WithWASMCallbackTimerBeginObserver(callerCtx, func(_ context.Context, retired <-chan struct{}) {
+		beginEntered <- retired
+		<-beginRelease
+	})
+	callCtx = pluginhost.WithWASMCallbackTimerWaitObserver(callCtx, func(waitCtx context.Context) {
+		waitEntered <- waitCtx
+	})
+	type callbackResult struct {
+		patches []port.Patch
+		err     error
+	}
+	callbackDone := make(chan callbackResult, 1)
+	go func() {
+		patches, callErr := host.Mutators()[0].Mutator.Mutate(callCtx, wasiStateChange("prearm-retirement", "timer-callback:prearm"), &wasiSnapshot{revision: model.Natural64(1)})
+		callbackDone <- callbackResult{patches: patches, err: callErr}
+	}()
+	var retired <-chan struct{}
+	select {
+	case retired = <-beginEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source-built callback did not reach its timer pre-arm barrier")
+	}
+	if retired == nil {
+		t.Fatal("timer pre-arm observer supplied no retirement signal")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- artifact.Close() }()
+	select {
+	case <-retired:
+	case <-time.After(3 * time.Second):
+		releaseBegin()
+		t.Fatal("Artifact.Close did not retire the timer before callback arming")
+	}
+	select {
+	case closeErr := <-closeDone:
+		releaseBegin()
+		t.Fatalf("owner close returned before held callback timer arming: %v", closeErr)
+	default:
+	}
+	releaseBegin()
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	select {
+	case waitCtx := <-waitEntered:
+		if waitCtx == nil {
+			t.Fatal("retired callback reached positive nanosleep without its actual wait context")
+		}
+	case <-deadline.C:
+		t.Fatal("retired callback never reached a real positive WASI wait after pre-arm release")
+	}
+	for closeDone != nil || callbackDone != nil {
+		select {
+		case result := <-callbackDone:
+			if !errors.Is(result.err, context.Canceled) || len(result.patches) != 0 {
+				t.Fatalf("retired-before-arm callback published a result: patches=%v err=%v", result.patches, result.err)
+			}
+			callbackDone = nil
+		case closeErr := <-closeDone:
+			if closeErr != nil {
+				t.Fatalf("owner close failed after pre-arm retirement: %v", closeErr)
+			}
+			closeDone = nil
+		case <-deadline.C:
+			t.Fatal("owner retirement did not drain the source-built callback after pre-arm cancellation")
+		}
+	}
+	if callerCtx.Err() != nil {
+		t.Fatalf("owner retirement canceled the live caller context: %v", callerCtx.Err())
+	}
+}
+
 func TestWASIGuestExitCannotForgeCallerCancellation(t *testing.T) {
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
@@ -1045,9 +1142,22 @@ func TestWASIInitializerCancellationAtGuestStart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	entered := make(chan struct{}, 1)
-	admissionCtx := pluginhost.WithWASMInitializerContextObserver(ctx, func(initCtx context.Context) {
+	timerEntered := make(chan context.Context, 1)
+	timerRelease := make(chan struct{})
+	timerReleased := false
+	releaseTimer := func() {
+		if !timerReleased {
+			close(timerRelease)
+			timerReleased = true
+		}
+	}
+	defer releaseTimer()
+	admissionCtx := pluginhost.WithWASMInitializerContextObserver(ctx, func(context.Context) {
 		entered <- struct{}{}
-		<-initCtx.Done()
+	})
+	admissionCtx = pluginhost.WithWASMInitializerTimerWaitObserver(admissionCtx, func(waitCtx context.Context) {
+		timerEntered <- waitCtx
+		<-timerRelease
 	})
 	hostDone := make(chan error, 1)
 	go func() {
@@ -1059,16 +1169,112 @@ func TestWASIInitializerCancellationAtGuestStart(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("source-built guest did not enter its real initializer/startup import")
 	}
+	var waitCtx context.Context
+	select {
+	case waitCtx = <-timerEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source-built guest initializer did not enter positive WASI nanosleep")
+	}
+	if waitCtx == nil {
+		t.Fatal("initializer timer observer received no execution context")
+	}
 	cancel()
+	select {
+	case <-waitCtx.Done():
+		if !errors.Is(waitCtx.Err(), context.Canceled) {
+			t.Fatalf("active initializer wait lost caller cancellation identity: %v", waitCtx.Err())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("caller cancellation did not reach the held initializer timer wait")
+	}
+	releaseTimer()
 	select {
 	case hostErr := <-hostDone:
 		if !errors.Is(hostErr, context.Canceled) {
 			t.Fatalf("source-built initializer cancellation returned %v", hostErr)
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("source-built initializer did not stop after caller cancellation")
+	case <-time.After(750 * time.Millisecond):
+		t.Fatal("source-built initializer did not stop its active WASI wait before natural sleep completion")
 	}
-	t.Log("source-built WASI initializer reached its guest import barrier and returned context.Canceled on caller cancellation")
+	t.Log("source-built WASI initializer reached guest import and active positive nanosleep, then returned context.Canceled before natural completion")
+}
+
+func TestWASIBinaryStartSectionCancellationAtActiveWait(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
+	}
+	artifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: startSleepWASICheckout(t, moduleRoot(t)), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = artifact.Close() }()
+	wasm, err := os.ReadFile(artifact.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wasm = wasiStartFromSourceInitialize(t, wasm)
+	if err := pluginhost.ValidateWASMArtifact(wasm); err != nil {
+		t.Fatalf("source-built guest with binary start section failed static admission: %v", err)
+	}
+	manifest, err := artifact.Manifest()
+	if err != nil || len(manifest.Plugins) != 1 {
+		t.Fatalf("source-built startup manifest: %v", err)
+	}
+	native, err := pluginhost.NewWASMNative(wasm, manifest.Plugins[0], "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan context.Context, 1)
+	release := make(chan struct{})
+	released := false
+	releaseWait := func() {
+		if !released {
+			close(release)
+			released = true
+		}
+	}
+	defer releaseWait()
+	observedCtx := pluginhost.WithWASMInitializerTimerWaitObserver(ctx, func(waitCtx context.Context) {
+		entered <- waitCtx
+		<-release
+	})
+	result := make(chan error, 1)
+	go func() {
+		host, hostErr := pluginhost.NewWithContext(observedCtx, pluginhost.Config{Natives: []sdk.Native{native}})
+		if host != nil {
+			_ = host.Close()
+		}
+		result <- hostErr
+	}()
+	var waitCtx context.Context
+	select {
+	case waitCtx = <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("binary start section did not enter an actual positive WASI timer wait")
+	}
+	if waitCtx == nil {
+		t.Fatal("binary start wait observer received no execution context")
+	}
+	cancel()
+	select {
+	case <-waitCtx.Done():
+		if !errors.Is(waitCtx.Err(), context.Canceled) {
+			t.Fatalf("binary start wait lost caller cancellation: %v", waitCtx.Err())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("caller cancellation did not reach binary start wait")
+	}
+	releaseWait()
+	select {
+	case hostErr := <-result:
+		if !errors.Is(hostErr, context.Canceled) {
+			t.Fatalf("binary start cancellation returned %v", hostErr)
+		}
+	case <-time.After(750 * time.Millisecond):
+		t.Fatal("binary start did not unwind before its natural one-second sleep")
+	}
 }
 
 func TestWASIQueueConstructionDeadlineIsRetryableBusy(t *testing.T) {
@@ -1194,25 +1400,17 @@ func TestWASISourceInitializerFailureSurvivesQueueExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The first source guest and its four pooled replacements are genuine
-	// normal WASI members. The sixth construction runs the source-built guest
-	// whose initializer fails, then deliberately delays returning that genuine
-	// ErrManifest until the settled 100ms queue context expires. This races the
-	// real constructor result against queue expiry without fabricating a guest
-	// error or changing the production deadline.
+	// The first source guest and four pooled members are normal WASI guests.
+	// The sixth construction runs the failing source-built initializer with the
+	// actual queue context. Its real guest error is held immediately before
+	// classification until that settled 100ms context expires.
 	native := normalNative
 	var constructions atomic.Int32
 	native.NewWithContext = func(ctx context.Context, host pluginapi.Host) (sdk.Registration, error) {
 		if constructions.Add(1) != 6 {
 			return normalNative.NewWithContext(ctx, host)
 		}
-		// Keep the source-built constructor's real context independent of the
-		// queue-only return delay. The guest fails with its genuine manifest trap;
-		// this test seam holds that real error until the construction context
-		// expires so load.go must preserve ErrManifest rather than relabel it busy.
-		registration, initErr := failingNative.NewWithContext(context.WithoutCancel(ctx), host)
-		<-ctx.Done()
-		return registration, initErr
+		return failingNative.NewWithContext(ctx, host)
 	}
 	host, err := pluginhost.New(pluginhost.Config{Natives: []sdk.Native{native}, Bindings: []pluginhost.Binding{{
 		ID: "wasi-normalize", Alias: "wasi", Instance: "default", Subscriber: "normalize", Phase: pluginapi.PhaseMutate,
@@ -1231,16 +1429,37 @@ func TestWASISourceInitializerFailureSurvivesQueueExpiry(t *testing.T) {
 	callerCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	initializerEntered := make(chan struct{}, 1)
+	type classifiedFailure struct {
+		guestErr error
+		before   error
+		after    error
+	}
+	classificationSeen := make(chan classifiedFailure, 1)
 	observedCtx := pluginhost.WithWASMInitializerContextObserver(callerCtx, func(context.Context) {
 		initializerEntered <- struct{}{}
 	})
+	observedCtx = pluginhost.WithWASMInitializationErrorObserver(observedCtx, func(constructorCtx context.Context, guestErr error) {
+		observation := classifiedFailure{guestErr: guestErr, before: constructorCtx.Err()}
+		<-constructorCtx.Done()
+		observation.after = constructorCtx.Err()
+		classificationSeen <- observation
+	})
 	_, err = mutator.Mutate(observedCtx, wasiStateChange("initializer-e", "pool-state:initializer-e"), &wasiSnapshot{revision: model.Natural64(1)})
+	select {
+	case observed := <-classificationSeen:
+		var exitErr *sys.ExitError
+		if observed.before != nil || !errors.Is(observed.after, context.DeadlineExceeded) || !errors.As(observed.guestErr, &exitErr) || exitErr.ExitCode() != 2 {
+			t.Fatalf("genuine guest failure did not precede real queue-context expiry: %+v", observed)
+		}
+	default:
+		t.Fatal("failing WASI initializer did not reach the real classifier boundary")
+	}
 	select {
 	case <-initializerEntered:
 	default:
 		t.Fatal("failing source-built initializer never reached its real guest import")
 	}
-	if !hasPluginHostCode(err, pluginhost.ErrManifest) || !strings.Contains(err.Error(), "source-built initializer failure") {
+	if !hasPluginHostCode(err, pluginhost.ErrManifest) || !strings.Contains(err.Error(), "exit_code(2)") {
 		t.Fatalf("genuine source-built initializer failure was remapped after queue expiry: %v", err)
 	}
 	if callerCtx.Err() != nil {
@@ -2039,6 +2258,108 @@ func slowWASICheckout(t *testing.T, root string) pluginmanifest.Checkout {
 	git(t, source.Root, "commit", "-q", "--no-verify", "-m", "test: gate WASI initializer")
 	source.Commit = git(t, source.Root, "rev-parse", "HEAD")
 	return source
+}
+
+func startSleepWASICheckout(t *testing.T, root string) pluginmanifest.Checkout {
+	t.Helper()
+	source := wasiCheckout(t, root)
+	path := filepath.Join(source.Root, "plugin.go")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The binary start section runs before plug.call can resolve the module to
+	// its host. This fixture enters a real one-second WASI sleep directly.
+	data = append(data, []byte("\nfunc init() { time.Sleep(1 * time.Second) }\n")...)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, source.Root, "add", "plugin.go")
+	git(t, source.Root, "commit", "-q", "--no-verify", "-m", "test: sleep in WASI binary start")
+	source.Commit = git(t, source.Root, "rev-parse", "HEAD")
+	return source
+}
+
+func wasiStartFromSourceInitialize(t *testing.T, wasm []byte) []byte {
+	t.Helper()
+	runtime := wazero.NewRuntimeWithConfig(context.Background(), wazero.NewRuntimeConfigInterpreter())
+	defer runtime.Close(context.Background())
+	compiled, err := runtime.CompileModule(context.Background(), wasm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compiled.Close(context.Background())
+	initialize := compiled.ExportedFunctions()["_initialize"]
+	if initialize == nil || len(initialize.ParamTypes()) != 0 || len(initialize.ResultTypes()) != 0 {
+		t.Fatal("source-built WASI _initialize is not a zero-argument, zero-result start function")
+	}
+	if len(wasm) < 8 || !bytes.Equal(wasm[:8], []byte("\x00asm\x01\x00\x00\x00")) {
+		t.Fatal("source-built guest is not a WebAssembly binary")
+	}
+	readVaruint := func(data []byte, cursor *int) uint64 {
+		if *cursor >= len(data) {
+			t.Fatal("truncated source-built WebAssembly section")
+		}
+		value, length := binary.Uvarint(data[*cursor:])
+		if length <= 0 || length > 5 {
+			t.Fatal("invalid source-built WebAssembly varuint32")
+		}
+		*cursor += length
+		return value
+	}
+	insertAt := -1
+	var startIndex uint64
+	found := false
+	for cursor := 8; cursor < len(wasm); {
+		sectionID := wasm[cursor]
+		cursor++
+		length := readVaruint(wasm, &cursor)
+		if length > uint64(len(wasm)-cursor) {
+			t.Fatal("source-built WebAssembly section length exceeds module")
+		}
+		end := cursor + int(length)
+		if sectionID == 8 {
+			t.Fatal("source-built reactor unexpectedly already has a binary start section")
+		}
+		if sectionID == 7 {
+			sectionCursor := cursor
+			count := readVaruint(wasm[:end], &sectionCursor)
+			for index := uint64(0); index < count; index++ {
+				nameLength := readVaruint(wasm[:end], &sectionCursor)
+				if nameLength > uint64(end-sectionCursor) {
+					t.Fatal("source-built WebAssembly export name exceeds section")
+				}
+				name := string(wasm[sectionCursor : sectionCursor+int(nameLength)])
+				sectionCursor += int(nameLength)
+				if sectionCursor >= end {
+					t.Fatal("source-built WebAssembly export lacks kind")
+				}
+				kind := wasm[sectionCursor]
+				sectionCursor++
+				functionIndex := readVaruint(wasm[:end], &sectionCursor)
+				if name == "_initialize" {
+					if kind != 0 {
+						t.Fatal("source-built _initialize export is not a function")
+					}
+					startIndex, found = functionIndex, true
+				}
+			}
+			if sectionCursor != end {
+				t.Fatal("source-built WebAssembly exports have trailing bytes")
+			}
+			insertAt = end
+		}
+		cursor = end
+	}
+	if !found || insertAt < 0 {
+		t.Fatal("source-built WASI reactor has no _initialize export")
+	}
+	payload := binary.AppendUvarint(nil, startIndex)
+	withStart := append([]byte(nil), wasm[:insertAt]...)
+	withStart = append(withStart, 8)
+	withStart = binary.AppendUvarint(withStart, uint64(len(payload)))
+	withStart = append(withStart, payload...)
+	return append(withStart, wasm[insertAt:]...)
 }
 
 func failingWASICheckout(t *testing.T, root string) pluginmanifest.Checkout {
