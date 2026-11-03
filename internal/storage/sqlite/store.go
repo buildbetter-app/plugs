@@ -369,12 +369,15 @@ func (s *Store) immediateLocked(ctx context.Context, l *activeLease, fn func(*sq
 		return err
 	}
 	defer c.Close()
-	var registered bool
+	var registered, committed bool
 	var durable leaseHeartbeat
 	// Cancellation may be reported after native BEGIN acquired the writer.
-	// Roll back before returning that connection to the pool on every path.
+	// Every unconfirmed path rolls back before returning the connection. After
+	// a confirmed COMMIT there must be no further native transaction work.
 	defer func() {
-		_, _ = c.ExecContext(context.Background(), `ROLLBACK`)
+		if !committed {
+			_, _ = c.ExecContext(context.Background(), `ROLLBACK`)
+		}
 		if registered {
 			var uncertain commitError
 			if errors.As(err, &uncertain) {
@@ -399,6 +402,7 @@ func (s *Store) immediateLocked(ctx context.Context, l *activeLease, fn func(*sq
 	if _, err = s.commitImmediate(ctx, c, l, durable); err != nil {
 		return err
 	}
+	committed = true
 	if l != nil {
 		l.finishPublication()
 		registered = false

@@ -60,14 +60,14 @@ func publicationHeartbeat(ctx context.Context, lease driver.ActiveLease, start, 
 // result. They expose heartbeats during the SQL/fsync interval and after the
 // durable graph commit but before the driver unregisters the publication.
 type publicationCommitConnector struct {
-	driver     sqldriver.Driver
-	dsn        string
-	before     func()
-	after      func()
-	afterBegin func()
-	armed      atomic.Bool
-	every      atomic.Bool
-	steps      atomic.Int32
+	driver    sqldriver.Driver
+	dsn       string
+	before    func()
+	after     func()
+	armed     atomic.Bool
+	every     atomic.Bool
+	steps     atomic.Int32
+	rollbacks atomic.Int32
 }
 
 func (c *publicationCommitConnector) Driver() sqldriver.Driver { return c.driver }
@@ -90,8 +90,8 @@ func (c *publicationCommitConn) ExecContext(ctx context.Context, query string, a
 		c.connector.before()
 	}
 	result, err := c.Conn.(sqldriver.ExecerContext).ExecContext(ctx, query, args)
-	if query == "BEGIN IMMEDIATE" && err == nil && c.connector.afterBegin != nil {
-		c.connector.afterBegin()
+	if query == "ROLLBACK" {
+		c.connector.rollbacks.Add(1)
 	}
 	if query == "COMMIT" && err == nil {
 		c.connector.steps.Add(1)
@@ -161,8 +161,8 @@ func publicationHeartbeatsAcrossCommit(t *testing.T, mode string) {
 	if err != nil || lateRenew != nil || renewal.err != nil || renewal.successes == 0 || held < 2*time.Second {
 		t.Fatalf("publication=%v lateRenew=%v heartbeat=%+v held=%s", err, lateRenew, renewal, held)
 	}
-	if connector.steps.Load() != 1 {
-		t.Fatalf("publication required a post-COMMIT flush: nativeCommits=%d", connector.steps.Load())
+	if connector.steps.Load() != 1 || connector.rollbacks.Load() != 0 {
+		t.Fatalf("publication performed post-COMMIT transaction work: nativeCommits=%d rollbacks=%d", connector.steps.Load(), connector.rollbacks.Load())
 	}
 	assertDurableHeartbeat(t, ctx, observer, lease)
 	// The graph's SQL snapshot is necessarily older than the heartbeat accepted
