@@ -392,6 +392,9 @@ func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable,
 	}
 	for _, rows := range [][]driver.DerivedRow{del, add} {
 		for _, row := range rows {
+			if row.Index != nil {
+				return fmt.Errorf("%w: SQLite selection indexes are not implemented", driver.ErrUnsupported)
+			}
 			key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
 			if err := key.Validate(); err != nil {
 				return err
