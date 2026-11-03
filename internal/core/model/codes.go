@@ -8,6 +8,9 @@ import (
 type ErrorCode string
 type WarningCode string
 
+// CodeUnsupported refuses a valid operation outside the addressed execution plane.
+const CodeUnsupported ErrorCode = "unsupported"
+
 func validErrorCode(code ErrorCode) bool {
 	switch code {
 	case "parse_error", "invalid_request", "method_not_found", "invalid_params", "internal_error",
@@ -23,7 +26,7 @@ func validErrorCode(code ErrorCode) bool {
 		"post_subscriber_failed", "history_gone", "visibility_lost", "too_many_sessions", "filter_too_broad",
 		"scope_too_large", "destination_paused", "ref_moved", "unknown_field", "restore_requires_empty",
 		"restore_checksum_failed", "restore_violation", "human_presence_required", "authz_verify_failed",
-		"invalid_cursor", "compaction_unavailable", "stale_snapshot", "plugin_durable_state_unavailable":
+		"invalid_cursor", "compaction_unavailable", "stale_snapshot", "plugin_durable_state_unavailable", CodeUnsupported:
 		return true
 	default:
 		return false

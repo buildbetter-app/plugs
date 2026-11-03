@@ -96,14 +96,25 @@ for implementation and telemetry mapping.
 | `invalid_cursor` | `-32053` | no | `client` | no |
 | `compaction_unavailable` | `-32054` | yes | `operator` | no |
 | `stale_snapshot` | `-32055` | yes | `internal` | no |
+| `plugin_durable_state_unavailable` | `-32056` | no | `client` | no |
+| `unsupported` | `-32057` | no | `client` | no |
 
 The protocol range is the standard JSON-RPC allocation (`-32700` through
-`-32603`). Plug application errors use `-32000` through `-32055`. The bounded
+`-32603`). Plug application errors use `-32000` through `-32057`. The bounded
 contract registry owns this range: values are append-only, never renumbered
 after publication, and new codes use the next unused value. The
 `x-error-catalog` array and the `ErrorCode` enum are the machine-readable
 allocation for this snapshot; any future registry or generator must preserve
 every existing row.
+
+`unsupported` has the canonical message `operation is unsupported`. After
+existing admission, replay and reference checks, a raw durable Writer
+`CloseOp` whose resolved target is a canonical branch-zero
+`workflow:item/<32 lowercase hex>` identity receives this nonretryable refusal,
+including singleton, all-workflow and mixed durable/workflow transactions.
+The refusal discloses no operational existence or state and permits no
+provider side effect or cross-plane transaction. Named workflow close retains
+its existing provider route.
 
 ## Parent/child refusal boundary
 
