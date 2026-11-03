@@ -84,7 +84,7 @@ type publicationCommitConn struct {
 }
 
 func (c *publicationCommitConn) ExecContext(ctx context.Context, query string, args []sqldriver.NamedValue) (sqldriver.Result, error) {
-	hook := query == "COMMIT" && (c.connector.every.Load() || c.connector.armed.CompareAndSwap(true, false))
+	hook := query == "COMMIT" && (c.connector.armed.CompareAndSwap(true, false) || c.connector.every.Load())
 	if hook && c.connector.before != nil {
 		c.connector.before()
 	}

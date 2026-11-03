@@ -29,11 +29,11 @@ Epoch/token and expiry checks occur inside that transaction, including immediate
 before COMMIT. Staging holds no SQLite write transaction, so lease release and
 expiry takeover can fence unfinished writers.
 
-A long publication does not block its own holder's lease heartbeats. After
-BEGIN IMMEDIATE validates the fresh durable lease, the driver registers that
-exact lease as the publication owner. Timely Renew calls can then advance a
-synchronized private deadline without taking the SQLite writer or publication
-lock again. Both wall-clock expiry and the real monotonic deadline are checked
+During its graph transaction, a long publication does not block its own
+holder's lease heartbeats. After BEGIN IMMEDIATE validates the fresh durable
+lease, the driver registers that exact lease as the publication owner. Timely
+Renew calls can then advance a synchronized private deadline without taking the
+SQLite writer or publication lock again. Both wall-clock expiry and the real monotonic deadline are checked
 on each heartbeat and fence; a delayed expiry callback cannot resurrect a
 paused or expired holder. A publication without timely heartbeats still rolls
 back at the final fence. The TTL is unchanged.
