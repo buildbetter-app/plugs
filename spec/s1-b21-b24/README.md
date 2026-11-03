@@ -70,21 +70,35 @@ identity, raw stream digests, command sequence and equal projections without
 importing or executing the recorder. This external profile is not claimed
 binary-equivalent to `reference-a.json`/`reference-b.json`, and it does not
 promote the untimed B24 deviation. The capture target is manual; ordinary
-count acceptance is registered only after authentic twins are extracted and
-checked in. Source review and fixture policy results are not runtime proof.
+count acceptance embeds the genuine twins extracted from the separate capture
+described below. Source review and fixture policy results are not runtime proof.
 
 Done = two fresh ordinary-count recordings pass the declared vector under this
 explicit public profile, proven by the original RunsOn log/archive, matching
 candidate/source/runtime identities, lossless inner and outer stream frames,
 and independent offline extraction, followed by exact-head memory, SQLite and
 PostgreSQL acceptance; source checks and another card's runtime result do not
-count. This source-only candidate intentionally has no count twins. The draft
-`ordinary_count_test.go` is not registered in `acceptance` until those genuine
-files exist. It maps reference task/open/closed to Plug issue/todo/done and
+count. `ordinary_count_test.go` is registered in `acceptance` with
+`count-reference-first.json` and `count-reference-repeat.json`. It maps
+reference task/open/closed to Plug issue/todo/done and
 checks current, historical and SQLite-reopened counts through the existing RPC
 fixture. The existing authenticated HTTP count tests remain a separate required
 part of the eventual focused gate. No Query or authorization implementation is
 changed by this route.
+
+The genuine count twins were captured at source
+`22f09c9b6bff090e080f1a6addbb50b8f8a436fc` (tree
+`6f738eee9acdff22ac2285996280ea6c791d5baa`) in RunsOn run `41572443347`.
+The reviewed strict offline extractor accepted the original archived frames
+and independently derived all seven count values from each fresh workspace.
+Both public shutdown replies were verified; raw stream equality was false,
+while normalized transcript and projection equality were true. The first twin
+SHA-256 is `cc392e04165b2a23498020550af9d67c5fe94a3fdde575d3c6a4e272e60bd4fa`;
+the repeat is `bf86ed9979b723141e232ca74f67e717a261d0f0eb14b09984762d6758c15d20`.
+These files retain the exact extractor output bytes. This capture proves the
+selected public count vector. Plug acceptance and authenticated HTTP count
+qualification require separate exact-head gates on the child that registers
+these twins. The older reference files and B24 deviation remain unchanged.
 
 Source attribution: archive provisioning and private runtime setup were adapted
 from B01 `7bdeea0c` and B09 `cb40cab68` source atoms. The B23 profile, commands,

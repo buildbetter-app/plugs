@@ -8,9 +8,13 @@ go_test(
         "clock_boundary_test.go",
         "close_contract_test.go",
         "fixture_test.go",
+        "ordinary_count_test.go",
         "reference_test.go",
     ],
     embedsrcs = [
+        "count-reference-first.json",
+        "count-reference-repeat.json",
+        "record_ordinary_count.py",
         "reference-a.json",
         "reference-b.json",
         "record_reference.py",
@@ -33,10 +37,9 @@ go_test(
     ],
 )
 
-# The ordinary-count reference bytes are added only after the two fresh
-# managed-proxied captures have been independently extracted and reviewed.
-# Keeping this target separate prevents //... from executing the public
-# reference engine or accepting absent/synthetic twins.
+# The acceptance twins come from the separately reviewed managed-proxied
+# capture route. Keeping the manual capture target separate prevents //...
+# from executing the public reference engine.
 _ORDINARY_COUNT_CAPTURE_EMBEDS = [
     "extract_ordinary_count_packet.py",
     "ordinary_count_capture.py",

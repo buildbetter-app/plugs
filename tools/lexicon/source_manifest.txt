@@ -1054,6 +1054,8 @@ spec/s1-b21-b24/acceptance_test.go
 spec/s1-b21-b24/cas_contract_test.go
 spec/s1-b21-b24/clock_boundary_test.go
 spec/s1-b21-b24/close_contract_test.go
+spec/s1-b21-b24/count-reference-first.json
+spec/s1-b21-b24/count-reference-repeat.json
 spec/s1-b21-b24/extract_ordinary_count_packet.py
 spec/s1-b21-b24/fixture_test.go
 spec/s1-b21-b24/ordinary_count_capture.py
