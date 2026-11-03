@@ -65,27 +65,24 @@ func NewDurableStateWithPersistence(store driver.CheckpointStore, lease driver.A
 
 func (d *durableAccess) Persistent() bool { return d != nil && d.persistent }
 
-func (d *durableAccess) available(ctx context.Context, write bool) error {
+func (d *durableAccess) available(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if d == nil || d.store == nil || d.lease == nil {
-		return failure(ErrDurable, "durable capability is not configured")
+	if d == nil || d.store == nil || d.lease == nil || !d.persistent {
+		return failure(ErrDurableState, "persistent durable capability is not configured")
 	}
 	select {
 	case <-d.lease.Lost():
 		return failure(ErrDurable, "storage lease is lost")
 	default:
 	}
-	if write {
-		return nil
-	}
 	return nil
 }
 
 func (d *durableAccess) load(ctx context.Context) (driver.Checkpoint, durableNamespace, error) {
 	var namespace durableNamespace
-	if err := d.available(ctx, false); err != nil {
+	if err := d.available(ctx); err != nil {
 		return driver.Checkpoint{}, namespace, err
 	}
 	checkpoint, err := d.store.LoadCheckpoint(ctx, d.key)

@@ -292,7 +292,7 @@ func (r *Runtime) bind(config Config) error {
 	writer, metrics := newPipelineWriter(r.Store, r.Lease, pipeline.WithOntology(ontology))
 	r.Metrics = metrics
 	serviceOptions := []service.Option{service.WithOntology(ontology)}
-	if checkpoints, ok := r.Store.(driver.CheckpointStore); ok {
+	if checkpoints, ok := r.Store.(driver.PersistentCheckpointStore); ok && checkpoints.Persistent() {
 		state := pluginhost.NewDurableStateWithPersistence(checkpoints, r.Lease, workflowplugin.Alias, "default", config.Driver != "memory")
 		workflow, workflowErr := workflowplugin.New(state)
 		if workflowErr != nil {

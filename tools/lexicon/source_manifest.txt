@@ -617,6 +617,7 @@ internal/server/composition/restore_import_test.go
 internal/server/composition/telemetry.go
 internal/server/composition/telemetry_test.go
 internal/server/composition/testdata/server-representative-plug-dump-1.tar
+internal/server/composition/workflow_runtime_test.go
 internal/server/events/BUILD.bazel
 internal/server/events/audit.go
 internal/server/events/audit_delivery_test.go

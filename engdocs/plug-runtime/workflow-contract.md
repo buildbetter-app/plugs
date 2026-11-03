@@ -10,14 +10,19 @@ memory row, collaboration session, or wisp row.
 `x.workflow.invoke` accepts a template reference, a project, a checklist, and
 an explicit `mode` of `permanent` or `ephemeral`. Omitting `mode` is refused;
 callers must choose the plane at the invocation boundary. A checklist item has
-an opaque client label, title, and optional type. The request is authenticated
-with the current principal and project in `_meta` and requires an idempotency
-key. The manifest grammar is the existing `manifest_version: 1` form with a
+an opaque client label, title, and optional type. The transport authenticates
+the current principal; `_meta` carries the project, anonymous-agent label, and
+required idempotency key. Caller identity is never accepted from parameters.
+The manifest grammar is the existing `manifest_version: 1` form with a
 plugin provision `{kind: "methods", prefix: "x.workflow", methods: {invoke:
 {permission: "write", resource: "params.project"}}}`; the canonical
 OpenRPC/catalog descriptor has the same parameter/result schemas and
 idempotency declaration. The host rejects a workflow instance that lacks the
 durable capability rather than silently creating process-local state.
+Native registration additionally requires a trusted invocation adapter that
+resolves the current caller and metadata from the host context and routes
+permanent invocation through the ordinary writer. Missing adapters refuse
+registration; plugins do not synthesize principals or idempotency keys.
 
 Permanent invocation lowers each checklist item through the ordinary
 `bead.create` writer. The returned items are ordinary durable beads with the
@@ -47,7 +52,10 @@ Comments and claim state are durable in the plugin plane and survive process
 restart when the selected store is SQLite or PostgreSQL (or another
 composition-admitted persistent `CheckpointStore`). The process-local memory
 driver refuses new ephemeral invocations because it cannot make a process
-restart guarantee. A stale generation or lease cannot overwrite a newer state.
+restart guarantee. A state provider without an explicit positive persistence
+marker is also refused. Memory hosts omit the ephemeral provider, preserving
+ordinary ready lists and permanent invocation. A stale generation or lease
+cannot overwrite a newer state.
 A denied read or mutation fails closed without disclosing the item body,
 comments, or run identity.
 

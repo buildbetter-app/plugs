@@ -94,7 +94,7 @@ type Provider struct {
 	mu          sync.Mutex
 }
 
-// persistentState is an optional host marker. A CheckpointStore is durable
+// persistentState is a required marker for ephemeral invocation. A CheckpointStore is durable
 // only when the selected driver can reopen it after a process restart; the
 // in-memory driver deliberately reports false so ephemeral mode fails closed.
 type persistentState interface {
@@ -187,7 +187,7 @@ func New(state pluginapi.DurableState) (*Provider, error) {
 	if state == nil {
 		return nil, errors.New("workflow: durable state is required")
 	}
-	persistent := true
+	persistent := false
 	if marker, ok := state.(persistentState); ok {
 		persistent = marker.Persistent()
 	}
@@ -759,7 +759,7 @@ func (p *Provider) Close(ctx context.Context, by model.PrincipalRef, req model.R
 			delete(value.Items, id)
 		}
 		delete(value.Runs, run.ID)
-		p.sanitizeTerminalReceipts(value, run.ID, item.ID)
+		p.sanitizeTerminalReceipts(value, run.ID)
 	}
 	receipt, err := p.storeReceipt(value, by, meta, struct {
 		ID     model.Ref `json:"id"`
@@ -769,7 +769,7 @@ func (p *Provider) Close(ctx context.Context, by model.PrincipalRef, req model.R
 		return model.Commit{}, err
 	}
 	if complete {
-		p.sanitizeTerminalReceipts(value, run.ID, item.ID)
+		p.sanitizeTerminalReceipts(value, run.ID)
 	}
 	p.appendAudit(&value, "workflow.close", receipt)
 	if complete {
@@ -781,7 +781,7 @@ func (p *Provider) Close(ctx context.Context, by model.PrincipalRef, req model.R
 	return commit, nil
 }
 
-func (p *Provider) sanitizeTerminalReceipts(value persisted, runID, itemID string) {
+func (p *Provider) sanitizeTerminalReceipts(value persisted, runID string) {
 	for key, receipt := range value.Receipts {
 		if receipt.RunID != runID {
 			continue
@@ -797,13 +797,13 @@ func (p *Provider) sanitizeTerminalReceipts(value persisted, runID, itemID strin
 				Item  ItemView `json:"item"`
 			}
 			if json.Unmarshal(receipt.Result, &result) == nil && result.Found {
-				result.Item = ItemView{ID: itemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias}
+				result.Item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: result.Item.Revision}
 				receipt.Result, _ = json.Marshal(result)
 			}
 		} else if receipt.Method == "bead.claim" {
 			var item ItemView
 			if json.Unmarshal(receipt.Result, &item) == nil {
-				item = ItemView{ID: itemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias}
+				item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: item.Revision}
 				receipt.Result, _ = json.Marshal(item)
 			}
 		}

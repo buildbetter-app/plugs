@@ -19,6 +19,8 @@ type testDurableState struct {
 	rev   uint64
 }
 
+func (*testDurableState) Persistent() bool { return true }
+
 func (s *testDurableState) Read(_ context.Context, key string, dst any) (bool, pluginapi.Revision, error) {
 	if key != stateKey {
 		return false, pluginapi.Natural64(0), nil
@@ -88,6 +90,81 @@ func (s *testDurableState) List(_ context.Context, prefix string, limit int) ([]
 }
 
 var _ pluginapi.DurableState = (*testDurableState)(nil)
+
+func TestNativeRequiresTrustedCallerAdapter(t *testing.T) {
+	_, err := Native(nil).New(nil)
+	var failure *model.Error
+	if !errors.As(err, &failure) || failure.Data.Code != "unauthenticated" {
+		t.Fatalf("native registration invented a fallback caller: %v", err)
+	}
+}
+
+func TestEphemeralInvocationRequiresExplicitPersistentCapability(t *testing.T) {
+	// Embedding only the public state interface deliberately hides the optional
+	// marker. An unknown provider must not inherit a restart guarantee.
+	state := struct{ pluginapi.DurableState }{&testDurableState{}}
+	provider, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = provider.Invoke(context.Background(), model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, InvokeRequest{
+		Template: "template", Project: "project", Mode: "ephemeral",
+		Checklist: []ChecklistItem{{Label: "one", Title: "title"}},
+	}, model.WriteMeta{Method: "x.workflow.invoke", Project: "project", IdempotencyKey: strings.Repeat("1", 64)})
+	var failure *model.Error
+	if !errors.As(err, &failure) || failure.Data.Code != "invalid_params" {
+		t.Fatalf("unmarked state accepted an ephemeral restart guarantee: %v", err)
+	}
+}
+
+func TestTerminalClaimsPreserveEachOriginalItemIdentity(t *testing.T) {
+	ctx := context.Background()
+	state := &testDurableState{}
+	provider, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.WithIdentity(Alias, "default", "inc-1")
+	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	meta := func(method, key string) model.WriteMeta {
+		return model.WriteMeta{Method: method, Project: "project", Agent: "owner", AgentLabel: "owner", IdempotencyKey: strings.Repeat(key, 64)}
+	}
+	run, err := provider.Invoke(ctx, by, InvokeRequest{
+		Template: "template", Project: "project", Mode: "ephemeral",
+		Checklist: []ChecklistItem{{Label: "one", Title: "first private title"}, {Label: "two", Title: "second private title"}},
+	}, meta("x.workflow.invoke", "1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRef := model.RefByID(run.Items[0].ID, model.Natural64(0))
+	claimed, err := provider.Claim(ctx, by, firstRef, meta("bead.claim", "2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, found, _, err := provider.ClaimNext(ctx, by, "project", nil, meta("bead.claimNext", "3"))
+	if err != nil || !found || next.ID == claimed.ID {
+		t.Fatalf("claimNext did not select the other item: item=%+v found=%v err=%v", next, found, err)
+	}
+	if _, err := provider.Close(ctx, by, firstRef, "done", meta("bead.close", "4")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Close(ctx, by, model.RefByID(next.ID, model.Natural64(0)), "done", meta("bead.close", "5")); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := provider.Claim(ctx, by, firstRef, meta("bead.claim", "2"))
+	if err != nil || replayed.ID != claimed.ID || replayed.Revision.String() != claimed.Revision.String() {
+		t.Fatalf("terminal claim changed its committed identity: first=%+v replay=%+v err=%v", claimed, replayed, err)
+	}
+	replayedNext, found, replayedReceipt, err := provider.ReplayClaimNext(ctx, by, "project", nil, meta("bead.claimNext", "3"))
+	if err != nil || !found || !replayedReceipt || replayedNext.ID != next.ID || replayedNext.Revision.String() != next.Revision.String() {
+		t.Fatalf("terminal claimNext changed its committed identity: first=%+v replay=%+v found=%v replayed=%v err=%v", next, replayedNext, found, replayedReceipt, err)
+	}
+	for _, item := range []ItemView{replayed, replayedNext} {
+		if item.Title != "" || item.Project != "" || item.Claim != nil || len(item.Comments) != 0 {
+			t.Fatalf("terminal replay retained operational payload: %+v", item)
+		}
+	}
+}
 
 func TestReceiptsStayLiveUntilCompletionAndResetTerminalWindow(t *testing.T) {
 	ctx := context.Background()
