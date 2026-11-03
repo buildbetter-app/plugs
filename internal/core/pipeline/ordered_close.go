@@ -91,7 +91,8 @@ func (w *Writer) prepareClose(ctx context.Context, p *prepared, current *pending
 			p.refusal = refusal
 		}
 	}
-	if ok && current.doc.Fields["status"] != target {
+	statusChanges := ok && current.doc.Fields["status"] != target
+	if statusChanges {
 		current.doc.Fields["status"] = target
 		current.setBy["fields.status"] = "request"
 	}
@@ -99,14 +100,16 @@ func (w *Writer) prepareClose(ctx context.Context, p *prepared, current *pending
 		if strings.TrimSpace(op.Reason) == "" {
 			return nil, failure("invalid_params", "comment body must not be empty")
 		}
-		stamp := w.cfg.now().UTC()
-		for _, comment := range current.doc.Comments {
-			if !stamp.After(comment.Time) {
-				stamp = comment.Time.Add(time.Second)
+		if statusChanges {
+			stamp := w.cfg.now().UTC()
+			for _, comment := range current.doc.Comments {
+				if !stamp.After(comment.Time) {
+					stamp = comment.Time.Add(time.Second)
+				}
 			}
+			current.doc.Comments = append(current.doc.Comments, Comment{Body: op.Reason, Principal: p.proposal.Principal, Time: stamp})
+			current.setBy["comments"] = "request"
 		}
-		current.doc.Comments = append(current.doc.Comments, Comment{Body: op.Reason, Principal: p.proposal.Principal, Time: stamp})
-		current.setBy["comments"] = "request"
 	}
 	if current.doc.Lease != nil {
 		current.doc.Lease = nil

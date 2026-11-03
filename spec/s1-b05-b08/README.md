@@ -54,6 +54,54 @@ refusals preserve earlier batch images, history, graph sentinel, and receipts.
 Association links remain legal. These tests do not certify the missing public
 cycle-report producer or B14's waits-for metadata/fanout behavior.
 
+The separate B06 recorder follow-up uses ordinary public `create` and `dep add`
+operations to build two disjoint blocks-plus-tracks rings, with the higher ring
+written first and each blocking edge starting at its highest member. Actual
+`dep cycles --include-tracks --json` output must contain both complete paths in
+sorted order, each starting at its lowest ID. A pure-tracks loop is checked
+before those rings exist, and the default report must stay empty afterwards.
+Repeated reads and a same-type edge re-add must retain identical report bytes.
+The independent projector checks the retained streams and command bindings;
+an empty report cannot satisfy these nonempty probes.
+
+Native JSON is intentionally uncapped: `--limit 1 --json` must still contain
+both paths. The human renderer must show one path while naming the total of
+two; `--limit 0` must show both. Plug's RPC envelope has its own explicit
+`cycleCount`, `truncated`, and `items` projection. The two interfaces are not
+assigned the same limit expectation.
+
+These probes are partial native coverage. At the pinned source, ordinary add
+rejects a closing scheduling edge, bulk `--no-cycle-check` still performs a
+final graph check, and public import reports skipped cycle edges rather than
+retaining them. Same-endpoint edge re-adds deduplicate; they do not create real
+parallel rows. No supported public route for a cycle with an unreadable member
+has been established. Blocking-only nonempty, parallel-row, and unreadable-cycle
+fixtures therefore remain explicit dependencies. No SQL injection, private
+history change, cycle-check bypass, or manufactured reference result supplies
+them. Public branch creation and merge do not establish a divergent-branch
+fixture: the embedded CLI factory opens `main`, and no public checkout command
+is exposed at this pin. That source trace is not proof that every possible
+public synchronization route is impossible. The existing blocked reference
+manifest and its empty recordings stay unchanged.
+
+`TestB06SQLConcurrentOppositeSchedulingEdgesHaveOneDurableWinner` adds a separate
+Plug concurrency assertion on real SQLite and mandatory disposable PostgreSQL.
+Both actual write transactions pause before forwarding their complete sorted
+lock sets, so both calls prepare against the old graph and request its update
+sentinel. The test requires one committed edge, one `ontology_guard_failed`
+refusal, exactly one history/version/sentinel publication, and no loser receipt.
+It closes and opens the same SQL DSN, checks retained store identity and state,
+then checks an empty cycle report, durable winner replay, and unchanged state
+after a repeated loser refusal. The fixture uses the existing request timeout
+and has no sleeps, retry loop, replacement store, or skipped SQL branch.
+
+Done = supported nonempty native probes and the SQL concurrency assertions
+execute with their required observations, proven by genuine paired public
+recordings and exact-head raw/XML gate records respectively; authored admission
+fixtures, the Plug graph oracle, and parent gate results do not count. Ordinary
+admission fixtures do not execute the native producer. Controlled Go+SQL clock
+proof and the unresolved public fixture routes still bound full-card acceptance.
+
 The refill assertions additionally check plain waits-for child settlement and
 reopen, direct/transitive dependency readiness, ordered multi-target close,
 atomic refusal of a parent-first batch, durable close replay, and stale close
