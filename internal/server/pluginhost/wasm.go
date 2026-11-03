@@ -211,6 +211,8 @@ type wasmInvocation struct {
 // time.
 type wasmInitializerObserverKey struct{}
 
+type wasmInitializerContextObserverKey struct{}
+
 type wasmInitializerCallKey struct{}
 
 // WithWASMInitializerObserver returns a context that observes a deterministic
@@ -224,6 +226,18 @@ func WithWASMInitializerObserver(ctx context.Context, observer func()) context.C
 		return ctx
 	}
 	return context.WithValue(ctx, wasmInitializerObserverKey{}, observer)
+}
+
+// WithWASMInitializerContextObserver observes the actual guest initializer
+// execution context at the same internal zero-length import barrier.
+func WithWASMInitializerContextObserver(ctx context.Context, observer func(context.Context)) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wasmInitializerContextObserverKey{}, observer)
 }
 
 // wasmReadRequest is the deliberately small internal E5 envelope. The
@@ -526,6 +540,9 @@ func (r *wasmRuntime) hostCall(ctx context.Context, module api.Module, ptr, leng
 	// as a deterministic entry barrier. It carries no reader or guest-memory
 	// capability and is accepted only on the private initialization context.
 	if _, initializing := ctx.Value(wasmInitializerCallKey{}).(struct{}); initializing && ptr == 0 && length == 0 {
+		if observer, ok := ctx.Value(wasmInitializerContextObserverKey{}).(func(context.Context)); ok {
+			observer(ctx)
+		}
 		if observer, ok := ctx.Value(wasmInitializerObserverKey{}).(func()); ok {
 			observer()
 		}
