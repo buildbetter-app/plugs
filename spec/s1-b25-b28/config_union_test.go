@@ -606,6 +606,189 @@ func TestB27ConfigUnionHistoryRequiresExplicitSnapshotAcrossDrivers(t *testing.T
 	}
 }
 
+// This separate authored input satisfies the old current-image guards. A
+// comment/allocator/relation refusal must not mask missing strict admission.
+func configUnionLegacyArchive(t *testing.T) []byte {
+	t.Helper()
+	return configUnionArchive(t, func(in *configUnionInput) {
+		in.manifest.Projects = []dumpformat.Project{{Prefix: "pl", IDMode: "hash", HashLength: 32, ChildCounters: map[string]uint64{}}}
+		for i := range in.manifest.Ontology {
+			in.manifest.Ontology[i].Target.Project = "pl"
+		}
+		rekey := strings.NewReplacer(
+			"demo-7.4", "pl-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			"demo-7", "pl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"demo-8", "pl-cccccccccccccccccccccccccccccccc",
+		)
+		delete(in.records, "comment")
+		for kind, records := range in.records {
+			var retained []dumpformat.Record
+			for _, record := range records {
+				switch record.Source.Table {
+				case "events", "issue_versions", "issue_counter", "child_counters":
+					continue
+				}
+				var rebound dumpformat.Record
+				decoder := json.NewDecoder(strings.NewReader(rekey.Replace(string(configUnionJSON(t, record)))))
+				decoder.UseNumber()
+				if err := decoder.Decode(&rebound); err != nil {
+					t.Fatal(err)
+				}
+				if rebound.Project == "demo" {
+					rebound.Project = "pl"
+				}
+				if kind == "beads-archive" {
+					rebound.ID = rebound.Source.Table + "/" + digest(configUnionJSON(t, rebound.Source.Fields))
+				}
+				retained = append(retained, rebound)
+			}
+			in.records[kind] = retained
+		}
+	})
+}
+
+func TestB27ConfigUnionLegacyWrappersRequireExplicitSnapshotAcrossDrivers(t *testing.T) {
+	data := configUnionLegacyArchive(t)
+	archive, err := dumpformat.Read(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := archive.Manifest()
+	wantProject := dumpformat.Project{Prefix: "pl", IDMode: "hash", HashLength: 32, ChildCounters: map[string]uint64{}}
+	if manifest.History != "unavailable" || len(archive.Records("comment")) != 0 || !reflect.DeepEqual(manifest.Projects, []dumpformat.Project{wantProject}) {
+		t.Fatal("strict control does not satisfy the other legacy history/comment/allocator guards")
+	}
+	wantTargets := map[string]dumpformat.ImportTarget{
+		"pl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {Type: "decision", Status: "queued"},
+		"pl-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {Type: "incident", Status: "shared"},
+		"pl-cccccccccccccccccccccccccccccccc": {Type: "proposal", Status: "shipped"},
+	}
+	migration, ok := archive.ImportMigration()
+	if !ok || len(archive.Records("bead")) != len(wantTargets) {
+		t.Fatal("control lacks its complete admitted strict migration")
+	}
+	for _, bead := range archive.Records("bead") {
+		want, known := wantTargets[bead.ID]
+		got, present := migration.Target("pl", bead.ID)
+		if !known || bead.Project != "pl" || !present || got != want {
+			t.Fatal("strict control lost its independent hash32 identity/type/status targets")
+		}
+	}
+	if len(archive.Records("edge")) != 1 {
+		t.Fatal("strict control lacks its supported relation")
+	}
+	edge := archive.Records("edge")[0].Body
+	if edge["target_kind"] != "depends_on_issue_id" || edge["type"] != "blocks" || edge["from"] != "pl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || edge["to"] != "pl-cccccccccccccccccccccccccccccccc" {
+		t.Fatal("strict control contains a relation outside legacy support")
+	}
+	// Inspection succeeds without selecting a policy or opening any store.
+	profile := configUnionProfile(t, data)
+	verification := converterroundtrip.Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}
+	if verification.ArchiveSHA256 != digest(data) || len(verification.DerivedSHA256) != 64 || profile.SourceStoreID != driver.StoreID(manifest.StoreID) {
+		t.Fatal("inspection did not bind the complete strict control")
+	}
+	for _, kind := range []string{"memory", "sqlite", "postgres"} {
+		for _, entrypoint := range []string{"Restore", "RestoreWithLease", "explicit-snapshot"} {
+			t.Run(kind+"/"+entrypoint, func(t *testing.T) {
+				s := openStack(t, kind, nil)
+				target := &configUnionObservedStore{Store: s.store}
+				if entrypoint == "explicit-snapshot" {
+					report, err := converterroundtrip.RestoreImportWithLease(s.ctx, bytes.NewReader(data), target, s.lease, profile, verification)
+					if err != nil || target.writes != 1 || report.Archive == nil || report.Restored.Head.String() != "1" {
+						t.Fatalf("same strict input with explicit snapshot did not commit: report=%+v writes=%d err=%v", report, target.writes, err)
+					}
+					for id, want := range wantTargets {
+						row, present := readRecord(t, s, id)
+						var document pipeline.Document
+						if !present || json.Unmarshal(row.Body, &document) != nil || document.Project != "pl" || document.Type != want.Type || document.Fields["status"] != want.Status {
+							t.Fatalf("explicit snapshot lost the expected strict record %s", id)
+						}
+					}
+					state := relationState(t, s)
+					if len(state.Changesets) != 1 || state.Changesets[0].Kind != model.ChangesetRestore {
+						t.Fatal("explicit strict snapshot fabricated history")
+					}
+					if kind != "memory" {
+						s.reopen()
+						if !reflect.DeepEqual(state, relationState(t, s)) {
+							t.Fatal("explicit strict snapshot changed after SQL reopen")
+						}
+					}
+					return
+				}
+				if entrypoint == "Restore" {
+					// Let this wrapper acquire its own lease if the admission guard
+					// regresses; a held fixture lease must not mask Store.Write.
+					if err := s.lease.Release(s.ctx); err != nil {
+						t.Fatal(err)
+					}
+					s.lease = nil
+				}
+				before := relationState(t, s)
+				assertUnionLegacyRefusalUnpublished(t, s, profile, archive)
+				var report converterroundtrip.Report
+				var restoreErr error
+				if entrypoint == "Restore" {
+					report, restoreErr = converterroundtrip.Restore(s.ctx, bytes.NewReader(data), target, verification)
+				} else {
+					report, restoreErr = converterroundtrip.RestoreWithLease(s.ctx, bytes.NewReader(data), target, s.lease, verification)
+				}
+				var refused driver.ErrRestoreHistoryRefused
+				if !errors.As(restoreErr, &refused) || refused.Mode != driver.RestoreHistoryModeFull || refused.History != "unavailable" || refused.Reason != driver.RestoreHistoryReasonUnavailable || target.writes != 0 || report.Archive == nil || !report.Restored.Head.IsZero() || report.Recovered || report.IdempotencyKey != "" || report.RequestHash != "" || !reflect.DeepEqual(report.Target, before.Meta) {
+					t.Fatalf("legacy strict admission escaped its typed before-write refusal: report=%+v writes=%d err=%v", report, target.writes, restoreErr)
+				}
+				if !reflect.DeepEqual(before, relationState(t, s)) {
+					t.Fatal("legacy strict refusal changed full observed durable state")
+				}
+				assertUnionLegacyRefusalUnpublished(t, s, profile, archive)
+				if kind != "memory" {
+					s.reopen()
+					if !reflect.DeepEqual(before, relationState(t, s)) {
+						t.Fatal("legacy strict refusal left durable state after SQL reopen")
+					}
+					assertUnionLegacyRefusalUnpublished(t, s, profile, archive)
+				}
+			})
+		}
+	}
+}
+
+func assertUnionLegacyRefusalUnpublished(t *testing.T, s *stack, p driver.RestoreImportProfile, archive *dumpformat.Archive) {
+	t.Helper()
+	assertUnionRefusalUnpublished(t, s, p)
+	meta, err := s.store.Meta(s.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.store.Read(s.ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	principal, err := driver.PrincipalKey(model.PrincipalRef{Kind: "system", ID: "plug-converter"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "restore/" + p.ArchiveDigest
+	if receipt, err := r.IdempotencyByKey(s.ctx, principal, "", "offline.restore", key); err != nil || receipt != nil {
+		t.Fatalf("legacy strict refusal published recovery receipt: %+v %v", receipt, err)
+	}
+	if change, err := r.ChangesetByKey(s.ctx, principal, "", "offline.restore", key); err != nil || change != nil {
+		t.Fatalf("legacy strict refusal published recovery log/events: %+v %v", change, err)
+	}
+	files := archive.Manifest().Files
+	manifest, ok := archive.Member("manifest.json")
+	if !ok {
+		t.Fatal("strict control lost its manifest")
+	}
+	files["manifest.json"] = dumpformat.File{SHA256: digest(manifest), Size: int64(len(manifest))}
+	for name, file := range files {
+		if _, err := r.Blob(s.ctx, driver.Hash(file.SHA256)); !errors.Is(err, driver.ErrNotFound) {
+			t.Fatalf("legacy strict refusal published source member blob %s: %v", name, err)
+		}
+	}
+}
+
 func assertUnionRefusalUnpublished(t *testing.T, s *stack, p driver.RestoreImportProfile) {
 	t.Helper()
 	meta, err := s.store.Meta(s.ctx)

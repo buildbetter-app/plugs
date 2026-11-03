@@ -47,13 +47,21 @@ func declarationsFromSource(values map[string]any, family, origin string) ([]Con
 			// Native store locations are retained as opaque provenance, never
 			// enumerated configuration. The same marker in a config family
 			// cannot replace a captured directory or its parsed file entries.
-			if family == "store-files-and-quiescence" && row["contents"] == "not-read" {
+			if contents, marked := row["contents"]; marked {
+				if family != "store-files-and-quiescence" || contents != "not-read" {
+					return migrationRefusal("malformed-declaration", name, entry, "opaque marker is not captured configuration")
+				}
 				for _, field := range []string{"entries", "values", "bytes", "sha256", "size"} {
 					if _, present := row[field]; present {
 						return migrationRefusal("malformed-declaration", name, entry, "opaque store directory has captured contents")
 					}
 				}
 				return nil
+			}
+			for _, field := range []string{"values", "bytes", "sha256", "size"} {
+				if _, present := row[field]; present {
+					return migrationRefusal("malformed-declaration", name, entry, "directory has file capture fields")
+				}
 			}
 			children, ok := row["entries"].([]any)
 			if !ok {

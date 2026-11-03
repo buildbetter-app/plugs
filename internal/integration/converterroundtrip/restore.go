@@ -159,8 +159,8 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		return report, err
 	}
 	// The historical Restore/RestoreWithLease wrappers predate the trusted
-	// host admission profile and retain their compatibility behavior: they are
-	// current-image imports. The explicit import surface defaults to strict
+	// host admission profile and retain their non-strict current-image behavior.
+	// Strict migrations require the explicit import surface, which defaults to
 	// full history and must name snapshot to flatten an incomplete archive.
 	if profile != nil {
 		mode, modeErr := driver.ParseRestoreHistoryMode(string(profile.HistoryMode))
@@ -648,6 +648,12 @@ func buildPlanForInspection(archive *dumpformat.Archive) (restorePlan, error) {
 
 func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time, mode planMode) (restorePlan, error) {
 	manifest := archive.Manifest()
+	migration, _ := archive.ImportMigration()
+	if mode == planLegacy && migration != nil {
+		// A missing import profile cannot opt a newly strict migration into
+		// snapshot semantics. Inspection remains available without admission.
+		return restorePlan{}, driver.ErrRestoreHistoryRefused{Mode: driver.RestoreHistoryModeFull, History: manifest.History, Reason: driver.RestoreHistoryReasonUnavailable}
+	}
 	if mode == planLegacy && manifest.History != "unavailable" {
 		return restorePlan{}, fmt.Errorf("%w: unverified source history cannot be restored", ErrRestoreUnavailable)
 	}
@@ -672,7 +678,6 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		return restorePlan{}, fmt.Errorf("%w: import restore time is required", ErrRestoreUnavailable)
 	}
 
-	migration, _ := archive.ImportMigration()
 	beads := archive.Records("bead")
 	docs := map[string]pipeline.Document{}
 	if len(beads) > 20000 {

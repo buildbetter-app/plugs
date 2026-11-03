@@ -422,7 +422,7 @@ func TestStrictConfigUnionOpaqueDirectoryProvenance(t *testing.T) {
 	for _, control := range []string{
 		"config file", "empty YAML object", "empty JSON object",
 		"missing config values", "null config values", "non-object config values",
-		"opaque config directory", "opaque entries", "opaque parsed values",
+		"opaque config directory", "opaque entries", "opaque nonempty entries", "opaque parsed values",
 		"opaque bytes", "opaque hash", "opaque size", "unmarked opaque directory",
 	} {
 		t.Run(control, func(t *testing.T) {
@@ -455,6 +455,8 @@ func TestStrictConfigUnionOpaqueDirectoryProvenance(t *testing.T) {
 				wantEntry = configPath
 			case "opaque entries":
 				opaque["entries"], wantEntry = []any{}, storePath
+			case "opaque nonempty entries":
+				opaque["entries"], wantEntry = []any{config}, storePath
 			case "opaque parsed values":
 				opaque["values"], wantEntry = map[string]any{"status.custom": "hidden:done"}, storePath
 			case "opaque bytes":
@@ -505,6 +507,99 @@ func TestStrictConfigUnionOpaqueDirectoryProvenance(t *testing.T) {
 				t.Fatal("raw directory/config provenance changed")
 			}
 		})
+	}
+}
+
+func TestStrictConfigUnionConfigDirectoryShapes(t *testing.T) {
+	for _, family := range []string{"beads-dir-config", "project-config", "project-local-config"} {
+		for _, control := range []string{
+			"enumerated file", "enumerated empty", "opaque missing entries",
+			"opaque empty entries", "opaque nonempty entries", "unknown contents", "null contents",
+			"directory values", "directory null values", "directory bytes", "directory hash", "directory size",
+		} {
+			t.Run(family+"/"+control, func(t *testing.T) {
+				f := strictUnionFixture(t, "", nil)
+				directoryPath := "/synthetic/config-directory"
+				raw := []byte("status:\n  custom: [queued:active]\n")
+				file := map[string]any{
+					"path": directoryPath + "/config.yaml", "state": "file", "sha256": digest(raw), "size": len(raw),
+					"bytes":  map[string]any{"$bytes": base64.StdEncoding.EncodeToString(raw)},
+					"values": map[string]any{"status": map[string]any{"custom": []any{"queued:active"}}},
+				}
+				directory := map[string]any{"path": directoryPath, "state": "directory", "entries": []any{file}}
+				wantDeclarations, refuse := 1, true
+				switch control {
+				case "enumerated file":
+					refuse = false
+				case "enumerated empty":
+					directory["entries"], wantDeclarations, refuse = []any{}, 0, false
+				case "opaque missing entries":
+					directory["contents"] = "not-read"
+					delete(directory, "entries")
+				case "opaque empty entries":
+					directory["contents"], directory["entries"] = "not-read", []any{}
+				case "opaque nonempty entries":
+					directory["contents"] = "not-read"
+				case "unknown contents":
+					directory["contents"] = "captured"
+				case "null contents":
+					directory["contents"] = nil
+				case "directory values":
+					directory["values"] = map[string]any{}
+				case "directory null values":
+					directory["values"] = nil
+				case "directory bytes":
+					directory["bytes"] = map[string]any{"$bytes": ""}
+				case "directory hash":
+					directory["sha256"] = digest(nil)
+				case "directory size":
+					directory["size"] = 0
+				}
+				wantOrigin := ""
+				for i := range f.config {
+					entry := &f.config[i]
+					if entry.Input.Family == family {
+						entry.Input.State, entry.Values = "json-config", map[string]any{"observations": []any{directory}}
+						wantOrigin = family + ":" + entry.Input.Path + "@" + directoryPath
+					}
+				}
+				if wantOrigin == "" {
+					t.Fatal("missing independent config-family input")
+				}
+				var wantSources []byte
+				data := strictUnionBytes(t, f, func(_ *Manifest, members map[string][]byte) {
+					wantSources = append([]byte(nil), members["config/sources.json"]...)
+				})
+				a, err := Read(bytes.NewReader(data))
+				if refuse {
+					var refused *MigrationRefusal
+					if a != nil || !errors.As(err, &refused) || refused.Code != "malformed-declaration" || refused.Entry != directoryPath {
+						t.Fatalf("contradictory directory admitted: %v", err)
+					}
+					for _, origin := range refused.Origins {
+						if origin == wantOrigin {
+							return
+						}
+					}
+					t.Fatalf("directory refusal lost exact input origin: %+v", refused)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				migration, ok := a.ImportMigration()
+				if !ok || len(migration.Declarations()) != wantDeclarations {
+					t.Fatal("enumerated config directory changed its declaration set")
+				}
+				status, declared := migration.Document().Statuses["queued"]
+				if declared != (wantDeclarations == 1) || declared && status.Category != ontology.Unstarted {
+					t.Fatal("enumerated config file did not supply its declared status")
+				}
+				retained, _ := a.Member("config/sources.json")
+				if !bytes.Equal(retained, wantSources) {
+					t.Fatal("enumerated directory provenance changed")
+				}
+			})
+		}
 	}
 }
 
