@@ -88,47 +88,8 @@ func newFixtureWithClock(t *testing.T, authenticated bool, now func() time.Time)
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		f.targetCalls.Add(1)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(target.Close)
-	manifest, err := pluginapi.DecodeManifest([]byte(`{"manifest_version":1,"plugins":[{"id":"app.example.transportprobe","alias":"transportprobe","version":"1.0.0","plugin_api":"1.0","runtime":"native","provides":[{"kind":"subscriber","name":"inspect","phases":["validate","post"],"reads":["fields.title"]}]}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	native := sdk.Native{Instance: "default", Manifest: manifest.Plugins[0], New: func(host pluginapi.Host) (sdk.Registration, error) {
-		return sdk.Registration{
-			Validators: map[string]pluginapi.Validator{"inspect": sdk.ValidateFunc(func(ctx context.Context, change pluginapi.ProposedChange, _ pluginapi.SnapshotReader) (pluginapi.Verdict, error) {
-				if change.Principal.Kind != f.principal.Kind || change.Principal.ID != f.principal.ID {
-					return pluginapi.Verdict{}, errors.New("native validator lost admitted principal")
-				}
-				f.validators.Add(1)
-				if err := deniedEgress(host, target.URL, pluginhost.ErrHotEgress, "synchronous pre call"); err != nil {
-					return pluginapi.Verdict{}, err
-				}
-				return pluginapi.Verdict{Allow: true}, nil
-			})},
-			Posts: map[string]pluginapi.PostSubscriber{"inspect": sdk.AfterFunc(func(_ context.Context, change pluginapi.CommittedChange, _ pluginapi.SnapshotReader) error {
-				if change.Principal.Kind != f.principal.Kind || change.Principal.ID != f.principal.ID {
-					return errors.New("native post callback lost committed principal")
-				}
-				f.posts.Add(1)
-				detail := "anonymous mode"
-				if authenticated {
-					detail = "private or non-public target"
-				}
-				return deniedEgress(host, target.URL, pluginhost.ErrEgress, detail)
-			})},
-		}, nil
-	}}
-	// This is a declared, disposable loopback target. Anonymous mode must
-	// refuse on authentication posture; authenticated mode still refuses the IP.
-	native.Manifest.Requires.Egress = []string{strings.TrimPrefix(target.URL, "https://")}
-	host, err := pluginhost.New(pluginhost.Config{Natives: []sdk.Native{native}, AuthenticationConfigured: authenticated, Bindings: []pluginhost.Binding{
-		{ID: "i3-validate", Alias: "transportprobe", Instance: "default", Subscriber: "inspect", Phase: pluginapi.PhaseValidate, Reads: []string{"fields.title"}},
-		{ID: "i3-post", Alias: "transportprobe", Instance: "default", Subscriber: "inspect", Phase: pluginapi.PhasePost, Reads: []string{"fields.title"}},
-	}})
+	native, bindings := newTransportProbe(t, f, authenticated)
+	host, err := pluginhost.New(pluginhost.Config{Natives: []sdk.Native{native}, AuthenticationConfigured: authenticated, Bindings: bindings})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +148,54 @@ func newFixtureWithClock(t *testing.T, authenticated bool, now func() time.Time)
 	t.Cleanup(f.client.CloseIdleConnections)
 	f.initializeMCP(t)
 	return f
+}
+
+// newTransportProbe is shared by the direct adapter fixture and the real
+// composition fixture. The callback checks the admitted principal and uses a
+// disposable loopback TLS server to prove the native host's egress policy.
+func newTransportProbe(t *testing.T, f *fixture, authenticated bool) (sdk.Native, []pluginhost.Binding) {
+	t.Helper()
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		f.targetCalls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(target.Close)
+	manifest, err := pluginapi.DecodeManifest([]byte(`{"manifest_version":1,"plugins":[{"id":"app.example.transportprobe","alias":"transportprobe","version":"1.0.0","plugin_api":"1.0","runtime":"native","provides":[{"kind":"subscriber","name":"inspect","phases":["validate","post"],"reads":["fields.title"]}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	native := sdk.Native{Instance: "default", Manifest: manifest.Plugins[0], New: func(host pluginapi.Host) (sdk.Registration, error) {
+		return sdk.Registration{
+			Validators: map[string]pluginapi.Validator{"inspect": sdk.ValidateFunc(func(_ context.Context, change pluginapi.ProposedChange, _ pluginapi.SnapshotReader) (pluginapi.Verdict, error) {
+				if change.Principal.Kind != f.principal.Kind || change.Principal.ID != f.principal.ID {
+					return pluginapi.Verdict{}, errors.New("native validator lost admitted principal")
+				}
+				f.validators.Add(1)
+				if err := deniedEgress(host, target.URL, pluginhost.ErrHotEgress, "synchronous pre call"); err != nil {
+					return pluginapi.Verdict{}, err
+				}
+				return pluginapi.Verdict{Allow: true}, nil
+			})},
+			Posts: map[string]pluginapi.PostSubscriber{"inspect": sdk.AfterFunc(func(_ context.Context, change pluginapi.CommittedChange, _ pluginapi.SnapshotReader) error {
+				if change.Principal.Kind != f.principal.Kind || change.Principal.ID != f.principal.ID {
+					return errors.New("native post callback lost committed principal")
+				}
+				f.posts.Add(1)
+				detail := "anonymous mode"
+				if authenticated {
+					detail = "private or non-public target"
+				}
+				return deniedEgress(host, target.URL, pluginhost.ErrEgress, detail)
+			})},
+		}, nil
+	}}
+	// This is a declared, disposable loopback target. Anonymous mode must
+	// refuse on authentication posture; authenticated mode still refuses the IP.
+	native.Manifest.Requires.Egress = []string{strings.TrimPrefix(target.URL, "https://")}
+	return native, []pluginhost.Binding{
+		{ID: "i3-validate", Alias: "transportprobe", Instance: "default", Subscriber: "inspect", Phase: pluginapi.PhaseValidate, Reads: []string{"fields.title"}},
+		{ID: "i3-post", Alias: "transportprobe", Instance: "default", Subscriber: "inspect", Phase: pluginapi.PhasePost, Reads: []string{"fields.title"}},
+	}
 }
 
 func (f *fixture) initializeMCP(t *testing.T) {

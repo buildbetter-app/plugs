@@ -543,6 +543,7 @@ internal/integration/transports/BUILD.bazel
 internal/integration/transports/README.md
 internal/integration/transports/client_test.go
 internal/integration/transports/composition_test.go
+internal/integration/transports/configured_test.go
 internal/integration/transports/fixture_test.go
 internal/integration/transports/transports_test.go
 internal/integration/viewpermissions/BUILD.bazel
@@ -633,6 +634,8 @@ internal/server/composition/configfile_test.go
 internal/server/composition/epic_progress_test.go
 internal/server/composition/mcp.go
 internal/server/composition/mcp_lifecycle_test.go
+internal/server/composition/native.go
+internal/server/composition/native_test.go
 internal/server/composition/restore_actual_archive_test.go
 internal/server/composition/restore_import.go
 internal/server/composition/restore_import_test.go
