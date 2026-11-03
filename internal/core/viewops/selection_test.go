@@ -264,7 +264,7 @@ func TestW9EveryUnavailableSummaryPathKeepsAuthorized20000Cap(t *testing.T) {
 		body = append(body[:len(body)-1], []byte(`,"labels":["x"]}`)...)
 		rows[i] = driver.Record{Ref: model.RefByID(id, model.Natural64(0)), Kind: "bead", Revision: model.Natural64(1), Body: body}
 	}
-	for _, name := range []string{"no_compiled_authority", "unbounded_labels", "saved_without_witness", "additional_host_policy", "storage_unavailable", "storage_check_only"} {
+	for _, name := range []string{"no_compiled_authority", "unbounded_labels", "saved_without_source_binding", "additional_host_policy", "storage_unavailable", "storage_check_only"} {
 		t.Run(name, func(t *testing.T) {
 			def := Definition{Filter: &Filter{}, Fields: []string{}, GroupBy: []string{"type"}}
 			cfg := Config{}
@@ -287,7 +287,7 @@ func TestW9EveryUnavailableSummaryPathKeepsAuthorized20000Cap(t *testing.T) {
 				cfg.AuthorizeRead = func(context.Context, model.PrincipalRef, model.ResourceRef, string) error { return nil }
 			}
 			req := RunRequest{Definition: &def}
-			if name == "saved_without_witness" {
+			if name == "saved_without_source_binding" {
 				cfg.Views = savedViewMap{"saved": def}
 				req.Definition = nil
 				req.ViewID = "saved"

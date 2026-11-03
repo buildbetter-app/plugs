@@ -230,7 +230,7 @@ func (f *w9Fixture) seedBatch(t *testing.T, records []driver.Record) model.Revis
 	if _, err := tx.Head(ctx); err != nil {
 		t.Fatal(err)
 	}
-	header := driver.ChangesetHeader{Kind: model.ChangesetWrite, Principal: model.PrincipalRef{Kind: "system", ID: "w9-fixture"}, LockKeys: lockKeys}
+	header := driver.ChangesetHeader{Incarnation: tx.Snapshot().Incarnation, Kind: model.ChangesetWrite, Principal: model.PrincipalRef{Kind: "system", ID: "w9-fixture"}, LockKeys: lockKeys}
 	writer, ok := tx.(driver.GraphSourceWriter)
 	if !ok {
 		t.Fatal("W9 engine lacks complete source publication")
@@ -744,7 +744,7 @@ func TestW9UnsupportedMembershipCaveatsAndBothPolicyPlanesAcrossEngines(t *testi
 		f := newW9Fixture(t, store)
 		f.seed(t, []driver.Record{w9Record("a", "bug", "visible-name", "public", "todo", "x"), w9Record("b", "bug", "hidden-name", "secret", "todo", "x")})
 		f.store.allowScan = true
-		for _, name := range []string{"unbounded_label", "saved_without_witness", "extra_host_restriction", "caveat_intersection"} {
+		for _, name := range []string{"unbounded_label", "saved_without_source_binding", "extra_host_restriction", "caveat_intersection"} {
 			t.Run(name, func(t *testing.T) {
 				cfg := viewops.Config{}
 				def := viewops.Definition{Filter: &viewops.Filter{}}
@@ -754,7 +754,7 @@ func TestW9UnsupportedMembershipCaveatsAndBothPolicyPlanesAcrossEngines(t *testi
 				switch name {
 				case "unbounded_label":
 					def.Filter.Query = "label=x"
-				case "saved_without_witness":
+				case "saved_without_source_binding":
 					cfg.Views = w9FixedViewReader{def}
 					req.Definition = nil
 					req.ViewID = "saved"
