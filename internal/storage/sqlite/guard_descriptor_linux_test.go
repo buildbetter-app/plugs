@@ -2,8 +2,6 @@ package sqlite
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -22,8 +20,7 @@ import (
 )
 
 func guardPath(s *Store, key driver.LockKey) string {
-	hash := sha256.Sum256([]byte("guard:" + keyID(key)))
-	return filepath.Join(s.lockDir, hex.EncodeToString(hash[:]))
+	return guardStripePath(s.lockDir, guardStripe(key))
 }
 
 func guardDescriptorCount(t *testing.T, s *Store) int {
@@ -101,6 +98,156 @@ func restoreGuardRequests(count int) driver.LockSet {
 	return requests
 }
 
+func collidingGuardKeys(t *testing.T) []driver.LockKey {
+	t.Helper()
+	first := testKey("pl-stripe-000000")
+	stripe := guardStripe(first)
+	keys := []driver.LockKey{first}
+	for i := 1; i < guardStripeCount*256; i++ {
+		key := testKey(fmt.Sprintf("pl-stripe-%06d", i))
+		if guardStripe(key) == stripe {
+			keys = append(keys, key)
+			if len(keys) == 3 {
+				return keys
+			}
+		}
+	}
+	t.Fatal("could not find three colliding guard keys")
+	return nil
+}
+
+func TestGuardStripePlanUsesNumericOrder(t *testing.T) {
+	requests := guardRequests(2048)
+	for i := range requests {
+		requests[i].Mode = driver.LockShare
+	}
+	stripes, indexes := planGuardStripes(requests)
+	if len(stripes) < 2 || len(stripes) > guardStripeCount || len(indexes) != len(requests) {
+		t.Fatalf("stripe plan sizes: stripes=%d indexes=%d requests=%d", len(stripes), len(indexes), len(requests))
+	}
+	for i, stripe := range stripes {
+		if i > 0 && stripes[i-1].stripe >= stripe.stripe {
+			t.Fatalf("stripe acquisition order is not strictly increasing: %+v", stripes)
+		}
+		if !stripe.share || stripe.skipLocked {
+			t.Fatalf("shared-only stripe has incorrect mode: %+v", stripe)
+		}
+	}
+	for i, request := range requests {
+		if indexes[i] != guardStripe(request.Key) {
+			t.Fatalf("request %d mapped to stripe %d, want %d", i, indexes[i], guardStripe(request.Key))
+		}
+	}
+}
+
+func TestCollidingGuardModesUseOneHandleAndStrongestMode(t *testing.T) {
+	ctx := testContext(t)
+	s := openStore(t, ctx, filepath.Join(t.TempDir(), "guard-stripe-modes.db"))
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	keys := collidingGuardKeys(t)
+	for _, first := range []driver.LockMode{driver.LockShare, driver.LockUpdate, driver.LockSkipLocked} {
+		for _, second := range []driver.LockMode{driver.LockShare, driver.LockUpdate, driver.LockSkipLocked} {
+			t.Run(string(first)+"/"+string(second), func(t *testing.T) {
+				requests := driver.LockSet{{Key: keys[0], Mode: first}, {Key: keys[1], Mode: second}}
+				stripes, _ := planGuardStripes(requests)
+				share := first == driver.LockShare && second == driver.LockShare
+				skipLocked := first == driver.LockSkipLocked && second == driver.LockSkipLocked
+				if len(stripes) != 1 || stripes[0].share != share || stripes[0].skipLocked != skipLocked {
+					t.Fatalf("incorrect combined stripe modes: %+v", stripes)
+				}
+				value, err := s.Write(ctx, lease)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tx := value.(*transaction)
+				defer tx.Close()
+				beforeFD, beforeVMA := guardDescriptorCount(t, s), guardVMACount(t, s)
+				states, err := tx.Lock(ctx, requests)
+				if err != nil || len(states) != 2 || len(tx.guards) != 1 {
+					t.Fatalf("colliding acquisition states=%d handles=%d err=%v", len(states), len(tx.guards), err)
+				}
+				if !reflect.DeepEqual(tx.acquired, requests) {
+					t.Fatalf("stripe promotion changed per-key modes: got=%+v want=%+v", tx.acquired, requests)
+				}
+				if got := guardDescriptorCount(t, s); got != beforeFD {
+					t.Fatalf("colliding stripe retained descriptors: before=%d after=%d", beforeFD, got)
+				}
+				if got := guardVMACount(t, s); got != beforeVMA+1 {
+					t.Fatalf("colliding stripe mappings: before=%d after=%d, want one added", beforeVMA, got)
+				}
+				for i, request := range requests {
+					if keyID(states[i].Key) != keyID(request.Key) {
+						t.Fatalf("state %d lost input key order", i)
+					}
+					if request.Mode == driver.LockShare {
+						if err := tx.Put(ctx, driver.Record{Ref: *request.Key.Ref, Kind: "test", Body: []byte(`{}`)}); err == nil {
+							t.Fatal("stripe promotion authorized a write under a share lock")
+						}
+					}
+				}
+				guardProbe(t, ctx, guardPath(s, keys[0]), false, false)
+				guardProbe(t, ctx, guardPath(s, keys[1]), true, share)
+				if err := tx.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if got := guardVMACount(t, s); got != beforeVMA {
+					t.Fatalf("colliding stripe release retained VMAs: before=%d after=%d", beforeVMA, got)
+				}
+				guardProbe(t, ctx, guardPath(s, keys[0]), false, true)
+			})
+		}
+	}
+}
+
+func TestCollidingSkipLockedGuardsOmitBusyStripe(t *testing.T) {
+	ctx := testContext(t)
+	s := openStore(t, ctx, filepath.Join(t.TempDir(), "guard-stripe-skip.db"))
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	keys := collidingGuardKeys(t)
+	holder, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if _, err := holder.Lock(ctx, driver.LockSet{{Key: keys[0], Mode: driver.LockUpdate}}); err != nil {
+		t.Fatal(err)
+	}
+	requests := driver.LockSet{{Key: keys[1], Mode: driver.LockSkipLocked}, {Key: keys[2], Mode: driver.LockSkipLocked}}
+	value, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := value.(*transaction)
+	defer tx.Close()
+	beforeFD, beforeVMA := guardDescriptorCount(t, s), guardVMACount(t, s)
+	states, err := tx.Lock(ctx, requests)
+	if err != nil || len(states) != 0 || len(tx.acquired) != 0 || len(tx.guards) != 0 {
+		t.Fatalf("busy skip-only stripe: states=%d acquired=%d handles=%d err=%v", len(states), len(tx.acquired), len(tx.guards), err)
+	}
+	if got := guardDescriptorCount(t, s); got != beforeFD {
+		t.Fatalf("skipped stripe retained descriptors: before=%d after=%d", beforeFD, got)
+	}
+	if got := guardVMACount(t, s); got != beforeVMA {
+		t.Fatalf("skipped stripe retained mappings: before=%d after=%d", beforeVMA, got)
+	}
+	if err := tx.Put(ctx, driver.Record{Ref: *keys[1].Ref, Kind: "test", Body: []byte(`{}`)}); err == nil {
+		t.Fatal("omitted colliding key authorized a write")
+	}
+	if err := holder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	nextValue, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := nextValue.(*transaction)
+	defer next.Close()
+	states, err = next.Lock(ctx, requests)
+	if err != nil || len(states) != 2 || len(next.guards) != 1 {
+		t.Fatalf("released skip-only stripe: states=%d handles=%d err=%v", len(states), len(next.guards), err)
+	}
+}
+
 func TestLargeCompleteLockSetUsesBoundedDescriptors(t *testing.T) {
 	ctx := testContext(t)
 	s := openStore(t, ctx, filepath.Join(t.TempDir(), "guard-descriptor.db"))
@@ -154,12 +301,19 @@ func TestLargeCompleteLockSetUsesBoundedDescriptors(t *testing.T) {
 	}
 }
 
-func TestCompleteRestoreGuardFamiliesMeasureDescriptorAndVMACapacity(t *testing.T) {
+func TestCompleteRestoreGuardFamiliesUseBoundedDescriptorsAndMappings(t *testing.T) {
 	ctx := testContext(t)
 	s := openStore(t, ctx, filepath.Join(t.TempDir(), "restore-guard-capacity.db"))
 	requests := restoreGuardRequests(20000)
 	if err := driver.ValidateLockSet(requests); err != nil {
 		t.Fatal(err)
+	}
+	if len(requests) != 80001 {
+		t.Fatalf("restore guard requests=%d, want 80001", len(requests))
+	}
+	stripes := make(map[int]bool)
+	for _, request := range requests {
+		stripes[guardStripe(request.Key)] = true
 	}
 	lease := getLease(t, ctx, s, driver.LeaseTTL)
 	value, err := s.Write(ctx, lease)
@@ -173,17 +327,30 @@ func TestCompleteRestoreGuardFamiliesMeasureDescriptorAndVMACapacity(t *testing.
 	if err != nil {
 		t.Fatalf("restore guard acquisition failed after %d keys: %v", len(states), err)
 	}
-	if len(states) != len(requests) || len(tx.guards) != len(requests) {
-		t.Fatalf("restore guard acquisition states=%d handles=%d want %d", len(states), len(tx.guards), len(requests))
+	if len(states) != len(requests) || len(tx.acquired) != len(requests) {
+		t.Fatalf("restore guard acquisition states=%d acquired=%d want %d", len(states), len(tx.acquired), len(requests))
+	}
+	if len(tx.guards) != len(stripes) || len(tx.guards) > 1024 {
+		t.Fatalf("restore guard handles=%d, want %d distinct stripes and at most 1024", len(tx.guards), len(stripes))
 	}
 	afterFD, afterVMA := guardDescriptorCount(t, s), guardVMACount(t, s)
 	t.Logf("actual restore guard set records=%d bead_sentinels=%d closure_sentinels=%d ancestor_rows=%d graph_sentinel=1 total=%d descriptors=%d vmas=%d", 20000, 20000, 20000, 20000, len(requests), afterFD-beforeFD, afterVMA-beforeVMA)
 	if afterFD-beforeFD > 1 {
 		t.Fatalf("restore guard acquisition retained %d descriptors for %d keys", afterFD-beforeFD, len(requests))
 	}
-	if afterVMA-beforeVMA != len(requests) {
-		t.Fatalf("restore guard mappings=%d, want one VMA per key (%d)", afterVMA-beforeVMA, len(requests))
+	if afterVMA-beforeVMA != len(stripes) || afterVMA-beforeVMA > 1024 {
+		t.Fatalf("restore guard mappings=%d, want %d distinct stripes and at most 1024", afterVMA-beforeVMA, len(stripes))
 	}
+	// A second open must conflict on every held stripe, not just a sample.
+	for stripe := range stripes {
+		f, ok, err := tryFileLock(guardStripePath(s.lockDir, stripe), false)
+		unlockFile(f)
+		if err != nil || ok {
+			t.Fatalf("restore stripe %d lost exclusion: acquired=%v err=%v", stripe, ok, err)
+		}
+	}
+	guardProbe(t, ctx, guardPath(s, requests[0].Key), false, false)
+	guardProbe(t, ctx, guardPath(s, requests[len(requests)-1].Key), true, false)
 	if err := tx.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -193,6 +360,8 @@ func TestCompleteRestoreGuardFamiliesMeasureDescriptorAndVMACapacity(t *testing.
 	if got := guardVMACount(t, s); got != beforeVMA {
 		t.Fatalf("restore guard release retained VMAs: before=%d after=%d", beforeVMA, got)
 	}
+	guardProbe(t, ctx, guardPath(s, requests[0].Key), false, true)
+	guardProbe(t, ctx, guardPath(s, requests[len(requests)-1].Key), false, true)
 }
 
 func TestCommitReleasesGuardMappings(t *testing.T) {
@@ -307,7 +476,7 @@ func TestLockRejectsLeaseLostDuringGuardAcquisition(t *testing.T) {
 
 	// fence checks Lost before calling the production Clock seam. Signal loss
 	// at that point while Lock owns the transaction mutex: Close is queued,
-	// and the real per-key flock/mmap and SQL paths still have to unwind.
+	// and the real stripe flock/mmap and SQL paths still have to unwind.
 	loseOnFence.Store(true)
 	states, lockErr := tx.Lock(ctx, requests)
 	if lockErr == nil {

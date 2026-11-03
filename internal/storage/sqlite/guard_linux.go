@@ -6,10 +6,10 @@ import (
 	"syscall"
 )
 
-// guardHandle keeps the existing hashed-file flock alive without retaining an
-// open descriptor for every key. Linux keeps the file reference associated
-// with this mapping after the descriptor is closed, so the old flock protocol
-// remains visible to other processes.
+// guardHandle keeps one stripe's flock alive without retaining a descriptor.
+// Linux keeps the file reference associated with this mapping after close,
+// preserving interprocess exclusion. Lock acquires at most guardStripeCount
+// handles, bounding both descriptors and VMAs independently of the key count.
 type guardHandle interface {
 	release()
 }

@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -124,30 +123,29 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 	if t.locked || t.hasHead {
 		return nil, fmt.Errorf("sqlite: acquire the complete lock set once")
 	}
+	stripes, indexes := planGuardStripes(requests)
 	for {
 		if err := t.check(ctx); err != nil {
 			return nil, err
 		}
-		selected := make(driver.LockSet, 0, len(requests))
-		guards := make([]guardHandle, 0, len(requests))
+		guards := make([]guardHandle, 0, len(stripes))
+		var held [guardStripeCount]bool
 		blocked := false
 		var acquireErr error
-		for _, r := range requests {
-			hash := sha256.Sum256([]byte("guard:" + keyID(r.Key)))
-			guard, ok, err := tryGuardLock(filepath.Join(t.store.lockDir, hex.EncodeToString(hash[:])), r.Mode == driver.LockShare)
+		for _, stripe := range stripes {
+			guard, ok, err := tryGuardLock(guardStripePath(t.store.lockDir, stripe.stripe), stripe.share)
 			if err != nil {
 				acquireErr = err
 				break
 			}
 			if !ok {
-				if r.Mode == driver.LockSkipLocked {
+				if stripe.skipLocked {
 					continue
 				}
 				blocked = true
 				break
 			}
-			r.Key = copyKey(r.Key)
-			selected = append(selected, r)
+			held[stripe.stripe] = true
 			guards = append(guards, guard)
 		}
 		if acquireErr != nil || blocked {
@@ -166,6 +164,13 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 			case <-timer.C:
 			}
 			continue
+		}
+		selected := make(driver.LockSet, 0, len(requests))
+		for i, request := range requests {
+			if held[indexes[i]] {
+				request.Key = copyKey(request.Key)
+				selected = append(selected, request)
+			}
 		}
 		// Every requested non-skipped key is held before reading any state. Failed
 		// acquisition retains no partial lock set; different processes obey this too.
