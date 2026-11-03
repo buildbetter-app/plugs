@@ -3,6 +3,7 @@ package composition
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -164,6 +165,15 @@ func TestAuthenticatedWorkflowHTTPRestartCompletionAndHistory(t *testing.T) {
 		t.Fatalf("restart lost durable workflow comment: %v", reopened)
 	}
 	claim := call(ownerClient, "bead.claimNext", map[string]any{}, strings.Repeat("3", 64))
+	var liveClaim model.Commit
+	if err := json.Unmarshal(claim.JSON, &liveClaim); err != nil {
+		t.Fatal(err)
+	}
+	if len(liveClaim.Results) != 1 || liveClaim.Results[0].Ref.ID != itemID ||
+		liveClaim.Revision.String() != "0" || liveClaim.LeaseExpiresAt == nil ||
+		liveClaim.LeaseTtlMs == nil || liveClaim.LeaseTtlMs.String() != "1800000" {
+		t.Fatalf("live standard claim lost its identity or lease metadata: %s", claim.JSON)
+	}
 	replayedClaim := call(ownerClient, "bead.claimNext", map[string]any{}, strings.Repeat("3", 64))
 	if !bytes.Equal(claim.JSON, replayedClaim.JSON) {
 		t.Fatalf("claimNext response loss changed committed identity: first=%s replay=%s", claim.JSON, replayedClaim.JSON)
@@ -188,6 +198,22 @@ func TestAuthenticatedWorkflowHTTPRestartCompletionAndHistory(t *testing.T) {
 	replayedClose := call(ownerClient, "bead.close", closeParams, strings.Repeat("4", 64))
 	if !bytes.Equal(closed.JSON, replayedClose.JSON) {
 		t.Fatalf("terminal restart replay changed completion receipt: first=%s replay=%s", closed.JSON, replayedClose.JSON)
+	}
+	// The schema admits an identity-only receipt shape. Establish its lifecycle
+	// provenance at the real producer boundary: only replay after completion
+	// and reopen may lose the original live claim's lease fields.
+	terminalClaim := call(ownerClient, "bead.claimNext", map[string]any{}, strings.Repeat("3", 64))
+	var erasedClaim model.Commit
+	if err := json.Unmarshal(terminalClaim.JSON, &erasedClaim); err != nil {
+		t.Fatal(err)
+	}
+	if len(erasedClaim.Results) != 1 || erasedClaim.Revision.String() != "0" ||
+		erasedClaim.Results[0].Ref != liveClaim.Results[0].Ref ||
+		erasedClaim.Results[0].Revision != liveClaim.Results[0].Revision ||
+		erasedClaim.LeaseExpiresAt != nil || erasedClaim.LeaseTtlMs != nil ||
+		len(erasedClaim.Results[0].Record) != 0 || len(erasedClaim.Warnings) != 0 ||
+		bytes.Contains(terminalClaim.JSON, []byte("ephemeral confidential")) {
+		t.Fatalf("terminal standard claim replay changed identity or retained payload: live=%s terminal=%s", claim.JSON, terminalClaim.JSON)
 	}
 	terminal := call(ownerClient, "x.workflow.invoke", params, strings.Repeat("1", 64))
 	if len(resultObject(t, terminal)["items"].([]any)) != 0 || bytes.Contains(terminal.JSON, []byte("ephemeral confidential")) {
