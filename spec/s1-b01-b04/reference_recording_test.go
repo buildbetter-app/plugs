@@ -128,11 +128,39 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
+	captured := false
 	defer func() {
-		if err := retainReferenceCapture(root, retained, os.Stdout); err != nil {
+		if err := retainReferenceCapture(root, retained, os.Stdout, captured); err != nil {
 			t.Errorf("retain capture packet: %v", err)
 		}
 	}()
+	profileBytes, err := json.Marshal(map[string]any{
+		"format":           "plug.s1-b01-b04.capture-profile.v1",
+		"publicDescriptor": publicReferenceDescriptor,
+		"sourceCommit":     captureSourceCommit, "sourceTree": captureSourceTree,
+		"binarySHA256":   captureBinarySHA256,
+		"recorderSHA256": sha256File(referenceRecorderBytes),
+		"mode":           "managed-proxied-server", "doltVersion": referenceDoltVersion,
+		"doltArchiveURL": referenceDoltURL, "doltArchiveSHA256": referenceDoltSHA256,
+		"doltMember":    referenceDoltMember,
+		"qualification": "raw capture only; clocks/embedded/full-card parity unqualified",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		"capture-profile.json":           profileBytes,
+		"public-reference-manifest.json": manifestBytes,
+		"record_reference.py":            referenceRecorderBytes,
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	binaryPath := filepath.Join(root, "reference-engine")
 	publicReferenceBinary(t, archivePath, manifestPath, binaryPath)
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
@@ -229,6 +257,7 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 	if transcript, err := os.ReadFile(filepath.Join(root, "raw-commands.jsonl")); err != nil || len(transcript) == 0 {
 		t.Fatalf("reference raw transcript was not retained: %v", err)
 	}
+	captured = true
 	fmt.Println("S1_B01_B04_CAPTURE_BEGIN")
 	fmt.Print(string(artifact))
 	if len(artifact) == 0 || artifact[len(artifact)-1] != '\n' {

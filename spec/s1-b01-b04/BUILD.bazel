@@ -29,7 +29,10 @@ go_test(
         "reference_runtime.go",
         "reference_runtime_test.go",
     ],
-    embedsrcs = ["record_reference.py"],
+    embedsrcs = [
+        "record_reference.py",
+        "extract_reference_packet.py",
+    ],
     args = ["-test.v"],
 )
 

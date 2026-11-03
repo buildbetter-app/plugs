@@ -18,6 +18,9 @@ import (
 //go:embed record_reference.py
 var runtimeRecorderSource []byte
 
+//go:embed extract_reference_packet.py
+var runtimeExtractorSource []byte
+
 func runtimeTestArchive(t *testing.T, headers ...*tar.Header) []byte {
 	t.Helper()
 	var output bytes.Buffer
@@ -207,13 +210,21 @@ func TestCapturePacketSurvivesLogOnlyCollector(t *testing.T) {
 		t.Fatal(err)
 	}
 	var log bytes.Buffer
-	if err := retainReferenceCapture(root, retained, &log); err != nil {
+	if err := retainReferenceCapture(root, retained, &log, false); err != nil {
 		t.Fatal(err)
 	}
-	const begin = "S1_B01_B04_RAW_PACKET_BEGIN\n"
-	const end = "\nS1_B01_B04_RAW_PACKET_END\n"
-	if !strings.HasPrefix(log.String(), begin) || !strings.HasSuffix(log.String(), end) {
+	lines := bytes.Split(log.Bytes(), []byte("\n"))
+	if len(lines) != 4 {
 		t.Fatalf("log-only collector lost raw packet: %d bytes logged", log.Len())
+	}
+	var size int
+	var digest string
+	if _, err := fmt.Sscanf(string(lines[0]), capturePacketBegin+" %d %s", &size, &digest); err != nil {
+		t.Fatal(err)
+	}
+	if size != len(lines[1]) || digest != referenceDigest(lines[1]) ||
+		string(lines[2]) != fmt.Sprintf("%s %d %s", capturePacketEnd, size, digest) {
+		t.Fatal("raw frame length/digest/footer differs")
 	}
 	var packet struct {
 		Format string `json:"format"`
@@ -223,10 +234,10 @@ func TestCapturePacketSurvivesLogOnlyCollector(t *testing.T) {
 			SHA256  string `json:"sha256"`
 		} `json:"files"`
 	}
-	if err := json.Unmarshal(bytes.TrimSuffix(bytes.TrimPrefix(log.Bytes(), []byte(begin)), []byte(end)), &packet); err != nil {
+	if err := json.Unmarshal(lines[1], &packet); err != nil {
 		t.Fatal(err)
 	}
-	if packet.Format != "plug.s1-b01-b04.raw-packet.v1" || len(packet.Files) != 7 {
+	if packet.Format != "plug.s1-b01-b04.raw-packet.v1" || len(packet.Files) != len(capturePacketFiles) {
 		t.Fatalf("incomplete raw packet: format=%q files=%d", packet.Format, len(packet.Files))
 	}
 	for name, data := range map[string][]byte{"raw-commands.jsonl": want, "recorder.stderr": {}} {
@@ -253,13 +264,13 @@ func TestCapturePacketFailureStillLogsAvailableBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	var log bytes.Buffer
-	if err := retainReferenceCapture(root, filepath.Join(root, "missing-output-directory"), &log); err == nil {
+	if err := retainReferenceCapture(root, filepath.Join(root, "missing-output-directory"), &log, false); err == nil {
 		t.Fatal("read/copy failure accepted")
 	}
 	if !bytes.Contains(log.Bytes(), []byte(`"bytesBase64":"YXZhaWxhYmxl"`)) || !bytes.Contains(log.Bytes(), []byte(`"error":`)) {
 		t.Fatalf("available bytes or retention error lost from log: %s", log.Bytes())
 	}
-	if err := retainReferenceCapture(root, t.TempDir(), captureLogFailure{}); err == nil || !strings.Contains(err.Error(), "test log") {
+	if err := retainReferenceCapture(root, t.TempDir(), captureLogFailure{}, false); err == nil || !strings.Contains(err.Error(), "test log") {
 		t.Fatalf("log-write failure accepted: %v", err)
 	}
 }
@@ -267,3 +278,110 @@ func TestCapturePacketFailureStillLogsAvailableBytes(t *testing.T) {
 type captureLogFailure struct{}
 
 func (captureLogFailure) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestCapturePacketCompleteAndMissingOutcome(t *testing.T) {
+	root, retained := t.TempDir(), t.TempDir()
+	for source := range capturePacketFiles {
+		if err := os.WriteFile(filepath.Join(root, source), []byte("capture-negative-probe"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var log bytes.Buffer
+	if err := retainReferenceCapture(root, retained, &log, true); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(log.Bytes(), []byte(`"status":"CAPTURED"`)) {
+		t.Fatal("complete negative harness packet lost its declared outcome")
+	}
+	if err := os.Remove(filepath.Join(root, "capture-profile.json")); err != nil {
+		t.Fatal(err)
+	}
+	log.Reset()
+	if err := retainReferenceCapture(root, retained, &log, true); err == nil {
+		t.Fatal("completed packet accepted a missing profile")
+	}
+	if !bytes.Contains(log.Bytes(), []byte(`"status":"BLOCK"`)) {
+		t.Fatal("missing profile was not a BLOCK packet")
+	}
+}
+
+func TestCapturePacketIndependentExtractorFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	extractor := filepath.Join(root, "extract_reference_packet.py")
+	if err := os.WriteFile(extractor, runtimeExtractorSource, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "recorder.stderr"), []byte("partial\x00failure\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	if err := retainReferenceCapture(root, t.TempDir(), &log, false); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(root, "capture.log")
+	if err := os.WriteFile(logPath, log.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// This tests framing/retention only; no reference producer is executed.
+	command := exec.Command("python3", "-B", "-c", `
+import copy, importlib.util, json, pathlib, subprocess, sys
+source, log_path, root = map(pathlib.Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("independent_extractor", source)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+raw = log_path.read_bytes()
+packet, payload = module.unframe(raw)
+files = module.validate_packet(packet)
+assert files["recorder.stderr"] == b"partial\x00failure\r\n"
+assert packet["status"] == "BLOCK"
+
+def reject(operation):
+    try:
+        operation()
+    except (ValueError, KeyError, TypeError):
+        return
+    raise AssertionError("invalid packet accepted")
+
+reject(lambda: module.accept_capture(packet, files))
+for malformed in (b"", raw[:-1], raw[:len(raw)//2], raw+raw,
+        raw.replace(b"\n", b"\r\n"), raw.replace(b'"status":"BLOCK"', b'"status":"OTHER"'),
+        raw.replace(b"\n", b"\nextra\n", 1)):
+    reject(lambda: module.unframe(malformed))
+
+def frame(payload):
+    identity = str(len(payload)).encode() + b" " + module.digest(payload).encode()
+    return module.BEGIN+b" "+identity+b"\n"+payload+b"\n"+module.END+b" "+identity+b"\n"
+
+reject(lambda: module.unframe(frame(b'{"duplicate":1,"duplicate":2}')))
+reject(lambda: module.unframe(frame(b'{ "format": "not-canonical" }')))
+missing = copy.deepcopy(packet)
+missing["files"].pop("raw-commands.jsonl")
+reject(lambda: module.validate_packet(missing))
+changed = copy.deepcopy(packet)
+changed["files"]["recorder.stderr"]["size"] += 1
+reject(lambda: module.validate_packet(changed))
+changed = copy.deepcopy(packet)
+changed["files"]["recorder.stderr"]["bytesBase64"] = "AA=="
+reject(lambda: module.validate_packet(changed))
+read_error = copy.deepcopy(packet)
+read_error["status"] = "CAPTURED"
+read_error["files"]["recorder.stderr"]["error"] = "read refused"
+reject(lambda: module.accept_capture(read_error, files))
+# Default positive extraction refuses BLOCK before creating any output.
+accepted = root / "must-not-be-accepted"
+refused = subprocess.run([sys.executable,"-B",str(source),str(log_path),"--output",str(accepted)], capture_output=True)
+assert refused.returncode != 0 and not accepted.exists()
+# Only an explicit diagnostic route preserves a BLOCK packet, under that label.
+diagnostic = root / "diagnostic"
+retained = subprocess.run([sys.executable,"-B",str(source),str(log_path),"--output",str(diagnostic),"--retain-block"], capture_output=True)
+assert retained.returncode == 0, retained.stderr
+assert (diagnostic / "packet.json").read_bytes() == payload
+assert (diagnostic / "recorder.stderr").read_bytes() == b"partial\x00failure\r\n"
+assert json.loads((diagnostic / "extraction.json").read_bytes())["classification"] == "diagnostic-unqualified"
+`, extractor, logPath, root)
+	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root,
+		"PYTHONNOUSERSITE=1", "PYTHONDONTWRITEBYTECODE=1", "LC_ALL=C.UTF-8"}
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("independent raw packet extractor: %v: %s", err, output)
+	}
+}

@@ -86,10 +86,17 @@ and records its actual digest and runtime mode. Each disposable store is stopped
 through the public CLI before removal. The raw command stdout/stderr bytes and
 exit codes are retained separately, including on recorder failure. This runtime
 packet is also emitted as `S1_B01_B04_RAW_PACKET_BEGIN`/`END` framed JSON in the
-test log, with base64 bytes and digests for each file and explicit missing-file
-entries. The trusted RunsOn collector archives logs and XML rather than
+test log. Both literal header and footer bind the exact canonical JSON payload
+length and SHA-256; file entries bind size, base64 bytes, digest, presence, and
+read/copy errors. Source, declared profile, actual runtime and command streams
+remain separate. A failed or incomplete producer is explicitly `BLOCK`. The trusted RunsOn collector archives logs and XML rather than
 undeclared output files, so both successful and failed capture packets survive
 that route. File read, copy, or log-write failures fail the test.
+`extract_reference_packet.py` independently rejects partial, duplicated,
+noncanonical, altered or malformed frames and mismatched file digests. Its
+normal extraction refuses `BLOCK` before creating output; `--retain-block`
+explicitly preserves diagnostic bytes with an unqualified label. A successfully
+extracted raw capture still needs the separate paired semantic/clock proof.
 
 This runtime
 profile does not certify embedded-mode behavior, controlled reference clocks,

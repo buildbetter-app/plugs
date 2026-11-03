@@ -146,51 +146,69 @@ func runReferenceRecorder(command *exec.Cmd, root string) ([]byte, []byte, error
 	return stdout, stderr.Bytes(), errors.Join(runErr, outErr, errErr)
 }
 
-func retainReferenceCapture(root, retained string, log io.Writer) error {
+const capturePacketBegin = "S1_B01_B04_RAW_PACKET_BEGIN"
+const capturePacketEnd = "S1_B01_B04_RAW_PACKET_END"
+const capturePacketLimit = 32 << 20
+
+var capturePacketFiles = map[string]string{
+	"recording.json":                 "reference-recording.json",
+	"raw-commands.jsonl":             "raw-commands.jsonl",
+	"capture-runtime.json":           "capture-runtime.json",
+	"capture-profile.json":           "capture-profile.json",
+	"public-reference-manifest.json": "public-reference-manifest.json",
+	"record_reference.py":            "record_reference.py",
+	"recorder.stdout":                "recorder.stdout",
+	"recorder.stderr":                "recorder.stderr",
+	"dolt-version.stdout":            "dolt-version.stdout",
+	"dolt-version.stderr":            "dolt-version.stderr",
+}
+
+func retainReferenceCapture(root, retained string, log io.Writer, captured bool) error {
 	var errs []error
-	type packetFile struct {
-		Present bool   `json:"present"`
-		Bytes   []byte `json:"bytesBase64"`
-		SHA256  string `json:"sha256,omitempty"`
-		Error   string `json:"error,omitempty"`
-	}
-	files := make(map[string]packetFile)
-	for source, name := range map[string]string{
-		"recording.json":       "reference-recording.json",
-		"raw-commands.jsonl":   "raw-commands.jsonl",
-		"capture-runtime.json": "capture-runtime.json",
-		"recorder.stdout":      "recorder.stdout",
-		"recorder.stderr":      "recorder.stderr",
-		"dolt-version.stdout":  "dolt-version.stdout",
-		"dolt-version.stderr":  "dolt-version.stderr",
-	} {
+	files := make(map[string]any)
+	for source, name := range capturePacketFiles {
+		entry := map[string]any{"present": false, "bytesBase64": nil, "size": 0}
+		files[name] = entry
 		data, err := os.ReadFile(filepath.Join(root, source))
 		if os.IsNotExist(err) {
-			files[name] = packetFile{}
+			if captured {
+				errs = append(errs, fmt.Errorf("completed capture is missing %s", source))
+			}
 			continue
 		}
 		if err != nil {
-			files[name] = packetFile{Error: err.Error()}
+			entry["error"] = err.Error()
 			errs = append(errs, fmt.Errorf("retain %s: %w", source, err))
 			continue
 		}
-		entry := packetFile{Present: true, Bytes: data, SHA256: referenceDigest(data)}
+		entry["present"], entry["bytesBase64"] = true, data
+		entry["size"], entry["sha256"] = len(data), referenceDigest(data)
 		if err := os.WriteFile(filepath.Join(retained, name), data, 0o600); err != nil {
-			entry.Error = err.Error()
+			entry["error"] = err.Error()
 			errs = append(errs, fmt.Errorf("retain %s: %w", name, err))
 		}
-		files[name] = entry
 	}
-	// The trusted RunsOn collector archives test.log and test.xml only. Preserve
-	// exact public raw bytes there as well as in undeclared output files, even
-	// when the producer fails or a file copy cannot be completed.
-	packet, err := json.Marshal(struct {
-		Format string                `json:"format"`
-		Files  map[string]packetFile `json:"files"`
-	}{Format: "plug.s1-b01-b04.raw-packet.v1", Files: files})
-	if err != nil {
-		errs = append(errs, err)
-	} else if _, err := fmt.Fprintf(log, "S1_B01_B04_RAW_PACKET_BEGIN\n%s\nS1_B01_B04_RAW_PACKET_END\n", packet); err != nil {
+	status := "BLOCK"
+	if captured && len(errs) == 0 {
+		status = "CAPTURED"
+	}
+	// Use the existing B09 framing convention with this lane's own markers.
+	// The trusted collector archives logs/XML, not undeclared output files.
+	var payload bytes.Buffer
+	encoder := json.NewEncoder(&payload)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(map[string]any{
+		"format": "plug.s1-b01-b04.raw-packet.v1", "status": status, "files": files,
+	}); err != nil {
+		return errors.Join(append(errs, err)...)
+	}
+	packet := bytes.TrimSuffix(payload.Bytes(), []byte("\n"))
+	if len(packet) > capturePacketLimit {
+		return errors.Join(append(errs, fmt.Errorf("raw capture packet exceeds %d bytes", capturePacketLimit))...)
+	}
+	digest := referenceDigest(packet)
+	if _, err := fmt.Fprintf(log, "%s %d %s\n%s\n%s %d %s\n",
+		capturePacketBegin, len(packet), digest, packet, capturePacketEnd, len(packet), digest); err != nil {
 		errs = append(errs, fmt.Errorf("retain raw packet in test log: %w", err))
 	}
 	return errors.Join(errs...)
