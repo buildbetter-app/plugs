@@ -2,17 +2,21 @@ package batchsql_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"sync"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
@@ -33,10 +37,40 @@ type publicBatchReply struct {
 	} `json:"_meta"`
 }
 
+// Observe the very same Writer outcome used by the public service. Private
+// domain messages intentionally become canonical catalog messages on the wire;
+// this passive observer proves the precise graph guard without exposing it.
+type publicBatchWriter struct {
+	*pipeline.Writer
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+func (w *publicBatchWriter) ApplyWithOutcome(ctx context.Context, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (port.WriteOutcome, error) {
+	outcome, err := w.Writer.ApplyWithOutcome(ctx, by, cs, meta)
+	w.mu.Lock()
+	w.calls++
+	w.err = err
+	w.mu.Unlock()
+	return outcome, err
+}
+
+func (w *publicBatchWriter) observed() (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.calls, w.err
+}
+
+type publicBatchHost struct {
+	*httptest.Server
+	writer *publicBatchWriter
+}
+
 // Public no-plugin mode retains the real ontology, graph and revision guards.
 // In particular, a fixed-policy tx.apply refusal would never reach this test's
 // two distinct guards. All calls traverse HTTP, BindService and Service.Apply.
-func publicBatchEndpoint(t *testing.T, f *fixture) *httptest.Server {
+func publicBatchEndpoint(t *testing.T, f *fixture) *publicBatchHost {
 	t.Helper()
 	source := model.RefByID("ontology/public-batch-guard-order", model.Natural64(0))
 	body, err := service.MarshalOntologySource(service.OntologySource{Base: ontology.DefaultDocument()})
@@ -46,10 +80,10 @@ func publicBatchEndpoint(t *testing.T, f *fixture) *httptest.Server {
 	if _, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: source, Kind: "ontology", Op: model.OpCreate, Body: body}}); err != nil {
 		t.Fatal(err)
 	}
-	writer := pipeline.New(f.store, f.lease,
+	writer := &publicBatchWriter{Writer: pipeline.New(f.store, f.lease,
 		pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now), pipeline.WithIDGenerator(f.nextID),
 		pipeline.WithOntologyAudit(service.NewOntologyAudit(service.StaticOntologySource(source))),
-	)
+	)}
 	domain := service.New(f.store, f.lease, writer, service.WithOntology(f.ontology))
 	registry, err := rpc.NewRegistry()
 	if err != nil {
@@ -76,11 +110,12 @@ func publicBatchEndpoint(t *testing.T, f *fixture) *httptest.Server {
 	}
 	endpoint := httptest.NewServer(handler)
 	t.Cleanup(endpoint.Close)
-	return endpoint
+	return &publicBatchHost{Server: endpoint, writer: writer}
 }
 
-func publicBatchCall(t *testing.T, f *fixture, endpoint *httptest.Server, key string, cs model.ChangeSet) publicBatchReply {
+func publicBatchCall(t *testing.T, f *fixture, endpoint *publicBatchHost, key string, cs model.ChangeSet) publicBatchReply {
 	t.Helper()
+	beforeCalls, _ := endpoint.writer.observed()
 	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "id": "guard-order", "method": "tx.apply",
 		"params": map[string]any{"changeSet": cs, "_meta": map[string]any{"project": "batch-local", "agent": publicBatchAgent, "idempotencyKey": key}},
@@ -108,6 +143,10 @@ func publicBatchCall(t *testing.T, f *fixture, endpoint *httptest.Server, key st
 	decoder.UseNumber()
 	if err := decoder.Decode(&reply); err != nil || response.StatusCode != http.StatusOK {
 		t.Fatalf("public tx.apply HTTP %d: %s (%v)", response.StatusCode, raw, err)
+	}
+	calls, domainErr := endpoint.writer.observed()
+	if calls != beforeCalls+1 || (reply.Error == nil) != (domainErr == nil) {
+		t.Fatalf("HTTP call must observe exactly one matching Writer outcome: calls=%d->%d error=%v reply=%s", beforeCalls, calls, domainErr, raw)
 	}
 	return reply
 }
@@ -204,7 +243,7 @@ func TestPublicBatchRevisionRefusalPrecedesCycleGuardAcrossStores(t *testing.T) 
 				name string
 				code model.ErrorCode
 			}{{"stale-revision-before-cycle", "precondition_failed"}, {"current-revision-reaches-cycle", "ontology_guard_failed"}} {
-				t.Run(refusal.name, func(t *testing.T) {
+				if !t.Run(refusal.name, func(t *testing.T) {
 					reply := publicBatchCall(t, f, endpoint, key, batch)
 					if reply.Error == nil || reply.Error.Data.Code != refusal.code || reply.Error.Data.Retryable || len(reply.Result) != 0 || reply.Meta.Replayed {
 						t.Fatalf("want pure %s refusal, got %+v result=%s", refusal.code, reply.Error, reply.Result)
@@ -214,13 +253,19 @@ func TestPublicBatchRevisionRefusalPrecedesCycleGuardAcrossStores(t *testing.T) 
 						if reply.Error.Data.Details["reason"] != "revision" || !ok || current.String() != seed.Revision.String() {
 							t.Fatalf("revision refusal did not reach real committed CAS: %+v", reply.Error.Data)
 						}
-					} else if reply.Error.Data.Hint != "blocking link would form a cycle" {
-						t.Fatalf("correcting only the expectation missed the cycle guard: %+v", reply.Error.Data)
+					} else {
+						var domain *model.Error
+						_, err := endpoint.writer.observed()
+						if !errors.As(err, &domain) || domain.Data.Code != refusal.code || domain.Message != "blocking link would form a cycle" {
+							t.Fatalf("correcting only the expectation missed the actual Writer cycle guard: %v", err)
+						}
 					}
 					if after := publicBatchRead(t, f, key); !reflect.DeepEqual(before, after) {
 						t.Fatalf("refused batch published records/derived/predicates/versions/history/events/receipt: before=%+v after=%+v", before, after)
 					}
-				})
+				}) {
+					return
+				}
 				batch.Expect = []model.Precondition{model.PreconditionByRevision(a, seed.Revision)}
 			}
 			batch.Ops[2] = link(b, c) // Only the cycle-causing endpoint changes.
