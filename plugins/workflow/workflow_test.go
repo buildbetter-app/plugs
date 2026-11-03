@@ -608,3 +608,169 @@ func TestOrdinaryAccessCollectsTerminalReceiptsAndRetainsUnfinishedRun(t *testin
 		t.Fatalf("old unfinished receipt failed to replay without another write: %+v err=%v", replay, err)
 	}
 }
+
+func TestReadySnapshotTracksWritesAndLeaseExpiry(t *testing.T) {
+	ctx := context.Background()
+	clock := time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC)
+	state := &testDurableState{}
+	provider, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.WithClock(func() time.Time { return clock })
+	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	meta := model.WriteMeta{Method: "x.workflow.invoke", Project: "project", AgentLabel: "agent", IdempotencyKey: strings.Repeat("1", 64)}
+	run, err := provider.Invoke(ctx, by, InvokeRequest{
+		Template: "template", Project: "project", Mode: "ephemeral",
+		Checklist: []ChecklistItem{{Label: "one", Title: "one"}, {Label: "two", Title: "two"}, {Label: "three", Title: "three"}},
+	}, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sortItems(run.Items)
+	meta.Method, meta.IdempotencyKey = "bead.claim", strings.Repeat("2", 64)
+	first, err := provider.Claim(ctx, by, model.RefByID(run.Items[0].ID, model.Natural64(0)), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(time.Minute)
+	meta.IdempotencyKey = strings.Repeat("3", 64)
+	second, err := provider.Claim(ctx, by, model.RefByID(run.Items[1].ID, model.Natural64(0)), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := provider.ReadySnapshot(ctx, by, "project", nil, meta)
+	if err != nil || len(before.Items) != 1 || before.Items[0].ID != run.Items[2].ID || before.Revision != pluginapi.Natural64(state.rev) || before.ValidUntil == nil || !before.ValidUntil.Equal(first.Claim.ExpiresAt) {
+		t.Fatalf("ready snapshot did not bind current membership and first expiry: %+v err=%v", before, err)
+	}
+	compat, err := provider.Ready(ctx, by, "project", nil, meta)
+	if err != nil || !reflect.DeepEqual(compat, before.Items) {
+		t.Fatalf("Ready compatibility changed: %+v err=%v", compat, err)
+	}
+	clock = first.Claim.ExpiresAt
+	afterFirst, err := provider.ReadySnapshot(ctx, by, "project", nil, meta)
+	if err != nil || len(afterFirst.Items) != 2 || afterFirst.Revision != before.Revision || afterFirst.ValidUntil == nil || !afterFirst.ValidUntil.Equal(second.Claim.ExpiresAt) {
+		t.Fatalf("time-only membership change lost its binding: %+v err=%v", afterFirst, err)
+	}
+	clock = second.Claim.ExpiresAt
+	afterBoth, err := provider.ReadySnapshot(ctx, by, "project", nil, meta)
+	if err != nil || len(afterBoth.Items) != 3 || afterBoth.Revision != before.Revision || afterBoth.ValidUntil != nil {
+		t.Fatalf("last expiry did not clear the time boundary: %+v err=%v", afterBoth, err)
+	}
+	for i := range afterBoth.Items {
+		if afterBoth.Items[i].ID != run.Items[i].ID {
+			t.Fatalf("snapshot order differs from ready ID order: %+v", afterBoth.Items)
+		}
+	}
+	meta.Method, meta.IdempotencyKey = "bead.comment", strings.Repeat("4", 64)
+	if _, err := provider.Comment(ctx, by, model.RefByID(run.Items[2].ID, model.Natural64(0)), "mutation", meta); err != nil {
+		t.Fatal(err)
+	}
+	afterWrite, err := provider.ReadySnapshot(ctx, by, "project", nil, meta)
+	if err != nil || afterWrite.Revision == before.Revision || afterWrite.Revision != pluginapi.Natural64(state.rev) || len(afterWrite.Items) != 3 {
+		t.Fatalf("write did not advance snapshot generation: %+v err=%v", afterWrite, err)
+	}
+}
+
+func TestReadySnapshotScopesExpiryToMatchingCandidates(t *testing.T) {
+	ctx := context.Background()
+	start := time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC)
+	clock := start
+	state := &testDurableState{}
+	provider, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.WithClock(func() time.Time { return clock })
+	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	for _, row := range []struct {
+		agent, project, kind, key string
+		age                       time.Duration
+		claim                     bool
+	}{
+		{"owner", "project", "task", "1", 0, true},
+		{"owner", "project", "task", "2", 0, false},
+		{"other", "project", "task", "3", 10 * time.Minute, true},
+		{"owner", "other", "task", "4", 9 * time.Minute, true},
+		{"owner", "project", "issue", "5", 8 * time.Minute, true},
+	} {
+		clock = start.Add(-row.age)
+		meta := model.WriteMeta{Method: "x.workflow.invoke", Project: row.project, AgentLabel: row.agent, IdempotencyKey: strings.Repeat(row.key, 64)}
+		run, err := provider.Invoke(ctx, by, InvokeRequest{Template: "template", Project: row.project, Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "one", Title: "title", Type: row.kind}}}, meta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.claim {
+			meta.Method = "bead.claim"
+			if _, err := provider.Claim(ctx, by, model.RefByID(run.Items[0].ID, model.Natural64(0)), meta); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	clock = start.Add(time.Minute)
+	meta := model.WriteMeta{Project: "project", AgentLabel: "owner"}
+	snapshot, err := provider.ReadySnapshot(ctx, by, "project", []string{"task"}, meta)
+	if err != nil || len(snapshot.Items) != 1 || snapshot.Items[0].Type != "task" || snapshot.ValidUntil == nil || !snapshot.ValidUntil.Equal(start.Add(ClaimTTL)) {
+		t.Fatalf("another owner/project/type changed snapshot scope: %+v err=%v", snapshot, err)
+	}
+	empty, err := provider.ReadySnapshot(ctx, by, "missing", nil, meta)
+	if err != nil || empty.Items == nil || len(empty.Items) != 0 || empty.ValidUntil != nil || empty.Revision != snapshot.Revision {
+		t.Fatalf("empty scope acquired another scope's deadline: %+v err=%v", empty, err)
+	}
+}
+
+type snapshotReadState struct {
+	*testDurableState
+	reads     int
+	afterRead func()
+}
+
+func (s *snapshotReadState) Read(ctx context.Context, key string, dst any) (bool, pluginapi.Revision, error) {
+	found, revision, err := s.testDurableState.Read(ctx, key, dst)
+	s.reads++
+	if err == nil && s.afterRead != nil {
+		hook := s.afterRead
+		s.afterRead = nil
+		hook()
+	}
+	return found, revision, err
+}
+
+func (s *snapshotReadState) Revision(context.Context, string) (pluginapi.Revision, error) {
+	return "", errors.New("snapshot attempted a separate revision read")
+}
+
+func TestReadySnapshotPairsItemsWithTheirAtomicReadRevision(t *testing.T) {
+	ctx := context.Background()
+	state := &snapshotReadState{testDurableState: &testDurableState{}}
+	provider, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	meta := model.WriteMeta{Method: "x.workflow.invoke", Project: "project", AgentLabel: "owner", IdempotencyKey: strings.Repeat("1", 64)}
+	run, err := provider.Invoke(ctx, by, InvokeRequest{Template: "template", Project: "project", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "one", Title: "one"}, {Label: "two", Title: "two"}}}, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := New(state.testDurableState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeRevision := pluginapi.Natural64(state.rev)
+	state.reads = 0
+	state.afterRead = func() {
+		meta.Method, meta.IdempotencyKey = "bead.close", strings.Repeat("2", 64)
+		if _, err := other.Close(ctx, by, model.RefByID(run.Items[0].ID, model.Natural64(0)), "done", meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := provider.ReadySnapshot(ctx, by, "project", nil, meta)
+	if err != nil || state.reads != 1 || len(snapshot.Items) != 2 || snapshot.Revision != beforeRevision || snapshot.Revision == pluginapi.Natural64(state.rev) {
+		t.Fatalf("snapshot mixed items with a later generation: %+v reads=%d err=%v", snapshot, state.reads, err)
+	}
+	next, err := provider.ReadySnapshot(ctx, by, "project", nil, meta)
+	if err != nil || len(next.Items) != 1 || next.Revision != pluginapi.Natural64(state.rev) || next.Revision == snapshot.Revision {
+		t.Fatalf("following snapshot did not observe the other provider's write: %+v err=%v", next, err)
+	}
+}

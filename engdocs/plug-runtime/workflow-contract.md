@@ -102,9 +102,18 @@ phase. Its signed continuation cursor binds method, the complete effective
 principal (including the anonymous-agent label when present), project, filter,
 store incarnation, ontology and authorization generation; a workflow-phase bit
 keeps the offset from being confused with a core offset. The workflow phase is
-bounded by the standard page limit and ordered by immutable item ID, so a
-continuation offset cannot reorder or skip an item within one authorization
-scope. `bead.claimNext` uses that same order and binding. `bead.get`,
+bounded by the standard page limit and ordered by immutable item ID. Workflow
+continuations additionally require the provider checkpoint generation and the
+earliest matching claim expiry: either can change ready membership within one
+authorization scope. The provider's `ReadySnapshot` returns the sorted items,
+same-read checkpoint revision (including any receipt cleanup), and a
+`ValidUntil` deadline for the earliest future expiry of an otherwise matching
+claimed item. No deadline is needed when no matching lease can change membership.
+The service adapter must refuse a continuation when its snapshot binding has
+changed, before applying the previous offset; it must also apply resource
+filters before page slicing. Provider snapshot evidence alone does not prove
+the service cursor binding. `bead.claimNext` uses the same ready order.
+`bead.get`,
 `bead.comment`, and `bead.close` accept the typed workflow ID through the
 ordinary service dispatcher and apply the current principal/project ownership
 check before exposing or mutating plugin state.

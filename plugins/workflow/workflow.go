@@ -68,6 +68,14 @@ type ItemView struct {
 	Comments []CommentView  `json:"comments,omitempty"`
 }
 
+// ReadySnapshot binds one ready list to its checkpoint generation. ValidUntil
+// bounds membership changes caused by a matching claim expiring without a write.
+type ReadySnapshot struct {
+	Items      []ItemView
+	Revision   pluginapi.Revision
+	ValidUntil *time.Time
+}
+
 type ClaimView struct {
 	Principal  model.PrincipalRef `json:"principal"`
 	Agent      string             `json:"agent,omitempty"`
@@ -452,8 +460,12 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 }
 
 func (p *Provider) itemView(item itemState) ItemView {
+	return itemViewAt(item, p.now())
+}
+
+func itemViewAt(item itemState, now time.Time) ItemView {
 	view := ItemView{ID: item.ID, RunID: item.RunID, Label: item.Label, Title: item.Title, Type: item.Type, Project: item.Project, Status: item.Status, Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: model.Natural64(item.Generation)}
-	if item.Claim != nil && !p.now().After(item.Claim.ExpiresAt) {
+	if item.Claim != nil && !now.After(item.Claim.ExpiresAt) {
 		view.Claim = &ClaimView{Principal: item.Claim.Principal, Agent: item.Claim.Agent, ExpiresAt: item.Claim.ExpiresAt, Generation: model.Natural64(item.Claim.Generation)}
 	}
 	for _, comment := range item.Comments {
@@ -490,20 +502,27 @@ func itemReady(item itemState, now time.Time) bool {
 	return item.Status == "claimed" && item.Claim != nil && !now.Before(item.Claim.ExpiresAt)
 }
 
-func (p *Provider) readyItems(value persisted, by model.PrincipalRef, project string, types []string, meta model.WriteMeta) ([]ItemView, error) {
+func (p *Provider) readySnapshot(value persisted, revision pluginapi.Revision, by model.PrincipalRef, project string, types []string, meta model.WriteMeta, now time.Time) (ReadySnapshot, error) {
 	principal, _, err := principalScope(by, effectiveAgent(by, meta))
 	if err != nil {
-		return nil, fail("invalid_params", "invalid principal")
+		return ReadySnapshot{}, fail("invalid_params", "invalid principal")
 	}
-	items := make([]ItemView, 0)
+	snapshot := ReadySnapshot{Items: make([]ItemView, 0), Revision: revision}
 	for _, item := range value.Items {
-		if item.Project != project || !itemReady(item, p.now()) || !matchesType(item.Type, types) || item.Owner.Principal != principal || item.Owner.Agent != effectiveAgent(by, meta) {
+		if item.Project != project || !matchesType(item.Type, types) || item.Owner.Principal != principal || item.Owner.Agent != effectiveAgent(by, meta) {
 			continue
 		}
-		items = append(items, p.itemView(item))
+		if itemReady(item, now) {
+			snapshot.Items = append(snapshot.Items, itemViewAt(item, now))
+		} else if (item.Status == "open" || item.Status == "claimed") && item.Claim != nil && now.Before(item.Claim.ExpiresAt) {
+			if snapshot.ValidUntil == nil || item.Claim.ExpiresAt.Before(*snapshot.ValidUntil) {
+				expiresAt := item.Claim.ExpiresAt
+				snapshot.ValidUntil = &expiresAt
+			}
+		}
 	}
-	sortItems(items)
-	return items, nil
+	sortItems(snapshot.Items)
+	return snapshot, nil
 }
 
 func (p *Provider) Get(ctx context.Context, by model.PrincipalRef, id model.Ref, meta model.WriteMeta) (ItemView, error) {
@@ -527,13 +546,20 @@ func (p *Provider) Get(ctx context.Context, by model.PrincipalRef, id model.Ref,
 }
 
 func (p *Provider) Ready(ctx context.Context, by model.PrincipalRef, project string, types []string, meta model.WriteMeta) ([]ItemView, error) {
+	snapshot, err := p.ReadySnapshot(ctx, by, project, types, meta)
+	return snapshot.Items, err
+}
+
+// ReadySnapshot reads the list and its generation together under the provider
+// lock. Cleanup, when needed, publishes first and supplies the returned revision.
+func (p *Provider) ReadySnapshot(ctx context.Context, by model.PrincipalRef, project string, types []string, meta model.WriteMeta) (ReadySnapshot, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	value, _, err := p.load(ctx)
+	value, revision, err := p.load(ctx)
 	if err != nil {
-		return nil, err
+		return ReadySnapshot{}, err
 	}
-	return p.readyItems(value, by, project, types, meta)
+	return p.readySnapshot(value, revision, by, project, types, meta, p.now())
 }
 
 func matchesType(value string, types []string) bool {
