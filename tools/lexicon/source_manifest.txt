@@ -482,6 +482,7 @@ internal/integration/postgresacceptance/README.md
 internal/integration/postgresacceptance/atomic_close_test.go
 internal/integration/postgresacceptance/atomic_test.go
 internal/integration/postgresacceptance/b15_comments_test.go
+internal/integration/postgresacceptance/b15_page_test.go
 internal/integration/postgresacceptance/b16_labels_test.go
 internal/integration/postgresacceptance/engine_test.go
 internal/integration/postgresacceptance/fixture_test.go
