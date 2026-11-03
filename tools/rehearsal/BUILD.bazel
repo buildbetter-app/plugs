@@ -38,6 +38,14 @@ go_test(
     embed = [":rehearsal"],
 )
 
+go_test(
+    name = "transcript_test",
+    size = "small",
+    srcs = ["transcript_test.go"],
+    embed = [":rehearsal"],
+    deps = ["//internal/api/wire"],
+)
+
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
