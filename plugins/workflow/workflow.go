@@ -287,10 +287,7 @@ func digest(value any) (string, error) {
 }
 
 func (p *Provider) receiptScope(by model.PrincipalRef, meta model.WriteMeta) (principal, principalHash, agent, project, key string, err error) {
-	agent = meta.AgentLabel
-	if agent == "" && by.Kind == "anonymous" {
-		agent = meta.Agent
-	}
+	agent = effectiveAgent(by, meta)
 	principal, principalHash, err = principalScope(by, agent)
 	if err != nil {
 		return "", "", "", "", "", err

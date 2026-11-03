@@ -99,6 +99,35 @@ func TestNativeRequiresTrustedCallerAdapter(t *testing.T) {
 	}
 }
 
+func TestInvocationUsesTheSameEffectiveAgentAsStandardReads(t *testing.T) {
+	for _, by := range []model.PrincipalRef{{Kind: "user", ID: "owner"}, {Kind: "anonymous", ID: "anonymous"}} {
+		t.Run(by.Kind, func(t *testing.T) {
+			provider, err := New(&testDurableState{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta := model.WriteMeta{Method: "x.workflow.invoke", Project: "project", IdempotencyKey: strings.Repeat("1", 64)}
+			if by.Kind == "user" {
+				meta.AgentLabel, meta.Agent = "first-client-label", "first-client-label"
+			}
+			run, err := provider.Invoke(context.Background(), by, InvokeRequest{
+				Template: "template", Project: "project", Mode: "ephemeral",
+				Checklist: []ChecklistItem{{Label: "one", Title: "title"}},
+			}, meta)
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta.Method = "bead.get"
+			if by.Kind == "user" {
+				meta.AgentLabel, meta.Agent = "second-client-label", "second-client-label"
+			}
+			if _, err := provider.Get(context.Background(), by, model.RefByID(run.Items[0].ID, model.Natural64(0)), meta); err != nil {
+				t.Fatalf("invocation and standard read disagreed about effective caller: %v", err)
+			}
+		})
+	}
+}
+
 func TestEphemeralInvocationRequiresExplicitPersistentCapability(t *testing.T) {
 	// Embedding only the public state interface deliberately hides the optional
 	// marker. An unknown provider must not inherit a restart guarantee.
