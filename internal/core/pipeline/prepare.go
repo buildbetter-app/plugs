@@ -1374,8 +1374,12 @@ func (p *prepared) graph(ctx context.Context) error {
 		return nil
 	}
 	if docs == nil {
-		if err := p.observeIndexedGraphIncoming(ctx); err != nil {
+		indexed, err := p.observeIndexedGraphIncoming(ctx)
+		if err != nil {
 			return err
+		}
+		if indexed {
+			return nil
 		}
 	}
 	if docs == nil {
