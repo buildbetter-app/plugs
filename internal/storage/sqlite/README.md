@@ -25,9 +25,11 @@ Head is the last file lock. Records, tombstones, forward-patch versions, blobs,
 derived observations, predicates, replay receipts and log rows
 publish together under BEGIN IMMEDIATE. Lease acquisition, release, checkpoint
 CAS and response finalization use the same publication lock and SQL transaction.
-Epoch/token and expiry checks occur inside that transaction, including immediately
-before COMMIT. Staging holds no SQLite write transaction, so lease release and
-expiry takeover can fence unfinished writers.
+Epoch/token and expiry checks occur inside that transaction. The final fence,
+made while the cross-process publication flock and SQLite writer are held,
+authorizes the native COMMIT; that native step cannot be preempted. Staging
+holds no SQLite write transaction, so lease release and expiry takeover can
+fence unfinished writers.
 
 A long publication does not block its own holder's lease heartbeats. After
 BEGIN IMMEDIATE validates the fresh durable lease, the driver registers that
@@ -91,13 +93,18 @@ owner's renewal path; it does not make leases immune to scheduling pauses or
 I/O failure. The heartbeat journal's own file/directory sync and any wait for
 registration must fit within the previous lease budget. A slow or failed journal
 write fails closed rather than increasing the TTL or reviving an expired owner.
-Native SQLite COMMIT itself remains non-preemptible: a process stopped after the
-last fence, inside COMMIT, may have an uncertain or already-published outcome on
-resuming. The driver cannot roll back a confirmed native COMMIT. All processes
-must use this journal-aware driver and retain the stable lock directory; mixing
-older binaries or deleting/replacing the journal while an owner is live is not
-supported. An unacknowledged journal write interrupted by a crash can at most
-delay takeover until its timestamp expires; it cannot authorize a stale owner.
+The final fence is the commit authorization boundary, not an interruptible
+deadline. A process paused after that check and before or inside native COMMIT
+may publish after its nominal lease deadline. Mutual exclusion still holds:
+the publication flock remains held, so no other process or handle can acquire
+the lease during that interval. Once COMMIT returns, an expired holder is
+marked Lost and every subsequent publication by that holder is fenced. Native
+SQLite COMMIT remains non-preemptible, and the driver cannot roll back a
+confirmed native COMMIT. All processes must use this journal-aware driver and
+retain the stable lock directory; mixing older binaries or deleting/replacing
+the journal while an owner is live is not supported. An unacknowledged journal
+write interrupted by a crash can at most delay takeover until its timestamp
+expires; it cannot authorize a stale owner.
 
 Keyed writes with post work atomically publish ResponsePending. Fresh readers
 observe finalization; existing snapshots retain their original pending state.

@@ -119,6 +119,157 @@ func hookPublicationCommit(t *testing.T, s *Store, path string) *publicationComm
 	return connector
 }
 
+// The final fence is the SQLite publication authorization boundary. A native
+// COMMIT cannot be preempted after that check, but the publication flock keeps
+// takeover excluded until COMMIT returns. This regression pauses exactly in
+// that interval, then verifies the confirmed publication, lost old holder and
+// fenced subsequent use.
+func TestSQLitePublicationLeaseFinalFencePauseCommitsWhileGateHeld(t *testing.T) {
+	ctx := testContext(t)
+	path := filepath.Join(t.TempDir(), "final-fence-pause.db")
+	s := openStore(t, ctx, path)
+	observer := openStore(t, ctx, path)
+	lease := getLease(t, ctx, s, time.Second).(*activeLease)
+
+	// Disable the expiry callback so finishPublication's real-time check is the
+	// deterministic point that marks this holder Lost after native COMMIT.
+	lease.mu.Lock()
+	deadline := lease.deadline
+	if lease.timer == nil || !lease.timer.Stop() {
+		lease.mu.Unlock()
+		t.Fatal("lease expiry callback was not available to stop")
+	}
+	lease.mu.Unlock()
+
+	connector := hookPublicationCommit(t, s, path)
+	paused := make(chan struct{})
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	connector.before = func() {
+		close(paused)
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+	}
+
+	const key = "final-fence-pause"
+	publicationDone := make(chan error, 1)
+	go func() {
+		publicationDone <- s.immediate(ctx, lease, func(c *sql.Conn) error {
+			_, err := c.ExecContext(ctx, `INSERT INTO checkpoints VALUES(?,?,?)`, key, revKey(1), []byte("committed"))
+			return err
+		})
+	}()
+	select {
+	case <-paused:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+
+	// The contender starts while the hook is still between the final fence and
+	// native COMMIT. It must time out on the publication flock, never acquire
+	// the expired row, and never be allowed to observe a free lease in this
+	// pause. Keep the hook blocked until its context has returned.
+	contenderCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	contenderDone := make(chan struct {
+		lease driver.ActiveLease
+		err   error
+	}, 1)
+	go func() {
+		contender, err := observer.Lease(contenderCtx, "contender", driver.LeaseTTL)
+		contenderDone <- struct {
+			lease driver.ActiveLease
+			err   error
+		}{lease: contender, err: err}
+	}()
+
+	// Ensure the nominal deadline passes while the publication gate remains
+	// held; stopping the timer above makes this check independent of callback
+	// scheduling.
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case result := <-contenderDone:
+			timer.Stop()
+			t.Fatalf("contender returned before the holder deadline: lease=%v err=%v", result.lease, result.err)
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			t.Fatal(ctx.Err())
+		}
+	}
+	select {
+	case result := <-contenderDone:
+		t.Fatalf("contender escaped the publication pause: lease=%v err=%v", result.lease, result.err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	default:
+	}
+	select {
+	case result := <-contenderDone:
+		if result.lease != nil || !errors.Is(result.err, context.DeadlineExceeded) {
+			t.Fatalf("contender was not blocked by the publication flock: lease=%v err=%v", result.lease, result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case <-lease.Lost():
+		t.Fatal("holder was marked Lost before native COMMIT returned")
+	default:
+	}
+
+	close(release)
+	released = true
+	select {
+	case err := <-publicationDone:
+		if err != nil {
+			t.Fatalf("publication after final-fence pause: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if connector.steps.Load() != 1 || connector.rollbacks.Load() != 0 {
+		t.Fatalf("pause performed unexpected native transaction work: commits=%d rollbacks=%d", connector.steps.Load(), connector.rollbacks.Load())
+	}
+	checkpoint, err := observer.LoadCheckpoint(ctx, key)
+	if err != nil || checkpoint.Generation != 1 || string(checkpoint.Payload) != "committed" {
+		t.Fatalf("confirmed publication was not durable: checkpoint=%+v err=%v", checkpoint, err)
+	}
+	select {
+	case <-lease.Lost():
+	default:
+		t.Fatal("expired holder was not marked Lost after native COMMIT")
+	}
+	requireFenced(t, lease.Renew(ctx))
+	if _, err := s.SaveCheckpoint(ctx, lease, key, checkpoint.Generation, []byte("stale")); err == nil {
+		t.Fatal("expired holder published again after the confirmed commit")
+	} else {
+		requireFenced(t, err)
+	}
+
+	next := getLease(t, ctx, observer, driver.LeaseTTL)
+	if next.Epoch() <= lease.Epoch() {
+		t.Fatalf("successor epoch=%d did not advance past expired holder epoch=%d", next.Epoch(), lease.Epoch())
+	}
+	successor, err := observer.SaveCheckpoint(ctx, next, key, checkpoint.Generation, []byte("successor"))
+	if err != nil || successor.Generation != checkpoint.Generation+1 || string(successor.Payload) != "successor" {
+		t.Fatalf("successor publication=%+v err=%v", successor, err)
+	}
+	t.Logf("final fence authorized one native COMMIT after a %s nominal TTL deadline; contender timed out during the held flock, old epoch %d became Lost, and successor epoch %d published", time.Since(deadline), lease.Epoch(), next.Epoch())
+}
+
 func TestSQLitePublicationLeaseHeartbeatsAcrossCommit(t *testing.T) {
 	for _, mode := range []string{"graph", "renewal"} {
 		t.Run(mode, func(t *testing.T) { publicationHeartbeatsAcrossCommit(t, mode) })
