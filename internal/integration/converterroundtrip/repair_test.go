@@ -313,12 +313,13 @@ func assertRestoreSelfAncestors(t *testing.T, store driver.Store) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	ids := []string{idA, idB, idC}
+	// Observe requires encoded key order, which differs from the source ID order.
+	ids := []string{idC, idA, idB}
 	// Fixed contract bytes, independently derived without the production codec.
 	selfKeys := []string{
+		"cGwtY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M.cGwtY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M",
 		"cGwtYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE.cGwtYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE",
 		"cGwtYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI.cGwtYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI",
-		"cGwtY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M.cGwtY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M",
 	}
 	keys := make([]driver.LockKey, len(ids))
 	for i, key := range selfKeys {
