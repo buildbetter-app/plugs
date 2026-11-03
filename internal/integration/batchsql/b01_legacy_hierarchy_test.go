@@ -193,7 +193,8 @@ func b01HydratedClaim(t *testing.T, h *b01Public, reply b01Reply, want model.Ref
 	commit := b01Committed(t, reply)
 	state := h.f.state(t)
 	if reply.Meta.Replayed || commit.Revision != state.Meta.Head || len(commit.Results) != 1 ||
-		commit.Results[0].Revision != commit.Revision || commit.Results[0].Ref != want ||
+		commit.Results[0].Revision != commit.Revision || !commit.Results[0].Ref.IsID() ||
+		commit.Results[0].Ref.ID != want.ID || !commit.Results[0].Ref.Branch.IsZero() ||
 		!bytes.Equal(commit.Results[0].Record, state.Records[want.ID].Body) {
 		t.Fatalf("claim did not return the committed winner: %s", reply.Result)
 	}
