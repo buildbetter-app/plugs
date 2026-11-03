@@ -232,7 +232,7 @@ func (d Dialect) Prepare(ctx context.Context, q SQL, current, next driver.Meta, 
 	if err != nil {
 		return Plan{}, err
 	}
-	parentComplete, linksComplete := true, true
+	parentComplete, linksComplete, parentDeclared, linksDeclared := true, true, false, false
 	for id, record := range records {
 		kind := identities[id].Kind
 		if record != nil {
@@ -260,7 +260,10 @@ func (d Dialect) Prepare(ctx context.Context, q SQL, current, next driver.Meta, 
 		if key(record.Ref) != id || declaration.ParentKey == id || driver.ValidateGraphSourceRecord(*record, nil, declaration.Links) != nil {
 			return Plan{}, fmt.Errorf("%w: source key/image/declaration mismatch", driver.ErrUnsupported)
 		}
-		if !declaration.Graph {
+		parentDeclared = true
+		if declaration.Graph {
+			linksDeclared = true
+		} else {
 			linksComplete = false
 		}
 	}
@@ -280,8 +283,8 @@ func (d Dialect) Prepare(ctx context.Context, q SQL, current, next driver.Meta, 
 			return Plan{}, err
 		}
 	}
-	parentActive := coverage.Parent.Ready || empty && parentComplete
-	linksActive := coverage.Links.Ready || empty && linksComplete
+	parentActive := coverage.Parent.Ready || empty && parentComplete && parentDeclared
+	linksActive := coverage.Links.Ready || empty && linksComplete && linksDeclared
 	parent, links := coverage.Parent, coverage.Links
 	first := head
 	if durableEmpty {
@@ -300,8 +303,8 @@ func (d Dialect) Prepare(ctx context.Context, q SQL, current, next driver.Meta, 
 			return Plan{}, err
 		}
 		parent, links = Coverage{First: floor}, Coverage{First: floor}
-		parentActive = empty && parentComplete
-		linksActive = empty && linksComplete
+		parentActive = empty && parentComplete && parentDeclared
+		linksActive = empty && linksComplete && linksDeclared
 	}
 	parent.Through, links.Through = at, at
 	return Plan{Dialect: d, Incarnation: next.Incarnation, At: at, Parent: parent, Links: links, ParentActive: parentActive, LinksActive: linksActive, Records: records, Declarations: overlay.Declarations}, nil

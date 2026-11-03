@@ -93,6 +93,20 @@ func LegacyUpgrade(t *testing.T, store driver.Store, lease driver.ActiveLease, o
 		t.Fatalf("partial build did not fail atomically: calls=%d err=%v", calls, err)
 	}
 	unsupported(read(nil))
+	cancelCtx, cancel := context.WithCancel(ctx)
+	calls = 0
+	err = builder.BuildGraphSourceIndexes(cancelCtx, lease, func(record driver.Record) (driver.GraphSourceMetadata, error) {
+		calls++
+		if calls == 129 {
+			cancel()
+		}
+		return decode(record)
+	})
+	cancel()
+	if !errors.Is(err, context.Canceled) || calls < 129 {
+		t.Fatalf("canceled partial build did not roll back: calls=%d err=%v", calls, err)
+	}
+	unsupported(read(nil))
 	if err := pipeline.BuildSourceIndexes(ctx, store, lease); err != nil {
 		t.Fatal(err)
 	}

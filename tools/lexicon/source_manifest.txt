@@ -682,6 +682,7 @@ internal/server/composition/restore_actual_archive_digest_test.go
 internal/server/composition/restore_actual_archive_test.go
 internal/server/composition/restore_import.go
 internal/server/composition/restore_import_test.go
+internal/server/composition/source_indexes_test.go
 internal/server/composition/telemetry.go
 internal/server/composition/telemetry_test.go
 internal/server/composition/testdata/server-representative-plug-dump-1.tar
@@ -888,6 +889,7 @@ internal/storage/conformance/noops.go
 internal/storage/conformance/responses.go
 internal/storage/conformance/sourceactivation/BUILD.bazel
 internal/storage/conformance/sourceactivation/activation.go
+internal/storage/conformance/sourceactivation/independent.go
 internal/storage/conformance/sourceactivation/native.go
 internal/storage/conformance/sourceactivation/upgrade.go
 internal/storage/conformance/staged_reads.go

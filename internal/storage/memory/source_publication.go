@@ -155,6 +155,7 @@ func (t *transaction) publishSourceIndexes(next *state) error {
 	h, links := current.hierarchy, current.sourceLinks
 	hReady, linksReady := hierarchyReady(h), sourceLinksReady(links)
 	parentComplete, graphComplete := true, true
+	parentDeclared, graphDeclared := false, false
 	puts := make([]hierarchySource, 0, len(t.sourceDeclarations))
 	linkPuts := make([]sourceLinkSource, 0, len(t.sourceDeclarations))
 	deletes := make([]string, 0)
@@ -183,8 +184,10 @@ func (t *transaction) publishSourceIndexes(next *state) error {
 			parentComplete, graphComplete = false, false
 			continue
 		}
+		parentDeclared = true
 		puts = append(puts, hierarchySource{parentKey: declaration.parentKey, record: next.records[key]})
 		if declaration.graph {
+			graphDeclared = true
 			linkPuts = append(linkPuts, sourceLinkSource{record: next.records[key], links: declaration.links})
 		} else {
 			graphComplete = false
@@ -205,8 +208,8 @@ func (t *transaction) publishSourceIndexes(next *state) error {
 			}
 		}
 	}
-	activateParent := !hReady && empty && parentComplete
-	activateLinks := !linksReady && empty && graphComplete
+	activateParent := !hReady && empty && parentComplete && parentDeclared
+	activateLinks := !linksReady && empty && graphComplete && graphDeclared
 	if t.restore != nil {
 		// Current-image restore starts its new incarnation at the actual floor.
 		// Imported history publishes through its separate unbuilt path instead.

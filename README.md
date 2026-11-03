@@ -35,8 +35,9 @@ refuses with `closure_too_large`.
 
 Memory, SQLite, and PostgreSQL maintain direct-child and incoming-link source
 indexes atomically with supported writes, independently of derived ancestor
-rows. An ontology-only bootstrap can certify an empty graph; later typed bead
-writes maintain that coverage even though the store already has other history.
+rows. After an ontology-only bootstrap, the first complete typed bead
+publication can certify the previously empty graph even though the store
+already has other history. Later typed writes maintain that coverage.
 
 On server startup, after acquiring its renewing lease and before admitting
 requests, Plug upgrades missing source indexes by decoding every current bead

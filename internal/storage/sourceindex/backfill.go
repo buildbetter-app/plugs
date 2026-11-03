@@ -71,6 +71,9 @@ func (d Dialect) Backfill(ctx context.Context, q SQL, meta driver.Meta, decode d
 		p.Records = make(map[string]*driver.Record, len(records))
 		p.Declarations = make(map[string]Declaration, len(records))
 		for i := range records {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			record := &records[i]
 			id := key(record.Ref)
 			if id <= after {
@@ -130,9 +133,11 @@ func (d Dialect) sourcePage(ctx context.Context, q SQL, after string) ([]driver.
 			var revision string
 			err = rows.Scan(&rawKey, &ref, &record.Kind, &revision, &record.Body)
 			if err == nil {
-				record.Ref = model.RefByID(string(ref), model.Natural64(0))
-				record.Revision = model.Natural(revision)
-				err = record.Revision.Validate()
+				err = json.Unmarshal(ref, &record.Ref)
+				if err == nil {
+					record.Revision = model.Natural(revision)
+					err = record.Revision.Validate()
+				}
 			}
 		}
 		if err != nil {

@@ -32,3 +32,26 @@ func TestSourceCoverageNativeOntologyFirst(t *testing.T) {
 	s := openStore(t, ctx, filepath.Join(t.TempDir(), "native-ontology-first.db"))
 	sourceactivation.NativeOntologyFirst(t, s, getLease(t, ctx, s, driver.LeaseTTL))
 }
+
+func TestSourceCoverageIndependentStartupUpgrade(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t, ctx, filepath.Join(t.TempDir(), "independent.db"))
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	sourceactivation.ParentOnlyUpgrade(t, s, lease)
+}
+
+func TestSourceCoverageStartupGapRefuses(t *testing.T) {
+	ctx := context.Background()
+	s := openStore(t, ctx, filepath.Join(t.TempDir(), "independent.db"))
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	a := testRef("pl-a")
+	tx, h := beginSourceTest(t, s, lease, a)
+	if err := tx.PutGraphRecord(context.Background(), sourceRecord(a.ID, `{}`), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	commitSourceTest(t, tx, h)
+	if _, err := s.db.ExecContext(ctx, `UPDATE meta SET head=?`, revKey(2)); err != nil {
+		t.Fatal(err)
+	}
+	sourceactivation.GapRefuses(t, s, lease)
+}

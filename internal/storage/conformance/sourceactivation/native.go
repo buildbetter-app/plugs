@@ -67,6 +67,9 @@ func NativeOntologyFirst(t *testing.T, store driver.Store, lease driver.ActiveLe
 	if err = tx.Put(ctx, driver.Record{Ref: ontology, Kind: "ontology", Body: []byte(`{"version":1}`)}); err != nil {
 		t.Fatal(err)
 	}
+	if err = tx.BumpSentinels(ctx, []driver.Sentinel{driver.SentinelGraphBlocking}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Principal: profile.Principal, Method: profile.Method, IdempotencyKey: profile.IdempotencyKey, RequestHash: profile.RequestHash, LockKeys: keys, Changes: []model.ChangeRecord{{Ref: ontology, Op: model.OpCreate}}}); err != nil {
 		t.Fatal(err)
 	}
