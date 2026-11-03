@@ -385,12 +385,6 @@ func TestSelectionSQLiteFinalParentChainAndExactSortCensus(t *testing.T) {
 		return rows, err
 	}
 	if err := s.BuildGraphSourceIndexes(ctx, lease, decode, project); err != nil {
-		var hierarchy, beadRows, factSets, facts int
-		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM hierarchy_source_current`).Scan(&hierarchy)
-		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_bead_history WHERE end_revision IS NULL`).Scan(&beadRows)
-		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_fact_sets WHERE end_revision IS NULL`).Scan(&factSets)
-		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_facts`).Scan(&facts)
-		t.Logf("affected fixture build diagnostics: hierarchy=%d bead_rows=%d fact_sets=%d facts=%d err=%v", hierarchy, beadRows, factSets, facts, err)
 		t.Fatal(err)
 	}
 	meta := getMeta(t, ctx, s)
@@ -471,12 +465,8 @@ func TestSelectionAffectedParentProofIncludesUnchangedDescendants(t *testing.T) 
 			depthOne := rows[0].Clone()
 			depthOne.Row.Key += ":depth-1"
 			depthOne.Row.Index.Row.Key = depthOne.Row.Key
-			target := root
-			if record.Ref.ID == sibling.ID {
-				target = root
-			}
 			depthOne.Row.Index.Facts.Rows = []driver.SelectionFact{{
-				Kind: driver.SelectionAncestorFact, Ref: &record.Ref, Target: &target, Depth: 1,
+				Kind: driver.SelectionAncestorFact, Ref: &record.Ref, Target: &root, Depth: 1,
 			}}
 			depthOne.Row.Index.ValueDigest = driver.SelectionDigest(depthOne.Row.Value)
 			rows = append(rows, depthOne)
@@ -656,10 +646,6 @@ func TestSelectionFamilyCompleteKeepsCanonicalMultiRowSource(t *testing.T) {
 	}
 	complete, err = owner.selectionFamilyCompleteForCommit(ctx, conn, meta.Incarnation, family, fullReplacement)
 	if err != nil || !complete {
-		t.Logf("full replacement diagnostics: oldRows=%v childRows=%d", oldRows, len(childRows))
-		for id, state := range fullReplacement {
-			t.Logf("replacement state id=%q present=%t derived=%t", id, state.Present, state.Derived != nil)
-		}
 		t.Fatalf("complete multi-row replacement rejected: complete=%t err=%v", complete, err)
 	}
 
