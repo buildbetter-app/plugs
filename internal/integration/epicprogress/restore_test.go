@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
@@ -250,6 +252,108 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	durableRead := durable.viewer(t, epics, visible)
 	inspectProgress(t, durable.api.call(t, durableRead, "view.run", progressParams(g.parent, epics)), map[string]int{"total": 2, "status:todo": 2}, 1)
 	t.Logf("EP6 native head restore, physical SQLite close/reopen, current policy, cycle refusal, and count refresh proven at restored incarnation %s", incarnation)
+}
+
+// TestEpicProgressNativeRestoreReopenDetachUsesIndexedHierarchy exercises the
+// actual paged native dump/restore path at the 20,000-bead workload. The
+// reopened Writer must use the certified direct-parent source index rather than
+// enumerating every bead during the unchanged two-second pre-phase.
+func TestEpicProgressNativeRestoreReopenDetachUsesIndexedHierarchy(t *testing.T) {
+	dir := t.TempDir()
+	source := newFixture(t, "sqlite", filepath.Join(dir, "source-large.db"), true)
+	parent, child := buildLargeEpic(t, source)
+	sourceAdmin := admin(t, source.store, source.lease)
+	data, archive := dumpHead(t, sourceAdmin)
+	if !archive.Native() {
+		t.Fatal("large fixture dump was not native")
+	}
+	sourceAdmin.close(t)
+	source.close(t)
+
+	path := filepath.Join(dir, "restored-large.db")
+	target, lease := openStore(t, "sqlite", path)
+	targetAdmin := admin(t, target, lease)
+	incarnation := restoreHead(t, targetAdmin, data, archive)
+	targetAdmin.close(t)
+	if err := lease.Release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := newFixtureMode(t, "sqlite", path, true, false)
+	reads := reopened.reads
+	reads.reset()
+	writer := pipeline.New(&observedWriteStore{Store: reopened.store, observer: reads}, reopened.lease, pipeline.WithOntology(service.NewOntology(nil)))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := writer.Apply(ctx, model.PrincipalRef{Kind: "user", ID: "operator"}, model.ChangeSet{Ops: []model.Op{{
+		Kind:     model.OpReparent,
+		Reparent: &model.ReparentOp{Target: child},
+	}}}, model.WriteMeta{Project: visible, Method: "tx.apply", AgentLabel: "native-restore-detach", IdempotencyKey: "00000000000000000000000000000011"})
+	if err != nil {
+		t.Fatalf("native restore/reopen detach failed: %v (queries=%d parent_reads=%d inverse_reads=%d)", err, reads.queryCount(), reads.hierarchyCount(), reads.inverseCount())
+	}
+	if reads.queryCount() != 0 {
+		t.Fatalf("native restore/reopen detach used whole-bead Query fallback: queries=%d hierarchy_reads=%d inverse_reads=%d", reads.queryCount(), reads.hierarchyCount(), reads.inverseCount())
+	}
+	if reads.hierarchyCount() == 0 || reads.inverseCount() == 0 {
+		t.Fatalf("native restore/reopen detach did not use bounded source reads: hierarchy=%d inverse=%d", reads.hierarchyCount(), reads.inverseCount())
+	}
+	if rows := len(persistedClosure(t, reopened.store)); rows != 20049 {
+		t.Fatalf("native restore/reopen detach left %d closure rows, want 20049", rows)
+	}
+	t.Logf("native restore/reopen detach indexed: incarnation=%s whole-bead queries=%d hierarchy_reads=%d inverse_reads=%d", incarnation, reads.queryCount(), reads.hierarchyCount(), reads.inverseCount())
+}
+
+type observedWriteStore struct {
+	driver.Store
+	observer *readObserver
+}
+
+func (s *observedWriteStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	reader, err := s.Store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	return &observedReader{Reader: reader, observer: s.observer}, nil
+}
+
+func (s *observedWriteStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	tx, err := s.Store.Write(ctx, lease)
+	if err != nil {
+		return nil, err
+	}
+	return &observedWriteTx{WriteTx: tx, observer: s.observer}, nil
+}
+
+type observedWriteTx struct {
+	driver.WriteTx
+	observer *readObserver
+}
+
+func (t *observedWriteTx) Query(ctx context.Context, query driver.Query) (driver.Page[driver.Record], error) {
+	t.observer.queries.Add(1)
+	return t.WriteTx.Query(ctx, query)
+}
+func (t *observedWriteTx) HierarchyChildren(ctx context.Context, parents []model.Ref, limit int) ([]driver.Record, bool, error) {
+	t.observer.hierarchyChildren.Add(1)
+	return t.WriteTx.(driver.HierarchyChildrenReader).HierarchyChildren(ctx, parents, limit)
+}
+func (t *observedWriteTx) HierarchyChildrenExcluding(ctx context.Context, parents, excluded []model.Ref, limit int) ([]driver.Record, bool, error) {
+	t.observer.hierarchyChildren.Add(1)
+	return t.WriteTx.(driver.HierarchyChildrenExcludingReader).HierarchyChildrenExcluding(ctx, parents, excluded, limit)
+}
+func (t *observedWriteTx) InverseSourceLinks(ctx context.Context, targets []model.Ref, kinds []driver.IncomingLinkKind, excluded []model.Ref, limit int) ([]driver.Record, bool, error) {
+	t.observer.inverseSourceLinks.Add(1)
+	return t.WriteTx.(driver.InverseSourceLinksReader).InverseSourceLinks(ctx, targets, kinds, excluded, limit)
+}
+func (t *observedWriteTx) DerivedRowsForPrefixes(ctx context.Context, table driver.DerivedTable, prefixes []string) ([]driver.DerivedRow, error) {
+	return t.WriteTx.(driver.DerivedPrefixReader).DerivedRowsForPrefixes(ctx, table, prefixes)
+}
+func (t *observedWriteTx) PutGraphRecord(ctx context.Context, record driver.Record, parent *model.Ref, links []driver.SourceLink) error {
+	return t.WriteTx.(driver.GraphSourceWriter).PutGraphRecord(ctx, record, parent, links)
 }
 
 // Derived hierarchy state is part of a usable restore: count reads can succeed
