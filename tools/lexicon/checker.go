@@ -369,15 +369,20 @@ func scanGoIdentifiers(path string, content []byte, term Term, allowance GoStrin
 			text = n.Name
 		case *ast.BasicLit:
 			if n.Kind == token.STRING {
-				decoded, err := strconv.Unquote(n.Value)
-				if err != nil {
-					findings = append(findings, Finding{Path: path, Line: fset.Position(node.Pos()).Line, Class: "invalid-go", Term: "string"})
-					return true
+				text = n.Value
+				if path == externalProtocolSource {
+					decoded, err := strconv.Unquote(n.Value)
+					if err != nil {
+						findings = append(findings, Finding{Path: path, Line: fset.Position(node.Pos()).Line, Class: "invalid-go", Term: "string"})
+						return true
+					}
+					if !imports[n.Pos()] && allowance.Path == path && decoded == allowance.Value && decoded != "" {
+						return true
+					}
+					// Decode every other string here so altered spellings cannot use
+					// the allowance; keep the established scan elsewhere unchanged.
+					text = decoded
 				}
-				if !imports[n.Pos()] && path == externalProtocolSource && allowance.Path == path && decoded == allowance.Value && decoded != "" {
-					return true
-				}
-				text = decoded
 			}
 		}
 		if text != "" {
