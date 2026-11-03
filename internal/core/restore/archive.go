@@ -980,7 +980,7 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 		return model.Changeset{}, restoreAdmissionError(err)
 	}
 	for _, record := range records {
-		if err := tx.Put(ctx, record); err != nil {
+		if err := pipeline.PutSourceRecord(ctx, tx, record); err != nil {
 			return model.Changeset{}, err
 		}
 	}

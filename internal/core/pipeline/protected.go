@@ -345,7 +345,7 @@ func (w *Writer) applyProtectedOnce(ctx context.Context, by model.PrincipalRef, 
 	revision := model.Natural64(n + 1)
 	response := model.Commit{Revision: revision, Results: []model.OpResult{}, Warnings: []model.Warning{}}
 	for _, change := range recordChanges {
-		if err := tx.Put(ctx, driver.Record{Ref: change.Ref, Kind: change.Kind, Body: append([]byte(nil), change.After...)}); err != nil {
+		if err := PutSourceRecord(ctx, tx, driver.Record{Ref: change.Ref, Kind: change.Kind, Body: append([]byte(nil), change.After...)}); err != nil {
 			return model.Commit{}, err
 		}
 		result := model.OpResult{Ref: change.Ref, Revision: revision}

@@ -257,8 +257,12 @@ internal/core/pipeline/document.go
 internal/core/pipeline/gate.go
 internal/core/pipeline/guard_test.go
 internal/core/pipeline/hierarchy.go
+internal/core/pipeline/hierarchy_indexed.go
+internal/core/pipeline/hierarchy_indexed_graph.go
+internal/core/pipeline/hierarchy_indexed_test.go
 internal/core/pipeline/hierarchy_prefix_guard_test.go
 internal/core/pipeline/hierarchy_scope_test.go
+internal/core/pipeline/hierarchy_source.go
 internal/core/pipeline/hierarchy_test.go
 internal/core/pipeline/labels.go
 internal/core/pipeline/lease_overlay.go
@@ -275,6 +279,7 @@ internal/core/pipeline/response.go
 internal/core/pipeline/response_test.go
 internal/core/pipeline/snapshot.go
 internal/core/pipeline/snapshot_get_test.go
+internal/core/pipeline/snapshot_hierarchy.go
 internal/core/pipeline/telemetry.go
 internal/core/pipeline/telemetry_test.go
 internal/core/port/BUILD.bazel
@@ -308,7 +313,10 @@ internal/core/service/direct_blockers_test.go
 internal/core/service/gate.go
 internal/core/service/graph.go
 internal/core/service/heartbeat.go
+internal/core/service/hierarchy-index-consumer-design.md
 internal/core/service/hierarchy_guards.go
+internal/core/service/hierarchy_indexed.go
+internal/core/service/hierarchy_indexed_test.go
 internal/core/service/history.go
 internal/core/service/history_reads_test.go
 internal/core/service/history_sqlite_rpc_test.go

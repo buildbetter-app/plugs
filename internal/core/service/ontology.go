@@ -326,9 +326,16 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 	if lifecycle || graphNeeded {
 		graph = prefix
 		if graph == nil {
-			graph, err = scanBeads(ctx, reader)
+			var complete bool
+			graph, complete, err = indexedGuardGraph(ctx, proposal, reader)
 			if err != nil {
 				return err
+			}
+			if !complete {
+				graph, err = scanBeads(ctx, reader)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		// Guards evaluate the whole atomic post-image, including dependencies

@@ -557,7 +557,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			if e != nil {
 				return model.Commit{}, e
 			}
-			err = tx.Put(ctx, driver.Record{Ref: pending.ref, Kind: pending.kind, Body: body})
+			err = PutSourceRecord(ctx, tx, driver.Record{Ref: pending.ref, Kind: pending.kind, Body: body})
 		}
 		if err != nil {
 			return model.Commit{}, err
