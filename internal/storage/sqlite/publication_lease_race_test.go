@@ -110,6 +110,13 @@ func hookPublicationCommit(t *testing.T, s *Store, path string) *publicationComm
 }
 
 func TestSQLitePublicationLeaseHeartbeatsAcrossCommit(t *testing.T) {
+	for _, mode := range []string{"graph", "renewal"} {
+		t.Run(mode, func(t *testing.T) { publicationHeartbeatsAcrossCommit(t, mode) })
+	}
+}
+
+func publicationHeartbeatsAcrossCommit(t *testing.T, mode string) {
+	t.Helper()
 	ctx := testContext(t)
 	path := filepath.Join(t.TempDir(), "commit-heartbeats.db")
 	s := openStore(t, ctx, path)
@@ -132,10 +139,17 @@ func TestSQLitePublicationLeaseHeartbeatsAcrossCommit(t *testing.T) {
 	}
 	var lateRenew error
 	connector.after = func() { lateRenew = lease.Renew(ctx) }
-	err := s.immediate(ctx, lease, func(c *sql.Conn) error {
-		_, err := c.ExecContext(ctx, `INSERT INTO checkpoints VALUES(?,?,?)`, "commit-heartbeats", revKey(1), []byte("committed"))
-		return err
-	})
+	var err error
+	if mode == "renewal" {
+		// A lease-only publication must not serialize other timely Renew calls
+		// behind its own SQL/fsync interval either.
+		err = lease.Renew(ctx)
+	} else {
+		err = s.immediate(ctx, lease, func(c *sql.Conn) error {
+			_, err := c.ExecContext(ctx, `INSERT INTO checkpoints VALUES(?,?,?)`, "commit-heartbeats", revKey(1), []byte("committed"))
+			return err
+		})
+	}
 	close(stop)
 	renewal := <-done
 	if err != nil || lateRenew != nil || renewal.err != nil || renewal.successes == 0 || held < 2*time.Second {
@@ -155,8 +169,12 @@ func TestSQLitePublicationLeaseHeartbeatsAcrossCommit(t *testing.T) {
 		t.Fatalf("handoff left private heartbeat: durable=%d effective=%d deadline=%s publishing=%v lost=%v", row.expires, expires, deadline, publishing, lost)
 	}
 	cp, err := observer.LoadCheckpoint(ctx, "commit-heartbeats")
-	if err != nil || cp.Generation != 1 || string(cp.Payload) != "committed" {
-		t.Fatalf("native publication=%+v err=%v", cp, err)
+	wantGeneration, wantPayload := uint64(1), "committed"
+	if mode == "renewal" {
+		wantGeneration, wantPayload = 0, ""
+	}
+	if err != nil || cp.Generation != wantGeneration || string(cp.Payload) != wantPayload {
+		t.Fatalf("native publication=%+v err=%v want generation=%d", cp, err, wantGeneration)
 	}
 	short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
@@ -235,6 +253,39 @@ func TestSQLitePublicationLeaseAbortFailsClosed(t *testing.T) {
 			t.Logf("%s: accepted heartbeat failed closed; graph generation=%d; stale Renew fenced", mode, cp.Generation)
 		})
 	}
+}
+
+func TestSQLitePublicationLeaseRepeatedWallStampAbortFailsClosed(t *testing.T) {
+	ctx := testContext(t)
+	clock := testclock.New(t, time.Date(2037, 1, 1, 0, 0, 0, 0, time.UTC))
+	s := clockStore(t, clock)
+	lease := getLease(t, ctx, s, time.Second).(*activeLease)
+	original, err := readLease(ctx, s.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("abort heartbeat with identical wall stamp")
+	err = s.immediate(ctx, lease, func(*sql.Conn) error {
+		if err := lease.Renew(ctx); err != nil {
+			return err
+		}
+		lease.mu.Lock()
+		expires := lease.expires
+		lease.mu.Unlock()
+		if expires != original.expires {
+			return fmt.Errorf("did not exercise identical durable/private wall stamp")
+		}
+		return failure
+	})
+	if !errors.Is(err, failure) {
+		t.Fatal(err)
+	}
+	select {
+	case <-lease.Lost():
+	default:
+		t.Fatal("identical timestamp hid an aborted acknowledged heartbeat")
+	}
+	requireFenced(t, lease.Renew(ctx))
 }
 
 func TestSQLitePublicationLeaseChecksMonotonicDeadlineWithoutExpiryCallback(t *testing.T) {

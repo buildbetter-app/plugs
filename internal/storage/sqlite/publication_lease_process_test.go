@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -127,7 +128,25 @@ func TestSQLitePublicationLeaseRenewalExcludesProcessUntilRealExpiry(t *testing.
 
 func TestSQLitePublicationLeaseWaitingRenewalSeesRegistration(t *testing.T) {
 	ctx := testContext(t)
-	s := openStore(t, ctx, filepath.Join(t.TempDir(), "registration.db"))
+	var observe atomic.Bool
+	checkedBeforeRegistration := make(chan struct{})
+	// Observe the waiter's real-time expiry check. No time value or deadline
+	// is replaced, and it cannot acquire the publication gate we already hold.
+	value, err := (Driver{Clock: func() time.Time {
+		if observe.CompareAndSwap(true, false) {
+			close(checkedBeforeRegistration)
+		}
+		return time.Now()
+	}}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "registration.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := value.(*Store)
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	lease := getLease(t, ctx, s, time.Second).(*activeLease)
 	gate, err := s.fileLock(ctx, "publication", false, lease.Lost())
 	if err != nil {
@@ -135,19 +154,13 @@ func TestSQLitePublicationLeaseWaitingRenewalSeesRegistration(t *testing.T) {
 	}
 	defer unlockFile(gate)
 	// Start Renew before registration while the publication gate is occupied.
-	// Taking renewMu proves this is an admitted Renew, not just a scheduled
-	// goroutine that might start only after the publication finishes.
 	renewal := make(chan error, 1)
+	observe.Store(true)
 	go func() { renewal <- lease.Renew(ctx) }()
-	for lease.renewMu.TryLock() {
-		lease.renewMu.Unlock()
-		timer := time.NewTimer(time.Millisecond)
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			timer.Stop()
-			t.Fatal(ctx.Err())
-		}
+	select {
+	case <-checkedBeforeRegistration:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
 	err = s.immediateLocked(ctx, lease, func(c *sql.Conn) error {
 		select {

@@ -30,12 +30,11 @@ func readLease(ctx context.Context, q queryer) (leaseRow, error) {
 }
 
 type activeLease struct {
-	store   *Store
-	epoch   uint64
-	token   string
-	ttl     time.Duration
-	renewMu sync.Mutex
-	mu      sync.Mutex
+	store *Store
+	epoch uint64
+	token string
+	ttl   time.Duration
+	mu    sync.Mutex
 	// expires is either durable, or protected by this exact lease's registered
 	// publication. In the latter case the owner holds BOTH BEGIN IMMEDIATE and
 	// the cross-process publication gate when registration begins. The gate
@@ -282,8 +281,8 @@ func (s *Store) Lease(ctx context.Context, holder string, ttl time.Duration) (dr
 	}
 }
 func (l *activeLease) Renew(ctx context.Context) error {
-	l.renewMu.Lock()
-	defer l.renewMu.Unlock()
+	// Serialize deadline updates with l.mu, not a mutex spanning SQL: another
+	// timely Renew must also bridge a slow lease-only native COMMIT.
 	if err := l.store.check(ctx); err != nil {
 		return err
 	}
