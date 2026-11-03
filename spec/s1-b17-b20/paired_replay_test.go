@@ -324,13 +324,40 @@ func pairedRestoreSnapshot(t *testing.T, p *pairedStore, data []byte, archive *d
 	}
 	check := func() {
 		t.Helper()
-		actual := b17StateOf(t, p.b17Harness, ref)
-		if actual.Meta.StoreID != source.Meta.StoreID || actual.Meta.Incarnation != status.Incarnation || actual.Meta.Incarnation == before.Incarnation || actual.Meta.Incarnation == source.Meta.Incarnation || actual.Meta.Head.String() != "1" || actual.Meta.HistoryFloor.String() != "1" || !bytes.Equal(actual.Body, source.Body) || len(actual.Versions) != 1 || !actual.Versions[0].Base || !bytes.Equal(actual.Versions[0].Body, source.Body) || len(actual.Log) != 1 || actual.Log[0].Kind != model.ChangesetRestore {
-			t.Fatalf("restored native snapshot identity/content/base/floor mismatch: %+v", actual.Meta)
+		actual, err := p.store.Meta(p.ctx)
+		if err != nil || actual.StoreID != source.Meta.StoreID || actual.Incarnation != status.Incarnation || actual.Incarnation == before.Incarnation || actual.Incarnation == source.Meta.Incarnation || actual.Head.String() != "1" || actual.HistoryFloor.String() != "1" {
+			t.Fatalf("restored native snapshot identity/floor mismatch: %+v %v", actual, err)
+		}
+		r, err := p.store.Read(p.ctx, driver.View{Incarnation: actual.Incarnation})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		rows, err := r.Get(p.ctx, []driver.Ref{ref})
+		if err != nil || len(rows) != 1 || rows[0].Revision.String() != "1" || !bytes.Equal(rows[0].Body, source.Body) {
+			t.Fatalf("restored native snapshot content mismatch: %+v %v", rows, err)
+		}
+		versions, err := r.Versions(p.ctx, ref, driver.PageReq{Limit: 100})
+		if err != nil || versions.NextCursor != nil || len(versions.Items) != 1 || !versions.Items[0].Base || versions.Items[0].Revision.String() != "1" || !bytes.Equal(versions.Items[0].Body, source.Body) {
+			t.Fatalf("restored native snapshot base mismatch: %+v %v", versions, err)
+		}
+		receipt := p.receipt(t, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "paired-snapshot"})
+		if receipt == nil || receipt.ResponsePending || receipt.RequestHash != b17Hash(string(data)) || receipt.Commit.Revision.String() != "1" || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Revision.String() != "1" || receipt.Changeset.Incarnation != actual.Incarnation || !reflect.DeepEqual(receipt.Changeset.Principal, b17Actor) || len(receipt.Changeset.Changes) != 1 {
+			t.Fatalf("missing atomic durable restore receipt: %+v", receipt)
+		}
+		// A snapshot establishes floor 1. A nil cursor asks for discarded
+		// revision-zero history; inspect the restore commit by its receipt,
+		// and require typed truncation rather than treating nil as a log scan.
+		var truncated driver.ErrTruncated
+		if log, err := r.Changesets(p.ctx, nil, 100); !errors.As(err, &truncated) || truncated.Floor.String() != "1" || len(log) != 0 {
+			t.Fatalf("discarded journal history did not refuse without a partial page: %+v %v", log, err)
+		}
+		cursor := &driver.Cursor{Incarnation: actual.Incarnation, Revision: actual.HistoryFloor}
+		if log, err := r.Changesets(p.ctx, cursor, 100); err != nil || len(log) != 0 {
+			t.Fatalf("caught-up journal at the retained floor: %+v %v", log, err)
 		}
 		zero := model.Natural64(0)
-		var truncated driver.ErrTruncated
-		if _, err := p.store.Read(p.ctx, driver.View{Incarnation: actual.Meta.Incarnation, At: &zero}); !errors.As(err, &truncated) {
+		if _, err := p.store.Read(p.ctx, driver.View{Incarnation: actual.Incarnation, At: &zero}); !errors.As(err, &truncated) {
 			t.Fatalf("snapshot invented discarded history: %v", err)
 		}
 		var old driver.ErrIncarnationChanged
