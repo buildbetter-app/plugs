@@ -543,7 +543,7 @@ func TestE3ConfiguredDirectBlockerFixture(t *testing.T) {
 	}
 	// A real deletion leaves a dangling link; it must stay unknown instead of
 	// becoming an active blocker or a denied existing target.
-	if _, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{Time: f.clock()}, []conformance.FixtureChange{{Ref: model.RefByID(e3ID(61), model.Natural64(0)), Kind: "bead", Op: model.OpDelete}}); err != nil {
+	if _, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{Time: f.clock()}, []conformance.FixtureChange{{Ref: model.RefByID(e3ID(61), model.Natural64(0)), Kind: "bead", Op: model.OpDelete, Graph: &conformance.FixtureGraphSource{}}}); err != nil {
 		t.Fatal(err)
 	}
 	params := map[string]any{"viewId": e3ID(98), "itemId": e3ID(52), "_meta": map[string]any{"project": e3Project}}

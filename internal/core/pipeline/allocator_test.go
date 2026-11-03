@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -687,6 +688,17 @@ func TestRandomAllocatorDriverRefusalsPublishNothing(t *testing.T) {
 					if scenario == "shared-candidate-lock" {
 						locks[0].Mode = driver.LockShare
 					}
+					if scenario == "staged" {
+						// The preceding real Writer create now establishes source
+						// coverage after allocator-only history. Stage the collision
+						// with its complete metadata/lock, not an illegal untyped Put.
+						locks = append(locks, driver.LockRequest{Key: driver.GraphBlockingSentinelLock, Mode: driver.LockUpdate})
+						sort.Slice(locks, func(i, j int) bool {
+							a, _ := driver.EncodeLockKey(locks[i].Key)
+							b, _ := driver.EncodeLockKey(locks[j].Key)
+							return a < b
+						})
+					}
 					before, err := store.Meta(ctx)
 					if err != nil {
 						t.Fatal(err)
@@ -718,7 +730,7 @@ func TestRandomAllocatorDriverRefusalsPublishNothing(t *testing.T) {
 					}
 					if scenario == "staged" {
 						body, _ := json.Marshal(Document{ID: candidate, Type: "task", Fields: map[string]any{"title": "must roll back"}})
-						if err = tx.Put(ctx, driver.Record{Ref: ref, Kind: "bead", Body: body}); err != nil {
+						if err = PutSourceRecord(ctx, tx, driver.Record{Ref: ref, Kind: "bead", Body: body}); err != nil {
 							t.Fatal(err)
 						}
 					}

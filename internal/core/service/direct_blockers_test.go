@@ -164,7 +164,7 @@ func TestReadDirectBlockersPreservesUnknownAndOntologySnapshotChanges(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "system", ID: "direct-blockers-test"}}, []conformance.FixtureChange{{Ref: blocker, Kind: "bead", Op: model.OpPatch, Body: blockerBody}}); err != nil {
+		if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "system", ID: "direct-blockers-test"}}, []conformance.FixtureChange{{Ref: blocker, Kind: "bead", Op: model.OpPatch, Body: blockerBody, Graph: &conformance.FixtureGraphSource{}}}); err != nil {
 			t.Fatal(err)
 		}
 		firstMeta, err := f.store.Meta(ctx)
@@ -276,7 +276,7 @@ func TestReadDirectBlockersDistinguishesMissingAndRefusesUnboundedInput(t *testi
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "system", ID: "direct-blockers-test"}}, []conformance.FixtureChange{{Ref: dependent, Kind: "bead", Op: model.OpPatch, Body: encoded}}); err != nil {
+		if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "system", ID: "direct-blockers-test"}}, []conformance.FixtureChange{{Ref: dependent, Kind: "bead", Op: model.OpPatch, Body: encoded, Graph: &conformance.FixtureGraphSource{Links: []driver.SourceLink{{Kind: body.Links[0].Kind, To: body.Links[0].To}}}}}); err != nil {
 			t.Fatal(err)
 		}
 		meta, err = f.store.Meta(ctx)
