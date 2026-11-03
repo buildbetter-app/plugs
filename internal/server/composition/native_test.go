@@ -131,7 +131,8 @@ func TestNativeCompositionUsesOwnedPersistentStoreAndActiveLease(t *testing.T) {
 	config.StoreFactory = nil
 	restarted := startRuntime(t, config)
 	store := restarted.r.Store.(driver.PersistentCheckpointStore)
-	if _, err := store.SaveCheckpoint(ctx, oldLease, "plugin/composednative/default/durable", 1, checkpoint.Payload); !errors.Is(err, driver.ErrFenced) {
+	var fenced driver.ErrFenced
+	if _, err := store.SaveCheckpoint(ctx, oldLease, "plugin/composednative/default/durable", 1, checkpoint.Payload); !errors.As(err, &fenced) {
 		t.Fatalf("old native-runtime lease was not fenced after reopen: %v", err)
 	}
 	persisted, err := store.LoadCheckpoint(ctx, "plugin/composednative/default/durable")
