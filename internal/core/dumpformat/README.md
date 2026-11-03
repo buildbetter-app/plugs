@@ -51,10 +51,12 @@ or mismatched comparisons refuse before lease/write acquisition.
 The `builtin-head/1` comparison hashes compact JSON with fields `profile`,
 `tables`, `rows`, in that order. `tables` contains all nine driver derived table
 names in lexical order; `rows` contains `{table,key,value}` objects sorted by
-table then key. An `ancestor_closure` row uses the descendant ID as its key and
-an array of `{ancestor,depth}` objects as its value. Since parents are refused,
-each bead's value is exactly `[{"ancestor":"<its ID>","depth":0}]`. These self
-memberships exist even without an authorization provider. Each bead also has
+table then key. An `ancestor_closure` row uses the canonical hierarchy codec:
+`base64url(descendant).base64url(ancestor)` without padding as its key and a
+scalar nonnegative integer depth as its value. Since parents are refused, each
+bead has exactly one self row with value `0`. These self memberships exist even
+without an authorization provider. Comparisons for the earlier array-valued
+closure image refuse before publication. Each bead also has
 ready state `{blocked,ready}`, an empty cut array, empty derived attributes,
 a sort value `{id,priority}`, and outgoing references sorted by link kind then
 target ID. Readiness uses the built-in

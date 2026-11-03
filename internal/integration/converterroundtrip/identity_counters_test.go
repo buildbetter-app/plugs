@@ -4,9 +4,14 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -17,6 +22,9 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/postgres"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
 // A positive decimal child with leading zeroes is admitted by the source ID
@@ -81,10 +89,9 @@ func TestFullSourceImportCreatesWithoutReusingSourceIdentityAcrossDrivers(t *tes
 func exerciseImportedIdentityWrites(t *testing.T, engine string, data []byte, source *dumpformat.Archive, p driver.RestoreImportProfile, collision string) {
 	t.Helper()
 	ctx := context.Background()
-	// This existing fixture fails if its real PostgreSQL cannot start; there is
+	// This fixture fails if its real PostgreSQL cannot start; there is
 	// no optional-driver skip or in-memory substitute for the SQL matrix.
-	store, lease, cleanup := openReverseTarget(t, engine)
-	defer cleanup()
+	store, lease, reopen := openIdentityTarget(t, engine)
 	empty := reverseState(t, store)
 	if !empty.Meta.Head.IsZero() || len(empty.Records) != 0 {
 		t.Fatal("identity restore requires a fresh target")
@@ -118,6 +125,7 @@ func exerciseImportedIdentityWrites(t *testing.T, engine string, data []byte, so
 	}
 	draws := 0
 	freshChild := parent.ID + "." + strings.Repeat("b", 32)
+	secondChild := parent.ID + "." + strings.Repeat("c", 32)
 	if collision != "" {
 		if _, exists := prior[collision]; !exists || parent.ID != "demo-7" {
 			t.Fatal("collision control is not an actual restored child identity")
@@ -132,6 +140,10 @@ func exerciseImportedIdentityWrites(t *testing.T, engine string, data []byte, so
 				return collision, nil
 			case 2:
 				return freshChild, nil
+			case 3:
+				return freshChild, nil // Collide with the child retained across reopen.
+			case 4:
+				return secondChild, nil
 			default:
 				return "", fmt.Errorf("unexpected child entropy draw %d", draws)
 			}
@@ -214,8 +226,163 @@ func exerciseImportedIdentityWrites(t *testing.T, engine string, data []byte, so
 	if err != nil || !replay.Replayed || !reflect.DeepEqual(replay.Commit, commit) || !reflect.DeepEqual(beforeReplay, reverseState(t, store)) || (collision != "" && draws != 2) {
 		t.Fatalf("child replay consumed another identity or changed restored state: %+v %v draws=%d", replay, err, draws)
 	}
+	store, lease = reopen()
+	if !reflect.DeepEqual(beforeReplay, reverseState(t, store)) {
+		t.Fatal("reopen changed restored state or the first public child")
+	}
+	writer = pipeline.New(store, lease, options...)
+	replay, err = writer.ApplyWithOutcome(ctx, p.Admission.Actor, changes, meta)
+	if err != nil || !replay.Replayed || !reflect.DeepEqual(replay.Commit, commit) || !reflect.DeepEqual(beforeReplay, reverseState(t, store)) || (collision != "" && draws != 2) {
+		t.Fatalf("reopened writer did not retain child replay: %+v %v draws=%d", replay, err, draws)
+	}
+	second, err := writer.Apply(ctx, p.Admission.Actor, changes, model.WriteMeta{Method: "tx.apply", Project: "demo", IdempotencyKey: hashBytes([]byte("identity-child-after-reopen"))})
+	if err != nil || len(second.Results) != 1 {
+		t.Fatalf("public second child after reopen: %+v %v", second, err)
+	}
+	next := second.Results[0].Ref.ID
+	suffix, ok = strings.CutPrefix(next, parent.ID+".")
+	if !ok || len(suffix) != 32 || strings.Trim(suffix, "0123456789abcdef") != "" || next == child {
+		t.Fatalf("second child reused or lost its restored-parent identity: %q", next)
+	}
+	if _, reused := prior[next]; reused || (collision != "" && (draws != 4 || next != secondChild)) {
+		t.Fatalf("reopened writer did not retry the persisted child collision: child=%q draws=%d", next, draws)
+	}
+	created++
+	assertPreserved()
+	after := reverseState(t, store)
+	retained := make(map[string]driver.Record, len(after.Records))
+	for _, row := range after.Records {
+		retained[row.Ref.ID] = row
+	}
+	for _, row := range beforeReplay.Records {
+		if !reflect.DeepEqual(retained[row.Ref.ID], row) {
+			t.Fatalf("second child creation changed pre-reopen record %q", row.Ref.ID)
+		}
+	}
+	doc, err := pipeline.DecodeDocument(retained[next].Body)
+	if err != nil || doc.ID != next || doc.Project != "demo" || doc.Parent == nil || *doc.Parent != parent {
+		t.Fatalf("second child did not retain restored-parent reference: %+v %v", doc, err)
+	}
 	assertImportedIdentityEvidence(t, store, source)
-	t.Logf("IDENTITY_CONTINUITY engine=%s mode=%s archive=%s restored_head=%s final_head=%s prefixes=%d creates=%d collision_draws=%d original_records=%d history=%s", engine, p.HistoryMode, source.SHA256(), before.Meta.Head, beforeReplay.Meta.Head, len(source.Manifest().Projects), created, draws, len(prior), source.Manifest().History)
+	lifecycle := "persistent-close-reopen"
+	if engine == "memory" {
+		lifecycle = "same-store-lease-writer-refresh"
+	}
+	t.Logf("IDENTITY_CONTINUITY engine=%s lifecycle=%s mode=%s archive=%s restored_head=%s final_head=%s prefixes=%d creates=%d collision_draws=%d original_records=%d history=%s", engine, lifecycle, p.HistoryMode, source.SHA256(), before.Meta.Head, after.Meta.Head, len(source.Manifest().Projects), created, draws, len(prior), source.Manifest().History)
+}
+
+// Persistent engines really close and reopen their file/database. Memory has
+// no durable reopen contract, so it retains the store and refreshes the lease.
+func openIdentityTarget(t *testing.T, engine string) (driver.Store, driver.ActiveLease, func() (driver.Store, driver.ActiveLease)) {
+	t.Helper()
+	ctx := context.Background()
+	var open func() (driver.Store, error)
+	switch engine {
+	case "memory":
+		open = func() (driver.Store, error) { return memory.New(), nil }
+	case "sqlite":
+		path := filepath.Join(t.TempDir(), "identity.db")
+		open = func() (driver.Store, error) { return (sqlite.Driver{}).Open(ctx, driver.Config{DSN: path}) }
+	case "postgres":
+		dsn := identityPostgresDSN(t)
+		open = func() (driver.Store, error) { return postgres.Open(ctx, driver.Config{DSN: dsn}) }
+	default:
+		t.Fatalf("unknown identity driver %q", engine)
+	}
+	store, err := open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lease driver.ActiveLease
+	t.Cleanup(func() {
+		if lease != nil {
+			if err := lease.Release(ctx); err != nil {
+				t.Errorf("release identity lease: %v", err)
+			}
+		}
+		if store != nil {
+			if err := store.Close(); err != nil {
+				t.Errorf("close identity store: %v", err)
+			}
+		}
+	})
+	acquire := func() {
+		t.Helper()
+		lease, err = store.Lease(ctx, "converter-identity-"+engine, driver.LeaseTTL)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	acquire()
+	return store, lease, func() (driver.Store, driver.ActiveLease) {
+		t.Helper()
+		if err := lease.Release(ctx); err != nil {
+			t.Fatal(err)
+		}
+		lease = nil
+		if engine != "memory" {
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store = nil
+			store, err = open()
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		acquire()
+		return store, lease
+	}
+}
+
+func identityPostgresDSN(t *testing.T) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	docker := func(ctx context.Context, args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, "docker", append([]string{"--host=unix:///var/run/docker.sock"}, args...)...)
+		for _, entry := range os.Environ() {
+			if !strings.HasPrefix(entry, "DOCKER_HOST=") && !strings.HasPrefix(entry, "DOCKER_CONTEXT=") && !strings.HasPrefix(entry, "DOCKER_TLS=") && !strings.HasPrefix(entry, "DOCKER_TLS_VERIFY=") && !strings.HasPrefix(entry, "DOCKER_CERT_PATH=") {
+				cmd.Env = append(cmd.Env, entry)
+			}
+		}
+		return cmd.CombinedOutput()
+	}
+	name := "plug-swarm-i6-identity-" + hashBytes([]byte(t.TempDir()))[:16]
+	const image = "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
+	if out, err := docker(ctx, "run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_identity", "-p", "127.0.0.1::5432", image); err != nil {
+		t.Fatalf("real PostgreSQL start failed: %v %s", err, out)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		if out, err := docker(cleanupCtx, "rm", "-f", name); err != nil {
+			t.Errorf("owned PostgreSQL cleanup failed: %v %s", err, out)
+		}
+	})
+	address, err := docker(ctx, "port", name, "5432/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := strings.TrimSpace(string(address))
+	if host, _, err := net.SplitHostPort(addr); err != nil || host != "127.0.0.1" {
+		t.Fatal("test PostgreSQL must bind loopback")
+	}
+	dsn := "postgres://postgres@" + addr + "/plug_identity?sslmode=disable"
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for {
+		if err := db.PingContext(ctx); err == nil {
+			return dsn
+		}
+		if ctx.Err() != nil {
+			t.Fatal("real PostgreSQL did not become ready")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func assertImportedIdentityEvidence(t *testing.T, store driver.Store, source *dumpformat.Archive) {
