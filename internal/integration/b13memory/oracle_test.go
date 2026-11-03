@@ -42,6 +42,12 @@ func (f *fixture) reader() driver.Reader {
 }
 
 func (f *fixture) state() durableState {
+	return f.stateAfter(nil)
+}
+
+// The original lifecycle always reads from zero. A restored lifetime must name
+// its declared floor explicitly; it must never turn truncated history into [].
+func (f *fixture) stateAfter(after *driver.Cursor) durableState {
 	f.t.Helper()
 	meta, err := f.oracle.Meta(f.ctx)
 	if err != nil {
@@ -57,7 +63,7 @@ func (f *fixture) state() durableState {
 		f.t.Fatalf("incomplete oracle records: %+v %v", page, err)
 	}
 	s := durableState{Meta: meta, Records: page.Items, Versions: map[string][]driver.Version{}, Receipts: map[scope]*driver.IdempotencyRecord{}, Derived: map[driver.DerivedTable][]driver.DerivedRow{}}
-	s.Changesets, err = r.Changesets(f.ctx, nil, 1000)
+	s.Changesets, err = r.Changesets(f.ctx, after, 1000)
 	if err != nil || len(s.Changesets) >= 1000 {
 		f.t.Fatalf("incomplete oracle changesets: %d %v", len(s.Changesets), err)
 	}
