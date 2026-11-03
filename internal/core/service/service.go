@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -228,7 +230,15 @@ func (s *Service) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req
 			// still decides whether that type is active for this project.
 			types[index] = "issue"
 		}
-		ops[index] = model.Op{Kind: model.OpCreate, Create: &model.CreateOp{Key: fmt.Sprintf("workflow-%x-%d", digest, index), Type: types[index], Project: req.Project, Fields: map[string]any{"title": item.Title}}}
+		// The alias is an opaque, strict base64url key. Encoding the digest and
+		// binary index avoids the non-zero trailing-bit failures of textual
+		// suffixes while keeping every checklist operation locally distinct.
+		aliasPayload := append([]byte("plug/workflow/permanent/create\x00"), digest[:]...)
+		var indexBytes [4]byte
+		binary.BigEndian.PutUint32(indexBytes[:], uint32(index))
+		aliasPayload = append(aliasPayload, indexBytes[:]...)
+		alias := base64.RawURLEncoding.EncodeToString(aliasPayload)
+		ops[index] = model.Op{Kind: model.OpCreate, Create: &model.CreateOp{Key: alias, Type: types[index], Project: req.Project, Fields: map[string]any{"title": item.Title}}}
 	}
 	meta.Project = req.Project
 	out, err := s.apply(ctx, by, "x.workflow.invoke", model.ChangeSet{Ops: ops}, meta, false)
