@@ -2,6 +2,7 @@ package authzrpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -14,6 +15,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 )
@@ -208,114 +210,128 @@ func TestActualScopedProducerAndW2BindingDifferential(t *testing.T) {
 	writer := pipeline.New(s, lease, pipeline.WithOntology(service.NewOntology(nil)))
 	var refs []model.Ref
 	for i, project := range []string{"web/api", "other", "canonical/project", ""} {
-		result, err := writer.Apply(ctx, model.PrincipalRef{Kind: "user", ID: "creator"}, model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Fields: map[string]any{"title": "real source", "priority": 0}}}}}, model.WriteMeta{Method: "bead.create", Project: project, IdempotencyKey: fmt.Sprintf("%032x", i+1)})
-		if err != nil || len(result.Results) != 1 {
-			t.Fatalf("actual Writer create: %v", err)
+		// The portable allocator uses slash-free prefixes. These imported
+		// registry names intentionally contain slashes and are not allocator
+		// profiles. Seed their content through the adopted storage fixture,
+		// then publish every tested projection with the real Writer below.
+		target := ref(fmt.Sprintf("scoped-content-%d", i))
+		body, err := json.Marshal(pipeline.Document{ID: target.ID, Type: "issue", Project: project, Fields: map[string]any{"title": "imported source", "priority": 0}})
+		if err != nil {
+			t.Fatal(err)
 		}
-		refs = append(refs, result.Results[0].Ref)
+		if _, err := conformance.Seed(ctx, s, lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: target, Kind: "bead", Op: model.OpCreate, Body: body, Graph: &conformance.FixtureGraphSource{}}}); err != nil {
+			t.Fatal(err)
+		}
+		result, err := writer.Apply(ctx, model.PrincipalRef{Kind: "user", ID: "creator"}, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: target, Fields: map[string]any{"title": "real source"}}}}}, model.WriteMeta{Method: "bead.update", Project: project, IdempotencyKey: fmt.Sprintf("%032x", i+1)})
+		if err != nil || len(result.Results) != 1 || result.Results[0].Ref.ID != target.ID {
+			t.Fatalf("actual Writer publication: %v", err)
+		}
+		refs = append(refs, target)
 	}
 	initial, _ := s.Meta(ctx)
 	keys, _ := authzfixed.SelectionRows(ns)
 	principal := model.PrincipalRef{Kind: "agent", ID: "worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "same"}}
 	var stale driver.SelectionPlan
 	for bits := 0; bits < 32; bits++ {
-		next := base
-		next.Projects = append([]authzfixed.Project(nil), base.Projects...)
-		next.Teams = append([]authzfixed.Team(nil), base.Teams...)
-		next.Projects[0].Active, next.Teams[0].Active = bits&8 != 0, bits&16 != 0
-		add := func(subject authz.SubjectRef, kind authz.ScopeKind, target, role string) {
-			next.Grants = append(next.Grants, authz.Grant{Subject: subject, Scope: authz.Scope{Kind: kind, Ref: ref(target)}, Role: role})
-		}
-		if bits&1 != 0 {
-			add(authz.SubjectRef{Kind: "user", ID: "same"}, authz.ProjectScope, "canonical/project", "involved")
-		}
-		if bits&2 != 0 {
-			add(authz.SubjectRef{Kind: "user", ID: "same"}, authz.TeamScope, "same", "member")
-		}
-		if bits&4 != 0 {
-			add(authz.SubjectRef{Kind: "team", ID: "same"}, authz.ProjectScope, "canonical/project", "involved")
-		}
-		if err := facts.Replace(next); err != nil {
-			t.Fatal(err)
-		}
-		r, err := s.Read(ctx, driver.View{Incarnation: ns.Incarnation})
-		if err != nil {
-			t.Fatal(err)
-		}
-		binding, err := composition.Checker.BindAuthorization(ctx, r, principal, authz.Modify, authz.Bead, "bead.update")
-		if err != nil {
-			t.Fatal(err)
-		}
-		filter, err := binding.Filter()
-		if err != nil {
-			t.Fatal(err)
-		}
-		description := filter.Description()
-		if _, err := scopedScalarTemplateTestLower(description, keys); !errors.Is(err, driver.ErrSelectionUnavailable) {
-			t.Fatal("full fixed Modify silently dropped the team alternative")
-		}
-		unreachable := scopedReference(description)
-		unreachable.Permit = authz.And(authz.FilterExpr{Op: authz.False}, description.Permit)
-		if _, err := scopedScalarTemplateTestLower(unreachable, keys); !errors.Is(err, driver.ErrSelectionUnavailable) {
-			t.Fatal("false arm hid unsupported TeamInvolvement")
-		}
-		full, err := binding.Check(ctx, refs)
-		if err != nil {
-			t.Fatal(err)
-		}
-		edge, found := scopedDirectEdge(description.Permit)
-		if !found {
-			t.Fatal("actual W2 policy lost direct project grant edge")
-		}
-		direct := scopedReference(description)
-		direct.Permit = authz.And(authz.FilterExpr{Op: authz.PrincipalKind, Kind: "agent"}, authz.FilterExpr{Op: authz.SponsorKind, Kind: "user"}, authz.FilterExpr{Op: authz.ActiveProject}, edge)
-		expression, err := scopedScalarTemplateTestLower(direct, keys)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Seal this explicitly extracted TEST subset under its own binding.
-		// It never attests that the full W2 Modify policy has been lowered.
-		directFilter, err := direct.Prepare()
-		if err != nil {
-			t.Fatal(err)
-		}
-		plan := scopedPlan(t, r, directFilter, expression, keys, ns, initial.Head)
-		got, err := r.(driver.SelectionReader).Select(ctx, plan)
-		if err != nil {
-			t.Fatalf("bits=%05b actual producer selection: %v", bits, err)
-		}
-		var wantIDs, gotIDs []string
-		for i, target := range refs {
-			resource := authz.Resource{Kind: authz.Bead, Ref: target}
-			wantFull, err := scopedReference(description).Match(ctx, binding.slice, resource)
-			expectedFull := i == 0 && bits&8 != 0 && (bits&1 != 0 || bits&2 != 0 && bits&4 != 0 && bits&16 != 0)
-			if err != nil || wantFull != full[i] || wantFull != expectedFull {
-				t.Fatalf("actual W2 binding vs fixed interpreter bits=%05b: %v", bits, err)
+		t.Run(fmt.Sprintf("direct_team_activity_%05b", bits), func(t *testing.T) {
+			next := base
+			next.Projects = append([]authzfixed.Project(nil), base.Projects...)
+			next.Teams = append([]authzfixed.Team(nil), base.Teams...)
+			next.Projects[0].Active, next.Teams[0].Active = bits&8 != 0, bits&16 != 0
+			add := func(subject authz.SubjectRef, kind authz.ScopeKind, target, role string) {
+				next.Grants = append(next.Grants, authz.Grant{Subject: subject, Scope: authz.Scope{Kind: kind, Ref: ref(target)}, Role: role})
 			}
-			wantDirect, err := direct.Match(ctx, binding.slice, resource)
-			expectedDirect := i == 0 && bits&8 != 0 && bits&1 != 0
-			if err != nil || wantDirect != expectedDirect {
-				t.Fatalf("direct subset differs from explicit registry/activity expectation bits=%05b: %v", bits, err)
+			if bits&1 != 0 {
+				add(authz.SubjectRef{Kind: "user", ID: "same"}, authz.ProjectScope, "canonical/project", "involved")
 			}
-			if wantDirect {
-				wantIDs = append(wantIDs, target.ID)
+			if bits&2 != 0 {
+				add(authz.SubjectRef{Kind: "user", ID: "same"}, authz.TeamScope, "same", "member")
 			}
-		}
-		for _, key := range got.Keys {
-			gotIDs = append(gotIDs, key.Ref.ID)
-		}
-		sort.Strings(wantIDs)
-		sort.Strings(gotIDs)
-		if !reflect.DeepEqual(gotIDs, wantIDs) || got.Total != uint64(len(wantIDs)) {
-			t.Fatalf("bits=%05b scoped direct edge=%v want=%v", bits, gotIDs, wantIDs)
-		}
-		if bits == 9 {
-			stale = plan
-		} // direct grant + active project; valid NAME!=ID positive.
-		if bits == 30 && (!full[0] || len(got.Keys) != 0) {
-			t.Fatal("same-team path was incorrectly represented by direct grants")
-		}
-		_ = r.Close()
+			if bits&4 != 0 {
+				add(authz.SubjectRef{Kind: "team", ID: "same"}, authz.ProjectScope, "canonical/project", "involved")
+			}
+			if err := facts.Replace(next); err != nil {
+				t.Fatal(err)
+			}
+			r, err := s.Read(ctx, driver.View{Incarnation: ns.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			binding, err := composition.Checker.BindAuthorization(ctx, r, principal, authz.Modify, authz.Bead, "bead.update")
+			if err != nil {
+				t.Fatal(err)
+			}
+			filter, err := binding.Filter()
+			if err != nil {
+				t.Fatal(err)
+			}
+			description := filter.Description()
+			if _, err := scopedScalarTemplateTestLower(description, keys); !errors.Is(err, driver.ErrSelectionUnavailable) {
+				t.Fatal("full fixed Modify silently dropped the team alternative")
+			}
+			unreachable := scopedReference(description)
+			unreachable.Permit = authz.And(authz.FilterExpr{Op: authz.False}, description.Permit)
+			if _, err := scopedScalarTemplateTestLower(unreachable, keys); !errors.Is(err, driver.ErrSelectionUnavailable) {
+				t.Fatal("false arm hid unsupported TeamInvolvement")
+			}
+			full, err := binding.Check(ctx, refs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			edge, found := scopedDirectEdge(description.Permit)
+			if !found {
+				t.Fatal("actual W2 policy lost direct project grant edge")
+			}
+			direct := scopedReference(description)
+			direct.Permit = authz.And(authz.FilterExpr{Op: authz.PrincipalKind, Kind: "agent"}, authz.FilterExpr{Op: authz.SponsorKind, Kind: "user"}, authz.FilterExpr{Op: authz.ActiveProject}, edge)
+			expression, err := scopedScalarTemplateTestLower(direct, keys)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Seal this explicitly extracted TEST subset under its own binding.
+			// It never attests that the full W2 Modify policy has been lowered.
+			directFilter, err := direct.Prepare()
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan := scopedPlan(t, r, directFilter, expression, keys, ns, initial.Head)
+			got, err := r.(driver.SelectionReader).Select(ctx, plan)
+			if err != nil {
+				t.Fatalf("bits=%05b actual producer selection: %v", bits, err)
+			}
+			var wantIDs, gotIDs []string
+			for i, target := range refs {
+				resource := authz.Resource{Kind: authz.Bead, Ref: target}
+				wantFull, err := scopedReference(description).Match(ctx, binding.slice, resource)
+				expectedFull := i == 0 && bits&8 != 0 && (bits&1 != 0 || bits&2 != 0 && bits&4 != 0 && bits&16 != 0)
+				if err != nil || wantFull != full[i] || wantFull != expectedFull {
+					t.Fatalf("actual W2 binding vs fixed interpreter bits=%05b: %v", bits, err)
+				}
+				wantDirect, err := direct.Match(ctx, binding.slice, resource)
+				expectedDirect := i == 0 && bits&8 != 0 && bits&1 != 0
+				if err != nil || wantDirect != expectedDirect {
+					t.Fatalf("direct subset differs from explicit registry/activity expectation bits=%05b: %v", bits, err)
+				}
+				if wantDirect {
+					wantIDs = append(wantIDs, target.ID)
+				}
+			}
+			for _, key := range got.Keys {
+				gotIDs = append(gotIDs, key.Ref.ID)
+			}
+			sort.Strings(wantIDs)
+			sort.Strings(gotIDs)
+			if !reflect.DeepEqual(gotIDs, wantIDs) || got.Total != uint64(len(wantIDs)) {
+				t.Fatalf("bits=%05b scoped direct edge=%v want=%v", bits, gotIDs, wantIDs)
+			}
+			if bits == 9 {
+				stale = plan
+			} // direct grant + active project; valid NAME!=ID positive.
+			if bits == 30 && (!full[0] || len(got.Keys) != 0) {
+				t.Fatal("same-team path was incorrectly represented by direct grants")
+			}
+		})
 	}
 	current, err := s.Read(ctx, driver.View{Incarnation: ns.Incarnation})
 	if err != nil {

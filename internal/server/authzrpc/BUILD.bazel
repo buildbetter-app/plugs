@@ -33,6 +33,7 @@ go_test(
         "//internal/core/service",
         "//internal/plugins/authnapikey",
         "//internal/plugins/authzfixed",
+        "//internal/storage/conformance",
         "//internal/storage/driver",
         "//internal/storage/memory",
     ],
