@@ -190,10 +190,16 @@ try {
     assert.equal((await fetch(base + "/fixture/hold", {method:"POST"})).ok, true);
     await evaluate(`(() => {
       globalThis.heldReplies = [];
-      addEventListener("message", (event) => { if (event.data?.id === "held") heldReplies.push(event.data); });
+      addEventListener("message", (event) => {
+        if (event.data?.id === "held" && (Object.hasOwn(event.data, "result") || Object.hasOwn(event.data, "error"))) heldReplies.push(event.data);
+      });
     })()`);
     await evaluate(`parent.postMessage({jsonrpc:"2.0",id:"held",method:"bead.get",params:{id:${JSON.stringify(configured.ref)}}}, "*")`, probe);
     await until(async () => (await stats()).heldReads === 1, "real configured read response held");
+    // The held bridge read already ran with the canary present. Ordinary
+    // frame navigations carrying cookies are deliberately refused by the UI;
+    // clear the canary to exercise the separate wrapper-reload boundary.
+    await send("Network.clearBrowserCookies");
     await evaluate("document.querySelector('iframe').contentWindow.location.reload()");
     await until(() => evaluate("document.querySelector('iframe').dataset.bridgeState === 'revoked'"), "wrapper reload revokes bridge");
     await until(async () => (await stats()).canceledReads === 1, "reload aborts actual HTTP read");

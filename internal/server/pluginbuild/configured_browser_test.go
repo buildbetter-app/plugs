@@ -152,6 +152,7 @@ func TestConfiguredSourcePluginBrowserSafety(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "configured-browser.sqlite")
+	t.Setenv("PLUG_WASI_PROBE", "owned-loopback-public-canary")
 	var observed *browserCheckpointStore
 	runtime, err := composition.Open(ctx, composition.Config{
 		Driver: "sqlite", DSN: path, Project: "web", UI: true,
@@ -194,10 +195,13 @@ func TestConfiguredSourcePluginBrowserSafety(t *testing.T) {
 	served := make(chan error, 1)
 	go func() { served <- listener.Serve() }()
 	backend := "http://" + listener.Addr().String()
-	created := configuredBrowserRPC(t, backend, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "configured source"}}, "1", false)
+	created := configuredBrowserRPC(t, backend, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "configured source"}}, "1", "")
 	var commit model.Commit
 	if err := json.Unmarshal(created, &commit); err != nil || len(commit.Results) != 1 || len(commit.Warnings) != 1 || commit.Warnings[0].Details["binding"] != "browser-denied-post" {
 		t.Fatalf("source mutate/validate/real denied post: %s err=%v", created, err)
+	}
+	if commit.Results[0].SetBy["fields.title"] != "browser-normalize" {
+		t.Fatalf("source callback provenance is missing from the configured commit: %s", created)
 	}
 	ref := commit.Results[0].Ref
 	meta, err := observed.Meta(ctx)
@@ -216,19 +220,24 @@ func TestConfiguredSourcePluginBrowserSafety(t *testing.T) {
 	if len(leases) != 1 || leases[0] != runtime.Lease {
 		t.Fatal("source post receipt did not use the exact configured active lease")
 	}
-	for index, title := range []string{"private", "reject", "timer-callback:bounded"} {
+	for index, test := range []struct{ title, code string }{
+		{"private", "subscriber_unavailable"},
+		{"reject", "ontology_guard_failed"},
+		{"timer-callback:bounded", "subscriber_unavailable"},
+	} {
 		started := time.Now()
-		configuredBrowserRPC(t, backend, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": title}}, fmt.Sprint(index+2), true)
+		configuredBrowserRPC(t, backend, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": test.title}}, fmt.Sprint(index+2), test.code)
 		if time.Since(started) > 2*time.Second {
-			t.Fatalf("source callback refusal was not bounded: %s", title)
+			t.Fatalf("source callback refusal was not bounded: %s", test.title)
 		}
 		current, err := observed.Meta(ctx)
 		if err != nil || current.Head != meta.Head {
-			t.Fatalf("refused source callback published a graph change: %s meta=%+v err=%v", title, current, err)
+			t.Fatalf("refused source callback published a graph change: %s meta=%+v err=%v", test.title, current, err)
 		}
+		t.Logf("source callback title=%s code=%s elapsed=%s head=%s", test.title, test.code, time.Since(started), current.Head)
 	}
 	// A real write after the timed-out guest proves its replacement is usable.
-	configuredBrowserRPC(t, backend, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "recovered source"}}, "5", false)
+	configuredBrowserRPC(t, backend, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "recovered source"}}, "5", "")
 	finalMeta, err := observed.Meta(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -319,7 +328,7 @@ func TestConfiguredSourcePluginBrowserSafety(t *testing.T) {
 	t.Logf("configured source/browser teardown: host inactive, listener closed, old lease fenced, checkpoint bytes/head retained; RPC=%d credentialed=0 outsideAssets=0 egress=0 canceledRead=1", probe.calls.Load())
 }
 
-func configuredBrowserRPC(t *testing.T, base, method string, params map[string]any, key string, refused bool) json.RawMessage {
+func configuredBrowserRPC(t *testing.T, base, method string, params map[string]any, key string, wantCode string) json.RawMessage {
 	t.Helper()
 	params["_meta"] = map[string]any{"project": "web", "idempotencyKey": strings.Repeat(key, 32)}
 	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "configured-" + key, "method": method, "params": params})
@@ -341,8 +350,14 @@ func configuredBrowserRPC(t *testing.T, base, method string, params map[string]a
 	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
 		t.Fatal(err)
 	}
-	if hasError := len(envelope.Error) != 0 && string(envelope.Error) != "null"; hasError != refused {
-		t.Fatalf("%s refused=%t response=%+v", method, refused, envelope)
+	var failure struct{ Data struct{ Code string } }
+	if len(envelope.Error) != 0 && string(envelope.Error) != "null" {
+		if err := json.Unmarshal(envelope.Error, &failure); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if failure.Data.Code != wantCode || wantCode == "" && (len(envelope.Result) == 0 || string(envelope.Result) == "null") || wantCode != "" && len(envelope.Result) != 0 {
+		t.Fatalf("%s code=%q want=%q error=%s result=%s", method, failure.Data.Code, wantCode, envelope.Error, envelope.Result)
 	}
 	return envelope.Result
 }
