@@ -1753,6 +1753,19 @@ func validateSavedImage(b RuntimeBundle) error {
 		return err
 	}
 	defer file.Close()
+	var config struct {
+		Config struct{ Labels map[string]string }
+		RootFS struct {
+			Type    string
+			DiffIDs []string `json:"diff_ids"`
+		} `json:"rootfs"`
+	}
+	var manifests []struct {
+		Config string
+		Layers []string
+	}
+	configName := ""
+	members := map[string]string{}
 	reader := tar.NewReader(file)
 	for {
 		header, e := reader.Next()
@@ -1762,30 +1775,64 @@ func validateSavedImage(b RuntimeBundle) error {
 		if e != nil {
 			return fmt.Errorf("saved image archive invalid")
 		}
-		if header.Typeflag != tar.TypeReg || header.Size > 1<<20 {
+		if header.Typeflag == tar.TypeDir {
 			continue
 		}
-		if header.Name != b.ImageDigest+".json" && !strings.HasSuffix(header.Name, "/"+b.ImageDigest) {
-			continue
+		if (header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA) || header.Size > 256<<20 {
+			return fmt.Errorf("saved image member must be a bounded regular file")
 		}
-		raw, e := io.ReadAll(reader)
-		if e != nil || digestBytes(raw) != b.ImageDigest {
-			return fmt.Errorf("saved image config digest mismatch")
+		if _, duplicate := members[header.Name]; duplicate {
+			return fmt.Errorf("saved image member repeated")
 		}
-		var config struct {
-			Config struct{ Labels map[string]string }
-		}
-		if json.Unmarshal(raw, &config) != nil {
-			return fmt.Errorf("saved image config invalid")
-		}
-		for key, want := range map[string]string{"plug.source.sha": b.SourceSHA, "plug.source.tree": b.SourceTree, "plug.edition": b.Role, "plug.executable.sha256": b.ExecutableDigest} {
-			if config.Config.Labels[key] != want {
-				return fmt.Errorf("saved image source/executable pin mismatch")
+		isConfig := header.Name == b.ImageDigest+".json" || header.Name == "blobs/sha256/"+b.ImageDigest
+		if isConfig || header.Name == "manifest.json" {
+			if header.Size > 1<<20 {
+				return fmt.Errorf("saved image metadata exceeds bound")
 			}
+			raw, e := io.ReadAll(reader)
+			if e != nil {
+				return fmt.Errorf("saved image metadata incomplete")
+			}
+			members[header.Name] = digestBytes(raw)
+			if isConfig {
+				if configName != "" || members[header.Name] != b.ImageDigest || json.Unmarshal(raw, &config) != nil {
+					return fmt.Errorf("saved image config digest or content mismatch")
+				}
+				configName = header.Name
+			} else if json.Unmarshal(raw, &manifests) != nil {
+				return fmt.Errorf("saved image manifest invalid")
+			}
+		} else {
+			hash := sha256.New()
+			if _, e := io.Copy(hash, reader); e != nil {
+				return fmt.Errorf("saved image member incomplete")
+			}
+			members[header.Name] = hex.EncodeToString(hash.Sum(nil))
 		}
-		return nil
+		if strings.HasPrefix(header.Name, "blobs/sha256/") && header.Name != "blobs/sha256/"+members[header.Name] {
+			return fmt.Errorf("saved image blob digest mismatch")
+		}
 	}
-	return fmt.Errorf("saved runnable image does not match image pin")
+	if configName == "" || len(manifests) != 1 || manifests[0].Config != configName {
+		return fmt.Errorf("saved runnable image does not match image pin")
+	}
+	for key, want := range map[string]string{"plug.source.sha": b.SourceSHA, "plug.source.tree": b.SourceTree, "plug.edition": b.Role, "plug.executable.sha256": b.ExecutableDigest} {
+		if config.Config.Labels[key] != want {
+			return fmt.Errorf("saved image source/executable pin mismatch")
+		}
+	}
+	// Docker image-save emits uncompressed layer tars. Bind every required
+	// member, in order, to the rootfs digests inside the pinned image config.
+	// A config-only or rehashed corrupt archive must fail before activation.
+	if config.RootFS.Type != "layers" || len(manifests[0].Layers) == 0 || len(manifests[0].Layers) != len(config.RootFS.DiffIDs) {
+		return fmt.Errorf("saved image layer set incomplete")
+	}
+	for i, name := range manifests[0].Layers {
+		if members[name] == "" || "sha256:"+members[name] != config.RootFS.DiffIDs[i] {
+			return fmt.Errorf("saved image layer missing or digest mismatch")
+		}
+	}
+	return nil
 }
 
 func publicState(ctx context.Context, c *client.Client) (string, error) {
