@@ -4,8 +4,8 @@
 # package, resource, reverse-dependent, repository-graph, and CI-only branches.
 set -euo pipefail
 
-repo_root="$(git rev-parse --show-toplevel)"
-resolver="$repo_root/scripts/ci/plug-bazel-targets.sh"
+source_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+resolver="$source_dir/plug-bazel-targets.sh"
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/plug-bazel-targets-test.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
 
@@ -35,27 +35,42 @@ git -C "$fixture/repo" commit -q -m base
 base="$(git -C "$fixture/repo" rev-parse HEAD)"
 
 cat >"$fixture/fake-bazel" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-query="$*"
-case "$query" in
-  *'rdeps(//..., set(//pkg:foo.go))'*|*'rdeps(//..., set(//pkg:cmd/nested/main.go))'*|*'rdeps(//..., set(//pkg:catalog.json //pkg:static/index.html))'*)
-    printf '%s\n' '//consumer:consumer_test'
-    ;;
-  *'kind("source file", deps(//...))'*)
-    printf '%s\n' '//pkg:foo.go' '//pkg:cmd/nested/main.go' '//pkg:catalog.json' '//pkg:static/index.html'
-    ;;
-  *'kind(".*_test rule", //...)'*)
-    printf '%s\n' '//pkg:pkg_test'
-    ;;
-  *'kind(".*_test rule", //pkg:all)'*)
-    printf '%s\n' '//pkg:pkg_test'
-    ;;
-  *)
-    echo "unexpected Bazel query: $query" >&2
-    exit 1
-    ;;
-esac
+#!/usr/bin/python3
+import json
+import re
+import sys
+
+expression = sys.argv[sys.argv.index("query") + 1]
+scope = expression
+pattern = None
+boundary = ') except (attr("tags", '
+if expression.startswith("(") and boundary in expression:
+    scope, tail = expression[1:].split(boundary, 1)
+    pattern, end = json.JSONDecoder().raw_decode(tail)
+    assert tail[end:] == ', ' + scope + ') except set(//tools/roundtrip:public_beads_runtime_test))', expression
+count = "//spec/s1-b21-b24:ordinary_count_capture_test"
+runtime = "//tools/roundtrip:public_beads_runtime_test"
+tags = {count: ["local", "manual"], "//pkg:manual_capture_test": ["manual", "local"],
+        runtime: ["local", "manual"], "//pkg:manual_policy_test": ["manual-policy"],
+        "//pkg:premanual_test": ["premanual"]}
+ordinary = ["//pkg:pkg_test", "//pkg:manual_policy_test", "//pkg:premanual_test"]
+if scope == 'kind("source file", deps(//...))':
+    result = ["//pkg:foo.go", "//pkg:cmd/nested/main.go", "//pkg:catalog.json", "//pkg:static/index.html"]
+elif 'rdeps(//..., set(' in scope:
+    result = ["//consumer:consumer_test", count, "//pkg:manual_capture_test", runtime]
+elif scope == 'kind(".*_test rule", //...)':
+    result = [*ordinary, "//consumer:consumer_test", count, "//pkg:manual_capture_test", runtime]
+elif scope == 'kind(".*_test rule", //pkg:all)':
+    result = [*ordinary, "//pkg:manual_capture_test"]
+else:
+    raise AssertionError(expression)
+if pattern is not None:
+    # Model attr over rendered lists and set subtraction independently of
+    # target names: a substring manual tag must not lose ordinary coverage.
+    matcher = re.compile(pattern)
+    result = [label for label in result if label == runtime
+              or not matcher.search("[" + ", ".join(tags.get(label, [])) + "]")]
+print("\n".join(result))
 EOF
 chmod 755 "$fixture/fake-bazel"
 
@@ -143,6 +158,27 @@ grep -Fxq '//pkg:pkg_test' "$fixture/graph/touched-targets.txt"
 grep -Fxq '1' "$fixture/graph/full-graph.txt"
 [[ ! -s "$fixture/graph/reverse-targets.txt" ]]
 
+# Both complete-graph and source/reverse paths preserve every ordinary test,
+# including tags containing the word manual, plus the prepared runtime.
+python3 - "$fixture" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+ordinary = {"//pkg:pkg_test", "//pkg:manual_policy_test", "//pkg:premanual_test"}
+runtime = "//tools/roundtrip:public_beads_runtime_test"
+for name in ("package", "nested", "resource"):
+    assert set((root / name / "touched-targets.txt").read_text().splitlines()) == ordinary, name
+    assert set((root / name / "reverse-targets.txt").read_text().splitlines()) == {
+        "//consumer:consumer_test", runtime}, name
+for name in ("nested-graph", "unknown", "unknown-go", "graph"):
+    assert set((root / name / "touched-targets.txt").read_text().splitlines()) == {
+        *ordinary, "//consumer:consumer_test", runtime}, name
+PY
+
+# An ambient reference marker grants no automatic manual admission.
+(cd "$fixture/repo" && PLUG_PUBLIC_REFERENCE=caller-claim BAZEL_BIN="$fixture/fake-bazel" "$resolver" --base "$base" --head "$head" --output "$fixture/claimed")
+cmp "$fixture/graph/touched-targets.txt" "$fixture/claimed/touched-targets.txt"
+
 base="$head"
 printf '%s\n' '# CI-only change' >>"$fixture/repo/scripts/ci/ci.sh"
 git -C "$fixture/repo" add scripts/ci/ci.sh
@@ -153,4 +189,4 @@ grep -Fxq '//:lexicon_gate' "$fixture/ci/touched-targets.txt"
 grep -Fxq '0' "$fixture/ci/full-graph.txt"
 grep -Fq 'fallback=//:lexicon_gate' "$fixture/ci/selection.txt"
 
-echo "plug-ci-targets: package, nested Go ownership with/without graph changes, owned/unknown resource, unknown Go, reverse, graph, and CI-only cases passed"
+echo "plug-ci-targets: ordinary coverage, manual opt-in, prepared runtime, package/resource/reverse/graph and CI-only cases passed"
