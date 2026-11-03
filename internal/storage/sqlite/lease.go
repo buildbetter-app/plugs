@@ -42,11 +42,15 @@ type activeLease struct {
 	expires    int64
 	renewal    uint64
 	publishing bool
-	deadline   time.Time
-	timer      *time.Timer
-	lost       chan struct{}
-	lostFlag   bool
-	released   bool
+	// handoff stops accepting private heartbeats after the graph COMMIT. New
+	// Renew callers wait for the publication gate instead of extending the
+	// heartbeat while its final durable copy is being committed.
+	handoff  bool
+	deadline time.Time
+	timer    *time.Timer
+	lost     chan struct{}
+	lostFlag bool
+	released bool
 }
 
 func (l *activeLease) Epoch() uint64         { return l.epoch }
@@ -170,7 +174,10 @@ func (l *activeLease) renewPublication(ctx context.Context) (bool, error) {
 	if !l.liveLocked(now.UnixNano(), l.expires) {
 		return false, driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
 	}
-	if !l.publishing {
+	if !l.publishing || l.handoff {
+		// At the handoff cutoff the last accepted heartbeat is being flushed.
+		// Queue this call on the gate without acknowledging a new extension.
+		// It must still pass both expiry checks when it can renew normally.
 		return false, nil
 	}
 	if !deadline.After(l.deadline) {
@@ -188,31 +195,35 @@ func (l *activeLease) renewPublication(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// finishPublication closes the bridge atomically with comparing the durable
-// heartbeat. A concurrent Renew either belongs to this interval (and needs a
-// follow-up SQL commit) or must acquire the gate itself. Even if the lease died
-// during fsync, a successfully committed graph is still a successful commit.
+// finishPublication closes the bridge if the last accepted heartbeat is
+// durable (or Lost is already closed). Otherwise it atomically cuts off private
+// heartbeat admission: later Renew calls wait on the gate while ONE lease-only
+// transaction flushes the fixed heartbeat. No mutex is held across SQL/fsync.
+// Even if the lease died during fsync, a committed graph is still successful.
 func (l *activeLease) finishPublication(durable leaseHeartbeat) bool {
 	now := l.store.now().UnixNano()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if !l.liveLocked(now, l.expires) || l.heartbeatLocked() == durable {
 		l.publishing = false
+		l.handoff = false
 		return true
 	}
+	l.handoff = true
 	return false
 }
 
 func (l *activeLease) abortPublication(durable leaseHeartbeat) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.publishing {
+	if l.publishing || l.handoff {
 		// Rollback/cancellation/uncertain COMMIT cannot leave an acknowledged
 		// private heartbeat live after relinquishing cross-process exclusion.
 		if l.heartbeatLocked() != durable {
 			l.loseLocked()
 		}
 		l.publishing = false
+		l.handoff = false
 	}
 }
 func (s *Store) leaseFor(ctx context.Context, value driver.ActiveLease) (*activeLease, error) {

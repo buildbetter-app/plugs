@@ -399,10 +399,10 @@ func (s *Store) immediateLocked(ctx context.Context, l *activeLease, fn func(*sq
 	if err != nil {
 		return err
 	}
-	for l != nil && !l.finishPublication(durable) {
-		// Renew remains nonblocking while these lease-only transactions run.
-		// If it races a COMMIT, repeat until the durable expiry catches up, or
-		// fail closed. Never hand an unpersisted live heartbeat to a contender.
+	if l != nil && !l.finishPublication(durable) {
+		// A heartbeat raced the graph COMMIT. finishPublication has atomically
+		// stopped private renewals, so one lease-only transaction suffices even
+		// when EVERY native COMMIT takes longer than the renewal interval.
 		if _, err = c.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
 			return commitError{err}
 		}
@@ -417,6 +417,11 @@ func (s *Store) immediateLocked(ctx context.Context, l *activeLease, fn func(*sq
 			return commitError{err}
 		}
 		durable = next
+		if !l.finishPublication(durable) {
+			// Fail closed rather than release exclusion with an unexpected
+			// unpersisted heartbeat. This cannot occur after the cutoff.
+			return commitError{fmt.Errorf("sqlite: heartbeat advanced during publication handoff")}
+		}
 	}
 	return nil
 }

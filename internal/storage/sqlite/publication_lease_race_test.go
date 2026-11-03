@@ -325,6 +325,116 @@ func publicationBoundedSlowHandoff(t *testing.T, mode string) {
 	t.Logf("%s: publication returned in %s using two 4s COMMITs with ttl=%s renewEvery=%s; queued Renew completed a third 4s COMMIT; lease remains live and durable", mode, elapsed, driver.LeaseTTL, driver.LeaseRenewEvery)
 }
 
+func TestSQLitePublicationLeaseQueuedHandoffRenewal(t *testing.T) {
+	for _, mode := range []string{"cancellation", "expiry"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := testContext(t)
+			path := filepath.Join(t.TempDir(), "queued-handoff.db")
+			s := openStore(t, ctx, path)
+			observer := openStore(t, ctx, path)
+			lease := getLease(t, ctx, s, time.Second).(*activeLease)
+			connector := hookPublicationCommit(t, s, path)
+			connector.every.Store(true)
+			t.Cleanup(func() { connector.every.Store(false) })
+			var accepted, queuedErr error
+			var queuedEarly, advanced bool
+			var held time.Duration
+			connector.after = func() {
+				if connector.steps.Load() == 1 {
+					// Accept a heartbeat after the graph COMMIT's snapshot so
+					// finalization must enter its real lease-only transaction.
+					accepted = lease.Renew(ctx)
+				}
+			}
+			connector.before = func() {
+				if connector.steps.Load() != 1 {
+					return
+				}
+				lease.mu.Lock()
+				before := lease.heartbeatLocked()
+				lease.mu.Unlock()
+				renewCtx, cancel := context.WithCancel(ctx)
+				defer cancel()
+				queued := make(chan error, 1)
+				go func() { queued <- lease.Renew(renewCtx) }()
+				started := time.Now()
+				delay := 100 * time.Millisecond
+				if mode == "expiry" {
+					delay = 2 * time.Second
+				}
+				timer := time.NewTimer(delay)
+				defer timer.Stop()
+				select {
+				case queuedErr = <-queued:
+					// A successful return before the gate opens would falsely
+					// acknowledge an extension excluded by the cutoff.
+					queuedEarly = queuedErr == nil
+					select {
+					case <-timer.C:
+					case <-ctx.Done():
+					}
+				case <-timer.C:
+					if mode == "cancellation" {
+						cancel()
+					}
+					queuedErr = <-queued
+				case <-ctx.Done():
+					cancel()
+					queuedErr = <-queued
+				}
+				held = time.Since(started)
+				lease.mu.Lock()
+				advanced = lease.heartbeatLocked() != before
+				lease.mu.Unlock()
+			}
+			err := s.immediate(ctx, lease, func(c *sql.Conn) error {
+				_, err := c.ExecContext(ctx, `INSERT INTO checkpoints VALUES(?,?,?)`, "queued-handoff", revKey(1), []byte("committed"))
+				return err
+			})
+			if err != nil || accepted != nil || queuedEarly || advanced || connector.steps.Load() != 2 {
+				t.Fatalf("publication=%v accepted=%v queued=%v early=%v advanced=%v nativeCommits=%d", err, accepted, queuedErr, queuedEarly, advanced, connector.steps.Load())
+			}
+			if mode == "cancellation" {
+				if !errors.Is(queuedErr, context.Canceled) {
+					t.Fatalf("queued Renew ignored cancellation: %v", queuedErr)
+				}
+				select {
+				case <-lease.Lost():
+					t.Fatal("canceling an unaccepted queued renewal lost the durable live lease")
+				default:
+				}
+			} else {
+				if held < 2*time.Second {
+					t.Fatalf("did not cross the real TTL during handoff: held=%s", held)
+				}
+				requireFenced(t, queuedErr)
+				requireFenced(t, lease.Renew(ctx))
+				select {
+				case <-lease.Lost():
+				default:
+					t.Fatal("queued renewal resurrected an expired handoff lease")
+				}
+				next := getLease(t, ctx, observer, driver.LeaseTTL)
+				if next.Epoch() <= lease.Epoch() {
+					t.Fatal("handoff expiry takeover did not advance the epoch")
+				}
+				requireFenced(t, lease.Renew(ctx))
+			}
+			cp, readErr := observer.LoadCheckpoint(ctx, "queued-handoff")
+			if readErr != nil || cp.Generation != 1 || string(cp.Payload) != "committed" {
+				t.Fatalf("already committed graph changed: checkpoint=%+v err=%v", cp, readErr)
+			}
+			lease.mu.Lock()
+			registered := lease.publishing || lease.handoff
+			lease.mu.Unlock()
+			if registered {
+				t.Fatal("completed handoff left heartbeat admission registered")
+			}
+			t.Logf("%s: unaccepted queued Renew returned %v without advancing the heartbeat; held=%s; graph remains committed", mode, queuedErr, held)
+		})
+	}
+}
+
 func TestSQLitePublicationLeaseAbortFailsClosed(t *testing.T) {
 	for _, mode := range []string{"callback-error", "cancellation", "after-durable-commit"} {
 		t.Run(mode, func(t *testing.T) {

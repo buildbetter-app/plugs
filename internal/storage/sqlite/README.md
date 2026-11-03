@@ -42,15 +42,23 @@ This bridge is safe across processes because the publication gate excludes all
 lease acquisition/release and other publications until handoff; the native
 writer is also held when ownership is registered. Matching the epoch/token is
 still mandatory, including when a WAL reader sees the older durable expiry.
-Accepted heartbeats are persisted with the graph. Heartbeats racing COMMIT/fsync
-are flushed in lease-only transactions while retaining the same gate, until the
-durable heartbeat and private heartbeat agree atomically. If rollback,
-cancellation or an uncertain outcome prevents that handoff, the driver closes
-Lost before releasing exclusion rather than advertising an unpersisted live
-extension. In particular, an aborted publication that accepted a private
-heartbeat may require acquiring a new lease. No second connection or process
-can take the lease based on the older expiry while its publication gate is held;
-after genuine expiry, takeover advances the epoch and fences the old holder.
+Accepted heartbeats are persisted with the graph. If a heartbeat races the
+initial COMMIT/fsync, the driver atomically stops accepting private extensions
+and flushes that fixed heartbeat in at most one lease-only transaction, retaining
+the same gate. Later Renew calls wait for the gate instead of extending a moving
+target; they renew normally after handoff, only if the lease is still live.
+Neither the lease mutex nor the store mutex is held across SQL or fsync. This
+keeps publication bounded even when every COMMIT takes longer than the renewal
+interval. The cutoff does not suspend expiry: if the final flush exhausts the
+last accepted heartbeat's wall-clock or monotonic budget, Lost closes and queued
+renewals cannot resurrect it. A graph already durably committed remains committed.
+If rollback, cancellation or an uncertain outcome prevents that handoff, the
+driver closes Lost before releasing exclusion rather than advertising an
+unpersisted live extension. In particular, an aborted publication that accepted
+a private heartbeat may require acquiring a new lease. No second connection or
+process can take the lease based on the older expiry while its publication gate
+is held; after genuine expiry, takeover advances the epoch and fences the old
+holder.
 
 Keyed writes with post work atomically publish ResponsePending. Fresh readers
 observe finalization; existing snapshots retain their original pending state.
