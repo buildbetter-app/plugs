@@ -31,6 +31,7 @@ import (
 )
 
 var rawWorkflowSource = model.Ref{ID: "ontology/raw-workflow-close"}
+var rawWorkflowPrincipal = model.PrincipalRef{Kind: "user", ID: "user:raw-workflow-close-worker"}
 
 const rawWorkflowCheckpoint = "plugin/workflow/default/durable"
 
@@ -122,7 +123,7 @@ func (h *rawWorkflowHTTP) open(t *testing.T) {
 		t.Fatal(err)
 	}
 	keys := authnapikey.New(authnapikey.Config{Now: f.now})
-	key, err := keys.Issue(batchPrincipal, f.now().Add(time.Hour))
+	key, err := keys.Issue(rawWorkflowPrincipal, f.now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +305,7 @@ func (h *rawWorkflowHTTP) state(t *testing.T, request model.WriteMeta) rawWorkfl
 	if s.Observed, err = r.Observe(f.ctx, ordered); err != nil {
 		t.Fatal(err)
 	}
-	principal, err := driver.PrincipalKey(batchPrincipal)
+	principal, err := driver.PrincipalKey(rawWorkflowPrincipal)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,6 +346,22 @@ func (h *rawWorkflowHTTP) refuse(t *testing.T, cs model.ChangeSet, meta model.Wr
 
 func rawWorkflowClose(ref model.Ref) model.Op {
 	return model.Op{Kind: model.OpClose, Close: &model.CloseOp{Kind: model.OpClose, Target: ref, Reason: "completed once"}}
+}
+
+func rawWorkflowRow(t *testing.T, state rawWorkflowState, id string) driver.Record {
+	t.Helper()
+	var found driver.Record
+	count := 0
+	for _, row := range state.Rows {
+		if row.Ref.ID == id {
+			found = row
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one current row for %s, found %d", id, count)
+	}
+	return found
 }
 
 func (h *rawWorkflowHTTP) requireGCBait(t *testing.T, state rawWorkflowState, active ...model.Ref) {
@@ -516,14 +533,13 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 			if len(after.Versions[first.ID]) != len(before.Versions[first.ID])+1 || !reflect.DeepEqual(before.Versions[other.ID], after.Versions[other.ID]) || !reflect.DeepEqual(before.Checkpoint, after.Checkpoint) || len(after.Log[len(after.Log)-1].Events) == 0 || reflect.DeepEqual(before.Derived, after.Derived) {
 				t.Fatal("positive close must change its version/derived/event state and conserve the control bead and workflow checkpoint")
 			}
-			for _, row := range after.Rows {
-				if row.Ref.ID != first.ID {
-					continue
-				}
-				doc := decodeDocument(t, row)
-				if doc.Fields["status"] != "done" || len(doc.Comments) != 1 || doc.Comments[0].Body != "completed once" {
-					t.Fatalf("corrected close status/reason: %+v", doc)
-				}
+			row := rawWorkflowRow(t, after, first.ID)
+			doc := decodeDocument(t, row)
+			if doc.Fields["status"] != "done" || len(doc.Comments) != 1 || doc.Comments[0].Body != "completed once" || row.Revision.String() != commit.Revision.String() || commit.Results[0].Revision.String() != commit.Revision.String() {
+				t.Fatalf("corrected close status/reason/revision: row=%+v doc=%+v commit=%+v", row, doc, commit)
+			}
+			if !reflect.DeepEqual(rawWorkflowRow(t, before, other.ID), rawWorkflowRow(t, after, other.ID)) {
+				t.Fatal("corrected prefix changed current control bead body/revision")
 			}
 			replay := h.apply(t, valid, refusedKey)
 			if !replay.Meta.Replayed || !reflect.DeepEqual(commit, rawWorkflowCommit(t, replay)) || !bytes.Equal(reply.Result, replay.Result) {
@@ -536,6 +552,28 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 				t.Fatalf("changed successful-key body lost idempotency precedence: %+v", reused)
 			}
 			rawWorkflowSame(t, after, h.state(t, refusedKey))
+			// A canonical-looking alias key still resolves to an ordinary new
+			// bead. With no workflow-target op to mask an eager refusal, this
+			// positive protects classification of the resolved ID arm only.
+			aliasMeta := f.meta("canonical-looking-alias")
+			aliasBefore := h.state(t, aliasMeta)
+			aliasCommit := rawWorkflowCommit(t, h.apply(t, model.ChangeSet{Ops: []model.Op{
+				createOp(operational.ID, "ordinary canonical-looking alias", "batch-local"),
+				rawWorkflowClose(model.RefByKey(operational.ID)),
+			}}, aliasMeta))
+			aliasAfter := h.state(t, aliasMeta)
+			if len(aliasCommit.Results) != 2 || aliasCommit.Results[0].Ref.ID == operational.ID || aliasCommit.Results[0].Ref.ID != aliasCommit.Results[1].Ref.ID || !reflect.DeepEqual(aliasBefore.Checkpoint, aliasAfter.Checkpoint) {
+				t.Fatal("canonical-looking key was not resolved to the same ordinary durable bead without operational mutation")
+			}
+			aliasRow := rawWorkflowRow(t, aliasAfter, aliasCommit.Results[0].Ref.ID)
+			aliasDoc := decodeDocument(t, aliasRow)
+			if aliasDoc.Fields["status"] != "done" || len(aliasDoc.Comments) != 1 || aliasDoc.Comments[0].Body != "completed once" || aliasRow.Revision.String() != aliasCommit.Revision.String() || len(aliasAfter.Versions[aliasRow.Ref.ID]) != 1 {
+				t.Fatalf("resolved ordinary alias close did not commit its terminal image once: %+v", aliasDoc)
+			}
+			if !reflect.DeepEqual(rawWorkflowRow(t, after, first.ID), rawWorkflowRow(t, aliasAfter, first.ID)) || !reflect.DeepEqual(rawWorkflowRow(t, after, other.ID), rawWorkflowRow(t, aliasAfter, other.ID)) {
+				t.Fatal("resolved-alias positive changed earlier durable controls")
+			}
+			after = h.state(t, refusedKey)
 			if engine != "memory" {
 				// A supported named read now consumes the same GC bait. This
 				// positive control runs only after every raw refusal/replay oracle.
