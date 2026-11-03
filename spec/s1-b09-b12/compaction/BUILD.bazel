@@ -26,3 +26,10 @@ filegroup(
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
 )
+
+# Use --test_filter=^TestB11B12ReopenCompactionIdentityRefusalAndAllocationRetry$
+# for the isolated continuation candidate; the existing glob owns its sources.
+test_suite(
+    name = "b11_b12_reopen_identity",
+    tests = [":compaction_test"],
+)

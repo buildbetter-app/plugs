@@ -78,6 +78,10 @@ type DerivedTable string
 type DerivedRow struct {
 	Key   string
 	Value []byte
+	// Index is an optional trusted-core projection of these exact logical
+	// bytes. It changes neither this row's identity nor its lock/sentinel
+	// obligations. Drivers must preserve it atomically or refuse the write.
+	Index *SelectionIndex
 }
 type LockKeyKind string
 type ReadFact string

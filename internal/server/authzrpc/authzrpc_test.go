@@ -108,6 +108,11 @@ func newFixture(t *testing.T, mutators []pipeline.MutatorBinding) *fixture {
 
 func newFixtureOn(t *testing.T, store driver.Store, mutators []pipeline.MutatorBinding) *fixture {
 	t.Helper()
+	return newFixtureWith(t, store, mutators, authzrpc.New)
+}
+
+func newFixtureWith(t *testing.T, store driver.Store, mutators []pipeline.MutatorBinding, construct func(context.Context, authzrpc.Config) (*authzrpc.Composition, error)) *fixture {
+	t.Helper()
 	ctx := context.Background()
 	f := &fixture{store: store}
 	t.Cleanup(func() { _ = f.store.Close() })
@@ -146,7 +151,7 @@ func newFixtureOn(t *testing.T, store driver.Store, mutators []pipeline.MutatorB
 		t.Fatal(err)
 	}
 	f.keys = authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
-	f.server, err = authzrpc.New(ctx, authzrpc.Config{
+	f.server, err = construct(ctx, authzrpc.Config{
 		Store: f.store, Lease: lease, Provider: f.keys, Facts: f.facts,
 		Namespace: ns, DefaultProject: "project", Mutators: mutators,
 	})

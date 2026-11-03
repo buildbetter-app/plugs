@@ -21,6 +21,7 @@ go_test(
         "//internal/core/model",
         "//internal/core/pipeline:pipeline",
         "//internal/core/port",
+        "//internal/core/service",
         "//internal/storage/driver",
         "//internal/storage/sourceindex",
         "//internal/storage/conformance",

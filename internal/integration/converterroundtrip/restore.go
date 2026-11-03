@@ -766,9 +766,12 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 				metadata["plug.restore.allocator"] = encoded
 			}
 		}
-		labels := []string{}
-		for _, value := range source.Body["labels"].([]any) {
-			labels = append(labels, value.(string))
+		labels, labelsOK := exactLabelSet(source.Body["labels"])
+		if !labelsOK {
+			return restorePlan{}, fmt.Errorf("%w: source labels are not writable for %s", ErrRestoreUnavailable, source.ID)
+		}
+		if len(labels) != 0 {
+			fields["labels"] = append([]string(nil), labels...)
 		}
 		docs[source.ID] = pipeline.Document{Labels: labels, ID: source.ID, Type: targetType, Project: source.Project, Fields: fields, Metadata: metadata}
 	}

@@ -102,6 +102,9 @@ type Config struct {
 	// listener and RPC composition. The UI validates every bundle and grant;
 	// this field accepts no caller-supplied installation or credential.
 	UIFrames []webui.FrameBundle
+	// RestoredWASI loads an existing source-built lock through ArtifactStore.
+	// It is an alternative to NativePlugins/NativeBindings, not an installer.
+	RestoredWASI *RestoredWASIConfig
 	// Compaction supplies a host-owned summary and trusted D32 verifier. Nil
 	// keeps summary generation and reversal unavailable; there is no egress.
 	Compaction *service.CompactionConfig
@@ -152,6 +155,7 @@ type Runtime struct {
 	Dispatcher       *coreevents.Dispatcher
 	ProjectionStatus coreevents.ProjectionStatusReader
 	restoreImport    *restoreImportAdapter
+	restoredWASI     *restoredWASI
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -175,6 +179,13 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	restored, err := restoreConfiguredWASI(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	// Until Runtime takes ownership, every startup failure removes the
+	// disposable restored bytes without opening a guest.
+	defer func() { _ = closeRestoredWASI(restored) }()
 	store, err := openStore(ctx, config)
 	if err != nil {
 		return nil, err
@@ -188,7 +199,8 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 	}
 
 	lifetime, cancel := context.WithCancel(ctx)
-	r := &Runtime{Store: store, Lease: lease, ctx: lifetime, cancel: cancel, renewDone: make(chan struct{})}
+	r := &Runtime{Store: store, Lease: lease, ctx: lifetime, cancel: cancel, renewDone: make(chan struct{}), restoredWASI: restored}
+	restored = nil // Runtime now owns the artifact on success and bind failure.
 	// Start renewal before binding optional subsystems so a failed bind can
 	// still be canceled and joined by Close without leaking the lease.
 	go r.renew(config.LeaseHolder)
@@ -309,8 +321,14 @@ func (r *Runtime) bind(config Config) error {
 	}
 	ontology := service.NewOntology(nil)
 	writerOptions := []pipeline.Option{pipeline.WithOntology(ontology)}
-	if len(config.NativePlugins) != 0 || len(config.NativeBindings) != 0 {
-		nativeHost, hostErr := r.newNativeHost(config, authConfig)
+	if r.restoredWASI != nil || len(config.NativePlugins) != 0 || len(config.NativeBindings) != 0 {
+		var nativeHost *pluginhost.Host
+		var hostErr error
+		if r.restoredWASI != nil {
+			nativeHost, hostErr = r.newRestoredWASIHost(authConfig)
+		} else {
+			nativeHost, hostErr = r.newNativeHost(config, authConfig)
+		}
 		if hostErr != nil {
 			return hostErr
 		}
@@ -706,6 +724,7 @@ func (r *Runtime) Close(ctx context.Context) error {
 		if r.NativeHost != nil {
 			r.closeErr = errors.Join(r.closeErr, r.NativeHost.Close())
 		}
+		r.closeErr = errors.Join(r.closeErr, closeRestoredWASI(r.restoredWASI))
 		<-r.renewDone
 		leaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		r.closeErr = errors.Join(r.closeErr, r.Lease.Release(leaseCtx))
