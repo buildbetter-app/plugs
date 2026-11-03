@@ -92,6 +92,9 @@ type Config struct {
 	// RestoreImportPlanner is converter-owned inspection of the exact archive;
 	// composition never derives or accepts a caller-supplied derived digest.
 	RestoreImportPlanner RestoreImportPlanner
+	// Compaction supplies a host-owned summary and trusted D32 verifier. Nil
+	// keeps summary generation and reversal unavailable; there is no egress.
+	Compaction *service.CompactionConfig
 
 	// ViewReader and Readiness are optional host-owned read projections. When
 	// ViewReader is present, view.run/view.explain and view.watch are composed
@@ -299,6 +302,9 @@ func (r *Runtime) bind(config Config) error {
 			return fmt.Errorf("composition: initialize workflow plugin: %w", workflowErr)
 		}
 		serviceOptions = append(serviceOptions, service.WithWorkflow(workflow.WithIdentity(workflowplugin.Alias, "default", meta.Incarnation)))
+	}
+	if config.Compaction != nil {
+		serviceOptions = append(serviceOptions, service.WithCompaction(*config.Compaction))
 	}
 	r.Service = service.New(r.Store, r.Lease, writer, serviceOptions...)
 	registry, err := rpc.NewRegistry()

@@ -519,6 +519,12 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	for i, lock := range locks {
 		keys[i] = lock.Key
 	}
+	// Method is server-bound audit metadata; authorization remains in the
+	// service and canonical Writer checks. No caller-supplied kind is accepted.
+	kind := model.ChangesetWrite
+	if meta.Method == "history.revert" {
+		kind = model.ChangesetRevert
+	}
 	// Legacy no-op receipts keep the existing head-only NoopCommitter
 	// semantics. claimNext's terminal null is different: the contract gives
 	// it a durable H+1 receipt, with no graph changes, so it continues through
@@ -532,7 +538,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		if err != nil {
 			return model.Commit{}, err
 		}
-		return noop.CommitNoop(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
+		return noop.CommitNoop(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
 	}
 	n, err := head.Uint64()
 	if err != nil || n == math.MaxUint64 {
@@ -576,7 +582,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		return model.Commit{}, err
 	}
-	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(p.changed) != 0 && len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
+	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(p.changed) != 0 && len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
 	if err != nil {
 		if errors.Is(err, driver.ErrCheckpointConflict) {
 			return model.Commit{}, errStale

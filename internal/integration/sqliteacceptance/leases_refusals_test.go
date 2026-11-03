@@ -130,13 +130,31 @@ func TestUnsupportedCardRemainderRefusesWithoutWrites(t *testing.T) {
 	before := f.state(t)
 	for _, method := range []string{
 		"bead.heartbeat",
-		"history.versions", "history.revert", "history.redact",
+		"history.versions", "history.redact",
 		"admin.restore.begin", "view.run",
 	} {
 		if _, exists := f.catalog.Descriptor(method); !exists {
 			t.Fatalf("test names a method outside the actual wire catalog: %s", method)
 		}
 		f.code(t, f.call(t, method, map[string]any{}), "method_not_found")
+	}
+	// B12 now has real handlers. The ordinary host has neither a summary
+	// provider nor a trusted presence verifier, so it must fail closed through
+	// those handlers instead of presenting an obsolete method_not_found.
+	for _, tc := range []struct {
+		method, code string
+		params       map[string]any
+	}{
+		{"admin.compact", "compaction_unavailable", writeParams(t, map[string]any{})},
+		{"history.revert", "human_presence_required", writeParams(t, map[string]any{
+			"ref": ref, "baseRevision": before.Meta.Head, "expect": []model.Precondition{},
+			"humanPresence": map[string]any{"mode": "presence_check", "challenge": "unissued", "proof": "unissued"},
+		})},
+	} {
+		f.code(t, f.call(t, tc.method, tc.params), tc.code)
+		if f.receipt(t, tc.method, "owner", tc.params["_meta"].(map[string]any)["idempotencyKey"].(string)) != nil {
+			t.Fatal("missing B12 host capability published a receipt")
+		}
 	}
 	f.code(t, f.call(t, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "parented"}, "parent": model.RefByKey("unresolved-parent")})), "invalid_params")
 	f.code(t, f.call(t, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "must not land", "status": "done"}})), "ontology_use_slot_verb")
@@ -149,5 +167,5 @@ func TestUnsupportedCardRemainderRefusesWithoutWrites(t *testing.T) {
 		domainCode(t, err, "invalid_params")
 	}
 	requireSameState(t, before, f.state(t))
-	t.Log("unbound public heartbeat/history-mutation/restore/view methods, malformed named parents and unsupported attach/project-move/status/unknown-field writes explicitly refused")
+	t.Log("unbound public heartbeat/remaining-history/restore/view methods, missing B12 host capabilities, malformed named parents and unsupported attach/project-move/status/unknown-field writes explicitly refused")
 }

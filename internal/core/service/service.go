@@ -26,6 +26,7 @@ type Service struct {
 	authorizationInstalled func() bool
 	events                 EventProvider
 	workflow               *workflowplugin.Provider
+	compaction             CompactionConfig
 }
 
 // claimNextConflictRestartBudget bounds only the extra full-walk restart used
