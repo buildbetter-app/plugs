@@ -1,0 +1,161 @@
+name: Plug CP7 Product Latency
+
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plug-cp7-latency-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  product-baseline:
+    name: Real CP7 baseline (${{ matrix.engine }})
+    runs-on: runs-on=${{ github.run_id }}/runner=bb-x64-16
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [sqlite, postgres]
+    env:
+      CP7_ENGINE: ${{ matrix.engine }}
+    steps:
+      - name: Set up RunsOn
+        uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
+
+      - name: Checkout exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify checkout and declare evidence scope
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cp7-evidence"
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          tree = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
+          assert head == os.environ["EXPECTED_SHA"], "checkout differs from requested SHA"
+          report = {
+              "schema": "plug-real-cp7-scheduled-run/v1",
+              "head": head, "tree": tree, "checkout_verified": True,
+              "engine": os.environ["CP7_ENGINE"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "event": os.environ["GITHUB_EVENT_NAME"],
+              "workload_sha256": hashlib.sha256(Path("internal/integration/cp7latency/workload.json").read_bytes()).hexdigest(),
+              "scope": "new real product service baseline; authentication transport and real-host SLO unqualified",
+              "gate": "correctness errors fail; measured cap/deadline/SLO misses remain RED target_pass=false",
+          }
+          Path(os.environ["RUNNER_TEMP"], "cp7-evidence", "run.json").write_text(json.dumps(report, indent=2) + "\n")
+          PY
+
+      - name: Restore verified Bazel repository cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cp7-bazel-repository-cache
+          key: plug-bazel-repository-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'MODULE.bazel.lock') }}
+
+      - name: Install pinned Bazel toolchain
+        env:
+          BAZELISK_SHA256: 5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992
+          BAZEL_SHA256: d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8
+        run: |
+          set -euo pipefail
+          test "$(tr -d '[:space:]' < .bazelversion)" = 9.3.0
+          mkdir -p "$RUNNER_TEMP/cp7-bazelisk" "$RUNNER_TEMP/cp7-bazel-repository-cache"
+          curl --fail --silent --show-error --location --retry 3 --max-time 120 \
+            --output "$RUNNER_TEMP/cp7-bazel" \
+            https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64
+          printf '%s  %s\n' "$BAZELISK_SHA256" "$RUNNER_TEMP/cp7-bazel" | sha256sum --check --status
+          chmod 755 "$RUNNER_TEMP/cp7-bazel"
+          {
+            echo "BAZELISK_HOME=$RUNNER_TEMP/cp7-bazelisk"
+            echo "BAZELISK_VERIFY_SHA256=$BAZEL_SHA256"
+          } >> "$GITHUB_ENV"
+          cat > "$RUNNER_TEMP/cp7.bazelrc" <<EOF
+          common --enable_bzlmod
+          common --color=no
+          common --repository_cache=$RUNNER_TEMP/cp7-bazel-repository-cache
+          common --remote_cache=
+          common --remote_executor=
+          common --repo_contents_cache=
+          test --nocache_test_results
+          test --test_output=all
+          test --test_timeout=900,900,900,9000
+          EOF
+
+      - name: Execute every fraction and operation
+        run: |
+          set -euo pipefail
+          target="//internal/integration/cp7latency:cp7_latency_${CP7_ENGINE}_test"
+          args=(test "$target" //tools/lexicon:lexicon_gate
+            --lockfile_mode=error --jobs=4 --local_resources=cpu=4
+            --nocache_test_results --test_output=all --test_arg=-test.v
+            --test_timeout=900,900,900,9000
+            "--test_env=PLUG_SOURCE_MODULE_ROOT=$GITHUB_WORKSPACE")
+          printf '%q ' bazel "${args[@]}" > "$RUNNER_TEMP/cp7-evidence/command.txt"
+          printf '\n' >> "$RUNNER_TEMP/cp7-evidence/command.txt"
+          set +e
+          "$RUNNER_TEMP/cp7-bazel" --nosystem_rc --nohome_rc --noworkspace_rc \
+            --bazelrc="$RUNNER_TEMP/cp7.bazelrc" "${args[@]}" \
+            2>&1 | tee "$RUNNER_TEMP/cp7-evidence/bazel.log"
+          rc=${PIPESTATUS[0]}
+          printf '%s\n' "$rc" > "$RUNNER_TEMP/cp7-evidence/exit_code"
+          exit "$rc"
+
+      - name: Preserve raw measurements and correctness evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          destination="$RUNNER_TEMP/cp7-evidence"
+          mkdir -p "$destination"
+          testlogs="bazel-testlogs/internal/integration/cp7latency/cp7_latency_${CP7_ENGINE}_test"
+          if [[ -d "$testlogs" ]]; then
+            cp -R -L "$testlogs" "$destination/test-results"
+          fi
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          destination = Path(os.environ["RUNNER_TEMP"], "cp7-evidence")
+          log = destination / "test-results/test.log"
+          records = {"CP7_SAMPLE": [], "CP7_CASE": []}
+          if log.exists():
+              for line in log.read_text().splitlines():
+                  for kind in records:
+                      marker = kind + " "
+                      if marker in line:
+                          records[kind].append(json.loads(line.split(marker, 1)[1]))
+          for kind, values in records.items():
+              (destination / (kind.lower() + ".jsonl")).write_text("".join(json.dumps(v, sort_keys=True) + "\n" for v in values))
+          complete = len(records["CP7_CASE"]) == 9 and len(records["CP7_SAMPLE"]) == 216
+          red = sum(not case["target_pass"] for case in records["CP7_CASE"])
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(f"New real product service baseline: {len(records['CP7_CASE'])}/9 cases, {len(records['CP7_SAMPLE'])}/216 attempts. Complete: {complete}. Recorded RED cases: {red}.\n\n")
+              summary.write("Bazel success certifies harness correctness/build only. Cap, deadline and SLO misses remain RED; authentication transport, real-host SLO, 200-agent runtime and product qualification remain unqualified.\n")
+          if log.exists() and (destination / "exit_code").read_text().strip() == "0":
+              assert complete, "successful test did not execute the declared matrix"
+          PY
+          if [[ -x "$RUNNER_TEMP/cp7-bazel" ]]; then
+            "$RUNNER_TEMP/cp7-bazel" --nosystem_rc --nohome_rc --noworkspace_rc \
+              --bazelrc="$RUNNER_TEMP/cp7.bazelrc" shutdown
+          fi
+
+      - name: Upload baseline evidence including RED measurements
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: plug-cp7-latency-${{ matrix.engine }}-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: error
+          path: ${{ runner.temp }}/cp7-evidence
