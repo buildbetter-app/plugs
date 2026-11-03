@@ -533,6 +533,7 @@ internal/integration/receiptconcurrency/receiptconcurrency_test.go
 internal/integration/restoreworkload/BUILD.bazel
 internal/integration/restoreworkload/README.md
 internal/integration/restoreworkload/restore_workload_test.go
+internal/integration/restoreworkload/restored_lifecycle_reopen_test.go
 internal/integration/rpctx/BUILD.bazel
 internal/integration/rpctx/rpc_tx_test.go
 internal/integration/s1relations/BUILD.bazel
