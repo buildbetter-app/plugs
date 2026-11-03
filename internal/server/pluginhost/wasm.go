@@ -105,9 +105,10 @@ type wasmFactory struct {
 // wait, so closing a runtime cannot leave a poll sleeping on a guest-selected
 // duration.
 type wasmTimer struct {
-	mu      sync.Mutex
-	active  *wasmTimerWait
-	retired bool
+	mu          sync.Mutex
+	active      *wasmTimerWait
+	retired     bool
+	retiredDone chan struct{}
 }
 
 type wasmTimerWait struct {
@@ -148,9 +149,27 @@ func (t *wasmTimer) end(wait *wasmTimerWait) {
 	t.mu.Unlock()
 }
 
+// retirementSignal is allocated only for the callback pre-arm observer.
+func (t *wasmTimer) retirementSignal() <-chan struct{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.retiredDone == nil {
+		t.retiredDone = make(chan struct{})
+		if t.retired {
+			close(t.retiredDone)
+		}
+	}
+	return t.retiredDone
+}
+
 func (t *wasmTimer) cancel() {
 	t.mu.Lock()
-	t.retired = true
+	if !t.retired {
+		t.retired = true
+		if t.retiredDone != nil {
+			close(t.retiredDone)
+		}
+	}
 	wait := t.active
 	t.mu.Unlock()
 	if wait != nil {
@@ -223,6 +242,8 @@ type wasmInitializationErrorObserverKey struct{}
 
 type wasmCallbackTimerWaitObserverKey struct{}
 
+type wasmCallbackTimerBeginObserverKey struct{}
+
 type wasmInitializerCallKey struct{}
 
 // WithWASMInitializerObserver returns a context that observes a deterministic
@@ -284,6 +305,18 @@ func WithWASMCallbackTimerWaitObserver(ctx context.Context, observer func(contex
 		return ctx
 	}
 	return context.WithValue(ctx, wasmCallbackTimerWaitObserverKey{}, observer)
+}
+
+// WithWASMCallbackTimerBeginObserver observes callback timer arming with the
+// actual invocation context and the timer's permanent retirement signal.
+func WithWASMCallbackTimerBeginObserver(ctx context.Context, observer func(context.Context, <-chan struct{})) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wasmCallbackTimerBeginObserverKey{}, observer)
 }
 
 // wasmReadRequest is the deliberately small internal E5 envelope. The
@@ -823,6 +856,9 @@ func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest, readers .
 		switch request.Op {
 		case "mutate", "validate", "post":
 			observer, _ = ctx.Value(wasmCallbackTimerWaitObserverKey{}).(func(context.Context))
+			if beginObserver, _ := ctx.Value(wasmCallbackTimerBeginObserverKey{}).(func(context.Context, <-chan struct{})); beginObserver != nil {
+				beginObserver(ctx, r.timer.retirementSignal())
+			}
 		}
 		timerWait = r.timer.begin(ctx, observer)
 		defer r.timer.end(timerWait)
