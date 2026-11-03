@@ -158,6 +158,11 @@ func newFixtureWith(t *testing.T, store driver.Store, mutators []pipeline.Mutato
 	if err != nil {
 		t.Fatal(err)
 	}
+	// These publication fixtures explicitly install durable authority. Host
+	// construction itself remains read-only, including on existing stores.
+	if err := f.facts.Replace(f.base); err != nil {
+		t.Fatal(err)
+	}
 	return f
 }
 

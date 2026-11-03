@@ -853,7 +853,7 @@ func TestMutableFactsRejectsStaleRegistryPublication(t *testing.T) {
 	}
 }
 
-// Initial installation is a real H+1 authority publication. A failed commit
+// Explicit initial Replace is a real H+1 authority publication. A failed commit
 // keeps the target empty; a lost acknowledgement is durably occupied and is
 // recovered by exact rebind without a second initialization commit.
 func initialSourcePublication(t *testing.T, open storeFactory) {
@@ -894,12 +894,20 @@ func initialSourcePublication(t *testing.T, open storeFactory) {
 				store.next = fault
 			}
 			composition, err := authzrpc.New(ctx, config)
-			if mode == "success" && (err != nil || composition == nil) {
+			if err != nil || composition == nil {
+				t.Fatal(err)
+			}
+			constructed, constructedACL := publicationState(t, store.Store, namespace)
+			if constructed.String() != before.Head.String() || constructedACL.Present || !constructedACL.Revision.IsZero() || fault != nil && (fault.headCalls != 0 || fault.commitCalls != 0) {
+				t.Fatal("host construction published initial authority")
+			}
+			err = source.Replace(facts)
+			if mode == "success" && err != nil {
 				t.Fatal(err)
 			}
 			if mode != "success" {
 				var lost driver.ErrIndeterminate
-				if composition != nil || fault.commitCalls != 1 || fault.headCalls != 1 || len(fault.rows) != 4 || len(fault.bumped) != 1 || (fault.lostAck && !errors.As(err, &lost)) || (!fault.lostAck && !errors.Is(err, errBeforeFactsCommit)) {
+				if fault.commitCalls != 1 || fault.headCalls != 1 || len(fault.rows) != 4 || len(fault.bumped) != 1 || (fault.lostAck && !errors.As(err, &lost)) || (!fault.lostAck && !errors.Is(err, errBeforeFactsCommit)) {
 					t.Fatalf("initial fault did not follow complete source/fact/ACL staging: %+v error=%v", fault, err)
 				}
 			}
@@ -954,6 +962,11 @@ func initialSourcePublication(t *testing.T, open storeFactory) {
 			}
 			if _, err := authzrpc.New(ctx, config); err != nil {
 				t.Fatal("legitimate initial recovery/rebind failed:", err)
+			}
+			if mode == "before_commit" {
+				if err := source.Replace(facts); err != nil {
+					t.Fatal("explicit initial publication after rollback:", err)
+				}
 			}
 			finalHead, finalACL := publicationState(t, store.Store, namespace)
 			if finalHead.String() != "1" || finalACL.Revision.String() != "1" {
