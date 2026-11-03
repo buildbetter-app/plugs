@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/pluginapi"
+	"github.com/tetratelabs/wazero/api"
 )
 
 // e5ABIArtifact is the minimal E5-shaped module: env.plug.call is the only
@@ -359,4 +361,56 @@ func TestWASMLateReaderCannotPublishAfterDeadline(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "deadline") {
 		t.Fatalf("late reader response was not revoked: %v", err)
 	}
+}
+
+func TestWASMFactoryClosesAtLastGuestAndReopens(t *testing.T) {
+	factory := &wasmFactory{wasm: append([]byte(nil), e5ABIArtifact()...), modules: map[api.Module]*wasmRuntime{}}
+	first, err := factory.newRuntime(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := factory.newRuntime(context.Background(), nil)
+	if err != nil {
+		first.close()
+		t.Fatal(err)
+	}
+	if first.module == second.module {
+		first.close()
+		second.close()
+		t.Fatal("factory reused a guest module instead of fresh private state")
+	}
+	first.close()
+	factory.mu.Lock()
+	openWithSibling := factory.runtime != nil && factory.compiled != nil && len(factory.modules) == 1
+	factory.mu.Unlock()
+	if !openWithSibling {
+		second.close()
+		t.Fatal("closing one guest retired resources still owned by its sibling")
+	}
+	second.close()
+	factory.mu.Lock()
+	closedAtLastGuest := factory.runtime == nil && factory.compiled == nil && len(factory.modules) == 0
+	factory.mu.Unlock()
+	if !closedAtLastGuest {
+		t.Fatal("last guest did not release compiled/runtime resources")
+	}
+	third, err := factory.newRuntime(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third.close()
+}
+
+func TestWASMFactoryCanceledConstructionDoesNotPoisonReopen(t *testing.T) {
+	factory := &wasmFactory{wasm: append([]byte(nil), e5ABIArtifact()...), modules: map[api.Module]*wasmRuntime{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := factory.newRuntime(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled construction returned %v", err)
+	}
+	runtime, err := factory.newRuntime(context.Background(), nil)
+	if err != nil {
+		t.Fatal("factory could not recover after canceled construction:", err)
+	}
+	runtime.close()
 }
