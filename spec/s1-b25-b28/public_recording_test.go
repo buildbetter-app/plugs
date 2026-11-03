@@ -333,39 +333,64 @@ func recordBuildInfo(t *testing.T, root string, artifact publicArtifact, profile
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "go", "version", "-m", artifact.Binary).CombinedOutput()
-	if err != nil {
-		t.Fatalf("pinned Beads build info is unavailable: %v\n%s", err, output)
-	}
-	if err := checkPublicBuildInfo(output, profile.GoModuleSHA256); err != nil {
-		t.Fatalf("pinned Beads main module is not profile-bound: %v", err)
-	}
+	output, runErr := exec.CommandContext(ctx, "go", "version", "-m", artifact.Binary).CombinedOutput()
 	path := filepath.Join(root, "build-info.txt")
 	if err := os.WriteFile(path, output, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("PUBLIC_BUILD_INFO path=%s sha256=%s", path, hashBytes(output))
+	if runErr != nil {
+		t.Fatalf("pinned Beads build info is unavailable: %v\n%s", runErr, output)
+	}
+	if err := checkPublicBuildInfo(output, profile.GoModuleSHA256, profile.Exporter.Label); err != nil {
+		t.Fatalf("pinned Beads main package is not profile-bound: %v\n%s", err, output)
+	}
 	return output
 }
 
-// The exact source module is a hash pin in the companion profile. Match the
-// main module record; a matching dependency or path substring is insufficient.
-func checkPublicBuildInfo(data []byte, expectedModuleSHA256 string) error {
+// Bazel's Go binary records its main package path without a mod record. Bind
+// that complete path to the sealed exporter label and the unchanged module
+// hash. Any present mod record must agree; dependencies cannot supply either.
+func checkPublicBuildInfo(data []byte, expectedModuleSHA256, exporterLabel string) error {
 	if len(expectedModuleSHA256) != 64 || !isLowerHex(expectedModuleSHA256) {
 		return errors.New("invalid source module hash pin")
 	}
-	count := 0
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 || fields[0] != "mod" {
-			continue
-		}
-		count++
-		if len(fields) < 3 || hashBytes([]byte(fields[1])) != expectedModuleSHA256 {
-			return errors.New("main module does not match the sealed source profile")
+	targetPackage, target, ok := strings.Cut(exporterLabel, ":")
+	if !ok || !strings.HasPrefix(targetPackage, "//") || target == "" || strings.ContainsAny(target, ":/\\ \t\r\n") {
+		return errors.New("invalid sealed exporter label")
+	}
+	relativePackage := strings.TrimPrefix(targetPackage, "//")
+	for _, part := range strings.Split(relativePackage, "/") {
+		if part == "" || part == "." || part == ".." || strings.ContainsAny(part, "\\ \t\r\n") {
+			return errors.New("invalid sealed exporter package")
 		}
 	}
-	if count != 1 {
-		return errors.New("build info must contain exactly one main module")
+	packageSuffix := "/" + relativePackage
+	pathCount, moduleCount := 0, 0
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "path":
+			pathCount++
+			if len(fields) != 2 || !strings.HasSuffix(fields[1], packageSuffix) {
+				return errors.New("main package does not match the sealed exporter label")
+			}
+			module := strings.TrimSuffix(fields[1], packageSuffix)
+			if hashBytes([]byte(module)) != expectedModuleSHA256 {
+				return errors.New("main package module does not match the sealed source profile")
+			}
+		case "mod":
+			moduleCount++
+			if len(fields) < 3 || hashBytes([]byte(fields[1])) != expectedModuleSHA256 {
+				return errors.New("main module does not match the sealed source profile")
+			}
+		}
+	}
+	if pathCount != 1 || moduleCount > 1 {
+		return errors.New("build info must contain exactly one main package and at most one matching module")
 	}
 	return nil
 }
@@ -1011,23 +1036,35 @@ func TestPublicProjectionArchiveCloseReasonAndReverseHeader(t *testing.T) {
 func TestPublicProjectionBuildInfoRequiresMainModulePin(t *testing.T) {
 	module := "example.invalid/reference"
 	pin := hashBytes([]byte(module))
+	label := "//cmd/reference:reference"
+	mainPath := "\tpath\t" + module + "/cmd/reference\n"
+	mainModule := "\tmod\t" + module + "\t(devel)\n"
 	for _, tc := range []struct {
-		name, info, pin string
-		ok              bool
+		name, info, pin, label string
+		ok                     bool
 	}{
-		{"main_module", "reference: go1.26.10\n\tpath\t" + module + "/cmd/reference\n\tmod\t" + module + "\t(devel)\n", pin, true},
-		{"wrong_module", "\tmod\texample.invalid/other\t(devel)\n", pin, false},
-		{"dependency_only", "\tdep\t" + module + "\tv1.0.0\n", pin, false},
-		{"substring_only", "\tmod\t" + module + "-other\t(devel)\n", pin, false},
-		{"missing_module", "reference: go1.26.10\n", pin, false},
-		{"malformed_module", "\tmod\t" + module + "\n", pin, false},
-		{"duplicate_module", "\tmod\t" + module + "\t(devel)\n\tmod\t" + module + "\t(devel)\n", pin, false},
-		{"missing_pin", "\tmod\t" + module + "\t(devel)\n", "", false},
+		{"main_module", "reference: go1.26.10\n" + mainPath + mainModule, pin, label, true},
+		{"bazel_main_package", "reference: go1.26.10\n" + mainPath + "\tdep\texample.invalid/dependency\tv1.0.0\n", pin, label, true},
+		{"wrong_module", mainPath + "\tmod\texample.invalid/other\t(devel)\n", pin, label, false},
+		{"dependency_only", "\tdep\t" + module + "\tv1.0.0\n", pin, label, false},
+		{"substring_only", mainPath + "\tmod\t" + module + "-other\t(devel)\n", pin, label, false},
+		{"substring_path", "\tpath\t" + module + "-other/cmd/reference\n", pin, label, false},
+		{"wrong_package", "\tpath\t" + module + "/cmd/other\n" + mainModule, pin, label, false},
+		{"package_suffix", "\tpath\t" + module + "/cmd/reference/other\n" + mainModule, pin, label, false},
+		{"missing_path", mainModule, pin, label, false},
+		{"malformed_path", mainPath + "\tpath\n", pin, label, false},
+		{"duplicate_path", mainPath + mainPath + mainModule, pin, label, false},
+		{"malformed_module", mainPath + "\tmod\t" + module + "\n", pin, label, false},
+		{"duplicate_module", mainPath + mainModule + mainModule, pin, label, false},
+		{"missing_pin", mainPath + mainModule, "", label, false},
+		{"invalid_label", mainPath + mainModule, pin, "cmd/reference:reference", false},
+		{"extra_label_target", mainPath + mainModule, pin, label + ":other", false},
+		{"noncanonical_package", mainPath + mainModule, pin, "//cmd/../cmd/reference:reference", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := checkPublicBuildInfo([]byte(tc.info), tc.pin)
+			err := checkPublicBuildInfo([]byte(tc.info), tc.pin, tc.label)
 			if (err == nil) != tc.ok {
-				t.Fatalf("main module binding: %v", err)
+				t.Fatalf("main package binding: %v", err)
 			}
 		})
 	}
