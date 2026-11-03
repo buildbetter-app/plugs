@@ -97,3 +97,38 @@ of discarding either source. The input verification limits and incomplete
 history disclosures remain in the output; this adds no full A6 history replay
 or restore certification. Live restore and converter round-trip execution
 remain with their existing owners.
+
+Strict configuration union is an explicit import migration selected by
+`StrictUnionOntologyVerification`, with the existing closed directive shape.
+It collects normalized custom status/type rows, stored `status.custom` and
+`types.custom`, and all parsed YAML configuration observations independently.
+Raw records and `config/sources.json` remain unchanged, including original
+paths, precedence and captured byte envelopes. Producer capture must bind
+parsed YAML values to its actual bytes; consumer parser controls do not prove
+an authentic filesystem observation or the companion's effective runtime view.
+Opaque `store-files-and-quiescence` directories marked `contents:not-read`
+remain raw provenance without parsed configuration or enumerated entries.
+That exception is restricted to this family and cannot replace actual YAML/JSON
+configuration: file observations still require object-valued parsed `values`,
+including `{}` for legitimate empty files; null or missing values refuse.
+
+The compatible-category `beads-compat` preset maps active to unstarted, wip to
+started, done to completed/success and frozen to backlog. Absent/unspecified
+categories and conflicting declarations refuse with a `MigrationRefusal`
+naming the entry and origins. An explicit `map_status` with
+`target:{project:<prefix>,type:"issue"}`, `from:<source-name>` and
+`to:<built-in-status-key>` resolves the definition without rewriting either
+raw layer. Every declared custom type requires the existing `map_type` to
+`issue`. Strict mode installs source-named status/type aliases, including
+unused declarations; legacy type-mapping semantics stay unchanged. The
+compiled document retains built-in lifecycle slots and transition guards.
+
+Only normalized custom status/type tables become conditionally carried, after
+the complete migration validates; all other family refusals, exact raw/body
+mapping, census and credential-reference checks remain. A populated declaration
+without the strict disclosure refuses rather than remaining archive-only.
+Strict mode currently requires one explicit project and refuses source-history
+frames: project ownership and custom historical ontology must not be guessed.
+`Archive.ImportMigration` exposes detached declarations, the compiled document
+and exact per-record targets for the non-native restore adapter. It grants no
+native runtime, history, public recorder or production qualification.
