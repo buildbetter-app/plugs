@@ -1038,6 +1038,9 @@ plugins/workflow/native.go
 plugins/workflow/workflow.go
 plugins/workflow/workflow_test.go
 scripts/ci/BUILD.bazel
+scripts/ci/bazel-testlogs/BUILD.bazel
+scripts/ci/bazel-testlogs/archive.py
+scripts/ci/bazel-testlogs/archive_test.py
 scripts/ci/nightly-restore-streak/BUILD.bazel
 scripts/ci/nightly-restore-streak/README.md
 scripts/ci/nightly-restore-streak/verify.py
