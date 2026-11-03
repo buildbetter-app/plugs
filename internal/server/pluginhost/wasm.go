@@ -112,6 +112,7 @@ type wasmTimer struct {
 
 type wasmTimerWait struct {
 	ctx       context.Context
+	observer  func(context.Context)
 	abort     chan struct{}
 	abortOnce sync.Once
 }
@@ -120,8 +121,8 @@ func (w *wasmTimerWait) cancel() {
 	w.abortOnce.Do(func() { close(w.abort) })
 }
 
-func (t *wasmTimer) begin(ctx context.Context) *wasmTimerWait {
-	wait := &wasmTimerWait{ctx: ctx, abort: make(chan struct{})}
+func (t *wasmTimer) begin(ctx context.Context, observer func(context.Context)) *wasmTimerWait {
+	wait := &wasmTimerWait{ctx: ctx, observer: observer, abort: make(chan struct{})}
 	t.mu.Lock()
 	previous := t.active
 	t.active = wait
@@ -169,6 +170,9 @@ func (t *wasmTimer) nanosleep(ns int64) {
 	}
 	timer := time.NewTimer(time.Duration(ns))
 	defer timer.Stop()
+	if wait.observer != nil {
+		wait.observer(wait.ctx)
+	}
 	select {
 	case <-timer.C:
 	case <-wait.ctx.Done():
@@ -213,6 +217,8 @@ type wasmInitializerObserverKey struct{}
 
 type wasmInitializerContextObserverKey struct{}
 
+type wasmCallbackTimerWaitObserverKey struct{}
+
 type wasmInitializerCallKey struct{}
 
 // WithWASMInitializerObserver returns a context that observes a deterministic
@@ -238,6 +244,18 @@ func WithWASMInitializerContextObserver(ctx context.Context, observer func(conte
 		return ctx
 	}
 	return context.WithValue(ctx, wasmInitializerContextObserverKey{}, observer)
+}
+
+// WithWASMCallbackTimerWaitObserver observes positive WASI timer waits
+// entered by a guest callback with its active invocation context.
+func WithWASMCallbackTimerWaitObserver(ctx context.Context, observer func(context.Context)) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wasmCallbackTimerWaitObserverKey{}, observer)
 }
 
 // wasmReadRequest is the deliberately small internal E5 envelope. The
@@ -358,7 +376,7 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 	initCtx, cancel := context.WithTimeout(ctx, wasmInitTimeout)
 	defer cancel()
 	timer := &wasmTimer{}
-	initWait := timer.begin(initCtx)
+	initWait := timer.begin(initCtx, nil)
 	defer timer.end(initWait)
 	moduleConfig := wazero.NewModuleConfig().WithStartFunctions().WithSysNanotime().WithNanosleep(timer.nanosleep)
 	module, err := runtime.InstantiateModule(initCtx, compiled, moduleConfig)
@@ -769,7 +787,12 @@ func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest, readers .
 	}
 	var timerWait *wasmTimerWait
 	if r.timer != nil {
-		timerWait = r.timer.begin(ctx)
+		var observer func(context.Context)
+		switch request.Op {
+		case "mutate", "validate", "post":
+			observer, _ = ctx.Value(wasmCallbackTimerWaitObserverKey{}).(func(context.Context))
+		}
+		timerWait = r.timer.begin(ctx, observer)
 		defer r.timer.end(timerWait)
 	}
 	data, err := json.Marshal(request)
