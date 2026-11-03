@@ -71,6 +71,18 @@ Run the focused targets through the RunsOn wrapper:
 The whole-tree exact-head gate remains separate. This package does not certify
 latency, 200-agent contention rates, or unrelated cards.
 
+`//spec/s1-b01-b04:reference_recording` is an explicit, manual capture target.
+Invoke it only through the prepared public-reference RunsOn route. Missing
+archive, source, manifest, or producer-run inputs fail the test; they never
+produce a skipped success. Ordinary whole-tree tests do not execute this
+environment-dependent recorder. Two fresh matching captures remain required
+for complete paired reference evidence.
+
+The B02 replay also checks that public `bead.link` and `bead.fail` release a
+conditional dependent through the configured failure slot on memory, SQLite
+(including reopen), and PostgreSQL. This adopted outcome check does not extend
+the retained Beads traces or qualify the rest of the B02 card.
+
 ## B04 public claim assertions
 
 `//spec/s1-b01-b04:claim_acceptance` adds real JSON-RPC assertions on memory,

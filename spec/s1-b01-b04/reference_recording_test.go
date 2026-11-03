@@ -17,7 +17,14 @@ import (
 //go:embed record_reference.py
 var referenceRecorderBytes []byte
 
-const publicReferenceDescriptor = "41399124974:13121145530:8c3d155f3940d21bd270fb14fe0292de0db1b3f377214756db59edf53eec5fa2"
+// This target is built separately from recorded_integrity_test. Keep its
+// immutable input pins in its declared source set as well.
+const (
+	publicReferenceDescriptor = "41399124974:13121145530:8c3d155f3940d21bd270fb14fe0292de0db1b3f377214756db59edf53eec5fa2"
+	captureSourceCommit       = "9d6fff760b7a314b476539198504d77ce0959656"
+	captureSourceTree         = "cde121d6e4119e454857ad1c3ca293e2791be840"
+	captureBinarySHA256       = "3c6bbb888431751adce98dfebc8cbeeb5869300698e8b069a4d7438fabfb3af4"
+)
 
 func envRequired(t *testing.T, name string) string {
 	t.Helper()
@@ -53,11 +60,11 @@ func publicReferenceBinary(t *testing.T, archivePath, manifestPath string, desti
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Source.Beads.Commit != pinnedCommit || manifest.Source.Beads.Tree != pinnedTree {
+	if manifest.Source.Beads.Commit != captureSourceCommit || manifest.Source.Beads.Tree != captureSourceTree {
 		t.Fatalf("public reference source pin=%s/%s", manifest.Source.Beads.Commit, manifest.Source.Beads.Tree)
 	}
-	if got := manifest.Artifacts["bin/bd"].SHA256; got != pinnedBinary {
-		t.Fatalf("public reference binary manifest=%s want=%s", got, pinnedBinary)
+	if got := manifest.Artifacts["bin/bd"].SHA256; got != captureBinarySHA256 {
+		t.Fatalf("public reference binary manifest=%s want=%s", got, captureBinarySHA256)
 	}
 	archive, err := zip.OpenReader(archivePath)
 	if err != nil {
@@ -83,8 +90,8 @@ func publicReferenceBinary(t *testing.T, archivePath, manifestPath string, desti
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := sha256File(data); got != pinnedBinary {
-		t.Fatalf("public reference binary=%s want=%s", got, pinnedBinary)
+	if got := sha256File(data); got != captureBinarySHA256 {
+		t.Fatalf("public reference binary=%s want=%s", got, captureBinarySHA256)
 	}
 	if err := os.WriteFile(destination, data, 0o700); err != nil {
 		t.Fatal(err)

@@ -17,6 +17,7 @@ go_test(
     srcs = ["reference_recording_test.go"],
     embedsrcs = ["record_reference.py"],
     args = ["-test.v"],
+    tags = ["manual"],
 )
 
 go_test(
