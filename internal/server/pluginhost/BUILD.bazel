@@ -28,6 +28,7 @@ go_test(
         "//internal/core/port",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "//internal/storage/sqlite",
         "//pluginapi",
         "//sdk/go:sdk_go",
         "//sdk/go/conformance",

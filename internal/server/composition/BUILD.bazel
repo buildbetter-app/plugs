@@ -25,11 +25,13 @@ go_library(
         "//internal/server/viewrpc",
         "//internal/server/watch",
         "//internal/server/watchhttp",
+		"//internal/server/pluginhost",
         "//internal/server/webui",
         "//internal/storage/driver",
         "//internal/storage/memory",
         "//internal/storage/postgres",
         "//internal/storage/sqlite",
+		"//plugins/workflow",
     ],
 )
 
@@ -62,6 +64,7 @@ go_test(
         "//internal/plugins/authzfixed",
         "//internal/server/authn",
         "//internal/server/authzrpc",
+        "//internal/server/pluginhost",
         "//internal/server/transport/httpjson",
         "//internal/server/transport/inprocess",
         "//internal/server/viewrpc",

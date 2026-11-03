@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "authzrpc",
-    srcs = ["authzrpc.go", "checker.go", "hierarchy.go", "hierarchy_read.go", "service.go", "slice.go"],
+    srcs = ["authzrpc.go", "checker.go", "hierarchy.go", "hierarchy_read.go", "service.go", "slice.go", "workflow_claimnext.go", "workflow_reads.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/authzrpc",
     visibility = ["//:__subpackages__"],
     deps = [
@@ -17,6 +17,7 @@ go_library(
         "//internal/server/rpc",
         "//internal/server/transport/httpjson",
         "//internal/storage/driver",
+        "//plugins/workflow",
     ],
 )
 
@@ -49,6 +50,30 @@ go_test(
 )
 
 go_test(
+    name = "workflow_claimnext_test",
+    srcs = ["workflow_claimnext_test.go", "workflow_claimnext_auth_test.go", "workflow_writes_test.go", "workflow_boundary_test.go", "workflow_reads_test.go", "workflow_cursor_test.go"],
+    embed = [":authzrpc"],
+    tags = ["block-network"],
+    deps = [
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/server/pluginhost",
+        "//internal/server/rpc",
+        "//internal/server/transport/httpjson",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/sqlite",
+        "//plugins/workflow",
+    ],
+)
+
+go_test(
     name = "hierarchy_test",
     srcs = ["hierarchy_test.go", "atomic_close_test.go", "hierarchy_lifecycle_test.go", "hierarchy_lifecycle_guards_test.go"],
     embed = [":authzrpc"],
@@ -60,6 +85,22 @@ go_test(
         "//internal/plugins/authnapikey",
         "//internal/plugins/authzfixed",
         "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/sqlite",
+    ],
+)
+
+go_test(
+    name = "workflow_reads_test",
+    srcs = ["workflow_reads_test.go"],
+    embed = [":authzrpc"],
+    deps = [
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/service",
+        "//internal/plugins/authzfixed",
+        "//internal/server/rpc",
         "//internal/storage/driver",
         "//internal/storage/memory",
         "//internal/storage/sqlite",

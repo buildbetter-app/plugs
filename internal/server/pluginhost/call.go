@@ -164,7 +164,8 @@ func (c *capabilities) Call(ctx context.Context, method string, params, result a
 	return decode(response, result)
 }
 
-func (c *capabilities) State() pluginapi.StateStore { return &stateAccess{c.instance} }
+func (c *capabilities) State() pluginapi.StateStore          { return &stateAccess{c.instance} }
+func (c *capabilities) DurableState() pluginapi.DurableState { return c.instance.durable }
 func (c *capabilities) HTTP() *http.Client {
 	return &http.Client{Transport: &egressTransport{instance: c.instance}, Timeout: time.Second, CheckRedirect: func(_ *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {

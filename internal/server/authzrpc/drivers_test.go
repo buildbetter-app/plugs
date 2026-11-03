@@ -2,6 +2,7 @@ package authzrpc_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -203,6 +204,23 @@ func currentHistory(t *testing.T, open storeFactory) {
 	first := page(t, f.call(t, unrestricted, "history.query", cursorParams, 1204))
 	if len(first.Items) != 1 || first.NextCursor == "" {
 		t.Fatal("history fixture did not produce a continuation")
+	}
+	// Guarded history pages use the history cursor contract; Ready-only
+	// workflow membership metadata must never be attached to this token.
+	parts := strings.Split(first.NextCursor, ".")
+	if len(parts) != 2 {
+		t.Fatal("history cursor was not signed as two segments")
+	}
+	body, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cursorFields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &cursorFields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cursorFields["readyMembership"]; ok {
+		t.Fatal("history cursor carried Ready membership metadata")
 	}
 	next.Grants = nil
 	if err := f.facts.Replace(next); err != nil {
