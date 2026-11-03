@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
@@ -13,18 +17,19 @@ import (
 	"testing"
 )
 
-// The four files are complete normalized command transcripts from two
-// independent fresh Beads workspaces. The test derives the retained semantic
-// projection from the embedded JSON and keeps the older synthetic vectors in
-// replay_test.go as a separate Plug-only fixture.
+// Version 1 files retain the historical normalized transcripts, including their
+// misleading rawDigest/rawSha256 names. They do not prove raw byte equality or
+// isolated credentials. Version 2 keeps exact streams and names the normalized
+// digest separately. Neither version qualifies B12's unsupported apply/restore.
 //
-//go:embed reference/*.json record_reference.py
+//go:embed reference/*.json record_reference.py record_reference_test.py
 var referenceFiles embed.FS
 
 const (
 	referenceSourceCommit = "9d6fff760b7a314b476539198504d77ce0959656"
 	referenceSourceTree   = "cde121d6e4119e454857ad1c3ca293e2791be840"
 	referenceBinarySHA256 = "33cdadbe3bd7a82e2c3c40f4b5da4403d822acc00d544a321df24e277c0836a3"
+	legacyRecorderSHA256  = "3a979c3b1bb5e1e45643adf1e13ebf675d56c5549fdc9b6fa0962f5594251936"
 )
 
 type referenceCommand struct {
@@ -36,19 +41,44 @@ type referenceCommand struct {
 }
 
 type referenceRun struct {
-	Commands         []referenceCommand `json:"commands"`
-	Observations     map[string]any     `json:"observations"`
-	Projection       map[string]any     `json:"projection"`
-	RawSHA256        string             `json:"rawDigest"`
-	ProjectionSHA256 string             `json:"projectionDigest"`
+	Commands     []referenceCommand `json:"commands"`
+	Observations map[string]any     `json:"observations"`
+	Projection   map[string]any     `json:"projection"`
+	// These legacy fields describe a normalized decoded transcript, never bytes.
+	LegacyNormalizedDigest string            `json:"rawDigest"`
+	LegacyProjectionDigest string            `json:"projectionDigest"`
+	Streams                []referenceStream `json:"streams"`
+	NormalizedSHA256       string            `json:"normalizedTranscriptSha256"`
+	RawStreamsSHA256       string            `json:"rawStreamsSha256"`
+	ProjectionSHA256       string            `json:"projectionSha256"`
+}
+
+type referenceStream struct {
+	Label        string `json:"label"`
+	StdoutBase64 string `json:"stdoutBase64"`
+	StderrBase64 string `json:"stderrBase64"`
+	StdoutSHA256 string `json:"stdoutSha256"`
+	StderrSHA256 string `json:"stderrSha256"`
+}
+
+type referenceEquality struct {
+	NormalizedTranscriptsEqual bool `json:"normalizedTranscriptsEqual"`
+	ProjectionsEqual           bool `json:"projectionsEqual"`
+	RawStreamsEqual            bool `json:"rawStreamsEqual"`
+	PerCommand                 []struct {
+		Label       string `json:"label"`
+		StdoutEqual bool   `json:"stdoutEqual"`
+		StderrEqual bool   `json:"stderrEqual"`
+	} `json:"perCommand"`
 }
 
 type referenceRecording struct {
 	Schema string `json:"schema"`
 	Card   string `json:"card"`
 	Source struct {
-		Commit string `json:"commit"`
-		Tree   string `json:"tree"`
+		Commit           string `json:"commit"`
+		Tree             string `json:"tree"`
+		CleanWorkingTree bool   `json:"cleanWorkingTree"`
 	} `json:"source"`
 	Binary struct {
 		SHA256 string `json:"sha256"`
@@ -56,18 +86,31 @@ type referenceRecording struct {
 	Recorder struct {
 		SHA256 string `json:"sha256"`
 	} `json:"recorder"`
-	First            referenceRun   `json:"first"`
-	Repeat           referenceRun   `json:"repeat"`
-	Projection       map[string]any `json:"projection"`
-	ProjectionSHA256 string         `json:"projectionSha256"`
-	RawSHA256        string         `json:"rawSha256"`
-	Repeated         struct {
-		RawSHA256        string `json:"rawSha256"`
-		ProjectionSHA256 string `json:"projectionSha256"`
+	First                  referenceRun   `json:"first"`
+	Repeat                 referenceRun   `json:"repeat"`
+	Projection             map[string]any `json:"projection"`
+	ProjectionSHA256       string         `json:"projectionSha256"`
+	LegacyNormalizedSHA256 string         `json:"rawSha256"`
+	NormalizedSHA256       string         `json:"normalizedTranscriptSha256"`
+	RawStreamsSHA256       string         `json:"rawStreamsSha256"`
+	Repeated               struct {
+		LegacyNormalizedSHA256 string `json:"rawSha256"`
+		NormalizedSHA256       string `json:"normalizedTranscriptSha256"`
+		RawStreamsSHA256       string `json:"rawStreamsSha256"`
+		ProjectionSHA256       string `json:"projectionSha256"`
 	} `json:"repeated"`
 	Disposition struct {
 		Status string `json:"status"`
+		Source string `json:"source"`
 	} `json:"disposition"`
+	Equality      referenceEquality `json:"equality"`
+	Configuration struct {
+		Value struct {
+			Environment struct {
+				InheritAmbient *bool `json:"inheritAmbient"`
+			} `json:"environment"`
+		} `json:"value"`
+	} `json:"configuration"`
 }
 
 type referenceProvenance struct {
@@ -90,13 +133,17 @@ type referenceProvenance struct {
 		ProjectionsEqual              bool `json:"projectionsEqual"`
 	} `json:"recording"`
 	Cards map[string]struct {
-		File                   string `json:"file"`
-		SHA256                 string `json:"sha256"`
-		RawSHA256              string `json:"rawSha256"`
-		RepeatRawSHA256        string `json:"repeatRawSha256"`
-		ProjectionSHA256       string `json:"projectionSha256"`
-		RepeatProjectionSHA256 string `json:"repeatProjectionSha256"`
-		Status                 string `json:"status"`
+		File                         string `json:"file"`
+		SHA256                       string `json:"sha256"`
+		LegacyNormalizedSHA256       string `json:"rawSha256"`
+		LegacyRepeatNormalizedSHA256 string `json:"repeatRawSha256"`
+		NormalizedSHA256             string `json:"normalizedTranscriptSha256"`
+		RepeatNormalizedSHA256       string `json:"repeatNormalizedTranscriptSha256"`
+		RawStreamsSHA256             string `json:"rawStreamsSha256"`
+		RepeatRawStreamsSHA256       string `json:"repeatRawStreamsSha256"`
+		ProjectionSHA256             string `json:"projectionSha256"`
+		RepeatProjectionSHA256       string `json:"repeatProjectionSha256"`
+		Status                       string `json:"status"`
 	} `json:"cards"`
 }
 
@@ -143,14 +190,19 @@ func commandMap(commands []referenceCommand) map[string]referenceCommand {
 
 func assertRecording(t *testing.T, card string, recording referenceRecording, raw []byte, recorder []byte) {
 	t.Helper()
-	if recording.Schema != "plug.s1-b09-b12.reference-recording.v1" || recording.Card != card {
+	legacy := recording.Schema == "plug.s1-b09-b12.reference-recording.v1"
+	if (!legacy && recording.Schema != "plug.s1-b09-b12.reference-recording.v2") || recording.Card != card {
 		t.Fatalf("reference identity changed: %+v", recording)
 	}
 	if recording.Source.Commit != referenceSourceCommit || recording.Source.Tree != referenceSourceTree || recording.Binary.SHA256 != referenceBinarySHA256 {
 		t.Fatalf("reference pins changed: commit=%s tree=%s binary=%s", recording.Source.Commit, recording.Source.Tree, recording.Binary.SHA256)
 	}
-	if recording.Recorder.SHA256 != referenceBytesDigest(recorder) {
-		t.Fatalf("recorder digest changed for %s: got %s want %s", card, recording.Recorder.SHA256, referenceBytesDigest(recorder))
+	wantRecorder := referenceBytesDigest(recorder)
+	if legacy {
+		wantRecorder = legacyRecorderSHA256
+	}
+	if recording.Recorder.SHA256 != wantRecorder {
+		t.Fatalf("recorder digest changed for %s: got %s want %s", card, recording.Recorder.SHA256, wantRecorder)
 	}
 	if len(recording.First.Commands) == 0 || len(recording.First.Commands) != len(recording.Repeat.Commands) {
 		t.Fatalf("%s command transcripts are empty or unpaired", card)
@@ -161,27 +213,148 @@ func assertRecording(t *testing.T, card string, recording referenceRecording, ra
 	if !reflect.DeepEqual(recording.First.Projection, recording.Repeat.Projection) || !reflect.DeepEqual(recording.First.Projection, recording.Projection) {
 		t.Fatalf("%s independent semantic projections differ", card)
 	}
-	if recording.First.RawSHA256 != recording.Repeat.RawSHA256 || recording.First.ProjectionSHA256 != recording.Repeat.ProjectionSHA256 || recording.RawSHA256 != recording.First.RawSHA256 || recording.ProjectionSHA256 != recording.First.ProjectionSHA256 {
-		t.Fatalf("%s paired digests differ or do not match top-level", card)
-	}
-	if recording.Repeated.RawSHA256 != recording.Repeat.RawSHA256 || recording.Repeated.ProjectionSHA256 != recording.Repeat.ProjectionSHA256 {
-		t.Fatalf("%s repeated digest summary is stale", card)
-	}
-	if got := referenceDigest(recording.First.Projection); got != recording.First.ProjectionSHA256 {
-		t.Fatalf("%s projection digest=%s recomputed=%s", card, recording.First.ProjectionSHA256, got)
-	}
 	var full map[string]any
 	if err := json.Unmarshal(raw, &full); err != nil {
 		t.Fatal(err)
 	}
-	if got := referenceDigest(map[string]any{"commands": full["first"].(map[string]any)["commands"], "observations": full["first"].(map[string]any)["observations"]}); got != recording.First.RawSHA256 {
-		t.Fatalf("%s raw digest=%s recomputed=%s", card, recording.First.RawSHA256, got)
+	if legacy {
+		assertLegacyNormalizedDigests(t, card, recording, full)
+		t.Logf("%s retains version 1 evidence only: raw bytes, clean source and credential isolation are unproven", card)
+	} else {
+		assertExactStreams(t, card, recording, full)
 	}
 	for _, command := range recording.First.Commands {
 		if len(command.Argv) < 2 || command.Argv[0] != "reference-engine" {
 			t.Fatalf("%s command provenance changed: %+v", card, command)
 		}
 	}
+}
+
+func assertLegacyNormalizedDigests(t *testing.T, card string, recording referenceRecording, full map[string]any) {
+	t.Helper()
+	first, repeat := recording.First, recording.Repeat
+	if first.LegacyNormalizedDigest != repeat.LegacyNormalizedDigest || recording.LegacyNormalizedSHA256 != first.LegacyNormalizedDigest || recording.Repeated.LegacyNormalizedSHA256 != repeat.LegacyNormalizedDigest || first.LegacyProjectionDigest != repeat.LegacyProjectionDigest || recording.ProjectionSHA256 != first.LegacyProjectionDigest || recording.Repeated.ProjectionSHA256 != repeat.LegacyProjectionDigest {
+		t.Fatalf("%s historical normalized digest summary is stale", card)
+	}
+	for index, run := range []referenceRun{first, repeat} {
+		name := []string{"first", "repeat"}[index]
+		value := full[name].(map[string]any)
+		if run.LegacyNormalizedDigest != referenceDigest(map[string]any{"commands": value["commands"], "observations": value["observations"]}) || run.LegacyProjectionDigest != referenceDigest(run.Projection) {
+			t.Fatalf("%s historical %s normalized/projection digest is stale", card, name)
+		}
+	}
+}
+
+func normalizedReferenceValue(value any, card string) any {
+	switch value := value.(type) {
+	case map[string]any:
+		omitted := map[string]bool{}
+		for _, key := range []string{"created_at", "updated_at", "closed_at", "defer_until", "heartbeat_at", "started_at", "revision", "schema_version", "owner", "lease_expires_at", "leaseExpiresAt", "createdAt", "updatedAt", "closedAt", "commit", "hash", "CommitHash", "CommitDate", "revision_hash", "revisionHash"} {
+			omitted[key] = true
+		}
+		result := map[string]any{}
+		for key, item := range value {
+			if !omitted[key] {
+				result[key] = normalizedReferenceValue(item, card)
+			}
+		}
+		return result
+	case []any:
+		result := make([]any, len(value))
+		for index, item := range value {
+			result[index] = normalizedReferenceValue(item, card)
+		}
+		return result
+	case string:
+		value = regexp.MustCompile(`20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z`).ReplaceAllString(value, "<runtime-time>")
+		value = regexp.MustCompile(`/tmp/plug-swarm/work/[^/\s]+`).ReplaceAllString(value, "<workspace>")
+		if card == "B09" {
+			value = regexp.MustCompile(`\bb09-[a-z0-9]{3,8}\b`).ReplaceAllString(value, "<generated-id>")
+		}
+		return value
+	default:
+		return value
+	}
+}
+
+func decodedReferenceStream(t *testing.T, stream referenceStream) ([]byte, []byte) {
+	t.Helper()
+	stdout, outErr := base64.StdEncoding.Strict().DecodeString(stream.StdoutBase64)
+	stderr, errErr := base64.StdEncoding.Strict().DecodeString(stream.StderrBase64)
+	if outErr != nil || errErr != nil || base64.StdEncoding.EncodeToString(stdout) != stream.StdoutBase64 || base64.StdEncoding.EncodeToString(stderr) != stream.StderrBase64 || referenceBytesDigest(stdout) != stream.StdoutSHA256 || referenceBytesDigest(stderr) != stream.StderrSHA256 {
+		t.Fatalf("%s exact stream encoding/digest is invalid", stream.Label)
+	}
+	return stdout, stderr
+}
+
+func assertExactStreams(t *testing.T, card string, recording referenceRecording, full map[string]any) {
+	t.Helper()
+	inherit := recording.Configuration.Value.Environment.InheritAmbient
+	if !recording.Source.CleanWorkingTree || inherit == nil || *inherit || recording.Disposition.Source != "engdocs/design/plug/spec/behaviors/content.md#"+card {
+		t.Fatalf("%s version 2 source/configuration/card binding is incomplete", card)
+	}
+	for index, run := range []referenceRun{recording.First, recording.Repeat} {
+		name := []string{"first", "repeat"}[index]
+		value := full[name].(map[string]any)
+		if run.NormalizedSHA256 != referenceDigest(map[string]any{"commands": value["commands"], "observations": value["observations"]}) || run.RawStreamsSHA256 != referenceDigest(value["streams"]) || run.ProjectionSHA256 != referenceDigest(run.Projection) {
+			t.Fatalf("%s %s stream/normalized/projection digest is stale", card, name)
+		}
+		if len(run.Streams) != len(run.Commands) {
+			t.Fatalf("%s %s exact streams are unpaired", card, name)
+		}
+		for i, stream := range run.Streams {
+			command := run.Commands[i]
+			stdout, stderr := decodedReferenceStream(t, stream)
+			var decoded any
+			if err := json.Unmarshal(stdout, &decoded); err != nil {
+				decoded = string([]rune(string(stdout)))
+			}
+			if stream.Label != command.Label || !reflect.DeepEqual(normalizedReferenceValue(decoded, card), command.Stdout) || !reflect.DeepEqual(normalizedReferenceValue(string([]rune(string(stderr))), card), command.Stderr) {
+				t.Fatalf("%s %s exact streams do not produce their normalized command", card, stream.Label)
+			}
+		}
+	}
+	first, repeat := recording.First, recording.Repeat
+	if first.NormalizedSHA256 != repeat.NormalizedSHA256 || first.ProjectionSHA256 != repeat.ProjectionSHA256 || recording.NormalizedSHA256 != first.NormalizedSHA256 || recording.RawStreamsSHA256 != first.RawStreamsSHA256 || recording.ProjectionSHA256 != first.ProjectionSHA256 || recording.Repeated.NormalizedSHA256 != repeat.NormalizedSHA256 || recording.Repeated.RawStreamsSHA256 != repeat.RawStreamsSHA256 || recording.Repeated.ProjectionSHA256 != repeat.ProjectionSHA256 {
+		t.Fatalf("%s version 2 digest summary is stale", card)
+	}
+	if !recording.Equality.NormalizedTranscriptsEqual || !recording.Equality.ProjectionsEqual || len(recording.Equality.PerCommand) != len(first.Streams) {
+		t.Fatalf("%s equality summary is incomplete", card)
+	}
+	rawEqual := true
+	for index, left := range first.Streams {
+		leftOut, leftErr := decodedReferenceStream(t, left)
+		rightOut, rightErr := decodedReferenceStream(t, repeat.Streams[index])
+		equality := recording.Equality.PerCommand[index]
+		outEqual, errEqual := bytes.Equal(leftOut, rightOut), bytes.Equal(leftErr, rightErr)
+		if equality.Label != left.Label || equality.StdoutEqual != outEqual || equality.StderrEqual != errEqual {
+			t.Fatalf("%s %s raw byte equality summary is stale", card, left.Label)
+		}
+		rawEqual = rawEqual && outEqual && errEqual
+	}
+	if recording.Equality.RawStreamsEqual != rawEqual {
+		t.Fatalf("%s raw byte equality claim disagrees with exact streams", card)
+	}
+}
+
+func TestS1ReferenceRecorderContract(t *testing.T) {
+	// These are recorder-policy unit tests, not Beads or paired-store evidence.
+	directory := t.TempDir()
+	for _, name := range []string{"record_reference.py", "record_reference_test.py"} {
+		data, err := referenceFiles.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command := exec.Command("python3", "-B", filepath.Join(directory, "record_reference_test.py"))
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("reference recorder policy tests failed: %v\n%s", err, output)
+	}
+	t.Log(string(output))
 }
 
 func assertAllSuccessfulExcept(t *testing.T, commands []referenceCommand, failed ...string) {
@@ -224,7 +397,12 @@ func TestS1PinnedBeadsReferenceRecordingsAndIndependentProjections(t *testing.T)
 	if err := json.Unmarshal(provenanceRaw, &provenance); err != nil {
 		t.Fatal(err)
 	}
-	if provenance.Schema != "plug.s1-b09-b12.reference-provenance.v1" || provenance.Source.Commit != referenceSourceCommit || provenance.Source.Tree != referenceSourceTree || provenance.Binary.SHA256 != referenceBinarySHA256 || provenance.Recorder.SHA256 != referenceBytesDigest(recorder) {
+	legacy := provenance.Schema == "plug.s1-b09-b12.reference-provenance.v1"
+	wantRecorder := referenceBytesDigest(recorder)
+	if legacy {
+		wantRecorder = legacyRecorderSHA256
+	}
+	if (!legacy && provenance.Schema != "plug.s1-b09-b12.reference-provenance.v2") || provenance.Source.Commit != referenceSourceCommit || provenance.Source.Tree != referenceSourceTree || provenance.Binary.SHA256 != referenceBinarySHA256 || provenance.Recorder.SHA256 != wantRecorder {
 		t.Fatalf("reference provenance changed: %+v", provenance)
 	}
 	if provenance.Recording.Runs != 2 || !provenance.Recording.IndependentFreshGitWorkspaces || !provenance.Recording.NormalizedTranscriptsEqual || !provenance.Recording.ProjectionsEqual {
@@ -233,6 +411,9 @@ func TestS1PinnedBeadsReferenceRecordingsAndIndependentProjections(t *testing.T)
 
 	for _, card := range []string{"B09", "B10", "B11", "B12"} {
 		recording, raw := readRecording(t, card)
+		if legacy != (recording.Schema == "plug.s1-b09-b12.reference-recording.v1") {
+			t.Fatalf("%s recording/provenance versions differ", card)
+		}
 		assertRecording(t, card, recording, raw, recorder)
 		entry, ok := provenance.Cards[card]
 		if !ok {
@@ -248,8 +429,15 @@ func TestS1PinnedBeadsReferenceRecordingsAndIndependentProjections(t *testing.T)
 		if referenceBytesDigest(fileBytes) != entry.SHA256 {
 			t.Fatalf("provenance file digest for %s is stale", card)
 		}
-		if entry.RawSHA256 != recording.RawSHA256 || entry.RepeatRawSHA256 != recording.Repeated.RawSHA256 || entry.ProjectionSHA256 != recording.ProjectionSHA256 || entry.RepeatProjectionSHA256 != recording.Repeated.ProjectionSHA256 || entry.Status != recording.Disposition.Status {
+		if entry.ProjectionSHA256 != recording.ProjectionSHA256 || entry.RepeatProjectionSHA256 != recording.Repeated.ProjectionSHA256 || entry.Status != recording.Disposition.Status {
 			t.Fatalf("provenance summary for %s is stale: %+v", card, entry)
+		}
+		if legacy {
+			if entry.LegacyNormalizedSHA256 != recording.LegacyNormalizedSHA256 || entry.LegacyRepeatNormalizedSHA256 != recording.Repeated.LegacyNormalizedSHA256 {
+				t.Fatalf("historical normalized digest summary for %s is stale", card)
+			}
+		} else if entry.NormalizedSHA256 != recording.NormalizedSHA256 || entry.RepeatNormalizedSHA256 != recording.Repeated.NormalizedSHA256 || entry.RawStreamsSHA256 != recording.RawStreamsSHA256 || entry.RepeatRawStreamsSHA256 != recording.Repeated.RawStreamsSHA256 {
+			t.Fatalf("stream/normalized digest summary for %s is stale", card)
 		}
 	}
 
@@ -287,7 +475,7 @@ func TestS1PinnedBeadsReferenceRecordingsAndIndependentProjections(t *testing.T)
 	}
 	assertAllSuccessfulExcept(t, b12.First.Commands, "admin-compact-apply", "restore-read", "restore-apply")
 
-	t.Log("B09-B12 pinned Beads recordings PASS: paired normalized transcripts and semantic projections are byte-stable; B12's embedded-mode refusal remains an explicit deviation")
+	t.Log("B09-B12 paired normalized decoded transcripts and semantic projections match; version 1 has no raw byte proof, and B12 apply/restore remains unsupported and unqualified")
 }
 
 func cardToFile(card string) string {
@@ -318,7 +506,14 @@ func TestS1ReferenceProjectionKeysRemainBounded(t *testing.T) {
 func TestS1ReferenceArtifactDigestShape(t *testing.T) {
 	for _, card := range []string{"B09", "B10", "B11", "B12"} {
 		recording, raw := readRecording(t, card)
-		for name, value := range map[string]string{"raw": recording.RawSHA256, "projection": recording.ProjectionSHA256, "file": referenceBytesDigest(raw)} {
+		digests := map[string]string{"projection": recording.ProjectionSHA256, "file": referenceBytesDigest(raw)}
+		if recording.Schema == "plug.s1-b09-b12.reference-recording.v1" {
+			digests["legacy normalized"] = recording.LegacyNormalizedSHA256
+		} else {
+			digests["normalized"] = recording.NormalizedSHA256
+			digests["exact stream envelope"] = recording.RawStreamsSHA256
+		}
+		for name, value := range digests {
 			if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(value) {
 				t.Fatalf("%s %s digest has invalid shape: %q", card, name, value)
 			}

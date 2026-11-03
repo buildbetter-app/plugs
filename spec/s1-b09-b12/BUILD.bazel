@@ -10,6 +10,7 @@ go_test(
         "provenance.json",
         "projection.py",
         "record_reference.py",
+        "record_reference_test.py",
         "vectors.json",
     ] + glob(["reference/*.json"]),
     args = ["-test.v"],

@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """Record public B09-B12 behavior from the pinned Beads executable.
 
-Each invocation creates a new Git-backed workspace. The command transcript is
-kept separate from the card projection: timestamps, Dolt revisions, generated
-owners and B09's timestamp-derived IDs are explicitly normalized, while the
-stable behavior selected by each card is projected from the command results.
-The wrapper refuses a source or binary pin mismatch and runs the card twice in
-independent workspaces before writing an artifact.
+Each invocation creates a new Git-backed workspace with a private, deterministic
+environment. Exact stdout/stderr bytes are retained alongside a separately
+normalized decoded transcript and card projection. Raw byte equality is reported
+independently: timestamps and generated IDs can differ between fresh stores.
+The wrapper refuses a dirty source tree or pin mismatch and runs the card twice
+before writing a version 2 artifact. Version 1 files are historical evidence only.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -28,9 +28,54 @@ TREE = "cde121d6e4119e454857ad1c3ca293e2791be840"
 BINARY_SHA256 = "33cdadbe3bd7a82e2c3c40f4b5da4403d822acc00d544a321df24e277c0836a3"
 DRIVER = "github.com/dolthub/dolt/go@v0.40.5-0.20260806213044-796d07497741"
 WORK_ROOT = Path("/tmp/plug-swarm/work")
+GIT = "/usr/bin/git"
+
+# This is the entire child-process environment, not an overlay on os.environ.
+# No ambient tokens, credential paths, proxy settings, Git overrides or user
+# configuration are inherited. Git configuration has command-scope precedence.
+ENVIRONMENT = {
+    "PATH": "/usr/bin:/bin",
+    "USER": "s1-reference",
+    "LOGNAME": "s1-reference",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "TZ": "UTC",
+    "TERM": "dumb",
+    "CI": "true",
+    "NO_COLOR": "1",
+    "BD_NON_INTERACTIVE": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "/bin/false",
+    "SSH_ASKPASS": "/bin/false",
+    "GIT_SSH_COMMAND": "/bin/false",
+    "GIT_AUTHOR_NAME": "s1-b09-b12-reference",
+    "GIT_AUTHOR_EMAIL": "s1-b09-b12-reference@invalid",
+    "GIT_COMMITTER_NAME": "s1-b09-b12-reference",
+    "GIT_COMMITTER_EMAIL": "s1-b09-b12-reference@invalid",
+    "AWS_EC2_METADATA_DISABLED": "true",
+    "AWS_CONFIG_FILE": "/dev/null",
+    "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
+}
+GIT_CONFIGURATION = {
+    "credential.helper": "",
+    "credential.interactive": "false",
+    "core.askPass": "/bin/false",
+    "core.sshCommand": "/bin/false",
+    "core.hooksPath": "/dev/null",
+    "core.fsmonitor": "false",
+    "core.untrackedCache": "false",
+    "init.templateDir": "/dev/null",
+    "init.defaultBranch": "main",
+    "protocol.allow": "never",
+    "user.name": "s1-b09-b12-reference",
+    "user.email": "s1-b09-b12-reference@invalid",
+}
 
 # These are runtime identities, not card semantics. They are removed from the
-# retained transcript and named again in the limits field below.
+# normalized transcript only. Exact stream bytes retain every runtime field.
 NORMALIZED_FIELDS = {
     "created_at", "updated_at", "closed_at", "defer_until", "heartbeat_at",
     "started_at", "revision", "schema_version", "owner", "lease_expires_at",
@@ -71,12 +116,42 @@ def digest(value: Any) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def verify_source(root: Path) -> dict[str, str]:
-    commit = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
-    tree = subprocess.check_output(["git", "-C", str(root), "rev-parse", f"{commit}^{{tree}}"], text=True).strip()
+def isolated_environment(directory: Path, actor: str) -> dict[str, str]:
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    env = dict(ENVIRONMENT)
+    for key, name in (
+        ("HOME", "home"), ("XDG_CONFIG_HOME", "config"),
+        ("XDG_CACHE_HOME", "cache"), ("XDG_DATA_HOME", "data"),
+        ("XDG_STATE_HOME", "state"), ("TMPDIR", "tmp"),
+    ):
+        path = directory / name
+        path.mkdir(mode=0o700, exist_ok=True)
+        env[key] = str(path)
+    env["BEADS_ACTOR"] = actor
+    env["GIT_CONFIG_COUNT"] = str(len(GIT_CONFIGURATION))
+    for index, (key, value) in enumerate(GIT_CONFIGURATION.items()):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+    return env
+
+
+def source_git(root: Path, *args: str) -> bytes:
+    WORK_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="s1-source-verify-", dir=WORK_ROOT) as directory:
+        env = isolated_environment(Path(directory), "s1-source-verifier")
+        return subprocess.check_output([GIT, "-C", str(root.resolve()), *args], env=env)
+
+
+def verify_source(root: Path) -> dict[str, Any]:
+    # Check before hashing any source evidence, including on subsequent reads.
+    # Do not print status output: an unrelated untracked filename can be private.
+    if source_git(root, "status", "--porcelain=v1", "--untracked-files=all"):
+        raise RuntimeError("source checkout is dirty; tracked and untracked changes are forbidden")
+    commit = source_git(root, "rev-parse", "HEAD").decode().strip()
+    tree = source_git(root, "rev-parse", f"{commit}^{{tree}}").decode().strip()
     if commit != PIN or tree != TREE:
         raise RuntimeError(f"source pin mismatch: commit={commit} tree={tree}")
-    return {"commit": commit, "tree": tree}
+    return {"commit": commit, "tree": tree, "cleanWorkingTree": True}
 
 
 def normalize(value: Any, card: str) -> Any:
@@ -108,26 +183,22 @@ class Recorder:
         WORK_ROOT.mkdir(parents=True, exist_ok=True)
         self.workspace = Path(tempfile.mkdtemp(prefix=f"s1-{card.lower()}-", dir=WORK_ROOT))
         self.commands: list[dict[str, Any]] = []
-        self.env = {
-            key: value for key, value in os.environ.items()
-            if not key.startswith(("BEADS_", "BD_", "DOLT_"))
-        }
-        self.env.update({
-            "BEADS_ACTOR": f"s1-{card.lower()}-reference",
-            "BD_NON_INTERACTIVE": "1",
-            "CI": "true",
-            "LC_ALL": "C",
-            "NO_COLOR": "1",
-            "TZ": "UTC",
-            "GIT_CONFIG_GLOBAL": "/dev/null",
-            "GIT_CONFIG_NOSYSTEM": "1",
-        })
+        self.streams: list[dict[str, str]] = []
+        self.env = isolated_environment(self.workspace / ".recorder-env", f"s1-{card.lower()}-reference")
 
     def run(self, label: str, args: list[str], expected: int = 0, stdin: str | None = None) -> tuple[int, bytes, bytes]:
         proc = subprocess.run(
             [str(self.binary), *args], cwd=self.workspace, env=self.env,
-            input=stdin, capture_output=True, check=False, text=False, timeout=120,
+            input=stdin.encode() if stdin is not None else None,
+            capture_output=True, check=False, text=False, timeout=120,
         )
+        self.streams.append({
+            "label": label,
+            "stdoutBase64": base64.b64encode(proc.stdout).decode("ascii"),
+            "stderrBase64": base64.b64encode(proc.stderr).decode("ascii"),
+            "stdoutSha256": digest(proc.stdout),
+            "stderrSha256": digest(proc.stderr),
+        })
         stdout = proc.stdout.decode(errors="replace")
         stderr = proc.stderr.decode(errors="replace")
         try:
@@ -287,12 +358,14 @@ class Recorder:
         )
         self.run("restore-read", ["restore", "b12-source", "--json"], expected=1)
         self.run("restore-apply", ["restore", "b12-source", "--apply", "--json"], expected=1)
+        apply_error = "Error: 'bd admin compact' is not yet supported in embedded mode\n"
+        restore_error = "Error: issue b12-source is not compacted\nHint: only compacted issues need restoration\n"
         projection = {
             "analyzeSucceeded": isinstance(analyze, dict),
             "analyzeCandidateCount": analyze.get("summary", {}).get("total_candidates", -1),
-            "applyRefusedInEmbeddedMode": self.commands[-3]["exitCode"] != 0,
-            "restoreReadRefusedWithoutSnapshot": self.commands[-2]["exitCode"] != 0,
-            "restoreApplyRefusedWithoutSnapshot": self.commands[-1]["exitCode"] != 0,
+            "applyRefusedInEmbeddedMode": self.commands[-3]["exitCode"] == 1 and self.commands[-3]["stderr"] == apply_error,
+            "restoreReadRefusedWithoutSnapshot": self.commands[-2]["exitCode"] == 1 and self.commands[-2]["stderr"] == restore_error,
+            "restoreApplyRefusedWithoutSnapshot": self.commands[-1]["exitCode"] == 1 and self.commands[-1]["stderr"] == restore_error,
         }
         return {
             "observations": {"analyze": normalize(analyze, self.card)},
@@ -304,59 +377,93 @@ class Recorder:
         }
 
     def record(self) -> dict[str, Any]:
-        subprocess.run(["git", "init", "-q"], cwd=self.workspace, env=self.env, check=True, capture_output=True)
+        subprocess.run([GIT, "init", "-q"], cwd=self.workspace, env=self.env, check=True, capture_output=True)
         subprocess.run(
-            ["git", "config", "user.name", "s1-b09-b12-reference"],
+            [GIT, "config", "user.name", "s1-b09-b12-reference"],
             cwd=self.workspace, env=self.env, check=True, capture_output=True,
         )
         subprocess.run(
-            ["git", "config", "user.email", "s1-b09-b12-reference@invalid"],
+            [GIT, "config", "user.email", "s1-b09-b12-reference@invalid"],
             cwd=self.workspace, env=self.env, check=True, capture_output=True,
         )
         self.init()
         card = getattr(self, f"card_{self.card.lower()}")()
         payload = {
-            "schema": "plug.s1-b09-b12.beads-reference.v1",
+            "schema": "plug.s1-b09-b12.beads-reference.v2",
             "card": self.card,
             "engine": "embedded-dolt",
             "sourceCommit": PIN,
             "sourceTree": TREE,
             "binarySha256": digest(self.binary.read_bytes()),
             "commands": self.commands,
+            "streams": self.streams,
             "observations": card["observations"],
             "projection": card["projection"],
             "limits": card["limits"],
         }
-        payload["rawDigest"] = digest({"commands": payload["commands"], "observations": payload["observations"]})
-        payload["projectionDigest"] = digest(payload["projection"])
+        payload["normalizedTranscriptSha256"] = digest({"commands": payload["commands"], "observations": payload["observations"]})
+        # Digest of the canonical lossless stream envelope; each stream also
+        # carries its SHA-256 over the exact bytes, before decoding/normalizing.
+        payload["rawStreamsSha256"] = digest(payload["streams"])
+        payload["projectionSha256"] = digest(payload["projection"])
         return payload
 
 
 def source_evidence(source: Path, card: str) -> list[dict[str, str]]:
+    verify_source(source)
     result = []
     for item in SOURCE_TESTS[card]:
         relative, symbol = item.split("::", 1)
-        path = source / relative
-        if not path.is_file():
-            raise RuntimeError(f"pinned source file is missing: {relative}")
-        text = path.read_text(encoding="utf-8")
+        # Read the pinned object, so a concurrent worktree edit or symlink
+        # cannot silently change the bytes attributed to PIN/TREE.
+        data = source_git(source, "cat-file", "blob", f"{PIN}:{relative}")
+        text = data.decode("utf-8")
         if not re.search(r"\bfunc " + re.escape(symbol) + r"\(", text):
             raise RuntimeError(f"pinned source symbol is missing: {item}")
-        result.append({"path": relative, "sha256": digest(path.read_bytes()), "symbol": symbol})
+        result.append({"path": relative, "sha256": digest(data), "symbol": symbol})
+    verify_source(source)
     return result
 
 
 def schema_evidence(source: Path) -> dict[str, Any]:
+    verify_source(source)
     result: dict[str, Any] = {}
+    paths = source_git(source, "ls-tree", "-r", "--name-only", PIN, "--", "internal/storage/schema/migrations").decode().splitlines()
     for plane, directory in (
-        ("main", source / "internal/storage/schema/migrations"),
-        ("ignored", source / "internal/storage/schema/migrations/ignored"),
+        ("main", "internal/storage/schema/migrations"),
+        ("ignored", "internal/storage/schema/migrations/ignored"),
     ):
-        files = [{"path": str(path.relative_to(source)), "sha256": digest(path.read_bytes())} for path in sorted(directory.glob("*.up.sql"))]
+        files = [{"path": path, "sha256": digest(source_git(source, "cat-file", "blob", f"{PIN}:{path}"))}
+                 for path in sorted(paths) if str(Path(path).parent) == directory and path.endswith(".up.sql")]
         if not files:
             raise RuntimeError(f"empty {plane} migration inventory")
         result[plane] = {"cursor": max(int(Path(item["path"]).name.split("_", 1)[0]) for item in files), "files": len(files), "digest": digest(files)}
+    verify_source(source)
     return result
+
+
+def compare_runs(first: dict[str, Any], repeat: dict[str, Any]) -> dict[str, Any]:
+    if first["projection"] != repeat["projection"]:
+        raise RuntimeError("independent source projections differ")
+    if first["commands"] != repeat["commands"] or first["observations"] != repeat["observations"]:
+        raise RuntimeError("normalized independent source transcripts differ")
+    if len(first["streams"]) != len(repeat["streams"]):
+        raise RuntimeError("independent source streams are unpaired")
+    per_command = []
+    for left, right in zip(first["streams"], repeat["streams"]):
+        if left["label"] != right["label"]:
+            raise RuntimeError("independent source stream labels differ")
+        per_command.append({
+            "label": left["label"],
+            "stdoutEqual": base64.b64decode(left["stdoutBase64"], validate=True) == base64.b64decode(right["stdoutBase64"], validate=True),
+            "stderrEqual": base64.b64decode(left["stderrBase64"], validate=True) == base64.b64decode(right["stderrBase64"], validate=True),
+        })
+    return {
+        "normalizedTranscriptsEqual": True,
+        "projectionsEqual": True,
+        "rawStreamsEqual": all(item["stdoutEqual"] and item["stderrEqual"] for item in per_command),
+        "perCommand": per_command,
+    }
 
 
 def one_run(card: str, binary: Path, source: Path) -> dict[str, Any]:
@@ -384,10 +491,7 @@ def main() -> int:
     source = verify_source(args.source_root)
     first = one_run(args.card, args.reference, args.source_root)
     repeat = one_run(args.card, args.reference, args.source_root)
-    if first["projection"] != repeat["projection"]:
-        raise SystemExit("BLOCKED: independent source projections differ")
-    if first["rawDigest"] != repeat["rawDigest"]:
-        raise SystemExit("BLOCKED: normalized independent source transcripts differ")
+    equality = compare_runs(first, repeat)
     recorder_digest = digest(Path(__file__).read_bytes())
     config = {
         "actor": f"s1-{args.card.lower()}-reference",
@@ -395,6 +499,12 @@ def main() -> int:
         "workspace": "fresh-disposable-Git-backed",
         "timezone": "UTC",
         "driver": "embedded-dolt",
+        "environment": {
+            "inheritAmbient": False,
+            "values": ENVIRONMENT,
+            "gitConfiguration": GIT_CONFIGURATION,
+            "privateDirectories": ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "TMPDIR"],
+        },
     }
     inputs = {
         "card": args.card,
@@ -402,11 +512,11 @@ def main() -> int:
         "normalizedFields": sorted(NORMALIZED_FIELDS),
     }
     output = {
-        "schema": "plug.s1-b09-b12.reference-recording.v1",
+        "schema": "plug.s1-b09-b12.reference-recording.v2",
         "source": {**source, "sourceRefs": first["sourceRefs"]},
         "binary": {"sha256": BINARY_SHA256, "path": str(args.reference.resolve())},
         "driver": {"name": "embedded-dolt", "version": DRIVER},
-        "recorder": {"identity": "s1-b09-b12-reference-recorder", "version": "1", "source": "spec/s1-b09-b12/record_reference.py", "sha256": recorder_digest},
+        "recorder": {"identity": "s1-b09-b12-reference-recorder", "version": "2", "source": "spec/s1-b09-b12/record_reference.py", "sha256": recorder_digest},
         "configuration": {"value": config, "sha256": digest(config)},
         "inputs": {"value": inputs, "sha256": digest(inputs)},
         "schemaEvidence": schema_evidence(args.source_root),
@@ -414,18 +524,20 @@ def main() -> int:
         "first": first,
         "repeat": repeat,
         "projection": first["projection"],
-        "projectionSha256": first["projectionDigest"],
-        "rawSha256": first["rawDigest"],
-        "repeated": {"rawSha256": repeat["rawDigest"], "projectionSha256": repeat["projectionDigest"]},
+        "projectionSha256": first["projectionSha256"],
+        "normalizedTranscriptSha256": first["normalizedTranscriptSha256"],
+        "rawStreamsSha256": first["rawStreamsSha256"],
+        "repeated": {key: repeat[key] for key in ("normalizedTranscriptSha256", "rawStreamsSha256", "projectionSha256")},
+        "equality": equality,
         "disposition": {
             "status": "deviate" if args.card == "B12" else "keep",
             "scope": "recorded-reference-vector",
-            "source": f"engdocs/design/plug/spec/behaviors/{'content' if args.card == 'B12' else 'work'}.md#{args.card}",
+            "source": f"engdocs/design/plug/spec/behaviors/content.md#{args.card}",
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(canonical(output) + b"\n")
-    print(json.dumps({"card": args.card, "output": str(args.output), "rawSha256": first["rawDigest"], "projectionSha256": first["projectionDigest"]}, sort_keys=True))
+    print(json.dumps({"card": args.card, "output": str(args.output), "normalizedTranscriptSha256": first["normalizedTranscriptSha256"], "rawStreamsSha256": first["rawStreamsSha256"], "rawStreamsEqual": equality["rawStreamsEqual"], "projectionSha256": first["projectionSha256"]}, sort_keys=True))
     return 0
 
 

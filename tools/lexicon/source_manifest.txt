@@ -1037,6 +1037,7 @@ spec/s1-b09-b12/compaction/selection_test.go
 spec/s1-b09-b12/projection.py
 spec/s1-b09-b12/provenance.json
 spec/s1-b09-b12/record_reference.py
+spec/s1-b09-b12/record_reference_test.py
 spec/s1-b09-b12/reference/b09.json
 spec/s1-b09-b12/reference/b10.json
 spec/s1-b09-b12/reference/b11.json
