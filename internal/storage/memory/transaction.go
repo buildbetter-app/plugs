@@ -28,6 +28,7 @@ type transaction struct {
 	restore                 *driver.Meta
 	offlineHistory          *driver.PreparedOfflineHistory
 	nativeRestore           *driver.NativeRestoreProfile
+	nativeAllocators        bool
 	importRestore           *driver.RestoreImportProfile
 	closed, locked, hasHead bool
 	acquired                driver.LockSet
@@ -36,6 +37,7 @@ type transaction struct {
 	blobs                   map[driver.Hash][]byte
 	bumps                   map[string]driver.LockKey
 	allocators              map[string]driver.OfflineAllocator
+	parentCounters          map[string]driver.ParentCounter
 	allocated               map[string]bool
 	checkpointGuards        map[string]uint64
 }
@@ -87,6 +89,7 @@ func (t *transaction) finish() {
 	t.blobs = nil
 	t.bumps = nil
 	t.allocators = nil
+	t.parentCounters = nil
 	t.allocated = nil
 	s.signal()
 }
@@ -391,6 +394,9 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 		}
 		validate := driver.ValidateOfflineRestoreHeader
 		if t.nativeRestore != nil {
+			if !t.nativeAllocators {
+				return model.Changeset{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorBindingRequired, nil)
+			}
 			validate = t.nativeRestore.ValidateHeader
 		}
 		if t.importRestore != nil {
@@ -500,6 +506,12 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	for prefix, allocator := range t.allocators {
 		next.allocators[prefix] = allocator.Clone()
 	}
+	if len(t.parentCounters) > 0 && next.parentCounters == nil {
+		next.parentCounters = make(map[string]driver.ParentCounter)
+	}
+	for key, counter := range t.parentCounters {
+		next.parentCounters[key] = counter
+	}
 	for id, record := range t.records {
 		ref := t.recordRef(id)
 		version := driver.Version{Ref: ref, Revision: revision, CreatedAt: when, Principal: entry.Principal, Deleted: record == nil}
@@ -554,6 +566,12 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	// Allocation and validation are complete. Epoch and publication share this
 	// mutex, so a takeover cannot interleave with the final fenced commit.
 	// Cancellation during validation/copying must also publish nothing.
+	if err := t.check(ctx); err != nil {
+		return model.Changeset{}, err
+	}
+	if err := next.publishAllocatorImage(s.state, t.restore != nil); err != nil {
+		return model.Changeset{}, err
+	}
 	if err := t.check(ctx); err != nil {
 		return model.Changeset{}, err
 	}

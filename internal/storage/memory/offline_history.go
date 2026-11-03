@@ -117,6 +117,12 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	if err = t.check(ctx); err != nil {
 		return zero, err
 	}
+	if err := next.publishAllocatorImage(s.state, true); err != nil {
+		return zero, err
+	}
+	if err := t.check(ctx); err != nil {
+		return zero, err
+	}
 	s.state = next
 	t.finish()
 	return cloneJSON(entry)

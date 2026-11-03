@@ -1,0 +1,69 @@
+{
+  "format": "plug-s1-b09-b12-synthetic/1",
+  "source": {
+    "repository": "buildbetter-app/plugs",
+    "ref": "refs/tags/beads-base",
+    "commit": "9d6fff760b7a314b476539198504d77ce0959656",
+    "tree": "cde121d6e4119e454857ad1c3ca293e2791be840"
+  },
+  "cards": {
+    "B09": {
+      "status": "partial-source-vector; full-card-unqualified",
+      "sourceTests": [
+        "internal/idgen/hash_test.go::TestGenerateHashIDMatchesJiraVector",
+        "internal/storage/issueops/create_batch_cache_test.go::TestFlushAuxEventsMintsThePerRowIDs"
+      ],
+      "input": {
+        "title": "Fix login",
+        "description": "Details",
+        "creator": "jira-import",
+        "timestamp": "2024-01-02T03:04:05.006Z",
+        "nonce": 0
+      },
+      "sourceVectors": {
+        "3": "bd-vju",
+        "4": "bd-8d8e",
+        "5": "bd-bi3tk",
+        "6": "bd-8bi3tk",
+        "7": "bd-r5sr6bm",
+        "8": "bd-8r5sr6bm"
+      },
+      "decisionIDs": ["A1", "P44"]
+    },
+    "B10": {
+      "status": "synthetic-replay-only; full-card-unqualified",
+      "sourceTests": [
+        "internal/types/id_generator_test.go::TestGenerateChildID",
+        "internal/storage/domain/db/child_counter_test.go::TestChildCounterSQLRepository"
+      ],
+      "input": {
+        "parent": "demo-1",
+        "restoredCounter": 1,
+        "observedDirectChild": "demo-1.8",
+        "observedGrandchild": "demo-1.8.2",
+        "maxDepth": 2,
+        "project": "demo"
+      },
+      "decisionIDs": ["A1", "P44"]
+    },
+    "B11": {
+      "status": "partial-source-vector; full-card-unqualified",
+      "sourceTests": [
+        "internal/storage/depid/depid_test.go::TestNewGolden",
+        "internal/storage/issueops/dependencies_test.go::TestReplaceDependencyTargetRekeysCascadedRows"
+      ],
+      "input": {
+        "issueID": "issue-1",
+        "target": "issue-2",
+        "type": "blocks"
+      },
+      "sourceVector": "91990ee3-275c-59c5-9291-30f8a8732228",
+      "decisionIDs": ["P1", "P2", "D25"]
+    },
+    "B12": {
+      "status": "full-card-unqualified",
+      "reason": "No admitted public Plug compaction producer or reversible-snapshot replay exists in this source head.",
+      "decisionIDs": ["P45", "P73", "CP6"]
+    }
+  }
+}
