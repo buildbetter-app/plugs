@@ -23,13 +23,18 @@ func sourceRecord(id, body string) driver.Record {
 
 func beginSourceTest(t *testing.T, s *Store, lease driver.ActiveLease, refs ...model.Ref) (*transaction, driver.ChangesetHeader) {
 	t.Helper()
+	return beginSourceTestWithLocks(t, s, lease, nil, true, refs...)
+}
+
+func beginSourceTestWithLocks(t *testing.T, s *Store, lease driver.ActiveLease, extra []driver.LockKey, bump bool, refs ...model.Ref) (*transaction, driver.ChangesetHeader) {
+	t.Helper()
 	ctx := context.Background()
 	tx, err := s.Write(ctx, lease)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = tx.Close() })
-	keys := []driver.LockKey{driver.GraphBlockingSentinelLock}
+	keys := append([]driver.LockKey{driver.GraphBlockingSentinelLock}, extra...)
 	sentinels := []driver.Sentinel{driver.SentinelGraphBlocking}
 	for _, ref := range refs {
 		ref := ref
@@ -52,10 +57,37 @@ func beginSourceTest(t *testing.T, s *Store, lease driver.ActiveLease, refs ...m
 	if _, err = tx.Head(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err = tx.BumpSentinels(ctx, sentinels); err != nil {
-		t.Fatal(err)
+	if bump {
+		if err = tx.BumpSentinels(ctx, sentinels); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return tx.(*transaction), driver.ChangesetHeader{Incarnation: getMeta(t, ctx, s).Incarnation, Kind: model.ChangesetWrite, Principal: model.PrincipalRef{Kind: "system", ID: "source-index"}, LockKeys: keys}
+}
+
+// Native source fixtures declare an explicitly empty allocator inventory, bind
+// it before Lock/Head, and stage it before any bead or predicate publication.
+func beginNativeSourceTest(t *testing.T, s *Store, lease driver.ActiveLease, profile driver.NativeRestoreProfile, refs ...model.Ref) (*transaction, driver.ChangesetHeader, driver.Meta, error) {
+	t.Helper()
+	ctx := context.Background()
+	snapshot, err := driver.NewAllocatorSnapshot(driver.Meta{StoreID: profile.StoreID, Incarnation: "native-source-incarnation"}, model.Natural64(1), model.Natural64(0), driver.AllocatorInventory{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.AllocatorBinding, err = snapshot.Binding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence, err := driver.NativeAllocatorRestoreLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, h := beginSourceTestWithLocks(t, s, lease, []driver.LockKey{fence}, false, refs...)
+	meta, err := tx.PrepareNativeRestore(ctx, profile)
+	if err == nil {
+		err = tx.RestoreNativeAllocators(ctx, snapshot)
+	}
+	return tx, h, meta, err
 }
 
 func commitSourceTest(t *testing.T, tx *transaction, h driver.ChangesetHeader) model.Changeset {
@@ -366,10 +398,8 @@ func TestGraphSourceNativeRestoreFloorAndDescendingTwentyThousand(t *testing.T) 
 		refs[i] = testRef(fmt.Sprintf("pl-native-%05d", i))
 	}
 	started := time.Now()
-	tx, h := beginSourceTest(t, s, lease, refs...)
-	tx.bumps = make(map[string]driver.LockKey)
 	profile := driver.NativeRestoreProfile{StoreID: "native-sqlite-source", Principal: model.PrincipalRef{Kind: "user", ID: "operator"}, Method: "admin.restore.finish", IdempotencyKey: "restore-native-source", RequestHash: strings.Repeat("a", 64)}
-	meta, err := tx.PrepareNativeRestore(ctx, profile)
+	tx, h, meta, err := beginNativeSourceTest(t, s, lease, profile, refs...)
 	if err != nil {
 		t.Fatal(err)
 	}
