@@ -172,6 +172,9 @@ func (t *transaction) AllocateTopLevel(ctx context.Context, prefix, expected str
 	if err != nil {
 		return err
 	}
+	if value.Mode == driver.AllocatorRandom {
+		return t.consumeRandom(ctx, value, "", expected)
+	}
 	if value.Mode == driver.AllocatorHash {
 		return fmt.Errorf("%w: hash allocation requires the content tuple", driver.ErrUnsupported)
 	}
@@ -200,6 +203,9 @@ func (t *transaction) AllocateChild(ctx context.Context, parent, expected string
 	if err != nil {
 		return err
 	}
+	if value.Mode == driver.AllocatorRandom {
+		return t.consumeRandom(ctx, value, parent, expected)
+	}
 	child, err := value.ValidateChildCandidate(parent, expected)
 	if err != nil {
 		return err
@@ -207,9 +213,6 @@ func (t *transaction) AllocateChild(ctx context.Context, parent, expected string
 	current := value.Children[parent]
 	if child <= current {
 		return fmt.Errorf("%w: allocator child counter already consumed %s", driver.ErrConflict, expected)
-	}
-	if child == ^uint64(0) {
-		return fmt.Errorf("%w: child counter exhausted", driver.ErrUnsupported)
 	}
 	ref := driver.Ref{ID: expected}
 	id, err := recordKey(ref)
@@ -274,6 +277,43 @@ func (t *transaction) AllocateHashTopLevel(ctx context.Context, prefix string, i
 var _ driver.AllocatorReader = (*reader)(nil)
 var _ driver.AllocatorContinuation = (*transaction)(nil)
 var _ driver.HashAllocatorContinuation = (*transaction)(nil)
+
+// Consume a previewed opaque candidate under the complete allocator/record
+// locks. Never draw randomness again or advance a random profile's counters.
+func (t *transaction) consumeRandom(ctx context.Context, value driver.OfflineAllocator, parent, expected string) error {
+	if err := value.ValidateCandidate(parent, expected); err != nil {
+		return err
+	}
+	if _, _, err := t.allocatorWritable(value.Prefix); err != nil {
+		return err
+	}
+	ref := driver.Ref{ID: expected}
+	if err := t.writable(driver.LockKey{Kind: driver.LockRecord, Ref: &ref}); err != nil {
+		return err
+	}
+	id, err := recordKey(ref)
+	if err != nil {
+		return err
+	}
+	if _, staged := t.records[id]; staged || t.allocated[id] {
+		return fmt.Errorf("%w: allocator candidate already staged or reserved", driver.ErrConflict)
+	}
+	var exists bool
+	if err := t.sql.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM plug_postgres.records WHERE key=$1)`, []byte(id)).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("%w: allocator candidate already exists", driver.ErrConflict)
+	}
+	if err := t.stageAllocator(value.Prefix, value); err != nil {
+		return err
+	}
+	if t.allocated == nil {
+		t.allocated = make(map[string]bool)
+	}
+	t.allocated[id] = true
+	return nil
+}
 
 func (t *transaction) allocatorPrefix(ctx context.Context, parent string) (string, error) {
 	prefix := ""

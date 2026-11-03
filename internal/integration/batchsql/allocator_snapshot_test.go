@@ -2,14 +2,139 @@ package batchsql_test
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+// Call consumption directly so Writer collision checks cannot hide missing
+// engine locks, durable membership or transaction-local reservations.
+func TestRestoredRandomAllocatorConsumptionGuardsAcrossStores(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			seedChildAllocatorFixture(t, f, driver.NewRandomAllocator("demo"), false)
+			root := hierarchyApply(t, f, hierarchyCreate("random-guard-root", nil, "demo")).Results[0].Ref
+			child := hierarchyApply(t, f, hierarchyCreate("random-guard-child", &root, "demo")).Results[0].Ref
+			for _, parent := range []string{"", root.ID} {
+				kind := "root"
+				if parent != "" {
+					kind = "child"
+				}
+				for _, scenario := range []string{"rollback", "durable", "staged", "reserved", "missing-allocator-lock", "shared-allocator-lock", "missing-candidate-lock", "shared-candidate-lock", "cancelled", "malformed"} {
+					t.Run(kind+"/"+scenario, func(t *testing.T) {
+						prefix := "demo-"
+						if parent != "" {
+							prefix = parent + "."
+						}
+						candidate := prefix + strings.Repeat("1", 32)
+						if scenario == "durable" {
+							candidate = root.ID
+							if parent != "" {
+								candidate = child.ID
+							}
+						}
+						if scenario == "malformed" {
+							candidate = prefix + strings.Repeat("G", 32)
+						}
+						before := childAllocatorDurableState(t, f)
+						image := observedAllocatorSnapshot(t, f, nil)
+						ref := model.Ref{ID: candidate}
+						allocator, err := driver.AllocatorLock("demo")
+						if err != nil {
+							t.Fatal(err)
+						}
+						locks := driver.LockSet{{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Mode: driver.LockUpdate}, {Key: allocator, Mode: driver.LockUpdate}}
+						switch scenario {
+						case "missing-allocator-lock":
+							locks = locks[:1]
+						case "shared-allocator-lock":
+							locks[1].Mode = driver.LockShare
+						case "missing-candidate-lock":
+							locks = locks[1:]
+						case "shared-candidate-lock":
+							locks[0].Mode = driver.LockShare
+						}
+						tx, err := f.store.Write(f.ctx, f.lease)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer tx.Close()
+						facts, err := tx.Lock(f.ctx, locks)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if _, err = tx.Head(f.ctx); err != nil {
+							t.Fatal(err)
+						}
+						if scenario == "staged" {
+							body, err := json.Marshal(map[string]any{"id": candidate, "type": "issue", "fields": map[string]any{"title": "must roll back"}})
+							if err != nil {
+								t.Fatal(err)
+							}
+							if err = tx.Put(f.ctx, driver.Record{Ref: ref, Kind: "bead", Body: body}); err != nil {
+								t.Fatal(err)
+							}
+						}
+						callCtx := f.ctx
+						if scenario == "cancelled" {
+							var cancel context.CancelFunc
+							callCtx, cancel = context.WithCancel(f.ctx)
+							cancel()
+						}
+						consume := func() error {
+							port := tx.(driver.AllocatorContinuation)
+							if parent == "" {
+								return port.AllocateTopLevel(callCtx, "demo", candidate)
+							}
+							return port.AllocateChild(callCtx, parent, candidate)
+						}
+						if scenario == "reserved" {
+							if err = consume(); err != nil {
+								t.Fatalf("first previewed candidate was refused: %v", err)
+							}
+						}
+						err = consume()
+						if scenario == "rollback" {
+							if err != nil {
+								t.Fatalf("previewed candidate was reminted/refused: %v", err)
+							}
+						} else if err == nil {
+							t.Fatalf("%s consumed a forbidden candidate", scenario)
+						}
+						if (scenario == "durable" || scenario == "staged" || scenario == "reserved") && !errors.Is(err, driver.ErrConflict) {
+							t.Fatalf("collision was not typed conflict: %v", err)
+						}
+						if scenario == "cancelled" && !errors.Is(err, context.Canceled) {
+							t.Fatalf("cancellation was masked: %v", err)
+						}
+						if err = tx.Close(); err != nil {
+							t.Fatal(err)
+						}
+						requireSameState(t, before, childAllocatorDurableState(t, f))
+						requireAllocatorSnapshotBytes(t, image, observedAllocatorSnapshot(t, f, nil))
+						probe, err := f.store.Write(f.ctx, f.lease)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer probe.Close()
+						after, err := probe.Lock(f.ctx, locks)
+						if err != nil || !reflect.DeepEqual(facts, after) {
+							t.Fatalf("rollback changed facts or retained locks: %v", err)
+						}
+					})
+				}
+			}
+		})
+	}
+}
 
 func observedAllocatorSnapshot(t *testing.T, f *fixture, at *model.Revision) driver.AllocatorSnapshot {
 	t.Helper()

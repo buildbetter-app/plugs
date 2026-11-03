@@ -197,9 +197,6 @@ func (t *transaction) AllocateChild(ctx context.Context, parent, expected string
 	if child <= current {
 		return fmt.Errorf("%w: allocator child counter already consumed %s", driver.ErrConflict, expected)
 	}
-	if child == ^uint64(0) {
-		return fmt.Errorf("%w: child counter exhausted", driver.ErrUnsupported)
-	}
 	ref := model.Ref{ID: expected}
 	id, err := recordKey(ref)
 	if err != nil {
