@@ -64,6 +64,16 @@ type reclaimRaceTx struct {
 	store *reclaimRaceStore
 }
 
+// Preserve the optional typed source writer: embedding driver.WriteTx alone
+// hides it and makes core attempt an untyped write on a certified store.
+func (tx *reclaimRaceTx) PutGraphRecord(ctx context.Context, record driver.Record, parent *model.Ref, links []driver.SourceLink) error {
+	writer, ok := tx.WriteTx.(driver.GraphSourceWriter)
+	if !ok {
+		return driver.ErrUnsupported
+	}
+	return writer.PutGraphRecord(ctx, record, parent, links)
+}
+
 func (tx *reclaimRaceTx) ExpectCheckpoint(ctx context.Context, key string, generation uint64) error {
 	return tx.WriteTx.(driver.CheckpointGuardTx).ExpectCheckpoint(ctx, key, generation)
 }

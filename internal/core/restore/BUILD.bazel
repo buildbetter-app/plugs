@@ -36,6 +36,7 @@ go_test(
         "//internal/storage/memory",
         "//internal/storage/sqlite",
     ],
+    tags = ["exclusive"],
 )
 
 filegroup(

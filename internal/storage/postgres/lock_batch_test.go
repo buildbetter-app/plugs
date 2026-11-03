@@ -1,13 +1,84 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"sort"
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+func TestBatchedLocksKeepOpaqueRefIdentityAndOwnership(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	requests := driver.LockSet{}
+	for _, value := range []string{"raw:\xff", "raw:\xfe", "raw:\ufffd", "raw:\x00:tail", ""} {
+		ref := model.RefByKey(value)
+		requests = append(requests, driver.LockRequest{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Mode: driver.LockUpdate})
+	}
+	ref := model.RefByID("raw-\xff", model.Natural64(0))
+	requests = append(requests, driver.LockRequest{Key: testLock(ref), Mode: driver.LockUpdate})
+	sort.Slice(requests, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(requests[i].Key)
+		b, _ := driver.EncodeLockKey(requests[j].Key)
+		return a < b
+	})
+	keys := make([]driver.LockKey, len(requests))
+	ids := make([]string, len(requests))
+	for i, request := range requests {
+		// Keep an independent value so mutations below cannot change the oracle.
+		ref := *request.Key.Ref
+		keys[i] = driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
+		var err error
+		ids[i], err = driver.EncodeLockKey(keys[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	states, err := tx.Lock(ctx, requests)
+	if err != nil || len(states) != len(keys) {
+		t.Fatalf("opaque lock set: states=%d want=%d error=%v", len(states), len(keys), err)
+	}
+	r := testRead(t, s, nil)
+	observed, err := r.Observe(ctx, keys)
+	if err != nil || len(observed) != len(keys) {
+		t.Fatalf("opaque observations: states=%d want=%d error=%v", len(observed), len(keys), err)
+	}
+	for i, id := range ids {
+		var stored []byte
+		if err := s.db.QueryRowContext(ctx, `SELECT key FROM plug_postgres.locks WHERE key=$1`, []byte(id)).Scan(&stored); err != nil || !bytes.Equal(stored, []byte(id)) {
+			t.Fatalf("physical lock identity: want=%x got=%x error=%v", id, stored, err)
+		}
+		for _, state := range []driver.LockState{states[i], observed[i]} {
+			got, err := driver.EncodeLockKey(state.Key)
+			if err != nil || got != id || state.Present || !state.Revision.IsZero() {
+				t.Fatalf("opaque state: want=%x got=%x present=%v revision=%v error=%v", id, got, state.Present, state.Revision, err)
+			}
+		}
+		*requests[i].Key.Ref = model.RefByKey("changed-input")
+		*states[i].Key.Ref = model.RefByKey("changed-lock-result")
+		got, err := driver.EncodeLockKey(tx.(*transaction).acquired[i].Key)
+		if err != nil || got != id {
+			t.Fatalf("opaque acquired key aliases caller: want=%x got=%x error=%v", id, got, err)
+		}
+		*observed[i].Key.Ref = model.RefByKey("changed-observe-result")
+		got, err = driver.EncodeLockKey(keys[i])
+		if err != nil || got != id {
+			t.Fatalf("opaque observation aliases input: want=%x got=%x error=%v", id, got, err)
+		}
+	}
+	t.Log("OPAQUE_LOCK_IDENTITY raw_sql_bytes=true lock_and_observe_order=true caller_owned=true")
+}
 
 func TestBatchedLocksPreserveMixedModesAndSkippedSubset(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

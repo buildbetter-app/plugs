@@ -14,6 +14,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/sourceindex"
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -42,7 +43,12 @@ type transaction struct {
 	allocated        map[string]bool
 	done             chan struct{}
 
-	checkpointGuards map[string]uint64
+	checkpointGuards          map[string]uint64
+	sourceOverlay             sourceindex.Overlay
+	sourceCoverage            sourceindex.CoveragePair
+	sourceCoverageHead        model.Revision
+	sourceCoverageIncarnation string
+	sourceCoverageValid       bool
 }
 
 func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
@@ -140,10 +146,11 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 	if err := driver.ValidateLockSet(requests); err != nil {
 		return nil, err
 	}
-	requests, err = copied(requests)
-	if err != nil {
-		return nil, err
+	owned := make([]driver.LockRequest, len(requests))
+	for i, request := range requests {
+		owned[i] = driver.LockRequest{Key: copyLockKey(request.Key), Mode: request.Mode}
 	}
+	requests = owned
 	ids := make([]string, len(requests))
 	for i, request := range requests {
 		ids[i], err = keyID(request.Key)
@@ -360,6 +367,10 @@ func (t *transaction) writable(key driver.LockKey) error {
 func (t *transaction) Put(ctx context.Context, record driver.Record) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.putSourceRecord(ctx, record, nil)
+}
+
+func (t *transaction) putSourceRecord(ctx context.Context, record driver.Record, declaration *sourceindex.Declaration) error {
 	if err := t.check(ctx); err != nil {
 		return err
 	}
@@ -383,6 +394,11 @@ func (t *transaction) Put(ctx context.Context, record driver.Record) error {
 	if staged, ok := t.records[key]; ok && staged != nil && staged.Kind != record.Kind {
 		return fmt.Errorf("%w: postgres cannot change staged kind", driver.ErrUnsupported)
 	}
+	if record.Kind == "bead" {
+		if err = t.guardSourcePut(ctx, declaration); err != nil {
+			return err
+		}
+	}
 	record.Revision = model.Natural64(0)
 	if exists {
 		record.Revision = previous.record.Revision
@@ -391,6 +407,7 @@ func (t *transaction) Put(ctx context.Context, record driver.Record) error {
 		record.Ref.Branch = model.Natural64(0)
 	}
 	record.Body = bytes.Clone(record.Body)
+	t.sourceOverlay.Replace(key, declaration)
 	t.records[key] = &record
 	t.identities[key] = driver.Record{Ref: record.Ref, Kind: record.Kind}
 	return nil
@@ -422,6 +439,18 @@ func (t *transaction) Delete(ctx context.Context, ref driver.Ref) error {
 		}
 		t.identities[key] = driver.Record{Ref: value.record.Ref, Kind: value.record.Kind}
 	}
+	if t.identities[key].Kind == "bead" {
+		coverage, err := t.currentSourceCoverage(ctx)
+		if err != nil {
+			return err
+		}
+		if coverage.Parent.Ready || coverage.Links.Ready {
+			if err = t.writable(driver.GraphBlockingSentinelLock); err != nil {
+				return err
+			}
+		}
+	}
+	t.sourceOverlay.Replace(key, nil)
 	t.records[key] = nil
 	return nil
 }
