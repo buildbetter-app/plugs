@@ -664,6 +664,7 @@ internal/server/ontologyrpc/integration_test.go
 internal/server/pluginbuild/BUILD.bazel
 internal/server/pluginbuild/README.md
 internal/server/pluginbuild/build.go
+internal/server/pluginbuild/configured_browser_test.go
 internal/server/pluginbuild/containment_linux_amd64.go
 internal/server/pluginbuild/containment_linux_amd64_test.go
 internal/server/pluginbuild/containment_other.go
