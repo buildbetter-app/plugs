@@ -209,7 +209,8 @@ func TestActualScopedProducerAndW2BindingDifferential(t *testing.T) {
 	}
 	writer := pipeline.New(s, lease, pipeline.WithOntology(service.NewOntology(nil)))
 	var refs []model.Ref
-	for i, project := range []string{"web/api", "other", "canonical/project", ""} {
+	projects := []string{"web/api", "other", "canonical/project", ""}
+	for i, project := range projects {
 		// The portable allocator uses slash-free prefixes. These imported
 		// registry names intentionally contain slashes and are not allocator
 		// profiles. Seed their content through the adopted storage fixture,
@@ -228,6 +229,20 @@ func TestActualScopedProducerAndW2BindingDifferential(t *testing.T) {
 			t.Fatalf("actual Writer publication project=%q ref=%s: err=%#v results=%+v", project, target.ID, err, result.Results)
 		}
 		refs = append(refs, target)
+	}
+	// Imported ordinary saves leave a temporal coverage gap. Activate their
+	// complete current image through the public startup path, then publish
+	// every tested current source again with the real Writer. Backfill must
+	// not supply the final source-bound projections exercised below.
+	if err := pipeline.BuildSourceIndexes(ctx, s, lease); err != nil {
+		t.Fatalf("activate imported source indexes: %v", err)
+	}
+	for i, project := range projects {
+		target := refs[i]
+		result, err := writer.Apply(ctx, model.PrincipalRef{Kind: "user", ID: "creator"}, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: target, Fields: map[string]any{"title": "current source"}}}}}, model.WriteMeta{Method: "bead.update", Project: project, IdempotencyKey: fmt.Sprintf("%032x", i+101)})
+		if err != nil || len(result.Results) != 1 || result.Results[0].Ref.ID != target.ID {
+			t.Fatalf("post-startup Writer publication project=%q ref=%s: err=%#v results=%+v", project, target.ID, err, result.Results)
+		}
 	}
 	initial, _ := s.Meta(ctx)
 	keys, _ := authzfixed.SelectionRows(ns)
