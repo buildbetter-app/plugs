@@ -128,6 +128,12 @@ func mutate(raw json.RawMessage) uint64 {
 		return response(map[string]any{"error": "invalid after"})
 	}
 	title, _ := after.Fields["title"].(string)
+	if strings.HasPrefix(title, "timer-callback:") {
+		// This is an actual guest callback-owned WASI nanosleep. The host-side
+		// test observes entry through the callback wait context seam and then
+		// cancels or retires the invocation without changing production bounds.
+		time.Sleep(time.Second)
+	}
 	if strings.HasPrefix(title, "acceptance:") {
 		return acceptanceMutation(payload, title)
 	}
