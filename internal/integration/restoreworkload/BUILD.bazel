@@ -3,7 +3,10 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "restoreworkload_test",
     size = "medium",
-    srcs = ["restore_workload_test.go"],
+    srcs = [
+        "restore_workload_test.go",
+        "restored_lifecycle_reopen_test.go",
+    ],
     args = ["-test.v"],
     deps = [
         "//internal/api/wire",

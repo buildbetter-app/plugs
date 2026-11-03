@@ -2,8 +2,11 @@ package webacceptance_test
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -170,6 +173,7 @@ func TestE3ScriptedBrowserTaskReceipts(t *testing.T) {
 		"project": e3Project, "storedBeads": f.receipt.StoredBeads, "agents": f.receipt.Agents,
 		"homeViewId": e3ID(99), "blockedViewId": e3ID(98), "grantCarrierId": e3ID(100), "grantKey": e3GrantKey,
 		"grant": grant, "blockedId": e3ID(52), "blockerId": e3ID(51), "deniedId": e3ID(60),
+		"epicID": e3ID(99), "epicHiddenChildID": e3ID(60),
 		"updateKey": e3Key("browser-live-update"), "revokeKey": e3Key("browser-revoke"),
 		"sourceHead": f.receipt.SourceHead, "sourceTree": f.receipt.SourceTree,
 	})
@@ -227,7 +231,85 @@ func TestE3ScriptedBrowserTaskReceipts(t *testing.T) {
 		"checks": f.browser.policy.checks.Load(), "allows": f.browser.policy.allows.Load(), "denials": f.browser.policy.denials.Load(),
 		"scope": "explicit current persisted fixture grants; installed production policy remains unqualified",
 	})
+	writeE3JSON(t, filepath.Join(f.evidence, "corpus-workload.json"), f.receipt)
+	if err := f.browser.writeEvidence(); err != nil {
+		t.Errorf("E3 watch evidence: %v", err)
+	}
+	logE3BrowserEvidence(t, f.evidence)
 	t.Logf("E3 qualification=%s; actual browser/RPC/NDJSON evidence=%s", receipt.Qualification, f.evidence)
+}
+
+// logE3BrowserEvidence keeps the recorder's existing public observations in
+// the ordinary Bazel test log. Remote collectors retain test.log and test.xml,
+// while the recorder also writes these files as undeclared outputs that are
+// otherwise discarded by hosted delivery. This is an evidence transport only:
+// it does not alter the browser workload, assertions, deadlines or credentials.
+func logE3BrowserEvidence(t *testing.T, evidence string) {
+	t.Helper()
+	const (
+		chunkBytes = 3072
+		maxBytes   = 8 << 20
+	)
+	// These are public fixture observations. The full stored-bead export is
+	// deliberately excluded; credentials and private runtime state are never
+	// copied into the test log.
+	names := []string{
+		"browser-input.json",
+		"browser-outcomes.json",
+		"browser-wire.json",
+		"harness-rpc.json",
+		"watch.ndjson",
+		"browser-console.json",
+		"browser-egress.json",
+		"policy-counters.json",
+		"policy-boundaries.json",
+		"corpus-workload.json",
+	}
+	for index := 1; index <= 5; index++ {
+		names = append(names, fmt.Sprintf("task-%d.png", index))
+	}
+	incomplete := false
+	for _, name := range names {
+		path := filepath.Join(evidence, name)
+		raw, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			logE3EvidenceManifest(t, name, "incomplete", 0, "", 0, "missing")
+			incomplete = true
+			continue
+		}
+		if err != nil {
+			logE3EvidenceManifest(t, name, "incomplete", 0, "", 0, "read_failure")
+			t.Errorf("E3 evidence %s: %v", name, err)
+			incomplete = true
+			continue
+		}
+		if len(raw) > maxBytes {
+			logE3EvidenceManifest(t, name, "incomplete", len(raw), "", 0, "oversize")
+			t.Errorf("E3 evidence %s exceeds %d-byte bound: %d", name, maxBytes, len(raw))
+			incomplete = true
+			continue
+		}
+		digest := sha256.Sum256(raw)
+		chunks := (len(raw) + chunkBytes - 1) / chunkBytes
+		logE3EvidenceManifest(t, name, "complete", len(raw), fmt.Sprintf("%x", digest[:]), chunks, "")
+		for chunk := 0; chunk < chunks; chunk++ {
+			start := chunk * chunkBytes
+			end := start + chunkBytes
+			if end > len(raw) {
+				end = len(raw)
+			}
+			part := raw[start:end]
+			partDigest := sha256.Sum256(part)
+			t.Logf("E3 evidence chunk=%s index=%d offset=%d bytes=%d sha256=%x base64=%s", name, chunk, start, len(part), partDigest[:], base64.StdEncoding.EncodeToString(part))
+		}
+	}
+	if incomplete {
+		t.Errorf("E3 evidence collection incomplete; see incomplete manifests")
+	}
+}
+
+func logE3EvidenceManifest(t *testing.T, name, status string, bytes int, digest string, chunks int, reason string) {
+	t.Logf("E3 evidence manifest=schema=plug-e3-evidence/1 kind=public-fixture name=%s status=%s bytes=%d sha256=%s chunks=%d chunkBytes=3072 reason=%s", name, status, bytes, digest, chunks, reason)
 }
 
 func (f *e3Fixture) verifyPolicyBoundaries() {

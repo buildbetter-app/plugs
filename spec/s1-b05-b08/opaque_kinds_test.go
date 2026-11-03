@@ -50,7 +50,7 @@ func TestB07OpaqueKindsRoundTripThroughPublicLinkAndUnlink(t *testing.T) {
 						t.Fatalf("replay or duplicate changed the graph/history: before=%+v after=%+v", before, after)
 					}
 					retype := f.call(t, f.ctx, "bead.link", map[string]any{"from": from, "to": to, "kind": "blocks"}, key("opaque-retype"), actor)
-					if retype.Error == nil || retype.Error.Data.Code != "invalid_params" {
+					if retype.Error == nil || retype.Error.Data.Code != "ontology_guard_failed" {
 						t.Fatalf("opaque edge was retyped: %+v", retype)
 					}
 					if after := f.state(t, from); !reflect.DeepEqual(before, after) {

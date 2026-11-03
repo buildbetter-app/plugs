@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 var prefixPattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
@@ -128,14 +131,17 @@ func Read(reader io.Reader) (*Archive, error) {
 		}
 		return &Archive{sha256: digest(data), manifest: manifest, members: members, native: true}, nil
 	}
+	if _, present := members[NativeAllocatorMember]; present || manifest.NativeAllocatorProfile != "" || manifest.NativeAllocatorDigest != "" {
+		return nil, fmt.Errorf("native allocator snapshot requires plug-native-store scope")
+	}
 	if err := validateManifest(manifest, members); err != nil {
 		return nil, err
 	}
-	byKind, err := validateRecords(manifest, members)
+	byKind, migration, err := validateRecords(manifest, members)
 	if err != nil {
 		return nil, err
 	}
-	archive := &Archive{sha256: digest(data), tarBytes: append([]byte(nil), data...), manifest: manifest, members: members, byKind: byKind}
+	archive := &Archive{sha256: digest(data), tarBytes: append([]byte(nil), data...), manifest: manifest, members: members, byKind: byKind, migration: migration}
 	if err := validateSourceHistory(archive); err != nil {
 		return nil, err
 	}
@@ -154,7 +160,7 @@ func allowedMember(name string) bool {
 	if name == "manifest.json" || name == "config/sources.json" || name == SourceHistoryMember {
 		return true
 	}
-	if name == "records/native.ndjson" || name == "versions.ndjson" || name == "changesets.ndjson" {
+	if name == "records/native.ndjson" || name == "versions.ndjson" || name == "changesets.ndjson" || name == NativeAllocatorMember {
 		return true
 	}
 	if strings.HasPrefix(name, "blobs/") && len(strings.TrimPrefix(name, "blobs/")) == 64 {
@@ -202,6 +208,20 @@ func validateNativeArchive(manifest Manifest, members map[string][]byte, paths [
 			return fmt.Errorf("native archive does not checksum %q", path)
 		}
 	}
+	// The allocator member was added after the original native envelope. Keep
+	// the envelope parser backward-compatible so the restore manager can map a
+	// missing legacy member to its typed semantic refusal before publication.
+	if allocator, ok := members[NativeAllocatorMember]; ok {
+		if err := validateNativeAllocatorMember(allocator); err != nil {
+			return err
+		}
+		if manifest.NativeAllocatorDigest != digest(allocator) {
+			return fmt.Errorf("native allocator digest mismatch")
+		}
+		if file, ok := manifest.Files[NativeAllocatorMember]; !ok || file.Size != int64(len(allocator)) || file.SHA256 != digest(allocator) {
+			return fmt.Errorf("native allocator snapshot checksum/size mismatch")
+		}
+	}
 	for path := range members {
 		if path != "manifest.json" {
 			if _, ok := manifest.Files[path]; !ok {
@@ -230,6 +250,46 @@ func validateNativeArchive(manifest Manifest, members map[string][]byte, paths [
 	}
 	if hex.EncodeToString(h.Sum(nil)) != manifest.NativeDigest {
 		return fmt.Errorf("native archive digest mismatch")
+	}
+	return nil
+}
+
+// validateNativeAllocatorMember checks only the transport shape. The driver
+// owns the typed codec, shared here to enforce exact counters and canonical
+// bytes. Closed profile/coverage refusals remain semantic manager decisions.
+func validateNativeAllocatorMember(raw []byte) error {
+	var value struct {
+		Version       string            `json:"version"`
+		StoreID       string            `json:"store_id"`
+		Incarnation   string            `json:"incarnation"`
+		At            json.RawMessage   `json:"at"`
+		CoverageFloor json.RawMessage   `json:"coverage_floor"`
+		Projects      []json.RawMessage `json:"projects"`
+		Parents       []json.RawMessage `json:"parents"`
+	}
+	check := json.NewDecoder(bytes.NewReader(raw))
+	check.UseNumber()
+	if err := checkValue(check, 0); err != nil {
+		return fmt.Errorf("invalid native allocator snapshot: %w", err)
+	}
+	if _, err := check.Token(); err != io.EOF {
+		return fmt.Errorf("invalid native allocator snapshot: trailing JSON data")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return fmt.Errorf("invalid native allocator snapshot: %w", err)
+	}
+	if value.Version == "" || value.StoreID == "" || value.Incarnation == "" || len(bytes.TrimSpace(value.At)) == 0 || len(bytes.TrimSpace(value.CoverageFloor)) == 0 || bytes.Equal(bytes.TrimSpace(value.At), []byte("null")) || bytes.Equal(bytes.TrimSpace(value.CoverageFloor), []byte("null")) || value.Projects == nil || value.Parents == nil {
+		return fmt.Errorf("invalid native allocator snapshot envelope")
+	}
+	if _, err := driver.DecodeAllocatorSnapshot(raw); err != nil {
+		var semantic *driver.NativeAllocatorSnapshotError
+		if errors.As(err, &semantic) && (semantic.Reason == driver.NativeAllocatorProfileUnsupported || semantic.Reason == driver.NativeAllocatorCoverageUnavailable) {
+			return nil
+		}
+		return fmt.Errorf("invalid native allocator snapshot: %w", err)
 	}
 	return nil
 }
@@ -289,8 +349,8 @@ func validateManifest(manifest Manifest, members map[string][]byte) error {
 	for key, value := range verificationLimits {
 		expectedVerification[key] = value
 	}
-	if manifest.Verification["ontology"] == explicitOntologyVerification {
-		expectedVerification["ontology"] = explicitOntologyVerification
+	if declaration := manifest.Verification["ontology"]; declaration == explicitOntologyVerification || declaration == StrictUnionOntologyVerification {
+		expectedVerification["ontology"] = declaration
 	} else if len(manifest.Ontology) != 0 {
 		return fmt.Errorf("explicit ontology directives require their verification disclosure")
 	}
@@ -302,7 +362,11 @@ func validateManifest(manifest Manifest, members map[string][]byte) error {
 	if err := validateProjects(manifest.Projects); err != nil {
 		return err
 	}
-	if err := validateOntology(manifest.Ontology, manifest.Projects); err != nil {
+	if manifest.Verification["ontology"] == StrictUnionOntologyVerification {
+		if err := validateMigrationDirectives(manifest.Ontology, manifest.Projects); err != nil {
+			return err
+		}
+	} else if err := validateOntology(manifest.Ontology, manifest.Projects); err != nil {
 		return err
 	}
 	if len(manifest.Files) != len(members)-1 {
@@ -347,40 +411,37 @@ func validateProjects(input []Project) error {
 	return nil
 }
 
-func validateRecords(manifest Manifest, members map[string][]byte) (map[string][]Record, error) {
+func validateRecords(manifest Manifest, members map[string][]byte) (map[string][]Record, *ImportMigration, error) {
 	registry := map[string]bool{}
 	byKind := map[string][]Record{}
 	counts := map[string]int{}
 	lastKind := ""
 	for _, kind := range manifest.Kinds {
 		if !knownKinds[kind.Name] || kind.Version != 1 || kind.Name <= lastKind || kind.File != "records/"+kind.Name+".ndjson" || kind.Count < 1 {
-			return nil, fmt.Errorf("unknown, duplicate or unordered kind registry entry")
+			return nil, nil, fmt.Errorf("unknown, duplicate or unordered kind registry entry")
 		}
 		lastKind = kind.Name
 		registry[kind.File] = true
 		member, ok := members[kind.File]
 		if !ok || len(member) == 0 || member[len(member)-1] != '\n' {
-			return nil, fmt.Errorf("missing or unterminated kind records for %s", kind.Name)
+			return nil, nil, fmt.Errorf("missing or unterminated kind records for %s", kind.Name)
 		}
 		lines := bytes.Split(member[:len(member)-1], []byte{'\n'})
 		if len(lines) != kind.Count {
-			return nil, fmt.Errorf("record count mismatch for %s", kind.Name)
+			return nil, nil, fmt.Errorf("record count mismatch for %s", kind.Name)
 		}
 		last := ""
 		rows := make([]Record, 0, len(lines))
 		for _, line := range lines {
 			var record Record
 			if err := decodeJSON(line, &record); err != nil {
-				return nil, fmt.Errorf("invalid %s record: %w", kind.Name, err)
+				return nil, nil, fmt.Errorf("invalid %s record: %w", kind.Name, err)
 			}
 			if record.Kind != kind.Name || record.ID == "" || record.Source.Table == "" || record.Source.Fields == nil || record.Body == nil {
-				return nil, fmt.Errorf("invalid typed record in %s", kind.Name)
+				return nil, nil, fmt.Errorf("invalid typed record in %s", kind.Name)
 			}
 			if key := recordKey(record); key <= last {
-				return nil, fmt.Errorf("duplicate or unordered typed record in %s", kind.Name)
-			}
-			if err := validateRecord(record, manifest.Projects, counts); err != nil {
-				return nil, err
+				return nil, nil, fmt.Errorf("duplicate or unordered typed record in %s", kind.Name)
 			}
 			last = recordKey(record)
 			rows = append(rows, record)
@@ -389,23 +450,37 @@ func validateRecords(manifest Manifest, members map[string][]byte) (map[string][
 	}
 	for path := range members {
 		if strings.HasPrefix(path, "records/") && !registry[path] {
-			return nil, fmt.Errorf("unregistered record kind %q", path)
+			return nil, nil, fmt.Errorf("unregistered record kind %q", path)
 		}
 	}
-	if err := validateDispositions(manifest.Sources, counts, members["config/sources.json"]); err != nil {
-		return nil, err
+	_, hasHistory := members[SourceHistoryMember]
+	migration, err := compileImportMigration(manifest, byKind, members["config/sources.json"], hasHistory)
+	if err != nil {
+		return nil, nil, err
 	}
-	if err := validateIssueOntology(manifest.Ontology, byKind["bead"], true); err != nil {
-		return nil, err
+	for _, kind := range manifest.Kinds {
+		for _, record := range byKind[kind.Name] {
+			if err := validateMigratedRecord(record, manifest.Projects, counts, migration); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+	if err := validateMigratedDispositions(manifest.Sources, counts, members["config/sources.json"], migration); err != nil {
+		return nil, nil, err
+	}
+	if migration == nil {
+		if err := validateIssueOntology(manifest.Ontology, byKind["bead"], true); err != nil {
+			return nil, nil, err
+		}
 	}
 	historyRows := counts["issue_versions"] + counts["issue_snapshots"] + counts["compaction_snapshots"]
 	if _, captured := members[SourceHistoryMember]; !captured && (historyRows != 0) != (manifest.History == "available-unverified") {
-		return nil, fmt.Errorf("history declaration does not match archived source rows")
+		return nil, nil, fmt.Errorf("history declaration does not match archived source rows")
 	}
 	if err := validateRelations(manifest.Projects, byKind); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return byKind, nil
+	return byKind, migration, nil
 }
 
 func recordKey(record Record) string { return record.Project + "\x00" + record.ID }

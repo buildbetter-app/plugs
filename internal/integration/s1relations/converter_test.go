@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 )
 
@@ -40,10 +42,29 @@ func TestB27PublicConverterRefusalsPreserveRelationalTargetsAcrossAllStores(t *t
 				name = "populated"
 			}
 			t.Run(name, func(t *testing.T) {
-				f := newFixture(t, kind, []string{"s1-parent", "s1-target", "s1-child"})
+				f := newFixture(t, kind, []string{"s1-parent", "s1-target"})
+				var child model.Ref
 				if populated {
-					seedRelations(t, f)
+					child, _, _ = seedRelations(t, f)
+					if child.ID != "s1-parent.1" {
+						t.Fatalf("actual relational child identity: %+v", child)
+					}
 				}
+				readChild := func(label string) {
+					if !populated {
+						return
+					}
+					got := f.call("bead.get", label, map[string]any{"id": child})
+					var result struct {
+						Bead struct {
+							ID string `json:"id"`
+						} `json:"bead"`
+					}
+					if got.Error != nil || json.Unmarshal(got.Result, &result) != nil || result.Bead.ID != child.ID {
+						t.Fatalf("retained actual relational child became unreadable: %+v", got)
+					}
+				}
+				readChild("before-refusal-child")
 				before := f.image()
 				currentReceipt := f.receipt("bead.close", "close")
 				if populated && currentReceipt == nil {
@@ -65,17 +86,13 @@ func TestB27PublicConverterRefusalsPreserveRelationalTargetsAcrossAllStores(t *t
 					t.Fatal("refused conversion changed target records, versions, events, head or reference indexes")
 				}
 				equalReceipt(t, currentReceipt, f.receipt("bead.close", "close"))
+				readChild("after-refusal-child")
 				f.reopen()
 				if !bytes.Equal(before, f.image()) {
 					t.Fatal("refused conversion changed durable state after SQL reopen/server reconstruction")
 				}
 				equalReceipt(t, currentReceipt, f.receipt("bead.close", "close"))
-				if populated {
-					got := f.call("bead.get", "retained-child", map[string]any{"id": ref("s1-child")})
-					if got.Error != nil {
-						t.Fatalf("retained relational target became unreadable: %+v", got)
-					}
-				}
+				readChild("reopened-retained-child")
 				t.Logf("B27 %s/%s: public refusal %v conserved graph/history/reference indexes and current receipt", kind, name, want)
 			})
 		}

@@ -99,8 +99,8 @@ func runStableRecording(t *testing.T, engine string) runtimeRecording {
 	if got := captureCall(t, f, &trace, "bead.link", map[string]any{"from": depA, "to": depB, "kind": "custom-edge"}, key("projection-custom")); got.Error != nil {
 		t.Fatalf("custom edge refused: %s", got.Error.Data.Code)
 	}
-	if got := captureCall(t, f, &trace, "bead.link", map[string]any{"from": depA, "to": depB, "kind": "blocks"}, key("projection-retype")); got.Error != nil && got.Error.Data.Code != "invalid_params" {
-		t.Fatalf("unexpected retype code: %s", got.Error.Data.Code)
+	if got := captureCall(t, f, &trace, "bead.link", map[string]any{"from": depA, "to": depB, "kind": "blocks"}, key("projection-retype")); got.Error == nil || got.Error.Data.Code != "ontology_guard_failed" {
+		t.Fatalf("valid-kind invariant refusal: %+v", got)
 	}
 
 	cycleA := f.create(t, "cycle-a")

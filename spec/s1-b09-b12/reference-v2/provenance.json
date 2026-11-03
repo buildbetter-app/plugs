@@ -1,0 +1,53 @@
+{
+  "cards": [
+    "B09",
+    "B10",
+    "B11"
+  ],
+  "equality": {
+    "normalizedTranscriptsEqual": true,
+    "projectionsEqual": true,
+    "rawStreamsEqual": false
+  },
+  "independentOriginalByteAudit": {
+    "report": "S1-B09-B12-PR250-cb40cab68-original-authentic-byte-audit-20261103.md",
+    "scope": "selected public managed-proxied B09-B11 producer only",
+    "sha256": "8981fb341eb2237d06c89a25c91741a322bcb1f235ff48d9993f58df46d879e4"
+  },
+  "packet": {
+    "bytes": 1514945,
+    "file": "cb40-41563023339.packet.json",
+    "sha256": "33cd8fdcb66b5b93f4a36329fc0598cb9c5d012fc350804809da5eb5a38d4067"
+  },
+  "producer": {
+    "archiveSha256": "b871e324901a00a82a8a368a7826d739110483fdb547d6101ab084f3f8869da6",
+    "commit": "cb40cab68d65307a9bac17bfd43754eb0210d5c0",
+    "parent": "e71f09310eb5558c29230f691cc4bd5bb6afb443",
+    "receipt": "s1-b09-b11-config-v2-cb40cab68-cb40cab68d65-20261103T015700Z-9ddaa10a5f40",
+    "run": "41563023339",
+    "testLogSha256": "56f25819dcf31e9a51fed035f8d5d3b0b0ddd21b9b3f2a7ad995e3680b603694",
+    "tree": "09fe250b7ff627ade066d687b29b1410d8f1bdbf"
+  },
+  "profile": "s1-b09-b11-public9d6-proxied-dolt220-v2",
+  "qualification": {
+    "B12": "NOT EXECUTED; full-card-unqualified",
+    "fullFourCards": "unqualified",
+    "fullS1": "unqualified",
+    "hosted": "unqualified",
+    "nativeProducer": "PLAN_BLOCK",
+    "referenceCaptureRepeated": false
+  },
+  "replayMappings": {
+    "B09": "Raw first/second content; real hash allocator. Source explicit duplicate ID maps to occupied trusted-generator candidates, refused by real writer with unchanged durable state. No explicit-ID RPC is asserted.",
+    "B10": "Raw explicit parent/.8 enter existing driver restore seam with stale counter1; subsequent mint/delete/ordered-close through real writer; SQLite reopen before .13.",
+    "B11": "Raw endpoint inputs use trusted ID generator; exact blocks, same-type readd, relates-to retype, unlink/relink; persisted records/history compared."
+  },
+  "runtimeConfigurationScope": "initial copies before runtime/init only; no final unchanged-config claim",
+  "schema": "plug.s1-b09-b11.accepted-reference-replay-input.v1",
+  "source": {
+    "binarySha256": "3c6bbb888431751adce98dfebc8cbeeb5869300698e8b069a4d7438fabfb3af4",
+    "classification": "original Go-built CGO0; not canonical Bazel; not legacy33cd",
+    "commit": "9d6fff760b7a314b476539198504d77ce0959656",
+    "tree": "cde121d6e4119e454857ad1c3ca293e2791be840"
+  }
+}

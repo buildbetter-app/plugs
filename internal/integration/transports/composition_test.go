@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/composition"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	sdk "github.com/buildbetter-app/plugs/sdk/go"
 )
 
 // This decorator keeps the real memory driver and core read path. Its only
@@ -96,6 +98,9 @@ func productionFixture(t *testing.T, authenticated bool) (*fixture, *composition
 		config.AuthMode = "authenticated"
 		config.Auth = authn.Config{Provider: f.keys}
 	}
+	native, bindings := newTransportProbe(t, f, authenticated)
+	config.NativePlugins = []sdk.Native{native}
+	config.NativeBindings = bindings
 	runtime, err := composition.Open(context.Background(), config)
 	if err != nil {
 		t.Fatal(err)
@@ -132,6 +137,15 @@ func TestProductionListenerMountsWebSocketAndDrainsBeforeStoreClose(t *testing.T
 			t.Cleanup(func() { releaseOnce.Do(func() { close(store.release) }) })
 			create := request(t, "production", "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "production WebSocket route"}, "_meta": map[string]any{"idempotencyKey": "550e8400-e29b-41d4-a716-446655440000"}})
 			created := success(t, f.call(t, "websocket", create))
+			for _, transport := range transports {
+				got := f.call(t, transport, create)
+				if !got.Meta.Replayed || !bytes.Equal(success(t, got), created) {
+					t.Fatalf("production %s changed replay result or metadata", transport)
+				}
+			}
+			if f.validators.Load() != 1 || f.posts.Load() != 1 || f.targetCalls.Load() != 0 {
+				t.Fatalf("composed native callbacks=%d/%d outbound=%d", f.validators.Load(), f.posts.Load(), f.targetCalls.Load())
+			}
 			var commit struct {
 				Results []struct{ Ref json.RawMessage }
 			}
@@ -151,6 +165,20 @@ func TestProductionListenerMountsWebSocketAndDrainsBeforeStoreClose(t *testing.T
 			connection.Close()
 			if status != http.StatusForbidden {
 				t.Fatalf("production WebSocket hostile origin: %d", status)
+			}
+			status, _, _ = f.post(t, "/rpc/v1", create, func(r *http.Request) {
+				r.Host = "attacker.invalid"
+				r.Header.Set("X-Forwarded-Host", strings.TrimPrefix(f.url, "http://"))
+				r.Header.Set("X-Forwarded-For", "127.0.0.1")
+			})
+			if status != http.StatusForbidden {
+				t.Fatalf("production hostile host: %d", status)
+			}
+			status, _, _ = f.post(t, "/rpc/v1", create, func(r *http.Request) {
+				r.Header.Set("Authorization", "Bearer invalid-fixture-key")
+			})
+			if status != http.StatusUnauthorized {
+				t.Fatalf("production invalid credential: %d", status)
 			}
 
 			connection, _, status = f.connect(t, nil)

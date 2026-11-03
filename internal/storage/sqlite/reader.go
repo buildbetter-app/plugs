@@ -20,13 +20,14 @@ import (
 )
 
 type reader struct {
-	mu     sync.Mutex
-	store  *Store
-	tx     *sql.Tx
-	meta   driver.Meta
-	at     uint64
-	closed bool
-	owner  *transaction
+	allocatorImage *driver.AllocatorSnapshot
+	mu             sync.Mutex
+	store          *Store
+	tx             *sql.Tx
+	meta           driver.Meta
+	at             uint64
+	closed         bool
+	owner          *transaction
 }
 
 func (s *Store) Read(ctx context.Context, v driver.View) (driver.Reader, error) {

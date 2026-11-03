@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deterministic run-bound delivery and failure propagation; no real Bazel runs.
 set -euo pipefail
-repo_root="$(git rev-parse --show-toplevel)"
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 python3 - "$repo_root" <<'PY'
 import json
 import hashlib
@@ -48,6 +48,7 @@ with tempfile.TemporaryDirectory(prefix="plug-bazel-delivery-test.") as temporar
 import json
 import os
 from pathlib import Path
+import re
 import sys
 root = Path(__file__).parent
 config = json.loads((root / "control.json").read_text())
@@ -65,7 +66,13 @@ cp7 = ("//internal/integration/cp7latency:cp7_correctness_test",
        "//internal/integration/cp7latency:cp7_latency_sqlite_test",
        "//internal/integration/cp7latency:cp7_latency_postgres_test") if config.get("cp7") else ()
 public_target = ("//tools/roundtrip:public_beads_runtime_test",) if config.get("public_runtime") else ()
-test_labels = ("//pkg:pkg_test", "//consumer:consumer_test", "//libraryconsumer:library_test", "//tools/lexicon:lexicon_gate", *cp7, *public_target)
+ordinary_policy = ("//pkg:manual_policy_test",) if config.get("manual_candidates") else ()
+count_capture = "//spec/s1-b21-b24:ordinary_count_capture_test"
+manual_targets = (count_capture, "//pkg:manual_capture_test") if config.get("manual_candidates") else ()
+tags = {count_capture: ["local", "manual"], "//pkg:manual_capture_test": ["manual", "local"],
+        "//tools/roundtrip:public_beads_runtime_test": ["local", "manual"],
+        "//pkg:manual_policy_test": ["manual-policy"]}
+test_labels = ("//pkg:pkg_test", "//consumer:consumer_test", "//libraryconsumer:library_test", "//tools/lexicon:lexicon_gate", *ordinary_policy, *cp7, *public_target)
 if command == "version":
     assert "--gnu_format" in args
     if not config.get("direct_bazel"):
@@ -80,29 +87,45 @@ elif command == "query":
         print("query failed", file=sys.stderr)
         sys.exit(config["query_exit"])
     expression = args[args.index("query") + 1]
-    if expression == 'kind("source file", deps(//...))':
-        print("//pkg:file.go\n//pkg:cmd/nested/main.go")
-    elif '.*_library rule' in expression:
+    scope, pattern = expression, None
+    boundary = ') except (attr("tags", '
+    if expression.startswith("(") and boundary in expression:
+        scope, tail = expression[1:].split(boundary, 1)
+        pattern, end = json.JSONDecoder().raw_decode(tail)
+        assert tail[end:] == ', ' + scope + ') except set(//tools/roundtrip:public_beads_runtime_test))', expression
+    if scope == 'kind("source file", deps(//...))':
+        result = ["//pkg:file.go", "//pkg:cmd/nested/main.go"]
+    elif '.*_library rule' in scope:
         # A directory without a BUILD is not a Bazel package. Reproduce the
         # real owning-libraries failure if the selector invents one.
-        assert expression == 'kind(".*_library rule", set(//pkg:all))', expression
-        print("//pkg:pkg")
-    elif 'set(//pkg:pkg)' in expression:
-        print("//libraryconsumer:library_test")
-    elif 'rdeps(' in expression:
-        print("//consumer:consumer_test")
-    elif 'tests(set(' in expression:
-        print("\n".join(test_labels))
-    elif expression == 'kind(".*_test rule", //...)':
-        print("\n".join(("//pkg:pkg_test", "//consumer:consumer_test", *cp7)))
+        assert scope == 'kind(".*_library rule", set(//pkg:all))', scope
+        result = ["//pkg:pkg"]
+    elif 'set(//pkg:pkg)' in scope:
+        result = ["//libraryconsumer:library_test", *manual_targets, *public_target]
+    elif 'rdeps(' in scope:
+        result = ["//consumer:consumer_test", *manual_targets, *public_target]
+    elif 'tests(set(' in scope:
+        result = test_labels
+    elif scope == 'kind(".*_test rule", //...)':
+        result = ["//pkg:pkg_test", "//consumer:consumer_test", *ordinary_policy, *manual_targets, *public_target, *cp7]
     else:
-        print("//pkg:pkg_test")
+        result = ["//pkg:pkg_test", *ordinary_policy, *manual_targets]
+    if pattern is not None:
+        matcher = re.compile(pattern)
+        result = [label for label in result if label == "//tools/roundtrip:public_beads_runtime_test"
+                  or not matcher.search("[" + ", ".join(tags.get(label, [])) + "]")]
+    print("\n".join(result))
 elif command == "test":
     assert "--test_env=GO_TEST_WRAP_TESTV=1" in args
     assert [arg for arg in args if arg.startswith("--test_timeout=")] == ["--test_timeout=900,900,900,9000"], args
     assert not any(arg.startswith(("--test_tag_filters", "--test_size_filters", "--test_timeout_filters", "--test_filter", "--build_tag_filters")) for arg in args), args
     if cp7:
         assert set(cp7).issubset(args), args
+    if config.get("manual_candidates"):
+        assert not set(manual_targets).intersection(args), args
+        assert set(ordinary_policy).issubset(args), args
+    if public_target:
+        assert set(public_target).issubset(args), args
     public_args = [arg for arg in args if arg.startswith("--test_env=PLUG_PUBLIC_BEADS_")]
     assert public_args == config.get("public_env", []), (public_args, config.get("public_env", []))
     labels = test_labels
@@ -287,6 +310,38 @@ else:
     phase("begin", repo / "inside-source", 2)
     assert not (repo / "inside-source").exists()
 
+    def assert_automatic_manual_boundary(out, prepared_runtime):
+        count = "//spec/s1-b21-b24:ordinary_count_capture_test"
+        manual = "//pkg:manual_capture_test"
+        runtime = "//tools/roundtrip:public_beads_runtime_test"
+        ordinary = {"//pkg:pkg_test", "//pkg:manual_policy_test",
+                    "//consumer:consumer_test", "//libraryconsumer:library_test"}
+        selected = set((out / "selection/command-targets.txt").read_text().splitlines())
+        assert selected == {"//:lexicon_gate", *ordinary, *({runtime} if prepared_runtime else set())}, selected
+        resolved = set((out / "selection/resolved-test-targets.txt").read_text().splitlines())
+        assert resolved == {"//tools/lexicon:lexicon_gate", *ordinary, *({runtime} if prepared_runtime else set())}, resolved
+        for name in ("touched-targets", "reverse-targets", "owning-reverse-targets"):
+            assert not {count, manual}.intersection((out / ("selection/" + name + ".txt")).read_text().splitlines()), name
+        argv = json.loads((out / "commands/tests/argv.json").read_text())
+        assert selected.issubset(argv) and not {count, manual}.intersection(argv), argv
+
+    # Source/package, source reverse and delivery's owning-library closure all
+    # contain manual candidates. A reference env claim cannot opt them in.
+    env["PLUG_PUBLIC_REFERENCE"] = "caller-claim"
+    try:
+        out, result = exercise("manual-source-ordinary", {"manual_candidates": True})
+        assert_automatic_manual_boundary(out, False)
+    finally:
+        env.pop("PLUG_PUBLIC_REFERENCE")
+    out, result = exercise("manual-source-prepared", {"manual_candidates": True, "public_runtime": True}, public_mode="valid")
+    assert_automatic_manual_boundary(out, True)
+    out, result = exercise("manual-source-unprepared-runtime", {"manual_candidates": True, "public_runtime": True}, 86, 86)
+    assert result["first_failure"]["stage"] == "collector-run"
+    assert not (out / "commands/tests").exists()
+    out, result = exercise("manual-source-mismatched-runtime", {"manual_candidates": True, "public_runtime": True}, 86, 86, public_mode="malformed")
+    assert result["first_failure"]["stage"] == "collector-run"
+    assert not (out / "commands/tests").exists()
+
     # Keep the package-only delivery/failure cases above and separately cover
     # the graph-plus-nested-source path that failed in the hosted workflow.
     base = head
@@ -327,5 +382,12 @@ else:
     out, result = exercise("public-stray", {}, 86, 86, public_mode="stray")
     assert result["first_failure"]["stage"] == "collector-run"
 
-print("plug-ci-delivery: bundle, accounting, secrets exclusion, tamper/escape, query/test/collector/shutdown first-failure and cleanup fixtures and unfiltered CP7 timeout-map delivery passed")
+    # BUILD/fullgraph selection must not reintroduce the unprepared count
+    # capture, and must retain the deliberately prepared manual runtime.
+    out, result = exercise("manual-graph-ordinary", {"manual_candidates": True})
+    assert_automatic_manual_boundary(out, False)
+    out, result = exercise("manual-graph-prepared", {"manual_candidates": True, "public_runtime": True}, public_mode="valid")
+    assert_automatic_manual_boundary(out, True)
+
+print("plug-ci-delivery: manual preparation boundary, ordinary coverage, prepared runtime, bundle/accounting/refusal and CP7 timeout-map fixtures passed")
 PY

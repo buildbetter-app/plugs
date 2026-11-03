@@ -289,3 +289,52 @@ func b19RestoreCapturedSnapshot(t *testing.T, engine string, data []byte, archiv
 		check()
 	}
 }
+
+// The last consumed child has been deleted. Complete native state must retain
+// its suffix even though neither the live record image nor its parent body
+// contains it, including when another real allocation lands before Read.
+func TestB19NativeSnapshotPreservesDeletedChildContinuation(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite"} {
+		t.Run(engine, func(t *testing.T) {
+			source := openB17Harness(t, engine)
+			parent := b17Commit(t, source, model.ChangeSet{Ops: []model.Op{b17Create()}}, 180).Results[0].Ref
+			childOp := b17Create()
+			childOp.Create.Parent = &parent
+			child := b17Commit(t, source, model.ChangeSet{Ops: []model.Op{childOp}}, 181).Results[0].Ref
+			if child.ID != parent.ID+".1" {
+				t.Fatalf("source actual child id: %+v", child)
+			}
+			b17Commit(t, source, model.ChangeSet{Ops: []model.Op{{Kind: model.OpDelete, Delete: &model.DeleteOp{Target: child}}}}, 182)
+			baseline, manifest, err := restore.Dump(source.ctx, source.store, "head")
+			if err != nil {
+				t.Fatal(err)
+			}
+			wrapped := &b19WriteBeforeReadStore{Store: source.store, write: func() {
+				next := b17Commit(t, source, model.ChangeSet{Ops: []model.Op{childOp}}, 183).Results[0].Ref
+				if next.ID != parent.ID+".2" {
+					t.Fatalf("source consumed child reused: %+v", next)
+				}
+			}}
+			data, got, err := restore.Dump(source.ctx, wrapped, "head")
+			if err != nil || !bytes.Equal(data, baseline) || !reflect.DeepEqual(got, manifest) {
+				t.Fatalf("allocator escaped B19 captured head: %+v %v", got, err)
+			}
+			archive, err := dumpformat.Read(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, ok := archive.NativeMember(dumpformat.NativeAllocatorMember)
+			if !ok {
+				t.Fatal("B19 native snapshot omitted allocator continuation")
+			}
+			snapshot, err := driver.DecodeAllocatorSnapshot(raw)
+			if err != nil || snapshot.At.String() != "3" || snapshot.Incarnation != manifest.NativeIncarnation || len(snapshot.Inventory.Projects) != 0 || len(snapshot.Inventory.Parents) != 1 || snapshot.Inventory.Parents[0].Parent != parent.ID || snapshot.Inventory.Parents[0].LastChild != 1 || manifest.NativeAllocatorDigest != b17Hash(string(raw)) {
+				t.Fatalf("B19 captured allocator image: %+v %v", snapshot, err)
+			}
+			records := b19SnapshotMember[b19SnapshotRecord](t, archive, "records/native.ndjson")
+			if len(records) != 1 || records[0].Ref.ID != parent.ID {
+				t.Fatal("deleted child still present in archive record census")
+			}
+		})
+	}
+}

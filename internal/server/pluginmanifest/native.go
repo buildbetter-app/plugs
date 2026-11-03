@@ -41,7 +41,7 @@ func (b *Bundle) Natives(ctx context.Context, implementations []sdk.Native) ([]s
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, sdk.Native{Manifest: copy, Instance: native.Instance, New: native.New})
+		result = append(result, sdk.Native{Manifest: copy, Instance: native.Instance, New: native.New, NewWithContext: native.NewWithContext})
 		used[plugin.ID] = true
 	}
 	for _, plugin := range b.manifest.Plugins {

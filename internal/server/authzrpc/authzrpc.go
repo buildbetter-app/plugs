@@ -24,6 +24,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 // Snapshot is the read-only portion of both a pipeline snapshot and a driver
@@ -104,6 +105,10 @@ type Config struct {
 	// It does not implement hierarchy storage/RPC or relax ordinary #18 writes.
 	// Keep false until the host installs the separately reviewed hierarchy Writer.
 	Hierarchy bool
+	// Workflow is the optional durable plugin provider. When installed, the
+	// guarded service exposes x.workflow.invoke and standard-tool routing while
+	// preserving the checker for core beads.
+	Workflow *workflowplugin.Provider
 }
 
 // Composition owns the installed chain and is useful to hosts that need the
@@ -168,7 +173,11 @@ func New(ctx context.Context, config Config) (*Composition, error) {
 		options = append(options, pipeline.WithMutators(config.Mutators...))
 	}
 	writer := pipeline.New(config.Store, config.Lease, options...)
-	domain := service.New(config.Store, config.Lease, writer, service.WithOntology(ontology))
+	serviceOptions := []service.Option{service.WithOntology(ontology)}
+	if config.Workflow != nil {
+		serviceOptions = append(serviceOptions, service.WithWorkflow(config.Workflow))
+	}
+	domain := service.New(config.Store, config.Lease, writer, serviceOptions...)
 	guarded := &GuardedService{
 		delegate:        domain,
 		checker:         checker,
@@ -388,9 +397,9 @@ func samePrincipal(a, b model.PrincipalRef) bool {
 		return false
 	}
 	// Native caveats can contain typed Refs while authenticated/frozen values
-	// contain JSON objects. Compare their normalized values, not serialized
-	// bytes. PrincipalRef's strict codec preserves exact JSON numbers, so this
-	// does not round distinct caveat values together.
+	// contain JSON objects. Compare their normalized values, not object member
+	// order in the encoded bytes. PrincipalRef's strict codec preserves exact
+	// JSON numbers, so normalization cannot round distinct caveat values.
 	var left, right model.PrincipalRef
 	if json.Unmarshal(x, &left) != nil || json.Unmarshal(y, &right) != nil {
 		return false

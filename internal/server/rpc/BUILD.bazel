@@ -2,15 +2,15 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "rpc",
-    srcs = ["admin.go", "comments.go", "cursor.go", "registry.go", "server.go", "service.go"],
+    srcs = ["admin.go", "comments.go", "compact.go", "cursor.go", "registry.go", "server.go", "service.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/rpc",
     visibility = ["//:__subpackages__"],
-    deps = ["//internal/api/wire", "//internal/core/model", "//internal/core/port", "//internal/core/restore", "//internal/core/service", "//internal/server/authn", "//internal/storage/driver"],
+    deps = ["//internal/api/wire", "//internal/core/model", "//internal/core/port", "//internal/core/restore", "//internal/core/service", "//internal/server/authn", "//internal/storage/driver", "//plugins/workflow"],
 )
 
 go_test(
     name = "rpc_test",
-    srcs = ["cursor_test.go", "gate_integration_test.go", "integration_test.go", "openrpc_test.go", "rpc_test.go"],
+    srcs = ["cursor_test.go", "gate_integration_test.go", "integration_test.go", "openrpc_test.go", "rpc_test.go", "workflow_integration_test.go"],
     embedsrcs = ["openrpc.json"],
     deps = [
         ":rpc",
@@ -19,6 +19,7 @@ go_test(
         "//internal/plugins/authnapikey",
         "//internal/plugins/authzfixed",
         "//internal/server/authzrpc",
+        "//internal/server/pluginhost",
         "//internal/core/model",
         "//internal/core/ontology",
         "//internal/core/pipeline",
@@ -29,6 +30,7 @@ go_test(
         "//internal/storage/driver",
         "//internal/storage/memory",
         "//internal/storage/sqlite",
+        "//plugins/workflow",
     ],
 )
 

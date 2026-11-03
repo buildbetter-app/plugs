@@ -3600,6 +3600,14 @@ resolver. The result is capped at 100 edges; overflow and cancellation refuse
 atomically with the existing `closure_too_large` and `busy` errors, without a
 partial result.
 
+The existing edge kind vocabulary includes `waits-for`. Its verdict evaluates
+the stored optional all/any and `also_blocks` metadata against the complete
+direct child fanout from that same pinned reader, using each child's own
+project ontology. Absent metadata keeps the terminal-spawner/all-child legacy
+fallback. An unavailable child ontology or unknown child status stays unknown;
+child identities, projects and statuses are not added to the result. Target
+redaction and the existing 100 direct-edge bound are unchanged.
+
 ## Deliberate boundaries
 
 The sketches leave JSON-RPC wire types in `contracts/openrpc.json` and keep

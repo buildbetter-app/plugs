@@ -3,6 +3,7 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -45,6 +46,9 @@ func (p *prepared) resolveParent(ctx context.Context, parent *model.Ref, aliases
 	for id := ref.ID; id != ""; {
 		if id == child || seen[id] {
 			return nil, failure("ontology_guard_failed", "parent would form a cycle")
+		}
+		if p.maxHierarchyDepth > 0 && strings.Count(id, ".") >= p.maxHierarchyDepth {
+			return nil, failure("invalid_params", fmt.Sprintf("maximum hierarchy depth (%d) exceeded for parent %s", p.maxHierarchyDepth, id))
 		}
 		seen[id] = true
 		node, err := p.load(ctx, model.Ref{ID: id})
@@ -231,6 +235,10 @@ func (p *prepared) hierarchyAffected(parents map[string]string) (map[string]bool
 // with missing/extra/wrong-depth rows fails closed.
 func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 	if len(p.hierarchyEdits) == 0 {
+		// Field, metadata, comment and lease updates leave the parent graph
+		// unchanged. They already observe their target record in prepare, so
+		// avoid enumerating every bead merely to revalidate an untouched
+		// hierarchy.
 		return nil, nil
 	}
 	complex := false
@@ -238,6 +246,11 @@ func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 		complex = complex || !edit.create || edit.parent != ""
 	}
 	for _, pending := range p.writes {
+		// Ordinary field/lease updates preserve an existing parent and do not
+		// need to rescan the complete graph. Create/Reparent mark the parent
+		// path in the hierarchy edits. A mixed batch can still contain a
+		// parent-preserving update alongside a root create, so retain the full
+		// check whenever that batch already requires a graph.
 		complex = complex || (len(pending.before) != 0 && pending.doc.Parent != nil)
 	}
 	stored := map[string]Document{}

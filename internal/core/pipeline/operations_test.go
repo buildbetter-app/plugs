@@ -42,7 +42,9 @@ func TestConditionalLinksAreAtomicGuardedAndDoNotWriteEndpoints(t *testing.T) {
 		_, err := w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{patch(blocker, map[string]any{"title": "must roll back"}), link(blocker, dependent, kind)}}, meta(i+3))
 		code(t, err, "ontology_guard_failed")
 	}
-	_, err = w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{link(dependent, blocker, "invented")}}, meta(5))
+	// Unknown but well-formed dependency kinds remain import-compatible; an
+	// empty kind is the malformed wire case for this refusal assertion.
+	_, err = w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{link(dependent, blocker, "")}}, meta(5))
 	code(t, err, "invalid_params")
 	_, err = w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{{Kind: model.OpDelete, Delete: &model.DeleteOp{Target: blocker}}}}, meta(6))
 	code(t, err, "ontology_guard_failed")
@@ -80,6 +82,27 @@ func TestConditionalLinksAreAtomicGuardedAndDoNotWriteEndpoints(t *testing.T) {
 	log, err := h.read(t).Changesets(context.Background(), nil, 10)
 	if err != nil || len(log) != 4 || log[3].Changes[0].Op != model.OpDelete {
 		t.Fatalf("log=%+v err=%v", log, err)
+	}
+}
+
+func TestDependencyEndpointIdentityRefusesRetypeAndWrongKindUnlink(t *testing.T) {
+	h := setup(t)
+	w := h.writer()
+	seed := apply(t, w, model.ChangeSet{Ops: []model.Op{create("source"), create("target")}}, meta(21))
+	source, target := seed.Results[0].Ref, seed.Results[1].Ref
+	apply(t, w, model.ChangeSet{Ops: []model.Op{link(source, target, "blocks")}}, meta(22))
+	// Association annotations may coexist with a workflow edge. Use a second
+	// workflow kind to exercise the typed endpoint conflict contract.
+	retype := link(source, target, "waits-for")
+	_, err := w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{retype}}, meta(23))
+	code(t, err, "ontology_guard_failed")
+	wrongKind := retype
+	wrongKind.Kind = model.OpUnlink
+	_, err = w.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{wrongKind}}, meta(24))
+	code(t, err, "not_found")
+	doc, err := DecodeDocument(apply(t, w, model.ChangeSet{Ops: []model.Op{patch(source, map[string]any{"title": "read"})}}, meta(25)).Results[0].Record)
+	if err != nil || len(doc.Links) != 1 || doc.Links[0].Kind != "blocks" || doc.Links[0].To.ID != target.ID {
+		t.Fatalf("endpoint identity changed after typed refusal: %+v err=%v", doc.Links, err)
 	}
 }
 

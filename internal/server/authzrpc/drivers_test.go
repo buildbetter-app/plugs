@@ -2,7 +2,9 @@ package authzrpc_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -53,6 +55,7 @@ func TestFixedPermissionsAcrossDrivers(t *testing.T) {
 			t.Run("history_uses_current_permissions", func(t *testing.T) { currentHistory(t, open) })
 			t.Run("post_image", func(t *testing.T) { postImage(t, open) })
 			t.Run("authorization_races", func(t *testing.T) { authorizationRaces(t, open) })
+			t.Run("source_publication_failure", func(t *testing.T) { sourcePublicationFailure(t, open) })
 		})
 	}
 }
@@ -203,6 +206,23 @@ func currentHistory(t *testing.T, open storeFactory) {
 	first := page(t, f.call(t, unrestricted, "history.query", cursorParams, 1204))
 	if len(first.Items) != 1 || first.NextCursor == "" {
 		t.Fatal("history fixture did not produce a continuation")
+	}
+	// Guarded history pages use the history cursor contract; Ready-only
+	// workflow membership metadata must never be attached to this token.
+	parts := strings.Split(first.NextCursor, ".")
+	if len(parts) != 2 {
+		t.Fatal("history cursor was not signed as two segments")
+	}
+	body, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cursorFields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &cursorFields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cursorFields["readyMembership"]; ok {
+		t.Fatal("history cursor carried Ready membership metadata")
 	}
 	next.Grants = nil
 	if err := f.facts.Replace(next); err != nil {
@@ -381,6 +401,195 @@ func immutableRegistry(t *testing.T, open storeFactory) {
 			success(t, f.call(t, worker("user:operator"), "bead.update", map[string]any{
 				"id": model.RefByID(beadID, model.Natural64(0)), "fields": map[string]any{"title": "still authorized"},
 			}, 100))
+		})
+	}
+}
+
+var errBeforeFactsCommit = errors.New("authorization publication failed before commit")
+
+// Only the next real transaction is wrapped. Lock, Head, staging, rollback and
+// persistence remain driver-owned; the control fires at Commit, after staging.
+type factsPublicationStore struct {
+	driver.Store
+	next *factsPublicationFault
+}
+
+type factsPublicationFault struct {
+	lostAck     bool
+	commitCalls int
+	bumped      []driver.ReadFact
+	committed   model.Changeset
+}
+
+func (s *factsPublicationStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	tx, err := s.Store.Write(ctx, lease)
+	if err != nil || s.next == nil {
+		return tx, err
+	}
+	fault := s.next
+	s.next = nil
+	return &factsPublicationTx{WriteTx: tx, fault: fault}, nil
+}
+
+type factsPublicationTx struct {
+	driver.WriteTx
+	fault *factsPublicationFault
+}
+
+func (tx *factsPublicationTx) BumpReadFacts(ctx context.Context, facts []driver.ReadFact) error {
+	if err := tx.WriteTx.BumpReadFacts(ctx, facts); err != nil {
+		return err
+	}
+	tx.fault.bumped = append(tx.fault.bumped, facts...)
+	return nil
+}
+
+func (tx *factsPublicationTx) Commit(ctx context.Context, header driver.ChangesetHeader) (model.Changeset, error) {
+	tx.fault.commitCalls++
+	if !tx.fault.lostAck {
+		return model.Changeset{}, errBeforeFactsCommit
+	}
+	entry, err := tx.WriteTx.Commit(ctx, header)
+	if err != nil {
+		return model.Changeset{}, err
+	}
+	tx.fault.committed = entry
+	// The real commit is complete. Hide its result just as a lost COMMIT
+	// acknowledgement does; deferred Rollback/Close cannot undo persistence.
+	return model.Changeset{}, driver.ErrIndeterminate{IdempotencyKey: header.IdempotencyKey}
+}
+
+func publicationState(t *testing.T, store driver.Store, namespace authz.Namespace) (model.Revision, driver.LockState) {
+	t.Helper()
+	ctx := context.Background()
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := store.Read(ctx, driver.View{Incarnation: namespace.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	fact, err := driver.NewReadFact(authz.ACLDependency(namespace).Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states, err := reader.Observe(ctx, []driver.LockKey{{Kind: driver.LockReadFact, Fact: fact}})
+	if err != nil || len(states) != 1 || reader.Snapshot().At.String() != meta.Head.String() {
+		t.Fatalf("independent durable ACL/head observation: states=%+v head=%s error=%v", states, meta.Head, err)
+	}
+	return meta.Head, states[0]
+}
+
+func sourcePublicationFailure(t *testing.T, open storeFactory) {
+	for _, mode := range []string{"before_commit", "commit_lost_ack"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			store := &factsPublicationStore{Store: open(t)}
+			f := newFixtureOn(t, store, nil)
+			// Begin with a nonzero, genuinely committed ACL generation. The
+			// successful bead write then separates storage head from that fact.
+			if err := f.facts.Replace(f.base); err != nil {
+				t.Fatal(err)
+			}
+			old, replacement := worker("user:operator"), worker("user:replacement")
+			update := func(by model.PrincipalRef, title string, key int) reply {
+				return f.call(t, by, "bead.update", map[string]any{"id": fixtureRef(1), "fields": map[string]any{"title": title}}, key)
+			}
+			success(t, update(old, "last published", 1400))
+			beforeRows, err := f.reader(t).Get(ctx, []model.Ref{fixtureRef(1)})
+			if err != nil || len(beforeRows) != 1 {
+				t.Fatalf("committed protected fixture: %v", err)
+			}
+			beforeHead, beforeACL := publicationState(t, store.Store, f.base.Namespace)
+			if !beforeACL.Present || beforeACL.Revision.IsZero() || beforeACL.Revision.String() == beforeHead.String() {
+				t.Fatal("fixture must distinguish committed ACL generation from current head")
+			}
+			next := f.base
+			next.Grants = []authz.Grant{{Subject: authz.SubjectRef{Kind: "user", ID: "user:replacement"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: f.base.Projects[0].Ref}, Role: "involved"}}
+			fault := &factsPublicationFault{lostAck: mode == "commit_lost_ack"}
+			store.next = fault
+			err = f.facts.Replace(next)
+			var unknown driver.ErrIndeterminate
+			if fault.lostAck && !errors.As(err, &unknown) || !fault.lostAck && !errors.Is(err, errBeforeFactsCommit) {
+				t.Fatalf("wrong publication failure: %v", err)
+			}
+			if fault.commitCalls != 1 || !reflect.DeepEqual(fault.bumped, []driver.ReadFact{beforeACL.Key.Fact}) || store.next != nil {
+				t.Fatalf("fault did not reach Commit after real ACL staging: %+v", fault)
+			}
+			afterHead, afterACL := publicationState(t, store.Store, f.base.Namespace)
+			entries, err := f.reader(t).Changesets(ctx, &driver.Cursor{Incarnation: f.base.Namespace.Incarnation, Revision: beforeHead}, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fault.lostAck {
+				if afterHead.String() == beforeHead.String() || !afterACL.Present || afterACL.Revision.String() != afterHead.String() || fault.committed.Revision.String() != afterHead.String() || len(entries) != 1 || !reflect.DeepEqual(entries[0], fault.committed) || entries[0].Kind != model.ChangesetDerived || entries[0].Principal.Kind != "system" || entries[0].Principal.ID != "authzrpc" || len(entries[0].Changes) != 0 {
+					t.Fatalf("lost acknowledgement lacked a real atomic ACL commit: head=%s ACL=%+v entries=%+v", afterHead, afterACL, entries)
+				}
+				loaded, err := f.facts.Load(ctx, f.reader(t))
+				if err == nil || !reflect.DeepEqual(loaded, authzfixed.Facts{}) {
+					t.Fatal("generation mismatch returned stale authorization facts")
+				}
+				got := f.call(t, model.PrincipalRef{Kind: "user", ID: "user:reader"}, "bead.get", map[string]any{"id": fixtureRef(1)}, 1401)
+				if got.Error == nil || got.Error.Data.Code != "authz_unavailable" || !got.Error.Data.Retryable || len(got.Result) != 0 {
+					t.Fatalf("uncertain source allowed a protected read: %+v", got)
+				}
+			} else {
+				if afterHead.String() != beforeHead.String() || !reflect.DeepEqual(afterACL, beforeACL) || len(entries) != 0 || !fault.committed.Revision.IsZero() {
+					t.Fatal("failed commit published an ACL generation or changeset")
+				}
+				loaded, err := f.facts.Load(ctx, f.reader(t))
+				if err != nil || !reflect.DeepEqual(loaded, f.base) {
+					t.Fatalf("failed commit replaced the previously published source: %v", err)
+				}
+				success(t, f.call(t, model.PrincipalRef{Kind: "user", ID: "user:reader"}, "bead.get", map[string]any{"id": fixtureRef(1)}, 1401))
+			}
+			// Neither a tentative grant nor the old grant after a durable
+			// revocation may authorize a write. Check actual content and receipts.
+			for i, by := range []model.PrincipalRef{replacement, old} {
+				if !fault.lostAck && i == 1 {
+					continue // The old grant is still the committed source here.
+				}
+				want := "forbidden"
+				if fault.lostAck {
+					want = "authz_unavailable"
+				}
+				got := update(by, "must not commit", 1410+i)
+				if got.Error == nil || got.Error.Data.Code != model.ErrorCode(want) || fault.lostAck && !got.Error.Data.Retryable || len(got.Result) != 0 || f.receipt(t, by, "bead.update", 1410+i) != nil {
+					t.Fatalf("unpublished source authorized a write: %+v", got)
+				}
+			}
+			rows, err := f.reader(t).Get(ctx, []model.Ref{fixtureRef(1)})
+			if err != nil || !reflect.DeepEqual(rows, beforeRows) {
+				t.Fatal("publication failure or denied write changed protected content")
+			}
+			if head, acl := publicationState(t, store.Store, f.base.Namespace); head.String() != afterHead.String() || !reflect.DeepEqual(acl, afterACL) {
+				t.Fatal("protected reads or denied writes changed durable ACL/head")
+			}
+			if !fault.lostAck {
+				success(t, update(old, "previous source remains valid", 1420))
+			}
+			// Recover by publishing the intended current source through Replace,
+			// never by rebinding stale grants to the observed newer generation.
+			if err := f.facts.Replace(next); err != nil {
+				t.Fatal(err)
+			}
+			recoveredHead, recoveredACL := publicationState(t, store.Store, f.base.Namespace)
+			loaded, err := f.facts.Load(ctx, f.reader(t))
+			if err != nil || !reflect.DeepEqual(loaded, next) || recoveredHead.String() == afterHead.String() || !recoveredACL.Present || recoveredACL.Revision.String() != recoveredHead.String() {
+				t.Fatalf("legitimate publication did not recover the current source: %v", err)
+			}
+			success(t, f.call(t, model.PrincipalRef{Kind: "user", ID: "user:reader"}, "bead.get", map[string]any{"id": fixtureRef(1)}, 1430))
+			denied := update(old, "stale grant", 1431)
+			if denied.Error == nil || denied.Error.Data.Code != "forbidden" || len(denied.Result) != 0 || f.receipt(t, old, "bead.update", 1431) != nil || f.reader(t).Snapshot().At.String() != recoveredHead.String() {
+				t.Fatal("recovered source accepted the revoked grant")
+			}
+			success(t, update(replacement, "current source", 1432))
+			if f.receipt(t, replacement, "bead.update", 1432) == nil {
+				t.Fatal("current source write omitted its durable receipt")
+			}
+			t.Logf("publication control=%s Commit_calls=%d before_head=%s before_acl=%s after_head=%s after_acl=%s recovery_head=%s recovery_acl=%s", mode, fault.commitCalls, beforeHead, beforeACL.Revision, afterHead, afterACL.Revision, recoveredHead, recoveredACL.Revision)
 		})
 	}
 }

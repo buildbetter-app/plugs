@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +13,22 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
+
+// StringPatternError identifies a pattern validation failure at Path. Cause is
+// non-nil for an invalid schema pattern and nil for a well-formed mismatch.
+type StringPatternError struct {
+	Path  string
+	Cause error
+}
+
+func (e *StringPatternError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("%s: invalid schema pattern: %v", e.Path, e.Cause)
+	}
+	return fmt.Sprintf("%s: string does not match pattern", e.Path)
+}
+
+func (e *StringPatternError) Unwrap() error { return e.Cause }
 
 func (c *Catalog) resolve(ref string) (any, error) {
 	if !strings.HasPrefix(ref, "#/") {
@@ -168,6 +185,15 @@ func (c *Catalog) validate(schema, value any, path string, request bool, depth i
 			n, _ := bound.Int64()
 			if int64(utf8.RuneCountInString(v)) > n {
 				return fmt.Errorf("%s: string too long", path)
+			}
+		}
+		if pattern, ok := s["pattern"].(string); ok {
+			matches, err := regexp.MatchString(pattern, v)
+			if err != nil {
+				return &StringPatternError{Path: path, Cause: err}
+			}
+			if !matches {
+				return &StringPatternError{Path: path}
 			}
 		}
 		if s["format"] == "date-time" {

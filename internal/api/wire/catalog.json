@@ -1600,6 +1600,13 @@
           "required": true
         },
         {
+          "name": "metadata",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/LinkMetadata"
+          }
+        },
+        {
           "name": "expect",
           "schema": {
             "type": "array",
@@ -3051,6 +3058,111 @@
       "x-permission": "none",
       "x-agent-core": false,
       "x-stability": "v1"
+    },
+    {
+      "name": "x.workflow.invoke",
+      "summary": "Invoke a workflow template in the permanent or ephemeral plane.",
+      "description": "Invoke a template with an explicit permanent or ephemeral mode. Ephemeral items use plugin-owned durable state while live and are deleted atomically when the checklist completes; they never enter bead history.",
+      "tags": [
+        {
+          "name": "plugin"
+        }
+      ],
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "template",
+          "schema": {
+            "type": "string"
+          },
+          "required": true
+        },
+        {
+          "name": "project",
+          "schema": {
+            "type": "string"
+          },
+          "required": true
+        },
+        {
+          "name": "mode",
+          "schema": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "required": true
+        },
+        {
+          "name": "checklist",
+          "schema": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowChecklistItem"
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "required": true
+        },
+        {
+          "name": "_meta",
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "description": "Transport metadata; not an application actor field."
+        }
+      ],
+      "result": {
+        "name": "result",
+        "description": "Workflow invocation result.",
+        "schema": {
+          "$ref": "#/components/schemas/WorkflowInvokeResult"
+        }
+      },
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/WriteConflict"
+        },
+        {
+          "$ref": "#/components/errors/Busy"
+        },
+        {
+          "$ref": "#/components/errors/RateLimited"
+        },
+        {
+          "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
+        },
+        {
+          "$ref": "#/components/errors/PluginDurableStateUnavailable"
+        }
+      ],
+      "x-effect": "write",
+      "x-idempotency": "required",
+      "x-permission": "write",
+      "x-agent-core": false,
+      "x-stability": "v1",
+      "x-resource": "params.project"
     },
     {
       "name": "gate.approve",
@@ -4944,7 +5056,8 @@
           "name": "beforeRevision",
           "schema": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Only select records whose current revision is strictly less than beforeRevision; equality is excluded."
           }
         },
         {
@@ -6752,6 +6865,22 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "plane": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plugin": {
+            "type": "string"
+          },
+          "workflowRunId": {
+            "type": "string"
           }
         },
         "required": [
@@ -7041,6 +7170,10 @@
           },
           "linkKind": {
             "type": "string"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/LinkMetadata",
+            "description": "Only valid for a waits-for link. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
           }
         },
         "required": [
@@ -7242,9 +7375,19 @@
         "required": [
           "revision",
           "results",
-          "warnings",
-          "leaseExpiresAt",
-          "leaseTtlMs"
+          "warnings"
+        ],
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "leaseExpiresAt",
+              "leaseTtlMs"
+            ]
+          },
+          {
+            "$ref": "#/components/schemas/WorkflowClaimReceipt"
+          }
         ],
         "additionalProperties": false
       },
@@ -7689,7 +7832,8 @@
             "type": "string",
             "enum": [
               "blocks",
-              "conditional-blocks"
+              "conditional-blocks",
+              "waits-for"
             ]
           },
           "state": {
@@ -10269,6 +10413,331 @@
           "target"
         ],
         "additionalProperties": false
+      },
+      "WorkflowChecklistItem": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowRun": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "completed"
+            ]
+          },
+          "owner": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "mode",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "plane": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plugin": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "claim": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "title",
+          "type",
+          "project",
+          "status",
+          "plane",
+          "kind",
+          "revision"
+        ],
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^workflow:item/."
+              },
+              "runId": {
+                "type": "string",
+                "pattern": "^workflow:run/."
+              },
+              "plane": {
+                "const": "ephemeral"
+              },
+              "kind": {
+                "const": "workflow.item"
+              },
+              "plugin": {
+                "const": "workflow"
+              }
+            },
+            "required": [
+              "runId",
+              "plugin"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "plane": {
+                "const": "permanent"
+              },
+              "kind": {
+                "const": "bead"
+              },
+              "runId": {
+                "const": ""
+              },
+              "plugin": {
+                "const": ""
+              }
+            }
+          }
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowClaimReceipt": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "const": 0
+          },
+          "results": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^workflow:item/."
+                    },
+                    "branch": {
+                      "const": 0
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ],
+                  "additionalProperties": false
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "ref",
+                "revision"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "maxItems": 0
+          }
+        },
+        "required": [
+          "revision",
+          "results",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowInvokeResult": {
+        "type": "object",
+        "properties": {
+          "plane": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "run": {
+            "$ref": "#/components/schemas/WorkflowRun"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowItem"
+            }
+          }
+        },
+        "required": [
+          "plane",
+          "items"
+        ],
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "plane": {
+                "const": "permanent"
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "plane": {
+                      "const": "permanent"
+                    }
+                  }
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "plane": {
+                "const": "ephemeral"
+              },
+              "run": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^workflow:run/."
+                  },
+                  "mode": {
+                    "const": "ephemeral"
+                  }
+                }
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "plane": {
+                      "const": "ephemeral"
+                    }
+                  }
+                }
+              }
+            },
+            "required": [
+              "run"
+            ]
+          }
+        ],
+        "additionalProperties": false
+      },
+      "LinkMetadata": {
+        "type": "object",
+        "properties": {
+          "gate": {
+            "type": "string",
+            "enum": [
+              "all-children",
+              "any-children"
+            ]
+          },
+          "also_blocks": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       }
     },
     "errors": {
@@ -12341,6 +12810,40 @@
           ],
           "additionalProperties": false
         }
+      },
+      "PluginDurableStateUnavailable": {
+        "code": -32056,
+        "message": "plugin durable state unavailable",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "plugin_durable_state_unavailable"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
       }
     }
   },
@@ -12805,6 +13308,13 @@
       "retryable": true,
       "audience": "internal",
       "warningCapable": false
+    },
+    {
+      "code": "plugin_durable_state_unavailable",
+      "jsonRpc": -32056,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
     }
   ],
   "x-plugin-method-pattern": {
@@ -12820,10 +13330,10 @@
     "format": "plug-method-registry/1",
     "status": "bounded-contract-artifact",
     "purpose": "Human-maintained bounded contract artifact, read independently of methods at validation time; validates the closed method inventory, descriptor fields and wire inventories before an implementation generator exists.",
-    "methodCount": 81,
+    "methodCount": 82,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
-    "nameSha256": "925afc30e52e4659b24e34f311698c96930f215ba460fee7c1634634d1ff04ff",
-    "descriptorSha256": "c43156b68e4597291d1d870a64d8be91243676be73bb8b87f49af8db2d507549",
+    "nameSha256": "9149680634f6becbd955204e4bfa1c19b0c37911ca3c7ad3f155969a892fc7c9",
+    "descriptorSha256": "37831a514a37dfead5c44dd6e28bff214cbff1bc247f365bdecfe1de7f85a71c",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -13872,6 +14382,13 @@
             }
           },
           {
+            "name": "metadata",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LinkMetadata"
+            }
+          },
+          {
             "name": "expect",
             "required": false,
             "schema": {
@@ -14809,6 +15326,76 @@
           "#/components/errors/AuthzNotInstalled",
           "#/components/errors/AuthnUnavailable",
           "#/components/errors/RateLimited"
+        ]
+      },
+      {
+        "name": "x.workflow.invoke",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "template",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "project",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "mode",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "permanent",
+                "ephemeral"
+              ]
+            },
+            "required": true
+          },
+          {
+            "name": "checklist",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/WorkflowChecklistItem"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "required": true
+          },
+          {
+            "name": "_meta",
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            },
+            "description": "Transport metadata; not an application actor field."
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/WorkflowInvokeResult"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired",
+          "#/components/errors/PluginDurableStateUnavailable"
         ]
       },
       {
@@ -16054,7 +16641,8 @@
             "required": false,
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "description": "Only select records whose current revision is strictly less than beforeRevision; equality is excluded."
             }
           },
           {

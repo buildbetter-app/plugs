@@ -24,3 +24,5 @@ func factory(t *testing.T) driver.Store {
 func TestSharedConformance(t *testing.T) { conformance.Run(t, factory) }
 
 func TestAuditConformance(t *testing.T) { conformance.RunAudit(t, factory) }
+
+func TestStagedReadOverlay(t *testing.T) { conformance.RunStagedReadOverlay(t, factory) }

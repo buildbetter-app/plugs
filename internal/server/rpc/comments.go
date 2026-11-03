@@ -140,7 +140,7 @@ func dispatchCommentPage(ctx context.Context, svc Service, c Call, p servicePara
 		selected = &service.AsOf{Revision: position.AsOf.Revision, Incarnation: position.AsOf.Incarnation}
 		after = &position.After
 	}
-	thread, err := svc.Get(ctx, c.Principal, service.GetRequest{ID: id, AsOf: selected})
+	thread, err := svc.Get(ctx, c.Principal, service.GetRequest{ID: id, AsOf: selected, Project: c.Meta.Project, Agent: c.Meta.Agent})
 	if err != nil {
 		return nil, err
 	}

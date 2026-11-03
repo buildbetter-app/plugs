@@ -141,6 +141,7 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	dir := t.TempDir()
 	source := newFixture(t, "sqlite", filepath.Join(dir, "source.db"), true)
 	g := source.graph(t)
+	sourceAllocators := persistedAllocatorSnapshot(t, source.store)
 	viewer := source.viewer(t, epics, visible)
 	before := inspectProgress(t, source.api.call(t, viewer, "view.run", progressParams(g.parent, epics)), map[string]int{"total": 2, "status:todo": 1, "status:done": 1}, 1)
 	beforeImages := persistedImages(t, source.store)
@@ -158,6 +159,11 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	}
 	sourceAdmin := admin(t, source.store, source.lease)
 	data, archive := dumpHead(t, sourceAdmin)
+	allocatorMember, ok := archive.NativeMember(dumpformat.NativeAllocatorMember)
+	expectedAllocatorBytes, err := driver.EncodeAllocatorSnapshot(sourceAllocators)
+	if err != nil || !ok || !bytes.Equal(allocatorMember, expectedAllocatorBytes) {
+		t.Fatalf("paged admin dump lost exact retained allocator member: %v", err)
+	}
 	sourceAdmin.close(t)
 	source.close(t)
 	if archive.Manifest().History != "head" {
@@ -170,6 +176,18 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	// Restore must establish all source state through its admitted native path.
 	targetAdmin := admin(t, target, lease)
 	incarnation := restoreHead(t, targetAdmin, data, archive)
+	restoredAllocators := persistedAllocatorSnapshot(t, target)
+	expectedAllocators, err := sourceAllocators.Detached()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedAllocators.Incarnation = incarnation
+	expectedAllocators.At = model.Natural64(1)
+	expectedAllocators.CoverageFloor = model.Natural64(1)
+	for i := range expectedAllocators.Inventory.Parents {
+		expectedAllocators.Inventory.Parents[i].Incarnation = incarnation
+	}
+	requireAllocatorBytes(t, expectedAllocators, restoredAllocators)
 	if !reflect.DeepEqual(persistedImages(t, target), beforeImages) {
 		t.Fatal("native restore changed source bead or protected ontology images")
 	}
@@ -189,6 +207,7 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	// A fresh host/checker/key ring over the reopened physical SQLite file is
 	// essential: no in-memory parent/count/authority cache may satisfy this read.
 	reopened := newFixtureMode(t, "sqlite", path, true, false)
+	requireAllocatorBytes(t, restoredAllocators, persistedAllocatorSnapshot(t, reopened.store))
 	if !reflect.DeepEqual(persistedImages(t, reopened.store), beforeImages) {
 		t.Fatal("physical reopen changed restored source images")
 	}
@@ -206,17 +225,30 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 	// Restored hierarchy must still participate in actual future graph writes:
 	// a descendant cycle refuses atomically, then a valid detach updates counts.
 	head := reopened.head(t)
+	beforeRefusal := persistedAllocatorSnapshot(t, reopened.store)
 	cycle := model.ChangeSet{Ops: []model.Op{{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: g.parent, Parent: &g.grandchild}}}}
 	requireCode(t, reopened.write(t, reopened.owner, "tx.apply", epics, map[string]any{"changeSet": cycle}), "ontology_guard_failed")
 	if reopened.head(t) != head {
 		t.Fatal("restored cycle refusal changed head")
 	}
+	requireAllocatorBytes(t, beforeRefusal, persistedAllocatorSnapshot(t, reopened.store))
 	detach := model.ChangeSet{Ops: []model.Op{{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: g.done}}}}
 	committed(t, reopened.write(t, reopened.owner, "tx.apply", visible, map[string]any{"changeSet": detach}))
 	if rows := len(persistedClosure(t, reopened.store)); rows != 10 {
 		t.Fatalf("restored detach left %d hierarchy closure rows, want 10", rows)
 	}
 	inspectProgress(t, reopened.api.call(t, read, "view.run", after.refresh), map[string]int{"total": 1, "status:todo": 1}, 1)
+	continued := reopened.create(t, visible, "continued after native restore", &g.parent)
+	if continued.ID != g.parent.ID+".4" {
+		t.Fatalf("native restore/reopen reused consumed child number: %+v", continued)
+	}
+	inspectProgress(t, reopened.api.call(t, read, "view.run", progressParams(g.parent, epics)), map[string]int{"total": 2, "status:todo": 2}, 1)
+	continuedAllocators := persistedAllocatorSnapshot(t, reopened.store)
+	reopened.close(t)
+	durable := newFixtureMode(t, "sqlite", path, true, false)
+	requireAllocatorBytes(t, continuedAllocators, persistedAllocatorSnapshot(t, durable.store))
+	durableRead := durable.viewer(t, epics, visible)
+	inspectProgress(t, durable.api.call(t, durableRead, "view.run", progressParams(g.parent, epics)), map[string]int{"total": 2, "status:todo": 2}, 1)
 	t.Logf("EP6 native head restore, physical SQLite close/reopen, current policy, cycle refusal, and count refresh proven at restored incarnation %s", incarnation)
 }
 
@@ -303,4 +335,42 @@ func persistedImages(t *testing.T, store driver.Store) map[string]any {
 	}
 	out["ontology/ep6"] = ontology
 	return out
+}
+
+func persistedAllocatorSnapshot(t *testing.T, store driver.Store) driver.AllocatorSnapshot {
+	t.Helper()
+	ctx := context.Background()
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation, At: &meta.Head})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	capability, ok := r.(driver.AllocatorSnapshotReader)
+	if !ok {
+		t.Fatal("epicprogress store lacks native allocator snapshot")
+	}
+	snapshot, err := capability.AllocatorSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func requireAllocatorBytes(t *testing.T, want, got driver.AllocatorSnapshot) {
+	t.Helper()
+	a, err := driver.EncodeAllocatorSnapshot(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := driver.EncodeAllocatorSnapshot(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(a, b) {
+		t.Fatalf("epicprogress native allocator continuation changed:\nwant %s\n got %s", a, b)
+	}
 }
