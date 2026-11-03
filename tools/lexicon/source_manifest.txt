@@ -596,6 +596,7 @@ internal/server/authzrpc/workflow_claimnext_auth_test.go
 internal/server/authzrpc/workflow_claimnext_test.go
 internal/server/authzrpc/workflow_reads.go
 internal/server/authzrpc/workflow_reads_test.go
+internal/server/authzrpc/workflow_writes_test.go
 internal/server/claimrpc/BUILD.bazel
 internal/server/claimrpc/service.go
 internal/server/claimrpc/service_test.go

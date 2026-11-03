@@ -252,18 +252,9 @@ func (s *GuardedService) UnlinkWithOutcome(ctx context.Context, by model.Princip
 }
 func (s *GuardedService) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	if workflowItemRef(req.ID) {
-		binding, err := s.workflowClaimAuthority(ctx, by, meta.Project)
-		if err != nil {
-			return port.WriteOutcome{}, err
-		}
-		out, err := s.delegate.ClaimWithOutcome(ctx, by, req, meta)
-		if err != nil {
-			return port.WriteOutcome{}, err
-		}
-		if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
-			return port.WriteOutcome{}, err
-		}
-		return out, nil
+		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
+			return s.delegate.ClaimWithOutcome(ctx, by, req, meta)
+		})
 	}
 	return s.delegate.ClaimWithOutcome(ctx, by, req, meta)
 }
@@ -273,7 +264,22 @@ func (s *GuardedService) WorkflowInvoke(ctx context.Context, by model.PrincipalR
 	if !ok {
 		return workflowplugin.InvokeResult{}, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
 	}
-	return workflow.WorkflowInvoke(ctx, by, req, meta)
+	if req.Mode != "ephemeral" {
+		// Permanent invocations use the ordinary Writer's transactional policy.
+		return workflow.WorkflowInvoke(ctx, by, req, meta)
+	}
+	binding, err := s.workflowModifyAuthority(ctx, by, req.Project)
+	if err != nil {
+		return workflowplugin.InvokeResult{}, err
+	}
+	out, err := workflow.WorkflowInvoke(ctx, by, req, meta)
+	if err != nil {
+		return workflowplugin.InvokeResult{}, err
+	}
+	if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
+		return workflowplugin.InvokeResult{}, err
+	}
+	return out, nil
 }
 
 func workflowItemRef(ref model.Ref) bool {
@@ -329,7 +335,7 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			return nil, replayErr
 		}
 		if replayed {
-			binding, err := s.workflowClaimAuthority(ctx, by, req.Project)
+			binding, err := s.workflowModifyAuthority(ctx, by, req.Project)
 			if err != nil {
 				return nil, err
 			}
@@ -408,7 +414,7 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			}
 			// The provider may select a workflow item after the final live page.
 			// Apply the same current project permit before entering that seam.
-			binding, err := s.workflowClaimAuthority(ctx, by, req.Project)
+			binding, err := s.workflowModifyAuthority(ctx, by, req.Project)
 			if err != nil {
 				return nil, err
 			}
@@ -508,9 +514,19 @@ func claimNextCandidateConflict(err error) bool {
 	return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 }
 func (s *GuardedService) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CommentRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowItemRef(req.ID) {
+		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
+			return s.delegate.CommentWithOutcome(ctx, by, req, meta)
+		})
+	}
 	return s.delegate.CommentWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowItemRef(req.ID) {
+		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
+			return s.delegate.CloseWithOutcome(ctx, by, req, meta)
+		})
+	}
 	return s.delegate.CloseWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) ReopenWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ReopenRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
