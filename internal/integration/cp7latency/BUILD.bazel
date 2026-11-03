@@ -1,6 +1,6 @@
 load("@rules_go//go:def.bzl", "go_test")
 
-_COMMON = ["fixture_test.go", "measurement_test.go"]
+_COMMON = ["fixture_test.go", "measurement_test.go", "work_counters_test.go"]
 _DEPS = [
     "//internal/core/authz",
     "//internal/core/model",
@@ -19,9 +19,21 @@ _DEPS = [
 
 go_test(
     name = "cp7_correctness_test",
-    srcs = _COMMON + ["correctness_test.go"],
+    srcs = _COMMON + ["correctness_test.go", "semantics_test.go", "work_accounting_test.go"],
     data = ["workload.json"],
     embedsrcs = ["workload.json"],
+    deps = _DEPS,
+)
+
+# Dense semantic completions are separate from the unchanged timed matrix.
+go_test(
+    name = "cp7_dense_semantics_test",
+    srcs = _COMMON + ["dense_summary_test.go"],
+    args = ["-test.timeout=150m"],
+    data = ["workload.json"],
+    embedsrcs = ["workload.json"],
+    size = "enormous",
+    timeout = "eternal",
     deps = _DEPS,
 )
 
@@ -47,6 +59,7 @@ test_suite(
     name = "cp7_latency_test",
     tests = [
         ":cp7_correctness_test",
+        ":cp7_dense_semantics_test",
         ":cp7_latency_postgres_test",
         ":cp7_latency_sqlite_test",
     ],

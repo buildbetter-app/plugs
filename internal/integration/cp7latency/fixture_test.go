@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -76,63 +75,11 @@ func ancestors(t *testing.T, n int) []driver.DerivedRow {
 	return rows
 }
 
-// Reader counters observe API work only. The underlying reader executes every
-// call unchanged; these counts are not executor visits or semantic candidates.
-type counters struct{ queries, returned, gets, observed atomic.Int64 }
-type readCounts struct {
-	Queries  int64 `json:"query_calls"`
-	Returned int64 `json:"query_rows_returned"`
-	Gets     int64 `json:"get_calls"`
-	Observed int64 `json:"observed_keys"`
-}
-
-func (c *counters) reset() {
-	c.queries.Store(0)
-	c.returned.Store(0)
-	c.gets.Store(0)
-	c.observed.Store(0)
-}
-func (c *counters) value() readCounts {
-	return readCounts{c.queries.Load(), c.returned.Load(), c.gets.Load(), c.observed.Load()}
-}
-
+// This holder owns instrumentation, but product composition receives Store
+// itself. Concrete optional reader/transaction/store capabilities stay intact.
 type measuredStore struct {
 	driver.Store
-	driver.ResponseFinalizer
-	driver.CheckpointStore
 	counts counters
-}
-type measuredReader struct {
-	driver.Reader
-	driver.AllocatorReader
-	counts *counters
-}
-
-func (s *measuredStore) Read(ctx context.Context, v driver.View) (driver.Reader, error) {
-	r, err := s.Store.Read(ctx, v)
-	if err != nil {
-		return nil, err
-	}
-	allocator, ok := r.(driver.AllocatorReader)
-	if !ok {
-		r.Close()
-		return nil, fmt.Errorf("declared SQL driver lost its allocator reader capability")
-	}
-	return &measuredReader{Reader: r, AllocatorReader: allocator, counts: &s.counts}, nil
-}
-func (r *measuredReader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
-	r.counts.queries.Add(1)
-	p, err := r.Reader.Query(ctx, q)
-	r.counts.returned.Add(int64(len(p.Items)))
-	return p, err
-}
-func (r *measuredReader) Get(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
-	r.counts.gets.Add(1)
-	return r.Reader.Get(ctx, refs)
-}
-func (r *measuredReader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
-	r.counts.observed.Add(int64(len(keys)))
-	return r.Reader.Observe(ctx, keys)
 }
 
 type fixture struct {
@@ -212,17 +159,17 @@ func newFixture(t *testing.T, engine string, n int) *fixture {
 	t.Helper()
 	started := time.Now()
 	raw := openStore(t, engine)
-	finalizer, ok := raw.(driver.ResponseFinalizer)
+	_, ok := raw.(driver.ResponseFinalizer)
 	if !ok {
 		raw.Close()
 		t.Fatal("declared SQL driver lacks response finalization")
 	}
-	checkpoints, ok := raw.(driver.CheckpointStore)
+	_, ok = raw.(driver.CheckpointStore)
 	if !ok {
 		raw.Close()
 		t.Fatal("declared SQL driver lacks checkpoints")
 	}
-	s := &measuredStore{Store: raw, ResponseFinalizer: finalizer, CheckpointStore: checkpoints}
+	s := &measuredStore{Store: raw}
 	t.Cleanup(func() {
 		if err := s.Close(); err != nil {
 			t.Error(err)
@@ -297,14 +244,14 @@ func newFixture(t *testing.T, engine string, n int) *fixture {
 
 func (f *fixture) compose(t *testing.T) {
 	t.Helper()
-	app, err := authzrpc.New(context.Background(), authzrpc.Config{Store: f.store, Lease: f.lease,
+	app, err := authzrpc.New(context.Background(), authzrpc.Config{Store: f.store.Store, Lease: f.lease,
 		Provider: authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }}),
 		Facts:    f.facts, Namespace: f.base.Namespace, DefaultProject: projectName})
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.app = app
-	f.views, err = viewops.New(f.store, f.lease, viewops.Config{OntologyRevision: model.Natural64(1),
+	f.views, err = viewops.New(f.store.Store, f.lease, viewops.Config{OntologyRevision: model.Natural64(1),
 		AuthorizeRead: func(ctx context.Context, p model.PrincipalRef, r model.ResourceRef, _ string) error {
 			_, err := app.Service.Get(ctx, p, service.GetRequest{ID: r.Ref})
 			return err

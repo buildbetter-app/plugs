@@ -17,6 +17,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 //go:embed workload.json
@@ -47,6 +48,8 @@ type sample struct {
 	Error              string           `json:"error,omitempty"`
 	ErrorData          *model.ErrorData `json:"error_data,omitempty"`
 	Counts             readCounts       `json:"reader_api"`
+	Work               executedReadWork `json:"executed_read_work"`
+	SQLExecutorWork    string           `json:"sql_executor_work"`
 	TargetMS           float64          `json:"target_ms"`
 	TargetPass         bool             `json:"target_pass"`
 	ValidationMS       float64          `json:"validation_ms"`
@@ -236,6 +239,7 @@ func (f *fixture) observe(t *testing.T, engine string, divisor int, op, phase st
 		p = f.agent(divisor, divisor != 1)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), requestDeadline)
+	ctx = driver.WithReadWorkObserver(ctx, &f.store.counts)
 	defer cancel()
 	meta := model.WriteMeta{Method: "bead.claimNext", Project: projectName, Return: "full", IdempotencyKey: requestKey(op, divisor, phase, index)}
 	var ready service.BeadPage
@@ -256,7 +260,7 @@ func (f *fixture) observe(t *testing.T, engine string, divisor int, op, phase st
 	elapsed := time.Since(started)
 	status, code := classify(err, ctx.Err())
 	s := sample{Engine: engine, FractionDivisor: divisor, Corpus: f.n, ExpectedAuthorized: f.n / divisor, Operation: op, Phase: phase, Index: index,
-		ElapsedMS: float64(elapsed.Microseconds()) / 1000, Status: status, Code: code, Counts: f.store.counts.value(), TargetMS: 50}
+		ElapsedMS: float64(elapsed.Microseconds()) / 1000, Status: status, Code: code, Counts: f.store.counts.value(), Work: f.store.counts.work(), SQLExecutorWork: "UNMEASURED", TargetMS: 50}
 	// Even an oracle failure retains its raw timed observation.
 	defer func() { emit(t, "CP7_SAMPLE", s) }()
 	if op == "Q6GroupedCount" {

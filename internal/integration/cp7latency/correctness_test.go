@@ -326,6 +326,7 @@ type boundaryStore struct {
 	driver.Store
 	name    string
 	expired atomic.Bool
+	active  atomic.Bool
 }
 
 type boundaryReader struct {
@@ -342,7 +343,11 @@ func (s *boundaryStore) Read(ctx context.Context, view driver.View) (driver.Read
 	return &boundaryReader{Reader: r, AllocatorReader: r.(driver.AllocatorReader), store: s}, nil
 }
 
-func (r *boundaryReader) Query(ctx context.Context, _ driver.Query) (driver.Page[driver.Record], error) {
+func (r *boundaryReader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	if !r.store.active.Load() {
+		return r.Reader.Query(ctx, q)
+	}
+	driver.ReportReadWork(ctx, driver.ReadQueryCalls, 1)
 	<-ctx.Done()
 	r.store.expired.Store(errors.Is(ctx.Err(), context.DeadlineExceeded))
 	return driver.Page[driver.Record]{}, boundaryError(r.store.name)
@@ -354,6 +359,8 @@ func TestObservationBoundary(t *testing.T) {
 		f := newFixture(t, "sqlite", 11)
 		fault := &boundaryStore{Store: f.store.Store, name: name}
 		f.store.Store = fault
+		f.compose(t)
+		fault.active.Store(true)
 		before, err := f.store.Meta(context.Background())
 		if err != nil {
 			t.Fatal(err)
