@@ -375,6 +375,12 @@ internal/integration/auditsql/audit_sql_test.go
 internal/integration/auditsql/engine_test.go
 internal/integration/auditsql/faults_test.go
 internal/integration/auditsql/fixture_test.go
+internal/integration/b03catalog/BUILD.bazel
+internal/integration/b03catalog/README.md
+internal/integration/b03catalog/archival_test.go
+internal/integration/b03catalog/catalog_test.go
+internal/integration/b03catalog/engine_test.go
+internal/integration/b03catalog/fixture_test.go
 internal/integration/b13memory/BUILD.bazel
 internal/integration/b13memory/README.md
 internal/integration/b13memory/fixture_test.go
