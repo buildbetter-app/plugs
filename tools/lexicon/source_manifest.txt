@@ -289,6 +289,7 @@ internal/core/pipeline/snapshot_get_test.go
 internal/core/pipeline/snapshot_hierarchy.go
 internal/core/pipeline/telemetry.go
 internal/core/pipeline/telemetry_test.go
+internal/core/pipeline/workflow_close_ref.go
 internal/core/port/BUILD.bazel
 internal/core/port/gate.go
 internal/core/port/pipeline.go
@@ -389,6 +390,7 @@ internal/integration/batchsql/hierarchy_authorization_test.go
 internal/integration/batchsql/hierarchy_test.go
 internal/integration/batchsql/native_allocator_restore_test.go
 internal/integration/batchsql/public_batch_guard_order_test.go
+internal/integration/batchsql/raw_workflow_close_refusal_test.go
 internal/integration/batchsql/thousand_diagnostic_test.go
 internal/integration/claimsql/BUILD.bazel
 internal/integration/claimsql/README.md
