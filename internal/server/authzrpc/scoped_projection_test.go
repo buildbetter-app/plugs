@@ -186,6 +186,62 @@ func scopedRequireUnavailable(t *testing.T, err error) {
 	}
 }
 
+// Mirror the core legacy-startup fixture's canonical logical root input.
+// Graph source metadata alone does not establish ancestor closure. These rows
+// have no SelectionIndex; only public startup may prove and annotate them.
+func scopedSeedLogicalRoots(t *testing.T, s driver.Store, lease driver.ActiveLease, namespace authz.Namespace, refs []model.Ref) {
+	t.Helper()
+	ctx := context.Background()
+	keys := []driver.LockKey{driver.GraphBlockingSentinelLock}
+	sentinels := []driver.Sentinel{driver.SentinelGraphBlocking}
+	var rows []driver.DerivedRow
+	for _, ref := range refs {
+		row, err := pipeline.AncestorRow(ref.ID, ref.ID, 0)
+		if err != nil || row.Index != nil {
+			t.Fatal("canonical unannotated logical root:", err)
+		}
+		rows = append(rows, row)
+		key := driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: row.Key}
+		keys = append(keys, driver.LockKey{Kind: driver.LockDerived, Derived: &key})
+		sentinel, err := driver.NewClosureSentinel(ref.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+		sentinels = append(sentinels, sentinel)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(keys[i])
+		b, _ := driver.EncodeLockKey(keys[j])
+		return a < b
+	})
+	locks := make(driver.LockSet, len(keys))
+	for i, key := range keys {
+		locks[i] = driver.LockRequest{Key: key, Mode: driver.LockUpdate}
+	}
+	tx, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	defer tx.Rollback(ctx)
+	if _, err := tx.Lock(ctx, locks); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Head(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutDerived(ctx, driver.DerivedAncestorClosure, nil, rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: namespace.Incarnation, Kind: model.ChangesetDerived, Principal: model.PrincipalRef{Kind: "system", ID: "scoped-logical-fixture"}, LockKeys: keys}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestActualScopedProducerAndW2BindingDifferential(t *testing.T) {
 	ctx := context.Background()
 	s := memory.New()
@@ -205,6 +261,11 @@ func TestActualScopedProducerAndW2BindingDifferential(t *testing.T) {
 	}
 	composition, err := New(ctx, Config{Store: s, Lease: lease, Provider: authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }}), Facts: facts, Namespace: ns, DefaultProject: "web/api"})
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Durable authority is an explicit fixture publication, never a side
+	// effect required from read-only host construction.
+	if err := facts.Replace(base); err != nil {
 		t.Fatal(err)
 	}
 	writer := pipeline.New(s, lease, pipeline.WithOntology(service.NewOntology(nil)))
@@ -230,13 +291,59 @@ func TestActualScopedProducerAndW2BindingDifferential(t *testing.T) {
 		}
 		refs = append(refs, target)
 	}
-	// Imported ordinary saves leave a temporal coverage gap. Activate their
-	// complete current image through the public startup path, then publish
+	scopedSeedLogicalRoots(t, s, lease, ns, refs)
+	checkCoreCoverage := func(stage string, available bool) {
+		t.Helper()
+		r, err := s.Read(ctx, driver.View{Incarnation: ns.Incarnation})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		binding, err := composition.Checker.BindAuthorization(ctx, r, model.PrincipalRef{Kind: "user", ID: "coverage-reader"}, authz.Read, authz.Bead, "bead.list")
+		if err != nil {
+			t.Fatal(err)
+		}
+		filter, err := binding.Filter()
+		if err != nil {
+			t.Fatal(err)
+		}
+		probeKeys, _ := authzfixed.SelectionRows(ns)
+		expression, err := scopedScalarTemplateTestLower(filter.Description(), probeKeys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := r.(driver.SelectionReader).Select(ctx, scopedPlan(t, r, filter, expression, probeKeys, ns, *r.Snapshot().At))
+		if !available {
+			if !errors.Is(err, driver.ErrSelectionUnavailable) {
+				t.Fatalf("%s imported interval unexpectedly admitted: %v", stage, err)
+			}
+			return
+		}
+		if err != nil || got.Total != uint64(len(refs)) || len(got.Keys) != len(refs) {
+			t.Fatalf("%s SortKey current interval/census: total=%d keys=%d err=%v", stage, got.Total, len(got.Keys), err)
+		}
+		want, actual := []string{}, []string{}
+		for _, ref := range refs {
+			want = append(want, ref.ID)
+		}
+		for _, key := range got.Keys {
+			actual = append(actual, key.Ref.ID)
+		}
+		sort.Strings(want)
+		sort.Strings(actual)
+		if !reflect.DeepEqual(want, actual) {
+			t.Fatalf("%s source census=%v want=%v", stage, actual, want)
+		}
+	}
+	checkCoreCoverage("before public startup", false)
+	// Imported ordinary saves leave a temporal coverage gap. With real logical
+	// closure present, activate their complete current image, then publish
 	// every tested current source again with the real Writer. Backfill must
 	// not supply the final source-bound projections exercised below.
 	if err := pipeline.BuildSourceIndexes(ctx, s, lease); err != nil {
 		t.Fatalf("activate imported source indexes: %v", err)
 	}
+	checkCoreCoverage("after public startup", true)
 	for i, project := range projects {
 		target := refs[i]
 		result, err := writer.Apply(ctx, model.PrincipalRef{Kind: "user", ID: "creator"}, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: target, Fields: map[string]any{"title": "current source"}}}}}, model.WriteMeta{Method: "bead.update", Project: project, IdempotencyKey: fmt.Sprintf("%032x", i+101)})
@@ -244,6 +351,7 @@ func TestActualScopedProducerAndW2BindingDifferential(t *testing.T) {
 			t.Fatalf("post-startup Writer publication project=%q ref=%s: err=%#v results=%+v", project, target.ID, err, result.Results)
 		}
 	}
+	checkCoreCoverage("after final Writer publications", true)
 	initial, _ := s.Meta(ctx)
 	keys, _ := authzfixed.SelectionRows(ns)
 	principal := model.PrincipalRef{Kind: "agent", ID: "worker", Sponsor: &model.PrincipalRef{Kind: "user", ID: "same"}}
