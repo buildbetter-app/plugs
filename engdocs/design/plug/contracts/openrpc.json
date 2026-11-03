@@ -7344,9 +7344,19 @@
         "required": [
           "revision",
           "results",
-          "warnings",
-          "leaseExpiresAt",
-          "leaseTtlMs"
+          "warnings"
+        ],
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "leaseExpiresAt",
+              "leaseTtlMs"
+            ]
+          },
+          {
+            "$ref": "#/components/schemas/WorkflowClaimReceipt"
+          }
         ],
         "additionalProperties": false
       },
@@ -10367,7 +10377,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "pattern": "^workflow:item/"
+            "minLength": 1
           },
           "runId": {
             "type": "string"
@@ -10427,6 +10437,104 @@
           "kind",
           "revision"
         ],
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^workflow:item/."
+              },
+              "runId": {
+                "type": "string",
+                "pattern": "^workflow:run/."
+              },
+              "plane": {
+                "const": "ephemeral"
+              },
+              "kind": {
+                "const": "workflow.item"
+              },
+              "plugin": {
+                "const": "workflow"
+              }
+            },
+            "required": [
+              "runId",
+              "plugin"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "plane": {
+                "const": "permanent"
+              },
+              "kind": {
+                "const": "bead"
+              },
+              "runId": {
+                "const": ""
+              },
+              "plugin": {
+                "const": ""
+              }
+            }
+          }
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowClaimReceipt": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "const": 0
+          },
+          "results": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^workflow:item/."
+                    },
+                    "branch": {
+                      "const": 0
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ],
+                  "additionalProperties": false
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "ref",
+                "revision"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "maxItems": 0
+          }
+        },
+        "required": [
+          "revision",
+          "results",
+          "warnings"
+        ],
         "additionalProperties": false
       },
       "WorkflowInvokeResult": {
@@ -10452,6 +10560,62 @@
         "required": [
           "plane",
           "items"
+        ],
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "plane": {
+                "const": "permanent"
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "plane": {
+                      "const": "permanent"
+                    }
+                  }
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "plane": {
+                "const": "ephemeral"
+              },
+              "run": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^workflow:run/."
+                  },
+                  "mode": {
+                    "const": "ephemeral"
+                  }
+                }
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "plane": {
+                      "const": "ephemeral"
+                    }
+                  }
+                }
+              }
+            },
+            "required": [
+              "run"
+            ]
+          }
         ],
         "additionalProperties": false
       }

@@ -203,6 +203,8 @@ type HistoryDiff struct {
 type GetRequest struct {
 	ID   model.Ref
 	AsOf *AsOf
+	// Project is the effective transport scope for plugin-owned reads.
+	Project string
 	// Agent carries the transport's anonymous-agent label to plugin-owned
 	// standard reads. Authenticated principals ignore it for ownership.
 	Agent string

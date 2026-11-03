@@ -278,6 +278,19 @@ func (s *Service) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, r
 		if s.workflow == nil {
 			return port.WriteOutcome{}, failure("not_found", "workflow item was not found")
 		}
+		if meta.Method == "bead.claimNext" {
+			// claimNext candidates are selected and authorized by the queue walk.
+			// Preserve that selector when committing the provider receipt; the
+			// provider intentionally refuses the legacy bare bead.claim shape.
+			item, found, replayed, err := s.workflow.ClaimNextSelected(ctx, by, req.ID, meta.Project, nil, meta)
+			if err != nil {
+				return port.WriteOutcome{}, err
+			}
+			if !found {
+				return port.WriteOutcome{Replayed: replayed, NullResult: true}, nil
+			}
+			return port.WriteOutcome{Commit: workflowClaimCommit(item), Replayed: replayed}, nil
+		}
 		item, err := s.workflow.Claim(ctx, by, req.ID, meta)
 		if err != nil {
 			return port.WriteOutcome{}, err
@@ -294,6 +307,42 @@ func (s *Service) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, r
 	}
 	_, err = claimResult(v.Commit)
 	return v, err
+}
+
+// ReplayWorkflowClaimNext checks only the provider-owned durable receipt for
+// this exact selector. It is an optional adapter seam used by the guarded RPC
+// service before it walks the live ready set; a miss must never consume a new
+// candidate. The bool reports whether the provider had a retained receipt.
+func (s *Service) ReplayWorkflowClaimNext(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta) (*port.WriteOutcome, bool, error) {
+	if s.workflow == nil {
+		return nil, false, nil
+	}
+	if strings.TrimSpace(req.Project) == "" {
+		return nil, false, failure("project_required", "supply a project")
+	}
+	identity, err := ClaimNextRequestIdentity(req)
+	if err != nil {
+		return nil, false, failure("invalid_params", "invalid claimNext selector")
+	}
+	meta.ClaimNextIdentity = identity
+	meta.Method = "bead.claimNext"
+	meta.Project = req.Project
+	if by.Kind != "anonymous" {
+		meta.AgentLabel = ""
+	} else if meta.AgentLabel == "" {
+		meta.AgentLabel = meta.Agent
+	}
+	item, found, replayed, err := s.workflow.ReplayClaimNext(ctx, by, req.Project, nil, meta)
+	if err != nil {
+		return nil, false, err
+	}
+	if !replayed {
+		return nil, false, nil
+	}
+	if !found {
+		return &port.WriteOutcome{Replayed: true, NullResult: true}, true, nil
+	}
+	return &port.WriteOutcome{Commit: workflowClaimCommit(item), Replayed: true}, true, nil
 }
 
 func (s *Service) claim(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
@@ -318,6 +367,7 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 	}
 	meta.ClaimNextIdentity = identity
 	meta.Method = "bead.claimNext"
+	meta.Project = req.Project
 	selectionSeed := ClaimNextSelectionSeed(identity, meta.IdempotencyKey)
 	if by.Kind != "anonymous" {
 		meta.AgentLabel = ""
@@ -361,18 +411,10 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 			return &out, nil
 		}
 	}
-	if s.workflow != nil {
-		workflowMeta := meta
-		workflowMeta.Method = "bead.claimNext"
-		if item, found, replayed, replayErr := s.workflow.ReplayClaimNext(ctx, by, req.Project, workflowTypes(req.Filter), workflowMeta); replayErr != nil {
-			return nil, replayErr
-		} else if replayed {
-			if !found {
-				return &port.WriteOutcome{Replayed: true, NullResult: true}, nil
-			}
-			out := port.WriteOutcome{Commit: workflowClaimCommit(item), Replayed: true}
-			return &out, nil
-		}
+	if out, replayed, replayErr := s.ReplayWorkflowClaimNext(ctx, by, req, meta); replayErr != nil {
+		return nil, replayErr
+	} else if replayed {
+		return out, nil
 	}
 
 	position := (*PagePosition)(nil)
@@ -439,7 +481,9 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 				}
 				return nil, err
 			}
-			out.NullResult = true
+			if len(out.Commit.Results) == 0 {
+				out.NullResult = true
+			}
 			return &out, nil
 		}
 		position = page.Next
@@ -473,14 +517,21 @@ func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRe
 	}
 	meta.ClaimNextIdentity = identity
 	meta.Method = "bead.claimNext"
+	meta.Project = req.Project
 	if s.workflow != nil {
 		types := []string(nil)
 		if req.Filter != nil {
 			types = req.Filter.Types
 		}
-		item, found, _, err := s.workflow.ClaimNext(ctx, by, req.Project, types, meta)
+		item, found, replayed, err := s.workflow.ClaimNext(ctx, by, req.Project, types, meta)
 		if err != nil {
 			return port.WriteOutcome{}, err
+		}
+		if replayed {
+			if !found {
+				return port.WriteOutcome{Replayed: true, NullResult: true}, nil
+			}
+			return port.WriteOutcome{Commit: workflowClaimCommit(item), Replayed: true}, nil
 		}
 		if found {
 			return port.WriteOutcome{Commit: workflowClaimCommit(item)}, nil
@@ -611,12 +662,9 @@ func (s *Service) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, r
 func workflowClaimCommit(item workflowplugin.ItemView) model.Commit {
 	commit := model.Commit{Revision: model.Natural64(0), Results: []model.OpResult{{Ref: model.RefByID(item.ID, model.Natural64(0)), Revision: item.Revision}}, Warnings: []model.Warning{}}
 	if item.Claim != nil {
-		ttl := item.Claim.ExpiresAt.Sub(time.Now())
-		if ttl > 0 {
-			commit.LeaseExpiresAt = &item.Claim.ExpiresAt
-			value := model.Natural64(uint64(ttl / time.Millisecond))
-			commit.LeaseTtlMs = &value
-		}
+		commit.LeaseExpiresAt = &item.Claim.ExpiresAt
+		value := model.Natural64(uint64(workflowplugin.ClaimTTL / time.Millisecond))
+		commit.LeaseTtlMs = &value
 	}
 	return commit
 }

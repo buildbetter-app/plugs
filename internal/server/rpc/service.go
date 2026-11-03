@@ -43,6 +43,13 @@ type WorkflowService interface {
 	WorkflowInvoke(context.Context, model.PrincipalRef, workflowplugin.InvokeRequest, model.WriteMeta) (workflowplugin.InvokeResult, error)
 }
 
+// WorkflowClaimNextService is an optional standard-tool adapter seam. The
+// guarded composition asks it for a provider-owned durable replay before
+// walking the live queue, while existing Service test doubles remain valid.
+type WorkflowClaimNextService interface {
+	ReplayWorkflowClaimNext(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta) (*port.WriteOutcome, bool, error)
+}
+
 // MemoryService is an additive capability. Keeping it separate from Service
 // preserves the existing RPC test/service wrappers while allowing the real
 // domain service to bind the frozen memory and brief descriptors.
@@ -200,7 +207,7 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		if err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 		}
-		v, err := svc.Get(ctx, c.Principal, service.GetRequest{ID: id, AsOf: p.AsOf.domain(), Agent: c.Meta.Agent})
+		v, err := svc.Get(ctx, c.Principal, service.GetRequest{ID: id, AsOf: p.AsOf.domain(), Project: c.Meta.Project, Agent: c.Meta.Agent})
 		if err != nil {
 			return nil, err
 		}

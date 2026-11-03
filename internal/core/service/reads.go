@@ -19,7 +19,7 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 		if s.workflow == nil {
 			return GetResult{}, failure("not_found", "workflow item was not found")
 		}
-		item, err := s.workflow.Get(ctx, by, req.ID, workflowMeta(by, "bead.get", "", req.Agent))
+		item, err := s.workflow.Get(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent))
 		if err != nil {
 			return GetResult{}, err
 		}

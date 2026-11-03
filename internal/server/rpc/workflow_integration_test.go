@@ -77,6 +77,39 @@ func workflowMeta(key, agent string) map[string]any {
 	return map[string]any{"idempotencyKey": key, "agent": agent, "project": "workflow-project"}
 }
 
+func TestWorkflowGetBindsEffectiveProject(t *testing.T) {
+	ctx := rpc.WithPrincipal(context.Background(), model.PrincipalRef{Kind: "anonymous", ID: "anonymous"})
+	server, store, lease := openWorkflowSQLiteServer(t, filepath.Join(t.TempDir(), "workflow-project.db"))
+	t.Cleanup(func() {
+		_ = lease.Release(context.Background())
+		_ = store.Close()
+	})
+	// pagingConfig's default project is "p". Exercise the actual provider and
+	// SQLite checkpoint through RPC with the same principal and agent throughout.
+	invoked := result(t, call(t, server, ctx, "x.workflow.invoke", paramsJSON(t, map[string]any{
+		"template": "project-binding", "project": "p", "mode": "ephemeral",
+		"checklist": []map[string]any{{"label": "first", "title": "project private item", "type": "task"}},
+		"_meta":     map[string]any{"idempotencyKey": strings.Repeat("c", 64), "agent": "same-agent", "project": "p"},
+	})))
+	itemID := invoked["items"].([]any)[0].(map[string]any)["id"].(string)
+	for _, project := range []string{"other-project", "workflow-project"} {
+		requireCode(t, call(t, server, ctx, "bead.get", paramsJSON(t, map[string]any{
+			"id": map[string]any{"id": itemID}, "_meta": map[string]any{"agent": "same-agent", "project": project},
+		})), "forbidden")
+	}
+	for _, meta := range []map[string]any{
+		{"agent": "same-agent", "project": "p"},
+		{"agent": "same-agent"},
+	} {
+		got := result(t, call(t, server, ctx, "bead.get", paramsJSON(t, map[string]any{
+			"id": map[string]any{"id": itemID}, "_meta": meta,
+		})))
+		if got["bead"].(map[string]any)["id"] != itemID || got["bead"].(map[string]any)["project"] != "p" {
+			t.Fatalf("effective project was not carried to workflow Get: %v", got)
+		}
+	}
+}
+
 func TestEphemeralWorkflowUsesStandardToolsAcrossRestartAndLeavesNoHistory(t *testing.T) {
 	ctx := rpc.WithPrincipal(context.Background(), model.PrincipalRef{Kind: "anonymous", ID: "anonymous"})
 	path := filepath.Join(t.TempDir(), "workflow.db")

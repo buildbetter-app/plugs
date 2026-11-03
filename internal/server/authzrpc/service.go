@@ -40,7 +40,7 @@ const claimNextConflictRestartBudget = 1
 
 func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req service.GetRequest) (service.GetResult, error) {
 	if workflowItemRef(req.ID) {
-		return s.delegate.Get(ctx, by, req)
+		return s.getWorkflow(ctx, by, req)
 	}
 	allowed, err := s.checkRead(ctx, by, "bead.get", req.ID)
 	if err != nil {
@@ -199,7 +199,7 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 	}
 	page.Items = items
 	page.Next = nil
-	return s.filterPage(ctx, by, "bead.ready", req.Limit, req.Position, page, false)
+	return s.filterPage(ctx, by, "bead.ready", req.Project, req.Limit, req.Position, page, false)
 }
 
 func (s *GuardedService) History(ctx context.Context, by model.PrincipalRef, req service.HistoryRequest) (service.BeadPage, error) {
@@ -232,7 +232,7 @@ func (s *GuardedService) History(ctx context.Context, by model.PrincipalRef, req
 	}
 	page.Items = items
 	page.Next = nil
-	return s.filterPage(ctx, by, "history.query", req.Limit, req.Position, page, true)
+	return s.filterPage(ctx, by, "history.query", req.Project, req.Limit, req.Position, page, true)
 }
 
 func (s *GuardedService) CreateWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CreateRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
@@ -282,6 +282,7 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	}
 	meta.ClaimNextIdentity = identity
 	meta.Method = "bead.claimNext"
+	meta.Project = req.Project
 	selectionSeed := service.ClaimNextSelectionSeed(identity, meta.IdempotencyKey)
 	if by.Kind != "anonymous" {
 		meta.AgentLabel = ""
@@ -309,6 +310,15 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			// idempotency_key_reused, while an equal receipt is reauthorized by the
 			// installed Writer checker.
 			return s.delegate.ClaimNextWithOutcome(ctx, by, req, meta)
+		}
+	}
+	if workflow, ok := s.delegate.(rpc.WorkflowClaimNextService); ok {
+		out, replayed, replayErr := workflow.ReplayWorkflowClaimNext(ctx, by, req, meta)
+		if replayErr != nil {
+			return nil, replayErr
+		}
+		if replayed {
+			return out, nil
 		}
 	}
 	position := (*service.PagePosition)(nil)
@@ -394,7 +404,9 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 				}
 				return nil, err
 			}
-			out.NullResult = true
+			if len(out.Commit.Results) == 0 {
+				out.NullResult = true
+			}
 			return &out, nil
 		}
 		position = page.Next
@@ -524,7 +536,7 @@ func (s *GuardedService) current(ctx context.Context, asOf *service.AsOf) (drive
 	return reader, reader, func() { _ = reader.Close() }, nil
 }
 
-func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, method string, limit int, position *service.PagePosition, page service.BeadPage, pinned bool) (service.BeadPage, error) {
+func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, method, project string, limit int, position *service.PagePosition, page service.BeadPage, pinned bool) (service.BeadPage, error) {
 	// Historical and current content both use current authority. Only content
 	// membership and parent relationships remain pinned to the returned page.
 	_, snapshot, closeReader, err := s.current(ctx, nil)
@@ -556,9 +568,22 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 		return service.BeadPage{}, authzError(err)
 	}
 	filtered := make([]service.Bead, 0, len(page.Items))
+	workflowChecked, workflowAllowed := false, false
 	for _, bead := range page.Items {
 		if bead.Kind == "workflow.item" {
-			filtered = append(filtered, bead)
+			if method != "bead.ready" || bead.Project != project {
+				continue
+			}
+			if !workflowChecked {
+				workflowAllowed, err = s.checker.workflowRead(ctx, caller, authorization, method, project)
+				if err != nil {
+					return service.BeadPage{}, err
+				}
+				workflowChecked = true
+			}
+			if workflowAllowed {
+				filtered = append(filtered, bead)
+			}
 			continue
 		}
 		ok, err := template.Match(ctx, facts, authz.Resource{Kind: authz.Bead, Ref: model.RefByID(bead.ID, model.Natural64(0))})
