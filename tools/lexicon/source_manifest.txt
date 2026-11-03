@@ -327,6 +327,7 @@ internal/core/service/history.go
 internal/core/service/history_reads_test.go
 internal/core/service/history_sqlite_rpc_test.go
 internal/core/service/i1_acceptance_test.go
+internal/core/service/label_rename.go
 internal/core/service/lease.go
 internal/core/service/memories.go
 internal/core/service/ontology.go
@@ -775,6 +776,7 @@ internal/server/rpc/cursor.go
 internal/server/rpc/cursor_test.go
 internal/server/rpc/gate_integration_test.go
 internal/server/rpc/integration_test.go
+internal/server/rpc/label_rename.go
 internal/server/rpc/openrpc.json
 internal/server/rpc/openrpc_test.go
 internal/server/rpc/registry.go
