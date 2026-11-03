@@ -7,9 +7,10 @@ import (
 
 const explicitOntologyVerification = "built-in status mapping; explicit map_type directives recorded in manifest"
 
-// OntologyDirective admits an otherwise unknown Beads issue type without
-// changing its source spelling. The closed wire shape matches the exporter;
-// other ontology migration operations are not part of this archive contract.
+// OntologyDirective retains the closed exporter directive shape. Legacy
+// archives admit unknown source types through map_type. Explicit strict-union
+// imports also resolve status categories through map_status; the disclosure
+// selects their typed migration semantics without altering the raw source.
 type OntologyDirective struct {
 	ID     string         `json:"id"`
 	Kind   string         `json:"kind"`

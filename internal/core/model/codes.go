@@ -23,7 +23,7 @@ func validErrorCode(code ErrorCode) bool {
 		"post_subscriber_failed", "history_gone", "visibility_lost", "too_many_sessions", "filter_too_broad",
 		"scope_too_large", "destination_paused", "ref_moved", "unknown_field", "restore_requires_empty",
 		"restore_checksum_failed", "restore_violation", "human_presence_required", "authz_verify_failed",
-		"invalid_cursor", "compaction_unavailable", "stale_snapshot":
+		"invalid_cursor", "compaction_unavailable", "stale_snapshot", "plugin_durable_state_unavailable":
 		return true
 	default:
 		return false
