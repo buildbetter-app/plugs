@@ -2,6 +2,7 @@ package pluginbuild_test
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -57,9 +58,9 @@ func TestRestoredWASIDigestRecheckedBeforeGuestInitialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// An empty custom section keeps the module valid and executable. If the
-	// recorded digest were ignored, runtime validation would accept these bytes.
-	tampered := append(append([]byte(nil), original...), 0, 1, 0)
+	// Renaming an existing custom section changes no code, size or mode. If
+	// the recorded digest were ignored, runtime validation would accept it.
+	tampered := renameWASMCustomSection(t, original)
 	if err := pluginhost.ValidateWASMArtifact(tampered); err != nil {
 		t.Fatalf("tamper must remain a valid WASM artifact: %v", err)
 	}
@@ -96,4 +97,37 @@ func TestRestoredWASIDigestRecheckedBeforeGuestInitialization(t *testing.T) {
 		t.Fatalf("untampered restored guest result=%s err=%v", result, err)
 	}
 	t.Logf("restored digest drift refused before guest initialization; untampered source-free restore initialized=%d and executed echo", initialized.Load())
+}
+
+func renameWASMCustomSection(t *testing.T, original []byte) []byte {
+	t.Helper()
+	changed := append([]byte(nil), original...)
+	for cursor := 8; cursor < len(changed); {
+		section := changed[cursor]
+		cursor++
+		size, count := binary.Uvarint(changed[cursor:])
+		if count <= 0 || size > uint64(len(changed)-cursor-count) {
+			t.Fatal("invalid source-built WASM section")
+		}
+		cursor += count
+		end := cursor + int(size)
+		if section == 0 {
+			length, count := binary.Uvarint(changed[cursor:end])
+			if count <= 0 || length > uint64(end-cursor-count) {
+				t.Fatal("invalid source-built WASM custom section name")
+			}
+			if length > 0 {
+				index := cursor + count
+				if changed[index] == 'x' {
+					changed[index] = 'y'
+				} else {
+					changed[index] = 'x'
+				}
+				return changed
+			}
+		}
+		cursor = end
+	}
+	t.Fatal("source-built WASM has no named custom section")
+	return nil
 }
