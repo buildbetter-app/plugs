@@ -27,7 +27,7 @@ func (precisionProvider) Authenticate(_ context.Context, token string) (model.Pr
 	if token != "public-precision-fixture" {
 		return model.PrincipalRef{}, authn.ErrUnauthenticated
 	}
-	return model.PrincipalRef{Kind: "service", ID: "precision-fixture"}, nil
+	return model.PrincipalRef{Kind: "service", ID: "service:precision-fixture"}, nil
 }
 
 // Deliver the adapter's generated HTTP request to the real MCP handler without
@@ -105,7 +105,7 @@ func TestMCPRoundTripDeliversExactIntegersToCanonicalHandler(t *testing.T) {
 				if number, ok := revision.(json.Number); !ok || string(number) != tc.revision || !reflect.DeepEqual(got, want) {
 					t.Errorf("receiving handler changed params: want %s; got %s", params, call.Params)
 				}
-				if call.Principal.Kind != "service" || call.Principal.ID != "precision-fixture" {
+				if call.Principal.Kind != "service" || call.Principal.ID != "service:precision-fixture" {
 					t.Errorf("receiving handler lost admitted identity: %+v", call.Principal)
 				}
 				return rpc.Outcome{Result: json.RawMessage(`{"revision":2,"results":[],"warnings":[]}`), Replayed: true}, nil
