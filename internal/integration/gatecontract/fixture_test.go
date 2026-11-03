@@ -26,6 +26,8 @@ type fixture struct {
 	server           *rpc.Server
 	sequence, nextID int
 	lastKey          string
+	roundTrip        func(context.Context, []byte) ([]byte, error)
+	principal        model.PrincipalRef
 }
 
 func eachStore(t *testing.T, run func(*testing.T, *fixture)) {
@@ -133,7 +135,11 @@ func (f *fixture) request(method string, params map[string]any, key, code string
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	raw, err = inprocess.New(f.server).RoundTrip(context.Background(), raw)
+	transport := f.roundTrip
+	if transport == nil {
+		transport = inprocess.New(f.server).RoundTrip
+	}
+	raw, err = transport(context.Background(), raw)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -194,7 +200,11 @@ func (f *fixture) refuse(method string, params map[string]any, code string) {
 		f.t.Fatal(err)
 	}
 	defer r.Close()
-	principal, err := driver.PrincipalKey(model.PrincipalRef{Kind: "anonymous", ID: "anonymous"})
+	by := f.principal
+	if by.ID == "" {
+		by = model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	}
+	principal, err := driver.PrincipalKey(by)
 	if err != nil {
 		f.t.Fatal(err)
 	}
