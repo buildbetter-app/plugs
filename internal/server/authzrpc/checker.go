@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/core/authz"
@@ -24,6 +25,7 @@ type Checker struct {
 	store     driver.Store
 	lease     driver.ActiveLease
 	hierarchy bool
+	now       func() time.Time
 }
 
 var _ port.Authorizer = (*Checker)(nil)
@@ -92,7 +94,17 @@ func (c *Checker) decision(ctx context.Context, snapshot Snapshot, principal mod
 // cannot be smuggled through a permitted update. Replay rechecks the current
 // chain only and never trusts a receipt as a grant.
 func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, proposal port.ProposedChange, reader port.SnapshotReader) error {
-	if c != nil && c.hierarchy {
+	heartbeat := proposal.Meta.Method == "bead.heartbeat"
+	claimMaintenance := heartbeat || proposal.Meta.Method == "bead.release"
+	if claimMaintenance {
+		// These protected service seams maintain the caller's existing claim.
+		// Only the finite fixed component maps to its existing modify predicate;
+		// every other policy and the Writer retain the actual method.
+		if proposal.Principal.Kind != "agent" {
+			return forbidden("public claim maintenance requires an Agent")
+		}
+	}
+	if c != nil && c.hierarchy && !claimMaintenance {
 		switch hierarchyRouteFor(proposal) {
 		case hierarchyDirect:
 			return c.AuthorizeHierarchy(ctx, stage, proposal, reader)
@@ -152,7 +164,11 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 		// cannot mint a replayable receipt for a different queue.
 		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Project, Ref: project}, Method: ""})
 	}
-	decisions, err := c.chain.Check(ctx, s, requests)
+	chain := c.chain
+	if claimMaintenance {
+		chain = c.claimMaintenanceChain()
+	}
+	decisions, err := chain.Check(ctx, s, requests)
 	if err != nil {
 		return authzError(err)
 	}
@@ -163,8 +179,29 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 		if decision.Effect != authz.Allow {
 			return forbidden(strings.Join(decision.Reasons, ","))
 		}
-		if stage == port.AuthorizeAfter && i < changeCount {
+		if stage == port.AuthorizeAfter && i < changeCount && !heartbeat {
 			if err := c.validateExistingWrite(ctx, reader, proposal, proposal.Changes[i], caller); err != nil {
+				return err
+			}
+		}
+		if heartbeat && i < changeCount {
+			// A heartbeat has no proposed graph image. Validate the actual
+			// unchanged stored image after membership admission, including on
+			// replay. Check the current held lease before the Writer can return
+			// a previously published receipt for a now-invalid claim.
+			change := proposal.Changes[i]
+			rows, err := reader.Get(ctx, []model.Ref{change.Resource.Ref})
+			if err != nil {
+				return &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+			}
+			if len(rows) != 1 {
+				return forbidden("heartbeat requires an existing authorized bead")
+			}
+			change.Before, change.After = rows[0].Body, rows[0].Body
+			if err := c.validateExistingWrite(ctx, reader, proposal, change, caller); err != nil {
+				return err
+			}
+			if err := c.validateHeartbeatClaim(ctx, proposal.Principal, change.Resource.Ref, rows[0]); err != nil {
 				return err
 			}
 		}
@@ -199,6 +236,12 @@ func (c *Checker) validateExistingWrite(ctx context.Context, reader Snapshot, pr
 		return forbidden("invalid proposed bead image")
 	}
 	method := proposal.Meta.Method
+	if method == "bead.heartbeat" || method == "bead.release" {
+		// The chain already evaluated the actual protected method. This
+		// existing-image guard checks only immutable permission assignment;
+		// holder, expiry and quiet publication remain Writer responsibilities.
+		method = "bead.update"
+	}
 	if method == "tx.apply" && change.Op.Kind == model.OpClose {
 		// Policy already checked both tx.apply and bead.close. This existing
 		// image adapter only checks immutable permission-bearing assignment.
@@ -261,7 +304,7 @@ func (c *Checker) Visible(_ context.Context, p model.PrincipalRef, d wire.Method
 	}
 	if d.Permission == "write" {
 		switch d.Name {
-		case "bead.claim", "bead.claimNext", "bead.update":
+		case "bead.claim", "bead.claimNext", "bead.update", "bead.heartbeat", "bead.release":
 			return p.Kind == "agent" && p.Sponsor != nil && p.Sponsor.Kind == "user", nil
 		default:
 			return false, nil

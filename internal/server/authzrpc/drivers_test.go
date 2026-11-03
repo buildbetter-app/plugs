@@ -402,6 +402,19 @@ func localDocker(args ...string) ([]byte, error) {
 
 func postgresFactory(t *testing.T) storeFactory {
 	t.Helper()
+	dsn := postgresDSNFactory(t)
+	return func(t *testing.T) driver.Store {
+		t.Helper()
+		s, err := postgres.Open(context.Background(), driver.Config{DSN: dsn(t)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+}
+
+func postgresDSNFactory(t *testing.T) func(*testing.T) string {
+	t.Helper()
 	const image = "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
 	name := fmt.Sprintf("plug-swarm-authz-i5-%d-%d", os.Getpid(), time.Now().UnixNano())
 	if out, err := localDocker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-p", "127.0.0.1::5432", image); err != nil {
@@ -430,16 +443,12 @@ func postgresFactory(t *testing.T) storeFactory {
 	}
 	t.Logf("real PostgreSQL image=%s loopback_only=true owned_cleanup=true", image)
 	var sequence atomic.Uint64
-	return func(t *testing.T) driver.Store {
+	return func(t *testing.T) string {
 		t.Helper()
 		database := fmt.Sprintf("authz_%d", sequence.Add(1))
 		if out, err := localDocker("exec", name, "createdb", "-h", "127.0.0.1", "-U", "postgres", database); err != nil {
 			t.Fatalf("owned test database: %v %s", err, out)
 		}
-		s, err := postgres.Open(context.Background(), driver.Config{DSN: "postgres://postgres@" + address + "/" + database + "?sslmode=disable"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return s
+		return "postgres://postgres@" + address + "/" + database + "?sslmode=disable"
 	}
 }

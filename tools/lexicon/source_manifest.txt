@@ -581,8 +581,11 @@ internal/server/authzrpc/atomic_close_test.go
 internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/checker.go
+internal/server/authzrpc/claim.go
+internal/server/authzrpc/claim_test.go
 internal/server/authzrpc/cycles.go
 internal/server/authzrpc/drivers_test.go
+internal/server/authzrpc/export_test.go
 internal/server/authzrpc/hierarchy.go
 internal/server/authzrpc/hierarchy_lifecycle_guards_test.go
 internal/server/authzrpc/hierarchy_lifecycle_test.go
