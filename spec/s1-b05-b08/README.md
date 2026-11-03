@@ -8,11 +8,35 @@ This package is the focused Plug runtime lane for:
   conflict;
 - B08 linked-child close guards and lifecycle settlement.
 
-The tests construct the real Writer, service, RPC registry, claim binding, and
-memory, file-backed SQLite, or disposable PostgreSQL driver with fixed UTC clocks, finite IDs, fixed
-project/agent metadata, and deterministic idempotency keys. Heartbeat refreshes
-are checked against graph head, versions, changesets, and persisted bead bytes;
-Persistent stores are reopened before replay to prove checkpoint receipt durability.
+The historical direct-dispatch fixtures construct the real Writer, service, RPC
+registry, claim binding, and memory, file-backed SQLite, or disposable PostgreSQL
+driver with fixed service time, finite IDs, fixed project/agent metadata, and
+deterministic idempotency keys. Fixed service time alone does not control every
+driver or SQL clock. Heartbeat refreshes are checked against graph head, versions,
+changesets, and persisted bead bytes; persistent stores are reopened before replay
+to prove checkpoint receipt durability.
+
+The adopted B05 disposition keeps heartbeat strictly quiet: a valid existing
+base `ClaimLease` permits only replica-local overlay creation/refresh and keyed
+response effects. A missing base lease returns exactly `lease_not_held`, without
+a new overlay, durable revision/event or receipt. This deliberately differs from
+Beads' recorded missing-lease re-arm. Restore may retain a leaseless started/hooked
+bead with a warning; heartbeat does not repair that base lease.
+
+New regression source in `internal/server/authzrpc/claim_test.go` uses the supported
+guarded `authzrpc` host, genuine API keys and HTTP, with real memory/SQLite and
+owned disposable PostgreSQL. Its test-only constructor binds application time;
+the drivers use their existing clock seams, including a real PostgreSQL SQL
+function and independent SQL readback. The heartbeat deadline in checkpoint JSON
+is Go-bound, not SQL-generated. The assertions compare actual overlay/replay
+bytes and exact deadlines against unchanged bead bytes, revision/head, complete
+versions/changesets, graph/authority facts and ordinary receipts. They cover
+same-second refresh/replay, missing overlay/base/holder, foreign holder/project,
+released/closed targets, current revocation, lease loss and public recovery
+impersonation, including published receipt replay after the current claim ends
+or changes holder. Closed targets use an explicit real-store fixture; this is not
+close-transition qualification. This source child has not been executed; S1 must
+route independent changed-source review and authorize exact named gates.
 
 The heartbeat/reclaim regressions pause actual producer calls before forwarding
 to real checkpoint saves and graph commits. Both publication orders are tested:
