@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -12,49 +13,33 @@ import (
 // A first typed publication may establish a new interval only when every
 // bead known to this store is introduced in this very commit. Objects from a
 // deleted or imported lifetime prevent a later final-image recertification.
-func (t *transaction) selectionNeverSourcedBefore(ctx context.Context, c *sql.Conn, current driver.Meta) (bool, error) {
+func (t *transaction) selectionNeverSourcedBefore(ctx context.Context, c queryer, current driver.Meta) (bool, error) {
 	// An imported source starts a new incarnation, not a virgin authored
 	// lifetime. Its complete final image must go through explicit backfill;
 	// the restore commit cannot certify source history it did not publish.
 	if t.restore != nil {
 		return false, nil
 	}
-	rows, err := c.QueryContext(ctx, `SELECT key FROM objects WHERE kind='bead'`)
+	// Open initializes this marker from legacy objects once. A missing marker
+	// is conservatively non-virgin so an unusual pre-marker incarnation can
+	// never gain a first-publication certificate by inference.
+	var virgin int
+	err := c.QueryRowContext(ctx, `SELECT virgin FROM selection_virgin_state WHERE incarnation=?`, current.Incarnation).Scan(&virgin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			_ = rows.Close()
-			return false, err
-		}
-		ids = append(ids, id)
+	if virgin != 1 {
+		return false, nil
 	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return false, err
-	}
-	if err := rows.Close(); err != nil {
-		return false, err
-	}
-	seen := false
-	for _, id := range ids {
-		record, changed := t.records[id]
-		if !changed || record == nil || record.Kind != "bead" {
-			return false, nil
-		}
-		seen = true
-		var old int
-		if err := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM versions WHERE key=? AND rev<=?)`, id, revKey(mustUint(current.Head))).Scan(&old); err != nil {
-			return false, err
-		}
-		if old != 0 {
-			return false, nil
+	for _, record := range t.records {
+		if record != nil && record.Kind == "bead" {
+			return true, nil
 		}
 	}
-	return seen, nil
+	return false, nil
 }
 
 // Complete typed rows must accompany every changed live bead. Existing fact
@@ -65,10 +50,24 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 	if family.Kind == "" {
 		return t.selectionCompleteForCommit(ctx, c, incarnation, derived)
 	}
-	type stagedFact struct{ key string }
-	bySource := map[string]stagedFact{}
+	// Ancestor closures are represented as one physical derived row per
+	// source/depth. The other typed families have one row per source, but an
+	// ancestor source legitimately owns several rows. Keep both the complete
+	// staged replacement set and explicit removals by source. Hierarchy delta
+	// publication can remove stale rows for an unchanged descendant before
+	// adding the complete replacement set; that is valid only when every old
+	// row is accounted for and at least one complete replacement remains.
+	bySource := map[string]map[string]struct{}{}
+	removedBySource := map[string]map[string]struct{}{}
+	touchedSources := map[string]struct{}{}
 	for id, state := range derived {
 		if state.Key.Derived == nil {
+			continue
+		}
+		// The encoded derived key carries its table. Do not issue a typed family
+		// lookup for rows owned by another family; the old implementation made
+		// every family scan the full staged overlay on every commit.
+		if state.Key.Derived.Table != family.Table {
 			continue
 		}
 		var oldSource, oldKind string
@@ -79,6 +78,9 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 			incarnation, revKey(0), id, string(family.Table)).Scan(&oldSource, &oldKind)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return false, err
+		}
+		if oldKind == string(family.Kind) && oldSource != "" {
+			touchedSources[oldSource] = struct{}{}
 		}
 		newFamily := state.Present && state.Derived != nil && state.Derived.Index != nil &&
 			state.Derived.Index.Source.Key.Kind == driver.LockRecord &&
@@ -93,11 +95,19 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 				return false, nil // an unknown or deleted record owner cannot certify
 			}
 		}
+		if oldKind == string(family.Kind) && state.Present && !newFamily {
+			// A present untyped or wrong-family replacement is an ordinary/raw
+			// write to an existing typed row. It cannot be reinterpreted as the
+			// explicit remove arm of a complete hierarchy delta.
+			return false, nil
+		}
 		if oldKind == string(family.Kind) && !newFamily {
-			removed, changed := t.records[oldSource]
-			if !changed || removed != nil {
-				return false, nil
+			rows := removedBySource[oldSource]
+			if rows == nil {
+				rows = make(map[string]struct{})
+				removedBySource[oldSource] = rows
 			}
+			rows[id] = struct{}{}
 		}
 		if !newFamily {
 			continue
@@ -107,13 +117,22 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 			return false, nil
 		}
 		sourceID := keyID(source.Key)
+		touchedSources[sourceID] = struct{}{}
 		if record, changed := t.records[sourceID]; changed && (record == nil || record.Kind != "bead") {
 			return false, nil
 		}
-		if _, duplicate := bySource[sourceID]; duplicate {
+		rows := bySource[sourceID]
+		if rows == nil {
+			rows = make(map[string]struct{})
+			bySource[sourceID] = rows
+		}
+		if _, duplicate := rows[id]; duplicate {
 			return false, nil
 		}
-		bySource[sourceID] = stagedFact{key: id}
+		if family.Kind != driver.SelectionAncestorFact && len(rows) != 0 {
+			return false, nil
+		}
+		rows[id] = struct{}{}
 		if oldKind == string(family.Kind) && oldSource != sourceID {
 			removed, changed := t.records[oldSource]
 			if !changed || removed != nil {
@@ -127,27 +146,94 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 				return false, nil
 			}
 		}
+		// Delete records have no typed overlay row of their own, but their
+		// source identity still closes every active fact envelope below. Keep
+		// deleted bead sources in the touched set so a raw Delete cannot carry
+		// ready coverage without an explicit tombstone for each physical row.
+		if record == nil {
+			if identity, known := t.sourceIdentities[id]; known && identity.Kind == "bead" {
+				touchedSources[id] = struct{}{}
+			}
+		}
 	}
-	for source, row := range bySource {
-		if _, changed := t.records[source]; changed {
-			continue // source publication closes its previous fact sets
+	for source := range touchedSources {
+		staged := bySource[source]
+		if record, changed := t.records[source]; changed {
+			if record != nil && record.Kind == "bead" && len(staged) == 0 {
+				return false, nil
+			}
+			if record != nil {
+				continue // source publication closes its previous fact sets
+			}
+			// A raw bead deletion is complete only when every active typed row
+			// for this source has an explicit Present=false derived state. A
+			// pipeline delete may remove all rows and is accepted below; an
+			// unannotated or partial delete remains unavailable.
+			if len(staged) != 0 {
+				return false, nil
+			}
 		}
 		rows, err := querySelectionSourceFactRows(ctx, c, incarnation, family, source)
 		if err != nil {
 			return false, err
 		}
-		for _, previous := range rows {
-			if previous != row.key {
-				if _, replaced := derived[previous]; !replaced {
+		if record, deleted := t.records[source]; deleted && record == nil {
+			for _, previous := range rows {
+				if _, removed := removedBySource[source][previous]; !removed {
 					return false, nil
 				}
 			}
+			continue
+		}
+		if len(rows) != 0 && len(staged) == 0 {
+			// A live unchanged source cannot lose its only typed envelope. This
+			// also rejects a partial remove without the complete replacement delta.
+			return false, nil
+		}
+		for _, previous := range rows {
+			if _, replaced := staged[previous]; replaced {
+				continue
+			}
+			if _, removed := removedBySource[source][previous]; removed {
+				continue
+			}
+			return false, nil
 		}
 	}
 	// Independently complete derived, read-fact and sentinel sourced rows do
 	// not participate in this record-built family. Their exact envelopes still
 	// follow the ordinary source-observation admission path.
 	return true, nil
+}
+
+// selectionParentProofSeeds returns the source identities whose committed
+// parent/ancestor component can change in this transaction.  The recursive
+// SQL proof expands each seed through the current Parent index, so an ancestor
+// move also checks every existing descendant whose chain depends on it.  A
+// source-only update remains local to its own chain.
+func (t *transaction) selectionParentProofSeeds(derived map[string]driver.LockState) []string {
+	seen := make(map[string]struct{}, len(t.records)+len(derived))
+	for id, record := range t.records {
+		if identity, ok := t.sourceIdentities[id]; ok && identity.Kind == "bead" {
+			seen[id] = struct{}{}
+			continue
+		}
+		if record != nil && record.Kind == "bead" {
+			seen[id] = struct{}{}
+		}
+	}
+	for _, state := range derived {
+		if state.Derived == nil || state.Derived.Index == nil || state.Derived.Index.Source.Key.Kind != driver.LockRecord {
+			continue
+		}
+		seen[keyID(state.Derived.Index.Source.Key)] = struct{}{}
+	}
+	seeds := make([]string, 0, len(seen))
+	for id := range seen {
+		seeds = append(seeds, id)
+	}
+	sort.Strings(seeds)
+	return seeds
 }
 
 // A core fact family is rebuilt from bead records only. A live, known
@@ -172,23 +258,25 @@ func (t *transaction) selectionRecordBuiltSource(ctx context.Context, c queryer,
 }
 
 func querySelectionSourceFactRows(ctx context.Context, c queryer, incarnation string, family driver.SelectionProjectionFamily, source string) ([]string, error) {
-	// queryer has QueryRowContext only. The bounded count/identity query is
-	// sufficient because a complete family has at most one row per source.
-	var count int
-	var row sql.NullString
-	err := c.QueryRowContext(ctx, `SELECT COUNT(*),MIN(row_key) FROM selection_fact_sets
-		WHERE incarnation=? AND branch=? AND row_table=? AND kind=? AND source_key=? AND end_revision IS NULL`,
-		incarnation, revKey(0), string(family.Table), string(family.Kind), source).Scan(&count, &row)
+	rows, err := c.QueryContext(ctx, `SELECT row_key FROM selection_fact_sets
+		WHERE incarnation=? AND branch=? AND row_table=? AND kind=? AND source_key=? AND end_revision IS NULL
+		ORDER BY row_key`, incarnation, revKey(0), string(family.Table), string(family.Kind), source)
 	if err != nil {
 		return nil, err
 	}
-	if count > 1 {
-		return []string{"", ""}, nil
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var row string
+		if err := rows.Scan(&row); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
 	}
-	if count == 0 {
-		return nil, nil
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
-	return []string{row.String}, nil
+	return out, nil
 }
 
 type selectionFamilyDecision struct {
@@ -224,11 +312,11 @@ func (t *transaction) prepareSelectionFamilyCoverage(ctx context.Context, c *sql
 	return decisions, nil
 }
 
-func publishSelectionFamilyCoverage(ctx context.Context, c *sql.Conn, incarnation, previous, next string, decisions []selectionFamilyDecision) error {
+func publishSelectionFamilyCoverage(ctx context.Context, c *sql.Conn, incarnation, previous, next string, decisions []selectionFamilyDecision, parentSeeds []string) error {
 	for _, decision := range decisions {
 		family, interval, priorReady, complete, firstTyped := decision.family, decision.interval, decision.priorReady, decision.complete, decision.firstTyped
 		if complete && family.Kind == driver.SelectionAncestorFact {
-			valid, err := verifySQLiteSelectionParentChains(ctx, c, incarnation, next)
+			valid, err := verifySQLiteSelectionParentChainsAffected(ctx, c, incarnation, next, parentSeeds)
 			if err != nil {
 				return err
 			}
