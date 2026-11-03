@@ -1059,6 +1059,7 @@ spec/s1-b25-b28/acceptance_test.go
 spec/s1-b25-b28/b26-deviation.json
 spec/s1-b25-b28/converter_test.go
 spec/s1-b25-b28/provenance.py
+spec/s1-b25-b28/public_recording_test.go
 spec/s1-b25-b28/record_reference.py
 spec/s1-b25-b28/reference_test.go
 spec/s1-b25-b28/relations_test.go
@@ -1067,6 +1068,8 @@ spec/s1-b25-b28/testdata/existing-target.jsonl
 spec/s1-b25-b28/testdata/inputs.jsonl
 spec/s1-b25-b28/testdata/projection.json
 spec/s1-b25-b28/testdata/provenance.json
+spec/s1-b25-b28/testdata/public-companion-profile.json
+spec/s1-b25-b28/testdata/public-recording-fixture.json
 spec/s1-b25-b28/testdata/run1/commands.json
 spec/s1-b25-b28/testdata/run1/source-export.jsonl
 spec/s1-b25-b28/testdata/run1/target-export.jsonl
