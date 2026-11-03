@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -308,26 +310,140 @@ func TestLockRejectsLeaseLostDuringGuardAcquisition(t *testing.T) {
 	// and the real per-key flock/mmap and SQL paths still have to unwind.
 	loseOnFence.Store(true)
 	states, lockErr := tx.Lock(ctx, requests)
-	if err := tx.Close(); err != nil {
-		t.Fatal(err)
-	}
 	if lockErr == nil {
+		_ = tx.Close()
 		t.Fatalf("Lock published %d states after lease loss; its guard mappings were already queued for release", len(states))
 	}
 	requireFenced(t, lockErr)
 	if len(states) != 0 {
 		t.Fatalf("fenced acquisition returned %d states", len(states))
 	}
-	if got := guardDescriptorCount(t, s); got != beforeFD {
+	tx.mu.Lock()
+	locked, acquired, adopted := tx.locked, len(tx.acquired), len(tx.guards)
+	afterFD, afterVMA := guardDescriptorCount(t, s), guardVMACount(t, s)
+	tx.mu.Unlock()
+	if locked || acquired != 0 || adopted != 0 {
+		t.Fatalf("fenced acquisition adopted a partial set: locked=%v acquired=%d guards=%d", locked, acquired, adopted)
+	}
+	if got := afterFD; got != beforeFD {
 		t.Fatalf("fenced acquisition retained descriptors: before=%d after=%d", beforeFD, got)
 	}
-	if got := guardVMACount(t, s); got != beforeVMA {
+	if got := afterVMA; got != beforeVMA {
 		t.Fatalf("fenced acquisition retained VMAs: before=%d after=%d", beforeVMA, got)
+	}
+	if err := tx.Close(); err != nil {
+		t.Fatal(err)
 	}
 	for _, request := range requests {
 		guardProbe(t, ctx, guardPath(s, request.Key), false, true)
 	}
 	t.Logf("lease loss rejected the complete %d-key set and released every original flock/mapping", len(requests))
+}
+
+func TestCompleteLockStatesMatchPinnedObserver(t *testing.T) {
+	ctx := testContext(t)
+	s := openStore(t, ctx, filepath.Join(t.TempDir(), "guard-state-equivalence.db"))
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	live := driver.DerivedRow{Key: "guard/live", Value: []byte("original")}
+	deleted := driver.DerivedRow{Key: "guard/deleted", Value: []byte("deleted")}
+	prefixCommit(t, ctx, s, lease, 1, nil, []driver.DerivedRow{live, deleted})
+	// Open before subsequent commits: Lock must repin after taking every guard.
+	writer, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	live.Value = []byte("current")
+	prefixCommit(t, ctx, s, lease, 2, []driver.DerivedRow{deleted}, []driver.DerivedRow{live})
+	seedRecord(t, ctx, s, lease, "pl-guard-deleted", `{"old":true}`)
+	remove, header := beginRecord(t, ctx, s, lease, "pl-guard-deleted")
+	if err := remove.Delete(ctx, testRef("pl-guard-deleted")); err != nil {
+		t.Fatal(err)
+	}
+	header.Changes[0].Op = model.OpDelete
+	if _, err := remove.Commit(ctx, header); err != nil {
+		t.Fatal(err)
+	}
+
+	fact := driver.ReadFact("guard/equivalence")
+	factWriter, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer factWriter.Close()
+	factKeys := []driver.LockKey{testKey("pl-guard-live"), {Kind: driver.LockReadFact, Fact: fact}}
+	factLocks := driver.LockSet{{Key: factKeys[0], Mode: driver.LockUpdate}, {Key: factKeys[1], Mode: driver.LockUpdate}}
+	if _, err := factWriter.Lock(ctx, factLocks); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := factWriter.Head(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := factWriter.Put(ctx, driver.Record{Ref: testRef("pl-guard-live"), Kind: "test", Body: []byte(`{ "number": 1e+03, "nested": [1, 2] }`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := factWriter.BumpReadFacts(ctx, []driver.ReadFact{fact}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := factWriter.Commit(ctx, driver.ChangesetHeader{
+		Incarnation: getMeta(t, ctx, s).Incarnation, Kind: model.ChangesetWrite,
+		Principal: model.PrincipalRef{Kind: "system", ID: "guard-state-test"}, LockKeys: factKeys,
+		Changes: []model.ChangeRecord{{Ref: testRef("pl-guard-live"), Op: model.OpCreate, FromRevision: model.Natural64(0)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	skipped := testKey("pl-guard-skipped")
+	holder, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if _, err := holder.Lock(ctx, driver.LockSet{{Key: skipped, Mode: driver.LockUpdate}}); err != nil {
+		t.Fatal(err)
+	}
+	sentinel, _ := driver.NewClosureSentinel("pl-prefix")
+	keys := []driver.LockKey{
+		testKey("pl-prefix"), testKey("pl-guard-live"), testKey("pl-guard-deleted"), testKey("pl-guard-missing"), skipped,
+		{Kind: driver.LockReadFact, Fact: fact}, {Kind: driver.LockReadFact, Fact: "guard/missing"},
+		{Kind: driver.LockSentinel, Sentinel: sentinel}, driver.GraphBlockingSentinelLock,
+		{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: live.Key}},
+		{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: deleted.Key}},
+		{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: "guard/missing"}},
+	}
+	sort.Slice(keys, func(i, j int) bool { return keyID(keys[i]) < keyID(keys[j]) })
+	requests := make(driver.LockSet, len(keys))
+	selected := make([]driver.LockKey, 0, len(keys)-1)
+	for i, key := range keys {
+		mode := driver.LockUpdate
+		if keyID(key) == keyID(skipped) {
+			mode = driver.LockSkipLocked
+		} else {
+			selected = append(selected, key)
+		}
+		requests[i] = driver.LockRequest{Key: key, Mode: mode}
+	}
+	observer := getReader(t, ctx, s, getMeta(t, ctx, s), nil)
+	want, err := observer.Observe(ctx, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := writer.Lock(ctx, requests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("complete locked states differ from independent pinned scalar observation:\ngot=%+v\nwant=%+v", got, want)
+	}
+	staged := driver.DerivedRow{Key: live.Key, Value: []byte("staged")}
+	if err := writer.PutDerived(ctx, driver.DerivedAttribute, nil, []driver.DerivedRow{staged}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := writer.Observe(ctx, []driver.LockKey{{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: staged.Key}}})
+	if err != nil || len(state) != 1 || state[0].Derived == nil || string(state[0].Derived.Value) != "staged" {
+		t.Fatalf("locked writer lost staged derived overlay: %+v %v", state, err)
+	}
+	t.Logf("complete %d selected states match pinned scalar observation across live/deleted/missing records, facts, sentinels, derived rows and a skipped guard", len(got))
 }
 
 func guardProbe(t *testing.T, ctx context.Context, path string, share, acquired bool) {
