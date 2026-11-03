@@ -3,6 +3,8 @@ package viewops
 import (
 	"strings"
 	"unicode"
+
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 // Label expressions stay private to the shared matcher. Scalar terms remain
@@ -254,4 +256,27 @@ func (p *labelQueryParser) word() string {
 	word := p.rest[:end]
 	p.rest = p.rest[end:]
 	return word
+}
+
+// Each existing logical label row is complete for exactly one source ID.
+// The closed driver contract has no candidate-relative/family operand.
+func (p *labelPredicate) selection(id string) driver.SelectionExpr {
+	switch p.op {
+	case '=':
+		value := driver.SelectionString(p.value)
+		return driver.SelectionExpr{Op: driver.SelectionExistsOp, Exists: &driver.SelectionExists{
+			Row: driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: id}, Kind: driver.SelectionLabelFact,
+			Tests: []driver.SelectionFactTest{{Column: driver.SelectionFactRef, Candidate: driver.SelectionID}, {Column: driver.SelectionFactName, Value: &value}},
+		}}
+	case '!':
+		return driver.SelectionExpr{Op: driver.SelectionNot, Args: []driver.SelectionExpr{p.left.selection(id)}}
+	case '&', '|':
+		op := driver.SelectionAll
+		if p.op == '|' {
+			op = driver.SelectionAny
+		}
+		return driver.SelectionExpr{Op: op, Args: []driver.SelectionExpr{p.left.selection(id), p.right.selection(id)}}
+	default:
+		return driver.SelectionExpr{Op: driver.SelectionFalse}
+	}
 }

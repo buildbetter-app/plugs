@@ -363,6 +363,7 @@ internal/core/viewops/epic_progress.go
 internal/core/viewops/label_predicate.go
 internal/core/viewops/parent_projection.go
 internal/core/viewops/run.go
+internal/core/viewops/selection_test.go
 internal/core/viewops/service.go
 internal/core/viewops/service_test.go
 internal/core/viewops/types.go
@@ -695,6 +696,7 @@ internal/server/authzrpc/prepared_test.go
 internal/server/authzrpc/scoped_projection_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
+internal/server/authzrpc/view_selection_test.go
 internal/server/authzrpc/workflow_boundary_test.go
 internal/server/authzrpc/workflow_claimnext.go
 internal/server/authzrpc/workflow_claimnext_auth_test.go

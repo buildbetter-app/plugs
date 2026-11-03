@@ -92,7 +92,18 @@ func (s *Service) projectParents(ctx context.Context, by model.PrincipalRef, con
 			}
 			parent, exists := findStored(rows, ref.ID)
 			if !exists {
-				return epicUnavailable("parent projection source is unavailable")
+				records, err := content.Get(ctx, []model.Ref{*ref})
+				if err != nil {
+					return mapped(err)
+				}
+				if len(records) != 1 || records[0].Kind != "bead" || !driver.SelectionSameRef(records[0].Ref, *ref) {
+					return epicUnavailable("parent projection source is unavailable")
+				}
+				doc, err := decodeDocument(records[0].Body)
+				if err != nil || doc.ID != ref.ID {
+					return epicUnavailable("parent projection source is invalid")
+				}
+				parent = stored{record: records[0], doc: doc}
 			}
 			allowed, err := s.authorize(ctx, by, parent)
 			if err != nil {
