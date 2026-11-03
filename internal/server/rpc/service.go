@@ -78,6 +78,7 @@ type serviceParams struct {
 	Parent       *model.Ref                     `json:"parent"`
 	Expect       []model.Precondition           `json:"expect"`
 	Body         string                         `json:"body"`
+	CommentPage  *commentPageSelection          `json:"commentPage"`
 	Reason       string                         `json:"reason"`
 	Key          string                         `json:"key"`
 	Content      string                         `json:"content"`
@@ -213,36 +214,14 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		if err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 		}
+		if p.CommentPage != nil {
+			return dispatchCommentPage(ctx, svc, c, p, id)
+		}
 		v, err := svc.Get(ctx, c.Principal, service.GetRequest{ID: id, AsOf: p.AsOf.domain(), Project: c.Meta.Project, Agent: c.Meta.Agent})
 		if err != nil {
 			return nil, err
 		}
-		attachments := v.Attachments
-		if attachments == nil {
-			attachments = []model.Attachment{}
-		}
-		out := map[string]any{"bead": beadJSON(v.Bead), "attachments": attachments}
-		if v.Comments != nil {
-			comments := make([]map[string]any, len(v.Comments))
-			for i, comment := range v.Comments {
-				value := map[string]any{"body": comment.Body, "principal": comment.Principal, "time": timestamp(comment.Time)}
-				if comment.Origin != "" {
-					value["origin"] = comment.Origin
-					if comment.SourceTime != nil {
-						value["sourceTime"] = timestamp(*comment.SourceTime)
-					}
-					if comment.SourceAuthor != "" {
-						value["sourceAuthor"] = comment.SourceAuthor
-					}
-				}
-				comments[i] = value
-			}
-			out["comments"] = comments
-		}
-		if v.Lease != nil {
-			out["lease"] = map[string]any{"holder": v.Lease.Principal.ID, "expiresAt": timestamp(v.Lease.ExpiresAt), "ttlMs": v.Lease.TTL.Milliseconds(), "epoch": v.Lease.Epoch}
-		}
-		return out, nil
+		return beadGetJSON(v, true), nil
 	case "bead.ready":
 		position, err := c.paging.decode(c, p)
 		if err != nil {
@@ -648,6 +627,36 @@ func healthJSON(v driver.StoreHealth) map[string]any {
 	return out
 }
 func timestamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+
+func beadGetJSON(v service.GetResult, includeComments bool) map[string]any {
+	attachments := v.Attachments
+	if attachments == nil {
+		attachments = []model.Attachment{}
+	}
+	out := map[string]any{"bead": beadJSON(v.Bead), "attachments": attachments}
+	if includeComments && v.Comments != nil {
+		comments := make([]map[string]any, len(v.Comments))
+		for i, comment := range v.Comments {
+			value := map[string]any{"body": comment.Body, "principal": comment.Principal, "time": timestamp(comment.Time)}
+			if comment.Origin != "" {
+				value["origin"] = comment.Origin
+				if comment.SourceTime != nil {
+					value["sourceTime"] = timestamp(*comment.SourceTime)
+				}
+				if comment.SourceAuthor != "" {
+					value["sourceAuthor"] = comment.SourceAuthor
+				}
+			}
+			comments[i] = value
+		}
+		out["comments"] = comments
+	}
+	if v.Lease != nil {
+		out["lease"] = map[string]any{"holder": v.Lease.Principal.ID, "expiresAt": timestamp(v.Lease.ExpiresAt), "ttlMs": v.Lease.TTL.Milliseconds(), "epoch": v.Lease.Epoch}
+	}
+	return out
+}
+
 func beadJSON(b service.Bead) map[string]any {
 	out := map[string]any{"id": b.ID, "type": b.Type, "revision": b.Revision}
 	for k, v := range map[string]string{"project": b.Project, "status": b.Status, "parent": b.Parent, "assignee": b.Assignee} {

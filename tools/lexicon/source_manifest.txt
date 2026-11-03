@@ -317,6 +317,8 @@ internal/core/service/canonical_claim_slot_audit_test.go
 internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
 internal/core/service/claim_recovery_test.go
+internal/core/service/comments.go
+internal/core/service/comments_test.go
 internal/core/service/compact.go
 internal/core/service/direct_blockers.go
 internal/core/service/direct_blockers_test.go
@@ -529,6 +531,7 @@ internal/integration/postgresacceptance/README.md
 internal/integration/postgresacceptance/atomic_close_test.go
 internal/integration/postgresacceptance/atomic_test.go
 internal/integration/postgresacceptance/b15_comments_test.go
+internal/integration/postgresacceptance/b15_page_test.go
 internal/integration/postgresacceptance/b16_labels_test.go
 internal/integration/postgresacceptance/engine_test.go
 internal/integration/postgresacceptance/fixture_test.go
@@ -637,6 +640,7 @@ internal/server/authzrpc/README.md
 internal/server/authzrpc/atomic_close_test.go
 internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
+internal/server/authzrpc/b15_comments_page_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/drivers_test.go
 internal/server/authzrpc/hierarchy.go
@@ -773,6 +777,7 @@ internal/server/rpc/BUILD.bazel
 internal/server/rpc/admin.go
 internal/server/rpc/cmd/openrpcgen/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/main.go
+internal/server/rpc/comments.go
 internal/server/rpc/compact.go
 internal/server/rpc/cursor.go
 internal/server/rpc/cursor_test.go
@@ -1198,6 +1203,7 @@ spec/s1-b13-b16/BUILD.bazel
 spec/s1-b13-b16/README.md
 spec/s1-b13-b16/capture_regressions_test.go
 spec/s1-b13-b16/capture_regressions_test.py
+spec/s1-b13-b16/comment_page_test.go
 spec/s1-b13-b16/record_reference.py
 spec/s1-b13-b16/reference_capture.py
 spec/s1-b13-b16/reference_capture_main.go
