@@ -22,24 +22,25 @@ import (
 
 type transaction struct {
 	*reader
-	lease            *activeLease
-	locked, hasHead  bool
-	restore          *driver.Meta
-	offlineHistory   *driver.PreparedOfflineHistory
-	nativeRestore    *driver.NativeRestoreProfile
-	nativeAllocators bool
-	importRestore    *driver.RestoreImportProfile
-	acquired         driver.LockSet
-	files            []*os.File
-	guards           []guardHandle
-	done             chan struct{}
-	records          map[string]*driver.Record
-	derived          map[string]driver.LockState
-	blobs            map[driver.Hash][]byte
-	bumps            map[string]driver.LockKey
-	allocators       map[string]driver.OfflineAllocator
-	parentCounters   map[string]driver.ParentCounter
-	allocated        map[string]bool
+	lease              *activeLease
+	locked, hasHead    bool
+	restore            *driver.Meta
+	offlineHistory     *driver.PreparedOfflineHistory
+	nativeRestore      *driver.NativeRestoreProfile
+	nativeAllocators   bool
+	importRestore      *driver.RestoreImportProfile
+	acquired           driver.LockSet
+	files              []*os.File
+	guards             []guardHandle
+	done               chan struct{}
+	records            map[string]*driver.Record
+	derived            map[string]driver.LockState
+	blobs              map[driver.Hash][]byte
+	bumps              map[string]driver.LockKey
+	allocators         map[string]driver.OfflineAllocator
+	parentCounters     map[string]driver.ParentCounter
+	allocated          map[string]bool
+	selectionAnnotated bool
 
 	checkpointGuards          map[string]uint64
 	sourceOverlay             sourceindex.Overlay
@@ -100,6 +101,7 @@ func (t *transaction) finish() {
 	t.allocators = nil
 	t.parentCounters = nil
 	t.allocated = nil
+	t.selectionAnnotated = false
 	t.store.untrack(t)
 	close(t.done)
 }
@@ -382,6 +384,18 @@ func (t *transaction) PutBlob(ctx context.Context, data []byte) (driver.Hash, er
 	return id, nil
 }
 func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow) error {
+	return t.putDerived(ctx, table, del, add, false)
+}
+
+// PutSelectionDerived is the optional trusted typed-publication capability.
+// Ordinary PutDerived keeps its existing logical-write contract and cannot
+// supply annotations. Both entrypoints validate the complete batch before
+// any staged row changes.
+func (t *transaction) PutSelectionDerived(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow) error {
+	return t.putDerived(ctx, table, del, add, true)
+}
+
+func (t *transaction) putDerived(ctx context.Context, table driver.DerivedTable, del, add []driver.DerivedRow, indexed bool) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if err := t.check(ctx); err != nil {
@@ -390,10 +404,13 @@ func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable,
 	if err := (driver.DerivedRowKey{Table: table, Key: "validation"}).Validate(); err != nil {
 		return err
 	}
-	for _, rows := range [][]driver.DerivedRow{del, add} {
+	for which, rows := range [][]driver.DerivedRow{del, add} {
 		for _, row := range rows {
-			if row.Index != nil {
-				return fmt.Errorf("%w: SQLite selection indexes are not implemented", driver.ErrUnsupported)
+			if which == 0 && row.Index != nil || !indexed && row.Index != nil || indexed && which == 1 && row.Index == nil {
+				return fmt.Errorf("%w: invalid SQLite selection publication arm", driver.ErrUnsupported)
+			}
+			if err := row.Index.Validate(table, row); err != nil {
+				return err
 			}
 			key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
 			if err := key.Validate(); err != nil {
@@ -404,15 +421,28 @@ func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable,
 			}
 		}
 	}
+	proposed := make(map[string]driver.LockState, len(t.derived)+len(add)+len(del))
+	for id, state := range t.derived {
+		proposed[id] = state
+	}
+	annotated := t.selectionAnnotated
 	for _, row := range del {
 		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
-		t.derived[keyID(key)] = driver.LockState{Key: key, Revision: model.Natural64(0)}
+		proposed[keyID(key)] = driver.LockState{Key: key, Revision: model.Natural64(0)}
 	}
 	for _, row := range add {
 		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
-		row.Value = bytes.Clone(row.Value)
-		t.derived[keyID(key)] = driver.LockState{Key: key, Derived: &row, Present: true, Revision: model.Natural64(0)}
+		copy := row.Clone()
+		proposed[keyID(key)] = driver.LockState{Key: key, Derived: &copy, Present: true, Revision: model.Natural64(0)}
+		annotated = annotated || copy.Index != nil
 	}
+	if annotated {
+		if err := t.validateSelectionWrites(ctx, proposed); err != nil {
+			return err
+		}
+	}
+	t.derived = proposed
+	t.selectionAnnotated = annotated
 	return nil
 }
 func (t *transaction) bump(ctx context.Context, keys []driver.LockKey) error {
@@ -498,6 +528,11 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		}
 		if err = t.validatePredicates(ctx); err != nil {
 			return err
+		}
+		if t.selectionAnnotated {
+			if err = t.validateSelectionWrites(ctx, t.derived); err != nil {
+				return err
+			}
 		}
 		meta, err := readMeta(ctx, c)
 		if err != nil {
@@ -600,11 +635,18 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		if err = sourcePlan.Publish(ctx, c); err != nil {
 			return err
 		}
-		for _, v := range t.derived {
+		// Rebind changed source annotations only in this commit-local overlay.
+		// If any later publication statement fails, t.derived remains bound to
+		// the observed prepublication source token for a safe retry/rollback.
+		derived := t.reboundSelectionSources(revision)
+		for _, v := range derived {
 			v.Revision = revision
 			if err = publishKey(ctx, c, v); err != nil {
 				return err
 			}
+		}
+		if err = t.publishSelection(ctx, c, meta, revision, derived); err != nil {
+			return err
 		}
 		for _, key := range t.bumps {
 			if err = publishKey(ctx, c, driver.LockState{Key: key, Revision: revision, Present: true}); err != nil {

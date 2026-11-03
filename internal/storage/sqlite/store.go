@@ -162,6 +162,8 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 		if e != nil {
 			return e
 		}
+		// New stores start unbuilt. Only explicit complete startup or a first
+		// complete typed publication may establish a family interval.
 		_, e = readMeta(ctx, c)
 		return e
 	})
