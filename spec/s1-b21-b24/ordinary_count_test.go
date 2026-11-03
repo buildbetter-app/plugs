@@ -338,5 +338,5 @@ func TestS1B23OrdinaryCountReferenceProfileIsExplicit(t *testing.T) {
 	if !strings.Contains(reference.Source.Profile, "managed-proxied") || reference.Source.RuntimeMode != "managed-proxied-server" {
 		t.Fatalf("count reference profile was presented as a different engine: %+v", reference.Source)
 	}
-	t.Logf("B23 reference profile retained: commit=%s tree=%s bd=%s dolt=%s/%s descriptor=%s", reference.Source.Commit, reference.Source.Tree, reference.Source.BinarySHA256, reference.Source.DoltVersion, reference.Source.DoltSHA256, reference.Source.Descriptor)
+	t.Logf("B23 reference profile retained: commit=%s tree=%s executable=%s dolt=%s/%s descriptor=%s", reference.Source.Commit, reference.Source.Tree, reference.Source.BinarySHA256, reference.Source.DoltVersion, reference.Source.DoltSHA256, reference.Source.Descriptor)
 }
