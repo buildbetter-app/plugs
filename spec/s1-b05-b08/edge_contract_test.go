@@ -564,22 +564,24 @@ func TestB07NamedEdgeMethodsKeepUnsupportedWorkflowReferencesAtomic(t *testing.T
 func TestB07DurableEdgesRefuseActualEphemeralWorkflowItemsAtomically(t *testing.T) {
 	for _, engine := range testEngines {
 		t.Run(engine, func(t *testing.T) {
-			f := newEphemeralCycleFixture(t, engine)
+			workflowFixture := newEphemeralCycleFixture(t, engine)
 			if engine == "memory" {
-				before := f.state(t)
-				got := f.request(t, "bead.cycles", map[string]any{"includeEphemeral": true}, "b07-routing-memory")
+				before := workflowFixture.state(t)
+				got := workflowFixture.request(t, "bead.cycles", map[string]any{"includeEphemeral": true}, "b07-routing-memory")
 				if got.Error == nil || got.Error.Data.Code != "plugin_durable_state_unavailable" {
 					t.Fatalf("memory workflow capability=%+v", got.Error)
 				}
-				if after := f.state(t); !reflect.DeepEqual(before, after) {
+				if after := workflowFixture.state(t); !reflect.DeepEqual(before, after) {
 					t.Fatal("memory workflow capability refusal changed durable or graph state")
 				}
 				return
 			}
 
-			created := f.request(t, "bead.create", map[string]any{
+			workflow := workflowFixture.invoke(t, "b07-routing-invoke", 1)[0]
+			durableFixture := newEdgeContractFixture(t, engine)
+			created := durableFixture.f.call(t, durableFixture.f.ctx, "bead.create", map[string]any{
 				"type": "issue", "fields": map[string]any{"title": "durable routing source"},
-			}, "b07-routing-create")
+			}, key("b07-routing-create"), actor)
 			if created.Error != nil {
 				t.Fatalf("durable routing source refused: %+v", created.Error)
 			}
@@ -588,9 +590,8 @@ func TestB07DurableEdgesRefuseActualEphemeralWorkflowItemsAtomically(t *testing.
 				t.Fatalf("durable routing source result=%s error=%v", created.Result, err)
 			}
 			durable := commit.Results[0].Ref
-			workflowItems := f.invoke(t, "b07-routing-invoke", 1)
-			workflow := workflowItems[0]
-			before := f.state(t)
+			beforeDurable := durableFixture.snapshot(t)
+			beforeWorkflow := workflowFixture.state(t)
 			attempts := []struct {
 				method string
 				params map[string]any
@@ -601,17 +602,25 @@ func TestB07DurableEdgesRefuseActualEphemeralWorkflowItemsAtomically(t *testing.
 				{method: "tx.apply", params: map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{edgeLinkOp(workflow, durable, "blocks")}}}},
 			}
 			for i, attempt := range attempts {
-				got := f.request(t, attempt.method, attempt.params, "b07-routing-refusal-"+model.Natural64(uint64(i)).String())
+				probe := durableFixture.probe(attempt.method, "b07-routing-refusal-"+model.Natural64(uint64(i)).String())
+				got := durableFixture.call(t, probe, attempt.params)
 				if got.Error == nil || got.Error.Data.Code != "invalid_params" || len(got.Result) != 0 {
 					t.Fatalf("%s mixed-plane refusal=%+v result=%s", attempt.method, got.Error, got.Result)
 				}
-				if after := f.state(t); !reflect.DeepEqual(before, after) {
-					t.Fatalf("%s mixed-plane refusal changed durable/checkpoint/graph state", attempt.method)
+				if after := durableFixture.snapshot(t); !reflect.DeepEqual(beforeDurable, after) {
+					t.Fatalf("%s mixed-plane refusal changed durable/graph state", attempt.method)
+				}
+				if after := workflowFixture.state(t); !reflect.DeepEqual(beforeWorkflow, after) {
+					t.Fatalf("%s mixed-plane refusal changed workflow checkpoint state", attempt.method)
 				}
 			}
-			f.reopen(t)
-			if after := f.state(t); !reflect.DeepEqual(before, after) {
-				t.Fatal("mixed-plane refusals were not durable-state neutral after reopen")
+			durableFixture.f.reopen(t)
+			workflowFixture.reopen(t)
+			if after := durableFixture.snapshot(t); !reflect.DeepEqual(beforeDurable, after) {
+				t.Fatal("mixed-plane refusals changed durable state after reopen")
+			}
+			if after := workflowFixture.state(t); !reflect.DeepEqual(beforeWorkflow, after) {
+				t.Fatal("mixed-plane refusals changed workflow state after reopen")
 			}
 		})
 	}
