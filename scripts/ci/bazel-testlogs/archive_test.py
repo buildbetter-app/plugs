@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""Exercise the workflow's real archive block with temporary output bytes.
+
+These fixtures test artifact transport only. They are not public RPC captures
+or expected B13 readback, and cannot qualify the B13 product behavior.
+"""
+
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tarfile
+import tempfile
+import unittest
+import warnings
+import zipfile
+
+
+HERE = Path(__file__).absolute().parent
+if "TEST_SRCDIR" in os.environ:
+    REPOSITORY = Path(os.environ["TEST_SRCDIR"]) / os.environ["TEST_WORKSPACE"]
+else:
+    REPOSITORY = HERE.parents[2]
+WORKFLOW = REPOSITORY / ".github/workflows/plug-remote-bazel.yml"
+INVENTORY = "undeclared-outputs.json"
+B13_TEST = "internal/integration/b13memory/b13memory_test"
+SINKS = tuple(
+    "b13-readback-" + engine + "-" + side + "-public.jsonl"
+    for engine in ("memory", "sqlite", "postgres")
+    for side in ("source", "target")
+)
+
+
+def workflow_archive_block():
+    lines = WORKFLOW.read_text().splitlines()
+    start = lines.index("      - name: Archive Bazel test logs")
+    end = next(index for index in range(start + 1, len(lines)) if lines[index].startswith("      - name:"))
+    step = lines[start:end]
+    if "        if: always()" not in step:
+        raise AssertionError("test output transport must run after a failed test")
+    run = step.index("        run: |") + 1
+    return "\n".join(line[10:] for line in step[run:] if line) + "\n"
+
+
+class ArchiveTransportTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="plug-bazel-outputs-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.logs = self.root / "bazel-testlogs"
+        self.evidence = self.root / "evidence"
+        self.evidence.mkdir()
+        helper = self.root / "scripts/ci/bazel-testlogs/archive.py"
+        helper.parent.mkdir(parents=True)
+        shutil.copyfile(HERE / "archive.py", helper)
+
+    def write(self, path, data):
+        destination = self.logs / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
+        return destination
+
+    def archive(self, expected_exit=0):
+        environment = dict(os.environ, REMOTE_BAZEL_EVIDENCE_DIR=str(self.evidence))
+        result = subprocess.run(
+            ["bash", "-euo", "pipefail", "-c", workflow_archive_block()],
+            cwd=self.root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(result.returncode, expected_exit, result.stderr.decode(errors="replace"))
+        with tarfile.open(self.evidence / "bazel-testlogs.tgz", "r:gz") as archive:
+            files = {member.name.removeprefix("./"): archive.extractfile(member).read()
+                     for member in archive.getmembers() if member.isfile()}
+        self.assertIn(INVENTORY, files, "standard artifact must retain the actual output inventory")
+        inventory = json.loads(files[INVENTORY])
+        for record in inventory["files"]:
+            self.assertEqual(record["bytes"], len(files[record["path"]]))
+            self.assertEqual(record["sha256"], hashlib.sha256(files[record["path"]]).hexdigest())
+        return files, inventory
+
+    def zipped(self, name, contents):
+        raw = io.BytesIO()
+        with zipfile.ZipFile(raw, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path, data in contents:
+                archive.writestr(path, data)
+        path = name + "/test.outputs/outputs.zip"
+        self.write(path, raw.getvalue())
+        return path, raw.getvalue()
+
+    def assert_original_outputs(self, files, inventory, expected):
+        observed = {}
+        for record in inventory["outputs"]:
+            if "container" in record:
+                with zipfile.ZipFile(io.BytesIO(files[record["container"]])) as archive:
+                    info = archive.infolist()[record["member_index"]]
+                    data = archive.read(info)
+                    self.assertEqual(info.filename, record["name"])
+            else:
+                data = files[record["path"]]
+            identity = (record["test"], record["name"])
+            self.assertNotIn(identity, observed)
+            observed[identity] = data
+            self.assertEqual(record["bytes"], len(data))
+            self.assertEqual(record["sha256"], hashlib.sha256(data).hexdigest())
+        self.assertEqual(observed, expected)
+
+    def test_six_zipped_sinks_keep_exact_bytes_after_success_and_failure(self):
+        # Deliberately opaque transport bytes, never a claimed public capture.
+        sinks = {name: (name + " Ω\n").encode() + b"\x00\xff\r\n\t" for name in SINKS}
+        for failed in (False, True):
+            with self.subTest(test_failed=failed):
+                log = b"--- FAIL: transport-fixture\n" if failed else b"--- PASS: transport-fixture\n"
+                xml = b'<testsuite failures="1"/>\n' if failed else b'<testsuite failures="0"/>\n'
+                self.write(B13_TEST + "/test.log", log)
+                self.write(B13_TEST + "/test.xml", xml)
+                (self.evidence / "exit_code").write_bytes(b"3\n" if failed else b"0\n")
+                path, original_zip = self.zipped(B13_TEST, sinks.items())
+                manifest = b"opaque Bazel undeclared output manifest\n"
+                self.write(B13_TEST + "/test.outputs_manifest/MANIFEST", manifest)
+                files, inventory = self.archive()
+                self.assertTrue(inventory["complete"])
+                self.assertEqual(inventory["errors"], [])
+                self.assertEqual(files[path], original_zip)
+                self.assertEqual(files[B13_TEST + "/test.log"], log)
+                self.assertEqual(files[B13_TEST + "/test.xml"], xml)
+                self.assertEqual(files[B13_TEST + "/test.outputs_manifest/MANIFEST"], manifest)
+                self.assertEqual((self.evidence / "exit_code").read_bytes(), b"3\n" if failed else b"0\n")
+                self.assert_original_outputs(files, inventory, {(B13_TEST, name): data for name, data in sinks.items()})
+
+    def test_unzipped_nested_and_empty_outputs_keep_exact_names_and_bytes(self):
+        contents = {"raw Ω/source public.jsonl": b"one\r\n\x00two\n", "empty.jsonl": b""}
+        for name, data in contents.items():
+            self.write(B13_TEST + "/test.outputs/" + name, data)
+        files, inventory = self.archive()
+        self.assertTrue(inventory["complete"])
+        self.assert_original_outputs(files, inventory, {(B13_TEST, name): data for name, data in contents.items()})
+
+    def test_shards_and_attempts_keep_same_named_outputs_distinct(self):
+        expected = {}
+        for attempt in ("shard_1_of_2", "shard_2_of_2", "test_attempts/attempt_1"):
+            test = B13_TEST + "/" + attempt
+            data = attempt.encode() + b"\n"
+            self.zipped(test, [(SINKS[0], data)])
+            expected[(test, SINKS[0])] = data
+        # Bazel can also name a retried action's outputs beside attempt_1.log.
+        raw = io.BytesIO()
+        with zipfile.ZipFile(raw, "w") as archive:
+            archive.writestr(SINKS[0], b"attempt_2 original output\n")
+        self.write(B13_TEST + "/test_attempts/attempt_2.outputs/outputs.zip", raw.getvalue())
+        self.write(B13_TEST + "/test_attempts/attempt_2.log", b"actual failed attempt log\n")
+        expected[(B13_TEST + "/test_attempts/attempt_2", SINKS[0])] = b"attempt_2 original output\n"
+        files, inventory = self.archive()
+        self.assertTrue(inventory["complete"])
+        self.assertEqual(files[B13_TEST + "/test_attempts/attempt_2.log"], b"actual failed attempt log\n")
+        self.assert_original_outputs(files, inventory, expected)
+
+    def test_bazel_workspace_convenience_symlink_keeps_original_outputs(self):
+        self.write(B13_TEST + "/test.outputs/" + SINKS[0], b"original sink bytes\n")
+        real_logs = self.root / "output-base/testlogs"
+        real_logs.parent.mkdir()
+        self.logs.rename(real_logs)
+        self.logs.symlink_to(real_logs, target_is_directory=True)
+        files, inventory = self.archive()
+        self.assertTrue(inventory["complete"])
+        self.assert_original_outputs(files, inventory, {(B13_TEST, SINKS[0]): b"original sink bytes\n"})
+
+    def test_missing_testlogs_keeps_empty_inventory_without_invented_sinks(self):
+        files, inventory = self.archive()
+        self.assertEqual(set(files), {INVENTORY})
+        self.assertEqual(inventory["outputs"], [])
+        self.assertEqual(inventory["files"], [])
+
+    def test_missing_sinks_are_not_filled_from_expected_names(self):
+        self.zipped(B13_TEST, [(SINKS[0], b"actual partial output\n")])
+        files, inventory = self.archive()
+        self.assertEqual(len(inventory["outputs"]), 1)
+        self.assert_original_outputs(files, inventory, {(B13_TEST, SINKS[0]): b"actual partial output\n"})
+
+    def test_corrupt_zip_is_retained_and_archive_step_fails(self):
+        path = B13_TEST + "/test.outputs/outputs.zip"
+        original = b"not a ZIP: retain these original bytes\n"
+        self.write(path, original)
+        self.write(B13_TEST + "/test.log", b"--- FAIL: original failure\n")
+        for original_exit in (b"0\n", b"3\n"):
+            with self.subTest(original_bazel_exit=original_exit):
+                (self.evidence / "exit_code").write_bytes(original_exit)
+                files, inventory = self.archive(expected_exit=86)
+                self.assertFalse(inventory["complete"])
+                self.assertEqual(files[path], original)
+                self.assertEqual(inventory["errors"][0]["path"], path)
+                self.assertIn(B13_TEST + "/test.log", files)
+                self.assertEqual((self.evidence / "exit_code").read_bytes(), original_exit)
+
+    def test_unsafe_and_symlink_zip_members_are_refused_without_extraction(self):
+        for name in ("../escape.jsonl", "/absolute.jsonl", "bad\\name.jsonl", "symbolic"):
+            with self.subTest(name=name):
+                raw = io.BytesIO()
+                with zipfile.ZipFile(raw, "w") as archive:
+                    info = zipfile.ZipInfo(name)
+                    if name == "symbolic":
+                        info.create_system, info.external_attr = 3, 0o120777 << 16
+                    archive.writestr(info, b"original output bytes\n")
+                path = B13_TEST + "/test.outputs/outputs.zip"
+                self.write(path, raw.getvalue())
+                files, inventory = self.archive(expected_exit=86)
+                self.assertFalse(inventory["complete"])
+                self.assertEqual(files[path], raw.getvalue())
+                self.assertEqual(inventory["outputs"], [])
+        self.assertFalse((self.root / "escape.jsonl").exists())
+
+    def test_duplicate_zip_member_retains_container_and_reports_incomplete(self):
+        raw = io.BytesIO()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with zipfile.ZipFile(raw, "w") as archive:
+                archive.writestr(SINKS[0], b"first actual member\n")
+                archive.writestr(SINKS[0], b"second actual member\n")
+        path = B13_TEST + "/test.outputs/outputs.zip"
+        self.write(path, raw.getvalue())
+        files, inventory = self.archive(expected_exit=86)
+        self.assertFalse(inventory["complete"])
+        self.assertEqual(files[path], raw.getvalue())
+        self.assertIn("ambiguous", inventory["errors"][0]["error"])
+
+    def test_nested_output_symlinks_do_not_read_unrelated_files(self):
+        unrelated = self.root / "unrelated.jsonl"
+        unrelated.write_bytes(b"outside the Bazel output tree\n")
+        output = self.logs / B13_TEST / "test.outputs" / SINKS[0]
+        output.parent.mkdir(parents=True)
+        output.symlink_to(unrelated)
+        files, inventory = self.archive(expected_exit=86)
+        self.assertFalse(inventory["complete"])
+        self.assertNotIn(str(output.relative_to(self.logs)), files)
+        self.assertEqual(inventory["outputs"], [])
+
+    def test_bazel_internal_log_alias_keeps_bytes_and_records_original_link(self):
+        path = B13_TEST + "/test_attempts/attempt_1.log"
+        self.write(path, b"original failing attempt bytes\n")
+        alias = self.logs / B13_TEST / "test.log"
+        alias.symlink_to("test_attempts/attempt_1.log")
+        files, inventory = self.archive()
+        self.assertTrue(inventory["complete"])
+        self.assertEqual(files[B13_TEST + "/test.log"], files[path])
+        record = next(row for row in inventory["files"] if row["path"] == B13_TEST + "/test.log")
+        self.assertEqual(record["original_symlink"], "test_attempts/attempt_1.log")
+        self.assertEqual(record["snapshot_source"], path)
+
+
+if __name__ == "__main__":
+    unittest.main()
