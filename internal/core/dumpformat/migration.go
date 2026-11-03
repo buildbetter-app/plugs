@@ -106,7 +106,7 @@ func collectConfigDeclarations(records map[string][]Record, config []byte) ([]Co
 			continue
 		}
 		origin := entry.Input.Family + ":" + entry.Input.Path
-		decls, err := declarationsFromSource(entry.Values, origin)
+		decls, err := declarationsFromSource(entry.Values, entry.Input.Family, origin)
 		if err != nil {
 			return nil, err
 		}

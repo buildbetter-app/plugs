@@ -418,6 +418,96 @@ func TestStrictConfigUnionNativeObservationEnvelope(t *testing.T) {
 	}
 }
 
+func TestStrictConfigUnionOpaqueDirectoryProvenance(t *testing.T) {
+	for _, control := range []string{
+		"config file", "empty YAML object", "empty JSON object",
+		"missing config values", "null config values", "non-object config values",
+		"opaque config directory", "opaque entries", "opaque parsed values",
+		"opaque bytes", "opaque hash", "opaque size", "unmarked opaque directory",
+	} {
+		t.Run(control, func(t *testing.T) {
+			f := strictUnionFixture(t, "", nil)
+			raw := []byte("status:\n  custom: [queued:active]\n")
+			configPath, storePath := "/synthetic/.beads/config.yaml", "/synthetic/store"
+			parsed := map[string]any{"status": map[string]any{"custom": []any{"queued:active"}}}
+			wantDeclarations, wantEntry := 1, ""
+			if control == "empty YAML object" || control == "empty JSON object" {
+				raw, parsed, wantDeclarations = nil, map[string]any{}, 0
+				if control == "empty JSON object" {
+					configPath, raw = "/synthetic/.beads/config.json", []byte("{}\n")
+				}
+			}
+			config := map[string]any{
+				"path": configPath, "state": "file", "sha256": digest(raw), "size": len(raw),
+				"bytes": map[string]any{"$bytes": base64.StdEncoding.EncodeToString(raw)}, "values": parsed,
+			}
+			opaque := map[string]any{"path": storePath, "state": "directory", "contents": "not-read", "mode": 0o700}
+			switch control {
+			case "missing config values":
+				delete(config, "values")
+				wantEntry = configPath
+			case "null config values":
+				config["values"], wantEntry = nil, configPath
+			case "non-object config values":
+				config["values"], wantEntry = false, configPath
+			case "opaque config directory":
+				config = map[string]any{"path": configPath, "state": "directory", "contents": "not-read"}
+				wantEntry = configPath
+			case "opaque entries":
+				opaque["entries"], wantEntry = []any{}, storePath
+			case "opaque parsed values":
+				opaque["values"], wantEntry = map[string]any{"status.custom": "hidden:done"}, storePath
+			case "opaque bytes":
+				opaque["bytes"], wantEntry = map[string]any{"$bytes": ""}, storePath
+			case "opaque hash":
+				opaque["sha256"], wantEntry = "not-a-file-hash", storePath
+			case "opaque size":
+				opaque["size"], wantEntry = 0, storePath
+			case "unmarked opaque directory":
+				delete(opaque, "contents")
+				wantEntry = storePath
+			}
+			for i := range f.config {
+				entry := &f.config[i]
+				switch entry.Input.Family {
+				case "beads-dir-config":
+					entry.Input.State, entry.Values = "json-config", map[string]any{"observations": []any{config}}
+				case "store-files-and-quiescence":
+					entry.Input.State = "json-config"
+					entry.Values = map[string]any{"observations": []any{opaque}, "operator_quiesced": true, "sql_clean": true, "filesystem_atomicity": "not-verified"}
+				}
+			}
+			var wantSources []byte
+			data := strictUnionBytes(t, f, func(_ *Manifest, members map[string][]byte) {
+				wantSources = append([]byte(nil), members["config/sources.json"]...)
+			})
+			a, err := Read(bytes.NewReader(data))
+			if wantEntry != "" {
+				var refused *MigrationRefusal
+				if a != nil || !errors.As(err, &refused) || refused.Code != "malformed-declaration" || refused.Entry != wantEntry {
+					t.Fatalf("malformed config or opaque evidence admitted: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			m, ok := a.ImportMigration()
+			if !ok || len(m.Declarations()) != wantDeclarations {
+				t.Fatal("opaque provenance changed the effective declaration set")
+			}
+			status, declared := m.Document().Statuses["queued"]
+			if declared != (wantDeclarations == 1) || declared && status.Category != ontology.Unstarted {
+				t.Fatal("true parsed configuration was replaced by opaque provenance")
+			}
+			retained, _ := a.Member("config/sources.json")
+			if !bytes.Equal(retained, wantSources) {
+				t.Fatal("raw directory/config provenance changed")
+			}
+		})
+	}
+}
+
 // The pinned source reserves seven built-in names; its parser permits frozen
 // as a custom name. The strict declaration must survive the legacy spelling.
 func TestStrictConfigUnionDeclaredLegacySpelling(t *testing.T) {

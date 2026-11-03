@@ -9,7 +9,7 @@ import (
 // Native capture retains both parsed source values and the exact byte envelope.
 // Binding parsed YAML to those bytes is the producer's capture responsibility;
 // this reader checks the envelope and consumes its declared parsed values.
-func declarationsFromSource(values map[string]any, origin string) ([]ConfigDeclaration, error) {
+func declarationsFromSource(values map[string]any, family, origin string) ([]ConfigDeclaration, error) {
 	result, err := declarationsFromValues(values, origin)
 	if err != nil {
 		return nil, err
@@ -44,6 +44,17 @@ func declarationsFromSource(values map[string]any, origin string) ([]ConfigDecla
 				return migrationRefusal("malformed-declaration", name, entry)
 			}
 		case "directory":
+			// Native store locations are retained as opaque provenance, never
+			// enumerated configuration. The same marker in a config family
+			// cannot replace a captured directory or its parsed file entries.
+			if family == "store-files-and-quiescence" && row["contents"] == "not-read" {
+				for _, field := range []string{"entries", "values", "bytes", "sha256", "size"} {
+					if _, present := row[field]; present {
+						return migrationRefusal("malformed-declaration", name, entry, "opaque store directory has captured contents")
+					}
+				}
+				return nil
+			}
 			children, ok := row["entries"].([]any)
 			if !ok {
 				return migrationRefusal("malformed-declaration", name, entry)

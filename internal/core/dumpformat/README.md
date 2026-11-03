@@ -106,6 +106,11 @@ Raw records and `config/sources.json` remain unchanged, including original
 paths, precedence and captured byte envelopes. Producer capture must bind
 parsed YAML values to its actual bytes; consumer parser controls do not prove
 an authentic filesystem observation or the companion's effective runtime view.
+Opaque `store-files-and-quiescence` directories marked `contents:not-read`
+remain raw provenance without parsed configuration or enumerated entries.
+That exception is restricted to this family and cannot replace actual YAML/JSON
+configuration: file observations still require object-valued parsed `values`,
+including `{}` for legitimate empty files; null or missing values refuse.
 
 The compatible-category `beads-compat` preset maps active to unstarted, wip to
 started, done to completed/success and frozen to backlog. Absent/unspecified
