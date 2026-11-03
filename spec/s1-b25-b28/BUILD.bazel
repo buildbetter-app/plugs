@@ -78,6 +78,13 @@ go_test(
     ],
 )
 
+# Existing independent expected protocol data, shared without copying it.
+filegroup(
+    name = "public_recording_protocol",
+    srcs = ["testdata/public-recording-fixture.json"],
+    visibility = ["//tools/roundtrip:__pkg__"],
+)
+
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
