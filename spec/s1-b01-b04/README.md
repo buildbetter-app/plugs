@@ -85,6 +85,13 @@ checks the archive digest before extracting an executable, verifies its version,
 and records its actual digest and runtime mode. Each disposable store is stopped
 through the public CLI before removal. The raw command stdout/stderr bytes and
 exit codes are retained separately, including on recorder failure. This runtime
+packet is also emitted as `S1_B01_B04_RAW_PACKET_BEGIN`/`END` framed JSON in the
+test log, with base64 bytes and digests for each file and explicit missing-file
+entries. The trusted RunsOn collector archives logs and XML rather than
+undeclared output files, so both successful and failed capture packets survive
+that route. File read, copy, or log-write failures fail the test.
+
+This runtime
 profile does not certify embedded-mode behavior, controlled reference clocks,
 or full-card parity. The historical twins remain unchanged and are not rebound
 to the new runtime or current recorder bytes.

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -147,6 +148,13 @@ func runReferenceRecorder(command *exec.Cmd, root string) ([]byte, []byte, error
 
 func retainReferenceCapture(root, retained string, log io.Writer) error {
 	var errs []error
+	type packetFile struct {
+		Present bool   `json:"present"`
+		Bytes   []byte `json:"bytesBase64"`
+		SHA256  string `json:"sha256,omitempty"`
+		Error   string `json:"error,omitempty"`
+	}
+	files := make(map[string]packetFile)
 	for source, name := range map[string]string{
 		"recording.json":       "reference-recording.json",
 		"raw-commands.jsonl":   "raw-commands.jsonl",
@@ -158,15 +166,32 @@ func retainReferenceCapture(root, retained string, log io.Writer) error {
 	} {
 		data, err := os.ReadFile(filepath.Join(root, source))
 		if os.IsNotExist(err) {
+			files[name] = packetFile{}
 			continue
 		}
 		if err != nil {
+			files[name] = packetFile{Error: err.Error()}
 			errs = append(errs, fmt.Errorf("retain %s: %w", source, err))
 			continue
 		}
+		entry := packetFile{Present: true, Bytes: data, SHA256: referenceDigest(data)}
 		if err := os.WriteFile(filepath.Join(retained, name), data, 0o600); err != nil {
+			entry.Error = err.Error()
 			errs = append(errs, fmt.Errorf("retain %s: %w", name, err))
 		}
+		files[name] = entry
+	}
+	// The trusted RunsOn collector archives test.log and test.xml only. Preserve
+	// exact public raw bytes there as well as in undeclared output files, even
+	// when the producer fails or a file copy cannot be completed.
+	packet, err := json.Marshal(struct {
+		Format string                `json:"format"`
+		Files  map[string]packetFile `json:"files"`
+	}{Format: "plug.s1-b01-b04.raw-packet.v1", Files: files})
+	if err != nil {
+		errs = append(errs, err)
+	} else if _, err := fmt.Fprintf(log, "S1_B01_B04_RAW_PACKET_BEGIN\n%s\nS1_B01_B04_RAW_PACKET_END\n", packet); err != nil {
+		errs = append(errs, fmt.Errorf("retain raw packet in test log: %w", err))
 	}
 	return errors.Join(errs...)
 }

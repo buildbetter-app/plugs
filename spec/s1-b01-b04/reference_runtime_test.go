@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -242,3 +243,27 @@ func TestCapturePacketSurvivesLogOnlyCollector(t *testing.T) {
 		t.Fatal("failed producer's missing recording is not explicit")
 	}
 }
+
+func TestCapturePacketFailureStillLogsAvailableBytes(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "raw-commands.jsonl"), []byte("available"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "recorder.stderr"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	if err := retainReferenceCapture(root, filepath.Join(root, "missing-output-directory"), &log); err == nil {
+		t.Fatal("read/copy failure accepted")
+	}
+	if !bytes.Contains(log.Bytes(), []byte(`"bytesBase64":"YXZhaWxhYmxl"`)) || !bytes.Contains(log.Bytes(), []byte(`"error":`)) {
+		t.Fatalf("available bytes or retention error lost from log: %s", log.Bytes())
+	}
+	if err := retainReferenceCapture(root, t.TempDir(), captureLogFailure{}); err == nil || !strings.Contains(err.Error(), "test log") {
+		t.Fatalf("log-write failure accepted: %v", err)
+	}
+}
+
+type captureLogFailure struct{}
+
+func (captureLogFailure) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
