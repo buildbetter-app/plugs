@@ -2,6 +2,7 @@ package s1b05b08
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -550,6 +551,67 @@ func TestB07NamedEdgeMethodsKeepUnsupportedWorkflowReferencesAtomic(t *testing.T
 				edgeRequireRefusal(t, e.call(t, p, map[string]any{"changeSet": cs}), "invalid_params")
 				edgeRequireStateEqual(t, before, e.snapshot(t))
 				edgeRequirePublicReady(t, e, local.ID)
+			}
+		})
+	}
+}
+
+// The ordinary workflow-ID matrix above proves the early durable boundary,
+// while this case binds it to a real ephemeral producer. Persistent workflow
+// items are created by the actual provider and then presented to both durable
+// edge producers in both directions. Neither producer may manufacture a
+// durable edge, receipt, graph revision, or workflow checkpoint mutation.
+func TestB07DurableEdgesRefuseActualEphemeralWorkflowItemsAtomically(t *testing.T) {
+	for _, engine := range testEngines {
+		t.Run(engine, func(t *testing.T) {
+			f := newEphemeralCycleFixture(t, engine)
+			if engine == "memory" {
+				before := f.state(t)
+				got := f.request(t, "bead.cycles", map[string]any{"includeEphemeral": true}, "b07-routing-memory")
+				if got.Error == nil || got.Error.Data.Code != "plugin_durable_state_unavailable" {
+					t.Fatalf("memory workflow capability=%+v", got.Error)
+				}
+				if after := f.state(t); !reflect.DeepEqual(before, after) {
+					t.Fatal("memory workflow capability refusal changed durable or graph state")
+				}
+				return
+			}
+
+			created := f.request(t, "bead.create", map[string]any{
+				"type": "issue", "fields": map[string]any{"title": "durable routing source"},
+			}, "b07-routing-create")
+			if created.Error != nil {
+				t.Fatalf("durable routing source refused: %+v", created.Error)
+			}
+			var commit model.Commit
+			if err := json.Unmarshal(created.Result, &commit); err != nil || len(commit.Results) != 1 {
+				t.Fatalf("durable routing source result=%s error=%v", created.Result, err)
+			}
+			durable := commit.Results[0].Ref
+			workflowItems := f.invoke(t, "b07-routing-invoke", 1)
+			workflow := workflowItems[0]
+			before := f.state(t)
+			attempts := []struct {
+				method string
+				params map[string]any
+			}{
+				{method: "bead.link", params: map[string]any{"from": durable, "to": workflow, "kind": "blocks"}},
+				{method: "bead.link", params: map[string]any{"from": workflow, "to": durable, "kind": "blocks"}},
+				{method: "tx.apply", params: map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{edgeLinkOp(durable, workflow, "blocks")}}}},
+				{method: "tx.apply", params: map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{edgeLinkOp(workflow, durable, "blocks")}}}},
+			}
+			for i, attempt := range attempts {
+				got := f.request(t, attempt.method, attempt.params, "b07-routing-refusal-"+model.Natural64(uint64(i)).String())
+				if got.Error == nil || got.Error.Data.Code != "invalid_params" || len(got.Result) != 0 {
+					t.Fatalf("%s mixed-plane refusal=%+v result=%s", attempt.method, got.Error, got.Result)
+				}
+				if after := f.state(t); !reflect.DeepEqual(before, after) {
+					t.Fatalf("%s mixed-plane refusal changed durable/checkpoint/graph state", attempt.method)
+				}
+			}
+			f.reopen(t)
+			if after := f.state(t); !reflect.DeepEqual(before, after) {
+				t.Fatal("mixed-plane refusals were not durable-state neutral after reopen")
 			}
 		})
 	}
