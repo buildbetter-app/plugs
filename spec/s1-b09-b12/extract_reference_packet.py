@@ -232,8 +232,8 @@ def projected(card, outputs, commands):
             "restoreApplyRefusedWithoutSnapshot": commands["restore-apply"]["exitCode"] == 1 and commands["restore-apply"]["stderr"] == restore_error,
         }
         require(projection == {"analyzeSucceeded": True, "analyzeCandidateCount": 0, "applyRefusedInEmbeddedMode": True,
-                               "restoreReadRefusedWithoutSnapshot": True, "restoreApplyRefusedWithoutSnapshot": True},
-                "B12 embedded boundary changed; apply/restore remains unqualified")
+                "restoreReadRefusedWithoutSnapshot": True, "restoreApplyRefusedWithoutSnapshot": True},
+                "B12 embedded apply/restore boundary is unsupported or changed; remains unqualified")
         observations = {"analyze": analyze}
     return projection, normalized(observations, card)
 
