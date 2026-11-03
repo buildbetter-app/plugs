@@ -954,6 +954,7 @@ scripts/ci/prepare-public-reference-test.py
 scripts/ci/prepare-public-reference.py
 scripts/ci/public-bundle-test.py
 scripts/ci/public-bundle.py
+scripts/ci/reconcile-openrpc-test.py
 scripts/ci/reconcile-openrpc.py
 scripts/demo.sh
 sdk/go/BUILD.bazel
