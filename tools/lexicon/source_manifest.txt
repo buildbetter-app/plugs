@@ -1257,6 +1257,7 @@ tools/rehearsal/disposable_test.go
 tools/rehearsal/files.go
 tools/rehearsal/files_test.go
 tools/rehearsal/gate.go
+tools/rehearsal/mcp_precision_test.go
 tools/rehearsal/metrics.go
 tools/rehearsal/metrics_test.go
 tools/rehearsal/rollback_fault_test.go
