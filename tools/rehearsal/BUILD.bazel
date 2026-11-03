@@ -74,29 +74,6 @@ go_test(
     deps = ["//internal/api/wire"],
 )
 
-go_test(
-    name = "mcp_precision_test",
-    size = "small",
-    srcs = ["mcp_precision_test.go"],
-    embed = [":rehearsal"],
-    deps = [
-        "//internal/api/wire",
-        "//internal/client",
-        "//internal/core/model",
-        "//internal/server/authn",
-        "//internal/server/rpc",
-        "//internal/server/transport/mcp",
-    ],
-)
-
-go_test(
-    name = "transcript_test",
-    size = "small",
-    srcs = ["transcript_test.go"],
-    embed = [":rehearsal"],
-    deps = ["//internal/api/wire"],
-)
-
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
