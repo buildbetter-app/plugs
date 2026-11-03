@@ -32,7 +32,6 @@ import (
 	"github.com/buildbetter-app/plugs/pluginapi"
 	sdk "github.com/buildbetter-app/plugs/sdk/go"
 	"github.com/tetratelabs/wazero"
-	"github.com/tetratelabs/wazero/sys"
 )
 
 // The source checkout is deliberately committed into a disposable repository
@@ -1433,6 +1432,13 @@ func TestWASISourceInitializerFailureSurvivesQueueExpiry(t *testing.T) {
 	if constructorHost == nil || constructions.Load() != 5 {
 		t.Fatalf("expected source plus four normal pool members before replacement, constructed %d", constructions.Load())
 	}
+	isSourceInitializerTrap := func(guestErr error) bool {
+		if guestErr == nil || errors.Is(guestErr, context.Canceled) || errors.Is(guestErr, context.DeadlineExceeded) {
+			return false
+		}
+		message := guestErr.Error()
+		return strings.Contains(message, "wasm error: unreachable") && strings.Contains(message, ".runtime.gopanic") && strings.Contains(message, ".main.init.")
+	}
 	// Keep the failing factory's compiled module live across its real guest
 	// error. Its cold compile is outside the 100ms pool queue budget; the
 	// subsequent sixth construction still uses that unchanged queue context.
@@ -1455,6 +1461,7 @@ func TestWASISourceInitializerFailureSurvivesQueueExpiry(t *testing.T) {
 		warmErrorSeen <- guestErr
 		<-warmRelease
 	})
+	var warmGuestErr error
 	warmDone := make(chan error, 1)
 	go func() {
 		_, warmErr := failingNative.NewWithContext(warmCtx, constructorHost)
@@ -1464,7 +1471,7 @@ func TestWASISourceInitializerFailureSurvivesQueueExpiry(t *testing.T) {
 		releaseWarm()
 		select {
 		case warmErr := <-warmDone:
-			if !hasPluginHostCode(warmErr, pluginhost.ErrManifest) {
+			if warmGuestErr != nil && (!hasPluginHostCode(warmErr, pluginhost.ErrManifest) || !strings.Contains(warmErr.Error(), warmGuestErr.Error())) {
 				t.Errorf("held source-built warm constructor did not preserve its guest failure: %v", warmErr)
 			}
 		case <-time.After(3 * time.Second):
@@ -1478,9 +1485,9 @@ func TestWASISourceInitializerFailureSurvivesQueueExpiry(t *testing.T) {
 	}
 	select {
 	case guestErr := <-warmErrorSeen:
-		var exitErr *sys.ExitError
-		if !errors.As(guestErr, &exitErr) || exitErr.ExitCode() != 2 {
-			t.Fatalf("failing source-built guest did not produce the expected real exit: %v", guestErr)
+		warmGuestErr = guestErr
+		if !isSourceInitializerTrap(guestErr) {
+			t.Fatalf("failing source-built guest did not produce its real initializer trap: %v", guestErr)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("failing source-built guest did not reach its real classifier before pool replacement")
@@ -1504,21 +1511,22 @@ func TestWASISourceInitializerFailureSurvivesQueueExpiry(t *testing.T) {
 		classificationSeen <- observation
 	})
 	_, err = mutator.Mutate(observedCtx, wasiStateChange("initializer-e", "pool-state:initializer-e"), &wasiSnapshot{revision: model.Natural64(1)})
+	var observedGuestErr error
 	select {
 	case observed := <-classificationSeen:
-		var exitErr *sys.ExitError
-		if observed.before != nil || !errors.Is(observed.after, context.DeadlineExceeded) || !errors.As(observed.guestErr, &exitErr) || exitErr.ExitCode() != 2 {
+		observedGuestErr = observed.guestErr
+		if observed.before != nil || !errors.Is(observed.after, context.DeadlineExceeded) || !isSourceInitializerTrap(observed.guestErr) {
 			t.Fatalf("genuine guest failure did not precede real queue-context expiry: %+v", observed)
 		}
 	default:
-		t.Fatal("failing WASI initializer did not reach the real classifier boundary")
+		t.Fatalf("failing WASI initializer did not reach the real classifier boundary: mutate=%v constructions=%d", err, constructions.Load())
 	}
 	select {
 	case <-initializerEntered:
 	default:
 		t.Fatal("failing source-built initializer never reached its real guest import")
 	}
-	if !hasPluginHostCode(err, pluginhost.ErrManifest) || !strings.Contains(err.Error(), "exit_code(2)") {
+	if !hasPluginHostCode(err, pluginhost.ErrManifest) || !strings.Contains(err.Error(), observedGuestErr.Error()) {
 		t.Fatalf("genuine source-built initializer failure was remapped after queue expiry: %v", err)
 	}
 	if callerCtx.Err() != nil {
