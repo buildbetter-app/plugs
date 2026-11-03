@@ -824,6 +824,8 @@ internal/storage/driver/audit_contract_test.go
 internal/storage/driver/driver.go
 internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
+internal/storage/driver/hierarchy.go
+internal/storage/driver/hierarchy_contract_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
 internal/storage/driver/offline_history.go
@@ -832,6 +834,9 @@ internal/storage/driver/offline_restore.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
 internal/storage/driver/restore_test.go
+internal/storage/driver/source_links.go
+internal/storage/driver/source_links_contract_test.go
+internal/storage/hierarchy-index-design.md
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/allocator.go
 internal/storage/memory/audit_test.go
@@ -840,6 +845,8 @@ internal/storage/memory/checkpoint_guard.go
 internal/storage/memory/checkpoint_test.go
 internal/storage/memory/clock_test.go
 internal/storage/memory/derived_reader.go
+internal/storage/memory/hierarchy_index.go
+internal/storage/memory/hierarchy_index_test.go
 internal/storage/memory/lease.go
 internal/storage/memory/lifetimes_test.go
 internal/storage/memory/metadata.go
@@ -849,6 +856,8 @@ internal/storage/memory/noop_test.go
 internal/storage/memory/offline_history.go
 internal/storage/memory/offline_restore.go
 internal/storage/memory/reader.go
+internal/storage/memory/source_link_index.go
+internal/storage/memory/source_link_index_test.go
 internal/storage/memory/staged_reads_test.go
 internal/storage/memory/store.go
 internal/storage/memory/transaction.go
@@ -868,6 +877,7 @@ internal/storage/postgres/driver.go
 internal/storage/postgres/encoding.go
 internal/storage/postgres/engine_test.go
 internal/storage/postgres/fencing_test.go
+internal/storage/postgres/hierarchy_schema_test.go
 internal/storage/postgres/lease.go
 internal/storage/postgres/lease_prepare_test.go
 internal/storage/postgres/lock_batch_test.go
@@ -880,6 +890,7 @@ internal/storage/postgres/query.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
 internal/storage/postgres/schema.go
+internal/storage/postgres/source_link_schema_test.go
 internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
 internal/storage/sqlite/BUILD.bazel
@@ -892,6 +903,7 @@ internal/storage/sqlite/clock_test.go
 internal/storage/sqlite/derived_prefix_test.go
 internal/storage/sqlite/derived_reader.go
 internal/storage/sqlite/engine_test.go
+internal/storage/sqlite/hierarchy_schema_test.go
 internal/storage/sqlite/lease.go
 internal/storage/sqlite/locks_other.go
 internal/storage/sqlite/locks_unix.go
@@ -904,6 +916,7 @@ internal/storage/sqlite/publication_cancel_test.go
 internal/storage/sqlite/reader.go
 internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/schema.go
+internal/storage/sqlite/source_link_schema_test.go
 internal/storage/sqlite/sqlite_test.go
 internal/storage/sqlite/staged_reads_test.go
 internal/storage/sqlite/store.go

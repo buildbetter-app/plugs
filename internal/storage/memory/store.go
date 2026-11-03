@@ -42,16 +42,18 @@ type blob struct {
 	revision uint64
 }
 type state struct {
-	meta       driver.Meta
-	records    map[string]driver.Record
-	kinds      map[string]string
-	versions   map[string][]driver.Version
-	keys       map[string]driver.LockState
-	keyHistory map[string][]driver.LockState
-	blobs      map[driver.Hash]blob
-	log        []model.Changeset
-	replays    map[scope]replay
-	allocators map[string]driver.OfflineAllocator
+	meta        driver.Meta
+	records     map[string]driver.Record
+	kinds       map[string]string
+	versions    map[string][]driver.Version
+	keys        map[string]driver.LockState
+	keyHistory  map[string][]driver.LockState
+	blobs       map[driver.Hash]blob
+	log         []model.Changeset
+	replays     map[scope]replay
+	allocators  map[string]driver.OfflineAllocator
+	hierarchy   *hierarchyIndex  // immutable; nil/empty roots never certify coverage
+	sourceLinks *sourceLinkIndex // separate complete outgoing-link coverage
 }
 
 func (s *state) fork() *state {
@@ -144,6 +146,8 @@ func NewWithOptions(options Options) (*Store, error) {
 		meta:    driver.Meta{StoreID: options.StoreID, Incarnation: options.Incarnation, SchemaVersion: 1, State: "ready", Head: model.Natural64(0), HistoryFloor: model.Natural64(0)},
 		records: make(map[string]driver.Record), kinds: make(map[string]string), versions: make(map[string][]driver.Version),
 		keys: make(map[string]driver.LockState), keyHistory: make(map[string][]driver.LockState), blobs: make(map[driver.Hash]blob), replays: make(map[scope]replay), allocators: make(map[string]driver.OfflineAllocator),
+		hierarchy:   newHierarchyIndex(options.Incarnation),
+		sourceLinks: newSourceLinkIndex(options.Incarnation),
 	}
 	return s, nil
 }
