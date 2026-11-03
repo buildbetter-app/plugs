@@ -58,6 +58,11 @@ func TestNativeDumpPreservesRetainedAllocatorStateAcrossStores(t *testing.T) {
 								if !errors.Is(err, driver.ErrUnsupported) || len(data) != 0 || manifest.Format != "" {
 									t.Fatalf("missing capability admitted: bytes=%d manifest=%+v err=%v", len(data), manifest, err)
 								}
+							} else if history == "full" && !before.Meta.HistoryFloor.IsZero() {
+								var truncated driver.ErrTruncated
+								if !errors.As(err, &truncated) || truncated.Floor.String() != before.Meta.HistoryFloor.String() || len(data) != 0 || manifest.Format != "" {
+									t.Fatalf("native snapshot invented discarded full history: bytes=%d manifest=%+v err=%v", len(data), manifest, err)
+								}
 							} else {
 								if err != nil || len(data) == 0 {
 									t.Fatalf("complete native snapshot refused: %s %s %v", kind, history, err)

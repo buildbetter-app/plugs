@@ -656,8 +656,8 @@ func TestParentCounterSnapshotStagingAndLockGuardsAcrossStores(t *testing.T) {
 			}
 			_, err = historical.(driver.ParentCounterReader).LoadParentCounter(f.ctx, parent.ID)
 			historical.Close()
-			if !errors.Is(err, driver.ErrUnsupported) {
-				t.Fatalf("historical current-only counter read=%v", err)
+			if !errors.Is(err, driver.ErrNotFound) {
+				t.Fatalf("historical snapshot observed a counter created after its head: %v", err)
 			}
 			counterKey, err := driver.ParentCounterLock(before.Meta.Incarnation, parent.ID)
 			if err != nil {
