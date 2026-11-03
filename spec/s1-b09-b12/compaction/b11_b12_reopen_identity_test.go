@@ -131,7 +131,7 @@ func TestB11B12ReopenCompactionIdentityRefusalAndAllocationRetry(t *testing.T) {
 				params["humanPresence"] = authority.issue(f, params, selected.key)
 				before := b11B12Image(t, f)
 				reverted := f.call("history.revert", selected.key, params, "")
-				assertKind(t, f, reverted["revision"], model.ChangesetRevert)
+				b11B12AssertKind(t, f, reverted["revision"], model.ChangesetRevert)
 				after := b11B12Image(t, f)
 				b11B12AllocatorUnchanged(t, before, after)
 				b11B12Append(t, before, after, selected.key)
@@ -178,6 +178,7 @@ type b11B12StoreImage struct {
 	records    []driver.Record
 	versions   map[string][]driver.Version
 	changesets []model.Changeset
+	restore    *driver.IdempotencyRecord
 	allocators driver.AllocatorInventory
 	facts      []driver.LockState
 	receipts   map[string]*driver.IdempotencyRecord
@@ -204,7 +205,23 @@ func b11B12Image(t *testing.T, f *fixture) b11B12StoreImage {
 		}
 		image.versions[id] = page.Items
 	}
-	image.changesets, err = r.Changesets(ctx, nil, 1000)
+	// The trusted fixture has a head-only restore floor. Changesets is
+	// exclusive, so retain its boundary changeset/receipt separately from
+	// the complete post-restore log rather than silently losing revision 1.
+	sourceID, _ := b11B12SeedInput()
+	hash := b11B12SeedHash(t)
+	if image.meta.StoreID != sourceID || image.meta.HistoryFloor.String() != "1" {
+		t.Fatalf("restore identity/floor changed: %+v", image.meta)
+	}
+	image.restore, err = r.IdempotencyByKey(ctx, "system:plug-converter", "", "offline.restore", "b11-b12-seed-"+hash)
+	if err != nil || image.restore == nil || image.restore.ResponsePending || image.restore.RequestHash != hash {
+		t.Fatalf("missing final restore receipt: %+v %v", image.restore, err)
+	}
+	boundary := image.restore.Changeset
+	if boundary.Kind != model.ChangesetRestore || boundary.Incarnation != image.meta.Incarnation || boundary.Revision != image.meta.HistoryFloor || boundary.IdempotencyKey != "b11-b12-seed-"+hash || image.restore.Commit.Revision != boundary.Revision {
+		t.Fatalf("restore receipt lost its boundary changeset: %+v", image.restore)
+	}
+	image.changesets, err = r.Changesets(ctx, &driver.Cursor{Incarnation: image.meta.Incarnation, Revision: image.meta.HistoryFloor, Index: model.Natural64(0), Method: "changesets", OntologyRevision: model.Natural64(0)}, 1000)
 	if err != nil || len(image.changesets) >= 1000 {
 		t.Fatalf("changeset census incomplete: %v", err)
 	}
@@ -254,6 +271,9 @@ func b11B12SameImage(t *testing.T, want, got b11B12StoreImage) {
 // receipt. Earlier audit versions and all other receipts are immutable.
 func b11B12Append(t *testing.T, before, after b11B12StoreImage, key string) {
 	t.Helper()
+	if !reflect.DeepEqual(before.restore, after.restore) {
+		t.Fatal("write changed the restore boundary changeset/receipt")
+	}
 	if len(after.changesets) != len(before.changesets)+1 || !reflect.DeepEqual(before.changesets, after.changesets[:len(before.changesets)]) {
 		t.Fatal("write replaced permanent changesets or published more than one")
 	}
@@ -320,6 +340,40 @@ func b11B12AssertEdge(t *testing.T, image b11B12StoreImage, kind string) {
 	t.Fatal("source endpoint disappeared")
 }
 
+// Use the same floor-aware history census as conservation checks; the shared
+// assertKind helper assumes an ordinary fixture whose history begins at zero.
+func b11B12AssertKind(t *testing.T, f *fixture, revision any, kind model.ChangesetKind) {
+	t.Helper()
+	image := b11B12Image(t, f)
+	for _, entry := range append([]model.Changeset{image.restore.Changeset}, image.changesets...) {
+		if entry.Revision.String() == fmt.Sprint(revision) {
+			if entry.Kind != kind {
+				t.Fatalf("revision %v kind=%s want %s", revision, entry.Kind, kind)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing audit revision %v", revision)
+}
+
+func b11B12SeedInput() (driver.StoreID, driver.OfflineAllocator) {
+	return "b11-b12-allocator-fixture", driver.OfflineAllocator{Prefix: "b12", Mode: driver.AllocatorSequential, LastID: 40, Children: map[string]uint64{"b12-40": 7}}
+}
+
+func b11B12SeedHash(t *testing.T) string {
+	t.Helper()
+	sourceID, seed := b11B12SeedInput()
+	payload, err := json.Marshal(struct {
+		Source driver.StoreID
+		Value  driver.OfflineAllocator
+	}{sourceID, seed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
 func b11B12SeedAllocator(t *testing.T, f *fixture) {
 	t.Helper()
 	ctx := context.Background()
@@ -342,7 +396,7 @@ func b11B12SeedAllocator(t *testing.T, f *fixture) {
 	if !ok {
 		t.Fatal("real driver lacks trusted offline restore setup")
 	}
-	const sourceID driver.StoreID = "b11-b12-allocator-fixture"
+	sourceID, seed := b11B12SeedInput()
 	meta, err := restore.PrepareOfflineRestore(ctx, sourceID)
 	if err != nil {
 		t.Fatal(err)
@@ -351,25 +405,20 @@ func b11B12SeedAllocator(t *testing.T, f *fixture) {
 	if !ok {
 		t.Fatal("real driver lacks allocator continuation")
 	}
-	seed := driver.OfflineAllocator{Prefix: "b12", Mode: driver.AllocatorSequential, LastID: 40, Children: map[string]uint64{"b12-40": 7}}
 	if err = allocator.RestoreAllocators(ctx, []driver.OfflineAllocator{seed}); err != nil {
 		t.Fatal(err)
 	}
-	payload, err := json.Marshal(struct {
-		Source driver.StoreID
-		Value  driver.OfflineAllocator
-	}{sourceID, seed})
+	hash := b11B12SeedHash(t)
+	committed, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Principal: model.PrincipalRef{Kind: "system", ID: "plug-converter"}, Method: "offline.restore", IdempotencyKey: "b11-b12-seed-" + hash, RequestHash: hash, Response: model.Commit{Results: []model.OpResult{}, Warnings: []model.Warning{}}, LockKeys: []driver.LockKey{key}})
 	if err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256(payload)
-	hash := hex.EncodeToString(sum[:])
-	if _, err = tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Principal: model.PrincipalRef{Kind: "system", ID: "plug-converter"}, Method: "offline.restore", IdempotencyKey: "b11-b12-seed-" + hash, RequestHash: hash, Response: model.Commit{Results: []model.OpResult{}, Warnings: []model.Warning{}}, LockKeys: []driver.LockKey{key}}); err != nil {
 		t.Fatal(err)
 	}
 	// Assert the fixture, including unrelated child counters, independently
 	// before invoking any public operation that could mask an invalid seed.
 	image := b11B12Image(t, f)
+	if !reflect.DeepEqual(image.meta, meta) || !reflect.DeepEqual(image.restore.Changeset, committed) || len(image.changesets) != 0 {
+		t.Fatalf("restore metadata/changeset/receipt was not published together: meta=%+v commit=%+v image=%+v", meta, committed, image)
+	}
 	if len(image.allocators.Projects) != 1 || !reflect.DeepEqual(image.allocators.Projects[0], seed) {
 		raw, _ := json.Marshal(image.allocators)
 		t.Fatalf("allocator seed did not persist: %s", raw)
