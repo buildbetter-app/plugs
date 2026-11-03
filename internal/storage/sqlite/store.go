@@ -234,6 +234,13 @@ func (s *Store) track(c io.Closer) error {
 func (s *Store) untrack(c io.Closer) { s.mu.Lock(); delete(s.children, c); s.mu.Unlock() }
 
 func (s *Store) fileLock(ctx context.Context, name string, share bool, lost <-chan struct{}) (*os.File, error) {
+	return s.fileLockUntil(ctx, name, share, lost, nil)
+}
+
+// fileLockUntil also lets a waiter finish without taking the lock. Renewal uses
+// this on every attempt, including when a publication starts after Renew starts
+// waiting. A nil file with no error means the alternative completed the work.
+func (s *Store) fileLockUntil(ctx context.Context, name string, share bool, lost <-chan struct{}, alternative func() (bool, error)) (*os.File, error) {
 	hash := sha256.Sum256([]byte(name))
 	path := filepath.Join(s.lockDir, hex.EncodeToString(hash[:]))
 	for {
@@ -244,6 +251,11 @@ func (s *Store) fileLock(ctx context.Context, name string, share bool, lost <-ch
 		case <-lost:
 			return nil, driver.ErrFenced{}
 		default:
+		}
+		if alternative != nil {
+			if done, err := alternative(); done || err != nil {
+				return nil, err
+			}
 		}
 		f, ok, err := tryFileLock(path, share)
 		if err != nil {
@@ -317,7 +329,7 @@ func (s *Store) Health(ctx context.Context) (driver.StoreHealth, error) {
 	if err != nil {
 		return driver.StoreHealth{}, err
 	}
-	row, err := readLease(ctx, tx)
+	row, err := s.readLease(ctx, tx)
 	if err != nil {
 		return driver.StoreHealth{}, err
 	}
@@ -328,8 +340,12 @@ func (s *Store) Health(ctx context.Context) (driver.StoreHealth, error) {
 	return driver.StoreHealth{Driver: "sqlite", Role: role, LeaseEpoch: row.epoch, Head: m.Head, Incarnation: m.Incarnation, AuthorizationChain: []string{}}, nil
 }
 
-// A COMMIT error has an uncertain durable outcome. Graph callers map this to
-// ErrIndeterminate with the original request key rather than retrying blindly.
+// A COMMIT error has an uncertain durable outcome, even if it is cancellation:
+// modernc's deferred context check can replace a successful native result.
+// Graph, checkpoint and finalizer callers map this private error to public
+// ErrIndeterminate without unwrapping a no-publication rejection. Graph/receipt
+// outcomes retain their request key; checkpoint callers retain their original
+// key and expected generation. A confirmed COMMIT has no fallible follow-up.
 type commitError struct{ error }
 
 func (e commitError) Unwrap() error { return e.error }
@@ -344,34 +360,80 @@ func (s *Store) immediate(ctx context.Context, l *activeLease, fn func(*sql.Conn
 		return err
 	}
 	defer unlockFile(gate)
+	return s.immediateLocked(ctx, l, fn)
+}
+
+// immediateLocked requires the cross-process publication gate through cleanup.
+// Renew persists its own journal before acceptance, so COMMIT is the only native
+// publication and its confirmed success cannot turn into a handoff error.
+func (s *Store) immediateLocked(ctx context.Context, l *activeLease, fn func(*sql.Conn) error) (err error) {
 	c, err := s.db.Conn(ctx)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
+	var registered, committed bool
+	var durable leaseHeartbeat
 	// Cancellation may be reported after native BEGIN acquired the writer.
-	// Roll back before returning that connection to the pool on every path.
-	defer func() { _, _ = c.ExecContext(context.Background(), `ROLLBACK`) }()
+	// Every unconfirmed path rolls back before returning the connection. After
+	// a confirmed COMMIT there must be no further native transaction work.
+	defer func() {
+		if !committed {
+			_, _ = c.ExecContext(context.Background(), `ROLLBACK`)
+		}
+		if registered {
+			var uncertain commitError
+			if errors.As(err, &uncertain) {
+				l.signalLost()
+			}
+			l.abortPublication(durable)
+		}
+	}()
 	if _, err = c.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
 		return err
 	}
 	if l != nil {
-		if err = s.fence(ctx, c, l); err != nil {
+		durable, err = s.beginLeasePublication(ctx, c, l)
+		if err != nil {
 			return err
 		}
+		registered = true
 	}
 	if err = fn(c); err != nil {
 		return err
 	}
-	if l != nil {
-		if err = s.fence(ctx, c, l); err != nil {
-			return err
-		}
+	if _, err = s.commitImmediate(ctx, c, l, durable); err != nil {
+		return err
 	}
-	if _, err = c.ExecContext(ctx, `COMMIT`); err != nil {
-		return commitError{err}
+	committed = true
+	if l != nil {
+		l.finishPublication()
+		registered = false
 	}
 	return nil
+}
+
+func (s *Store) commitImmediate(ctx context.Context, c *sql.Conn, l *activeLease, durable leaseHeartbeat) (leaseHeartbeat, error) {
+	heartbeat := durable
+	if l != nil {
+		l.mu.Lock()
+		heartbeat = l.heartbeatLocked()
+		l.mu.Unlock()
+		if heartbeat.expires != durable.expires {
+			if _, err := c.ExecContext(ctx, `UPDATE active_lease SET expires=? WHERE singleton=1 AND epoch=? AND token=?`, heartbeat.expires, revKey(l.epoch), l.token); err != nil {
+				return durable, err
+			}
+		}
+		// Check identity AND current effective expiry after the SQL work. BEGIN
+		// alone is not sufficient: a holder that stops renewing must be fenced.
+		if err := s.fence(ctx, c, l); err != nil {
+			return durable, err
+		}
+	}
+	if _, err := c.ExecContext(ctx, `COMMIT`); err != nil {
+		return durable, commitError{error: err}
+	}
+	return heartbeat, nil
 }
 
 func (s *Store) Close() error {
