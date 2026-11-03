@@ -105,6 +105,105 @@ func testConfig() Config {
 	}
 }
 
+func checkedInExternalProtocolConfig(t *testing.T) (Config, string) {
+	t.Helper()
+	path := filepath.Join("..", "..", "engdocs", "style", "lexicon.toml")
+	if root := os.Getenv("TEST_SRCDIR"); root != "" {
+		path = filepath.Join(root, os.Getenv("TEST_WORKSPACE"), "engdocs", "style", "lexicon.toml")
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil || cfg.ExternalProtocolString.Path != externalProtocolSource || cfg.ExternalProtocolString.Value == "" {
+		t.Fatalf("checked-in external protocol allowance: %+v, %v", cfg.ExternalProtocolString, err)
+	}
+	return cfg, path
+}
+
+func TestExternalProtocolStringAllowsOnlyExactDecodedLiteral(t *testing.T) {
+	cfg, _ := checkedInExternalProtocolConfig(t)
+	value := cfg.ExternalProtocolString.Value
+	for name, literal := range map[string]string{
+		"quoted":  strconv.Quote(value),
+		"raw":     "`" + value + "`",
+		"escaped": `"\x42` + value[1:] + `"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			source := "package recorder\nvar externalAssignment = " + literal + "\n"
+			findings, err := CheckFiles(map[string][]byte{externalProtocolSource: []byte(source)}, cfg)
+			if err != nil || len(findings) != 0 {
+				t.Fatalf("exact decoded external assignment was rejected: %#v, %v", findings, err)
+			}
+		})
+	}
+}
+
+func TestExternalProtocolStringKeepsOtherLexiconRefusals(t *testing.T) {
+	cfg, _ := checkedInExternalProtocolConfig(t)
+	value := cfg.ExternalProtocolString.Value
+	assignment := strconv.Quote(value)
+	productTerm := cfg.Terms[2].Matches[0]
+	for _, test := range []struct {
+		name, path, source, class string
+	}{
+		{"neighbor_path", "spec/s1-b25-b28/public_recording_other_test.go", "package recorder\nvar externalAssignment = " + assignment, "identifier"},
+		{"wildcard_path", "spec/s1-b25-b28/*.go", "package recorder\nvar externalAssignment = " + assignment, "identifier"},
+		{"different_value", externalProtocolSource, "package recorder\nvar externalAssignment = " + strconv.Quote(value+"-extra"), "identifier"},
+		{"extra_term_in_literal", externalProtocolSource, "package recorder\nvar externalAssignment = " + strconv.Quote(value+" "+productTerm), "product-term"},
+		{"other_term_in_file", externalProtocolSource, "package recorder\nvar externalAssignment = " + assignment + "\nvar other = " + strconv.Quote(productTerm), "product-term"},
+		{"identifier", externalProtocolSource, "package recorder\nvar " + strings.SplitN(value, "=", 2)[0] + " = 1\nvar externalAssignment = " + assignment, "identifier"},
+		{"import", externalProtocolSource, "package recorder\nimport " + assignment + "\nvar externalAssignment = " + assignment, "identifier"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			findings, err := CheckFiles(map[string][]byte{test.path: []byte(test.source)}, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hasFindingClass(findings, test.class) {
+				t.Fatalf("%s did not retain %s refusal: %#v", test.name, test.class, findings)
+			}
+		})
+	}
+	without := cfg
+	without.ExternalProtocolString = GoStringAllowance{}
+	findings, err := CheckFiles(map[string][]byte{externalProtocolSource: []byte("package recorder\nvar externalAssignment = " + assignment)}, without)
+	if err != nil || !hasFindingClass(findings, "identifier") {
+		t.Fatalf("missing allowance admitted the external assignment: %#v, %v", findings, err)
+	}
+}
+
+func hasFindingClass(findings []Finding, class string) bool {
+	for _, finding := range findings {
+		if finding.Class == class {
+			return true
+		}
+	}
+	return false
+}
+
+func TestExternalProtocolStringConfigurationRejectsBroadening(t *testing.T) {
+	cfg, path := checkedInExternalProtocolConfig(t)
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct{ name, config string }{
+		{"neighbor_path", strings.Replace(string(original), cfg.ExternalProtocolString.Path, "spec/s1-b25-b28/public_recording_other_test.go", 1)},
+		{"wildcard_path", strings.Replace(string(original), cfg.ExternalProtocolString.Path, "spec/s1-b25-b28/*.go", 1)},
+		{"empty_value", strings.Replace(string(original), "value = "+strconv.Quote(cfg.ExternalProtocolString.Value), `value = ""`, 1)},
+		{"duplicate_section", string(original) + "\n[external_protocol_string]\n"},
+		{"duplicate_path", strings.Replace(string(original), "path = "+strconv.Quote(cfg.ExternalProtocolString.Path), "path = "+strconv.Quote(cfg.ExternalProtocolString.Path)+"\npath = "+strconv.Quote(cfg.ExternalProtocolString.Path), 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "lexicon.toml")
+			if err := os.WriteFile(file, []byte(test.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(file); err == nil {
+				t.Fatal("broadened or malformed external protocol allowance was accepted")
+			}
+		})
+	}
+}
+
 func TestCheckFilesBlocksTermsAndImports(t *testing.T) {
 	cfg := testConfig()
 	files := map[string][]byte{

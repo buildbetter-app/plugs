@@ -27,11 +27,20 @@ type Term struct {
 	Allow   map[rune]bool
 }
 
+// GoStringAllowance admits one decoded external-protocol string at one path.
+type GoStringAllowance struct {
+	Path  string
+	Value string
+}
+
 // Config is the small TOML subset used by the repository lexicon.
 type Config struct {
-	Terms      []Term
-	Provenance []string
+	Terms                  []Term
+	Provenance             []string
+	ExternalProtocolString GoStringAllowance
 }
+
+const externalProtocolSource = "spec/s1-b25-b28/public_recording_test.go"
 
 // Finding identifies one boundary violation.
 type Finding struct {
@@ -57,6 +66,7 @@ func LoadConfig(path string) (Config, error) {
 	var cfg Config
 	section := ""
 	var current *Term
+	var externalSection, externalPath, externalValue bool
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
 		if line == "" {
@@ -72,6 +82,14 @@ func LoadConfig(path string) (Config, error) {
 			section = "zones"
 			current = nil
 			continue
+		case "[external_protocol_string]":
+			if externalSection {
+				return Config{}, errors.New("duplicate external protocol string section")
+			}
+			externalSection = true
+			section = "external_protocol_string"
+			current = nil
+			continue
 		}
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
@@ -84,6 +102,28 @@ func LoadConfig(path string) (Config, error) {
 		}
 		if section == "zones" && key == "provenance" {
 			cfg.Provenance = values
+			continue
+		}
+		if section == "external_protocol_string" {
+			if len(values) != 1 {
+				return Config{}, errors.New("external protocol string fields require one value")
+			}
+			switch key {
+			case "path":
+				if externalPath {
+					return Config{}, errors.New("duplicate external protocol string path")
+				}
+				externalPath = true
+				cfg.ExternalProtocolString.Path = values[0]
+			case "value":
+				if externalValue {
+					return Config{}, errors.New("duplicate external protocol string value")
+				}
+				externalValue = true
+				cfg.ExternalProtocolString.Value = values[0]
+			default:
+				return Config{}, fmt.Errorf("unknown external protocol string key: %s", key)
+			}
 			continue
 		}
 		if current == nil {
@@ -120,6 +160,9 @@ func LoadConfig(path string) (Config, error) {
 		if cfg.Terms[i].Class == "" || (len(cfg.Terms[i].Matches) == 0 && cfg.Terms[i].Pattern == "") {
 			return Config{}, fmt.Errorf("lexicon term %d is incomplete", i)
 		}
+	}
+	if externalSection && (!externalPath || !externalValue || cfg.ExternalProtocolString.Path != externalProtocolSource || cfg.ExternalProtocolString.Value == "") {
+		return Config{}, errors.New("external protocol string must bind the exact source path and a nonempty literal")
 	}
 	return cfg, nil
 }
@@ -201,7 +244,7 @@ func checkFiles(files map[string][]byte, cfg Config, policy *TreePolicy) ([]Find
 			continue
 		}
 		provenance := isProvenance(path, cfg.Provenance)
-		findings = append(findings, scanFile(path, content, cfg.Terms, provenance)...)
+		findings = append(findings, scanFile(path, content, cfg, provenance)...)
 	}
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].Path != findings[j].Path {
@@ -263,10 +306,10 @@ func isProvenance(path string, zones []string) bool {
 	return false
 }
 
-func scanFile(path string, content []byte, terms []Term, provenance bool) []Finding {
+func scanFile(path string, content []byte, cfg Config, provenance bool) []Finding {
 	text := string(content)
 	var findings []Finding
-	for _, term := range terms {
+	for _, term := range cfg.Terms {
 		if provenance && term.Class != "upstream-infra" {
 			continue
 		}
@@ -293,7 +336,7 @@ func scanFile(path string, content []byte, terms []Term, provenance bool) []Find
 			if filepath.Ext(path) != ".go" {
 				continue
 			}
-			findings = append(findings, scanGoIdentifiers(path, content, term)...)
+			findings = append(findings, scanGoIdentifiers(path, content, term, cfg.ExternalProtocolString)...)
 			continue
 		}
 		for _, match := range term.Matches {
@@ -308,11 +351,15 @@ func scanFile(path string, content []byte, terms []Term, provenance bool) []Find
 	return findings
 }
 
-func scanGoIdentifiers(path string, content []byte, term Term) []Finding {
+func scanGoIdentifiers(path string, content []byte, term Term, allowance GoStringAllowance) []Finding {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, content, parser.ParseComments)
 	if err != nil {
 		return []Finding{{Path: path, Line: 1, Class: "invalid-go", Term: "parse"}}
+	}
+	imports := make(map[token.Pos]bool, len(file.Imports))
+	for _, spec := range file.Imports {
+		imports[spec.Path.Pos()] = true
 	}
 	var findings []Finding
 	ast.Inspect(file, func(node ast.Node) bool {
@@ -321,8 +368,16 @@ func scanGoIdentifiers(path string, content []byte, term Term) []Finding {
 		case *ast.Ident:
 			text = n.Name
 		case *ast.BasicLit:
-			if n.Kind.String() == "STRING" {
-				text = n.Value
+			if n.Kind == token.STRING {
+				decoded, err := strconv.Unquote(n.Value)
+				if err != nil {
+					findings = append(findings, Finding{Path: path, Line: fset.Position(node.Pos()).Line, Class: "invalid-go", Term: "string"})
+					return true
+				}
+				if !imports[n.Pos()] && path == externalProtocolSource && allowance.Path == path && decoded == allowance.Value && decoded != "" {
+					return true
+				}
+				text = decoded
 			}
 		}
 		if text != "" {
