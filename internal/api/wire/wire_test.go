@@ -23,10 +23,13 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if got := len(c.Descriptors()); got != 83 {
 		t.Fatalf("method inventory = %d", got)
 	}
+	if _, ok := c.Descriptor("bead.comments"); ok {
+		t.Fatal("comment listing must use the selected bead.get projection")
+	}
 	if got := len(c.ErrorCatalog()); got != 63 {
 		t.Fatalf("error inventory = %d", got)
 	}
-	if digest(catalogJSON) != "d9fbef67bd9665897d3ffd168e3c02596369d6c37976136ecef572245b42df91" {
+	if digest(catalogJSON) != "abc0908f0d21e02fcb2efbe93dee661759b7ae8e3a256c170a3dec6bda37afee" {
 		t.Fatal("bounded source snapshot changed; reconcile approved contract")
 	}
 	// These changes affect one of two independent descriptor representations.
@@ -109,6 +112,51 @@ func TestBoundedCatalogParity(t *testing.T) {
 	}
 	if _, err = c.GenerateOpenRPC([]MethodDesc{{Name: "incomplete"}}); err == nil {
 		t.Fatal("generator accepted incomplete descriptor")
+	}
+}
+
+func TestB15CommentPageIsSelectedThroughBeadGet(t *testing.T) {
+	canonicalPath := filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), "engdocs/design/plug/contracts/openrpc.json")
+	canonical, err := os.ReadFile(canonicalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, raw := range map[string][]byte{"canonical": canonical, "embedded": catalogJSON} {
+		t.Run(name, func(t *testing.T) {
+			c, err := ParseCatalog(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := c.Descriptor("bead.comments"); ok {
+				t.Fatal("comment listing escaped the adopted bead.get surface")
+			}
+			get, ok := c.Descriptor("bead.get")
+			if !ok {
+				t.Fatal("bead.get descriptor missing")
+			}
+			for _, params := range []string{
+				`{"id":{"id":"p-1"}}`,
+				`{"id":{"id":"p-1"},"commentPage":{}}`,
+				`{"id":{"id":"p-1"},"commentPage":{"limit":1}}`,
+				`{"id":{"id":"p-1"},"commentPage":{"limit":500,"cursor":"opaque"}}`,
+			} {
+				if err := c.ValidateParams(get, []byte(params)); err != nil {
+					t.Fatalf("valid comment selection refused: %s: %v", params, err)
+				}
+			}
+			for _, params := range []string{
+				`{"id":{"id":"p-1"},"commentPage":null}`,
+				`{"id":{"id":"p-1"},"commentPage":{"limit":0}}`,
+				`{"id":{"id":"p-1"},"commentPage":{"limit":501}}`,
+				`{"id":{"id":"p-1"},"commentPage":{"cursor":1}}`,
+				`{"id":{"id":"p-1"},"commentPage":{"unknown":true}}`,
+				`{"id":{"id":"p-1"},"limit":1}`,
+			} {
+				if err := c.ValidateParams(get, []byte(params)); err == nil {
+					t.Fatalf("invalid comment selection admitted: %s", params)
+				}
+			}
+		})
 	}
 }
 
