@@ -30,6 +30,34 @@ func parentID(parent *model.Ref) string {
 	return parent.ID
 }
 
+// HierarchyParent validates the persisted canonical relation without rewriting
+// stored bytes. Writer accepts legacy parent-child operations and persists both
+// Parent and the matching link so closure and authorization see one hierarchy.
+// Raw legacy-only stores need an explicit migration, never a read-time backfill.
+func HierarchyParent(doc Document) (*model.Ref, error) {
+	parent := doc.Parent
+	if err := validateParent(parent); err != nil {
+		return nil, failure("invalid_params", "invalid hierarchy parent")
+	}
+	for _, link := range doc.Links {
+		if link.Kind != "parent-child" {
+			continue
+		}
+		if err := validateParent(&link.To); err != nil {
+			return nil, failure("invalid_params", "invalid legacy hierarchy parent")
+		}
+		if parent != nil && parent.ID != link.To.ID {
+			return nil, failure("invalid_params", "conflicting parent representations")
+		}
+		value := link.To
+		parent = &value
+	}
+	if doc.Parent == nil && parent != nil {
+		return nil, failure("invalid_params", "legacy hierarchy requires canonical Parent; use the Writer link path or an explicit migration")
+	}
+	return parent, nil
+}
+
 // Resolve through the same ordered pending graph used by all other operations.
 // In particular, an alias cannot grant existence to a later create, and a
 // transient descendant cycle is not rescued by a later operation in the batch.
@@ -51,7 +79,11 @@ func (p *prepared) resolveParent(ctx context.Context, parent *model.Ref, aliases
 		if err != nil {
 			return nil, err
 		}
-		id = parentID(node.doc.Parent)
+		parent, err := HierarchyParent(node.doc)
+		if err != nil {
+			return nil, err
+		}
+		id = parentID(parent)
 	}
 	return &ref, nil
 }
@@ -84,12 +116,16 @@ func (p *prepared) documents(ctx context.Context) (map[string]Document, error) {
 	}
 }
 
-func parentGraph(docs map[string]Document) map[string]string {
+func parentGraph(docs map[string]Document) (map[string]string, error) {
 	parents := make(map[string]string, len(docs))
 	for id, doc := range docs {
-		parents[id] = parentID(doc.Parent)
+		parent, err := HierarchyParent(doc)
+		if err != nil {
+			return nil, err
+		}
+		parents[id] = parentID(parent)
 	}
-	return parents
+	return parents, nil
 }
 
 func checkParentGraph(parents map[string]string) error {
@@ -248,11 +284,17 @@ func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 			return nil, err
 		}
 	}
-	before := parentGraph(stored)
+	before, err := parentGraph(stored)
+	if err != nil {
+		return nil, err
+	}
 	if err := checkParentGraph(before); err != nil {
 		return nil, err
 	}
-	staged := parentGraph(stored)
+	staged, err := parentGraph(stored)
+	if err != nil {
+		return nil, err
+	}
 	affected, err := p.hierarchyAffected(staged)
 	if err != nil {
 		return nil, err
@@ -268,7 +310,10 @@ func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 			final[id] = pending.doc
 		}
 	}
-	after := parentGraph(final)
+	after, err := parentGraph(final)
+	if err != nil {
+		return nil, err
+	}
 	if err := checkParentGraph(after); err != nil {
 		return nil, err
 	}

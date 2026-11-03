@@ -25,8 +25,12 @@ pure-Go reference build with SHA-256
 `3c6bbb888431751adce98dfebc8cbeeb5869300698e8b069a4d7438fabfb3af4`.
 
 The card projections retain the old/reference outcome and the adopted Plug
-outcome side by side. B01/B02 use `A3/D3/P74` and `A3/P22` respectively for
-category and stored-order differences. B03 uses `P10/P41/D24/A3`; B04 keeps
+outcome side by side. Their historical B01/B02 metadata uses `A3/D3/P74` and
+`A3/P22` respectively for category and stored-order differences. P74 permits
+ordering lag only. The separately adopted indefinite-parent membership deviation
+is recorded in [the B01 hierarchy disposition](b01-hierarchy-deviation.md) and
+`b01-hierarchy-vectors.json`, without rewriting historical metadata or captures.
+B03 uses `P10/P41/D24/A3`; B04 keeps
 claim semantics with `A4/P60`. The decisions are data in the manifest, not
 comments hidden in assertions. Timestamps, generated revisions, random leases,
 and Dolt commit IDs are omitted only where the manifest names them. The retained

@@ -84,7 +84,7 @@ func DecodeDocument(body []byte) (Document, error) {
 	if d.ID == "" || d.Type == "" || d.Fields == nil {
 		return d, fmt.Errorf("invalid bead document")
 	}
-	if err := validateParent(d.Parent); err != nil {
+	if _, err := HierarchyParent(d); err != nil {
 		return d, err
 	}
 	for _, comment := range d.Comments {
