@@ -28,8 +28,8 @@ write and every SQLite table when archive conversion is refused on a nonempty
 target. The retained B25 extension bytes and existing B28 reference bytes stay
 outside this package and are not rewritten.
 
-The manual `public_recording_test` target closes the executable-side B27 gap
-with two fresh, independent RunsOn recordings. It consumes the verified
+The manual `public_recording_test` target requires two fresh, independent
+RunsOn recordings to close its executable-side B27 slice. It consumes the verified
 `plug-public-companion/1` bundle through `PLUG_PUBLIC_BUNDLE`, checks the
 sealed Beads commit/tree, executable digest, manifest, and `go version -m`
 build information, then runs real commands in disposable stores. Each run
@@ -38,11 +38,27 @@ labels/metadata/parent/dependency/comment/close data, JSONL export, import
 into a non-empty target, and target export. It then captures the actual
 `beads-inventory/1` census and `plug-dump/1` archive for both stores. Raw
 stdout/stderr, argv, stdin/output hashes, inventories, archives, build info,
-and a provenance file remain under `/tmp/plug-swarm/work`; the test also
-compares an independent JSONL projection with an independent archive
+and projections go to `TEST_UNDECLARED_OUTPUTS_DIR` (or a disposable directory
+under `/tmp/plug-swarm/work` when the variable is absent). Command receipts
+are flushed after each command, including failures. Executable copies and
+stores stay in separate disposable directories and are removed at test end.
+The test also compares an independent JSONL projection with an independent archive
 projection and requires the two recordings to match. Store identifiers and
 timestamps are excluded only by the declared projection fields in
-`testdata/public-recording-fixture.json`.
+`testdata/public-recording-fixture.json`. Dependency endpoints/types, the
+parent edge, and comment contents/multiplicity must survive import exactly;
+equal row counts do not establish preservation. The separate manual
+`recorder_validation_test` contains authored corruption controls for those
+assertions and does not invoke Beads or qualify a behavior card.
+
+The current `682ca798` companion has JSONL and `plug-dump/1` export but no
+native `beads-inventory/1` capture. Focused r8/r9 therefore remain RED at
+inventory capture; two complete new recordings and paired archive projections
+have not been produced. A separately delivered, reviewed native producer is
+required before that boundary can execute. No fixture inventory substitutes
+for it. The remote workflow must also collect Bazel's undeclared outputs;
+placing files there does not establish hosted retention when the workflow
+uploads only test logs/XML.
 
 Run it only on RunsOn after preparing the public bundle descriptor:
 

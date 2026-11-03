@@ -2,9 +2,9 @@ package s1b25b28_test
 
 // This is an opt-in runtime recording.  It deliberately consumes the public
 // companion artifact prepared by RunsOn instead of building, downloading, or
-// faking a Beads executable in the test.  The output directory is retained
-// under /tmp/plug-swarm/work so every command receipt and source byte remains
-// available for an independent review.
+// faking a Beads executable in the test. Raw evidence goes to Bazel's undeclared
+// outputs; executable copies and disposable stores stay under /tmp/plug-swarm/work.
+// The remote workflow must collect undeclared outputs before retention is proven.
 
 import (
 	"bytes"
@@ -117,11 +117,26 @@ func TestPublicPairedRecording(t *testing.T) {
 	}
 	artifact := verifyPublicArtifact(t, profile)
 	root := makeRecordingRoot(t)
+	t.Logf("PUBLIC_RECORDING_OUTPUT %s", root)
+	storeRoot := makeRecordingDirectory(t, "/tmp/plug-swarm/work", "s1-b25-b28-public-stores-")
+	t.Cleanup(func() {
+		if err := os.RemoveAll(storeRoot); err != nil {
+			t.Errorf("remove disposable public stores: %v", err)
+		}
+	})
+	manifest, err := os.ReadFile(artifact.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hashBytes(manifest) != artifact.ManifestSHA {
+		t.Fatal("public manifest changed after artifact admission")
+	}
+	writeRecordingBytes(t, filepath.Join(root, "public-companion-manifest.json"), manifest)
 	buildInfo := recordBuildInfo(t, root, artifact)
 	t.Logf("PUBLIC_RECORDING_ARTIFACT build_run=%s binary_sha256=%s manifest_sha256=%s build_info_sha256=%s", artifact.BuildRun, artifact.SHA256, artifact.ManifestSHA, hashBytes(buildInfo))
 
-	run1 := recordPublicRun(t, root, "run1", artifact, fixture)
-	run2 := recordPublicRun(t, root, "run2", artifact, fixture)
+	run1 := recordPublicRun(t, root, storeRoot, "run1", artifact, fixture)
+	run2 := recordPublicRun(t, root, storeRoot, "run2", artifact, fixture)
 	if run1.SourceProjectionSHA != run2.SourceProjectionSHA || run1.TargetProjectionSHA != run2.TargetProjectionSHA {
 		t.Fatalf("paired public projections differ: run1 source=%s target=%s, run2 source=%s target=%s", run1.SourceProjectionSHA, run1.TargetProjectionSHA, run2.SourceProjectionSHA, run2.TargetProjectionSHA)
 	}
@@ -254,10 +269,22 @@ func verifyPublicArtifact(t *testing.T, profile recordingProfile) publicArtifact
 
 func makeRecordingRoot(t *testing.T) string {
 	t.Helper()
-	if err := os.MkdirAll("/tmp/plug-swarm/work", 0o700); err != nil {
+	parent := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+	if parent == "" {
+		parent = "/tmp/plug-swarm/work"
+	}
+	if !filepath.IsAbs(parent) {
+		t.Fatal("public recording output directory must be absolute")
+	}
+	return makeRecordingDirectory(t, parent, "s1-b25-b28-public-recording-")
+}
+
+func makeRecordingDirectory(t *testing.T, parent, pattern string) string {
+	t.Helper()
+	if err := os.MkdirAll(parent, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	root, err := os.MkdirTemp("/tmp/plug-swarm/work", "s1-b25-b28-public-recording-")
+	root, err := os.MkdirTemp(parent, pattern)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,6 +292,13 @@ func makeRecordingRoot(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func writeRecordingBytes(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func recordBuildInfo(t *testing.T, root string, artifact publicArtifact) []byte {
@@ -282,14 +316,15 @@ func recordBuildInfo(t *testing.T, root string, artifact publicArtifact) []byte 
 	return output
 }
 
-func recordPublicRun(t *testing.T, root, name string, artifact publicArtifact, fixture recordingFixture) publicRun {
+func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact publicArtifact, fixture recordingFixture) publicRun {
 	t.Helper()
 	run := publicRun{Name: name, Root: filepath.Join(root, name)}
 	if err := os.MkdirAll(run.Root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	source := filepath.Join(run.Root, "source")
-	target := filepath.Join(run.Root, "target")
+	storeRoot = filepath.Join(storeRoot, name)
+	source := filepath.Join(storeRoot, "source")
+	target := filepath.Join(storeRoot, "target")
 	if err := os.MkdirAll(source, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +337,7 @@ func recordPublicRun(t *testing.T, root, name string, artifact publicArtifact, f
 			t.Fatal(err)
 		}
 	}
-	pinned := filepath.Join(run.Root, "bd-pinned")
+	pinned := filepath.Join(storeRoot, "bd-pinned")
 	copyPinned(t, artifact.Binary, pinned, artifact.SHA256, artifact.Size)
 	env := recordingEnv(source)
 	commandGit := func(label, store string, dir string, argv []string) []byte {
@@ -354,6 +389,7 @@ func recordPublicRun(t *testing.T, root, name string, artifact publicArtifact, f
 	if err != nil {
 		t.Fatalf("source JSONL projection: %v", err)
 	}
+	writeRecordingBytes(t, filepath.Join(run.Root, "source-jsonl-projection.json"), sourceRawProjection)
 	validateSourceRows(t, sourceRawProjection, fixture)
 	validateInventoryAndArchive(t, &run, commandBD, "source", source, run.Root, fixture)
 
@@ -373,6 +409,7 @@ func recordPublicRun(t *testing.T, root, name string, artifact publicArtifact, f
 	if err != nil {
 		t.Fatalf("target JSONL projection: %v", err)
 	}
+	writeRecordingBytes(t, filepath.Join(run.Root, "target-jsonl-projection.json"), targetRawProjection)
 	assertTargetContainsSource(t, sourceRawProjection, targetRawProjection, fixture)
 	validateInventoryAndArchive(t, &run, commandBD, "target", target, run.Root, fixture)
 
@@ -388,10 +425,12 @@ func recordPublicRun(t *testing.T, root, name string, artifact publicArtifact, f
 	if err != nil {
 		t.Fatalf("source archive projection: %v", err)
 	}
+	writeRecordingBytes(t, filepath.Join(run.Root, "source-archive-projection.json"), sourceArchiveProjection)
 	targetArchiveProjection, err := projectArchive(targetArchive, fixture.ProjectionFields)
 	if err != nil {
 		t.Fatalf("target archive projection: %v", err)
 	}
+	writeRecordingBytes(t, filepath.Join(run.Root, "target-archive-projection.json"), targetArchiveProjection)
 	if !bytes.Equal(sourceRawProjection, sourceArchiveProjection) || !bytes.Equal(targetRawProjection, targetArchiveProjection) {
 		t.Fatalf("independent JSONL/archive projections differ: source=%s/%s target=%s/%s", hashBytes(sourceRawProjection), hashBytes(sourceArchiveProjection), hashBytes(targetRawProjection), hashBytes(targetArchiveProjection))
 	}
@@ -631,35 +670,129 @@ func validateSourceRows(t *testing.T, projection []byte, fixture recordingFixtur
 	if value.Memories[fixture.MemoryKey] != "paired-store memory" {
 		t.Fatalf("source recording omitted memory %s: %+v", fixture.MemoryKey, value.Memories)
 	}
+	wantEdges := []map[string]any{
+		{"from": publicChildID, "to": "pub-dependency", "target_kind": "depends_on_issue_id", "type": "blocks"},
+		{"from": publicChildID, "to": "pub-root", "target_kind": "depends_on_issue_id", "type": "parent-child"},
+	}
+	if !equalJSON(value.Edges, wantEdges) {
+		t.Fatalf("source recording changed dependency/parent relations: got=%s want=%s", canonical(value.Edges), canonical(wantEdges))
+	}
+	if len(value.Comments) != 1 || value.Comments[0]["issue_id"] != "pub-root" || value.Comments[0]["text"] != "preserve this public comment" {
+		t.Fatalf("source recording changed the public comment: %s", canonical(value.Comments))
+	}
 }
 
 func assertTargetContainsSource(t *testing.T, source, target []byte, fixture recordingFixture) {
 	t.Helper()
-	var left, right semanticProjection
-	if err := json.Unmarshal(source, &left); err != nil {
+	if err := comparePublicImport(source, target, fixture); err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(target, &right); err != nil {
-		t.Fatal(err)
+}
+
+// This comparison deliberately checks relation contents and multiplicity. Equal
+// counts would miss an import that replaces an endpoint, type, author, or body.
+func comparePublicImport(source, target []byte, fixture recordingFixture) error {
+	left, err := decodePublicProjection(source)
+	if err != nil {
+		return fmt.Errorf("source projection: %w", err)
+	}
+	right, err := decodePublicProjection(target)
+	if err != nil {
+		return fmt.Errorf("target projection: %w", err)
 	}
 	if _, ok := right.Issues["pub-keep"]; !ok {
-		t.Fatal("target import deleted the pre-existing target issue")
+		return fmt.Errorf("target import deleted the pre-existing target issue")
 	}
 	for id, issue := range left.Issues {
 		if !equalJSON(issue, right.Issues[id]) {
-			t.Fatalf("target import changed source issue %s", id)
+			return fmt.Errorf("target import changed source issue %s", id)
 		}
 	}
 	if !equalJSON(left.Memories, right.Memories) {
-		t.Fatal("target import changed source memories")
+		return fmt.Errorf("target import changed source memories")
 	}
-	if len(right.Edges) < len(left.Edges) || len(right.Comments) < len(left.Comments) {
-		t.Fatalf("target import dropped relationships: source edges/comments=%d/%d target=%d/%d", len(left.Edges), len(left.Comments), len(right.Edges), len(right.Comments))
+	if !equalJSON(left.Edges, right.Edges) {
+		return fmt.Errorf("target import changed dependency/parent relations: source=%s target=%s", canonical(left.Edges), canonical(right.Edges))
+	}
+	if !equalJSON(left.Comments, right.Comments) {
+		return fmt.Errorf("target import changed comment contents: source=%s target=%s", canonical(left.Comments), canonical(right.Comments))
 	}
 	for _, id := range fixture.IDs {
 		if id != "pub-keep" && right.Issues[id] == nil {
-			t.Fatalf("target import omitted source issue %s", id)
+			return fmt.Errorf("target import omitted source issue %s", id)
 		}
+	}
+	return nil
+}
+
+func decodePublicProjection(data []byte) (semanticProjection, error) {
+	var projection semanticProjection
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&projection); err != nil {
+		return projection, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return projection, fmt.Errorf("projection has trailing data: %v", err)
+	}
+	return projection, nil
+}
+
+// Authored measurement controls, not recordings: prove that the import
+// comparison rejects substituted relations even when the row counts match.
+func TestPublicProjectionRejectsRelationCorruption(t *testing.T) {
+	source := semanticProjection{
+		Issues: map[string]map[string]any{"pub-root": {"title": "Public root"}, publicChildID: {"title": "Public child"}, "pub-dependency": {"title": "Public dependency"}},
+		Edges: []map[string]any{
+			{"from": publicChildID, "to": "pub-dependency", "target_kind": "depends_on_issue_id", "type": "blocks"},
+			{"from": publicChildID, "to": "pub-root", "target_kind": "depends_on_issue_id", "type": "parent-child"},
+		},
+		Comments: []map[string]any{{"id": json.Number("9007199254740993"), "issue_id": "pub-root", "author": "public-recorder", "text": "preserve this public comment"}},
+		Memories: map[string]any{"public-memory": "paired-store memory"},
+	}
+	fixture := recordingFixture{IDs: []string{"pub-root", publicChildID, "pub-dependency", "pub-keep"}}
+	sourceBytes, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		mutate func(*semanticProjection)
+		want   string
+	}{
+		{"unchanged", func(*semanticProjection) {}, ""},
+		{"dependency_endpoint", func(p *semanticProjection) { p.Edges[0]["to"] = "pub-keep" }, "dependency/parent relations"},
+		{"dependency_type", func(p *semanticProjection) { p.Edges[0]["type"] = "relates-to" }, "dependency/parent relations"},
+		{"parent_endpoint", func(p *semanticProjection) { p.Edges[1]["to"] = "pub-keep" }, "dependency/parent relations"},
+		{"duplicate_edge", func(p *semanticProjection) { p.Edges = append(p.Edges, p.Edges[0]) }, "dependency/parent relations"},
+		{"comment_text", func(p *semanticProjection) { p.Comments[0]["text"] = "replaced" }, "comment contents"},
+		{"comment_author", func(p *semanticProjection) { p.Comments[0]["author"] = "another-actor" }, "comment contents"},
+		{"comment_issue", func(p *semanticProjection) { p.Comments[0]["issue_id"] = publicChildID }, "comment contents"},
+		{"comment_integer_precision", func(p *semanticProjection) { p.Comments[0]["id"] = json.Number("9007199254740992") }, "comment contents"},
+		{"duplicate_comment", func(p *semanticProjection) { p.Comments = append(p.Comments, p.Comments[0]) }, "comment contents"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			target, err := decodePublicProjection(sourceBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target.Issues["pub-keep"] = map[string]any{"title": "Keep target row"}
+			tc.mutate(&target)
+			targetBytes, err := json.Marshal(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = comparePublicImport(sourceBytes, targetBytes, fixture)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("corrupt import error=%v, want %s", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -728,6 +861,9 @@ func runCommand(t *testing.T, root string, receipts *[]commandReceipt, label, st
 		receipt.StdinSHA256 = hashBytes(stdin)
 	}
 	*receipts = append(*receipts, receipt)
+	// Flush before failing so the failing command and every preceding command
+	// retain their argv, exit status and raw-output hashes in Bazel outputs.
+	writeCommandReceipts(t, root, *receipts)
 	if err != nil {
 		t.Fatalf("public command %s failed (exit %d): %v\nstdout=%s\nstderr=%s", label, exit, err, stdout.String(), stderr.String())
 	}
