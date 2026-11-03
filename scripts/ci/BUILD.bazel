@@ -25,3 +25,14 @@ sh_test(
     ],
     size = "small",
 )
+
+sh_test(
+    name = "reconcile_openrpc_test",
+    srcs = ["reconcile-openrpc-test.py"],
+    args = ["-v"],
+    data = [
+        "reconcile-openrpc.py",
+        "//:engdocs/design/plug/contracts/openrpc.json",
+    ],
+    size = "small",
+)

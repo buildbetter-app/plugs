@@ -5040,7 +5040,8 @@
           "name": "beforeRevision",
           "schema": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Only select records whose current revision is strictly less than beforeRevision; equality is excluded."
           }
         },
         {
@@ -13200,7 +13201,7 @@
     "methodCount": 82,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "9149680634f6becbd955204e4bfa1c19b0c37911ca3c7ad3f155969a892fc7c9",
-    "descriptorSha256": "2f2ceaf3680f0694ec8e12a64d137e37ab559c75cb9aa79671c9eae961c74291",
+    "descriptorSha256": "38f900c5118b2edeaa708a4168d15597718da76d21100921a95b8311c0114dfc",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -16498,7 +16499,8 @@
             "required": false,
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "description": "Only select records whose current revision is strictly less than beforeRevision; equality is excluded."
             }
           },
           {
