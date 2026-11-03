@@ -47,5 +47,15 @@ func (s *GuardedService) Cycles(ctx context.Context, by model.PrincipalRef, req 
 	if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
 		return service.CyclesResult{}, err
 	}
+	// The final authority reader is closed before validation returns. Lease
+	// loss during that read/close must still fence this response.
+	select {
+	case <-s.lease.Lost():
+		return service.CyclesResult{}, &model.Error{Data: model.ErrorData{Code: "busy", Retryable: true, Hint: "active storage lease was lost"}}
+	default:
+	}
+	if err := ctx.Err(); err != nil {
+		return service.CyclesResult{}, err
+	}
 	return result, nil
 }

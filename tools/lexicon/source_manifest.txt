@@ -1003,6 +1003,8 @@ spec/s1-b05-b08/README.md
 spec/s1-b05-b08/blocking_hierarchy_test.go
 spec/s1-b05-b08/checkpoint_guards_test.go
 spec/s1-b05-b08/cycle_admission_test.go
+spec/s1-b05-b08/cycle_fence_test.go
+spec/s1-b05-b08/cycle_oracle_test.go
 spec/s1-b05-b08/cycle_rpc_test.go
 spec/s1-b05-b08/engines_test.go
 spec/s1-b05-b08/fixture_test.go

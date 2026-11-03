@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"testing"
 	"time"
 
@@ -32,9 +31,20 @@ type cycleRPCFixture struct {
 	app     *authzrpc.Composition
 	keys    *authnapikey.Provider
 	project model.Ref
+	facts   authzfixed.Facts
 }
 
 func newCycleRPCFixture(t *testing.T, engine string) *cycleRPCFixture {
+	return newCycleRPCFixtureConfigured(t, engine, nil, nil)
+}
+
+type cycleSeedRow struct {
+	id      string
+	project string
+	links   []pipeline.Link
+}
+
+func newCycleRPCFixtureConfigured(t *testing.T, engine string, rows []cycleSeedRow, configure func(*cycleRPCFixture, *authzrpc.Config)) *cycleRPCFixture {
 	t.Helper()
 	ctx := context.Background()
 	f := &cycleRPCFixture{project: model.RefByID("visible-project", model.Natural64(0))}
@@ -68,32 +78,33 @@ func newCycleRPCFixture(t *testing.T, engine string) *cycleRPCFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedCycleRPCRows(t, f.store, f.lease, f.project)
+	if rows == nil {
+		rows = defaultCycleRPCRows()
+	}
+	seedCycleRPCRows(t, f.store, f.lease, rows)
 	ns := authz.Namespace{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, InstallationID: "fixed", Authority: model.RefByID("authority", model.Natural64(0))}
-	facts := authzfixed.Facts{Namespace: ns, Projects: []authzfixed.Project{
+	f.facts = authzfixed.Facts{Namespace: ns, Projects: []authzfixed.Project{
 		{Ref: f.project, Name: "visible", InstallationID: "fixed", Active: true},
 		{Ref: model.RefByID("secret-project", model.Natural64(0)), Name: "secret", InstallationID: "fixed", Active: true},
 	}}
 	f.keys = authnapikey.New(authnapikey.Config{AuthorizationInstalled: func() bool { return true }})
-	f.app, err = authzrpc.New(ctx, authzrpc.Config{Store: f.store, Lease: f.lease, Provider: f.keys, Facts: authzrpc.StaticFacts{Facts: facts}, Namespace: ns, DefaultProject: "visible"})
+	config := authzrpc.Config{Store: f.store, Lease: f.lease, Provider: f.keys, Facts: authzrpc.StaticFacts{Facts: f.facts}, Namespace: ns, DefaultProject: "visible"}
+	if configure != nil {
+		configure(f, &config)
+	}
+	f.app, err = authzrpc.New(ctx, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return f
 }
 
-func seedCycleRPCRows(t *testing.T, store driver.Store, lease driver.ActiveLease, project model.Ref) {
-	t.Helper()
+func defaultCycleRPCRows() []cycleSeedRow {
 	// The conformance seed is a disposable public fixture seam. It writes
 	// already-shaped rows so the report can be tested against a cycle that
 	// ordinary product writes correctly refuse.
-	type row struct {
-		id      string
-		project string
-		links   []pipeline.Link
-	}
 	ref := func(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
-	rows := []row{
+	return []cycleSeedRow{
 		{"a", "visible", []pipeline.Link{{To: ref("b"), Kind: "blocks"}, {To: ref("wait"), Kind: "waits-for"}}},
 		{"b", "visible", []pipeline.Link{{To: ref("a"), Kind: "blocks"}, {To: ref("parent"), Kind: "parent-child"}}},
 		{"c", "visible", []pipeline.Link{{To: ref("d"), Kind: "blocks"}}},
@@ -109,6 +120,11 @@ func seedCycleRPCRows(t *testing.T, store driver.Store, lease driver.ActiveLease
 		{"partial", "visible", []pipeline.Link{{To: ref("partial-secret"), Kind: "blocks"}}},
 		{"partial-secret", "secret", []pipeline.Link{{To: ref("partial"), Kind: "blocks"}}},
 	}
+}
+
+func seedCycleRPCRows(t *testing.T, store driver.Store, lease driver.ActiveLease, rows []cycleSeedRow) {
+	t.Helper()
+	ref := func(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
 	changes := make([]conformance.FixtureChange, 0, len(rows))
 	for _, row := range rows {
 		doc := pipeline.Document{ID: row.id, Type: "issue", Project: row.project, Fields: map[string]any{"title": row.id, "status": "todo", "priority": 0}, Links: row.links}
@@ -129,10 +145,17 @@ func (f *cycleRPCFixture) call(t *testing.T, principal model.PrincipalRef, metho
 	if err != nil {
 		t.Fatal(err)
 	}
+	return f.callToken(t, issued.Token, method, params)
+}
+
+func (f *cycleRPCFixture) callToken(t *testing.T, token, method string, params map[string]any) (service.CyclesResult, *model.Error) {
+	t.Helper()
 	if params == nil {
 		params = map[string]any{}
 	}
-	params["_meta"] = map[string]any{"project": "visible"}
+	if _, supplied := params["_meta"]; !supplied {
+		params["_meta"] = map[string]any{"project": "visible"}
+	}
 	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
 	if err != nil {
 		t.Fatal(err)
@@ -140,12 +163,9 @@ func (f *cycleRPCFixture) call(t *testing.T, principal model.PrincipalRef, metho
 	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1"+httpjson.Path, bytes.NewReader(body))
 	req.Header.Set("Plug-RPC", "1")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+issued.Token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	response := httptest.NewRecorder()
 	f.app.Handler.ServeHTTP(response, req)
-	if response.Code != http.StatusOK {
-		t.Fatalf("HTTP status = %d body=%s", response.Code, response.Body.String())
-	}
 	var envelope struct {
 		Result json.RawMessage `json:"result"`
 		Error  *struct {
@@ -156,7 +176,13 @@ func (f *cycleRPCFixture) call(t *testing.T, principal model.PrincipalRef, metho
 		t.Fatal(err)
 	}
 	if envelope.Error != nil {
+		if len(envelope.Result) != 0 {
+			t.Fatal("refused report disclosed a result")
+		}
 		return service.CyclesResult{}, &model.Error{Data: envelope.Error.Data}
+	}
+	if response.Code != http.StatusOK || len(envelope.Result) == 0 {
+		t.Fatalf("invalid successful report: HTTP %d body=%s", response.Code, response.Body.String())
 	}
 	var result service.CyclesResult
 	if err := json.Unmarshal(envelope.Result, &result); err != nil {
@@ -173,7 +199,7 @@ func TestB06AuthenticatedCycleReportAcrossDisposableStores(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			user := model.PrincipalRef{Kind: "user", ID: "cycle-reader"}
+			user := model.PrincipalRef{Kind: "user", ID: "user:cycle-reader"}
 			got, rpcErr := f.call(t, user, "bead.cycles", map[string]any{"limit": 1})
 			if rpcErr != nil {
 				t.Fatalf("cycle report refused: %+v", rpcErr.Data)
@@ -183,6 +209,9 @@ func TestB06AuthenticatedCycleReportAcrossDisposableStores(t *testing.T) {
 			}
 			if got.Items[0].MemberCount.String() != "2" || got.Items[0].Path[0].Ref == nil {
 				t.Fatalf("lowest-ID report path = %+v", got.Items[0])
+			}
+			if got.AsOf.Revision.String() != before.Head.String() || got.AsOf.Incarnation != before.Incarnation {
+				t.Fatalf("report is not bound to its content snapshot: %+v", got.AsOf)
 			}
 			full, rpcErr := f.call(t, user, "bead.cycles", nil)
 			if rpcErr != nil {
@@ -196,13 +225,16 @@ func TestB06AuthenticatedCycleReportAcrossDisposableStores(t *testing.T) {
 			if rpcErr != nil {
 				t.Fatalf("mixed cycle report refused: %+v", rpcErr.Data)
 			}
-			if !containsCycle(cycleRPCPaths(mixed), []string{"root", "step"}) || containsCycle(cycleRPCPaths(mixed), []string{"tracks-a", "tracks-b"}) {
+			if !reflect.DeepEqual(cycleRPCPaths(mixed), [][]string{{"a", "b"}, {"c", "d"}, {"partial", "partial-secret"}, {"root", "step"}}) {
 				t.Fatalf("mixed paths = %v", cycleRPCPaths(mixed))
 			}
-			limited := model.PrincipalRef{Kind: "user", ID: "limited-cycle-reader", Caveats: map[string]any{"projects": []model.Ref{f.project}}}
+			limited := model.PrincipalRef{Kind: "user", ID: "user:limited-cycle-reader", Caveats: map[string]any{"projects": []model.Ref{f.project}}}
 			partial, rpcErr := f.call(t, limited, "bead.cycles", nil)
 			if rpcErr != nil {
 				t.Fatalf("limited cycle report refused: %+v", rpcErr.Data)
+			}
+			if !reflect.DeepEqual(cycleRPCPaths(partial), [][]string{{"a", "b"}, {"c", "d"}, {"partial", ""}}) || partial.CycleCount.String() != "3" || partial.Truncated {
+				t.Fatalf("hidden projection/count = %+v", partial)
 			}
 			var partialItem service.Cycle
 			for _, item := range partial.Items {
@@ -217,6 +249,20 @@ func TestB06AuthenticatedCycleReportAcrossDisposableStores(t *testing.T) {
 				if member.Unreadable && member.Ref != nil {
 					t.Fatal("unreadable member disclosed a reference")
 				}
+			}
+			// Hidden cycles inside the selected project do not contribute to
+			// count or truncation, even when the visible limit is exactly full.
+			refs := model.PrincipalRef{Kind: "user", ID: "user:one-cycle", Caveats: map[string]any{"refs": []model.Ref{
+				model.RefByID("c", model.Natural64(0)), model.RefByID("d", model.Natural64(0)),
+			}}}
+			only, rpcErr := f.call(t, refs, "bead.cycles", map[string]any{"limit": 1})
+			if rpcErr != nil || only.CycleCount.String() != "1" || only.Truncated || !reflect.DeepEqual(cycleRPCPaths(only), [][]string{{"c", "d"}}) {
+				t.Fatalf("wholly hidden cycles affected count/limit: result=%+v error=%+v", only, rpcErr)
+			}
+			empty := model.PrincipalRef{Kind: "user", ID: "user:no-cycles", Caveats: map[string]any{"refs": []model.Ref{}}}
+			none, rpcErr := f.call(t, empty, "bead.cycles", map[string]any{"limit": 1})
+			if rpcErr != nil || none.CycleCount.String() != "0" || none.Truncated || len(none.Items) != 0 {
+				t.Fatalf("wholly hidden graph disclosed existence: result=%+v error=%+v", none, rpcErr)
 			}
 			_, rpcErr = f.call(t, user, "bead.cycles", map[string]any{"includeEphemeral": true})
 			if rpcErr == nil || rpcErr.Data.Code != "invalid_params" {
@@ -250,14 +296,6 @@ func cycleRPCPaths(result service.CyclesResult) [][]string {
 	for _, item := range result.Items {
 		paths = append(paths, cycleRPCPath(item))
 	}
-	sort.Slice(paths, func(i, j int) bool {
-		for k := 0; k < len(paths[i]) && k < len(paths[j]); k++ {
-			if paths[i][k] != paths[j][k] {
-				return paths[i][k] < paths[j][k]
-			}
-		}
-		return len(paths[i]) < len(paths[j])
-	})
 	return paths
 }
 
@@ -268,13 +306,4 @@ func containsCycle(paths [][]string, want []string) bool {
 		}
 	}
 	return false
-}
-
-func TestB06CycleReportPathOracle(t *testing.T) {
-	got := [][]string{{"a", "b"}, {"c", "d"}}
-	want := [][]string{{"a", "b"}, {"c", "d"}}
-	sort.Slice(got, func(i, j int) bool { return reflect.DeepEqual(got[i], want[i]) })
-	if !reflect.DeepEqual(got, want) {
-		t.Fatal("oracle fixture changed")
-	}
 }
