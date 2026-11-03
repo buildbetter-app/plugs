@@ -58,10 +58,13 @@ type watch struct {
 	consumer      *Subscription
 	nextMu        sync.Mutex
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{}
-	queue  chan Frame
+	// lifetime is the authoritative session context. AfterFunc cancellation of
+	// ctx is asynchronous, so admission and delivery must also check it directly.
+	lifetime context.Context
+	ctx      context.Context
+	cancel   context.CancelFunc
+	done     chan struct{}
+	queue    chan Frame
 	// queueMu serializes the only producer (the polling loop, plus the
 	// initial snapshot before it starts) with close/drain. A cancellation may
 	// arrive while a poll is returning, so closing a channel without this
@@ -188,6 +191,12 @@ func (m *Manager) Open(ctx context.Context, request Request) (*Subscription, err
 			return nil, err
 		}
 	}
+	// Recheck at registration: the session may have ended while Open waited
+	// for the manager lock or generated its subscription ID.
+	if err := ctx.Err(); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
 	if _, exists := m.watches[request.SubscriptionID]; exists {
 		m.mu.Unlock()
 		return nil, ErrDuplicateSubscription
@@ -206,12 +215,16 @@ func (m *Manager) Open(ctx context.Context, request Request) (*Subscription, err
 	// stopCaller is linked to the caller's context without retaining a
 	// goroutine per watch after cancellation.
 	stop := context.AfterFunc(ctx, stopCaller)
-	current := &watch{manager: m, id: request.SubscriptionID, session: request.SessionID, request: request, ctx: watchCtx, cancel: func() { stop(); cancel(); stopCaller() }, done: make(chan struct{}), queue: make(chan Frame, m.config.QueueSize), auth: &visibilityAuthorization{base: m.config.Events.Reader.Authorization, visible: map[string]bool{}}}
+	current := &watch{manager: m, id: request.SubscriptionID, session: request.SessionID, request: request, lifetime: ctx, ctx: watchCtx, cancel: func() { stop(); cancel(); stopCaller() }, done: make(chan struct{}), queue: make(chan Frame, m.config.QueueSize), auth: &visibilityAuthorization{base: m.config.Events.Reader.Authorization, visible: map[string]bool{}}}
 	m.watches[current.id] = current
 	sessions[current.id] = current
 	m.mu.Unlock()
 
-	if err := current.open(); err != nil {
+	err := current.open()
+	if current.lifetimeEnded() {
+		err = ErrSubscriptionClosed
+	}
+	if err != nil {
 		m.mu.Lock()
 		delete(m.watches, current.id)
 		if sessions := m.session[current.session]; sessions != nil {
@@ -399,7 +412,7 @@ func (m *Manager) AttachSession(ctx context.Context, id, sessionID string, princ
 	current.mu.Lock()
 	defer current.mu.Unlock()
 	defer m.mu.Unlock()
-	if current.ctx.Err() != nil || current.closed {
+	if current.lifetimeEnded() || current.closed {
 		return nil, ErrSubscriptionClosed
 	}
 	if current.consumer != nil {
@@ -434,7 +447,7 @@ func (m *Manager) Attach(ctx context.Context, id string, principal model.Princip
 	current.mu.Lock()
 	defer current.mu.Unlock()
 	defer m.mu.Unlock()
-	if current.ctx.Err() != nil || current.closed {
+	if current.lifetimeEnded() || current.closed {
 		return nil, ErrSubscriptionClosed
 	}
 	if current.consumer != nil {
@@ -445,7 +458,16 @@ func (m *Manager) Attach(ctx context.Context, id string, principal model.Princip
 	return subscription, nil
 }
 
+// lifetimeEnded keeps revocation synchronous with session close, even before
+// the callback that cancels the watch's own context has been scheduled.
+func (current *watch) lifetimeEnded() bool {
+	return current.ctx.Err() != nil || current.lifetime.Err() != nil
+}
+
 func (current *watch) open() error {
+	if current.lifetimeEnded() {
+		return ErrSubscriptionClosed
+	}
 	binding, err := current.manager.binding(current.ctx, current.request)
 	if err != nil {
 		return err
@@ -478,6 +500,9 @@ func (current *watch) run() {
 		select {
 		case <-current.ctx.Done():
 			return
+		case <-current.lifetime.Done():
+			current.cancel()
+			return
 		case <-ticker.C:
 			if err := current.step(); err != nil {
 				current.mu.Lock()
@@ -487,7 +512,7 @@ func (current *watch) run() {
 					// still in flight, so the source may report not_found before
 					// the session lifetime cancellation reaches this worker. Keep
 					// the transport-level closure sentinel stable in that race.
-					if current.ctx.Err() != nil || (current.request.Method == MethodPresenceWatch && isNotFound(err)) {
+					if current.lifetimeEnded() || (current.request.Method == MethodPresenceWatch && isNotFound(err)) {
 						current.closeErr = ErrSubscriptionClosed
 					} else {
 						current.closeErr = err
@@ -501,6 +526,9 @@ func (current *watch) run() {
 }
 
 func (current *watch) step() error {
+	if current.lifetimeEnded() {
+		return ErrSubscriptionClosed
+	}
 	current.mu.Lock()
 	if current.halted {
 		current.mu.Unlock()
@@ -778,8 +806,8 @@ func (current *watch) enqueue(frame Frame) error {
 	defer current.queueMu.Unlock()
 	current.mu.Lock()
 	defer current.mu.Unlock()
-	if err := current.ctx.Err(); err != nil {
-		return err
+	if current.lifetimeEnded() {
+		return ErrSubscriptionClosed
 	}
 	if current.halted {
 		return nil
@@ -823,8 +851,8 @@ func (current *watch) replaceWithReset(reason string, binding Binding) error {
 	defer current.queueMu.Unlock()
 	current.mu.Lock()
 	defer current.mu.Unlock()
-	if current.ctx.Err() != nil {
-		return current.ctx.Err()
+	if current.lifetimeEnded() {
+		return ErrSubscriptionClosed
 	}
 	if current.replacement != nil {
 		return nil
@@ -850,7 +878,7 @@ func (current *watch) next(ctx context.Context, consumer *Subscription) (Frame, 
 	if err := ctx.Err(); err != nil {
 		return Frame{}, err
 	}
-	if err := current.ctx.Err(); err != nil {
+	if current.lifetimeEnded() {
 		return Frame{}, current.closedError()
 	}
 	var frame Frame
@@ -858,6 +886,8 @@ func (current *watch) next(ctx context.Context, consumer *Subscription) (Frame, 
 	case <-ctx.Done():
 		return Frame{}, ctx.Err()
 	case <-current.ctx.Done():
+		return Frame{}, current.closedError()
+	case <-current.lifetime.Done():
 		return Frame{}, current.closedError()
 	case value, ok := <-current.queue:
 		if !ok {
@@ -870,7 +900,7 @@ func (current *watch) next(ctx context.Context, consumer *Subscription) (Frame, 
 	if err := ctx.Err(); err != nil {
 		return Frame{}, err
 	}
-	if current.ctx.Err() != nil {
+	if current.lifetimeEnded() {
 		return Frame{}, current.closedError()
 	}
 	checkCtx, cancel := context.WithCancel(ctx)
@@ -939,7 +969,7 @@ func (current *watch) next(ctx context.Context, consumer *Subscription) (Frame, 
 	if err := ctx.Err(); err != nil {
 		return Frame{}, err
 	}
-	if current.ctx.Err() != nil {
+	if current.lifetimeEnded() {
 		return Frame{}, current.closedError()
 	}
 	if err := frame.validate(); err != nil {
@@ -954,6 +984,11 @@ func (current *watch) next(ctx context.Context, consumer *Subscription) (Frame, 
 		frame = *current.replacement
 		current.mu.Unlock()
 	}
+	// Validation and visibility bookkeeping can overlap session close too.
+	// The original lifetime, not its asynchronous callback, gates the handoff.
+	if current.lifetimeEnded() {
+		return Frame{}, current.closedError()
+	}
 	if frame.Terminal() {
 		current.fail(ErrResetRequired)
 	}
@@ -964,7 +999,7 @@ func (current *watch) fail(err error) error {
 	// A lifetime ending during delivery wins over the in-flight operation's
 	// context error. Keep the transport closure sentinel consistent with run,
 	// while preserving the original error for a still-live watch.
-	if current.ctx.Err() != nil {
+	if current.lifetimeEnded() {
 		err = ErrSubscriptionClosed
 	}
 	current.mu.Lock()
