@@ -555,6 +555,36 @@ func quietPublicRecoveryHTTP(t *testing.T, f *quietFixture) {
 	t.Helper()
 	by := worker("user:operator")
 	f.claim(t, by)
+	requireForeignLiveClaim := func(state quietState, caller model.PrincipalRef, key int) {
+		t.Helper()
+		select {
+		case <-f.lease.Lost():
+			t.Fatal("public recovery fixture lost its storage lease")
+		default:
+		}
+		var actual struct {
+			ID    string
+			Lease *pipeline.ClaimLease
+		}
+		if err := json.Unmarshal([]byte(state.Body), &actual); err != nil || actual.ID != beadID || actual.Lease == nil {
+			t.Fatalf("public recovery fixture has no actual base claim: %v", err)
+		}
+		holder, err := driver.PrincipalKey(actual.Lease.Principal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		principal, err := driver.PrincipalKey(caller)
+		if err != nil || holder == principal || !samePrincipal(t, actual.Lease.Principal, by) {
+			t.Fatalf("public recovery fixture is not held by the original, different Agent: %v", err)
+		}
+		epoch, err := actual.Lease.Epoch.Uint64()
+		if err != nil || epoch == 0 || epoch != f.lease.Epoch() || !f.clock.Now().Before(actual.Lease.ExpiresAt) {
+			t.Fatalf("public recovery fixture claim is not live under the current storage lease: %v", err)
+		}
+		if state.Overlay.Generation != 0 || len(state.Overlay.Payload) != 0 || f.receipt(t, caller, "bead.release", key) != nil {
+			t.Fatal("public recovery fixture has an overlay or an existing release receipt")
+		}
+	}
 	if _, err := f.keys.Issue(model.PrincipalRef{Kind: "system", ID: "core"}, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("public API-key provider issued the trusted recovery principal")
 	}
@@ -563,12 +593,20 @@ func quietPublicRecoveryHTTP(t *testing.T, f *quietFixture) {
 	params := quietParams()
 	params["_meta"] = map[string]any{"agent": "core"}
 	before := f.state(t, other, 7500)
-	requireQuietRefusal(t, f.call(t, other, "bead.release", params, 7500), "lease_not_held", "bead is claimed by another principal")
+	requireForeignLiveClaim(before, other, 7500)
+	got := f.call(t, other, "bead.release", params, 7500)
+	requireQuietRefusal(t, got, "lease_not_held", "")
+	// Ordinary release puts its diagnostic in Error.Message. The RPC catalog
+	// supplies the public message and retry metadata without inventing a hint.
+	if got.Error.Data.Hint != "" || !got.Error.Data.Retryable || len(got.Error.Data.Details) != 0 {
+		t.Fatal("ordinary release did not preserve its public lease_not_held projection")
+	}
 	if !reflect.DeepEqual(before, f.state(t, other, 7500)) || f.receipt(t, other, "bead.release", 7500) != nil {
 		t.Fatal("agent label or ID impersonated recovery or released a foreign claim")
 	}
 	user := model.PrincipalRef{Kind: "user", ID: "user:core"}
 	before = f.state(t, user, 7501)
+	requireForeignLiveClaim(before, user, 7501)
 	requireQuietRefusal(t, f.call(t, user, "bead.release", quietParams(), 7501), "forbidden", "claim maintenance requires an authenticated sponsored agent")
 	if !reflect.DeepEqual(before, f.state(t, user, 7501)) || f.receipt(t, user, "bead.release", 7501) != nil {
 		t.Fatal("public User acquired a recovery/deputy write")
