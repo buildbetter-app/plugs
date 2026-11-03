@@ -79,6 +79,9 @@ type e3CorpusReceipt struct {
 	ActualAgents            int              `json:"actualSimulatedAgents"`
 	ActualLiveSessions      int              `json:"actualLiveSessions"`
 	ActualWorkingRows       int              `json:"actualWorkingRows"`
+	EpicID                  string           `json:"epicID,omitempty"`
+	EpicDirectChildren      int              `json:"epicDirectChildren,omitempty"`
+	EpicHiddenChildren      int              `json:"epicHiddenChildren,omitempty"`
 	Authorization           string           `json:"authorization"`
 	DisplayNameSupport      string           `json:"displayNameSupport"`
 	DisplayNamesRequested   int              `json:"displayNamesRequested"`
@@ -261,6 +264,32 @@ func (f *e3Fixture) populate(first, last int) {
 
 func (f *e3Fixture) runAgents() {
 	f.t.Helper()
+	// Persist the epic graph through the real tx.apply/Reparent path before any
+	// child is claimed. The lease guard intentionally rejects reparenting a
+	// claimed bead, so hierarchy setup must precede the collaboration workload.
+	// The parent and 51 direct children are existing Writer-created beads, so
+	// this preserves the exact 20,000-bead corpus while exercising the
+	// hierarchy seam used by the browser's epic-progress producer. Child 60
+	// remains the stored but unreadable canary; its identity and status must
+	// never escape.
+	parent := model.RefByID(e3ID(99), model.Natural64(0))
+	ops := make([]model.Op, 0, e3Agents+1)
+	for index := 1; index <= e3Agents; index++ {
+		child := model.RefByID(e3ID(index), model.Natural64(0))
+		parentCopy := parent
+		ops = append(ops, model.Op{Kind: model.OpReparent, Reparent: &model.ReparentOp{Kind: model.OpReparent, Target: child, Parent: &parentCopy}})
+	}
+	hidden := model.RefByID(e3ID(60), model.Natural64(0))
+	parentCopy := parent
+	ops = append(ops, model.Op{Kind: model.OpReparent, Reparent: &model.ReparentOp{Kind: model.OpReparent, Target: hidden, Parent: &parentCopy}})
+	f.call("tx.apply", map[string]any{
+		"changeSet": model.ChangeSet{Ops: ops},
+		"_meta":     map[string]any{"project": e3Project, "agent": "e3-populator", "idempotencyKey": e3Key("epic-hierarchy")},
+	}, nil)
+	f.receipt.EpicID = parent.ID
+	f.receipt.EpicDirectChildren = e3Agents + 1
+	f.receipt.EpicHiddenChildren = 1
+
 	displayNamesSupported := true
 	probeMeta := map[string]any{"project": e3Project, "agent": "e3-displayName-probe", "idempotencyKey": e3Key("displayName-probe")}
 	f.receipt.DisplayNamesRequested++

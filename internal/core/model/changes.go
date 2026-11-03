@@ -22,6 +22,7 @@ type Op struct {
 	Kind     OpKind      `json:"-"`
 	Create   *CreateOp   `json:"-"`
 	Patch    *PatchOp    `json:"-"`
+	Close    *CloseOp    `json:"-"`
 	Reparent *ReparentOp `json:"-"`
 	Link     *LinkOp     `json:"-"` // carries both link and unlink
 	Comment  *CommentOp  `json:"-"`
@@ -35,6 +36,7 @@ type OpKind string
 const (
 	OpCreate   OpKind = "create"
 	OpPatch    OpKind = "patch"
+	OpClose    OpKind = "close"
 	OpReparent OpKind = "reparent"
 	OpLink     OpKind = "link"
 	OpUnlink   OpKind = "unlink"
@@ -57,17 +59,70 @@ type PatchOp struct {
 	Target Ref            `json:"target"`
 	Fields map[string]any `json:"fields"`
 }
+
+// CloseOp enters the canonical close slot at this position in tx.apply.
+// Expect observes the ordered in-request image, unlike ChangeSet.Expect,
+// which observes the pinned committed snapshot.
+type CloseOp struct {
+	Kind   OpKind         `json:"kind"`
+	Target Ref            `json:"target"`
+	Reason string         `json:"reason,omitempty"`
+	Expect []Precondition `json:"expect,omitempty"`
+}
 type ReparentOp struct {
 	Kind    OpKind `json:"kind"`
 	Target  Ref    `json:"target"`
 	Parent  *Ref   `json:"parent,omitempty"`
 	Project string `json:"project,omitempty"`
 }
+
+// LinkMetadata is the optional waits-for fanout predicate. The edge's To
+// remains the spawner; metadata never introduces another endpoint.
+type LinkMetadata struct {
+	Gate       string `json:"gate,omitempty"`
+	AlsoBlocks bool   `json:"also_blocks,omitempty"`
+}
+
+// Normalized returns a detached all-children/false default for explicit {}.
+func (m LinkMetadata) Normalized() (LinkMetadata, error) {
+	if m.Gate == "" {
+		m.Gate = "all-children"
+	}
+	if m.Gate != "all-children" && m.Gate != "any-children" {
+		return LinkMetadata{}, fmt.Errorf("unsupported waits-for gate %q", m.Gate)
+	}
+	return m, nil
+}
+
+func (m *LinkMetadata) UnmarshalJSON(data []byte) error {
+	var value struct {
+		Gate       *string `json:"gate,omitempty"`
+		AlsoBlocks bool    `json:"also_blocks,omitempty"`
+	}
+	if err := decodeStrict(data, &value); err != nil {
+		return err
+	}
+	next := LinkMetadata{Gate: "all-children", AlsoBlocks: value.AlsoBlocks}
+	if value.Gate != nil {
+		next.Gate = *value.Gate
+		if next.Gate == "" {
+			return fmt.Errorf("waits-for gate must not be empty")
+		}
+	}
+	normalized, err := next.Normalized()
+	if err != nil {
+		return err
+	}
+	*m = normalized
+	return nil
+}
+
 type LinkOp struct {
-	Kind     OpKind `json:"kind"`
-	From     Ref    `json:"from"`
-	To       Ref    `json:"to"`
-	LinkKind string `json:"linkKind"`
+	Kind     OpKind        `json:"kind"`
+	From     Ref           `json:"from"`
+	To       Ref           `json:"to"`
+	LinkKind string        `json:"linkKind"`
+	Metadata *LinkMetadata `json:"metadata,omitempty"`
 }
 type CommentOp struct {
 	Kind   OpKind `json:"kind"`
@@ -143,6 +198,13 @@ func validatePatch(value PatchOp) error {
 	return requireNonNilMap("fields", value.Fields)
 }
 
+func validateClose(value CloseOp) error {
+	if value.Kind != OpClose {
+		return fmt.Errorf("close operation has kind %q", value.Kind)
+	}
+	return nil
+}
+
 func validateReparent(value ReparentOp) error {
 	if value.Kind != OpReparent {
 		return fmt.Errorf("reparent operation has kind %q", value.Kind)
@@ -153,6 +215,13 @@ func validateReparent(value ReparentOp) error {
 func validateLink(value LinkOp) error {
 	if value.Kind != OpLink && value.Kind != OpUnlink {
 		return fmt.Errorf("link operation has kind %q", value.Kind)
+	}
+	if value.Metadata != nil {
+		if value.Kind != OpLink || value.LinkKind != "waits-for" {
+			return fmt.Errorf("metadata is only valid on a waits-for link")
+		}
+		_, err := value.Metadata.Normalized()
+		return err
 	}
 	return nil
 }
@@ -194,7 +263,7 @@ func validateSetMeta(value SetMetaOp) error {
 // wrapper. UnmarshalJSON performs the inverse discriminator selection.
 func (o Op) MarshalJSON() ([]byte, error) {
 	selected := 0
-	for _, present := range []bool{o.Create != nil, o.Patch != nil, o.Reparent != nil, o.Link != nil, o.Comment != nil, o.Attach != nil, o.Delete != nil, o.SetMeta != nil} {
+	for _, present := range []bool{o.Create != nil, o.Patch != nil, o.Close != nil, o.Reparent != nil, o.Link != nil, o.Comment != nil, o.Attach != nil, o.Delete != nil, o.SetMeta != nil} {
 		if present {
 			selected++
 		}
@@ -208,6 +277,8 @@ func (o Op) MarshalJSON() ([]byte, error) {
 		payloadKind = o.Create.Kind
 	case o.Patch != nil:
 		payloadKind = o.Patch.Kind
+	case o.Close != nil:
+		payloadKind = o.Close.Kind
 	case o.Reparent != nil:
 		payloadKind = o.Reparent.Kind
 	case o.Link != nil:
@@ -242,6 +313,16 @@ func (o Op) MarshalJSON() ([]byte, error) {
 		value := *o.Patch
 		value.Kind = OpPatch
 		if err := validatePatch(value); err != nil {
+			return nil, err
+		}
+		return json.Marshal(value)
+	case OpClose:
+		if o.Close == nil {
+			return nil, fmt.Errorf("operation %q has no payload", o.Kind)
+		}
+		value := *o.Close
+		value.Kind = OpClose
+		if err := validateClose(value); err != nil {
 			return nil, err
 		}
 		return json.Marshal(value)
@@ -346,6 +427,15 @@ func (o *Op) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		decoded.Patch = &value
+	case OpClose:
+		var value CloseOp
+		if err := decodeStrict(data, &value, "kind", "target"); err != nil {
+			return err
+		}
+		if err := validateClose(value); err != nil {
+			return err
+		}
+		decoded.Close = &value
 	case OpReparent:
 		var value ReparentOp
 		if err := decodeStrict(data, &value, "kind", "target"); err != nil {

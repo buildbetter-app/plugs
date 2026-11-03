@@ -14,6 +14,7 @@ go_test(
         "-test.v",
     ],
     data = ["//spec/recorded/extension:extension.json"],
+    tags = ["exclusive"],
     deps = [
         "//internal/acceptance",
         "//internal/core/model",

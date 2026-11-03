@@ -1,0 +1,51 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_test")
+
+go_test(
+    name = "acceptance",
+    srcs = [
+        "slice_test.go",
+    ],
+    embedsrcs = [
+        "record_reference.py",
+    ],
+    args = ["-test.v"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/sqlite",
+    ],
+)
+
+go_test(
+    name = "capture_regressions",
+    srcs = ["capture_regressions_test.go"],
+    embedsrcs = [
+        "capture_regressions_test.py",
+        "reference_capture.py",
+    ],
+    args = ["-test.v"],
+    data = ["//scripts/ci:public_reference_validation"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
+
+go_binary(
+    name = "reference_capture",
+    srcs = ["reference_capture_main.go"],
+    data = [
+        "record_reference.py",
+        "reference_capture.py",
+        "//scripts/ci:public_reference_validation",
+    ],
+)

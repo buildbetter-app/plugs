@@ -181,11 +181,8 @@ func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]stored
 			if link.Kind == "conditional-blocks" {
 				satisfied = effective.SatisfiesConditionalBlocks(s.Status)
 			}
-			if link.Kind == "waits-for" && !satisfied {
-				// A waits-for edge is a fanout gate. With no gate metadata on
-				// the compact Plug link envelope, an open target is satisfied
-				// once all of its explicit or linked children are terminal.
-				satisfied = o.noOpenChildren(blocker.doc, graph)
+			if link.Kind == "waits-for" {
+				satisfied = o.waitsForSatisfied(link, blocker, graph)
 			}
 			if !satisfied {
 				return false, nil
@@ -197,6 +194,43 @@ func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]stored
 		}
 	}
 	return true, nil
+}
+
+// waitsForSatisfied evaluates the complete tracked graph already acquired by
+// the ontology guard. Explicit metadata follows the pinned waits-for formula:
+// an open child blocks unless any-children has a terminal child; also_blocks
+// additionally requires the spawner itself to be terminal.
+func (o *Ontology) waitsForSatisfied(link pipeline.Link, spawner storedBead, graph map[string]storedBead) bool {
+	terminal := func(row storedBead) bool {
+		return o.effective(row.doc.Project).SatisfiesBlocks(state(row.doc).Status)
+	}
+	if link.Metadata == nil {
+		// Preserve the legacy terminal-spawner/all-children fallback.
+		return terminal(spawner) || o.noOpenChildren(spawner.doc, graph)
+	}
+	if link.Metadata.AlsoBlocks && !terminal(spawner) {
+		return false
+	}
+	openChild, terminalChild := false, false
+	for _, child := range graph {
+		member := child.doc.Parent != nil && child.doc.Parent.ID == spawner.doc.ID
+		if !member {
+			for _, edge := range child.doc.Links {
+				if edge.Kind == "parent-child" && edge.To.ID == spawner.doc.ID {
+					member = true
+					break
+				}
+			}
+		}
+		if member {
+			if terminal(child) {
+				terminalChild = true
+			} else {
+				openChild = true
+			}
+		}
+	}
+	return !openChild || link.Metadata.Gate == "any-children" && terminalChild
 }
 
 // readyDependencies extends the close-guard blocker predicate with the
@@ -220,9 +254,33 @@ func (o *Ontology) readyDependencies(doc pipeline.Document, graph map[string]sto
 			return false, nil
 		}
 	}
-	// The explicit parent field is hierarchy/disclosure metadata. It is
-	// checked by close guards, while ready membership is governed by graph
-	// dependency edges so a child remains visible when its parent is hidden.
+	return o.readyAncestors(doc, graph)
+}
+
+// readyAncestors applies canonical parent scheduling to ready and fresh claims.
+// It deliberately leaves close and settlement's direct blocker guard unchanged.
+func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
+	seen := map[string]bool{doc.ID: true}
+	for doc.Parent != nil {
+		parent := doc.Parent
+		row, exists := graph[parent.ID]
+		if !exists || !parent.IsID() || !parent.Branch.IsZero() || seen[parent.ID] {
+			return false, nil
+		}
+		// An open parent alone is not a blocker. Deferred/backlog ancestors
+		// and their live blockers suppress the entire subtree, using each
+		// ancestor's own project ontology from the same complete snapshot.
+		category, known := o.effective(row.doc.Project).Category(state(row.doc).Status)
+		if !known || category == ontology.Backlog {
+			return false, nil
+		}
+		unblocked, err := o.noOpenBlockers(row.doc, graph)
+		if err != nil || !unblocked {
+			return unblocked, err
+		}
+		seen[parent.ID] = true
+		doc = row.doc
+	}
 	return true, nil
 }
 

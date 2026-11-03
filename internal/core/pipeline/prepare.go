@@ -55,6 +55,9 @@ type prepared struct {
 	snapshot *snapshotReader
 	writes   map[string]*pending
 	proposal port.ProposedChange
+	// Ordered images are private core input for typed close guard validation.
+	ordered []port.Change
+	closes  map[string]bool
 	// refusal is deliberately kept out of ProposedChange. It may contain a
 	// current revision token and can be released only after AuthorizeBefore has
 	// covered every disclosed expectation target.
@@ -171,6 +174,15 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	}
 	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}, allocatorCursors: map[string]uint64{}, allocatorSeen: map[string]bool{}}
 	aliases := map[string]model.Ref{}
+	for _, op := range cs.Ops {
+		if op.Kind == model.OpClose {
+			if meta.Method != "tx.apply" {
+				return nil, failure("invalid_params", "close operation requires tx.apply")
+			}
+			p.closes = map[string]bool{}
+			break
+		}
+	}
 	slotRef := ""
 	if len(cs.Ops) == 0 {
 		if meta.Method != "bead.claimNext" {
@@ -186,6 +198,11 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 		}
 	}
 	for _, op := range cs.Ops {
+		if op.Kind == model.OpClose {
+			value := *op.Close
+			value.Expect = append([]model.Precondition{}, value.Expect...)
+			op.Close = &value
+		}
 		var target model.Ref
 		var current *pending
 		var before json.RawMessage
@@ -240,6 +257,9 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if err = applyFields(current, c.Fields, "request"); err != nil {
 				return nil, err
 			}
+			if err = p.inheritLabels(ctx, current); err != nil {
+				return nil, err
+			}
 			if c.Key != "" {
 				aliases[c.Key] = target
 			}
@@ -247,6 +267,8 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			switch op.Kind {
 			case model.OpPatch:
 				target = op.Patch.Target
+			case model.OpClose:
+				target = op.Close.Target
 			case model.OpComment:
 				target = op.Comment.Target
 			case model.OpLink, model.OpUnlink:
@@ -319,6 +341,12 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if err = applyFields(current, op.Patch.Fields, "request"); err != nil {
 					return nil, err
 				}
+			case model.OpClose:
+				op.Close.Target = target
+				before, err = w.prepareClose(ctx, p, current, op.Close, aliases)
+				if err != nil {
+					return nil, err
+				}
 			case model.OpComment:
 				if strings.TrimSpace(op.Comment.Body) == "" {
 					return nil, failure("invalid_params", "comment body must not be empty")
@@ -364,8 +392,26 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 						return nil, failure("invalid_params", "dependency endpoint already has a different type")
 					}
 				}
-				if op.Kind == model.OpLink && found < 0 {
-					current.doc.Links = append(current.doc.Links, Link{To: to, Kind: kind})
+				var metadata *model.LinkMetadata
+				if op.Link.Metadata != nil {
+					if op.Kind != model.OpLink || kind != "waits-for" {
+						return nil, failure("invalid_params", "metadata is only valid on a waits-for link")
+					}
+					value, err := op.Link.Metadata.Normalized()
+					if err != nil {
+						return nil, failure("invalid_params", err.Error())
+					}
+					metadata = &value
+				}
+				if op.Kind == model.OpLink {
+					if found < 0 {
+						current.doc.Links = append(current.doc.Links, Link{To: to, Kind: kind, Metadata: metadata})
+					} else if metadata != nil {
+						// Omission preserves the stored predicate. An explicit
+						// replacement participates in ordinary final-image CAS,
+						// no-op detection and the single history/version commit.
+						current.doc.Links[found].Metadata = metadata
+					}
 				}
 				if op.Kind == model.OpUnlink && found >= 0 {
 					current.doc.Links = append(current.doc.Links[:found], current.doc.Links[found+1:]...)
@@ -390,7 +436,17 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 		}
 		p.refs = append(p.refs, target)
-		p.proposal.Changes = append(p.proposal.Changes, port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: target}, Op: op, Before: before})
+		change := port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: target}, Op: op, Before: before}
+		if p.closes != nil {
+			if !current.deleted {
+				change.After, err = current.body()
+				if err != nil {
+					return nil, err
+				}
+			}
+			p.ordered = append(p.ordered, change)
+		}
+		p.proposal.Changes = append(p.proposal.Changes, change)
 	}
 	// Only actual operation targets belong to the write set. Reads of link
 	// endpoints remain guarded but do not gain spurious versions or revisions.
@@ -739,6 +795,12 @@ func applyFields(p *pending, fields map[string]any, setter string) error {
 		if name == "" || strings.ContainsAny(name, "./\x00") {
 			return failure("invalid_params", "field names must be nonempty unqualified keys")
 		}
+		if name == "labels" {
+			if err := setLabels(p, value, setter); err != nil {
+				return err
+			}
+			continue
+		}
 		if value == nil {
 			delete(p.doc.Fields, name)
 		} else {
@@ -980,7 +1042,7 @@ func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta
 		}
 	} else {
 		for _, pending := range p.writes {
-			method := gateLifecycleMethod(meta.Method, pending)
+			method := p.lifecycleMethod(pending)
 			if !isSlot(method) || isClaim(method) {
 				continue
 			}
