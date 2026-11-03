@@ -1056,6 +1056,7 @@ internal/storage/sqlite/lease_heartbeat_test.go
 internal/storage/sqlite/locks_other.go
 internal/storage/sqlite/locks_unix.go
 internal/storage/sqlite/metadata.go
+internal/storage/sqlite/metadata_outcome_test.go
 internal/storage/sqlite/offline_history.go
 internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/parent_counter.go

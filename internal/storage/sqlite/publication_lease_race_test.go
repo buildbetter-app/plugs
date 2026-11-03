@@ -56,18 +56,20 @@ func publicationHeartbeat(ctx context.Context, lease driver.ActiveLease, start, 
 	return done
 }
 
-// These hooks surround REAL native transactions; they do not replace an engine
-// result. They expose heartbeats during the SQL/fsync interval and after the
-// durable graph commit but before the driver unregisters the publication.
+// These hooks surround REAL native transactions. They expose heartbeats during
+// the SQL/fsync interval and after the durable commit but before unregistration.
+// checkContextAfter additionally makes modernc's deferred cancellation check
+// deterministic: native COMMIT succeeds, but its execution returns ctx.Err().
 type publicationCommitConnector struct {
-	driver    sqldriver.Driver
-	dsn       string
-	before    func()
-	after     func()
-	armed     atomic.Bool
-	every     atomic.Bool
-	steps     atomic.Int32
-	rollbacks atomic.Int32
+	driver            sqldriver.Driver
+	dsn               string
+	before            func()
+	after             func()
+	checkContextAfter bool
+	armed             atomic.Bool
+	every             atomic.Bool
+	steps             atomic.Int32
+	rollbacks         atomic.Int32
 }
 
 func (c *publicationCommitConnector) Driver() sqldriver.Driver { return c.driver }
@@ -97,6 +99,9 @@ func (c *publicationCommitConn) ExecContext(ctx context.Context, query string, a
 		c.connector.steps.Add(1)
 		if hook && c.connector.after != nil {
 			c.connector.after()
+		}
+		if hook && c.connector.checkContextAfter && ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
 	}
 	return result, err
