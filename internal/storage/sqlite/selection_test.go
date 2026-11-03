@@ -662,3 +662,54 @@ func TestSelectionSparseRefPlanAndCacheWork(t *testing.T) {
 	}
 	t.Logf("SQLite sparse selection EXPLAIN=%q cache_hits=%d executor_row_visits=UNMEASURED", details, hits)
 }
+
+// The affected ancestor proof must drive the temporal family lookup from the
+// changed source set. The old family interval index placed start_revision
+// before source_key, which made SQLite scan the whole family before applying
+// the affected-source join as the store grew.
+func TestSelectionAffectedFamilyPlanUsesSourceTemporalIndex(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	meta, err := s.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := revKey(mustUint(meta.Head))
+	query := `EXPLAIN QUERY PLAN WITH affected(record_key) AS (VALUES (?)),
+		sets AS (
+			SELECT f.row_key,f.start_revision,f.source_key
+			FROM selection_fact_sets f
+			JOIN affected a ON a.record_key=f.source_key
+			WHERE f.incarnation=? AND f.branch=? AND f.row_table=? AND f.kind=?
+			AND f.start_revision<=? AND (f.end_revision IS NULL OR f.end_revision>?)
+		)
+		SELECT * FROM sets`
+	plan, err := s.db.QueryContext(ctx, query,
+		"0:selection-plan-seed", meta.Incarnation, revKey(0),
+		string(driver.DerivedAncestorClosure), string(driver.SelectionAncestorFact), at, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plan.Close()
+	var details []string
+	for plan.Next() {
+		var node, parent, unused int
+		var detail string
+		if err := plan.Scan(&node, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		details = append(details, detail)
+	}
+	if err := plan.Err(); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(details, "\n")
+	if !strings.Contains(joined, "SEARCH f USING INDEX selection_fact_sets_family_source") ||
+		!strings.Contains(joined, "source_key=?") {
+		t.Fatalf("affected family proof lost source-bounded temporal plan: %s", joined)
+	}
+	if strings.Contains(joined, "SEARCH f USING INDEX selection_fact_sets_family ") {
+		t.Fatalf("affected family proof fell back to the broad interval index: %s", joined)
+	}
+}
