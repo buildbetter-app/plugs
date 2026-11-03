@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//internal/core/model",
         "//internal/storage/driver",
+        "//internal/storage/sourceindex",
         "@com_github_jackc_pgx_v5//stdlib:stdlib",
     ],
 )
@@ -21,6 +22,7 @@ go_test(
         "//internal/core/pipeline:pipeline",
         "//internal/core/port",
         "//internal/storage/driver",
+        "//internal/storage/sourceindex",
         "//internal/storage/conformance",
         "//internal/testclock",
     ],

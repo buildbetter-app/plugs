@@ -83,6 +83,7 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 		value.Revision = plan.Meta.Head
 		next.publishKey(id, value)
 	}
+	next.publishDerivedKeys(t.derived)
 	for id, key := range t.bumps {
 		next.publishKey(id, driver.LockState{Key: key, Revision: plan.Meta.Head, Present: true})
 	}

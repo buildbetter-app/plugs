@@ -288,13 +288,16 @@ func runSnapshotLifetime(t *testing.T, backend backend) {
 	}
 	stagedRef := model.RefByID("staged-only", model.Natural64(0))
 	lock := driver.LockKey{Kind: driver.LockRecord, Ref: &stagedRef}
-	if _, err := staged.Lock(ctx, []driver.LockRequest{{Key: lock, Mode: driver.LockUpdate}}); err != nil {
+	if _, err := staged.Lock(ctx, []driver.LockRequest{
+		{Key: lock, Mode: driver.LockUpdate},
+		{Key: driver.GraphBlockingSentinelLock, Mode: driver.LockUpdate},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := staged.Head(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := staged.Put(ctx, driver.Record{Ref: stagedRef, Kind: "bead", Body: []byte(`{"id":"staged-only"}`)}); err != nil {
+	if err := pipeline.PutSourceRecord(ctx, staged, driver.Record{Ref: stagedRef, Kind: "bead", Body: []byte(`{"id":"staged-only","type":"issue","fields":{}}`)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {

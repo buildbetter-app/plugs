@@ -262,8 +262,12 @@ internal/core/pipeline/document.go
 internal/core/pipeline/gate.go
 internal/core/pipeline/guard_test.go
 internal/core/pipeline/hierarchy.go
+internal/core/pipeline/hierarchy_indexed.go
+internal/core/pipeline/hierarchy_indexed_graph.go
+internal/core/pipeline/hierarchy_indexed_test.go
 internal/core/pipeline/hierarchy_prefix_guard_test.go
 internal/core/pipeline/hierarchy_scope_test.go
+internal/core/pipeline/hierarchy_source.go
 internal/core/pipeline/hierarchy_test.go
 internal/core/pipeline/labels.go
 internal/core/pipeline/lease_overlay.go
@@ -280,6 +284,7 @@ internal/core/pipeline/response.go
 internal/core/pipeline/response_test.go
 internal/core/pipeline/snapshot.go
 internal/core/pipeline/snapshot_get_test.go
+internal/core/pipeline/snapshot_hierarchy.go
 internal/core/pipeline/telemetry.go
 internal/core/pipeline/telemetry_test.go
 internal/core/port/BUILD.bazel
@@ -314,7 +319,10 @@ internal/core/service/direct_blockers_test.go
 internal/core/service/gate.go
 internal/core/service/graph.go
 internal/core/service/heartbeat.go
+internal/core/service/hierarchy-index-consumer-design.md
 internal/core/service/hierarchy_guards.go
+internal/core/service/hierarchy_indexed.go
+internal/core/service/hierarchy_indexed_test.go
 internal/core/service/history.go
 internal/core/service/history_reads_test.go
 internal/core/service/history_sqlite_rpc_test.go
@@ -358,6 +366,13 @@ internal/integration/auditsql/audit_sql_test.go
 internal/integration/auditsql/engine_test.go
 internal/integration/auditsql/faults_test.go
 internal/integration/auditsql/fixture_test.go
+internal/integration/b13memory/BUILD.bazel
+internal/integration/b13memory/README.md
+internal/integration/b13memory/fixture_test.go
+internal/integration/b13memory/lifecycle_test.go
+internal/integration/b13memory/manifest-proposal.patch
+internal/integration/b13memory/oracle_test.go
+internal/integration/b13memory/postgres_test.go
 internal/integration/batchsql/BUILD.bazel
 internal/integration/batchsql/README.md
 internal/integration/batchsql/allocator_archive_test.go
@@ -370,6 +385,7 @@ internal/integration/batchsql/fixture_test.go
 internal/integration/batchsql/hierarchy_authorization_test.go
 internal/integration/batchsql/hierarchy_test.go
 internal/integration/batchsql/native_allocator_restore_test.go
+internal/integration/batchsql/public_batch_guard_order_test.go
 internal/integration/batchsql/thousand_diagnostic_test.go
 internal/integration/claimsql/BUILD.bazel
 internal/integration/claimsql/README.md
@@ -386,6 +402,7 @@ internal/integration/collabwatch/reconnect_acceptance_test.go
 internal/integration/converterroundtrip/BUILD.bazel
 internal/integration/converterroundtrip/hierarchy_import_test.go
 internal/integration/converterroundtrip/history.go
+internal/integration/converterroundtrip/identity_counters_test.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
 internal/integration/converterroundtrip/native_restore_test.go
@@ -463,12 +480,14 @@ internal/integration/nightlyrestore/engine_test.go
 internal/integration/nightlyrestore/fixture_test.go
 internal/integration/nightlyrestore/history_diff_test.go
 internal/integration/nightlyrestore/restore_diff_test.go
+internal/integration/nightlyrestore/snapshot_archive_metadata_test.go
 internal/integration/offlinehistory/BUILD.bazel
 internal/integration/offlinehistory/archive_test.go
 internal/integration/offlinehistory/fixture_test.go
 internal/integration/offlinehistory/history_test.go
 internal/integration/offlinehistory/producer_test.go
 internal/integration/offlinehistory/refusal_edges_test.go
+internal/integration/offlinehistory/reverse_reopen_test.go
 internal/integration/offlinehistory/testdata/dolt-source-partial.md
 internal/integration/offlinehistory/testdata/dolt-source-partial.tar
 internal/integration/offlinehistory/testdata/full.tar
@@ -503,6 +522,8 @@ internal/integration/postgresacceptance/BUILD.bazel
 internal/integration/postgresacceptance/README.md
 internal/integration/postgresacceptance/atomic_close_test.go
 internal/integration/postgresacceptance/atomic_test.go
+internal/integration/postgresacceptance/b15_comments_test.go
+internal/integration/postgresacceptance/b16_labels_test.go
 internal/integration/postgresacceptance/engine_test.go
 internal/integration/postgresacceptance/fixture_test.go
 internal/integration/postgresacceptance/history_test.go
@@ -554,11 +575,13 @@ internal/integration/sqlreadersnapshots/BUILD.bazel
 internal/integration/sqlreadersnapshots/integration_test.go
 internal/integration/transports/BUILD.bazel
 internal/integration/transports/README.md
+internal/integration/transports/authority_equivalence_test.go
 internal/integration/transports/client_test.go
 internal/integration/transports/composition_test.go
 internal/integration/transports/configured_test.go
 internal/integration/transports/fixture_test.go
 internal/integration/transports/transports_test.go
+internal/integration/transports/wire_equivalence_test.go
 internal/integration/viewpermissions/BUILD.bazel
 internal/integration/viewpermissions/viewpermissions_test.go
 internal/integration/watchsql/BUILD.bazel
@@ -615,6 +638,7 @@ internal/server/authzrpc/hierarchy_lifecycle_guards_test.go
 internal/server/authzrpc/hierarchy_lifecycle_test.go
 internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
+internal/server/authzrpc/history_authority_test.go
 internal/server/authzrpc/predicate_count_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
@@ -649,6 +673,7 @@ internal/server/composition/mcp.go
 internal/server/composition/mcp_lifecycle_test.go
 internal/server/composition/native.go
 internal/server/composition/native_test.go
+internal/server/composition/restore_actual_archive_digest_test.go
 internal/server/composition/restore_actual_archive_test.go
 internal/server/composition/restore_import.go
 internal/server/composition/restore_import_test.go
@@ -678,6 +703,7 @@ internal/server/ontologyrpc/integration_test.go
 internal/server/pluginbuild/BUILD.bazel
 internal/server/pluginbuild/README.md
 internal/server/pluginbuild/build.go
+internal/server/pluginbuild/configured_browser_test.go
 internal/server/pluginbuild/containment_linux_amd64.go
 internal/server/pluginbuild/containment_linux_amd64_test.go
 internal/server/pluginbuild/containment_other.go
@@ -695,6 +721,7 @@ internal/server/pluginbuild/fixture/plugin.go
 internal/server/pluginbuild/persistent.go
 internal/server/pluginbuild/process_other.go
 internal/server/pluginbuild/process_unix.go
+internal/server/pluginbuild/restore_digest_test.go
 internal/server/pluginbuild/sdk_test.go
 internal/server/pluginbuild/source_test.go
 internal/server/pluginbuild/store.go
@@ -765,6 +792,7 @@ internal/server/transport/inprocess/inprocess.go
 internal/server/transport/inprocess/inprocess_test.go
 internal/server/transport/mcp/BUILD.bazel
 internal/server/transport/mcp/README.md
+internal/server/transport/mcp/body_bounds_test.go
 internal/server/transport/mcp/config.go
 internal/server/transport/mcp/errors.go
 internal/server/transport/mcp/handler.go
@@ -786,6 +814,7 @@ internal/server/transport/websocket/config.go
 internal/server/transport/websocket/conn.go
 internal/server/transport/websocket/handler.go
 internal/server/transport/websocket/lifecycle_test.go
+internal/server/transport/websocket/text_fragments_test.go
 internal/server/transport/websocket/websocket_test.go
 internal/server/viewrpc/BUILD.bazel
 internal/server/viewrpc/README.md
@@ -867,6 +896,8 @@ internal/storage/driver/audit_contract_test.go
 internal/storage/driver/driver.go
 internal/storage/driver/errors.go
 internal/storage/driver/errors_test.go
+internal/storage/driver/hierarchy.go
+internal/storage/driver/hierarchy_contract_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
 internal/storage/driver/offline_history.go
@@ -877,6 +908,9 @@ internal/storage/driver/parent_counter_test.go
 internal/storage/driver/receipt_contract_test.go
 internal/storage/driver/restore.go
 internal/storage/driver/restore_test.go
+internal/storage/driver/source_links.go
+internal/storage/driver/source_links_contract_test.go
+internal/storage/hierarchy-index-design.md
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/allocator.go
 internal/storage/memory/allocator_snapshot.go
@@ -886,7 +920,10 @@ internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_guard.go
 internal/storage/memory/checkpoint_test.go
 internal/storage/memory/clock_test.go
+internal/storage/memory/derived_prefix_test.go
 internal/storage/memory/derived_reader.go
+internal/storage/memory/hierarchy_index.go
+internal/storage/memory/hierarchy_index_test.go
 internal/storage/memory/lease.go
 internal/storage/memory/lifetimes_test.go
 internal/storage/memory/metadata.go
@@ -897,6 +934,11 @@ internal/storage/memory/offline_history.go
 internal/storage/memory/offline_restore.go
 internal/storage/memory/parent_counter.go
 internal/storage/memory/reader.go
+internal/storage/memory/source_backend_test.go
+internal/storage/memory/source_link_index.go
+internal/storage/memory/source_link_index_test.go
+internal/storage/memory/source_publication.go
+internal/storage/memory/source_reader.go
 internal/storage/memory/staged_reads_test.go
 internal/storage/memory/store.go
 internal/storage/memory/transaction.go
@@ -917,6 +959,7 @@ internal/storage/postgres/driver.go
 internal/storage/postgres/encoding.go
 internal/storage/postgres/engine_test.go
 internal/storage/postgres/fencing_test.go
+internal/storage/postgres/hierarchy_schema_test.go
 internal/storage/postgres/lease.go
 internal/storage/postgres/lease_prepare_test.go
 internal/storage/postgres/lock_batch_test.go
@@ -930,8 +973,15 @@ internal/storage/postgres/query.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
 internal/storage/postgres/schema.go
+internal/storage/postgres/source_backend_test.go
+internal/storage/postgres/source_index.go
+internal/storage/postgres/source_link_schema_test.go
 internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
+internal/storage/sourceindex/BUILD.bazel
+internal/storage/sourceindex/publication.go
+internal/storage/sourceindex/reader.go
+internal/storage/sourceindex/source.go
 internal/storage/sqlite/BUILD.bazel
 internal/storage/sqlite/README.md
 internal/storage/sqlite/allocator.go
@@ -943,6 +993,11 @@ internal/storage/sqlite/clock_test.go
 internal/storage/sqlite/derived_prefix_test.go
 internal/storage/sqlite/derived_reader.go
 internal/storage/sqlite/engine_test.go
+internal/storage/sqlite/guard.go
+internal/storage/sqlite/guard_descriptor_linux_test.go
+internal/storage/sqlite/guard_linux.go
+internal/storage/sqlite/guard_nonlinux.go
+internal/storage/sqlite/hierarchy_schema_test.go
 internal/storage/sqlite/lease.go
 internal/storage/sqlite/locks_other.go
 internal/storage/sqlite/locks_unix.go
@@ -957,6 +1012,9 @@ internal/storage/sqlite/query_cursor_test.go
 internal/storage/sqlite/reader.go
 internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/schema.go
+internal/storage/sqlite/source_backend_test.go
+internal/storage/sqlite/source_index.go
+internal/storage/sqlite/source_link_schema_test.go
 internal/storage/sqlite/sqlite_test.go
 internal/storage/sqlite/staged_reads_test.go
 internal/storage/sqlite/store.go

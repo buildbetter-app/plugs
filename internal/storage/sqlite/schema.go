@@ -39,4 +39,108 @@ CREATE TABLE IF NOT EXISTS core_sessions (
 );
 CREATE INDEX IF NOT EXISTS core_sessions_active_expiry ON core_sessions(revoked, expires_at);
 CREATE TABLE IF NOT EXISTS allocator_states (prefix TEXT PRIMARY KEY, data BLOB NOT NULL);
+
+-- Additive representation only: an absent coverage row means unbuilt. Open
+-- must not certify an existing store merely because these tables are empty.
+CREATE TABLE IF NOT EXISTS hierarchy_index_coverage (
+ incarnation TEXT NOT NULL, branch TEXT COLLATE BINARY NOT NULL,
+ format INTEGER NOT NULL CHECK(format=1),
+ built_from TEXT COLLATE BINARY NOT NULL,
+ certified_through TEXT COLLATE BINARY NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('unbuilt','ready')),
+ PRIMARY KEY(incarnation, branch),
+ CHECK(length(branch)=20 AND branch NOT GLOB '*[^0-9]*' AND branch<='18446744073709551615'),
+ CHECK(length(built_from)=20 AND built_from NOT GLOB '*[^0-9]*' AND built_from<='18446744073709551615'),
+ CHECK(length(certified_through)=20 AND certified_through NOT GLOB '*[^0-9]*' AND certified_through<='18446744073709551615'),
+ CHECK(built_from<=certified_through)
+);
+CREATE TABLE IF NOT EXISTS hierarchy_source_current (
+ incarnation TEXT NOT NULL, branch TEXT COLLATE BINARY NOT NULL,
+ child_key TEXT COLLATE BINARY NOT NULL, parent_key TEXT COLLATE BINARY,
+ ref BLOB NOT NULL, kind TEXT NOT NULL CHECK(kind='bead'),
+ revision TEXT COLLATE BINARY NOT NULL, body BLOB,
+ PRIMARY KEY(incarnation, branch, child_key),
+ CHECK(parent_key IS NULL OR parent_key<>child_key),
+ CHECK(length(branch)=20 AND branch NOT GLOB '*[^0-9]*' AND branch<='18446744073709551615'),
+ CHECK(length(revision)=20 AND revision NOT GLOB '*[^0-9]*' AND revision<='18446744073709551615')
+);
+CREATE INDEX IF NOT EXISTS hierarchy_source_current_parent
+ ON hierarchy_source_current(incarnation, branch, parent_key, child_key)
+ WHERE parent_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS hierarchy_source_history (
+ incarnation TEXT NOT NULL, branch TEXT COLLATE BINARY NOT NULL,
+ child_key TEXT COLLATE BINARY NOT NULL, parent_key TEXT COLLATE BINARY,
+ start_revision TEXT COLLATE BINARY NOT NULL, end_revision TEXT COLLATE BINARY,
+ ref BLOB NOT NULL, kind TEXT NOT NULL CHECK(kind='bead'),
+ revision TEXT COLLATE BINARY NOT NULL, body BLOB,
+ PRIMARY KEY(incarnation, branch, child_key, start_revision),
+ CHECK(parent_key IS NULL OR parent_key<>child_key),
+ CHECK(length(branch)=20 AND branch NOT GLOB '*[^0-9]*' AND branch<='18446744073709551615'),
+ CHECK(length(revision)=20 AND revision NOT GLOB '*[^0-9]*' AND revision<='18446744073709551615'),
+ CHECK(length(start_revision)=20 AND start_revision NOT GLOB '*[^0-9]*' AND start_revision<='18446744073709551615'),
+ CHECK(end_revision IS NULL OR (length(end_revision)=20 AND end_revision NOT GLOB '*[^0-9]*' AND end_revision<='18446744073709551615' AND end_revision>start_revision)),
+ CHECK(revision<=start_revision)
+);
+CREATE INDEX IF NOT EXISTS hierarchy_source_history_parent
+ ON hierarchy_source_history(incarnation, branch, parent_key, child_key, start_revision)
+ WHERE parent_key IS NOT NULL;
+
+-- Outgoing-link coverage is independent of canonical Parent coverage. An
+-- image row denotes a complete typed outgoing set, including the empty set.
+-- Edge kinds are opaque bytes; custom values are never normalized as SQL text.
+CREATE TABLE IF NOT EXISTS graph_link_index_coverage (
+ incarnation TEXT NOT NULL, branch TEXT COLLATE BINARY NOT NULL,
+ format INTEGER NOT NULL CHECK(format=1),
+ built_from TEXT COLLATE BINARY NOT NULL,
+ certified_through TEXT COLLATE BINARY NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('unbuilt','ready')),
+ PRIMARY KEY(incarnation, branch),
+ CHECK(length(branch)=20 AND branch NOT GLOB '*[^0-9]*' AND branch<='18446744073709551615'),
+ CHECK(length(built_from)=20 AND built_from NOT GLOB '*[^0-9]*' AND built_from<='18446744073709551615'),
+ CHECK(length(certified_through)=20 AND certified_through NOT GLOB '*[^0-9]*' AND certified_through<='18446744073709551615'),
+ CHECK(built_from<=certified_through)
+);
+CREATE TABLE IF NOT EXISTS graph_link_source_current (
+ incarnation TEXT NOT NULL, branch TEXT COLLATE BINARY NOT NULL,
+ source_key TEXT COLLATE BINARY NOT NULL, ref BLOB NOT NULL,
+ kind TEXT NOT NULL CHECK(kind='bead'), revision TEXT COLLATE BINARY NOT NULL, body BLOB,
+ PRIMARY KEY(incarnation, branch, source_key),
+ CHECK(length(branch)=20 AND branch NOT GLOB '*[^0-9]*' AND branch<='18446744073709551615'),
+ CHECK(length(revision)=20 AND revision NOT GLOB '*[^0-9]*' AND revision<='18446744073709551615')
+);
+CREATE TABLE IF NOT EXISTS graph_link_current (
+ incarnation TEXT NOT NULL, branch TEXT COLLATE BINARY NOT NULL,
+ source_key TEXT COLLATE BINARY NOT NULL, link_kind BLOB NOT NULL,
+ target_key TEXT COLLATE BINARY NOT NULL,
+ PRIMARY KEY(incarnation, branch, source_key, link_kind, target_key),
+ CHECK(typeof(link_kind)='blob' AND length(link_kind) BETWEEN 1 AND 32),
+ FOREIGN KEY(incarnation, branch, source_key)
+  REFERENCES graph_link_source_current(incarnation, branch, source_key) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS graph_link_current_incoming
+ ON graph_link_current(incarnation, branch, target_key, link_kind, source_key);
+CREATE TABLE IF NOT EXISTS graph_link_source_history (
+ incarnation TEXT NOT NULL, branch TEXT COLLATE BINARY NOT NULL,
+ source_key TEXT COLLATE BINARY NOT NULL,
+ start_revision TEXT COLLATE BINARY NOT NULL, end_revision TEXT COLLATE BINARY,
+ ref BLOB NOT NULL, kind TEXT NOT NULL CHECK(kind='bead'),
+ revision TEXT COLLATE BINARY NOT NULL, body BLOB,
+ PRIMARY KEY(incarnation, branch, source_key, start_revision),
+ CHECK(length(branch)=20 AND branch NOT GLOB '*[^0-9]*' AND branch<='18446744073709551615'),
+ CHECK(length(revision)=20 AND revision NOT GLOB '*[^0-9]*' AND revision<='18446744073709551615'),
+ CHECK(length(start_revision)=20 AND start_revision NOT GLOB '*[^0-9]*' AND start_revision<='18446744073709551615'),
+ CHECK(end_revision IS NULL OR (length(end_revision)=20 AND end_revision NOT GLOB '*[^0-9]*' AND end_revision<='18446744073709551615' AND end_revision>start_revision)),
+ CHECK(revision<=start_revision)
+);
+CREATE TABLE IF NOT EXISTS graph_link_history (
+ incarnation TEXT NOT NULL, branch TEXT COLLATE BINARY NOT NULL,
+ source_key TEXT COLLATE BINARY NOT NULL, start_revision TEXT COLLATE BINARY NOT NULL,
+ link_kind BLOB NOT NULL, target_key TEXT COLLATE BINARY NOT NULL,
+ PRIMARY KEY(incarnation, branch, source_key, start_revision, link_kind, target_key),
+ CHECK(typeof(link_kind)='blob' AND length(link_kind) BETWEEN 1 AND 32),
+ FOREIGN KEY(incarnation, branch, source_key, start_revision)
+  REFERENCES graph_link_source_history(incarnation, branch, source_key, start_revision) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS graph_link_history_incoming
+ ON graph_link_history(incarnation, branch, target_key, link_kind, source_key, start_revision);
 `

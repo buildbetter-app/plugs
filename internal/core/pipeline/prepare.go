@@ -79,6 +79,7 @@ type prepared struct {
 	maxHierarchyDepth int
 	hierarchyEdits    []hierarchyEdit
 	hierarchyDelta    *hierarchyDelta
+	hierarchySources  *hierarchySources
 	checkpointReads   map[string]uint64
 }
 
@@ -1353,6 +1354,14 @@ func (p *prepared) graph(ctx context.Context) error {
 		return err
 	}
 	need := docs != nil
+	for _, edit := range p.hierarchyEdits {
+		// Indexed hierarchy facts are deliberately partial. Retain the complete
+		// graph checks for legacy hierarchy links and scheduling relations.
+		need = need || !edit.create || edit.parent != ""
+	}
+	for _, pending := range p.writes {
+		need = need || len(p.hierarchyEdits) != 0 && len(pending.before) != 0 && pending.doc.Parent != nil
+	}
 	for _, c := range p.proposal.Changes {
 		if c.Op.Kind == model.OpLink || c.Op.Kind == model.OpUnlink || c.Op.Kind == model.OpDelete {
 			need = true
@@ -1360,6 +1369,11 @@ func (p *prepared) graph(ctx context.Context) error {
 	}
 	if !need {
 		return nil
+	}
+	if docs == nil {
+		if err := p.observeIndexedGraphIncoming(ctx); err != nil {
+			return err
+		}
 	}
 	if docs == nil {
 		docs, err = p.documents(ctx)

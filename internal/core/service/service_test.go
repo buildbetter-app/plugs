@@ -1316,6 +1316,17 @@ type claimNextRaceTx struct {
 	hasHead bool
 }
 
+// The race wrapper observes Head and Query, but must preserve the optional
+// atomic source writer of its real memory transaction. Hiding that capability
+// would turn an otherwise valid certified bead update into an untyped Put.
+func (tx *claimNextRaceTx) PutGraphRecord(ctx context.Context, record driver.Record, parent *model.Ref, links []driver.SourceLink) error {
+	writer, ok := tx.WriteTx.(driver.GraphSourceWriter)
+	if !ok {
+		return driver.ErrUnsupported
+	}
+	return writer.PutGraphRecord(ctx, record, parent, links)
+}
+
 func (tx *claimNextRaceTx) Head(ctx context.Context) (model.Revision, error) {
 	head, err := tx.WriteTx.Head(ctx)
 	tx.hasHead = err == nil
@@ -1682,7 +1693,7 @@ func TestGetCommentSnapshotsAndDetachedProvenance(t *testing.T) {
 	doc := pipeline.Document{ID: ref.ID, Project: "local", Type: "issue", Fields: map[string]any{"title": "Comments", "status": "todo"}}
 	source := f.now.Add(-time.Hour)
 	doc.Comments = []pipeline.Comment{{Body: "legacy", Principal: anonymous, Time: f.now}, {Body: "imported", Principal: model.PrincipalRef{Kind: "user", ID: "restore-admin", Caveats: map[string]any{"nested": map[string]any{"value": "original"}}}, Time: f.now, Origin: "import", SourceAuthor: "original author", SourceTime: &source}}
-	seeded, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: mustJSON(t, doc)}})
+	seeded, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: mustJSON(t, doc), Graph: &conformance.FixtureGraphSource{}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1720,7 +1731,7 @@ func TestGetRefusesMalformedStoredCommentUnion(t *testing.T) {
 				comment[k] = v
 			}
 			doc := map[string]any{"id": ref.ID, "project": "local", "type": "issue", "fields": map[string]any{"title": "Malformed", "status": "todo"}, "comments": []any{comment}}
-			_, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: mustJSON(t, doc)}})
+			_, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: mustJSON(t, doc), Graph: &conformance.FixtureGraphSource{}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1748,7 +1759,7 @@ func TestCanonicalParentCannotSatisfyNoOpenChildren(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: child, Kind: "bead", Op: model.OpPatch, Body: body}}); err != nil {
+			if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: child, Kind: "bead", Op: model.OpPatch, Body: body, Graph: &conformance.FixtureGraphSource{Parent: &parent}}}); err != nil {
 				t.Fatal(err)
 			}
 			before, err := f.store.Meta(ctx)

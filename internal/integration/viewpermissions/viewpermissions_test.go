@@ -375,7 +375,7 @@ func TestCandidateCapAppliesAfterRealFixedReadAuthorization(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			changes = append(changes, conformance.FixtureChange{Ref: model.RefByID(id, model.Natural64(0)), Kind: "bead", Op: model.OpCreate, Body: body})
+			changes = append(changes, conformance.FixtureChange{Ref: model.RefByID(id, model.Natural64(0)), Kind: "bead", Op: model.OpCreate, Body: body, Graph: &conformance.FixtureGraphSource{}})
 		}
 		if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, changes); err != nil {
 			t.Fatal(err)
