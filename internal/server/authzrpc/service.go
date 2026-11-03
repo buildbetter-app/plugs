@@ -654,7 +654,10 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 			filtered = append(filtered, bead)
 		}
 	}
-	membership := readyMembershipDigest(filtered)
+	membership := ""
+	if method == "bead.ready" {
+		membership = readyMembershipDigest(filtered)
+	}
 	if method == "bead.ready" && position != nil && position.ReadyMembership != membership {
 		return service.BeadPage{}, &model.Error{Message: "ready membership changed since cursor issuance; restart paging", Data: model.ErrorData{Code: "cursor_invalid"}}
 	}
@@ -678,7 +681,11 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	if end > len(filtered) {
 		end = len(filtered)
 	}
-	out := service.BeadPage{Items: append([]service.Bead(nil), filtered[offset:end]...), AsOf: page.AsOf, WorkflowSnapshot: page.WorkflowSnapshot, ReadyMembership: membership}
+	out := service.BeadPage{Items: append([]service.Bead(nil), filtered[offset:end]...), AsOf: page.AsOf}
+	if method == "bead.ready" {
+		out.WorkflowSnapshot = page.WorkflowSnapshot
+		out.ReadyMembership = membership
+	}
 	content, _, closeContent, err := s.current(ctx, &page.AsOf)
 	if err != nil {
 		return service.BeadPage{}, err
@@ -705,8 +712,10 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 			Offset: end, AsOf: page.AsOf,
 			AuthorizationRevision: authorization.authorizationRevision,
 			AuthorizationBound:    authorization.authorizationBound,
-			WorkflowSnapshot:      page.WorkflowSnapshot,
-			ReadyMembership:       membership,
+		}
+		if method == "bead.ready" {
+			out.Next.WorkflowSnapshot = page.WorkflowSnapshot
+			out.Next.ReadyMembership = membership
 		}
 	}
 	binding, err := s.checker.readAuthorityBinding(ctx, caller, authorization, snapshot)
