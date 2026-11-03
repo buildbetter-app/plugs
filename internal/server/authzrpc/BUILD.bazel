@@ -22,6 +22,18 @@ go_library(
 )
 
 go_test(
+    name = "prepared_authz_test",
+    srcs = ["prepared_test.go"],
+    embed = [":authzrpc"],
+    deps = [
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/plugins/authzfixed",
+        "//internal/storage/driver",
+    ],
+)
+
+go_test(
     name = "authzrpc_test",
     size = "large",
     srcs = ["authzrpc_test.go", "drivers_test.go", "predicate_count_test.go"],
