@@ -25,7 +25,7 @@ try {
   ws = new WebSocket(target.webSocketDebuggerUrl);
   await once(ws, "open");
   let sequence = 0;
-  const pending = new Map(), requests = [], errors = [];
+  const pending = new Map(), requests = [], errors = [], wire = new Map();
   const send = (method, params = {}) => new Promise((resolve, reject) => {
     const id = ++sequence; pending.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params }));
   });
@@ -35,13 +35,41 @@ try {
       const job = pending.get(event.id); pending.delete(event.id);
       if (job) event.error ? job.reject(new Error("browser command refused")) : job.resolve(event.result);
     } else if (event.method === "Runtime.exceptionThrown") errors.push(event.params.exceptionDetails);
-    else if (event.method === "Network.requestWillBeSent" && event.params.request.url.endsWith("/rpc/v1")) requests.push(JSON.parse(event.params.request.postData));
+    else if (event.method === "Network.requestWillBeSent" && event.params.request.url.endsWith("/rpc/v1")) {
+      const request = JSON.parse(event.params.request.postData);
+      requests.push(request);
+      wire.set(event.params.requestId, { url: event.params.request.url, method: request.method, id: request.id });
+    } else if (event.method === "Network.responseReceived" && wire.has(event.params.requestId)) {
+      wire.get(event.params.requestId).status = event.params.response.status;
+    } else if (event.method === "Network.loadingFailed" && wire.has(event.params.requestId)) {
+      wire.get(event.params.requestId).networkError = /net::ERR_[A-Z0-9_]+/.exec(event.params.errorText || "")?.[0] || "unknown";
+    }
   });
   await send("Page.enable"); await send("Runtime.enable"); await send("Network.enable");
   const evaluate = async expression => {
     const result = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
     assert(!result.exceptionDetails, "browser assertion expression failed: " + JSON.stringify(result.exceptionDetails));
     return result.result.value;
+  };
+  const refusalContext = async (fixture, url, state, rendered) => {
+    const rpcURL = base + "/fixtures/" + fixture.name + "/rpc/v1";
+    const reads = [...wire.entries()].filter(([, request]) => request.url === rpcURL && request.method === "view.run");
+    const rpc = [];
+    for (const [requestId, request] of reads) {
+      const observation = { ...request };
+      try {
+        const body = await send("Network.getResponseBody", { requestId });
+        const envelope = JSON.parse(body.base64Encoded ? Buffer.from(body.body, "base64").toString() : body.body);
+        // Report envelope correlation and the typed code, never error hints
+        // or arbitrary body text that might identify unreadable records.
+        observation.responseID = envelope.id;
+        const code = envelope.error?.data?.code;
+        observation.errorCode = typeof code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : null;
+        observation.hasResult = Object.hasOwn(envelope, "result");
+      } catch (_) { observation.bodyUnavailable = true; }
+      rpc.push(observation);
+    }
+    return JSON.stringify({ fixture: fixture.name, expectedCode: fixture.code, expectedURL: url, actualURL: await evaluate("location.href"), state, rendered, rpc });
   };
   const settled = () => until(() => evaluate("document.querySelector('#cancel')?.hidden && document.querySelector('#connection-state')?.textContent !== 'Loading'"), "read completion");
   const click = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
@@ -128,7 +156,8 @@ try {
       assert(!(/unreadable-child|unreadable-status|unreadable-project/.test(await value("main"))), "no identities/statuses from malformed data or error hints");
       if (fixture.code) {
         assert.equal(state, "Unavailable", fixture.name);
-        assert((await value("#epic-state")).includes(fixture.code), fixture.name + " preserves its typed refusal");
+        const rendered = await value("#epic-state");
+        assert(rendered.includes(fixture.code), fixture.name + " preserves its typed refusal" + (rendered.includes(fixture.code) ? "" : ": " + await refusalContext(fixture, url, state, rendered)));
         assert.equal(result.total, "", fixture.name);
         assert.equal(result.remainder, "", fixture.name);
       } else {
