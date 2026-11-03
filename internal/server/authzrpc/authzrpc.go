@@ -397,9 +397,9 @@ func samePrincipal(a, b model.PrincipalRef) bool {
 		return false
 	}
 	// Native caveats can contain typed Refs while authenticated/frozen values
-	// contain JSON objects. Compare their normalized values, not serialized
-	// bytes. PrincipalRef's strict codec preserves exact JSON numbers, so this
-	// does not round distinct caveat values together.
+	// contain JSON objects. Compare their normalized values, not object member
+	// order in the encoded bytes. PrincipalRef's strict codec preserves exact
+	// JSON numbers, so normalization cannot round distinct caveat values.
 	var left, right model.PrincipalRef
 	if json.Unmarshal(x, &left) != nil || json.Unmarshal(y, &right) != nil {
 		return false
