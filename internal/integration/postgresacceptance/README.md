@@ -28,6 +28,7 @@ real engine clock. Hosts renew their leases and close HTTP before SQL resources.
 
 | Named scenario | Cards and exact bounded assertions |
 | --- | --- |
+| `TestB15PublicCommentsPostgresHistoryRefusalAndReopen` | B15: public HTTP comments keep exact Unicode body and verified actor, advance fixed-clock stamps, write one history/event per durable comment, preserve anchor fields and as-of snapshots, refuse empty/unknown/prefix requests without receipts, and replay identically after physical PostgreSQL reopen. This complements the retained memory/SQLite slice; public keyset pagination and the wisp plane remain unqualified. |
 | `TestB28DurableWarningReceiptAcrossHandlesAndReopen` | B28: post failure returns one committed warning; an already-open independent SQL pool sees its finalized receipt. New service/Writer/lease on that pool and then full store reopen replay byte-identical results without another ID, graph write or post callback. Changed request under the old key refuses. |
 | `TestB22CASNoopAndReplayRetainOriginalRevision` | B22/B18: current record revision and field hash accept; stale guards refuse without changing complete graph/history/predicates or storing a success receipt. A no-op at head 5 preserves record revision 4, creates no graph history, and replays the original receipt at head 6 and after reopen. |
 | `TestB22ConcurrentCASHasOneWinner` | B22: two concurrent HTTP updates to disjoint fields with the same revision yield one winner and one typed refusal. Only the winning field/version/log/receipt exists; replay adds no work. |
