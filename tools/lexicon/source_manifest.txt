@@ -123,6 +123,7 @@ internal/api/wire/error.go
 internal/api/wire/json.go
 internal/api/wire/meta.go
 internal/api/wire/schema.go
+internal/api/wire/unsupported_contract_test.go
 internal/api/wire/wire_test.go
 internal/cli/BUILD.bazel
 internal/cli/README.md
@@ -211,6 +212,7 @@ internal/core/model/response.go
 internal/core/model/runtime.go
 internal/core/model/schema_test.go
 internal/core/model/testdata/openrpc-components.json
+internal/core/model/unsupported_error_test.go
 internal/core/ontology/BUILD.bazel
 internal/core/ontology/check.go
 internal/core/ontology/compile.go
