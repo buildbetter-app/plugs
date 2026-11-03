@@ -377,6 +377,9 @@ internal/integration/b13memory/lifecycle_test.go
 internal/integration/b13memory/manifest-proposal.patch
 internal/integration/b13memory/oracle_test.go
 internal/integration/b13memory/postgres_test.go
+internal/integration/b14fixedpolicy/BUILD.bazel
+internal/integration/b14fixedpolicy/README.md
+internal/integration/b14fixedpolicy/public_members_test.go
 internal/integration/batchsql/BUILD.bazel
 internal/integration/batchsql/README.md
 internal/integration/batchsql/allocator_archive_test.go
