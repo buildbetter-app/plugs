@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -192,6 +193,218 @@ func TestTerminalClaimsPreserveEachOriginalItemIdentity(t *testing.T) {
 		if item.Title != "" || item.Project != "" || item.Claim != nil || len(item.Comments) != 0 {
 			t.Fatalf("terminal replay retained operational payload: %+v", item)
 		}
+	}
+}
+
+func TestRetainedReceiptFromAnotherIncarnationRefusesDuplicateRun(t *testing.T) {
+	for _, terminal := range []bool{false, true} {
+		t.Run(map[bool]string{false: "live", true: "terminal"}[terminal], func(t *testing.T) {
+			ctx := context.Background()
+			clock := time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC)
+			state := &testDurableState{}
+			provider, err := New(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			provider.WithClock(func() time.Time { return clock }).WithIdentity(Alias, "default", "inc-1")
+			by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+			meta := model.WriteMeta{Method: "x.workflow.invoke", Project: "project", Agent: "owner", AgentLabel: "owner", IdempotencyKey: strings.Repeat("1", 64)}
+			req := InvokeRequest{Template: "template", Project: "project", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "one", Title: "private title"}}}
+			first, err := provider.Invoke(ctx, by, req, meta)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Live receipts must remain fenced even beyond their initial window.
+			clock = clock.Add(driver.IdempotencyWindow + time.Hour)
+			if terminal {
+				closeMeta := meta
+				closeMeta.Method, closeMeta.IdempotencyKey = "bead.close", strings.Repeat("2", 64)
+				if _, err := provider.Close(ctx, by, model.RefByID(first.Items[0].ID, model.Natural64(0)), "done", closeMeta); err != nil {
+					t.Fatal(err)
+				}
+			}
+			restored, err := New(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restored.WithClock(func() time.Time { return clock }).WithIdentity(Alias, "default", "inc-2")
+			before := append([]byte(nil), state.value...)
+			_, err = restored.Invoke(ctx, by, req, meta)
+			var failure *model.Error
+			if !errors.As(err, &failure) || failure.Data.Code != "idempotency_key_reused" {
+				t.Fatalf("changed incarnation treated retained receipt as a miss: %v", err)
+			}
+			if !bytes.Equal(state.value, before) {
+				t.Fatal("refused prior-incarnation replay changed durable state")
+			}
+			// A process/provider restart within the original incarnation still
+			// replays the original live or identity-only terminal result.
+			restored.WithIdentity(Alias, "default", "inc-1")
+			replayed, err := restored.Invoke(ctx, by, req, meta)
+			if err != nil || replayed.Run == nil || replayed.Run.ID != first.Run.ID {
+				t.Fatalf("same-incarnation restart lost replay: result=%+v err=%v", replayed, err)
+			}
+			if terminal && (replayed.Run.State != "completed" || len(replayed.Items) != 0) {
+				t.Fatalf("terminal replay recreated operational state: %+v", replayed)
+			}
+		})
+	}
+}
+
+func TestSelectedClaimNextKeepsSelectorReplayAndErasesTerminalPayload(t *testing.T) {
+	ctx := context.Background()
+	state := &testDurableState{}
+	provider, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.WithIdentity(Alias, "default", "inc-1")
+	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	meta := func(method, key string) model.WriteMeta {
+		return model.WriteMeta{Method: method, Project: "project", Agent: "owner", AgentLabel: "owner", IdempotencyKey: strings.Repeat(key, 64)}
+	}
+	run, err := provider.Invoke(ctx, by, InvokeRequest{
+		Template: "template", Project: "project", Mode: "ephemeral",
+		Checklist: []ChecklistItem{{Label: "one", Title: "first private title"}, {Label: "two", Title: "second private title"}},
+	}, meta("x.workflow.invoke", "1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := model.RefByID(run.Items[1].ID, model.Natural64(0))
+	if _, err := provider.Comment(ctx, by, selected, "private comment", meta("bead.comment", "2")); err != nil {
+		t.Fatal(err)
+	}
+	selector := meta("bead.claimNext", "3")
+	selector.ClaimNextIdentity = `{"viewId":"","filter":{"resources":["selected"],"types":["task"]}}`
+	claimed, found, replayed, err := provider.ClaimNextSelected(ctx, by, selected, "project", nil, selector)
+	if err != nil || !found || replayed || claimed.ID != selected.ID || claimed.Claim == nil {
+		t.Fatalf("selected claimNext did not commit its candidate: item=%+v found=%v replayed=%v err=%v", claimed, found, replayed, err)
+	}
+	retry, found, replayed, err := provider.ReplayClaimNext(ctx, by, "project", []string{"task"}, selector)
+	if err != nil || !found || !replayed || !reflect.DeepEqual(retry, claimed) {
+		t.Fatalf("selector retry did not replay selected claim: item=%+v found=%v replayed=%v err=%v", retry, found, replayed, err)
+	}
+	changed := selector
+	changed.ClaimNextIdentity += "changed-selector"
+	_, _, _, err = provider.ReplayClaimNext(ctx, by, "project", nil, changed)
+	var failure *model.Error
+	if !errors.As(err, &failure) || failure.Data.Code != "idempotency_key_reused" {
+		t.Fatalf("changed selector reused selected receipt: %v", err)
+	}
+	// Another target supplied after response loss cannot change the receipt's
+	// committed selection, even if the original item is no longer ready.
+	other := model.RefByID(run.Items[0].ID, model.Natural64(0))
+	retry, found, replayed, err = provider.ClaimNextSelected(ctx, by, other, "project", nil, selector)
+	if err != nil || !found || !replayed || retry.ID != selected.ID {
+		t.Fatalf("selected retry changed target: item=%+v found=%v replayed=%v err=%v", retry, found, replayed, err)
+	}
+	if _, err := provider.Close(ctx, by, selected, "done", meta("bead.close", "4")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Close(ctx, by, other, "done", meta("bead.close", "5")); err != nil {
+		t.Fatal(err)
+	}
+	retry, found, replayed, err = provider.ReplayClaimNext(ctx, by, "project", nil, selector)
+	if err != nil || !found || !replayed || retry.ID != selected.ID || retry.Revision.String() != claimed.Revision.String() || retry.Title != "" || retry.Project != "" || retry.Claim != nil || len(retry.Comments) != 0 {
+		t.Fatalf("terminal selected claim replay retained payload or changed identity: item=%+v found=%v replayed=%v err=%v", retry, found, replayed, err)
+	}
+	for _, forbidden := range []string{"first private title", "second private title", "private comment"} {
+		if bytes.Contains(state.value, []byte(forbidden)) {
+			t.Fatalf("completion retained operational payload %q", forbidden)
+		}
+	}
+}
+
+func TestCompletionErasesLegacyBareClaimNextReceipt(t *testing.T) {
+	ctx := context.Background()
+	state := &testDurableState{}
+	provider, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	meta := model.WriteMeta{Method: "x.workflow.invoke", Project: "project", Agent: "owner", AgentLabel: "owner", IdempotencyKey: strings.Repeat("1", 64)}
+	run, err := provider.Invoke(ctx, by, InvokeRequest{Template: "template", Project: "project", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "one", Title: "legacy private title"}}}, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := model.RefByID(run.Items[0].ID, model.Natural64(0))
+	claimMeta := meta
+	claimMeta.Method, claimMeta.IdempotencyKey = "bead.claim", strings.Repeat("2", 64)
+	claimed, err := provider.Claim(ctx, by, ref, claimMeta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reproduce the prior persisted format, where public claimNext entered
+	// Claim and stored a bare ItemView. A new provider must still erase it on
+	// completion instead of keeping its body in a terminal receipt.
+	value, revision, err := provider.load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, receipt := range value.Receipts {
+		if receipt.Method == "bead.claim" {
+			receipt.Method = "bead.claimNext"
+			value.Receipts[key] = receipt
+		}
+	}
+	if err := provider.save(ctx, value, revision); err != nil {
+		t.Fatal(err)
+	}
+	meta.Method, meta.IdempotencyKey = "bead.close", strings.Repeat("3", 64)
+	if _, err := provider.Close(ctx, by, ref, "done", meta); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(state.value, []byte("legacy private title")) {
+		t.Fatal("completion retained legacy claimNext body")
+	}
+	value, _, err = provider.load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, receipt := range value.Receipts {
+		if receipt.Method != "bead.claimNext" {
+			continue
+		}
+		checked++
+		var result claimNextResult
+		if err := json.Unmarshal(receipt.Result, &result); err != nil {
+			t.Fatal(err)
+		}
+		if !receipt.Terminal || !result.Found || result.Item.ID != ref.ID || result.Item.Revision.String() != claimed.Revision.String() || result.Item.Claim != nil {
+			t.Fatalf("legacy terminal receipt lost identity or retained a claim: %+v", result)
+		}
+	}
+	if checked != 1 {
+		t.Fatalf("legacy claimNext receipt count=%d, want 1", checked)
+	}
+}
+
+func TestSelectedClaimNextReplaysEmptyBeforeNewCandidate(t *testing.T) {
+	ctx := context.Background()
+	provider, err := New(&testDurableState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	meta := model.WriteMeta{Method: "bead.claimNext", Project: "project", Agent: "owner", AgentLabel: "owner", IdempotencyKey: strings.Repeat("1", 64), ClaimNextIdentity: "empty-selector"}
+	if _, found, replayed, err := provider.ClaimNext(ctx, by, "project", nil, meta); err != nil || found || replayed {
+		t.Fatalf("empty selection was not committed: found=%v replayed=%v err=%v", found, replayed, err)
+	}
+	invokeMeta := meta
+	invokeMeta.Method, invokeMeta.IdempotencyKey = "x.workflow.invoke", strings.Repeat("2", 64)
+	run, err := provider.Invoke(ctx, by, InvokeRequest{Template: "template", Project: "project", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "one", Title: "new item"}}}, invokeMeta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := model.RefByID(run.Items[0].ID, model.Natural64(0))
+	if item, found, replayed, err := provider.ClaimNextSelected(ctx, by, ref, "project", nil, meta); err != nil || found || !replayed || item.ID != "" {
+		t.Fatalf("selected call replaced durable empty with a later item: item=%+v found=%v replayed=%v err=%v", item, found, replayed, err)
+	}
+	item, err := provider.Get(ctx, by, ref, meta)
+	if err != nil || item.Status != "open" || item.Claim != nil {
+		t.Fatalf("empty replay claimed later candidate: item=%+v err=%v", item, err)
 	}
 }
 

@@ -311,12 +311,20 @@ func (p *Provider) checkReplay(value persisted, by model.PrincipalRef, meta mode
 	}
 	receipt, ok := value.Receipts[key]
 	if !ok {
+		// A restored checkpoint can carry receipts from an earlier store
+		// incarnation. Its scoped map key differs, but the same operation must
+		// fail explicitly rather than creating a second run or claim.
+		for _, previous := range value.Receipts {
+			if previous.Principal == principal && previous.PrincipalHash == principalHash && previous.Agent == agent && previous.Project == project && previous.Plugin == p.plugin && previous.Instance == p.instance && previous.Method == meta.Method && previous.Key == meta.IdempotencyKey && previous.Incarnation != p.incarnation && p.receiptRetained(value, previous) {
+				return false, fail("idempotency_key_reused", "idempotency receipt belongs to another store incarnation")
+			}
+		}
 		return false, nil
 	}
 	if receipt.Principal != principal || receipt.PrincipalHash != principalHash || receipt.Agent != agent || receipt.Project != project || receipt.Plugin != p.plugin || receipt.Instance != p.instance || receipt.Incarnation != p.incarnation || receipt.Method != meta.Method || receipt.Key != meta.IdempotencyKey {
 		return false, fail("idempotency_key_reused", "idempotency receipt scope changed")
 	}
-	if !p.now().Before(receipt.ExpiresAt) && (receipt.RunID == "" || value.Runs[receipt.RunID].ID == "") {
+	if !p.receiptRetained(value, receipt) {
 		return false, nil
 	}
 	if receipt.Digest != d {
@@ -326,6 +334,10 @@ func (p *Provider) checkReplay(value persisted, by model.PrincipalRef, meta mode
 		return false, err
 	}
 	return true, nil
+}
+
+func (p *Provider) receiptRetained(value persisted, receipt receiptState) bool {
+	return p.now().Before(receipt.ExpiresAt) || receipt.RunID != "" && value.Runs[receipt.RunID].ID != ""
 }
 
 func receiptKey(p *Provider, by model.PrincipalRef, meta model.WriteMeta) (string, string, string, string, string, error) {
@@ -532,12 +544,47 @@ func sortItems(items []ItemView) {
 	}
 }
 
+type claimNextResult struct {
+	Found bool     `json:"found"`
+	Item  ItemView `json:"item"`
+}
+
+func claimNextRequest(project string, types []string, meta model.WriteMeta) any {
+	if meta.ClaimNextIdentity != "" {
+		// The service supplies its canonical full selector, including resource
+		// filters. Candidate selection must not replace that selector with an ID.
+		return struct {
+			Project  string `json:"project"`
+			Selector string `json:"selector"`
+		}{Project: project, Selector: meta.ClaimNextIdentity}
+	}
+	return struct {
+		Project string   `json:"project"`
+		Types   []string `json:"types,omitempty"`
+	}{Project: project, Types: append([]string(nil), types...)}
+}
+
 // ClaimNext returns (item, found, replayed). A replayed empty result is a
 // durable terminal null for this selector and must not probe a later item.
 func (p *Provider) ClaimNext(ctx context.Context, by model.PrincipalRef, project string, types []string, meta model.WriteMeta) (ItemView, bool, bool, error) {
+	return p.claimNext(ctx, by, project, types, meta, nil)
+}
+
+// ClaimNextSelected commits the candidate chosen and authorized by the ordinary
+// service queue walk. Its receipt retains the full selector and wrapped result
+// shared by ClaimNext and ReplayClaimNext, never a bare bead.claim response.
+func (p *Provider) ClaimNextSelected(ctx context.Context, by model.PrincipalRef, ref model.Ref, project string, types []string, meta model.WriteMeta) (ItemView, bool, bool, error) {
+	if ref.Validate() != nil || !ref.IsID() || !strings.HasPrefix(ref.ID, ItemPrefix) || ref.Branch.String() != "0" {
+		return ItemView{}, false, false, fail("invalid_params", "workflow claimNext requires a branch-zero item reference")
+	}
+	return p.claimNext(ctx, by, project, types, meta, &ref)
+}
+
+func (p *Provider) claimNext(ctx context.Context, by model.PrincipalRef, project string, types []string, meta model.WriteMeta, selectedRef *model.Ref) (ItemView, bool, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	meta.Project = project
+	meta.Method = "bead.claimNext"
 	value, revision, err := p.load(ctx)
 	if err != nil {
 		return ItemView{}, false, false, err
@@ -545,14 +592,8 @@ func (p *Provider) ClaimNext(ctx context.Context, by model.PrincipalRef, project
 	if meta.IdempotencyKey == "" {
 		return ItemView{}, false, false, fail("invalid_params", "idempotency key is required")
 	}
-	request := struct {
-		Project string   `json:"project"`
-		Types   []string `json:"types,omitempty"`
-	}{Project: project, Types: append([]string(nil), types...)}
-	var replay struct {
-		Found bool     `json:"found"`
-		Item  ItemView `json:"item"`
-	}
+	request := claimNextRequest(project, types, meta)
+	var replay claimNextResult
 	if ok, err := p.checkReplay(value, by, meta, request, &replay); err != nil {
 		return ItemView{}, false, false, err
 	} else if ok {
@@ -565,6 +606,9 @@ func (p *Provider) ClaimNext(ctx context.Context, by model.PrincipalRef, project
 	var selected *itemState
 	for id := range value.Items {
 		item := value.Items[id]
+		if selectedRef != nil && selectedRef.ID != item.ID {
+			continue
+		}
 		if item.Project == project && itemReady(item, p.now()) && matchesType(item.Type, types) && item.Owner.Principal == principal && item.Owner.Agent == effectiveAgent(by, meta) {
 			if selected == nil || item.ID < selected.ID {
 				copy := item
@@ -573,6 +617,9 @@ func (p *Provider) ClaimNext(ctx context.Context, by model.PrincipalRef, project
 		}
 	}
 	if selected == nil {
+		if selectedRef != nil {
+			return ItemView{}, false, false, fail("not_found", "workflow candidate is no longer ready")
+		}
 		receipt, err := p.storeReceipt(value, by, meta, request, replay, "", "")
 		if err != nil {
 			return ItemView{}, false, false, err
@@ -588,10 +635,7 @@ func (p *Provider) ClaimNext(ctx context.Context, by model.PrincipalRef, project
 	selected.Claim = &claimState{Principal: by, Agent: effectiveAgent(by, meta), ExpiresAt: p.now().Add(claimTTL), Generation: selected.Generation}
 	value.Items[selected.ID] = *selected
 	item := p.itemView(*selected)
-	replay = struct {
-		Found bool     `json:"found"`
-		Item  ItemView `json:"item"`
-	}{Found: true, Item: item}
+	replay = claimNextResult{Found: true, Item: item}
 	receipt, err := p.storeReceipt(value, by, meta, request, replay, selected.RunID, selected.ID)
 	if err != nil {
 		return ItemView{}, false, false, err
@@ -610,23 +654,21 @@ func (p *Provider) ReplayClaimNext(ctx context.Context, by model.PrincipalRef, p
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	meta.Project = project
+	meta.Method = "bead.claimNext"
 	value, _, err := p.load(ctx)
 	if err != nil {
 		return ItemView{}, false, false, err
 	}
-	request := struct {
-		Project string   `json:"project"`
-		Types   []string `json:"types,omitempty"`
-	}{Project: project, Types: append([]string(nil), types...)}
-	var replay struct {
-		Found bool     `json:"found"`
-		Item  ItemView `json:"item"`
-	}
+	request := claimNextRequest(project, types, meta)
+	var replay claimNextResult
 	ok, err := p.checkReplay(value, by, meta, request, &replay)
 	return replay.Item, replay.Found, ok, err
 }
 
 func (p *Provider) Claim(ctx context.Context, by model.PrincipalRef, req model.Ref, meta model.WriteMeta) (ItemView, error) {
+	if meta.Method == "bead.claimNext" {
+		return ItemView{}, fail("invalid_params", "claimNext requires its selector and wrapped result")
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	value, revision, err := p.load(ctx)
@@ -789,14 +831,19 @@ func (p *Provider) sanitizeTerminalReceipts(value persisted, runID string) {
 			terminalInvoke := InvokeResult{Plane: "ephemeral", Run: &RunView{ID: runID, Mode: "ephemeral", State: "completed"}, Items: []ItemView{}}
 			receipt.Result, _ = json.Marshal(terminalInvoke)
 		} else if receipt.Method == "bead.claimNext" {
-			var result struct {
-				Found bool     `json:"found"`
-				Item  ItemView `json:"item"`
+			var result claimNextResult
+			_ = json.Unmarshal(receipt.Result, &result)
+			if !result.Found && receipt.ItemID != "" {
+				// Erase legacy bare-item receipts too. Their digest cannot replay
+				// as a selector, but completion must still delete their payload.
+				var legacy ItemView
+				if json.Unmarshal(receipt.Result, &legacy) == nil && legacy.ID == receipt.ItemID {
+					result.Item = legacy
+				}
 			}
-			if json.Unmarshal(receipt.Result, &result) == nil && result.Found {
-				result.Item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: result.Item.Revision}
-				receipt.Result, _ = json.Marshal(result)
-			}
+			result.Found = receipt.ItemID != ""
+			result.Item = ItemView{ID: receipt.ItemID, RunID: runID, Status: "closed", Plane: "ephemeral", Kind: "workflow.item", Plugin: Alias, Revision: result.Item.Revision}
+			receipt.Result, _ = json.Marshal(result)
 		} else if receipt.Method == "bead.claim" {
 			var item ItemView
 			if json.Unmarshal(receipt.Result, &item) == nil {

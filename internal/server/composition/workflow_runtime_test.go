@@ -74,6 +74,20 @@ func TestAuthenticatedWorkflowHTTPRestartCompletionAndHistory(t *testing.T) {
 		Auth: authn.Config{Provider: keys},
 	}
 	current := startRuntime(t, config)
+	initialMeta, err := current.r.Store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIncarnation := func() {
+		t.Helper()
+		meta, err := current.r.Store.Meta(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if meta.Incarnation != initialMeta.Incarnation {
+			t.Fatalf("SQLite reopen changed incarnation: first=%q reopened=%q", initialMeta.Incarnation, meta.Incarnation)
+		}
+	}
 	newClient := func(key authnapikey.IssuedKey, project string) *client.Client {
 		t.Helper()
 		transport, err := client.NewHTTP(client.HTTPConfig{Server: "http://" + current.server.Addr().String(), Token: key.Token})
@@ -111,7 +125,7 @@ func TestAuthenticatedWorkflowHTTPRestartCompletionAndHistory(t *testing.T) {
 	commentParams := ref(itemID)
 	commentParams["body"] = "ephemeral confidential comment"
 	call(ownerClient, "bead.comment", commentParams, strings.Repeat("2", 64))
-	_, err := newClient(otherKey, config.Project).Call(ctx, "bead.get", itemRef, "")
+	_, err = newClient(otherKey, config.Project).Call(ctx, "bead.get", itemRef, "")
 	var denied *wire.Error
 	if !errors.As(err, &denied) || denied.Data.Code != "forbidden" {
 		t.Fatalf("other authenticated principal read workflow item: %v", err)
@@ -143,6 +157,7 @@ func TestAuthenticatedWorkflowHTTPRestartCompletionAndHistory(t *testing.T) {
 	assertNoHistory()
 	current.stop(t)
 	current = startRuntime(t, config)
+	assertIncarnation()
 	ownerClient = newClient(ownerKey, config.Project)
 	reopened := resultObject(t, call(ownerClient, "bead.get", itemRef, ""))
 	if comments := reopened["comments"].([]any); len(comments) != 1 || comments[0].(map[string]any)["body"] != commentParams["body"] {
@@ -164,17 +179,20 @@ func TestAuthenticatedWorkflowHTTPRestartCompletionAndHistory(t *testing.T) {
 	closeParams := ref(itemID)
 	closeParams["reason"] = "done"
 	closed := call(ownerClient, "bead.close", closeParams, strings.Repeat("4", 64))
-	// Model a lost final response in the same store incarnation. The scoped
-	// terminal receipt replays the identity-only commit without resurrecting
-	// the deleted item. Incarnation is intentionally part of the receipt scope,
-	// so a later restart must not replay this old response.
-	replayedClose := call(ownerClient, "bead.close", closeParams, strings.Repeat("4", 64))
-	if !bytes.Equal(closed.JSON, replayedClose.JSON) {
-		t.Fatalf("terminal response replay changed completion receipt: first=%s replay=%s", closed.JSON, replayedClose.JSON)
-	}
+	// A process restart preserves the store incarnation. Model a lost final
+	// response by reopening before retrying its identity-only completion.
 	current.stop(t)
 	current = startRuntime(t, config)
+	assertIncarnation()
 	ownerClient = newClient(issue(owner), config.Project)
+	replayedClose := call(ownerClient, "bead.close", closeParams, strings.Repeat("4", 64))
+	if !bytes.Equal(closed.JSON, replayedClose.JSON) {
+		t.Fatalf("terminal restart replay changed completion receipt: first=%s replay=%s", closed.JSON, replayedClose.JSON)
+	}
+	terminal := call(ownerClient, "x.workflow.invoke", params, strings.Repeat("1", 64))
+	if len(resultObject(t, terminal)["items"].([]any)) != 0 || bytes.Contains(terminal.JSON, []byte("ephemeral confidential")) {
+		t.Fatalf("terminal restart replay disclosed or recreated payload: %s", terminal.JSON)
+	}
 	_, err = ownerClient.Call(ctx, "bead.get", itemRef, "")
 	if !errors.As(err, &denied) || denied.Data.Code != "not_found" {
 		t.Fatalf("completed workflow item remained readable after restart: %v", err)

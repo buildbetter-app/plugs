@@ -38,9 +38,12 @@ for a live run remains replayable even after its initial operation window; a
 terminal receipt is replayable only until its completion-based 24-hour window
 ends. The same key with a different digest or any changed scope returns
 `idempotency_key_reused`. Replay is authorized again for the current principal.
-The store incarnation is part of that scope: a same-incarnation response-loss
-retry can replay, but a restart refuses replay of a receipt from the prior
-incarnation while restoring the live state document.
+The store incarnation is part of that scope. SQLite and PostgreSQL preserve
+the incarnation on ordinary reopen, so response-loss retries, including
+terminal receipts, replay across process restart. A retained receipt from a
+different incarnation explicitly returns `idempotency_key_reused` instead of
+being treated as a miss that could create another run. Restored live state
+can continue under new operation keys in the current incarnation.
 Completion atomically replaces body-bearing invocation/claim results with
 identity-only terminal results and deletes all run/item/comment/claim payloads.
 Replay after completion therefore returns only the bounded identity/commit
@@ -50,6 +53,14 @@ workflow lifecycle operations, completion, and receipt GC. Audit entries carry
 full receipt scope and typed IDs but no work-item payload; they remain plugin
 audit provenance and are not core versions, events, dumps, or permanent item
 history.
+
+The ordinary service passes its canonical full `bead.claimNext` selector to
+the provider separately from the selected item reference. Selected claims,
+receipt-only retries, and empty selections share that selector digest and the
+same `{found, item}` stored result. A replayed empty result remains terminal
+even when another item becomes ready. Completion sanitizes both that canonical
+result and older bare-item claim receipts while preserving each operation's
+original item ID and revision.
 
 The host's checkpoint lease and the provider's run/item generations fence
 takeover. Read and write paths fail closed when the store lease is lost or the

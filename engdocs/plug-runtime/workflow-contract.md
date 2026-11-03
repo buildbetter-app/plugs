@@ -104,7 +104,10 @@ scope. `bead.claimNext` uses that same order and binding. `bead.get`,
 ordinary service dispatcher and apply the current principal/project ownership
 check before exposing or mutating plugin state.
 
-The store incarnation is part of every receipt and cursor binding. A response
-loss can replay within the same incarnation, while a restart creates a new
-incarnation and refuses replay of an older response scope; live operational
-state itself remains recoverable from the persistent checkpoint.
+The store incarnation is part of every receipt and cursor binding. Ordinary
+SQLite and PostgreSQL reopen preserves that persisted incarnation, so live and
+terminal receipts replay across process restart within their retention window.
+A restore into a different incarnation refuses a retained prior-incarnation
+operation with `idempotency_key_reused`; it cannot turn a scoped receipt miss
+into another run. Live operational state remains recoverable from the
+persistent checkpoint.
