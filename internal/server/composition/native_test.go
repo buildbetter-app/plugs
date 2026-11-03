@@ -22,6 +22,9 @@ import (
 type nativeObservedStore struct {
 	driver.Store
 	driver.PersistentCheckpointStore
+	// Preserve the real driver's response finalization capability; callbacks
+	// must use the ordinary durable post-outcome receipt path as well.
+	driver.ResponseFinalizer
 	mu     sync.Mutex
 	leases []driver.ActiveLease
 	closed atomic.Bool
@@ -87,7 +90,7 @@ func TestNativeCompositionUsesOwnedPersistentStoreAndActiveLease(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			observed = &nativeObservedStore{Store: store, PersistentCheckpointStore: store.(driver.PersistentCheckpointStore)}
+			observed = &nativeObservedStore{Store: store, PersistentCheckpointStore: store.(driver.PersistentCheckpointStore), ResponseFinalizer: store.(driver.ResponseFinalizer)}
 			return observed, nil
 		},
 	}
@@ -255,7 +258,7 @@ func TestRuntimeCloseDrainsCanceledNativeCallbackBeforeStoreAndLease(t *testing.
 			if err != nil {
 				return nil, err
 			}
-			observed = &nativeObservedStore{Store: store, PersistentCheckpointStore: store.(driver.PersistentCheckpointStore)}
+			observed = &nativeObservedStore{Store: store, PersistentCheckpointStore: store.(driver.PersistentCheckpointStore), ResponseFinalizer: store.(driver.ResponseFinalizer)}
 			return observed, nil
 		},
 	}
