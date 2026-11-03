@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -204,21 +205,43 @@ func (s *Service) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req
 	if strings.TrimSpace(req.Template) == "" || strings.TrimSpace(req.Project) == "" || len(req.Checklist) == 0 {
 		return workflowplugin.InvokeResult{}, failure("invalid_params", "template, project and checklist are required")
 	}
-	result := workflowplugin.InvokeResult{Plane: "permanent", Items: []workflowplugin.ItemView{}}
+	// One ordinary Writer proposal keeps the checklist atomic and validates the
+	// original request key in its own method namespace. Local create aliases
+	// bind the complete invocation to the Writer request hash without adding
+	// workflow metadata to any durable bead body.
+	request, err := json.Marshal(req)
+	if err != nil {
+		return workflowplugin.InvokeResult{}, failure("invalid_params", "invalid workflow invocation")
+	}
+	digest := sha256.Sum256(append([]byte("plug/workflow/permanent/1\x00"), request...))
+	ops := make([]model.Op, len(req.Checklist))
+	types := make([]string, len(req.Checklist))
+	labels := make(map[string]bool, len(req.Checklist))
 	for index, item := range req.Checklist {
-		key := meta.IdempotencyKey
-		if key != "" {
-			key = fmt.Sprintf("%s-%d", key, index)
+		if strings.TrimSpace(item.Label) == "" || strings.TrimSpace(item.Title) == "" || labels[item.Label] {
+			return workflowplugin.InvokeResult{}, failure("invalid_params", "checklist labels must be unique and labels and titles must be nonempty")
 		}
-		commit, err := s.Create(ctx, by, CreateRequest{Type: item.Type, Fields: map[string]any{"title": item.Title}}, model.WriteMeta{Method: "bead.create", Project: req.Project, IdempotencyKey: key, Agent: meta.Agent, AgentLabel: meta.AgentLabel})
-		if err != nil {
-			return workflowplugin.InvokeResult{}, err
+		labels[item.Label] = true
+		types[index] = item.Type
+		if types[index] == "" {
+			// The ordinary built-in type is issue. The configured ontology
+			// still decides whether that type is active for this project.
+			types[index] = "issue"
 		}
-		if len(commit.Results) != 1 {
-			return workflowplugin.InvokeResult{}, failure("internal_error", "permanent workflow item did not return one result")
-		}
-		ref := commit.Results[0].Ref
-		result.Items = append(result.Items, workflowplugin.ItemView{ID: ref.ID, Label: item.Label, Title: item.Title, Type: item.Type, Project: req.Project, Status: "open", Plane: "permanent", Kind: "bead", Revision: commit.Results[0].Revision})
+		ops[index] = model.Op{Kind: model.OpCreate, Create: &model.CreateOp{Key: fmt.Sprintf("workflow-%x-%d", digest, index), Type: types[index], Project: req.Project, Fields: map[string]any{"title": item.Title}}}
+	}
+	meta.Project = req.Project
+	out, err := s.apply(ctx, by, "x.workflow.invoke", model.ChangeSet{Ops: ops}, meta, false)
+	if err != nil {
+		return workflowplugin.InvokeResult{}, err
+	}
+	if len(out.Commit.Results) != len(req.Checklist) {
+		return workflowplugin.InvokeResult{}, failure("internal_error", "permanent workflow invocation did not return every item")
+	}
+	result := workflowplugin.InvokeResult{Plane: "permanent", Items: make([]workflowplugin.ItemView, len(req.Checklist))}
+	for index, item := range req.Checklist {
+		created := out.Commit.Results[index]
+		result.Items[index] = workflowplugin.ItemView{ID: created.Ref.ID, Label: item.Label, Title: item.Title, Type: types[index], Project: req.Project, Status: "open", Plane: "permanent", Kind: "bead", Revision: created.Revision}
 	}
 	return result, nil
 }
