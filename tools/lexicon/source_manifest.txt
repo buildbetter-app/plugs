@@ -340,6 +340,8 @@ internal/core/service/heartbeat.go
 internal/core/service/hierarchy-index-consumer-design.md
 internal/core/service/hierarchy_guards.go
 internal/core/service/hierarchy_indexed.go
+internal/core/service/hierarchy_indexed_integration_test.go
+internal/core/service/hierarchy_indexed_overlay_test.go
 internal/core/service/hierarchy_indexed_test.go
 internal/core/service/history.go
 internal/core/service/history_reads_test.go
