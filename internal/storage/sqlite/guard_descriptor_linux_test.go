@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -272,6 +273,61 @@ func TestCanceledPartialLockAcquisitionReleasesAllRanges(t *testing.T) {
 	if len(states) != 2 {
 		t.Fatalf("retry states=%d, want 2", len(states))
 	}
+}
+
+// Losing the lease after the entry fence must never publish a successful
+// complete set whose mappings the lease watcher is already waiting to release.
+func TestLockRejectsLeaseLostDuringGuardAcquisition(t *testing.T) {
+	ctx := testContext(t)
+	var loseOnFence atomic.Bool
+	var lease *activeLease
+	value, err := (Driver{Clock: func() time.Time {
+		now := time.Now()
+		if loseOnFence.Swap(false) {
+			lease.signalLost()
+		}
+		return now
+	}}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "guard-lost-acquisition.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := value.(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	lease = getLease(t, ctx, s, driver.LeaseTTL).(*activeLease)
+	writer, err := s.Write(ctx, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := writer.(*transaction)
+	defer tx.Close()
+	requests := restoreGuardRequests(2)
+	beforeFD, beforeVMA := guardDescriptorCount(t, s), guardVMACount(t, s)
+
+	// fence checks Lost before calling the production Clock seam. Signal loss
+	// at that point while Lock owns the transaction mutex: Close is queued,
+	// and the real per-key flock/mmap and SQL paths still have to unwind.
+	loseOnFence.Store(true)
+	states, lockErr := tx.Lock(ctx, requests)
+	if err := tx.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if lockErr == nil {
+		t.Fatalf("Lock published %d states after lease loss; its guard mappings were already queued for release", len(states))
+	}
+	requireFenced(t, lockErr)
+	if len(states) != 0 {
+		t.Fatalf("fenced acquisition returned %d states", len(states))
+	}
+	if got := guardDescriptorCount(t, s); got != beforeFD {
+		t.Fatalf("fenced acquisition retained descriptors: before=%d after=%d", beforeFD, got)
+	}
+	if got := guardVMACount(t, s); got != beforeVMA {
+		t.Fatalf("fenced acquisition retained VMAs: before=%d after=%d", beforeVMA, got)
+	}
+	for _, request := range requests {
+		guardProbe(t, ctx, guardPath(s, request.Key), false, true)
+	}
+	t.Logf("lease loss rejected the complete %d-key set and released every original flock/mapping", len(requests))
 }
 
 func guardProbe(t *testing.T, ctx context.Context, path string, share, acquired bool) {
