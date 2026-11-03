@@ -191,6 +191,11 @@ func validMetrics(metrics Metrics) bool {
 		if errors != row.RetryableError+row.TerminalError {
 			return false
 		}
+		// Every method_not_found observation is also an unknown call. Flags
+		// sanitized to transport_error can contribute additional unknown calls.
+		if row.Unknown < row.ErrorCodes["method_not_found"] {
+			return false
+		}
 		if math.IsNaN(row.P50MS) || math.IsNaN(row.P95MS) || math.IsNaN(row.P99MS) || math.IsInf(row.P50MS, 0) || math.IsInf(row.P95MS, 0) || math.IsInf(row.P99MS, 0) || row.P50MS < 0 || row.P95MS < row.P50MS || row.P99MS < row.P95MS {
 			return false
 		}
