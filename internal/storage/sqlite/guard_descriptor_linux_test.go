@@ -346,7 +346,8 @@ func TestCompleteLockStatesMatchPinnedObserver(t *testing.T) {
 	lease := getLease(t, ctx, s, driver.LeaseTTL)
 	live := driver.DerivedRow{Key: "guard/live", Value: []byte("original")}
 	deleted := driver.DerivedRow{Key: "guard/deleted", Value: []byte("deleted")}
-	prefixCommit(t, ctx, s, lease, 1, nil, []driver.DerivedRow{live, deleted})
+	opaque := driver.DerivedRow{Key: "guard/opaque-\xff", Value: []byte("opaque")}
+	prefixCommit(t, ctx, s, lease, 1, nil, []driver.DerivedRow{live, deleted, opaque})
 	// Open before subsequent commits: Lock must repin after taking every guard.
 	writer, err := s.Write(ctx, lease)
 	if err != nil {
@@ -410,6 +411,7 @@ func TestCompleteLockStatesMatchPinnedObserver(t *testing.T) {
 		{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: live.Key}},
 		{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: deleted.Key}},
 		{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: "guard/missing"}},
+		{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: opaque.Key}},
 	}
 	sort.Slice(keys, func(i, j int) bool { return keyID(keys[i]) < keyID(keys[j]) })
 	requests := make(driver.LockSet, len(keys))

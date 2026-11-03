@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -182,70 +183,89 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 }
 
 // observeLockSet runs only after Lock has acquired the complete selected set
-// and pinned the current head. Read every state from that same snapshot in one
-// statement instead of preparing a history/record lookup for each guard. The
-// scalar reader keeps its historical reconstruction and public read behavior.
+// and pinned the current head. Batches avoid preparing a history/record lookup
+// for each guard. Raw SQL string bindings preserve opaque key bytes; JSON
+// string encoding would replace invalid UTF-8 accepted by the driver keys.
+// The scalar reader keeps its historical reconstruction and public behavior.
 func (t *transaction) observeLockSet(ctx context.Context, requests driver.LockSet) ([]driver.LockState, error) {
 	keys := make([]string, len(requests))
 	for i, request := range requests {
 		keys[i] = keyID(request.Key)
 	}
-	encoded, err := json.Marshal(keys)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := t.tx.QueryContext(ctx, `SELECT requested.key,
-		(SELECT data FROM key_history WHERE key=requested.value AND rev<=? ORDER BY rev DESC LIMIT 1),
-		(SELECT data FROM records WHERE key=requested.value)
-		FROM json_each(?) AS requested`, revKey(t.at), string(encoded))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	states := make([]driver.LockState, len(requests))
-	for rows.Next() {
-		var i int
-		var history, record []byte
-		if err := rows.Scan(&i, &history, &record); err != nil {
+	const batchSize = 256
+	for start := 0; start < len(requests); start += batchSize {
+		end := min(start+batchSize, len(requests))
+		var query strings.Builder
+		query.WriteString("WITH requested(ordinal, key) AS (VALUES ")
+		args := make([]any, 0, end-start+1)
+		for i := start; i < end; i++ {
+			if i != start {
+				query.WriteByte(',')
+			}
+			fmt.Fprintf(&query, "(%d,?)", i)
+			args = append(args, keys[i])
+		}
+		query.WriteString(`) SELECT requested.ordinal,
+			(SELECT data FROM key_history WHERE key=requested.key AND rev<=? ORDER BY rev DESC LIMIT 1),
+			(SELECT data FROM records WHERE key=requested.key)
+			FROM requested`)
+		args = append(args, revKey(t.at))
+		err := func() error {
+			rows, err := t.tx.QueryContext(ctx, query.String(), args...)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var i int
+				var history, record []byte
+				if err := rows.Scan(&i, &history, &record); err != nil {
+					return err
+				}
+				key := requests[i].Key
+				state := driver.LockState{Key: copyKey(key), Revision: model.Natural64(0)}
+				if history != nil {
+					if err := json.Unmarshal(history, &state); err != nil {
+						return err
+					}
+				}
+				if key.Kind == driver.LockRecord {
+					if staged, ok := t.records[keys[i]]; ok {
+						state.Present = staged != nil
+						if staged != nil {
+							value := copyRecord(*staged)
+							state.Record = &value
+						}
+					} else {
+						state.Present = record != nil
+						if record != nil {
+							var value driver.Record
+							if err := json.Unmarshal(record, &value); err != nil {
+								return err
+							}
+							state.Record = &value
+						}
+					}
+				}
+				if staged, ok := t.derived[keys[i]]; ok {
+					state.Present = staged.Present
+					state.Derived = nil
+					if staged.Derived != nil {
+						value := *staged.Derived
+						value.Value = bytes.Clone(value.Value)
+						state.Derived = &value
+					}
+				}
+				states[i] = state
+			}
+			return rows.Err()
+		}()
+		if err != nil {
 			return nil, err
 		}
-		key := requests[i].Key
-		state := driver.LockState{Key: copyKey(key), Revision: model.Natural64(0)}
-		if history != nil {
-			if err := json.Unmarshal(history, &state); err != nil {
-				return nil, err
-			}
-		}
-		if key.Kind == driver.LockRecord {
-			if staged, ok := t.records[keys[i]]; ok {
-				state.Present = staged != nil
-				if staged != nil {
-					value := copyRecord(*staged)
-					state.Record = &value
-				}
-			} else {
-				state.Present = record != nil
-				if record != nil {
-					var value driver.Record
-					if err := json.Unmarshal(record, &value); err != nil {
-						return nil, err
-					}
-					state.Record = &value
-				}
-			}
-		}
-		if staged, ok := t.derived[keys[i]]; ok {
-			state.Present = staged.Present
-			state.Derived = nil
-			if staged.Derived != nil {
-				value := *staged.Derived
-				value.Value = bytes.Clone(value.Value)
-				state.Derived = &value
-			}
-		}
-		states[i] = state
 	}
-	return states, rows.Err()
+	return states, nil
 }
 
 func (t *transaction) Head(ctx context.Context) (model.Revision, error) {
