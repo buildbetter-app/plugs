@@ -163,7 +163,7 @@ func exerciseImportedIdentityWrites(t *testing.T, engine string, data []byte, so
 	for _, project := range source.Manifest().Projects {
 		commit, err := writer.Apply(ctx, p.Admission.Actor, model.ChangeSet{Ops: []model.Op{{
 			Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Project: project.Prefix, Fields: map[string]any{"title": "created after import"}},
-		}}}, model.WriteMeta{Method: "tx.apply", Project: project.Prefix, IdempotencyKey: "identity-root-" + project.Prefix})
+		}}}, model.WriteMeta{Method: "tx.apply", Project: project.Prefix, IdempotencyKey: hashBytes([]byte("identity-root-" + project.Prefix))})
 		if err != nil || len(commit.Results) != 1 {
 			t.Fatalf("public root create for %s: %+v %v", project.Prefix, commit, err)
 		}
@@ -181,7 +181,7 @@ func exerciseImportedIdentityWrites(t *testing.T, engine string, data []byte, so
 	changes := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{
 		Type: "issue", Project: "demo", Parent: &parent, Fields: map[string]any{"title": "child of restored source bead"},
 	}}}}
-	meta := model.WriteMeta{Method: "tx.apply", Project: "demo", IdempotencyKey: "identity-child"}
+	meta := model.WriteMeta{Method: "tx.apply", Project: "demo", IdempotencyKey: hashBytes([]byte("identity-child"))}
 	commit, err := writer.Apply(ctx, p.Admission.Actor, changes, meta)
 	if err != nil || len(commit.Results) != 1 {
 		t.Fatalf("public child create under restored parent: %+v %v", commit, err)
