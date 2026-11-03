@@ -26,6 +26,9 @@ func (t *transaction) header(h driver.ChangesetHeader) ([]byte, error) {
 	if t.restore != nil {
 		validate := driver.ValidateOfflineRestoreHeader
 		if t.nativeRestore != nil {
+			if !t.nativeAllocators {
+				return nil, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorBindingRequired, nil)
+			}
 			validate = t.nativeRestore.ValidateHeader
 		}
 		if t.importRestore != nil {
@@ -297,6 +300,15 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	if err != nil {
 		return zero, err
 	}
+	target := t.meta
+	target.Head = revision
+	if t.restore != nil {
+		target = *t.restore
+	}
+	if err := t.publishAllocatorJournal(ctx, t.sql, target, t.restore != nil); err != nil {
+		_ = t.finish()
+		return zero, err
+	}
 	// Once database publication begins, every failure closes and rolls back
 	// the transaction, including all already-inserted version and blob rows.
 	if err = t.writeRecords(ctx, entry); err != nil {
@@ -321,6 +333,10 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			_ = t.finish()
 			return zero, err
 		}
+	}
+	if err = t.publishParentCounters(ctx, t.sql); err != nil {
+		_ = t.finish()
+		return zero, err
 	}
 	for hash, data := range t.blobs {
 		if _, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.blobs VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, string(hash), revision.String(), data); err != nil {

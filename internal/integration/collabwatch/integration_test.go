@@ -837,6 +837,33 @@ func (s *observedPresenceSource) Snapshot(ctx context.Context, by model.Principa
 	return data, err
 }
 
+func TestSessionCloseRevokesBufferedEventWatchBeforeLifetimeNotification(t *testing.T) {
+	f := newFixture(t)
+	notification := newPresenceReadGate()
+	defer notification.unblock()
+	f.watchLifetime = func(ctx context.Context) context.Context {
+		return delayedWatchLifetime{Context: ctx, release: notification.release}
+	}
+	f.create(t, "buffered-before-close")
+	sessionID := f.session(t, alice)
+	// Keep the real opening event page buffered. Close must revoke it without
+	// waiting for any asynchronous notification to the watch's derived context.
+	subscription := f.subscribe(t, alice, sessionID, "")
+	if _, err := f.callSessionClose(t, alice, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	beforeDrain := durableState(t, f)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := subscription.Next(ctx); !errors.Is(err, watch.ErrSubscriptionClosed) {
+		t.Fatalf("session close delivered a buffered event before lifetime notification: %v", err)
+	}
+	waitForWatchCount(t, f, sessionID, 0)
+	if string(beforeDrain) != string(durableState(t, f)) {
+		t.Fatal("closed watch drain changed durable rows, history, or head")
+	}
+}
+
 func TestSessionCloseDuringRealPresenceReadUnderConcurrentRPCLoad(t *testing.T) {
 	gate := newPresenceReadGate()
 	defer gate.unblock()

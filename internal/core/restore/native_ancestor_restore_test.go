@@ -348,6 +348,10 @@ type failDerivedTx struct {
 	driver.WriteTx
 }
 
+func (t *failDerivedTx) RestoreNativeAllocators(ctx context.Context, snapshot driver.AllocatorSnapshot) error {
+	return t.WriteTx.(driver.NativeAllocatorRestoreTx).RestoreNativeAllocators(ctx, snapshot)
+}
+
 func (t *failDerivedTx) PrepareNativeRestore(ctx context.Context, profile driver.NativeRestoreProfile) (driver.Meta, error) {
 	native, ok := t.WriteTx.(driver.NativeRestoreTx)
 	if !ok {

@@ -9,7 +9,7 @@ import (
 
 func (s *Store) restoreEmpty() error {
 	v := s.state
-	if !v.meta.Head.IsZero() || !v.meta.HistoryFloor.IsZero() || len(v.records)+len(v.kinds)+len(v.versions)+len(v.keys)+len(v.keyHistory)+len(v.blobs)+len(v.log)+len(v.replays)+len(v.allocators)+len(s.checkpoints) != 0 {
+	if !v.meta.Head.IsZero() || !v.meta.HistoryFloor.IsZero() || len(v.records)+len(v.kinds)+len(v.versions)+len(v.keys)+len(v.keyHistory)+len(v.blobs)+len(v.log)+len(v.replays)+len(v.allocators)+len(v.parentCounters)+len(s.checkpoints) != 0 || v.allocatorHistory != nil {
 		return driver.ErrRestoreTargetNotEmpty
 	}
 	return nil
@@ -27,7 +27,7 @@ func (t *transaction) prepareRestore(ctx context.Context, source driver.StoreID)
 	if err := t.check(ctx); err != nil {
 		return driver.Meta{}, err
 	}
-	if !t.hasHead || s.head != t || t.restore != nil || len(t.records)+len(t.derived)+len(t.bumps)+len(t.blobs)+len(t.allocators) != 0 {
+	if !t.hasHead || s.head != t || t.restore != nil || len(t.records)+len(t.derived)+len(t.bumps)+len(t.blobs)+len(t.allocators)+len(t.parentCounters) != 0 {
 		return driver.Meta{}, fmt.Errorf("offline restore requires Head before staging")
 	}
 	if err := s.restoreEmpty(); err != nil {
@@ -49,6 +49,9 @@ func (t *transaction) PrepareNativeRestore(ctx context.Context, profile driver.N
 	s := t.store
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := t.nativeAllocatorLocks(bound.AllocatorBinding); err != nil {
+		return driver.Meta{}, err
+	}
 	meta, err := t.prepareRestore(ctx, bound.StoreID)
 	if err == nil {
 		t.nativeRestore = &bound

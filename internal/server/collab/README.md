@@ -76,7 +76,14 @@ viewer-filtered snapshot changes, and leaves row reads to `presence.list`.
 Snapshot polls reuse `List`, so focus and claims are masked by current access;
 they write no graph, version, changeset, checkpoint, or dump state. The watch
 manager reserves the shared 32-watch session cap and ties expiry, close, lease
-loss, and shutdown to the session context. A signed cursor is bound to the
+loss, and shutdown to the session context. Watch registration, attachment, and
+frame delivery check that original lifetime directly: once `session.close`
+returns, even a buffered event cannot be delivered while asynchronous
+cancellation callbacks are still pending. A blocked consumer and the watch
+worker also observe the original lifetime's `Done` channel; closed sessions
+cannot retain a live stream by racing the notification callback. Request-only
+cancellation and contention on a still-live presence snapshot do not close the
+session. A signed cursor is bound to the
 presence method, project filter, principal, policy generation, and store
 incarnation; reconnecting with a changed snapshot advances that cursor.
 The watch adapter remains absent when no real collaboration source is wired.

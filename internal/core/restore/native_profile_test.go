@@ -293,6 +293,10 @@ type nativeRestoreFaultTx struct {
 	owner *nativeRestoreFaultStore
 }
 
+func (t *nativeRestoreFaultTx) RestoreNativeAllocators(ctx context.Context, snapshot driver.AllocatorSnapshot) error {
+	return t.WriteTx.(driver.NativeAllocatorRestoreTx).RestoreNativeAllocators(ctx, snapshot)
+}
+
 func (t *nativeRestoreFaultTx) PrepareNativeRestore(ctx context.Context, p driver.NativeRestoreProfile) (driver.Meta, error) {
 	return t.WriteTx.(driver.NativeRestoreTx).PrepareNativeRestore(ctx, p)
 }
@@ -438,6 +442,10 @@ func (s *nativeCompletionStore) Write(ctx context.Context, lease driver.ActiveLe
 type nativeCompletionTx struct {
 	driver.WriteTx
 	owner *nativeCompletionStore
+}
+
+func (t *nativeCompletionTx) RestoreNativeAllocators(ctx context.Context, snapshot driver.AllocatorSnapshot) error {
+	return t.WriteTx.(driver.NativeAllocatorRestoreTx).RestoreNativeAllocators(ctx, snapshot)
 }
 
 func (t *nativeCompletionTx) PrepareNativeRestore(ctx context.Context, p driver.NativeRestoreProfile) (driver.Meta, error) {

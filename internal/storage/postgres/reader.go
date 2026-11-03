@@ -14,13 +14,14 @@ import (
 )
 
 type reader struct {
-	mu     sync.Mutex
-	store  *Store
-	sql    *sql.Tx
-	meta   driver.Meta
-	at     uint64
-	closed bool
-	writer *transaction
+	allocatorImage *driver.AllocatorSnapshot
+	mu             sync.Mutex
+	store          *Store
+	sql            *sql.Tx
+	meta           driver.Meta
+	at             uint64
+	closed         bool
+	writer         *transaction
 	// Writers reserve their connection so cancellation cleanup can wait for
 	// pgx's asynchronous server termination before another lock probe starts.
 	conn        *sql.Conn
@@ -90,6 +91,7 @@ func (r *reader) finish() error {
 		return nil
 	}
 	r.closed = true
+	r.allocatorImage = nil
 	err := r.sql.Rollback()
 	if errors.Is(err, sql.ErrTxDone) {
 		err = nil
@@ -115,7 +117,9 @@ func (r *reader) finish() error {
 		r.writer.derived = nil
 		r.writer.blobs = nil
 		r.writer.allocators = nil
+		r.writer.parentCounters = nil
 		r.writer.bumps = nil
+		r.writer.allocated = nil
 		r.writer.acquired = nil
 		close(r.writer.done)
 	}
@@ -382,60 +386,6 @@ func (r *reader) Blob(ctx context.Context, hash driver.Hash) ([]byte, error) {
 	return data, err
 }
 
-func (r *reader) observe(ctx context.Context, key driver.LockKey) (driver.LockState, error) {
-	id, err := keyID(key)
-	if err != nil {
-		return driver.LockState{}, err
-	}
-	key, err = copied(key)
-	if err != nil {
-		return driver.LockState{}, err
-	}
-	state := driver.LockState{Key: key, Revision: model.Natural64(0)}
-	if key.Kind == driver.LockRecord {
-		if r.writer != nil {
-			if record, ok := r.writer.records[id]; ok {
-				if record != nil {
-					v, e := copied(*record)
-					if e != nil {
-						return state, e
-					}
-					state.Record = &v
-					state.Present = true
-					state.Revision = v.Revision
-				}
-				return state, nil
-			}
-		}
-		value, ok, err := r.recordAt(ctx, id)
-		if err != nil {
-			return state, err
-		}
-		if ok {
-			state.Revision = value.record.Revision
-			state.Present = !value.deleted
-			if state.Present {
-				state.Record = &value.record
-			}
-		}
-		return state, nil
-	}
-	if r.writer != nil {
-		if state, ok := r.writer.derived[id]; ok {
-			return copied(state)
-		}
-	}
-	var raw []byte
-	err = r.sql.QueryRowContext(ctx, `SELECT value FROM plug_postgres.states WHERE key=$1 AND revision<=$2 ORDER BY revision DESC LIMIT 1`, []byte(id), decimal(r.at)).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return state, nil
-	}
-	if err != nil {
-		return state, err
-	}
-	err = decode(raw, &state)
-	return state, err
-}
 func (r *reader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -467,25 +417,7 @@ func (r *reader) observeKeys(ctx context.Context, keys []driver.LockKey) ([]driv
 		states[i] = driver.LockState{Key: owned, Revision: model.Natural64(0)}
 		indexes[id] = i
 		if key.Kind == driver.LockRecord {
-			if r.writer != nil {
-				if _, staged := r.writer.records[id]; staged {
-					states[i], err = r.observe(ctx, key)
-					if err != nil {
-						return nil, err
-					}
-					continue
-				}
-			}
 			recordIDs = append(recordIDs, id)
-		} else if r.writer != nil {
-			if state, staged := r.writer.derived[id]; staged {
-				states[i], err = copied(state)
-				if err != nil {
-					return nil, err
-				}
-			} else {
-				stateIDs = append(stateIDs, []byte(id))
-			}
 		} else {
 			stateIDs = append(stateIDs, []byte(id))
 		}
@@ -521,6 +453,38 @@ func (r *reader) observeKeys(ctx context.Context, keys []driver.LockKey) ([]driv
 		}
 		if err := rows.Err(); err != nil {
 			return nil, err
+		}
+	}
+	// Staging changes the visible image, not the committed optimistic token.
+	// Load those tokens in batches above even for deleted/replaced rows, then
+	// copy the overlay so caller mutation cannot alter this transaction.
+	if r.writer != nil {
+		for i, key := range keys {
+			id, _ := keyID(key)
+			if key.Kind == driver.LockRecord {
+				if record, staged := r.writer.records[id]; staged {
+					states[i].Record = nil
+					states[i].Present = record != nil
+					if record != nil {
+						row, err := copied(*record)
+						if err != nil {
+							return nil, err
+						}
+						row.Revision = states[i].Revision
+						states[i].Record = &row
+					}
+				}
+			} else if staged, ok := r.writer.derived[id]; ok {
+				states[i].Present = staged.Present
+				states[i].Derived = nil
+				if staged.Derived != nil {
+					row, err := copied(*staged.Derived)
+					if err != nil {
+						return nil, err
+					}
+					states[i].Derived = &row
+				}
+			}
 		}
 	}
 	return states, nil

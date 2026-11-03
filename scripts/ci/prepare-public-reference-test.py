@@ -138,6 +138,35 @@ class ReferenceTest(unittest.TestCase):
                                  for name in helper.ENVIRONMENT_NAMES
                              ])
 
+    def test_explicit_count_capture_keeps_fixed_reference_opt_in_and_refusals(self):
+        target = "//spec/s1-b21-b24:ordinary_count_capture_test"
+        marker = helper.MARKER + helper.DESCRIPTOR
+        environment = self.prepared_environment()
+        for command in ("test", "coverage"):
+            arguments = command + " " + target + " " + marker
+            self.assertEqual(helper.route_arguments(arguments, environment),
+                             [command, target, marker] + [
+                                 "--test_env=" + name + "=" + environment[name]
+                                 for name in helper.ENVIRONMENT_NAMES
+                             ])
+            for name in helper.ENVIRONMENT_NAMES:
+                missing = dict(environment)
+                missing.pop(name)
+                with self.subTest(command=command, missing=name), self.assertRaises(ValueError):
+                    helper.route_arguments(arguments, missing)
+            wrong_run = {**environment, "PLUG_PUBLIC_REFERENCE_BUILD_RUN": "41398730774"}
+            with self.assertRaises(ValueError):
+                helper.route_arguments(arguments, wrong_run)
+            with self.assertRaises(ValueError):
+                helper.route_arguments(arguments, {})
+            with self.assertRaises(ValueError):
+                helper.route_arguments(arguments.replace(helper.DESCRIPTOR, "1:2:" + "a" * 64), environment)
+            with self.assertRaises(ValueError):
+                helper.route_arguments(arguments + " --test_env=PLUG_PUBLIC_REFERENCE_ZIP=/caller", environment)
+        # Without the explicit marker, no prepared values are routed. The
+        # separately owned count target retains its strict same-run guard.
+        self.assertEqual(helper.route_arguments("test " + target, environment), ["test", target])
+
     def test_prepared_route_requires_all_absolute_paths_and_exact_build_run(self):
         arguments = "run " + helper.CAPTURE_TARGET + " " + helper.MARKER + helper.DESCRIPTOR
         for name in helper.ENVIRONMENT_NAMES:

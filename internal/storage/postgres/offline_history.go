@@ -67,6 +67,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	if err = t.fence(ctx); err != nil {
 		return zero, err
 	}
+	if err := t.publishAllocatorJournal(ctx, t.sql, plan.Meta, true); err != nil {
+		return fail(err)
+	}
 	counts := map[string]uint64{}
 	for i, row := range plan.Rows {
 		r := row.Record

@@ -5,7 +5,10 @@ go_library(
     srcs = glob(["*.go"], exclude = ["*_test.go"]),
     importpath = "github.com/buildbetter-app/plugs/internal/core/dumpformat",
     visibility = ["//:__subpackages__"],
-    deps = ["//internal/core/ontology"],
+    deps = [
+        "//internal/core/ontology",
+        "//internal/storage/driver",
+    ],
 )
 
 go_test(

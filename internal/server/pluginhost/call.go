@@ -17,6 +17,11 @@ type invocation struct {
 	reader pluginapi.SnapshotReader
 }
 
+// invocationKey authenticates the context supplied to a durable operation.
+// A constructor may retain its facade, but an operation must carry the token
+// of this instance's current call, never a previous call or a replacement root.
+type invocationKey struct{}
+
 // Native callbacks are serialized per instance. A timed-out, refused, or
 // otherwise failed callback disposes its guest; the pool may replace that
 // member only after its callback has unwound.
@@ -48,8 +53,11 @@ func (i *instance) run(ctx context.Context, phase pluginapi.Phase, timeout time.
 	if scoped, ok := reader.(*scopedReader); ok {
 		scoped.ctx = ctx
 	}
+	call := &invocation{phase: phase, reader: reader}
+	ctx = context.WithValue(ctx, invocationKey{}, call)
+	call.ctx = ctx
 	i.mu.Lock()
-	i.active = &invocation{ctx, phase, reader}
+	i.active = call
 	i.mu.Unlock()
 	result := make(chan error, 1)
 	go func() {
@@ -165,7 +173,7 @@ func (c *capabilities) Call(ctx context.Context, method string, params, result a
 }
 
 func (c *capabilities) State() pluginapi.StateStore          { return &stateAccess{c.instance} }
-func (c *capabilities) DurableState() pluginapi.DurableState { return c.instance.durable }
+func (c *capabilities) DurableState() pluginapi.DurableState { return &durableStateAccess{c.instance} }
 func (c *capabilities) HTTP() *http.Client {
 	return &http.Client{Transport: &egressTransport{instance: c.instance}, Timeout: time.Second, CheckRedirect: func(_ *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
