@@ -817,6 +817,9 @@ internal/storage/driver/BUILD.bazel
 internal/storage/driver/allocator.go
 internal/storage/driver/allocator_contract_test.go
 internal/storage/driver/allocator_hash_test.go
+internal/storage/driver/allocator_journal.go
+internal/storage/driver/allocator_snapshot.go
+internal/storage/driver/allocator_snapshot_test.go
 internal/storage/driver/audit_contract_test.go
 internal/storage/driver/driver.go
 internal/storage/driver/errors.go
