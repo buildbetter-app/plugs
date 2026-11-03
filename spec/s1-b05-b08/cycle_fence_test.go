@@ -155,7 +155,11 @@ func TestB06CycleReportUsesCurrentExactMethodAndOneContentSnapshot(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			user := model.PrincipalRef{Kind: "user", ID: "user:current-cycle-reader"}
+			// Project caveats exercise the real member lookup on this same
+			// authority reader; an unscoped user permit needs no member Get.
+			user := model.PrincipalRef{Kind: "user", ID: "user:current-cycle-reader", Caveats: map[string]any{"projects": []model.Ref{
+				f.project, model.RefByID("secret-project", model.Natural64(0)),
+			}}}
 			got, rpcErr := f.call(t, user, "bead.cycles", nil)
 			if rpcErr != nil || got.CycleCount.String() != "3" {
 				t.Fatalf("report=%+v error=%+v", got, rpcErr)
@@ -228,7 +232,8 @@ func TestB06CycleReportOperationalErrorsNeverBecomePartialSuccess(t *testing.T) 
 					if err != nil {
 						t.Fatal(err)
 					}
-					_, rpcErr := f.call(t, model.PrincipalRef{Kind: "user", ID: "user:error-cycle-reader"}, "bead.cycles", nil)
+					by := model.PrincipalRef{Kind: "user", ID: "user:error-cycle-reader", Caveats: map[string]any{"projects": []model.Ref{f.project}}}
+					_, rpcErr := f.call(t, by, "bead.cycles", nil)
 					want := model.ErrorCode("authz_unavailable")
 					if stage == "query" || stage == "final-read" {
 						want = "internal_error"

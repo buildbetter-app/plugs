@@ -27,8 +27,15 @@ func dispatchCycles(ctx context.Context, svc CyclesService, call Call) (any, err
 	if err != nil || limit > 1000 {
 		return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params"}}
 	}
-	return svc.Cycles(ctx, call.Principal, service.CyclesRequest{
+	result, err := svc.Cycles(ctx, call.Principal, service.CyclesRequest{
 		Project: call.Meta.Project, IncludeTracks: params.IncludeTracks,
 		IncludeEphemeral: params.IncludeEphemeral, Limit: int(limit),
 	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"items": result.Items, "cycleCount": result.CycleCount, "truncated": result.Truncated,
+		"asOf": asOf{result.AsOf.Revision, result.AsOf.Incarnation},
+	}, nil
 }
