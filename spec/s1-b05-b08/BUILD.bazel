@@ -1,11 +1,18 @@
 load("@rules_go//go:def.bzl", "go_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 go_test(
     name = "acceptance",
     srcs = [
         "blocking_hierarchy_test.go",
         "checkpoint_guards_test.go",
+        "cycle_admission_test.go",
+        "cycle_rpc_test.go",
+        "cycle_fence_test.go",
+        "cycle_oracle_test.go",
         "engines_test.go",
+        "ephemeral_cycle_oracle_test.go",
+        "ephemeral_cycle_test.go",
         "fixture_test.go",
         "heartbeat_repair_test.go",
         "opaque_kinds_test.go",
@@ -13,6 +20,7 @@ go_test(
         "provenance_test.go",
         "reclaim_race_test.go",
         "runtime_test.go",
+        "settlement_test.go",
     ],
     tags = ["local", "requires-network"],
     embedsrcs = [
@@ -22,16 +30,25 @@ go_test(
     ],
     args = ["-test.v"],
     deps = [
+        "//internal/core/authz",
         "//internal/core/model",
         "//internal/core/pipeline",
         "//internal/core/port",
+        "//internal/core/restore",
         "//internal/core/service",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/server/authzrpc",
         "//internal/server/claimrpc",
+        "//internal/server/pluginhost",
         "//internal/server/rpc",
+        "//internal/server/transport/httpjson",
+        "//internal/storage/conformance",
         "//internal/storage/driver",
         "//internal/storage/memory",
         "//internal/storage/postgres",
         "//internal/storage/sqlite",
+        "//plugins/workflow",
     ],
 )
 
@@ -39,4 +56,34 @@ filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "reference_admission",
+    srcs = ["reference_admission_test.go"],
+    embedsrcs = [
+        "prepared_reference_test.py",
+        "project_reference.py",
+        "record_reference.py",
+        "reference_admission_test.py",
+        "reference_inputs.py",
+    ],
+    args = ["-test.v"],
+)
+
+# The trusted workflow prepares the pinned public reference only when this
+# explicit target is invoked with its fixed PLUG_PUBLIC_REFERENCE descriptor.
+# Keep it out of wildcard/whole-tree runs: the prepared paths exist only on
+# that RunsOn route and the test must never fall back to a local artifact.
+sh_test(
+    name = "prepared_reference_route",
+    srcs = ["prepared_reference_test.py"],
+    data = [
+        "prepared_reference_test.py",
+        "record_reference.py",
+        "project_reference.py",
+        "reference_inputs.py",
+    ],
+    tags = ["manual", "requires-network"],
+    size = "large",
 )

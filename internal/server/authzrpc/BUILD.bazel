@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "authzrpc",
-    srcs = ["authzrpc.go", "checker.go", "hierarchy.go", "hierarchy_read.go", "service.go", "slice.go", "workflow_claimnext.go", "workflow_reads.go"],
+    srcs = ["authzrpc.go", "checker.go", "claim.go", "cycles.go", "hierarchy.go", "hierarchy_read.go", "service.go", "slice.go", "workflow_claimnext.go", "workflow_reads.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/server/authzrpc",
     visibility = ["//:__subpackages__"],
     deps = [
@@ -14,6 +14,7 @@ go_library(
         "//internal/core/service",
         "//internal/plugins/authzfixed",
         "//internal/server/authn",
+        "//internal/server/claimrpc",
         "//internal/server/rpc",
         "//internal/server/transport/httpjson",
         "//internal/storage/driver",
@@ -24,7 +25,7 @@ go_library(
 go_test(
     name = "authzrpc_test",
     size = "large",
-    srcs = ["authzrpc_test.go", "drivers_test.go", "predicate_count_test.go"],
+    srcs = ["authzrpc_test.go", "claim_test.go", "drivers_test.go", "export_test.go", "predicate_count_test.go"],
     embed = [":authzrpc"],
     tags = ["exclusive"],
     deps = [
@@ -46,6 +47,7 @@ go_test(
         "//internal/storage/memory",
         "//internal/storage/postgres",
         "//internal/storage/sqlite",
+        "//internal/testclock",
         "//pluginapi",
         "//sdk/go:sdk_go",
     ],
