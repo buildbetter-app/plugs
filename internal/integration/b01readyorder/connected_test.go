@@ -153,6 +153,16 @@ type stagedRankFailureTx struct {
 	staged *atomic.Bool
 }
 
+// Preserve typed source publication so the injected refusal still follows
+// the real driver's sort-row staging on a certified store.
+func (tx stagedRankFailureTx) PutGraphRecord(ctx context.Context, record driver.Record, parent *model.Ref, links []driver.SourceLink) error {
+	writer, ok := tx.WriteTx.(driver.GraphSourceWriter)
+	if !ok {
+		return driver.ErrUnsupported
+	}
+	return writer.PutGraphRecord(ctx, record, parent, links)
+}
+
 func (tx stagedRankFailureTx) PutDerived(ctx context.Context, table driver.DerivedTable, remove, add []driver.DerivedRow) error {
 	if err := tx.WriteTx.PutDerived(ctx, table, remove, add); err != nil {
 		return err

@@ -298,7 +298,15 @@ func TestB01CreationClockSeamFeedsOrderWithoutChangingCreationOnUpdate(t *testin
 		if got := readCreation(); !got.Equal(createdAt) {
 			t.Fatalf("edit rewrote creation: %s -> %s", createdAt, got)
 		}
-		f.seed(t, document("pl-recent-p4", f.clock.Now(), 4))
+		// The preceding Writer created certified source coverage. This literal
+		// fixture is an explicit root with no outgoing links, using the same
+		// typed publication contract as the existing real driver fixture helper.
+		recent := document("pl-recent-p4", f.clock.Now(), 4)
+		if _, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{Time: f.clock.Now()}, []conformance.FixtureChange{{
+			Ref: model.Ref{ID: "pl-recent-p4"}, Kind: "bead", Op: model.OpCreate, Body: jsonBytes(t, recent), Graph: &conformance.FixtureGraphSource{},
+		}}); err != nil {
+			t.Fatal(err)
+		}
 		f.unchanged(t, func() { f.pages(t, nil, "pl-recent-p4", id.ID) })
 	})
 }
