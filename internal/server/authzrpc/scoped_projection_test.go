@@ -214,8 +214,9 @@ func TestActualScopedProducerAndW2BindingDifferential(t *testing.T) {
 		// registry names intentionally contain slashes and are not allocator
 		// profiles. Seed their content through the adopted storage fixture,
 		// then publish every tested projection with the real Writer below.
+		// Imported updates need a valid status; OpPatch skips create defaults.
 		target := ref(fmt.Sprintf("scoped-content-%d", i))
-		body, err := json.Marshal(pipeline.Document{ID: target.ID, Type: "issue", Project: project, Fields: map[string]any{"title": "imported source", "priority": 0}})
+		body, err := json.Marshal(pipeline.Document{ID: target.ID, Type: "issue", Project: project, Fields: map[string]any{"title": "imported source", "priority": 0, "status": "todo"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -224,7 +225,7 @@ func TestActualScopedProducerAndW2BindingDifferential(t *testing.T) {
 		}
 		result, err := writer.Apply(ctx, model.PrincipalRef{Kind: "user", ID: "creator"}, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: target, Fields: map[string]any{"title": "real source"}}}}}, model.WriteMeta{Method: "bead.update", Project: project, IdempotencyKey: fmt.Sprintf("%032x", i+1)})
 		if err != nil || len(result.Results) != 1 || result.Results[0].Ref.ID != target.ID {
-			t.Fatalf("actual Writer publication: %v", err)
+			t.Fatalf("actual Writer publication project=%q ref=%s: err=%#v results=%+v", project, target.ID, err, result.Results)
 		}
 		refs = append(refs, target)
 	}
