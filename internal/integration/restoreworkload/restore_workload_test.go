@@ -592,7 +592,20 @@ func thinSliceHistoryDocument(t *testing.T, c *client.Client, ref model.Ref, rev
 }
 
 func TestRestoredThinSliceLifecycleAcrossMemoryAndSQLite(t *testing.T) {
-	source := openThinSliceLocal(t, "memory", "", "thin-source", false)
+	for _, sourceBackend := range []string{"memory", "sqlite"} {
+		t.Run("source-"+sourceBackend, func(t *testing.T) {
+			runRestoredThinSliceLifecycle(t, sourceBackend)
+		})
+	}
+}
+
+func runRestoredThinSliceLifecycle(t *testing.T, sourceBackend string) {
+	t.Helper()
+	sourceDSN := ""
+	if sourceBackend == "sqlite" {
+		sourceDSN = filepath.Join(t.TempDir(), "thin-source.db")
+	}
+	source := openThinSliceLocal(t, sourceBackend, sourceDSN, "thin-source", false)
 	blocker := thinSliceCreate(t, source.Client, "thin blocker", 1)
 	dependent := thinSliceCreate(t, source.Client, "thin dependent", 2)
 	linkSet := model.ChangeSet{Ops: []model.Op{{
@@ -602,24 +615,67 @@ func TestRestoredThinSliceLifecycleAcrossMemoryAndSQLite(t *testing.T) {
 	if _, err := source.Client.Call(context.Background(), "tx.apply", map[string]any{"changeSet": linkSet}, thinSliceKey(3)); err != nil {
 		t.Fatalf("source link: %v", err)
 	}
+	sourceReady := readyPage(t, source.Client)
+	if sourceReady.revision != "3" || sourceReady.incarnation == "" || !sameSet(sourceReady.ids, []string{blocker.ID}) {
+		t.Fatalf("source ready page=%+v", sourceReady)
+	}
+	sourceDocuments := map[string]pipeline.Document{}
+	for _, ref := range []model.Ref{blocker, dependent} {
+		sourceDocuments[ref.ID] = thinSliceHistoryDocument(t, source.Client, ref, "3", sourceReady.incarnation)
+	}
 	archiveData, archive := captureHeadDump(t, source.Client)
+	sourceManifest := archive.Manifest()
+	if !archive.Native() || sourceManifest.History != "head" || sourceManifest.NativeHead != "3" || sourceManifest.NativeIncarnation != sourceReady.incarnation || sourceManifest.NativeStoreID == "" || sourceManifest.RecordCount < 2 || sourceManifest.ChangesetCount != 0 {
+		t.Fatalf("source archive has the wrong snapshot identity or scope: %+v", sourceManifest)
+	}
+	if sourceBackend == "sqlite" {
+		if err := source.Close(); err != nil {
+			t.Fatal(err)
+		}
+		// Export from a fresh composition over the persisted SQLite file,
+		// rather than reusing the writer or relabeling a memory archive.
+		source = openThinSliceLocal(t, sourceBackend, sourceDSN, "thin-source", false)
+		if reopened := readyPage(t, source.Client); reopened.revision != sourceReady.revision || reopened.incarnation != sourceReady.incarnation || !sameSet(reopened.ids, sourceReady.ids) {
+			t.Fatalf("SQLite source reopen changed ready state: got=%+v want=%+v", reopened, sourceReady)
+		}
+		for _, ref := range []model.Ref{blocker, dependent} {
+			document := thinSliceHistoryDocument(t, source.Client, ref, "3", sourceReady.incarnation)
+			if !reflect.DeepEqual(document, sourceDocuments[ref.ID]) {
+				t.Fatalf("SQLite source reopen changed %s: got=%+v want=%+v", ref.ID, document, sourceDocuments[ref.ID])
+			}
+		}
+		archiveData, archive = captureHeadDump(t, source.Client)
+		if got := archive.Manifest(); !archive.Native() || got.History != sourceManifest.History || got.NativeHead != sourceManifest.NativeHead || got.NativeIncarnation != sourceManifest.NativeIncarnation || got.NativeStoreID != sourceManifest.NativeStoreID || got.StoreID != sourceManifest.StoreID || got.RecordCount != sourceManifest.RecordCount || got.ChangesetCount != sourceManifest.ChangesetCount {
+			t.Fatalf("SQLite source reopen changed archive identity or scope: got=%+v want=%+v", got, sourceManifest)
+		}
+		t.Logf("SQLite source close/reopen before export: head=%s incarnation=%s records=%d documents/dependency=preserved", sourceManifest.NativeHead, sourceManifest.NativeIncarnation, sourceManifest.RecordCount)
+	}
 	if err := source.Close(); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, backend := range []string{"memory", "sqlite"} {
-		t.Run(backend, func(t *testing.T) {
+		t.Run("target-"+backend, func(t *testing.T) {
 			dsn := ""
 			if backend == "sqlite" {
 				dsn = filepath.Join(t.TempDir(), "thin-slice.db")
 			}
 			target := openThinSliceLocal(t, backend, dsn, "thin-worker", true)
 			restoredIncarnation := restoreHead(t, target.Client, archiveData, archive)
+			if restoredIncarnation == "" || restoredIncarnation == archive.Manifest().NativeIncarnation {
+				t.Fatalf("first restore reused the %s source incarnation: %q", sourceBackend, restoredIncarnation)
+			}
 			assertThinSliceRegistry(t, target.Client)
 
 			ready := readyPage(t, target.Client)
 			if ready.revision != "1" || ready.incarnation != restoredIncarnation || !sameSet(ready.ids, []string{blocker.ID}) {
 				t.Fatalf("fresh restored ready page=%+v", ready)
+			}
+			for _, ref := range []model.Ref{blocker, dependent} {
+				document := thinSliceHistoryDocument(t, target.Client, ref, "1", restoredIncarnation)
+				if !reflect.DeepEqual(document, sourceDocuments[ref.ID]) {
+					t.Fatalf("%s -> %s first restore changed %s: got=%+v want=%+v", sourceBackend, backend, ref.ID, document, sourceDocuments[ref.ID])
+				}
 			}
 
 			claimParams := map[string]any{"filter": map[string]any{"types": []string{"issue"}}}
@@ -692,7 +748,7 @@ func TestRestoredThinSliceLifecycleAcrossMemoryAndSQLite(t *testing.T) {
 			if final := readyPage(t, target.Client); len(final.ids) != 0 || final.revision != "7" {
 				t.Fatalf("final ready page=%+v", final)
 			}
-			t.Logf("thin restored lifecycle passed on %s: restore=%s claim=2 update=3 comment=4 tx.apply=5 close=6/7 warnings=replayed", backend, restoredIncarnation)
+			t.Logf("thin restored lifecycle source=%s target=%s: restore=%s claim=2 update=3 comment=4 tx.apply=5 close=6/7 warnings=replayed", sourceBackend, backend, restoredIncarnation)
 
 			// Continue the same restored fixture through history, dump and a
 			// second empty-store restore. Exporting the original fixture would
@@ -784,7 +840,7 @@ func TestRestoredThinSliceLifecycleAcrossMemoryAndSQLite(t *testing.T) {
 					}
 					// Close joins the local lease-renewal worker and releases the
 					// store; no listener, UI, or detached background work is used.
-					t.Logf("I2 in-process lifecycle %s -> %s: ready -> claim -> update -> comment -> close -> history -> dump(head=7) -> restore(head=1); records=%d comments=2/1 dependency=blocks test-presence-verifier=restore-workload", backend, restoredBackend, manifest.RecordCount)
+					t.Logf("I2 in-process lifecycle source=%s -> target=%s -> second-restore=%s: ready -> claim -> update -> comment -> guarded-close -> history -> dump(head=7) -> restore(head=1); records=%d comments=2/1 dependency=blocks test-presence-verifier=restore-workload", sourceBackend, backend, restoredBackend, manifest.RecordCount)
 				})
 			}
 		})
