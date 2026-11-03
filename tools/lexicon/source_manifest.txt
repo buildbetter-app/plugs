@@ -1236,6 +1236,7 @@ tools/rehearsal/files.go
 tools/rehearsal/files_test.go
 tools/rehearsal/gate.go
 tools/rehearsal/metrics.go
+tools/rehearsal/metrics_completeness_test.go
 tools/rehearsal/metrics_test.go
 tools/rehearsal/three_rehearsals.sh
 tools/roundtrip/BUILD.bazel
