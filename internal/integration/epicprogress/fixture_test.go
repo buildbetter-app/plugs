@@ -3,12 +3,20 @@ package epicprogress_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"os"
+	"os/exec"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +37,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/postgres"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
@@ -174,30 +183,179 @@ func requireCode(t *testing.T, r reply, code model.ErrorCode) {
 	}
 }
 
+type readObserver struct {
+	queries           atomic.Uint64
+	hierarchyChildren atomic.Uint64
+}
+
+func (o *readObserver) reset() {
+	o.queries.Store(0)
+	o.hierarchyChildren.Store(0)
+}
+
+func (o *readObserver) queryCount() uint64 {
+	return o.queries.Load()
+}
+
+func (o *readObserver) hierarchyCount() uint64 {
+	return o.hierarchyChildren.Load()
+}
+
+type observedReadStore struct {
+	store    viewops.ReadStore
+	observer *readObserver
+}
+
+func (s *observedReadStore) Meta(ctx context.Context) (driver.Meta, error) {
+	return s.store.Meta(ctx)
+}
+
+func (s *observedReadStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	reader, err := s.store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	return &observedReader{Reader: reader, observer: s.observer}, nil
+}
+
+type observedReader struct {
+	driver.Reader
+	observer *readObserver
+}
+
+func (r *observedReader) Query(ctx context.Context, query driver.Query) (driver.Page[driver.Record], error) {
+	r.observer.queries.Add(1)
+	return r.Reader.Query(ctx, query)
+}
+
+func (r *observedReader) HierarchyChildren(ctx context.Context, parents []model.Ref, limit int) ([]driver.Record, bool, error) {
+	r.observer.hierarchyChildren.Add(1)
+	reader, ok := r.Reader.(driver.HierarchyChildrenReader)
+	if !ok {
+		return nil, false, driver.ErrUnsupported
+	}
+	return reader.HierarchyChildren(ctx, parents, limit)
+}
+
+func (r *observedReader) HierarchyChildrenExcluding(ctx context.Context, parents, excluded []model.Ref, limit int) ([]driver.Record, bool, error) {
+	r.observer.hierarchyChildren.Add(1)
+	reader, ok := r.Reader.(driver.HierarchyChildrenExcludingReader)
+	if !ok {
+		return nil, false, driver.ErrUnsupported
+	}
+	return reader.HierarchyChildrenExcluding(ctx, parents, excluded, limit)
+}
+
+// readerOnly intentionally exposes no optional hierarchy interface. It lets
+// the regression compare the indexed result with the existing scan path.
+type readerOnly struct{ driver.Reader }
+
+type unindexedReadStore struct{ store viewops.ReadStore }
+
+func (s *unindexedReadStore) Meta(ctx context.Context) (driver.Meta, error) {
+	return s.store.Meta(ctx)
+}
+
+func (s *unindexedReadStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	reader, err := s.store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	return readerOnly{Reader: reader}, nil
+}
+
 type fixture struct {
-	store     driver.Store
-	lease     driver.ActiveLease
-	keys      *authnapikey.Provider
-	facts     *authzrpc.MutableFacts
-	base      authzfixed.Facts
-	app       *authzrpc.Composition
-	api       *endpoint
-	lifecycle *endpoint
-	sequence  int
-	owner     string
-	stopRenew context.CancelFunc
-	renewDone chan struct{}
-	once      sync.Once
+	store      driver.Store
+	lease      driver.ActiveLease
+	keys       *authnapikey.Provider
+	facts      *authzrpc.MutableFacts
+	base       authzfixed.Facts
+	app        *authzrpc.Composition
+	api        *endpoint
+	lifecycle  *endpoint
+	views      *viewops.Service
+	viewConfig viewops.Config
+	reads      *readObserver
+	sequence   int
+	owner      string
+	stopRenew  context.CancelFunc
+	renewDone  chan struct{}
+	once       sync.Once
+}
+
+const postgresImage = "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
+
+func docker(args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", append([]string{"--host=unix:///var/run/docker.sock"}, args...)...)
+	for _, value := range os.Environ() {
+		name, _, _ := strings.Cut(value, "=")
+		switch name {
+		case "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH":
+		default:
+			cmd.Env = append(cmd.Env, value)
+		}
+	}
+	return cmd.CombinedOutput()
+}
+
+func ownedPostgres(t *testing.T) string {
+	t.Helper()
+	var random [12]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		t.Fatal(err)
+	}
+	name := "plug-ep6-progress-" + hex.EncodeToString(random[:])
+	out, err := docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_ep6", "-p", "127.0.0.1::5432", postgresImage)
+	if err != nil {
+		t.Fatalf("owned PostgreSQL start failed: %v %s", err, out)
+	}
+	t.Cleanup(func() {
+		if out, err := docker("rm", "-f", name); err != nil {
+			t.Errorf("owned PostgreSQL cleanup failed: %v %s", err, out)
+		}
+	})
+	out, err = docker("port", name, "5432/tcp")
+	if err != nil {
+		t.Fatalf("owned PostgreSQL address failed: %v %s", err, out)
+	}
+	address := strings.TrimSpace(string(out))
+	host, _, err := net.SplitHostPort(address)
+	if err != nil || host != "127.0.0.1" {
+		t.Fatalf("owned PostgreSQL must bind only loopback: %q %v", address, err)
+	}
+	dsn := "postgres://postgres@" + address + "/plug_ep6?sslmode=disable"
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	for db.PingContext(ctx) != nil {
+		select {
+		case <-ctx.Done():
+			t.Fatal("owned PostgreSQL did not become ready")
+		case <-time.After(30 * time.Millisecond):
+		}
+	}
+	return dsn
 }
 
 func openStore(t *testing.T, backend, path string) (driver.Store, driver.ActiveLease) {
 	t.Helper()
 	var store driver.Store
 	var err error
-	if backend == "memory" {
+	switch backend {
+	case "memory":
 		store = memory.New()
-	} else {
+	case "sqlite":
 		store, err = (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: path})
+	case "postgres":
+		store, err = postgres.Open(context.Background(), driver.Config{DSN: ownedPostgres(t)})
+	default:
+		t.Fatalf("unknown backend %q", backend)
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +376,8 @@ func newFixture(t *testing.T, backend, path string, progress bool) *fixture {
 func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology bool) *fixture {
 	t.Helper()
 	store, lease := openStore(t, backend, path)
-	f := &fixture{store: store, lease: lease, renewDone: make(chan struct{})}
+	reads := &readObserver{}
+	f := &fixture{store: store, lease: lease, reads: reads, renewDone: make(chan struct{})}
 	t.Cleanup(func() { f.close(t) })
 	ctx, stop := context.WithCancel(context.Background())
 	f.stopRenew = stop
@@ -299,7 +458,8 @@ func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology b
 			t.Fatal(err)
 		}
 	}
-	views, err := viewops.New(store, lease, vc)
+	f.viewConfig = vc
+	f.views, err = viewops.New(&observedReadStore{store: store, observer: reads}, lease, vc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +470,7 @@ func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology b
 	if err := rpc.BindService(registry, &observedService{GuardedService: f.app.Service, t: t}); err != nil {
 		t.Fatal(err)
 	}
-	if err := viewrpc.BindWithConfig(registry, views, viewrpc.Config{CursorKey: []byte("ep6-disposable-cursor-key-0123456789")}); err != nil {
+	if err := viewrpc.BindWithConfig(registry, f.views, viewrpc.Config{CursorKey: []byte("ep6-disposable-cursor-key-0123456789")}); err != nil {
 		t.Fatal(err)
 	}
 	server, err := rpc.New(registry, rpc.Config{Incarnation: meta.Incarnation, AuthMode: "authenticated", OntologyRevision: model.Natural64(1), DefaultProject: epics,
