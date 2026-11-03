@@ -63,6 +63,7 @@ func TestNativeRestoreReopenDetachUsesCertifiedHierarchyCoverage(t *testing.T) {
 		Reparent: &model.ReparentOp{Target: direct[0]},
 	}}}, model.WriteMeta{Project: "local", Method: "tx.apply", AgentLabel: "native-detach", IdempotencyKey: "00000000000000000000000000000002"})
 	if err != nil {
+		t.Logf("native restore/reopen detach failed before commit: err=%v queries=%d parent_reads=%d inverse_reads=%d", err, observed.queries, observed.parentReads, observed.inverseReads)
 		t.Fatal(err)
 	}
 	if observed.queries != 0 {
