@@ -1187,6 +1187,7 @@ spec/s1-b01-b04/claim_acceptance_test.go
 spec/s1-b01-b04/clock_boundary_test.go
 spec/s1-b01-b04/fixture_test.go
 spec/s1-b01-b04/manifest.json
+spec/s1-b01-b04/manifest_test.go
 spec/s1-b01-b04/record_reference.py
 spec/s1-b01-b04/recorded_integrity_test.go
 spec/s1-b01-b04/replay_support_test.go
