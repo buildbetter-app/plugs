@@ -80,6 +80,7 @@ type prepared struct {
 	hierarchyEdits    []hierarchyEdit
 	hierarchyDelta    *hierarchyDelta
 	hierarchySources  *hierarchySources
+	projections       *projectionDelta
 	checkpointReads   map[string]uint64
 }
 
@@ -1285,6 +1286,11 @@ func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta
 
 func (p *prepared) sentinels() []driver.Sentinel {
 	set := map[driver.Sentinel]bool{}
+	if p.projections != nil {
+		for _, sentinel := range p.projections.sentinels {
+			set[sentinel] = true
+		}
+	}
 	if p.hierarchyDelta != nil {
 		for _, s := range p.hierarchyDelta.sentinels {
 			set[s] = true

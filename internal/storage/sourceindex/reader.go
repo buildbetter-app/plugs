@@ -132,6 +132,7 @@ func (d Dialect) fetchHeaders(ctx context.Context, q SQL, incarnation string, re
 		return err
 	}
 	work.Queries++
+	driver.ReportReadWork(ctx, driver.ReadSourceQueries, 1)
 	byID := make(map[int]*sourceCursor, len(cursors))
 	for _, c := range cursors {
 		byID[c.id] = c
@@ -144,6 +145,7 @@ func (d Dialect) fetchHeaders(ctx context.Context, q SQL, incarnation string, re
 			break
 		}
 		work.Headers++
+		driver.ReportReadWork(ctx, driver.ReadSourceHeaders, 1)
 		if work.Headers > MaxHeaders {
 			err = unavailableBudget()
 			break
@@ -210,6 +212,7 @@ func (d Dialect) advanceCursor(ctx context.Context, q SQL, incarnation string, r
 			return false, unavailableBudget()
 		}
 		work.Headers++
+		driver.ReportReadWork(ctx, driver.ReadSourceHeaders, 1)
 		return true, nil
 	}
 	cursor.position++
@@ -339,6 +342,7 @@ func (d Dialect) Select(ctx context.Context, q SQL, meta driver.Meta, at uint64,
 			return nil, false, unavailableBudget()
 		}
 		work.Headers++
+		driver.ReportReadWork(ctx, driver.ReadSourceHeaders, 1)
 		h = append(h, cursor)
 	}
 	heap.Init(&h)
@@ -395,6 +399,7 @@ func (d Dialect) fetchImages(ctx context.Context, q SQL, incarnation string, at 
 			}
 			found[header.key] = *r
 			work.Images++
+			driver.ReportReadWork(ctx, driver.ReadSourceImages, 1)
 		} else {
 			stored = append(stored, header)
 		}
@@ -440,6 +445,7 @@ func (d Dialect) fetchImages(ctx context.Context, q SQL, incarnation string, at 
 			return nil, err
 		}
 		work.Queries++
+		driver.ReportReadWork(ctx, driver.ReadSourceQueries, 1)
 		for rows.Next() {
 			var id, ref, body []byte
 			var kind, revision string
@@ -447,6 +453,10 @@ func (d Dialect) fetchImages(ctx context.Context, q SQL, incarnation string, at 
 				break
 			}
 			work.Images++
+			driver.ReportReadWork(ctx, driver.ReadSourceImages, 1)
+			// SQL Scan allocated a body even if identity validation later
+			// rejects this image or it is only the page lookahead.
+			driver.ReportReadPayload(ctx, body)
 			n, e := strconv.ParseUint(revision, 10, 64)
 			if e != nil {
 				err = e
@@ -477,6 +487,9 @@ func (d Dialect) fetchImages(ctx context.Context, q SQL, incarnation string, at 
 			return nil, fmt.Errorf("%w: malformed indexed source image", driver.ErrUnsupported)
 		}
 		image.Body = bytes.Clone(image.Body)
+		// This second allocation is distinct from the stored row Scan. A
+		// staged alias did not allocate a body before this clone.
+		driver.ReportReadPayload(ctx, image.Body)
 		images = append(images, image)
 	}
 	return images, nil
