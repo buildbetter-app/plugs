@@ -33,7 +33,7 @@ type Driver struct {
 }
 
 func (Driver) Info() driver.Info {
-	return driver.Info{Name: "sqlite", Version: "1", Capabilities: []string{"transactions", "history", "leases", "checkpoints", "allocator_continuation", "core_sessions", "noop", "response_finalization", driver.CapabilityRestoreCurrentImage}}
+	return driver.Info{Name: "sqlite", Version: "1", Capabilities: []string{"transactions", "history", "leases", "checkpoints", driver.CapabilityPersistentCheckpoints, "allocator_continuation", "core_sessions", "noop", "response_finalization", driver.CapabilityRestoreCurrentImage}}
 }
 
 type Store struct {
@@ -45,6 +45,10 @@ type Store struct {
 	children map[io.Closer]struct{}
 	leases   map[*activeLease]struct{}
 }
+
+// Persistent reports that SQLite checkpoint bytes survive Store.Close and a
+// subsequent open of the same file.
+func (*Store) Persistent() bool { return true }
 
 // SupportsRestore advertises the only restore mode this store can publish
 // atomically through its existing immediate transaction boundary.

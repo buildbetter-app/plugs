@@ -101,14 +101,49 @@ func (f MemoryReadAuthorizerFunc) CanReadMemory(ctx context.Context, by model.Pr
 
 // PagePosition is domain state, never an untrusted wire token. RPC signs and
 // validates its method/principal/filter binding before passing it to service.
-// Ready and MemoryList continue at Offset in the live ordered list; AsOf
-// identifies the last observed page and incarnation. History instead pins
-// every page to AsOf.
+// Ordinary Ready and MemoryList continue at Offset in the live ordered list;
+// AsOf identifies the last observed page and incarnation. Workflow Ready
+// offsets additionally bind the provider snapshot. History pins every page.
 type PagePosition struct {
 	Offset                int
 	AsOf                  AsOf
 	AuthorizationRevision model.Revision
 	AuthorizationBound    bool
+	// Workflow marks the second phase of bead.ready pagination. Core beads are
+	// emitted first; the signed transport cursor then continues through the
+	// stable plugin-owned workflow ordering without resetting the core offset.
+	Workflow bool
+	// WorkflowSnapshot also binds an authorization-filtered aggregate offset,
+	// whose position does not use the raw provider-phase Workflow flag.
+	WorkflowSnapshot *WorkflowPageSnapshot
+	// ReadyMembership binds guarded aggregate paging to the complete
+	// post-authorization order, including ordinary core rows.
+	ReadyMembership string
+}
+
+// WorkflowPageSnapshot identifies one atomic provider ready observation. Its
+// deadline includes currently excluded claims: expiry can change membership
+// without changing the persisted revision. It is internal signed cursor state.
+type WorkflowPageSnapshot struct {
+	Revision   model.Revision `json:"revision"`
+	ValidUntil *time.Time     `json:"validUntil,omitempty"`
+}
+
+func (s *WorkflowPageSnapshot) Valid() bool {
+	return s == nil || (s.Revision.Validate() == nil && (s.ValidUntil == nil || !s.ValidUntil.IsZero()))
+}
+
+func (s *WorkflowPageSnapshot) Equal(other *WorkflowPageSnapshot) bool {
+	if s == nil || other == nil {
+		return s == other
+	}
+	if !s.Valid() || !other.Valid() || s.Revision.String() != other.Revision.String() {
+		return false
+	}
+	if s.ValidUntil == nil || other.ValidUntil == nil {
+		return s.ValidUntil == other.ValidUntil
+	}
+	return s.ValidUntil.Equal(*other.ValidUntil)
 }
 
 type Filter struct {
@@ -199,10 +234,18 @@ type HistoryDiff struct {
 type GetRequest struct {
 	ID   model.Ref
 	AsOf *AsOf
+	// Project is the effective transport scope for plugin-owned reads.
+	Project string
+	// Agent carries the transport's anonymous-agent label to plugin-owned
+	// standard reads. Authenticated principals ignore it for ownership.
+	Agent string
 }
 
 type ReadyRequest struct {
-	Project  string
+	Project string
+	// Agent carries the transport's anonymous-agent label to plugin-owned
+	// standard ready listings and cursor continuations.
+	Agent    string
 	ViewID   string
 	Filter   *Filter
 	Limit    int
@@ -371,6 +414,12 @@ type Bead struct {
 	ReadinessPending bool
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+	// Workflow fields are present only for plugin-owned ephemeral items. They
+	// make the plane and kind explicit at the standard-tool boundary.
+	Plane         string
+	Kind          string
+	Plugin        string
+	WorkflowRunID string
 }
 
 type Lease struct {
@@ -404,6 +453,10 @@ type BeadPage struct {
 	NextCursor string
 	AsOf       AsOf
 	Next       *PagePosition
+	// Retained even on the final page so guarded aggregation can sign its own
+	// continuation after current-policy filtering.
+	WorkflowSnapshot *WorkflowPageSnapshot
+	ReadyMembership  string
 }
 
 type ClaimResult struct {

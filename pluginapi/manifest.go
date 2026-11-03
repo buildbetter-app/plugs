@@ -64,7 +64,16 @@ type Requirements struct {
 	Methods []string `json:"methods,omitempty"`
 	Egress  []string `json:"egress,omitempty"`
 	Secrets []string `json:"secrets,omitempty"`
+	// State names the restart contract a plugin expects from Host.
+	State StateRequirement `json:"state,omitempty"`
 }
+
+type StateRequirement string
+
+const (
+	StateProcessLocal StateRequirement = "process-local"
+	StateDurable      StateRequirement = "durable"
+)
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 var methodPart = regexp.MustCompile(`^[a-z][A-Za-z0-9_-]*$`)
@@ -192,6 +201,9 @@ func (p PluginManifest) Validate() error {
 	}
 	if len(p.Requires.Secrets) > 0 {
 		return fmt.Errorf("secret injection is not implemented by this native host")
+	}
+	if p.Requires.State != "" && p.Requires.State != StateProcessLocal && p.Requires.State != StateDurable {
+		return fmt.Errorf("unsupported state requirement %q", p.Requires.State)
 	}
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/pluginapi"
 	sdk "github.com/buildbetter-app/plugs/sdk/go"
 )
@@ -32,6 +33,12 @@ type Config struct {
 	Natives    []sdk.Native
 	Bindings   []Binding
 	Dispatcher Dispatcher
+	// CheckpointStore and CheckpointLease are the canonical host-owned
+	// persistence capability. DurableStore/DurableLease below are retained as
+	// composition vocabulary aliases for this same capability.
+	CheckpointStore     driver.CheckpointStore
+	CheckpointLease     driver.ActiveLease
+	RequireDurableState bool
 	// AuthenticationConfigured is trusted host configuration, never a plugin
 	// grant or caller-supplied principal. Leave it false in anonymous mode:
 	// even declared egress is disabled without an authentication provider.
@@ -39,6 +46,11 @@ type Config struct {
 	// Authorize checks a caller's permission to invoke extension methods. With
 	// no authorization plugin nil permits, matching core's optional chain.
 	Authorize func(context.Context, string, []pluginapi.Ref) error
+	// DurableStore and DurableLease enable the plugin-owned unversioned
+	// capability. Both must be supplied together; without them DurableState
+	// fails closed instead of falling back to process memory.
+	DurableStore driver.CheckpointStore
+	DurableLease driver.ActiveLease
 }
 
 // Binding is an effective ontology binding; its grants may only narrow the
@@ -62,6 +74,9 @@ type Host struct {
 	dispatcher               Dispatcher
 	authorize                func(context.Context, string, []pluginapi.Ref) error
 	authenticationConfigured bool
+	durableStore             driver.CheckpointStore
+	durableLease             driver.ActiveLease
+	durablePersistent        bool
 	closed                   bool
 }
 
@@ -85,6 +100,7 @@ type instance struct {
 	mu           sync.Mutex
 	active       *invocation
 	state        *stateStore
+	durable      *durableAccess
 	disposed     bool
 	disposeFn    func()
 }
@@ -150,7 +166,7 @@ func newInstancePool(ctx context.Context, native sdk.Native, owner *Host, source
 	// The source instance owns extension methods. Each binding gets four fresh
 	// callback guests; only the host-side state store crosses that boundary.
 	for n := 0; n < maxRuntimeInstances; n++ {
-		member, err := newInstanceWithContext(ctx, native, source.manifest, owner, source.state)
+		member, err := newInstanceWithContext(ctx, native, source.manifest, owner, source.state, source.durable)
 		if err != nil {
 			pool.close()
 			return nil, err
@@ -169,7 +185,7 @@ func (p *instancePool) newMember(ctx context.Context) (*instance, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	member, err := newInstanceWithContext(ctx, p.native, p.manifest, p.owner, p.state)
+	member, err := newInstanceWithContext(ctx, p.native, p.manifest, p.owner, p.state, p.owner.durableFor(p.manifest.Alias, p.native.Instance))
 	if err != nil {
 		return nil, err
 	}
@@ -753,7 +769,33 @@ func NewWithContext(ctx context.Context, config Config) (result *Host, err error
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	h := &Host{instances: map[string]*instance{}, natives: map[string]sdk.Native{}, methods: map[string]registeredMethod{}, dispatcher: config.Dispatcher, authorize: config.Authorize, authenticationConfigured: config.AuthenticationConfigured}
+	if config.CheckpointStore != nil && config.DurableStore != nil {
+		return nil, failure(ErrDurableState, "checkpoint store supplied more than once")
+	}
+	if config.CheckpointLease != nil && config.DurableLease != nil {
+		return nil, failure(ErrDurableState, "checkpoint lease supplied more than once")
+	}
+	checkpointStore := config.CheckpointStore
+	if checkpointStore == nil {
+		checkpointStore = config.DurableStore
+	}
+	checkpointLease := config.CheckpointLease
+	if checkpointLease == nil {
+		checkpointLease = config.DurableLease
+	}
+	hasCheckpoint := checkpointStore != nil || checkpointLease != nil
+	if hasCheckpoint && (checkpointStore == nil || checkpointLease == nil) {
+		return nil, failure(ErrDurableState, "checkpoint store and active lease must be supplied together")
+	}
+	persistentCheckpoint := false
+	if checkpointStore != nil {
+		persistent, ok := checkpointStore.(driver.PersistentCheckpointStore)
+		persistentCheckpoint = ok && persistent.Persistent()
+	}
+	if config.RequireDurableState && !persistentCheckpoint {
+		return nil, failure(ErrDurableState, "persistent checkpoint capability is required")
+	}
+	h := &Host{instances: map[string]*instance{}, natives: map[string]sdk.Native{}, methods: map[string]registeredMethod{}, dispatcher: config.Dispatcher, authorize: config.Authorize, authenticationConfigured: config.AuthenticationConfigured, durableStore: checkpointStore, durableLease: checkpointLease, durablePersistent: persistentCheckpoint}
 	defer func() {
 		if err != nil {
 			_ = h.Close()
@@ -779,7 +821,10 @@ func NewWithContext(ctx context.Context, config Config) (result *Host, err error
 		if h.instances[key] != nil {
 			return nil, failure(ErrManifest, "duplicate instance %s", key)
 		}
-		i, err := newInstanceWithContext(ctx, native, p, h, newStateStore())
+		if p.Requires.State == pluginapi.StateDurable && !persistentCheckpoint {
+			return nil, failure(ErrDurableState, "plugin %s requires restart-durable state", p.Alias)
+		}
+		i, err := newInstanceWithContext(ctx, native, p, h, newStateStore(), h.durableFor(p.Alias, native.Instance))
 		if err != nil {
 			return nil, fmt.Errorf("initialize %s: %w", key, err)
 		}
@@ -877,11 +922,11 @@ func (h *Host) register(i *instance) error {
 	return nil
 }
 
-func newInstance(native sdk.Native, manifest pluginapi.PluginManifest, owner *Host, state *stateStore) (*instance, error) {
-	return newInstanceWithContext(context.Background(), native, manifest, owner, state)
+func newInstance(native sdk.Native, manifest pluginapi.PluginManifest, owner *Host, state *stateStore, durable *durableAccess) (*instance, error) {
+	return newInstanceWithContext(context.Background(), native, manifest, owner, state, durable)
 }
 
-func newInstanceWithContext(ctx context.Context, native sdk.Native, manifest pluginapi.PluginManifest, owner *Host, state *stateStore) (*instance, error) {
+func newInstanceWithContext(ctx context.Context, native sdk.Native, manifest pluginapi.PluginManifest, owner *Host, state *stateStore, durable *durableAccess) (*instance, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -889,7 +934,7 @@ func newInstanceWithContext(ctx context.Context, native sdk.Native, manifest plu
 	if err != nil {
 		return nil, err
 	}
-	i := &instance{manifest: copyManifest, name: native.Instance, owner: owner, gate: make(chan struct{}, 1), state: state}
+	i := &instance{manifest: copyManifest, name: native.Instance, owner: owner, gate: make(chan struct{}, 1), state: state, durable: durable}
 	host := &capabilities{instance: i}
 	var registration sdk.Registration
 	if native.NewWithContext != nil {
@@ -903,6 +948,13 @@ func newInstanceWithContext(ctx context.Context, native sdk.Native, manifest plu
 	i.registration = registration
 	i.disposeFn = host.onDispose
 	return i, nil
+}
+
+func (h *Host) durableFor(alias, instance string) *durableAccess {
+	if h.durableStore == nil || h.durableLease == nil {
+		return newDurableAccessWithPersistence(nil, nil, alias, instance, false)
+	}
+	return newDurableAccessWithPersistence(h.durableStore, h.durableLease, alias, instance, h.durablePersistent)
 }
 
 func (i *instance) isDisposed() bool {
