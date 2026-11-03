@@ -2,10 +2,14 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "acceptance_test",
+    size = "large",
+    tags = ["local", "requires-network"],
     srcs = [
         "acceptance_test.go",
         "converter_test.go",
         "reference_test.go",
+        "relations_test.go",
+        "subscribers_test.go",
     ],
     args = ["-test.v"],
     data = glob(["testdata/**"]) + [
@@ -23,7 +27,9 @@ go_test(
         "//internal/integration/converterroundtrip",
         "//internal/storage/driver",
         "//internal/storage/memory",
+        "//internal/storage/postgres",
         "//internal/storage/sqlite",
+        "//internal/testclock",
     ],
 )
 

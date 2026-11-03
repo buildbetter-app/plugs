@@ -8,9 +8,12 @@ invariants are atomic, a late event-log failure rolls back the write/version/
 receipt, committed post failures become sanitized durable warnings and dead
 letters, and sponsor-resolved approvals count distinct humans before resolving.
 
-The B25 and B28 tests use real memory and file-backed SQLite stores with a fixed
-UTC clock, explicit IDs, a disposable lease, and the production Writer. The
-SQLite cases close and reopen the store before replay/readback. The I4 event
+The direct B25 and B28 tests use real memory, file-backed SQLite and PostgreSQL
+stores with fixed Go and driver/SQL clocks, explicit IDs, a disposable lease,
+and the production Writer. PostgreSQL uses the test-only VOLATILE SQL clock
+through the unchanged driver queries. The tests read actual persisted changeset
+and receipt timestamps; production clocks and budgets are unchanged. Both SQL
+stores close and reopen before replay/readback. The I4 event
 case installs a real SQLite trigger that fails only at changeset publication;
 the retry proves that no version, receipt, event, or callback leaked from the
 refused transaction. The timed post case deliberately panics in
@@ -89,9 +92,10 @@ promotion. Instead, a source archive whose real `storage_class` is
 `b26-deviation.json`; promotion, mixed-plane dependencies, and promotion
 rollback remain dependent on an adopted producer contract.
 
-The package is an acceptance slice, not a full-card parity certificate. It does
-not claim B26 positive producer evidence, complete B27 configuration/auxiliary
-source coverage, Postgres replay, or production deployment. Run it through the
+The package is an acceptance slice, not a full-card parity certificate. Direct
+B25/B28 three-store cases and B27 hierarchy regressions do not replace genuine
+pinned reference pairs. B26 positive producer evidence and complete B27
+configuration/auxiliary source coverage remain outside this proof. Run it through the
 RunsOn wrapper, never local Bazel:
 
 ```sh
@@ -102,3 +106,13 @@ export PATH=/tmp/plug-swarm/bin/worker-safe:$PATH
   //internal/integration/postsql:postsql_test \\
   --test_output=errors --test_arg=-test.v
 ```
+
+The B27 converter now lowers an admitted source parent-child edge into the
+core Parent field, retains the source edge mirror, and constructs canonical
+ancestor pair rows used by ordinary writes. Its independent regression inputs
+exercise a three-level parent tree, SQL reopen, a real reparent, reverse
+refusal after a parent changes, and prewrite rejection of multiple parents,
+missing parents and scheduling conflicts on memory, SQLite and PostgreSQL.
+Those authored inputs are not Beads recordings. The legacy entry point keeps
+its existing parent-edge refusal; the admitted import and inspection paths
+carry the new lowering. Prior raw captures and all RED receipts are retained.

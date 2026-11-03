@@ -317,16 +317,23 @@ func assertRestoreSelfAncestors(t *testing.T, store driver.Store) {
 	defer r.Close()
 	ids := []string{idA, idB, idC}
 	keys := make([]driver.LockKey, len(ids))
+	identities := map[string]string{}
 	for i, id := range ids {
 		part := base64.RawURLEncoding.EncodeToString([]byte(id))
 		keys[i] = driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: part + "." + part}}
+		identities[part+"."+part] = id
 	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(keys[i])
+		b, _ := driver.EncodeLockKey(keys[j])
+		return a < b
+	})
 	states, err := r.Observe(ctx, keys)
 	if err != nil || len(states) != len(ids) {
 		t.Fatalf("ancestor rows: %+v %v", states, err)
 	}
-	for i, id := range ids {
-		state := states[i]
+	for i, state := range states {
+		id := identities[keys[i].Derived.Key]
 		// This legacy fixture has no parents. Assert the canonical pair key
 		// and scalar zero independently of the production codec and plan.
 		want := "0"

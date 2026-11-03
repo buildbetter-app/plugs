@@ -1061,6 +1061,8 @@ spec/s1-b25-b28/converter_test.go
 spec/s1-b25-b28/provenance.py
 spec/s1-b25-b28/record_reference.py
 spec/s1-b25-b28/reference_test.go
+spec/s1-b25-b28/relations_test.go
+spec/s1-b25-b28/subscribers_test.go
 spec/s1-b25-b28/testdata/existing-target.jsonl
 spec/s1-b25-b28/testdata/inputs.jsonl
 spec/s1-b25-b28/testdata/projection.json

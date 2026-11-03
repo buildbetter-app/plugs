@@ -22,7 +22,9 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/postgres"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
+	"github.com/buildbetter-app/plugs/internal/testclock"
 )
 
 var acceptancePrincipal = model.PrincipalRef{Kind: "user", ID: "s1-acceptance"}
@@ -35,6 +37,9 @@ type stack struct {
 	store     driver.Store
 	lease     driver.ActiveLease
 	path      string
+	dsn       string
+	engine    driver.Driver
+	clock     *testclock.Clock
 	ids       []string
 	nextID    int
 	writer    *pipeline.Writer
@@ -45,10 +50,10 @@ func openStack(t *testing.T, kind string, ids []string, options ...pipeline.Opti
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
-	s := &stack{t: t, ctx: ctx, ids: append([]string(nil), ids...), principal: acceptancePrincipal}
+	s := &stack{t: t, ctx: ctx, ids: append([]string(nil), ids...), principal: acceptancePrincipal, clock: testclock.New(t, acceptanceClock)}
 	if kind == "memory" {
 		store, err := memory.NewWithOptions(memory.Options{
-			Clock:       func() time.Time { return acceptanceClock },
+			Clock:       s.clock.Now,
 			StoreID:     driver.StoreID("s1-" + kind),
 			Incarnation: "s1-" + kind + "-incarnation",
 		})
@@ -58,13 +63,22 @@ func openStack(t *testing.T, kind string, ids []string, options ...pipeline.Opti
 		s.store = store
 	} else if kind == "sqlite" {
 		s.path = filepath.Join(t.TempDir(), "s1.sqlite")
-		store, err := (sqlite.Driver{}).Open(ctx, driver.Config{DSN: s.path})
+		s.dsn, s.engine = s.path, sqlite.Driver{Clock: s.clock.Now}
+	} else if kind == "postgres" {
+		s.dsn = s.clock.BindPostgres(t, testclock.PostgresDSN(t))
+		s.engine = postgres.Driver{}
+		if at := testclock.PostgresNow(t, s.dsn); !at.Equal(acceptanceClock) {
+			t.Fatalf("reached SQL clock=%s, Go clock=%s", at, acceptanceClock)
+		}
+	} else {
+		t.Fatalf("unknown acceptance store %q", kind)
+	}
+	if s.engine != nil {
+		var err error
+		s.store, err = s.engine.Open(ctx, driver.Config{DSN: s.dsn})
 		if err != nil {
 			t.Fatal(err)
 		}
-		s.store = store
-	} else {
-		t.Fatalf("unknown acceptance store %q", kind)
 	}
 	lease, err := s.store.Lease(ctx, "s1-acceptance", driver.LeaseTTL)
 	if err != nil {
@@ -95,7 +109,7 @@ func (s *stack) newWriter(options ...pipeline.Option) *pipeline.Writer {
 		return id, nil
 	}
 	base := []pipeline.Option{
-		pipeline.WithClock(func() time.Time { return acceptanceClock }),
+		pipeline.WithClock(s.clock.Now),
 		pipeline.WithIDGenerator(idGenerator),
 		pipeline.WithOntology(service.NewOntology(nil)),
 	}
@@ -105,8 +119,8 @@ func (s *stack) newWriter(options ...pipeline.Option) *pipeline.Writer {
 
 func (s *stack) reopen() {
 	s.t.Helper()
-	if s.path == "" {
-		s.t.Fatal("reopen is only valid for the SQLite fixture")
+	if s.engine == nil {
+		s.t.Fatal("reopen requires a real SQL store")
 	}
 	if s.lease != nil {
 		_ = s.lease.Release(context.Background())
@@ -114,7 +128,7 @@ func (s *stack) reopen() {
 	if err := s.store.Close(); err != nil {
 		s.t.Fatal(err)
 	}
-	store, err := (sqlite.Driver{}).Open(s.ctx, driver.Config{DSN: s.path})
+	store, err := s.engine.Open(s.ctx, driver.Config{DSN: s.dsn})
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -170,6 +184,7 @@ func readRecord(t *testing.T, s *stack, id string) (driver.Record, bool) {
 
 type relationalImage struct {
 	Fields   map[string]any             `json:"fields"`
+	Labels   []string                   `json:"labels,omitempty"`
 	Parent   *model.Ref                 `json:"parent,omitempty"`
 	Metadata map[string]json.RawMessage `json:"metadata,omitempty"`
 	Comments []pipeline.Comment         `json:"comments,omitempty"`
@@ -182,7 +197,7 @@ func relational(t *testing.T, record driver.Record) relationalImage {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return relationalImage{Fields: doc.Fields, Parent: doc.Parent, Metadata: doc.Metadata, Comments: doc.Comments, Links: doc.Links}
+	return relationalImage{Fields: doc.Fields, Labels: doc.Labels, Parent: doc.Parent, Metadata: doc.Metadata, Comments: doc.Comments, Links: doc.Links}
 }
 
 func encoded(t *testing.T, value any) []byte {
@@ -205,8 +220,8 @@ func setupRelational(t *testing.T, kind string) (*stack, string, string, relatio
 	t.Helper()
 	s := openStack(t, kind, []string{"s1-parent", "s1-child"})
 	commit := apply(t, s, model.ChangeSet{Ops: []model.Op{
-		{Kind: model.OpCreate, Create: &model.CreateOp{Key: "parent", Type: "issue", Fields: map[string]any{"title": "original", "description": "keep", "priority": 2}}},
-		{Kind: model.OpCreate, Create: &model.CreateOp{Key: "child", Type: "issue", Parent: ptr(model.RefByKey("parent")), Fields: map[string]any{"title": "child"}}},
+		{Kind: model.OpCreate, Create: &model.CreateOp{Key: "parent", Type: "issue", Fields: map[string]any{"title": "original", "description": "keep", "priority": 2, "labels": []string{"alpha", "beta"}}}},
+		{Kind: model.OpCreate, Create: &model.CreateOp{Key: "child", Type: "issue", Parent: ptr(model.RefByKey("parent")), Fields: map[string]any{"title": "child", "labels": []string{"child"}}}},
 		{Kind: model.OpLink, Link: &model.LinkOp{Kind: model.OpLink, From: model.RefByKey("parent"), To: model.RefByKey("child"), LinkKind: "relates-to"}},
 		{Kind: model.OpComment, Comment: &model.CommentOp{Kind: model.OpComment, Target: model.RefByKey("parent"), Body: "retain this exact comment"}},
 		{Kind: model.OpSetMeta, SetMeta: &model.SetMetaOp{Kind: model.OpSetMeta, Target: model.RefByKey("parent"), Key: "plugin.note", Value: json.RawMessage(`{"nested":true}`)}},
@@ -227,8 +242,8 @@ func setupRelational(t *testing.T, kind string) (*stack, string, string, relatio
 
 func ptr(ref model.Ref) *model.Ref { return &ref }
 
-func TestB25RelationalPreservationAndDeleteCascadeAcrossMemoryAndSQLite(t *testing.T) {
-	for _, kind := range []string{"memory", "sqlite"} {
+func TestB25RelationalPreservationAndDeleteCascadeAcrossDrivers(t *testing.T) {
+	for _, kind := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(kind, func(t *testing.T) {
 			s, parentID, childID, before := setupRelational(t, kind)
 			patchMeta := writeMeta(2)
@@ -241,6 +256,7 @@ func TestB25RelationalPreservationAndDeleteCascadeAcrossMemoryAndSQLite(t *testi
 				t.Fatal("parent disappeared after scalar update")
 			}
 			after := relational(t, afterRecord)
+			assertJSONEqual(t, []string{"alpha", "beta"}, after.Labels)
 			if after.Parent != nil {
 				// The parent is intentionally root; the child carries the parent edge.
 				t.Fatalf("unexpected root parent edge: %+v", after.Parent)
@@ -267,7 +283,7 @@ func TestB25RelationalPreservationAndDeleteCascadeAcrossMemoryAndSQLite(t *testi
 				t.Fatalf("child parent edge was not preserved: %+v err=%v", childDoc, err)
 			}
 
-			if kind == "sqlite" {
+			if kind != "memory" {
 				s.reopen()
 				reopened, ok := readRecord(t, s, parentID)
 				if !ok {
@@ -292,36 +308,42 @@ func TestB25RelationalPreservationAndDeleteCascadeAcrossMemoryAndSQLite(t *testi
 	}
 }
 
-func TestB25FailedAuxiliaryWriteRollsBackScalarUpdate(t *testing.T) {
-	s, parentID, _, before := setupRelational(t, "memory")
-	meta := writeMeta(2)
-	_, err := s.writer.Apply(s.ctx, s.principal, model.ChangeSet{Ops: []model.Op{
-		{Kind: model.OpPatch, Patch: &model.PatchOp{Kind: model.OpPatch, Target: ref(parentID), Fields: map[string]any{"title": "must-rollback"}}},
-		{Kind: model.OpLink, Link: &model.LinkOp{Kind: model.OpLink, From: ref(parentID), To: ref(parentID), LinkKind: "blocks"}},
-	}}, meta)
-	if err == nil || !strings.Contains(err.Error(), "self-links are refused") {
-		t.Fatalf("blocking auxiliary write was not refused atomically: %v", err)
-	}
-	row, ok := readRecord(t, s, parentID)
-	if !ok {
-		t.Fatal("parent disappeared after refused batch")
-	}
-	assertJSONEqual(t, before, relational(t, row))
-	head, err := s.store.Meta(s.ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if head.Head.String() != "1" {
-		t.Fatalf("refused batch advanced head to %s", head.Head)
-	}
-	reader, err := s.store.Read(s.ctx, driver.View{Incarnation: head.Incarnation})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
-	principal, _ := driver.PrincipalKey(s.principal)
-	if receipt, err := reader.IdempotencyByKey(s.ctx, principal, "", meta.Method, meta.IdempotencyKey); err != nil || receipt != nil {
-		t.Fatalf("refused auxiliary batch published receipt=%+v err=%v", receipt, err)
+func TestB25FailedAuxiliaryWriteRollsBackScalarUpdateAcrossDrivers(t *testing.T) {
+	for _, kind := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(kind, func(t *testing.T) {
+
+			s, parentID, _, before := setupRelational(t, kind)
+			meta := writeMeta(2)
+			_, err := s.writer.Apply(s.ctx, s.principal, model.ChangeSet{Ops: []model.Op{
+				{Kind: model.OpPatch, Patch: &model.PatchOp{Kind: model.OpPatch, Target: ref(parentID), Fields: map[string]any{"title": "must-rollback"}}},
+				{Kind: model.OpLink, Link: &model.LinkOp{Kind: model.OpLink, From: ref(parentID), To: ref(parentID), LinkKind: "blocks"}},
+			}}, meta)
+			if err == nil || !strings.Contains(err.Error(), "self-links are refused") {
+				t.Fatalf("blocking auxiliary write was not refused atomically: %v", err)
+			}
+			row, ok := readRecord(t, s, parentID)
+			if !ok {
+				t.Fatal("parent disappeared after refused batch")
+			}
+			assertJSONEqual(t, before, relational(t, row))
+			head, err := s.store.Meta(s.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if head.Head.String() != "1" {
+				t.Fatalf("refused batch advanced head to %s", head.Head)
+			}
+			reader, err := s.store.Read(s.ctx, driver.View{Incarnation: head.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			principal, _ := driver.PrincipalKey(s.principal)
+			if receipt, err := reader.IdempotencyByKey(s.ctx, principal, "", meta.Method, meta.IdempotencyKey); err != nil || receipt != nil {
+				t.Fatalf("refused auxiliary batch published receipt=%+v err=%v", receipt, err)
+			}
+
+		})
 	}
 }
 
@@ -336,51 +358,69 @@ func (p *panicTimedPost) AfterWithTimeout(context.Context, time.Duration, port.C
 	panic("controlled S1 timed post panic")
 }
 
-func TestB28CommittedWarningDeadLetterAndReplaySurviveSQLiteReopen(t *testing.T) {
-	var calls atomic.Int32
-	s := openStack(t, "sqlite", []string{"s1-warning"})
-	postStore, ok := s.store.(driver.CheckpointStore)
-	if !ok {
-		t.Fatal("SQLite fixture has no checkpoint store")
-	}
-	post := &panicTimedPost{calls: &calls}
-	w := s.newWriter(pipeline.WithPostFailureStore(postStore), pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "s1/timed-panic", Subscriber: post}))
-	cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Kind: model.OpCreate, Type: "issue", Fields: map[string]any{"title": "warning"}}}}}
-	meta := writeMeta(30)
-	first, err := w.Apply(s.ctx, s.principal, cs, meta)
-	if err != nil || first.Revision.String() != "1" || len(first.Warnings) != 1 || first.Warnings[0].Code != "post_subscriber_failed" {
-		t.Fatalf("timed post did not become a committed warning: commit=%+v err=%v", first, err)
-	}
-	if calls.Load() != 1 {
-		t.Fatalf("timed post callback count=%d", calls.Load())
-	}
-	incarnation, err := s.store.Meta(s.ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadKey := pipeline.PostDeadLetterKey(incarnation.Incarnation, first.Revision, "s1/timed-panic")
-	checkpoint, err := postStore.LoadCheckpoint(s.ctx, deadKey)
-	var dead pipeline.PostDeadLetter
-	if err != nil || checkpoint.Generation != 1 || json.Unmarshal(checkpoint.Payload, &dead) != nil || dead.Binding != "s1/timed-panic" || dead.Reason != "post_subscriber_failed" || dead.Revision.String() != "1" {
-		t.Fatalf("missing durable sanitized dead letter: checkpoint=%+v dead=%+v err=%v", checkpoint, dead, err)
-	}
-	if bytes.Contains(checkpoint.Payload, []byte("controlled S1 timed post panic")) {
-		t.Fatal("dead-letter metadata retained panic text")
-	}
+func TestB28CommittedWarningDeadLetterAndReplayAcrossDrivers(t *testing.T) {
+	for _, kind := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(kind, func(t *testing.T) {
 
-	replay, err := w.Apply(s.ctx, s.principal, cs, meta)
-	if err != nil || !reflect.DeepEqual(first, replay) || calls.Load() != 1 {
-		t.Fatalf("replay changed warning or reran callback: first=%+v replay=%+v calls=%d err=%v", first, replay, calls.Load(), err)
-	}
-	s.reopen()
-	reopenedStore := s.store.(driver.CheckpointStore)
-	reloaded, err := reopenedStore.LoadCheckpoint(s.ctx, deadKey)
-	if err != nil || !bytes.Equal(reloaded.Payload, checkpoint.Payload) || reloaded.Generation != checkpoint.Generation {
-		t.Fatalf("reopened dead letter changed: before=%+v after=%+v err=%v", checkpoint, reloaded, err)
-	}
-	replay, err = s.writer.Apply(s.ctx, s.principal, cs, meta)
-	if err != nil || !reflect.DeepEqual(first, replay) || calls.Load() != 1 {
-		t.Fatalf("reopened replay changed warning or reran callback: first=%+v replay=%+v calls=%d err=%v", first, replay, calls.Load(), err)
+			var calls atomic.Int32
+			s := openStack(t, kind, []string{"s1-warning"})
+			postStore, ok := s.store.(driver.CheckpointStore)
+			if !ok {
+				t.Fatal("real fixture has no checkpoint store")
+			}
+			post := &panicTimedPost{calls: &calls}
+			w := s.newWriter(pipeline.WithPostFailureStore(postStore), pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "s1/timed-panic", Subscriber: post}))
+			cs := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Kind: model.OpCreate, Type: "issue", Fields: map[string]any{"title": "warning"}}}}}
+			meta := writeMeta(30)
+			first, err := w.Apply(s.ctx, s.principal, cs, meta)
+			if err != nil || first.Revision.String() != "1" || len(first.Warnings) != 1 || first.Warnings[0].Code != "post_subscriber_failed" {
+				t.Fatalf("timed post did not become a committed warning: commit=%+v err=%v", first, err)
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("timed post callback count=%d", calls.Load())
+			}
+			incarnation, err := s.store.Meta(s.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			deadKey := pipeline.PostDeadLetterKey(incarnation.Incarnation, first.Revision, "s1/timed-panic")
+			checkpoint, err := postStore.LoadCheckpoint(s.ctx, deadKey)
+			var dead pipeline.PostDeadLetter
+			if err != nil || checkpoint.Generation != 1 || json.Unmarshal(checkpoint.Payload, &dead) != nil || dead.Binding != "s1/timed-panic" || dead.Reason != "post_subscriber_failed" || dead.Revision.String() != "1" {
+				t.Fatalf("missing durable sanitized dead letter: checkpoint=%+v dead=%+v err=%v", checkpoint, dead, err)
+			}
+			if bytes.Contains(checkpoint.Payload, []byte("controlled S1 timed post panic")) {
+				t.Fatal("dead-letter metadata retained panic text")
+			}
+
+			replay, err := w.Apply(s.ctx, s.principal, cs, meta)
+			if err != nil || !reflect.DeepEqual(first, replay) || calls.Load() != 1 {
+				t.Fatalf("replay changed warning or reran callback: first=%+v replay=%+v calls=%d err=%v", first, replay, calls.Load(), err)
+			}
+			assertPersistedClock(t, s)
+			if kind != "memory" {
+
+				s.reopen()
+				reopenedStore := s.store.(driver.CheckpointStore)
+				reloaded, err := reopenedStore.LoadCheckpoint(s.ctx, deadKey)
+				if err != nil || !bytes.Equal(reloaded.Payload, checkpoint.Payload) || reloaded.Generation != checkpoint.Generation {
+					t.Fatalf("reopened dead letter changed: before=%+v after=%+v err=%v", checkpoint, reloaded, err)
+				}
+				reinstalled := s.newWriter(pipeline.WithPostFailureStore(reopenedStore), pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "s1/timed-panic", Subscriber: post}))
+				w = reinstalled
+				replay, err = reinstalled.Apply(s.ctx, s.principal, cs, meta)
+				if err != nil || !reflect.DeepEqual(first, replay) || calls.Load() != 1 {
+					t.Fatalf("reopened replay changed warning or reran callback: first=%+v replay=%+v calls=%d err=%v", first, replay, calls.Load(), err)
+				}
+
+			}
+
+			noop, err := w.Apply(s.ctx, s.principal, model.ChangeSet{Ops: []model.Op{{Kind: model.OpPatch, Patch: &model.PatchOp{Target: ref("s1-warning"), Fields: map[string]any{"title": "warning"}}}}}, writeMeta(31))
+			if err != nil || noop.Revision.String() != "1" || len(noop.Warnings) != 0 || calls.Load() != 1 {
+				t.Fatalf("no-op minted a revision or called a post subscriber: %+v calls=%d", noop, calls.Load())
+			}
+
+		})
 	}
 }
 
