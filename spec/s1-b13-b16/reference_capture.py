@@ -23,8 +23,8 @@ import zipfile
 
 PINNED_COMMIT = "9d6fff760b7a314b476539198504d77ce0959656"
 PINNED_TREE = "cde121d6e4119e454857ad1c3ca293e2791be840"
-ARTIFACT_RUN = "41361573924"
-ARTIFACT_ID = "13105007501"
+ARTIFACT_RUN = "41399124974"
+ARTIFACT_ID = "13121145530"
 ARTIFACT_URLS = [
     f"https://api.github.com/repos/buildbetter-app/plugs/actions/artifacts/{ARTIFACT_ID}/zip",
     f"https://github.com/buildbetter-app/plugs/actions/artifacts/{ARTIFACT_ID}/zip",
@@ -32,8 +32,9 @@ ARTIFACT_URLS = [
 ]
 BINARY_SHA256 = "3c6bbb888431751adce98dfebc8cbeeb5869300698e8b069a4d7438fabfb3af4"
 BINARY_SIZE = 112341314
-ARCHIVE_SHA256 = "63f31a9cec53d7fd0ef538795814822c809b0398627c1c4c4ed5bca1258b95dc"
-ARCHIVE_SIZE = 132280320
+ARCHIVE_SHA256 = "e4b67e5456f91419ec9c1290ca3cc620ef27f71812a821677a3ea5647a70d412"
+ARCHIVE_SIZE = 132331520
+SOURCE_REF = "refs/heads/beads"
 RECORDER_RELATIVE = "spec/s1-b13-b16/record_reference.py"
 EXPECTED_FILES = {
     "bd-version.json",
@@ -309,8 +310,12 @@ def fetch_source(root: Path, receipts: list[dict[str, object]], env: dict[str, s
     source.mkdir()
     command_receipt(["git", "init", "-q"], source, env, receipts)
     command_receipt(["git", "-C", str(source), "remote", "add", "origin", "https://github.com/buildbetter-app/plugs.git"], root, env, receipts)
-    command_receipt(["git", "-C", str(source), "fetch", "--no-tags", "--depth=1", "origin", PINNED_COMMIT], root, env, receipts)
-    command_receipt(["git", "-C", str(source), "checkout", "--detach", "FETCH_HEAD"], root, env, receipts)
+    # Fetch the public branch through its ordinary ref route, then bind the
+    # detached checkout to the exact immutable commit/tree. This avoids
+    # token-specific rejection of a raw ancestor-SHA fetch while retaining the
+    # clean-tree guard before the recorder runs.
+    command_receipt(["git", "-C", str(source), "fetch", "--no-tags", "--depth=32", "--no-write-fetch-head", "origin", SOURCE_REF], root, env, receipts)
+    command_receipt(["git", "-C", str(source), "checkout", "--detach", PINNED_COMMIT], root, env, receipts)
     commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], env=env, text=True).strip()
     tree = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD^{tree}"], env=env, text=True).strip()
     clean = subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], env=env, text=True)
