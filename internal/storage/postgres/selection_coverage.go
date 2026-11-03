@@ -133,8 +133,11 @@ func (r *reader) compileSelectionFamilyValidity(ctx context.Context, at uint64, 
 		`proof_ancestors AS MATERIALIZED (SELECT r.source_key,f.ref_key,f.target_key,f.depth FROM proof_rows r JOIN proof_facts f ON f.row_key=r.row_key LEFT JOIN proof_headers h ON h.key=r.source_key WHERE (h.kind='bead' OR h.key IS NULL AND r.source_present) AND r.family_table='ancestor_closure' AND r.source_kind='record' AND r.fact_kind='ancestor')`)
 	// Count the complete relation once, rather than running an aggregate for
 	// each live source in every family while publication holds the lease fence.
-	// The left join below still treats an absent group as zero; all untouched
-	// rows and the independent freshness/identity/parent-chain proofs remain.
+	// Each family uses a full equality join so its materialized census cannot
+	// be rescanned by a nested loop for every live source. Missing groups still
+	// count as zero. Orphan groups already fail the independent freshness proof
+	// below; retaining them here prevents reduction back to a left join. All
+	// untouched rows and freshness/identity/parent-chain proofs remain.
 	c.ctes = append(c.ctes, `proof_census AS MATERIALIZED (SELECT r.source_key,r.family_table,coalesce(r.fact_kind,'') fact_kind,count(*) n FROM proof_rows r LEFT JOIN proof_headers h ON h.key=r.source_key WHERE (h.kind='bead' OR h.key IS NULL AND r.source_present) AND r.source_kind='record' GROUP BY r.source_key,r.family_table,coalesce(r.fact_kind,''))`)
 	chain := selectionParentChainSQL
 	branches := []string{}
@@ -145,7 +148,7 @@ func (r *reader) compileSelectionFamilyValidity(ctx context.Context, at uint64, 
 		if family.Kind == "" {
 			countCheck = `coalesce(census.n,0)<>1`
 		}
-		valid := `NOT EXISTS(SELECT 1 FROM proof_live l LEFT JOIN proof_census census ON census.source_key=l.key AND census.family_table=` + table + ` AND census.fact_kind=` + kind + ` WHERE ` + countCheck + `) AND NOT EXISTS(SELECT 1 FROM (` + rows + `) x LEFT JOIN proof_live l ON l.key=x.source_key LEFT JOIN proof_headers h ON h.key=x.source_key WHERE l.key IS NULL OR h.key IS NULL OR h.kind<>'bead' OR NOT h.present OR NOT x.source_present OR h.revision IS DISTINCT FROM x.source_revision OR l.revision IS DISTINCT FROM x.source_revision OR h.digest IS DISTINCT FROM x.source_digest)`
+		valid := `NOT EXISTS(SELECT 1 FROM proof_live l FULL JOIN (SELECT source_key,n FROM proof_census WHERE family_table=` + table + ` AND fact_kind=` + kind + `) census ON census.source_key=l.key WHERE l.key IS NULL OR ` + countCheck + `) AND NOT EXISTS(SELECT 1 FROM (` + rows + `) x LEFT JOIN proof_live l ON l.key=x.source_key LEFT JOIN proof_headers h ON h.key=x.source_key WHERE l.key IS NULL OR h.key IS NULL OR h.kind<>'bead' OR NOT h.present OR NOT x.source_present OR h.revision IS DISTINCT FROM x.source_revision OR l.revision IS DISTINCT FROM x.source_revision OR h.digest IS DISTINCT FROM x.source_digest)`
 		if family.Kind == "" {
 			valid += ` AND NOT EXISTS(SELECT 1 FROM (` + rows + `) x WHERE x.bead_key IS DISTINCT FROM x.source_key)`
 		}
