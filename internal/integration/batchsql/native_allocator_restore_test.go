@@ -324,8 +324,13 @@ func TestNativeAllocatorRestoreAllNineRealStorePairs(t *testing.T) {
 						if prefix == "hash" && child.ID != root.ID+".1" {
 							t.Fatalf("restored hash child suffix: %+v", child)
 						}
-						if prefix == "random" && !strings.HasPrefix(child.ID, root.ID+"-") {
-							t.Fatalf("restored random child shape: %+v", child)
+						if prefix == "random" {
+							for _, candidate := range []struct{ id, prefix string }{{root.ID, "random-"}, {child.ID, root.ID + "."}} {
+								suffix, ok := strings.CutPrefix(candidate.id, candidate.prefix)
+								if !ok || len(suffix) != 32 || strings.Trim(suffix, "0123456789abcdef") != "" {
+									t.Fatalf("restored random candidate %q must be %s followed by 32 lower-hex digits", candidate.id, candidate.prefix)
+								}
+							}
 						}
 					}
 					current := observedAllocatorSnapshot(t, target, nil)
