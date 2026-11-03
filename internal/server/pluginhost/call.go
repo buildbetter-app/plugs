@@ -196,7 +196,13 @@ func contains(values []string, value string) bool {
 // Invoke runs a declared native extension. The embedding server authorizes
 // its permission/resource before dispatch; schemas remain registry-owned.
 func (h *Host) Invoke(ctx context.Context, name string, params json.RawMessage) (json.RawMessage, error) {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return nil, failure(ErrInactive, "plugin host is closed")
+	}
 	m, ok := h.methods[name]
+	h.mu.Unlock()
 	if !ok {
 		return nil, failure(ErrMethod, "undeclared method %s", name)
 	}
