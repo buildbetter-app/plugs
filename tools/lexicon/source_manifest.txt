@@ -303,6 +303,8 @@ internal/core/service/audit_test.go
 internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
 internal/core/service/claim_recovery_test.go
+internal/core/service/cycles.go
+internal/core/service/cycles_test.go
 internal/core/service/direct_blockers.go
 internal/core/service/direct_blockers_test.go
 internal/core/service/gate.go
@@ -579,6 +581,7 @@ internal/server/authzrpc/atomic_close_test.go
 internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/checker.go
+internal/server/authzrpc/cycles.go
 internal/server/authzrpc/drivers_test.go
 internal/server/authzrpc/hierarchy.go
 internal/server/authzrpc/hierarchy_lifecycle_guards_test.go
@@ -696,6 +699,7 @@ internal/server/rpc/cmd/openrpcgen/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/main.go
 internal/server/rpc/cursor.go
 internal/server/rpc/cursor_test.go
+internal/server/rpc/cycles.go
 internal/server/rpc/gate_integration_test.go
 internal/server/rpc/integration_test.go
 internal/server/rpc/openrpc.json
@@ -999,6 +1003,7 @@ spec/s1-b05-b08/README.md
 spec/s1-b05-b08/blocking_hierarchy_test.go
 spec/s1-b05-b08/checkpoint_guards_test.go
 spec/s1-b05-b08/cycle_admission_test.go
+spec/s1-b05-b08/cycle_rpc_test.go
 spec/s1-b05-b08/engines_test.go
 spec/s1-b05-b08/fixture_test.go
 spec/s1-b05-b08/heartbeat_repair_test.go

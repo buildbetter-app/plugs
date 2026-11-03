@@ -128,6 +128,9 @@ func BindService(registry *Registry, svc Service) error {
 		return fmt.Errorf("nil service or registry")
 	}
 	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.claimNext", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "bead.link", "bead.unlink", "tx.apply", "history.query"}
+	if _, ok := svc.(CyclesService); ok {
+		names = append(names, "bead.cycles")
+	}
 	if _, ok := svc.(MemoryService); ok {
 		names = append(names, "agent.brief", "memory.get", "memory.list", "memory.save", "memory.delete")
 	}
@@ -163,6 +166,9 @@ func BindService(registry *Registry, svc Service) error {
 }
 
 func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
+	if c.Method == "bead.cycles" {
+		return dispatchCycles(ctx, svc.(CyclesService), c)
+	}
 	var p serviceParams
 	if err := wire.DecodeInto(c.Params, &p); err != nil {
 		return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}

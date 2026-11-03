@@ -6414,6 +6414,87 @@
       "x-agent-core": false,
       "x-stability": "v1",
       "x-inferred": true
+    },
+    {
+      "name": "bead.cycles",
+      "summary": "Report deterministic current durable-plane dependency cycles.",
+      "description": "Default follows blocks and conditional-blocks only. Optional tracks retains the default report and adds a shortest-return cycle per blocking edge. Parent-child and waits-for are excluded. A visible project member anchors each item; hidden members retain placeholders. includeEphemeral=true explicitly refuses an unavailable workflow plane.",
+      "tags": [
+        {
+          "name": "core"
+        }
+      ],
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "includeTracks",
+          "schema": {
+            "type": "boolean"
+          },
+          "description": "Add the canonical mixed report; pure tracks loops are excluded."
+        },
+        {
+          "name": "includeEphemeral",
+          "schema": {
+            "type": "boolean"
+          },
+          "description": "The durable plane is supported. True is explicitly refused until a production workflow graph plane is installed."
+        },
+        {
+          "name": "limit",
+          "schema": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          },
+          "description": "Maximum returned items, default100; cycleCount remains the complete visible-project count."
+        },
+        {
+          "name": "_meta",
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "description": "Transport project scope and deadlines; no application actor field."
+        }
+      ],
+      "result": {
+        "name": "result",
+        "description": "Result",
+        "schema": {
+          "$ref": "#/components/schemas/CyclesResult"
+        }
+      },
+      "errors": [
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/Unauthenticated"
+        },
+        {
+          "$ref": "#/components/errors/AuthzUnavailable"
+        },
+        {
+          "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/Busy"
+        },
+        {
+          "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
+        },
+        {
+          "$ref": "#/components/errors/InternalError"
+        }
+      ],
+      "x-effect": "read",
+      "x-idempotency": "none",
+      "x-permission": "read",
+      "x-agent-core": true,
+      "x-stability": "v1"
     }
   ],
   "components": {
@@ -10181,6 +10262,97 @@
           "checkpoint"
         ],
         "additionalProperties": false
+      },
+      "CycleMember": {
+        "description": "One member in directed cycle order; an unreadable member discloses no reference.",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "ref": {
+                "$ref": "#/components/schemas/Ref"
+              }
+            },
+            "required": [
+              "ref"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "unreadable": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "unreadable"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "Cycle": {
+        "type": "object",
+        "description": "A path rotated to its lowest internal ID; the closing endpoint is implied.",
+        "properties": {
+          "path": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CycleMember"
+            },
+            "minItems": 1
+          },
+          "memberCount": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "unreadableCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "partial": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "memberCount",
+          "unreadableCount",
+          "partial"
+        ],
+        "additionalProperties": false
+      },
+      "CyclesResult": {
+        "type": "object",
+        "description": "Current durable-plane cycles anchored by a readable member in the selected project. Wholly hidden cycles contribute no items or count.",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Cycle"
+            },
+            "maxItems": 1000
+          },
+          "cycleCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/AsOf"
+          }
+        },
+        "required": [
+          "items",
+          "cycleCount",
+          "truncated",
+          "asOf"
+        ],
+        "additionalProperties": false
       }
     },
     "errors": {
@@ -12732,10 +12904,10 @@
     "format": "plug-method-registry/1",
     "status": "bounded-contract-artifact",
     "purpose": "Human-maintained bounded contract artifact, read independently of methods at validation time; validates the closed method inventory, descriptor fields and wire inventories before an implementation generator exists.",
-    "methodCount": 81,
+    "methodCount": 82,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
-    "nameSha256": "925afc30e52e4659b24e34f311698c96930f215ba460fee7c1634634d1ff04ff",
-    "descriptorSha256": "979980fb391c2c7b91a8cc9252a34411988a90235389df319aafba16a6adcab6",
+    "nameSha256": "7c2b748a818d5c575ccb56b158db713de43544534cc23fdbf22404d9b3a5290a",
+    "descriptorSha256": "f79f1a0cb9736b75f32cb7474ad13afe7db9456d7a01cb21d3910f1cce475664",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -16946,6 +17118,59 @@
           "#/components/errors/IdempotencyKeyReused",
           "#/components/errors/LeaseNotHeld",
           "#/components/errors/LeaseExpired"
+        ]
+      },
+      {
+        "name": "bead.cycles",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": true,
+        "params": [
+          {
+            "name": "includeTracks",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "includeEphemeral",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/CyclesResult"
+        },
+        "errors": [
+          "#/components/errors/InvalidParams",
+          "#/components/errors/Unauthenticated",
+          "#/components/errors/AuthzUnavailable",
+          "#/components/errors/Forbidden",
+          "#/components/errors/Busy",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IncarnationChanged",
+          "#/components/errors/InternalError"
         ]
       }
     ],
