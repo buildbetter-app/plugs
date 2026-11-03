@@ -538,13 +538,17 @@ func sortStored(rows []stored, sortKeys []string) {
 			desc := strings.HasPrefix(raw, "-")
 			key := strings.TrimPrefix(raw, "-")
 			left, right := sortValue(rows[i], key), sortValue(rows[j], key)
-			if left == right {
+			order := strings.Compare(left, right)
+			if key == "revision" {
+				order = compareRevisionValues(rows[i].record.Revision, rows[j].record.Revision)
+			}
+			if order == 0 {
 				continue
 			}
 			if desc {
-				return left > right
+				return order > 0
 			}
-			return left < right
+			return order < 0
 		}
 		return rows[i].doc.ID < rows[j].doc.ID
 	})

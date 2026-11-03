@@ -326,6 +326,8 @@ internal/core/viewops/BUILD.bazel
 internal/core/viewops/epic_progress.go
 internal/core/viewops/label_predicate.go
 internal/core/viewops/parent_projection.go
+internal/core/viewops/revision_order.go
+internal/core/viewops/revision_order_test.go
 internal/core/viewops/run.go
 internal/core/viewops/service.go
 internal/core/viewops/service_test.go
