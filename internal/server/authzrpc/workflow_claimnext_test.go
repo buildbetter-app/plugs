@@ -64,14 +64,14 @@ func newWorkflowClaimNextFixture(t *testing.T) *workflowClaimNextFixture {
 	project := model.RefByID("project", model.Natural64(0))
 	facts := authzfixed.Facts{Namespace: ns,
 		Projects: []authzfixed.Project{{Ref: project, Name: "project", InstallationID: "fixed", Active: true}},
-		Grants:   []authz.Grant{{Subject: authz.SubjectRef{Kind: "user", ID: "sponsor"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: project}, Role: "involved"}},
+		Grants:   []authz.Grant{{Subject: authz.SubjectRef{Kind: "user", ID: "user:sponsor"}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: project}, Role: "involved"}},
 	}
 	f.app, err = New(ctx, Config{Store: store, Lease: f.lease, Provider: f.keys, Facts: StaticFacts{Facts: facts}, Namespace: ns, DefaultProject: "project", Workflow: f.provider})
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.domain = f.app.Service.delegate.(*service.Service)
-	f.by = model.PrincipalRef{Kind: "agent", ID: "workflow-owner", Sponsor: &model.PrincipalRef{Kind: "user", ID: "sponsor"}}
+	f.by = model.PrincipalRef{Kind: "agent", ID: "agent:workflow-owner", Sponsor: &model.PrincipalRef{Kind: "user", ID: "user:sponsor"}}
 	return f
 }
 

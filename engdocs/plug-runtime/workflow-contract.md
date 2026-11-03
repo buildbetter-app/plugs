@@ -3,7 +3,7 @@
 This document is the public B26 contract for the repository workflow plugin. It
 keeps the historical B26 archive refusal as provenance while defining the
 adopted Option C producer. A workflow run is a plugin resource, never a bead,
-memory row, collaboration session, or wisp row.
+memory row, or collaboration session.
 
 ## Invocation
 

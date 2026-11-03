@@ -24,7 +24,7 @@ func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesEphemeral(t *testing.T
 	ctx := context.Background()
 	params := map[string]any{
 		"template": "template", "project": "workflow-memory", "mode": "permanent",
-		"checklist": []map[string]any{{"label": "one", "title": "ordinary durable item", "type": "task"}},
+		"checklist": []map[string]any{{"label": "one", "title": "ordinary durable item", "type": "issue"}},
 	}
 	created, err := f.client.Call(ctx, "x.workflow.invoke", params, "")
 	if err != nil {
@@ -58,7 +58,7 @@ func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesEphemeral(t *testing.T
 func TestAuthenticatedWorkflowHTTPRestartCompletionAndHistory(t *testing.T) {
 	ctx := context.Background()
 	keys := authnapikey.New(authnapikey.Config{})
-	owner := model.PrincipalRef{Kind: "user", ID: "workflow-owner"}
+	owner := model.PrincipalRef{Kind: "user", ID: "user:workflow-owner"}
 	issue := func(principal model.PrincipalRef) authnapikey.IssuedKey {
 		t.Helper()
 		key, err := keys.Issue(principal, time.Now().Add(time.Hour))
@@ -68,7 +68,7 @@ func TestAuthenticatedWorkflowHTTPRestartCompletionAndHistory(t *testing.T) {
 		return key
 	}
 	ownerKey := issue(owner)
-	otherKey := issue(model.PrincipalRef{Kind: "user", ID: "workflow-other"})
+	otherKey := issue(model.PrincipalRef{Kind: "user", ID: "user:workflow-other"})
 	config := Config{
 		Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "workflow-runtime.db"),
 		Project: "workflow-http", Address: DefaultAddress, AuthMode: "authenticated",
