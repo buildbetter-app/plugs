@@ -86,8 +86,16 @@ func (p Plan) Publish(ctx context.Context, q SQL) error {
 			}
 			// Ref is the resolved ID's raw bytes, not JSON. Branch zero is scoped
 			// separately, so opaque admitted identity bytes round-trip exactly.
-			current = append(current, []any{p.Incarnation, branch, d.key(id), parent, []byte(r.Ref.ID), r.Kind, at, r.Body})
-			history = append(history, []any{p.Incarnation, branch, d.key(id), parent, at, nil, []byte(r.Ref.ID), r.Kind, at, r.Body})
+			revision := at
+			if p.backfill {
+				value, err := r.Revision.Uint64()
+				if err != nil || value > p.At {
+					return fmt.Errorf("invalid backfill source revision")
+				}
+				revision = d.revision(value)
+			}
+			current = append(current, []any{p.Incarnation, branch, d.key(id), parent, []byte(r.Ref.ID), r.Kind, revision, r.Body})
+			history = append(history, []any{p.Incarnation, branch, d.key(id), parent, at, nil, []byte(r.Ref.ID), r.Kind, revision, r.Body})
 		}
 		if err := d.insertRows(ctx, q, "hierarchy_source_current", []string{"incarnation", "branch", "child_key", "parent_key", "ref", "kind", "revision", "body"}, current); err != nil {
 			return err
@@ -95,8 +103,10 @@ func (p Plan) Publish(ctx context.Context, q SQL) error {
 		if err := d.insertRows(ctx, q, "hierarchy_source_history", []string{"incarnation", "branch", "child_key", "parent_key", "start_revision", "end_revision", "ref", "kind", "revision", "body"}, history); err != nil {
 			return err
 		}
-		if err := p.marker(ctx, q, "hierarchy_index_coverage", p.Parent); err != nil {
-			return err
+		if !p.backfill {
+			if err := p.marker(ctx, q, "hierarchy_index_coverage", p.Parent); err != nil {
+				return err
+			}
 		}
 	}
 	if p.LinksActive {
@@ -110,8 +120,16 @@ func (p Plan) Publish(ctx context.Context, q SQL) error {
 			if r == nil || !typed || !declaration.Graph {
 				continue
 			}
-			current = append(current, []any{p.Incarnation, branch, d.key(id), []byte(r.Ref.ID), r.Kind, at, r.Body})
-			history = append(history, []any{p.Incarnation, branch, d.key(id), at, nil, []byte(r.Ref.ID), r.Kind, at, r.Body})
+			revision := at
+			if p.backfill {
+				value, err := r.Revision.Uint64()
+				if err != nil || value > p.At {
+					return fmt.Errorf("invalid backfill source revision")
+				}
+				revision = d.revision(value)
+			}
+			current = append(current, []any{p.Incarnation, branch, d.key(id), []byte(r.Ref.ID), r.Kind, revision, r.Body})
+			history = append(history, []any{p.Incarnation, branch, d.key(id), at, nil, []byte(r.Ref.ID), r.Kind, revision, r.Body})
 			seen := make(map[Bucket]bool, len(declaration.Links))
 			for _, link := range declaration.Links {
 				bucket := Bucket{link.Kind, key(link.To)}
@@ -135,8 +153,10 @@ func (p Plan) Publish(ctx context.Context, q SQL) error {
 		if err := d.insertRows(ctx, q, "graph_link_history", []string{"incarnation", "branch", "source_key", "start_revision", "link_kind", "target_key"}, historyFacts); err != nil {
 			return err
 		}
-		if err := p.marker(ctx, q, "graph_link_index_coverage", p.Links); err != nil {
-			return err
+		if !p.backfill {
+			if err := p.marker(ctx, q, "graph_link_index_coverage", p.Links); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

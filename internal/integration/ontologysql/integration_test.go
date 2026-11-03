@@ -236,13 +236,19 @@ func (f *sqlFixture) seedRawSource(body []byte, op model.OpKind) {
 
 func (f *sqlFixture) seedRecord(ref model.Ref, kind string, op model.OpKind, body []byte) {
 	f.t.Helper()
+	change := conformance.FixtureChange{Ref: ref, Kind: kind, Op: op, Body: body}
+	if kind == "bead" {
+		// Keep the deliberately malformed field byte-exact while declaring the
+		// fixture's known root/no-links source metadata. No decoding or repair.
+		change.Graph = &conformance.FixtureGraphSource{}
+	}
 	_, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{
 		Kind:       model.ChangesetWrite,
 		Principal:  fixturePrincipal,
 		Method:     "fixture.ontology.row",
 		AgentLabel: "ontology-sql",
 		Time:       time.Date(2026, 10, 29, 15, 1, 0, 0, time.UTC),
-	}, []conformance.FixtureChange{{Ref: ref, Kind: kind, Op: op, Body: body}})
+	}, []conformance.FixtureChange{change})
 	if err != nil {
 		f.t.Fatalf("seed %s/%s: %v", kind, ref.ID, err)
 	}

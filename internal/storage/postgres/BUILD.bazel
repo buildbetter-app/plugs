@@ -25,6 +25,7 @@ go_test(
         "//internal/storage/driver",
         "//internal/storage/sourceindex",
         "//internal/storage/conformance",
+        "//internal/storage/conformance/sourceactivation",
         "//internal/testclock",
     ],
     size = "large",

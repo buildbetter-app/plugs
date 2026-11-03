@@ -36,9 +36,13 @@ const HierarchyMaxExcluded = 1000
 // an earlier parent declaration. Errors leave the staged image unchanged.
 //
 // Coverage and source images publish atomically with records, versions, log,
-// head and receipts. Certification starts only from a proven empty durable
-// target under Head with complete typed bead metadata. Legacy unbuilt stores
-// may continue untyped writes without certification. A certified store refuses
+// head and receipts. Ordinary certification starts from a proven empty graph
+// under Head with complete typed bead metadata; unrelated ontology/source-free
+// history does not prevent activation. Coverage never extends below the proven
+// source-free head unless the whole durable target is empty. Populated unbuilt
+// stores require the separate atomic GraphSourceIndexBuilder startup port.
+// Legacy unbuilt stores may continue untyped writes without certification.
+// A certified store refuses
 // every untyped bead Put before staging and requires graph/blocking for bead
 // deletion. It never bridges a stale coverage gap or certifies imported history
 // from the final source images alone.

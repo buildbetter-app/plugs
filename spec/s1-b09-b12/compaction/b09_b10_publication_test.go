@@ -47,6 +47,21 @@ func (tx *b09B10PublicationTx) Put(ctx context.Context, record driver.Record) er
 	return nil
 }
 
+// PutGraphRecord forwards typed source publication. Embedding WriteTx alone
+// hides driver.GraphSourceWriter, and a certified store then refuses the raw
+// Put before the commit hook runs.
+func (tx *b09B10PublicationTx) PutGraphRecord(ctx context.Context, record driver.Record, parent *model.Ref, links []driver.SourceLink) error {
+	writer, ok := tx.WriteTx.(driver.GraphSourceWriter)
+	if !ok {
+		return driver.ErrUnsupported
+	}
+	if err := writer.PutGraphRecord(ctx, record, parent, links); err != nil {
+		return err
+	}
+	tx.puts++
+	return nil
+}
+
 func (tx *b09B10PublicationTx) BumpSentinels(ctx context.Context, keys []driver.Sentinel) error {
 	if err := tx.WriteTx.BumpSentinels(ctx, keys); err != nil {
 		return err
