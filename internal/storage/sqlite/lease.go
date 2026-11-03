@@ -30,17 +30,24 @@ func readLease(ctx context.Context, q queryer) (leaseRow, error) {
 }
 
 type activeLease struct {
-	store    *Store
-	epoch    uint64
-	token    string
-	ttl      time.Duration
-	renewMu  sync.Mutex
-	mu       sync.Mutex
-	deadline time.Time
-	timer    *time.Timer
-	lost     chan struct{}
-	lostFlag bool
-	released bool
+	store   *Store
+	epoch   uint64
+	token   string
+	ttl     time.Duration
+	renewMu sync.Mutex
+	mu      sync.Mutex
+	// expires is either durable, or protected by this exact lease's registered
+	// publication. In the latter case the owner holds BOTH BEGIN IMMEDIATE and
+	// the cross-process publication gate when registration begins. The gate
+	// stays held until every accepted heartbeat is durable or Lost is closed.
+	expires    int64
+	renewal    uint64
+	publishing bool
+	deadline   time.Time
+	timer      *time.Timer
+	lost       chan struct{}
+	lostFlag   bool
+	released   bool
 }
 
 func (l *activeLease) Epoch() uint64         { return l.epoch }
@@ -72,6 +79,25 @@ func (l *activeLease) expire() {
 	}
 	l.timer = time.AfterFunc(remaining, l.expire)
 }
+
+// liveLocked checks time explicitly, not only the timer callback: a process
+// paused past its monotonic deadline must not renew or commit when it resumes.
+func (l *activeLease) liveLocked(expires int64) bool {
+	if l.lostFlag || l.released || l.store.now().UnixNano() >= expires || !time.Now().Before(l.deadline) {
+		l.loseLocked()
+		return false
+	}
+	return true
+}
+
+func (l *activeLease) fenceLocked(s *Store, r leaseRow, expires int64) error {
+	if l.store != s || r.epoch != l.epoch || r.token != l.token || !l.liveLocked(expires) {
+		l.loseLocked()
+		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: r.epoch}
+	}
+	return nil
+}
+
 func (s *Store) fence(ctx context.Context, q queryer, l *activeLease) error {
 	r, err := readLease(ctx, q)
 	if err != nil {
@@ -80,16 +106,105 @@ func (s *Store) fence(ctx context.Context, q queryer, l *activeLease) error {
 	if l == nil {
 		return driver.ErrFenced{ObservedEpoch: r.epoch}
 	}
-	select {
-	case <-l.lost:
-		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: r.epoch}
-	default:
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	// A WAL reader may have sampled the old durable row just before a heartbeat
+	// was persisted and unregistered. The synchronized effective expiry remains
+	// safe even then: it cannot escape the publication gate while live unless
+	// it was persisted, and it never overrides a changed epoch/token.
+	return l.fenceLocked(s, r, max(r.expires, l.expires))
+}
+
+// renewal identifies an accepted heartbeat even when an injected wall clock
+// returns the same timestamp twice. It is local bookkeeping, not a lease epoch.
+// A single publication cannot span 2^64 successful Renew calls.
+type leaseHeartbeat struct {
+	expires int64
+	renewal uint64
+}
+
+func (l *activeLease) heartbeatLocked() leaseHeartbeat {
+	return leaseHeartbeat{expires: l.expires, renewal: l.renewal}
+}
+
+func (s *Store) beginLeasePublication(ctx context.Context, c *sql.Conn, l *activeLease) (leaseHeartbeat, error) {
+	r, err := readLease(ctx, c)
+	if err != nil {
+		return leaseHeartbeat{}, err
 	}
-	if l.store != s || r.epoch != l.epoch || r.token != l.token || s.now().UnixNano() >= r.expires {
-		l.signalLost()
-		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: r.epoch}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	// The gate and native writer are already held. Require the fresh DURABLE
+	// expiry at entry; only this registered interval can bridge its renewals.
+	if err := l.fenceLocked(s, r, r.expires); err != nil {
+		return leaseHeartbeat{}, err
 	}
-	return nil
+	l.publishing = true
+	return leaseHeartbeat{expires: r.expires, renewal: l.renewal}, nil
+}
+
+// renewPublication acknowledges a heartbeat without SQL only while takeover is
+// excluded by this lease's publication gate. The store lock orders it against
+// Close; l.mu orders it against expiry, release, registration and handoff.
+func (l *activeLease) renewPublication(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	l.store.mu.Lock()
+	defer l.store.mu.Unlock()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.store.closed {
+		l.loseLocked()
+		return false, fmt.Errorf("sqlite: store closed")
+	}
+	if !l.liveLocked(l.expires) {
+		return false, driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
+	}
+	if !l.publishing {
+		return false, nil
+	}
+	now, deadline := l.store.leaseTimes(l.ttl)
+	// Sampling an injected clock or a scheduler pause may take time. Recheck
+	// both old deadlines before advancing either; Lost is never resurrected.
+	if !l.liveLocked(l.expires) {
+		return false, driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
+	}
+	l.expires = now.Add(l.ttl).UnixNano()
+	l.renewal++
+	l.deadline = deadline
+	if l.timer != nil {
+		l.timer.Stop()
+	}
+	l.timer = time.AfterFunc(time.Until(deadline), l.expire)
+	return true, nil
+}
+
+// finishPublication closes the bridge atomically with comparing the durable
+// heartbeat. A concurrent Renew either belongs to this interval (and needs a
+// follow-up SQL commit) or must acquire the gate itself. Even if the lease died
+// during fsync, a successfully committed graph is still a successful commit.
+func (l *activeLease) finishPublication(durable leaseHeartbeat) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.liveLocked(l.expires) || l.heartbeatLocked() == durable {
+		l.publishing = false
+		return true
+	}
+	return false
+}
+
+func (l *activeLease) abortPublication(durable leaseHeartbeat) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.publishing {
+		// Rollback/cancellation/uncertain COMMIT cannot leave an acknowledged
+		// private heartbeat live after relinquishing cross-process exclusion.
+		if l.heartbeatLocked() != durable {
+			l.loseLocked()
+		}
+		l.publishing = false
+	}
 }
 func (s *Store) leaseFor(ctx context.Context, value driver.ActiveLease) (*activeLease, error) {
 	if err := s.check(ctx); err != nil {
@@ -133,8 +248,8 @@ func (s *Store) Lease(ctx context.Context, holder string, ttl time.Duration) (dr
 			if r.epoch == math.MaxUint64 {
 				return fmt.Errorf("sqlite: lease epoch exhausted")
 			}
-			l := &activeLease{store: s, epoch: r.epoch + 1, token: randomID(), ttl: ttl, deadline: deadline, lost: make(chan struct{})}
-			_, err = c.ExecContext(ctx, `UPDATE active_lease SET epoch=?,token=?,holder=?,expires=? WHERE singleton=1`, revKey(l.epoch), l.token, holder, now.Add(ttl).UnixNano())
+			l := &activeLease{store: s, epoch: r.epoch + 1, token: randomID(), ttl: ttl, expires: now.Add(ttl).UnixNano(), deadline: deadline, lost: make(chan struct{})}
+			_, err = c.ExecContext(ctx, `UPDATE active_lease SET epoch=?,token=?,holder=?,expires=? WHERE singleton=1`, revKey(l.epoch), l.token, holder, l.expires)
 			if err == nil {
 				acquired = l
 			}
@@ -172,40 +287,24 @@ func (l *activeLease) Renew(ctx context.Context) error {
 	if err := l.store.check(ctx); err != nil {
 		return err
 	}
-	// Do not hold l.mu while fencing: the fence may signal Lost.
-	updated := false
-	err := l.store.immediate(ctx, l, func(c *sql.Conn) error {
-		now, deadline := l.store.leaseTimes(l.ttl)
-		_, err := c.ExecContext(ctx, `UPDATE active_lease SET expires=? WHERE singleton=1`, now.Add(l.ttl).UnixNano())
-		if err != nil {
-			return err
-		}
-		l.mu.Lock()
-		defer l.mu.Unlock()
-		if l.lostFlag {
-			return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
-		}
-		// Publish the new timer while still inside the SQL publication lock.
-		// Failed SQL publication closes Lost instead of trusting this deadline.
-		l.deadline = deadline
-		if l.timer != nil {
-			l.timer.Stop()
-		}
-		l.timer = time.AfterFunc(time.Until(deadline), l.expire)
-		updated = true
-		return nil
+	gate, err := l.store.fileLockUntil(ctx, "publication", false, l.Lost(), func() (bool, error) {
+		return l.renewPublication(ctx)
 	})
-	if err != nil {
-		if updated {
-			l.signalLost()
-		}
+	if err != nil || gate == nil {
+		return err
+	}
+	defer unlockFile(gate)
+	// No publication belonged to this lease while we waited. Use the normal
+	// immediate boundary, which registers a bridge before advancing the timer.
+	if err := l.store.immediateLocked(ctx, l, func(*sql.Conn) error {
+		_, err := l.renewPublication(ctx)
+		return err
+	}); err != nil {
 		return err
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	// An expiry callback that won the race is irrevocable. The server has
-	// already stopped admission and must acquire another lease.
-	if l.lostFlag {
+	if !l.liveLocked(l.expires) {
 		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
 	}
 	return nil

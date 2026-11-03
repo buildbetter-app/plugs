@@ -232,7 +232,7 @@ func TestNativeRestoreRejectsMalformedAncestorGraphsBeforeWrite(t *testing.T) {
 			}
 			after, metaErr := store.Meta(ctx)
 			if metaErr != nil || !reflect.DeepEqual(before, after) || store.writes != 0 {
-				t.Fatalf("malformed graph opened %d writes or changed metadata: before=%+v after=%+v err=%v", store.writes, after, metaErr)
+				t.Fatalf("malformed graph opened %d writes or changed metadata: before=%+v after=%+v err=%v", store.writes, before, after, metaErr)
 			}
 			assertEmptyRestoreTarget(t, ctx, store)
 		})

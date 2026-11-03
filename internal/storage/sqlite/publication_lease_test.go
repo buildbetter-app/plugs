@@ -49,14 +49,16 @@ func publicationPastLeaseTTL(t *testing.T, renew bool) {
 	publicationHeld := make(chan struct{})
 	renewalStarted := make(chan time.Time, 1)
 	renewalDone := make(chan renewalResult, 1)
-	renewCtx, cancelRenew := context.WithCancel(ctx)
-	defer cancelRenew()
+	renewCtx := ctx
+	stopRenew := make(chan struct{})
 	if renew {
 		go func() {
 			var result renewalResult
 			defer func() { renewalDone <- result }()
 			select {
 			case <-publicationHeld:
+			case <-stopRenew:
+				return
 			case <-renewCtx.Done():
 				return
 			}
@@ -66,8 +68,8 @@ func publicationPastLeaseTTL(t *testing.T, renew bool) {
 			for {
 				result.attempts++
 				if err := lease.Renew(renewCtx); err != nil {
-					// Cancellation after publication only stops this test's
-					// renewer; a real expiry/fence must remain observable.
+					// The test context may end on failure; a real expiry/fence
+					// must remain observable.
 					if !errors.Is(err, context.Canceled) || renewCtx.Err() == nil {
 						result.err = err
 					}
@@ -75,6 +77,8 @@ func publicationPastLeaseTTL(t *testing.T, renew bool) {
 				}
 				result.successes++
 				select {
+				case <-stopRenew:
+					return
 				case <-renewCtx.Done():
 					return
 				case <-ticker.C:
@@ -127,7 +131,9 @@ func publicationPastLeaseTTL(t *testing.T, renew bool) {
 		}
 		return nil
 	})
-	cancelRenew()
+	// Stop future ticks, but let any admitted Renew finish instead of canceling
+	// its real SQL COMMIT (the cancellation regressions cover that separately).
+	close(stopRenew)
 	if renew {
 		renewal = <-renewalDone
 	}

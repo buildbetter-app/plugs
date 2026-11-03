@@ -14,11 +14,34 @@ Sorted guard sets use driver-owned advisory file locks in `<database>.plug-locks
 Failed acquisitions release the entire partial set before waiting; skipLocked
 omits conflicts. Head is the last file lock. Records, tombstones, forward-patch
 versions, blobs, derived observations, predicates, replay receipts and log rows
-publish together under BEGIN IMMEDIATE. Lease acquisition, renewal, release,
-checkpoint CAS and response finalization use the same publication lock and SQL
-transaction. Epoch checks occur inside that transaction, including immediately
+publish together under BEGIN IMMEDIATE. Lease acquisition, release, checkpoint
+CAS and response finalization use the same publication lock and SQL transaction.
+Epoch/token and expiry checks occur inside that transaction, including immediately
 before COMMIT. Staging holds no SQLite write transaction, so lease release and
 expiry takeover can fence unfinished writers.
+
+A long publication does not block its own holder's lease heartbeats. After
+BEGIN IMMEDIATE validates the fresh durable lease, the driver registers that
+exact lease as the publication owner. Timely Renew calls can then advance a
+synchronized private deadline without taking the SQLite writer or publication
+lock again. Both wall-clock expiry and the real monotonic deadline are checked
+on each heartbeat and fence; a delayed expiry callback cannot resurrect a
+paused or expired holder. A publication without timely heartbeats still rolls
+back at the final fence. The TTL is unchanged.
+
+This bridge is safe across processes because the publication gate excludes all
+lease acquisition/release and other publications until handoff; the native
+writer is also held when ownership is registered. Matching the epoch/token is
+still mandatory, including when a WAL reader sees the older durable expiry.
+Accepted heartbeats are persisted with the graph. Heartbeats racing COMMIT/fsync
+are flushed in lease-only transactions while retaining the same gate, until the
+durable heartbeat and private heartbeat agree atomically. If rollback,
+cancellation or an uncertain outcome prevents that handoff, the driver closes
+Lost before releasing exclusion rather than advertising an unpersisted live
+extension. In particular, an aborted publication that accepted a private
+heartbeat may require acquiring a new lease. No second connection or process
+can take the lease based on the older expiry while its publication gate is held;
+after genuine expiry, takeover advances the epoch and fences the old holder.
 
 Keyed writes with post work atomically publish ResponsePending. Fresh readers
 observe finalization; existing snapshots retain their original pending state.
