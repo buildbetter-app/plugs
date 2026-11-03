@@ -181,15 +181,30 @@ func (v selectionView) beads(ctx context.Context, at uint64) (map[string]selecti
 type selectionFacts struct {
 	rows    map[string]driver.SelectionFacts
 	sources map[*driver.SelectionSources]map[string]bool
+	// Ref sets belong to expression nodes in this request, never to a store or
+	// snapshot cache. Different vectors can share a backing array or prefix.
+	refs map[*driver.SelectionExpr]map[string]bool
 }
 
 func newSelectionFacts() selectionFacts {
-	return selectionFacts{rows: map[string]driver.SelectionFacts{}, sources: map[*driver.SelectionSources]map[string]bool{}}
+	return selectionFacts{rows: map[string]driver.SelectionFacts{}, sources: map[*driver.SelectionSources]map[string]bool{}, refs: map[*driver.SelectionExpr]map[string]bool{}}
 }
 
-func (v selectionView) facts(ctx context.Context, e driver.SelectionExpr, at uint64, out selectionFacts) error {
+func (v selectionView) facts(ctx context.Context, e *driver.SelectionExpr, at uint64, out selectionFacts) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if e.Op == driver.SelectionRefs {
+		members := make(map[string]bool, len(e.Refs))
+		for _, ref := range e.Refs {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			// Plan validation already checked each Ref. Keep the same opaque
+			// canonical identity as SelectionSameRef, including branch aliases.
+			members[keyID(driver.LockKey{Kind: driver.LockRecord, Ref: &ref})] = true
+		}
+		out.refs[e] = members
 	}
 	if e.Exists != nil {
 		x := e.Exists
@@ -224,14 +239,14 @@ func (v selectionView) facts(ctx context.Context, e driver.SelectionExpr, at uin
 		}
 	}
 	if e.Sources != nil {
-		members, err := v.sourceMembers(ctx, e, at)
+		members, err := v.sourceMembers(ctx, *e, at)
 		if err != nil {
 			return err
 		}
 		out.sources[e.Sources] = members
 	}
-	for _, child := range e.Args {
-		if err := v.facts(ctx, child, at, out); err != nil {
+	for i := range e.Args {
+		if err := v.facts(ctx, &e.Args[i], at, out); err != nil {
 			return err
 		}
 	}
@@ -399,7 +414,7 @@ func factValue(f driver.SelectionFact, c driver.SelectionFactColumn) driver.Sele
 	}
 	return driver.SelectionValue{}
 }
-func evalSelection(ctx context.Context, e driver.SelectionExpr, b *selectionBead, identity model.Ref, facts selectionFacts) (bool, error) {
+func evalSelection(ctx context.Context, e *driver.SelectionExpr, b *selectionBead, identity model.Ref, identityKey string, facts selectionFacts) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -411,31 +426,26 @@ func evalSelection(ctx context.Context, e driver.SelectionExpr, b *selectionBead
 	case driver.SelectionResourceExists:
 		return b != nil, nil
 	case driver.SelectionAll:
-		for _, a := range e.Args {
-			match, err := evalSelection(ctx, a, b, identity, facts)
+		for i := range e.Args {
+			match, err := evalSelection(ctx, &e.Args[i], b, identity, identityKey, facts)
 			if err != nil || !match {
 				return false, err
 			}
 		}
 		return true, nil
 	case driver.SelectionAny:
-		for _, a := range e.Args {
-			match, err := evalSelection(ctx, a, b, identity, facts)
+		for i := range e.Args {
+			match, err := evalSelection(ctx, &e.Args[i], b, identity, identityKey, facts)
 			if err != nil || match {
 				return match, err
 			}
 		}
 		return false, nil
 	case driver.SelectionNot:
-		match, err := evalSelection(ctx, e.Args[0], b, identity, facts)
+		match, err := evalSelection(ctx, &e.Args[0], b, identity, identityKey, facts)
 		return !match, err
 	case driver.SelectionRefs:
-		for _, r := range e.Refs {
-			if driver.SelectionSameRef(r, identity) {
-				return true, nil
-			}
-		}
-		return false, nil
+		return facts.refs[e][identityKey], nil
 	case driver.SelectionCompareOp:
 		c := e.Compare
 		v := beadValue(b, identity, c.Column)
@@ -600,14 +610,14 @@ func (v selectionView) evaluate(ctx context.Context, p driver.SelectionPlan, exi
 	// candidates. False/NOT, exclusions, empty vectors and probes cannot hide
 	// unavailable facts or independent source domains.
 	cf, af := newSelectionFacts(), newSelectionFacts()
-	if err = cv.facts(ctx, p.Membership, c, cf); err != nil {
+	if err = cv.facts(ctx, &p.Membership, c, cf); err != nil {
 		return zero, err
 	}
-	if err = v.facts(ctx, p.Authorization, a, af); err != nil {
+	if err = v.facts(ctx, &p.Authorization, a, af); err != nil {
 		return zero, err
 	}
 	if boundary.HostExpression != nil {
-		if err = v.facts(ctx, *boundary.HostExpression, a, af); err != nil {
+		if err = v.facts(ctx, boundary.HostExpression, a, af); err != nil {
 			return zero, err
 		}
 	}
@@ -635,19 +645,19 @@ func (v selectionView) evaluate(ctx context.Context, p driver.SelectionPlan, exi
 		if x, ok := authority[id]; ok {
 			current = &x
 		}
-		member, err := evalSelection(ctx, p.Membership, &b, b.row.Ref, cf)
+		member, err := evalSelection(ctx, &p.Membership, &b, b.row.Ref, id, cf)
 		if err != nil {
 			return zero, err
 		}
 		if !member {
 			continue
 		}
-		allowed, err := evalSelection(ctx, p.Authorization, current, b.row.Ref, af)
+		allowed, err := evalSelection(ctx, &p.Authorization, current, b.row.Ref, id, af)
 		if err != nil {
 			return zero, err
 		}
 		if allowed && boundary.HostExpression != nil {
-			allowed, err = evalSelection(ctx, *boundary.HostExpression, current, b.row.Ref, af)
+			allowed, err = evalSelection(ctx, boundary.HostExpression, current, b.row.Ref, id, af)
 			if err != nil {
 				return zero, err
 			}
