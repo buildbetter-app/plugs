@@ -55,6 +55,8 @@ jobs:
       PLUG_SOURCE_REF: ${{ inputs.source_ref }}
       PLUG_TARGET: ${{ inputs.plug_target }}
       BUNDLE_LABEL: ${{ inputs.label }}
+      BUNDLE_ARTIFACT_NAME: plug-public-bundle-${{ inputs.label }}-${{ github.run_id }}
+      VERIFICATION_ARTIFACT_NAME: plug-public-bundle-verification-${{ inputs.label }}-${{ github.run_id }}
     steps:
       - name: Set up RunsOn
         uses: runs-on/action@17b59092eb37ebfdbb034460892887c09100eaa3 # v2.5.0
@@ -113,11 +115,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Set finite native artifact addresses
+        if: ${{ inputs.profile == 'plug-public-native/1' }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 scripts/ci/public-native-delivery.py artifact-env --label "$BUNDLE_LABEL" >> "$GITHUB_ENV"
+
       - name: Run public bundle boundary regression
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           python3 scripts/ci/public-bundle-test.py
+          python3 scripts/ci/public-native-delivery-test.py
 
       - name: Fetch and verify canonical Beads source
         run: |
@@ -429,7 +439,7 @@ jobs:
       - name: Upload public executables and provenance
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: plug-public-bundle-${{ inputs.label }}-${{ github.run_id }}
+          name: ${{ env.BUNDLE_ARTIFACT_NAME }}
           if-no-files-found: error
           retention-days: 14
           path: ${{ runner.temp }}/public-bundle
@@ -437,7 +447,7 @@ jobs:
       - name: Download and verify uploaded bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: plug-public-bundle-${{ inputs.label }}-${{ github.run_id }}
+          name: ${{ env.BUNDLE_ARTIFACT_NAME }}
           path: ${{ runner.temp }}/public-bundle-downloaded
 
       - name: Restore executable paths from canonical archive
@@ -619,7 +629,7 @@ jobs:
         if: ${{ success() && (inputs.profile == 'plug-public-companion/1' || inputs.profile == 'plug-public-native/1') }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: plug-public-bundle-verification-${{ inputs.label }}-${{ github.run_id }}
+          name: ${{ env.VERIFICATION_ARTIFACT_NAME }}
           if-no-files-found: error
           retention-days: 14
           path: |

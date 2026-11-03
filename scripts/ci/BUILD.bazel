@@ -1,0 +1,10 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "public_native_delivery_test",
+    srcs = ["public_native_delivery_test.go"],
+    data = [
+        "public-native-delivery.py",
+        "public-native-delivery-test.py",
+    ],
+)
