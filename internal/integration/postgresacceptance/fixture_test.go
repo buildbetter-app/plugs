@@ -123,6 +123,7 @@ type host struct {
 	domain  *service.Service
 	server  *httpjson.Server
 	client  *http.Client
+	token   string
 	url     string
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -135,17 +136,20 @@ type host struct {
 }
 
 func startHost(t *testing.T, store *postgres.Store, sequence *ids, record *trace, extra ...pipeline.Option) *host {
-	return startHostWithWorkflow(t, false, store, sequence, record, extra...)
+	return startHostWithWorkflow(t, false, store, sequence, record, nil, "", extra...)
 }
 
-func startWorkflowHost(t *testing.T, store *postgres.Store, sequence *ids, record *trace, extra ...pipeline.Option) *host {
-	return startHostWithWorkflow(t, true, store, sequence, record, extra...)
+func startWorkflowHost(t *testing.T, store *postgres.Store, sequence *ids, record *trace, provider authn.Provider, token string, extra ...pipeline.Option) *host {
+	if provider == nil || token == "" {
+		t.Fatal("workflow HTTP acceptance requires an issued credential")
+	}
+	return startHostWithWorkflow(t, true, store, sequence, record, provider, token, extra...)
 }
 
-func startHostWithWorkflow(t *testing.T, withWorkflow bool, store *postgres.Store, sequence *ids, record *trace, extra ...pipeline.Option) *host {
+func startHostWithWorkflow(t *testing.T, withWorkflow bool, store *postgres.Store, sequence *ids, record *trace, provider authn.Provider, token string, extra ...pipeline.Option) *host {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &host{store: store, ctx: ctx, cancel: cancel, renewed: make(chan error, 1), served: make(chan error, 1), trace: record}
+	h := &host{store: store, token: token, ctx: ctx, cancel: cancel, renewed: make(chan error, 1), served: make(chan error, 1), trace: record}
 	leaseCtx, done := context.WithTimeout(ctx, 5*time.Second)
 	var err error
 	h.lease, err = store.Lease(leaseCtx, "v3-postgres-host", driver.LeaseTTL)
@@ -213,11 +217,15 @@ func startHostWithWorkflow(t *testing.T, withWorkflow bool, store *postgres.Stor
 	}
 	// Synthetic fixed signing material makes restart continuation observable.
 	// It is local test data, not a production credential or configuration.
-	server, err := rpc.New(registry, rpc.Config{Incarnation: meta.Incarnation, DefaultProject: project, CursorKey: bytes.Repeat([]byte{0x31}, 32)})
+	authMode := "anonymous"
+	if provider != nil {
+		authMode = "authenticated"
+	}
+	server, err := rpc.New(registry, rpc.Config{Incarnation: meta.Incarnation, DefaultProject: project, AuthMode: authMode, CursorKey: bytes.Repeat([]byte{0x31}, 32)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	authenticator, err := authn.New(authn.Config{})
+	authenticator, err := authn.New(authn.Config{Provider: provider})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,6 +301,9 @@ func (h *host) exchange(method string, params map[string]any, requestKey, label 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Plug-RPC", "1")
+	if h.token != "" {
+		req.Header.Set("Authorization", "Bearer "+h.token)
+	}
 	response, err := h.client.Do(req)
 	if err != nil {
 		return reply{}, err
@@ -373,10 +384,14 @@ func reader(t *testing.T, store driver.Store) driver.Reader {
 }
 
 func receipt(t *testing.T, store driver.Store, method, requestKey, label string) *driver.IdempotencyRecord {
+	return receiptFor(t, store, actor, method, requestKey, label)
+}
+
+func receiptFor(t *testing.T, store driver.Store, by model.PrincipalRef, method, requestKey, label string) *driver.IdempotencyRecord {
 	t.Helper()
 	r := reader(t, store)
 	defer r.Close()
-	principal, err := driver.PrincipalKey(actor)
+	principal, err := driver.PrincipalKey(by)
 	if err != nil {
 		t.Fatal(err)
 	}
