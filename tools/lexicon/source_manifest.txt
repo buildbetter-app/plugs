@@ -639,6 +639,7 @@ internal/server/composition/mcp.go
 internal/server/composition/mcp_lifecycle_test.go
 internal/server/composition/native.go
 internal/server/composition/native_test.go
+internal/server/composition/restore_actual_archive_digest_test.go
 internal/server/composition/restore_actual_archive_test.go
 internal/server/composition/restore_import.go
 internal/server/composition/restore_import_test.go
@@ -685,6 +686,7 @@ internal/server/pluginbuild/fixture/plugin.go
 internal/server/pluginbuild/persistent.go
 internal/server/pluginbuild/process_other.go
 internal/server/pluginbuild/process_unix.go
+internal/server/pluginbuild/restore_digest_test.go
 internal/server/pluginbuild/sdk_test.go
 internal/server/pluginbuild/source_test.go
 internal/server/pluginbuild/store.go

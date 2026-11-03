@@ -34,6 +34,7 @@ go_test(
         "containment_linux_amd64_test.go",
         "containment_other_test.go",
         "durable_test.go",
+        "restore_digest_test.go",
         "sdk_test.go",
         "source_test.go",
     ],
