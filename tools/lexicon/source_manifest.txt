@@ -668,10 +668,12 @@ internal/server/collab/resources.go
 internal/server/collab/rpc.go
 internal/server/collab/types.go
 internal/server/composition/BUILD.bazel
+internal/server/composition/artifact.go
 internal/server/composition/composition_test.go
 internal/server/composition/config.go
 internal/server/composition/configfile.go
 internal/server/composition/configfile_test.go
+internal/server/composition/configured_artifact_test.go
 internal/server/composition/epic_progress_test.go
 internal/server/composition/mcp.go
 internal/server/composition/mcp_lifecycle_test.go
