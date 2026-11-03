@@ -98,9 +98,11 @@ func OntologyFirst(t *testing.T, store driver.Store, lease driver.ActiveLease) {
 	// Count the real fallback instead of making a timing-only assertion. Every
 	// underlying read/write and both source capabilities pass through unchanged.
 	observed := &observedStore{Store: store}
-	w := pipeline.New(observed, lease, pipeline.WithOntology(service.NewOntology(nil)))
+	o := service.NewOntology(nil)
+	w := pipeline.New(observed, lease, pipeline.WithOntology(o))
+	svc := service.New(observed, lease, w, service.WithOntology(o))
 	started := time.Now()
-	commit, err := w.Apply(ctx, model.PrincipalRef{Kind: "system", ID: "source-activation"}, model.ChangeSet{Ops: []model.Op{{Kind: model.OpClose, Close: &model.CloseOp{Target: changes[1].Ref}}}}, model.WriteMeta{Method: "bead.close", IdempotencyKey: "a5d1e7f024ab41c0b2ae124aa0098765"})
+	commit, err := svc.Close(ctx, model.PrincipalRef{Kind: "system", ID: "source-activation"}, service.CloseRequest{ID: changes[1].Ref}, model.WriteMeta{Method: "bead.close", IdempotencyKey: "a5d1e7f024ab41c0b2ae124aa0098765"})
 	if err != nil || commit.Revision.String() != "202" {
 		t.Errorf("lifecycle close under 1000-child parent: commit=%+v err=%v", commit, err)
 	}
