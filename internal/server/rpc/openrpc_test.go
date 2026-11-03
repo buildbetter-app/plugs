@@ -57,6 +57,7 @@ func TestGeneratedOpenRPCDeterminism(t *testing.T) {
 func catalogServiceRequests() map[string]struct{ params, domain string } {
 	return map[string]struct{ params, domain string }{
 		"bead.get":       {`{"id":{"id":"p-1"}}`, "get"},
+		"bead.comments":  {`{"id":{"id":"p-1"}}`, "get"},
 		"bead.ready":     {`{}`, "ready"},
 		"bead.create":    {`{"type":"task","fields":{}}`, "create"},
 		"bead.update":    {`{"id":{"id":"p-1"},"fields":{}}`, "update"},

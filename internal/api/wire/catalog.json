@@ -358,6 +358,88 @@
       "x-stability": "v1"
     },
     {
+      "name": "bead.comments",
+      "summary": "Page one bead comment thread.",
+      "description": "Read one authorized bead thread in (time, stored ordinal) keyset order. The opaque cursor pins the thread revision; pages default to 100 and cap at 500. Read authorization is the same as bead.get.",
+      "tags": [
+        {
+          "name": "core"
+        }
+      ],
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "id",
+          "schema": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "required": true
+        },
+        {
+          "name": "asOf",
+          "schema": {
+            "$ref": "#/components/schemas/AsOf"
+          }
+        },
+        {
+          "name": "limit",
+          "schema": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          }
+        },
+        {
+          "name": "cursor",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "_meta",
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "description": "Transport metadata; not an application actor field."
+        }
+      ],
+      "result": {
+        "name": "result",
+        "description": "Result",
+        "schema": {
+          "$ref": "#/components/schemas/CommentPage"
+        }
+      },
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/RateLimited"
+        },
+        {
+          "$ref": "#/components/errors/Busy"
+        },
+        {
+          "$ref": "#/components/errors/CursorInvalid"
+        },
+        {
+          "$ref": "#/components/errors/CursorExpired"
+        },
+        {
+          "$ref": "#/components/errors/IncarnationChanged"
+        }
+      ],
+      "x-effect": "read",
+      "x-idempotency": "none",
+      "x-permission": "read",
+      "x-agent-core": false,
+      "x-stability": "v1"
+    },
+    {
       "name": "bead.ready",
       "summary": "List ready beads from a live cursor.",
       "description": "List ready beads from a live cursor.",
@@ -9845,6 +9927,47 @@
         ],
         "description": "Stored comment. Legacy comments retain body, principal and time. Imported comments add a verified restoring principal, fixed import origin, restore commit time and separate source provenance."
       },
+      "PagedComment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Stable one-based position in the append-only stored thread."
+          },
+          "comment": {
+            "$ref": "#/components/schemas/Comment"
+          }
+        },
+        "required": [
+          "id",
+          "comment"
+        ],
+        "additionalProperties": false
+      },
+      "CommentPage": {
+        "type": "object",
+        "properties": {
+          "comments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PagedComment"
+            }
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/AsOf"
+          },
+          "nextCursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "comments",
+          "asOf"
+        ],
+        "additionalProperties": false,
+        "description": "One pinned comment thread page in (time, stored ordinal) order. An absent nextCursor marks the end."
+      },
       "LegacyComment": {
         "type": "object",
         "properties": {
@@ -12748,10 +12871,10 @@
     "format": "plug-method-registry/1",
     "status": "bounded-contract-artifact",
     "purpose": "Human-maintained bounded contract artifact, read independently of methods at validation time; validates the closed method inventory, descriptor fields and wire inventories before an implementation generator exists.",
-    "methodCount": 81,
+    "methodCount": 82,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
-    "nameSha256": "925afc30e52e4659b24e34f311698c96930f215ba460fee7c1634634d1ff04ff",
-    "descriptorSha256": "979980fb391c2c7b91a8cc9252a34411988a90235389df319aafba16a6adcab6",
+    "nameSha256": "59b208a49ceed8f56c1e0180ce07ace1b8106385d38b648d51915012cf214614",
+    "descriptorSha256": "de3dc5cf24c027366b076b9d62690c14635155a754b82ea6d5bcc29d55481ade",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -13028,6 +13151,65 @@
           "#/components/errors/RateLimited",
           "#/components/errors/Busy",
           "#/components/errors/CursorExpired"
+        ]
+      },
+      {
+        "name": "bead.comments",
+        "effect": "read",
+        "idempotency": "none",
+        "permission": "read",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          {
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/AsOf"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "_meta",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            }
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/CommentPage"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/RateLimited",
+          "#/components/errors/Busy",
+          "#/components/errors/CursorInvalid",
+          "#/components/errors/CursorExpired",
+          "#/components/errors/IncarnationChanged"
         ]
       },
       {

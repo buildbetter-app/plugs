@@ -127,7 +127,7 @@ func BindService(registry *Registry, svc Service) error {
 	if registry == nil || svc == nil {
 		return fmt.Errorf("nil service or registry")
 	}
-	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.claimNext", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "bead.link", "bead.unlink", "tx.apply", "history.query"}
+	names := []string{"bead.get", "bead.comments", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.claimNext", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "bead.link", "bead.unlink", "tx.apply", "history.query"}
 	if _, ok := svc.(MemoryService); ok {
 		names = append(names, "agent.brief", "memory.get", "memory.list", "memory.save", "memory.delete")
 	}
@@ -174,6 +174,8 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 	meta := model.WriteMeta{Method: c.Method, AgentLabel: c.Meta.Agent, Project: c.Meta.Project, IdempotencyKey: c.Meta.IdempotencyKey, DryRun: c.Meta.DryRun, Return: c.Meta.Return, Traceparent: c.Meta.Traceparent, Agent: c.Meta.Agent}
 	memory, memoryCapable := svc.(MemoryService)
 	switch c.Method {
+	case "bead.comments":
+		return dispatchComments(ctx, svc, c, p, int(limit))
 	case "bead.get":
 		id, err := p.refID()
 		if err != nil {
