@@ -42,19 +42,21 @@ type blob struct {
 	revision uint64
 }
 type state struct {
-	meta        driver.Meta
-	records     map[string]driver.Record
-	kinds       map[string]string
-	versions    map[string][]driver.Version
-	keys        map[string]driver.LockState
-	keyHistory  map[string][]driver.LockState
-	derivedKeys map[driver.DerivedTable][]string // sorted historical key catalog, immutable after publication
-	blobs       map[driver.Hash]blob
-	log         []model.Changeset
-	replays     map[scope]replay
-	allocators  map[string]driver.OfflineAllocator
-	hierarchy   *hierarchyIndex  // immutable; nil/empty roots never certify coverage
-	sourceLinks *sourceLinkIndex // separate complete outgoing-link coverage
+	allocatorHistory *allocatorImage
+	meta             driver.Meta
+	records          map[string]driver.Record
+	kinds            map[string]string
+	versions         map[string][]driver.Version
+	keys             map[string]driver.LockState
+	keyHistory       map[string][]driver.LockState
+	derivedKeys      map[driver.DerivedTable][]string // sorted historical key catalog, immutable after publication
+	blobs            map[driver.Hash]blob
+	log              []model.Changeset
+	replays          map[scope]replay
+	allocators       map[string]driver.OfflineAllocator
+	parentCounters   map[string]driver.ParentCounter
+	hierarchy        *hierarchyIndex  // immutable; nil/empty roots never certify coverage
+	sourceLinks      *sourceLinkIndex // separate complete outgoing-link coverage
 }
 
 func (s *state) fork() *state {
@@ -67,6 +69,7 @@ func (s *state) fork() *state {
 	n.derivedKeys = maps.Clone(s.derivedKeys)
 	n.blobs = maps.Clone(s.blobs)
 	n.replays = maps.Clone(s.replays)
+	n.parentCounters = maps.Clone(s.parentCounters)
 	n.allocators = make(map[string]driver.OfflineAllocator, len(s.allocators))
 	for prefix, allocator := range s.allocators {
 		n.allocators[prefix] = allocator.Clone()

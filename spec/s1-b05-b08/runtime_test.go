@@ -160,7 +160,7 @@ func testDependencyLifecycleEdges(t *testing.T, engine string) {
 		t.Fatalf("custom edge incorrectly blocked close: %s", customClose.Error.Data.Code)
 	}
 	retype := f.call(t, f.ctx, "bead.link", map[string]any{"from": parent, "to": child, "kind": "blocks"}, key("retype"), actor)
-	if retype.Error == nil || retype.Error.Data.Code != "invalid_params" {
+	if retype.Error == nil || retype.Error.Data.Code != "ontology_guard_failed" {
 		t.Fatalf("retype=%+v", retype)
 	}
 	cycleA := f.create(t, "cycle-a")

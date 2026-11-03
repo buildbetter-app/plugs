@@ -22,22 +22,24 @@ import (
 
 type transaction struct {
 	*reader
-	lease           *activeLease
-	locked, hasHead bool
-	restore         *driver.Meta
-	offlineHistory  *driver.PreparedOfflineHistory
-	nativeRestore   *driver.NativeRestoreProfile
-	importRestore   *driver.RestoreImportProfile
-	acquired        driver.LockSet
-	files           []*os.File
-	guards          []guardHandle
-	done            chan struct{}
-	records         map[string]*driver.Record
-	derived         map[string]driver.LockState
-	blobs           map[driver.Hash][]byte
-	bumps           map[string]driver.LockKey
-	allocators      map[string]driver.OfflineAllocator
-	allocated       map[string]bool
+	lease            *activeLease
+	locked, hasHead  bool
+	restore          *driver.Meta
+	offlineHistory   *driver.PreparedOfflineHistory
+	nativeRestore    *driver.NativeRestoreProfile
+	nativeAllocators bool
+	importRestore    *driver.RestoreImportProfile
+	acquired         driver.LockSet
+	files            []*os.File
+	guards           []guardHandle
+	done             chan struct{}
+	records          map[string]*driver.Record
+	derived          map[string]driver.LockState
+	blobs            map[driver.Hash][]byte
+	bumps            map[string]driver.LockKey
+	allocators       map[string]driver.OfflineAllocator
+	parentCounters   map[string]driver.ParentCounter
+	allocated        map[string]bool
 
 	checkpointGuards          map[string]uint64
 	sourceOverlay             sourceindex.Overlay
@@ -96,6 +98,7 @@ func (t *transaction) finish() {
 	t.blobs = nil
 	t.bumps = nil
 	t.allocators = nil
+	t.parentCounters = nil
 	t.allocated = nil
 	t.store.untrack(t)
 	close(t.done)
@@ -460,6 +463,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	if t.offlineHistory != nil {
 		return model.Changeset{}, fmt.Errorf("prepared history requires CommitOfflineHistory")
 	}
+	if t.nativeRestore != nil && !t.nativeAllocators {
+		return model.Changeset{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorBindingRequired, nil)
+	}
 	if err := t.validateHeader(ctx, h); err != nil {
 		return model.Changeset{}, err
 	}
@@ -520,6 +526,16 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		}
 		sourcePlan, err := t.prepareSourcePublication(ctx, c, meta, revision)
 		if err != nil {
+			return err
+		}
+		target := meta
+		target.Head = revision
+		if t.restore != nil {
+			target = *t.restore
+		}
+		// Allocator journals, records, counters and source indexes all publish
+		// inside this immediate transaction and roll back together on failure.
+		if err = t.publishAllocatorJournal(ctx, c, target, t.restore != nil); err != nil {
 			return err
 		}
 		for id, record := range t.records {
@@ -600,6 +616,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			if _, err = c.ExecContext(ctx, `INSERT INTO allocator_states(prefix,data) VALUES(?,?) ON CONFLICT(prefix) DO UPDATE SET data=excluded.data`, prefix, allocatorData); err != nil {
 				return err
 			}
+		}
+		if err = t.publishParentCounters(ctx, c); err != nil {
+			return err
 		}
 		for hash, blob := range t.blobs {
 			if blob == nil {

@@ -712,7 +712,7 @@ func TestHierarchyClosure5000And5001AcrossStores(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			f := newFixture(t, engine)
-			writer, metrics := pipeline.NewWithTelemetry(f.store, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now), pipeline.WithIDGenerator(f.nextID))
+			writer, metrics := pipeline.NewWithTelemetry(f.store, f.lease, pipeline.WithOntology(f.ontology), pipeline.WithClock(f.now), pipeline.WithIDGenerator(f.nextID), pipeline.WithHierarchyMaxDepth(10))
 			f.writer = writer
 			ops := []model.Op{hierarchyCreate("subtree", nil, "work"), hierarchyCreate("extra", nil, "work")}
 			for i := 1; i < 500; i++ {

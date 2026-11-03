@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -46,6 +47,9 @@ func (p *prepared) resolveParent(ctx context.Context, parent *model.Ref, aliases
 	for id := ref.ID; id != ""; {
 		if id == child || seen[id] {
 			return nil, failure("ontology_guard_failed", "parent would form a cycle")
+		}
+		if p.maxHierarchyDepth > 0 && strings.Count(id, ".") >= p.maxHierarchyDepth {
+			return nil, failure("invalid_params", fmt.Sprintf("maximum hierarchy depth (%d) exceeded for parent %s", p.maxHierarchyDepth, id))
 		}
 		seen[id] = true
 		node, err := p.load(ctx, model.Ref{ID: id})
