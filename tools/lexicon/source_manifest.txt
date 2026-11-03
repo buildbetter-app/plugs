@@ -370,6 +370,7 @@ internal/integration/batchsql/fixture_test.go
 internal/integration/batchsql/hierarchy_authorization_test.go
 internal/integration/batchsql/hierarchy_test.go
 internal/integration/batchsql/native_allocator_restore_test.go
+internal/integration/batchsql/raw_workflow_close_refusal_test.go
 internal/integration/batchsql/thousand_diagnostic_test.go
 internal/integration/claimsql/BUILD.bazel
 internal/integration/claimsql/README.md
