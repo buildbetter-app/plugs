@@ -217,6 +217,10 @@ type wasmInitializerObserverKey struct{}
 
 type wasmInitializerContextObserverKey struct{}
 
+type wasmInitializerTimerWaitObserverKey struct{}
+
+type wasmInitializationErrorObserverKey struct{}
+
 type wasmCallbackTimerWaitObserverKey struct{}
 
 type wasmInitializerCallKey struct{}
@@ -244,6 +248,30 @@ func WithWASMInitializerContextObserver(ctx context.Context, observer func(conte
 		return ctx
 	}
 	return context.WithValue(ctx, wasmInitializerContextObserverKey{}, observer)
+}
+
+// WithWASMInitializerTimerWaitObserver observes positive WASI timer waits
+// entered during module instantiation or initialization with the timed init context.
+func WithWASMInitializerTimerWaitObserver(ctx context.Context, observer func(context.Context)) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wasmInitializerTimerWaitObserverKey{}, observer)
+}
+
+// WithWASMInitializationErrorObserver observes the actual constructor parent
+// context and runtime result before initialization error classification.
+func WithWASMInitializationErrorObserver(ctx context.Context, observer func(context.Context, error)) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wasmInitializationErrorObserverKey{}, observer)
 }
 
 // WithWASMCallbackTimerWaitObserver observes positive WASI timer waits
@@ -376,7 +404,8 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 	initCtx, cancel := context.WithTimeout(ctx, wasmInitTimeout)
 	defer cancel()
 	timer := &wasmTimer{}
-	initWait := timer.begin(initCtx, nil)
+	initObserver, _ := initCtx.Value(wasmInitializerTimerWaitObserverKey{}).(func(context.Context))
+	initWait := timer.begin(initCtx, initObserver)
 	defer timer.end(initWait)
 	moduleConfig := wazero.NewModuleConfig().WithStartFunctions().WithSysNanotime().WithNanosleep(timer.nanosleep)
 	module, err := runtime.InstantiateModule(initCtx, compiled, moduleConfig)
@@ -433,6 +462,9 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 // original context error; the private one-second initializer timeout remains a
 // manifest error so queue pressure cannot disguise a real guest failure.
 func wasmInitializationError(ctx, initCtx context.Context, label string, err error) error {
+	if observer, _ := ctx.Value(wasmInitializationErrorObserverKey{}).(func(context.Context, error)); observer != nil {
+		observer(ctx, err)
+	}
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		return failure(ErrManifest, "%s: %v", label, err)
 	}
