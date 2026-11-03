@@ -1880,6 +1880,14 @@ type wasiGuestObservedTx struct {
 	locks chan wasiGuestLockTrace
 }
 
+func (tx *wasiGuestObservedTx) PutGraphRecord(ctx context.Context, record driver.Record, parent *model.Ref, links []driver.SourceLink) error {
+	writer, ok := tx.WriteTx.(driver.GraphSourceWriter)
+	if !ok {
+		return driver.ErrUnsupported
+	}
+	return writer.PutGraphRecord(ctx, record, parent, links)
+}
+
 func (tx *wasiGuestObservedTx) Lock(ctx context.Context, requests []driver.LockRequest) ([]driver.LockState, error) {
 	states, err := tx.WriteTx.Lock(ctx, requests)
 	if err == nil {

@@ -40,6 +40,15 @@ func TestB12ProjectScopeAndReversalPublicationFailure(t *testing.T) {
 					versions := f.versions(ref)
 					log := f.changesets()
 					f.call("history.revert", "publication-revert", params, "internal_error")
+					wantPutFailures, wantCommitFailures := 0, 0
+					if stage == "put" {
+						wantPutFailures = 1
+					} else {
+						wantCommitFailures = 1
+					}
+					if observed.putFailures != wantPutFailures || observed.commitFailures != wantCommitFailures {
+						t.Fatalf("injected publication faults: put=%d commit=%d; want put=%d commit=%d", observed.putFailures, observed.commitFailures, wantPutFailures, wantCommitFailures)
+					}
 					f.assertSameHead(before)
 					f.assertNoReceipt("history.revert", "publication-revert")
 					if !reflect.DeepEqual(versions, f.versions(ref)) || !reflect.DeepEqual(log, f.changesets()) {

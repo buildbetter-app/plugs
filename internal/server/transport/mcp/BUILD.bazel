@@ -15,7 +15,7 @@ go_library(
 
 go_test(
     name = "mcp_test",
-    srcs = ["handler_test.go", "notification_stream_test.go"],
+    srcs = ["body_bounds_test.go", "handler_test.go", "notification_stream_test.go"],
     deps = [
         ":mcp",
         "//internal/api/wire",
