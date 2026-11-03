@@ -2,6 +2,8 @@ package compaction_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -321,7 +323,6 @@ func b11B12AssertEdge(t *testing.T, image b11B12StoreImage, kind string) {
 func b11B12SeedAllocator(t *testing.T, f *fixture) {
 	t.Helper()
 	ctx := context.Background()
-	meta := f.meta()
 	key, err := driver.AllocatorLock("b12")
 	if err != nil {
 		t.Fatal(err)
@@ -337,6 +338,15 @@ func b11B12SeedAllocator(t *testing.T, f *fixture) {
 	if _, err = tx.Head(ctx); err != nil {
 		t.Fatal(err)
 	}
+	restore, ok := tx.(driver.OfflineRestoreTx)
+	if !ok {
+		t.Fatal("real driver lacks trusted offline restore setup")
+	}
+	const sourceID driver.StoreID = "b11-b12-allocator-fixture"
+	meta, err := restore.PrepareOfflineRestore(ctx, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	allocator, ok := tx.(driver.AllocatorContinuation)
 	if !ok {
 		t.Fatal("real driver lacks allocator continuation")
@@ -345,7 +355,16 @@ func b11B12SeedAllocator(t *testing.T, f *fixture) {
 	if err = allocator.RestoreAllocators(ctx, []driver.OfflineAllocator{seed}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Principal: model.PrincipalRef{Kind: "system", ID: "b11-b12-seed"}, LockKeys: []driver.LockKey{key}}); err != nil {
+	payload, err := json.Marshal(struct {
+		Source driver.StoreID
+		Value  driver.OfflineAllocator
+	}{sourceID, seed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	hash := hex.EncodeToString(sum[:])
+	if _, err = tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Principal: model.PrincipalRef{Kind: "system", ID: "plug-converter"}, Method: "offline.restore", IdempotencyKey: "b11-b12-seed-" + hash, RequestHash: hash, Response: model.Commit{Results: []model.OpResult{}, Warnings: []model.Warning{}}, LockKeys: []driver.LockKey{key}}); err != nil {
 		t.Fatal(err)
 	}
 	// Assert the fixture, including unrelated child counters, independently
