@@ -14,8 +14,8 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-const explicitKey = "  MiXeD Key/Ω café ✓  "
-const originalBody = "  VerBaTiM value\n東京\t🌱  "
+const explicitKey = "  MiXeD Key/Ω café Ж  "
+const originalBody = "  VerBaTiM value\n東京\t植物  "
 const replacedBody = "  CURRENT text café 東京\n"
 const hiddenBody = "B13-hidden-secret-content"
 
