@@ -308,6 +308,9 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if err != nil {
 				return nil, err
 			}
+			if (op.Kind == model.OpLink || op.Kind == model.OpUnlink) && strings.HasPrefix(target.ID, "workflow:") {
+				return nil, failure("invalid_params", "workflow references require a supported workflow item operation")
+			}
 			if op.Kind == model.OpClose && canonicalWorkflowCloseTarget(target) {
 				return nil, failure(model.CodeUnsupported, "workflow items cannot participate in durable close changesets")
 			}
@@ -394,7 +397,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if to.ID == target.ID {
 					return nil, failure("ontology_guard_failed", "self-links are refused")
 				}
-				if _, e := p.load(ctx, to); e != nil {
+				if e := p.loadLinkTarget(ctx, to); e != nil {
 					return nil, e
 				}
 				// The endpoint is read, not written, unless another op targets it.
@@ -543,6 +546,35 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 		return nil, err
 	}
 	return p, nil
+}
+
+// loadLinkTarget keeps the source endpoint guarded while allowing a valid
+// external/cross-prefix target to remain an unresolved edge. A target which
+// was present and is deleted earlier in this batch is still refused: callers
+// must unlink the stored edge before deleting its local endpoint. Workflow
+// references belong to the separate workflow plane and never become durable
+// graph edges through this writer.
+func (p *prepared) loadLinkTarget(ctx context.Context, ref model.Ref) error {
+	if prior, ok := p.writes[ref.ID]; ok && prior.deleted {
+		return failure("not_found", "record was deleted in this batch")
+	}
+	if _, err := p.load(ctx, ref); err == nil {
+		return nil
+	} else {
+		var typed *model.Error
+		if !errors.As(err, &typed) || typed == nil || typed.Data.Code != "not_found" {
+			return err
+		}
+		if strings.HasPrefix(ref.ID, "workflow:") {
+			return failure("invalid_params", "workflow references require a supported workflow item operation")
+		}
+		if validateErr := driver.ValidateHierarchyRef(ref); validateErr != nil {
+			return failure("invalid_params", "link target must be a canonical branch-zero ID")
+		}
+		// p.load observed the absent record lock. The lock is retained in the
+		// snapshot read set, so a concurrent creation makes this write stale.
+		return nil
+	}
 }
 
 // prepareMemory lowers memory.save/delete into the same prepared transaction
@@ -1391,10 +1423,25 @@ func (p *prepared) graph(ctx context.Context) error {
 			docs[id] = pending.doc
 		}
 	}
+	deleted := make(map[string]bool)
+	for id, pending := range p.writes {
+		if pending.deleted {
+			deleted[id] = true
+		}
+	}
 	for _, doc := range docs {
 		for _, link := range doc.Links {
+			if err := driver.ValidateHierarchyRef(link.To); err != nil {
+				return failure("ontology_guard_failed", "link target is not a canonical branch-zero ID")
+			}
 			if _, ok := docs[link.To.ID]; !ok {
-				return failure("ontology_guard_failed", "unlink all incoming and outgoing edges before deletion")
+				if deleted[link.To.ID] {
+					return failure("ontology_guard_failed", "unlink all incoming and outgoing edges before deletion")
+				}
+				// A valid target outside this store is an intentionally retained
+				// external/cross-prefix edge. It has no local graph node to walk,
+				// but remains in the source image and keeps blocking effects
+				// fail-closed until a readable target exists.
 			}
 		}
 	}
@@ -1422,6 +1469,9 @@ func (p *prepared) graph(ctx context.Context) error {
 		}
 		for _, link := range docs[id].Links {
 			if dependencyIsScheduling(link.Kind) {
+				if _, exists := docs[link.To.ID]; !exists {
+					continue
+				}
 				if err := walk(link.To.ID); err != nil {
 					return err
 				}

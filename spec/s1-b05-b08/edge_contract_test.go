@@ -13,10 +13,8 @@ import (
 // (typed external/workflow targets and thread preservation); D25/P22/P45/P48.
 // OpenRPC LinkOp/LinkMetadata additionally pins omission versus explicit {}.
 // These are authored public-runtime tests, never native reference recordings.
-// Root disposition de50c0a5 keeps current cross-plane links unsupported pending
-// distinct design review/adoption. The durable cases below do not qualify a
-// mixed-plane editor, unresolved external target or thread API. Their proposed
-// representation and atomicity belong to the separate S1 design unit.
+// Durable cross-plane writes remain refused at the named/tx.apply boundary;
+// valid unresolved external/cross-prefix targets are retained as edge values.
 
 func edgeLinkOp(from, to model.Ref, kind string) model.Op {
 	return model.Op{Kind: model.OpLink, Link: &model.LinkOp{From: from, To: to, LinkKind: kind}}
@@ -37,6 +35,33 @@ func edgeRequireRefusal(t *testing.T, result envelope, code string) {
 	t.Helper()
 	if result.Error == nil || result.Error.Data.Code != code {
 		t.Fatalf("public refusal=%+v want=%s", result, code)
+	}
+}
+
+func edgeReadyContains(t *testing.T, e *edgeContractFixture, id string, want bool) {
+	t.Helper()
+	got := e.f.call(t, e.f.ctx, "bead.ready", map[string]any{"limit": 1000}, "", actor)
+	if got.Error != nil {
+		t.Fatalf("public ready refused: %+v", got)
+	}
+	var page struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		NextCursor string `json:"nextCursor"`
+	}
+	if err := json.Unmarshal(got.Result, &page); err != nil || page.NextCursor != "" {
+		t.Fatalf("ready was not a complete membership observation: %s error=%v", got.Result, err)
+	}
+	found := false
+	for _, item := range page.Items {
+		if item.ID == id {
+			found = true
+			break
+		}
+	}
+	if found != want {
+		t.Fatalf("ready membership for %s=%t want=%t items=%+v", id, found, want, page.Items)
 	}
 }
 
@@ -132,7 +157,7 @@ func TestB07GuardedDurableEdgeBatchRefusalConservesEveryPlane(t *testing.T) {
 						code = "precondition_failed"
 					case "late-retype":
 						cs.Ops = append(cs.Ops, edgeLinkOp(from, to, "tracks"))
-						code = "invalid_params"
+						code = "ontology_guard_failed"
 					case "late-self":
 						cs.Ops = append(cs.Ops, edgeLinkOp(to, to, "blocks"))
 					case "late-cycle":
@@ -298,6 +323,145 @@ func TestB07WaitsForMetadataValuesNoopOmissionAndReplacement(t *testing.T) {
 	}
 }
 
+func TestB07UnresolvedExternalTargetsRetainIdentityAcrossBothProducers(t *testing.T) {
+	for _, engine := range testEngines {
+		for _, producer := range []string{"bead.link", "tx.apply"} {
+			for _, tc := range []struct {
+				name, kind string
+				ready      bool
+			}{
+				{name: "blocking-cross-prefix", kind: "blocks", ready: false},
+				{name: "association-external", kind: "relates-to", ready: true},
+			} {
+				t.Run(engine+"/"+producer+"/"+tc.name, func(t *testing.T) {
+					e := newEdgeContractFixture(t, engine)
+					from := e.create(t, "unresolved-"+tc.name)
+					to := model.RefByID("foreign-prefix-404", model.Natural64(0))
+					p := e.probe(producer, "unresolved-"+producer+"-"+tc.name)
+					params := map[string]any{}
+					if producer == "bead.link" {
+						params = map[string]any{"from": from, "to": to, "kind": tc.kind}
+					} else {
+						params = map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{edgeLinkOp(from, to, tc.kind)}}}
+					}
+					before := e.snapshot(t)
+					linked := e.call(t, p, params)
+					edgeRequireSuccess(t, linked)
+					after := e.snapshot(t)
+					commit := edgeRequireReceipt(t, after, p, linked.Result, false)
+					edgeRequireSingleCommit(t, before, after, commit, from)
+					edgeRequireLinks(t, after, from, edgeLinkValue(to, tc.kind))
+					if _, exists := after.Records[edgeRecordKey(to)]; exists {
+						t.Fatal("unresolved target unexpectedly acquired a durable record")
+					}
+					edgeReadyContains(t, e, from.ID, tc.ready)
+					e.f.reopen(t)
+					edgeRequireStateEqual(t, after, e.snapshot(t))
+					edgeReadyContains(t, e, from.ID, tc.ready)
+
+					// An unresolved edge can be removed without inventing a target
+					// record; unlink is guarded by the source image only.
+					removeMethod := "bead.unlink"
+					if producer == "tx.apply" {
+						removeMethod = "tx.apply"
+					}
+					remove := e.probe(removeMethod, "unresolved-remove-"+producer+"-"+tc.name)
+					removeParams := map[string]any{}
+					if producer == "bead.link" {
+						removeParams = map[string]any{"from": from, "to": to, "kind": tc.kind}
+					} else {
+						removeParams = map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{{Kind: model.OpUnlink, Link: &model.LinkOp{From: from, To: to, LinkKind: tc.kind}}}}}
+					}
+					beforeRemove := e.snapshot(t)
+					removed := e.call(t, remove, removeParams)
+					edgeRequireSuccess(t, removed)
+					afterRemove := e.snapshot(t)
+					removeCommit := edgeRequireReceipt(t, afterRemove, remove, removed.Result, false)
+					edgeRequireSingleCommit(t, beforeRemove, afterRemove, removeCommit, from)
+					edgeRequireLinks(t, afterRemove, from)
+				})
+			}
+		}
+	}
+}
+
+func TestB07WaitsForMetadataParityAcrossPublicAndTxApply(t *testing.T) {
+	cases := []struct {
+		name, gate string
+		also       bool
+		closeA     bool
+		closeB     bool
+		closeTo    bool
+		ready      bool
+	}{
+		{name: "all-children", gate: "all-children", ready: true, closeA: true, closeB: true},
+		{name: "any-children", gate: "any-children", ready: true, closeA: true},
+		{name: "all-children-also-blocks", gate: "all-children", also: true, ready: true, closeA: true, closeB: true, closeTo: true},
+		{name: "any-children-also-blocks", gate: "any-children", also: true, ready: true, closeA: true, closeB: true, closeTo: true},
+	}
+	for _, engine := range testEngines {
+		for _, producer := range []string{"bead.link", "tx.apply"} {
+			for _, tc := range cases {
+				t.Run(engine+"/"+producer+"/"+tc.name, func(t *testing.T) {
+					e := newEdgeContractFixture(t, engine)
+					from, to := e.create(t, "waits-parity-source"), e.create(t, "waits-parity-spawner")
+					childA := e.f.createWithParent(t, "waits-parity-child-a", to)
+					childB := e.f.createWithParent(t, "waits-parity-child-b", to)
+					e.refs = append(e.refs, childA, childB)
+					e.probes = append(e.probes,
+						edgeReceiptProbe{"bead.create", key("create-waits-parity-child-a")},
+						edgeReceiptProbe{"bead.create", key("create-waits-parity-child-b")})
+					metadata := map[string]any{"gate": tc.gate, "also_blocks": tc.also}
+					p := e.probe(producer, "waits-parity-"+tc.name)
+					params := map[string]any{}
+					if producer == "bead.link" {
+						params = map[string]any{"from": from, "to": to, "kind": "waits-for", "metadata": metadata}
+					} else {
+						params = map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{{Kind: model.OpLink, Link: &model.LinkOp{From: from, To: to, LinkKind: "waits-for", Metadata: &model.LinkMetadata{Gate: tc.gate, AlsoBlocks: tc.also}}}}}}
+					}
+					before := e.snapshot(t)
+					linked := e.call(t, p, params)
+					edgeRequireSuccess(t, linked)
+					after := e.snapshot(t)
+					commit := edgeRequireReceipt(t, after, p, linked.Result, false)
+					edgeRequireSingleCommit(t, before, after, commit, from)
+					want := edgeLinkValue(to, "waits-for")
+					storedMetadata := map[string]any{"gate": tc.gate}
+					if tc.also {
+						storedMetadata["also_blocks"] = true
+					}
+					want["metadata"] = storedMetadata
+					edgeRequireLinks(t, after, from, want)
+					edgeReadyContains(t, e, from.ID, false)
+
+					closeChild := func(label string, child model.Ref) {
+						probe := e.probe("bead.close", label)
+						closed := e.call(t, probe, map[string]any{"id": child})
+						edgeRequireSuccess(t, closed)
+					}
+					if tc.closeA {
+						closeChild("waits-parity-close-a", childA)
+					}
+					edgeReadyContains(t, e, from.ID, tc.gate == "any-children" && !tc.also && tc.closeA)
+					if tc.closeB {
+						closeChild("waits-parity-close-b", childB)
+					}
+					if tc.closeTo {
+						closeChild("waits-parity-close-spawner", to)
+					}
+					edgeReadyContains(t, e, from.ID, tc.ready)
+					final := e.snapshot(t)
+					e.f.reopen(t)
+					reopened := e.snapshot(t)
+					edgeRequireStateEqual(t, final, reopened)
+					edgeRequireLinks(t, reopened, from, want)
+					edgeReadyContains(t, e, from.ID, tc.ready)
+				})
+			}
+		}
+	}
+}
+
 func TestB07InvalidMetadataRefusesPublicBatchWithoutAnyPublication(t *testing.T) {
 	for _, engine := range testEngines {
 		t.Run(engine, func(t *testing.T) {
@@ -377,6 +541,15 @@ func TestB07NamedEdgeMethodsKeepUnsupportedWorkflowReferencesAtomic(t *testing.T
 					edgeRequireStateEqual(t, before, e.snapshot(t))
 					edgeRequirePublicReady(t, e, local.ID)
 				}
+			}
+			workflow = model.RefByID("workflow:item/0123456789abcdef0123456789abcdef", model.Natural64(0))
+			for i, pair := range [][2]model.Ref{{local, workflow}, {workflow, local}} {
+				p := e.probe("tx.apply", "unsupported-plane-tx-"+model.Natural64(uint64(i)).String())
+				before := e.snapshot(t)
+				cs := model.ChangeSet{Ops: []model.Op{edgeLinkOp(pair[0], pair[1], "blocks")}}
+				edgeRequireRefusal(t, e.call(t, p, map[string]any{"changeSet": cs}), "invalid_params")
+				edgeRequireStateEqual(t, before, e.snapshot(t))
+				edgeRequirePublicReady(t, e, local.ID)
 			}
 		})
 	}

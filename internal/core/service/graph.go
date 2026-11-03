@@ -173,6 +173,9 @@ func (o *Ontology) noOpenBlockers(doc pipeline.Document, graph map[string]stored
 		case "blocks", "conditional-blocks", "waits-for":
 			blocker, exists := graph[link.To.ID]
 			if !exists || !link.To.IsID() || !link.To.Branch.IsZero() {
+				// Keep the unresolved edge in the source image, but do not
+				// infer that an external blocker is terminal. Readiness is
+				// deliberately fail-closed until the target can be read.
 				return false, nil
 			}
 			s := state(blocker.doc)
