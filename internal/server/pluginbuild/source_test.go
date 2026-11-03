@@ -799,6 +799,9 @@ func TestWASIArtifactAdmissionCancellationAndOwnerClose(t *testing.T) {
 	if closeErr != nil {
 		t.Fatalf("owner close failed: %v", closeErr)
 	}
+	if !errors.Is(hostErr, context.Canceled) {
+		t.Fatalf("owner cancellation did not reach source WASI admission: %v", hostErr)
+	}
 	t.Logf("source WASI owner-close admission returned: %v", hostErr)
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Fatalf("owner close removed output with unexpected state: %v", statErr)
