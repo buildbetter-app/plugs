@@ -9,6 +9,11 @@ This packet retains all source/profile/config/runtime/stream bytes and the
 original `rawStreamsEqual=false`; normalized and projection equality are true.
 Initial configuration copies prove only the pre-runtime/init setup. The
 producer candidate remains distinct from each subsequent Plug replay candidate.
+The complete packet is declared by exact path and SHA-256 in the existing
+lexicon immutable-reference policy. Original focused run `41574255757` at
+`cfff5a066` passed the replay and pipeline tests but failed the tree gate on a
+pinned source-test name inside those bytes. The declaration preserves the
+original packet, with changed bytes and undeclared sibling files still refused.
 
 The new Go source projector imports no producer/extractor and decodes original
 stdout/stderr with per-stream checksum checks. Both fresh source runs supply
