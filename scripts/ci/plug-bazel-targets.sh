@@ -98,6 +98,17 @@ query() {
   return "$code"
 }
 
+# Automatic explicit labels must preserve Bazel's manual opt-in boundary.
+# Hosted CI prepares and validates this one manual runtime target; reference
+# captures keep their separate, explicit prepare-public-reference.py route.
+query_automatic_tests() {
+  local tests="$1"
+  # Bazel renders list attributes as [tag, tag]. Match whole list items;
+  # the first/last-character alternatives cover the surrounding brackets.
+  local manual='(^.|, )manual(,|.$)'
+  query "($tests) except (attr(\"tags\", \"$manual\", $tests) except set(//tools/roundtrip:public_beads_runtime_test))"
+}
+
 full_graph=0
 ci_contract=0
 packages=()
@@ -190,7 +201,7 @@ printf '%s\n' "${resource_labels[@]}" | sed '/^$/d' | LC_ALL=C sort -u >"$output
 printf '%s\n' "${unknown_paths[@]}" | sed '/^$/d' | LC_ALL=C sort -u >"$output/unknown-files.txt"
 
 if ((full_graph)); then
-  if touched_query="$(query 'kind(".*_test rule", //...)')"; then :; else
+  if touched_query="$(query_automatic_tests 'kind(".*_test rule", //...)')"; then :; else
     code=$?
     echo "targets: cannot query complete Bazel test graph" >&2
     exit "$code"
@@ -201,7 +212,7 @@ else
   touched=()
   while IFS= read -r package; do
     [[ -n "$package" ]] || continue
-    if package_query="$(query "kind(\".*_test rule\", ${package}:all)")"; then :; else
+    if package_query="$(query_automatic_tests "kind(\".*_test rule\", ${package}:all)")"; then :; else
       code=$?
       echo "targets: cannot query tests for $package" >&2
       exit "$code"
@@ -214,7 +225,7 @@ else
   if [[ -s "$output/seeds.txt" ]]; then
     mapfile -t seed_values <"$output/seeds.txt"
     seed_set="set(${seed_values[*]})"
-    if reverse_query="$(query "kind(\".*_test rule\", rdeps(//..., ${seed_set}))")"; then :; else
+    if reverse_query="$(query_automatic_tests "kind(\".*_test rule\", rdeps(//..., ${seed_set}))")"; then :; else
       code=$?
       echo "targets: cannot query reverse-dependent tests" >&2
       exit "$code"

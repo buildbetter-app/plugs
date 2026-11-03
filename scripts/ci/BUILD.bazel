@@ -36,3 +36,20 @@ sh_test(
     ],
     size = "small",
 )
+
+sh_test(
+    name = "plug_bazel_targets_test",
+    srcs = ["plug-bazel-targets-test.sh"],
+    data = ["plug-bazel-targets.sh"],
+    size = "small",
+)
+
+sh_test(
+    name = "plug_bazel_delivery_test",
+    srcs = ["plug-bazel-delivery-test.sh"],
+    data = [
+        "plug-bazel-delivery.py",
+        "plug-bazel-targets.sh",
+    ],
+    size = "small",
+)

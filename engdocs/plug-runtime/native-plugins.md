@@ -26,6 +26,35 @@ post callbacks to the existing Writer. Extension methods are separate from
 the bounded RPC registry: an embedding application must supply the registry,
 schema and authorization adapter before exposing one over a network.
 
+## Compose callbacks into the configured server
+
+`composition.Open` now owns the native callback host as well as storage and
+transports. The trusted embedding application supplies `Config.NativePlugins`
+and `Config.NativeBindings`; `Runtime.bind` constructs the host and attaches its
+mutators, validators and post subscribers to the same Writer used by the
+configured HTTP, WebSocket, stdio adapter and MCP requests. A caller cannot
+install native code or change these grants through RPC or server YAML.
+
+The selected store supplies durable native state only when it implements
+`driver.PersistentCheckpointStore` and returns `Persistent() == true`. The host
+receives that exact store and the runtime's existing active lease. A memory
+checkpoint or a persistent-looking driver name cannot satisfy a plugin's
+`requires.state: durable` declaration. Constructor or binding failures close
+the acquired resources; normal shutdown drains transports, cancels the runtime
+lifetime and joins the native host, then releases the lease and closes storage.
+
+The standalone path remains `plug server` -> `LoadConfigFile` -> `Open` ->
+`Listen`. Its YAML selects storage and listener settings, while compiled-in
+callback registration belongs to the trusted embedding host. It does not
+interpret YAML as executable plugin registration or create an authentication
+provider from `auth.mode`. The merged workflow service adapter continues to
+use its existing provider and standard-tool interfaces.
+
+Configured-runtime regressions open real SQLite through this composition,
+exercise admitted native callbacks and durable checkpoints, and reopen the
+same database after shutdown. This boundary does not qualify arbitrary native
+code, source loading, WASI, PostgreSQL failover, browser login or production.
+
 ## Capabilities and callback lifetime
 
 Native plugins are trusted compiled-in code, **not runtime-isolated**. The host
@@ -35,7 +64,7 @@ filesystem or network access outside the Host.
 | Phase | Supported host behavior |
 | --- | --- |
 | Mutate / validate | Masked proposal and declared, pinned SnapshotReader reads join the commit guard. No graph/state writes, mutable state reads or egress. RPC-shaped Host.Call reads refuse; use the reader. |
-| Post | Committed-revision reader, process-local instance-state CAS and granted HTTPS egress. Graph writes and RPC reads refuse. Failure is a warning on the committed result. |
+| Post | Committed-revision reader, process-local instance-state CAS, configured durable state and granted HTTPS egress. Graph writes and RPC reads refuse. Failure is a warning on the committed result. |
 | Extension method | Declared method/resource checks and optional caller authorization. Granted outbound core reads require the supplied Dispatcher; outbound graph writes refuse pending a field-grant adapter. |
 
 Readers enforce field grants and budgets of at most 32 point reads and four
@@ -52,9 +81,14 @@ explicit fail-open pre binding produces a visible subscriber_skipped warning.
 Post failure produces post_subscriber_failed after commit.
 
 State is per instance and process-local CAS, not a durable event checkpoint.
+DurableState uses the configured persistent checkpoint store and active lease.
+A constructor may retain its durable facade, but every operation requires the
+current host-issued callback context. Pre calls refuse mutable reads and
+writes; completed, canceled, stale-context and closed-host operations refuse.
+Detaching caller cancellation cannot extend the host's invocation lifetime.
 Egress requires exact declared HTTPS host:port, public DNS checks on every
 request/redirect and at most 10 MiB per body with a 1 s timeout. Secret
-injection, WASI/WASM artifacts, plugin UI, durable plugin state and automatic
+injection, WASI/WASM artifacts, plugin UI and automatic
 network extension exposure are unsupported by this host snapshot.
 
 ## Run the real native fixture

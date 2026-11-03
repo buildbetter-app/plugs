@@ -12,6 +12,96 @@ import (
 	"github.com/buildbetter-app/plugs/pluginapi"
 )
 
+// durableStateAccess is the plugin-facing facade. It can be retained by a
+// constructor, but every operation needs the authenticated context of a live
+// host-driven call. The raw namespace adapter below remains available only to
+// trusted composition roots, which do not execute as plugin callbacks.
+type durableStateAccess struct{ instance *instance }
+
+var _ pluginapi.DurableState = (*durableStateAccess)(nil)
+
+// Persistent is capability metadata, safe to inspect during construction.
+func (d *durableStateAccess) Persistent() bool { return d.instance.durable.Persistent() }
+
+func (d *durableStateAccess) context(ctx context.Context, write bool) (context.Context, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	i := d.instance
+	i.owner.mu.Lock()
+	closed := i.owner.closed
+	i.owner.mu.Unlock()
+	if closed || i.isDisposed() {
+		return nil, nil, failure(ErrInactive, "plugin host or instance is closed")
+	}
+	call, err := i.current()
+	if err != nil {
+		return nil, nil, err
+	}
+	if ctx.Value(invocationKey{}) != call {
+		return nil, nil, failure(ErrInactive, "durable state requires the current host-driven invocation context")
+	}
+	if err := call.stateAvailable(write); err != nil {
+		return nil, nil, err
+	}
+	// Always retain the host's deadline/cancellation even when plugin code
+	// supplies context.WithoutCancel(callCtx). Caller cancellation may only
+	// narrow that lifetime; it can never replace or extend it.
+	operation, cancel := context.WithCancel(call.ctx)
+	stop := context.AfterFunc(ctx, cancel)
+	return operation, func() { stop(); cancel() }, nil
+}
+
+func (d *durableStateAccess) Read(ctx context.Context, key string, dst any) (bool, pluginapi.Revision, error) {
+	ctx, cancel, err := d.context(ctx, false)
+	if err != nil {
+		return false, "", err
+	}
+	defer cancel()
+	return d.instance.durable.Read(ctx, key, dst)
+}
+
+func (d *durableStateAccess) Get(ctx context.Context, key string, dst any) (bool, error) {
+	found, _, err := d.Read(ctx, key, dst)
+	return found, err
+}
+
+func (d *durableStateAccess) Revision(ctx context.Context, key string) (pluginapi.Revision, error) {
+	ctx, cancel, err := d.context(ctx, false)
+	if err != nil {
+		return "", err
+	}
+	defer cancel()
+	return d.instance.durable.Revision(ctx, key)
+}
+
+func (d *durableStateAccess) Put(ctx context.Context, key string, value any, expect pluginapi.Revision) (pluginapi.Revision, error) {
+	ctx, cancel, err := d.context(ctx, true)
+	if err != nil {
+		return "", err
+	}
+	defer cancel()
+	return d.instance.durable.Put(ctx, key, value, expect)
+}
+
+func (d *durableStateAccess) Delete(ctx context.Context, key string, expect pluginapi.Revision) error {
+	ctx, cancel, err := d.context(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	return d.instance.durable.Delete(ctx, key, expect)
+}
+
+func (d *durableStateAccess) List(ctx context.Context, prefix string, limit int) ([]pluginapi.DurableEntry, error) {
+	ctx, cancel, err := d.context(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+	return d.instance.durable.List(ctx, prefix, limit)
+}
+
 // durableAccess stores one plugin alias/instance namespace in one driver
 // checkpoint. CheckpointStore is deliberately the only persistence primitive
 // exposed here: plugin code cannot obtain a driver, transaction, SQL handle or
