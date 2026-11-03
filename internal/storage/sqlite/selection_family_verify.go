@@ -169,63 +169,67 @@ func verifySQLiteSelectionParentChainsAffected(ctx context.Context, q queryer, i
 		return true, nil
 	}
 	values := make([]string, len(seeds))
-	args := []any{incarnation, revKey(0), at}
+	args := make([]any, 0, len(seeds)+40)
 	for i, seed := range seeds {
 		values[i] = "(?)"
 		args = append(args, seed)
 	}
-	args = append(args, string(driver.DerivedAncestorClosure), string(driver.SelectionAncestorFact), at, at,
-		string(driver.SelectionAncestorFact))
+	// Keep the scope values as ordinary predicates instead of a correlated
+	// one-row CTE.  SQLite can then use the existing (incarnation,branch,key)
+	// indexes for every affected lookup.  The affected component is explicitly
+	// materialized so later proof branches cannot re-expand the full history.
+	args = append(args, incarnation, revKey(0), incarnation, revKey(0),
+		incarnation, revKey(0), string(driver.DerivedAncestorClosure), string(driver.SelectionAncestorFact), at, at,
+		incarnation, revKey(0), string(driver.SelectionAncestorFact),
+		incarnation, revKey(0), at, at,
+		incarnation, revKey(0), at, at,
+		incarnation, revKey(0), at, at)
 	var bad int
 	err := q.QueryRowContext(ctx, `WITH RECURSIVE
-		scope(incarnation,branch,at) AS (VALUES(?,?,?)),
 		seed(record_key) AS (VALUES `+strings.Join(values, ",")+`),
-		affected(record_key) AS (
+		affected(record_key) AS MATERIALIZED (
 			SELECT record_key FROM seed
 			UNION
 			SELECT h.child_key FROM hierarchy_source_current h
 			JOIN affected a ON a.record_key=h.parent_key
-			CROSS JOIN scope s
-			WHERE h.incarnation=s.incarnation AND h.branch=s.branch
+			WHERE h.incarnation=? AND h.branch=?
 		),
-		beads AS (
+		beads(record_key,parent_key) AS MATERIALIZED (
 			SELECT h.child_key AS record_key,h.parent_key
 			FROM hierarchy_source_current h
 			JOIN affected a ON a.record_key=h.child_key
-			CROSS JOIN scope s
-			WHERE h.incarnation=s.incarnation AND h.branch=s.branch
+			WHERE h.incarnation=? AND h.branch=?
 		),
-		sets AS (
+		sets(row_key,start_revision,source_key) AS MATERIALIZED (
 			SELECT f.row_key,f.start_revision,f.source_key
 			FROM selection_fact_sets f
 			JOIN affected a ON a.record_key=f.source_key
-			CROSS JOIN scope s
-			WHERE f.incarnation=s.incarnation AND f.branch=s.branch
+			WHERE f.incarnation=? AND f.branch=?
 			AND f.row_table=? AND f.kind=? AND f.start_revision<=?
 			AND (f.end_revision IS NULL OR f.end_revision>?)
 		),
-		facts AS (
+		facts(row_key,start_revision,source_key,ref_key,target_key,depth) AS MATERIALIZED (
 			SELECT s.row_key,s.start_revision,s.source_key,f.ref_key,f.target_key,f.depth
-			FROM sets s JOIN selection_facts f ON f.incarnation=(SELECT incarnation FROM scope)
-			AND f.branch=(SELECT branch FROM scope) AND f.row_key=s.row_key
+			FROM sets s CROSS JOIN selection_facts f
+			WHERE f.incarnation=? AND f.branch=? AND f.row_key=s.row_key
 			AND f.start_revision=s.start_revision AND f.kind=?
 		),
 		bad_rows AS (
 			SELECT 1 FROM beads b
-				WHERE (SELECT COUNT(*) FROM selection_bead_history h CROSS JOIN scope s
-					WHERE h.incarnation=s.incarnation AND h.branch=s.branch
-					AND h.record_key=b.record_key AND h.start_revision<=s.at
-					AND (h.end_revision IS NULL OR h.end_revision>s.at))<>1
+				WHERE (SELECT COUNT(*) FROM selection_bead_history h
+					WHERE h.incarnation=? AND h.branch=?
+					AND h.record_key=b.record_key AND h.start_revision<=?
+					AND (h.end_revision IS NULL OR h.end_revision>?))<>1
 			UNION ALL SELECT 1 FROM beads b
-				WHERE EXISTS(SELECT 1 FROM selection_bead_history h CROSS JOIN scope s
-					WHERE h.incarnation=s.incarnation AND h.branch=s.branch
-					AND h.record_key=b.record_key AND h.start_revision<=s.at
-					AND (h.end_revision IS NULL OR h.end_revision>s.at)
+				WHERE EXISTS(SELECT 1 FROM selection_bead_history h
+					WHERE h.incarnation=? AND h.branch=?
+					AND h.record_key=b.record_key AND h.start_revision<=?
+					AND (h.end_revision IS NULL OR h.end_revision>?)
 					AND h.parent_key IS NOT b.parent_key)
-			UNION ALL SELECT 1 FROM selection_bead_history h CROSS JOIN scope s
+			UNION ALL SELECT 1 FROM selection_bead_history h
 				JOIN affected a ON a.record_key=h.record_key
-				WHERE h.incarnation=s.incarnation AND h.branch=s.branch
-				AND h.start_revision<=s.at AND (h.end_revision IS NULL OR h.end_revision>s.at)
+				WHERE h.incarnation=? AND h.branch=?
+				AND h.start_revision<=? AND (h.end_revision IS NULL OR h.end_revision>?)
 				AND NOT EXISTS(SELECT 1 FROM beads b WHERE b.record_key=h.record_key)
 			UNION ALL SELECT 1 FROM beads b
 				WHERE NOT EXISTS(SELECT 1 FROM sets f WHERE f.source_key=b.record_key)
