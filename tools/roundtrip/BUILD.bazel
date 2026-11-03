@@ -40,6 +40,7 @@ go_test(
     args = ["-public-beads-runtime"],
     data = [
         "testdata/public-companion-profile.json",
+        "//spec/s1-b25-b28:public_recording_protocol",
         "//internal/integration/converterroundtrip:public_source_fixtures",
         "//internal/integration/offlinehistory:lexicon_files",
     ],
