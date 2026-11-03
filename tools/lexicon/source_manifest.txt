@@ -791,6 +791,7 @@ internal/server/viewrpc/integration_test.go
 internal/server/watch/BUILD.bazel
 internal/server/watch/authorization.go
 internal/server/watch/boundaries_test.go
+internal/server/watch/lifetime_test.go
 internal/server/watch/manager.go
 internal/server/watch/manager_test.go
 internal/server/watch/types.go
