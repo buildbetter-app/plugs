@@ -33,6 +33,43 @@ go_test(
     ],
 )
 
+# The ordinary-count reference bytes are added only after the two fresh
+# managed-proxied captures have been independently extracted and reviewed.
+# Keeping this target separate prevents //... from executing the public
+# reference engine or accepting absent/synthetic twins.
+_ORDINARY_COUNT_CAPTURE_EMBEDS = [
+    "extract_ordinary_count_packet.py",
+    "ordinary_count_capture.py",
+    "ordinary_count_capture_policy_test.py",
+    "ordinary_count_profile.py",
+    "record_ordinary_count.py",
+]
+
+go_test(
+    name = "ordinary_count_capture_policy_test",
+    srcs = [
+        "ordinary_count_capture_harness_test.go",
+        "ordinary_count_capture_policy_test.go",
+        "ordinary_count_runtime.go",
+    ],
+    embedsrcs = _ORDINARY_COUNT_CAPTURE_EMBEDS,
+    args = ["-test.v"],
+)
+
+go_test(
+    name = "ordinary_count_capture_test",
+    srcs = [
+        "ordinary_count_capture_harness_test.go",
+        "ordinary_count_capture_test.go",
+        "ordinary_count_runtime.go",
+    ],
+    embedsrcs = _ORDINARY_COUNT_CAPTURE_EMBEDS,
+    args = ["-test.v"],
+    tags = ["local", "manual"],
+    size = "large",
+    timeout = "long",
+)
+
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),

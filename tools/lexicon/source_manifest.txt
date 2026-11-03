@@ -1054,7 +1054,17 @@ spec/s1-b21-b24/acceptance_test.go
 spec/s1-b21-b24/cas_contract_test.go
 spec/s1-b21-b24/clock_boundary_test.go
 spec/s1-b21-b24/close_contract_test.go
+spec/s1-b21-b24/extract_ordinary_count_packet.py
 spec/s1-b21-b24/fixture_test.go
+spec/s1-b21-b24/ordinary_count_capture.py
+spec/s1-b21-b24/ordinary_count_capture_harness_test.go
+spec/s1-b21-b24/ordinary_count_capture_policy_test.go
+spec/s1-b21-b24/ordinary_count_capture_policy_test.py
+spec/s1-b21-b24/ordinary_count_capture_test.go
+spec/s1-b21-b24/ordinary_count_profile.py
+spec/s1-b21-b24/ordinary_count_runtime.go
+spec/s1-b21-b24/ordinary_count_test.go
+spec/s1-b21-b24/record_ordinary_count.py
 spec/s1-b21-b24/record_reference.py
 spec/s1-b21-b24/reference-a.json
 spec/s1-b21-b24/reference-b.json
