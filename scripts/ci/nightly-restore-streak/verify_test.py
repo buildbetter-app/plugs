@@ -10,10 +10,14 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import shlex
 import subprocess
+import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -40,11 +44,24 @@ class SyntheticReceiptTest(unittest.TestCase):
         self.repository.mkdir()
         # Real Git object resolution, with no real project history or credentials.
         self.git("init", "--quiet")
-        self.fixtures = {
-            "internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar": b"SYNTHETIC exporter fixture",
-            "internal/integration/offlinehistory/testdata/full.tar": b"SYNTHETIC full fixture",
-            "internal/integration/offlinehistory/testdata/partial.tar": b"SYNTHETIC partial fixture",
-        }
+        self.fixtures, self.inventories = {}, {}
+        for name, label in (("internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar", "source"),
+                            ("internal/integration/offlinehistory/testdata/full.tar", "full"),
+                            ("internal/integration/offlinehistory/testdata/partial.tar", "partial")):
+            members = {"manifest.json": encoded({"synthetic_evaluator_fixture": label}),
+                       "records/bead.ndjson": b'{"id":"demo-a","synthetic":true}\n',
+                       "config/sources.json": encoded({"synthetic": label})}
+            if label != "source":
+                members["history/source.json"] = encoded({"synthetic": label})
+            output = io.BytesIO()
+            with tarfile.open(fileobj=output, mode="w:") as archive:
+                for member_name, body in members.items():
+                    info = tarfile.TarInfo(member_name)
+                    info.size = len(body)
+                    archive.addfile(info, io.BytesIO(body))
+            body = output.getvalue()
+            self.fixtures[name] = body
+            self.inventories[digest(body)] = {key: digest(value) for key, value in members.items()}
         for name, body in {**self.fixtures, ".github/workflows/plug-nightly-restore-diffs.yml": b"# SYNTHETIC source fixture\n"}.items():
             path = self.repository / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -88,20 +105,43 @@ class SyntheticReceiptTest(unittest.TestCase):
             for ordinal in (1, 2):
                 names.append(f"TestNightlyFreshStoreDiffs/{driver}/fresh-{ordinal}")
                 snapshots.append({"driver": driver, "fresh_restore": ordinal, "status": "pass",
-                                  "incarnation": f"snapshot-{driver}-{ordinal}", "census": self.census("a" * 64, True)})
+                                  "incarnation": f"snapshot-{driver}-{ordinal}",
+                                  "census": self.census("a" * 64, True, self.inventories[source_hash])})
                 for case in cases:
                     names.append(f"TestNightlyHistoryFreshStoreDiffs/{case}/{driver}/fresh-{ordinal}")
                     head, floor = (1, 1) if case.startswith("snapshot-") else ((3, 1) if case == "explicit-partial" else (5, 0))
                     archive_hash = partial_hash if case.endswith("partial") else full_hash
-                    census = {"head": str(head), "floor": str(floor), "current": self.census(archive_hash),
-                              "changesets_unavailable_through": str(floor),
-                              "as_of_record_sha256": {str(i): {"demo-a": "b" * 64} for i in range(1, head + 1)},
-                              "versions": {"demo-a": [{"revision": "1", "base": True, "deleted": False, "image_sha256": "b" * 64}]},
-                              "changesets_after_floor": [{"revision": str(i)} for i in range(floor + 1, head + 1)],
-                              "restore_receipt": {"revision": str(head), "kind": "restore", "idempotency_key": "b" * 32}}
+                    current = self.census(archive_hash)
+                    images = {str(i): {"demo-a": f"{i:064x}"} for i in range(1, head)}
+                    images[str(head)] = current["record_sha256"]
+                    versions = {"demo-a": [{"revision": i, "base": i == 1, "deleted": False,
+                                             "image_sha256": images[str(i)]["demo-a"]} for i in range(1, head + 1)]}
+                    for identity, image in current["record_sha256"].items():
+                        if identity != "demo-a":
+                            versions[identity] = [{"revision": head, "base": True, "deleted": False, "image_sha256": image}]
+                    entries = []
+                    for revision in range(1, head + 1):
+                        changes = [{"ref": {"id": "demo-a", "branch": 0}, "op": "create" if revision == 1 else "patch",
+                                    "fromRevision": revision - 1, "changedPaths": ["/" if head == 1 else ""]}]
+                        if revision == head:
+                            changes.extend({"ref": {"id": identity, "branch": 0}, "op": "create", "fromRevision": 0,
+                                            "changedPaths": ["/" if head == 1 else ""]} for identity in current["ids"] if identity != "demo-a")
+                        entry = {"revision": revision, "branch": 0, "incarnation": "", "kind": "restore",
+                                 "time": "0001-01-01T00:00:00Z", "principal": {"kind": "user", "id": "n1-test-restore-admin"},
+                                 "chain": [], "changes": changes}
+                        if revision == head:
+                            entry["idempotencyKey"] = "b" * 32
+                        entries.append(entry)
+                    census = {"head": head, "floor": floor, "current": current, "changesets_unavailable_through": floor,
+                              "as_of_record_sha256": images, "versions": versions,
+                              "changesets_after_floor": entries[floor:], "restore_receipt": entries[-1]}
                     if not case.startswith("snapshot-"):
-                        census["history_evidence"] = {"source": "plug-source-history/1", "mode": "partial" if floor else "full",
-                                                      "complete": not bool(floor), "first": 4 if floor else 1, "head": 4}
+                        sequences = [(4, 2)] if floor else [(i, i) for i in range(1, 5)]
+                        census["history_evidence"] = {"source": "beads-dolt-images/1", "mode": "partial" if floor else "full",
+                            "complete": not bool(floor), "first": 4 if floor else 1, "head": 4, "floor": floor,
+                            "gaps": [{"first": 1, "last": 3, "reason": "not-retained"}] if floor else [],
+                            "mapping": [{"sequence": sequence, "revision": revision, "eventIds": [str(sequence)],
+                                         "commitIds": [f"{sequence:032x}"]} for sequence, revision in sequences]}
                     history.append({"case": case, "driver": driver, "fresh_restore": ordinal,
                                     "incarnation": f"{case}-{driver}-{ordinal}", "census": census})
             for control, reason in controls:
@@ -129,14 +169,15 @@ class SyntheticReceiptTest(unittest.TestCase):
         self.write_zip(directory, members)
         return directory
 
-    def census(self, archive, snapshot=False):
+    def census(self, archive, snapshot=False, members=None):
         ids = ["demo-a", "restore/archive", "instance_config/restore-import/binding", "instance_config/restore-import/project/demo"]
         records = {name: "b" * 64 for name in ids}
         return {"counts": {"bead": 1, "restore-archive": 1, "instance_config": 2}, "ids": ids, "record_sha256": records,
                 "version_sha256": records if snapshot else {}, "dependencies": [],
-                "source_allocators": [{"prefix": "demo", "id_mode": "hash", "last_id": 8, "child_counters": {}}],
-                "target_allocators": [{"prefix": "demo", "id_mode": "random", "random_bytes": 16}],
-                "archive_member_sha256": {"manifest.json": "c" * 64, "records/bead.ndjson": "d" * 64}, "archive_sha256": archive}
+                "source_allocators": [{"prefix": "demo", "id_mode": "hash", "hash_length": 1, "last_id": 8, "child_counters": {}}],
+                "target_allocators": [{"prefix": "demo", "id_mode": "random", "random_bytes": 16,
+                                       "suffix_encoding": "lower-hex", "top_level_shape": "prefix-random", "child_shape": "parent-random"}],
+                "archive_member_sha256": members if members is not None else self.inventories[archive], "archive_sha256": archive}
 
     def write_zip(self, directory, members):
         with zipfile.ZipFile(directory / "artifact.zip", "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -247,6 +288,82 @@ class SyntheticReceiptTest(unittest.TestCase):
         self.assertEqual(result["status"], "TEST_PASS", result)
         self.assertEqual(result["nights"][-1]["tree"], tree)
         self.assertNotEqual(tree, self.tree)
+
+    def test_missing_promisor_object_refuses_without_lazy_fetch(self):
+        helper_directory = self.root / "synthetic-remote-helper"
+        helper_directory.mkdir()
+        marker = self.root / "SYNTHETIC-fetch-attempt"
+        helper = helper_directory / "git-remote-n1synthetic"
+        helper.write_text("#!/bin/sh\nprintf invoked > " + shlex.quote(str(marker)) + "\nexit 1\n")
+        helper.chmod(0o755)
+        self.git("config", "core.repositoryformatversion", "1")
+        self.git("config", "extensions.partialClone", "origin")
+        self.git("config", "remote.origin.promisor", "true")
+        self.git("config", "remote.origin.url", "n1synthetic::offline-test")
+        self.git("config", "protocol.n1synthetic.allow", "always")
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env["PATH"] = str(helper_directory) + os.pathsep + env["PATH"]
+        # Negative control: unprotected Git attempts the local fake transport.
+        # The fake helper records an attempt and never accesses a network.
+        control = subprocess.run(["git", "-C", str(self.repository), "cat-file", "-t", "e" * 40],
+                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertNotEqual(control.returncode, 0)
+        self.assertTrue(marker.exists(), "negative control did not exercise partial-clone lazy fetch")
+        marker.unlink()
+        with patch.dict(os.environ, {"PATH": env["PATH"]}):
+            with self.assertRaises(subprocess.CalledProcessError):
+                verifier.git(self.repository, "cat-file", "-t", "e" * 40)
+        self.assertFalse(marker.exists(), "offline object read attempted a fetch")
+
+    def test_ambient_git_object_redirection_cannot_replace_selected_repository(self):
+        with patch.dict(os.environ, {"GIT_DIR": str(self.root / "absent.git"), "GIT_OBJECT_DIRECTORY": str(self.root / "absent-objects")}):
+            result = self.result()
+        self.assertEqual(result["status"], "TEST_PASS", result)
+
+    def test_native_integer_history_revisions_reject_string_and_boolean_substitutes(self):
+        path = "test-results/test.outputs/nightly-history-restore-diffs.json"
+        for key, value in (("head", "5"), ("floor", "0"), ("changesets_unavailable_through", "0"), ("floor", False)):
+            with self.subTest(key=key, value=value):
+                self.blocked(lambda: self.mutate(path, lambda report: report["results"][0]["census"].update({key: value}), member=True), "head/floor")
+
+    def test_mixed_immutable_repository_identities_cannot_form_a_streak(self):
+        def change():
+            self.mutate("workflow-run.json", lambda run: (run["repository"].update(id=17), run["head_repository"].update(id=17)))
+            self.mutate("artifact.json", lambda artifact: artifact["workflow_run"].update(repository_id=17, head_repository_id=17))
+        self.blocked(change, "mixed immutable repository")
+
+    def test_coherent_group_wide_incomplete_history_is_refused(self):
+        path = "test-results/test.outputs/nightly-history-restore-diffs.json"
+        cases = [
+            (lambda value: value["as_of_record_sha256"].update({"2": {}}), "as-of image"),
+            (lambda value: value["versions"]["demo-a"].clear(), "nested version"),
+            (lambda value: value["versions"]["demo-a"][1].update(revision=1), "version revision"),
+            (lambda value: value["changesets_after_floor"][1].update(revision=1), "duplicate changeset"),
+            (lambda value: value["changesets_after_floor"][0]["changes"].clear(), "transition identities"),
+            (lambda value: value["current"]["archive_member_sha256"].pop("records/bead.ndjson"), "archive member"),
+            (lambda value: value["current"]["source_allocators"].__setitem__(0, {}), "source allocator"),
+            (lambda value: value["current"]["target_allocators"].__setitem__(0, {}), "target allocator"),
+            (lambda value: value["history_evidence"]["mapping"][0].pop("eventIds"), "replay event"),
+        ]
+        for edit, reason in cases:
+            with self.subTest(reason=reason):
+                def change(report):
+                    for row in report["results"]:
+                        if row["case"] == "strict-default-full":
+                            edit(row["census"])
+                self.blocked(lambda: self.mutate(path, change, member=True), reason)
+
+    def test_coherent_snapshot_manifest_only_or_empty_allocators_are_refused(self):
+        path = "test-results/test.outputs/nightly-restore-diffs.json"
+        def manifest_only(report):
+            for row in report["results"]:
+                members = row["census"]["archive_member_sha256"]
+                row["census"]["archive_member_sha256"] = {"manifest.json": members["manifest.json"]}
+        self.blocked(lambda: self.mutate(path, manifest_only, member=True), "archive member")
+        def empty_allocators(report):
+            for row in report["results"]:
+                row["census"]["target_allocators"] = [{}]
+        self.blocked(lambda: self.mutate(path, empty_allocators, member=True), "target allocator")
 
     def test_exact_checkout_sha_tree_and_run_bindings_are_required(self):
         for key, value in (("head", "e" * 40), ("expected_sha", "e" * 40), ("tree", "f" * 40), ("checkout_verified", False),

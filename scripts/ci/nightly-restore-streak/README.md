@@ -32,7 +32,8 @@ python3 scripts/ci/nightly-restore-streak/verify.py \
 
 The local Git repository must already contain every recorded source commit and
 its fixture blobs. The verifier resolves each SHA/tree separately without
-replacement objects, compares it to the exact checkout receipt, and checks report
+replacement objects or partial-clone lazy fetch (all network transports are
+disabled), compares it to the exact checkout receipt, and checks report
 fixture hashes against those source blobs. Source heads may differ across nights.
 
 Every supplied run must be a completed successful first-attempt `schedule` event
@@ -43,7 +44,13 @@ RUN/PASS/XML entries without failure/error/skip. Comparison completeness require
 all six snapshot restores, all thirty history restores and all fifteen typed
 no-write refusals across memory, SQLite and PostgreSQL. It checks census presence,
 fixture bindings, history revision coverage and equality across each six-store
-comparison group. The original driver tests remain the semantic oracle; this
+comparison group. Native history revision/floor fields are JSON integers.
+Nested checks bind as-of images, complete version transitions, changeset identity
+and revision continuity, the final receipt and source replay mapping. Archive
+inventories come from the recorded source fixture blobs; allocator project
+identities and profiles must be complete. All nights must share the same native
+immutable repository ID.
+The original driver tests remain the semantic oracle; this
 tool does not replay restores or invent new report data.
 
 Dates come from native `created_at` in UTC, including GitHub's scheduling delay.
