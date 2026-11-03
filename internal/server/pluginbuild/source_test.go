@@ -747,7 +747,8 @@ func TestWASIArtifactAdmissionCancellationAndOwnerClose(t *testing.T) {
 		default:
 		}
 		select {
-		case initializerContextDone <- initCtx.Err():
+		case <-initCtx.Done():
+			initializerContextDone <- initCtx.Err()
 		case <-initializerRelease:
 			return
 		}
