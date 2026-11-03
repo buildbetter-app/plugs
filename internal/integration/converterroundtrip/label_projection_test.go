@@ -470,7 +470,7 @@ func TestImportedLabelContractRefusesBeforeWrite(t *testing.T) {
 		want []string
 	}{
 		{"255-unicode-scalars", []string{strings.Repeat("界", 255)}},
-		{"exact-identities", []string{" Label", "LABEL", "cafe\u0301", "café", "🔧"}},
+		{"exact-identities", []string{" Label", "LABEL", "cafe\u0301", "café", "𠀀"}},
 		{"empty-set", []string{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
