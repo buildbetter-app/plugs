@@ -549,6 +549,7 @@ internal/integration/transports/composition_test.go
 internal/integration/transports/configured_test.go
 internal/integration/transports/fixture_test.go
 internal/integration/transports/transports_test.go
+internal/integration/transports/wire_equivalence_test.go
 internal/integration/viewpermissions/BUILD.bazel
 internal/integration/viewpermissions/viewpermissions_test.go
 internal/integration/watchsql/BUILD.bazel
