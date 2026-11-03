@@ -632,7 +632,7 @@ func (p *Provider) claimNext(ctx context.Context, by model.PrincipalRef, project
 	}
 	selected.Status = "claimed"
 	selected.Generation++
-	selected.Claim = &claimState{Principal: by, Agent: effectiveAgent(by, meta), ExpiresAt: p.now().Add(claimTTL), Generation: selected.Generation}
+	selected.Claim = &claimState{Principal: by, Agent: effectiveAgent(by, meta), ExpiresAt: p.now().UTC().Add(claimTTL), Generation: selected.Generation}
 	value.Items[selected.ID] = *selected
 	item := p.itemView(*selected)
 	replay = claimNextResult{Found: true, Item: item}
@@ -693,7 +693,7 @@ func (p *Provider) Claim(ctx context.Context, by model.PrincipalRef, req model.R
 	}
 	item.Status = "claimed"
 	item.Generation++
-	item.Claim = &claimState{Principal: by, Agent: effectiveAgent(by, meta), ExpiresAt: p.now().Add(claimTTL), Generation: item.Generation}
+	item.Claim = &claimState{Principal: by, Agent: effectiveAgent(by, meta), ExpiresAt: p.now().UTC().Add(claimTTL), Generation: item.Generation}
 	value.Items[item.ID] = item
 	view := p.itemView(item)
 	receipt, err := p.storeReceipt(value, by, meta, req, view, item.RunID, item.ID)
