@@ -151,6 +151,7 @@ func (h *rawWorkflowHTTP) call(t *testing.T, method string, params map[string]an
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("Plug-RPC", "1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+h.token)
 	response, err := h.api.Client().Do(req)
