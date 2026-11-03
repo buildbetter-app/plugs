@@ -307,6 +307,9 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if err != nil {
 				return nil, err
 			}
+			if op.Kind == model.OpClose && canonicalWorkflowCloseTarget(target) {
+				return nil, failure(model.CodeUnsupported, "workflow items cannot participate in durable close changesets")
+			}
 			current, err = p.load(ctx, target)
 			if err != nil {
 				return nil, err

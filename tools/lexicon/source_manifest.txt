@@ -284,6 +284,7 @@ internal/core/pipeline/snapshot.go
 internal/core/pipeline/snapshot_get_test.go
 internal/core/pipeline/telemetry.go
 internal/core/pipeline/telemetry_test.go
+internal/core/pipeline/workflow_close_ref.go
 internal/core/port/BUILD.bazel
 internal/core/port/gate.go
 internal/core/port/pipeline.go
