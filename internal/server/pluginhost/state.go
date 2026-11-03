@@ -34,6 +34,11 @@ func (s *stateAccess) available(ctx context.Context, write bool) error {
 	if err != nil {
 		return err
 	}
+	return call.stateAvailable(write)
+}
+
+// Both state planes obey the same pure, replayable pre-call boundary.
+func (call *invocation) stateAvailable(write bool) error {
 	if call.hot() {
 		if write {
 			return failure(ErrHotWrite, "plugin state")
