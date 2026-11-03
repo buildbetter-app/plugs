@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -124,6 +125,18 @@ func (f *quietFixture) state(t *testing.T, by model.PrincipalRef, key int) quiet
 		}
 		keys = append(keys, driver.LockKey{Kind: driver.LockReadFact, Fact: fact})
 	}
+	encoded := make(map[driver.LockKey]string, len(keys))
+	for _, key := range keys {
+		value, err := driver.EncodeLockKey(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded[key] = value
+	}
+	sort.Slice(keys, func(i, j int) bool { return encoded[keys[i]] < encoded[keys[j]] })
+	if err := driver.ValidateLockKeys(keys); err != nil {
+		t.Fatal(err)
+	}
 	facts, err := r.Observe(ctx, keys)
 	if err != nil || len(facts) != len(keys) {
 		t.Fatalf("graph/record/authority facts: %v", err)
@@ -197,11 +210,15 @@ func (f *quietFixture) alterClaimFixture(t *testing.T, alter func(*pipeline.Docu
 		t.Fatal(err)
 	}
 	alter(&doc)
+	body := quietJSON(t, doc)
 	_, err = conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{
-		Ref: quietRef(), Kind: "bead", Op: model.OpPatch, Body: []byte(quietJSON(t, doc)),
+		Ref: quietRef(), Kind: "bead", Op: model.OpPatch, Body: []byte(body),
 	}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if persisted := f.state(t, worker("user:operator"), 7101); persisted.Body != body {
+		t.Fatal("actual persisted fixture bytes differ from the seeded document")
 	}
 }
 
@@ -236,13 +253,40 @@ func TestQuietHeartbeatHTTPAcrossDrivers(t *testing.T) {
 					}
 				}, "lease_not_held", "bead has no active claim"},
 				{"missing_holder", false, func(t *testing.T, f *quietFixture, _ model.PrincipalRef) {
-					f.alterClaimFixture(t, func(doc *pipeline.Document) { doc.Lease.Principal = model.PrincipalRef{} })
+					f.alterClaimFixture(t, func(doc *pipeline.Document) { doc.Lease.Principal.ID = "" })
+					stored := f.state(t, worker("user:operator"), 7101)
+					var actual struct {
+						Lease struct{ Principal model.PrincipalRef }
+					}
+					if err := json.Unmarshal([]byte(stored.Body), &actual); err != nil || actual.Lease.Principal.Kind != "agent" || actual.Lease.Principal.ID != "" {
+						t.Fatalf("missing-ID Agent fixture was not persisted: %v", err)
+					}
 				}, "lease_not_held", "bead is claimed by another principal"},
+				{"zero_base_ttl", false, func(t *testing.T, f *quietFixture, _ model.PrincipalRef) {
+					f.alterClaimFixture(t, func(doc *pipeline.Document) { doc.Lease.TtlMs = model.Natural64(0) })
+				}, "lease_not_held", "claim has an invalid lease TTL"},
+				{"overflow_base_ttl", false, func(t *testing.T, f *quietFixture, _ model.PrincipalRef) {
+					f.alterClaimFixture(t, func(doc *pipeline.Document) {
+						doc.Lease.TtlMs = model.Natural64(uint64((1<<63-1)/time.Millisecond) + 1)
+					})
+				}, "lease_not_held", "claim has an invalid lease TTL"},
 				{"foreign_holder", true, nil, "lease_not_held", "bead is claimed by another principal"},
 				{"released", false, func(t *testing.T, f *quietFixture, by model.PrincipalRef) {
 					params := quietParams()
 					params["reason"] = "holder release"
 					success(t, f.call(t, by, "bead.release", params, 7120))
+					stored := f.state(t, by, 7120)
+					var actual struct {
+						Lease    *json.RawMessage
+						Comments []struct {
+							Body      string
+							Principal model.PrincipalRef
+						}
+					}
+					if err := json.Unmarshal([]byte(stored.Body), &actual); err != nil || actual.Lease != nil || len(actual.Comments) != 1 ||
+						actual.Comments[0].Body != "holder release" || !samePrincipal(t, actual.Comments[0].Principal, by) {
+						t.Fatalf("public release did not persist its comment and nil lease: %v", err)
+					}
 				}, "lease_not_held", "bead has no active claim"},
 				{"closed", false, func(t *testing.T, f *quietFixture, _ model.PrincipalRef) {
 					// Seed an actual closed row; this tests heartbeat admission,
@@ -268,6 +312,19 @@ func TestQuietHeartbeatHTTPAcrossDrivers(t *testing.T) {
 						row.prepare(t, f, by)
 					}
 					before := f.state(t, by, 7110)
+					if row.name == "zero_base_ttl" || row.name == "overflow_base_ttl" {
+						var actual struct{ Lease struct{ TtlMs model.Natural } }
+						if err := json.Unmarshal([]byte(before.Body), &actual); err != nil {
+							t.Fatal(err)
+						}
+						want := model.Natural64(0)
+						if row.name == "overflow_base_ttl" {
+							want = model.Natural64(uint64((1<<63-1)/time.Millisecond) + 1)
+						}
+						if actual.Lease.TtlMs.String() != want.String() || before.Replay.Generation != 0 || len(before.Replay.Payload) != 0 {
+							t.Fatal("invalid TTL fixture or absent fresh-key receipt was not independently observed")
+						}
+					}
 					got := f.call(t, by, "bead.heartbeat", quietParams(), 7110)
 					requireQuietRefusal(t, got, row.code, row.hint)
 					if after := f.state(t, by, 7110); !reflect.DeepEqual(before, after) {
@@ -283,6 +340,9 @@ func TestQuietHeartbeatHTTPAcrossDrivers(t *testing.T) {
 					quietPastReplayHTTP(t, newQuietFixture(t, engine, dsn), state)
 				})
 			}
+			t.Run("published_replay_reclaimed_same_holder", func(t *testing.T) {
+				quietReclaimedReplayHTTP(t, newQuietFixture(t, engine, dsn))
+			})
 			t.Run("lost_storage_lease", func(t *testing.T) {
 				quietLeaseLossHTTP(t, newQuietFixture(t, engine, dsn))
 			})
@@ -306,6 +366,7 @@ func quietOverlayHTTP(t *testing.T, f *quietFixture) {
 	}
 	f.clock.Advance(t, 2*time.Second)
 	want := f.clock.Now().Add(5 * time.Minute)
+	originalDeadline := want
 	got := f.call(t, by, "bead.heartbeat", quietParams(), 7200)
 	if got.Meta.Replayed || !quietDeadline(t, got).Equal(want) {
 		t.Fatal("fresh overlay did not use the independently scheduled five-minute deadline")
@@ -365,6 +426,41 @@ func quietOverlayHTTP(t *testing.T, f *quietFixture) {
 	}
 	if err := json.Unmarshal(afterRefresh.Replay.Payload, &receipt); err != nil || receipt.State != "published" || !receipt.LeaseExpiresAt.Equal(want) {
 		t.Fatalf("refreshed stored response differs from the public deadline: %v", err)
+	}
+	beforeOldReplay := f.state(t, by, 7200)
+	oldReplay := f.call(t, by, "bead.heartbeat", quietParams(), 7200)
+	if !oldReplay.Meta.Replayed || !quietDeadline(t, oldReplay).Equal(originalDeadline) {
+		t.Fatal("same-claim replay did not preserve the original response after a newer heartbeat")
+	}
+	if !reflect.DeepEqual(beforeOldReplay, f.state(t, by, 7200)) || !reflect.DeepEqual(afterRefresh, f.state(t, by, 7202)) {
+		t.Fatal("same-claim old-key replay rewrote a receipt or the newer overlay")
+	}
+}
+
+func quietReclaimedReplayHTTP(t *testing.T, f *quietFixture) {
+	t.Helper()
+	by := worker("user:operator")
+	f.claim(t, by)
+	_ = quietDeadline(t, f.call(t, by, "bead.heartbeat", quietParams(), 7800))
+	original := f.state(t, by, 7800)
+	var oldReceipt struct{ ClaimExpiresAt time.Time }
+	if err := json.Unmarshal(original.Replay.Payload, &oldReceipt); err != nil || oldReceipt.ClaimExpiresAt.IsZero() {
+		t.Fatalf("original receipt claim boundary: %v", err)
+	}
+	success(t, f.call(t, by, "bead.release", quietParams(), 7801))
+	f.clock.Advance(t, time.Second)
+	success(t, f.call(t, by, "bead.claim", quietParams(), 7802))
+	before := f.state(t, by, 7800)
+	var actual struct{ Lease pipeline.ClaimLease }
+	if err := json.Unmarshal([]byte(before.Body), &actual); err != nil ||
+		!samePrincipal(t, actual.Lease.Principal, by) || actual.Lease.Epoch.String() != model.Natural64(f.lease.Epoch()).String() ||
+		!actual.Lease.ExpiresAt.Equal(f.clock.Now().Add(5*time.Minute)) || actual.Lease.ExpiresAt.Equal(oldReceipt.ClaimExpiresAt) ||
+		!reflect.DeepEqual(original.Replay, before.Replay) {
+		t.Fatalf("public reacquisition did not establish a later claim with the original receipt intact: %v", err)
+	}
+	requireQuietRefusal(t, f.call(t, by, "bead.heartbeat", quietParams(), 7800), "lease_not_held", "heartbeat reservation belongs to a different claim")
+	if !reflect.DeepEqual(before, f.state(t, by, 7800)) {
+		t.Fatal("old-key replay after public reacquisition changed durable/checkpoint/receipt state")
 	}
 }
 

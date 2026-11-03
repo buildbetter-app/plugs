@@ -2,6 +2,8 @@ package authzrpc
 
 import (
 	"context"
+	"sync"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -19,6 +21,32 @@ type claimMaintenance interface {
 }
 
 var _ claimMaintenance = (*GuardedService)(nil)
+var _ pipeline.HeartbeatReplayAuthorizer = (*Checker)(nil)
+
+// claimMaintenanceSlice reuses only successful dependency registrations within
+// one Check on one pinned slice. Reads, policies and per-change checks still run;
+// the first registration always reaches the real snapshot's commit guard.
+type claimMaintenanceSlice struct {
+	authz.Slice
+	mu       sync.Mutex
+	recorded map[authz.Dependency]struct{}
+}
+
+func (s *claimMaintenanceSlice) Record(ctx context.Context, dependency authz.Dependency) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, ok := s.recorded[dependency]; ok {
+		return nil
+	}
+	if err := s.Slice.Record(ctx, dependency); err != nil {
+		return err
+	}
+	s.recorded[dependency] = struct{}{}
+	return nil
+}
 
 func (c *Checker) claimMaintenanceChain() authz.Chain {
 	chain := c.chain
@@ -69,6 +97,10 @@ func (c *Checker) validateHeartbeatClaim(ctx context.Context, by model.Principal
 	if err != nil || epoch == 0 || epoch > c.lease.Epoch() {
 		return &model.Error{Data: model.ErrorData{Code: "lease_not_held", Hint: "claim has an invalid storage lease epoch"}}
 	}
+	ttl, err := doc.Lease.TtlMs.Int64()
+	if err != nil || ttl < 1 || ttl > int64((1<<63-1)/time.Millisecond) {
+		return &model.Error{Data: model.ErrorData{Code: "lease_not_held", Hint: "claim has an invalid lease TTL"}}
+	}
 	checkpoints, ok := c.store.(driver.CheckpointStore)
 	if !ok {
 		return &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
@@ -84,6 +116,43 @@ func (c *Checker) validateHeartbeatClaim(ctx context.Context, by model.Principal
 	}
 	if !c.now().UTC().Before(effective.ExpiresAt) {
 		return &model.Error{Data: model.ErrorData{Code: "lease_expired", Hint: "bead claim has expired"}}
+	}
+	return nil
+}
+
+// AuthorizeHeartbeatReplay checks the receipt's original base claim after the
+// ordinary current-authority/holder/deadline checks. The current overlay may
+// have advanced; a valid same-claim replay still returns its original deadline.
+func (c *Checker) AuthorizeHeartbeatReplay(ctx context.Context, by model.PrincipalRef, ref model.Ref, original *pipeline.ClaimLease, reader port.SnapshotReader) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if reader == nil {
+		return &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+	}
+	if by.Kind != "agent" {
+		return forbidden("public claim maintenance requires an Agent")
+	}
+	rows, err := reader.Get(ctx, []model.Ref{ref})
+	if err != nil {
+		return &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+	}
+	if len(rows) != 1 || rows[0].Kind != "bead" {
+		return forbidden("heartbeat requires an existing authorized bead")
+	}
+	doc, err := pipeline.DecodeDocument(rows[0].Body)
+	if err != nil || doc.ID != ref.ID {
+		return &model.Error{Data: model.ErrorData{Code: "internal_error", Hint: "invalid persisted bead"}}
+	}
+	if original == nil || original.ExpiresAt.IsZero() || doc.Lease == nil {
+		return &model.Error{Data: model.ErrorData{Code: "lease_not_held", Hint: "heartbeat reservation belongs to a different claim"}}
+	}
+	principal, principalErr := driver.PrincipalKey(doc.Lease.Principal)
+	bound, boundErr := driver.PrincipalKey(original.Principal)
+	if principalErr != nil || boundErr != nil || principal != bound ||
+		doc.Lease.Agent != original.Agent || doc.Lease.Epoch.String() != original.Epoch.String() ||
+		!doc.Lease.ExpiresAt.Equal(original.ExpiresAt) {
+		return &model.Error{Data: model.ErrorData{Code: "lease_not_held", Hint: "heartbeat reservation belongs to a different claim"}}
 	}
 	return nil
 }

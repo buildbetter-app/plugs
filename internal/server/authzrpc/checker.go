@@ -165,10 +165,12 @@ func (c *Checker) Authorize(ctx context.Context, stage port.AuthorizationStage, 
 		requests = append(requests, authz.CheckRequest{Caller: caller, Action: authz.Modify, Resource: authz.Resource{Kind: authz.Project, Ref: project}, Method: ""})
 	}
 	chain := c.chain
+	var checkSlice authz.Slice = s
 	if claimMaintenance {
 		chain = c.claimMaintenanceChain()
+		checkSlice = &claimMaintenanceSlice{Slice: s, recorded: make(map[authz.Dependency]struct{})}
 	}
-	decisions, err := chain.Check(ctx, s, requests)
+	decisions, err := chain.Check(ctx, checkSlice, requests)
 	if err != nil {
 		return authzError(err)
 	}
