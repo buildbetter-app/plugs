@@ -42,9 +42,11 @@ func decodeDocument(raw []byte) (pipeline.Document, error) {
 			return doc, failure("invalid_params", "invalid stored parent")
 		}
 	}
-	if _, err := pipeline.HierarchyParent(doc); err != nil {
+	parent, err := pipeline.HierarchyParent(doc)
+	if err != nil {
 		return doc, err
 	}
+	doc.Parent = parent
 	// Preserve member presence before Go zero values erase null/empty provenance.
 	var envelope struct {
 		Comments json.RawMessage `json:"comments"`
