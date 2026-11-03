@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 )
 
 type publicComment struct {
@@ -36,7 +38,8 @@ func readCommentThread(t *testing.T, h *host, id string, asOf *model.Revision) c
 func TestB15PublicCommentsPostgresHistoryRefusalAndReopen(t *testing.T) {
 	const id = "pl-b15-anchor"
 	dsn, trace, sequence := freshDatabase(t), newTrace(t), newIDs(id)
-	h := startHost(t, openStore(t, dsn), sequence, trace)
+	audit := pipeline.WithOntologyAudit(service.NewOntologyAudit(nil))
+	h := startHost(t, openStore(t, dsn), sequence, trace, audit)
 	create(t, h, "b15-create", "comment anchor", 1)
 	original := readCommentThread(t, h, id, nil)
 	if len(original.Comments) != 0 {
@@ -97,7 +100,7 @@ func TestB15PublicCommentsPostgresHistoryRefusalAndReopen(t *testing.T) {
 	if err := h.close(); err != nil {
 		t.Fatal(err)
 	}
-	h = startHost(t, openStore(t, dsn), sequence, trace)
+	h = startHost(t, openStore(t, dsn), sequence, trace, audit)
 	if got := readCommentThread(t, h, id, nil); !reflect.DeepEqual(got, thread) {
 		t.Fatalf("physical PostgreSQL reopen changed public thread: before=%+v after=%+v", thread, got)
 	}
