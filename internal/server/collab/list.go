@@ -158,7 +158,19 @@ func (m *Manager) Snapshot(ctx context.Context, principal model.PrincipalRef, ag
 	if ownedErr != nil || ownedProject != project {
 		return nil, failure("not_found", "live session was not found")
 	}
-	rows, err := m.List(lifetime, caller, project)
+	// A snapshot belongs to both the request and the session. Keep request
+	// cancellation observable without allowing it to cancel the session itself.
+	pollCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(lifetime, cancel)
+	defer func() { stop(); cancel() }()
+	rows, err := m.List(pollCtx, caller, project)
+	// Session close/expiry cancels List, which correctly reports busy to a
+	// direct caller. Here the session is gone: return its existing absence
+	// result even if the watch's asynchronous lifetime notification is delayed.
+	// Errors from a still-live session, including contention, remain unchanged.
+	if lifetime.Err() != nil {
+		return nil, failure("not_found", "live session was not found")
+	}
 	if err != nil {
 		return nil, err
 	}
