@@ -347,7 +347,16 @@ func TestCompleteLockStatesMatchPinnedObserver(t *testing.T) {
 	live := driver.DerivedRow{Key: "guard/live", Value: []byte("original")}
 	deleted := driver.DerivedRow{Key: "guard/deleted", Value: []byte("deleted")}
 	opaque := driver.DerivedRow{Key: "guard/opaque-\xff", Value: []byte("opaque")}
-	prefixCommit(t, ctx, s, lease, 1, nil, []driver.DerivedRow{live, deleted, opaque})
+	initial := []driver.DerivedRow{live, deleted, opaque}
+	batchKeys := make([]driver.LockKey, 300)
+	for i := range batchKeys {
+		row := driver.DerivedRow{Key: fmt.Sprintf("guard/batch-%03d", i), Value: []byte(fmt.Sprintf("value-%d", i))}
+		batchKeys[i] = driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: row.Key}}
+		if i%2 == 0 {
+			initial = append(initial, row)
+		}
+	}
+	prefixCommit(t, ctx, s, lease, 1, nil, initial)
 	// Open before subsequent commits: Lock must repin after taking every guard.
 	writer, err := s.Write(ctx, lease)
 	if err != nil {
@@ -413,6 +422,7 @@ func TestCompleteLockStatesMatchPinnedObserver(t *testing.T) {
 		{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: "guard/missing"}},
 		{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAttribute, Key: opaque.Key}},
 	}
+	keys = append(keys, batchKeys...)
 	sort.Slice(keys, func(i, j int) bool { return keyID(keys[i]) < keyID(keys[j]) })
 	requests := make(driver.LockSet, len(keys))
 	selected := make([]driver.LockKey, 0, len(keys)-1)
@@ -445,7 +455,7 @@ func TestCompleteLockStatesMatchPinnedObserver(t *testing.T) {
 	if err != nil || len(state) != 1 || state[0].Derived == nil || string(state[0].Derived.Value) != "staged" {
 		t.Fatalf("locked writer lost staged derived overlay: %+v %v", state, err)
 	}
-	t.Logf("complete %d selected states match pinned scalar observation across live/deleted/missing records, facts, sentinels, derived rows and a skipped guard", len(got))
+	t.Logf("complete %d selected states match pinned scalar observation across multiple batches with live/deleted/missing records, facts, sentinels, populated/missing/opaque derived rows and a skipped guard", len(got))
 }
 
 func guardProbe(t *testing.T, ctx context.Context, path string, share, acquired bool) {
