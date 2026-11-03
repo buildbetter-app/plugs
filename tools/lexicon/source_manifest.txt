@@ -1315,6 +1315,7 @@ tools/rehearsal/admin_fixture.go
 tools/rehearsal/cmd/rollback-runtime/BUILD.bazel
 tools/rehearsal/cmd/rollback-runtime/main.go
 tools/rehearsal/cmd/shadow-rehearsal/BUILD.bazel
+tools/rehearsal/cmd/shadow-rehearsal/cli_test.sh
 tools/rehearsal/cmd/shadow-rehearsal/main.go
 tools/rehearsal/disposable.go
 tools/rehearsal/disposable_test.go
@@ -1327,6 +1328,8 @@ tools/rehearsal/metrics_test.go
 tools/rehearsal/rollback_fault_test.go
 tools/rehearsal/three_rehearsals.sh
 tools/rehearsal/transcript.go
+tools/rehearsal/transcript_consumer.go
+tools/rehearsal/transcript_consumer_test.go
 tools/rehearsal/transcript_test.go
 tools/roundtrip/BUILD.bazel
 tools/roundtrip/README.md
