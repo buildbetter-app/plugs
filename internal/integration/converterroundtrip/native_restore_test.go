@@ -89,8 +89,10 @@ func TestNativePreparedRestoreBindsDetachedReceiptAcrossDrivers(t *testing.T) {
 			if _, err := tx.(driver.OfflineRestoreTx).PrepareOfflineRestore(ctx, "converter"); err == nil {
 				t.Fatal("prepared native profile switched to converter")
 			}
-			if _, err := tx.Commit(ctx, nativeHeader(profile, meta)); err == nil {
-				t.Fatal("native restore committed without explicit complete allocator staging")
+			_, err = tx.Commit(ctx, nativeHeader(profile, meta))
+			var missingStage *driver.NativeAllocatorSnapshotError
+			if !errors.As(err, &missingStage) || missingStage.Reason != driver.NativeAllocatorBindingRequired {
+				t.Fatalf("native restore missing-stage refusal: %v", err)
 			}
 			if err := tx.(driver.NativeAllocatorRestoreTx).RestoreNativeAllocators(ctx, nativeAllocatorFixture()); err != nil {
 				t.Fatal(err)
