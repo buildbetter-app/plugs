@@ -105,12 +105,13 @@ type wasmFactory struct {
 // wait, so closing a runtime cannot leave a poll sleeping on a guest-selected
 // duration.
 type wasmTimer struct {
-	mu     sync.Mutex
-	active *wasmTimerWait
+	mu      sync.Mutex
+	active  *wasmTimerWait
+	retired bool
 }
 
 type wasmTimerWait struct {
-	done      <-chan struct{}
+	ctx       context.Context
 	abort     chan struct{}
 	abortOnce sync.Once
 }
@@ -120,16 +121,17 @@ func (w *wasmTimerWait) cancel() {
 }
 
 func (t *wasmTimer) begin(ctx context.Context) *wasmTimerWait {
-	wait := &wasmTimerWait{abort: make(chan struct{})}
-	if ctx != nil {
-		wait.done = ctx.Done()
-	}
+	wait := &wasmTimerWait{ctx: ctx, abort: make(chan struct{})}
 	t.mu.Lock()
 	previous := t.active
 	t.active = wait
+	retired := t.retired
 	t.mu.Unlock()
 	if previous != nil {
 		previous.cancel()
+	}
+	if retired {
+		wait.cancel()
 	}
 	return wait
 }
@@ -147,6 +149,7 @@ func (t *wasmTimer) end(wait *wasmTimerWait) {
 
 func (t *wasmTimer) cancel() {
 	t.mu.Lock()
+	t.retired = true
 	wait := t.active
 	t.mu.Unlock()
 	if wait != nil {
@@ -162,17 +165,19 @@ func (t *wasmTimer) nanosleep(ns int64) {
 	wait := t.active
 	t.mu.Unlock()
 	if wait == nil {
-		// Every guest path that can use WASI timers is armed above. Keep the
-		// default behavior for a defensive call made outside those paths.
-		time.Sleep(time.Duration(ns))
-		return
+		panic(failure(ErrInactive, "WASM timer is outside an active guest call"))
 	}
 	timer := time.NewTimer(time.Duration(ns))
 	defer timer.Stop()
 	select {
 	case <-timer.C:
-	case <-wait.done:
+	case <-wait.ctx.Done():
+		panic(wait.ctx.Err())
 	case <-wait.abort:
+		// Waking a poll alone lets a guest with a live context poll again
+		// while close waits for its invocation mutex. Terminate the active
+		// host call before module resources can be retired.
+		panic(context.Canceled)
 	}
 }
 
@@ -344,7 +349,7 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 	moduleConfig := wazero.NewModuleConfig().WithStartFunctions().WithSysNanotime().WithNanosleep(timer.nanosleep)
 	module, err := runtime.InstantiateModule(initCtx, compiled, moduleConfig)
 	if err != nil {
-		return nil, wasmInitializationError(ctx, initCtx, "WASM instantiate failed", err, false)
+		return nil, wasmInitializationError(ctx, initCtx, "WASM instantiate failed", err)
 	}
 	result := &wasmRuntime{factory: f, runtime: runtime, module: module, host: host, timer: timer}
 	result.alloc = module.ExportedFunction("plug_alloc")
@@ -371,23 +376,21 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 		case err := <-initDone:
 			if err != nil {
 				result.close()
-				return nil, wasmInitializationError(ctx, initCtx, "WASM runtime initialization failed", err, false)
+				return nil, wasmInitializationError(ctx, initCtx, "WASM runtime initialization failed", err)
 			}
-			if err := wasmInitializationError(ctx, initCtx, "WASM runtime initialization failed", nil, false); err != nil {
+			if err := wasmInitializationError(ctx, initCtx, "WASM runtime initialization failed", nil); err != nil {
 				result.close()
 				return nil, err
 			}
 		case <-initCtx.Done():
-			// A WASI host call such as poll_oneoff can ignore the context while
-			// the guest initializer is in flight. Wake that poll, close the
-			// module, then join the one bounded initializer call before retiring
-			// it. The joined zero exit code is classified as host termination
-			// below; genuine nonzero guest exits remain manifest failures.
+			// The timer bridge unwinds active WASI host waits, while wazero's
+			// WithCloseOnContextDone terminates guest execution. Join before
+			// resource closure so cleanup cannot replace a genuine guest trap
+			// with a zero-exit termination result.
 			timer.cancel()
-			_ = module.Close(context.Background())
 			err := <-initDone
 			result.close()
-			return nil, wasmInitializationError(ctx, initCtx, "WASM runtime initialization failed", err, true)
+			return nil, wasmInitializationError(ctx, initCtx, "WASM runtime initialization failed", err)
 		}
 	}
 	return result, nil
@@ -397,13 +400,8 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 // genuine guest failures. A caller or owner cancellation is returned as the
 // original context error; the private one-second initializer timeout remains a
 // manifest error so queue pressure cannot disguise a real guest failure.
-func wasmInitializationError(ctx, initCtx context.Context, label string, err error, hostTerminated bool) error {
-	contextTermination := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
-	if hostTerminated && !contextTermination {
-		var exitCoder interface{ ExitCode() uint32 }
-		contextTermination = errors.As(err, &exitCoder) && exitCoder.ExitCode() == 0
-	}
-	if err != nil && !contextTermination {
+func wasmInitializationError(ctx, initCtx context.Context, label string, err error) error {
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		return failure(ErrManifest, "%s: %v", label, err)
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
