@@ -264,8 +264,9 @@ func TestDoltHistoryMemberRefusalBeforeTargetAccessAllDrivers(t *testing.T) {
 				}
 				zero := model.Natural64(0)
 				old, err := target.Read(ctx, driver.View{Incarnation: report.Restored.Incarnation, At: &zero})
-				if old != nil {
+				if err == nil {
 					old.Close()
+					t.Fatal("same-target read below retained floor succeeded")
 				}
 				var truncated driver.ErrTruncated
 				if !errors.As(err, &truncated) || truncated.Floor != report.Restored.HistoryFloor {
