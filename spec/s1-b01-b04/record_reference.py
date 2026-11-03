@@ -328,14 +328,19 @@ class Recorder:
                 cards[name] = card
             finally:
                 failed = sys.exc_info()[0] is not None
+                stopped = self.runtime["mode"] != "managed-proxied-server" or not (card_workspace / ".beads").exists()
                 try:
                     if self.runtime["mode"] == "managed-proxied-server" and (card_workspace / ".beads").exists():
                         code, _, _ = card_recorder.run("cleanup-stop", ["dolt", "stop", "--json"], expected=None)
+                        stopped = code == 0
                         if initialized and code != 0 and not failed:
                             raise RuntimeError(f"{name}: managed reference runtime cleanup failed with exit {code}")
                 finally:
                     all_commands.extend(card_recorder.commands)
-                    shutil.rmtree(card_workspace, ignore_errors=True)
+                    if stopped:
+                        shutil.rmtree(card_workspace, ignore_errors=True)
+                    else:
+                        print(f"managed runtime shutdown unverified; workspace retained: {card_workspace}", file=sys.stderr)
         self.commands = all_commands
         # Keep command outcomes inside each card and remove the global setup
         # command from the card-specific sequence.  The full command transcript

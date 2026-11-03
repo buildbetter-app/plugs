@@ -89,7 +89,7 @@ esac
 		t.Fatal(err)
 	}
 	command := exec.Command("python3", "-B", "-c", `
-import base64, importlib.util, json, os, pathlib, sys
+import base64, importlib.util, json, os, pathlib, shutil, sys
 source, probe, root = map(pathlib.Path, sys.argv[1:])
 spec = importlib.util.spec_from_file_location("negative_recorder_probe", source)
 module = importlib.util.module_from_spec(spec)
@@ -111,6 +111,24 @@ assert base64.b64decode(events[1]["stderrBase64"]) == b"refused\r\n"
 assert events[1]["exitCode"] == 7 and events[2]["exitCode"] == 0
 assert not pathlib.Path(events[0]["workspace"]).exists()
 assert not (root / "recording.json").exists()
+# A failed shutdown must retain the owned workspace and its raw refusal.
+probe.write_text("#!/bin/sh\ncase \"$1\" in\n init) mkdir -p .beads; exit 0 ;;\n dolt) printf 'stop refused' >&2; exit 8 ;;\n *) exit 7 ;;\nesac\n")
+failed_stop = root / "failed-stop.jsonl"
+recorder = module.Recorder(probe, root, root,
+    {"mode": "managed-proxied-server", "version": "negative-probe"}, failed_stop)
+try:
+    recorder.record()
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("failed producer was accepted")
+events = [json.loads(line) for line in failed_stop.read_bytes().splitlines()]
+workspace = pathlib.Path(events[0]["workspace"])
+assert workspace.exists() and (workspace / ".beads").is_dir()
+assert events[-1]["label"] == "cleanup-stop" and events[-1]["exitCode"] == 8
+assert base64.b64decode(events[-1]["stderrBase64"]) == b"stop refused"
+# No real process exists in this negative probe; remove only its own directory.
+shutil.rmtree(workspace)
 `, recorder, probe, root)
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + root,

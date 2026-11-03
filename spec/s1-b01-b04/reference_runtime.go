@@ -36,7 +36,24 @@ func fetchReferenceDolt(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	// No GitHub/App credentials are added to this public release request.
-	client := &http.Client{Timeout: 2 * time.Minute}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	defer transport.CloseIdleConnections()
+	client := &http.Client{
+		Timeout:   2 * time.Minute,
+		Transport: transport,
+		CheckRedirect: func(request *http.Request, via []*http.Request) error {
+			if len(via) >= 5 || request.URL.Scheme != "https" || request.URL.User != nil || request.URL.Port() != "" {
+				return fmt.Errorf("unsupported pinned runtime redirect")
+			}
+			switch request.URL.Hostname() {
+			case "release-assets.githubusercontent.com", "objects.githubusercontent.com":
+				return nil
+			default:
+				return fmt.Errorf("unsupported pinned runtime redirect host")
+			}
+		},
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, err

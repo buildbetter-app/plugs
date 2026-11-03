@@ -2,6 +2,7 @@ package s1b01b04
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	_ "embed"
@@ -134,6 +135,8 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 			"capture-runtime.json": "capture-runtime.json",
 			"recorder.stdout":      "recorder.stdout",
 			"recorder.stderr":      "recorder.stderr",
+			"dolt-version.stdout":  "dolt-version.stdout",
+			"dolt-version.stderr":  "dolt-version.stderr",
 		} {
 			data, err := os.ReadFile(filepath.Join(root, source))
 			if os.IsNotExist(err) {
@@ -164,18 +167,34 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 	}
 	versionCommand := exec.Command(doltPath, "version")
 	versionCommand.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root, "LC_ALL=C", "TZ=UTC"}
-	version, err := versionCommand.CombinedOutput()
+	var versionError bytes.Buffer
+	versionCommand.Stderr = &versionError
+	version, err := versionCommand.Output()
+	for name, data := range map[string][]byte{"dolt-version.stdout": version, "dolt-version.stderr": versionError.Bytes()} {
+		if writeErr := os.WriteFile(filepath.Join(root, name), data, 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
 	if err != nil || strings.TrimSpace(string(version)) != "dolt version "+referenceDoltVersion {
 		t.Fatalf("pinned Dolt runtime version=%q error=%v", version, err)
 	}
-	runtimeBytes, err := json.Marshal(map[string]string{
-		"mode":          "managed-proxied-server",
-		"version":       referenceDoltVersion,
-		"versionOutput": strings.TrimSpace(string(version)),
-		"archiveURL":    referenceDoltURL,
-		"archiveSHA256": referenceDoltSHA256,
-		"binarySHA256":  doltDigest,
-		"pinSource":     "9d6fff760b7a314b476539198504d77ce0959656:tools/bazel/dolt.bzl",
+	stat, err := os.Stat(doltPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeBytes, err := json.Marshal(map[string]any{
+		"mode":                "managed-proxied-server",
+		"version":             referenceDoltVersion,
+		"versionOutput":       strings.TrimSpace(string(version)),
+		"archiveURL":          referenceDoltURL,
+		"archiveSHA256":       referenceDoltSHA256,
+		"binarySHA256":        doltDigest,
+		"archiveBytes":        len(archive),
+		"binaryBytes":         stat.Size(),
+		"member":              referenceDoltMember,
+		"versionStdoutSHA256": sha256File(version),
+		"versionStderrSHA256": sha256File(versionError.Bytes()),
+		"pinSource":           "9d6fff760b7a314b476539198504d77ce0959656:tools/bazel/dolt.bzl",
 	})
 	if err != nil {
 		t.Fatal(err)
