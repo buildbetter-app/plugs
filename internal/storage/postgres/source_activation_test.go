@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/storage/conformance/sourceactivation"
-	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/testclock"
 )
 
