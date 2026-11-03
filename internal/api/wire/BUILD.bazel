@@ -11,10 +11,24 @@ go_library(
 
 go_test(
     name = "wire_test",
-    srcs = ["unsupported_contract_test.go", "wire_test.go"],
+    srcs = ["wire_test.go"],
     data = ["//:engdocs/design/plug/contracts/openrpc.json"],
     embed = [":wire"],
     deps = ["//internal/core/model"],
+)
+
+go_test(
+    name = "unsupported_contract_test",
+    srcs = ["unsupported_contract_test.go"],
+    data = [
+        "catalog.json",
+        "//:engdocs/design/plug/contracts/openrpc.json",
+    ],
+    deps = [
+        ":wire",
+        "//internal/core/model",
+        "//internal/server/rpc",
+    ],
 )
 
 filegroup(
