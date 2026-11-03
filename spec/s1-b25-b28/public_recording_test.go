@@ -414,7 +414,7 @@ func recordPublicRun(t *testing.T, root, name string, artifact publicArtifact, f
 func validateInventoryAndArchive(t *testing.T, run *publicRun, commandBD func(string, string, string, []string, []byte) []byte, label, store, root string, fixture recordingFixture) {
 	t.Helper()
 	path := filepath.Join(root, label+"-inventory.json")
-	commandBD(label+"-inventory", label, store, []string{"--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", path}, nil)
+	commandBD(label+"-inventory", label, store, []string{"--readonly", "export", "--format", "beads-inventory/1", "--output", path}, nil)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("%s inventory was not published: %v", label, err)
