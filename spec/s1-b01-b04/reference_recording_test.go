@@ -2,6 +2,7 @@ package s1b01b04
 
 import (
 	"archive/zip"
+	"context"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
@@ -11,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -63,8 +66,17 @@ func publicReferenceBinary(t *testing.T, archivePath, manifestPath string, desti
 	if manifest.Source.Beads.Commit != captureSourceCommit || manifest.Source.Beads.Tree != captureSourceTree {
 		t.Fatalf("public reference source pin=%s/%s", manifest.Source.Beads.Commit, manifest.Source.Beads.Tree)
 	}
-	if got := manifest.Artifacts["bin/bd"].SHA256; got != captureBinarySHA256 {
-		t.Fatalf("public reference binary manifest=%s want=%s", got, captureBinarySHA256)
+	var binaryMember string
+	for name, artifact := range manifest.Artifacts {
+		if artifact.SHA256 == captureBinarySHA256 {
+			if binaryMember != "" {
+				t.Fatal("public reference manifest has multiple pinned executables")
+			}
+			binaryMember = name
+		}
+	}
+	if binaryMember == "" {
+		t.Fatal("public reference manifest has no executable with the pinned digest")
 	}
 	archive, err := zip.OpenReader(archivePath)
 	if err != nil {
@@ -73,13 +85,15 @@ func publicReferenceBinary(t *testing.T, archivePath, manifestPath string, desti
 	defer archive.Close()
 	var binary *zip.File
 	for _, entry := range archive.File {
-		if entry.Name == "bin/bd" {
+		if entry.Name == binaryMember {
+			if binary != nil {
+				t.Fatal("public reference archive has duplicate pinned executable members")
+			}
 			binary = entry
-			break
 		}
 	}
 	if binary == nil {
-		t.Fatal("public reference archive has no bin/bd")
+		t.Fatal("public reference archive has no pinned executable member")
 	}
 	reader, err := binary.Open()
 	if err != nil {
@@ -99,6 +113,7 @@ func publicReferenceBinary(t *testing.T, archivePath, manifestPath string, desti
 }
 
 func TestCapturePinnedBeadsReference(t *testing.T) {
+	retained := envRequired(t, "TEST_UNDECLARED_OUTPUTS_DIR")
 	archivePath := envRequired(t, "PLUG_PUBLIC_REFERENCE_ZIP")
 	sourcePath := envRequired(t, "PLUG_PUBLIC_REFERENCE_SOURCE")
 	manifestPath := envRequired(t, "PLUG_PUBLIC_REFERENCE_MANIFEST")
@@ -112,8 +127,63 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	binaryPath := filepath.Join(root, "bd")
+	defer func() {
+		for source, name := range map[string]string{
+			"recording.json":       "reference-recording.json",
+			"raw-commands.jsonl":   "raw-commands.jsonl",
+			"capture-runtime.json": "capture-runtime.json",
+			"recorder.stdout":      "recorder.stdout",
+			"recorder.stderr":      "recorder.stderr",
+		} {
+			data, err := os.ReadFile(filepath.Join(root, source))
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				t.Errorf("retain %s: %v", source, err)
+				continue
+			}
+			if err := os.WriteFile(filepath.Join(retained, name), data, 0o600); err != nil {
+				t.Errorf("retain %s: %v", name, err)
+			}
+		}
+	}()
+	binaryPath := filepath.Join(root, "reference-engine")
 	publicReferenceBinary(t, archivePath, manifestPath, binaryPath)
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Fatal("the pinned capture runtime requires Linux/amd64")
+	}
+	archive, err := fetchReferenceDolt(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	doltPath := filepath.Join(root, "dolt")
+	doltDigest, err := installReferenceDolt(archive, doltPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versionCommand := exec.Command(doltPath, "version")
+	versionCommand.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root, "LC_ALL=C", "TZ=UTC"}
+	version, err := versionCommand.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(version)) != "dolt version "+referenceDoltVersion {
+		t.Fatalf("pinned Dolt runtime version=%q error=%v", version, err)
+	}
+	runtimeBytes, err := json.Marshal(map[string]string{
+		"mode":          "managed-proxied-server",
+		"version":       referenceDoltVersion,
+		"versionOutput": strings.TrimSpace(string(version)),
+		"archiveURL":    referenceDoltURL,
+		"archiveSHA256": referenceDoltSHA256,
+		"binarySHA256":  doltDigest,
+		"pinSource":     "9d6fff760b7a314b476539198504d77ce0959656:tools/bazel/dolt.bzl",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimePath := filepath.Join(root, "capture-runtime.json")
+	if err := os.WriteFile(runtimePath, runtimeBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	recorderPath := filepath.Join(root, "record_reference.py")
 	if err := os.WriteFile(recorderPath, referenceRecorderBytes, 0o700); err != nil {
 		t.Fatal(err)
@@ -123,9 +193,11 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	command := exec.Command("python3", "-B", recorderPath,
-		"--binary", binaryPath, "--source", sourcePath, "--output", outputPath)
+		"--binary", binaryPath, "--source", sourcePath, "--output", outputPath,
+		"--runtime-manifest", runtimePath,
+		"--transcript", filepath.Join(root, "raw-commands.jsonl"))
 	command.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
+		"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"HOME=" + root,
 		"PYTHONNOUSERSITE=1",
 		"PYTHONDONTWRITEBYTECODE=1",
@@ -133,8 +205,14 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 		"TZ=UTC",
 	}
 	stdout, err := command.Output()
+	if writeErr := os.WriteFile(filepath.Join(root, "recorder.stdout"), stdout, 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
 	if err != nil {
 		if exit, ok := err.(*exec.ExitError); ok {
+			if writeErr := os.WriteFile(filepath.Join(root, "recorder.stderr"), exit.Stderr, 0o600); writeErr != nil {
+				t.Fatal(writeErr)
+			}
 			t.Fatalf("reference recorder failed: %v: %s", err, exit.Stderr)
 		}
 		t.Fatal(err)
@@ -153,10 +231,11 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 	if decoded["workspaceClass"] != "fresh-disposable" {
 		t.Fatalf("reference recording workspace=%v", decoded["workspaceClass"])
 	}
-	if output := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); output != "" {
-		if err := os.WriteFile(filepath.Join(output, "reference-recording.json"), artifact, 0o600); err != nil {
-			t.Fatal(err)
-		}
+	if decoded["runtimeProfile"] != "managed-proxied-server" {
+		t.Fatalf("reference recording runtime=%v", decoded["runtimeProfile"])
+	}
+	if transcript, err := os.ReadFile(filepath.Join(root, "raw-commands.jsonl")); err != nil || len(transcript) == 0 {
+		t.Fatalf("reference raw transcript was not retained: %v", err)
 	}
 	fmt.Println("S1_B01_B04_CAPTURE_BEGIN")
 	fmt.Print(string(artifact))

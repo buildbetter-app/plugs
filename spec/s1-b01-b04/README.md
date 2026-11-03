@@ -78,6 +78,17 @@ produce a skipped success. Ordinary whole-tree tests do not execute this
 environment-dependent recorder. Two fresh matching captures remain required
 for complete paired reference evidence.
 
+The prepared pure-Go executable cannot open embedded Dolt. Explicit captures
+use its supported `--proxied-server` mode with the public Dolt 2.2.0 Linux/amd64
+release pinned by the reference source's `tools/bazel/dolt.bzl`. The target
+checks the archive digest before extracting an executable, verifies its version,
+and records its actual digest and runtime mode. Each disposable store is stopped
+through the public CLI before removal. The raw command stdout/stderr bytes and
+exit codes are retained separately, including on recorder failure. This runtime
+profile does not certify embedded-mode behavior, controlled reference clocks,
+or full-card parity. The historical twins remain unchanged and are not rebound
+to the new runtime or current recorder bytes.
+
 The B02 replay also checks that public `bead.link` and `bead.fail` release a
 conditional dependent through the configured failure slot on memory, SQLite
 (including reopen), and PostgreSQL. This adopted outcome check does not extend
