@@ -194,3 +194,15 @@ func TestNativeAllocatorEnvelopeRejectsMalformedInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNativeAllocatorMemberCannotEnterConverterArchive(t *testing.T) {
+	fixture := newMergeFixture(t, "alpha")
+	data := fixture.bytes(t, func(manifest *Manifest, members map[string][]byte) {
+		raw := []byte(`{"version":"plug-native-allocator/1","store_id":"source","incarnation":"source-inc","at":0,"coverage_floor":0,"projects":[],"parents":[]}`)
+		members[NativeAllocatorMember] = raw
+		manifest.Files[NativeAllocatorMember] = File{SHA256: digest(raw), Size: int64(len(raw))}
+	})
+	if _, err := Read(bytes.NewReader(data)); err == nil {
+		t.Fatal("converter archive admitted native-only allocator member")
+	}
+}

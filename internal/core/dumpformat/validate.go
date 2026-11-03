@@ -131,6 +131,9 @@ func Read(reader io.Reader) (*Archive, error) {
 		}
 		return &Archive{sha256: digest(data), manifest: manifest, members: members, native: true}, nil
 	}
+	if _, present := members[NativeAllocatorMember]; present || manifest.NativeAllocatorProfile != "" || manifest.NativeAllocatorDigest != "" {
+		return nil, fmt.Errorf("native allocator snapshot requires plug-native-store scope")
+	}
 	if err := validateManifest(manifest, members); err != nil {
 		return nil, err
 	}
