@@ -297,9 +297,17 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	if err != nil {
 		return zero, err
 	}
+	sourcePlan, err := t.prepareSourcePublication(ctx, revision)
+	if err != nil {
+		return zero, err
+	}
 	// Once database publication begins, every failure closes and rolls back
 	// the transaction, including all already-inserted version and blob rows.
 	if err = t.writeRecords(ctx, entry); err != nil {
+		_ = t.finish()
+		return zero, err
+	}
+	if err = sourcePlan.Publish(ctx, t.sql); err != nil {
 		_ = t.finish()
 		return zero, err
 	}
