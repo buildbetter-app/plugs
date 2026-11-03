@@ -26,10 +26,12 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
+	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/postgres"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 const project = "postgres-acceptance"
@@ -133,6 +135,14 @@ type host struct {
 }
 
 func startHost(t *testing.T, store *postgres.Store, sequence *ids, record *trace, extra ...pipeline.Option) *host {
+	return startHostWithWorkflow(t, false, store, sequence, record, extra...)
+}
+
+func startWorkflowHost(t *testing.T, store *postgres.Store, sequence *ids, record *trace, extra ...pipeline.Option) *host {
+	return startHostWithWorkflow(t, true, store, sequence, record, extra...)
+}
+
+func startHostWithWorkflow(t *testing.T, withWorkflow bool, store *postgres.Store, sequence *ids, record *trace, extra ...pipeline.Option) *host {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &host{store: store, ctx: ctx, cancel: cancel, renewed: make(chan error, 1), served: make(chan error, 1), trace: record}
@@ -176,16 +186,29 @@ func startHost(t *testing.T, store *postgres.Store, sequence *ids, record *trace
 	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithClock(func() time.Time { return clock }), pipeline.WithIDGenerator(sequence.next)}
 	options = append(options, extra...)
 	h.writer = pipeline.New(store, h.lease, options...)
-	h.domain = service.New(store, h.lease, h.writer, service.WithOntology(ontology), service.WithClock(func() time.Time { return clock }))
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceOptions := []service.Option{service.WithOntology(ontology), service.WithClock(func() time.Time { return clock })}
+	if withWorkflow {
+		checkpoints, ok := any(store).(driver.PersistentCheckpointStore)
+		if !ok || !checkpoints.Persistent() {
+			t.Fatal("PostgreSQL workflow fixture requires persistent checkpoints")
+		}
+		state := pluginhost.NewDurableStateWithPersistence(checkpoints, h.lease, workflowplugin.Alias, "default", true)
+		workflow, err := workflowplugin.New(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		serviceOptions = append(serviceOptions, service.WithWorkflow(workflow.WithIdentity(workflowplugin.Alias, "default", meta.Incarnation)))
+	}
+	h.domain = service.New(store, h.lease, h.writer, serviceOptions...)
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = rpc.BindService(registry, h.domain); err != nil {
-		t.Fatal(err)
-	}
-	meta, err := store.Meta(ctx)
-	if err != nil {
 		t.Fatal(err)
 	}
 	// Synthetic fixed signing material makes restart continuation observable.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -45,14 +46,62 @@ func TestMemoryRuntimeKeepsOrdinaryWorkflowToolsAndRefusesEphemeral(t *testing.T
 	if len(readyItems) != 1 || readyItems[0].(map[string]any)["id"] != id {
 		t.Fatalf("ordinary memory ready=%v", readyItems)
 	}
+	before, err := f.r.Store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := f.r.Store.Read(ctx, driver.View{Incarnation: before.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changesBefore, err := reader.Changesets(ctx, nil, 100)
+	if err != nil {
+		_ = reader.Close()
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	checkpointBefore, err := f.r.Store.(driver.CheckpointStore).LoadCheckpoint(ctx, "plugin/workflow/default/durable")
+	if err != nil {
+		t.Fatal(err)
+	}
 	params["mode"] = "ephemeral"
 	_, err = f.client.Call(ctx, "x.workflow.invoke", params, "")
 	var refused *wire.Error
-	if !errors.As(err, &refused) || refused.Data.Code != "method_not_found" {
+	if !errors.As(err, &refused) || refused.Data.Code != "plugin_durable_state_unavailable" {
 		t.Fatalf("memory runtime accepted ephemeral invocation: %v", err)
+	}
+	after, err := f.r.Store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err = f.r.Store.Read(ctx, driver.View{Incarnation: after.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changesAfter, err := reader.Changesets(ctx, nil, 100)
+	if err != nil {
+		_ = reader.Close()
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	checkpointAfter, err := f.r.Store.(driver.CheckpointStore).LoadCheckpoint(ctx, "plugin/workflow/default/durable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Head != before.Head || !reflect.DeepEqual(changesAfter, changesBefore) || !reflect.DeepEqual(checkpointAfter, checkpointBefore) {
+		t.Fatalf("memory capability refusal published state: before=%+v after=%+v", before, after)
 	}
 	if _, err := f.client.Call(ctx, "bead.get", map[string]any{"id": map[string]any{"id": id}}, ""); err != nil {
 		t.Fatalf("ephemeral refusal broke ordinary memory reads: %v", err)
+	}
+	params["mode"] = "permanent"
+	params["checklist"] = []map[string]any{{"label": "after-refusal", "title": "ordinary item after capability refusal", "type": "task"}}
+	if _, err := f.client.Call(ctx, "x.workflow.invoke", params, ""); err != nil {
+		t.Fatalf("permanent workflow invocation after capability refusal failed: %v", err)
 	}
 }
 

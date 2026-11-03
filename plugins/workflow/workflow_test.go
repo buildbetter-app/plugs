@@ -142,8 +142,14 @@ func TestEphemeralInvocationRequiresExplicitPersistentCapability(t *testing.T) {
 		Checklist: []ChecklistItem{{Label: "one", Title: "title"}},
 	}, model.WriteMeta{Method: "x.workflow.invoke", Project: "project", IdempotencyKey: strings.Repeat("1", 64)})
 	var failure *model.Error
-	if !errors.As(err, &failure) || failure.Data.Code != "invalid_params" {
+	if !errors.As(err, &failure) || failure.Data.Code != "plugin_durable_state_unavailable" {
 		t.Fatalf("unmarked state accepted an ephemeral restart guarantee: %v", err)
+	}
+	_, err = provider.Invoke(context.Background(), model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, InvokeRequest{
+		Template: "template", Project: "project", Mode: "ephemeral",
+	}, model.WriteMeta{Method: "x.workflow.invoke", Project: "project", IdempotencyKey: strings.Repeat("2", 64)})
+	if !errors.As(err, &failure) || failure.Data.Code != "invalid_params" {
+		t.Fatalf("malformed request was conflated with missing persistence: %v", err)
 	}
 }
 
