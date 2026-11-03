@@ -65,6 +65,7 @@ type publicationCommitConnector struct {
 	before func()
 	after  func()
 	armed  atomic.Bool
+	every  atomic.Bool
 	steps  atomic.Int32
 }
 
@@ -83,7 +84,7 @@ type publicationCommitConn struct {
 }
 
 func (c *publicationCommitConn) ExecContext(ctx context.Context, query string, args []sqldriver.NamedValue) (sqldriver.Result, error) {
-	hook := query == "COMMIT" && c.connector.armed.CompareAndSwap(true, false)
+	hook := query == "COMMIT" && (c.connector.every.Load() || c.connector.armed.CompareAndSwap(true, false))
 	if hook && c.connector.before != nil {
 		c.connector.before()
 	}
@@ -182,6 +183,146 @@ func publicationHeartbeatsAcrossCommit(t *testing.T, mode string) {
 		t.Fatalf("handoff exposed expired durable lease: next=%v err=%v", next, err)
 	}
 	t.Logf("held real COMMIT boundary %s with %d timely heartbeats; late heartbeat flushed through %d native COMMITs; independent handle still excluded", held, renewal.successes, connector.steps.Load())
+}
+
+// A first-COMMIT-only delay misses a moving-target handoff: every flush may
+// receive yet another heartbeat before its COMMIT returns. Keep the production
+// TTL and renewal cadence, and delay EVERY real COMMIT beyond that cadence.
+func TestSQLitePublicationLeaseBoundedHandoffWithEveryCommitSlow(t *testing.T) {
+	for _, mode := range []string{"graph", "renewal"} {
+		t.Run(mode, func(t *testing.T) { publicationBoundedSlowHandoff(t, mode) })
+	}
+}
+
+func publicationBoundedSlowHandoff(t *testing.T, mode string) {
+	t.Helper()
+	ctx := testContext(t)
+	path := filepath.Join(t.TempDir(), "every-commit-slow.db")
+	s := openStore(t, ctx, path)
+	observer := openStore(t, ctx, path)
+	lease := getLease(t, ctx, s, driver.LeaseTTL).(*activeLease)
+	connector := hookPublicationCommit(t, s, path)
+	connector.every.Store(true)
+	// Cleanup must not apply the latency harness to the final Release.
+	t.Cleanup(func() { connector.every.Store(false) })
+	const commitDelay = 4 * time.Second
+	start, stop := make(chan struct{}), make(chan struct{})
+	done := make(chan publicationHeartbeatResult, 1)
+	go func() {
+		var result publicationHeartbeatResult
+		defer func() { done <- result }()
+		select {
+		case <-start:
+		case <-ctx.Done():
+			result.err = ctx.Err()
+			return
+		}
+		ticker := time.NewTicker(driver.LeaseRenewEvery)
+		defer ticker.Stop()
+		for {
+			// An already admitted Renew must finish, but a pending tick must not
+			// start another SQL publication once the graph caller has returned.
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				result.err = ctx.Err()
+				return
+			default:
+			}
+			if err := lease.Renew(ctx); err != nil {
+				result.err = err
+				return
+			}
+			result.successes++
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				result.err = ctx.Err()
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	var cutoff, advancedDuringHandoff, shortCommit atomic.Bool
+	var delayed atomic.Int32
+	connector.before = func() {
+		step := connector.steps.Load()
+		if step == 0 {
+			close(start)
+		}
+		lease.mu.Lock()
+		before := lease.heartbeatLocked()
+		if step == 1 {
+			cutoff.Store(lease.publishing)
+		}
+		lease.mu.Unlock()
+		started := time.Now()
+		timer := time.NewTimer(commitDelay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+		delayed.Add(1)
+		if time.Since(started) < commitDelay {
+			shortCommit.Store(true)
+		}
+		if step == 1 {
+			lease.mu.Lock()
+			advancedDuringHandoff.Store(lease.heartbeatLocked() != before)
+			lease.mu.Unlock()
+		}
+	}
+	started := time.Now()
+	var publicationErr error
+	if mode == "renewal" {
+		publicationErr = lease.Renew(ctx)
+	} else {
+		publicationErr = s.immediate(ctx, lease, func(c *sql.Conn) error {
+			_, err := c.ExecContext(ctx, `INSERT INTO checkpoints VALUES(?,?,?)`, "bounded-handoff", revKey(1), []byte("committed"))
+			return err
+		})
+	}
+	elapsed := time.Since(started)
+	close(stop)
+	renewal := <-done
+	if publicationErr != nil || renewal.err != nil || renewal.successes < 3 {
+		t.Fatalf("publication=%v heartbeat=%+v elapsed=%s nativeCommits=%d", publicationErr, renewal, elapsed, connector.steps.Load())
+	}
+	if !cutoff.Load() || advancedDuringHandoff.Load() {
+		t.Fatalf("finalization did not queue later renewals: cutoff=%v heartbeatAdvanced=%v", cutoff.Load(), advancedDuringHandoff.Load())
+	}
+	// Two commits publish the graph and its cutoff heartbeat; the third is
+	// the Renew queued during handoff, which must finish after the gate opens.
+	if connector.steps.Load() != 3 || delayed.Load() != 3 || shortCommit.Load() || elapsed < 2*commitDelay {
+		t.Fatalf("unbounded or unexercised handoff: nativeCommits=%d delayed=%d short=%v elapsed=%s", connector.steps.Load(), delayed.Load(), shortCommit.Load(), elapsed)
+	}
+	row, err := readLease(ctx, observer.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.mu.Lock()
+	expires, deadline, publishing, lost := lease.expires, lease.deadline, lease.publishing, lease.lostFlag
+	lease.mu.Unlock()
+	if row.expires != expires || row.expires != deadline.UnixNano() || publishing || lost {
+		t.Fatalf("handoff left private or lost lease: durable=%d effective=%d deadline=%s publishing=%v lost=%v", row.expires, expires, deadline, publishing, lost)
+	}
+	cp, err := observer.LoadCheckpoint(ctx, "bounded-handoff")
+	wantGeneration, wantPayload := uint64(1), "committed"
+	if mode == "renewal" {
+		wantGeneration, wantPayload = 0, ""
+	}
+	if err != nil || cp.Generation != wantGeneration || string(cp.Payload) != wantPayload {
+		t.Fatalf("native publication=%+v err=%v want generation=%d", cp, err, wantGeneration)
+	}
+	short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if next, err := observer.Lease(short, "contender", driver.LeaseTTL); next != nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("handoff exposed expired durable lease: next=%v err=%v", next, err)
+	}
+	t.Logf("%s: publication returned in %s using two 4s COMMITs with ttl=%s renewEvery=%s; queued Renew completed a third 4s COMMIT; lease remains live and durable", mode, elapsed, driver.LeaseTTL, driver.LeaseRenewEvery)
 }
 
 func TestSQLitePublicationLeaseAbortFailsClosed(t *testing.T) {
