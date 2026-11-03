@@ -24,6 +24,9 @@ const (
 	ItemPrefix = "workflow:item/"
 	stateKey   = "workflow/state"
 	claimTTL   = 30 * time.Minute
+	// ClaimTTL is the original duration recorded in workflow claim responses.
+	// Replays retain that duration instead of recomputing a remaining lease.
+	ClaimTTL = claimTTL
 )
 
 type ChecklistItem struct {
