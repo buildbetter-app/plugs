@@ -34,6 +34,7 @@ type transaction struct {
 	acquired                driver.LockSet
 	records                 map[string]*driver.Record
 	derived                 map[string]driver.LockState
+	selectionAnnotated      bool
 	blobs                   map[driver.Hash][]byte
 	bumps                   map[string]driver.LockKey
 	allocators              map[string]driver.OfflineAllocator
@@ -312,6 +313,9 @@ func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable,
 	}
 	for _, rows := range [][]driver.DerivedRow{del, add} {
 		for _, row := range rows {
+			if err := row.Index.Validate(table, row); err != nil {
+				return err
+			}
 			key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
 			if err := key.Validate(); err != nil {
 				return err
@@ -321,15 +325,33 @@ func (t *transaction) PutDerived(ctx context.Context, table driver.DerivedTable,
 			}
 		}
 	}
+	annotated := t.selectionAnnotated
+	for _, row := range add {
+		annotated = annotated || row.Index != nil
+	}
+	proposed := t.derived
+	if annotated {
+		proposed = make(map[string]driver.LockState, len(t.derived)+len(add)+len(del))
+		for id, value := range t.derived {
+			proposed[id] = value
+		}
+	}
 	for _, row := range del {
 		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
-		t.derived[keyID(key)] = driver.LockState{Key: key, Revision: model.Natural64(0)}
+		proposed[keyID(key)] = driver.LockState{Key: key, Revision: model.Natural64(0)}
 	}
 	for _, row := range add {
 		key := driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: table, Key: row.Key}}
-		copy := driver.DerivedRow{Key: row.Key, Value: bytes.Clone(row.Value)}
-		t.derived[keyID(key)] = driver.LockState{Key: key, Derived: &copy, Present: true, Revision: model.Natural64(0)}
+		copy := row.Clone()
+		proposed[keyID(key)] = driver.LockState{Key: key, Derived: &copy, Present: true, Revision: model.Natural64(0)}
 	}
+	if annotated {
+		if err := t.validateSelectionWrites(proposed); err != nil {
+			return err
+		}
+	}
+	t.derived = proposed
+	t.selectionAnnotated = annotated
 	return nil
 }
 
@@ -467,6 +489,11 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	if err := t.validatePredicates(); err != nil {
 		return model.Changeset{}, err
 	}
+	if t.selectionAnnotated {
+		if err := t.validateSelectionWrites(t.derived); err != nil {
+			return model.Changeset{}, err
+		}
+	}
 	head, err := s.state.meta.Head.Uint64()
 	if err != nil {
 		return model.Changeset{}, err
@@ -549,7 +576,11 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 		next.publishKey(id, lock)
 	}
 	for id, value := range t.derived {
+		value = copyLock(value)
 		value.Revision = revision
+		if value.Derived != nil && value.Derived.Index != nil && t.selectionSourceChanged(value.Derived.Index.Source.Key) {
+			value.Derived.Index.Source.Revision = revision
+		}
 		next.publishKey(id, value)
 	}
 	next.publishDerivedKeys(t.derived)
