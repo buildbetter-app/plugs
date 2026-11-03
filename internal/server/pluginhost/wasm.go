@@ -259,7 +259,8 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 	}
 	initCtx, cancel := context.WithTimeout(ctx, wasmInitTimeout)
 	defer cancel()
-	module, err := runtime.InstantiateModule(initCtx, compiled, wazero.NewModuleConfig().WithStartFunctions())
+	moduleConfig := wazero.NewModuleConfig().WithStartFunctions().WithSysNanotime().WithSysNanosleep()
+	module, err := runtime.InstantiateModule(initCtx, compiled, moduleConfig)
 	if err != nil {
 		return nil, failure(ErrManifest, "WASM instantiate failed: %v", err)
 	}
@@ -307,8 +308,8 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, ctxErr
 			}
-			if err == nil {
-				err = initCtx.Err()
+			if initErr := initCtx.Err(); initErr != nil {
+				err = initErr
 			}
 			return nil, failure(ErrManifest, "WASM runtime initialization failed: %v", err)
 		}
