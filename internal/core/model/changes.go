@@ -75,11 +75,54 @@ type ReparentOp struct {
 	Parent  *Ref   `json:"parent,omitempty"`
 	Project string `json:"project,omitempty"`
 }
+
+// LinkMetadata is the optional waits-for fanout predicate. The edge's To
+// remains the spawner; metadata never introduces another endpoint.
+type LinkMetadata struct {
+	Gate       string `json:"gate,omitempty"`
+	AlsoBlocks bool   `json:"also_blocks,omitempty"`
+}
+
+// Normalized returns a detached all-children/false default for explicit {}.
+func (m LinkMetadata) Normalized() (LinkMetadata, error) {
+	if m.Gate == "" {
+		m.Gate = "all-children"
+	}
+	if m.Gate != "all-children" && m.Gate != "any-children" {
+		return LinkMetadata{}, fmt.Errorf("unsupported waits-for gate %q", m.Gate)
+	}
+	return m, nil
+}
+
+func (m *LinkMetadata) UnmarshalJSON(data []byte) error {
+	var value struct {
+		Gate       *string `json:"gate,omitempty"`
+		AlsoBlocks bool    `json:"also_blocks,omitempty"`
+	}
+	if err := decodeStrict(data, &value); err != nil {
+		return err
+	}
+	next := LinkMetadata{Gate: "all-children", AlsoBlocks: value.AlsoBlocks}
+	if value.Gate != nil {
+		next.Gate = *value.Gate
+		if next.Gate == "" {
+			return fmt.Errorf("waits-for gate must not be empty")
+		}
+	}
+	normalized, err := next.Normalized()
+	if err != nil {
+		return err
+	}
+	*m = normalized
+	return nil
+}
+
 type LinkOp struct {
-	Kind     OpKind `json:"kind"`
-	From     Ref    `json:"from"`
-	To       Ref    `json:"to"`
-	LinkKind string `json:"linkKind"`
+	Kind     OpKind        `json:"kind"`
+	From     Ref           `json:"from"`
+	To       Ref           `json:"to"`
+	LinkKind string        `json:"linkKind"`
+	Metadata *LinkMetadata `json:"metadata,omitempty"`
 }
 type CommentOp struct {
 	Kind   OpKind `json:"kind"`
@@ -172,6 +215,13 @@ func validateReparent(value ReparentOp) error {
 func validateLink(value LinkOp) error {
 	if value.Kind != OpLink && value.Kind != OpUnlink {
 		return fmt.Errorf("link operation has kind %q", value.Kind)
+	}
+	if value.Metadata != nil {
+		if value.Kind != OpLink || value.LinkKind != "waits-for" {
+			return fmt.Errorf("metadata is only valid on a waits-for link")
+		}
+		_, err := value.Metadata.Normalized()
+		return err
 	}
 	return nil
 }

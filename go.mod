@@ -6,7 +6,7 @@ toolchain go1.26.10
 
 require (
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/tetratelabs/wazero v1.9.0
+	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.61.0
 )

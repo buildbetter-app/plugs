@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import base64
 from contextlib import ExitStack
 import hashlib
 import importlib.util
@@ -331,23 +332,71 @@ class ReferenceTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 helper.validate_source(source)
 
+    def test_git_classifies_only_explicit_authentication_failures(self):
+        auth_errors = (
+            b"fatal: Authentication failed for 'https://github.com/buildbetter-app/plugs.git/'",
+            b"fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+            b"fatal: invalid username or password",
+            b"fatal: unable to access 'https://github.com/buildbetter-app/plugs.git/': The requested URL returned error: 401",
+        )
+        for stderr in auth_errors:
+            with self.subTest(stderr=stderr), patch.object(
+                helper.subprocess, "run",
+                return_value=subprocess.CompletedProcess([], 1, b"", stderr),
+            ), self.assertRaises(helper.GitAuthenticationError):
+                helper.git(self.root, ["fetch"])
+        with patch.object(
+            helper.subprocess, "run",
+            return_value=subprocess.CompletedProcess(
+                [], 1, b"", b"fatal: unable to access: Could not resolve host: github.com",
+            ),
+        ), self.assertRaises(ValueError) as failure:
+            helper.git(self.root, ["fetch"])
+        self.assertNotIsInstance(failure.exception, helper.GitAuthenticationError)
+
     def test_retrieval_token_is_scoped_to_fixed_fetch_environment_only(self):
         calls = []
         def record(source, arguments, environment=None):
             calls.append((arguments, helper.git_environment() if environment is None else environment.copy()))
+            if arguments[0] == "fetch" and len([args for args, _ in calls if args[0] == "fetch"]) == 1:
+                raise helper.GitAuthenticationError()
             return b""
         with patch.dict(helper.os.environ, {"GH_TOKEN": "fixture-token-not-a-secret"}), patch.object(helper, "git", side_effect=record), patch.object(helper, "validate_source", return_value=helper.SOURCES["beads"]):
             helper.fetch_source(self.root / "retrieved-source")
         fetches = [(args, env) for args, env in calls if args[0] == "fetch"]
-        self.assertEqual(len(fetches), 1)
+        self.assertEqual(len(fetches), 2)
         args, env = fetches[0]
+        fallback_args, fallback_env = fetches[1]
         self.assertIn("--no-write-fetch-head", args)
+        self.assertIn("--depth=1", args)
+        self.assertIn("--no-tags", args)
         self.assertEqual(args[-2:], [helper.SOURCE_URL, helper.SOURCE_SHA])
-        self.assertIn("fixture-token-not-a-secret", env["GIT_CONFIG_VALUE_0"])
+        self.assertEqual(fallback_args, args)
+        self.assertEqual(fallback_args[-2:], [helper.SOURCE_URL, helper.SOURCE_SHA])
+        self.assertEqual(
+            base64.b64decode(env["GIT_CONFIG_VALUE_0"].split("AUTHORIZATION: Basic ", 1)[1]).decode(),
+            "x-access-token:fixture-token-not-a-secret",
+        )
+        self.assertNotIn("fixture-token-not-a-secret", " ".join(fallback_env.values()))
+        self.assertEqual(fallback_env, helper.git_environment())
         for arguments, environment in calls:
             self.assertNotIn("GH_TOKEN", environment)
             if arguments[0] != "fetch":
                 self.assertFalse(any("fixture-token-not-a-secret" in value for value in environment.values()))
+
+    def test_non_authentication_fetch_failure_does_not_retry(self):
+        calls = []
+        def record(source, arguments, environment=None):
+            calls.append((arguments, helper.git_environment() if environment is None else environment.copy()))
+            if arguments[0] == "fetch":
+                raise ValueError("fixture transport failure")
+            return b""
+        with patch.dict(helper.os.environ, {"GH_TOKEN": "fixture-token-not-a-secret"}), patch.object(helper, "git", side_effect=record), self.assertRaises(ValueError):
+            helper.fetch_source(self.root / "non-auth-failure")
+        fetches = [(args, env) for args, env in calls if args[0] == "fetch"]
+        self.assertEqual(len(fetches), 1)
+        self.assertIn("GIT_CONFIG_VALUE_0", fetches[0][1])
+        self.assertNotIn("fixture-token-not-a-secret", " ".join(fetches[0][1].values()))
 
 
 if __name__ == "__main__":

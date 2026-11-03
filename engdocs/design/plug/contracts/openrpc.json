@@ -1587,6 +1587,13 @@
           "required": true
         },
         {
+          "name": "metadata",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/LinkMetadata"
+          }
+        },
+        {
           "name": "expect",
           "schema": {
             "type": "array",
@@ -7146,6 +7153,10 @@
           },
           "linkKind": {
             "type": "string"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/LinkMetadata",
+            "description": "Only valid for a waits-for link. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
           }
         },
         "required": [
@@ -7785,7 +7796,8 @@
             "type": "string",
             "enum": [
               "blocks",
-              "conditional-blocks"
+              "conditional-blocks",
+              "waits-for"
             ]
           },
           "state": {
@@ -10618,6 +10630,22 @@
           }
         ],
         "additionalProperties": false
+      },
+      "LinkMetadata": {
+        "type": "object",
+        "properties": {
+          "gate": {
+            "type": "string",
+            "enum": [
+              "all-children",
+              "any-children"
+            ]
+          },
+          "also_blocks": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       }
     },
     "errors": {
@@ -13172,7 +13200,7 @@
     "methodCount": 82,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "9149680634f6becbd955204e4bfa1c19b0c37911ca3c7ad3f155969a892fc7c9",
-    "descriptorSha256": "cf1f41b77610dbfc36465067247c0fe36d3e2f248ec4e1c4d65b156260959ded",
+    "descriptorSha256": "2f2ceaf3680f0694ec8e12a64d137e37ab559c75cb9aa79671c9eae961c74291",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -14209,6 +14237,13 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "metadata",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LinkMetadata"
             }
           },
           {

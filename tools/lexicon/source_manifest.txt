@@ -324,6 +324,7 @@ internal/core/service/rpc_reads.go
 internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
+internal/core/service/waits_for_consumer_test.go
 internal/core/service/workflow_permanent_test.go
 internal/core/service/workflow_refs.go
 internal/core/viewops/BUILD.bazel
@@ -410,6 +411,15 @@ internal/integration/epicprogress/fixture_test.go
 internal/integration/epicprogress/restore_test.go
 internal/integration/eventsqlpaging/BUILD.bazel
 internal/integration/eventsqlpaging/integration_test.go
+internal/integration/gatecontract/BUILD.bazel
+internal/integration/gatecontract/README.md
+internal/integration/gatecontract/authorization_test.go
+internal/integration/gatecontract/consumer_host_test.go
+internal/integration/gatecontract/consumer_test.go
+internal/integration/gatecontract/engine_test.go
+internal/integration/gatecontract/fanout_test.go
+internal/integration/gatecontract/fixture_test.go
+internal/integration/gatecontract/metadata_test.go
 internal/integration/graphacceptance/BUILD.bazel
 internal/integration/graphacceptance/README.md
 internal/integration/graphacceptance/fixture_test.go
@@ -874,6 +884,7 @@ internal/storage/postgres/encoding.go
 internal/storage/postgres/engine_test.go
 internal/storage/postgres/fencing_test.go
 internal/storage/postgres/lease.go
+internal/storage/postgres/lease_prepare_test.go
 internal/storage/postgres/lock_batch_test.go
 internal/storage/postgres/metadata.go
 internal/storage/postgres/offline_history.go

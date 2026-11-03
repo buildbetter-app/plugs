@@ -353,10 +353,11 @@ type CloseRequest struct {
 // in a ChangeSet. Expect applies to the source bead, which is the only record
 // mutated by a dependency operation.
 type LinkRequest struct {
-	From   model.Ref
-	To     model.Ref
-	Kind   string
-	Expect []model.Precondition
+	From     model.Ref
+	To       model.Ref
+	Kind     string
+	Metadata *model.LinkMetadata
+	Expect   []model.Precondition
 }
 
 // The named lifecycle requests intentionally share the close shape. Their

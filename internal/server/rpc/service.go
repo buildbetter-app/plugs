@@ -425,7 +425,18 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		v, err := svc.ClaimWithOutcome(ctx, c.Principal, service.ClaimRequest{ID: id, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
 	case "bead.link":
-		v, err := svc.LinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, Kind: p.Kind, Expect: p.Expect}, meta)
+		var metadata *model.LinkMetadata
+		if p.Metadata != nil {
+			raw, err := json.Marshal(p.Metadata)
+			if err != nil {
+				return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
+			}
+			metadata = new(model.LinkMetadata)
+			if err := wire.DecodeInto(raw, metadata); err != nil {
+				return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
+			}
+		}
+		v, err := svc.LinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, Kind: p.Kind, Metadata: metadata, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
 	case "bead.unlink":
 		v, err := svc.UnlinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, Kind: p.Kind, Expect: p.Expect}, meta)

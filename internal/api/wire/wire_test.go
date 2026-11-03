@@ -26,7 +26,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if got := len(c.ErrorCatalog()); got != 61 {
 		t.Fatalf("error inventory = %d", got)
 	}
-	if digest(catalogJSON) != "77f7b86c62aaee0df4a4f14519029ad3b797ec2c7c41961b25ba95234c5bca5f" {
+	if digest(catalogJSON) != "bd7eeb614ead3f3b220814f0c71efbe7ad0e39f8e12d961107388c9d594e0a78" {
 		t.Fatal("bounded source snapshot changed; reconcile approved contract")
 	}
 	// These changes affect one of two independent descriptor representations.
@@ -288,6 +288,10 @@ func TestDirectBlockerContractMatchesCanonicalOpenRPC(t *testing.T) {
 				t.Fatal("ViewExplainResult directBlockers reference drift")
 			}
 			edge := schemas["DirectBlockerEdge"].(map[string]any)
+			kinds := edge["properties"].(map[string]any)["kind"].(map[string]any)["enum"]
+			if !reflect.DeepEqual(kinds, []any{"blocks", "conditional-blocks", "waits-for"}) {
+				t.Fatalf("direct blocker kinds drift: %v", kinds)
+			}
 			if !reflect.DeepEqual(edge["required"], []any{"blocker", "kind", "state"}) || edge["additionalProperties"] != false {
 				t.Fatalf("edge schema is not closed/required: %+v", edge)
 			}

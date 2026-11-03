@@ -61,8 +61,9 @@ type Comment struct {
 }
 
 type Link struct {
-	To   model.Ref `json:"to"`
-	Kind string    `json:"kind"`
+	To       model.Ref           `json:"to"`
+	Kind     string              `json:"kind"`
+	Metadata *model.LinkMetadata `json:"metadata,omitempty"`
 }
 
 type ClaimLease struct {
