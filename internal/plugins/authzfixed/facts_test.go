@@ -1,10 +1,13 @@
 package authzfixed
 
 import (
+	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 func ref(id string) model.Ref { return model.RefByID(id, model.Natural64(0)) }
@@ -91,5 +94,34 @@ func TestCanonicalFactAndRegistryValidation(t *testing.T) {
 	inactive.Grants = []authz.Grant{grant("user", "u", authz.TeamScope, "team", "member"), grant("team", "team", authz.ProjectScope, "project", "involved")}
 	if err := inactive.Validate(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSelectionFactLimitDoesNotChangeSourceAdmission(t *testing.T) {
+	f := facts()
+	f.Grants = make([]authz.Grant, driver.SelectionSummaryCap+1)
+	for i := range f.Grants {
+		f.Grants[i] = grant("user", fmt.Sprintf("user-%06d", i), authz.ProjectScope, "project", "involved")
+	}
+	body, err := FactsSourceBytes(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := SelectionRows(f.Namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := SelectionProjection(f, driver.SelectionSource{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &keys.Source}, Present: true, Digest: driver.SelectionDigest(body)})
+	if err != nil || len(rows) != 3 || rows[0].Index != nil {
+		t.Fatalf("optional projection cap rejected valid source: rows=%d error=%v", len(rows), err)
+	}
+	var grants driver.SelectionFacts
+	if err := json.Unmarshal(rows[0].Value, &grants); err != nil || len(grants.Rows) != len(f.Grants) {
+		t.Fatal("large ordinary grant set was truncated")
+	}
+	for _, row := range rows[1:] {
+		if row.Index == nil || row.Index.Facts == nil {
+			t.Fatal("supported complete domain lost its annotation")
+		}
 	}
 }
