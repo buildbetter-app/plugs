@@ -544,6 +544,24 @@ type CheckpointStore interface {
 	SaveCheckpoint(context.Context, ActiveLease, string, uint64, []byte) (Checkpoint, error)
 }
 
+// PersistentCheckpointStore is the stronger checkpoint capability required by
+// plugin state that promises restart durability. CheckpointStore alone is also
+// implemented by disposable stores such as memory, so callers must not infer
+// persistence from that interface.
+type PersistentCheckpointStore interface {
+	CheckpointStore
+	Persistent() bool
+}
+
+// DurableCheckpointStore is the vocabulary alias used by durable plugin
+// adapters. Keep one contract so callers do not treat ordinary checkpoints as
+// restart durable.
+type DurableCheckpointStore = PersistentCheckpointStore
+
+const (
+	CapabilityPersistentCheckpoints = "checkpoints.persistent"
+)
+
 // CheckpointGuardTx stages an unversioned metadata observation for Commit.
 // Commit checks every expected generation atomically with graph publication,
 // serialized against SaveCheckpoint even when the key is absent. A changed

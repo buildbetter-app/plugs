@@ -1,0 +1,26 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# These sources are a disposable SQL experiment, not a product authorization
+# implementation. The expensive measurement runs only when named explicitly.
+go_test(
+    name = "correctness_test",
+    srcs = ["closure.go", "measurement_test.go", "query.go", "query_test.go", "schema.go"],
+    deps = ["@org_modernc_sqlite//:sqlite"],
+)
+
+go_test(
+    name = "latency_test",
+    size = "large",
+    srcs = ["closure.go", "latency_test.go", "query.go", "schema.go"],
+    tags = ["exclusive", "manual"],
+    deps = [
+        "@com_github_jackc_pgx_v5//stdlib",
+        "@org_modernc_sqlite//:sqlite",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

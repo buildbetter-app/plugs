@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -29,6 +30,11 @@ const (
 	maxWASMMessage  = 1 << 20
 	maxWASMPages    = 1024 // 64 MiB per guest, including any memory growth.
 	wasmInitTimeout = time.Second
+	// A reader may ignore its context. Retired guests therefore keep their
+	// reader call accounted for until it actually returns. The cap is aligned
+	// with the four live pool members, so cancellation cannot create an
+	// unbounded set of retained reader workers across guest generations.
+	maxWASMReaderWorkers = maxRuntimeInstances
 	// The E5 ABI names the single host import env.plug.call. Keep the
 	// dotted function name intact so static admission and wazero instantiation
 	// enforce the same import contract.
@@ -50,11 +56,22 @@ func NewWASMNative(wasm []byte, manifest pluginapi.PluginManifest, instance stri
 		return sdk.Native{}, err
 	}
 	copyBytes := append([]byte(nil), wasm...)
+	factory := &wasmFactory{wasm: copyBytes, modules: map[api.Module]*wasmRuntime{}}
 	return sdk.Native{
 		Manifest: manifest,
 		Instance: instance,
 		New: func(host pluginapi.Host) (sdk.Registration, error) {
-			runtime, err := newWASMRuntime(copyBytes, host)
+			runtime, err := factory.newRuntime(context.Background(), host)
+			if err != nil {
+				return sdk.Registration{}, err
+			}
+			if capabilities, ok := host.(*capabilities); ok {
+				capabilities.onDispose = runtime.close
+			}
+			return runtime.registration(manifest), nil
+		},
+		NewWithContext: func(ctx context.Context, host pluginapi.Host) (sdk.Registration, error) {
+			runtime, err := factory.newRuntime(ctx, host)
 			if err != nil {
 				return sdk.Registration{}, err
 			}
@@ -66,14 +83,137 @@ func NewWASMNative(wasm []byte, manifest pluginapi.PluginManifest, instance stri
 	}, nil
 }
 
+// wasmFactory owns one compiled immutable module image. Each call to
+// newRuntime instantiates a distinct module in the same wazero runtime, so
+// linear memory, globals, allocators and invocation capabilities remain
+// private while compilation/link setup is paid only once.
+type wasmFactory struct {
+	mu            sync.Mutex
+	wasm          []byte
+	runtime       wazero.Runtime
+	compiled      wazero.CompiledModule
+	modules       map[api.Module]*wasmRuntime
+	constructing  int
+	readerSlots   chan struct{}
+	readerWorkers int
+}
+
+// wasmTimer bridges the context-aware lifetime of a guest call to WASI's
+// context-free nanosleep hook. The hook is installed once per module, while
+// the active wait is replaced for instantiation, initialization, and each
+// callback invocation. Explicit module retirement also cancels the active
+// wait, so closing a runtime cannot leave a poll sleeping on a guest-selected
+// duration.
+type wasmTimer struct {
+	mu          sync.Mutex
+	active      *wasmTimerWait
+	retired     bool
+	retiredDone chan struct{}
+}
+
+type wasmTimerWait struct {
+	ctx       context.Context
+	observer  func(context.Context)
+	abort     chan struct{}
+	abortOnce sync.Once
+}
+
+func (w *wasmTimerWait) cancel() {
+	w.abortOnce.Do(func() { close(w.abort) })
+}
+
+func (t *wasmTimer) begin(ctx context.Context, observer func(context.Context)) *wasmTimerWait {
+	wait := &wasmTimerWait{ctx: ctx, observer: observer, abort: make(chan struct{})}
+	t.mu.Lock()
+	previous := t.active
+	t.active = wait
+	retired := t.retired
+	t.mu.Unlock()
+	if previous != nil {
+		previous.cancel()
+	}
+	if retired {
+		wait.cancel()
+	}
+	return wait
+}
+
+func (t *wasmTimer) end(wait *wasmTimerWait) {
+	if wait == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.active == wait {
+		t.active = nil
+	}
+	t.mu.Unlock()
+}
+
+// retirementSignal is allocated only for the callback pre-arm observer.
+func (t *wasmTimer) retirementSignal() <-chan struct{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.retiredDone == nil {
+		t.retiredDone = make(chan struct{})
+		if t.retired {
+			close(t.retiredDone)
+		}
+	}
+	return t.retiredDone
+}
+
+func (t *wasmTimer) cancel() {
+	t.mu.Lock()
+	if !t.retired {
+		t.retired = true
+		if t.retiredDone != nil {
+			close(t.retiredDone)
+		}
+	}
+	wait := t.active
+	t.mu.Unlock()
+	if wait != nil {
+		wait.cancel()
+	}
+}
+
+func (t *wasmTimer) nanosleep(ns int64) {
+	if ns <= 0 {
+		return
+	}
+	t.mu.Lock()
+	wait := t.active
+	t.mu.Unlock()
+	if wait == nil {
+		panic(failure(ErrInactive, "WASM timer is outside an active guest call"))
+	}
+	timer := time.NewTimer(time.Duration(ns))
+	defer timer.Stop()
+	if wait.observer != nil {
+		wait.observer(wait.ctx)
+	}
+	select {
+	case <-timer.C:
+	case <-wait.ctx.Done():
+		panic(wait.ctx.Err())
+	case <-wait.abort:
+		// Waking a poll alone lets a guest with a live context poll again
+		// while close waits for its invocation mutex. Terminate the active
+		// host call before module resources can be retired.
+		panic(context.Canceled)
+	}
+}
+
 type wasmRuntime struct {
 	mu      sync.Mutex
+	factory *wasmFactory
 	runtime wazero.Runtime
 	module  api.Module
 	alloc   api.Function
 	handle  api.Function
 	memory  api.Memory
 	host    pluginapi.Host
+	timer   *wasmTimer
 	closed  bool
 }
 
@@ -86,6 +226,97 @@ type wasmInvocationKey struct{}
 
 type wasmInvocation struct {
 	reader pluginapi.SnapshotReader
+}
+
+// wasmInitializerObserverKey is an internal acceptance-test seam. It carries
+// no guest capability; it only lets a source-built test observe a zero-length
+// import reached from the real guest initializer without relying on elapsed
+// time.
+type wasmInitializerObserverKey struct{}
+
+type wasmInitializerContextObserverKey struct{}
+
+type wasmInitializerTimerWaitObserverKey struct{}
+
+type wasmInitializationErrorObserverKey struct{}
+
+type wasmCallbackTimerWaitObserverKey struct{}
+
+type wasmCallbackTimerBeginObserverKey struct{}
+
+type wasmInitializerCallKey struct{}
+
+// WithWASMInitializerObserver returns a context that observes a deterministic
+// source-built WASI guest initializer barrier. This is intentionally scoped to
+// the internal pluginhost package and has no wire or public plugin effect.
+func WithWASMInitializerObserver(ctx context.Context, observer func()) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wasmInitializerObserverKey{}, observer)
+}
+
+// WithWASMInitializerContextObserver observes the actual guest initializer
+// execution context at the same internal zero-length import barrier.
+func WithWASMInitializerContextObserver(ctx context.Context, observer func(context.Context)) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wasmInitializerContextObserverKey{}, observer)
+}
+
+// WithWASMInitializerTimerWaitObserver observes positive WASI timer waits
+// entered during module instantiation or initialization with the timed init context.
+func WithWASMInitializerTimerWaitObserver(ctx context.Context, observer func(context.Context)) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wasmInitializerTimerWaitObserverKey{}, observer)
+}
+
+// WithWASMInitializationErrorObserver observes the actual constructor parent
+// context and runtime result before initialization error classification.
+func WithWASMInitializationErrorObserver(ctx context.Context, observer func(context.Context, error)) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wasmInitializationErrorObserverKey{}, observer)
+}
+
+// WithWASMCallbackTimerWaitObserver observes positive WASI timer waits
+// entered by a guest callback with its active invocation context.
+func WithWASMCallbackTimerWaitObserver(ctx context.Context, observer func(context.Context)) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wasmCallbackTimerWaitObserverKey{}, observer)
+}
+
+// WithWASMCallbackTimerBeginObserver observes callback timer arming with the
+// actual invocation context and the timer's permanent retirement signal.
+func WithWASMCallbackTimerBeginObserver(ctx context.Context, observer func(context.Context, <-chan struct{})) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, wasmCallbackTimerBeginObserverKey{}, observer)
 }
 
 // wasmReadRequest is the deliberately small internal E5 envelope. The
@@ -120,43 +351,101 @@ type wasmReadGrants struct {
 }
 
 func newWASMRuntime(wasm []byte, host pluginapi.Host) (*wasmRuntime, error) {
-	ctx := context.Background()
-	runtime := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfigInterpreter().WithCloseOnContextDone(true).WithMemoryLimitPages(maxWASMPages))
+	factory := &wasmFactory{wasm: append([]byte(nil), wasm...), modules: map[api.Module]*wasmRuntime{}}
+	return factory.newRuntime(context.Background(), host)
+}
+
+func (f *wasmFactory) ensureLocked(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if f.runtime != nil && f.compiled != nil {
+		return nil
+	}
+	// The factory owns this shared runtime. Its owner context is stable while
+	// the caller context still bounds setup, linking and compilation below.
+	runtime := wazero.NewRuntimeWithConfig(context.Background(), wazero.NewRuntimeConfigInterpreter().WithCloseOnContextDone(true).WithMemoryLimitPages(maxWASMPages))
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, runtime); err != nil {
-		_ = runtime.Close(ctx)
-		return nil, failure(ErrManifest, "WASI runtime setup failed: %v", err)
+		_ = runtime.Close(context.Background())
+		return failure(ErrManifest, "WASI runtime setup failed: %v", err)
 	}
-	// The import is the one E5 bridge. It is linked for every module, but it
-	// only sees a scoped reader while a host-driven callback is executing. Calls
-	// during initialization, extension methods or any other unscoped execution
-	// trap explicitly rather than becoming an ambient capability.
-	result := &wasmRuntime{runtime: runtime, host: host}
+	// The import is linked once for the factory. It resolves the concrete
+	// module back to its wasmRuntime, preserving per-guest readers and buffers.
 	if _, err := runtime.NewHostModuleBuilder(wasmModuleName).
-		NewFunctionBuilder().WithFunc(result.hostCall).
+		NewFunctionBuilder().WithFunc(f.hostCall).
 		Export(wasmImportName).Instantiate(ctx); err != nil {
-		_ = runtime.Close(ctx)
-		return nil, failure(ErrManifest, "WASM host import setup failed: %v", err)
+		_ = runtime.Close(context.Background())
+		return failure(ErrManifest, "WASM host import setup failed: %v", err)
 	}
-	compiled, err := runtime.CompileModule(ctx, wasm)
+	compiled, err := runtime.CompileModule(ctx, f.wasm)
 	if err != nil {
-		_ = runtime.Close(ctx)
-		return nil, failure(ErrManifest, "WASM compile failed: %v", err)
+		_ = runtime.Close(context.Background())
+		return failure(ErrManifest, "WASM compile failed: %v", err)
 	}
 	if err := validateCompiledWASM(compiled); err != nil {
-		_ = runtime.Close(ctx)
+		_ = compiled.Close(context.Background())
+		_ = runtime.Close(context.Background())
+		return err
+	}
+	f.runtime, f.compiled = runtime, compiled
+	return nil
+}
+
+func closeWASMResources(compiled wazero.CompiledModule, runtime wazero.Runtime) {
+	if compiled != nil {
+		_ = compiled.Close(context.Background())
+	}
+	if runtime != nil {
+		_ = runtime.Close(context.Background())
+	}
+}
+
+func (f *wasmFactory) detachResourcesLocked() (wazero.CompiledModule, wazero.Runtime) {
+	if f.constructing != 0 || len(f.modules) != 0 {
+		return nil, nil
+	}
+	compiled, runtime := f.compiled, f.runtime
+	f.compiled, f.runtime = nil, nil
+	return compiled, runtime
+}
+
+func (f *wasmFactory) endConstruction() {
+	f.mu.Lock()
+	f.constructing--
+	compiled, runtime := f.detachResourcesLocked()
+	f.mu.Unlock()
+	closeWASMResources(compiled, runtime)
+}
+
+func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*wasmRuntime, error) {
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// A core start section can run during instantiation even when the named
-	// start functions are disabled. Bound that work and _initialize as well as
-	// the later host-driven calls, which have the existing host deadlines.
-	ctx, cancel := context.WithTimeout(ctx, wasmInitTimeout)
-	defer cancel()
-	module, err := runtime.InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithStartFunctions())
-	if err != nil {
-		_ = runtime.Close(ctx)
-		return nil, failure(ErrManifest, "WASM instantiate failed: %v", err)
+	f.mu.Lock()
+	f.constructing++
+	if err := f.ensureLocked(ctx); err != nil {
+		f.constructing--
+		f.mu.Unlock()
+		return nil, err
 	}
-	result.module = module
+	runtime, compiled := f.runtime, f.compiled
+	f.mu.Unlock()
+	defer f.endConstruction()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	initCtx, cancel := context.WithTimeout(ctx, wasmInitTimeout)
+	defer cancel()
+	timer := &wasmTimer{}
+	initObserver, _ := initCtx.Value(wasmInitializerTimerWaitObserverKey{}).(func(context.Context))
+	initWait := timer.begin(initCtx, initObserver)
+	defer timer.end(initWait)
+	moduleConfig := wazero.NewModuleConfig().WithStartFunctions().WithSysNanotime().WithNanosleep(timer.nanosleep)
+	module, err := runtime.InstantiateModule(initCtx, compiled, moduleConfig)
+	if err != nil {
+		return nil, wasmInitializationError(ctx, initCtx, "WASM instantiate failed", err)
+	}
+	result := &wasmRuntime{factory: f, runtime: runtime, module: module, host: host, timer: timer}
 	result.alloc = module.ExportedFunction("plug_alloc")
 	result.handle = module.ExportedFunction("plug_handle")
 	result.memory = module.Memory()
@@ -164,33 +453,140 @@ func newWASMRuntime(wasm []byte, host pluginapi.Host) (*wasmRuntime, error) {
 		result.close()
 		return nil, failure(ErrManifest, "WASM module does not expose the required ABI")
 	}
+	f.mu.Lock()
+	f.modules[module] = result
+	f.mu.Unlock()
 	// c-shared wasip1 modules expose `_initialize` instead of an exiting
 	// `_start`. Calling it once initializes the Go scheduler before any ABI
 	// calls, while the module remains resident for the host lifetime.
 	if initialize := module.ExportedFunction("_initialize"); initialize != nil {
-		if _, err := initialize.Call(ctx); err != nil {
+		initCtx = context.WithValue(initCtx, wasmInitializerCallKey{}, struct{}{})
+		initDone := make(chan error, 1)
+		go func() {
+			_, err := initialize.Call(initCtx)
+			initDone <- err
+		}()
+		select {
+		case err := <-initDone:
+			if err != nil {
+				result.close()
+				return nil, wasmInitializationError(ctx, initCtx, "WASM runtime initialization failed", err)
+			}
+			if err := wasmInitializationError(ctx, initCtx, "WASM runtime initialization failed", nil); err != nil {
+				result.close()
+				return nil, err
+			}
+		case <-initCtx.Done():
+			// The timer bridge unwinds active WASI host waits, while wazero's
+			// WithCloseOnContextDone terminates guest execution. Join before
+			// resource closure so cleanup cannot replace a genuine guest trap
+			// with a zero-exit termination result.
+			timer.cancel()
+			err := <-initDone
 			result.close()
-			return nil, failure(ErrManifest, "WASM runtime initialization failed: %v", err)
+			return nil, wasmInitializationError(ctx, initCtx, "WASM runtime initialization failed", err)
 		}
 	}
 	return result, nil
 }
 
+// wasmInitializationError keeps cancellation-shaped termination separate from
+// genuine guest failures. A caller or owner cancellation is returned as the
+// original context error; the private one-second initializer timeout remains a
+// manifest error so queue pressure cannot disguise a real guest failure.
+func wasmInitializationError(ctx, initCtx context.Context, label string, err error) error {
+	if observer, _ := ctx.Value(wasmInitializationErrorObserverKey{}).(func(context.Context, error)); observer != nil {
+		observer(ctx, err)
+	}
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return failure(ErrManifest, "%s: %v", label, err)
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if initErr := initCtx.Err(); initErr != nil {
+		return failure(ErrManifest, "%s: %v", label, initErr)
+	}
+	if err != nil {
+		return failure(ErrManifest, "%s: %v", label, err)
+	}
+	return nil
+}
+
+// acquireReaderWorker reserves one factory-wide slot for a reader call. A
+// canceled callback can return while its reader is still blocked, so the slot
+// remains held until the worker's defer runs. This bounds retention across
+// retired guest instances instead of treating maxRuntimeInstances as a worker
+// limit. When all slots are retained, refuse immediately as typed queue
+// pressure; waiting for the callback deadline would turn a retryable busy
+// condition into a caller cancellation and can deadlock guest retirement.
+func (f *wasmFactory) acquireReaderWorker(ctx context.Context) (func(), error) {
+	f.mu.Lock()
+	if f.readerSlots == nil {
+		f.readerSlots = make(chan struct{}, maxWASMReaderWorkers)
+	}
+	slots := f.readerSlots
+	f.mu.Unlock()
+	select {
+	case slots <- struct{}{}:
+		f.mu.Lock()
+		f.readerWorkers++
+		f.mu.Unlock()
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				<-slots
+				f.mu.Lock()
+				f.readerWorkers--
+				f.mu.Unlock()
+			})
+		}, nil
+	default:
+		return nil, poolBusy(ctx)
+	}
+}
+
+func (f *wasmFactory) hostCall(ctx context.Context, module api.Module, ptr, length uint32) uint64 {
+	f.mu.Lock()
+	runtime := f.modules[module]
+	f.mu.Unlock()
+	if runtime == nil {
+		panic("WASM guest is not initialized")
+	}
+	return runtime.hostCall(ctx, module, ptr, length)
+}
+
 func (r *wasmRuntime) close() {
+	if r.timer != nil {
+		r.timer.cancel()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.closeLocked()
 }
 
 func (r *wasmRuntime) closeLocked() {
+	if r.timer != nil {
+		r.timer.cancel()
+	}
 	if r.closed {
 		return
 	}
 	r.closed = true
 	if r.module != nil {
-		_ = r.module.Close(context.Background())
+		module := r.module
+		r.module = nil
+		var compiled wazero.CompiledModule
+		var runtime wazero.Runtime
+		if r.factory != nil {
+			r.factory.mu.Lock()
+			delete(r.factory.modules, module)
+			compiled, runtime = r.factory.detachResourcesLocked()
+			r.factory.mu.Unlock()
+		}
+		_ = module.Close(context.Background())
+		closeWASMResources(compiled, runtime)
 	}
-	_ = r.runtime.Close(context.Background())
 }
 
 type wasmRequest struct {
@@ -208,6 +604,12 @@ type wasmResponse struct {
 	Error   string             `json:"error,omitempty"`
 }
 
+type wasmReadOutcome struct {
+	value      any
+	err        error
+	panicValue any
+}
+
 // hostCall is the env.plug.call implementation. Invalid guest memory or
 // malformed envelopes are traps: the surrounding invoke call disposes of the
 // module, preserving the E5 fail-closed rule. Typed reader refusals are
@@ -216,6 +618,18 @@ type wasmResponse struct {
 func (r *wasmRuntime) hostCall(ctx context.Context, module api.Module, ptr, length uint32) uint64 {
 	if err := ctx.Err(); err != nil {
 		panic(err)
+	}
+	// The source acceptance fixture uses a zero-length import from _initialize
+	// as a deterministic entry barrier. It carries no reader or guest-memory
+	// capability and is accepted only on the private initialization context.
+	if _, initializing := ctx.Value(wasmInitializerCallKey{}).(struct{}); initializing && ptr == 0 && length == 0 {
+		if observer, ok := ctx.Value(wasmInitializerContextObserverKey{}).(func(context.Context)); ok {
+			observer(ctx)
+		}
+		if observer, ok := ctx.Value(wasmInitializerObserverKey{}).(func()); ok {
+			observer()
+		}
+		return 0
 	}
 	if length > maxWASMMessage {
 		panic(failure(ErrMethod, "WASM host request exceeds the message limit"))
@@ -233,7 +647,37 @@ func (r *wasmRuntime) hostCall(ctx context.Context, module api.Module, ptr, leng
 	if request.reader == nil {
 		panic("WASM outbound host calls are unsupported outside snapshot callbacks")
 	}
-	result, err := r.read(ctx, request.reader, data)
+	releaseReader, admissionErr := r.factory.acquireReaderWorker(ctx)
+	if admissionErr != nil {
+		panic(admissionErr)
+	}
+	readResult := make(chan wasmReadOutcome, 1)
+	go func() {
+		defer releaseReader()
+		outcome := wasmReadOutcome{}
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				outcome.panicValue = recovered
+			}
+			readResult <- outcome
+		}()
+		outcome.value, outcome.err = r.read(ctx, request.reader, data)
+	}()
+	var result any
+	var err error
+	select {
+	case <-ctx.Done():
+		// A reader is allowed to be slow or to ignore its context. Return from
+		// the guest import immediately so wazero can unwind the canceled guest;
+		// the bounded outcome channel keeps a late reader from touching guest
+		// memory after the module is retired.
+		panic(ctx.Err())
+	case outcome := <-readResult:
+		if outcome.panicValue != nil {
+			panic(outcome.panicValue)
+		}
+		result, err = outcome.value, outcome.err
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			panic(ctx.Err())
@@ -406,6 +850,19 @@ func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest, readers .
 		r.closeLocked()
 		return wasmResponse{}, err
 	}
+	var timerWait *wasmTimerWait
+	if r.timer != nil {
+		var observer func(context.Context)
+		switch request.Op {
+		case "mutate", "validate", "post":
+			observer, _ = ctx.Value(wasmCallbackTimerWaitObserverKey{}).(func(context.Context))
+			if beginObserver, _ := ctx.Value(wasmCallbackTimerBeginObserverKey{}).(func(context.Context, <-chan struct{})); beginObserver != nil {
+				beginObserver(ctx, r.timer.retirementSignal())
+			}
+		}
+		timerWait = r.timer.begin(ctx, observer)
+		defer r.timer.end(timerWait)
+	}
 	data, err := json.Marshal(request)
 	if err != nil || len(data) > maxWASMMessage {
 		r.closeLocked()
@@ -426,6 +883,30 @@ func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest, readers .
 	}
 	packed, err := r.handle.Call(ctx, uint64(input), uint64(len(data)))
 	if err != nil {
+		var busy *Error
+		if errors.As(err, &busy) && busy.CallbackBusy() {
+			// wazero wraps a host panic with the original error. Preserve the
+			// typed reader-admission refusal so the callback pipeline can map it
+			// to retryable busy instead of subscriber_unavailable.
+			r.closeLocked()
+			return wasmResponse{}, busy
+		}
+		if errors.Is(err, context.Canceled) {
+			// A guest can select a context-shaped exit code. Require caller
+			// cancellation or owner retirement before cleanup retires the timer.
+			cancellationErr := ctx.Err()
+			if cancellationErr == nil && r.timer != nil {
+				r.timer.mu.Lock()
+				if r.timer.retired {
+					cancellationErr = context.Canceled
+				}
+				r.timer.mu.Unlock()
+			}
+			if cancellationErr != nil {
+				r.closeLocked()
+				return wasmResponse{}, cancellationErr
+			}
+		}
 		r.closeLocked()
 	}
 	if err != nil || len(packed) != 1 {

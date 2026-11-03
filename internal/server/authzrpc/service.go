@@ -2,7 +2,12 @@ package authzrpc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -10,6 +15,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 // GuardedService keeps the domain service intact while adding the read-side
@@ -37,6 +43,9 @@ const listPostfilterCap = 20000
 const claimNextConflictRestartBudget = 1
 
 func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req service.GetRequest) (service.GetResult, error) {
+	if workflowItemRef(req.ID) {
+		return s.getWorkflow(ctx, by, req)
+	}
 	allowed, err := s.checkRead(ctx, by, "bead.get", req.ID)
 	if err != nil {
 		return service.GetResult{}, err
@@ -177,6 +186,7 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 		return service.BeadPage{}, err
 	}
 	items := append([]service.Bead(nil), page.Items...)
+	workflowSnapshot := page.WorkflowSnapshot
 	for page.Next != nil {
 		if len(items) >= listPostfilterCap {
 			return service.BeadPage{}, postfilterCap()
@@ -187,6 +197,10 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 		if err != nil {
 			return service.BeadPage{}, err
 		}
+		if workflowSnapshot != nil && !workflowSnapshot.Equal(page.WorkflowSnapshot) {
+			return service.BeadPage{}, &model.Error{Message: "workflow ready membership changed while collecting candidates", Data: model.ErrorData{Code: "cursor_invalid"}}
+		}
+		workflowSnapshot = page.WorkflowSnapshot
 		items = append(items, page.Items...)
 	}
 	if len(items) > listPostfilterCap {
@@ -194,7 +208,8 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 	}
 	page.Items = items
 	page.Next = nil
-	return s.filterPage(ctx, by, "bead.ready", req.Limit, req.Position, page, false)
+	page.WorkflowSnapshot = workflowSnapshot
+	return s.filterPage(ctx, by, "bead.ready", req.Project, req.Limit, req.Position, page, false)
 }
 
 func (s *GuardedService) History(ctx context.Context, by model.PrincipalRef, req service.HistoryRequest) (service.BeadPage, error) {
@@ -227,7 +242,7 @@ func (s *GuardedService) History(ctx context.Context, by model.PrincipalRef, req
 	}
 	page.Items = items
 	page.Next = nil
-	return s.filterPage(ctx, by, "history.query", req.Limit, req.Position, page, true)
+	return s.filterPage(ctx, by, "history.query", req.Project, req.Limit, req.Position, page, true)
 }
 
 func (s *GuardedService) CreateWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CreateRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
@@ -246,7 +261,39 @@ func (s *GuardedService) UnlinkWithOutcome(ctx context.Context, by model.Princip
 	return s.delegate.UnlinkWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowItemRef(req.ID) {
+		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
+			return s.delegate.ClaimWithOutcome(ctx, by, req, meta)
+		})
+	}
 	return s.delegate.ClaimWithOutcome(ctx, by, req, meta)
+}
+
+func (s *GuardedService) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req workflowplugin.InvokeRequest, meta model.WriteMeta) (workflowplugin.InvokeResult, error) {
+	workflow, ok := s.delegate.(rpc.WorkflowService)
+	if !ok {
+		return workflowplugin.InvokeResult{}, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
+	}
+	if req.Mode != "ephemeral" {
+		// Permanent invocations use the ordinary Writer's transactional policy.
+		return workflow.WorkflowInvoke(ctx, by, req, meta)
+	}
+	binding, err := s.workflowModifyAuthority(ctx, by, req.Project)
+	if err != nil {
+		return workflowplugin.InvokeResult{}, err
+	}
+	out, err := workflow.WorkflowInvoke(ctx, by, req, meta)
+	if err != nil {
+		return workflowplugin.InvokeResult{}, err
+	}
+	if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
+		return workflowplugin.InvokeResult{}, err
+	}
+	return out, nil
+}
+
+func workflowItemRef(ref model.Ref) bool {
+	return ref.IsID() && strings.HasPrefix(ref.ID, workflowplugin.ItemPrefix)
 }
 
 // ClaimNextWithOutcome keeps queue candidates visible to an Agent by applying
@@ -262,6 +309,7 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	}
 	meta.ClaimNextIdentity = identity
 	meta.Method = "bead.claimNext"
+	meta.Project = req.Project
 	selectionSeed := service.ClaimNextSelectionSeed(identity, meta.IdempotencyKey)
 	if by.Kind != "anonymous" {
 		meta.AgentLabel = ""
@@ -291,6 +339,22 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			return s.delegate.ClaimNextWithOutcome(ctx, by, req, meta)
 		}
 	}
+	if workflow, ok := s.delegate.(rpc.WorkflowClaimNextService); ok {
+		out, replayed, replayErr := workflow.ReplayWorkflowClaimNext(ctx, by, req, meta)
+		if replayErr != nil {
+			return nil, replayErr
+		}
+		if replayed {
+			binding, err := s.workflowModifyAuthority(ctx, by, req.Project)
+			if err != nil {
+				return nil, err
+			}
+			if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
+				return nil, err
+			}
+			return out, nil
+		}
+	}
 	position := (*service.PagePosition)(nil)
 	fresh := false
 	exhausted := map[string]error{}
@@ -304,6 +368,18 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 		}
 		for _, bead := range page.Items {
 			ref := model.RefByID(bead.ID, model.Natural64(0))
+			if workflowItemRef(ref) {
+				candidateMeta := meta
+				candidateMeta.Method = "bead.claimNext"
+				out, claimErr := s.ClaimWithOutcome(ctx, by, service.ClaimRequest{ID: ref}, candidateMeta)
+				if claimErr == nil {
+					return &out, nil
+				}
+				if !claimNextRace(claimErr) {
+					return nil, claimErr
+				}
+				continue
+			}
 			_, snapshot, closeReader, err := s.current(ctx, &service.AsOf{Revision: page.AsOf.Revision, Incarnation: page.AsOf.Incarnation})
 			if err != nil {
 				return nil, err
@@ -346,6 +422,12 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 			if s.commitEmpty == nil {
 				return nil, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 			}
+			// The provider may select a workflow item after the final live page.
+			// Apply the same current project permit before entering that seam.
+			binding, err := s.workflowModifyAuthority(ctx, by, req.Project)
+			if err != nil {
+				return nil, err
+			}
 			out, err := s.commitEmpty(ctx, by, req, meta, s.claimNextReadyProbe(by, req))
 			if err != nil {
 				if errors.Is(err, port.ErrClaimNextReady) {
@@ -362,7 +444,16 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 				}
 				return nil, err
 			}
-			out.NullResult = true
+			if out.Commit.Revision.IsZero() {
+				// Provider results do not advance the core head. Core null
+				// commits use the Writer's own transactional policy guard.
+				if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
+					return nil, err
+				}
+			}
+			if len(out.Commit.Results) == 0 {
+				out.NullResult = true
+			}
 			return &out, nil
 		}
 		position = page.Next
@@ -433,9 +524,19 @@ func claimNextCandidateConflict(err error) bool {
 	return value.Message == "snapshot changed during all four write attempts" || value.Data.Hint == "snapshot changed during all four write attempts"
 }
 func (s *GuardedService) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CommentRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowItemRef(req.ID) {
+		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
+			return s.delegate.CommentWithOutcome(ctx, by, req, meta)
+		})
+	}
 	return s.delegate.CommentWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	if workflowItemRef(req.ID) {
+		return s.workflowWrite(ctx, by, meta.Project, func() (port.WriteOutcome, error) {
+			return s.delegate.CloseWithOutcome(ctx, by, req, meta)
+		})
+	}
 	return s.delegate.CloseWithOutcome(ctx, by, req, meta)
 }
 func (s *GuardedService) ReopenWithOutcome(ctx context.Context, by model.PrincipalRef, req service.ReopenRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
@@ -492,7 +593,10 @@ func (s *GuardedService) current(ctx context.Context, asOf *service.AsOf) (drive
 	return reader, reader, func() { _ = reader.Close() }, nil
 }
 
-func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, method string, limit int, position *service.PagePosition, page service.BeadPage, pinned bool) (service.BeadPage, error) {
+func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, method, project string, limit int, position *service.PagePosition, page service.BeadPage, pinned bool) (service.BeadPage, error) {
+	if method == "bead.ready" && (!page.WorkflowSnapshot.Valid() || (position != nil && (position.Workflow || !position.WorkflowSnapshot.Equal(page.WorkflowSnapshot)))) {
+		return service.BeadPage{}, &model.Error{Message: "workflow ready snapshot changed since cursor issuance; restart paging", Data: model.ErrorData{Code: "cursor_invalid"}}
+	}
 	// Historical and current content both use current authority. Only content
 	// membership and parent relationships remain pinned to the returned page.
 	_, snapshot, closeReader, err := s.current(ctx, nil)
@@ -524,7 +628,24 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 		return service.BeadPage{}, authzError(err)
 	}
 	filtered := make([]service.Bead, 0, len(page.Items))
+	workflowChecked, workflowAllowed := false, false
 	for _, bead := range page.Items {
+		if bead.Kind == "workflow.item" {
+			if method != "bead.ready" || bead.Project != project {
+				continue
+			}
+			if !workflowChecked {
+				workflowAllowed, err = s.checker.workflowRead(ctx, caller, authorization, method, project)
+				if err != nil {
+					return service.BeadPage{}, err
+				}
+				workflowChecked = true
+			}
+			if workflowAllowed {
+				filtered = append(filtered, bead)
+			}
+			continue
+		}
 		ok, err := template.Match(ctx, facts, authz.Resource{Kind: authz.Bead, Ref: model.RefByID(bead.ID, model.Natural64(0))})
 		if err != nil {
 			return service.BeadPage{}, authzError(err)
@@ -532,6 +653,13 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 		if ok {
 			filtered = append(filtered, bead)
 		}
+	}
+	membership := ""
+	if method == "bead.ready" {
+		membership = readyMembershipDigest(filtered)
+	}
+	if method == "bead.ready" && position != nil && position.ReadyMembership != membership {
+		return service.BeadPage{}, &model.Error{Message: "ready membership changed since cursor issuance; restart paging", Data: model.ErrorData{Code: "cursor_invalid"}}
 	}
 	if limit == 0 {
 		limit = 100
@@ -554,18 +682,27 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 		end = len(filtered)
 	}
 	out := service.BeadPage{Items: append([]service.Bead(nil), filtered[offset:end]...), AsOf: page.AsOf}
+	if method == "bead.ready" {
+		out.WorkflowSnapshot = page.WorkflowSnapshot
+		out.ReadyMembership = membership
+	}
 	content, _, closeContent, err := s.current(ctx, &page.AsOf)
 	if err != nil {
 		return service.BeadPage{}, err
 	}
 	defer closeContent()
-	refs := make([]model.Ref, len(out.Items))
-	for i, bead := range out.Items {
-		refs[i] = model.RefByID(bead.ID, model.Natural64(0))
+	refs := make([]model.Ref, 0, len(out.Items))
+	for _, bead := range out.Items {
+		if bead.Kind != "workflow.item" {
+			refs = append(refs, model.RefByID(bead.ID, model.Natural64(0)))
+		}
 	}
-	parents, err := s.checker.parentProjections(ctx, caller, authorization, content, refs)
-	if err != nil {
-		return service.BeadPage{}, err
+	parents := map[string]ParentDisclosure{}
+	if len(refs) != 0 {
+		parents, err = s.checker.parentProjections(ctx, caller, authorization, content, refs)
+		if err != nil {
+			return service.BeadPage{}, err
+		}
 	}
 	for i := range out.Items {
 		projectBeadParent(&out.Items[i], parents[out.Items[i].ID])
@@ -576,6 +713,10 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 			AuthorizationRevision: authorization.authorizationRevision,
 			AuthorizationBound:    authorization.authorizationBound,
 		}
+		if method == "bead.ready" {
+			out.Next.WorkflowSnapshot = page.WorkflowSnapshot
+			out.Next.ReadyMembership = membership
+		}
 	}
 	binding, err := s.checker.readAuthorityBinding(ctx, caller, authorization, snapshot)
 	if err != nil {
@@ -585,6 +726,42 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 		return service.BeadPage{}, err
 	}
 	return out, nil
+}
+
+// readyMembershipDigest is the signed binding for a guarded aggregate page.
+// It covers the complete authorized order, so a core row leaving Ready or
+// changing priority cannot make a later workflow offset skip an item.
+func readyMembershipDigest(items []service.Bead) string {
+	h := sha256.New()
+	for _, item := range items {
+		encoded, err := json.Marshal(struct {
+			ID            string         `json:"id"`
+			Type          string         `json:"type"`
+			Project       string         `json:"project"`
+			Status        string         `json:"status"`
+			Revision      model.Revision `json:"revision"`
+			Fields        map[string]any `json:"fields,omitempty"`
+			Plane         string         `json:"plane,omitempty"`
+			Kind          string         `json:"kind,omitempty"`
+			Plugin        string         `json:"plugin,omitempty"`
+			WorkflowRunID string         `json:"workflowRunId,omitempty"`
+		}{item.ID, item.Type, item.Project, item.Status, item.Revision, item.Fields, item.Plane, item.Kind, item.Plugin, item.WorkflowRunID})
+		if err != nil {
+			encoded = []byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s", item.ID, item.Type, item.Project, item.Status, item.Revision.String()))
+		}
+		var size [8]byte
+		size[0] = byte(len(encoded) >> 56)
+		size[1] = byte(len(encoded) >> 48)
+		size[2] = byte(len(encoded) >> 40)
+		size[3] = byte(len(encoded) >> 32)
+		size[4] = byte(len(encoded) >> 24)
+		size[5] = byte(len(encoded) >> 16)
+		size[6] = byte(len(encoded) >> 8)
+		size[7] = byte(len(encoded))
+		_, _ = h.Write(size[:])
+		_, _ = h.Write(encoded)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func postfilterCap() error {

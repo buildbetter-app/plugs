@@ -98,6 +98,8 @@ engdocs/plug-runtime/rpc-http.md
 engdocs/plug-runtime/server.md
 engdocs/plug-runtime/storage.md
 engdocs/plug-runtime/transports.md
+engdocs/plug-runtime/workflow-contract.md
+engdocs/plug-runtime/workflow-durable-storage.md
 engdocs/style/BUILD.bazel
 engdocs/style/lexicon.toml
 examples/plugins/native-guard/BUILD.bazel
@@ -306,6 +308,7 @@ internal/core/service/audit_test.go
 internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
 internal/core/service/claim_recovery_test.go
+internal/core/service/compact.go
 internal/core/service/direct_blockers.go
 internal/core/service/direct_blockers_test.go
 internal/core/service/gate.go
@@ -325,6 +328,9 @@ internal/core/service/rpc_reads.go
 internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
+internal/core/service/waits_for_consumer_test.go
+internal/core/service/workflow_permanent_test.go
+internal/core/service/workflow_refs.go
 internal/core/viewops/BUILD.bazel
 internal/core/viewops/epic_progress.go
 internal/core/viewops/label_predicate.go
@@ -410,6 +416,15 @@ internal/integration/epicprogress/fixture_test.go
 internal/integration/epicprogress/restore_test.go
 internal/integration/eventsqlpaging/BUILD.bazel
 internal/integration/eventsqlpaging/integration_test.go
+internal/integration/gatecontract/BUILD.bazel
+internal/integration/gatecontract/README.md
+internal/integration/gatecontract/authorization_test.go
+internal/integration/gatecontract/consumer_host_test.go
+internal/integration/gatecontract/consumer_test.go
+internal/integration/gatecontract/engine_test.go
+internal/integration/gatecontract/fanout_test.go
+internal/integration/gatecontract/fixture_test.go
+internal/integration/gatecontract/metadata_test.go
 internal/integration/graphacceptance/BUILD.bazel
 internal/integration/graphacceptance/README.md
 internal/integration/graphacceptance/fixture_test.go
@@ -592,6 +607,14 @@ internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/predicate_count_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
+internal/server/authzrpc/workflow_boundary_test.go
+internal/server/authzrpc/workflow_claimnext.go
+internal/server/authzrpc/workflow_claimnext_auth_test.go
+internal/server/authzrpc/workflow_claimnext_test.go
+internal/server/authzrpc/workflow_cursor_test.go
+internal/server/authzrpc/workflow_reads.go
+internal/server/authzrpc/workflow_reads_test.go
+internal/server/authzrpc/workflow_writes_test.go
 internal/server/claimrpc/BUILD.bazel
 internal/server/claimrpc/service.go
 internal/server/claimrpc/service_test.go
@@ -619,6 +642,7 @@ internal/server/composition/restore_import_test.go
 internal/server/composition/telemetry.go
 internal/server/composition/telemetry_test.go
 internal/server/composition/testdata/server-representative-plug-dump-1.tar
+internal/server/composition/workflow_runtime_test.go
 internal/server/events/BUILD.bazel
 internal/server/events/audit.go
 internal/server/events/audit_delivery_test.go
@@ -667,6 +691,8 @@ internal/server/pluginhost/README.md
 internal/server/pluginhost/adapters.go
 internal/server/pluginhost/call.go
 internal/server/pluginhost/core_reader.go
+internal/server/pluginhost/durable.go
+internal/server/pluginhost/durable_contract_test.go
 internal/server/pluginhost/egress.go
 internal/server/pluginhost/egress_test.go
 internal/server/pluginhost/errors.go
@@ -675,6 +701,7 @@ internal/server/pluginhost/host_test.go
 internal/server/pluginhost/json.go
 internal/server/pluginhost/load.go
 internal/server/pluginhost/pipeline_test.go
+internal/server/pluginhost/pool_security_test.go
 internal/server/pluginhost/reader.go
 internal/server/pluginhost/state.go
 internal/server/pluginhost/wasm.go
@@ -698,6 +725,7 @@ internal/server/rpc/BUILD.bazel
 internal/server/rpc/admin.go
 internal/server/rpc/cmd/openrpcgen/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/main.go
+internal/server/rpc/compact.go
 internal/server/rpc/cursor.go
 internal/server/rpc/cursor_test.go
 internal/server/rpc/gate_integration_test.go
@@ -708,6 +736,7 @@ internal/server/rpc/registry.go
 internal/server/rpc/rpc_test.go
 internal/server/rpc/server.go
 internal/server/rpc/service.go
+internal/server/rpc/workflow_integration_test.go
 internal/server/transport/httpjson/BUILD.bazel
 internal/server/transport/httpjson/README.md
 internal/server/transport/httpjson/admission_test.go
@@ -862,6 +891,7 @@ internal/storage/postgres/encoding.go
 internal/storage/postgres/engine_test.go
 internal/storage/postgres/fencing_test.go
 internal/storage/postgres/lease.go
+internal/storage/postgres/lease_prepare_test.go
 internal/storage/postgres/lock_batch_test.go
 internal/storage/postgres/metadata.go
 internal/storage/postgres/offline_history.go
@@ -893,6 +923,7 @@ internal/storage/sqlite/offline_restore.go
 internal/storage/sqlite/pending_test.go
 internal/storage/sqlite/process_test.go
 internal/storage/sqlite/publication_cancel_test.go
+internal/storage/sqlite/query_cursor_test.go
 internal/storage/sqlite/reader.go
 internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/schema.go
@@ -911,6 +942,11 @@ pluginapi/op.go
 pluginapi/types.go
 pluginapi/types_test.go
 plugins/plug/SKILL.md
+plugins/workflow/BUILD.bazel
+plugins/workflow/manifest.json
+plugins/workflow/native.go
+plugins/workflow/workflow.go
+plugins/workflow/workflow_test.go
 scripts/ci/BUILD.bazel
 scripts/ci/plug-bazel-config-test.sh
 scripts/ci/plug-bazel-delivery-test.sh
@@ -923,6 +959,7 @@ scripts/ci/prepare-public-reference-test.py
 scripts/ci/prepare-public-reference.py
 scripts/ci/public-bundle-test.py
 scripts/ci/public-bundle.py
+scripts/ci/reconcile-openrpc-test.py
 scripts/ci/reconcile-openrpc.py
 scripts/demo.sh
 sdk/go/BUILD.bazel
@@ -1013,6 +1050,16 @@ spec/s1-b05-b08/reclaim_race_test.go
 spec/s1-b05-b08/record_reference.py
 spec/s1-b05-b08/reference/provenance.json
 spec/s1-b05-b08/runtime_test.go
+spec/s1-b09-b12/compaction/BUILD.bazel
+spec/s1-b09-b12/compaction/audit_test.go
+spec/s1-b09-b12/compaction/b12_test.go
+spec/s1-b09-b12/compaction/composition_test.go
+spec/s1-b09-b12/compaction/continuation_test.go
+spec/s1-b09-b12/compaction/fixture_test.go
+spec/s1-b09-b12/compaction/guards_test.go
+spec/s1-b09-b12/compaction/presence_test.go
+spec/s1-b09-b12/compaction/publication_test.go
+spec/s1-b09-b12/compaction/selection_test.go
 spec/s1-b13-b16/BUILD.bazel
 spec/s1-b13-b16/README.md
 spec/s1-b13-b16/capture_regressions_test.go
@@ -1086,6 +1133,13 @@ spikes/authz/evidence-v6/postgres-result.json
 spikes/authz/evidence-v6/provenance-manifest.json
 spikes/authz/evidence-v6/readout.md
 spikes/authz/evidence-v6/sqlite-result.json
+spikes/authz/latency/BUILD.bazel
+spikes/authz/latency/closure.go
+spikes/authz/latency/latency_test.go
+spikes/authz/latency/measurement_test.go
+spikes/authz/latency/query.go
+spikes/authz/latency/query_test.go
+spikes/authz/latency/schema.go
 spikes/runtime/BUILD.bazel
 spikes/runtime/README.md
 spikes/runtime/abi.go

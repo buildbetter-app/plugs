@@ -3,10 +3,12 @@ package wire
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp/syntax"
 	"strings"
 	"testing"
 
@@ -18,20 +20,20 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(c.Descriptors()); got != 81 {
+	if got := len(c.Descriptors()); got != 82 {
 		t.Fatalf("method inventory = %d", got)
 	}
 	if got := len(c.ErrorCatalog()); got != 61 {
 		t.Fatalf("error inventory = %d", got)
 	}
-	if digest(catalogJSON) != "32c051e8bc4fe516aaeb15e7b373fe4015a88f1d13aa3d7792bdfba93feea828" {
+	if digest(catalogJSON) != "5cb4c3e66aa5368693d6155ffccf3a0f7839c59404d2787a5d95f5c6ec46e288" {
 		t.Fatal("bounded source snapshot changed; reconcile approved contract")
 	}
 	// These changes affect one of two independent descriptor representations.
 	for _, change := range []struct{ before, after string }{
 		{`"x-agent-core": true`, `"x-agent-core": false`},
-		{`"methodCount": 81`, `"methodCount": 80`},
-		{`"nameSha256": "925afc30`, `"nameSha256": "825afc30`},
+		{`"methodCount": 82`, `"methodCount": 81`},
+		{`"nameSha256": "91496806`, `"nameSha256": "81496806`},
 		{`"stability": "v1"`, `"stability": ""`},
 		{`"#/components/errors/RateLimited"`, `"#/components/errors/NotARealError"`},
 	} {
@@ -60,7 +62,7 @@ func TestBoundedCatalogParity(t *testing.T) {
 	if err = json.Unmarshal(generated, &document); err != nil {
 		t.Fatal(err)
 	}
-	if len(document.Methods) != 81 {
+	if len(document.Methods) != 82 {
 		t.Fatal("generator dropped inventory methods")
 	}
 	for _, method := range document.Methods {
@@ -110,6 +112,156 @@ func TestBoundedCatalogParity(t *testing.T) {
 	}
 }
 
+func TestWorkflowInvocationResultSchemasSeparatePermanentAndEphemeral(t *testing.T) {
+	c, err := DefaultCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	method, ok := c.Descriptor("x.workflow.invoke")
+	if !ok {
+		t.Fatal("workflow invocation descriptor is missing")
+	}
+	permanent := `{"id":"pl-ordinary","runId":"","label":"one","title":"ordinary","type":"task","project":"project","status":"open","plane":"permanent","kind":"bead","plugin":"","revision":1}`
+	ephemeral := `{"id":"workflow:item/one","runId":"workflow:run/one","label":"one","title":"temporary","type":"task","project":"project","status":"open","plane":"ephemeral","kind":"workflow.item","plugin":"workflow","revision":0}`
+	run := `{"id":"workflow:run/one","mode":"ephemeral","state":"active"}`
+	for _, tc := range []struct {
+		name, result string
+		valid        bool
+	}{
+		{"ordinary permanent bead", `{"plane":"permanent","items":[` + permanent + `]}`, true},
+		{"live ephemeral item", `{"plane":"ephemeral","run":` + run + `,"items":[` + ephemeral + `]}`, true},
+		{"terminal identity only", `{"plane":"ephemeral","run":{"id":"workflow:run/one","mode":"ephemeral","state":"completed"},"items":[]}`, true},
+		{"permanent cannot carry ephemeral items", `{"plane":"permanent","items":[` + ephemeral + `]}`, false},
+		{"ephemeral cannot carry ordinary beads", `{"plane":"ephemeral","run":` + run + `,"items":[` + permanent + `]}`, false},
+		{"ephemeral requires a run", `{"plane":"ephemeral","items":[` + ephemeral + `]}`, false},
+		{"permanent has no plugin run", `{"plane":"permanent","run":` + run + `,"items":[` + permanent + `]}`, false},
+		{"ephemeral item ID is typed", `{"plane":"ephemeral","run":` + run + `,"items":[` + strings.Replace(ephemeral, "workflow:item/one", "pl-ordinary", 1) + `]}`, false},
+		{"ephemeral run ID is typed", `{"plane":"ephemeral","run":` + strings.Replace(run, "workflow:run/one", "pl-ordinary", 1) + `,"items":[]}`, false},
+		{"ephemeral plugin is bound", `{"plane":"ephemeral","run":` + run + `,"items":[` + strings.Replace(ephemeral, `"plugin":"workflow"`, `"plugin":"other"`, 1) + `]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := c.ValidateResult(method, []byte(tc.result)); (err == nil) != tc.valid {
+				t.Fatalf("valid=%v result=%s error=%v", tc.valid, tc.result, err)
+			}
+		})
+	}
+}
+
+func TestWorkflowSchemasMatchCanonicalOpenRPC(t *testing.T) {
+	path := filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("TEST_WORKSPACE"), "engdocs/design/plug/contracts/openrpc.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := DecodeJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := DefaultCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemas := canonical.(map[string]any)["components"].(map[string]any)["schemas"].(map[string]any)
+	embedded := c.root["components"].(map[string]any)["schemas"].(map[string]any)
+	for _, name := range []string{"ClaimResult", "WorkflowClaimReceipt", "WorkflowItem", "WorkflowInvokeResult", "WorkflowRun"} {
+		if schemas[name] == nil || !reflect.DeepEqual(schemas[name], embedded[name]) {
+			t.Fatalf("canonical/embedded workflow schema drift: %s", name)
+		}
+	}
+}
+
+func TestStringSchemaPatternsFailClosed(t *testing.T) {
+	c := &Catalog{}
+	for _, tc := range []struct {
+		name, pattern, value, errorText string
+	}{
+		{"typed ID matches", `^workflow:item/.`, "workflow:item/one", ""},
+		{"ordinary ID fails", `^workflow:item/.`, "pl-one", "does not match pattern"},
+		{"empty suffix fails", `^workflow:item/.`, "workflow:item/", "does not match pattern"},
+		{"unanchored JSON Schema search", `item`, "workflow:item/one", ""},
+		{"anchored prefix rejects embedded match", `^workflow:item/.`, "other/workflow:item/one", "does not match pattern"},
+		{"empty pattern matches", ``, "anything", ""},
+		{"invalid pattern fails closed", `[`, "workflow:item/one", "invalid schema pattern"},
+	} {
+		for _, request := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/request=%v", tc.name, request), func(t *testing.T) {
+				schema, err := json.Marshal(map[string]any{"type": "string", "pattern": tc.pattern})
+				if err != nil {
+					t.Fatal(err)
+				}
+				method := MethodDesc{Params: []Param{{Name: "value", Required: true, Schema: schema}}, Result: schema}
+				path := "result"
+				if request {
+					raw, _ := json.Marshal(map[string]any{"value": tc.value})
+					err = c.ValidateParams(method, raw)
+					path = "params.value"
+				} else {
+					raw, _ := json.Marshal(tc.value)
+					err = c.ValidateResult(method, raw)
+				}
+				if tc.errorText == "" {
+					if err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), tc.errorText) {
+					t.Fatalf("pattern validation error=%v, want %q", err, tc.errorText)
+				}
+				var patternError *StringPatternError
+				if !errors.As(err, &patternError) || patternError.Path != path {
+					t.Fatalf("pattern validation error=%v, want typed error at %s", err, path)
+				}
+				var invalidPattern *syntax.Error
+				if errors.As(err, &invalidPattern) != (tc.errorText == "invalid schema pattern") {
+					t.Fatalf("pattern error cause=%v, invalid pattern=%v", patternError.Cause, invalidPattern)
+				}
+			})
+		}
+	}
+}
+
+func TestWorkflowTerminalClaimSchemaPreservesLiveLeaseRequirements(t *testing.T) {
+	c, err := DefaultCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := `{"revision":0,"results":[{"ref":{"id":"workflow:item/one","branch":0},"revision":3}],"warnings":[]}`
+	leased := `{"revision":1,"results":[{"ref":{"id":"pl-one"},"revision":1}],"warnings":[],"leaseExpiresAt":"2026-11-03T01:00:00Z","leaseTtlMs":1800000}`
+	workflowLeased := strings.Replace(strings.Replace(leased, "pl-one", "workflow:item/one", 1), `"revision":1`, `"revision":0`, 1)
+	for _, name := range []string{"bead.claim", "bead.claimNext"} {
+		method, ok := c.Descriptor(name)
+		if !ok {
+			t.Fatal("claim descriptor missing", name)
+		}
+		for _, tc := range []struct {
+			name, result string
+			valid        bool
+		}{
+			{"ordinary leased result", leased, true},
+			{"live workflow leased result", workflowLeased, true},
+			{"terminal workflow identity", terminal, true},
+			{"ordinary claim still requires a lease", strings.Replace(terminal, "workflow:item/one", "pl-one", 1), false},
+			{"bare prefix is not an item", strings.Replace(terminal, "workflow:item/one", "workflow:item/", 1), false},
+			{"terminal branch must be zero", strings.Replace(terminal, `"branch":0`, `"branch":1`, 1), false},
+			{"terminal has no core revision", strings.Replace(terminal, `"revision":0`, `"revision":1`, 1), false},
+			{"lease TTL stays positive", strings.Replace(leased, `"leaseTtlMs":1800000`, `"leaseTtlMs":0`, 1), false},
+			{"lease expiry stays required", strings.Replace(leased, `"leaseExpiresAt":"2026-11-03T01:00:00Z",`, "", 1), false},
+			{"workflow lease TTL stays positive", strings.Replace(workflowLeased, `"leaseTtlMs":1800000`, `"leaseTtlMs":0`, 1), false},
+			{"workflow lease expiry stays required with TTL", strings.Replace(workflowLeased, `"leaseExpiresAt":"2026-11-03T01:00:00Z",`, "", 1), false},
+			{"workflow lease TTL stays required with expiry", strings.Replace(workflowLeased, `,"leaseTtlMs":1800000`, "", 1), false},
+			{"terminal cannot retain record payload", strings.Replace(terminal, `"ref":`, `"record":{"title":"private"},"ref":`, 1), false},
+			{"terminal has exactly one operation", `{"revision":0,"results":[],"warnings":[]}`, false},
+		} {
+			t.Run(name+"/"+tc.name, func(t *testing.T) {
+				if err := c.ValidateResult(method, []byte(tc.result)); (err == nil) != tc.valid {
+					t.Fatalf("valid=%v result=%s error=%v", tc.valid, tc.result, err)
+				}
+			})
+		}
+	}
+}
+
 func TestDirectBlockerContractMatchesCanonicalOpenRPC(t *testing.T) {
 	if os.Getenv("TEST_SRCDIR") == "" || os.Getenv("TEST_WORKSPACE") == "" {
 		t.Skip("canonical OpenRPC comparison runs under Bazel with the contract runfile")
@@ -136,6 +288,10 @@ func TestDirectBlockerContractMatchesCanonicalOpenRPC(t *testing.T) {
 				t.Fatal("ViewExplainResult directBlockers reference drift")
 			}
 			edge := schemas["DirectBlockerEdge"].(map[string]any)
+			kinds := edge["properties"].(map[string]any)["kind"].(map[string]any)["enum"]
+			if !reflect.DeepEqual(kinds, []any{"blocks", "conditional-blocks", "waits-for"}) {
+				t.Fatalf("direct blocker kinds drift: %v", kinds)
+			}
 			if !reflect.DeepEqual(edge["required"], []any{"blocker", "kind", "state"}) || edge["additionalProperties"] != false {
 				t.Fatalf("edge schema is not closed/required: %+v", edge)
 			}

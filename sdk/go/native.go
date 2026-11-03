@@ -28,6 +28,11 @@ type Native struct {
 	Manifest pluginapi.PluginManifest
 	Instance string
 	New      func(pluginapi.Host) (Registration, error)
+	// NewWithContext is an optional internal construction seam.  Hosts use it
+	// when a runtime is being acquired under a bounded caller context; public
+	// native constructors keep using New and therefore retain their existing
+	// source compatibility.
+	NewWithContext func(context.Context, pluginapi.Host) (Registration, error)
 }
 
 type MutateFunc func(context.Context, pluginapi.ProposedChange, pluginapi.SnapshotReader) ([]pluginapi.Patch, error)
