@@ -4,26 +4,51 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/gob"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"reflect"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
 const (
-	SelectionOrdinaryCap = 20000
-	SelectionSummaryCap  = 100000
-	SelectionGroupCap    = 100
-	SelectionMaxDepth    = 32
-	SelectionMaxNodes    = 4096
+	// Version 2 adds explicit optional presence and the kernel boolean template.
+	// Older annotation layouts are unavailable; never reinterpret their bytes.
+	SelectionIndexVersion = 2
+	SelectionOrdinaryCap  = 20000
+	SelectionSummaryCap   = 100000
+	SelectionGroupCap     = 100
+	SelectionMaxDepth     = 32
+	SelectionMaxNodes     = 4096
 )
 
 // SelectionReader is optional and internal. A selector is pinned to current
 // authority at reader creation; historical content has its own revision. Core
 // must still fence fresh authority before publishing. This is not a terminal
 // after-Head freshness primitive or a public query/SQL interface.
+//
+// Acceleration requires version-compatible COMPLETE bead projection coverage
+// at BOTH selected revisions: exactly one source-valid counting row per live
+// bead, including unrelated/hidden sources. Missing, duplicate or stale rows,
+// unbuilt ranges and incompatible layouts refuse BEFORE boolean evaluation,
+// even for empty/probe requests. SQL maintains this proof atomically with ALL
+// record, derived and control writes; it cannot infer coverage by setting a
+// marker, inspecting final bodies or building only the graph source indexes.
+// Initial population, deletes, imports/restores and invalidation must preserve
+// the same temporal/certified-versus-unbuilt source-index contract. Memory's
+// full census is the differential oracle, not a proposed SQL scan fallback.
+// Children/Incoming use the EXISTING parent/link indexes, not derived edge
+// copies, and require their independent source domains at the selected revision.
+// Coverage is node-relevant and eager: Children requires Parent coverage;
+// Incoming requires Links coverage. Every referenced arm is checked even under
+// false/NOT, empty inputs or a zero-row probe. Membership uses content revision;
+// Authorization and HostExpression use authority revision. A staged explicit
+// Parent declaration suffices for Children; only Incoming requires full Links.
+// Plans without either relation node do not require those source domains.
+// Only emitted thin keys are returned; SQL payload lookahead is forbidden.
 type SelectionReader interface {
 	Select(context.Context, SelectionPlan) (SelectionResult, error)
 }
@@ -46,10 +71,22 @@ type SelectionPlan struct {
 	Incarnation                        string
 	Branch                             model.Branch
 	ContentRevision, AuthorityRevision model.Revision
-	Membership, Authorization          SelectionExpr
-	Order                              []SelectionOrder
-	Mode                               SelectionMode
-	GroupBy                            SelectionGroup
+	// ContentCommitted selects the committed image even when historical content
+	// has the SAME revision token as a transaction overlay. Authority remains
+	// the pinned current overlay. It does not remove source/control evidence.
+	ContentCommitted          bool
+	Membership, Authorization SelectionExpr
+	Boundary                  *SelectionBoundary
+	// Excluded is the existing prepared-source suppression plane: canonical
+	// keys are excluded from committed AND staged candidates before membership,
+	// cap, page and aggregates. It does not erase authority/control evidence.
+	// Core prepared replacement images are NOT included by this interface.
+	// Exact aggregates over those images require a complete pre-cap merge in a
+	// future trusted adapter; suppression alone cannot claim that result.
+	Excluded []model.Ref
+	Order    []SelectionOrder
+	Mode     SelectionMode
+	GroupBy  SelectionGroup
 	// Cap may tighten, but never expand, the mode's default maximum.
 	Cap  int
 	Page *SelectionPage
@@ -103,6 +140,8 @@ const (
 	SelectionRefs           SelectionOp = "refs"
 	SelectionExistsOp       SelectionOp = "exists"
 	SelectionResourceExists SelectionOp = "resource_exists"
+	SelectionChildrenOp     SelectionOp = "children"
+	SelectionIncomingOp     SelectionOp = "incoming"
 )
 
 type SelectionExpr struct {
@@ -111,6 +150,15 @@ type SelectionExpr struct {
 	Compare *SelectionCompare
 	Refs    []model.Ref
 	Exists  *SelectionExists
+	Sources *SelectionSources
+}
+
+// Children uses Refs as canonical parents and forbids Kinds. Incoming uses
+// the union of closed target/kind pairs. Empty refs/kinds means no membership,
+// after all coverage checks; neither empty vector broadens the relation.
+type SelectionSources struct {
+	Refs  []model.Ref
+	Kinds []IncomingLinkKind
 }
 type SelectionCompare struct {
 	Column SelectionColumn
@@ -125,16 +173,18 @@ type SelectionExists struct {
 type SelectionFactColumn string
 
 const (
-	SelectionFactRef      SelectionFactColumn = "ref"
-	SelectionFactTarget   SelectionFactColumn = "target"
-	SelectionFactSubject  SelectionFactColumn = "subject"
-	SelectionFactScope    SelectionFactColumn = "scope"
-	SelectionFactRole     SelectionFactColumn = "role"
-	SelectionFactName     SelectionFactColumn = "name"
-	SelectionFactValue    SelectionFactColumn = "value"
-	SelectionFactActive   SelectionFactColumn = "active"
-	SelectionFactDepth    SelectionFactColumn = "depth"
-	SelectionFactLinkKind SelectionFactColumn = "link_kind"
+	SelectionFactRef         SelectionFactColumn = "ref"
+	SelectionFactTarget      SelectionFactColumn = "target"
+	SelectionFactSubject     SelectionFactColumn = "subject"
+	SelectionFactScope       SelectionFactColumn = "scope"
+	SelectionFactScopeKind   SelectionFactColumn = "scope_kind"
+	SelectionFactProjectName SelectionFactColumn = "project_name"
+	SelectionFactRole        SelectionFactColumn = "role"
+	SelectionFactName        SelectionFactColumn = "name"
+	SelectionFactValue       SelectionFactColumn = "value"
+	SelectionFactActive      SelectionFactColumn = "active"
+	SelectionFactDepth       SelectionFactColumn = "depth"
+	SelectionFactLinkKind    SelectionFactColumn = "link_kind"
 )
 
 type SelectionFactTest struct {
@@ -149,11 +199,26 @@ const (
 	SelectionAncestorFact SelectionFactKind = "ancestor"
 	SelectionLinkFact     SelectionFactKind = "link"
 	SelectionGrantFact    SelectionFactKind = "grant"
-	SelectionProjectFact  SelectionFactKind = "project"
-	SelectionTeamFact     SelectionFactKind = "team"
-	SelectionOntologyFact SelectionFactKind = "ontology"
-	SelectionReadyFact    SelectionFactKind = "ready"
-	SelectionPluginFact   SelectionFactKind = "plugin"
+	// This separate, versioned complete domain never upgrades generic grant
+	// rows (including an empty set) into authoritative fixed-scope metadata.
+	// It supports direct Bead-project grant leaves and exact scope literals.
+	// It does not represent the same-team member/active/involved join; a full
+	// policy requiring that join remains check-only/unavailable, even if the
+	// installed facts currently contain no team grants.
+	SelectionScopedGrantFact SelectionFactKind = "scoped_grant_v1"
+	SelectionProjectFact     SelectionFactKind = "project"
+	SelectionTeamFact        SelectionFactKind = "team"
+	SelectionOntologyFact    SelectionFactKind = "ontology"
+	SelectionReadyFact       SelectionFactKind = "ready"
+	SelectionPluginFact      SelectionFactKind = "plugin"
+)
+
+type SelectionScopeKind string
+
+const (
+	SelectionAuthorityScope SelectionScopeKind = "authority"
+	SelectionTeamScope      SelectionScopeKind = "team"
+	SelectionProjectScope   SelectionScopeKind = "project"
 )
 
 // A complete fact set belongs to ONE existing logical row. An empty set is
@@ -171,14 +236,35 @@ type SelectionFact struct {
 	Subject, Scope, Role, Name, Value string
 	Active                            bool
 	Depth                             uint64
+	// Only scoped_grant_v1 owns these fields. The producer derives them from
+	// the SAME complete installed source/registry as the unchanged opaque
+	// Subject/Scope/Role. Storage validates shape and source binding; it does
+	// not decode those opaque strings or prove redundant semantic agreement.
+	// Omit these newly added zero fields when serializing legacy generic facts,
+	// whose logical row Value may be encoding/json of this exact struct.
+	ScopeKind SelectionScopeKind `json:",omitempty"`
+	ScopeRef  *model.Ref         `json:",omitempty"` // Canonical fixed-scope metadata, not a query column.
+	// ProjectName is nonnil for a project scope and is its exact immutable
+	// registry NAME. Name != ScopeRef.ID is valid. It is nil for authority/team.
+	// Nil is never equal to an empty string. Matching CandidateProject covers
+	// Bead targets only: Project targets use their canonical Ref and History
+	// has no targetProject. There is no global wildcard or bead scope kind.
+	ProjectName *string `json:",omitempty"`
 }
 type SelectionBead struct {
-	Ref                           model.Ref
-	Project                       *string
-	Parent                        *model.Ref
-	Type, Status, Title, Template string
-	Priority                      int64
-	MembershipLeaf                string
+	Ref                 model.Ref
+	Project             *string
+	Parent              *model.Ref
+	Type, Status, Title string
+	Template            bool
+	Priority            int64
+	MembershipLeaf      string
+	// Absent declares optional semantic fields that are not present. Values
+	// for an absent field must be zero. Nil explicitly declares value fields
+	// present, including empty/0. Null/wrong-type values are not coerced: a
+	// producer unable to preserve semantics must withhold annotation/coverage.
+	// Project and Parent retain their separate pointer presence representation.
+	Absent []SelectionColumn
 }
 type SelectionSource struct {
 	Key      LockKey
@@ -186,6 +272,25 @@ type SelectionSource struct {
 	Present  bool
 	Digest   string
 }
+
+// DerivedSelectionRow carries a certified annotation without changing its
+// existing logical table/key/value identity. Activation/publication owns family
+// completeness separately; a slice of rows alone is never a coverage marker.
+type DerivedSelectionRow struct {
+	Table DerivedTable
+	Row   DerivedRow
+}
+
+func (r DerivedSelectionRow) Validate() error {
+	if r.Row.Index == nil {
+		return selectionError("certified row requires annotation")
+	}
+	return r.Row.Index.Validate(r.Table, r.Row)
+}
+func (r DerivedSelectionRow) Clone() DerivedSelectionRow {
+	return DerivedSelectionRow{Table: r.Table, Row: r.Row.Clone()}
+}
+
 type SelectionIndex struct {
 	Version     uint8
 	Row         DerivedRowKey
@@ -237,7 +342,7 @@ func SelectionSameRef(a, b model.Ref) bool {
 	y, ey := EncodeLockKey(LockKey{Kind: LockRecord, Ref: &b})
 	return ex == nil && ey == nil && x == y
 }
-func selectionError(s string) error { return fmt.Errorf("%w: selection %s", ErrUnsupported, s) }
+func selectionError(s string) error { return fmt.Errorf("%w: %s", ErrSelectionInvalid, s) }
 
 func valueKind(v SelectionValue) (string, error) {
 	n, kind := 0, ""
@@ -267,8 +372,10 @@ func valueKind(v SelectionValue) (string, error) {
 }
 func columnKind(c SelectionColumn) (string, error) {
 	switch c {
-	case SelectionID, SelectionType, SelectionProject, SelectionStatus, SelectionTitle, SelectionRevision, SelectionTemplate:
+	case SelectionID, SelectionType, SelectionProject, SelectionStatus, SelectionTitle, SelectionRevision:
 		return "string", nil
+	case SelectionTemplate:
+		return "bool", nil
 	case SelectionParent:
 		return "ref", nil
 	case SelectionPriority:
@@ -287,6 +394,8 @@ func factColumns(kind SelectionFactKind) (map[SelectionFactColumn]string, error)
 		return map[SelectionFactColumn]string{SelectionFactRef: "ref", SelectionFactTarget: "ref", SelectionFactLinkKind: "string"}, nil
 	case SelectionGrantFact:
 		return map[SelectionFactColumn]string{SelectionFactSubject: "string", SelectionFactScope: "string", SelectionFactRole: "string"}, nil
+	case SelectionScopedGrantFact:
+		return map[SelectionFactColumn]string{SelectionFactSubject: "string", SelectionFactScope: "string", SelectionFactRole: "string", SelectionFactScopeKind: "string", SelectionFactProjectName: "string"}, nil
 	case SelectionProjectFact, SelectionTeamFact:
 		return map[SelectionFactColumn]string{SelectionFactName: "string", SelectionFactActive: "bool"}, nil
 	case SelectionOntologyFact, SelectionPluginFact:
@@ -305,7 +414,7 @@ func factTable(kind SelectionFactKind, table DerivedTable) bool {
 		return table == DerivedAncestorClosure || table == DerivedCutClosure
 	case SelectionLinkFact:
 		return table == DerivedReferenceIndex
-	case SelectionGrantFact:
+	case SelectionGrantFact, SelectionScopedGrantFact:
 		return table == DerivedGrant
 	case SelectionOntologyFact:
 		return table == DerivedOntology
@@ -351,7 +460,7 @@ func validateExpr(e SelectionExpr, depth int, nodes *int) error {
 		}
 		switch c.Op {
 		case "absent":
-			if c.Value != nil || (c.Column != SelectionProject && c.Column != SelectionParent) {
+			if c.Value != nil || !selectionOptionalColumn(c.Column) {
 				return selectionError("invalid absence comparison")
 			}
 		case "eq", "contains":
@@ -416,6 +525,32 @@ func validateExpr(e SelectionExpr, depth int, nodes *int) error {
 			if got != want {
 				return selectionError("fact operand type mismatch")
 			}
+			if x.Kind == SelectionScopedGrantFact {
+				// Only the registry name has a candidate mapping in this closed
+				// Bead selector. Opaque identity/role and scope kind are exact
+				// trusted constants, never synthesized from a candidate ID/name.
+				if t.Candidate != "" && (t.Column != SelectionFactProjectName || t.Candidate != SelectionProject) {
+					return selectionError("unsupported scoped grant candidate mapping")
+				}
+				if t.Column == SelectionFactScopeKind && !selectionScopeKind(SelectionScopeKind(*t.Value.String)) {
+					return selectionError("unknown scoped grant scope kind")
+				}
+			}
+		}
+	case SelectionChildrenOp, SelectionIncomingOp:
+		if e.Sources == nil {
+			return selectionError("missing source membership")
+		}
+		used.Sources = e.Sources
+		if e.Op == SelectionChildrenOp {
+			if e.Sources.Kinds != nil {
+				return selectionError("children has incoming kinds")
+			}
+			if _, err := NormalizeHierarchyRequest(e.Sources.Refs, 0); err != nil {
+				return selectionError(err.Error())
+			}
+		} else if _, err := NormalizeInverseSourceLinksRequest(e.Sources.Refs, e.Sources.Kinds, nil, 0); err != nil {
+			return selectionError(err.Error())
 		}
 	default:
 		return selectionError("unknown expression")
@@ -438,6 +573,14 @@ func (p SelectionPlan) EffectiveCap() int {
 
 // Validate validates EVERY branch before any boolean or storage evaluation.
 func (p SelectionPlan) Validate() error {
+	err := p.validate()
+	if err != nil && !errors.Is(err, ErrSelectionInvalid) && !errors.Is(err, ErrSelectionCheckOnly) {
+		return fmt.Errorf("%w: %v", ErrSelectionInvalid, err)
+	}
+	return err
+}
+
+func (p SelectionPlan) validate() error {
 	if p.Incarnation == "" || p.Branch.Validate() != nil || !p.Branch.IsZero() {
 		return selectionError("invalid snapshot identity")
 	}
@@ -458,6 +601,18 @@ func (p SelectionPlan) Validate() error {
 	}
 	if err := validateExpr(p.Authorization, 0, &nodes); err != nil {
 		return err
+	}
+	boundary, err := p.boundary()
+	if err != nil {
+		return err
+	}
+	if len(p.Excluded) > HierarchyMaxExcluded {
+		return selectionError("source exclusion vector too large")
+	}
+	for _, ref := range p.Excluded {
+		if err := ValidateHierarchyRef(ref); err != nil {
+			return selectionError(err.Error())
+		}
 	}
 	if len(p.Order) > 16 {
 		return selectionError("too many order columns")
@@ -528,6 +683,9 @@ func (p SelectionPlan) Validate() error {
 			}
 		}
 	}
+	if boundary.Host == SelectionHostCheckOnly {
+		return SelectionCheckOnlyError{CandidateCap: SelectionCheckOnlyCap}
+	}
 	return nil
 }
 func (p SelectionPlan) Binding() (string, error) {
@@ -541,13 +699,22 @@ func (p SelectionPlan) Binding() (string, error) {
 	if err := validateExpr(p.Authorization, 0, &nodes); err != nil {
 		return "", err
 	}
-	// There are no maps/interfaces in this closed tree. Gob retains opaque
-	// string bytes that JSON would replace when they are not UTF-8.
-	var b bytes.Buffer
-	if err := gob.NewEncoder(&b).Encode(p); err != nil {
+	if _, err := p.boundary(); err != nil {
 		return "", err
 	}
-	return SelectionDigest(b.Bytes()), nil
+	seal, err := p.Boundary.GobEncode()
+	if err != nil {
+		return "", err
+	}
+	p.Boundary = nil
+	encoded, err := selectionBytes(struct {
+		Plan     SelectionPlan
+		Boundary []byte
+	}{p, seal})
+	if err != nil {
+		return "", err
+	}
+	return SelectionDigest(encoded), nil
 }
 
 func canonicalDigest(s string) bool {
@@ -558,7 +725,7 @@ func (index *SelectionIndex) Validate(table DerivedTable, row DerivedRow) error 
 	if index == nil {
 		return nil
 	}
-	if index.Version != 1 || index.Row.Table != table || index.Row.Key != row.Key || index.Incarnation == "" || index.Branch.Validate() != nil || !index.Branch.IsZero() {
+	if index.Version != SelectionIndexVersion || index.Row.Table != table || index.Row.Key != row.Key || index.Incarnation == "" || index.Branch.Validate() != nil || !index.Branch.IsZero() {
 		return selectionError("index envelope mismatch")
 	}
 	if err := index.Row.Validate(); err != nil {
@@ -567,22 +734,8 @@ func (index *SelectionIndex) Validate(table DerivedTable, row DerivedRow) error 
 	if index.ValueDigest != SelectionDigest(row.Value) {
 		return selectionError("index logical value digest mismatch")
 	}
-	if err := index.Source.Key.Validate(); err != nil {
+	if err := index.Source.Validate(); err != nil {
 		return err
-	}
-	if index.Source.Key.Ref != nil && !index.Source.Key.Ref.Branch.IsZero() {
-		return selectionError("source branch mismatch")
-	}
-	if _, err := index.Source.Revision.Uint64(); err != nil {
-		return err
-	}
-	data := index.Source.Key.Kind == LockRecord || index.Source.Key.Kind == LockDerived
-	if index.Source.Present && data {
-		if !canonicalDigest(index.Source.Digest) {
-			return selectionError("invalid source digest")
-		}
-	} else if index.Source.Digest != "" {
-		return selectionError("digest without source bytes")
 	}
 	if (index.Bead == nil) == (index.Facts == nil) {
 		return selectionError("index must have one layout")
@@ -598,6 +751,33 @@ func (index *SelectionIndex) Validate(table DerivedTable, row DerivedRow) error 
 		if b.Parent != nil {
 			if err := ValidateHierarchyRef(*b.Parent); err != nil {
 				return err
+			}
+		}
+		seen := map[SelectionColumn]bool{}
+		for _, c := range b.Absent {
+			if seen[c] {
+				return selectionError("duplicate absent field")
+			}
+			seen[c] = true
+			switch c {
+			case SelectionStatus:
+				if b.Status != "" {
+					return selectionError("absent status has value")
+				}
+			case SelectionTitle:
+				if b.Title != "" {
+					return selectionError("absent title has value")
+				}
+			case SelectionTemplate:
+				if b.Template {
+					return selectionError("absent template has value")
+				}
+			case SelectionPriority:
+				if b.Priority != 0 {
+					return selectionError("absent priority has value")
+				}
+			default:
+				return selectionError("invalid absent field")
 			}
 		}
 	} else {
@@ -648,6 +828,22 @@ func validateFact(table DerivedTable, f SelectionFact) error {
 		if f.Subject == "" || f.Role == "" {
 			return selectionError("grant shape")
 		}
+	case SelectionScopedGrantFact:
+		used.Subject, used.Scope, used.Role = f.Subject, f.Scope, f.Role
+		used.ScopeKind, used.ScopeRef, used.ProjectName = f.ScopeKind, f.ScopeRef, f.ProjectName
+		if f.Subject == "" || f.Scope == "" || f.Role == "" || !selectionScopeKind(f.ScopeKind) || f.ScopeRef == nil {
+			return selectionError("scoped grant shape")
+		}
+		if err := f.ScopeRef.Validate(); err != nil || !f.ScopeRef.IsID() || !f.ScopeRef.Branch.IsZero() || !selectionScopeText(f.ScopeRef.ID) {
+			return selectionError("scoped grant requires canonical fixed-scope ref")
+		}
+		if f.ScopeKind == SelectionProjectScope {
+			if f.ProjectName == nil || !selectionScopeText(*f.ProjectName) {
+				return selectionError("project scope requires exact registry name")
+			}
+		} else if f.ProjectName != nil {
+			return selectionError("nonproject scope has registry project name")
+		}
 	case SelectionProjectFact, SelectionTeamFact:
 		used.Name, used.Active = f.Name, f.Active
 		if f.Name == "" {
@@ -679,6 +875,14 @@ func validateFact(table DerivedTable, f SelectionFact) error {
 	return nil
 }
 
+func selectionScopeKind(kind SelectionScopeKind) bool {
+	return kind == SelectionAuthorityScope || kind == SelectionTeamScope || kind == SelectionProjectScope
+}
+
+func selectionScopeText(value string) bool {
+	return value != "" && utf8.ValidString(value) && strings.TrimSpace(value) == value && !strings.ContainsRune(value, 0)
+}
+
 // Clone owns all slices, pointers and logical bytes at the storage boundary.
 func (row DerivedRow) Clone() DerivedRow {
 	out := DerivedRow{Key: row.Key, Value: bytes.Clone(row.Value)}
@@ -694,6 +898,7 @@ func (row DerivedRow) Clone() DerivedRow {
 		}
 		if x.Bead != nil {
 			b := *x.Bead
+			b.Absent = append([]SelectionColumn(nil), b.Absent...)
 			if b.Project != nil {
 				v := *b.Project
 				b.Project = &v
@@ -720,10 +925,26 @@ func (row DerivedRow) Clone() DerivedRow {
 					v := *r.Link
 					r.Link = &v
 				}
+				if r.ScopeRef != nil {
+					v := *r.ScopeRef
+					r.ScopeRef = &v
+				}
+				if r.ProjectName != nil {
+					v := *r.ProjectName
+					r.ProjectName = &v
+				}
 			}
 			x.Facts = f
 		}
 		out.Index = &x
 	}
 	return out
+}
+
+func selectionOptionalColumn(c SelectionColumn) bool {
+	switch c {
+	case SelectionProject, SelectionParent, SelectionStatus, SelectionTitle, SelectionTemplate, SelectionPriority:
+		return true
+	}
+	return false
 }
