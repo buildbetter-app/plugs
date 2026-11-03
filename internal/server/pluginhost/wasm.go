@@ -259,7 +259,24 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 	}
 	initCtx, cancel := context.WithTimeout(ctx, wasmInitTimeout)
 	defer cancel()
-	moduleConfig := wazero.NewModuleConfig().WithStartFunctions().WithSysNanotime().WithSysNanosleep()
+	// wazero's WASI poll host function does not receive the Call context. Keep
+	// the source guest's normal timer semantics, but give a canceled initializer
+	// a bounded wakeup so explicit module retirement can join the call instead of
+	// leaving a poll host call resident past owner shutdown.
+	initAbort := make(chan struct{})
+	var abortInit sync.Once
+	cancelInitializer := func() { abortInit.Do(func() { close(initAbort) }) }
+	moduleConfig := wazero.NewModuleConfig().WithStartFunctions().WithSysNanotime().WithNanosleep(func(ns int64) {
+		if ns <= 0 {
+			return
+		}
+		timer := time.NewTimer(time.Duration(ns))
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-initAbort:
+		}
+	})
 	module, err := runtime.InstantiateModule(initCtx, compiled, moduleConfig)
 	if err != nil {
 		return nil, failure(ErrManifest, "WASM instantiate failed: %v", err)
@@ -301,8 +318,10 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 		case <-initCtx.Done():
 			// A WASI host call such as poll_oneoff can ignore the context while
 			// the guest initializer is in flight. Close the module explicitly,
-			// then join the one bounded initializer call before retiring it.
-			_ = module.Close(context.Background())
+			// wake that poll, then join the bounded initializer call before
+			// retiring it.
+			cancelInitializer()
+			_ = module.CloseWithExitCode(context.Background(), 1)
 			err := <-initDone
 			result.close()
 			if ctxErr := ctx.Err(); ctxErr != nil {
