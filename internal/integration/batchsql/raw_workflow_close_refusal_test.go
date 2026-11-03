@@ -448,6 +448,18 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 			h.watch = []model.Ref{first, other, operational, absent}
 			mixed := model.ChangeSet{Ops: []model.Op{rawWorkflowClose(first), rawWorkflowClose(operational)}}
 			refusedKey := f.meta("mixed-workflow-close")
+			control := h.state(t, refusedKey)
+			// Root creates publish actual ancestor self-rows. Ordinary Close
+			// preserves those rows; this Writer does not maintain ready_state.
+			if len(control.Derived[driver.DerivedAncestorClosure]) != 2 || len(control.Log) == 0 || len(control.Log[len(control.Log)-1].Events) != 2 {
+				t.Fatal("root-create derived rows and audit event controls must be nonempty")
+			}
+			for _, row := range control.Derived[driver.DerivedAncestorClosure] {
+				descendant, ancestor, depth, err := pipeline.DecodeAncestorRow(row)
+				if err != nil || descendant != ancestor || depth != 0 || descendant != first.ID && descendant != other.ID {
+					t.Fatalf("root-create derived control: row=%+v err=%v", row, err)
+				}
+			}
 			if engine != "memory" {
 				h.requireGCBait(t, h.state(t, refusedKey), operational, secondOperational)
 			}
@@ -519,9 +531,6 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 			// The identical first operation under the previously refused key
 			// proves a viable durable prefix and no reservation/no-op receipt.
 			before := h.state(t, refusedKey)
-			if len(before.Derived[driver.DerivedReadyState]) == 0 || len(before.Log[len(before.Log)-1].Events) == 0 {
-				t.Fatal("derived-row and event conservation controls must be nonempty")
-			}
 			valid := model.ChangeSet{Ops: mixed.Ops[:1]}
 			reply := h.apply(t, valid, refusedKey)
 			commit := rawWorkflowCommit(t, reply)
@@ -531,8 +540,8 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 			if reply.Meta.Replayed || newHead != oldHead+1 || commit.Revision.String() != after.Meta.Head.String() || len(commit.Results) != 1 || commit.Results[0].Ref.ID != first.ID || len(after.Log) != len(before.Log)+1 || after.Receipt == nil {
 				t.Fatal("corrected durable prefix did not commit exactly once under the refused key")
 			}
-			if len(after.Versions[first.ID]) != len(before.Versions[first.ID])+1 || !reflect.DeepEqual(before.Versions[other.ID], after.Versions[other.ID]) || !reflect.DeepEqual(before.Checkpoint, after.Checkpoint) || len(after.Log[len(after.Log)-1].Events) == 0 || reflect.DeepEqual(before.Derived, after.Derived) {
-				t.Fatal("positive close must change its version/derived/event state and conserve the control bead and workflow checkpoint")
+			if len(after.Versions[first.ID]) != len(before.Versions[first.ID])+1 || !reflect.DeepEqual(before.Versions[other.ID], after.Versions[other.ID]) || !reflect.DeepEqual(before.Checkpoint, after.Checkpoint) || len(after.Log[len(after.Log)-1].Events) == 0 || !reflect.DeepEqual(before.Derived, after.Derived) {
+				t.Fatal("positive close must change its version/event state and conserve derived rows, the control bead and workflow checkpoint")
 			}
 			row := rawWorkflowRow(t, after, first.ID)
 			doc := decodeDocument(t, row)
@@ -568,6 +577,22 @@ func TestRawWorkflowCloseRefusalPreservesBothPlanesAcrossStores(t *testing.T) {
 			}
 			aliasRow := rawWorkflowRow(t, aliasAfter, aliasCommit.Results[0].Ref.ID)
 			aliasDoc := decodeDocument(t, aliasRow)
+			if len(aliasAfter.Derived[driver.DerivedAncestorClosure]) != len(aliasBefore.Derived[driver.DerivedAncestorClosure])+1 {
+				t.Fatal("resolved-alias create did not publish its actual derived self-row")
+			}
+			foundDerived := false
+			for _, row := range aliasAfter.Derived[driver.DerivedAncestorClosure] {
+				descendant, ancestor, depth, err := pipeline.DecodeAncestorRow(row)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if descendant == aliasRow.Ref.ID && ancestor == aliasRow.Ref.ID && depth == 0 {
+					foundDerived = true
+				}
+			}
+			if !foundDerived {
+				t.Fatal("resolved ordinary bead's actual derived self-row is absent")
+			}
 			if aliasDoc.Fields["status"] != "done" || len(aliasDoc.Comments) != 1 || aliasDoc.Comments[0].Body != "completed once" || aliasRow.Revision.String() != aliasCommit.Revision.String() || len(aliasAfter.Versions[aliasRow.Ref.ID]) != 1 {
 				t.Fatalf("resolved ordinary alias close did not commit its terminal image once: %+v", aliasDoc)
 			}
