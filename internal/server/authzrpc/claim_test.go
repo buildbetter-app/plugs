@@ -486,7 +486,7 @@ func (quietForbidRules) Eval(_ context.Context, _ authz.Slice, requests []authz.
 	for i, request := range requests {
 		decisions[i].Effect = authz.NoDecision
 		if request.Method == "bead.heartbeat" || request.Method == "bead.release" {
-			decisions[i] = authz.Decision{Effect: authz.Forbid, Reasons: []string{"actual claim method forbidden"}}
+			decisions[i] = authz.Decision{Effect: authz.Deny, Reasons: []string{"actual claim method forbidden"}}
 		}
 	}
 	return decisions, nil
