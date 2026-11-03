@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 var prefixPattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
@@ -154,7 +157,7 @@ func allowedMember(name string) bool {
 	if name == "manifest.json" || name == "config/sources.json" || name == SourceHistoryMember {
 		return true
 	}
-	if name == "records/native.ndjson" || name == "versions.ndjson" || name == "changesets.ndjson" {
+	if name == "records/native.ndjson" || name == "versions.ndjson" || name == "changesets.ndjson" || name == NativeAllocatorMember {
 		return true
 	}
 	if strings.HasPrefix(name, "blobs/") && len(strings.TrimPrefix(name, "blobs/")) == 64 {
@@ -202,6 +205,20 @@ func validateNativeArchive(manifest Manifest, members map[string][]byte, paths [
 			return fmt.Errorf("native archive does not checksum %q", path)
 		}
 	}
+	// The allocator member was added after the original native envelope. Keep
+	// the envelope parser backward-compatible so the restore manager can map a
+	// missing legacy member to its typed semantic refusal before publication.
+	if allocator, ok := members[NativeAllocatorMember]; ok {
+		if err := validateNativeAllocatorMember(allocator); err != nil {
+			return err
+		}
+		if manifest.NativeAllocatorDigest != digest(allocator) {
+			return fmt.Errorf("native allocator digest mismatch")
+		}
+		if file, ok := manifest.Files[NativeAllocatorMember]; !ok || file.Size != int64(len(allocator)) || file.SHA256 != digest(allocator) {
+			return fmt.Errorf("native allocator snapshot checksum/size mismatch")
+		}
+	}
 	for path := range members {
 		if path != "manifest.json" {
 			if _, ok := manifest.Files[path]; !ok {
@@ -230,6 +247,46 @@ func validateNativeArchive(manifest Manifest, members map[string][]byte, paths [
 	}
 	if hex.EncodeToString(h.Sum(nil)) != manifest.NativeDigest {
 		return fmt.Errorf("native archive digest mismatch")
+	}
+	return nil
+}
+
+// validateNativeAllocatorMember checks only the transport shape. The driver
+// owns the typed codec, shared here to enforce exact counters and canonical
+// bytes. Closed profile/coverage refusals remain semantic manager decisions.
+func validateNativeAllocatorMember(raw []byte) error {
+	var value struct {
+		Version       string            `json:"version"`
+		StoreID       string            `json:"store_id"`
+		Incarnation   string            `json:"incarnation"`
+		At            json.RawMessage   `json:"at"`
+		CoverageFloor json.RawMessage   `json:"coverage_floor"`
+		Projects      []json.RawMessage `json:"projects"`
+		Parents       []json.RawMessage `json:"parents"`
+	}
+	check := json.NewDecoder(bytes.NewReader(raw))
+	check.UseNumber()
+	if err := checkValue(check, 0); err != nil {
+		return fmt.Errorf("invalid native allocator snapshot: %w", err)
+	}
+	if _, err := check.Token(); err != io.EOF {
+		return fmt.Errorf("invalid native allocator snapshot: trailing JSON data")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return fmt.Errorf("invalid native allocator snapshot: %w", err)
+	}
+	if value.Version == "" || value.StoreID == "" || value.Incarnation == "" || len(bytes.TrimSpace(value.At)) == 0 || len(bytes.TrimSpace(value.CoverageFloor)) == 0 || bytes.Equal(bytes.TrimSpace(value.At), []byte("null")) || bytes.Equal(bytes.TrimSpace(value.CoverageFloor), []byte("null")) || value.Projects == nil || value.Parents == nil {
+		return fmt.Errorf("invalid native allocator snapshot envelope")
+	}
+	if _, err := driver.DecodeAllocatorSnapshot(raw); err != nil {
+		var semantic *driver.NativeAllocatorSnapshotError
+		if errors.As(err, &semantic) && (semantic.Reason == driver.NativeAllocatorProfileUnsupported || semantic.Reason == driver.NativeAllocatorCoverageUnavailable) {
+			return nil
+		}
+		return fmt.Errorf("invalid native allocator snapshot: %w", err)
 	}
 	return nil
 }

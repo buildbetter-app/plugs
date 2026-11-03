@@ -280,6 +280,14 @@ type nativeOntologyBranchReader struct {
 	branch model.Natural
 }
 
+func (r nativeOntologyBranchReader) AllocatorSnapshot(ctx context.Context) (driver.AllocatorSnapshot, error) {
+	capability, ok := r.Reader.(driver.AllocatorSnapshotReader)
+	if !ok {
+		return driver.AllocatorSnapshot{}, driver.ErrUnsupported
+	}
+	return capability.AllocatorSnapshot(ctx)
+}
+
 func (r nativeOntologyBranchReader) AllocatorInventory(ctx context.Context) (driver.AllocatorInventory, error) {
 	inventory, ok := r.Reader.(driver.AllocatorInventoryReader)
 	if !ok {
