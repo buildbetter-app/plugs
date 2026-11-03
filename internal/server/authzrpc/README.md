@@ -29,6 +29,30 @@ second Writer or rebuilding the composition per request changes the service
 and cursor-key lifetime. This package does not take ownership of the borrowed
 Store, Lease, Provider or plugin host.
 
+The host also binds the cataloged `bead.heartbeat` and `bead.release` through
+`claimrpc.Bind` on the guarded service. Both public adapters require an
+authenticated sponsored Agent and fence a lost storage lease before dispatch.
+Only the fixed component maps these protected claim-maintenance methods to its
+existing bead `modify` predicate. Other policies retain the original method and
+their explicit forbids. Stored-image assignment guards and the Writer's current
+holder, expiry, replay and checkpoint/record fences remain in place. Public
+metadata cannot select the private `system:core` recovery path; no new reclaim
+semantics or plugin policy vocabulary is introduced.
+
+The guarded heartbeat authorizer checks the current base lease, holder, storage
+epoch and effective overlay deadline before either a fresh request or a published
+receipt can succeed. An old heartbeat receipt therefore does not bypass a
+released, reassigned, missing or expired claim. This is an authenticated-host
+guard; the accepted anonymous Writer replay path is unchanged.
+
+Heartbeat can refresh/recreate only an overlay for an existing valid base
+`ClaimLease`; a truly missing base lease returns `lease_not_held` and publishes
+no durable write. The controlled constructor is exposed only in the test build;
+`New` retains wall time and there is no new server configuration or RPC clock.
+The new three-driver HTTP assertions are source only pending independent review
+and S1-authorized execution. They do not qualify `composition.Open`, full B05,
+authentic reference twins or all Go/SQL clock paths.
+
 The component tests exercise the actual HTTP/RPC boundary with real native-host
 bindings, authenticated principals, durable mutation/refusal/replay, and
 claimNext defaults and terminal receipts. They do not qualify a WASI artifact,

@@ -46,7 +46,7 @@ func (r *RuleSet) Compile(req authz.ListRequest) (authz.FilterTemplate, error) {
 
 func readMethod(m string) bool {
 	switch m {
-	case "", "bead.get", "bead.list", "bead.ready", "view.run":
+	case "", "bead.get", "bead.list", "bead.ready", "bead.cycles", "view.run":
 		return true
 	}
 	return false
