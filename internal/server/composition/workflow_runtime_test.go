@@ -16,6 +16,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/plugins/authnapikey"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
+	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -235,4 +236,108 @@ func TestAuthenticatedWorkflowHTTPRestartCompletionAndHistory(t *testing.T) {
 	}
 	assertNoHistory()
 	t.Log("authenticated HTTP invoke/ready/comment/get/claimNext/close; two runtime reopenings; credential/project denials; terminal replay; native history/export exclusion")
+}
+
+func TestWorkflowRuntimeCollectsExpiredTerminalReceiptsOnReady(t *testing.T) {
+	ctx := context.Background()
+	config := Config{Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "workflow-gc.db"), Project: "workflow-gc", Address: DefaultAddress}
+	current := startRuntime(t, config)
+	call := func(method string, params map[string]any, key string) client.Result {
+		t.Helper()
+		result, err := current.client.Call(ctx, method, params, key)
+		if err != nil {
+			t.Fatalf("%s: %v", method, err)
+		}
+		return result
+	}
+	params := map[string]any{"template": "cleanup", "project": config.Project, "mode": "ephemeral",
+		"checklist": []map[string]any{{"label": "one", "title": "workflow item"}}}
+	ended := resultObject(t, call("x.workflow.invoke", params, strings.Repeat("1", 64)))
+	endedID := ended["items"].([]any)[0].(map[string]any)["id"].(string)
+	call("bead.close", map[string]any{"id": map[string]any{"id": endedID}}, strings.Repeat("2", 64))
+	live := call("x.workflow.invoke", params, strings.Repeat("3", 64))
+	liveObject := resultObject(t, live)
+	liveRunID := liveObject["run"].(map[string]any)["id"].(string)
+	liveID := liveObject["items"].([]any)[0].(map[string]any)["id"].(string)
+	state := pluginhost.NewDurableState(current.r.Store.(driver.PersistentCheckpointStore), current.r.Lease, "workflow", "default")
+	var document map[string]json.RawMessage
+	found, revision, err := state.Read(ctx, "workflow/state", &document)
+	if err != nil || !found {
+		t.Fatalf("read actual checkpoint: found=%v err=%v", found, err)
+	}
+	var receipts map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(document["receipts"], &receipts); err != nil {
+		t.Fatal(err)
+	}
+	if len(receipts) != 3 {
+		t.Fatalf("pre-cleanup receipt count=%d, want completed invoke/close and live invoke", len(receipts))
+	}
+	// Seed eligibility through the real scoped capability. This proves runtime
+	// activation after expiry, not elapsed wall-clock time or a changed clock.
+	expiredAt, err := json.Marshal(time.Now().UTC().Add(-driver.IdempotencyWindow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveReceiptKey := ""
+	for key, receipt := range receipts {
+		var runID string
+		if err := json.Unmarshal(receipt["runId"], &runID); err != nil {
+			t.Fatal(err)
+		}
+		if runID == liveRunID {
+			liveReceiptKey = key
+		}
+		receipt["expiresAt"] = expiredAt
+	}
+	if liveReceiptKey == "" {
+		t.Fatal("unfinished run receipt was not present before cleanup")
+	}
+	document["receipts"], err = json.Marshal(receipts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.Put(ctx, "workflow/state", document, revision); err != nil {
+		t.Fatal(err)
+	}
+	current.stop(t)
+	current = startRuntime(t, config)
+	ready := resultObject(t, call("bead.ready", map[string]any{"limit": 10}, ""))["items"].([]any)
+	if len(ready) != 1 || ready[0].(map[string]any)["id"] != liveID {
+		t.Fatalf("ordinary ready removed the old unfinished run: %v", ready)
+	}
+	state = pluginhost.NewDurableState(current.r.Store.(driver.PersistentCheckpointStore), current.r.Lease, "workflow", "default")
+	if found, _, err := state.Read(ctx, "workflow/state", &document); err != nil || !found {
+		t.Fatalf("read cleanup checkpoint: found=%v err=%v", found, err)
+	}
+	receipts = nil
+	if err := json.Unmarshal(document["receipts"], &receipts); err != nil {
+		t.Fatal(err)
+	}
+	if len(receipts) != 1 || receipts[liveReceiptKey] == nil {
+		t.Fatalf("normal ready did not physically collect only ended receipts: count=%d", len(receipts))
+	}
+	var audit []struct {
+		Event string `json:"event"`
+	}
+	if err := json.Unmarshal(document["audit"], &audit); err != nil {
+		t.Fatal(err)
+	}
+	gcCount := 0
+	for _, entry := range audit {
+		if entry.Event == "workflow.receipt.gc" {
+			gcCount++
+		}
+	}
+	if gcCount != 2 {
+		t.Fatalf("durable receipt GC audit count=%d, want 2", gcCount)
+	}
+	replay := call("x.workflow.invoke", params, strings.Repeat("3", 64))
+	if !bytes.Equal(live.JSON, replay.JSON) {
+		t.Fatalf("old unfinished invocation did not replay after restart/GC: first=%s replay=%s", live.JSON, replay.JSON)
+	}
+	call("bead.comment", map[string]any{"id": map[string]any{"id": liveID}, "body": "after cleanup"}, strings.Repeat("4", 64))
+	item := resultObject(t, call("bead.get", map[string]any{"id": map[string]any{"id": liveID}}, ""))
+	if comments := item["comments"].([]any); len(comments) != 1 || comments[0].(map[string]any)["body"] != "after cleanup" {
+		t.Fatalf("ordinary post-cleanup mutation was not durable: %v", item)
+	}
 }

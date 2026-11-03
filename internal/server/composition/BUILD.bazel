@@ -64,6 +64,7 @@ go_test(
         "//internal/plugins/authzfixed",
         "//internal/server/authn",
         "//internal/server/authzrpc",
+        "//internal/server/pluginhost",
         "//internal/server/transport/httpjson",
         "//internal/server/transport/inprocess",
         "//internal/server/viewrpc",

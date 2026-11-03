@@ -91,6 +91,11 @@ remove expired receipts only when their run is already ended (or the receipt
 does not reference a run), and never deletes an unfinished run. The workflow
 provider's `workflow/state` document is the single checkpoint-CAS unit for
 these maps and its identity-only audit ledger.
+Ordinary workflow state access performs eligible receipt GC and records the
+identity-only deletion audit in the same lease-fenced CAS. An idle store may
+retain expired identity-only receipts until its next workflow access; expiry
+does not depend on physical cleanup to stop replay. A cleanup conflict fails
+that access with `write_conflict` without publishing a partial map.
 
 `bead.ready` uses a stable ID-ascending workflow phase after the core ready
 phase. Its signed continuation cursor binds method, the complete effective

@@ -515,3 +515,96 @@ func TestReceiptsStayLiveUntilCompletionAndResetTerminalWindow(t *testing.T) {
 		t.Fatalf("expired terminal receipt did not GC for a fresh invocation: %+v", newRun)
 	}
 }
+
+type conflictedGCState struct {
+	*testDurableState
+	putFailure error
+}
+
+func (s *conflictedGCState) Put(ctx context.Context, key string, value any, expect pluginapi.Revision) (pluginapi.Revision, error) {
+	if s.putFailure != nil {
+		err := s.putFailure
+		s.putFailure = nil
+		return "", err
+	}
+	return s.testDurableState.Put(ctx, key, value, expect)
+}
+
+func TestOrdinaryAccessCollectsTerminalReceiptsAndRetainsUnfinishedRun(t *testing.T) {
+	ctx := context.Background()
+	clock := time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC)
+	state := &conflictedGCState{testDurableState: &testDurableState{}}
+	provider, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.WithClock(func() time.Time { return clock })
+	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	meta := model.WriteMeta{Method: "x.workflow.invoke", Project: "project", AgentLabel: "agent", IdempotencyKey: strings.Repeat("1", 64)}
+	req := InvokeRequest{Template: "template", Project: "project", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "one", Title: "title"}}}
+	ended, err := provider.Invoke(ctx, by, req, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeMeta := meta
+	closeMeta.Method, closeMeta.IdempotencyKey = "bead.close", strings.Repeat("2", 64)
+	if _, err := provider.Close(ctx, by, model.RefByID(ended.Items[0].ID, model.Natural64(0)), "done", closeMeta); err != nil {
+		t.Fatal(err)
+	}
+	meta.IdempotencyKey = strings.Repeat("3", 64)
+	live, err := provider.Invoke(ctx, by, req, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := append([]byte(nil), state.value...)
+	beforeRevision := state.rev
+	clock = clock.Add(driver.IdempotencyWindow + time.Second)
+	state.putFailure = driver.ErrCheckpointConflict
+	_, err = provider.Ready(ctx, by, "project", nil, meta)
+	var conflict *model.Error
+	if !errors.As(err, &conflict) || conflict.Data.Code != "write_conflict" {
+		t.Fatalf("cleanup conflict was not typed: %v", err)
+	}
+	if !bytes.Equal(before, state.value) || state.rev != beforeRevision {
+		t.Fatal("failed cleanup published a partial map or audit")
+	}
+	state.putFailure = driver.ErrFenced{ExpectedEpoch: 1, ObservedEpoch: 2}
+	_, err = provider.Ready(ctx, by, "project", nil, meta)
+	if !errors.As(err, &conflict) || conflict.Data.Code != "lease_not_held" {
+		t.Fatalf("cleanup lease refusal was not typed: %v", err)
+	}
+	if !bytes.Equal(before, state.value) || state.rev != beforeRevision {
+		t.Fatal("fenced cleanup published a partial map or audit")
+	}
+	// This one ordinary mutation must use the revision returned by cleanup,
+	// rather than attempting its second CAS with the pre-cleanup revision.
+	commentMeta := meta
+	commentMeta.Method, commentMeta.IdempotencyKey = "bead.comment", strings.Repeat("4", 64)
+	if _, err := provider.Comment(ctx, by, model.RefByID(live.Items[0].ID, model.Natural64(0)), "after cleanup", commentMeta); err != nil {
+		t.Fatalf("ordinary mutation did not use the cleanup revision: %v", err)
+	}
+	ready, err := provider.Ready(ctx, by, "project", nil, meta)
+	if err != nil || len(ready) != 1 || ready[0].ID != live.Items[0].ID || len(ready[0].Comments) != 1 {
+		t.Fatalf("ordinary ready lost unfinished run during cleanup: %+v err=%v", ready, err)
+	}
+	var saved persisted
+	if err := json.Unmarshal(state.value, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Receipts) != 2 || len(saved.Runs) != 1 || len(saved.Items) != 1 || state.rev != beforeRevision+2 {
+		t.Fatalf("cleanup did not publish exactly the terminal removal: receipts=%d runs=%d items=%d revision=%d", len(saved.Receipts), len(saved.Runs), len(saved.Items), state.rev)
+	}
+	gcAudits := 0
+	for _, entry := range saved.Audit {
+		if entry.Event == "workflow.receipt.gc" {
+			gcAudits++
+		}
+	}
+	if gcAudits != 2 {
+		t.Fatalf("receipt deletion audit count=%d, want 2", gcAudits)
+	}
+	replay, err := provider.Invoke(ctx, by, req, meta)
+	if err != nil || !reflect.DeepEqual(live, replay) || state.rev != beforeRevision+2 {
+		t.Fatalf("old unfinished receipt failed to replay without another write: %+v err=%v", replay, err)
+	}
+}

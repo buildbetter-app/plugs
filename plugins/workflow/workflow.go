@@ -236,6 +236,15 @@ func (p *Provider) load(ctx context.Context) (persisted, pluginapi.Revision, err
 	if value.Receipts == nil {
 		value.Receipts = map[string]receiptState{}
 	}
+	// Ordinary workflow access also performs eligible receipt cleanup. Publish
+	// it with the revision read alongside this complete map, then carry the new
+	// revision into any following mutation. Unfinished runs are never collected.
+	if p.collectExpiredReceipts(&value) {
+		revision, err = p.state.Put(ctx, stateKey, value, revision)
+		if err != nil {
+			return persisted{}, "", p.mapSaveError(err)
+		}
+	}
 	return value, revision, nil
 }
 
@@ -862,25 +871,23 @@ func workflowCommit(id string, generation uint64) model.Commit {
 	return model.Commit{Revision: model.Natural64(0), Results: []model.OpResult{{Ref: model.RefByID(id, model.Natural64(0)), Revision: model.Natural64(generation)}}, Warnings: []model.Warning{}}
 }
 
-// GC removes expired receipts whose run is already gone. It deliberately
-// never deletes an unfinished run or its bounded operation receipts.
-func (p *Provider) GC(ctx context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	value, revision, err := p.load(ctx)
-	if err != nil {
-		return err
-	}
+func (p *Provider) collectExpiredReceipts(value *persisted) bool {
 	changed := false
 	for key, receipt := range value.Receipts {
 		if !p.now().Before(receipt.ExpiresAt) && (receipt.RunID == "" || value.Runs[receipt.RunID].ID == "") {
-			p.appendAudit(&value, "workflow.receipt.gc", receipt)
+			p.appendAudit(value, "workflow.receipt.gc", receipt)
 			delete(value.Receipts, key)
 			changed = true
 		}
 	}
-	if !changed {
-		return nil
-	}
-	return p.mapSaveError(p.save(ctx, value, revision))
+	return changed
+}
+
+// GC uses the same cleanup as ordinary workflow state loads. It deliberately
+// never deletes an unfinished run or its operation receipts, regardless of age.
+func (p *Provider) GC(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, _, err := p.load(ctx)
+	return err
 }
