@@ -162,6 +162,15 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 		if e != nil {
 			return e
 		}
+		// Initialize the additive virgin-lifetime marker once per incarnation.
+		// Existing stores pay this compatibility census only at open; every
+		// subsequent commit uses the indexed single-row marker.
+		_, e = c.ExecContext(ctx, `INSERT OR IGNORE INTO selection_virgin_state(incarnation,virgin)
+			SELECT incarnation,CASE WHEN EXISTS(SELECT 1 FROM objects WHERE kind='bead') THEN 0 ELSE 1 END
+			FROM meta WHERE singleton=1`)
+		if e != nil {
+			return e
+		}
 		// New stores start unbuilt. Only explicit complete startup or a first
 		// complete typed publication may establish a family interval.
 		_, e = readMeta(ctx, c)
@@ -269,6 +278,7 @@ func (s *Store) fileLock(ctx context.Context, name string, share bool, lost <-ch
 
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 func readMeta(ctx context.Context, q queryer) (driver.Meta, error) {

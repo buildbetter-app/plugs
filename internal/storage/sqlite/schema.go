@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS active_lease (
  token TEXT NOT NULL, holder TEXT NOT NULL, expires INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS objects (key TEXT PRIMARY KEY, kind TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS objects_kind_key ON objects(kind,key);
 CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, data BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS versions (
  key TEXT NOT NULL, rev TEXT NOT NULL, base INTEGER NOT NULL, data BLOB NOT NULL,
@@ -39,6 +40,15 @@ CREATE TABLE IF NOT EXISTS core_sessions (
 );
 CREATE INDEX IF NOT EXISTS core_sessions_active_expiry ON core_sessions(revoked, expires_at);
 CREATE TABLE IF NOT EXISTS allocator_states (prefix TEXT PRIMARY KEY, data BLOB NOT NULL);
+
+-- A virgin source lifetime is an O(1) admission marker. It records whether
+-- any bead lifetime has ever been committed in this incarnation, so ordinary
+-- commits never need to census every object just to reject first-publication
+-- status.
+CREATE TABLE IF NOT EXISTS selection_virgin_state (
+ incarnation TEXT PRIMARY KEY,
+ virgin INTEGER NOT NULL CHECK(virgin IN (0,1))
+);
 
 -- Additive representation only: an absent coverage row means unbuilt. Open
 -- must not certify an existing store merely because these tables are empty.

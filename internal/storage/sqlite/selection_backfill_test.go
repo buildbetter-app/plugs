@@ -3,6 +3,7 @@ package sqlite
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"sync"
@@ -369,8 +370,17 @@ func TestSelectionSQLiteFinalParentChainAndExactSortCensus(t *testing.T) {
 	project.Decode = func(record driver.Record, inputs []driver.DerivedRow) ([]driver.DerivedSelectionRow, error) {
 		rows, err := plainProject(record, inputs)
 		if err == nil && record.Ref.ID == child.ID {
-			rows[0].Row.Index.Facts.Rows = append(rows[0].Row.Index.Facts.Rows,
-				driver.SelectionFact{Kind: driver.SelectionAncestorFact, Ref: &child, Target: &root, Depth: 1})
+			// Production emits one physical closure row per depth. Keep the
+			// depth-one fact in its own envelope so this test exercises the
+			// canonical multi-row-by-source representation.
+			depthOne := rows[0].Clone()
+			depthOne.Row.Key += ":depth-1"
+			depthOne.Row.Index.Row.Key = depthOne.Row.Key
+			depthOne.Row.Index.Facts.Rows = []driver.SelectionFact{{
+				Kind: driver.SelectionAncestorFact, Ref: &child, Target: &root, Depth: 1,
+			}}
+			depthOne.Row.Index.ValueDigest = driver.SelectionDigest(depthOne.Row.Value)
+			rows = append(rows, depthOne)
 		}
 		return rows, err
 	}
@@ -421,6 +431,332 @@ func TestSelectionSQLiteFinalParentChainAndExactSortCensus(t *testing.T) {
 	}
 	if err := verifySQLiteSelectionFamilyCensus(ctx, s.db, meta.Incarnation, at, sqliteSelectionFamilies()[0]); !errors.Is(err, driver.ErrSelectionUnavailable) {
 		t.Fatalf("duplicate live sort projection certified: %v", err)
+	}
+}
+
+func TestSelectionAffectedParentProofIncludesUnchangedDescendants(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	root, child, sibling := testRef("selection-affected-root"), testRef("selection-affected-child"), testRef("selection-affected-sibling")
+	tx, header := beginSourceTest(t, s, lease, root, child, sibling)
+	for _, item := range []struct {
+		ref    model.Ref
+		parent *model.Ref
+	}{{root, nil}, {child, &root}, {sibling, &root}} {
+		if err := tx.PutGraphRecord(ctx, driver.Record{Ref: item.ref, Kind: "bead", Body: []byte(`{}`)}, item.parent, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commitSourceTest(t, tx, header)
+	decode, project := selectionBackfillRaceProjection(header.Incarnation, nil)
+	plainDecode, plainProject := decode, project.Decode
+	decode = func(record driver.Record) (driver.GraphSourceMetadata, error) {
+		metadata, err := plainDecode(record)
+		if err == nil && (record.Ref.ID == child.ID || record.Ref.ID == sibling.ID) {
+			metadata.Selection[0].Row.Index.Bead.Parent = &root
+		}
+		return metadata, err
+	}
+	project.Decode = func(record driver.Record, inputs []driver.DerivedRow) ([]driver.DerivedSelectionRow, error) {
+		rows, err := plainProject(record, inputs)
+		if err == nil && (record.Ref.ID == child.ID || record.Ref.ID == sibling.ID) {
+			depthOne := rows[0].Clone()
+			depthOne.Row.Key += ":depth-1"
+			depthOne.Row.Index.Row.Key = depthOne.Row.Key
+			depthOne.Row.Index.Facts.Rows = []driver.SelectionFact{{
+				Kind: driver.SelectionAncestorFact, Ref: &record.Ref, Target: &root, Depth: 1,
+			}}
+			depthOne.Row.Index.ValueDigest = driver.SelectionDigest(depthOne.Row.Value)
+			rows = append(rows, depthOne)
+		}
+		return rows, err
+	}
+	if err := s.BuildGraphSourceIndexes(ctx, lease, decode, project); err != nil {
+		t.Fatal(err)
+	}
+	meta := getMeta(t, ctx, s)
+	at := revKey(mustUint(meta.Head))
+	rootKey := keyID(driver.LockKey{Kind: driver.LockRecord, Ref: &root})
+	valid, err := verifySQLiteSelectionParentChainsAffected(ctx, s.db, meta.Incarnation, at, []string{rootKey})
+	if err != nil || !valid {
+		t.Fatalf("affected proof rejected valid root component: valid=%t err=%v", valid, err)
+	}
+	childKey := keyID(driver.LockKey{Kind: driver.LockRecord, Ref: &child})
+	valid, err = verifySQLiteSelectionParentChainsAffected(ctx, s.db, meta.Incarnation, at, []string{childKey})
+	if err != nil || !valid {
+		t.Fatalf("affected proof rejected valid child-seeded component: valid=%t err=%v", valid, err)
+	}
+	// A leaf seed must not walk back to root and then down into an unrelated
+	// sibling. The sibling is still checked when root itself is the seed.
+	siblingKey := keyID(driver.LockKey{Kind: driver.LockRecord, Ref: &sibling})
+	if _, err := s.db.ExecContext(ctx, `UPDATE selection_bead_history SET parent_key=NULL
+		WHERE incarnation=? AND record_key=? AND end_revision IS NULL`, meta.Incarnation, siblingKey); err != nil {
+		t.Fatal(err)
+	}
+	valid, err = verifySQLiteSelectionParentChainsAffected(ctx, s.db, meta.Incarnation, at, []string{childKey})
+	if err != nil || !valid {
+		t.Fatalf("leaf-seeded proof expanded into unrelated sibling: valid=%t err=%v", valid, err)
+	}
+	valid, err = verifySQLiteSelectionParentChainsAffected(ctx, s.db, meta.Incarnation, at, []string{rootKey})
+	if err != nil || valid {
+		t.Fatalf("root-seeded proof missed stale sibling: valid=%t err=%v", valid, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE selection_bead_history SET parent_key=?
+		WHERE incarnation=? AND record_key=? AND end_revision IS NULL`, rootKey, meta.Incarnation, siblingKey); err != nil {
+		t.Fatal(err)
+	}
+	// The child is not a seed, but it is a current descendant of root. A stale
+	// typed Parent image must therefore invalidate the affected component.
+	if _, err := s.db.ExecContext(ctx, `UPDATE selection_bead_history SET parent_key=NULL
+		WHERE incarnation=? AND record_key=? AND end_revision IS NULL`, meta.Incarnation, childKey); err != nil {
+		t.Fatal(err)
+	}
+	valid, err = verifySQLiteSelectionParentChainsAffected(ctx, s.db, meta.Incarnation, at, []string{rootKey})
+	if err != nil || valid {
+		t.Fatalf("affected proof certified stale unchanged descendant: valid=%t err=%v", valid, err)
+	}
+}
+
+func TestSelectionFamilyCompleteKeepsCanonicalMultiRowSource(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	root, child, other := testRef("selection-multirow-root"), testRef("selection-multirow-child"), testRef("selection-multirow-other")
+	tx, header := beginSourceTest(t, s, lease, root, child, other)
+	for _, item := range []struct {
+		ref    model.Ref
+		parent *model.Ref
+	}{{root, nil}, {child, &root}, {other, nil}} {
+		if err := tx.PutGraphRecord(ctx, driver.Record{Ref: item.ref, Kind: "bead", Body: []byte(`{}`)}, item.parent, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commitSourceTest(t, tx, header)
+	decode, project := selectionBackfillRaceProjection(header.Incarnation, nil)
+	plainDecode, plainProject := decode, project.Decode
+	decode = func(record driver.Record) (driver.GraphSourceMetadata, error) {
+		metadata, err := plainDecode(record)
+		if err == nil && record.Ref.ID == child.ID {
+			metadata.Selection[0].Row.Index.Bead.Parent = &root
+		}
+		return metadata, err
+	}
+	project.Decode = func(record driver.Record, inputs []driver.DerivedRow) ([]driver.DerivedSelectionRow, error) {
+		rows, err := plainProject(record, inputs)
+		if err == nil && record.Ref.ID == child.ID {
+			depthOne := rows[0].Clone()
+			depthOne.Row.Key += ":depth-1"
+			depthOne.Row.Index.Row.Key = depthOne.Row.Key
+			depthOne.Row.Index.Facts.Rows = []driver.SelectionFact{{
+				Kind: driver.SelectionAncestorFact, Ref: &child, Target: &root, Depth: 1,
+			}}
+			depthOne.Row.Index.ValueDigest = driver.SelectionDigest(depthOne.Row.Value)
+			rows = append(rows, depthOne)
+		}
+		return rows, err
+	}
+	if err := s.BuildGraphSourceIndexes(ctx, lease, decode, project); err != nil {
+		t.Fatal(err)
+	}
+	meta := getMeta(t, ctx, s)
+	family := sqliteSelectionFamilies()[3]
+	childSource := keyID(driver.LockKey{Kind: driver.LockRecord, Ref: &child})
+	var oldRows []string
+	rows, err := s.db.QueryContext(ctx, `SELECT row_key FROM selection_fact_sets
+		WHERE incarnation=? AND branch=? AND row_table=? AND kind=? AND source_key=? AND end_revision IS NULL ORDER BY row_key`,
+		meta.Incarnation, revKey(0), string(family.Table), string(family.Kind), childSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var row string
+		if err := rows.Scan(&row); err != nil {
+			_ = rows.Close()
+			t.Fatal(err)
+		}
+		oldRows = append(oldRows, row)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		t.Fatal(err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(oldRows) != 2 {
+		t.Fatalf("canonical child source rows=%v, want self+depth", oldRows)
+	}
+
+	newRow := func(row driver.DerivedSelectionRow, key string) driver.DerivedSelectionRow {
+		copy := row.Clone()
+		copy.Row.Key = key
+		copy.Row.Index.Row.Key = key
+		return copy
+	}
+	state := func(row driver.DerivedSelectionRow, present bool) driver.LockState {
+		key := driver.DerivedRowKey{Table: row.Table, Key: row.Row.Key}
+		lock := driver.LockKey{Kind: driver.LockDerived, Derived: &key}
+		state := driver.LockState{Key: lock, Present: present}
+		if present {
+			copy := row.Row.Clone()
+			state.Derived = &copy
+		}
+		return state
+	}
+	childRecord := driver.Record{Ref: child, Kind: "bead", Body: []byte(`{}`)}
+	childRows, err := project.Decode(childRecord, nil)
+	if err != nil || len(childRows) != 2 {
+		t.Fatalf("child fixture rows=%d err=%v", len(childRows), err)
+	}
+	otherRecord := driver.Record{Ref: other, Kind: "bead", Body: []byte(`{}`)}
+	otherRows, err := project.Decode(otherRecord, nil)
+	if err != nil || len(otherRows) != 1 {
+		t.Fatalf("other fixture rows=%d err=%v", len(otherRows), err)
+	}
+	owner := &transaction{records: map[string]*driver.Record{}}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// An unrelated one-row replacement must not re-census or reject the
+	// existing child's valid self+depth closure.
+	unrelated := map[string]driver.LockState{}
+	otherRow := otherRows[0]
+	unrelated[keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: otherRow.Table, Key: otherRow.Row.Key}})] = state(otherRow, true)
+	complete, err := owner.selectionFamilyCompleteForCommit(ctx, conn, meta.Incarnation, family, unrelated)
+	if err != nil || !complete {
+		t.Fatalf("unrelated replacement rejected existing multi-row source: complete=%t err=%v", complete, err)
+	}
+
+	// A canonical replacement may remove both old physical rows and add a
+	// complete self+depth set under new opaque keys.
+	fullReplacement := map[string]driver.LockState{}
+	for _, row := range childRows {
+		replacement := newRow(row, "replacement/"+row.Row.Key)
+		fullReplacement[keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: replacement.Table, Key: replacement.Row.Key}})] = state(replacement, true)
+	}
+	for _, row := range childRows {
+		rowKey := driver.DerivedRowKey{Table: family.Table, Key: row.Row.Key}
+		id := keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &rowKey})
+		fullReplacement[id] = driver.LockState{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &rowKey}}
+	}
+	complete, err = owner.selectionFamilyCompleteForCommit(ctx, conn, meta.Incarnation, family, fullReplacement)
+	if err != nil || !complete {
+		t.Fatalf("complete multi-row replacement rejected: complete=%t err=%v", complete, err)
+	}
+
+	// A partial replacement that drops the self row must remain unavailable.
+	partial := map[string]driver.LockState{}
+	depth := newRow(childRows[1], "replacement/partial-depth")
+	partial[keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: depth.Table, Key: depth.Row.Key}})] = state(depth, true)
+	depthKey := driver.DerivedRowKey{Table: family.Table, Key: childRows[1].Row.Key}
+	partial[keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &depthKey})] = driver.LockState{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &depthKey}}
+	complete, err = owner.selectionFamilyCompleteForCommit(ctx, conn, meta.Incarnation, family, partial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete {
+		t.Fatal("partial multi-row replacement certified without the unchanged self row")
+	}
+}
+
+// A raw bead delete closes its source envelopes through changedSources even
+// when no typed projection tombstone is staged.  Ready ancestor coverage must
+// fail closed in that case; the canonical pipeline path is covered separately
+// by the complete remove-plus-replacement checks above.
+func TestSelectionFamilyCoverageRejectsRawDeleteWithoutTypedTombstones(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	ref := testRef("selection-raw-delete")
+	tx, header := beginSourceTest(t, s, lease, ref)
+	body := []byte(`{"id":"selection-raw-delete","type":"issue"}`)
+	if err := tx.PutGraphRecord(ctx, driver.Record{Ref: ref, Kind: "bead", Body: body}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	commitSourceTest(t, tx, header)
+	decode, project := selectionBackfillRaceProjection(header.Incarnation, nil)
+	if err := s.BuildGraphSourceIndexes(ctx, lease, decode, project); err != nil {
+		t.Fatal(err)
+	}
+	meta := getMeta(t, ctx, s)
+	ancestor := sqliteSelectionFamilies()[3]
+	ready, err := selectionFamilyReady(ctx, s.db, meta.Incarnation, ancestor, revKey(mustUint(meta.Head)))
+	if err != nil || !ready {
+		t.Fatalf("typed ancestor control was not ready before delete: ready=%t err=%v", ready, err)
+	}
+
+	remove, removeHeader := beginSourceTest(t, s, lease, ref)
+	if err := remove.Delete(ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+	commitSourceTest(t, remove, removeHeader)
+	meta = getMeta(t, ctx, s)
+	ready, err = selectionFamilyReady(ctx, s.db, meta.Incarnation, ancestor, revKey(mustUint(meta.Head)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready {
+		t.Fatal("raw bead delete carried ready ancestor coverage without typed tombstones")
+	}
+}
+
+type selectionCountingQueryer struct {
+	conn       *sql.Conn
+	rowQueries int
+	queries    int
+}
+
+func (q *selectionCountingQueryer) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	q.rowQueries++
+	return q.conn.QueryRowContext(ctx, query, args...)
+}
+
+func (q *selectionCountingQueryer) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	q.queries++
+	return q.conn.QueryContext(ctx, query, args...)
+}
+
+func TestSelectionVirginMarkerUsesConstantAdmissionWork(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	if _, err := s.db.ExecContext(ctx, `WITH RECURSIVE n(i) AS (
+		SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1200)
+		INSERT INTO objects(key,kind) SELECT printf('marker-bead-%04d', i), 'bead' FROM n`); err != nil {
+		t.Fatal(err)
+	}
+	meta := getMeta(t, ctx, s)
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM objects WHERE kind='bead'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1200 {
+		t.Fatalf("seeded marker work store=%d", count)
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	owner := &transaction{records: map[string]*driver.Record{
+		"new": &driver.Record{Kind: "bead"},
+	}}
+	counter := &selectionCountingQueryer{conn: conn}
+	virgin, err := owner.selectionNeverSourcedBefore(ctx, counter, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !virgin {
+		t.Fatal("virgin marker did not admit the first affected bead")
+	}
+	if counter.rowQueries != 1 || counter.queries != 0 {
+		t.Fatalf("virgin admission work grew beyond marker lookup: row_queries=%d queries=%d", counter.rowQueries, counter.queries)
 	}
 }
 
