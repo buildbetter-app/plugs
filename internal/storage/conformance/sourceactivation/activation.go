@@ -65,8 +65,12 @@ func OntologyFirst(t *testing.T, store driver.Store, lease driver.ActiveLease) {
 		}
 		changes[i] = conformance.FixtureChange{Ref: ref(doc.ID), Kind: "bead", Op: model.OpCreate, Body: body, Graph: &conformance.FixtureGraphSource{Parent: doc.Parent}}
 	}
-	if _, err := conformance.Seed(ctx, store, lease, driver.ChangesetHeader{}, changes); err != nil {
-		t.Fatal(err)
+	// Use bounded publications, as the server does; one giant SQL publication
+	// would hold the final lease row fence across all 20,000 images.
+	for first := 0; first < len(changes); first += 100 {
+		if _, err := conformance.Seed(ctx, store, lease, driver.ChangesetHeader{}, changes[first:first+100]); err != nil {
+			t.Fatal(err)
+		}
 	}
 	meta, err := store.Meta(ctx)
 	if err != nil {
@@ -96,8 +100,8 @@ func OntologyFirst(t *testing.T, store driver.Store, lease driver.ActiveLease) {
 	observed := &observedStore{Store: store}
 	w := pipeline.New(observed, lease, pipeline.WithOntology(service.NewOntology(nil)))
 	started := time.Now()
-	commit, err := w.Apply(ctx, model.PrincipalRef{Kind: "system", ID: "source-activation"}, model.ChangeSet{Ops: []model.Op{{Kind: model.OpClose, Close: &model.CloseOp{Target: changes[1].Ref}}}}, model.WriteMeta{Method: "bead.close", IdempotencyKey: "ontology-first-close"})
-	if err != nil || commit.Revision.String() != "3" {
+	commit, err := w.Apply(ctx, model.PrincipalRef{Kind: "system", ID: "source-activation"}, model.ChangeSet{Ops: []model.Op{{Kind: model.OpClose, Close: &model.CloseOp{Target: changes[1].Ref}}}}, model.WriteMeta{Method: "bead.close", IdempotencyKey: "a5d1e7f024ab41c0b2ae124aa0098765"})
+	if err != nil || commit.Revision.String() != "202" {
 		t.Errorf("lifecycle close under 1000-child parent: commit=%+v err=%v", commit, err)
 	}
 	if observed.queries != 0 || observed.parentReads == 0 || observed.inverseReads == 0 {
