@@ -152,6 +152,30 @@ func (s *observedService) ApplyWithOutcome(ctx context.Context, by model.Princip
 	return out, err
 }
 
+// Preserve the lifecycle service's actual refusal before RPC canonicalizes it.
+// The collector observes the unchanged Writer; no request, deadline, outcome or
+// error is replaced, and diagnostics run only after the real service returns.
+type observedLifecycleService struct {
+	*service.Service
+	t      *testing.T
+	phases *pipeline.Collector
+}
+
+func (s *observedLifecycleService) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	started := time.Now()
+	out, err := s.Service.CloseWithOutcome(ctx, by, req, meta)
+	if err != nil {
+		code, message := model.ErrorCode(""), err.Error()
+		var domain *model.Error
+		if errors.As(err, &domain) {
+			code, message = domain.Data.Code, domain.Message
+		}
+		phases, _ := json.Marshal(s.phases.Snapshot())
+		s.t.Logf("EP6_LIFECYCLE_REFUSAL method=bead.close code=%s message=%q elapsed_ms=%.3f phases=%s", code, message, float64(time.Since(started))/float64(time.Millisecond), phases)
+	}
+	return out, err
+}
+
 // call crosses the real loopback listener and authentication provider. Tokens
 // remain request-local and are never copied into durable evidence.
 func (e *endpoint) call(t *testing.T, token, method string, params map[string]any) reply {
@@ -409,13 +433,13 @@ func lifecycleFixture(t *testing.T, store driver.Store, lease driver.ActiveLease
 		t.Fatal(err)
 	}
 	resolver := service.NewOntology(nil)
-	writer := pipeline.New(store, lease, pipeline.WithOntology(resolver))
+	writer, phases := pipeline.NewWithTelemetry(store, lease, pipeline.WithOntology(resolver))
 	domain := service.New(store, lease, writer, service.WithOntology(resolver))
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rpc.BindService(registry, domain); err != nil {
+	if err := rpc.BindService(registry, &observedLifecycleService{Service: domain, t: t, phases: phases}); err != nil {
 		t.Fatal(err)
 	}
 	server, err := rpc.New(registry, rpc.Config{Incarnation: meta.Incarnation, AuthMode: "anonymous", DefaultProject: epics,
