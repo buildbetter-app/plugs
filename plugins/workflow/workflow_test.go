@@ -810,6 +810,10 @@ func TestClaimNextWithResourcesRetainsSelectedAndEmptyReplay(t *testing.T) {
 				t.Fatalf("filtered claim mutated the excluded ready item: %+v err=%v", ready, err)
 			}
 			before := append([]byte(nil), state.value...)
+			encodedItem, err := json.Marshal(item)
+			if err != nil {
+				t.Fatal(err)
+			}
 			clock = clock.Add(ClaimTTL + time.Second)
 			for _, receiptOnly := range []bool{false, true} {
 				var retry ItemView
@@ -819,7 +823,8 @@ func TestClaimNextWithResourcesRetainsSelectedAndEmptyReplay(t *testing.T) {
 				} else {
 					retry, retryFound, retryReplay, err = provider.ClaimNextWithResources(ctx, by, "project", nil, []string{allowed}, meta)
 				}
-				if err != nil || !retryReplay || retryFound != found || !reflect.DeepEqual(retry, item) || !bytes.Equal(before, state.value) {
+				encodedRetry, encodeErr := json.Marshal(retry)
+				if err != nil || encodeErr != nil || !retryReplay || retryFound != found || !bytes.Equal(encodedRetry, encodedItem) || !bytes.Equal(before, state.value) {
 					t.Fatalf("retry changed selector result after lease expiry: %+v found=%v replayed=%v err=%v", retry, retryFound, retryReplay, err)
 				}
 			}
