@@ -292,7 +292,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 		return Result{}, err
 	}
 	if typeSummary {
-		result, err := s.typeSummaryResult(candidates, rows, authorized, pending, definition, asOf)
+		result, err := s.typeSummaryResult(ctx, candidates, rows, authorized, pending, definition, asOf)
 		if err != nil {
 			return Result{}, err
 		}
@@ -313,7 +313,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	}
 	result := Result{Items: make([]Bead, 0, end-start), AsOf: asOf, Projection: projection}
 	for _, row := range candidates[start:end] {
-		item, err := s.item(row, definition.Fields, rows, authorized, pending)
+		item, err := s.item(ctx, row, definition.Fields, rows, authorized, pending)
 		if err != nil {
 			return Result{}, err
 		}
@@ -323,7 +323,7 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 		result.NextCursor = s.nextCursor(by, req.Agent, req.ViewID, definitionDigest, asOf, uint64(end))
 	}
 	if len(definition.GroupBy) != 0 {
-		result.Groups, err = s.grouped(candidates, start, end, definition.Fields, rows, authorized, pending)
+		result.Groups, err = s.grouped(ctx, candidates, start, end, definition.Fields, rows, authorized, pending)
 		if err != nil {
 			return Result{}, err
 		}
@@ -395,9 +395,10 @@ func (s *Service) nextCursor(by model.PrincipalRef, agent, viewID, definitionDig
 	return &Cursor{Version: 1, Method: "view.run", PrincipalDigest: principal, DefinitionDigest: definitionDigest, ViewID: viewID, OntologyRevision: s.cfg.OntologyRevision, Incarnation: asOf.Incarnation, Revision: asOf.Revision, Index: index}
 }
 
-func (s *Service) typeSummaryResult(candidates, rows []stored, authorized map[string]bool, pending map[string]ReadinessState, definition Definition, asOf AsOf) (Result, error) {
+func (s *Service) typeSummaryResult(ctx context.Context, candidates, rows []stored, authorized map[string]bool, pending map[string]ReadinessState, definition Definition, asOf AsOf) (Result, error) {
 	groups := map[string][]stored{}
 	for _, row := range candidates {
+		driver.ReportReadWork(ctx, driver.ReadAggregateInputs, 1)
 		groups[row.doc.Type] = append(groups[row.doc.Type], row)
 	}
 	if len(groups) > MaxGroups {
@@ -413,7 +414,7 @@ func (s *Service) typeSummaryResult(candidates, rows []stored, authorized map[st
 		groupRows := groups[key]
 		items := make([]Bead, 0)
 		for _, row := range groupRows {
-			item, err := s.item(row, definition.Fields, rows, authorized, pending)
+			item, err := s.item(ctx, row, definition.Fields, rows, authorized, pending)
 			if err != nil {
 				return Result{}, err
 			}
@@ -422,14 +423,16 @@ func (s *Service) typeSummaryResult(candidates, rows []stored, authorized map[st
 				items = append(items, item)
 			}
 		}
+		driver.ReportReadWork(ctx, driver.ReadAggregateGroups, 1)
 		result.Groups = append(result.Groups, Group{Key: key, Count: len(groupRows), Items: items})
 	}
 	return result, nil
 }
 
-func (s *Service) grouped(candidates []stored, start, end int, fields []string, rows []stored, authorized map[string]bool, pending map[string]ReadinessState) ([]Group, error) {
+func (s *Service) grouped(ctx context.Context, candidates []stored, start, end int, fields []string, rows []stored, authorized map[string]bool, pending map[string]ReadinessState) ([]Group, error) {
 	groups := map[string][]stored{}
 	for _, row := range candidates {
+		driver.ReportReadWork(ctx, driver.ReadAggregateInputs, 1)
 		groups[row.doc.Type] = append(groups[row.doc.Type], row)
 	}
 	pageGroups := map[string][]stored{}
@@ -450,7 +453,7 @@ func (s *Service) grouped(candidates []stored, start, end int, fields []string, 
 		all := groups[key]
 		group := Group{Key: key, Count: len(all), Items: []Bead{}}
 		for _, row := range pageGroups[key] {
-			item, err := s.item(row, fields, rows, authorized, pending)
+			item, err := s.item(ctx, row, fields, rows, authorized, pending)
 			if err != nil {
 				return nil, err
 			}
@@ -459,12 +462,14 @@ func (s *Service) grouped(candidates []stored, start, end int, fields []string, 
 		if count := remaining[key]; count != 0 {
 			group.Elided = &Elision{Count: count, Reason: "output_budget"}
 		}
+		driver.ReportReadWork(ctx, driver.ReadAggregateGroups, 1)
 		result = append(result, group)
 	}
 	return result, nil
 }
 
-func (s *Service) item(row stored, fields []string, rows []stored, authorized map[string]bool, pending map[string]ReadinessState) (Bead, error) {
+func (s *Service) item(ctx context.Context, row stored, fields []string, rows []stored, authorized map[string]bool, pending map[string]ReadinessState) (Bead, error) {
+	driver.ReportReadWork(ctx, driver.ReadItemProjections, 1)
 	fieldsMap := cloneMap(row.doc.Fields)
 	metadata := cloneMetadata(row.doc.Metadata)
 	if fields != nil {
