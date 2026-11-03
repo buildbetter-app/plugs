@@ -459,6 +459,7 @@ internal/integration/nightlyrestore/engine_test.go
 internal/integration/nightlyrestore/fixture_test.go
 internal/integration/nightlyrestore/history_diff_test.go
 internal/integration/nightlyrestore/restore_diff_test.go
+internal/integration/nightlyrestore/snapshot_archive_content_test.go
 internal/integration/offlinehistory/BUILD.bazel
 internal/integration/offlinehistory/archive_test.go
 internal/integration/offlinehistory/fixture_test.go
