@@ -4,8 +4,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
 func labels(t *testing.T, h *host, id string) []string {
@@ -72,7 +70,8 @@ func TestB16PublicLabelsPostgresReplacementInheritanceRefusalAndReopen(t *testin
 		"id":     ref(childID),
 		"fields": map[string]any{"labels": []string{"replace", "", "added", "replace"}},
 	}
-	changed := committed(t, h.call(t, "bead.update", replacement, key("b16-replace")), 4)
+	changedReply := h.call(t, "bead.update", replacement, key("b16-replace"))
+	committed(t, changedReply, 4)
 	if got := labels(t, h, childID); !reflect.DeepEqual(got, []string{"added", "replace"}) {
 		t.Fatalf("whole-set replacement was not canonical: %v", got)
 	}
@@ -88,7 +87,7 @@ func TestB16PublicLabelsPostgresReplacementInheritanceRefusalAndReopen(t *testin
 
 	beforeRefusal := graph(t, h.store)
 	for name, bad := range map[string]any{
-		"overlong":   strings.Repeat("界", 256),
+		"overlong":   []string{strings.Repeat("界", 256)},
 		"non_string": []any{"ok", 3},
 	} {
 		requestKey := key("b16-refuse-" + name)
@@ -112,7 +111,7 @@ func TestB16PublicLabelsPostgresReplacementInheritanceRefusalAndReopen(t *testin
 	if got := labels(t, h, childID); !reflect.DeepEqual(got, []string{"added", "replace"}) {
 		t.Fatalf("physical PostgreSQL reopen changed labels: %v", got)
 	}
-	replay(t, h.call(t, "bead.update", replacement, key("b16-replace")), changed.Result)
+	replay(t, h.call(t, "bead.update", replacement, key("b16-replace")), changedReply.Result)
 	unchanged(t, beforeRefusal, graph(t, h.store))
 	if got := labels(t, h, parentID); !reflect.DeepEqual(got, []string{"later"}) {
 		t.Fatalf("reopen changed parent labels: %v", got)
