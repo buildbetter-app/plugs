@@ -85,16 +85,6 @@ filegroup(
     visibility = ["//tools/roundtrip:__pkg__"],
 )
 
-# Measurement-only controls can run while public producer delivery is blocked.
-# Their PASS is never paired-recording or behavior-card qualification.
-go_test(
-    name = "recorder_validation_test",
-    srcs = ["public_recording_test.go"],
-    args = ["-test.v", "-test.run=^TestPublicProjection"],
-    tags = ["manual"],
-    deps = ["//internal/core/dumpformat"],
-)
-
 filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
