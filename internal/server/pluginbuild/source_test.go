@@ -846,6 +846,14 @@ func TestWASIGuestCallbackTimerCancellationAndRetirement(t *testing.T) {
 	defer func() { _ = artifact.Close() }()
 	host := wasiGuestHost(t, artifact, time.Second)
 	mutator := host.Mutators()[0].Mutator
+	prime, err := mutator.Mutate(context.Background(), wasiStateChange("timer-cancel", "pool-state:prime"), &wasiSnapshot{revision: model.Natural64(1)})
+	if err != nil || len(prime) != 1 {
+		t.Fatalf("source-built guest affinity was not primed before cancellation: patches=%v err=%v", prime, err)
+	}
+	var primeValue string
+	if json.Unmarshal(prime[0].Paths["fields.normalized"], &primeValue) != nil || !strings.HasSuffix(primeValue, "#1") {
+		t.Fatalf("source-built guest did not record its pre-cancellation state: %q", primeValue)
+	}
 
 	// The fixture's timer-callback title enters time.Sleep inside the real
 	// source-built guest callback. The observer is called only at the positive
@@ -877,7 +885,7 @@ func TestWASIGuestCallbackTimerCancellationAndRetirement(t *testing.T) {
 		if !errors.Is(callbackErr, context.Canceled) {
 			t.Fatalf("canceled source-built guest callback returned %v", callbackErr)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(750 * time.Millisecond):
 		t.Fatal("canceled source-built guest callback did not unwind its WASI wait")
 	}
 	if !errors.Is(waitCtx.Err(), context.Canceled) {
@@ -954,6 +962,7 @@ func TestWASIGuestCallbackTimerCancellationAndRetirement(t *testing.T) {
 	select {
 	case <-retireEntered:
 	case <-time.After(2 * time.Second):
+		releaseRetire()
 		_ = retireArtifact.Close()
 		t.Fatal("owner-retirement callback did not enter positive WASI nanosleep")
 	}
