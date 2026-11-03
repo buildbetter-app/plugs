@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -314,7 +316,23 @@ func epicDefinition(parent model.Ref) *viewops.Definition {
 
 func buildLargeEpic(t *testing.T, f *fixture) (model.Ref, model.Ref) {
 	t.Helper()
-	parent := f.create(t, epics, "indexed epic", nil)
+	// Populate this read-only regression through the real Writer and ordinary
+	// ontology, without the independent fixed-policy bulk-write deadline.
+	// The original authenticated 20k workload below is unchanged. No startup
+	// builder or test-installed coverage substitutes for typed publication.
+	writer := pipeline.New(f.store, f.lease, pipeline.WithOntology(service.NewOntology(nil)))
+	apply := func(ops []model.Op) model.Commit {
+		t.Helper()
+		f.sequence++
+		out, err := writer.Apply(context.Background(), model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, model.ChangeSet{Ops: ops}, model.WriteMeta{
+			Method: "tx.apply", Project: visible, Agent: "ep6-index-regression", AgentLabel: "ep6-index-regression", IdempotencyKey: fmt.Sprintf("%032x", f.sequence),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	parent := apply([]model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Project: epics, Fields: map[string]any{"title": "indexed epic"}}}}).Results[0].Ref
 	children := make([]model.Op, 0, 50)
 	for i := 0; i < 50; i++ {
 		children = append(children, model.Op{Kind: model.OpCreate, Create: &model.CreateOp{
@@ -322,7 +340,7 @@ func buildLargeEpic(t *testing.T, f *fixture) (model.Ref, model.Ref) {
 			Fields: map[string]any{"title": fmt.Sprintf("direct child %02d", i)},
 		}})
 	}
-	created := committed(t, f.write(t, f.owner, "tx.apply", visible, map[string]any{"changeSet": model.ChangeSet{Ops: children}}))
+	created := apply(children)
 	for start := 0; start < 19949; start += 100 {
 		end := start + 100
 		if end > 19949 {
@@ -335,7 +353,7 @@ func buildLargeEpic(t *testing.T, f *fixture) (model.Ref, model.Ref) {
 				Fields: map[string]any{"title": fmt.Sprintf("unrelated bead %05d", i)},
 			}})
 		}
-		committed(t, f.write(t, f.owner, "tx.apply", visible, map[string]any{"changeSet": model.ChangeSet{Ops: ops}}))
+		apply(ops)
 	}
 	meta, err := f.store.Meta(context.Background())
 	if err != nil {
