@@ -17,6 +17,20 @@ go_test(
     deps = ["//internal/core/model"],
 )
 
+go_test(
+    name = "unsupported_contract_test",
+    srcs = ["unsupported_contract_test.go"],
+    data = [
+        "catalog.json",
+        "//:engdocs/design/plug/contracts/openrpc.json",
+    ],
+    deps = [
+        ":wire",
+        "//internal/core/model",
+        "//internal/server/rpc",
+    ],
+)
+
 filegroup(
     name = "reconcile_openrpc_inputs",
     srcs = ["catalog.json", "wire_test.go"],
