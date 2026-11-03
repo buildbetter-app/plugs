@@ -305,6 +305,7 @@ internal/core/service/audit_test.go
 internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
 internal/core/service/claim_recovery_test.go
+internal/core/service/compact.go
 internal/core/service/direct_blockers.go
 internal/core/service/direct_blockers_test.go
 internal/core/service/gate.go
@@ -720,6 +721,7 @@ internal/server/rpc/BUILD.bazel
 internal/server/rpc/admin.go
 internal/server/rpc/cmd/openrpcgen/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/main.go
+internal/server/rpc/compact.go
 internal/server/rpc/cursor.go
 internal/server/rpc/cursor_test.go
 internal/server/rpc/gate_integration_test.go
@@ -1042,6 +1044,16 @@ spec/s1-b05-b08/reclaim_race_test.go
 spec/s1-b05-b08/record_reference.py
 spec/s1-b05-b08/reference/provenance.json
 spec/s1-b05-b08/runtime_test.go
+spec/s1-b09-b12/compaction/BUILD.bazel
+spec/s1-b09-b12/compaction/audit_test.go
+spec/s1-b09-b12/compaction/b12_test.go
+spec/s1-b09-b12/compaction/composition_test.go
+spec/s1-b09-b12/compaction/continuation_test.go
+spec/s1-b09-b12/compaction/fixture_test.go
+spec/s1-b09-b12/compaction/guards_test.go
+spec/s1-b09-b12/compaction/presence_test.go
+spec/s1-b09-b12/compaction/publication_test.go
+spec/s1-b09-b12/compaction/selection_test.go
 spec/s1-b13-b16/BUILD.bazel
 spec/s1-b13-b16/README.md
 spec/s1-b13-b16/capture_regressions_test.go
