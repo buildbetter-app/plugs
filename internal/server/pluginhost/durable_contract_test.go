@@ -207,6 +207,7 @@ func durableMethodNative(handle func(context.Context, pluginapi.DurableState) er
 			}
 			return sdk.Registration{Methods: []sdk.Method{{
 				Descriptor: pluginapi.Method{
+					Params: map[string]any{"type": "object"}, Result: map[string]any{"type": "object"},
 					Name: "x.durableprobe.probe", Permission: "read", Resource: func(any) []pluginapi.Ref {
 						return []pluginapi.Ref{pluginapi.RefByID("probe-project", "")}
 					},

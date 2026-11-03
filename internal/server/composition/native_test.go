@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
@@ -386,19 +387,10 @@ func TestConfiguredNativeHotDurableStateRefusalPublishesNothing(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			response, err := f.client.Call(context.Background(), "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "must not commit"}}, "550e8400-e29b-41d4-a716-446655440051")
-			if err != nil {
-				t.Fatal(err)
-			}
-			var envelope struct {
-				Error *struct {
-					Data struct {
-						Code string `json:"code"`
-					} `json:"data"`
-				} `json:"error"`
-			}
-			if err := json.Unmarshal(response.JSON, &envelope); err != nil || envelope.Error == nil || envelope.Error.Data.Code != "ontology_guard_failed" {
-				t.Fatalf("configured validator did not refuse the admitted HTTP write: %s err=%v", response.JSON, err)
+			_, err = f.client.Call(context.Background(), "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "must not commit"}}, "550e8400-e29b-41d4-a716-446655440051")
+			var refusal *wire.Error
+			if !errors.As(err, &refusal) || refusal.Data.Code != "ontology_guard_failed" {
+				t.Fatalf("configured validator did not refuse the admitted HTTP write: %v", err)
 			}
 			select {
 			case attempts := <-attempted:
