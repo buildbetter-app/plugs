@@ -38,6 +38,9 @@ for a live run remains replayable even after its initial operation window; a
 terminal receipt is replayable only until its completion-based 24-hour window
 ends. The same key with a different digest or any changed scope returns
 `idempotency_key_reused`. Replay is authorized again for the current principal.
+The store incarnation is part of that scope: a same-incarnation response-loss
+retry can replay, but a restart refuses replay of a receipt from the prior
+incarnation while restoring the live state document.
 Completion atomically replaces body-bearing invocation/claim results with
 identity-only terminal results and deletes all run/item/comment/claim payloads.
 Replay after completion therefore returns only the bounded identity/commit

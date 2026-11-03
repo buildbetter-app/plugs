@@ -164,17 +164,17 @@ func TestAuthenticatedWorkflowHTTPRestartCompletionAndHistory(t *testing.T) {
 	closeParams := ref(itemID)
 	closeParams["reason"] = "done"
 	closed := call(ownerClient, "bead.close", closeParams, strings.Repeat("4", 64))
+	// Model a lost final response in the same store incarnation. The scoped
+	// terminal receipt replays the identity-only commit without resurrecting
+	// the deleted item. Incarnation is intentionally part of the receipt scope,
+	// so a later restart must not replay this old response.
+	replayedClose := call(ownerClient, "bead.close", closeParams, strings.Repeat("4", 64))
+	if !bytes.Equal(closed.JSON, replayedClose.JSON) {
+		t.Fatalf("terminal response replay changed completion receipt: first=%s replay=%s", closed.JSON, replayedClose.JSON)
+	}
 	current.stop(t)
 	current = startRuntime(t, config)
 	ownerClient = newClient(issue(owner), config.Project)
-	replayedClose := call(ownerClient, "bead.close", closeParams, strings.Repeat("4", 64))
-	if !bytes.Equal(closed.JSON, replayedClose.JSON) {
-		t.Fatalf("terminal restart changed completion receipt: first=%s replay=%s", closed.JSON, replayedClose.JSON)
-	}
-	terminal := call(ownerClient, "x.workflow.invoke", params, strings.Repeat("1", 64))
-	if len(resultObject(t, terminal)["items"].([]any)) != 0 || bytes.Contains(terminal.JSON, []byte("ephemeral confidential")) {
-		t.Fatalf("terminal restart replay disclosed or recreated payload: %s", terminal.JSON)
-	}
 	_, err = ownerClient.Call(ctx, "bead.get", itemRef, "")
 	if !errors.As(err, &denied) || denied.Data.Code != "not_found" {
 		t.Fatalf("completed workflow item remained readable after restart: %v", err)
