@@ -865,6 +865,7 @@ internal/storage/postgres/encoding.go
 internal/storage/postgres/engine_test.go
 internal/storage/postgres/fencing_test.go
 internal/storage/postgres/lease.go
+internal/storage/postgres/lease_prepare_test.go
 internal/storage/postgres/lock_batch_test.go
 internal/storage/postgres/metadata.go
 internal/storage/postgres/offline_history.go

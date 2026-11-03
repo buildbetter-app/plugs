@@ -19,7 +19,12 @@ import (
 
 type transaction struct {
 	*reader
-	lease           *activeLease
+	lease *activeLease
+	// leasePrepared records the one lease/clock observation made after this
+	// writer's SQL transaction begins. Staging reuses that observation while
+	// local context, lease-loss and transaction-closed checks remain live;
+	// publication performs a fresh row-locking fence.
+	leasePrepared   bool
 	locked, hasHead bool
 	restore         *driver.Meta
 	nativeRestore   *driver.NativeRestoreProfile
@@ -41,10 +46,6 @@ func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.Wri
 	if err := s.check(ctx); err != nil {
 		return nil, err
 	}
-	l, err := s.checkLease(ctx, s.db, lease, false)
-	if err != nil {
-		return nil, err
-	}
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return nil, err
@@ -62,6 +63,16 @@ func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.Wri
 		_ = conn.Close()
 		return nil, err
 	}
+	// Prepare the writer against the same SQL transaction that will stage and
+	// publish it. The observation is deliberately not a row lock: Release or a
+	// takeover may proceed while staging, and the final FOR SHARE fence remains
+	// authoritative at publication.
+	l, err := s.checkLease(ctx, tx, lease, false)
+	if err != nil {
+		_ = tx.Rollback()
+		_ = conn.Close()
+		return nil, err
+	}
 	m, err := readMeta(ctx, tx, "")
 	if err != nil {
 		_ = tx.Rollback()
@@ -70,7 +81,7 @@ func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.Wri
 	}
 	r := &reader{store: s, sql: tx, meta: m, conn: conn, cleanupDone: cleanupDone}
 	r.at, _ = m.Head.Uint64()
-	t := &transaction{reader: r, lease: l, records: make(map[string]*driver.Record), identities: make(map[string]driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), allocators: make(map[string]driver.OfflineAllocator), bumps: make(map[string]driver.LockKey), done: make(chan struct{})}
+	t := &transaction{reader: r, lease: l, leasePrepared: true, records: make(map[string]*driver.Record), identities: make(map[string]driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), allocators: make(map[string]driver.OfflineAllocator), bumps: make(map[string]driver.LockKey), done: make(chan struct{})}
 	r.writer = t
 	if err = s.track(r); err != nil {
 		_ = r.finish()
