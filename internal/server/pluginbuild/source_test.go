@@ -731,11 +731,21 @@ func TestWASIArtifactAdmissionCancellationAndOwnerClose(t *testing.T) {
 	// with pluginhost.New in flight.
 	hostDone := make(chan error, 1)
 	initializerEntered := make(chan struct{}, 1)
+	initializerRelease := make(chan struct{})
+	initializerReleased := false
+	releaseInitializer := func() {
+		if !initializerReleased {
+			close(initializerRelease)
+			initializerReleased = true
+		}
+	}
+	defer releaseInitializer()
 	admissionCtx := pluginhost.WithWASMInitializerObserver(context.Background(), func() {
 		select {
 		case initializerEntered <- struct{}{}:
 		default:
 		}
+		<-initializerRelease
 	})
 	go func() {
 		_, hostErr := artifact.Host(admissionCtx, pluginhost.Config{})
@@ -748,24 +758,48 @@ func TestWASIArtifactAdmissionCancellationAndOwnerClose(t *testing.T) {
 	}
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- artifact.Close() }()
+	var (
+		hostErr     error
+		closeErr    error
+		hostDoneOK  bool
+		closeDoneOK bool
+	)
+	// The observer holds the real guest initializer at its entry barrier. A
+	// close result before release is therefore an actual early-retirement bug,
+	// independent of when the Host goroutine publishes hostDone.
 	select {
-	case <-closeDone:
-		select {
-		case <-hostDone:
-		default:
-			t.Fatal("Artifact.Close returned while source WASI admission was still running")
-		}
+	case closeErr = <-closeDone:
+		closeDoneOK = true
+		t.Fatal("Artifact.Close returned before source WASI initializer retired")
 	case <-time.After(100 * time.Millisecond):
-		// The owner is correctly waiting for the in-flight admission.
+		// The owner is still waiting for the in-flight initializer.
+		select {
+		case closeErr = <-closeDone:
+			closeDoneOK = true
+			t.Fatal("Artifact.Close returned before source WASI initializer retired")
+		default:
+		}
 	}
-	select {
-	case <-hostDone:
-	case <-time.After(3 * time.Second):
-		t.Fatal("owner cancellation did not stop source WASI admission")
+	releaseInitializer()
+	retirementDeadline := time.NewTimer(3 * time.Second)
+	defer retirementDeadline.Stop()
+	for !hostDoneOK || !closeDoneOK {
+		select {
+		case hostErr = <-hostDone:
+			hostDoneOK = true
+		case closeErr = <-closeDone:
+			closeDoneOK = true
+		case <-retirementDeadline.C:
+			if !hostDoneOK {
+				t.Fatal("owner cancellation did not stop source WASI admission")
+			}
+			t.Fatal("owner close did not finish after source WASI admission retired")
+		}
 	}
-	if closeErr := <-closeDone; closeErr != nil {
+	if closeErr != nil {
 		t.Fatalf("owner close failed: %v", closeErr)
 	}
+	t.Logf("source WASI owner-close admission returned: %v", hostErr)
 	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
 		t.Fatalf("owner close removed output with unexpected state: %v", statErr)
 	}
