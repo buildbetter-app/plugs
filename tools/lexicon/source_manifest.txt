@@ -1251,6 +1251,7 @@ tools/rehearsal/admin_fixture.go
 tools/rehearsal/cmd/rollback-runtime/BUILD.bazel
 tools/rehearsal/cmd/rollback-runtime/main.go
 tools/rehearsal/cmd/shadow-rehearsal/BUILD.bazel
+tools/rehearsal/cmd/shadow-rehearsal/cli_test.sh
 tools/rehearsal/cmd/shadow-rehearsal/main.go
 tools/rehearsal/disposable.go
 tools/rehearsal/disposable_test.go
