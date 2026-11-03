@@ -145,7 +145,7 @@ func newInstancePool(native sdk.Native, owner *Host, source *instance) (*instanc
 }
 
 func (p *instancePool) newMember() (*instance, error) {
-	member, err := newInstance(p.native, p.manifest, p.owner, p.state, p.owner.durableFor(p.manifest.Alias, p.manifest.ID))
+	member, err := newInstance(p.native, p.manifest, p.owner, p.state, p.owner.durableFor(p.manifest.Alias, p.native.Instance))
 	if err != nil {
 		return nil, err
 	}

@@ -3,12 +3,17 @@ package pluginhost
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 	"github.com/buildbetter-app/plugs/pluginapi"
 	sdk "github.com/buildbetter-app/plugs/sdk/go"
+	"github.com/buildbetter-app/plugs/sdk/go/conformance"
 )
 
 func TestDurableManifestRefusesMemoryCheckpoint(t *testing.T) {
@@ -95,5 +100,88 @@ func TestMemoryDurableAccessorRefusesEveryOperation(t *testing.T) {
 	checkpoint, err := store.LoadCheckpoint(ctx, "plugin/example/default/durable")
 	if err != nil || checkpoint.Generation != 0 || len(checkpoint.Payload) != 0 {
 		t.Fatalf("unavailable capability wrote a memory checkpoint: generation=%d err=%v", checkpoint.Generation, err)
+	}
+}
+
+func TestPooledReplacementKeepsNativeInstanceDurableNamespace(t *testing.T) {
+	ctx := context.Background()
+	store, err := (sqlite.Driver{}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "durable.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	lease, err := store.Lease(ctx, "namespace-replacement", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lease.Release(context.Background()) })
+	persistent, ok := store.(driver.PersistentCheckpointStore)
+	if !ok || !persistent.Persistent() {
+		t.Fatal("replacement namespace test requires a real persistent checkpoint store")
+	}
+
+	for _, test := range []struct {
+		instance string
+		timeout  bool
+	}{
+		{instance: "alpha"},
+		{instance: "beta", timeout: true},
+	} {
+		t.Run(test.instance, func(t *testing.T) {
+			native := conformance.Native(conformance.Options{})
+			native.Instance = test.instance
+			if native.Manifest.ID == native.Instance {
+				t.Fatal("test manifest ID must differ from native instance")
+			}
+			host, err := New(Config{Natives: []sdk.Native{native}, Bindings: []Binding{{
+				ID: "normalize", Alias: native.Manifest.Alias, Instance: native.Instance,
+				Subscriber: "normalize", Phase: pluginapi.PhaseMutate,
+				Reads: []string{"fields.title"}, Owns: []string{"fields.normalized"},
+			}}, CheckpointStore: persistent, CheckpointLease: lease})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool := host.bindings[0].pool
+			state := host.instances[native.Manifest.Alias+"/"+native.Instance].durable
+			if _, err := state.Put(ctx, "marker", test.instance, pluginapi.Natural64(0)); err != nil {
+				t.Fatal(err)
+			}
+			callbackTimeout := time.Second
+			if test.timeout {
+				callbackTimeout = 20 * time.Millisecond
+			}
+			err = pool.run(ctx, pluginapi.PhaseMutate, callbackTimeout, nil, func(_ *instance, callbackCtx context.Context) error {
+				if test.timeout {
+					<-callbackCtx.Done()
+					return callbackCtx.Err()
+				}
+				return errors.New("retire this guest")
+			})
+			if err == nil {
+				t.Fatal("failed callback did not retire its pooled member")
+			}
+			deadline := time.After(2 * time.Second)
+			for len(pool.available) != maxRuntimeInstances {
+				select {
+				case <-deadline:
+					t.Fatalf("pool did not refill after retired callback: available=%d", len(pool.available))
+				case <-time.After(time.Millisecond):
+				}
+			}
+			members := make([]*instance, 0, maxRuntimeInstances)
+			for index := 0; index < maxRuntimeInstances; index++ {
+				members = append(members, <-pool.available)
+			}
+			for index, member := range members {
+				var marker string
+				found, err := member.durable.Get(ctx, "marker", &marker)
+				if err != nil || !found || marker != test.instance {
+					t.Fatalf("member %d switched durable namespace after replacement: found=%t marker=%q err=%v", index, found, marker, err)
+				}
+			}
+			for _, member := range members {
+				pool.available <- member
+			}
+		})
 	}
 }
