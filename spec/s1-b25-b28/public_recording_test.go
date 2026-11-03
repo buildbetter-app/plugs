@@ -443,6 +443,12 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	commandReference := func(label, store, dir string, argv []string, stdin []byte) []byte {
 		return runCommand(t, run.Root, &run.Commands, label, store, dir, env(dir), append([]string{pinned}, argv...), stdin)
 	}
+	// Config list is the stored-settings readback. Use the CLI's explicit JSON
+	// envelope so its numeric schema_version cannot masquerade as a setting.
+	commandConfigList := func(label, store, dir string) []byte {
+		return runCommand(t, run.Root, &run.Commands, label, store, dir,
+			append(env(dir), "BD_JSON_ENVELOPE=1"), []string{pinned, "--json", "config", "list"}, nil)
+	}
 	commandGit("source-git-init", "source", source, []string{"-c", "init.defaultBranch=main", "init", "--quiet"})
 	version := commandReference("source-version", "source", source, []string{"version", "--json"}, nil)
 	var identity struct {
@@ -453,18 +459,20 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	}
 	commandReference("source-init", "source", source, []string{"init", "--prefix", "pub", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, nil)
 	commandReference("source-config", "source", source, []string{"--json", "config", "set", fixture.ConfigKey, "paired-public"}, nil)
-	configOutput := commandReference("source-config-list", "source", source, []string{"--json", "config", "list"}, nil)
-	var settings map[string]json.RawMessage
-	if err := json.Unmarshal(bytes.TrimSpace(configOutput), &settings); err != nil {
-		t.Fatalf("real config list is invalid JSON: %v %s", err, configOutput)
+	configOutput := commandConfigList("source-config-list", "source", source)
+	settings, err := readPublicConfigSettings(configOutput)
+	if err != nil {
+		t.Fatalf("real config list is invalid: %v %s", err, configOutput)
 	}
-	rawSetting, ok := settings[fixture.ConfigKey]
-	if !ok {
-		t.Fatalf("real config list omitted %s: key is absent %s", fixture.ConfigKey, configOutput)
+	configured, found := "", false
+	for _, setting := range settings {
+		if setting.Key == fixture.ConfigKey {
+			configured, found = setting.Value.(string), true // The readback parser requires string settings.
+			break
+		}
 	}
-	var configured string
-	if err := json.Unmarshal(rawSetting, &configured); err != nil || configured != "paired-public" {
-		t.Fatalf("real config list omitted %s: %v %s", fixture.ConfigKey, err, configOutput)
+	if !found || configured != "paired-public" {
+		t.Fatalf("real config list omitted %s: %s", fixture.ConfigKey, configOutput)
 	}
 	commandReference("source-remember", "source", source, []string{"--json", "remember", "paired-store memory", "--key", fixture.MemoryKey}, nil)
 	commandReference("source-create-root", "source", source, []string{"--json", "create", "--id", "pub-root", "--type", "task", "--title", "Public root", "--description", "relational root", "--metadata", `{"card":"B27","public":true}`, "--labels", "alpha,beta", "--spec-id", "s1/b27"}, nil)
@@ -488,7 +496,7 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	}
 	writeRecordingBytes(t, filepath.Join(run.Root, "source-jsonl-projection.json"), sourceRawProjection)
 	validateSourceRows(t, sourceRawProjection, fixture)
-	sourceConfig := commandReference("source-config-readback", "source", source, []string{"--json", "config", "list"}, nil)
+	sourceConfig := commandConfigList("source-config-readback", "source", source)
 	sourceExpected := observePublicConfig(t, run.Root, "source", sourceConfig, sourceRawProjection)
 	if observed, ok := sourceExpected.Config["config/"+fixture.ConfigKey]; !ok || observed.Source.Fields["value"] != configured {
 		t.Fatal("source setup config changed before independent archive observation")
@@ -513,7 +521,7 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	}
 	writeRecordingBytes(t, filepath.Join(run.Root, "target-jsonl-projection.json"), targetRawProjection)
 	assertTargetContainsSource(t, sourceRawProjection, targetRawProjection, fixture)
-	targetConfig := commandReference("target-config-readback", "target", target, []string{"--json", "config", "list"}, nil)
+	targetConfig := commandConfigList("target-config-readback", "target", target)
 	targetExpected := observePublicConfig(t, run.Root, "target", targetConfig, targetRawProjection)
 	validateInventoryAndArchive(t, &run, commandReference, "target", target, run.Root, fixture)
 
@@ -737,40 +745,78 @@ func observePublicConfig(t *testing.T, output, label string, settings, ordinary 
 	return expected
 }
 
-// The genuine config-list command returns stored settings, excluding the KV
-// plane. Retain every returned key and reject duplicate readback keys rather
-// than allowing map decoding to conceal them. User memories are observed in
-// ordinary JSONL independently. Unobserved metadata/KV entries cannot pass.
+// The genuine config-list command returns stored settings in the explicit
+// JSON data envelope, excluding the KV plane. Retain every data key and reject
+// duplicate keys in either object rather than allowing map decoding to conceal
+// them. The envelope's numeric schema_version is protocol metadata, not a
+// setting. User memories are observed in ordinary JSONL independently.
+// Unobserved metadata/KV entries cannot pass.
 func readPublicConfigSettings(data []byte) ([]publicConfigObservation, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
 	start, err := decoder.Token()
 	if err != nil || start != json.Delim('{') {
-		return nil, errors.New("config readback must be an object")
+		return nil, errors.New("config readback must be an envelope object")
 	}
 	observations := []publicConfigObservation{}
-	seen := map[string]bool{}
+	seenEnvelope := map[string]bool{}
 	for decoder.More() {
 		token, err := decoder.Token()
 		if err != nil {
 			return nil, err
 		}
 		key, ok := token.(string)
-		if !ok || key == "" || seen[key] || strings.HasPrefix(key, "kv.") {
-			return nil, errors.New("empty, duplicate or non-setting config readback key")
+		if !ok || seenEnvelope[key] {
+			return nil, errors.New("duplicate or invalid config readback envelope key")
 		}
-		var rawValue any
-		if err := decoder.Decode(&rawValue); err != nil {
-			return nil, fmt.Errorf("config readback value must be a string: %w", err)
+		seenEnvelope[key] = true
+		switch key {
+		case "schema_version":
+			var version any
+			if err := decoder.Decode(&version); err != nil {
+				return nil, errors.New("unsupported config readback schema_version")
+			}
+			number, ok := version.(json.Number)
+			if !ok || number != "1" {
+				return nil, errors.New("unsupported config readback schema_version")
+			}
+		case "data":
+			start, err := decoder.Token()
+			if err != nil || start != json.Delim('{') {
+				return nil, errors.New("config readback data must be an object")
+			}
+			seenSettings := map[string]bool{}
+			for decoder.More() {
+				token, err := decoder.Token()
+				if err != nil {
+					return nil, err
+				}
+				setting, ok := token.(string)
+				if !ok || setting == "" || seenSettings[setting] || strings.HasPrefix(setting, "kv.") {
+					return nil, errors.New("empty, duplicate or non-setting config readback key")
+				}
+				var rawValue any
+				if err := decoder.Decode(&rawValue); err != nil {
+					return nil, fmt.Errorf("config readback value must be a string: %w", err)
+				}
+				value, ok := rawValue.(string)
+				if !ok {
+					return nil, errors.New("config readback value must be a string")
+				}
+				seenSettings[setting] = true
+				observations = append(observations, publicConfigObservation{Table: "config", Key: setting, Value: value, Classification: "public"})
+			}
+			end, err := decoder.Token()
+			if err != nil || end != json.Delim('}') {
+				return nil, errors.New("config readback data is not closed")
+			}
+		default:
+			return nil, errors.New("unexpected config readback envelope key")
 		}
-		value, ok := rawValue.(string)
-		if !ok {
-			return nil, errors.New("config readback value must be a string")
-		}
-		seen[key] = true
-		observations = append(observations, publicConfigObservation{Table: "config", Key: key, Value: value, Classification: "public"})
 	}
-	if _, err := decoder.Token(); err != nil {
-		return nil, err
+	end, err := decoder.Token()
+	if err != nil || end != json.Delim('}') || !seenEnvelope["schema_version"] || !seenEnvelope["data"] {
+		return nil, errors.New("config readback envelope is incomplete")
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
@@ -1127,6 +1173,13 @@ func comparePublicImport(source, target []byte, fixture recordingFixture) error 
 			return fmt.Errorf("target import changed source issue %s", id)
 		}
 	}
+	for id := range right.Issues {
+		if id != "pub-keep" {
+			if _, source := left.Issues[id]; !source {
+				return fmt.Errorf("target import introduced issue %s", id)
+			}
+		}
+	}
 	if !equalJSON(left.Memories, right.Memories) {
 		return fmt.Errorf("target import changed source memories")
 	}
@@ -1185,6 +1238,9 @@ func TestPublicProjectionRejectsRelationCorruption(t *testing.T) {
 		{"dependency_type", func(p *semanticProjection) { p.Edges[0]["type"] = "relates-to" }, "dependency/parent relations"},
 		{"parent_endpoint", func(p *semanticProjection) { p.Edges[1]["to"] = "pub-keep" }, "dependency/parent relations"},
 		{"duplicate_edge", func(p *semanticProjection) { p.Edges = append(p.Edges, p.Edges[0]) }, "dependency/parent relations"},
+		{"extra_issue", func(p *semanticProjection) {
+			p.Issues["pub-extra"] = map[string]any{"title": "unexpected target issue"}
+		}, "target import introduced issue"},
 		{"comment_text", func(p *semanticProjection) { p.Comments[0]["text"] = "replaced" }, "comment contents"},
 		{"comment_author", func(p *semanticProjection) { p.Comments[0]["author"] = "another-actor" }, "comment contents"},
 		{"comment_issue", func(p *semanticProjection) { p.Comments[0]["issue_id"] = publicChildID }, "comment contents"},
@@ -1429,11 +1485,31 @@ func TestPublicProjectionConfigObservationRefusals(t *testing.T) {
 }
 
 func TestPublicProjectionConfigSettingsReadback(t *testing.T) {
-	observations, err := readPublicConfigSettings([]byte(`{"custom.public_recording":"paired-public","stored-only":"9007199254740993"}`))
-	if err != nil || len(observations) != 2 || observations[1].Value != "9007199254740993" {
-		t.Fatalf("independent string readback: %v", err)
+	observations, err := readPublicConfigSettings([]byte(`{"schema_version":1,"data":{"custom.public_recording":"paired-public","schema_version":"stored-version","stored-only":"9007199254740993"}}`))
+	if err != nil || len(observations) != 3 || observations[0].Value != "paired-public" || observations[1].Key != "schema_version" || observations[1].Value != "stored-version" || observations[2].Value != "9007199254740993" {
+		t.Fatalf("independent stored-settings readback: %v, %+v", err, observations)
 	}
-	for _, data := range []string{`[]`, `{"a":"x","a":"y"}`, `{"a":null}`, `{"a":42}`, `{"kv.memory.hidden":"x"}`, `{"a":"x"} {}`} {
+	empty, err := readPublicConfigSettings([]byte(`{"data":{},"schema_version":1}`))
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty stored-settings readback: %v, %+v", err, empty)
+	}
+	for _, data := range []string{
+		`[]`, `{"custom.public_recording":"paired-public","schema_version":1}`,
+		`{"data":{"a":"x"}}`, `{"schema_version":2,"data":{"a":"x"}}`,
+		`{"schema_version":"1","data":{"a":"x"}}`,
+		`{"schema_version":{},"data":{}}`,
+		`{"schema_version":1,"schema_version":1,"data":{}}`,
+		`{"schema_version":1,"data":{},"data":{}}`,
+		`{"schema_version":1,"data":{"a":"x"},"other":true}`,
+		`{"schema_version":1,"data":[]}`, `{"schema_version":1,"data":null}`,
+		`{"schema_version":1,"data":{"a":"x","a":"y"}}`,
+		`{"schema_version":1,"data":{"a":null}}`,
+		`{"schema_version":1,"data":{"a":42}}`,
+		`{"schema_version":1,"data":{"a":false}}`,
+		`{"schema_version":1,"data":{"a":{}}}`,
+		`{"schema_version":1,"data":{"kv.memory.hidden":"x"}}`,
+		`{"schema_version":1,"data":{"a":"x"}} {}`,
+	} {
 		if _, err := readPublicConfigSettings([]byte(data)); err == nil {
 			t.Fatal("invalid/duplicate/non-setting readback admitted")
 		}
