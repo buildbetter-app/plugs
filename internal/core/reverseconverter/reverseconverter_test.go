@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/ontologymigration"
 )
 
 func fixtureDump() Dump {
@@ -453,6 +454,116 @@ func TestConvertRefusesUnsupportedAndDuplicateInputs(t *testing.T) {
 				t.Fatalf("error did not carry structured report: %T %+v", err, err)
 			}
 		})
+	}
+}
+
+func unknownTypeDump(issueType string) Dump {
+	dump := cloneDump(fixtureDump())
+	bead := &dump.Records["bead"][0]
+	bead.Body["source_type"] = issueType
+	bead.Source.Fields["issue_type"] = issueType
+	return dump
+}
+
+func allowTypeDirective(issueType string) ontologymigration.Directive {
+	return ontologymigration.Directive{
+		ID: "preserve-" + issueType, Kind: ontologymigration.MapType,
+		Target: ontologymigration.Target{Project: "demo", Type: issueType},
+		From:   issueType, To: "issue",
+	}
+}
+
+func TestConvertUnknownTypeRequiresDirective(t *testing.T) {
+	result, err := Convert(unknownTypeDump("decision"))
+	var refusal *Refusal
+	if !errors.As(err, &refusal) || !strings.Contains(err.Error(), "unsupported kind \"decision\"") || len(result.JSONL) != 0 {
+		t.Fatalf("unknown type was not refused without output: result=%+v err=%v", result, err)
+	}
+}
+
+func TestConvertUnknownTypeDirectivePreservesSourceType(t *testing.T) {
+	dump := unknownTypeDump("decision")
+	directive := allowTypeDirective("decision")
+	first, err := ConvertWithDirectives(dump, []ontologymigration.Directive{directive})
+	if err != nil {
+		t.Fatalf("directive-authorized decision was refused: %v", err)
+	}
+	second, err := ConvertWithDirectives(dump, []ontologymigration.Directive{directive})
+	if err != nil || first.Digest == "" || first.Digest != second.Digest || !bytes.Equal(first.JSONL, second.JSONL) {
+		t.Fatalf("directive conversion was not deterministic: first=%+v second=%+v err=%v", first, second, err)
+	}
+	if len(first.Report.TypeMappings) != 1 || first.Report.TypeMappings[0].ID != directive.ID || first.Report.TypeMappings[0].From != "decision" || first.Report.TypeMappings[0].To != "issue" {
+		t.Fatalf("type mapping evidence=%+v", first.Report.TypeMappings)
+	}
+	var found issueLine
+	for _, line := range bytes.Split(bytes.TrimSpace(first.JSONL), []byte{'\n'}) {
+		var candidate issueLine
+		if err := json.Unmarshal(line, &candidate); err == nil && candidate.ID == "demo-3" {
+			found = candidate
+			break
+		}
+	}
+	if found.ID != "demo-3" || found.IssueType != "decision" {
+		t.Fatalf("source type was rewritten: %+v", found)
+	}
+}
+
+func TestConvertUnknownTypeDirectiveSupportsCustomAndExactRows(t *testing.T) {
+	dump := unknownTypeDump("architecture")
+	directive := allowTypeDirective("architecture")
+	directive.Target.ID = "demo-3"
+	result, err := ConvertWithDirectives(dump, []ontologymigration.Directive{directive})
+	if err != nil || len(result.Report.TypeMappings) != 1 {
+		t.Fatalf("custom exact-row type was not preserved: result=%+v err=%v", result, err)
+	}
+}
+
+func TestConvertTypeDirectiveRejectsIrrelevantMembers(t *testing.T) {
+	tests := map[string]func(*ontologymigration.Directive){
+		"field":      func(d *ontologymigration.Directive) { d.Field = "custom" },
+		"value":      func(d *ontologymigration.Directive) { d.Value = 1 },
+		"conversion": func(d *ontologymigration.Directive) { d.Conversion = "string_to_integer" },
+		"violation":  func(d *ontologymigration.Directive) { d.Violation = "digest" },
+		"reason":     func(d *ontologymigration.Directive) { d.Reason = "migration note" },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			directive := allowTypeDirective("decision")
+			mutate(&directive)
+			result, err := ConvertWithDirectives(unknownTypeDump("decision"), []ontologymigration.Directive{directive})
+			if err == nil || !strings.Contains(err.Error(), "not valid for map_type") || len(result.JSONL) != 0 {
+				t.Fatalf("irrelevant map_type member was accepted: result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestConvertTypeDirectiveValidationAndUsage(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      Dump
+		directives []ontologymigration.Directive
+		want       string
+	}{
+		{name: "missing target project", input: unknownTypeDump("decision"), directives: []ontologymigration.Directive{{ID: "bad", Kind: ontologymigration.MapType, Target: ontologymigration.Target{Type: "decision"}, From: "decision", To: "issue"}}, want: "project"},
+		{name: "wrong source", input: unknownTypeDump("decision"), directives: []ontologymigration.Directive{{ID: "bad", Kind: ontologymigration.MapType, Target: ontologymigration.Target{Project: "demo", Type: "other"}, From: "decision", To: "issue"}}, want: "source"},
+		{name: "same target", input: unknownTypeDump("decision"), directives: []ontologymigration.Directive{{ID: "bad", Kind: ontologymigration.MapType, Target: ontologymigration.Target{Project: "demo", Type: "decision"}, From: "decision", To: "decision"}}, want: "change"},
+		{name: "wrong kind", input: unknownTypeDump("decision"), directives: []ontologymigration.Directive{{ID: "bad", Kind: ontologymigration.MapStatus, Target: ontologymigration.Target{Project: "demo", Type: "decision"}, From: "decision", To: "issue"}}, want: "map_type"},
+		{name: "unused", input: fixtureDump(), directives: []ontologymigration.Directive{allowTypeDirective("unused")}, want: "unused"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ConvertWithDirectives(test.input, test.directives)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("directive error=%v, want %q", err, test.want)
+			}
+		})
+	}
+
+	dump := unknownTypeDump("decision")
+	conflict := []ontologymigration.Directive{allowTypeDirective("decision"), {ID: "other", Kind: ontologymigration.MapType, Target: ontologymigration.Target{Project: "demo", Type: "decision"}, From: "decision", To: "issue-2"}}
+	if _, err := ConvertWithDirectives(dump, conflict); err == nil || !strings.Contains(err.Error(), "conflicting") {
+		t.Fatalf("overlapping directives accepted: %v", err)
 	}
 }
 

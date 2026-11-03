@@ -316,8 +316,14 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 		}
 	}
 	var graph map[string]storedBead
-	if lifecycle || hierarchyGraphNeeded(proposal) {
-		var err error
+	graphNeeded, err := hierarchyGraphNeeded(proposal)
+	if err != nil {
+		// Decode malformed proposal images before any graph read. This keeps
+		// the refusal typed and no-write even when the pinned store is large or
+		// unavailable for a full guard scan.
+		return err
+	}
+	if lifecycle || graphNeeded {
 		graph = prefix
 		if graph == nil {
 			graph, err = scanBeads(ctx, reader)

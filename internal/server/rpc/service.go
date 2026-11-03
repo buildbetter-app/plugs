@@ -11,6 +11,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 // Service is the domain-only port implemented by core/service. Core never
@@ -35,6 +36,20 @@ type Service interface {
 	History(context.Context, model.PrincipalRef, service.HistoryRequest) (service.BeadPage, error)
 }
 
+// WorkflowService is optional so existing service test doubles and hosts that
+// do not install durable workflow storage keep the unchanged core inventory.
+// A composed provider binds x.workflow.invoke and the standard bead adapters.
+type WorkflowService interface {
+	WorkflowInvoke(context.Context, model.PrincipalRef, workflowplugin.InvokeRequest, model.WriteMeta) (workflowplugin.InvokeResult, error)
+}
+
+// WorkflowClaimNextService is an optional standard-tool adapter seam. The
+// guarded composition asks it for a provider-owned durable replay before
+// walking the live queue, while existing Service test doubles remain valid.
+type WorkflowClaimNextService interface {
+	ReplayWorkflowClaimNext(context.Context, model.PrincipalRef, service.ClaimNextRequest, model.WriteMeta) (*port.WriteOutcome, bool, error)
+}
+
 // MemoryService is an additive capability. Keeping it separate from Service
 // preserves the existing RPC test/service wrappers while allowing the real
 // domain service to bind the frozen memory and brief descriptors.
@@ -47,35 +62,38 @@ type MemoryService interface {
 }
 
 type serviceParams struct {
-	ID           json.RawMessage      `json:"id"`
-	Ref          model.Ref            `json:"ref"`
-	AsOf         *asOf                `json:"asOf"`
-	Project      string               `json:"project"`
-	ViewID       string               `json:"viewId"`
-	Filter       *filter              `json:"filter"`
-	Limit        model.Natural        `json:"limit"`
-	Cursor       string               `json:"cursor"`
-	After        string               `json:"after"`
-	FromRevision model.Revision       `json:"fromRevision"`
-	ToRevision   model.Revision       `json:"toRevision"`
-	Type         string               `json:"type"`
-	Fields       map[string]any       `json:"fields"`
-	Parent       *model.Ref           `json:"parent"`
-	Expect       []model.Precondition `json:"expect"`
-	Body         string               `json:"body"`
-	Reason       string               `json:"reason"`
-	Key          string               `json:"key"`
-	Content      string               `json:"content"`
-	Metadata     map[string]any       `json:"metadata"`
-	Query        string               `json:"query"`
-	BudgetTokens model.Natural        `json:"budgetTokens"`
-	ChangeSet    model.ChangeSet      `json:"changeSet"`
-	From         model.Ref            `json:"from"`
-	To           model.Ref            `json:"to"`
-	Kind         string               `json:"kind"`
-	State        string               `json:"state"`
-	Details      map[string]any       `json:"details"`
-	Meta         wire.Meta            `json:"_meta"`
+	ID           json.RawMessage                `json:"id"`
+	Ref          model.Ref                      `json:"ref"`
+	AsOf         *asOf                          `json:"asOf"`
+	Project      string                         `json:"project"`
+	ViewID       string                         `json:"viewId"`
+	Filter       *filter                        `json:"filter"`
+	Limit        model.Natural                  `json:"limit"`
+	Cursor       string                         `json:"cursor"`
+	After        string                         `json:"after"`
+	FromRevision model.Revision                 `json:"fromRevision"`
+	ToRevision   model.Revision                 `json:"toRevision"`
+	Type         string                         `json:"type"`
+	Fields       map[string]any                 `json:"fields"`
+	Parent       *model.Ref                     `json:"parent"`
+	Expect       []model.Precondition           `json:"expect"`
+	Body         string                         `json:"body"`
+	Reason       string                         `json:"reason"`
+	Key          string                         `json:"key"`
+	Content      string                         `json:"content"`
+	Metadata     map[string]any                 `json:"metadata"`
+	Query        string                         `json:"query"`
+	BudgetTokens model.Natural                  `json:"budgetTokens"`
+	ChangeSet    model.ChangeSet                `json:"changeSet"`
+	From         model.Ref                      `json:"from"`
+	To           model.Ref                      `json:"to"`
+	Kind         string                         `json:"kind"`
+	State        string                         `json:"state"`
+	Details      map[string]any                 `json:"details"`
+	Template     string                         `json:"template"`
+	Mode         string                         `json:"mode"`
+	Checklist    []workflowplugin.ChecklistItem `json:"checklist"`
+	Meta         wire.Meta                      `json:"_meta"`
 }
 type asOf struct {
 	Revision    model.Revision `json:"revision"`
@@ -137,6 +155,9 @@ func BindService(registry *Registry, svc Service) error {
 	if _, ok := svc.(port.GateService); ok {
 		names = append(names, "gate.approve", "gate.report")
 	}
+	if _, ok := svc.(WorkflowService); ok {
+		names = append(names, "x.workflow.invoke")
+	}
 	if capability, ok := any(svc).(interface{ EventListConfigured() bool }); !ok || capability.EventListConfigured() {
 		if _, ok := any(svc).(service.EventReader); ok {
 			names = append(names, "event.list")
@@ -180,12 +201,19 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 	meta := model.WriteMeta{Method: c.Method, AgentLabel: c.Meta.Agent, Project: c.Meta.Project, IdempotencyKey: c.Meta.IdempotencyKey, DryRun: c.Meta.DryRun, Return: c.Meta.Return, Traceparent: c.Meta.Traceparent, Agent: c.Meta.Agent}
 	memory, memoryCapable := svc.(MemoryService)
 	switch c.Method {
+	case "x.workflow.invoke":
+		workflow, ok := svc.(WorkflowService)
+		if !ok {
+			return nil, &model.Error{Data: model.ErrorData{Code: "method_not_found"}}
+		}
+		v, err := workflow.WorkflowInvoke(ctx, c.Principal, workflowplugin.InvokeRequest{Template: p.Template, Project: p.Project, Mode: p.Mode, Checklist: p.Checklist}, meta)
+		return v, err
 	case "bead.get":
 		id, err := p.refID()
 		if err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 		}
-		v, err := svc.Get(ctx, c.Principal, service.GetRequest{ID: id, AsOf: p.AsOf.domain()})
+		v, err := svc.Get(ctx, c.Principal, service.GetRequest{ID: id, AsOf: p.AsOf.domain(), Project: c.Meta.Project, Agent: c.Meta.Agent})
 		if err != nil {
 			return nil, err
 		}
@@ -220,7 +248,7 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		v, err := svc.Ready(ctx, c.Principal, service.ReadyRequest{Project: c.Meta.Project, ViewID: p.ViewID, Filter: p.Filter.domain(), Limit: int(limit), Position: position})
+		v, err := svc.Ready(ctx, c.Principal, service.ReadyRequest{Project: c.Meta.Project, Agent: c.Meta.Agent, ViewID: p.ViewID, Filter: p.Filter.domain(), Limit: int(limit), Position: position})
 		if err != nil {
 			return nil, err
 		}
@@ -403,7 +431,18 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		v, err := svc.ClaimWithOutcome(ctx, c.Principal, service.ClaimRequest{ID: id, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
 	case "bead.link":
-		v, err := svc.LinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, Kind: p.Kind, Expect: p.Expect}, meta)
+		var metadata *model.LinkMetadata
+		if p.Metadata != nil {
+			raw, err := json.Marshal(p.Metadata)
+			if err != nil {
+				return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
+			}
+			metadata = new(model.LinkMetadata)
+			if err := wire.DecodeInto(raw, metadata); err != nil {
+				return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
+			}
+		}
+		v, err := svc.LinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, Kind: p.Kind, Metadata: metadata, Expect: p.Expect}, meta)
 		return writeOutcome(v), err
 	case "bead.unlink":
 		v, err := svc.UnlinkWithOutcome(ctx, c.Principal, service.LinkRequest{From: p.From, To: p.To, Kind: p.Kind, Expect: p.Expect}, meta)
@@ -639,6 +678,18 @@ func beadJSON(b service.Bead) map[string]any {
 	}
 	if !b.UpdatedAt.IsZero() {
 		out["updatedAt"] = timestamp(b.UpdatedAt)
+	}
+	if b.Plane != "" {
+		out["plane"] = b.Plane
+	}
+	if b.Kind != "" {
+		out["kind"] = b.Kind
+	}
+	if b.Plugin != "" {
+		out["plugin"] = b.Plugin
+	}
+	if b.WorkflowRunID != "" {
+		out["workflowRunId"] = b.WorkflowRunID
 	}
 	return out
 }

@@ -14,10 +14,11 @@ import (
 // A bounded linear-memory arena keeps the ABI pointer stable across calls.
 // The host caps the module's entire memory at 64 MiB; this fixture uses 2 MiB.
 var (
-	arena [2 << 20]byte
-	next  uint32 = 1024
-	base  uint32
-	mu    sync.Mutex
+	arena      [2 << 20]byte
+	next       uint32 = 1024
+	stateCalls uint32
+	base       uint32
+	mu         sync.Mutex
 )
 
 func init() {
@@ -127,8 +128,41 @@ func mutate(raw json.RawMessage) uint64 {
 		return response(map[string]any{"error": "invalid after"})
 	}
 	title, _ := after.Fields["title"].(string)
+	if title == "guest-exit-canceled" {
+		// WASI proc_exit(-1) uses wazero's reserved context-canceled code.
+		// The live caller has not canceled, so the host must retain a guest
+		// failure rather than treating this as trusted owner retirement.
+		os.Exit(-1)
+	}
+	if strings.HasPrefix(title, "timer-callback:") {
+		// This is an actual guest callback-owned WASI nanosleep. The host-side
+		// test observes entry through the callback wait context seam and then
+		// cancels or retires the invocation without changing production bounds.
+		time.Sleep(time.Second)
+	}
 	if strings.HasPrefix(title, "acceptance:") {
 		return acceptanceMutation(payload, title)
+	}
+	if strings.HasPrefix(title, "pool-state:") {
+		var resource struct {
+			Ref struct {
+				ID string `json:"id"`
+			} `json:"ref"`
+		}
+		if json.Unmarshal(payload.Changes[0].Resource, &resource) == nil && resource.Ref.ID != "" {
+			if _, err := readRecords(resource.Ref.ID); err != nil {
+				return response(map[string]any{"error": err.Error()})
+			}
+		}
+		mu.Lock()
+		stateCalls++
+		calls := stateCalls
+		mu.Unlock()
+		value, _ := json.Marshal(fmt.Sprintf("%s#%d", strings.ToUpper(title), calls))
+		return response(map[string]any{"patches": []any{map[string]any{
+			"resource": json.RawMessage(payload.Changes[0].Resource),
+			"paths":    map[string]json.RawMessage{"fields.normalized": value},
+		}}})
 	}
 	if len(payload.Changes[0].Resource) != 0 {
 		var resource struct {

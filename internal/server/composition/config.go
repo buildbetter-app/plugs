@@ -31,6 +31,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/authn"
 	"github.com/buildbetter-app/plugs/internal/server/collab"
 	servertsevents "github.com/buildbetter-app/plugs/internal/server/events"
+	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/server/transport/mcp"
@@ -43,6 +44,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/internal/storage/postgres"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 const (
@@ -295,6 +297,14 @@ func (r *Runtime) bind(config Config) error {
 	serviceOptions := []service.Option{service.WithOntology(ontology)}
 	if config.Compaction != nil {
 		serviceOptions = append(serviceOptions, service.WithCompaction(*config.Compaction))
+	}
+	if checkpoints, ok := r.Store.(driver.PersistentCheckpointStore); ok && checkpoints.Persistent() {
+		state := pluginhost.NewDurableStateWithPersistence(checkpoints, r.Lease, workflowplugin.Alias, "default", config.Driver != "memory")
+		workflow, workflowErr := workflowplugin.New(state)
+		if workflowErr != nil {
+			return fmt.Errorf("composition: initialize workflow plugin: %w", workflowErr)
+		}
+		serviceOptions = append(serviceOptions, service.WithWorkflow(workflow.WithIdentity(workflowplugin.Alias, "default", meta.Incarnation)))
 	}
 	r.Service = service.New(r.Store, r.Lease, writer, serviceOptions...)
 	registry, err := rpc.NewRegistry()
