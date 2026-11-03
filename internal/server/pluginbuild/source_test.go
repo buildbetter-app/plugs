@@ -1406,8 +1406,12 @@ func TestWASISourceInitializerFailureSurvivesQueueExpiry(t *testing.T) {
 	// classification until that settled 100ms context expires.
 	native := normalNative
 	var constructions atomic.Int32
+	var constructorHost pluginapi.Host
 	native.NewWithContext = func(ctx context.Context, host pluginapi.Host) (sdk.Registration, error) {
 		if constructions.Add(1) != 6 {
+			if constructorHost == nil {
+				constructorHost = host
+			}
 			return normalNative.NewWithContext(ctx, host)
 		}
 		return failingNative.NewWithContext(ctx, host)
@@ -1425,6 +1429,61 @@ func TestWASISourceInitializerFailureSurvivesQueueExpiry(t *testing.T) {
 		if _, mutateErr := mutator.Mutate(context.Background(), wasiStateChange(principal, "pool-state:"+principal), &wasiSnapshot{revision: model.Natural64(1)}); mutateErr != nil {
 			t.Fatalf("normal source-built member %s failed before queued initializer race: %v", principal, mutateErr)
 		}
+	}
+	if constructorHost == nil || constructions.Load() != 5 {
+		t.Fatalf("expected source plus four normal pool members before replacement, constructed %d", constructions.Load())
+	}
+	// Keep the failing factory's compiled module live across its real guest
+	// error. Its cold compile is outside the 100ms pool queue budget; the
+	// subsequent sixth construction still uses that unchanged queue context.
+	warmCtx, cancelWarm := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelWarm()
+	warmGuestEntered := make(chan struct{}, 1)
+	warmErrorSeen := make(chan error, 1)
+	warmRelease := make(chan struct{})
+	warmReleased := false
+	releaseWarm := func() {
+		if !warmReleased {
+			close(warmRelease)
+			warmReleased = true
+		}
+	}
+	warmCtx = pluginhost.WithWASMInitializerContextObserver(warmCtx, func(context.Context) {
+		warmGuestEntered <- struct{}{}
+	})
+	warmCtx = pluginhost.WithWASMInitializationErrorObserver(warmCtx, func(_ context.Context, guestErr error) {
+		warmErrorSeen <- guestErr
+		<-warmRelease
+	})
+	warmDone := make(chan error, 1)
+	go func() {
+		_, warmErr := failingNative.NewWithContext(warmCtx, constructorHost)
+		warmDone <- warmErr
+	}()
+	defer func() {
+		releaseWarm()
+		select {
+		case warmErr := <-warmDone:
+			if !hasPluginHostCode(warmErr, pluginhost.ErrManifest) {
+				t.Errorf("held source-built warm constructor did not preserve its guest failure: %v", warmErr)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("held source-built warm constructor did not finish after release")
+		}
+	}()
+	select {
+	case <-warmGuestEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("failing source-built guest did not reach its initializer import before pool replacement")
+	}
+	select {
+	case guestErr := <-warmErrorSeen:
+		var exitErr *sys.ExitError
+		if !errors.As(guestErr, &exitErr) || exitErr.ExitCode() != 2 {
+			t.Fatalf("failing source-built guest did not produce the expected real exit: %v", guestErr)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("failing source-built guest did not reach its real classifier before pool replacement")
 	}
 	callerCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
