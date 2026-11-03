@@ -160,6 +160,13 @@ absence after SQL reopen. This covers the durable publication boundary; it
 does not observe an external subscriber or transport. Core parser controls are
 `TestStrictConfigUnion*` in `internal/core/dumpformat`.
 
+`TestB27ConfigUnionHistoryRequiresExplicitSnapshotAcrossDrivers` requires
+default/full and partial imports of the strict archive's unavailable history
+to refuse before `Store.Write`, with unchanged durable state and no receipt,
+log/events or archive blob, including after SQL reopen. Successful cases above
+explicitly select snapshot. These assertions have not been executed; no head
+configuration is substituted into source-history frames.
+
 The strict migration uses a distinct `beads-compat-union-head/1` derived image
 profile and installs one compiled document for aliases and derived predicates.
 The existing reverse profile guard refuses it, with no partial output or store

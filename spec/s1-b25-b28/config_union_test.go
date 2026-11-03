@@ -560,6 +560,52 @@ func TestB27ConfigUnionRefusalHasNoWriteHistoryReceiptOrPublicationAcrossDrivers
 	}
 }
 
+func TestB27ConfigUnionHistoryRequiresExplicitSnapshotAcrossDrivers(t *testing.T) {
+	data := configUnionArchive(t, nil)
+	snapshotProfile := configUnionProfile(t, data)
+	for _, kind := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(kind, func(t *testing.T) {
+			s := openStack(t, kind, nil)
+			target := &configUnionObservedStore{Store: s.store}
+			before := relationState(t, s)
+			for _, control := range []struct {
+				name   string
+				mode   driver.RestoreHistoryMode
+				reason driver.RestoreHistoryReason
+			}{
+				{"default-full", "", driver.RestoreHistoryReasonUnavailable},
+				{"explicit-full", driver.RestoreHistoryModeFull, driver.RestoreHistoryReasonUnavailable},
+				{"partial", driver.RestoreHistoryModePartial, driver.RestoreHistoryReasonNotYetSupported},
+			} {
+				t.Run(control.name, func(t *testing.T) {
+					profile := snapshotProfile
+					profile.HistoryMode = control.mode
+					report, err := converterroundtrip.RestoreImportWithLease(s.ctx, bytes.NewReader(data), target, s.lease, profile)
+					var refused driver.ErrRestoreHistoryRefused
+					wantMode := control.mode
+					if wantMode == "" {
+						wantMode = driver.RestoreHistoryModeFull
+					}
+					if !errors.As(err, &refused) || refused.Mode != wantMode || refused.History != "unavailable" || refused.Reason != control.reason || target.writes != 0 || report.Archive == nil || !report.Restored.Head.IsZero() {
+						t.Fatalf("strict config history refusal escaped before-write boundary: report=%+v writes=%d err=%v", report, target.writes, err)
+					}
+					if !reflect.DeepEqual(before, relationState(t, s)) {
+						t.Fatal("history refusal changed records, versions, changesets/events or derived state")
+					}
+					assertUnionRefusalUnpublished(t, s, profile)
+				})
+			}
+			if kind != "memory" {
+				s.reopen()
+				if !reflect.DeepEqual(before, relationState(t, s)) {
+					t.Fatal("history refusal left durable data visible after SQL reopen")
+				}
+				assertUnionRefusalUnpublished(t, s, snapshotProfile)
+			}
+		})
+	}
+}
+
 func assertUnionRefusalUnpublished(t *testing.T, s *stack, p driver.RestoreImportProfile) {
 	t.Helper()
 	meta, err := s.store.Meta(s.ctx)
