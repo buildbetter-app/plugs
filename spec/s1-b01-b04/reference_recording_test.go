@@ -129,26 +129,8 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 	}
 	root := t.TempDir()
 	defer func() {
-		for source, name := range map[string]string{
-			"recording.json":       "reference-recording.json",
-			"raw-commands.jsonl":   "raw-commands.jsonl",
-			"capture-runtime.json": "capture-runtime.json",
-			"recorder.stdout":      "recorder.stdout",
-			"recorder.stderr":      "recorder.stderr",
-			"dolt-version.stdout":  "dolt-version.stdout",
-			"dolt-version.stderr":  "dolt-version.stderr",
-		} {
-			data, err := os.ReadFile(filepath.Join(root, source))
-			if os.IsNotExist(err) {
-				continue
-			}
-			if err != nil {
-				t.Errorf("retain %s: %v", source, err)
-				continue
-			}
-			if err := os.WriteFile(filepath.Join(retained, name), data, 0o600); err != nil {
-				t.Errorf("retain %s: %v", name, err)
-			}
+		if err := retainReferenceCapture(root, retained, os.Stdout); err != nil {
+			t.Errorf("retain capture packet: %v", err)
 		}
 	}()
 	binaryPath := filepath.Join(root, "reference-engine")

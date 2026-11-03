@@ -144,3 +144,29 @@ func runReferenceRecorder(command *exec.Cmd, root string) ([]byte, []byte, error
 	errErr := os.WriteFile(filepath.Join(root, "recorder.stderr"), stderr.Bytes(), 0o600)
 	return stdout, stderr.Bytes(), errors.Join(runErr, outErr, errErr)
 }
+
+func retainReferenceCapture(root, retained string, log io.Writer) error {
+	var errs []error
+	for source, name := range map[string]string{
+		"recording.json":       "reference-recording.json",
+		"raw-commands.jsonl":   "raw-commands.jsonl",
+		"capture-runtime.json": "capture-runtime.json",
+		"recorder.stdout":      "recorder.stdout",
+		"recorder.stderr":      "recorder.stderr",
+		"dolt-version.stdout":  "dolt-version.stdout",
+		"dolt-version.stderr":  "dolt-version.stderr",
+	} {
+		data, err := os.ReadFile(filepath.Join(root, source))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("retain %s: %w", source, err))
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(retained, name), data, 0o600); err != nil {
+			errs = append(errs, fmt.Errorf("retain %s: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
+}

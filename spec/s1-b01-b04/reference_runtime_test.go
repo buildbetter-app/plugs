@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"compress/gzip"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -191,5 +193,52 @@ func TestCaptureRecorderPreservesCompleteOuterStreams(t *testing.T) {
 				t.Fatalf("outer streams truncated: stdout=%d stderr=%d", len(stdout), len(stderr))
 			}
 		})
+	}
+}
+
+func TestCapturePacketSurvivesLogOnlyCollector(t *testing.T) {
+	root, retained := t.TempDir(), t.TempDir()
+	want := append([]byte("partial\x00raw\r\n"), bytes.Repeat([]byte("x"), 65536)...)
+	if err := os.WriteFile(filepath.Join(root, "raw-commands.jsonl"), want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "recorder.stderr"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	if err := retainReferenceCapture(root, retained, &log); err != nil {
+		t.Fatal(err)
+	}
+	const begin = "S1_B01_B04_RAW_PACKET_BEGIN\n"
+	const end = "\nS1_B01_B04_RAW_PACKET_END\n"
+	if !strings.HasPrefix(log.String(), begin) || !strings.HasSuffix(log.String(), end) {
+		t.Fatalf("log-only collector lost raw packet: %d bytes logged", log.Len())
+	}
+	var packet struct {
+		Format string `json:"format"`
+		Files  map[string]struct {
+			Present bool   `json:"present"`
+			Bytes   []byte `json:"bytesBase64"`
+			SHA256  string `json:"sha256"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(bytes.TrimSuffix(bytes.TrimPrefix(log.Bytes(), []byte(begin)), []byte(end)), &packet); err != nil {
+		t.Fatal(err)
+	}
+	if packet.Format != "plug.s1-b01-b04.raw-packet.v1" || len(packet.Files) != 7 {
+		t.Fatalf("incomplete raw packet: format=%q files=%d", packet.Format, len(packet.Files))
+	}
+	for name, data := range map[string][]byte{"raw-commands.jsonl": want, "recorder.stderr": {}} {
+		entry := packet.Files[name]
+		if !entry.Present || !bytes.Equal(entry.Bytes, data) || entry.SHA256 != referenceDigest(data) {
+			t.Fatalf("log-only collector changed %s", name)
+		}
+		got, err := os.ReadFile(filepath.Join(retained, name))
+		if err != nil || !bytes.Equal(got, data) {
+			t.Fatalf("retained copy differs for %s: %v", name, err)
+		}
+	}
+	if entry, ok := packet.Files["reference-recording.json"]; !ok || entry.Present {
+		t.Fatal("failed producer's missing recording is not explicit")
 	}
 }
