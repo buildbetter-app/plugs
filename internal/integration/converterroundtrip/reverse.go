@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -254,8 +255,14 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 		return reverseconverter.Record{}, ReverseRefusal{"live_claim_or_attachment"}
 	}
 	for field := range doc.Fields {
-		if field != "status" && field != "title" && field != "description" && field != "priority" {
+		if field != "status" && field != "title" && field != "description" && field != "priority" && field != "labels" {
 			return reverseconverter.Record{}, ReverseRefusal{"unsupported_live_field"}
+		}
+	}
+	if raw, present := doc.Fields["labels"]; present {
+		labels, ok := exactLabelSet(raw)
+		if !ok || !slices.Equal(labels, doc.Labels) {
+			return reverseconverter.Record{}, ReverseRefusal{"inconsistent_live_labels"}
 		}
 	}
 	if err := checkLiveRelationsAndComments(source.ID, doc, dump); err != nil {

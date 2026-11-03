@@ -333,6 +333,7 @@ internal/core/service/history.go
 internal/core/service/history_reads_test.go
 internal/core/service/history_sqlite_rpc_test.go
 internal/core/service/i1_acceptance_test.go
+internal/core/service/label_rename.go
 internal/core/service/lease.go
 internal/core/service/memories.go
 internal/core/service/ontology.go
@@ -384,6 +385,11 @@ internal/integration/b13memory/readback_oracle_test.go
 internal/integration/b14fixedpolicy/BUILD.bazel
 internal/integration/b14fixedpolicy/README.md
 internal/integration/b14fixedpolicy/public_members_test.go
+internal/integration/b16sourcehistory/BUILD.bazel
+internal/integration/b16sourcehistory/README.md
+internal/integration/b16sourcehistory/engine_test.go
+internal/integration/b16sourcehistory/fixture_test.go
+internal/integration/b16sourcehistory/source_history_test.go
 internal/integration/batchsql/BUILD.bazel
 internal/integration/batchsql/README.md
 internal/integration/batchsql/allocator_archive_test.go
@@ -417,6 +423,8 @@ internal/integration/converterroundtrip/history.go
 internal/integration/converterroundtrip/identity_counters_test.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
+internal/integration/converterroundtrip/label_projection_test.go
+internal/integration/converterroundtrip/labels.go
 internal/integration/converterroundtrip/native_restore_test.go
 internal/integration/converterroundtrip/public_source_test.go
 internal/integration/converterroundtrip/repair_test.go
@@ -790,6 +798,7 @@ internal/server/rpc/cursor_test.go
 internal/server/rpc/cycles.go
 internal/server/rpc/gate_integration_test.go
 internal/server/rpc/integration_test.go
+internal/server/rpc/label_rename.go
 internal/server/rpc/openrpc.json
 internal/server/rpc/openrpc_test.go
 internal/server/rpc/registry.go

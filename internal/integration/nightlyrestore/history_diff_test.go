@@ -160,6 +160,9 @@ func checkSourceImage(t *testing.T, rows map[string]driver.Record, a *dumpformat
 					metadata["beads.source."+key] = jsonBytes(t, value)
 				}
 			}
+			if labels := source.Body["labels"].([]any); len(labels) != 0 {
+				fields["labels"] = append([]any(nil), labels...)
+			}
 			metadata["beads.source.status"] = jsonBytes(t, source.Source.Fields["status"])
 			metadata["beads.source_fields"] = jsonBytes(t, source.Source.Fields)
 			for _, key := range dumpformat.OpaqueIssueFields() {
