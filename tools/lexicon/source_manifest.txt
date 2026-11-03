@@ -698,6 +698,7 @@ internal/server/collab/rpc.go
 internal/server/collab/types.go
 internal/server/composition/BUILD.bazel
 internal/server/composition/artifact.go
+internal/server/composition/b03_runtime_test.go
 internal/server/composition/composition_test.go
 internal/server/composition/config.go
 internal/server/composition/configfile.go
