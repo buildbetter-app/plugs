@@ -60,6 +60,13 @@ process can take the lease based on the older expiry while its publication gate
 is held; after genuine expiry, takeover advances the epoch and fences the old
 holder.
 
+Checkpoint saves return their confirmed committed generation even if a subsequent
+lease-only heartbeat handoff fails, including expiry before the follow-up fence.
+That failure still closes Lost before releasing the publication gate; success
+reports the durable checkpoint, not a promise that its lease remains live. A
+failed or unconfirmed primary COMMIT is never converted into checkpoint success,
+and a fencing rejection before publication still leaves the checkpoint unchanged.
+
 Keyed writes with post work atomically publish ResponsePending. Fresh readers
 observe finalization; existing snapshots retain their original pending state.
 Only the fenced finalizer clears pending, including for an empty post outcome.

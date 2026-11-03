@@ -342,7 +342,12 @@ func (s *Store) Health(ctx context.Context) (driver.StoreHealth, error) {
 
 // A COMMIT error has an uncertain durable outcome. Graph callers map this to
 // ErrIndeterminate with the original request key rather than retrying blindly.
-type commitError struct{ error }
+// published distinguishes a confirmed primary COMMIT followed by a failed
+// lease-only handoff, so checkpoint callers can return their durable result.
+type commitError struct {
+	error
+	published bool
+}
 
 func (e commitError) Unwrap() error { return e.error }
 
@@ -404,23 +409,19 @@ func (s *Store) immediateLocked(ctx context.Context, l *activeLease, fn func(*sq
 		// stopped private renewals, so one lease-only transaction suffices even
 		// when EVERY native COMMIT takes longer than the renewal interval.
 		if _, err = c.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-			return commitError{err}
+			return commitError{error: err, published: true}
 		}
 		next, err := s.commitImmediate(ctx, c, l, durable)
 		if err != nil {
-			// The graph already committed. Even a pre-COMMIT error in this
-			// follow-up must not be reported as a determinate graph failure.
-			var uncertain commitError
-			if errors.As(err, &uncertain) {
-				return err
-			}
-			return commitError{err}
+			// The primary publication already committed. Failure to persist its
+			// last heartbeat must close Lost, not erase that confirmed outcome.
+			return commitError{error: err, published: true}
 		}
 		durable = next
 		if !l.finishPublication(durable) {
 			// Fail closed rather than release exclusion with an unexpected
 			// unpersisted heartbeat. This cannot occur after the cutoff.
-			return commitError{fmt.Errorf("sqlite: heartbeat advanced during publication handoff")}
+			return commitError{error: fmt.Errorf("sqlite: heartbeat advanced during publication handoff"), published: true}
 		}
 	}
 	return nil
@@ -444,7 +445,7 @@ func (s *Store) commitImmediate(ctx context.Context, c *sql.Conn, l *activeLease
 		}
 	}
 	if _, err := c.ExecContext(ctx, `COMMIT`); err != nil {
-		return durable, commitError{err}
+		return durable, commitError{error: err}
 	}
 	return heartbeat, nil
 }

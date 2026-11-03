@@ -212,7 +212,14 @@ func (s *Store) saveCheckpoint(ctx context.Context, value driver.ActiveLease, ke
 		return err
 	})
 	if err != nil {
-		return driver.Checkpoint{}, err
+		var publication commitError
+		if !errors.As(err, &publication) || !publication.published {
+			return driver.Checkpoint{}, err
+		}
+		// The checkpoint COMMIT succeeded; only the lease-only heartbeat
+		// handoff failed. immediate has already closed Lost and rolled back
+		// that follow-up before releasing exclusion. Return the confirmed
+		// checkpoint, never a fencing rejection that promises no publication.
 	}
 	result.Payload = bytes.Clone(result.Payload)
 	return result, nil
