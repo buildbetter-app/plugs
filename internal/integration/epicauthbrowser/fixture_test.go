@@ -159,6 +159,7 @@ type observedLifecycleService struct {
 	*service.Service
 	t      *testing.T
 	phases *pipeline.Collector
+	store  driver.Store
 }
 
 func (s *observedLifecycleService) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req service.CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
@@ -172,8 +173,33 @@ func (s *observedLifecycleService) CloseWithOutcome(ctx context.Context, by mode
 		}
 		phases, _ := json.Marshal(s.phases.Snapshot())
 		s.t.Logf("EP6_LIFECYCLE_REFUSAL method=bead.close code=%s message=%q elapsed_ms=%.3f phases=%s", code, message, float64(time.Since(started))/float64(time.Millisecond), phases)
+		s.observeSourceIndexes(ctx, req.ID)
 	}
 	return out, err
+}
+
+// These bounded driver-interface reads happen only after the failed write.
+// They neither initialize index coverage nor substitute facts for its guards.
+func (s *observedLifecycleService) observeSourceIndexes(ctx context.Context, target model.Ref) {
+	current, err := s.store.Meta(ctx)
+	if err != nil {
+		s.t.Logf("EP6_LIFECYCLE_SOURCE_INDEX snapshot_meta_error=%v", err)
+		return
+	}
+	reader, err := s.store.Read(ctx, driver.View{Incarnation: current.Incarnation})
+	if err != nil {
+		s.t.Logf("EP6_LIFECYCLE_SOURCE_INDEX snapshot_read_error=%v", err)
+		return
+	}
+	defer reader.Close()
+	if indexed, ok := reader.(driver.HierarchyChildrenReader); ok {
+		_, _, err := indexed.HierarchyChildren(ctx, []model.Ref{target}, 0)
+		s.t.Logf("EP6_LIFECYCLE_SOURCE_INDEX hierarchy_children_error=%v", err)
+	}
+	if indexed, ok := reader.(driver.InverseSourceLinksReader); ok {
+		_, _, err := indexed.InverseSourceLinks(ctx, []model.Ref{target}, []driver.IncomingLinkKind{driver.IncomingLinkParentChild}, nil, 0)
+		s.t.Logf("EP6_LIFECYCLE_SOURCE_INDEX inverse_source_links_error=%v", err)
+	}
 }
 
 // call crosses the real loopback listener and authentication provider. Tokens
@@ -439,7 +465,7 @@ func lifecycleFixture(t *testing.T, store driver.Store, lease driver.ActiveLease
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rpc.BindService(registry, &observedLifecycleService{Service: domain, t: t, phases: phases}); err != nil {
+	if err := rpc.BindService(registry, &observedLifecycleService{Service: domain, t: t, phases: phases, store: store}); err != nil {
 		t.Fatal(err)
 	}
 	server, err := rpc.New(registry, rpc.Config{Incarnation: meta.Incarnation, AuthMode: "anonymous", DefaultProject: epics,
