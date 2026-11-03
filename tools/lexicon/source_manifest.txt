@@ -409,6 +409,8 @@ internal/integration/eventsqlpaging/integration_test.go
 internal/integration/gatecontract/BUILD.bazel
 internal/integration/gatecontract/README.md
 internal/integration/gatecontract/authorization_test.go
+internal/integration/gatecontract/consumer_host_test.go
+internal/integration/gatecontract/consumer_test.go
 internal/integration/gatecontract/engine_test.go
 internal/integration/gatecontract/fanout_test.go
 internal/integration/gatecontract/fixture_test.go
