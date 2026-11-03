@@ -69,7 +69,7 @@ func dumpHead(t *testing.T, e *endpoint) ([]byte, *dumpformat.Archive) {
 	var data bytes.Buffer
 	cursor, dumpID := "", ""
 	for page := 0; page < 4096; page++ {
-		params := map[string]any{"history": "head", "pageSize": 1024, "humanPresence": presence}
+		params := map[string]any{"history": "head", "pageSize": 65536, "humanPresence": presence}
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
@@ -118,7 +118,7 @@ func restoreHead(t *testing.T, e *endpoint, data []byte, archive *dumpformat.Arc
 	begin := result(t, e.call(t, "", "admin.restore.begin", map[string]any{"manifest": manifest, "history": "head", "humanPresence": presence, "_meta": meta(0)}))
 	id := begin["restoreId"].(string)
 	for page, offset := 0, 0; offset < len(data); page++ {
-		end := offset + 1024
+		end := offset + 65536
 		if end > len(data) {
 			end = len(data)
 		}
