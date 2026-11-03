@@ -211,20 +211,31 @@ try {
 
     await delay(1100);
     const beforeRate = await stats();
-    const rate = await evaluate(`new Promise((resolve) => {
+    const rate = await evaluate(`new Promise((resolve, reject) => {
       const replies = [];
+      const expected = new Set(Array.from({length: 24}, (_, i) => "rate-" + i));
+      let timer;
+      const cleanup = () => { clearTimeout(timer); removeEventListener("message", listener); };
       const listener = (event) => {
-        if (event.source !== parent || !String(event.data?.id).startsWith("rate-")) return;
+        if (event.source !== parent || !expected.has(event.data?.id)) return;
+        expected.delete(event.data.id);
         replies.push(event.data);
-        if (replies.length === 24) { clearTimeout(timer); removeEventListener("message", listener); resolve(replies); }
+        if (expected.size === 0) { cleanup(); resolve(replies); }
       };
-      const timer = setTimeout(() => { removeEventListener("message", listener); resolve(replies); }, 5000);
       addEventListener("message", listener);
       for (let i = 0; i < 24; i++) parent.postMessage({jsonrpc:"2.0",id:"rate-"+i,method:"rpc.methods",params:{}}, "*");
+      timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("timed out waiting for rate replies: " + [...expected].join(",")));
+      }, 30000);
     })`, probe);
+    const rateLimited = rate.filter((reply) => reply.error?.data?.code === "rate_limited");
+    const successful = rate.filter((reply) => Array.isArray(reply.result?.methods));
+    const unclassified = rate.filter((reply) => reply.error?.data?.code !== "rate_limited" && !Array.isArray(reply.result?.methods));
     assert.equal(rate.length, 24);
-    assert.equal(rate.filter((reply) => reply.error?.data?.code === "rate_limited").length, 4);
-    assert.equal(rate.filter((reply) => Array.isArray(reply.result?.methods)).length, 20);
+    assert.equal(rateLimited.length, 4);
+    assert.equal(successful.length, 20, JSON.stringify(rate));
+    assert.equal(unclassified.length, 0, JSON.stringify(unclassified));
     assert.equal((await stats()).rpcCalls - beforeRate.rpcCalls, 20);
     console.log("PASS configured_bridge_rate_bound_20_actual_RPC_4_refusals");
 
@@ -299,7 +310,9 @@ try {
     await until(() => evaluate("globalThis.safetyLoaded === true", probe), "configured host before teardown");
     const control = await call(probe, "before-close", "bead.get", {id:configured.ref});
     assert.equal(control.result?.bead?.fields?.title, configured.title, JSON.stringify(control));
-    assert.equal((await fetch(base + "/fixture/close", {method:"POST"})).ok, true);
+    const closeResponse = await fetch(base + "/fixture/close", {method:"POST"});
+    const closeBody = await closeResponse.text();
+    assert.equal(closeResponse.ok, true, "configured Runtime.Close HTTP " + closeResponse.status + ": " + closeBody);
     const closed = await call(probe, "after-close", "bead.get", {id:configured.ref});
     assert(closed.error && !Object.hasOwn(closed, "result"), JSON.stringify(closed));
     assert.equal((await fetch(base + "/ui/config.json")).status, 502);
