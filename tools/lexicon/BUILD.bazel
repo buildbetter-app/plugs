@@ -26,6 +26,7 @@ go_test(
         "checker_test.go",
         "inventory_test.go",
     ],
+    data = ["//engdocs/style:lexicon.toml"],
     embed = [":checker"],
 )
 
