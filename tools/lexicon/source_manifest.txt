@@ -953,6 +953,9 @@ internal/storage/sqlite/parent_counter.go
 internal/storage/sqlite/pending_test.go
 internal/storage/sqlite/process_test.go
 internal/storage/sqlite/publication_cancel_test.go
+internal/storage/sqlite/publication_lease_process_test.go
+internal/storage/sqlite/publication_lease_race_test.go
+internal/storage/sqlite/publication_lease_test.go
 internal/storage/sqlite/query_cursor_test.go
 internal/storage/sqlite/reader.go
 internal/storage/sqlite/recordref_test.go
