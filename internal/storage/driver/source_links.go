@@ -60,13 +60,38 @@ func (kind IncomingLinkKind) Validate() error {
 //
 // Source images, Parent index, outgoing/inverse facts, independent versioned
 // link coverage, history, head/log/receipt publish in the existing transaction.
-// Parent coverage never certifies link coverage. Activation requires a proven
-// empty durable target under Head and complete typed images. Ordinary and
-// Parent-only bead Put must refuse ready link coverage before staging and must
-// never reuse an earlier staged link declaration. Legacy unbuilt stores remain
-// unbuilt; gaps and imported history cannot be certified from final images.
+// Parent coverage never certifies link coverage. Ordinary activation requires
+// a proven empty graph under Head and complete typed images, independent of
+// ontology/source-free history. Populated stores require the separate atomic
+// GraphSourceIndexBuilder startup port. Ordinary and Parent-only bead Put must
+// refuse ready link coverage before staging and must never reuse an earlier
+// staged link declaration. Gaps and imported historical coverage cannot be
+// certified from final images.
 type GraphSourceWriter interface {
 	PutGraphRecord(ctx context.Context, record Record, parent *model.Ref, links []SourceLink) error
+}
+
+// GraphSourceMetadata is the complete source declaration decoded by trusted
+// core from an exact current record. Storage does not interpret document JSON.
+type GraphSourceMetadata struct {
+	Parent *model.Ref
+	Links  []SourceLink
+}
+
+type GraphSourceDecoder func(Record) (GraphSourceMetadata, error)
+
+// GraphSourceIndexBuilder is an optional startup maintenance capability. It
+// rebuilds each unavailable domain from EVERY live bead under graph/Head and
+// final lease fences, using bounded pages and core's decoder. Index rows and
+// coverage become visible atomically, without changing records, revisions,
+// history, receipts or derived closure. A failure publishes nothing. Already
+// ready domains retain their historical coverage; stale/incompatible coverage
+// fails closed. Newly built coverage starts at the pinned current Head, never
+// claims imported/unknown historical coverage, and is not a write-budget bypass.
+// Call before serving requests, with ordinary lease renewal running. The decoder
+// must not call back into storage. Drivers without this port keep failing closed.
+type GraphSourceIndexBuilder interface {
+	BuildGraphSourceIndexes(context.Context, ActiveLease, GraphSourceDecoder) error
 }
 
 // InverseSourceLinksReader selects source Records with at least one outgoing

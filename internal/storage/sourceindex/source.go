@@ -194,6 +194,18 @@ func (d Dialect) Empty(ctx context.Context, q SQL) (bool, error) {
 	return !occupied, err
 }
 
+// SourcesEmpty proves that no live bead predates this publication. It checks
+// storage envelopes only, never document JSON or derived closure membership.
+func (d Dialect) SourcesEmpty(ctx context.Context, q SQL) (bool, error) {
+	query := "SELECT NOT EXISTS(SELECT 1 FROM records r JOIN objects o ON o.key=r.key WHERE o.kind='bead')"
+	if d == Postgres {
+		query = "SELECT NOT EXISTS(SELECT 1 FROM plug_postgres.records WHERE kind='bead' AND NOT deleted)"
+	}
+	var empty bool
+	err := q.QueryRowContext(ctx, query).Scan(&empty)
+	return empty, err
+}
+
 // Plan is prepared before record publication while Head is held. Its marker
 // and all source rows publish afterward inside that same fenced SQL transaction.
 type Plan struct {
@@ -204,6 +216,7 @@ type Plan struct {
 	ParentActive, LinksActive bool
 	Records                   map[string]*driver.Record
 	Declarations              map[string]Declaration
+	backfill                  bool // preserve source revisions; publish markers only after every page
 }
 
 func (d Dialect) Prepare(ctx context.Context, q SQL, current, next driver.Meta, durableEmpty bool, records map[string]*driver.Record, identities map[string]driver.Record, overlay *Overlay, graphWritable func() error, graphBumped bool) (Plan, error) {
@@ -219,7 +232,7 @@ func (d Dialect) Prepare(ctx context.Context, q SQL, current, next driver.Meta, 
 	if err != nil {
 		return Plan{}, err
 	}
-	parentComplete, linksComplete, parentDeclared, linksDeclared := true, true, false, false
+	parentComplete, linksComplete := true, true
 	for id, record := range records {
 		kind := identities[id].Kind
 		if record != nil {
@@ -247,31 +260,38 @@ func (d Dialect) Prepare(ctx context.Context, q SQL, current, next driver.Meta, 
 		if key(record.Ref) != id || declaration.ParentKey == id || driver.ValidateGraphSourceRecord(*record, nil, declaration.Links) != nil {
 			return Plan{}, fmt.Errorf("%w: source key/image/declaration mismatch", driver.ErrUnsupported)
 		}
-		parentDeclared = true
-		if declaration.Graph {
-			linksDeclared = true
-		} else {
+		if !declaration.Graph {
 			linksComplete = false
 		}
 	}
 	if coverage.Parent.Ready && (!parentComplete || coverage.Parent.Through != head) || coverage.Links.Ready && (!linksComplete || coverage.Links.Through != head) {
 		return Plan{}, fmt.Errorf("%w: incomplete or gapped typed source publication", driver.ErrUnsupported)
 	}
+	// Ontology, allocator and other source-free publications do not make an
+	// empty graph incomplete. Prove source absence under the same Head fence;
+	// never infer it from Head zero or from the staged final images.
 	empty := false
-	if durableEmpty {
-		empty, err = d.Empty(ctx, q)
+	if !coverage.Parent.Ready || !coverage.Links.Ready {
+		empty, err = d.SourcesEmpty(ctx, q)
+		if err == nil && empty {
+			empty, err = d.Empty(ctx, q)
+		}
 		if err != nil {
 			return Plan{}, err
 		}
 	}
-	parentActive := coverage.Parent.Ready || empty && parentComplete && parentDeclared
-	linksActive := coverage.Links.Ready || empty && linksComplete && linksDeclared
+	parentActive := coverage.Parent.Ready || empty && parentComplete
+	linksActive := coverage.Links.Ready || empty && linksComplete
 	parent, links := coverage.Parent, coverage.Links
+	first := head
+	if durableEmpty {
+		first = 0
+	}
 	if !parent.Ready {
-		parent.First = 0
+		parent.First = first
 	}
 	if !links.Ready {
-		links.First = 0
+		links.First = first
 	}
 	if current.Incarnation != next.Incarnation {
 		// Native current images have no revision-zero history in the new incarnation.
@@ -280,11 +300,11 @@ func (d Dialect) Prepare(ctx context.Context, q SQL, current, next driver.Meta, 
 			return Plan{}, err
 		}
 		parent, links = Coverage{First: floor}, Coverage{First: floor}
-		parentActive = empty && parentComplete && parentDeclared
-		linksActive = empty && linksComplete && linksDeclared
+		parentActive = empty && parentComplete
+		linksActive = empty && linksComplete
 	}
 	parent.Through, links.Through = at, at
-	return Plan{d, next.Incarnation, at, parent, links, parentActive, linksActive, records, overlay.Declarations}, nil
+	return Plan{Dialect: d, Incarnation: next.Incarnation, At: at, Parent: parent, Links: links, ParentActive: parentActive, LinksActive: linksActive, Records: records, Declarations: overlay.Declarations}, nil
 }
 
 func sortedRecordKeys(records map[string]*driver.Record) []string {

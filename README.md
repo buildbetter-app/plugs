@@ -33,7 +33,21 @@ that finds inconsistent stored ancestor rows refuses with
 those rows. An ordered batch that would affect more than 5,000 ancestor pairs
 refuses with `closure_too_large`.
 
-Memory, SQLite, and PostgreSQL maintain a direct-child source index atomically
-with supported writes, independently of those derived ancestor rows. Existing
-stores without complete index coverage use the complete source-validation path;
-opening a store does not certify or backfill its hierarchy.
+Memory, SQLite, and PostgreSQL maintain direct-child and incoming-link source
+indexes atomically with supported writes, independently of derived ancestor
+rows. An ontology-only bootstrap can certify an empty graph; later typed bead
+writes maintain that coverage even though the store already has other history.
+
+On server startup, after acquiring its renewing lease and before admitting
+requests, Plug upgrades missing source indexes by decoding every current bead
+through trusted core and publishing the complete indexes atomically. SQL
+backfill holds only a bounded page of source images at a time. It preserves
+record bytes, original revisions, public history and the history floor; newly
+built coverage starts at the current head, not at an unknown earlier revision.
+A failed or canceled build publishes nothing. Already-complete indexes are not
+rebuilt, stale coverage gaps still refuse, and a fresh target stays empty for
+native restore. Merely opening a driver store does not certify or backfill it.
+Hosts composing the Writer directly can run `pipeline.BuildSourceIndexes`
+before serving requests. Until coverage is complete, readers return unsupported
+and validation retains the complete source-validation fallback. The ordinary
+write pre-phase deadline remains two seconds.

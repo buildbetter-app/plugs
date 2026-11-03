@@ -155,7 +155,6 @@ func (t *transaction) publishSourceIndexes(next *state) error {
 	h, links := current.hierarchy, current.sourceLinks
 	hReady, linksReady := hierarchyReady(h), sourceLinksReady(links)
 	parentComplete, graphComplete := true, true
-	parentDeclared, graphDeclared := false, false
 	puts := make([]hierarchySource, 0, len(t.sourceDeclarations))
 	linkPuts := make([]sourceLinkSource, 0, len(t.sourceDeclarations))
 	deletes := make([]string, 0)
@@ -184,10 +183,8 @@ func (t *transaction) publishSourceIndexes(next *state) error {
 			parentComplete, graphComplete = false, false
 			continue
 		}
-		parentDeclared = true
 		puts = append(puts, hierarchySource{parentKey: declaration.parentKey, record: next.records[key]})
 		if declaration.graph {
-			graphDeclared = true
 			linkPuts = append(linkPuts, sourceLinkSource{record: next.records[key], links: declaration.links})
 		} else {
 			graphComplete = false
@@ -196,11 +193,20 @@ func (t *transaction) publishSourceIndexes(next *state) error {
 	if hReady && !parentComplete || linksReady && !graphComplete {
 		return fmt.Errorf("%w: incomplete typed source publication", driver.ErrUnsupported)
 	}
-	// Head zero alone is insufficient: restoreEmpty checks every durable family.
-	// A populated/unbuilt store is never certified by its final staged images.
-	empty := t.store.restoreEmpty() == nil
-	activateParent := !hReady && empty && parentComplete && parentDeclared
-	activateLinks := !linksReady && empty && graphComplete && graphDeclared
+	// Source-free history (notably ontology bootstrap) is not unknown bead
+	// coverage. Prove current source absence under Head; never infer historical
+	// completeness or certify a populated graph from its staged final images.
+	empty := true
+	if !hReady || !linksReady {
+		for _, record := range current.records {
+			if record.Kind == "bead" {
+				empty = false
+				break
+			}
+		}
+	}
+	activateParent := !hReady && empty && parentComplete
+	activateLinks := !linksReady && empty && graphComplete
 	if t.restore != nil {
 		// Current-image restore starts its new incarnation at the actual floor.
 		// Imported history publishes through its separate unbuilt path instead.
@@ -214,7 +220,7 @@ func (t *transaction) publishSourceIndexes(next *state) error {
 		} else {
 			root = newHierarchyRoot(at)
 			if t.restore == nil {
-				root = newHierarchyRoot(0)
+				root = newHierarchyRoot(head)
 				h, err = h.certify(root)
 			}
 		}
@@ -237,7 +243,7 @@ func (t *transaction) publishSourceIndexes(next *state) error {
 		} else {
 			root = newSourceLinkRoot(at)
 			if t.restore == nil {
-				root = newSourceLinkRoot(0)
+				root = newSourceLinkRoot(head)
 				links, err = links.certify(root)
 			}
 		}

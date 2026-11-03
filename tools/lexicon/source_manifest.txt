@@ -287,6 +287,7 @@ internal/core/pipeline/response_test.go
 internal/core/pipeline/snapshot.go
 internal/core/pipeline/snapshot_get_test.go
 internal/core/pipeline/snapshot_hierarchy.go
+internal/core/pipeline/source_indexes.go
 internal/core/pipeline/telemetry.go
 internal/core/pipeline/telemetry_test.go
 internal/core/port/BUILD.bazel
@@ -885,6 +886,10 @@ internal/storage/conformance/lifetimes.go
 internal/storage/conformance/locks.go
 internal/storage/conformance/noops.go
 internal/storage/conformance/responses.go
+internal/storage/conformance/sourceactivation/BUILD.bazel
+internal/storage/conformance/sourceactivation/activation.go
+internal/storage/conformance/sourceactivation/native.go
+internal/storage/conformance/sourceactivation/upgrade.go
 internal/storage/conformance/staged_reads.go
 internal/storage/depid/BUILD.bazel
 internal/storage/depid/depid.go
@@ -938,7 +943,9 @@ internal/storage/memory/offline_history.go
 internal/storage/memory/offline_restore.go
 internal/storage/memory/parent_counter.go
 internal/storage/memory/reader.go
+internal/storage/memory/source_activation_test.go
 internal/storage/memory/source_backend_test.go
+internal/storage/memory/source_backfill.go
 internal/storage/memory/source_link_index.go
 internal/storage/memory/source_link_index_test.go
 internal/storage/memory/source_publication.go
@@ -977,12 +984,15 @@ internal/storage/postgres/query.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
 internal/storage/postgres/schema.go
+internal/storage/postgres/source_activation_test.go
 internal/storage/postgres/source_backend_test.go
+internal/storage/postgres/source_backfill.go
 internal/storage/postgres/source_index.go
 internal/storage/postgres/source_link_schema_test.go
 internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
 internal/storage/sourceindex/BUILD.bazel
+internal/storage/sourceindex/backfill.go
 internal/storage/sourceindex/publication.go
 internal/storage/sourceindex/reader.go
 internal/storage/sourceindex/source.go
@@ -1016,7 +1026,9 @@ internal/storage/sqlite/query_cursor_test.go
 internal/storage/sqlite/reader.go
 internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/schema.go
+internal/storage/sqlite/source_activation_test.go
 internal/storage/sqlite/source_backend_test.go
+internal/storage/sqlite/source_backfill.go
 internal/storage/sqlite/source_index.go
 internal/storage/sqlite/source_link_schema_test.go
 internal/storage/sqlite/sqlite_test.go
