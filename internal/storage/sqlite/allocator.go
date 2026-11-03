@@ -275,7 +275,9 @@ func (t *transaction) allocatorPrefix(ctx context.Context, parent string) (strin
 			prefix = candidate
 		}
 	}
-	rows, err := t.tx.QueryContext(ctx, `SELECT prefix FROM allocator_states`)
+	// Journal identities are not project prefixes. They remain part of the
+	// complete snapshot/occupancy checks, outside this live allocator lookup.
+	rows, err := t.tx.QueryContext(ctx, `SELECT prefix FROM allocator_states WHERE prefix NOT LIKE 'allocator-snapshot/%'`)
 	if err != nil {
 		return "", err
 	}
