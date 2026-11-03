@@ -31,7 +31,7 @@ func TestQ5RawGroupSeededRotationBeforeAuthorization(t *testing.T) {
 			var key string
 			var rawOffset, rawWinner, authorizedWinner int
 			for i := 0; i < 128; i++ {
-				key = requestKey("raw-pivot", 2, "witness", i)
+				key = requestKey("raw-pivot", 2, "case", i)
 				seed := sha256.Sum256([]byte(identity + "\x00" + key))
 				group := sha256.Sum256([]byte(fmt.Sprintf("%x", seed) + "\x000"))
 				number := binary.BigEndian.Uint64(group[:8])
@@ -49,7 +49,7 @@ func TestQ5RawGroupSeededRotationBeforeAuthorization(t *testing.T) {
 				}
 			}
 			if rawWinner == 0 || rawWinner == authorizedWinner {
-				t.Fatal("no distinguishing raw-group pivot witness")
+				t.Fatal("no distinguishing raw-group pivot case")
 			}
 			p := f.agent(2, false)
 			meta := model.WriteMeta{Project: projectName, Return: "full", IdempotencyKey: key}
