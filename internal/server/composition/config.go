@@ -300,6 +300,11 @@ func openStore(ctx context.Context, config Config) (driver.Store, error) {
 }
 
 func (r *Runtime) bind(config Config) error {
+	// Renewal is already running. Complete the current-image upgrade before
+	// any request is admitted; ordinary writes retain their two-second pre phase.
+	if err := pipeline.BuildSourceIndexes(r.ctx, r.Store, r.Lease); err != nil {
+		return fmt.Errorf("composition: activate graph source indexes: %w", err)
+	}
 	meta, err := r.Store.Meta(r.ctx)
 	if err != nil {
 		return fmt.Errorf("composition: read store metadata: %w", err)
