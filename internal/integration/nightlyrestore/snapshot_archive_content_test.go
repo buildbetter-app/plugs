@@ -4,12 +4,35 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+// These identity fields are added during restore, so iterating the source
+// body cannot check them. The existing source/body comparisons already cover
+// archived content and its read_only/redactable policy flags.
+func snapshotArchiveContent(body []byte, source dumpformat.Record) error {
+	var metadata struct {
+		SourceID    string `json:"source_id"`
+		SourceTable string `json:"source_table"`
+	}
+	if err := json.Unmarshal(body, &metadata); err != nil {
+		return err
+	}
+	if metadata.SourceID != source.ID {
+		return fmt.Errorf("retained content source_id differs: got %q; want %q", metadata.SourceID, source.ID)
+	}
+	if metadata.SourceTable != source.Source.Table {
+		return fmt.Errorf("retained content source_table differs: got %q; want %q", metadata.SourceTable, source.Source.Table)
+	}
+	return nil
+}
 
 // Change one archived record before the real driver's Put. Preparation,
 // allocators, commit, live reads and base versions all use the real engine;
@@ -134,8 +157,12 @@ func TestNightlySnapshotArchiveContent(t *testing.T) {
 				delete(before, tc.field)
 				delete(after, tc.field)
 				same(t, "all other archived content and policy flags", after, before)
-				collect(t, store, a, p)
-				t.Fatalf("snapshot census silently accepted %s in a real %s restore", tc.name, engine)
+				if err := snapshotArchiveContent(rows[0].Body, source); err == nil {
+					collect(t, store, a, p)
+					t.Fatalf("snapshot census silently accepted %s in a real %s restore", tc.name, engine)
+				} else if !strings.Contains(err.Error(), tc.field) {
+					t.Fatalf("content comparison failed for a cause other than %s: %v", tc.field, err)
+				}
 			})
 		}
 	}
