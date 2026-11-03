@@ -149,6 +149,7 @@ internal/client/client_test.go
 internal/client/http.go
 internal/client/http_test.go
 internal/core/authz/BUILD.bazel
+internal/core/authz/binding_test.go
 internal/core/authz/chain.go
 internal/core/authz/chain_test.go
 internal/core/authz/doc.go
@@ -620,6 +621,7 @@ internal/server/authzrpc/README.md
 internal/server/authzrpc/atomic_close_test.go
 internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
+internal/server/authzrpc/binding_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/drivers_test.go
 internal/server/authzrpc/hierarchy.go

@@ -23,11 +23,12 @@ go_library(
 
 go_test(
     name = "prepared_authz_test",
-    srcs = ["prepared_test.go"],
+    srcs = ["binding_test.go", "prepared_test.go"],
     embed = [":authzrpc"],
     deps = [
         "//internal/core/authz",
         "//internal/core/model",
+        "//internal/core/port",
         "//internal/plugins/authzfixed",
         "//internal/storage/driver",
     ],
