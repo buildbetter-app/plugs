@@ -1,0 +1,9 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+sh_test(
+    name = "verifier_test",
+    size = "small",
+    srcs = ["verify_test.py"],
+    args = ["-v"],
+    data = ["verify.py"],
+)
