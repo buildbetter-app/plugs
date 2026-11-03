@@ -596,6 +596,7 @@ internal/server/authzrpc/workflow_boundary_test.go
 internal/server/authzrpc/workflow_claimnext.go
 internal/server/authzrpc/workflow_claimnext_auth_test.go
 internal/server/authzrpc/workflow_claimnext_test.go
+internal/server/authzrpc/workflow_cursor_test.go
 internal/server/authzrpc/workflow_reads.go
 internal/server/authzrpc/workflow_reads_test.go
 internal/server/authzrpc/workflow_writes_test.go

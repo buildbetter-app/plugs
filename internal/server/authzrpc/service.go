@@ -182,6 +182,7 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 		return service.BeadPage{}, err
 	}
 	items := append([]service.Bead(nil), page.Items...)
+	workflowSnapshot := page.WorkflowSnapshot
 	for page.Next != nil {
 		if len(items) >= listPostfilterCap {
 			return service.BeadPage{}, postfilterCap()
@@ -192,6 +193,10 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 		if err != nil {
 			return service.BeadPage{}, err
 		}
+		if workflowSnapshot != nil && !workflowSnapshot.Equal(page.WorkflowSnapshot) {
+			return service.BeadPage{}, &model.Error{Message: "workflow ready membership changed while collecting candidates", Data: model.ErrorData{Code: "cursor_invalid"}}
+		}
+		workflowSnapshot = page.WorkflowSnapshot
 		items = append(items, page.Items...)
 	}
 	if len(items) > listPostfilterCap {
@@ -199,6 +204,7 @@ func (s *GuardedService) Ready(ctx context.Context, by model.PrincipalRef, req s
 	}
 	page.Items = items
 	page.Next = nil
+	page.WorkflowSnapshot = workflowSnapshot
 	return s.filterPage(ctx, by, "bead.ready", req.Project, req.Limit, req.Position, page, false)
 }
 
@@ -584,6 +590,9 @@ func (s *GuardedService) current(ctx context.Context, asOf *service.AsOf) (drive
 }
 
 func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, method, project string, limit int, position *service.PagePosition, page service.BeadPage, pinned bool) (service.BeadPage, error) {
+	if method == "bead.ready" && (!page.WorkflowSnapshot.Valid() || (position != nil && (position.Workflow || !position.WorkflowSnapshot.Equal(page.WorkflowSnapshot)))) {
+		return service.BeadPage{}, &model.Error{Message: "workflow ready snapshot changed since cursor issuance; restart paging", Data: model.ErrorData{Code: "cursor_invalid"}}
+	}
 	// Historical and current content both use current authority. Only content
 	// membership and parent relationships remain pinned to the returned page.
 	_, snapshot, closeReader, err := s.current(ctx, nil)
@@ -661,7 +670,7 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 	if end > len(filtered) {
 		end = len(filtered)
 	}
-	out := service.BeadPage{Items: append([]service.Bead(nil), filtered[offset:end]...), AsOf: page.AsOf}
+	out := service.BeadPage{Items: append([]service.Bead(nil), filtered[offset:end]...), AsOf: page.AsOf, WorkflowSnapshot: page.WorkflowSnapshot}
 	content, _, closeContent, err := s.current(ctx, &page.AsOf)
 	if err != nil {
 		return service.BeadPage{}, err
@@ -688,7 +697,7 @@ func (s *GuardedService) filterPage(ctx context.Context, by model.PrincipalRef, 
 			Offset: end, AsOf: page.AsOf,
 			AuthorizationRevision: authorization.authorizationRevision,
 			AuthorizationBound:    authorization.authorizationBound,
-			Workflow:              page.Next != nil && page.Next.Workflow,
+			WorkflowSnapshot:      page.WorkflowSnapshot,
 		}
 	}
 	binding, err := s.checker.readAuthorityBinding(ctx, caller, authorization, snapshot)

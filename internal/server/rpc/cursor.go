@@ -23,17 +23,18 @@ type pageCodec struct {
 	incarnation string
 }
 type cursorPayload struct {
-	Version               int            `json:"version"`
-	Method                string         `json:"method"`
-	Principal             string         `json:"principal"`
-	Scope                 string         `json:"scope"`
-	Ontology              model.Revision `json:"ontology"`
-	Incarnation           string         `json:"incarnation"`
-	Offset                int            `json:"offset"`
-	AsOf                  asOf           `json:"asOf"`
-	AuthorizationRevision model.Revision `json:"authorizationRevision,omitempty"`
-	AuthorizationBound    bool           `json:"authorizationBound,omitempty"`
-	Workflow              bool           `json:"workflow,omitempty"`
+	Version               int                           `json:"version"`
+	Method                string                        `json:"method"`
+	Principal             string                        `json:"principal"`
+	Scope                 string                        `json:"scope"`
+	Ontology              model.Revision                `json:"ontology"`
+	Incarnation           string                        `json:"incarnation"`
+	Offset                int                           `json:"offset"`
+	AsOf                  asOf                          `json:"asOf"`
+	AuthorizationRevision model.Revision                `json:"authorizationRevision,omitempty"`
+	AuthorizationBound    bool                          `json:"authorizationBound,omitempty"`
+	Workflow              bool                          `json:"workflow,omitempty"`
+	WorkflowSnapshot      *service.WorkflowPageSnapshot `json:"workflowSnapshot,omitempty"`
 }
 
 func newPageCodec(config Config) (*pageCodec, error) {
@@ -153,6 +154,10 @@ func (c *pageCodec) decode(call Call, p serviceParams) (*service.PagePosition, e
 	if payload.AuthorizationBound && payload.AuthorizationRevision.Validate() != nil {
 		return nil, cursorInvalid()
 	}
+	if !payload.WorkflowSnapshot.Valid() || (payload.Workflow && payload.WorkflowSnapshot == nil) ||
+		(call.Method != "bead.ready" && (payload.Workflow || payload.WorkflowSnapshot != nil)) {
+		return nil, cursorInvalid()
+	}
 	if payload.Incarnation != c.incarnation {
 		return nil, incarnationChanged(payload.Incarnation, c.incarnation)
 	}
@@ -163,6 +168,7 @@ func (c *pageCodec) decode(call Call, p serviceParams) (*service.PagePosition, e
 		AuthorizationRevision: payload.AuthorizationRevision,
 		AuthorizationBound:    payload.AuthorizationBound,
 		Workflow:              payload.Workflow,
+		WorkflowSnapshot:      payload.WorkflowSnapshot,
 	}, nil
 }
 
@@ -187,6 +193,10 @@ func (c *pageCodec) encode(call Call, p serviceParams, position service.PagePosi
 	if position.AuthorizationBound && position.AuthorizationRevision.Validate() != nil {
 		return "", fmt.Errorf("service returned an invalid authorization revision")
 	}
+	if !position.WorkflowSnapshot.Valid() || (position.Workflow && position.WorkflowSnapshot == nil) ||
+		(call.Method != "bead.ready" && (position.Workflow || position.WorkflowSnapshot != nil)) {
+		return "", fmt.Errorf("service returned invalid workflow cursor state")
+	}
 	principal, scope, err := c.binding(call, p)
 	if err != nil {
 		return "", err
@@ -198,6 +208,7 @@ func (c *pageCodec) encode(call Call, p serviceParams, position service.PagePosi
 		AuthorizationRevision: position.AuthorizationRevision,
 		AuthorizationBound:    position.AuthorizationBound,
 		Workflow:              position.Workflow,
+		WorkflowSnapshot:      position.WorkflowSnapshot,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -233,6 +244,9 @@ func (c *pageCodec) page(call Call, p serviceParams, previous *service.PagePosit
 		return out, nil
 	}
 	position := *value.Next
+	if !position.WorkflowSnapshot.Equal(value.WorkflowSnapshot) {
+		return nil, fmt.Errorf("service next position does not match workflow snapshot")
+	}
 	if position.AsOf.Incarnation == "" {
 		position.AsOf.Incarnation = c.incarnation
 	}

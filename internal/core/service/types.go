@@ -101,9 +101,9 @@ func (f MemoryReadAuthorizerFunc) CanReadMemory(ctx context.Context, by model.Pr
 
 // PagePosition is domain state, never an untrusted wire token. RPC signs and
 // validates its method/principal/filter binding before passing it to service.
-// Ready and MemoryList continue at Offset in the live ordered list; AsOf
-// identifies the last observed page and incarnation. History instead pins
-// every page to AsOf.
+// Ordinary Ready and MemoryList continue at Offset in the live ordered list;
+// AsOf identifies the last observed page and incarnation. Workflow Ready
+// offsets additionally bind the provider snapshot. History pins every page.
 type PagePosition struct {
 	Offset                int
 	AsOf                  AsOf
@@ -113,6 +113,34 @@ type PagePosition struct {
 	// emitted first; the signed transport cursor then continues through the
 	// stable plugin-owned workflow ordering without resetting the core offset.
 	Workflow bool
+	// WorkflowSnapshot also binds an authorization-filtered aggregate offset,
+	// whose position does not use the raw provider-phase Workflow flag.
+	WorkflowSnapshot *WorkflowPageSnapshot
+}
+
+// WorkflowPageSnapshot identifies one atomic provider ready observation. Its
+// deadline includes currently excluded claims: expiry can change membership
+// without changing the persisted revision. It is internal signed cursor state.
+type WorkflowPageSnapshot struct {
+	Revision   model.Revision `json:"revision"`
+	ValidUntil *time.Time     `json:"validUntil,omitempty"`
+}
+
+func (s *WorkflowPageSnapshot) Valid() bool {
+	return s == nil || (s.Revision.Validate() == nil && (s.ValidUntil == nil || !s.ValidUntil.IsZero()))
+}
+
+func (s *WorkflowPageSnapshot) Equal(other *WorkflowPageSnapshot) bool {
+	if s == nil || other == nil {
+		return s == other
+	}
+	if !s.Valid() || !other.Valid() || s.Revision.String() != other.Revision.String() {
+		return false
+	}
+	if s.ValidUntil == nil || other.ValidUntil == nil {
+		return s.ValidUntil == other.ValidUntil
+	}
+	return s.ValidUntil.Equal(*other.ValidUntil)
 }
 
 type Filter struct {
@@ -421,6 +449,9 @@ type BeadPage struct {
 	NextCursor string
 	AsOf       AsOf
 	Next       *PagePosition
+	// Retained even on the final page so guarded aggregation can sign its own
+	// continuation after current-policy filtering.
+	WorkflowSnapshot *WorkflowPageSnapshot
 }
 
 type ClaimResult struct {

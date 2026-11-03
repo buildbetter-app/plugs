@@ -275,86 +275,89 @@ func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyReq
 }
 
 func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (BeadPage, error) {
+	limit, err := pageOptions(req.Project, req.ViewID, req.Cursor, req.Filter, req.Limit)
+	if err != nil {
+		return BeadPage{}, err
+	}
+	if err := validatePosition(req.Position); err != nil {
+		return BeadPage{}, err
+	}
 	if s.workflow == nil {
+		if req.Position != nil && (req.Position.Workflow || req.Position.WorkflowSnapshot != nil) {
+			return BeadPage{}, failure("cursor_invalid", "workflow provider is unavailable; restart paging")
+		}
 		return s.readyPage(ctx, by, req, restartOnRevision)
 	}
-	if req.Position != nil && req.Position.Workflow {
-		// The signed cursor has entered the plugin phase. Refresh the core
-		// incarnation/as-of observation, but do not re-emit core rows.
-		coreReq := req
+	workflowPhase := req.Position != nil && req.Position.Workflow
+	coreReq := req
+	if workflowPhase {
+		// Observe the current core incarnation without applying a provider
+		// offset to core content or re-emitting the first phase.
 		coreReq.Position = nil
 		coreReq.Limit = 1
-		corePage, err := s.readyPage(ctx, by, coreReq, restartOnRevision)
-		if err != nil {
-			return BeadPage{}, err
-		}
-		types := []string(nil)
-		if req.Filter != nil {
-			types = req.Filter.Types
-		}
-		items, err := s.workflow.Ready(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent))
-		if err != nil {
-			return BeadPage{}, err
-		}
-		limit := req.Limit
-		if limit == 0 {
-			limit = 100
-		}
-		offset := req.Position.Offset
-		if offset > len(items) {
-			return BeadPage{}, failure("cursor_invalid", "workflow cursor is beyond the current ready set")
-		}
-		end := offset + limit
-		if end > len(items) {
-			end = len(items)
-		}
-		page := BeadPage{AsOf: corePage.AsOf}
-		for _, item := range items[offset:end] {
-			page.Items = append(page.Items, workflowBead(item))
-		}
-		if end < len(items) {
-			page.Next = &PagePosition{Offset: end, AsOf: page.AsOf, Workflow: true}
-		}
-		return page, nil
 	}
-	page, err := s.readyPage(ctx, by, req, restartOnRevision)
-	if err != nil || s.workflow == nil {
-		return page, err
+	page, err := s.readyPage(ctx, by, coreReq, restartOnRevision)
+	if err != nil {
+		return BeadPage{}, err
 	}
-	// Core rows occupy the first phase. A core continuation must be consumed
-	// before plugin rows are appended, so one signed offset cannot skip or
-	// duplicate a workflow item.
-	if page.Next != nil {
+	if workflowPhase && req.Position.AsOf.Incarnation != page.AsOf.Incarnation {
+		return BeadPage{}, mapped(driver.ErrIncarnationChanged{From: req.Position.AsOf.Incarnation, To: page.AsOf.Incarnation})
+	}
+	// Core rows retain their existing live pagination. Only after consuming
+	// them do we capture a provider snapshot for the second phase.
+	if !workflowPhase && page.Next != nil {
 		return page, nil
 	}
 	types := []string(nil)
 	if req.Filter != nil {
 		types = req.Filter.Types
 	}
-	items, err := s.workflow.Ready(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+	snapshot, err := s.workflow.ReadySnapshot(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent))
 	if err != nil {
 		return BeadPage{}, err
 	}
-	limit := req.Limit
-	if limit == 0 {
-		limit = 100
+	binding := &WorkflowPageSnapshot{Revision: model.Revision(snapshot.Revision), ValidUntil: snapshot.ValidUntil}
+	if !binding.Valid() {
+		return BeadPage{}, failure("internal_error", "invalid workflow ready snapshot")
 	}
-	if len(page.Items) >= limit {
-		if len(items) != 0 {
-			page.Next = &PagePosition{Offset: 0, AsOf: page.AsOf, Workflow: true}
+	items := snapshot.Items
+	if req.Filter != nil && len(req.Filter.Resources) != 0 {
+		filtered := make([]workflowplugin.ItemView, 0, len(items))
+		for _, item := range items {
+			if slices.Contains(req.Filter.Resources, item.ID) {
+				filtered = append(filtered, item)
+			}
 		}
-		return page, nil
+		items = filtered
+	}
+	page.WorkflowSnapshot = binding
+	offset := 0
+	if workflowPhase {
+		if req.Position.WorkflowSnapshot == nil || !req.Position.WorkflowSnapshot.Valid() {
+			return BeadPage{}, failure("cursor_invalid", "workflow cursor is not snapshot-bound; restart paging")
+		}
+		if !req.Position.WorkflowSnapshot.Equal(binding) {
+			if !restartOnRevision {
+				return BeadPage{}, failure("cursor_invalid", "workflow ready membership changed; restart paging")
+			}
+			// ClaimNext is an internal live walker. Its own successful claims
+			// change the provider generation; restart rather than skipping rows.
+		} else {
+			offset = req.Position.Offset
+		}
+		if offset > len(items) {
+			return BeadPage{}, failure("cursor_invalid", "workflow cursor is beyond the captured ready set")
+		}
+		page.Items = nil
+		page.Next = nil
 	}
 	remaining := limit - len(page.Items)
-	if len(items) > remaining {
-		for _, item := range items[:remaining] {
-			page.Items = append(page.Items, workflowBead(item))
-		}
-		page.Next = &PagePosition{Offset: remaining, AsOf: page.AsOf, Workflow: true}
-		return page, nil
-	}
-	for _, item := range items {
+	end := min(offset+remaining, len(items))
+	for _, item := range items[offset:end] {
 		page.Items = append(page.Items, workflowBead(item))
+	}
+	if end < len(items) {
+		page.Next = &PagePosition{Offset: end, AsOf: page.AsOf, Workflow: true, WorkflowSnapshot: binding}
 	}
 	return page, nil
 }
