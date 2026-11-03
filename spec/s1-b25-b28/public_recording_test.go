@@ -113,6 +113,24 @@ type semanticProjection struct {
 	Memories map[string]any            `json:"memories"`
 }
 
+// Observations come from source readbacks/setup, never from the archive or
+// reverse converter. The public corpus declares public values only. A future
+// admitted observer may supply metadata or exact secret references explicitly.
+type publicConfigObservation struct {
+	Table          string `json:"table"`
+	Key            string `json:"key"`
+	Value          any    `json:"value"`
+	Classification string `json:"classification"`
+}
+
+type publicConfigExpectation struct {
+	Config     map[string]dumpformat.Record `json:"config"`
+	UserMemory map[string]dumpformat.Record `json:"user_memory"`
+	Policy     map[string]string            `json:"policy"`
+	Memories   map[string]any               `json:"reverse_memories"`
+	References []string                     `json:"config_references"`
+}
+
 // TestPublicPairedRecording is intentionally manual.  The target fails when
 // the trusted bundle environment is absent; a missing artifact is never
 // converted into a skip or a successful fixture result.
@@ -470,6 +488,11 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	}
 	writeRecordingBytes(t, filepath.Join(run.Root, "source-jsonl-projection.json"), sourceRawProjection)
 	validateSourceRows(t, sourceRawProjection, fixture)
+	sourceConfig := commandReference("source-config-readback", "source", source, []string{"--json", "config", "list"}, nil)
+	sourceExpected := observePublicConfig(t, run.Root, "source", sourceConfig, sourceRawProjection)
+	if observed, ok := sourceExpected.Config["config/"+fixture.ConfigKey]; !ok || observed.Source.Fields["value"] != configured {
+		t.Fatal("source setup config changed before independent archive observation")
+	}
 	validateInventoryAndArchive(t, &run, commandReference, "source", source, run.Root, fixture)
 
 	commandGit("target-git-init", "target", target, []string{"-c", "init.defaultBranch=main", "init", "--quiet"})
@@ -490,6 +513,8 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	}
 	writeRecordingBytes(t, filepath.Join(run.Root, "target-jsonl-projection.json"), targetRawProjection)
 	assertTargetContainsSource(t, sourceRawProjection, targetRawProjection, fixture)
+	targetConfig := commandReference("target-config-readback", "target", target, []string{"--json", "config", "list"}, nil)
+	targetExpected := observePublicConfig(t, run.Root, "target", targetConfig, targetRawProjection)
 	validateInventoryAndArchive(t, &run, commandReference, "target", target, run.Root, fixture)
 
 	sourceArchive, err := dumpformat.ReadFile(run.SourceArchivePath)
@@ -500,6 +525,8 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	if err != nil {
 		t.Fatalf("target plug-dump validation: %v", err)
 	}
+	assertPublicConfigArchive(t, sourceArchive, run.SourceInventoryPath, sourceExpected)
+	assertPublicConfigArchive(t, targetArchive, run.TargetInventoryPath, targetExpected)
 	sourceArchiveProjection, err := projectArchive(sourceArchive, fixture.ProjectionFields)
 	if err != nil {
 		t.Fatalf("source archive projection: %v", err)
@@ -515,8 +542,8 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	}
 	run.SourceProjectionSHA = hashBytes(sourceRawProjection)
 	run.TargetProjectionSHA = hashBytes(targetRawProjection)
-	run.PlugSourceProjection = replayPublicArchive(t, run.Root, storeRoot, "source", sourceArchive, sourceRawProjection, fixture)
-	run.PlugTargetProjection = replayPublicArchive(t, run.Root, storeRoot, "target", targetArchive, targetRawProjection, fixture)
+	run.PlugSourceProjection = replayPublicArchive(t, run.Root, storeRoot, "source", sourceArchive, sourceRawProjection, sourceExpected, fixture)
+	run.PlugTargetProjection = replayPublicArchive(t, run.Root, storeRoot, "target", targetArchive, targetRawProjection, targetExpected, fixture)
 	labels := make([]string, len(run.Commands))
 	for i, receipt := range run.Commands {
 		labels[i] = receipt.Label
@@ -534,7 +561,7 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 // Replay consumes the exact native producer envelope. It never manufactures an
 // archive or treats a converter refusal as success. Snapshot is an explicit
 // head-state slice under P5c/P44/P22/P46; this does not qualify source history.
-func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive *dumpformat.Archive, expected []byte, fixture recordingFixture) map[string]string {
+func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive *dumpformat.Archive, expected []byte, config publicConfigExpectation, fixture recordingFixture) map[string]string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -594,8 +621,8 @@ func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive 
 					t.Fatalf("%s actual Plug JSONL projection%s: %v", engine, suffix, err)
 				}
 				writeRecordingBytes(t, base+"-projection.json", projection)
-				if !bytes.Equal(expected, projection) {
-					t.Fatalf("%s Plug replay%s changed recorded semantics: reference=%s actual=%s", engine, suffix, hashBytes(expected), hashBytes(projection))
+				if err := comparePublicReverse(expected, projection, config, live.Result.Report.ConfigReferences, live.Result.Report.ConfigAsMemories); err != nil {
+					t.Fatalf("%s Plug replay%s changed recorded semantics: %v", engine, suffix, err)
 				}
 				hashes[engine+suffix] = hashBytes(projection)
 			}
@@ -684,17 +711,215 @@ func validateInventory(data []byte, fixture recordingFixture) error {
 	if len(expected) != 0 || len(inventory.ConfigPolicy) == 0 {
 		return fmt.Errorf("external/config policy census is incomplete: missing=%v policy=%v", expected, inventory.ConfigPolicy)
 	}
-	foundConfig := false
 	for key, policy := range inventory.ConfigPolicy {
 		if policy != "public" && policy != "secret" {
 			return fmt.Errorf("invalid config policy %s=%s", key, policy)
 		}
-		if strings.HasSuffix(key, "/"+fixture.ConfigKey) {
-			foundConfig = true
+	}
+	return nil
+}
+
+func observePublicConfig(t *testing.T, output, label string, settings, ordinary []byte) publicConfigExpectation {
+	t.Helper()
+	observations, err := readPublicConfigSettings(settings)
+	if err != nil {
+		t.Fatalf("%s independent config readback: %v", label, err)
+	}
+	expected, err := expectPublicConfig(observations, ordinary)
+	if err != nil {
+		t.Fatalf("%s independent config expectations: %v", label, err)
+	}
+	data, err := json.MarshalIndent(expected, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRecordingBytes(t, filepath.Join(output, label+"-config-expectation.json"), data)
+	return expected
+}
+
+// The genuine config-list command returns stored settings, excluding the KV
+// plane. Retain every returned key and reject duplicate readback keys rather
+// than allowing map decoding to conceal them. User memories are observed in
+// ordinary JSONL independently. Unobserved metadata/KV entries cannot pass.
+func readPublicConfigSettings(data []byte) ([]publicConfigObservation, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	start, err := decoder.Token()
+	if err != nil || start != json.Delim('{') {
+		return nil, errors.New("config readback must be an object")
+	}
+	observations := []publicConfigObservation{}
+	seen := map[string]bool{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := token.(string)
+		if !ok || key == "" || seen[key] || strings.HasPrefix(key, "kv.") {
+			return nil, errors.New("empty, duplicate or non-setting config readback key")
+		}
+		var rawValue any
+		if err := decoder.Decode(&rawValue); err != nil {
+			return nil, fmt.Errorf("config readback value must be a string: %w", err)
+		}
+		value, ok := rawValue.(string)
+		if !ok {
+			return nil, errors.New("config readback value must be a string")
+		}
+		seen[key] = true
+		observations = append(observations, publicConfigObservation{Table: "config", Key: key, Value: value, Classification: "public"})
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, errors.New("config readback has trailing data")
+	}
+	return observations, nil
+}
+
+func expectPublicConfig(observations []publicConfigObservation, ordinary []byte) (publicConfigExpectation, error) {
+	expected := publicConfigExpectation{
+		Config: map[string]dumpformat.Record{}, UserMemory: map[string]dumpformat.Record{},
+		Policy: map[string]string{}, Memories: map[string]any{}, References: []string{},
+	}
+	projection, err := decodePublicProjection(ordinary)
+	if err != nil {
+		return expected, err
+	}
+	for key, value := range projection.Memories {
+		if _, ok := value.(string); key == "" || !ok {
+			return expected, errors.New("ordinary memory observation requires a key and string value")
+		}
+		expected.Memories[key] = value
+		expected.Policy["config/kv.memory."+key] = "public"
+		expected.UserMemory[key] = dumpformat.Record{Kind: "memory", ID: key,
+			Body:   dumpformat.Row{"key": key, "value": value, "classification": "public"},
+			Source: dumpformat.Provenance{Table: "config", Fields: dumpformat.Row{"key": "kv.memory." + key, "value": value}}}
+	}
+	references := map[string]bool{}
+	var collectReferences func(any)
+	collectReferences = func(value any) {
+		switch value := value.(type) {
+		case map[string]any:
+			if ref, ok := value["$secret"].(string); ok && len(value) == 1 && ref != "" {
+				references[ref] = true
+			}
+			for _, item := range value {
+				collectReferences(item)
+			}
+		case []any:
+			for _, item := range value {
+				collectReferences(item)
+			}
 		}
 	}
-	if !foundConfig {
-		return fmt.Errorf("actual config policy does not include %s", fixture.ConfigKey)
+	for _, observed := range observations {
+		id := observed.Table + "/" + observed.Key
+		if (observed.Table != "config" && observed.Table != "metadata") || observed.Key == "" || (observed.Table == "config" && strings.HasPrefix(observed.Key, "kv.memory.")) {
+			return expected, errors.New("unsupported independent config source identity")
+		}
+		if _, duplicate := expected.Config[id]; duplicate {
+			return expected, fmt.Errorf("duplicate config observation %q", id)
+		}
+		if observed.Classification != "public" && observed.Classification != "secret" {
+			return expected, fmt.Errorf("unclassified config observation %q", id)
+		}
+		if observed.Classification == "secret" && !equalJSON(observed.Value, map[string]any{"$secret": id}) {
+			return expected, fmt.Errorf("config observation %q requires its exact secret reference", id)
+		}
+		value, ok := observed.Value.(string)
+		if !ok {
+			encoded, err := json.Marshal(observed.Value)
+			if err != nil {
+				return expected, err
+			}
+			value = string(encoded)
+		}
+		key := "plug.config/" + observed.Key
+		if _, collision := expected.Memories[key]; collision {
+			return expected, fmt.Errorf("reserved config memory-key collision %q", key)
+		}
+		expected.Memories[key] = value
+		expected.Policy[id] = observed.Classification
+		expected.Config[id] = dumpformat.Record{Kind: "config", ID: id,
+			Body:   dumpformat.Row{"key": id, "value": observed.Value, "classification": observed.Classification},
+			Source: dumpformat.Provenance{Table: observed.Table, Fields: dumpformat.Row{"key": observed.Key, "value": observed.Value}}}
+		references[id] = true
+		collectReferences(observed.Value)
+	}
+	for ref := range references {
+		expected.References = append(expected.References, ref)
+	}
+	sort.Strings(expected.References)
+	return expected, nil
+}
+
+func assertPublicConfigArchive(t *testing.T, archive *dumpformat.Archive, inventoryPath string, expected publicConfigExpectation) {
+	t.Helper()
+	data, err := os.ReadFile(inventoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inventory struct {
+		ConfigPolicy map[string]string `json:"config_policy"`
+	}
+	if err := json.Unmarshal(data, &inventory); err != nil {
+		t.Fatal(err)
+	}
+	if err := comparePublicConfigSources(archive.Records("config"), archive.Records("memory"), inventory.ConfigPolicy, expected); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func comparePublicConfigSources(config, memories []dumpformat.Record, policy map[string]string, expected publicConfigExpectation) error {
+	for _, group := range []struct {
+		kind string
+		got  []dumpformat.Record
+		want map[string]dumpformat.Record
+	}{{"config", config, expected.Config}, {"memory", memories, expected.UserMemory}} {
+		seen := map[string]bool{}
+		for _, record := range group.got {
+			if seen[record.ID] {
+				return fmt.Errorf("duplicate archive %s ID %q", group.kind, record.ID)
+			}
+			seen[record.ID] = true
+			want, ok := group.want[record.ID]
+			if !ok || !equalJSON(record, want) {
+				return fmt.Errorf("archive %s source/body differs from independent observation %q", group.kind, record.ID)
+			}
+		}
+		if len(seen) != len(group.want) {
+			return fmt.Errorf("archive %s source census is incomplete", group.kind)
+		}
+	}
+	if !equalJSON(policy, expected.Policy) {
+		return errors.New("config policy differs from complete independent observations")
+	}
+	return nil
+}
+
+// Ordinary import retains exactly its original user memories. Reverse adds an
+// explicitly enumerated config-memory set; no prefix is discarded or treated
+// as effective source configuration. Report checks are independent of JSONL.
+func comparePublicReverse(ordinary, actual []byte, expected publicConfigExpectation, references []string, configCount int) error {
+	want, err := decodePublicProjection(ordinary)
+	if err != nil {
+		return err
+	}
+	got, err := decodePublicProjection(actual)
+	if err != nil {
+		return err
+	}
+	if !equalJSON(got.Issues, want.Issues) || !equalJSON(got.Edges, want.Edges) || !equalJSON(got.Comments, want.Comments) {
+		return errors.New("reverse changed issue/relation/comment semantics")
+	}
+	if !equalJSON(got.Memories, expected.Memories) {
+		return errors.New("reverse config/user-memory set or values differ")
+	}
+	if configCount != len(expected.Config) || len(references) != len(expected.References) || len(references) > 0 && !equalJSON(references, expected.References) {
+		return errors.New("reverse config report differs from independent observations")
 	}
 	return nil
 }
@@ -723,6 +948,9 @@ func projectJSONL(data []byte, fields []string, categories map[string]string) ([
 			key, _ := row["key"].(string)
 			if key == "" {
 				return nil, fmt.Errorf("memory row has no key")
+			}
+			if _, duplicate := projection.Memories[key]; duplicate {
+				return nil, fmt.Errorf("duplicate memory key %q", key)
 			}
 			projection.Memories[key] = row["value"]
 			continue
@@ -1029,6 +1257,186 @@ func TestPublicProjectionArchiveCloseReasonAndReverseHeader(t *testing.T) {
 				t.Fatal("unsupported framing was silently discarded")
 			}
 		})
+	}
+}
+
+// All config controls below use independently enumerated authored observations
+// and output rows. They do not invoke a producer, converter, restore or store.
+type publicConfigControl struct {
+	Ordinary     []byte
+	Observations []publicConfigObservation
+	Config       []dumpformat.Record
+	Memory       []dumpformat.Record
+	Policy       map[string]string
+	Rows         []map[string]any
+	References   []string
+	Count        int
+}
+
+func newPublicConfigControl(t *testing.T) publicConfigControl {
+	t.Helper()
+	ordinary, err := projectJSONL([]byte(`{"_type":"issue","id":"pub-root","title":"Public root"}
+{"_type":"memory","key":"public-memory","value":"user value"}
+{"_type":"memory","key":"plug.config/user-owned","value":"keep this user memory"}
+`), []string{"title"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return publicConfigControl{
+		Ordinary: ordinary,
+		Observations: []publicConfigObservation{
+			{Table: "config", Key: "custom.public_recording", Value: "paired-public", Classification: "public"},
+			{Table: "metadata", Key: "api_token", Value: map[string]any{"$secret": "metadata/api_token"}, Classification: "secret"},
+		},
+		Config: []dumpformat.Record{
+			{Kind: "config", ID: "config/custom.public_recording", Body: dumpformat.Row{"key": "config/custom.public_recording", "value": "paired-public", "classification": "public"}, Source: dumpformat.Provenance{Table: "config", Fields: dumpformat.Row{"key": "custom.public_recording", "value": "paired-public"}}},
+			{Kind: "config", ID: "metadata/api_token", Body: dumpformat.Row{"key": "metadata/api_token", "value": map[string]any{"$secret": "metadata/api_token"}, "classification": "secret"}, Source: dumpformat.Provenance{Table: "metadata", Fields: dumpformat.Row{"key": "api_token", "value": map[string]any{"$secret": "metadata/api_token"}}}},
+		},
+		Memory: []dumpformat.Record{
+			{Kind: "memory", ID: "public-memory", Body: dumpformat.Row{"key": "public-memory", "value": "user value", "classification": "public"}, Source: dumpformat.Provenance{Table: "config", Fields: dumpformat.Row{"key": "kv.memory.public-memory", "value": "user value"}}},
+			{Kind: "memory", ID: "plug.config/user-owned", Body: dumpformat.Row{"key": "plug.config/user-owned", "value": "keep this user memory", "classification": "public"}, Source: dumpformat.Provenance{Table: "config", Fields: dumpformat.Row{"key": "kv.memory.plug.config/user-owned", "value": "keep this user memory"}}},
+		},
+		Policy: map[string]string{"config/custom.public_recording": "public", "metadata/api_token": "secret", "config/kv.memory.public-memory": "public", "config/kv.memory.plug.config/user-owned": "public"},
+		Rows: []map[string]any{
+			{"_type": "issue", "id": "pub-root", "title": "Public root"},
+			{"_type": "memory", "key": "public-memory", "value": "user value"},
+			{"_type": "memory", "key": "plug.config/user-owned", "value": "keep this user memory"},
+			{"_type": "memory", "key": "plug.config/custom.public_recording", "value": "paired-public"},
+			{"_type": "memory", "key": "plug.config/api_token", "value": `{"$secret":"metadata/api_token"}`},
+		},
+		References: []string{"config/custom.public_recording", "metadata/api_token"}, Count: 2,
+	}
+}
+
+func TestPublicProjectionConfigSources(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*publicConfigControl)
+	}{
+		{"unchanged", func(*publicConfigControl) {}},
+		{"dropped_config", func(c *publicConfigControl) { c.Config = c.Config[1:] }},
+		{"extra_config", func(c *publicConfigControl) { r := c.Config[0]; r.ID = "config/extra"; c.Config = append(c.Config, r) }},
+		{"duplicate_config_id", func(c *publicConfigControl) { c.Config = append(c.Config, c.Config[0]) }},
+		{"same_count_substitution", func(c *publicConfigControl) { c.Config[0].ID = "config/other" }},
+		{"classification", func(c *publicConfigControl) { c.Config[0].Body["classification"] = "secret" }},
+		{"body_value", func(c *publicConfigControl) { c.Config[0].Body["value"] = "substituted" }},
+		{"source_value", func(c *publicConfigControl) { c.Config[0].Source.Fields["value"] = "substituted" }},
+		{"body_source_substitution", func(c *publicConfigControl) {
+			c.Config[0].Body["value"] = "substituted"
+			c.Config[0].Source.Fields["value"] = "substituted"
+		}},
+		{"source_key", func(c *publicConfigControl) { c.Config[0].Source.Fields["key"] = "other" }},
+		{"source_table", func(c *publicConfigControl) { c.Config[0].Source.Table = "metadata" }},
+		{"missing_source_relations_identical", func(c *publicConfigControl) { c.Config[0].Source.Fields = nil }},
+		{"extra_source_field", func(c *publicConfigControl) { c.Config[0].Source.Fields["extra"] = "hidden" }},
+		{"body_key", func(c *publicConfigControl) { c.Config[0].Body["key"] = "config/other" }},
+		{"secret_reference", func(c *publicConfigControl) { c.Config[1].Body["value"] = map[string]any{"$secret": "metadata/other"} }},
+		{"dropped_user_memory", func(c *publicConfigControl) { c.Memory = c.Memory[1:] }},
+		{"duplicate_user_memory", func(c *publicConfigControl) { c.Memory = append(c.Memory, c.Memory[0]) }},
+		{"user_memory_value", func(c *publicConfigControl) { c.Memory[0].Body["value"] = "substituted" }},
+		{"policy_missing", func(c *publicConfigControl) { delete(c.Policy, "config/custom.public_recording") }},
+		{"policy_extra", func(c *publicConfigControl) { c.Policy["config/extra"] = "public" }},
+		{"policy_classification", func(c *publicConfigControl) { c.Policy["metadata/api_token"] = "public" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newPublicConfigControl(t)
+			expected, err := expectPublicConfig(c.Observations, c.Ordinary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.edit(&c)
+			err = comparePublicConfigSources(c.Config, c.Memory, c.Policy, expected)
+			if (err == nil) != (tc.name == "unchanged") {
+				t.Fatalf("source control %s: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestPublicProjectionReverseConfigMemories(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*publicConfigControl)
+	}{
+		{"unchanged", func(*publicConfigControl) {}},
+		{"dropped_config", func(c *publicConfigControl) { c.Rows = c.Rows[:4] }},
+		{"extra_reserved", func(c *publicConfigControl) {
+			c.Rows = append(c.Rows, map[string]any{"_type": "memory", "key": "plug.config/unobserved", "value": "extra"})
+		}},
+		{"same_count_key_substitution", func(c *publicConfigControl) { c.Rows[3]["key"] = "plug.config/other" }},
+		{"same_count_value_substitution", func(c *publicConfigControl) { c.Rows[3]["value"] = "substituted" }},
+		{"duplicate_config_memory", func(c *publicConfigControl) { c.Rows = append(c.Rows, c.Rows[3]) }},
+		{"duplicate_user_memory", func(c *publicConfigControl) { c.Rows = append(c.Rows, c.Rows[1]) }},
+		{"reserved_collision", func(c *publicConfigControl) { c.Rows[3]["key"] = "plug.config/user-owned" }},
+		{"changed_user_memory", func(c *publicConfigControl) { c.Rows[1]["value"] = "substituted" }},
+		{"dropped_reserved_user_memory", func(c *publicConfigControl) { c.Rows = append(c.Rows[:2], c.Rows[3:]...) }},
+		{"noncanonical_secret_string", func(c *publicConfigControl) { c.Rows[4]["value"] = `{ "$secret": "metadata/api_token" }` }},
+		{"nonstring_config_memory", func(c *publicConfigControl) { c.Rows[4]["value"] = map[string]any{"$secret": "metadata/api_token"} }},
+		{"changed_issue", func(c *publicConfigControl) { c.Rows[0]["title"] = "substituted" }},
+		{"wrong_count", func(c *publicConfigControl) { c.Count-- }},
+		{"missing_reference", func(c *publicConfigControl) { c.References = c.References[:1] }},
+		{"extra_reference", func(c *publicConfigControl) { c.References = append(c.References, "metadata/unobserved") }},
+		{"duplicate_reference", func(c *publicConfigControl) { c.References[1] = c.References[0] }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newPublicConfigControl(t)
+			expected, err := expectPublicConfig(c.Observations, c.Ordinary)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.edit(&c)
+			var data bytes.Buffer
+			encoder := json.NewEncoder(&data)
+			for _, row := range c.Rows {
+				if err := encoder.Encode(row); err != nil {
+					t.Fatal(err)
+				}
+			}
+			projection, err := projectJSONL(data.Bytes(), []string{"title"}, nil)
+			if err == nil {
+				err = comparePublicReverse(c.Ordinary, projection, expected, c.References, c.Count)
+			}
+			if (err == nil) != (tc.name == "unchanged") {
+				t.Fatalf("reverse control %s: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestPublicProjectionConfigObservationRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*publicConfigControl)
+	}{
+		{"duplicate_id", func(c *publicConfigControl) { c.Observations = append(c.Observations, c.Observations[0]) }},
+		{"ambiguous_source_keys", func(c *publicConfigControl) {
+			c.Observations[1].Key = c.Observations[0].Key
+			c.Observations[1].Classification = "public"
+		}},
+		{"user_reserved_collision", func(c *publicConfigControl) { c.Observations[0].Key = "user-owned" }},
+		{"unknown_table", func(c *publicConfigControl) { c.Observations[0].Table = "other" }},
+		{"missing_classification", func(c *publicConfigControl) { c.Observations[0].Classification = "" }},
+		{"wrong_secret_reference", func(c *publicConfigControl) { c.Observations[1].Value = map[string]any{"$secret": "metadata/other"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newPublicConfigControl(t)
+			tc.edit(&c)
+			if _, err := expectPublicConfig(c.Observations, c.Ordinary); err == nil {
+				t.Fatal("ambiguous or unclassified observation admitted")
+			}
+		})
+	}
+}
+
+func TestPublicProjectionConfigSettingsReadback(t *testing.T) {
+	observations, err := readPublicConfigSettings([]byte(`{"custom.public_recording":"paired-public","stored-only":"9007199254740993"}`))
+	if err != nil || len(observations) != 2 || observations[1].Value != "9007199254740993" {
+		t.Fatalf("independent string readback: %v", err)
+	}
+	for _, data := range []string{`[]`, `{"a":"x","a":"y"}`, `{"a":null}`, `{"a":42}`, `{"kv.memory.hidden":"x"}`, `{"a":"x"} {}`} {
+		if _, err := readPublicConfigSettings([]byte(data)); err == nil {
+			t.Fatal("invalid/duplicate/non-setting readback admitted")
+		}
 	}
 }
 

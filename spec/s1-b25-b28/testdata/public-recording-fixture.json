@@ -17,6 +17,7 @@
     "source-comment",
     "source-close",
     "source-export",
+    "source-config-readback",
     "source-inventory",
     "source-dump",
     "target-git-init",
@@ -25,6 +26,7 @@
     "target-create-keep",
     "target-import",
     "target-export",
+    "target-config-readback",
     "target-inventory",
     "target-dump"
   ],

@@ -56,9 +56,35 @@ assertions and does not invoke Beads or qualify a behavior card.
 
 When native capture is available, each actual archive is replayed through the
 real Plug restore and reverse layers in fresh memory and SQLite stores (with
-SQLite reopen), and its lossless JSONL projection must match the source
-projection. The replay is an additional connected check; it does not convert a
-producer refusal or a missing hosted raw-output upload into a pass.
+SQLite reopen). Ordinary JSONL import keeps its original user-memory
+expectation. Reverse output must contain those exact user memories plus exactly
+the independently expected `plug.config/<sourceKey>` string memories, with
+matching `ConfigReferences` and `ConfigAsMemories`. No reserved prefix is
+discarded: an unrelated user memory with that prefix still has to survive, and
+a key collision refuses the expectation. The replay is an additional connected
+check; it does not convert a producer refusal or a missing hosted raw-output
+upload into a pass.
+
+The recorder retains two additional genuine `config list --json` readbacks,
+after setup/export for each store, and writes separate config expectation
+artifacts. The public corpus declares public settings; the source's setup key
+must still match the earlier set/list observation. Every returned stored
+setting and ordinary JSONL user memory contributes an exact source-table/key,
+body/value/classification and policy assertion, independently of archive and
+reverse output. Missing, extra, duplicate or substituted archive records fail,
+as do policy discrepancies and duplicate JSONL memory keys. Config list excludes
+the KV plane; the user-memory records come from JSONL. Any other filtered KV or
+metadata entry needs an independent admitted observation and fails otherwise.
+The synthetic controls explicitly enumerate a structured secret reference to
+check its canonical string and source identity; no secret is resolved.
+
+The `TestPublicProjection` controls include same-count substitutions, missing
+or extra config, duplicate archive IDs/memory keys, reserved collisions,
+classification/source/value changes, missing config source with unchanged
+relational output, malformed readbacks, and incorrect reverse report entries.
+Their authored observations and output rows are measurement inputs, not public
+recordings. This oracle correction adds no status/type union, YAML-only
+configuration evidence, producer policy, native delivery or PostgreSQL replay.
 
 The current `682ca798` companion has JSONL and `plug-dump/1` export but no
 native `beads-inventory/1` capture. Focused r8/r9 therefore remain RED at
