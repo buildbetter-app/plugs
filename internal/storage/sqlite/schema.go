@@ -256,6 +256,11 @@ CREATE INDEX IF NOT EXISTS selection_fact_sets_source
  WHERE end_revision IS NULL;
 CREATE INDEX IF NOT EXISTS selection_fact_sets_family
  ON selection_fact_sets(incarnation,branch,row_table,kind,start_revision,end_revision,source_key);
+-- Affected ancestor proofs join the temporal family image by source. Keep the
+-- source identity before the revision range so a small affected set does not
+-- walk every historical row in the family interval index.
+CREATE INDEX IF NOT EXISTS selection_fact_sets_family_source
+ ON selection_fact_sets(incarnation,branch,row_table,kind,source_key,start_revision,end_revision);
 CREATE TABLE IF NOT EXISTS selection_facts (
  incarnation TEXT NOT NULL, branch TEXT COLLATE BINARY NOT NULL,
  row_key TEXT COLLATE BINARY NOT NULL, start_revision TEXT COLLATE BINARY NOT NULL,
