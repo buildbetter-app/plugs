@@ -279,8 +279,37 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 	// calls, while the module remains resident for the host lifetime.
 	if initialize := module.ExportedFunction("_initialize"); initialize != nil {
 		initCtx = context.WithValue(initCtx, wasmInitializerCallKey{}, struct{}{})
-		if _, err := initialize.Call(initCtx); err != nil {
+		initDone := make(chan error, 1)
+		go func() {
+			_, err := initialize.Call(initCtx)
+			initDone <- err
+		}()
+		select {
+		case err := <-initDone:
+			if err != nil {
+				result.close()
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
+				return nil, failure(ErrManifest, "WASM runtime initialization failed: %v", err)
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				result.close()
+				return nil, ctxErr
+			}
+		case <-initCtx.Done():
+			// A WASI host call such as poll_oneoff can ignore the context while
+			// the guest initializer is in flight. Close the module explicitly,
+			// then join the one bounded initializer call before retiring it.
+			_ = module.Close(context.Background())
+			err := <-initDone
 			result.close()
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			if err == nil {
+				err = initCtx.Err()
+			}
 			return nil, failure(ErrManifest, "WASM runtime initialization failed: %v", err)
 		}
 	}
