@@ -6,7 +6,10 @@ go_test(
     srcs = [
         "blocking_hierarchy_test.go",
         "checkpoint_guards_test.go",
+        "close_contract_oracle_test.go",
+        "close_contract_test.go",
         "cycle_admission_test.go",
+        "cycle_concurrency_test.go",
         "cycle_rpc_test.go",
         "cycle_fence_test.go",
         "cycle_oracle_test.go",
@@ -34,6 +37,7 @@ go_test(
     deps = [
         "//internal/core/authz",
         "//internal/core/model",
+        "//internal/core/ontology",
         "//internal/core/pipeline",
         "//internal/core/port",
         "//internal/core/restore",
