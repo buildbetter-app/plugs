@@ -664,6 +664,48 @@ func TestSelectionFamilyCompleteKeepsCanonicalMultiRowSource(t *testing.T) {
 	}
 }
 
+// A raw bead delete closes its source envelopes through changedSources even
+// when no typed projection tombstone is staged.  Ready ancestor coverage must
+// fail closed in that case; the canonical pipeline path is covered separately
+// by the complete remove-plus-replacement checks above.
+func TestSelectionFamilyCoverageRejectsRawDeleteWithoutTypedTombstones(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	ref := testRef("selection-raw-delete")
+	tx, header := beginSourceTest(t, s, lease, ref)
+	body := []byte(`{"id":"selection-raw-delete","type":"issue"}`)
+	if err := tx.PutGraphRecord(ctx, driver.Record{Ref: ref, Kind: "bead", Body: body}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	commitSourceTest(t, tx, header)
+	decode, project := selectionBackfillRaceProjection(header.Incarnation, nil)
+	if err := s.BuildGraphSourceIndexes(ctx, lease, decode, project); err != nil {
+		t.Fatal(err)
+	}
+	meta := getMeta(t, ctx, s)
+	ancestor := sqliteSelectionFamilies()[3]
+	ready, err := selectionFamilyReady(ctx, s.db, meta.Incarnation, ancestor, revKey(mustUint(meta.Head)))
+	if err != nil || !ready {
+		t.Fatalf("typed ancestor control was not ready before delete: ready=%t err=%v", ready, err)
+	}
+
+	remove, removeHeader := beginSourceTest(t, s, lease, ref)
+	if err := remove.Delete(ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+	commitSourceTest(t, remove, removeHeader)
+	meta = getMeta(t, ctx, s)
+	ready, err = selectionFamilyReady(ctx, s.db, meta.Incarnation, ancestor, revKey(mustUint(meta.Head)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready {
+		t.Fatal("raw bead delete carried ready ancestor coverage without typed tombstones")
+	}
+}
+
 type selectionCountingQueryer struct {
 	conn       *sql.Conn
 	rowQueries int

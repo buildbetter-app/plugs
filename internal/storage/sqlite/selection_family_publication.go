@@ -146,6 +146,15 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 				return false, nil
 			}
 		}
+		// Delete records have no typed overlay row of their own, but their
+		// source identity still closes every active fact envelope below. Keep
+		// deleted bead sources in the touched set so a raw Delete cannot carry
+		// ready coverage without an explicit tombstone for each physical row.
+		if record == nil {
+			if identity, known := t.sourceIdentities[id]; known && identity.Kind == "bead" {
+				touchedSources[id] = struct{}{}
+			}
+		}
 	}
 	for source := range touchedSources {
 		staged := bySource[source]
@@ -153,15 +162,32 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 			if record != nil && record.Kind == "bead" && len(staged) == 0 {
 				return false, nil
 			}
-			continue // source publication closes its previous fact sets
+			if record != nil {
+				continue // source publication closes its previous fact sets
+			}
+			// A raw bead deletion is complete only when every active typed row
+			// for this source has an explicit Present=false derived state. A
+			// pipeline delete may remove all rows and is accepted below; an
+			// unannotated or partial delete remains unavailable.
+			if len(staged) != 0 {
+				return false, nil
+			}
 		}
 		rows, err := querySelectionSourceFactRows(ctx, c, incarnation, family, source)
 		if err != nil {
 			return false, err
 		}
+		if record, deleted := t.records[source]; deleted && record == nil {
+			for _, previous := range rows {
+				if _, removed := removedBySource[source][previous]; !removed {
+					return false, nil
+				}
+			}
+			continue
+		}
 		if len(rows) != 0 && len(staged) == 0 {
 			// A live unchanged source cannot lose its only typed envelope. This
-			// also rejects a raw remove without the complete replacement delta.
+			// also rejects a partial remove without the complete replacement delta.
 			return false, nil
 		}
 		for _, previous := range rows {
