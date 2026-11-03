@@ -153,7 +153,7 @@ func TestConfiguredOntologyRuntimeLoadsCatalogAndAuditsLifecycle(t *testing.T) {
 	}
 	dependent := dependentCommit.Results[0].Ref
 	runtimeJSONCall(t, transport, "bead.link", map[string]any{"from": dependent, "to": blocker, "kind": "conditional-blocks"}, config.Project, "00000000000000000000000000000005")
-	runtimeJSONCall(t, transport, "bead.fail", map[string]any{"id": blocker, "reason": "configured audit"}, config.Project, "00000000000000000000000000000006")
+	runtimeJSONCall(t, transport, "bead.close", map[string]any{"id": blocker, "reason": "configured audit"}, config.Project, "00000000000000000000000000000006")
 
 	meta, err := runtime.Store.Meta(context.Background())
 	if err != nil {
@@ -209,7 +209,7 @@ func TestConfiguredOntologyStartupRefusesInvalidSourceAndClosesStore(t *testing.
 	}{
 		{name: "missing"},
 		{name: "wrong-kind", kind: "config", body: configuredSourceBody(t)},
-		{name: "malformed", kind: "ontology", body: []byte(`{"base":{"types":`)},
+		{name: "malformed", kind: "ontology", body: []byte(`{"base":{},"unsupported":true}`)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

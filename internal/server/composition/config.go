@@ -435,6 +435,7 @@ func (r *Runtime) bind(config Config) error {
 	}
 	ontology := ontologyRuntime
 	eventProvider := &runtimeEventProvider{}
+	nativeValidatorCount := 0
 	writerOptions := []pipeline.Option{pipeline.WithOntology(ontology)}
 	if config.Ontology != nil {
 		writerOptions = append(writerOptions, pipeline.WithOntologyAudit(service.NewOntologyAudit(ontologyLocator)))
@@ -460,6 +461,7 @@ func (r *Runtime) bind(config Config) error {
 			return hostErr
 		}
 		r.NativeHost = nativeHost
+		nativeValidatorCount = len(nativeHost.Validators())
 		writerOptions = append(writerOptions,
 			pipeline.WithMutators(nativeHost.Mutators()...),
 			pipeline.WithValidators(nativeHost.Validators()...),
@@ -485,6 +487,9 @@ func (r *Runtime) bind(config Config) error {
 	if config.Ontology != nil {
 		pre := config.Ontology.ValidatingPre
 		if pre == nil {
+			if nativeValidatorCount != 0 {
+				return fmt.Errorf("composition: configured ontology has %d native validating-pre binding(s); supply the actual ValidatingPre inventory", nativeValidatorCount)
+			}
 			pre = ontologyops.NoValidatingPre()
 		}
 		readAuthorize := config.Ontology.AuthorizeRead
