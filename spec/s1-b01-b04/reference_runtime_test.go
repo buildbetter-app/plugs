@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -282,6 +283,9 @@ func (captureLogFailure) Write([]byte) (int, error) { return 0, io.ErrClosedPipe
 func TestCapturePacketCompleteAndMissingOutcome(t *testing.T) {
 	root, retained := t.TempDir(), t.TempDir()
 	for source := range capturePacketFiles {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, source)), 0o700); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Join(root, source), []byte("capture-negative-probe"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -383,5 +387,126 @@ assert json.loads((diagnostic / "extraction.json").read_bytes())["classification
 		"PYTHONNOUSERSITE=1", "PYTHONDONTWRITEBYTECODE=1", "LC_ALL=C.UTF-8"}
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("independent raw packet extractor: %v: %s", err, output)
+	}
+}
+
+func TestCaptureDoltVersionSetupIsPrivateStrictAndRetained(t *testing.T) {
+	for _, scenario := range []string{"success", "config-failure", "second-config-failure", "version-failure", "version-warning"} {
+		t.Run(scenario, func(t *testing.T) {
+			root := t.TempDir()
+			probe := filepath.Join(root, "capture-runtime-negative-probe")
+			configExit, versionExit, extra, failSecond := "0", "0", "", "0"
+			configStderr := strings.Repeat("e", 65537) + "\r\n"
+			if scenario == "config-failure" {
+				configExit = "7"
+			}
+			if scenario == "version-failure" {
+				versionExit = "9"
+			}
+			if scenario == "version-warning" {
+				extra = "online warning\n"
+			}
+			if scenario == "second-config-failure" {
+				failSecond = "1"
+			}
+			body := fmt.Sprintf(`#!/bin/sh
+test "$DOLT_ROOT_PATH" = "$HOME" || exit 23
+test "$DOLT_DISABLE_EVENT_FLUSH" = 1 || exit 24
+case "$1" in
+ config)
+  test "$2:$3:$5" = "--global:--add:true" || exit 20
+  printf 'online version diagnostic\n'
+  printf '%s' >&2
+  test %s = 0 || exit %s
+  if test "$4" = versioncheck.disabled && test %s = 1; then exit 8; fi
+  mkdir -p "$DOLT_ROOT_PATH/.dolt"
+  case "$4" in
+   metrics.disabled) printf 'true' > "$HOME/metrics.disabled" ;;
+   versioncheck.disabled)
+    test -f "$HOME/metrics.disabled" || exit 25
+    printf '{"metrics.disabled":"true","versioncheck.disabled":"true"}\n' > "$DOLT_ROOT_PATH/.dolt/config_global.json"
+    ;;
+   *) exit 26 ;;
+  esac
+  ;;
+ version)
+  test -f "$DOLT_ROOT_PATH/.dolt/config_global.json" || exit 21
+  printf 'dolt version 2.2.0\n%s'
+  test %s = 0 || { printf 'version stderr\r\n' >&2; exit %s; }
+  ;;
+ *) exit 22 ;;
+esac
+`, configStderr, configExit, configExit, failSecond, extra, versionExit, versionExit)
+			if err := os.WriteFile(probe, []byte(body), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			_, _, err := prepareReferenceDoltVersion(probe, root)
+			if (err == nil) != (scenario == "success") {
+				t.Fatalf("scenario=%s error=%v", scenario, err)
+			}
+			trace, err := os.ReadFile(filepath.Join(root, "runtime-commands.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := bytes.Split(bytes.TrimSuffix(trace, []byte("\n")), []byte("\n"))
+			wantEvents := 3
+			if scenario == "config-failure" {
+				wantEvents = 1
+			} else if scenario == "second-config-failure" {
+				wantEvents = 2
+			}
+			if len(lines) != wantEvents {
+				t.Fatalf("runtime command order/count=%d want=%d", len(lines), wantEvents)
+			}
+			for i, line := range lines {
+				var event struct {
+					Label           string `json:"label"`
+					Exit            int    `json:"exitCode"`
+					Stdout          string `json:"stdoutBase64"`
+					Stderr          string `json:"stderrBase64"`
+					OutSHA          string `json:"stdoutSHA256"`
+					ErrSHA          string `json:"stderrSHA256"`
+					OutBytes        int    `json:"stdoutBytes"`
+					ErrBytes        int    `json:"stderrBytes"`
+					PrivateHome     bool   `json:"privateHome"`
+					PrivateDoltRoot bool   `json:"doltRootMatchesHome"`
+					FlushDisabled   bool   `json:"eventFlushDisabled"`
+				}
+				if err := json.Unmarshal(line, &event); err != nil {
+					t.Fatal(err)
+				}
+				stdout, outErr := base64.StdEncoding.DecodeString(event.Stdout)
+				stderr, errErr := base64.StdEncoding.DecodeString(event.Stderr)
+				if outErr != nil || errErr != nil || event.OutSHA != referenceDigest(stdout) || event.ErrSHA != referenceDigest(stderr) || event.OutBytes != len(stdout) || event.ErrBytes != len(stderr) || !event.PrivateHome || !event.PrivateDoltRoot || !event.FlushDisabled {
+					t.Fatal("runtime setup trace lost stream bytes/digests")
+				}
+				if i < 2 {
+					wantLabel := "dolt-config-metrics.disabled"
+					if i == 1 {
+						wantLabel = "dolt-config-versioncheck.disabled"
+					}
+					if event.Label != wantLabel || string(stdout) != "online version diagnostic\n" || string(stderr) != configStderr {
+						t.Fatal("configuration command raw streams lost")
+					}
+					if scenario == "config-failure" && event.Exit != 7 {
+						t.Fatal("config refusal exit lost")
+					}
+					if scenario == "second-config-failure" && i == 1 && event.Exit != 8 {
+						t.Fatal("second configuration refusal exit lost")
+					}
+				} else if event.Label != "dolt-version" || (scenario == "version-failure" && (event.Exit != 9 || string(stderr) != "version stderr\r\n")) {
+					t.Fatal("version command refusal metadata/streams lost")
+				}
+			}
+			if scenario != "config-failure" && scenario != "second-config-failure" {
+				configPath := filepath.Join(root, ".dolt", "config_global.json")
+				if data, err := os.ReadFile(configPath); err != nil || string(data) != "{\"metrics.disabled\":\"true\",\"versioncheck.disabled\":\"true\"}\n" {
+					t.Fatal("version configuration escaped the disposable HOME")
+				}
+				if info, err := os.Stat(configPath); err != nil || info.Mode().Perm() != 0o600 {
+					t.Fatal("configuration is not private")
+				}
+			}
+		})
 	}
 }

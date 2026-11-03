@@ -82,7 +82,14 @@ The prepared pure-Go executable cannot open embedded Dolt. Explicit captures
 use its supported `--proxied-server` mode with the public Dolt 2.2.0 Linux/amd64
 release pinned by the reference source's `tools/bazel/dolt.bzl`. The target
 checks the archive digest before extracting an executable, verifies its version,
-and records its actual digest and runtime mode. Each disposable store is stopped
+and records its actual digest and runtime mode. Before its strict version check,
+the target uses public `dolt config --global --add versioncheck.disabled true`
+only under the disposable `HOME`/`DOLT_ROOT_PATH`, after disabling metrics in
+the same private configuration. `DOLT_DISABLE_EVENT_FLUSH=1` prevents detached
+metrics children, following the pinned source's test environment. The packet
+retains that source, the actual private configuration bytes/modes, and complete
+configuration/version argv, exits and stream bytes/digests in
+`runtime-commands.jsonl`. Setup diagnostics remain unmodified. Each disposable store is stopped
 through the public CLI before removal. The raw command stdout/stderr bytes and
 exit codes are retained separately, including on recorder failure. This runtime
 packet is also emitted as `S1_B01_B04_RAW_PACKET_BEGIN`/`END` framed JSON in the

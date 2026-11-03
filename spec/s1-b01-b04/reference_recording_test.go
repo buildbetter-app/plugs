@@ -2,7 +2,6 @@ package s1b01b04
 
 import (
 	"archive/zip"
-	"bytes"
 	"context"
 	"crypto/sha256"
 	_ "embed"
@@ -142,8 +141,12 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 		"recorderSHA256": sha256File(referenceRecorderBytes),
 		"mode":           "managed-proxied-server", "doltVersion": referenceDoltVersion,
 		"doltArchiveURL": referenceDoltURL, "doltArchiveSHA256": referenceDoltSHA256,
-		"doltMember":    referenceDoltMember,
-		"qualification": "raw capture only; clocks/embedded/full-card parity unqualified",
+		"doltMember":               referenceDoltMember,
+		"doltVersionCheckDisabled": true,
+		"doltMetricsDisabled":      true, "doltEventFlushDisabled": true,
+		"doltConfigSourceSHA256": referenceDoltConfigSourceSHA256,
+		"doltEnvSourceSHA256":    referenceDoltEnvSourceSHA256,
+		"qualification":          "raw capture only; clocks/embedded/full-card parity unqualified",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -161,6 +164,25 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for source, destination := range map[string]string{
+		"internal/testutil/localdoltserver.go": "dolt-config-source.go",
+		"tools/bazel/test_env.sh":              "dolt-env-source.sh",
+	} {
+		data, err := os.ReadFile(filepath.Join(sourcePath, source))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := referenceDoltConfigSourceSHA256
+		if destination == "dolt-env-source.sh" {
+			want = referenceDoltEnvSourceSHA256
+		}
+		if sha256File(data) != want {
+			t.Fatalf("pinned runtime configuration source differs: %s", source)
+		}
+		if err := os.WriteFile(filepath.Join(root, destination), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	binaryPath := filepath.Join(root, "reference-engine")
 	publicReferenceBinary(t, archivePath, manifestPath, binaryPath)
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
@@ -175,36 +197,52 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	versionCommand := exec.Command(doltPath, "version")
-	versionCommand.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root, "LC_ALL=C", "TZ=UTC"}
-	var versionError bytes.Buffer
-	versionCommand.Stderr = &versionError
-	version, err := versionCommand.Output()
-	for name, data := range map[string][]byte{"dolt-version.stdout": version, "dolt-version.stderr": versionError.Bytes()} {
-		if writeErr := os.WriteFile(filepath.Join(root, name), data, 0o600); writeErr != nil {
-			t.Fatal(writeErr)
-		}
-	}
-	if err != nil || strings.TrimSpace(string(version)) != "dolt version "+referenceDoltVersion {
+	version, versionError, err := prepareReferenceDoltVersion(doltPath, root)
+	if err != nil {
 		t.Fatalf("pinned Dolt runtime version=%q error=%v", version, err)
+	}
+	runtimeCommands, err := os.ReadFile(filepath.Join(root, "runtime-commands.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, ".dolt", "config_global.json")
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configStat, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configDirStat, err := os.Stat(filepath.Dir(configPath))
+	if err != nil {
+		t.Fatal(err)
 	}
 	stat, err := os.Stat(doltPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	runtimeBytes, err := json.Marshal(map[string]any{
-		"mode":                "managed-proxied-server",
-		"version":             referenceDoltVersion,
-		"versionOutput":       strings.TrimSpace(string(version)),
-		"archiveURL":          referenceDoltURL,
-		"archiveSHA256":       referenceDoltSHA256,
-		"binarySHA256":        doltDigest,
-		"archiveBytes":        len(archive),
-		"binaryBytes":         stat.Size(),
-		"member":              referenceDoltMember,
-		"versionStdoutSHA256": sha256File(version),
-		"versionStderrSHA256": sha256File(versionError.Bytes()),
-		"pinSource":           "9d6fff760b7a314b476539198504d77ce0959656:tools/bazel/dolt.bzl",
+		"mode":                  "managed-proxied-server",
+		"version":               referenceDoltVersion,
+		"versionOutput":         strings.TrimSpace(string(version)),
+		"archiveURL":            referenceDoltURL,
+		"archiveSHA256":         referenceDoltSHA256,
+		"binarySHA256":          doltDigest,
+		"archiveBytes":          len(archive),
+		"binaryBytes":           stat.Size(),
+		"member":                referenceDoltMember,
+		"versionStdoutSHA256":   sha256File(version),
+		"versionStderrSHA256":   sha256File(versionError),
+		"versionCheckDisabled":  true,
+		"runtimeCommandsSHA256": sha256File(runtimeCommands),
+		"configSHA256":          sha256File(configBytes),
+		"configFileMode":        fmt.Sprintf("%04o", configStat.Mode().Perm()),
+		"configDirectoryMode":   fmt.Sprintf("%04o", configDirStat.Mode().Perm()),
+		"configSourceSHA256":    referenceDoltConfigSourceSHA256,
+		"envSourceSHA256":       referenceDoltEnvSourceSHA256,
+		"metricsDisabled":       true, "eventFlushDisabled": true, "privateDoltRoot": true,
+		"pinSource": "9d6fff760b7a314b476539198504d77ce0959656:tools/bazel/dolt.bzl",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -228,6 +266,8 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 	command.Env = []string{
 		"PATH=" + root + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"HOME=" + root,
+		"DOLT_ROOT_PATH=" + root,
+		"DOLT_DISABLE_EVENT_FLUSH=1",
 		"PYTHONNOUSERSITE=1",
 		"PYTHONDONTWRITEBYTECODE=1",
 		"LC_ALL=C.UTF-8",

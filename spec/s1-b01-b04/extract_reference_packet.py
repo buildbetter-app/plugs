@@ -21,6 +21,8 @@ FILES = {
     "reference-recording.json", "raw-commands.jsonl", "capture-runtime.json",
     "capture-profile.json", "public-reference-manifest.json", "record_reference.py",
     "recorder.stdout", "recorder.stderr", "dolt-version.stdout", "dolt-version.stderr",
+    "runtime-commands.jsonl",
+    "dolt-config.json", "dolt-config-source.go", "dolt-env-source.sh",
 }
 COMMIT = "9d6fff760b7a314b476539198504d77ce0959656"
 TREE = "cde121d6e4119e454857ad1c3ca293e2791be840"
@@ -29,6 +31,8 @@ DESCRIPTOR = "41399124974:13121145530:8c3d155f3940d21bd270fb14fe0292de0db1b3f377
 DOLT_ARCHIVE = "1f7ad8c2622995789420a3fb0f2d16b4aa7430000a825dd91d5938f36480cbf6"
 DOLT_URL = "https://github.com/dolthub/dolt/releases/download/v2.2.0/dolt-linux-amd64.tar.gz"
 DOLT_MEMBER = "dolt-linux-amd64/bin/dolt"
+DOLT_CONFIG_SOURCE = "2515e188b89e1676921d3a7dd215b8fa824f1206a72aa81da9aa85e491f6f3df"
+DOLT_ENV_SOURCE = "8bb3e5f57e2d8816753a4e0e9f08be5d64e51b89bde61d0d799f3bf04e1dd3d0"
 
 
 def canonical(value):
@@ -121,6 +125,10 @@ def accept_capture(packet, files):
             and profile.get("recorderSHA256") == digest(files["record_reference.py"])
             and profile.get("mode") == "managed-proxied-server"
             and profile.get("doltVersion") == "2.2.0" and profile.get("doltArchiveSHA256") == DOLT_ARCHIVE
+            and profile.get("doltVersionCheckDisabled") is True
+            and profile.get("doltMetricsDisabled") is True and profile.get("doltEventFlushDisabled") is True
+            and profile.get("doltConfigSourceSHA256") == digest(files["dolt-config-source.go"]) == DOLT_CONFIG_SOURCE
+            and profile.get("doltEnvSourceSHA256") == digest(files["dolt-env-source.sh"]) == DOLT_ENV_SOURCE
             and profile.get("doltArchiveURL") == DOLT_URL and profile.get("doltMember") == DOLT_MEMBER,
             "capture profile/source/recorder identity differs")
     manifest = load(files["public-reference-manifest.json"])
@@ -139,6 +147,34 @@ def accept_capture(packet, files):
             and runtime.get("versionStdoutSHA256") == digest(files["dolt-version.stdout"])
             and runtime.get("versionStderrSHA256") == digest(files["dolt-version.stderr"]),
             "actual runtime profile/stream identity differs")
+    require(runtime.get("versionCheckDisabled") is True
+            and runtime.get("metricsDisabled") is True and runtime.get("eventFlushDisabled") is True
+            and runtime.get("privateDoltRoot") is True
+            and runtime.get("configFileMode") == "0600" and runtime.get("configDirectoryMode") == "0700"
+            and runtime.get("configSHA256") == digest(files["dolt-config.json"])
+            and runtime.get("configSourceSHA256") == DOLT_CONFIG_SOURCE
+            and runtime.get("envSourceSHA256") == DOLT_ENV_SOURCE
+            and runtime.get("runtimeCommandsSHA256") == digest(files["runtime-commands.jsonl"]),
+            "runtime configuration trace identity differs")
+    require(load(files["dolt-config.json"]) == {"metrics.disabled": "true", "versioncheck.disabled": "true"},
+            "private runtime configuration bytes differ")
+    runtime_events = [load(line) for line in files["runtime-commands.jsonl"].splitlines()]
+    require([event.get("argv") for event in runtime_events] == [
+        ["dolt", "config", "--global", "--add", "metrics.disabled", "true"],
+        ["dolt", "config", "--global", "--add", "versioncheck.disabled", "true"], ["dolt", "version"]],
+        "runtime setup/version command order differs")
+    for event in runtime_events:
+        require(event.get("outcome") == "exited" and event.get("exitCode") == 0 and "error" not in event,
+                "runtime setup/version command failed")
+        require(event.get("privateHome") is True and event.get("doltRootMatchesHome") is True
+                and event.get("eventFlushDisabled") is True, "runtime command environment is not private")
+        for stream in ("stdout", "stderr"):
+            data = decode(event.get(stream + "Base64"))
+            require(len(data) == event.get(stream + "Bytes") and digest(data) == event.get(stream + "SHA256"),
+                    "runtime setup/version stream bytes differ")
+    require(decode(runtime_events[2]["stdoutBase64"]) == files["dolt-version.stdout"]
+            and decode(runtime_events[2]["stderrBase64"]) == files["dolt-version.stderr"],
+            "runtime version event and retained streams differ")
     recording = load(files["reference-recording.json"])
     require(recording.get("workspaceClass") == "fresh-disposable"
             and recording.get("runtimeProfile") == "managed-proxied-server"

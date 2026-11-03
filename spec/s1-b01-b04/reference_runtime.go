@@ -15,17 +15,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 // These are the Linux/amd64 release pins in the reference source's
 // tools/bazel/dolt.bzl at 9d6fff760b7a314b476539198504d77ce0959656.
 const (
-	referenceDoltVersion = "2.2.0"
-	referenceDoltURL     = "https://github.com/dolthub/dolt/releases/download/v2.2.0/dolt-linux-amd64.tar.gz"
-	referenceDoltSHA256  = "1f7ad8c2622995789420a3fb0f2d16b4aa7430000a825dd91d5938f36480cbf6"
-	referenceDoltMember  = "dolt-linux-amd64/bin/dolt"
-	referenceSizeLimit   = 256 << 20
+	referenceDoltVersion            = "2.2.0"
+	referenceDoltURL                = "https://github.com/dolthub/dolt/releases/download/v2.2.0/dolt-linux-amd64.tar.gz"
+	referenceDoltSHA256             = "1f7ad8c2622995789420a3fb0f2d16b4aa7430000a825dd91d5938f36480cbf6"
+	referenceDoltMember             = "dolt-linux-amd64/bin/dolt"
+	referenceSizeLimit              = 256 << 20
+	referenceDoltConfigSourceSHA256 = "2515e188b89e1676921d3a7dd215b8fa824f1206a72aa81da9aa85e491f6f3df"
+	referenceDoltEnvSourceSHA256    = "8bb3e5f57e2d8816753a4e0e9f08be5d64e51b89bde61d0d799f3bf04e1dd3d0"
 )
 
 func referenceDigest(data []byte) string {
@@ -146,6 +149,91 @@ func runReferenceRecorder(command *exec.Cmd, root string) ([]byte, []byte, error
 	return stdout, stderr.Bytes(), errors.Join(runErr, outErr, errErr)
 }
 
+func runReferenceRuntimeCommand(label string, command *exec.Cmd, root string) ([]byte, []byte, error) {
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	stdout, runErr := command.Output()
+	var code *int
+	outcome := "start-error"
+	if command.ProcessState != nil {
+		value := command.ProcessState.ExitCode()
+		code = &value
+		outcome = "exited"
+	}
+	event := map[string]any{
+		"label": label, "argv": append([]string{"dolt"}, command.Args[1:]...),
+		"exitCode": code, "outcome": outcome,
+		"stdoutBase64": append([]byte{}, stdout...), "stderrBase64": append([]byte{}, stderr.Bytes()...),
+		"stdoutBytes": len(stdout), "stderrBytes": stderr.Len(),
+		"stdoutSHA256": referenceDigest(stdout), "stderrSHA256": referenceDigest(stderr.Bytes()),
+		"privateHome":         command.Env != nil && containsReferenceEnv(command.Env, "HOME="+root),
+		"doltRootMatchesHome": containsReferenceEnv(command.Env, "DOLT_ROOT_PATH="+root),
+		"eventFlushDisabled":  containsReferenceEnv(command.Env, "DOLT_DISABLE_EVENT_FLUSH=1"),
+	}
+	if runErr != nil {
+		event["error"] = runErr.Error()
+	}
+	data, encodeErr := json.Marshal(event)
+	if encodeErr != nil {
+		return stdout, stderr.Bytes(), errors.Join(runErr, encodeErr)
+	}
+	file, openErr := os.OpenFile(filepath.Join(root, "runtime-commands.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if openErr != nil {
+		return stdout, stderr.Bytes(), errors.Join(runErr, openErr)
+	}
+	_, writeErr := file.Write(append(data, '\n'))
+	closeErr := file.Close()
+	return stdout, stderr.Bytes(), errors.Join(runErr, writeErr, closeErr)
+}
+
+func containsReferenceEnv(env []string, value string) bool {
+	for _, entry := range env {
+		if entry == value {
+			return true
+		}
+	}
+	return false
+}
+
+func prepareReferenceDoltVersion(doltPath, root string) ([]byte, []byte, error) {
+	// This public setting lives only in the disposable HOME. Keep strict version
+	// equality; suppress the online update check at its supported configuration.
+	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root, "DOLT_ROOT_PATH=" + root,
+		"DOLT_DISABLE_EVENT_FLUSH=1", "LC_ALL=C", "TZ=UTC"}
+	for _, setting := range []string{"metrics.disabled", "versioncheck.disabled"} {
+		configure := exec.Command(doltPath, "config", "--global", "--add", setting, "true")
+		configure.Env = env
+		if _, _, err := runReferenceRuntimeCommand("dolt-config-"+setting, configure, root); err != nil {
+			return nil, nil, fmt.Errorf("configure disposable Dolt %s: %w", setting, err)
+		}
+	}
+	configPath := filepath.Join(root, ".dolt", "config_global.json")
+	if err := os.Chmod(filepath.Dir(configPath), 0o700); err != nil {
+		return nil, nil, err
+	}
+	if err := os.Chmod(configPath, 0o600); err != nil {
+		return nil, nil, err
+	}
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	var config map[string]string
+	if err := json.Unmarshal(configBytes, &config); err != nil || len(config) != 2 || config["metrics.disabled"] != "true" || config["versioncheck.disabled"] != "true" {
+		return nil, nil, fmt.Errorf("disposable Dolt configuration differs: %q: %v", configBytes, err)
+	}
+	versionCommand := exec.Command(doltPath, "version")
+	versionCommand.Env = env
+	version, stderr, runErr := runReferenceRuntimeCommand("dolt-version", versionCommand, root)
+	outErr := os.WriteFile(filepath.Join(root, "dolt-version.stdout"), version, 0o600)
+	errErr := os.WriteFile(filepath.Join(root, "dolt-version.stderr"), stderr, 0o600)
+	var identityErr error
+	if runErr == nil && strings.TrimSpace(string(version)) != "dolt version "+referenceDoltVersion {
+		identityErr = fmt.Errorf("pinned Dolt runtime version=%q", version)
+	}
+	return version, stderr, errors.Join(runErr, outErr, errErr, identityErr)
+}
+
 const capturePacketBegin = "S1_B01_B04_RAW_PACKET_BEGIN"
 const capturePacketEnd = "S1_B01_B04_RAW_PACKET_END"
 const capturePacketLimit = 32 << 20
@@ -161,6 +249,10 @@ var capturePacketFiles = map[string]string{
 	"recorder.stderr":                "recorder.stderr",
 	"dolt-version.stdout":            "dolt-version.stdout",
 	"dolt-version.stderr":            "dolt-version.stderr",
+	"runtime-commands.jsonl":         "runtime-commands.jsonl",
+	".dolt/config_global.json":       "dolt-config.json",
+	"dolt-config-source.go":          "dolt-config-source.go",
+	"dolt-env-source.sh":             "dolt-env-source.sh",
 }
 
 func retainReferenceCapture(root, retained string, log io.Writer, captured bool) error {
