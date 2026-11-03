@@ -839,7 +839,10 @@ internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_guard.go
 internal/storage/memory/checkpoint_test.go
 internal/storage/memory/clock_test.go
+internal/storage/memory/derived_prefix_test.go
 internal/storage/memory/derived_reader.go
+internal/storage/memory/hierarchy_index.go
+internal/storage/memory/hierarchy_index_test.go
 internal/storage/memory/lease.go
 internal/storage/memory/lifetimes_test.go
 internal/storage/memory/metadata.go
@@ -849,6 +852,11 @@ internal/storage/memory/noop_test.go
 internal/storage/memory/offline_history.go
 internal/storage/memory/offline_restore.go
 internal/storage/memory/reader.go
+internal/storage/memory/source_backend_test.go
+internal/storage/memory/source_link_index.go
+internal/storage/memory/source_link_index_test.go
+internal/storage/memory/source_publication.go
+internal/storage/memory/source_reader.go
 internal/storage/memory/staged_reads_test.go
 internal/storage/memory/store.go
 internal/storage/memory/transaction.go
