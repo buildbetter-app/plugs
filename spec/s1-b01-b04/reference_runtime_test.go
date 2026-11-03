@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	_ "embed"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,6 +130,33 @@ assert events[-1]["label"] == "cleanup-stop" and events[-1]["exitCode"] == 8
 assert base64.b64decode(events[-1]["stderrBase64"]) == b"stop refused"
 # No real process exists in this negative probe; remove only its own directory.
 shutil.rmtree(workspace)
+# Inject the real TimeoutExpired shape without changing the 120s recorder
+# timeout or waiting. Setup and shutdown still execute the labelled probe.
+probe.write_text("#!/bin/sh\ncase \"$1\" in\n init) mkdir -p .beads; exit 0 ;;\n dolt) exit 0 ;;\n *) exit 7 ;;\nesac\n")
+real_run = module.subprocess.run
+def timeout_create(argv, **kwargs):
+    if argv[1] == "create":
+        raise module.subprocess.TimeoutExpired(argv, 120,
+            output=b"partial\x00stdout\n", stderr=b"partial stderr\r\n")
+    return real_run(argv, **kwargs)
+module.subprocess.run = timeout_create
+timed = root / "timeout.jsonl"
+try:
+    module.Recorder(probe, root, root,
+        {"mode": "managed-proxied-server", "version": "negative-probe"}, timed).record()
+except RuntimeError as error:
+    assert "timed out after 120 seconds" in str(error), str(error)
+else:
+    raise AssertionError("timed-out producer was accepted")
+finally:
+    module.subprocess.run = real_run
+events = [json.loads(line) for line in timed.read_bytes().splitlines()]
+assert [event["label"] for event in events] == ["init", "B01-create-p0", "cleanup-stop"]
+assert events[1]["outcome"] == "timeout" and events[1]["exitCode"] is None
+assert events[1]["timeoutSeconds"] == 120
+assert base64.b64decode(events[1]["stdoutBase64"]) == b"partial\x00stdout\n"
+assert base64.b64decode(events[1]["stderrBase64"]) == b"partial stderr\r\n"
+assert not pathlib.Path(events[0]["workspace"]).exists()
 `, recorder, probe, root)
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + root,
@@ -136,5 +164,32 @@ shutil.rmtree(workspace)
 	}
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("negative capture probe: %v: %s", err, output)
+	}
+}
+
+func TestCaptureRecorderPreservesCompleteOuterStreams(t *testing.T) {
+	for _, code := range []int{0, 7} {
+		t.Run(fmt.Sprintf("exit_%d", code), func(t *testing.T) {
+			root := t.TempDir()
+			command := exec.Command("python3", "-B", "-c", fmt.Sprintf(
+				"import os,sys;os.write(1,b'out'+b'x'*65536);os.write(2,b'err'+b'y'*65536);sys.exit(%d)", code))
+			command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root, "LC_ALL=C.UTF-8"}
+			stdout, stderr, err := runReferenceRecorder(command, root)
+			if (err != nil) != (code != 0) {
+				t.Fatalf("producer exit=%d error=%v", code, err)
+			}
+			for name, want := range map[string][]byte{
+				"recorder.stdout": append([]byte("out"), bytes.Repeat([]byte("x"), 65536)...),
+				"recorder.stderr": append([]byte("err"), bytes.Repeat([]byte("y"), 65536)...),
+			} {
+				got, readErr := os.ReadFile(filepath.Join(root, name))
+				if readErr != nil || !bytes.Equal(got, want) {
+					t.Fatalf("retained %s length=%d want=%d error=%v", name, len(got), len(want), readErr)
+				}
+			}
+			if len(stdout) != 65539 || len(stderr) != 65539 {
+				t.Fatalf("outer streams truncated: stdout=%d stderr=%d", len(stdout), len(stderr))
+			}
+		})
 	}
 }

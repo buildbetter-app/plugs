@@ -223,18 +223,9 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 		"LC_ALL=C.UTF-8",
 		"TZ=UTC",
 	}
-	stdout, err := command.Output()
-	if writeErr := os.WriteFile(filepath.Join(root, "recorder.stdout"), stdout, 0o600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
+	stdout, stderr, err := runReferenceRecorder(command, root)
 	if err != nil {
-		if exit, ok := err.(*exec.ExitError); ok {
-			if writeErr := os.WriteFile(filepath.Join(root, "recorder.stderr"), exit.Stderr, 0o600); writeErr != nil {
-				t.Fatal(writeErr)
-			}
-			t.Fatalf("reference recorder failed: %v: %s", err, exit.Stderr)
-		}
-		t.Fatal(err)
+		t.Fatalf("reference recorder failed: %v: %s", err, stderr)
 	}
 	if len(stdout) != 0 {
 		t.Logf("reference recorder stdout=%s", stdout)

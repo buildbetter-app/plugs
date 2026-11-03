@@ -7,10 +7,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 )
@@ -130,4 +132,15 @@ func installReferenceDolt(archive []byte, destination string) (string, error) {
 		return "", closeErr
 	}
 	return referenceDigest(payload), nil
+}
+
+func runReferenceRecorder(command *exec.Cmd, root string) ([]byte, []byte, error) {
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	stdout, runErr := command.Output()
+	// An explicit stderr buffer preserves successful stderr and avoids
+	// exec.ExitError.Stderr's bounded prefix/suffix capture on failure.
+	outErr := os.WriteFile(filepath.Join(root, "recorder.stdout"), stdout, 0o600)
+	errErr := os.WriteFile(filepath.Join(root, "recorder.stderr"), stderr.Bytes(), 0o600)
+	return stdout, stderr.Bytes(), errors.Join(runErr, outErr, errErr)
 }

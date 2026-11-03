@@ -94,10 +94,19 @@ class Recorder:
         )
 
     def run(self, label: str, args: list[str], expected: int | None = 0) -> tuple[int, bytes, bytes]:
-        proc = subprocess.run(
-            [str(self.binary), *args], cwd=self.workspace, env=self.env,
-            capture_output=True, check=False, timeout=120,
-        )
+        timed_out = False
+        try:
+            proc = subprocess.run(
+                [str(self.binary), *args], cwd=self.workspace, env=self.env,
+                capture_output=True, check=False, timeout=120,
+            )
+            code, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
+        except subprocess.TimeoutExpired as error:
+            # subprocess retains these exact partial bytes when it kills and
+            # waits for the timed-out command. Persist them before unwinding
+            # into the owned runtime's shutdown/removal path.
+            timed_out = True
+            code, stdout, stderr = None, error.stdout or b"", error.stderr or b""
         def stable_output(data: bytes) -> Any:
             text = data.decode(errors="replace")
             try:
@@ -109,26 +118,31 @@ class Recorder:
             {
                 "label": label,
                 "argv": ["reference-engine", *args],
-                "exitCode": proc.returncode,
-                "stdout": stable_output(proc.stdout),
-                "stderr": stable_output(proc.stderr),
+                "exitCode": code,
+                "outcome": "timeout" if timed_out else "exited",
+                "stdout": stable_output(stdout),
+                "stderr": stable_output(stderr),
             }
         )
         if self.transcript is not None:
             with self.transcript.open("ab") as stream:
                 stream.write(canonical({
                     "label": label, "argv": ["reference-engine", *args],
-                    "workspace": str(self.workspace), "exitCode": proc.returncode,
-                    "stdoutBase64": base64.b64encode(proc.stdout).decode("ascii"),
-                    "stderrBase64": base64.b64encode(proc.stderr).decode("ascii"),
+                    "workspace": str(self.workspace), "exitCode": code,
+                    "outcome": "timeout" if timed_out else "exited",
+                    "timeoutSeconds": 120 if timed_out else None,
+                    "stdoutBase64": base64.b64encode(stdout).decode("ascii"),
+                    "stderrBase64": base64.b64encode(stderr).decode("ascii"),
                 }) + b"\n")
-        if expected is not None and proc.returncode != expected:
+        if timed_out:
+            raise RuntimeError(f"{label}: timed out after 120 seconds; partial streams retained")
+        if expected is not None and code != expected:
             raise RuntimeError(
-                f"{label}: exit {proc.returncode}, expected {expected}\n"
-                f"stdout={proc.stdout.decode(errors='replace')}\n"
-                f"stderr={proc.stderr.decode(errors='replace')}"
+                f"{label}: exit {code}, expected {expected}\n"
+                f"stdout={stdout.decode(errors='replace')}\n"
+                f"stderr={stderr.decode(errors='replace')}"
             )
-        return proc.returncode, proc.stdout, proc.stderr
+        return code, stdout, stderr
 
     def json(self, label: str, args: list[str], expected: int = 0) -> Any:
         _, stdout, _ = self.run(label, args, expected)
