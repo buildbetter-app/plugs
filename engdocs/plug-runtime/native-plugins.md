@@ -64,7 +64,7 @@ filesystem or network access outside the Host.
 | Phase | Supported host behavior |
 | --- | --- |
 | Mutate / validate | Masked proposal and declared, pinned SnapshotReader reads join the commit guard. No graph/state writes, mutable state reads or egress. RPC-shaped Host.Call reads refuse; use the reader. |
-| Post | Committed-revision reader, process-local instance-state CAS and granted HTTPS egress. Graph writes and RPC reads refuse. Failure is a warning on the committed result. |
+| Post | Committed-revision reader, process-local instance-state CAS, configured durable state and granted HTTPS egress. Graph writes and RPC reads refuse. Failure is a warning on the committed result. |
 | Extension method | Declared method/resource checks and optional caller authorization. Granted outbound core reads require the supplied Dispatcher; outbound graph writes refuse pending a field-grant adapter. |
 
 Readers enforce field grants and budgets of at most 32 point reads and four
@@ -81,9 +81,14 @@ explicit fail-open pre binding produces a visible subscriber_skipped warning.
 Post failure produces post_subscriber_failed after commit.
 
 State is per instance and process-local CAS, not a durable event checkpoint.
+DurableState uses the configured persistent checkpoint store and active lease.
+A constructor may retain its durable facade, but every operation requires the
+current host-issued callback context. Pre calls refuse mutable reads and
+writes; completed, canceled, stale-context and closed-host operations refuse.
+Detaching caller cancellation cannot extend the host's invocation lifetime.
 Egress requires exact declared HTTPS host:port, public DNS checks on every
 request/redirect and at most 10 MiB per body with a 1 s timeout. Secret
-injection, WASI/WASM artifacts, plugin UI, durable plugin state and automatic
+injection, WASI/WASM artifacts, plugin UI and automatic
 network extension exposure are unsupported by this host snapshot.
 
 ## Run the real native fixture

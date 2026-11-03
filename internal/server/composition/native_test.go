@@ -55,6 +55,7 @@ func composedNative() sdk.Native {
 			},
 		},
 		New: func(host pluginapi.Host) (sdk.Registration, error) {
+			state := host.DurableState() // Supported constructor-held provider pattern.
 			return sdk.Registration{
 				Mutators: map[string]pluginapi.Mutator{"normalize": sdk.MutateFunc(func(_ context.Context, change pluginapi.ProposedChange, _ pluginapi.SnapshotReader) ([]pluginapi.Patch, error) {
 					patches := make([]pluginapi.Patch, 0, len(change.Changes))
@@ -64,7 +65,7 @@ func composedNative() sdk.Native {
 					return patches, nil
 				})},
 				Posts: map[string]pluginapi.PostSubscriber{"observe": sdk.AfterFunc(func(ctx context.Context, change pluginapi.CommittedChange, _ pluginapi.SnapshotReader) error {
-					_, err := host.DurableState().Put(ctx, "commit", change.Revision, pluginapi.Natural64(0))
+					_, err := state.Put(ctx, "commit", change.Revision, pluginapi.Natural64(0))
 					return err
 				})},
 			}, nil
@@ -231,10 +232,12 @@ func TestNativeConstructionUsesRuntimeCancellation(t *testing.T) {
 
 func TestRuntimeCloseDrainsCanceledNativeCallbackBeforeStoreAndLease(t *testing.T) {
 	entered, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	durableAfterCancel := make(chan error, 2)
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(release) })
 	native := composedNative()
-	native.NewWithContext = func(lifetime context.Context, _ pluginapi.Host) (sdk.Registration, error) {
+	native.NewWithContext = func(lifetime context.Context, host pluginapi.Host) (sdk.Registration, error) {
+		state := host.DurableState()
 		return sdk.Registration{
 			Mutators: map[string]pluginapi.Mutator{"normalize": sdk.MutateFunc(func(context.Context, pluginapi.ProposedChange, pluginapi.SnapshotReader) ([]pluginapi.Patch, error) {
 				return nil, nil
@@ -244,6 +247,10 @@ func TestRuntimeCloseDrainsCanceledNativeCallbackBeforeStoreAndLease(t *testing.
 				// A compiled-in native may retain its construction lifetime. The
 				// runtime must cancel that lifetime before waiting for host drain.
 				<-lifetime.Done()
+				_, err := state.Put(context.Background(), "late", "must not persist", pluginapi.Natural64(0))
+				durableAfterCancel <- err
+				_, err = state.Put(context.WithoutCancel(ctx), "late", "must not persist", pluginapi.Natural64(0))
+				durableAfterCancel <- err
 				close(canceled)
 				<-release
 				return ctx.Err()
@@ -288,6 +295,15 @@ func TestRuntimeCloseDrainsCanceledNativeCallbackBeforeStoreAndLease(t *testing.
 	if observed.closed.Load() {
 		t.Error("Runtime.Close closed SQLite while a native callback was still draining")
 	}
+	for index := 0; index < 2; index++ {
+		if err := <-durableAfterCancel; err == nil {
+			t.Error("draining native callback persisted through an independent or detached context")
+		}
+	}
+	checkpoint, err := observed.LoadCheckpoint(context.Background(), "plugin/composednative/default/durable")
+	if err != nil || checkpoint.Generation != 0 {
+		t.Errorf("draining native callback changed durable state: %+v err=%v", checkpoint, err)
+	}
 	select {
 	case <-runtime.Lease.Lost():
 		t.Error("Runtime.Close released the lease before native callback drain")
@@ -310,5 +326,99 @@ func TestRuntimeCloseDrainsCanceledNativeCallbackBeforeStoreAndLease(t *testing.
 	f.r = nil
 	if !observed.closed.Load() {
 		t.Fatal("native callback drain left SQLite open")
+	}
+}
+
+func TestConfiguredNativeHotDurableStateRefusalPublishesNothing(t *testing.T) {
+	for _, phase := range []pluginapi.Phase{pluginapi.PhaseMutate, pluginapi.PhaseValidate} {
+		t.Run(string(phase), func(t *testing.T) {
+			type attempt struct {
+				name, want string
+				err        error
+			}
+			attempted := make(chan []attempt, 1)
+			probe := func(ctx context.Context, state pluginapi.DurableState) {
+				var value any
+				_, _, readErr := state.Read(ctx, "marker", &value)
+				_, getErr := state.Get(ctx, "marker", &value)
+				_, revisionErr := state.Revision(ctx, "marker")
+				_, listErr := state.List(ctx, "marker", 10)
+				_, putErr := state.Put(ctx, "marker", "must not survive refusal", pluginapi.Natural64(0))
+				deleteErr := state.Delete(ctx, "marker", pluginapi.Natural64(0))
+				attempted <- []attempt{
+					{"read", pluginhost.ErrRead, readErr}, {"get", pluginhost.ErrRead, getErr},
+					{"revision", pluginhost.ErrRead, revisionErr}, {"list", pluginhost.ErrRead, listErr},
+					{"put", pluginhost.ErrHotWrite, putErr}, {"delete", pluginhost.ErrHotWrite, deleteErr},
+				}
+			}
+			native := composedNative()
+			native.Manifest.Provides = append(native.Manifest.Provides, pluginapi.Provision{
+				Kind: "subscriber", Name: "refuse", Phases: []pluginapi.Phase{pluginapi.PhaseValidate}, Reads: []string{"fields.title"},
+			})
+			native.New = func(host pluginapi.Host) (sdk.Registration, error) {
+				state := host.DurableState()
+				return sdk.Registration{
+					Mutators: map[string]pluginapi.Mutator{"normalize": sdk.MutateFunc(func(ctx context.Context, _ pluginapi.ProposedChange, _ pluginapi.SnapshotReader) ([]pluginapi.Patch, error) {
+						if phase == pluginapi.PhaseMutate {
+							probe(ctx, state)
+						}
+						return nil, nil
+					})},
+					Validators: map[string]pluginapi.Validator{"refuse": sdk.ValidateFunc(func(ctx context.Context, _ pluginapi.ProposedChange, _ pluginapi.SnapshotReader) (pluginapi.Verdict, error) {
+						if phase == pluginapi.PhaseValidate {
+							probe(ctx, state)
+						}
+						return pluginapi.Verdict{Allow: false, Violations: []pluginapi.Violation{{Guard: "refuse", Message: "deliberate validation refusal"}}}, nil
+					})},
+					Posts: map[string]pluginapi.PostSubscriber{"observe": sdk.AfterFunc(func(context.Context, pluginapi.CommittedChange, pluginapi.SnapshotReader) error {
+						return errors.New("post must never run on refused write")
+					})},
+				}, nil
+			}
+			f := startRuntime(t, Config{
+				Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "refused.db"), Project: "native-refusal", Address: DefaultAddress,
+				NativePlugins: []sdk.Native{native}, NativeBindings: []pluginhost.Binding{
+					{ID: "native-mutate", Alias: "composednative", Instance: "default", Subscriber: "normalize", Phase: pluginapi.PhaseMutate, Reads: []string{"fields.title"}, Owns: []string{"fields.title"}},
+					{ID: "native-refuse", Alias: "composednative", Instance: "default", Subscriber: "refuse", Phase: pluginapi.PhaseValidate, Reads: []string{"fields.title"}},
+				},
+			})
+			before, err := f.r.Store.Meta(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := f.client.Call(context.Background(), "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "must not commit"}}, "550e8400-e29b-41d4-a716-446655440051")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var envelope struct {
+				Error *struct {
+					Data struct {
+						Code string `json:"code"`
+					} `json:"data"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(response.JSON, &envelope); err != nil || envelope.Error == nil || envelope.Error.Data.Code != "ontology_guard_failed" {
+				t.Fatalf("configured validator did not refuse the admitted HTTP write: %s err=%v", response.JSON, err)
+			}
+			select {
+			case attempts := <-attempted:
+				for _, attempt := range attempts {
+					var diagnostic *pluginhost.Error
+					if !errors.As(attempt.err, &diagnostic) || diagnostic.Code != attempt.want {
+						t.Errorf("%s %s returned %v; want %s", phase, attempt.name, attempt.err, attempt.want)
+					}
+				}
+			default:
+				t.Fatal("configured pre callback did not execute")
+			}
+			after, err := f.r.Store.Meta(context.Background())
+			if err != nil || after.Head != before.Head {
+				t.Fatalf("refused native callback changed graph head: before=%+v after=%+v err=%v", before, after, err)
+			}
+			checkpoint, err := f.r.Store.(driver.PersistentCheckpointStore).LoadCheckpoint(context.Background(), "plugin/composednative/default/durable")
+			if err != nil || checkpoint.Generation != 0 || len(checkpoint.Payload) != 0 {
+				t.Fatalf("refused native callback published durable state: %+v err=%v", checkpoint, err)
+			}
+		})
 	}
 }

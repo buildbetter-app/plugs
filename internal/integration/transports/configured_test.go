@@ -156,6 +156,7 @@ func TestConfiguredSQLiteNativeTransportsPersistAndRestart(t *testing.T) {
 			path := sqliteServerConfig(t)
 			f, runtime, stop := configuredFixture(t, path, authenticated, time.Now)
 			var last json.RawMessage
+			var retainedRequest, retainedID, retainedResult json.RawMessage
 			for i, writer := range transports {
 				canonical := request(t, json.RawMessage(`9007199254740993`), "bead.create", map[string]any{
 					"type": "issue", "fields": map[string]any{"title": "Configured <" + writer + ">"},
@@ -163,6 +164,9 @@ func TestConfiguredSQLiteNativeTransportsPersistAndRestart(t *testing.T) {
 				})
 				first := f.call(t, writer, canonical)
 				last = success(t, first)
+				retainedRequest = append(json.RawMessage(nil), canonical...)
+				retainedID = append(json.RawMessage(nil), first.ID...)
+				retainedResult = append(json.RawMessage(nil), last...)
 				for _, transport := range transports {
 					got := f.call(t, transport, canonical)
 					if !got.Meta.Replayed || !bytes.Equal(got.ID, first.ID) || !bytes.Equal(success(t, got), last) {
@@ -201,6 +205,20 @@ func TestConfiguredSQLiteNativeTransportsPersistAndRestart(t *testing.T) {
 			reopened, err := runtime.Store.Meta(context.Background())
 			if err != nil || reopened.Head != meta.Head || reopened.Incarnation != meta.Incarnation {
 				t.Fatal("restart changed configured core store identity or head")
+			}
+			acceptedCheckpoint(t, runtime, 4)
+			for _, transport := range transports {
+				replay := f.call(t, transport, retainedRequest)
+				if !replay.Meta.Replayed || !bytes.Equal(replay.ID, retainedID) || !bytes.Equal(success(t, replay), retainedResult) {
+					t.Fatalf("configured %s lost the pre-restart canonical receipt", transport)
+				}
+			}
+			if f.validators.Load() != 0 || f.posts.Load() != 0 || f.targetCalls.Load() != 0 {
+				t.Fatal("reopened replay reran native callbacks or outbound requests")
+			}
+			afterReplay, err := runtime.Store.Meta(context.Background())
+			if err != nil || afterReplay.Head != reopened.Head || afterReplay.Incarnation != reopened.Incarnation {
+				t.Fatal("reopened replay changed the configured head or incarnation")
 			}
 			acceptedCheckpoint(t, runtime, 4)
 			status, _, _ := f.post(t, mcp.Path, []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`), func(r *http.Request) { r.Header.Set("MCP-Session-Id", oldSession) })
