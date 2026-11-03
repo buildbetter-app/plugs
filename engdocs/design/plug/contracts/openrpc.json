@@ -7668,7 +7668,8 @@
             "type": "string",
             "enum": [
               "blocks",
-              "conditional-blocks"
+              "conditional-blocks",
+              "waits-for"
             ]
           },
           "state": {

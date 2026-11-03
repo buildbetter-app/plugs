@@ -86,7 +86,9 @@ func TestB14AuthenticatedWaitsForConsumerFanoutAndReopen(t *testing.T) {
 		for _, waiter := range waiters {
 			assertConsumer(t, f, waiter.id, spawner, waiter.closed)
 		}
-		f.call("bead.close", map[string]any{"id": spawner}, true, "")
+		// Cancellation is terminal without the close slot's persistent
+		// NoOpenChildren guard, so a later child reopen remains a valid write.
+		f.call("bead.cancel", map[string]any{"id": spawner}, true, "")
 		for _, waiter := range waiters {
 			assertConsumer(t, f, waiter.id, spawner, true)
 		}

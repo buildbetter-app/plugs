@@ -136,6 +136,10 @@ func TestDirectBlockerContractMatchesCanonicalOpenRPC(t *testing.T) {
 				t.Fatal("ViewExplainResult directBlockers reference drift")
 			}
 			edge := schemas["DirectBlockerEdge"].(map[string]any)
+			kinds := edge["properties"].(map[string]any)["kind"].(map[string]any)["enum"]
+			if !reflect.DeepEqual(kinds, []any{"blocks", "conditional-blocks", "waits-for"}) {
+				t.Fatalf("direct blocker kinds drift: %v", kinds)
+			}
 			if !reflect.DeepEqual(edge["required"], []any{"blocker", "kind", "state"}) || edge["additionalProperties"] != false {
 				t.Fatalf("edge schema is not closed/required: %+v", edge)
 			}

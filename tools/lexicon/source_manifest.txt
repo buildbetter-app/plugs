@@ -322,6 +322,7 @@ internal/core/service/rpc_reads.go
 internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/types.go
+internal/core/service/waits_for_consumer_test.go
 internal/core/viewops/BUILD.bazel
 internal/core/viewops/epic_progress.go
 internal/core/viewops/label_predicate.go

@@ -698,7 +698,7 @@ func (s *Service) projectDirectBlockers(ctx context.Context, by model.PrincipalR
 		byID[doc.ID] = stored{record: record, doc: doc}
 	}
 	for _, edge := range verdict.Edges {
-		if edge.Kind != "blocks" && edge.Kind != "conditional-blocks" {
+		if edge.Kind != "blocks" && edge.Kind != "conditional-blocks" && edge.Kind != "waits-for" {
 			return nil, failure("internal_error", "invalid direct blocker kind")
 		}
 		if edge.State != DirectBlockerSatisfied && edge.State != DirectBlockerUnsatisfied && edge.State != DirectBlockerUnknown {

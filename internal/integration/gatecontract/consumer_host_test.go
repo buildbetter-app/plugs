@@ -45,7 +45,7 @@ type consumerPolicy struct {
 func (p *consumerPolicy) Compile(req authz.ListRequest) (authz.FilterTemplate, error) {
 	permit := authz.FilterExpr{Op: authz.False}
 	read := req.Action == authz.Read && (req.Method == "bead.get" || req.Method == "bead.ready" || req.Method == "history.get" || req.Method == "view.explain")
-	write := req.Action == authz.Modify && (req.Method == "bead.create" || req.Method == "bead.link" || req.Method == "bead.unlink" || req.Method == "bead.close" || req.Method == "bead.reopen" || req.Method == "bead.update" || req.Method == "tx.apply")
+	write := req.Action == authz.Modify && (req.Method == "bead.create" || req.Method == "bead.link" || req.Method == "bead.unlink" || req.Method == "bead.close" || req.Method == "bead.cancel" || req.Method == "bead.reopen" || req.Method == "bead.update" || req.Method == "tx.apply")
 	if read || write {
 		permit = authz.And(authz.FilterExpr{Op: authz.PrincipalKind, Kind: "user"}, authz.FilterExpr{Op: authz.ActiveProject}, authz.FilterExpr{Op: authz.GrantExists, Subject: authz.CallerSubject, Scope: authz.ProjectBindingScope, Role: "involved"})
 	}
