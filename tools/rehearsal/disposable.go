@@ -870,11 +870,12 @@ func (t *mcpTransport) exchange(ctx context.Context, data []byte) ([]byte, http.
 
 func (t *mcpTransport) RoundTrip(ctx context.Context, data []byte) ([]byte, error) {
 	var request struct {
-		ID     json.RawMessage
-		Method string
-		Params map[string]any
+		JSONRPC string `json:"jsonrpc"`
+		ID      json.RawMessage
+		Method  string
+		Params  map[string]any
 	}
-	if json.Unmarshal(data, &request) != nil {
+	if wire.DecodeInto(data, &request) != nil {
 		return nil, fmt.Errorf("invalid caller bytes")
 	}
 	// The generic discovered tool preserves canonical camel-case method names
