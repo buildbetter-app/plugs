@@ -289,6 +289,10 @@ func TestConfiguredSourcePluginBrowserSafety(t *testing.T) {
 	output, err := command.CombinedOutput()
 	fmt.Print(string(output))
 	if err != nil {
+		probe.uiMu.Lock()
+		observations, _ := json.Marshal(probe.uiObservations)
+		probe.uiMu.Unlock()
+		t.Logf("browser_failure_UI_observations=%s", observations)
 		t.Fatalf("configured source/browser integration: %v; output above", err)
 	}
 	if probe.credentials.Load() != 0 || probe.outside.Load() != 0 || probe.egress.Load() != 0 || probe.canceled.Load() != 1 {
@@ -366,6 +370,35 @@ type configuredBrowserProbe struct {
 	server                                                       *httptest.Server
 	calls, credentials, outside, egress, sibling, held, canceled atomic.Int64
 	hold                                                         atomic.Bool
+	uiMu                                                         sync.Mutex
+	uiStarted                                                    time.Time
+	uiObservations                                               []configuredBrowserUIObservation
+}
+
+type configuredBrowserUIObservation struct {
+	Stage         string `json:"stage"`
+	Path          string `json:"path"`
+	ElapsedMillis int64  `json:"elapsedMillis"`
+	Status        int    `json:"status,omitempty"`
+	Cookie        bool   `json:"cookie"`
+	Authorization bool   `json:"authorization"`
+}
+
+// Record only the disposable UI's paths, status and credential presence. No
+// header values, query strings, bodies or RPC records enter failure output.
+func (p *configuredBrowserProbe) observeUI(stage string, r *http.Request, status int) {
+	if !strings.HasPrefix(r.URL.Path, "/ui/") {
+		return
+	}
+	p.uiMu.Lock()
+	defer p.uiMu.Unlock()
+	p.uiObservations = append(p.uiObservations, configuredBrowserUIObservation{
+		Stage: stage, Path: r.URL.Path, ElapsedMillis: time.Since(p.uiStarted).Milliseconds(), Status: status,
+		Cookie: len(r.Header.Values("Cookie")) != 0, Authorization: len(r.Header.Values("Authorization")) != 0,
+	})
+	if len(p.uiObservations) > 128 {
+		p.uiObservations = p.uiObservations[len(p.uiObservations)-128:]
+	}
 }
 
 type configuredBrowserHoldKey struct{}
@@ -375,16 +408,18 @@ type configuredBrowserHoldKey struct{}
 // only test controls/stats and the outside-asset trap are served here.
 func newConfiguredBrowserProbe(t *testing.T, runtime *composition.Runtime, backend string) *configuredBrowserProbe {
 	t.Helper()
-	probe := &configuredBrowserProbe{}
+	probe := &configuredBrowserProbe{uiStarted: time.Now()}
 	target, err := url.Parse(backend)
 	if err != nil {
 		t.Fatal(err)
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		probe.observeUI("proxy-error", r, http.StatusBadGateway)
 		http.Error(w, "owned runtime unavailable", http.StatusBadGateway)
 	}
 	proxy.ModifyResponse = func(response *http.Response) error {
+		probe.observeUI("response", response.Request, response.StatusCode)
 		if response.Request.Context().Value(configuredBrowserHoldKey{}) == true {
 			probe.held.Add(1)
 			select {
@@ -398,6 +433,7 @@ func newConfiguredBrowserProbe(t *testing.T, runtime *composition.Runtime, backe
 		return nil
 	}
 	probe.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probe.observeUI("request", r, 0)
 		switch r.URL.Path {
 		case "/safety-stats":
 			_ = json.NewEncoder(w).Encode(map[string]int64{"rpcCalls": probe.calls.Load(), "siblingDocuments": probe.sibling.Load(), "heldReads": probe.held.Load(), "canceledReads": probe.canceled.Load()})

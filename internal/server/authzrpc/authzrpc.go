@@ -21,6 +21,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/plugins/authzfixed"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
+	"github.com/buildbetter-app/plugs/internal/server/claimrpc"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -123,7 +124,13 @@ type Composition struct {
 }
 
 func New(ctx context.Context, config Config) (*Composition, error) {
-	if nilValue(config.Store) || nilValue(config.Lease) || config.Provider == nil || config.Facts == nil {
+	return newWithClock(ctx, config, time.Now)
+}
+
+// newWithClock keeps controlled time at construction, outside RPC and server
+// configuration. The test build exposes this seam for real-store assertions.
+func newWithClock(ctx context.Context, config Config, now func() time.Time) (*Composition, error) {
+	if nilValue(config.Store) || nilValue(config.Lease) || config.Provider == nil || config.Facts == nil || now == nil {
 		return nil, fmt.Errorf("authzrpc: store, lease, provider and facts are required")
 	}
 	meta, err := config.Store.Meta(ctx)
@@ -158,14 +165,14 @@ func New(ctx context.Context, config Config) (*Composition, error) {
 		return nil, err
 	}
 	chain := authz.Chain{Namespace: ns, Rules: []authz.RuleSet{rules}}
-	checker := &Checker{chain: chain, source: config.Facts, caller: caller, store: config.Store, lease: config.Lease, hierarchy: config.Hierarchy}
+	checker := &Checker{chain: chain, source: config.Facts, caller: caller, store: config.Store, lease: config.Lease, hierarchy: config.Hierarchy, now: now}
 	if mutable, ok := config.Facts.(*MutableFacts); ok {
 		if err := mutable.bind(ctx, config.Store, config.Lease, ns); err != nil {
 			return nil, err
 		}
 	}
 	ontology := service.NewOntology(nil)
-	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithAuthorizer(checker), pipeline.WithEventContext(checker)}
+	options := []pipeline.Option{pipeline.WithOntology(ontology), pipeline.WithAuthorizer(checker), pipeline.WithEventContext(checker), pipeline.WithClock(now)}
 	if config.Audit != nil {
 		options = append(options, pipeline.WithOntologyAudit(config.Audit))
 	}
@@ -173,7 +180,11 @@ func New(ctx context.Context, config Config) (*Composition, error) {
 		options = append(options, pipeline.WithMutators(config.Mutators...))
 	}
 	writer := pipeline.New(config.Store, config.Lease, options...)
-	serviceOptions := []service.Option{service.WithOntology(ontology)}
+	serviceOptions := []service.Option{
+		service.WithOntology(ontology),
+		service.WithClock(now),
+		service.WithAuthorizationInstalled(func() bool { return true }),
+	}
 	if config.Workflow != nil {
 		serviceOptions = append(serviceOptions, service.WithWorkflow(config.Workflow))
 	}
@@ -191,6 +202,9 @@ func New(ctx context.Context, config Config) (*Composition, error) {
 		return nil, err
 	}
 	if err := rpc.BindService(registry, guarded); err != nil {
+		return nil, err
+	}
+	if err := claimrpc.Bind(registry, guarded); err != nil {
 		return nil, err
 	}
 	server, err := rpc.New(registry, rpc.Config{

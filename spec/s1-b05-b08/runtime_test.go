@@ -110,6 +110,79 @@ func TestB06B07B08DependencyLifecycleEdges(t *testing.T) {
 	}
 }
 
+func TestB07WaitsForBlocksUntilChildrenSettleAndReopenReblocks(t *testing.T) {
+	for _, engine := range testEngines {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			dependent, target := f.create(t, "waits-for-dependent"), f.create(t, "waits-for-target")
+			child := f.createWithParent(t, "waits-for-child", target)
+			linked := f.call(t, f.ctx, "bead.link", map[string]any{
+				"from": dependent, "to": target, "kind": "waits-for",
+			}, key("waits-for-link"), actor)
+			if linked.Error != nil {
+				t.Fatalf("waits-for link refused: %s", linked.Error.Data.Code)
+			}
+			requireOpaqueReadyIDs(t, f, target.ID, child.ID)
+			closed := f.call(t, f.ctx, "bead.close", map[string]any{"id": child}, key("waits-for-close-child"), actor)
+			if closed.Error != nil {
+				t.Fatalf("waits-for child close refused: %s", closed.Error.Data.Code)
+			}
+			// A plain fanout gate is satisfied while the spawner itself is
+			// open. Requiring the spawner to settle is the also_blocks case.
+			requireOpaqueReadyIDs(t, f, dependent.ID, target.ID)
+			reopened := f.call(t, f.ctx, "bead.reopen", map[string]any{"id": child}, key("waits-for-reopen-child"), actor)
+			if reopened.Error != nil {
+				t.Fatalf("waits-for child reopen refused: %s", reopened.Error.Data.Code)
+			}
+			f.reopen(t)
+			requireOpaqueReadyIDs(t, f, target.ID, child.ID)
+			if doc := f.document(t, dependent); len(doc.Links) != 1 || doc.Links[0].Kind != "waits-for" {
+				t.Fatalf("waits-for edge did not survive reopen: %+v", doc.Links)
+			}
+		})
+	}
+}
+
+func TestB08CloseSettlesTransitiveDependentsAndReopenReblocks(t *testing.T) {
+	for _, engine := range testEngines {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			blocker := f.create(t, "settlement-blocker")
+			direct := f.create(t, "settlement-direct")
+			transitive := f.create(t, "settlement-transitive")
+			for i, edge := range [][2]model.Ref{{direct, blocker}, {transitive, direct}} {
+				linked := f.call(t, f.ctx, "bead.link", map[string]any{
+					"from": edge[0], "to": edge[1], "kind": "blocks",
+				}, key("settlement-link-"+model.Natural64(uint64(i)).String()), actor)
+				if linked.Error != nil {
+					t.Fatalf("settlement link refused: %s", linked.Error.Data.Code)
+				}
+			}
+			requireOpaqueReadyIDs(t, f, blocker.ID)
+			if got := f.call(t, f.ctx, "bead.close", map[string]any{"id": blocker}, key("settlement-close-blocker"), actor); got.Error != nil {
+				t.Fatalf("blocker close refused: %s", got.Error.Data.Code)
+			}
+			requireOpaqueReadyIDs(t, f, direct.ID)
+			if got := f.call(t, f.ctx, "bead.close", map[string]any{"id": direct}, key("settlement-close-direct"), actor); got.Error != nil {
+				t.Fatalf("direct dependent close refused: %s", got.Error.Data.Code)
+			}
+			requireOpaqueReadyIDs(t, f, transitive.ID)
+			if got := f.call(t, f.ctx, "bead.reopen", map[string]any{"id": blocker}, key("settlement-reopen-blocker"), actor); got.Error != nil {
+				t.Fatalf("blocker reopen refused: %s", got.Error.Data.Code)
+			}
+			// The intermediate is still terminal; direct-edge satisfaction
+			// keeps its own dependent ready until that intermediate reopens.
+			requireOpaqueReadyIDs(t, f, blocker.ID, transitive.ID)
+			if got := f.call(t, f.ctx, "bead.reopen", map[string]any{"id": direct}, key("settlement-reopen-direct"), actor); got.Error != nil {
+				t.Fatalf("direct dependent reopen refused: %s", got.Error.Data.Code)
+			}
+			requireOpaqueReadyIDs(t, f, blocker.ID)
+			f.reopen(t)
+			requireOpaqueReadyIDs(t, f, blocker.ID)
+		})
+	}
+}
+
 func testDependencyLifecycleEdges(t *testing.T, engine string) {
 	f := newFixture(t, engine)
 	parent := f.create(t, "parent")

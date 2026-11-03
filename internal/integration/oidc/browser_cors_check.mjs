@@ -25,7 +25,7 @@ try {
   ws = new WebSocket(target.webSocketDebuggerUrl);
   await once(ws, "open");
   let sequence = 0;
-  const pending = new Map(), responses = [], methods = [];
+  const pending = new Map(), responses = [], methods = [], network = new Map();
   const send = (method, params = {}) => new Promise((resolve, reject) => {
     const id = ++sequence; pending.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params }));
   });
@@ -36,8 +36,17 @@ try {
       if (promise) event.error ? promise.reject(new Error("Chrome command failed")) : promise.resolve(event.result);
     } else if (event.method === "Network.responseReceived" && event.params.response.url === config.rpc) {
       responses.push(event.params.response);
+      const request = network.get(event.params.requestId);
+      if (request) request.status = event.params.response.status;
     } else if (event.method === "Network.requestWillBeSent" && event.params.request.url === config.rpc) {
       methods.push(event.params.request.method);
+      network.set(event.params.requestId, { method: event.params.request.method });
+    } else if (event.method === "Network.loadingFailed" && network.has(event.params.requestId)) {
+      const request = network.get(event.params.requestId);
+      // Only protocol classifications: never request headers, bearer, raw
+      // exception text, response bodies or CORS failedParameter values.
+      request.error = /net::ERR_[A-Z0-9_]+/.exec(event.params.errorText || "")?.[0] || "unknown";
+      request.corsError = event.params.corsErrorStatus?.corsError || null;
     }
   });
   const evaluate = async (expression) => {
@@ -52,20 +61,25 @@ try {
     await until(() => evaluate(`location.origin === ${JSON.stringify(url)} && document.readyState === "complete"`), "client navigation");
   };
   const call = (credentials, token) => evaluate(`(async () => {
+    let phase = "fetch", httpStatus = null;
     try {
       const response = await fetch(${JSON.stringify(config.rpc)}, {
         method:"POST", mode:"cors", credentials:${JSON.stringify(credentials)},
         headers:{"Authorization":${JSON.stringify("Bearer " + token)},"Content-Type":"application/json","Plug-RPC":"1"},
         body:JSON.stringify({jsonrpc:"2.0",id:"cors-safety",method:"rpc.methods",params:{}}),
       });
+      httpStatus = response.status; phase = "json";
       const value = await response.json();
       return {status:response.status,id:value.id,methods:Array.isArray(value.result?.methods),code:value.error?.data?.code};
-    } catch (_) { return {blocked:true}; }
+    } catch (error) {
+      const name = ["TypeError", "SyntaxError", "AbortError", "SecurityError", "NetworkError"].includes(error?.name) ? error.name : "Error";
+      return {blocked:true,phase,httpStatus,exception:name};
+    }
   })()`);
 
   await navigate(config.allowed);
   const permitted = await call("omit", config.token);
-  assert.equal(permitted.status, 200); assert.equal(permitted.id, "cors-safety"); assert.equal(permitted.methods, true);
+  assert.equal(permitted.status, 200, "bound bearer fetch/JSON completion: " + JSON.stringify({ phase: permitted.phase, httpStatus: permitted.httpStatus, exception: permitted.exception, network: [...network.values()] })); assert.equal(permitted.id, "cors-safety"); assert.equal(permitted.methods, true);
   assert(methods.includes("OPTIONS"), "browser did not execute a real preflight");
   const headers = responses.filter((response) => response.status === 200).map((response) => Object.fromEntries(Object.entries(response.headers).map(([key, value]) => [key.toLowerCase(), value])));
   assert(headers.length > 0);

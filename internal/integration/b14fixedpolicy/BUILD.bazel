@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "b14fixedpolicy_test",
+    srcs = ["public_members_test.go"],
+    args = ["-test.v"],
+    tags = ["requires-network"],
+    deps = [
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/service",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/server/authzrpc",
+        "//internal/server/transport/httpjson",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/sqlite",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
