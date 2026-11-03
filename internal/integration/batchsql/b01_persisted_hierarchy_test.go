@@ -21,10 +21,10 @@ func b01PersistedReadFixture(t *testing.T, engine string) (*b01Public, *b01Publi
 	probe := &b01PublicationProbe{}
 	b01InstallPublicationProbe(f, probe)
 	h := newB01Public(t, f)
-	reply, key := b01LocalWrite(t, h, "bead.create", b01Old, map[string]any{"type": "issue", "fields": map[string]any{"title": "receipt and publication witness"}})
+	reply, key := b01LocalWrite(t, h, "bead.create", b01Old, map[string]any{"type": "issue", "fields": map[string]any{"title": "receipt and publication observation"}})
 	b01Committed(t, reply)
 	if b01AnonymousReceipt(t, h, "bead.create", key) == nil || probe.calls.Load() != 1 {
-		t.Fatal("public fixture did not establish its receipt and publication witness")
+		t.Fatal("public fixture did not establish its receipt and publication observation")
 	}
 	return h, probe, key
 }
