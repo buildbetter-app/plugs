@@ -684,10 +684,13 @@ func (r *Runtime) Close(ctx context.Context) error {
 		if r.Sessions != nil {
 			r.closeErr = errors.Join(r.closeErr, r.Sessions.Close())
 		}
+		// Constructors receive the runtime lifetime. Cancel it before joining
+		// callbacks that may retain that context, while the lease and store are
+		// still available for their cleanup.
+		r.cancel()
 		if r.NativeHost != nil {
 			r.closeErr = errors.Join(r.closeErr, r.NativeHost.Close())
 		}
-		r.cancel()
 		<-r.renewDone
 		leaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		r.closeErr = errors.Join(r.closeErr, r.Lease.Release(leaseCtx))

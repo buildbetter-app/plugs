@@ -40,8 +40,8 @@ The selected store supplies durable native state only when it implements
 receives that exact store and the runtime's existing active lease. A memory
 checkpoint or a persistent-looking driver name cannot satisfy a plugin's
 `requires.state: durable` declaration. Constructor or binding failures close
-the acquired resources; normal shutdown drains transports, closes the native
-host, then releases the lease and closes storage.
+the acquired resources; normal shutdown drains transports, cancels the runtime
+lifetime and joins the native host, then releases the lease and closes storage.
 
 The standalone path remains `plug server` -> `LoadConfigFile` -> `Open` ->
 `Listen`. Its YAML selects storage and listener settings, while compiled-in

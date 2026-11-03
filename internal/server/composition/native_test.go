@@ -234,14 +234,16 @@ func TestRuntimeCloseDrainsCanceledNativeCallbackBeforeStoreAndLease(t *testing.
 	var releaseOnce sync.Once
 	defer releaseOnce.Do(func() { close(release) })
 	native := composedNative()
-	native.New = func(pluginapi.Host) (sdk.Registration, error) {
+	native.NewWithContext = func(lifetime context.Context, _ pluginapi.Host) (sdk.Registration, error) {
 		return sdk.Registration{
 			Mutators: map[string]pluginapi.Mutator{"normalize": sdk.MutateFunc(func(context.Context, pluginapi.ProposedChange, pluginapi.SnapshotReader) ([]pluginapi.Patch, error) {
 				return nil, nil
 			})},
 			Posts: map[string]pluginapi.PostSubscriber{"observe": sdk.AfterFunc(func(ctx context.Context, _ pluginapi.CommittedChange, _ pluginapi.SnapshotReader) error {
 				close(entered)
-				<-ctx.Done()
+				// A compiled-in native may retain its construction lifetime. The
+				// runtime must cancel that lifetime before waiting for host drain.
+				<-lifetime.Done()
 				close(canceled)
 				<-release
 				return ctx.Err()
