@@ -411,6 +411,8 @@ internal/integration/converterroundtrip/history.go
 internal/integration/converterroundtrip/identity_counters_test.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
+internal/integration/converterroundtrip/label_projection_test.go
+internal/integration/converterroundtrip/labels.go
 internal/integration/converterroundtrip/native_restore_test.go
 internal/integration/converterroundtrip/public_source_test.go
 internal/integration/converterroundtrip/repair_test.go
