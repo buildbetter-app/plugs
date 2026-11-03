@@ -10,7 +10,7 @@ const [base, trap, chromePath, configuredJSON] = process.argv.slice(2);
 const configured = configuredJSON ? JSON.parse(configuredJSON) : undefined;
 const profile = await mkdtemp(path.join(os.tmpdir(), "plug-sandbox-chrome-"));
 const chrome = spawn(chromePath, ["--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
-let stderr = "", ws;
+let stderr = "", ws, observeBrowserFailure;
 chrome.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(fn, description) {
@@ -25,30 +25,70 @@ try {
   await once(ws, "open");
   let sequence = 0;
   const pending = new Map(), frameSessions = new Map(), bridgeResponses = [];
+  // Failure observations contain fixture paths and CDP identities only. Do
+  // not collect response bodies, cookies, headers, or plugin/RPC payloads.
+  const recent = [];
+  const remember = (event) => { recent.push(event); if (recent.length > 64) recent.shift(); };
+  const fixturePath = (value) => {
+    try { const url = new URL(value); return url.origin === new URL(base).origin ? url.pathname : url.protocol; }
+    catch (_) { return "unavailable"; }
+  };
+  const targetState = (info) => ({ targetId: info.targetId, type: info.type, path: fixturePath(info.url), attached: info.attached });
+  const frameState = (tree) => ({ frameId: tree.frame.id, parentId: tree.frame.parentId, loaderId: tree.frame.loaderId,
+    path: fixturePath(tree.frame.url), children: (tree.childFrames || []).map(frameState) });
+  let lastFrameLookup;
   const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
-    const id = ++sequence; pending.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params, sessionId }));
+    const id = ++sequence; pending.set(id, { resolve, reject, method, sessionId }); ws.send(JSON.stringify({ id, method, params, sessionId }));
   });
   ws.addEventListener("message", ({ data }) => {
     const event = JSON.parse(data.toString());
     if (event.id) {
       const promise = pending.get(event.id); pending.delete(event.id);
+      if (promise && event.error) remember({ kind: "protocol-error", method: promise.method, sessionId: promise.sessionId, code: event.error.code });
       if (promise) event.error ? promise.reject(new Error(JSON.stringify(event.error))) : promise.resolve(event.result);
     } else if (event.method === "Runtime.bindingCalled" && event.params.name === "__i7ObserveBridgeReply") {
       bridgeResponses.push(JSON.parse(event.params.payload));
     } else if (event.method === "Target.attachedToTarget" && event.params.targetInfo.type === "iframe") {
       frameSessions.set(event.params.targetInfo.targetId, event.params.sessionId);
+      remember({ kind: event.method, sessionId: event.params.sessionId, target: targetState(event.params.targetInfo) });
+    } else if (event.method === "Target.detachedFromTarget" || event.method === "Target.targetDestroyed" || event.method === "Page.frameDetached") {
+      remember({ kind: event.method, sessionId: event.params.sessionId, targetId: event.params.targetId, frameId: event.params.frameId });
+    } else if (event.method === "Page.frameNavigated") {
+      remember({ kind: event.method, frame: frameState({ frame: event.params.frame }) });
     }
   });
   const evaluate = async (expression, sessionId) => {
     const result = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, sessionId);
+    if (result.exceptionDetails) remember({ kind: "evaluation-exception", sessionId, exceptionId: result.exceptionDetails.exceptionId });
     if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
     return result.result.value;
+  };
+  observeBrowserFailure = async () => {
+    const bounded = (promise) => Promise.race([
+      promise.then((value) => ({ value }), () => ({ unavailable: true })),
+      delay(1000).then(() => ({ unavailable: true })),
+    ]);
+    const [targets, frames, host] = await Promise.all([
+      bounded(send("Target.getTargets").then(({ targetInfos }) => targetInfos.map(targetState))),
+      bounded(send("Page.getFrameTree").then(({ frameTree }) => frameState(frameTree))),
+      bounded(evaluate(`({readyState:document.readyState, frames:Array.from(document.querySelectorAll('iframe'), (frame) => {
+        const state = {path:new URL(frame.src).pathname, bridgeState:frame.dataset.bridgeState};
+        try {
+          const host = frame.contentDocument, child = host?.querySelector('iframe');
+          return {...state, hostReadyState:host?.readyState, hostBridgeState:host?.documentElement.dataset.bridgeState,
+            childPath:child ? new URL(child.src).pathname : null};
+        } catch (_) { return {...state, hostAccessible:false}; }
+      })})`)),
+    ]);
+    console.error("BROWSER_FAILURE_STATE " + JSON.stringify({ lastFrameLookup, cachedSessions: [...frameSessions], recent, targets, frames, host }));
   };
   await send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true });
   await send("Page.enable"); await send("Runtime.enable"); await send("Network.enable");
   await send("Page.navigate", { url: base + "/ui/" });
   const frameSession = async (id) => until(async () => {
+    lastFrameLookup = { id, state: "requesting targets" };
     const { targetInfos } = await send("Target.getTargets");
+    lastFrameLookup = { id, targets: targetInfos.map(targetState) };
     const frame = targetInfos.find((info) => info.type === "iframe" && info.url === base + "/ui/frames/" + id + "/index.html");
     if (!frame) return;
     if (!frameSessions.has(frame.targetId)) frameSessions.set(frame.targetId, (await send("Target.attachToTarget", { targetId: frame.targetId, flatten: true })).sessionId);
@@ -265,6 +305,9 @@ try {
     assert.equal((await fetch(base + "/ui/config.json")).status, 502);
     console.log("PASS configured_Runtime_teardown_refuses_live_bridge_and_UI_access");
   }
+} catch (error) {
+  try { await observeBrowserFailure?.(); } catch (_) { console.error("BROWSER_FAILURE_STATE unavailable"); }
+  throw error;
 } finally {
   if (ws) ws.close();
   chrome.kill("SIGTERM");
