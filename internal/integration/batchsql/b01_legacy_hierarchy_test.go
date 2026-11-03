@@ -191,8 +191,10 @@ func b01HierarchyPair(t *testing.T, h *b01Public, parent model.Ref, representati
 func b01HydratedClaim(t *testing.T, h *b01Public, reply b01Reply, want model.Ref) {
 	t.Helper()
 	commit := b01Committed(t, reply)
-	if commit.NoOp || len(commit.Results) != 1 || commit.Results[0].Ref != want ||
-		!bytes.Equal(commit.Results[0].Record, h.f.state(t).Records[want.ID].Body) {
+	state := h.f.state(t)
+	if reply.Meta.Replayed || commit.Revision != state.Meta.Head || len(commit.Results) != 1 ||
+		commit.Results[0].Revision != commit.Revision || commit.Results[0].Ref != want ||
+		!bytes.Equal(commit.Results[0].Record, state.Records[want.ID].Body) {
 		t.Fatalf("claim did not return the committed winner: %s", reply.Result)
 	}
 	if status := h.get(t, h.viewer(t, b01Projects...), want, nil)["status"]; status != "in_progress" {
@@ -318,9 +320,14 @@ func TestB01PublicCanonicalAndLegacyHierarchyAcrossDrivers(t *testing.T) {
 					if !reflect.DeepEqual(ancestorBefore.Records[parent.ID], closed.Records[parent.ID]) || !reflect.DeepEqual(ancestorBefore.Versions[parent.ID], closed.Versions[parent.ID]) {
 						t.Fatal("child close changed the scheduling ancestor")
 					}
+					published := probe.calls.Load()
 					reply, _ = b01LocalWrite(t, h, "bead.close", b01Child, map[string]any{"id": child})
-					if !b01Committed(t, reply).NoOp || !reflect.DeepEqual(closed.Records, f.state(t).Records) || !reflect.DeepEqual(closed.Versions, f.state(t).Versions) {
-						t.Fatal("close settlement changed records or versions")
+					settledCommit := b01Committed(t, reply)
+					settled := f.state(t)
+					if reply.Meta.Replayed || settledCommit.Revision != closed.Meta.Head || settled.Meta.Head != closed.Meta.Head ||
+						!reflect.DeepEqual(closed.Records, settled.Records) || !reflect.DeepEqual(closed.Versions, settled.Versions) ||
+						!reflect.DeepEqual(closed.Log, settled.Log) || probe.calls.Load() != published {
+						t.Fatal("close settlement changed graph, history or publication")
 					}
 					h.progress(t, h.viewer(t, b01Projects...), parent, nil, map[string]int{"total": 1, "status:done": 1}, 0)
 					b01ReadyPages(t, h, free)
@@ -345,7 +352,7 @@ func TestB01PublicHierarchyConflictsAndLegacyBoundaryAcrossDrivers(t *testing.T)
 				reply, _ := b01LocalWrite(t, h, "bead.create", b01Child, map[string]any{"type": "issue", "fields": map[string]any{"title": "unparented"}})
 				orphan := b01Committed(t, reply).Results[0].Ref
 				if probe.calls.Load() == 0 {
-					t.Fatal("post-commit probe has no successful public-write witness")
+					t.Fatal("post-commit probe has no successful public-write call")
 				}
 				missing := b01Ref("pl-b01-parent-does-not-exist")
 				b01LegacyRefusal(t, h, probe, "conflicting-parent-link", "bead.link", b01Child,
@@ -378,9 +385,14 @@ func TestB01PublicHierarchyConflictsAndLegacyBoundaryAcrossDrivers(t *testing.T)
 					map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{move}}}, "invalid_params")
 				if representation != "canonical" {
 					before := f.state(t)
+					published := probe.calls.Load()
 					repeated, _ := b01LocalWrite(t, h, "bead.link", b01Child, map[string]any{"from": child, "to": parent, "kind": "parent-child"})
-					if !b01Committed(t, repeated).NoOp || !reflect.DeepEqual(before.Records, f.state(t).Records) || !reflect.DeepEqual(before.Versions, f.state(t).Versions) {
-						t.Fatal("matching legacy duplicate rewrote records/history")
+					repeatedCommit := b01Committed(t, repeated)
+					after := f.state(t)
+					if repeated.Meta.Replayed || repeatedCommit.Revision != before.Meta.Head || after.Meta.Head != before.Meta.Head ||
+						!reflect.DeepEqual(before.Records, after.Records) || !reflect.DeepEqual(before.Versions, after.Versions) ||
+						!reflect.DeepEqual(before.Log, after.Log) || probe.calls.Load() != published {
+						t.Fatal("matching legacy duplicate changed graph, history or publication")
 					}
 					b01LegacyRefusal(t, h, probe, "reparent-conflicts-with-retained-legacy-parent", "tx.apply", b01Child,
 						map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{hierarchyMove(child, &other)}}}, "invalid_params")
