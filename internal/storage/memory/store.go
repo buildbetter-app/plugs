@@ -48,6 +48,7 @@ type state struct {
 	versions    map[string][]driver.Version
 	keys        map[string]driver.LockState
 	keyHistory  map[string][]driver.LockState
+	derivedKeys map[driver.DerivedTable][]string // sorted historical key catalog, immutable after publication
 	blobs       map[driver.Hash]blob
 	log         []model.Changeset
 	replays     map[scope]replay
@@ -63,6 +64,7 @@ func (s *state) fork() *state {
 	n.versions = maps.Clone(s.versions)
 	n.keys = maps.Clone(s.keys)
 	n.keyHistory = maps.Clone(s.keyHistory)
+	n.derivedKeys = maps.Clone(s.derivedKeys)
 	n.blobs = maps.Clone(s.blobs)
 	n.replays = maps.Clone(s.replays)
 	n.allocators = make(map[string]driver.OfflineAllocator, len(s.allocators))
@@ -146,6 +148,7 @@ func NewWithOptions(options Options) (*Store, error) {
 		meta:    driver.Meta{StoreID: options.StoreID, Incarnation: options.Incarnation, SchemaVersion: 1, State: "ready", Head: model.Natural64(0), HistoryFloor: model.Natural64(0)},
 		records: make(map[string]driver.Record), kinds: make(map[string]string), versions: make(map[string][]driver.Version),
 		keys: make(map[string]driver.LockState), keyHistory: make(map[string][]driver.LockState), blobs: make(map[driver.Hash]blob), replays: make(map[scope]replay), allocators: make(map[string]driver.OfflineAllocator),
+		derivedKeys: make(map[driver.DerivedTable][]string),
 		hierarchy:   newHierarchyIndex(options.Incarnation),
 		sourceLinks: newSourceLinkIndex(options.Incarnation),
 	}

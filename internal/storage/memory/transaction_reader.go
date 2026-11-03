@@ -50,6 +50,7 @@ func (t *transaction) snapshotReader(ctx context.Context) (*reader, error) {
 		view.keys[id] = value
 		view.keyHistory[id] = append(append([]driver.LockState(nil), view.keyHistory[id]...), value)
 	}
+	view.publishDerivedKeys(t.derived)
 	return newReader(view, driver.View{Incarnation: view.meta.Incarnation}, s.now)
 }
 
