@@ -24,6 +24,22 @@ type commentCursorPayload struct {
 	After       service.CommentPosition `json:"after"`
 }
 
+const commentPageCursorMethod = "bead.get.commentPage"
+
+type commentPageSelection struct {
+	Limit  model.Natural `json:"limit"`
+	Cursor string        `json:"cursor"`
+}
+
+func selectsCommentPage(params json.RawMessage) bool {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(params, &object) != nil {
+		return false
+	}
+	_, selected := object["commentPage"]
+	return selected
+}
+
 // A comment cursor binds the selected bead as well as the authenticated
 // principal. Ordinary list cursors do not select an individual bead.
 func commentBinding(c Call, id model.Ref, requested *asOf) (string, string, error) {
@@ -47,13 +63,13 @@ func commentBinding(c Call, id model.Ref, requested *asOf) (string, string, erro
 }
 
 func decodeCommentCursor(c Call, p serviceParams, id model.Ref) (*commentCursorPayload, error) {
-	if p.Cursor == "" {
+	if p.CommentPage.Cursor == "" {
 		return nil, nil
 	}
-	if len(p.Cursor) > maxCursorBytes || c.paging == nil {
+	if len(p.CommentPage.Cursor) > maxCursorBytes || c.paging == nil {
 		return nil, cursorInvalid()
 	}
-	parts := strings.Split(p.Cursor, ".")
+	parts := strings.Split(p.CommentPage.Cursor, ".")
 	if len(parts) != 2 {
 		return nil, cursorInvalid()
 	}
@@ -71,7 +87,7 @@ func decodeCommentCursor(c Call, p serviceParams, id model.Ref) (*commentCursorP
 		return nil, cursorInvalid()
 	}
 	var payload commentCursorPayload
-	if wire.DecodeInto(body, &payload) != nil || payload.Version != 1 || payload.Method != "bead.comments" || payload.After.ID == 0 || payload.AsOf.Revision.Validate() != nil || payload.AsOf.Incarnation != payload.Incarnation {
+	if wire.DecodeInto(body, &payload) != nil || payload.Version != 1 || payload.Method != commentPageCursorMethod || payload.After.ID == 0 || payload.AsOf.Revision.Validate() != nil || payload.AsOf.Incarnation != payload.Incarnation {
 		return nil, cursorInvalid()
 	}
 	principal, scope, err := commentBinding(c, id, p.AsOf)
@@ -90,7 +106,7 @@ func encodeCommentCursor(c Call, p serviceParams, id model.Ref, at asOf, after s
 		return "", err
 	}
 	payload := commentCursorPayload{
-		Version: 1, Method: "bead.comments", Principal: principal, Scope: scope,
+		Version: 1, Method: commentPageCursorMethod, Principal: principal, Scope: scope,
 		Ontology: c.paging.ontology, Incarnation: c.paging.incarnation,
 		AsOf: at, After: after,
 	}
@@ -107,15 +123,12 @@ func encodeCommentCursor(c Call, p serviceParams, id model.Ref, at asOf, after s
 	return token, nil
 }
 
-// dispatchComments obtains the thread through the existing bead.get read
-// authorization and current-policy fence, then pages that pinned thread.
-func dispatchComments(ctx context.Context, svc Service, c Call, p serviceParams, limit int) (any, error) {
-	if limit > 500 {
+// dispatchCommentPage uses the same bead.get authorization and current-policy
+// fence while replacing the unbounded legacy comment array with one page.
+func dispatchCommentPage(ctx context.Context, svc Service, c Call, p serviceParams, id model.Ref) (any, error) {
+	limit, err := p.CommentPage.Limit.Uint64()
+	if err != nil || limit > 500 {
 		return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "comment page limit must be between 1 and 500"}}
-	}
-	id, err := p.refID()
-	if err != nil {
-		return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 	}
 	position, err := decodeCommentCursor(c, p, id)
 	if err != nil {
@@ -140,7 +153,7 @@ func dispatchComments(ctx context.Context, svc Service, c Call, p serviceParams,
 	if selected.Incarnation != c.paging.incarnation {
 		return nil, incarnationChanged(selected.Incarnation, c.paging.incarnation)
 	}
-	page, err := service.PageComments(thread.Comments, limit, after)
+	page, err := service.PageComments(thread.Comments, int(limit), after)
 	if err != nil {
 		return nil, err
 	}
@@ -168,5 +181,7 @@ func dispatchComments(ctx context.Context, svc Service, c Call, p serviceParams,
 		}
 		result["nextCursor"] = token
 	}
-	return result, nil
+	out := beadGetJSON(thread, false)
+	out["commentPage"] = result
+	return out, nil
 }

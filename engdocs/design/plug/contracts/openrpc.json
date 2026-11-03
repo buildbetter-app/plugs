@@ -298,7 +298,7 @@
     {
       "name": "bead.get",
       "summary": "Read a bead and its evidence attachments.",
-      "description": "Read a bead and its evidence attachments.",
+      "description": "Read a bead and its evidence attachments. Optional commentPage selects a bounded (time, stored ordinal) keyset page in the same authorized bead.get read; omitted selection retains the existing comments response.",
       "tags": [
         {
           "name": "core"
@@ -318,6 +318,13 @@
           "schema": {
             "$ref": "#/components/schemas/AsOf"
           }
+        },
+        {
+          "name": "commentPage",
+          "schema": {
+            "$ref": "#/components/schemas/CommentPageSelection"
+          },
+          "description": "Optional comment page selection; omitted keeps the existing bead.get response."
         },
         {
           "name": "_meta",
@@ -349,85 +356,9 @@
         },
         {
           "$ref": "#/components/errors/CursorExpired"
-        }
-      ],
-      "x-effect": "read",
-      "x-idempotency": "none",
-      "x-permission": "read",
-      "x-agent-core": false,
-      "x-stability": "v1"
-    },
-    {
-      "name": "bead.comments",
-      "summary": "Page one bead comment thread.",
-      "description": "Read one authorized bead thread in (time, stored ordinal) keyset order. The opaque cursor pins the thread revision; pages default to 100 and cap at 500. Read authorization is the same as bead.get.",
-      "tags": [
-        {
-          "name": "core"
-        }
-      ],
-      "paramStructure": "by-name",
-      "params": [
-        {
-          "name": "id",
-          "schema": {
-            "$ref": "#/components/schemas/Ref"
-          },
-          "required": true
-        },
-        {
-          "name": "asOf",
-          "schema": {
-            "$ref": "#/components/schemas/AsOf"
-          }
-        },
-        {
-          "name": "limit",
-          "schema": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 500
-          }
-        },
-        {
-          "name": "cursor",
-          "schema": {
-            "type": "string"
-          }
-        },
-        {
-          "name": "_meta",
-          "schema": {
-            "$ref": "#/components/schemas/Meta"
-          },
-          "description": "Transport metadata; not an application actor field."
-        }
-      ],
-      "result": {
-        "name": "result",
-        "description": "Result",
-        "schema": {
-          "$ref": "#/components/schemas/CommentPage"
-        }
-      },
-      "errors": [
-        {
-          "$ref": "#/components/errors/NotFound"
-        },
-        {
-          "$ref": "#/components/errors/Forbidden"
-        },
-        {
-          "$ref": "#/components/errors/RateLimited"
-        },
-        {
-          "$ref": "#/components/errors/Busy"
         },
         {
           "$ref": "#/components/errors/CursorInvalid"
-        },
-        {
-          "$ref": "#/components/errors/CursorExpired"
         },
         {
           "$ref": "#/components/errors/IncarnationChanged"
@@ -7269,6 +7200,9 @@
               "$ref": "#/components/schemas/Comment"
             },
             "description": "Optional imported or legacy comments. Existing bead.get authorization and as-of semantics apply."
+          },
+          "commentPage": {
+            "$ref": "#/components/schemas/CommentPage"
           }
         },
         "required": [
@@ -9802,6 +9736,21 @@
           "comment"
         ],
         "additionalProperties": false
+      },
+      "CommentPageSelection": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Select one comment page. The default limit is 100 and the maximum is 500; a cursor resumes the pinned thread."
       },
       "CommentPage": {
         "type": "object",
@@ -12855,10 +12804,10 @@
     "format": "plug-method-registry/1",
     "status": "bounded-contract-artifact",
     "purpose": "Human-maintained bounded contract artifact, read independently of methods at validation time; validates the closed method inventory, descriptor fields and wire inventories before an implementation generator exists.",
-    "methodCount": 82,
+    "methodCount": 81,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
-    "nameSha256": "59b208a49ceed8f56c1e0180ce07ace1b8106385d38b648d51915012cf214614",
-    "descriptorSha256": "de3dc5cf24c027366b076b9d62690c14635155a754b82ea6d5bcc29d55481ade",
+    "nameSha256": "925afc30e52e4659b24e34f311698c96930f215ba460fee7c1634634d1ff04ff",
+    "descriptorSha256": "c43156b68e4597291d1d870a64d8be91243676be73bb8b87f49af8db2d507549",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -13119,6 +13068,13 @@
             }
           },
           {
+            "name": "commentPage",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/CommentPageSelection"
+            }
+          },
+          {
             "name": "_meta",
             "required": false,
             "schema": {
@@ -13134,65 +13090,8 @@
           "#/components/errors/Forbidden",
           "#/components/errors/RateLimited",
           "#/components/errors/Busy",
-          "#/components/errors/CursorExpired"
-        ]
-      },
-      {
-        "name": "bead.comments",
-        "effect": "read",
-        "idempotency": "none",
-        "permission": "read",
-        "stability": "v1",
-        "agentCore": false,
-        "params": [
-          {
-            "name": "id",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/Ref"
-            }
-          },
-          {
-            "name": "asOf",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/AsOf"
-            }
-          },
-          {
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 500
-            }
-          },
-          {
-            "name": "cursor",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "_meta",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/Meta"
-            }
-          }
-        ],
-        "resultSchema": {
-          "$ref": "#/components/schemas/CommentPage"
-        },
-        "errors": [
-          "#/components/errors/NotFound",
-          "#/components/errors/Forbidden",
-          "#/components/errors/RateLimited",
-          "#/components/errors/Busy",
-          "#/components/errors/CursorInvalid",
           "#/components/errors/CursorExpired",
+          "#/components/errors/CursorInvalid",
           "#/components/errors/IncarnationChanged"
         ]
       },
@@ -17445,9 +17344,9 @@
       "compatibility": "Legacy comments decode unchanged. Imported comments require origin import and sourceTime."
     },
     "resultSurface": {
-      "beadGet": "bead.get may include an optional typed comments array on BeadGetResult; preserve existing bead.get authorization and as-of semantics.",
+      "beadGet": "bead.get retains its optional typed comments array when commentPage is omitted. When commentPage is selected, the result carries a pinned typed page instead of the unbounded array, with the same read authorization and as-of semantics.",
       "noNewRPC": true,
-      "consumerLimit": "This schema does not claim that a current service or browser already reads or renders comments."
+      "consumerLimit": "The comment page is a service/RPC projection; browser rendering and full B15 qualification require separate evidence."
     },
     "ordinaryInputs": {
       "commentOp": "closed to kind, target and body",

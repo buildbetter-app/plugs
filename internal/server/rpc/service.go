@@ -47,35 +47,36 @@ type MemoryService interface {
 }
 
 type serviceParams struct {
-	ID           json.RawMessage      `json:"id"`
-	Ref          model.Ref            `json:"ref"`
-	AsOf         *asOf                `json:"asOf"`
-	Project      string               `json:"project"`
-	ViewID       string               `json:"viewId"`
-	Filter       *filter              `json:"filter"`
-	Limit        model.Natural        `json:"limit"`
-	Cursor       string               `json:"cursor"`
-	After        string               `json:"after"`
-	FromRevision model.Revision       `json:"fromRevision"`
-	ToRevision   model.Revision       `json:"toRevision"`
-	Type         string               `json:"type"`
-	Fields       map[string]any       `json:"fields"`
-	Parent       *model.Ref           `json:"parent"`
-	Expect       []model.Precondition `json:"expect"`
-	Body         string               `json:"body"`
-	Reason       string               `json:"reason"`
-	Key          string               `json:"key"`
-	Content      string               `json:"content"`
-	Metadata     map[string]any       `json:"metadata"`
-	Query        string               `json:"query"`
-	BudgetTokens model.Natural        `json:"budgetTokens"`
-	ChangeSet    model.ChangeSet      `json:"changeSet"`
-	From         model.Ref            `json:"from"`
-	To           model.Ref            `json:"to"`
-	Kind         string               `json:"kind"`
-	State        string               `json:"state"`
-	Details      map[string]any       `json:"details"`
-	Meta         wire.Meta            `json:"_meta"`
+	ID           json.RawMessage       `json:"id"`
+	Ref          model.Ref             `json:"ref"`
+	AsOf         *asOf                 `json:"asOf"`
+	Project      string                `json:"project"`
+	ViewID       string                `json:"viewId"`
+	Filter       *filter               `json:"filter"`
+	Limit        model.Natural         `json:"limit"`
+	Cursor       string                `json:"cursor"`
+	After        string                `json:"after"`
+	FromRevision model.Revision        `json:"fromRevision"`
+	ToRevision   model.Revision        `json:"toRevision"`
+	Type         string                `json:"type"`
+	Fields       map[string]any        `json:"fields"`
+	Parent       *model.Ref            `json:"parent"`
+	Expect       []model.Precondition  `json:"expect"`
+	Body         string                `json:"body"`
+	CommentPage  *commentPageSelection `json:"commentPage"`
+	Reason       string                `json:"reason"`
+	Key          string                `json:"key"`
+	Content      string                `json:"content"`
+	Metadata     map[string]any        `json:"metadata"`
+	Query        string                `json:"query"`
+	BudgetTokens model.Natural         `json:"budgetTokens"`
+	ChangeSet    model.ChangeSet       `json:"changeSet"`
+	From         model.Ref             `json:"from"`
+	To           model.Ref             `json:"to"`
+	Kind         string                `json:"kind"`
+	State        string                `json:"state"`
+	Details      map[string]any        `json:"details"`
+	Meta         wire.Meta             `json:"_meta"`
 }
 type asOf struct {
 	Revision    model.Revision `json:"revision"`
@@ -127,7 +128,7 @@ func BindService(registry *Registry, svc Service) error {
 	if registry == nil || svc == nil {
 		return fmt.Errorf("nil service or registry")
 	}
-	names := []string{"bead.get", "bead.comments", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.claimNext", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "bead.link", "bead.unlink", "tx.apply", "history.query"}
+	names := []string{"bead.get", "bead.ready", "bead.create", "bead.update", "bead.claim", "bead.claimNext", "bead.comment", "bead.close", "bead.reopen", "bead.defer", "bead.cancel", "bead.fail", "bead.link", "bead.unlink", "tx.apply", "history.query"}
 	if _, ok := svc.(MemoryService); ok {
 		names = append(names, "agent.brief", "memory.get", "memory.list", "memory.save", "memory.delete")
 	}
@@ -174,43 +175,19 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 	meta := model.WriteMeta{Method: c.Method, AgentLabel: c.Meta.Agent, Project: c.Meta.Project, IdempotencyKey: c.Meta.IdempotencyKey, DryRun: c.Meta.DryRun, Return: c.Meta.Return, Traceparent: c.Meta.Traceparent, Agent: c.Meta.Agent}
 	memory, memoryCapable := svc.(MemoryService)
 	switch c.Method {
-	case "bead.comments":
-		return dispatchComments(ctx, svc, c, p, int(limit))
 	case "bead.get":
 		id, err := p.refID()
 		if err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 		}
+		if p.CommentPage != nil {
+			return dispatchCommentPage(ctx, svc, c, p, id)
+		}
 		v, err := svc.Get(ctx, c.Principal, service.GetRequest{ID: id, AsOf: p.AsOf.domain()})
 		if err != nil {
 			return nil, err
 		}
-		attachments := v.Attachments
-		if attachments == nil {
-			attachments = []model.Attachment{}
-		}
-		out := map[string]any{"bead": beadJSON(v.Bead), "attachments": attachments}
-		if v.Comments != nil {
-			comments := make([]map[string]any, len(v.Comments))
-			for i, comment := range v.Comments {
-				value := map[string]any{"body": comment.Body, "principal": comment.Principal, "time": timestamp(comment.Time)}
-				if comment.Origin != "" {
-					value["origin"] = comment.Origin
-					if comment.SourceTime != nil {
-						value["sourceTime"] = timestamp(*comment.SourceTime)
-					}
-					if comment.SourceAuthor != "" {
-						value["sourceAuthor"] = comment.SourceAuthor
-					}
-				}
-				comments[i] = value
-			}
-			out["comments"] = comments
-		}
-		if v.Lease != nil {
-			out["lease"] = map[string]any{"holder": v.Lease.Principal.ID, "expiresAt": timestamp(v.Lease.ExpiresAt), "ttlMs": v.Lease.TTL.Milliseconds(), "epoch": v.Lease.Epoch}
-		}
-		return out, nil
+		return beadGetJSON(v, true), nil
 	case "bead.ready":
 		position, err := c.paging.decode(c, p)
 		if err != nil {
@@ -605,6 +582,36 @@ func healthJSON(v driver.StoreHealth) map[string]any {
 	return out
 }
 func timestamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+
+func beadGetJSON(v service.GetResult, includeComments bool) map[string]any {
+	attachments := v.Attachments
+	if attachments == nil {
+		attachments = []model.Attachment{}
+	}
+	out := map[string]any{"bead": beadJSON(v.Bead), "attachments": attachments}
+	if includeComments && v.Comments != nil {
+		comments := make([]map[string]any, len(v.Comments))
+		for i, comment := range v.Comments {
+			value := map[string]any{"body": comment.Body, "principal": comment.Principal, "time": timestamp(comment.Time)}
+			if comment.Origin != "" {
+				value["origin"] = comment.Origin
+				if comment.SourceTime != nil {
+					value["sourceTime"] = timestamp(*comment.SourceTime)
+				}
+				if comment.SourceAuthor != "" {
+					value["sourceAuthor"] = comment.SourceAuthor
+				}
+			}
+			comments[i] = value
+		}
+		out["comments"] = comments
+	}
+	if v.Lease != nil {
+		out["lease"] = map[string]any{"holder": v.Lease.Principal.ID, "expiresAt": timestamp(v.Lease.ExpiresAt), "ttlMs": v.Lease.TTL.Milliseconds(), "epoch": v.Lease.Epoch}
+	}
+	return out
+}
+
 func beadJSON(b service.Bead) map[string]any {
 	out := map[string]any{"id": b.ID, "type": b.Type, "revision": b.Revision}
 	for k, v := range map[string]string{"project": b.Project, "status": b.Status, "parent": b.Parent, "assignee": b.Assignee} {

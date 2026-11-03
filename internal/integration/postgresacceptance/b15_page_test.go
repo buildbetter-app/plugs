@@ -21,11 +21,25 @@ type b15Page struct {
 
 func readB15Page(t *testing.T, h *host, params map[string]any) b15Page {
 	t.Helper()
-	r := h.call(t, "bead.comments", params, "")
+	r := h.call(t, "bead.get", params, "")
 	if r.Error != nil {
 		t.Fatal(r.Error)
 	}
-	return decode[b15Page](t, r.Result)
+	result := decode[struct {
+		CommentPage b15Page `json:"commentPage"`
+	}](t, r.Result)
+	return result.CommentPage
+}
+
+func b15GetParams(id string, limit int, cursor string) map[string]any {
+	selection := map[string]any{}
+	if limit != 0 {
+		selection["limit"] = limit
+	}
+	if cursor != "" {
+		selection["cursor"] = cursor
+	}
+	return map[string]any{"id": ref(id), "commentPage": selection}
 }
 
 func TestB15PublicCommentPagePostgresPinnedAcrossPhysicalReopen(t *testing.T) {
@@ -35,13 +49,13 @@ func TestB15PublicCommentPagePostgresPinnedAcrossPhysicalReopen(t *testing.T) {
 	h := startHost(t, openStore(t, dsn), sequence, trace, pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)))
 	create(t, h, "b15-page-create", "page anchor", 1)
 	create(t, h, "b15-page-other", "other anchor", 2)
-	if empty := readB15Page(t, h, map[string]any{"id": ref(id)}); len(empty.Comments) != 0 || empty.NextCursor != "" {
+	if empty := readB15Page(t, h, b15GetParams(id, 0, "")); len(empty.Comments) != 0 || empty.NextCursor != "" {
 		t.Fatalf("new PostgreSQL thread has comments: %+v", empty)
 	}
 	for i, body := range []string{"first", "second", "third"} {
 		committed(t, h.call(t, "bead.comment", map[string]any{"id": ref(id), "body": body}, key("b15-page-comment-"+body)), uint64(3+i))
 	}
-	first := readB15Page(t, h, map[string]any{"id": ref(id), "limit": 1})
+	first := readB15Page(t, h, b15GetParams(id, 1, ""))
 	if len(first.Comments) != 1 || first.Comments[0].ID != 1 || first.Comments[0].Comment.Body != "first" || first.NextCursor == "" {
 		t.Fatalf("first PostgreSQL keyset page: %+v", first)
 	}
@@ -50,23 +64,23 @@ func TestB15PublicCommentPagePostgresPinnedAcrossPhysicalReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	h = startHost(t, openStore(t, dsn), sequence, trace, pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)))
-	wrong := h.call(t, "bead.comments", map[string]any{"id": ref(other), "cursor": first.NextCursor, "limit": 1}, "")
+	wrong := h.call(t, "bead.get", b15GetParams(other, 1, first.NextCursor), "")
 	if wrong.Error == nil || wrong.Error.Data.Code != "cursor_invalid" {
 		t.Fatalf("cross-thread cursor was accepted: %+v", wrong)
 	}
-	second := readB15Page(t, h, map[string]any{"id": ref(id), "cursor": first.NextCursor, "limit": 1})
+	second := readB15Page(t, h, b15GetParams(id, 1, first.NextCursor))
 	if len(second.Comments) != 1 || second.Comments[0].ID != 2 || second.Comments[0].Comment.Body != "second" || second.NextCursor == "" || !reflect.DeepEqual(second.AsOf, first.AsOf) {
 		t.Fatalf("PostgreSQL pinned continuation changed: first=%+v second=%+v", first, second)
 	}
-	third := readB15Page(t, h, map[string]any{"id": ref(id), "cursor": second.NextCursor, "limit": 1})
+	third := readB15Page(t, h, b15GetParams(id, 1, second.NextCursor))
 	if len(third.Comments) != 1 || third.Comments[0].ID != 3 || third.Comments[0].Comment.Body != "third" || third.NextCursor != "" || !reflect.DeepEqual(third.AsOf, first.AsOf) {
 		t.Fatalf("PostgreSQL pinned tail changed: first=%+v third=%+v", first, third)
 	}
-	live := readB15Page(t, h, map[string]any{"id": ref(id), "limit": 500})
+	live := readB15Page(t, h, b15GetParams(id, 500, ""))
 	if len(live.Comments) != 4 || live.Comments[3].ID != 4 || live.Comments[3].Comment.Body != "later" || live.NextCursor != "" {
 		t.Fatalf("fresh PostgreSQL page lost later comment: %+v", live)
 	}
-	wrongLimit := h.call(t, "bead.comments", map[string]any{"id": ref(id), "limit": 501}, "")
+	wrongLimit := h.call(t, "bead.get", b15GetParams(id, 501, ""), "")
 	if wrongLimit.Error == nil || wrongLimit.Error.Data.Code != "invalid_params" {
 		t.Fatalf("overlarge PostgreSQL page was accepted: %+v", wrongLimit)
 	}
