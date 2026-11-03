@@ -369,11 +369,10 @@ func compileImportMigration(manifest Manifest, records map[string][]Record, conf
 	for _, r := range records["bead"] {
 		statusName, typeName := stringValue(r.Source.Fields["status"]), stringValue(r.Source.Fields["issue_type"])
 		status, builtin := sourceStatusTarget(statusName)
-		if !builtin {
-			if _, declared := statusTemplates[statusName]; !declared {
-				return nil, migrationRefusal("undeclared-entry", statusName, r.Project+"/"+r.ID)
-			}
+		if _, declared := statusTemplates[statusName]; declared {
 			status = statusName
+		} else if !builtin {
+			return nil, migrationRefusal("undeclared-entry", statusName, r.Project+"/"+r.ID)
 		}
 		typ := "issue"
 		if !builtInIssueType(typeName) {

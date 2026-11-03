@@ -341,7 +341,13 @@ func sourceStatusTarget(source string) (string, bool) {
 	return target, ok
 }
 
+// Source built-in names differ from legacy import spellings: frozen is a
+// legal custom name at the pinned source, even though older imports accepted
+// that spelling as backlog without a declaration.
 func builtInSourceStatus(source string) bool {
-	_, ok := sourceStatusTarget(source)
-	return ok
+	switch source {
+	case "open", "in_progress", "hooked", "blocked", "deferred", "pinned", "closed":
+		return true
+	}
+	return false
 }

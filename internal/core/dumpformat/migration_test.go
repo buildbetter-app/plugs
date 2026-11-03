@@ -178,13 +178,24 @@ func TestStrictConfigUnionStoredAndYAMLIndependent(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := strictUnionFixture(t, test.stored, test.yaml)
+			if test.name != "yaml-only" {
+				f.addConfig("config", "types.custom", "decision", "public")
+			}
+			if test.name != "stored-only" {
+				for i := range f.config {
+					if f.config[i].Input.Family == "beads-dir-config" {
+						f.config[i].Values["types.custom"] = []any{"decision"}
+					}
+				}
+			}
+			f.manifest.Ontology = []OntologyDirective{typeMapping("decision")}
 			a, err := Read(bytes.NewReader(strictUnionBytes(t, f, nil)))
 			if err != nil {
 				t.Fatal(err)
 			}
 			m, _ := a.ImportMigration()
-			if len(m.Document().Statuses) != 7 || m.Document().Statuses["queued"].Category != ontology.Unstarted {
-				t.Fatal("independent layer omitted from installed union")
+			if doc := m.Document(); len(doc.Statuses) != 7 || doc.Statuses["queued"].Category != ontology.Unstarted || len(doc.Types) != 2 || doc.Types["decision"].Workflow != "issue" {
+				t.Fatal("independent status/type layer omitted from installed union")
 			}
 		})
 	}
@@ -403,5 +414,21 @@ func TestStrictConfigUnionNativeObservationEnvelope(t *testing.T) {
 				t.Fatal("raw YAML byte envelope lost")
 			}
 		})
+	}
+}
+
+// The pinned source reserves seven built-in names; its parser permits frozen
+// as a custom name. The strict declaration must survive the legacy spelling.
+func TestStrictConfigUnionDeclaredLegacySpelling(t *testing.T) {
+	f := strictUnionFixture(t, "frozen:active", nil)
+	f.records["bead"][0].Source.Fields["status"] = "frozen"
+	a, err := Read(bytes.NewReader(strictUnionBytes(t, f, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := a.ImportMigration()
+	target, ok := m.Target("pl", f.records["bead"][0].ID)
+	if !ok || target.Status != "frozen" || m.Document().Statuses["frozen"].Category != ontology.Unstarted {
+		t.Fatal("legacy spelling replaced an explicitly declared custom status")
 	}
 }
