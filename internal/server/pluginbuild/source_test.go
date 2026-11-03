@@ -928,14 +928,28 @@ func TestWASIGuestCallbackTimerCancellationAndRetirement(t *testing.T) {
 	retireMutator := retireHost.Mutators()[0].Mutator
 	retireEntered := make(chan struct{}, 1)
 	retireWaitCtx := make(chan context.Context, 1)
+	retireRelease := make(chan struct{})
+	retireReleased := false
+	releaseRetire := func() {
+		if !retireReleased {
+			close(retireRelease)
+			retireReleased = true
+		}
+	}
+	defer releaseRetire()
 	retireCtx := pluginhost.WithWASMCallbackTimerWaitObserver(context.Background(), func(waitCtx context.Context) {
 		retireWaitCtx <- waitCtx
 		retireEntered <- struct{}{}
+		<-retireRelease
 	})
-	retireDone := make(chan error, 1)
+	type callbackResult struct {
+		patches []port.Patch
+		err     error
+	}
+	retireDone := make(chan callbackResult, 1)
 	go func() {
-		_, callbackErr := retireMutator.Mutate(retireCtx, wasiStateChange("timer-retire", "timer-callback:retire"), &wasiSnapshot{revision: model.Natural64(1)})
-		retireDone <- callbackErr
+		patches, callbackErr := retireMutator.Mutate(retireCtx, wasiStateChange("timer-retire", "timer-callback:retire"), &wasiSnapshot{revision: model.Natural64(1)})
+		retireDone <- callbackResult{patches: patches, err: callbackErr}
 	}()
 	select {
 	case <-retireEntered:
@@ -945,18 +959,26 @@ func TestWASIGuestCallbackTimerCancellationAndRetirement(t *testing.T) {
 	}
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- retireArtifact.Close() }()
+	// The real positive-nanosleep host hook is still held. Close must wait for
+	// this guest to leave the active wait before retiring the artifact.
 	select {
 	case closeErr := <-closeDone:
 		t.Fatalf("owner close returned before active guest callback retired: %v", closeErr)
 	case <-time.After(100 * time.Millisecond):
 	}
+	select {
+	case closeErr := <-closeDone:
+		t.Fatalf("owner close returned before held guest callback was released: %v", closeErr)
+	default:
+	}
+	releaseRetire()
 	retirementDeadline := time.NewTimer(3 * time.Second)
 	defer retirementDeadline.Stop()
 	for closeDone != nil || retireDone != nil {
 		select {
-		case callbackErr := <-retireDone:
-			if !errors.Is(callbackErr, context.Canceled) {
-				t.Fatalf("owner-retired source-built callback returned %v", callbackErr)
+		case result := <-retireDone:
+			if !errors.Is(result.err, context.Canceled) || len(result.patches) != 0 {
+				t.Fatalf("owner-retired source-built callback published a late result: patches=%v err=%v", result.patches, result.err)
 			}
 			retireDone = nil
 		case closeErr := <-closeDone:
@@ -1174,8 +1196,17 @@ func TestWASISourceInitializerFailureSurvivesQueueExpiry(t *testing.T) {
 	}
 	callerCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err = mutator.Mutate(callerCtx, wasiStateChange("initializer-e", "pool-state:initializer-e"), &wasiSnapshot{revision: model.Natural64(1)})
-	if !hasPluginHostCode(err, pluginhost.ErrManifest) {
+	initializerEntered := make(chan struct{}, 1)
+	observedCtx := pluginhost.WithWASMInitializerContextObserver(callerCtx, func(context.Context) {
+		initializerEntered <- struct{}{}
+	})
+	_, err = mutator.Mutate(observedCtx, wasiStateChange("initializer-e", "pool-state:initializer-e"), &wasiSnapshot{revision: model.Natural64(1)})
+	select {
+	case <-initializerEntered:
+	default:
+		t.Fatal("failing source-built initializer never reached its real guest import")
+	}
+	if !hasPluginHostCode(err, pluginhost.ErrManifest) || !strings.Contains(err.Error(), "source-built initializer failure") {
 		t.Fatalf("genuine source-built initializer failure was remapped after queue expiry: %v", err)
 	}
 	if callerCtx.Err() != nil {
