@@ -317,6 +317,8 @@ internal/core/service/canonical_claim_slot_audit_test.go
 internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
 internal/core/service/claim_recovery_test.go
+internal/core/service/comments.go
+internal/core/service/comments_test.go
 internal/core/service/compact.go
 internal/core/service/cycles.go
 internal/core/service/cycles_test.go
@@ -333,6 +335,7 @@ internal/core/service/history.go
 internal/core/service/history_reads_test.go
 internal/core/service/history_sqlite_rpc_test.go
 internal/core/service/i1_acceptance_test.go
+internal/core/service/label_rename.go
 internal/core/service/lease.go
 internal/core/service/memories.go
 internal/core/service/ontology.go
@@ -384,6 +387,11 @@ internal/integration/b13memory/readback_oracle_test.go
 internal/integration/b14fixedpolicy/BUILD.bazel
 internal/integration/b14fixedpolicy/README.md
 internal/integration/b14fixedpolicy/public_members_test.go
+internal/integration/b16sourcehistory/BUILD.bazel
+internal/integration/b16sourcehistory/README.md
+internal/integration/b16sourcehistory/engine_test.go
+internal/integration/b16sourcehistory/fixture_test.go
+internal/integration/b16sourcehistory/source_history_test.go
 internal/integration/batchsql/BUILD.bazel
 internal/integration/batchsql/README.md
 internal/integration/batchsql/allocator_archive_test.go
@@ -417,6 +425,8 @@ internal/integration/converterroundtrip/history.go
 internal/integration/converterroundtrip/identity_counters_test.go
 internal/integration/converterroundtrip/image.go
 internal/integration/converterroundtrip/import_test.go
+internal/integration/converterroundtrip/label_projection_test.go
+internal/integration/converterroundtrip/labels.go
 internal/integration/converterroundtrip/native_restore_test.go
 internal/integration/converterroundtrip/public_source_test.go
 internal/integration/converterroundtrip/repair_test.go
@@ -536,6 +546,7 @@ internal/integration/postgresacceptance/README.md
 internal/integration/postgresacceptance/atomic_close_test.go
 internal/integration/postgresacceptance/atomic_test.go
 internal/integration/postgresacceptance/b15_comments_test.go
+internal/integration/postgresacceptance/b15_page_test.go
 internal/integration/postgresacceptance/b16_labels_test.go
 internal/integration/postgresacceptance/engine_test.go
 internal/integration/postgresacceptance/fixture_test.go
@@ -644,6 +655,7 @@ internal/server/authzrpc/README.md
 internal/server/authzrpc/atomic_close_test.go
 internal/server/authzrpc/authzrpc.go
 internal/server/authzrpc/authzrpc_test.go
+internal/server/authzrpc/b15_comments_page_test.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/claim.go
 internal/server/authzrpc/claim_test.go
@@ -784,12 +796,14 @@ internal/server/rpc/BUILD.bazel
 internal/server/rpc/admin.go
 internal/server/rpc/cmd/openrpcgen/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/main.go
+internal/server/rpc/comments.go
 internal/server/rpc/compact.go
 internal/server/rpc/cursor.go
 internal/server/rpc/cursor_test.go
 internal/server/rpc/cycles.go
 internal/server/rpc/gate_integration_test.go
 internal/server/rpc/integration_test.go
+internal/server/rpc/label_rename.go
 internal/server/rpc/openrpc.json
 internal/server/rpc/openrpc_test.go
 internal/server/rpc/registry.go
@@ -1199,6 +1213,7 @@ spec/s1-b09-b12/compaction/BUILD.bazel
 spec/s1-b09-b12/compaction/audit_test.go
 spec/s1-b09-b12/compaction/b09_b10_conservation_test.go
 spec/s1-b09-b12/compaction/b09_b10_publication_test.go
+spec/s1-b09-b12/compaction/b11_b12_reopen_identity_test.go
 spec/s1-b09-b12/compaction/b12_test.go
 spec/s1-b09-b12/compaction/composition_test.go
 spec/s1-b09-b12/compaction/continuation_test.go
@@ -1238,6 +1253,7 @@ spec/s1-b13-b16/BUILD.bazel
 spec/s1-b13-b16/README.md
 spec/s1-b13-b16/capture_regressions_test.go
 spec/s1-b13-b16/capture_regressions_test.py
+spec/s1-b13-b16/comment_page_test.go
 spec/s1-b13-b16/record_reference.py
 spec/s1-b13-b16/reference_capture.py
 spec/s1-b13-b16/reference_capture_main.go
