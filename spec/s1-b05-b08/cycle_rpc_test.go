@@ -161,6 +161,7 @@ func (f *cycleRPCFixture) callToken(t *testing.T, token, method string, params m
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1"+httpjson.Path, bytes.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Plug-RPC", "1")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
