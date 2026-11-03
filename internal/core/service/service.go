@@ -121,6 +121,9 @@ func namedRef(ref model.Ref) error {
 	if err := ref.Validate(); err != nil || !ref.IsID() || ref.ID == "" || !ref.Branch.IsZero() {
 		return failure("invalid_params", "named verbs require a nonempty bead ID on the main branch")
 	}
+	if strings.HasPrefix(ref.ID, "workflow:") {
+		return failure("invalid_params", "workflow references require a supported workflow item operation")
+	}
 	return nil
 }
 
@@ -192,6 +195,9 @@ func workflowTypes(filter *Filter) []string {
 // invocations remain entirely in the workflow provider.
 func (s *Service) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req workflowplugin.InvokeRequest, meta model.WriteMeta) (workflowplugin.InvokeResult, error) {
 	if req.Mode == "ephemeral" {
+		if meta.DryRun {
+			return workflowplugin.InvokeResult{}, failure("invalid_params", "ephemeral workflow invocation does not support dryRun")
+		}
 		if s.workflow == nil {
 			return workflowplugin.InvokeResult{}, failure("method_not_found", "workflow plugin is not configured")
 		}
@@ -298,6 +304,9 @@ func (s *Service) Claim(ctx context.Context, by model.PrincipalRef, req ClaimReq
 
 func (s *Service) ClaimWithOutcome(ctx context.Context, by model.PrincipalRef, req ClaimRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	if workflowRef(req.ID) {
+		if err := validateWorkflowWrite(req.ID, req.Expect, meta); err != nil {
+			return port.WriteOutcome{}, err
+		}
 		if s.workflow == nil {
 			return port.WriteOutcome{}, failure("not_found", "workflow item was not found")
 		}
@@ -340,6 +349,9 @@ func (s *Service) ReplayWorkflowClaimNext(ctx context.Context, by model.Principa
 	if s.workflow == nil {
 		return nil, false, nil
 	}
+	if meta.DryRun {
+		return nil, false, failure("invalid_params", "workflow claimNext does not support dryRun")
+	}
 	if strings.TrimSpace(req.Project) == "" {
 		return nil, false, failure("project_required", "supply a project")
 	}
@@ -380,6 +392,9 @@ func (s *Service) claim(ctx context.Context, by model.PrincipalRef, req ClaimReq
 func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRef, req ClaimNextRequest, meta model.WriteMeta) (*port.WriteOutcome, error) {
 	if err := s.admit(ctx, by); err != nil {
 		return nil, err
+	}
+	if s.workflow != nil && meta.DryRun {
+		return nil, failure("invalid_params", "workflow claimNext does not support dryRun")
 	}
 	if strings.TrimSpace(req.Project) == "" {
 		return nil, failure("project_required", "supply a project")
@@ -544,6 +559,9 @@ func (s *Service) CommitClaimNextEmpty(ctx context.Context, by model.PrincipalRe
 	meta.Method = "bead.claimNext"
 	meta.Project = req.Project
 	if s.workflow != nil {
+		if meta.DryRun {
+			return port.WriteOutcome{}, failure("invalid_params", "workflow claimNext does not support dryRun")
+		}
 		types := []string(nil)
 		if req.Filter != nil {
 			types = req.Filter.Types
@@ -655,6 +673,9 @@ func (s *Service) Comment(ctx context.Context, by model.PrincipalRef, req Commen
 
 func (s *Service) CommentWithOutcome(ctx context.Context, by model.PrincipalRef, req CommentRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	if workflowRef(req.ID) {
+		if err := validateWorkflowWrite(req.ID, req.Expect, meta); err != nil {
+			return port.WriteOutcome{}, err
+		}
 		if s.workflow == nil {
 			return port.WriteOutcome{}, failure("not_found", "workflow item was not found")
 		}
@@ -682,6 +703,9 @@ func (s *Service) Close(ctx context.Context, by model.PrincipalRef, req CloseReq
 
 func (s *Service) CloseWithOutcome(ctx context.Context, by model.PrincipalRef, req CloseRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
 	if workflowRef(req.ID) {
+		if err := validateWorkflowWrite(req.ID, req.Expect, meta); err != nil {
+			return port.WriteOutcome{}, err
+		}
 		if s.workflow == nil {
 			return port.WriteOutcome{}, failure("not_found", "workflow item was not found")
 		}

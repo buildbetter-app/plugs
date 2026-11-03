@@ -16,6 +16,12 @@ import (
 
 func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest) (GetResult, error) {
 	if workflowRef(req.ID) {
+		if err := validateWorkflowRef(req.ID); err != nil {
+			return GetResult{}, err
+		}
+		if req.AsOf != nil {
+			return GetResult{}, failure("invalid_params", "workflow items have no historical asOf view")
+		}
 		if s.workflow == nil {
 			return GetResult{}, failure("not_found", "workflow item was not found")
 		}
