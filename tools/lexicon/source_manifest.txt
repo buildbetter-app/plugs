@@ -1059,6 +1059,15 @@ internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
 internal/storage/postgres/schema.go
 internal/storage/postgres/selection.go
+internal/storage/postgres/selection_backfill.go
+internal/storage/postgres/selection_backfill_test.go
+internal/storage/postgres/selection_coverage.go
+internal/storage/postgres/selection_fact_sql_test.go
+internal/storage/postgres/selection_fresh.go
+internal/storage/postgres/selection_index.go
+internal/storage/postgres/selection_publication.go
+internal/storage/postgres/selection_sources.go
+internal/storage/postgres/selection_sql_test.go
 internal/storage/postgres/selection_test.go
 internal/storage/postgres/source_activation_test.go
 internal/storage/postgres/source_backend_test.go
