@@ -36,7 +36,7 @@ go_test(
 go_test(
     name = "public_beads_runtime_test",
     size = "large",
-    srcs = ["main.go", "beads.go", "beads_runtime_test.go"],
+    srcs = ["main.go", "beads.go", "beads_runtime_test.go", "beads_native_regression_test.go"],
     args = ["-public-beads-runtime"],
     data = [
         "testdata/public-companion-profile.json",
