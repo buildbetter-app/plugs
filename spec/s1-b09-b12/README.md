@@ -39,12 +39,77 @@ equality per command and overall independently from normalized transcript and
 projection equality. Runtime timestamps and generated IDs may make raw bytes
 differ even when the normalized transcripts agree; that result is retained.
 
-Fresh version 2 recordings remain pending: this repair is source-only under the
-controller's retained-collector/no-new-gate instruction. The Go tests retain the
-version 1 evidence boundary and validate exact streams when version 2 artifacts
-are admitted. `TestS1ReferenceRecorderContract` runs recorder-policy regressions;
-its temporary Git repositories and mocked command streams are unit fixtures,
-not source-engine or paired-store acceptance evidence.
+The six-path recorder repair at `b0adfdd4f3f8669f8faba03637c813b99f396fde`
+passed independent source review and focused RunsOn run `41553992037`. That
+result covers its policy regressions and retained paired-driver replay; it
+does not transfer to this source successor or provide fresh version 2 bytes.
+`TestS1ReferenceRecorderContract` uses temporary Git repositories and mocked
+streams. Those are unit fixtures, not source-engine acceptance evidence.
+
+`public_reference_profile.py` adds one separate fixed public build profile:
+`s1-b09-b12-public9d6-original-go-v1`. It binds descriptor
+`41399124974:13121145530:8c3d155f3940d21bd270fb14fe0292de0db1b3f377214756db59edf53eec5fa2`,
+the exact source commit/tree/5087-entry manifest, producer workflow/build and
+toolchain metadata, ZIP/tar identities, and executable SHA-256
+`3c6bbb888431751adce98dfebc8cbeeb5869300698e8b069a4d7438fabfb3af4`.
+This is the original Go-built public profile, explicitly not canonical Bazel.
+The recorder's legacy `33cdadbe...` pin and every version 1 byte stay unchanged;
+the common source pin does not establish binary equivalence. The new wrapper
+has no user-selected hash, executable, URL or fallback route.
+
+The main-helper prerequisite passed in run `41553917261` at control/input SHA
+`713557b6a3abaf6fe5fc2dbf4ca38561d43f5deb`. Its metadata receipt is not a
+reusable VM path or executable. For an authentic capture, the existing trusted
+test route prepares the fixed ZIP, source, manifest and build-run environment
+in that same fresh RunsOn job. After independent review of the exact successor,
+the concrete invocation is:
+
+```sh
+export PATH=/tmp/plug-swarm/bin/worker-safe:$PATH
+/tmp/plug-swarm/bin/remote-bazel "$PWD" <reviewed-successor-sha> s1-b09-b12-public-v2 -- \
+  test //spec/s1-b09-b12:reference_capture_test --nocache_test_results --test_output=all \
+  --test_env=PLUG_PUBLIC_REFERENCE=41399124974:13121145530:8c3d155f3940d21bd270fb14fe0292de0db1b3f377214756db59edf53eec5fa2
+```
+
+Use a non-login shell. This explicit manual Go target is excluded from `//...`.
+Its allowlisted environment omits ambient credentials and configuration. The
+wrapper snapshots both prepared inputs privately, checks all source bytes/modes
+against the pinned Git tree, verifies the fixed ZIP/manifest/tar and both loose
+executables, and grants execute permission only after those checks. It invokes
+the unchanged reviewed recorder functions twice per card in eight new Git
+stores. Unexpected exits and timeout partial streams remain in a BLOCK packet.
+
+The entire canonical v2 JSON packet is emitted between literal BEGIN/END lines
+in the retained `test.log`, with byte length and SHA-256 repeated in both
+markers. The existing workflow archives that log for 14 days. The packet
+includes exact stream bytes/digests, profile and candidate module hashes, raw
+source manifest, and the selected test/migration blobs with Git/SHA-256 checks.
+`extract_reference_packet.py` imports no recorder/capture code. It independently
+derives normalized transcripts and semantic projections from raw stdout/stderr,
+measures all three equality kinds, validates source/schema/profile digests, and
+rejects absent, duplicated, truncated, altered, incomplete or BLOCK packets.
+The capture invokes it before labelling a packet PASS; after collection the
+same candidate's extractor must validate the archived log again:
+
+```sh
+python3 -B spec/s1-b09-b12/extract_reference_packet.py \
+  --log <retained-reference_capture_test/test.log> --source-root "$PWD" \
+  --candidate <reviewed-successor-sha> --tree <reviewed-successor-tree> \
+  --output <new-external-v2-packet.json>
+```
+
+The output path must be new. Keep these lossless v2 packets separate from
+`reference/` and its version 1 provenance; do not overwrite or relabel historical
+recordings. Source SHA, workflow-control SHA, complete same-run receipt and
+archive retention must also be audited externally. The packet itself does not
+establish that hosted binding. Raw byte inequality is retained honestly and
+cannot become raw equality through normalization.
+
+`//spec/s1-b09-b12:reference_capture_policy_test` checks the transport-free
+consumer, private snapshots, failure streams, complete framing and independent
+validator using synthetic unit fixtures. It executes no reference product and
+cannot substitute for the explicit manual capture or paired-store acceptance.
+Authentic v2 captures for this successor remain pending.
 
 The recordings are evidence for the selected B09–B12 cases, not full-card
 qualification. B12 records the embedded reference's honest `--apply` and

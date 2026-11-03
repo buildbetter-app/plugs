@@ -31,3 +31,37 @@ filegroup(
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
 )
+
+_CAPTURE_EMBEDS = [
+    "capture_harness_test.go",
+    "extract_reference_packet.py",
+    "public_reference_profile.py",
+    "record_reference.py",
+    "reference_capture.py",
+    "reference_capture_policy_test.py",
+    "reference_capture_test.go",
+]
+
+go_test(
+    name = "reference_capture_policy_test",
+    srcs = [
+        "capture_harness_test.go",
+        "capture_policy_test.go",
+    ],
+    embedsrcs = _CAPTURE_EMBEDS,
+    args = ["-test.v"],
+)
+
+# Explicit capture only; //... must never execute the public reference engine.
+go_test(
+    name = "reference_capture_test",
+    srcs = [
+        "capture_harness_test.go",
+        "reference_capture_test.go",
+    ],
+    embedsrcs = _CAPTURE_EMBEDS,
+    args = ["-test.v"],
+    tags = ["local", "manual"],
+    size = "large",
+    timeout = "long",
+)
