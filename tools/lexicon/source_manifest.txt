@@ -1024,6 +1024,8 @@ spec/s1-b05-b08/reference/provenance.json
 spec/s1-b05-b08/runtime_test.go
 spec/s1-b09-b12/BUILD.bazel
 spec/s1-b09-b12/README.md
+spec/s1-b09-b12/accepted_replay_test.go
+spec/s1-b09-b12/accepted_source_test.go
 spec/s1-b09-b12/capture_harness_test.go
 spec/s1-b09-b12/capture_policy_test.go
 spec/s1-b09-b12/compaction/BUILD.bazel
@@ -1048,6 +1050,8 @@ spec/s1-b09-b12/proxied_runtime.go
 spec/s1-b09-b12/public_reference_profile.py
 spec/s1-b09-b12/record_reference.py
 spec/s1-b09-b12/record_reference_test.py
+spec/s1-b09-b12/reference-v2/cb40-41563023339.packet.json
+spec/s1-b09-b12/reference-v2/provenance.json
 spec/s1-b09-b12/reference/b09.json
 spec/s1-b09-b12/reference/b10.json
 spec/s1-b09-b12/reference/b11.json

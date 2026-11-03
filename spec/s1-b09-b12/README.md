@@ -1,5 +1,37 @@
 # S1 B09–B12 focused slice
 
+The new `accepted_source_test.go` / `accepted_replay_test.go` consume the exact
+accepted public packet in `reference-v2/cb40-41563023339.packet.json`: authentic
+run `41563023339`, producer `cb40cab68`, 1,514,945 bytes, SHA-256
+`33cd8fdcb66b5b93f4a36329fc0598cb9c5d012fc350804809da5eb5a38d4067`.
+Its provenance file binds the original archive and independent byte audit.
+This packet retains all source/profile/config/runtime/stream bytes and the
+original `rawStreamsEqual=false`; normalized and projection equality are true.
+Initial configuration copies prove only the pre-runtime/init setup. The
+producer candidate remains distinct from each subsequent Plug replay candidate.
+
+The new Go source projector imports no producer/extractor and decodes original
+stdout/stderr with per-stream checksum checks. Both fresh source runs supply
+separate inputs to new memory and SQLite stores. Projections derived from
+persisted Plug bodies are compared with independently derived raw-source
+projections; each operation logs its actual request, commit/error, pinned store
+head, record bytes, versions and allocator state. A SQLite reopen precedes the
+post-deletion child mint and follows final dependency unlink. Source packet
+identity, stream corruption, incomplete shutdown and ignored producer-summary
+negative cases are separate from the real-store runs.
+
+The comparison mappings are explicit. Source explicit parent/child IDs use the
+existing driver restore seam with a stale child counter before product writes.
+The source explicit hash-ID collision maps to occupied trusted-generator
+candidates in the real writer, with a typed refusal and unchanged durable
+state; it does not imply a user-selectable ID RPC. Hash allocation itself uses
+the actual restored hash allocator and a controlled Go clock. Ordered close
+uses a fixed test ontology with open/closed slots; this proves allocator
+continuation after the persisted close, not B08 authorization/guard parity.
+The B11 regression uses the recorded `blocks` to `relates-to` pair literally.
+B12 remains NOT EXECUTED, and all four-card, full-S1, native-producer and hosted
+qualification boundaries remain unchanged. No new reference capture is needed.
+
 This package owns the narrow allocator and dependency-identity implementation
 for B09–B11 and the evidence boundary for B12. The source pin is
 `9d6fff760b7a314b476539198504d77ce0959656` with tree

@@ -3,6 +3,8 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "s1_b09_b12_test",
     srcs = [
+        "accepted_replay_test.go",
+        "accepted_source_test.go",
         "reference_test.go",
         "replay_test.go",
     ],
@@ -12,7 +14,7 @@ go_test(
         "record_reference.py",
         "record_reference_test.py",
         "vectors.json",
-    ] + glob(["reference/*.json"]),
+    ] + glob(["reference/*.json", "reference-v2/*.json"]),
     args = ["-test.v"],
     deps = [
         "//internal/core/model",
