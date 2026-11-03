@@ -977,6 +977,10 @@ plugins/workflow/native.go
 plugins/workflow/workflow.go
 plugins/workflow/workflow_test.go
 scripts/ci/BUILD.bazel
+scripts/ci/nightly-restore-streak/BUILD.bazel
+scripts/ci/nightly-restore-streak/README.md
+scripts/ci/nightly-restore-streak/verify.py
+scripts/ci/nightly-restore-streak/verify_test.py
 scripts/ci/plug-bazel-config-test.sh
 scripts/ci/plug-bazel-delivery-test.sh
 scripts/ci/plug-bazel-delivery.py
