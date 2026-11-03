@@ -310,6 +310,7 @@ internal/core/reverseconverter/types.go
 internal/core/service/BUILD.bazel
 internal/core/service/audit.go
 internal/core/service/audit_test.go
+internal/core/service/canonical_claim_slot_audit_test.go
 internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
 internal/core/service/claim_recovery_test.go
