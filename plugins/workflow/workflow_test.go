@@ -774,3 +774,97 @@ func TestReadySnapshotPairsItemsWithTheirAtomicReadRevision(t *testing.T) {
 		t.Fatalf("following snapshot did not observe the other provider's write: %+v err=%v", next, err)
 	}
 }
+
+func TestClaimNextWithResourcesRetainsSelectedAndEmptyReplay(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		t.Run(map[bool]string{false: "selected", true: "empty"}[empty], func(t *testing.T) {
+			ctx := context.Background()
+			clock := time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC)
+			state := &testDurableState{}
+			provider, err := New(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			provider.WithClock(func() time.Time { return clock })
+			by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+			meta := model.WriteMeta{Method: "x.workflow.invoke", Project: "project", AgentLabel: "owner", IdempotencyKey: strings.Repeat("1", 64)}
+			run, err := provider.Invoke(ctx, by, InvokeRequest{Template: "template", Project: "project", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "one", Title: "private one"}, {Label: "two", Title: "private two"}}}, meta)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sortItems(run.Items)
+			allowed := run.Items[1].ID
+			if empty {
+				meta.Method, meta.IdempotencyKey = "bead.claim", strings.Repeat("2", 64)
+				if _, err := provider.Claim(ctx, by, model.RefByID(allowed, model.Natural64(0)), meta); err != nil {
+					t.Fatal(err)
+				}
+			}
+			meta.Method, meta.IdempotencyKey, meta.ClaimNextIdentity = "bead.claimNext", strings.Repeat("3", 64), "canonical-resource-selector"
+			item, found, replayed, err := provider.ClaimNextWithResources(ctx, by, "project", nil, []string{allowed}, meta)
+			if err != nil || found != !empty || replayed || found && item.ID != allowed {
+				t.Fatalf("resource selector chose an excluded candidate: %+v found=%v replayed=%v err=%v", item, found, replayed, err)
+			}
+			ready, err := provider.Ready(ctx, by, "project", nil, meta)
+			if err != nil || len(ready) != 1 || ready[0].ID != run.Items[0].ID {
+				t.Fatalf("filtered claim mutated the excluded ready item: %+v err=%v", ready, err)
+			}
+			before := append([]byte(nil), state.value...)
+			clock = clock.Add(ClaimTTL + time.Second)
+			for _, receiptOnly := range []bool{false, true} {
+				var retry ItemView
+				var retryFound, retryReplay bool
+				if receiptOnly {
+					retry, retryFound, retryReplay, err = provider.ReplayClaimNext(ctx, by, "project", nil, meta)
+				} else {
+					retry, retryFound, retryReplay, err = provider.ClaimNextWithResources(ctx, by, "project", nil, []string{allowed}, meta)
+				}
+				if err != nil || !retryReplay || retryFound != found || !reflect.DeepEqual(retry, item) || !bytes.Equal(before, state.value) {
+					t.Fatalf("retry changed selector result after lease expiry: %+v found=%v replayed=%v err=%v", retry, retryFound, retryReplay, err)
+				}
+			}
+			for i, key := range []string{"4", "5"} {
+				closeMeta := meta
+				closeMeta.Method, closeMeta.IdempotencyKey = "bead.close", strings.Repeat(key, 64)
+				if _, err := provider.Close(ctx, by, model.RefByID(run.Items[i].ID, model.Natural64(0)), "done", closeMeta); err != nil {
+					t.Fatal(err)
+				}
+			}
+			terminal, terminalFound, replayed, err := provider.ClaimNextWithResources(ctx, by, "project", nil, []string{allowed}, meta)
+			if err != nil || !replayed || terminalFound != found || found && (terminal.ID != item.ID || terminal.Revision != item.Revision) || terminal.Title != "" || terminal.Claim != nil || len(terminal.Comments) != 0 {
+				t.Fatalf("resource receipt lost terminal identity or retained payload: %+v found=%v err=%v", terminal, terminalFound, err)
+			}
+		})
+	}
+}
+
+func TestClaimNextWithResourcesBindsDirectSelectorAndIntersectsTypes(t *testing.T) {
+	ctx := context.Background()
+	state := &testDurableState{}
+	provider, err := New(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	meta := model.WriteMeta{Method: "x.workflow.invoke", Project: "project", AgentLabel: "owner", IdempotencyKey: strings.Repeat("1", 64)}
+	run, err := provider.Invoke(ctx, by, InvokeRequest{Template: "template", Project: "project", Mode: "ephemeral", Checklist: []ChecklistItem{{Label: "one", Title: "one", Type: "issue"}, {Label: "two", Title: "two", Type: "task"}}}, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resources := []string{run.Items[0].ID, run.Items[1].ID}
+	meta.Method, meta.IdempotencyKey = "bead.claimNext", strings.Repeat("2", 64)
+	first, found, replayed, err := provider.ClaimNextWithResources(ctx, by, "project", []string{"task"}, resources, meta)
+	if err != nil || !found || replayed || first.ID != run.Items[1].ID {
+		t.Fatalf("resource/type intersection selected another item: %+v found=%v err=%v", first, found, err)
+	}
+	before := append([]byte(nil), state.value...)
+	_, _, _, err = provider.ClaimNextWithResources(ctx, by, "project", []string{"task"}, resources[:1], meta)
+	var failure *model.Error
+	if !errors.As(err, &failure) || failure.Data.Code != "idempotency_key_reused" || !bytes.Equal(before, state.value) {
+		t.Fatalf("changed resource selector reused a direct provider receipt: %v", err)
+	}
+	retry, found, replayed, err := provider.ClaimNextWithResources(ctx, by, "project", []string{"task"}, resources, meta)
+	if err != nil || !found || !replayed || !reflect.DeepEqual(retry, first) || !bytes.Equal(before, state.value) {
+		t.Fatalf("equal direct selector failed to replay without mutation: %+v err=%v", retry, err)
+	}
+}

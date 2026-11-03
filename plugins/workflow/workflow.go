@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -587,7 +588,7 @@ type claimNextResult struct {
 	Item  ItemView `json:"item"`
 }
 
-func claimNextRequest(project string, types []string, meta model.WriteMeta) any {
+func claimNextRequest(project string, types, resources []string, meta model.WriteMeta) any {
 	if meta.ClaimNextIdentity != "" {
 		// The service supplies its canonical full selector, including resource
 		// filters. Candidate selection must not replace that selector with an ID.
@@ -597,15 +598,23 @@ func claimNextRequest(project string, types []string, meta model.WriteMeta) any 
 		}{Project: project, Selector: meta.ClaimNextIdentity}
 	}
 	return struct {
-		Project string   `json:"project"`
-		Types   []string `json:"types,omitempty"`
-	}{Project: project, Types: append([]string(nil), types...)}
+		Project   string   `json:"project"`
+		Types     []string `json:"types,omitempty"`
+		Resources []string `json:"resources,omitempty"`
+	}{Project: project, Types: append([]string(nil), types...), Resources: append([]string(nil), resources...)}
 }
 
 // ClaimNext returns (item, found, replayed). A replayed empty result is a
 // durable terminal null for this selector and must not probe a later item.
 func (p *Provider) ClaimNext(ctx context.Context, by model.PrincipalRef, project string, types []string, meta model.WriteMeta) (ItemView, bool, bool, error) {
-	return p.claimNext(ctx, by, project, types, meta, nil)
+	return p.claimNext(ctx, by, project, types, nil, meta, nil)
+}
+
+// ClaimNextWithResources intersects the selector's optional resource IDs before
+// atomically choosing a candidate. The service supplies its full selector in
+// ClaimNextIdentity; direct calls without it bind resources in their digest.
+func (p *Provider) ClaimNextWithResources(ctx context.Context, by model.PrincipalRef, project string, types, resources []string, meta model.WriteMeta) (ItemView, bool, bool, error) {
+	return p.claimNext(ctx, by, project, types, resources, meta, nil)
 }
 
 // ClaimNextSelected commits the candidate chosen and authorized by the ordinary
@@ -615,10 +624,10 @@ func (p *Provider) ClaimNextSelected(ctx context.Context, by model.PrincipalRef,
 	if ref.Validate() != nil || !ref.IsID() || !strings.HasPrefix(ref.ID, ItemPrefix) || ref.Branch.String() != "0" {
 		return ItemView{}, false, false, fail("invalid_params", "workflow claimNext requires a branch-zero item reference")
 	}
-	return p.claimNext(ctx, by, project, types, meta, &ref)
+	return p.claimNext(ctx, by, project, types, nil, meta, &ref)
 }
 
-func (p *Provider) claimNext(ctx context.Context, by model.PrincipalRef, project string, types []string, meta model.WriteMeta, selectedRef *model.Ref) (ItemView, bool, bool, error) {
+func (p *Provider) claimNext(ctx context.Context, by model.PrincipalRef, project string, types, resources []string, meta model.WriteMeta, selectedRef *model.Ref) (ItemView, bool, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	meta.Project = project
@@ -630,7 +639,7 @@ func (p *Provider) claimNext(ctx context.Context, by model.PrincipalRef, project
 	if meta.IdempotencyKey == "" {
 		return ItemView{}, false, false, fail("invalid_params", "idempotency key is required")
 	}
-	request := claimNextRequest(project, types, meta)
+	request := claimNextRequest(project, types, resources, meta)
 	var replay claimNextResult
 	if ok, err := p.checkReplay(value, by, meta, request, &replay); err != nil {
 		return ItemView{}, false, false, err
@@ -645,6 +654,9 @@ func (p *Provider) claimNext(ctx context.Context, by model.PrincipalRef, project
 	for id := range value.Items {
 		item := value.Items[id]
 		if selectedRef != nil && selectedRef.ID != item.ID {
+			continue
+		}
+		if len(resources) != 0 && !slices.Contains(resources, item.ID) {
 			continue
 		}
 		if item.Project == project && itemReady(item, p.now()) && matchesType(item.Type, types) && item.Owner.Principal == principal && item.Owner.Agent == effectiveAgent(by, meta) {
@@ -697,7 +709,7 @@ func (p *Provider) ReplayClaimNext(ctx context.Context, by model.PrincipalRef, p
 	if err != nil {
 		return ItemView{}, false, false, err
 	}
-	request := claimNextRequest(project, types, meta)
+	request := claimNextRequest(project, types, nil, meta)
 	var replay claimNextResult
 	ok, err := p.checkReplay(value, by, meta, request, &replay)
 	return replay.Item, replay.Found, ok, err
