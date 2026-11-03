@@ -261,7 +261,7 @@ func TestEpicProgressSurvivesNativeRestoreAndSQLiteReopen(t *testing.T) {
 func TestEpicProgressNativeRestoreReopenDetachUsesIndexedHierarchy(t *testing.T) {
 	dir := t.TempDir()
 	source := newFixture(t, "sqlite", filepath.Join(dir, "source-large.db"), true)
-	parent, child := buildLargeEpic(t, source)
+	_, child := buildLargeEpic(t, source)
 	sourceAdmin := admin(t, source.store, source.lease)
 	data, archive := dumpHead(t, sourceAdmin)
 	if !archive.Native() {
