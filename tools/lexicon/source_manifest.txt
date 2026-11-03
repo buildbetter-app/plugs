@@ -211,6 +211,7 @@ internal/core/model/response.go
 internal/core/model/runtime.go
 internal/core/model/schema_test.go
 internal/core/model/testdata/openrpc-components.json
+internal/core/model/unsupported_error_test.go
 internal/core/ontology/BUILD.bazel
 internal/core/ontology/check.go
 internal/core/ontology/compile.go
