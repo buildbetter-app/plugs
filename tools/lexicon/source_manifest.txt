@@ -1238,6 +1238,7 @@ tools/rehearsal/gate.go
 tools/rehearsal/metrics.go
 tools/rehearsal/metrics_test.go
 tools/rehearsal/three_rehearsals.sh
+tools/rehearsal/transcript.go
 tools/rehearsal/transcript_test.go
 tools/roundtrip/BUILD.bazel
 tools/roundtrip/README.md
