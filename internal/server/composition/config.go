@@ -306,6 +306,9 @@ func (r *Runtime) bind(config Config) error {
 		}
 		serviceOptions = append(serviceOptions, service.WithWorkflow(workflow.WithIdentity(workflowplugin.Alias, "default", meta.Incarnation)))
 	}
+	if config.Compaction != nil {
+		serviceOptions = append(serviceOptions, service.WithCompaction(*config.Compaction))
+	}
 	r.Service = service.New(r.Store, r.Lease, writer, serviceOptions...)
 	registry, err := rpc.NewRegistry()
 	if err != nil {

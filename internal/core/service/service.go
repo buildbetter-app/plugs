@@ -27,6 +27,7 @@ type Service struct {
 	events                 EventProvider
 	compaction             CompactionConfig
 	workflow               *workflowplugin.Provider
+	compaction             CompactionConfig
 }
 
 // claimNextConflictRestartBudget bounds only the extra full-walk restart used
