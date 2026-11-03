@@ -109,9 +109,15 @@ func TestActualArchiveDigestRefusalPrecedesConverterPublication(t *testing.T) {
 					return observed, nil
 				},
 			})
-			checkpoint, err := observed.SaveCheckpoint(ctx, f.r.Lease, "restore-digest/baseline", 0, []byte(`{"before":"restore"}`))
+			// Even an unversioned checkpoint row makes a restore target
+			// nonempty. Observe absence without seeding any durable state.
+			const checkpointKey = "plugin/workflow/default/durable"
+			checkpoint, err := observed.LoadCheckpoint(ctx, checkpointKey)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if checkpoint.Generation != 0 || len(checkpoint.Payload) != 0 {
+				t.Fatalf("restore target has a workflow checkpoint: %+v", checkpoint)
 			}
 			before := captureActualArchiveCensus(t, observed)
 			if !before.Meta.Head.IsZero() || len(before.Rows) != 0 {
@@ -159,9 +165,9 @@ func TestActualArchiveDigestRefusalPrecedesConverterPublication(t *testing.T) {
 			}
 			// Checkpoints are intentionally excluded from archive imports. This
 			// assertion checks preservation, not plugin checkpoint execution.
-			persisted, err := observed.LoadCheckpoint(ctx, "restore-digest/baseline")
+			persisted, err := observed.LoadCheckpoint(ctx, checkpointKey)
 			if err != nil || !reflect.DeepEqual(persisted, checkpoint) {
-				t.Fatalf("restore changed the existing durable checkpoint: checkpoint=%+v err=%v", persisted, err)
+				t.Fatalf("restore published a durable checkpoint: checkpoint=%+v err=%v", persisted, err)
 			}
 			t.Logf("configured archive valid=%t plans=%d writes=%d checkpoint_saves=%d rows=%d head=%s", test.valid, planned.Load(), observed.writes.Load()-writes, observed.saves.Load()-saves, len(after.Rows), after.Meta.Head)
 		})
