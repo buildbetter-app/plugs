@@ -16,8 +16,9 @@ import (
 // copy for components; the original caller and component inputs cannot mutate
 // the material used by another check.
 type PreparedRequest struct {
-	request ListRequest
-	caveats []map[string]preparedCaveat
+	request           ListRequest
+	caveats           []map[string]preparedCaveat
+	freshObservations bool
 }
 
 type preparedCaveat struct {
@@ -156,7 +157,14 @@ type preparationSource interface {
 	AuthorizationPreparation() *Preparation
 }
 
-func snapshotPreparation(s Slice) *Preparation {
+// Custom component invocations must retain their first-touch reads, including
+// when the component delegates to the finite Eval port with the same context.
+type freshPreparationKey struct{}
+
+func snapshotPreparation(ctx context.Context, s Slice) *Preparation {
+	if fresh, _ := ctx.Value(freshPreparationKey{}).(bool); fresh {
+		return nil
+	}
 	if source, ok := s.(preparationSource); ok {
 		return source.AuthorizationPreparation()
 	}
@@ -354,5 +362,5 @@ func (b *PreparedChecks) Match(ctx context.Context, s Slice, index int, t Filter
 	}
 	// Reusable parsing must never retain a prior authority snapshot's state.
 	// Generic slices without an immutable request-owned provider revalidate.
-	return t.matchPrepared(ctx, s, b.raw[index].Resource, p, snapshotPreparation(s))
+	return t.matchPrepared(ctx, s, b.raw[index].Resource, p, snapshotPreparation(ctx, s))
 }

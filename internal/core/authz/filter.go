@@ -143,7 +143,7 @@ func (t FilterTemplate) Match(ctx context.Context, s Slice, r Resource) (bool, e
 		return false, nil
 	}
 	if t.prepared != nil && reflect.DeepEqual(t.Request, t.prepared.request) {
-		return t.matchPrepared(ctx, s, r, t.prepared, snapshotPreparation(s))
+		return t.matchPrepared(ctx, s, r, t.prepared, snapshotPreparation(ctx, s))
 	}
 	req := CheckRequest{Caller: t.Request.Caller, Action: t.Request.Action, Resource: r, Method: t.Request.Method}
 	ok, err := prepare(ctx, s, t.Namespace, req)
@@ -180,6 +180,9 @@ func (t FilterTemplate) Match(ctx context.Context, s Slice, r Resource) (bool, e
 func (t FilterTemplate) matchPrepared(ctx context.Context, s Slice, r Resource, p *PreparedRequest, state *Preparation) (bool, error) {
 	if r.Kind != p.request.ResourceKind {
 		return false, nil
+	}
+	if t.prepared != nil && t.prepared.freshObservations {
+		state = nil
 	}
 	ok, err := p.prepare(ctx, s, t.Namespace, r, state)
 	if err != nil || !ok {

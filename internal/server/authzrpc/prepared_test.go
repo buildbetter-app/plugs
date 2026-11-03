@@ -22,7 +22,11 @@ func (a preparationActions) MarshalJSON() ([]byte, error) {
 	return json.Marshal([]string{"read"})
 }
 
-type preparationSnapshot struct{ observations int }
+type preparationSnapshot struct {
+	observations     int
+	failObserve      error
+	failObserveAfter int
+}
 
 func (s *preparationSnapshot) Get(context.Context, []model.Ref) ([]driver.Record, error) {
 	return nil, errors.New("a User read filter must not load a project or record")
@@ -30,7 +34,11 @@ func (s *preparationSnapshot) Get(context.Context, []model.Ref) ([]driver.Record
 
 func (s *preparationSnapshot) Observe(_ context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
 	s.observations += len(keys)
-	return make([]driver.LockState, len(keys)), nil
+	var err error
+	if s.observations > s.failObserveAfter {
+		err = s.failObserve
+	}
+	return make([]driver.LockState, len(keys)), err
 }
 
 func preparationFixture(t *testing.T) (authz.Chain, authz.Caller, *atomic.Int32) {
@@ -199,6 +207,82 @@ func TestPreparedBatchRebindsFreshAuthoritySnapshot(t *testing.T) {
 				if err != nil || allowed != (i != 1) || calls.Load() != 1 || snapshot.observations != 4 {
 					t.Fatalf("snapshot %d: allowed=%v error=%v host normalizations=%d observations=%d", i, allowed, err, calls.Load(), snapshot.observations)
 				}
+			}
+		})
+	}
+}
+
+type preparationCustomLink struct{}
+
+func (preparationCustomLink) Check(_ context.Context, _ authz.Slice, requests []authz.CheckRequest) ([]authz.Step, error) {
+	steps := make([]authz.Step, len(requests))
+	for i := range steps {
+		steps[i].Effect = authz.NoDecision
+	}
+	return steps, nil
+}
+
+func (preparationCustomLink) Filter(authz.ListRequest) (authz.FilterExpr, error) {
+	return authz.FilterExpr{Op: authz.True}, nil
+}
+
+func (preparationCustomLink) AllowFilter(authz.ListRequest) (authz.FilterExpr, error) {
+	return authz.FilterExpr{Op: authz.False}, nil
+}
+
+type preparationCustomRule struct{ authz.RuleSet }
+
+func TestPreparedCustomComponentsRefreshDependencies(t *testing.T) {
+	for _, customLink := range []bool{false, true} {
+		name := "custom_rules"
+		if customLink {
+			name = "custom_link"
+		}
+		t.Run(name, func(t *testing.T) {
+			for _, path := range []string{"check", "nested_fixed_eval", "compiled_match", "batch_match"} {
+				t.Run(path, func(t *testing.T) {
+					chain, caller, _ := preparationFixture(t)
+					if customLink {
+						chain.Links = []authz.Link{preparationCustomLink{}}
+					} else {
+						// Retain the ordinary component port while delegating to
+						// fixed Eval, as the hierarchy adapter does.
+						chain.Rules[0] = preparationCustomRule{chain.Rules[0]}
+					}
+					s, snapshot := preparationSlice(chain, caller)
+					resource := authz.Resource{Kind: authz.Bead, Ref: model.RefByID("bead", model.Natural64(0))}
+					requests := []authz.CheckRequest{{Caller: caller, Action: authz.Read, Resource: resource, Method: "bead.get"}}
+					filter, err := chain.Compile(authz.ListRequest{Caller: caller, Action: authz.Read, ResourceKind: authz.Bead, Method: "bead.get"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					batch := authz.PrepareChecks(requests)
+					check := func() (bool, error) {
+						if path == "compiled_match" {
+							return filter.Match(context.Background(), s, resource)
+						}
+						if path == "batch_match" {
+							return batch.Match(context.Background(), s, 0, filter)
+						}
+						got, err := chain.Check(context.Background(), s, requests)
+						return len(got) == 1 && got[0].Effect == authz.Allow, err
+					}
+					if allowed, err := check(); err != nil || !allowed {
+						t.Fatalf("authenticated custom-component positive control: allowed=%v/%v", allowed, err)
+					}
+					snapshot.observations = 0
+					snapshot.failObserve = errors.New("later first-touch read failed")
+					if path == "nested_fixed_eval" {
+						// Initial Chain validation succeeds; the later finite Eval
+						// must still perform its own first-touch observations.
+						snapshot.failObserveAfter = 4
+					}
+					_, err = check()
+					var refusal *authz.Error
+					if !errors.As(err, &refusal) || refusal.Code != "authz_unavailable" {
+						t.Fatalf("custom-component %s hid a dependency failure: %v", path, err)
+					}
+				})
 			}
 		})
 	}

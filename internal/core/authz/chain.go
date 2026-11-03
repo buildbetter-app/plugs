@@ -19,6 +19,22 @@ type Chain struct {
 }
 
 func (c Chain) installed() bool { return len(c.Links)+len(c.Rules) > 0 }
+
+func (c Chain) finitePreparation() bool {
+	if len(c.Links) != 0 {
+		return false
+	}
+	for _, rules := range c.Rules {
+		if _, ok := rules.(PreparedRuleSet); !ok {
+			return false
+		}
+		if _, ok := rules.(PreparedCompiler); !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func (c Chain) budget() (time.Duration, error) {
 	if c.Budget < 0 || c.Budget > 100*time.Millisecond {
 		return 0, errors.New("authorization budget exceeds 100 ms ceiling")
@@ -116,7 +132,15 @@ func (c Chain) Check(ctx context.Context, s Slice, reqs []CheckRequest) ([]Decis
 	}
 	valid := make([]bool, len(reqs))
 	restrictions := make([][]FilterExpr, len(reqs))
-	state := snapshotPreparation(s)
+	// Custom components retain fresh first-touch observations for each Check
+	// invocation. Only a completely finite chain shares the snapshot's common
+	// preparation across calls; immutable parsing is still shared in either case.
+	if !c.finitePreparation() {
+		// The marker also reaches finite Eval called by an ordinary component,
+		// without changing the Slice or hiding its optional host capabilities.
+		ctx = context.WithValue(ctx, freshPreparationKey{}, true)
+	}
+	state := snapshotPreparation(ctx, s)
 	if state == nil {
 		state = &Preparation{}
 	}
@@ -264,6 +288,7 @@ func (c Chain) Compile(r ListRequest) (FilterTemplate, error) {
 	if err != nil {
 		return FilterTemplate{}, unavailable(err)
 	}
+	prepared.freshObservations = !c.finitePreparation()
 	r = prepared.Request()
 	t := FilterTemplate{Namespace: c.Namespace, Request: r, Permit: FilterExpr{Op: False}, Forbid: FilterExpr{Op: False}}
 	for j, l := range c.Links {
