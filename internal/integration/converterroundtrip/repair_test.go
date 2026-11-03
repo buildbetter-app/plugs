@@ -262,6 +262,12 @@ func TestRestoreRefusesUnsupportedSemanticsBeforeWrite(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), tt.cause) {
 					t.Fatalf("got %v; wanted %s", err, tt.cause)
 				}
+				if tt.name == "external target even when ID matches a bead" {
+					var unresolved *dumpformat.UnresolvedDependencyError
+					if !errors.As(err, &unresolved) || unresolved.EdgeID == "" || unresolved.Project != "pl" || unresolved.Source != idA || unresolved.Target != idA || unresolved.TargetKind != "depends_on_external" {
+						t.Fatalf("external dependency lost its typed endpoint report: %+v", err)
+					}
+				}
 				if target.writes != 0 || !reflect.DeepEqual(before, snapshot(t, store)) {
 					t.Fatal("semantic refusal opened a write or changed the target")
 				}

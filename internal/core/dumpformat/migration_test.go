@@ -618,3 +618,65 @@ func TestStrictConfigUnionDeclaredLegacySpelling(t *testing.T) {
 		t.Fatal("legacy spelling replaced an explicitly declared custom status")
 	}
 }
+
+func TestB27AuxiliarySourceInventoryNamesIndependentTablesAndRefusals(t *testing.T) {
+	f := newMergeFixture(t, "pl")
+	a, err := Read(bytes.NewReader(f.bytes(t, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"routes":               "refuse-if-nonempty",
+		"interactions":         "refuse-if-nonempty",
+		"issue_snapshots":      "archive",
+		"compaction_snapshots": "archive",
+		"provenance_events":    "archive",
+		"events":               "archive",
+	}
+	got := map[string]Disposition{}
+	for _, source := range a.Manifest().Sources {
+		if _, needed := want[source.Family]; needed {
+			if _, duplicate := got[source.Family]; duplicate {
+				t.Fatalf("duplicate independent source disposition %q", source.Family)
+			}
+			got[source.Family] = source
+		}
+	}
+	for family, action := range want {
+		source, ok := got[family]
+		if !ok || source.Action != action || source.Rows != 0 || source.Reason == "" {
+			t.Fatalf("independent source %q was not explicitly inventoried: %+v", family, source)
+		}
+	}
+
+	// A nonempty independent table is rejected before the archive can become a
+	// restore plan. Exercise each refusal family separately so a generic
+	// refuse-if-nonempty branch cannot masquerade as a complete inventory.
+	for family := range want {
+		if want[family] != "refuse-if-nonempty" {
+			continue
+		}
+		t.Run(family, func(t *testing.T) {
+			fixture := newMergeFixture(t, "pl")
+			fixture.addArchive(t, family, Row{"synthetic": family})
+			archive, err := Read(bytes.NewReader(fixture.bytes(t, nil)))
+			if archive != nil || err == nil || !strings.Contains(err.Error(), "unsupported or operational source record") {
+				t.Fatalf("nonempty independent source %q was not refused before admission: archive=%v err=%v", family, archive, err)
+			}
+		})
+	}
+}
+
+func TestB27UnresolvedDependencyIsTypedAndRetainsExactEndpoint(t *testing.T) {
+	f := newMergeFixture(t, "pl")
+	f.records["edge"][0].Source.Fields["depends_on_issue_id"] = "pl-missing"
+	f.records["edge"][0].Body["to"] = "pl-missing"
+	archive, err := Read(bytes.NewReader(f.bytes(t, nil)))
+	var refusal *UnresolvedDependencyError
+	if archive != nil || !errors.As(err, &refusal) {
+		t.Fatalf("unresolved dependency was not a typed refusal: archive=%v err=%v", archive, err)
+	}
+	if refusal.EdgeID != "pl-edge" || refusal.Project != "pl" || refusal.Source != "pl-1" || refusal.Target != "pl-missing" || refusal.TargetKind != "depends_on_issue_id" {
+		t.Fatalf("typed unresolved dependency lost source details: %+v", refusal)
+	}
+}
