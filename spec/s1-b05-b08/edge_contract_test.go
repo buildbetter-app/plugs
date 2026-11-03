@@ -2,7 +2,6 @@ package s1b05b08
 
 import (
 	"encoding/json"
-	"reflect"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -83,10 +82,15 @@ func TestB07GuardedDurableEdgeBatchSuccessAndReplayConserveAllState(t *testing.T
 			if err != nil || closeErr != nil || len(rows) != len(before.Records) {
 				t.Fatalf("historical source image unavailable: rows=%d error=%v close=%v", len(rows), err, closeErr)
 			}
+			seen := map[string]bool{}
 			for _, row := range rows {
-				if !reflect.DeepEqual(row, before.Records[edgeRecordKey(row.Ref)]) {
-					t.Fatalf("edge batch rewrote historical raw bytes: %+v", row)
+				id := edgeRecordKey(row.Ref)
+				want, exists := before.Records[id]
+				if !exists || seen[id] {
+					t.Fatalf("historical reader returned unexpected or duplicate record %s", id)
 				}
+				seen[id] = true
+				edgeRequireHistoricalRecordEqual(t, row, want)
 			}
 			e.f.reopen(t)
 			edgeRequireStateEqual(t, after, e.snapshot(t))

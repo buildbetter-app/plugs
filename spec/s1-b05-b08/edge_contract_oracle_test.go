@@ -66,6 +66,29 @@ func (e *edgeContractFixture) create(t *testing.T, title string) model.Ref {
 
 func edgeRecordKey(ref model.Ref) string { return ref.ID + ":" + ref.Branch.String() }
 
+// Historical identity uses the validated public value domain. Natural's empty
+// and explicit zero spellings are equivalent metadata; Body remains exact bytes.
+func edgeRequireHistoricalRecordEqual(t *testing.T, got, want driver.Record) {
+	t.Helper()
+	if !bytes.Equal(got.Body, want.Body) {
+		t.Fatalf("historical raw body bytes differ for %s: got=%x want=%x", edgeRecordKey(want.Ref), got.Body, want.Body)
+	}
+	for _, ref := range []model.Ref{got.Ref, want.Ref} {
+		if err := ref.Validate(); err != nil {
+			t.Fatalf("invalid historical/captured reference: %#v error=%v", ref, err)
+		}
+	}
+	for _, revision := range []model.Revision{got.Revision, want.Revision} {
+		if err := revision.Validate(); err != nil {
+			t.Fatalf("invalid historical/captured revision: %#v error=%v", revision, err)
+		}
+	}
+	if got.Ref.IsID() != want.Ref.IsID() || got.Ref.ID != want.Ref.ID || got.Ref.Key != want.Ref.Key ||
+		got.Ref.Branch.String() != want.Ref.Branch.String() || got.Kind != want.Kind || got.Revision.String() != want.Revision.String() {
+		t.Fatalf("historical record metadata differs: got=%#v want=%#v", got, want)
+	}
+}
+
 func (e *edgeContractFixture) snapshot(t *testing.T) edgeContractState {
 	t.Helper()
 	f := e.f
