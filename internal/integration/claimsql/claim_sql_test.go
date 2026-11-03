@@ -13,6 +13,7 @@ import (
 func TestSQLClaimRecoveryAtTheRPCBoundary(t *testing.T) {
 	eachEngine(t, func(t *testing.T, e engine) {
 		f := newFixture(t, e)
+		e = f.engine
 
 		// A live holder can release its own claim, while a different asserted
 		// anonymous agent cannot. Both calls use the real bead.release RPC.
@@ -30,7 +31,9 @@ func TestSQLClaimRecoveryAtTheRPCBoundary(t *testing.T) {
 		expired := f.createAndClaim(t, 2, "alice")
 		f.advance(5 * time.Minute) // exact lease expiry is still inside grace.
 		mustCode(t, dispatch(f.rpc, f.ctx, core, "bead.release", params(map[string]any{"id": expired}, writeKey(21), "")), "lease_expired")
-		f.advance(10 * time.Minute) // exact expiry == now - 2*TTL is refused.
+		f.advance(10*time.Minute - f.tick())
+		mustCode(t, dispatch(f.rpc, f.ctx, core, "bead.release", params(map[string]any{"id": expired}, writeKey(28), "")), "lease_expired")
+		f.advance(f.tick()) // exact expiry == now - 2*TTL is refused.
 		mustCode(t, dispatch(f.rpc, f.ctx, core, "bead.release", params(map[string]any{"id": expired}, writeKey(22), "")), "lease_expired")
 		mustCode(t, dispatch(f.rpc, f.ctx, anonymous, "bead.release", params(map[string]any{"id": expired}, writeKey(23), "alice")), "lease_expired")
 		mustCode(t, dispatch(f.rpc, f.ctx, anonymous, "bead.release", params(map[string]any{"id": expired}, writeKey(24), "bob")), "lease_not_held")
@@ -40,7 +43,7 @@ func TestSQLClaimRecoveryAtTheRPCBoundary(t *testing.T) {
 		}
 		requireSameState(t, foreignBefore, f.state(t, ""))
 
-		f.advance(time.Nanosecond) // strict expiry-before-cutoff now holds.
+		f.advance(f.tick()) // strict expiry-before-cutoff now holds.
 		recoveryKey := writeKey(26)
 		recovery := mustResult(t, dispatch(f.rpc, f.ctx, core, "bead.release", params(map[string]any{"id": expired, "reason": "expired worker recovered"}, recoveryKey, "")))
 		if recovery["revision"].(json.Number).String() != "6" {
@@ -139,8 +142,9 @@ func TestSQLClaimRecoveryAtTheRPCBoundary(t *testing.T) {
 func TestSQLClaimRecoveryRollsBackOnRealSQLFailure(t *testing.T) {
 	eachEngine(t, func(t *testing.T, e engine) {
 		f := newFixture(t, e)
+		e = f.engine
 		ref := f.createAndClaim(t, 3, "alice")
-		f.advance(15*time.Minute + time.Nanosecond)
+		f.advance(15*time.Minute + f.tick())
 		key := writeKey(36)
 		before := f.state(t, key)
 		e.recoveryFault(t, true)
@@ -169,8 +173,9 @@ func TestSQLClaimRecoveryRollsBackOnRealSQLFailure(t *testing.T) {
 func TestSQLClaimRecoveryFencesAStaleHost(t *testing.T) {
 	eachEngine(t, func(t *testing.T, e engine) {
 		f := newFixture(t, e)
+		e = f.engine
 		ref := f.createAndClaim(t, 4, "alice")
-		f.advance(15*time.Minute + time.Nanosecond)
+		f.advance(15*time.Minute + f.tick())
 
 		oldStore, oldLease, oldRPC := f.store, f.lease, f.rpc
 		if err := oldLease.Release(f.ctx); err != nil {

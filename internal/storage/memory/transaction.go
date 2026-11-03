@@ -28,6 +28,7 @@ type transaction struct {
 	restore                 *driver.Meta
 	offlineHistory          *driver.PreparedOfflineHistory
 	nativeRestore           *driver.NativeRestoreProfile
+	nativeAllocators        bool
 	importRestore           *driver.RestoreImportProfile
 	closed, locked, hasHead bool
 	acquired                driver.LockSet
@@ -36,7 +37,12 @@ type transaction struct {
 	blobs                   map[driver.Hash][]byte
 	bumps                   map[string]driver.LockKey
 	allocators              map[string]driver.OfflineAllocator
+	parentCounters          map[string]driver.ParentCounter
 	allocated               map[string]bool
+	checkpointGuards        map[string]uint64
+	sourceDeclarations      map[string]sourceDeclaration
+	stagedParents           map[string][]string
+	stagedIncoming          map[sourceLinkBucket][]string
 }
 
 func (t *transaction) check(ctx context.Context) error {
@@ -86,7 +92,11 @@ func (t *transaction) finish() {
 	t.blobs = nil
 	t.bumps = nil
 	t.allocators = nil
+	t.parentCounters = nil
 	t.allocated = nil
+	t.sourceDeclarations = nil
+	t.stagedParents = nil
+	t.stagedIncoming = nil
 	s.signal()
 }
 
@@ -230,25 +240,14 @@ func (t *transaction) Put(ctx context.Context, record driver.Record) error {
 	if err := t.check(ctx); err != nil {
 		return err
 	}
-	key, err := recordKey(record.Ref)
+	key, err := t.validateSourcePut(record)
 	if err != nil {
 		return err
 	}
-	if err := t.writable(driver.LockKey{Kind: driver.LockRecord, Ref: &record.Ref}); err != nil {
-		return err
+	if record.Kind == "bead" && (hierarchyReady(t.base.hierarchy) || sourceLinksReady(t.base.sourceLinks)) {
+		return fmt.Errorf("%w: certified bead publication requires typed source metadata", driver.ErrUnsupported)
 	}
-	if record.Kind == "" || !json.Valid(record.Body) {
-		return fmt.Errorf("memory: record requires kind and valid JSON body")
-	}
-	if kind, exists := t.base.kinds[key]; exists && kind != record.Kind {
-		return fmt.Errorf("memory: changing a record kind is unsupported")
-	}
-	if previous, ok := t.records[key]; ok && previous != nil && previous.Kind != record.Kind {
-		return fmt.Errorf("memory: changing a staged record kind is unsupported")
-	}
-	record = copyRecord(record)
-	record.Ref.Branch = model.Natural64(0)
-	t.records[key] = &record
+	t.stageSourceRecord(key, record, nil)
 	return nil
 }
 
@@ -270,6 +269,16 @@ func (t *transaction) Delete(ctx context.Context, ref driver.Ref) error {
 	if (!staged && t.base.records[key].Kind == "") || (staged && value == nil) {
 		return driver.ErrNotFound
 	}
+	kind := t.base.kinds[key]
+	if value != nil {
+		kind = value.Kind
+	}
+	if kind == "bead" && (hierarchyReady(t.base.hierarchy) || sourceLinksReady(t.base.sourceLinks)) {
+		if err := t.writable(driver.GraphBlockingSentinelLock); err != nil {
+			return err
+		}
+	}
+	t.replaceSourceDeclaration(key, nil)
 	t.records[key] = nil
 	return nil
 }
@@ -390,6 +399,9 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 		}
 		validate := driver.ValidateOfflineRestoreHeader
 		if t.nativeRestore != nil {
+			if !t.nativeAllocators {
+				return model.Changeset{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorBindingRequired, nil)
+			}
 			validate = t.nativeRestore.ValidateHeader
 		}
 		if t.importRestore != nil {
@@ -446,6 +458,9 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 			return copy, nil
 		}
 	}
+	if err := t.checkCheckpointGuards(); err != nil {
+		return model.Changeset{}, err
+	}
 	if err := t.validateChanges(header.Changes); err != nil {
 		return model.Changeset{}, err
 	}
@@ -496,6 +511,12 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	for prefix, allocator := range t.allocators {
 		next.allocators[prefix] = allocator.Clone()
 	}
+	if len(t.parentCounters) > 0 && next.parentCounters == nil {
+		next.parentCounters = make(map[string]driver.ParentCounter)
+	}
+	for key, counter := range t.parentCounters {
+		next.parentCounters[key] = counter
+	}
 	for id, record := range t.records {
 		ref := t.recordRef(id)
 		version := driver.Version{Ref: ref, Revision: revision, CreatedAt: when, Principal: entry.Principal, Deleted: record == nil}
@@ -531,6 +552,7 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 		value.Revision = revision
 		next.publishKey(id, value)
 	}
+	next.publishDerivedKeys(t.derived)
 	for id, key := range t.bumps {
 		next.publishKey(id, driver.LockState{Key: key, Revision: revision, Present: true})
 	}
@@ -543,6 +565,9 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	if t.restore != nil {
 		next.meta = *t.restore
 	}
+	if err := t.publishSourceIndexes(next); err != nil {
+		return model.Changeset{}, err
+	}
 	next.log = append(append([]model.Changeset(nil), next.log...), entry)
 	if header.IdempotencyKey != "" {
 		next.replays[key] = replay{value: driver.IdempotencyRecord{RequestHash: header.RequestHash, Commit: response, Changeset: entry, ResponsePending: header.ResponsePending}, at: s.now()}
@@ -550,6 +575,12 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	// Allocation and validation are complete. Epoch and publication share this
 	// mutex, so a takeover cannot interleave with the final fenced commit.
 	// Cancellation during validation/copying must also publish nothing.
+	if err := t.check(ctx); err != nil {
+		return model.Changeset{}, err
+	}
+	if err := next.publishAllocatorImage(s.state, t.restore != nil); err != nil {
+		return model.Changeset{}, err
+	}
 	if err := t.check(ctx); err != nil {
 		return model.Changeset{}, err
 	}
@@ -564,10 +595,9 @@ func (s *state) publishKey(id string, value driver.LockState) {
 }
 
 func (t *transaction) recordRef(id string) driver.Ref {
-	for _, request := range t.acquired {
-		if keyID(request.Key) == id {
-			return *request.Key.Ref
-		}
+	i := sort.Search(len(t.acquired), func(i int) bool { return keyID(t.acquired[i].Key) >= id })
+	if i < len(t.acquired) && keyID(t.acquired[i].Key) == id && t.acquired[i].Key.Kind == driver.LockRecord {
+		return *t.acquired[i].Key.Ref
 	}
 	panic("validated record lost its update lock")
 }
@@ -576,7 +606,7 @@ func (t *transaction) validateChanges(changes []model.ChangeRecord) error {
 	seen := make(map[string]bool)
 	for _, change := range changes {
 		switch change.Op {
-		case model.OpCreate, model.OpPatch, model.OpReparent, model.OpLink, model.OpUnlink, model.OpComment, model.OpAttach, model.OpDelete, model.OpSetMeta:
+		case model.OpCreate, model.OpPatch, model.OpReparent, model.OpLink, model.OpUnlink, model.OpComment, model.OpAttach, model.OpDelete, model.OpSetMeta, model.OpClose:
 		default:
 			return fmt.Errorf("memory: unknown change operation")
 		}

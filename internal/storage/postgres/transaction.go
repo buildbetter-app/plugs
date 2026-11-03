@@ -14,33 +14,45 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/sourceindex"
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
 type transaction struct {
 	*reader
-	lease           *activeLease
-	locked, hasHead bool
-	restore         *driver.Meta
-	nativeRestore   *driver.NativeRestoreProfile
-	importRestore   *driver.RestoreImportProfile
-	offlineHistory  *driver.PreparedOfflineHistory
-	acquired        driver.LockSet
-	records         map[string]*driver.Record
-	identities      map[string]driver.Record
-	derived         map[string]driver.LockState
-	blobs           map[driver.Hash][]byte
-	allocators      map[string]driver.OfflineAllocator
-	bumps           map[string]driver.LockKey
-	done            chan struct{}
+	lease *activeLease
+	// leasePrepared records the one lease/clock observation made after this
+	// writer's SQL transaction begins. Staging reuses that observation while
+	// local context, lease-loss and transaction-closed checks remain live;
+	// publication performs a fresh row-locking fence.
+	leasePrepared    bool
+	locked, hasHead  bool
+	restore          *driver.Meta
+	nativeRestore    *driver.NativeRestoreProfile
+	nativeAllocators bool
+	importRestore    *driver.RestoreImportProfile
+	offlineHistory   *driver.PreparedOfflineHistory
+	acquired         driver.LockSet
+	records          map[string]*driver.Record
+	identities       map[string]driver.Record
+	derived          map[string]driver.LockState
+	blobs            map[driver.Hash][]byte
+	allocators       map[string]driver.OfflineAllocator
+	parentCounters   map[string]driver.ParentCounter
+	bumps            map[string]driver.LockKey
+	allocated        map[string]bool
+	done             chan struct{}
+
+	checkpointGuards          map[string]uint64
+	sourceOverlay             sourceindex.Overlay
+	sourceCoverage            sourceindex.CoveragePair
+	sourceCoverageHead        model.Revision
+	sourceCoverageIncarnation string
+	sourceCoverageValid       bool
 }
 
 func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
 	if err := s.check(ctx); err != nil {
-		return nil, err
-	}
-	l, err := s.checkLease(ctx, s.db, lease, false)
-	if err != nil {
 		return nil, err
 	}
 	conn, err := s.db.Conn(ctx)
@@ -60,6 +72,16 @@ func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.Wri
 		_ = conn.Close()
 		return nil, err
 	}
+	// Prepare the writer against the same SQL transaction that will stage and
+	// publish it. The observation is deliberately not a row lock: Release or a
+	// takeover may proceed while staging, and the final FOR SHARE fence remains
+	// authoritative at publication.
+	l, err := s.checkLease(ctx, tx, lease, false)
+	if err != nil {
+		_ = tx.Rollback()
+		_ = conn.Close()
+		return nil, err
+	}
 	m, err := readMeta(ctx, tx, "")
 	if err != nil {
 		_ = tx.Rollback()
@@ -68,7 +90,7 @@ func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.Wri
 	}
 	r := &reader{store: s, sql: tx, meta: m, conn: conn, cleanupDone: cleanupDone}
 	r.at, _ = m.Head.Uint64()
-	t := &transaction{reader: r, lease: l, records: make(map[string]*driver.Record), identities: make(map[string]driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), allocators: make(map[string]driver.OfflineAllocator), bumps: make(map[string]driver.LockKey), done: make(chan struct{})}
+	t := &transaction{reader: r, lease: l, leasePrepared: true, records: make(map[string]*driver.Record), identities: make(map[string]driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), allocators: make(map[string]driver.OfflineAllocator), bumps: make(map[string]driver.LockKey), allocated: make(map[string]bool), done: make(chan struct{})}
 	r.writer = t
 	if err = s.track(r); err != nil {
 		_ = r.finish()
@@ -124,10 +146,11 @@ func (t *transaction) Lock(ctx context.Context, requests []driver.LockRequest) (
 	if err := driver.ValidateLockSet(requests); err != nil {
 		return nil, err
 	}
-	requests, err = copied(requests)
-	if err != nil {
-		return nil, err
+	owned := make([]driver.LockRequest, len(requests))
+	for i, request := range requests {
+		owned[i] = driver.LockRequest{Key: copyLockKey(request.Key), Mode: request.Mode}
 	}
+	requests = owned
 	ids := make([]string, len(requests))
 	for i, request := range requests {
 		ids[i], err = keyID(request.Key)
@@ -344,6 +367,10 @@ func (t *transaction) writable(key driver.LockKey) error {
 func (t *transaction) Put(ctx context.Context, record driver.Record) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.putSourceRecord(ctx, record, nil)
+}
+
+func (t *transaction) putSourceRecord(ctx context.Context, record driver.Record, declaration *sourceindex.Declaration) error {
 	if err := t.check(ctx); err != nil {
 		return err
 	}
@@ -367,6 +394,11 @@ func (t *transaction) Put(ctx context.Context, record driver.Record) error {
 	if staged, ok := t.records[key]; ok && staged != nil && staged.Kind != record.Kind {
 		return fmt.Errorf("%w: postgres cannot change staged kind", driver.ErrUnsupported)
 	}
+	if record.Kind == "bead" {
+		if err = t.guardSourcePut(ctx, declaration); err != nil {
+			return err
+		}
+	}
 	record.Revision = model.Natural64(0)
 	if exists {
 		record.Revision = previous.record.Revision
@@ -375,6 +407,7 @@ func (t *transaction) Put(ctx context.Context, record driver.Record) error {
 		record.Ref.Branch = model.Natural64(0)
 	}
 	record.Body = bytes.Clone(record.Body)
+	t.sourceOverlay.Replace(key, declaration)
 	t.records[key] = &record
 	t.identities[key] = driver.Record{Ref: record.Ref, Kind: record.Kind}
 	return nil
@@ -406,6 +439,18 @@ func (t *transaction) Delete(ctx context.Context, ref driver.Ref) error {
 		}
 		t.identities[key] = driver.Record{Ref: value.record.Ref, Kind: value.record.Kind}
 	}
+	if t.identities[key].Kind == "bead" {
+		coverage, err := t.currentSourceCoverage(ctx)
+		if err != nil {
+			return err
+		}
+		if coverage.Parent.Ready || coverage.Links.Ready {
+			if err = t.writable(driver.GraphBlockingSentinelLock); err != nil {
+				return err
+			}
+		}
+	}
+	t.sourceOverlay.Replace(key, nil)
 	t.records[key] = nil
 	return nil
 }

@@ -33,8 +33,9 @@ type DirectBlockerEdge struct {
 	Reason  string
 }
 
-// DirectBlockerVerdict is bounded to the dependent's stored direct edges. It
-// never walks transitive graph state or opens a second reader.
+// DirectBlockerVerdict is bounded to the dependent's stored direct edges.
+// Waits-for evaluates their direct child fanout, never transitive blockers,
+// and all source reads remain on the supplied pinned reader.
 type DirectBlockerVerdict struct {
 	Dependent model.Ref
 	Edges     []DirectBlockerEdge
@@ -53,9 +54,10 @@ const (
 	directBlockerMaxLimit     = 1000
 )
 
-// ReadDirectBlockers evaluates only the dependent's direct blocks and
-// conditional-blocks links against the caller's pinned reader. Ontology source
-// records and blocker records are read from that same snapshot; no service
+// ReadDirectBlockers evaluates the dependent's direct blocks,
+// conditional-blocks and waits-for links against the caller's pinned reader.
+// Waits-for uses the same child predicate as readiness and close guards.
+// Ontology, blocker and child records use that same snapshot; no service
 // store, live readiness query, writer, receipt or authorization callback is
 // consulted.
 func ReadDirectBlockers(ctx context.Context, reader driver.Reader, req DirectBlockerRequest) (DirectBlockerVerdict, error) {
@@ -91,7 +93,7 @@ func ReadDirectBlockers(ctx context.Context, reader driver.Reader, req DirectBlo
 	}
 	links := make([]pipeline.Link, 0, len(dependent.Links))
 	for _, link := range dependent.Links {
-		if link.Kind != "blocks" && link.Kind != "conditional-blocks" {
+		if link.Kind != "blocks" && link.Kind != "conditional-blocks" && link.Kind != "waits-for" {
 			continue
 		}
 		if len(links) == limit {
@@ -128,9 +130,8 @@ func ReadDirectBlockers(ctx context.Context, reader driver.Reader, req DirectBlo
 			byID[row.Ref.ID] = row
 		}
 	}
-	compiled := map[string]ontology.Effective{}
-	compiledKnown := map[string]bool{}
-	compiledAvailable := map[string]bool{}
+	evaluation := directBlockerEvaluation{reader: reader, locate: req.Ontology,
+		compiled: map[string]ontology.Effective{}, known: map[string]bool{}, available: map[string]bool{}}
 	for _, link := range links {
 		edge := DirectBlockerEdge{Blocker: link.To, Kind: link.Kind}
 		if !link.To.IsID() || !link.To.Branch.IsZero() {
@@ -150,25 +151,15 @@ func ReadDirectBlockers(ctx context.Context, reader driver.Reader, req DirectBlo
 		}
 		edge.Project = blocker.Project
 		edge.Status, _ = blocker.Fields["status"].(string)
-		key := blocker.Project
-		if !compiledKnown[key] {
-			effective, ok, effectiveErr := directBlockerEffective(ctx, reader, req.Ontology, blocker.Project)
-			err = effectiveErr
-			if err != nil {
-				return DirectBlockerVerdict{}, err
-			}
-			if ok {
-				compiled[key] = effective
-			}
-			compiledAvailable[key] = ok
-			compiledKnown[key] = true
+		effective, available, err := evaluation.effective(ctx, blocker.Project)
+		if err != nil {
+			return DirectBlockerVerdict{}, err
 		}
-		if !compiledAvailable[key] {
+		if !available {
 			edge.State, edge.Reason = DirectBlockerUnknown, "blocker ontology is unavailable in the snapshot"
 			verdict.Edges = append(verdict.Edges, edge)
 			continue
 		}
-		effective := compiled[key]
 		if _, statusKnown := effective.Status(edge.Status); !statusKnown {
 			edge.State, edge.Reason = DirectBlockerUnknown, "blocker status is unknown to its project ontology"
 			verdict.Edges = append(verdict.Edges, edge)
@@ -178,12 +169,26 @@ func ReadDirectBlockers(ctx context.Context, reader driver.Reader, req DirectBlo
 		if link.Kind == "conditional-blocks" {
 			satisfied = effective.SatisfiesConditionalBlocks(edge.Status)
 		}
+		if link.Kind == "waits-for" {
+			state, err := evaluation.waitsFor(ctx, link, storedBead{row, blocker})
+			if err != nil {
+				return DirectBlockerVerdict{}, err
+			}
+			if state == DirectBlockerUnknown {
+				edge.State, edge.Reason = state, "waits-for child state is unknown"
+				verdict.Edges = append(verdict.Edges, edge)
+				continue
+			}
+			satisfied = state == DirectBlockerSatisfied
+		}
 		if satisfied {
 			edge.State = DirectBlockerSatisfied
 		} else {
 			edge.State = DirectBlockerUnsatisfied
 			if link.Kind == "conditional-blocks" {
 				edge.Reason = "blocker status does not satisfy conditional-blocks"
+			} else if link.Kind == "waits-for" {
+				edge.Reason = "waits-for predicate is unsatisfied"
 			} else {
 				edge.Reason = "blocker status does not satisfy blocks"
 			}
@@ -191,6 +196,71 @@ func ReadDirectBlockers(ctx context.Context, reader driver.Reader, req DirectBlo
 		verdict.Edges = append(verdict.Edges, edge)
 	}
 	return verdict, nil
+}
+
+type directBlockerEvaluation struct {
+	reader    driver.Reader
+	locate    OntologySourceLocator
+	compiled  map[string]ontology.Effective
+	known     map[string]bool
+	available map[string]bool
+	graph     map[string]storedBead
+}
+
+func (e *directBlockerEvaluation) effective(ctx context.Context, project string) (ontology.Effective, bool, error) {
+	if !e.known[project] {
+		effective, ok, err := directBlockerEffective(ctx, e.reader, e.locate, project)
+		if err != nil {
+			return ontology.Effective{}, false, err
+		}
+		e.compiled[project], e.available[project], e.known[project] = effective, ok, true
+	}
+	return e.compiled[project], e.available[project], nil
+}
+
+func (e *directBlockerEvaluation) waitsFor(ctx context.Context, link pipeline.Link, spawner storedBead) (DirectBlockerState, error) {
+	terminal := e.compiled[spawner.doc.Project].SatisfiesBlocks(state(spawner.doc).Status)
+	if link.Metadata == nil && terminal {
+		return DirectBlockerSatisfied, nil
+	}
+	if link.Metadata != nil && link.Metadata.AlsoBlocks && !terminal {
+		return DirectBlockerUnsatisfied, nil
+	}
+	if e.graph == nil {
+		// A complete paginated scan on this reader is necessary for both Parent
+		// and legacy parent-child edges. A failed page cannot mean no children.
+		graph, err := scanBeads(ctx, e.reader)
+		if err != nil {
+			return "", err
+		}
+		e.graph = graph
+	}
+	for _, child := range e.graph {
+		member := child.doc.Parent != nil && child.doc.Parent.ID == spawner.doc.ID
+		for _, edge := range child.doc.Links {
+			member = member || edge.Kind == "parent-child" && edge.To.ID == spawner.doc.ID
+		}
+		if !member {
+			continue
+		}
+		effective, available, err := e.effective(ctx, child.doc.Project)
+		if err != nil {
+			return "", err
+		}
+		if !available {
+			return DirectBlockerUnknown, nil
+		}
+		if _, known := effective.Status(state(child.doc).Status); !known {
+			return DirectBlockerUnknown, nil
+		}
+	}
+	// Compile every relevant child's own project before reusing the canonical
+	// graph predicate. Unknown ontology/status cannot satisfy a child predicate.
+	o := NewOntology(func(project string) ontology.Effective { return e.compiled[project] })
+	if o.waitsForSatisfied(link, spawner, e.graph) {
+		return DirectBlockerSatisfied, nil
+	}
+	return DirectBlockerUnsatisfied, nil
 }
 
 func directBlockerEffective(ctx context.Context, reader driver.Reader, locate OntologySourceLocator, project string) (ontology.Effective, bool, error) {

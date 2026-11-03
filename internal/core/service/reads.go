@@ -11,9 +11,26 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest) (GetResult, error) {
+	if workflowRef(req.ID) {
+		if err := validateWorkflowRef(req.ID); err != nil {
+			return GetResult{}, err
+		}
+		if req.AsOf != nil {
+			return GetResult{}, failure("invalid_params", "workflow items have no historical asOf view")
+		}
+		if s.workflow == nil {
+			return GetResult{}, failure("not_found", "workflow item was not found")
+		}
+		item, err := s.workflow.Get(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent))
+		if err != nil {
+			return GetResult{}, err
+		}
+		return workflowGetResult(item), nil
+	}
 	if err := namedRef(req.ID); err != nil {
 		return GetResult{}, err
 	}
@@ -54,11 +71,15 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 		}
 	}
 	if doc.Lease != nil {
-		ttl, err := durationMS(doc.Lease.TtlMs)
+		lease, err := s.effectiveLease(ctx, doc.ID, doc.Lease)
 		if err != nil {
 			return GetResult{}, err
 		}
-		result.Lease = &Lease{Principal: doc.Lease.Principal, Agent: doc.Lease.Agent, ExpiresAt: doc.Lease.ExpiresAt, TTL: ttl, Epoch: doc.Lease.Epoch}
+		ttl, err := durationMS(lease.TtlMs)
+		if err != nil {
+			return GetResult{}, err
+		}
+		result.Lease = &Lease{Principal: lease.Principal, Agent: lease.Agent, ExpiresAt: lease.ExpiresAt, TTL: ttl, Epoch: lease.Epoch}
 	}
 	if err := s.admit(ctx, by); err != nil {
 		return GetResult{}, err
@@ -155,10 +176,16 @@ func (s *Service) readyItems(ctx context.Context, req ReadyRequest, r queryReade
 		if !matchesFilter(row, req.Project, req.Filter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
 			continue
 		}
-		if row.doc.Lease != nil && now.Before(row.doc.Lease.ExpiresAt) {
-			continue
+		if row.doc.Lease != nil {
+			lease, err := s.effectiveLease(ctx, row.doc.ID, row.doc.Lease)
+			if err != nil {
+				return nil, err
+			}
+			if now.Before(lease.ExpiresAt) {
+				continue
+			}
 		}
-		unblocked, err := s.ontology.noOpenBlockers(row.doc, graph)
+		unblocked, err := s.ontology.readyDependencies(row.doc, graph)
 		if err != nil {
 			return nil, err
 		}
@@ -244,13 +271,114 @@ func spreadClaimNextItems(items []Bead, seed string) ([]Bead, error) {
 }
 
 func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
-	return s.readyPage(ctx, by, req, false)
+	return s.readyCombined(ctx, by, req, false)
+}
+
+func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req ReadyRequest, restartOnRevision bool) (BeadPage, error) {
+	limit, err := pageOptions(req.Project, req.ViewID, req.Cursor, req.Filter, req.Limit)
+	if err != nil {
+		return BeadPage{}, err
+	}
+	if err := validatePosition(req.Position); err != nil {
+		return BeadPage{}, err
+	}
+	if s.workflow == nil {
+		if req.Position != nil && (req.Position.Workflow || req.Position.WorkflowSnapshot != nil) {
+			return BeadPage{}, failure("cursor_invalid", "workflow provider is unavailable; restart paging")
+		}
+		return s.readyPage(ctx, by, req, restartOnRevision)
+	}
+	workflowPhase := req.Position != nil && req.Position.Workflow
+	coreReq := req
+	if workflowPhase {
+		// Observe the current core incarnation without applying a provider
+		// offset to core content or re-emitting the first phase.
+		coreReq.Position = nil
+		coreReq.Limit = 1
+	}
+	page, err := s.readyPage(ctx, by, coreReq, restartOnRevision)
+	if err != nil {
+		return BeadPage{}, err
+	}
+	if workflowPhase && req.Position.AsOf.Incarnation != page.AsOf.Incarnation {
+		return BeadPage{}, mapped(driver.ErrIncarnationChanged{From: req.Position.AsOf.Incarnation, To: page.AsOf.Incarnation})
+	}
+	// Core rows retain their existing live pagination. Only after consuming
+	// them do we capture a provider snapshot for the second phase.
+	if !workflowPhase && page.Next != nil {
+		return page, nil
+	}
+	types := []string(nil)
+	if req.Filter != nil {
+		types = req.Filter.Types
+	}
+	snapshot, err := s.workflow.ReadySnapshot(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+	if err != nil {
+		return BeadPage{}, err
+	}
+	binding := &WorkflowPageSnapshot{Revision: model.Revision(snapshot.Revision), ValidUntil: snapshot.ValidUntil}
+	if !binding.Valid() {
+		return BeadPage{}, failure("internal_error", "invalid workflow ready snapshot")
+	}
+	items := snapshot.Items
+	if req.Filter != nil && len(req.Filter.Resources) != 0 {
+		filtered := make([]workflowplugin.ItemView, 0, len(items))
+		for _, item := range items {
+			if slices.Contains(req.Filter.Resources, item.ID) {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
+	page.WorkflowSnapshot = binding
+	offset := 0
+	if workflowPhase {
+		if req.Position.WorkflowSnapshot == nil || !req.Position.WorkflowSnapshot.Valid() {
+			return BeadPage{}, failure("cursor_invalid", "workflow cursor is not snapshot-bound; restart paging")
+		}
+		if !req.Position.WorkflowSnapshot.Equal(binding) {
+			if !restartOnRevision {
+				return BeadPage{}, failure("cursor_invalid", "workflow ready membership changed; restart paging")
+			}
+			// ClaimNext is an internal live walker. Its own successful claims
+			// change the provider generation; restart rather than skipping rows.
+		} else {
+			offset = req.Position.Offset
+		}
+		if offset > len(items) {
+			return BeadPage{}, failure("cursor_invalid", "workflow cursor is beyond the captured ready set")
+		}
+		page.Items = nil
+		page.Next = nil
+	}
+	remaining := limit - len(page.Items)
+	end := min(offset+remaining, len(items))
+	for _, item := range items[offset:end] {
+		page.Items = append(page.Items, workflowBead(item))
+	}
+	if end < len(items) {
+		page.Next = &PagePosition{Offset: end, AsOf: page.AsOf, Workflow: true, WorkflowSnapshot: binding}
+	}
+	return page, nil
+}
+
+func workflowBead(item workflowplugin.ItemView) Bead {
+	fields := map[string]any{"title": item.Title}
+	return Bead{ID: item.ID, Type: item.Type, Project: item.Project, Revision: item.Revision, Status: item.Status, Fields: fields, Plane: item.Plane, Kind: item.Kind, Plugin: item.Plugin, WorkflowRunID: item.RunID}
+}
+
+func workflowGetResult(item workflowplugin.ItemView) GetResult {
+	result := GetResult{Bead: workflowBead(item), Comments: []Comment{}}
+	for _, comment := range item.Comments {
+		result.Comments = append(result.Comments, Comment{Body: comment.Body, Principal: comment.Principal, Time: comment.Time})
+	}
+	return result
 }
 
 // ClaimNextReadyPage is the queue-specific live pager. A revision change
 // restarts its offset from the beginning of the newly observed ready set.
 func (s *Service) ClaimNextReadyPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
-	return s.readyPage(ctx, by, req, true)
+	return s.readyCombined(ctx, by, req, true)
 }
 
 // ReadyCandidates evaluates the complete ready set on a supplied snapshot.

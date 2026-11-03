@@ -8,17 +8,22 @@ go_library(
     deps = [
         "//internal/core/model",
         "//internal/storage/driver",
+        "//internal/storage/sourceindex",
         "@org_modernc_sqlite//:sqlite",
     ],
 )
 
 go_test(
     name = "sqlite_test",
+    # Restores 20,000-bead fixtures; isolate from parallel load like the other heavy targets (#272, #283).
+    tags = ["exclusive"],
     srcs = glob(["*_test.go"]),
     embed = [":sqlite"],
     deps = [
         "//internal/core/model",
         "//internal/storage/conformance",
+        "//internal/testclock",
         "//internal/storage/driver",
+        "//internal/storage/sourceindex",
     ],
 )

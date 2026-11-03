@@ -40,9 +40,11 @@ func TestS1B01ReplayReadyMembershipOrderAndDeferredParent(t *testing.T) {
 	h := newPostgresHarness(t)
 	for _, backend := range backends(t, h) {
 		t.Run(backend.name, func(t *testing.T) {
-			ids := []string{"b01-p0", "b01-tie-a", "b01-tie-b", "b01-parent", "b01-child", "b01-deferred", "b01-closed"}
+			// Only root creates consume the root generator. The child is an
+			// alias whose actual identity comes from the parent allocator.
+			ids := []string{"b01-p0", "b01-tie-a", "b01-tie-b", "b01-parent", "b01-deferred", "b01-closed"}
 			f := newFixture(t, backend.name, backend.dsn, defaultOntology(), ids)
-			createNodes(f,
+			seed := f.apply("nodes", "tx.apply",
 				createOp("b01-p0", project, map[string]any{"title": "priority zero", "priority": 0}, ""),
 				createOp("b01-tie-a", project, map[string]any{"title": "tie a", "priority": 1}, ""),
 				createOp("b01-tie-b", project, map[string]any{"title": "tie b", "priority": 1}, ""),
@@ -51,24 +53,40 @@ func TestS1B01ReplayReadyMembershipOrderAndDeferredParent(t *testing.T) {
 				createOp("b01-deferred", project, map[string]any{"title": "deferred", "priority": 2}, ""),
 				createOp("b01-closed", project, map[string]any{"title": "closed", "priority": 2}, ""),
 			)
+			if len(seed.Results) != 7 {
+				t.Fatalf("B01 seed results: %+v", seed)
+			}
+			parent, child := seed.Results[3].Ref, seed.Results[4].Ref
+			deferred, closed := seed.Results[5].Ref, seed.Results[6].Ref
+			if parent.ID != "b01-parent" || child.ID != "b01-parent.1" || deferred.ID != "b01-deferred" || closed.ID != "b01-closed" {
+				t.Fatalf("B01 committed identities: %+v", seed.Results)
+			}
+			if doc := f.document(child.ID); doc.Parent == nil || doc.Parent.ID != parent.ID {
+				t.Fatalf("B01 committed child lost its parent: %+v", doc)
+			}
 			initial := f.readyIDs("b01-initial", owner)
 			t.Logf("B01 initial Plug ready projection backend=%s ready=%v", backend.name, initial)
-			if code := errorCode(t, f.call("b01-defer-item", "bead.defer", owner, map[string]any{"id": map[string]any{"id": "b01-deferred"}, "reason": "wait"})); code != "" {
+			if code := errorCode(t, f.call("b01-defer-item", "bead.defer", owner, map[string]any{"id": deferred, "reason": "wait"})); code != "" {
 				t.Fatalf("defer item refused: %s", code)
 			}
-			if code := errorCode(t, f.call("b01-defer", "bead.defer", owner, map[string]any{"id": map[string]any{"id": "b01-parent"}, "reason": "wait"})); code != "" {
+			if code := errorCode(t, f.call("b01-defer", "bead.defer", owner, map[string]any{"id": parent, "reason": "wait"})); code != "" {
 				t.Fatalf("defer refused: %s", code)
 			}
-			if code := errorCode(t, f.call("b01-close", "bead.close", owner, map[string]any{"id": map[string]any{"id": "b01-closed"}, "reason": "done"})); code != "" {
+			if code := errorCode(t, f.call("b01-close", "bead.close", owner, map[string]any{"id": closed, "reason": "done"})); code != "" {
 				t.Fatalf("close refused: %s", code)
 			}
 			got := f.readyIDs("b01-filtered", owner)
-			want := referenceIDs(t, "B01", "readyIds")
+			reference := referenceIDs(t, "B01", "readyIds")
+			if !reflect.DeepEqual(reference, []string{"b01-p0", "b01-tie-a", "b01-tie-b", "b01-child"}) {
+				t.Fatalf("retained B01 reference observation changed: %v", reference)
+			}
+			t.Logf("B01 source/product identity binding: source b01-child -> committed %s, source b01-closed -> committed %s", child.ID, closed.ID)
+			// B01's canonical membership excludes deferred-parent descendants.
+			// Preserve the recorded reference's historical gap as an observation,
+			// while asserting the adopted Plug behavior independently of it.
+			want := []string{"b01-p0", "b01-tie-a", "b01-tie-b"}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("deferred/closed ready = %v, want %v", got, want)
-			}
-			if reflect.DeepEqual(got, []string{"b01-p0", "b01-tie-a", "b01-tie-b", "b01-child"}) {
-				t.Logf("B01 canonical deferred-parent suppression remains an explicit hierarchy gap; reference and Plug both observed child-ready decision=P74")
 			}
 			if f.document("b01-parent").Fields["status"] != "backlog" || f.document("b01-closed").Fields["status"] != "done" {
 				t.Fatalf("category projection lost: parent=%+v closed=%+v", f.document("b01-parent"), f.document("b01-closed"))
@@ -81,7 +99,7 @@ func TestS1B01ReplayReadyMembershipOrderAndDeferredParent(t *testing.T) {
 			}
 			// The retained reference and Plug order are intentionally separate:
 			// Plug stores category/rank keys and records P74 as a bounded deviation.
-			t.Logf("B01 projection backend=%s ready=%v decision=A3/D3/P74", backend.name, got)
+			t.Logf("B01 projection backend=%s referenceReady=%v adoptedReady=%v canonical deferred-parent suppression decision=A3/D3/P74", backend.name, reference, got)
 		})
 	}
 }

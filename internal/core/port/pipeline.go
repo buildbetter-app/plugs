@@ -24,6 +24,15 @@ type WriteOutcome struct {
 	NullResult bool
 }
 
+// HeartbeatOutcome is the response-only result of a quiet lease refresh. A
+// heartbeat never publishes a graph commit, version, event, or ordinary
+// idempotency receipt; its replay bit belongs to the checkpoint-backed lease
+// receipt and is therefore kept separate from WriteOutcome.
+type HeartbeatOutcome struct {
+	LeaseExpiresAt time.Time
+	Replayed       bool
+}
+
 // OutcomeWriter is an additive host seam. model.Writer.Apply remains available
 // for callers that do not need transport replay metadata.
 type OutcomeWriter interface {
@@ -48,6 +57,17 @@ type SnapshotReader interface {
 	Get(context.Context, []model.Ref) ([]driver.Record, error)
 	Query(context.Context, driver.Query) (driver.Page[driver.Record], error)
 	Observe(context.Context, []driver.LockKey) ([]driver.LockState, error)
+}
+
+// HierarchySnapshotReader is an optional trusted-core snapshot capability.
+// Children and selected closure groups join the same Writer read set as Get
+// and Observe, including empty membership, missing groups and exact row reads.
+// Unsupported source coverage must refuse; a generic Query is not a fallback.
+type HierarchySnapshotReader interface {
+	SnapshotReader
+	driver.HierarchyChildrenExcludingReader
+	driver.InverseSourceLinksReader
+	HierarchyClosureRows(context.Context, []model.Ref) ([]driver.DerivedRow, error)
 }
 
 type Change struct {

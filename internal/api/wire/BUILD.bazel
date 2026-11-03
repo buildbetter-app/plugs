@@ -18,6 +18,12 @@ go_test(
 )
 
 filegroup(
+    name = "reconcile_openrpc_inputs",
+    srcs = ["catalog.json", "wire_test.go"],
+    visibility = ["//scripts/ci:__pkg__"],
+)
+
+filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],

@@ -1,0 +1,51 @@
+{
+  "schema": "plug.cardb20.reference-provenance.v1",
+  "source": {
+    "commit": "9d6fff760b7a314b476539198504d77ce0959656",
+    "tree": "cde121d6e4119e454857ad1c3ca293e2791be840",
+    "archiveCommand": "git -C /home/dev/plugs archive --format=tar 9d6fff760b7a314b476539198504d77ce0959656",
+    "files": [
+      {
+        "path": "internal/storage/issueops/journal.go",
+        "gitBlob": "a4dc140e391eb67f4a14c2838c9da4fc4a361e2f",
+        "sha256": "a910ed82829df3ae39cbef3b12dd0bb6703e6c0022b67721d5a718a2709b688a"
+      },
+      {
+        "path": "internal/storage/issueops/events.go",
+        "gitBlob": "8a741b7791634a698c1c8432f44462124ed9dd10",
+        "sha256": "4fcb55d91def89df77f1f67c35e65981340356782801bc98a96f4af66f9b60b7"
+      },
+      {
+        "path": "cmd/bd/events.go",
+        "gitBlob": "5cb9917f10d6e747dda79750690eb0ca0e7f1c48",
+        "sha256": "7cf933cdac53c29c5ae6e259da767f9fbd9a77b113acbb2855cacd157578d67c"
+      }
+    ]
+  },
+  "build": {
+    "goCommand": "go build -o <disposable>/bd ./cmd/bd",
+    "cgoCflags": "-I<disposable-icu-dev>/usr/include",
+    "cgoCxxflags": "-I<disposable-icu-dev>/usr/include",
+    "cgoLdflags": "-L<disposable-icu-dev>/usr/lib/x86_64-linux-gnu",
+    "binarySha256": "174083f0816e08f94e65c05362d713b913dac036e7a6c0cea2ab0b054f3ee083"
+  },
+  "recorder": {
+    "path": "spec/cardb20/record_reference.py",
+    "sha256": "68d668a9425c8afbdb2070bd4627dba931cced8d1adf2c3c4a3e2c56be575002"
+  },
+  "recordings": [
+    {
+      "path": "reference/beads-run-a.json",
+      "fileSha256": "e2c06f3c984146e4f5b33f3b0b15127e938bef3243b7f955b3c349e0e933b9e4",
+      "projectionSha256": "7edcaae886dcc6941527f0d7cde85e932f58360f3a259b9ce43833f26783021f",
+      "rawFinalJournalSha256": "ac9705e8f5abee6bc27f6d00c88a650012bd59553f7b04a048ea2c33af372399"
+    },
+    {
+      "path": "reference/beads-run-b.json",
+      "fileSha256": "c0e6d264e73da1bbd38762cedb5c8970422c961fb38b6a53c5597376c8966dd4",
+      "projectionSha256": "7edcaae886dcc6941527f0d7cde85e932f58360f3a259b9ce43833f26783021f",
+      "rawFinalJournalSha256": "f95cb2432859ea55c6d740f382e4aef6d7996a13c1025e0480bdbdd8fbab5e9d"
+    }
+  ],
+  "retainedSelection": "Non-temporal sequence, operation, identity, actor, title, status, and close-reason fields only. Temporal raw outputs are represented by independent SHA-256 digests and are not used as invented expected output."
+}

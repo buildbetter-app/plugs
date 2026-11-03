@@ -49,7 +49,7 @@ func RunStagedReadOverlay(t *testing.T, factory Factory) {
 				if state.Present != wantPresent || state.Revision.String() != revision {
 					t.Fatalf("record observation=%+v, want present=%t revision=%s", state, wantPresent, revision)
 				}
-				if wantBody != "" && (state.Record == nil || string(state.Record.Body) != wantBody) {
+				if wantBody != "" && (state.Record == nil || string(state.Record.Body) != wantBody || state.Record.Revision.String() != revision) {
 					t.Fatalf("staged record=%+v, want body %q", state.Record, wantBody)
 				}
 			case driver.LockDerived:
@@ -62,10 +62,15 @@ func RunStagedReadOverlay(t *testing.T, factory Factory) {
 			}
 		}
 	}
-	states, err := tx.Observe(ctx, keys)
-	if err != nil {
-		t.Fatal(err)
+	observe := func(r driver.Reader) []driver.LockState {
+		t.Helper()
+		states, err := r.Observe(ctx, keys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return states
 	}
+	states := observe(tx)
 	// New rows have no committed revision yet. Both staged rows and the
 	// derived row must nevertheless be visible to the transaction reader.
 	assertStaged(states, "0", `{"value":"a"}`, `{"value":"b"}`, true, "0", "before")
@@ -93,9 +98,69 @@ func RunStagedReadOverlay(t *testing.T, factory Factory) {
 	if err := tx.PutDerived(ctx, driver.DerivedSortKey, []driver.DerivedRow{row}, nil); err != nil {
 		t.Fatal(err)
 	}
-	states, err = tx.Observe(ctx, keys)
-	if err != nil {
+	states = observe(tx)
+	assertStaged(states, "1", "", `{"value":"updated"}`, false, "1", "")
+	if _, err := tx.Head(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertStaged(states, "1", "", `{"value":"updated"}`, false, "1", "")
+	entry, err := tx.Commit(ctx, header(meta, requests,
+		model.ChangeRecord{Ref: a, Op: model.OpDelete, FromRevision: model.Natural64(1)},
+		model.ChangeRecord{Ref: b, Op: model.OpPatch, FromRevision: model.Natural64(1)},
+	))
+	if err != nil || entry.Revision.String() != "2" {
+		t.Fatalf("replacement commit=%+v error=%v", entry, err)
+	}
+	committed := observe(read(t, ctx, s, meta, nil))
+	assertStaged(committed, "2", "", `{"value":"updated"}`, false, "2", "")
+
+	// Replacement must leave revision-one bytes intact. Returned observation
+	// bodies and derived values belong to the caller, including historical reads.
+	at := model.Natural64(1)
+	historical := read(t, ctx, s, meta, &at)
+	states = observe(historical)
+	assertStaged(states, "1", `{"value":"a"}`, `{"value":"b"}`, true, "1", "before")
+	for _, state := range states {
+		if state.Record != nil {
+			state.Record.Body[0] = '!'
+		}
+		if state.Derived != nil {
+			state.Derived.Value[0] = '!'
+		}
+	}
+	assertStaged(observe(historical), "1", `{"value":"a"}`, `{"value":"b"}`, true, "1", "before")
+
+	// Recreating a deleted key and replacing a live key/derived tombstone
+	// retain revision two while staged, and rollback publishes none of them.
+	tx = begin(t, ctx, s, lease, requests)
+	if err := tx.Put(ctx, driver.Record{Ref: a, Kind: "test", Body: []byte(`{"value":"rollback-create"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Put(ctx, driver.Record{Ref: b, Kind: "test", Body: []byte(`{"value":"rollback-update"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.PutDerived(ctx, driver.DerivedSortKey, nil, []driver.DerivedRow{{Key: row.Key, Value: []byte("rollback-derived")}}); err != nil {
+		t.Fatal(err)
+	}
+	assertStaged(observe(tx), "2", `{"value":"rollback-create"}`, `{"value":"rollback-update"}`, true, "2", "rollback-derived")
+	if head, err := tx.Head(ctx); err != nil || head.String() != "2" {
+		t.Fatalf("head before rollback=%s error=%v", head, err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	after := read(t, ctx, s, meta, nil)
+	if states := observe(after); !reflect.DeepEqual(states, committed) {
+		t.Fatalf("rollback changed committed observations: got %+v, want %+v", states, committed)
+	}
+	log, err := after.Changesets(ctx, nil, 100)
+	if err != nil || len(log) != 2 || after.Snapshot().At.String() != "2" {
+		t.Fatalf("rollback consumed revision: log=%+v snapshot=%+v error=%v", log, after.Snapshot(), err)
+	}
+	for _, target := range []driver.Ref{a, b} {
+		versions, err := after.Versions(ctx, target, driver.PageReq{Limit: 10})
+		if err != nil || len(versions.Items) != 2 || versions.NextCursor != nil {
+			t.Fatalf("rollback changed versions for %s: %+v error=%v", target.ID, versions, err)
+		}
+	}
+	assertStaged(observe(read(t, ctx, s, meta, &at)), "1", `{"value":"a"}`, `{"value":"b"}`, true, "1", "before")
 }

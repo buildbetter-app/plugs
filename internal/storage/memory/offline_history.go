@@ -83,6 +83,7 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 		value.Revision = plan.Meta.Head
 		next.publishKey(id, value)
 	}
+	next.publishDerivedKeys(t.derived)
 	for id, key := range t.bumps {
 		next.publishKey(id, driver.LockState{Key: key, Revision: plan.Meta.Head, Present: true})
 	}
@@ -115,6 +116,12 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	key := normalizedScope(principal, h.AgentLabel, h.Method, h.IdempotencyKey)
 	next.replays[key] = replay{value: driver.IdempotencyRecord{RequestHash: h.RequestHash, Commit: response, Changeset: entry}, at: s.now()}
 	if err = t.check(ctx); err != nil {
+		return zero, err
+	}
+	if err := next.publishAllocatorImage(s.state, true); err != nil {
+		return zero, err
+	}
+	if err := t.check(ctx); err != nil {
 		return zero, err
 	}
 	s.state = next

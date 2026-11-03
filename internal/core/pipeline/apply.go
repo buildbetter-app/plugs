@@ -371,8 +371,14 @@ func replayExpectations(cs model.ChangeSet, results []model.OpResult) []model.Pr
 		}
 		aliases[op.Create.Key] = results[i].Ref
 	}
-	expects := make([]model.Precondition, 0, len(cs.Expect))
-	for _, expect := range cs.Expect {
+	all := append([]model.Precondition{}, cs.Expect...)
+	for _, op := range cs.Ops {
+		if op.Kind == model.OpClose && op.Close != nil {
+			all = append(all, op.Close.Expect...)
+		}
+	}
+	expects := make([]model.Precondition, 0, len(all))
+	for _, expect := range all {
 		canonical := expect
 		if !expect.Ref.IsID() {
 			if ref, ok := aliases[expect.Ref.Key]; ok {
@@ -418,7 +424,27 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	}
 	allocatorKeys := make([]driver.LockKey, 0)
 	allocatorPrefixes := map[string]bool{}
-	for _, pending := range writes {
+	parentCounters := map[string]bool{}
+	for _, pending := range p.writes {
+		// Receipt-only no-ops consume no previews. In an ordinary commit,
+		// include transient creates too: deleting a preview later in the
+		// batch removes its final row, not its consumed number.
+		if len(writes) == 0 || (pending.allocatorPrefix == "" && pending.allocatorChild == "") {
+			continue
+		}
+		ref := pending.ref
+		allocatorKeys = append(allocatorKeys, driver.LockKey{Kind: driver.LockRecord, Ref: &ref})
+		if pending.allocatorPrefix == "" && pending.allocatorChild != "" {
+			if !parentCounters[pending.allocatorChild] {
+				key, e := driver.ParentCounterLock(p.snapshot.Snapshot().Incarnation, pending.allocatorChild)
+				if e != nil {
+					return model.Commit{}, e
+				}
+				allocatorKeys = append(allocatorKeys, key)
+				parentCounters[pending.allocatorChild] = true
+			}
+			continue
+		}
 		if pending.allocatorPrefix == "" || allocatorPrefixes[pending.allocatorPrefix] {
 			continue
 		}
@@ -456,6 +482,22 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err != nil {
 		return model.Commit{}, err
 	}
+	if len(p.checkpointReads) != 0 {
+		guard, ok := tx.(driver.CheckpointGuardTx)
+		if !ok {
+			return model.Commit{}, driver.ErrUnsupported
+		}
+		keys := make([]string, 0, len(p.checkpointReads))
+		for key := range p.checkpointReads {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if err := guard.ExpectCheckpoint(ctx, key, p.checkpointReads[key]); err != nil {
+				return model.Commit{}, err
+			}
+		}
+	}
 	// Two callers may prepare the same random key concurrently. Recheck after
 	// serialization, before staging anything, and replay outside the transaction.
 	if prior, err := tx.IdempotencyByKey(ctx, principal, meta.AgentLabel, meta.Method, meta.IdempotencyKey); err != nil {
@@ -476,19 +518,35 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			return model.Commit{}, port.ErrClaimNextReady
 		}
 	}
-	if len(allocatorPrefixes) > 0 {
-		allocator, ok := tx.(driver.AllocatorContinuation)
-		if !ok {
+	if len(allocatorPrefixes) > 0 || len(parentCounters) > 0 {
+		allocator, supportsProfiles := tx.(driver.AllocatorContinuation)
+		parentAllocator, supportsParents := tx.(driver.ParentCounterContinuation)
+		if (len(allocatorPrefixes) > 0 && !supportsProfiles) || (len(parentCounters) > 0 && !supportsParents) {
 			return model.Commit{}, driver.ErrUnsupported
 		}
 		consumed := map[string]bool{}
 		for _, ref := range p.refs {
 			pending := p.writes[ref.ID]
-			if pending == nil || pending.allocatorPrefix == "" || consumed[ref.ID] {
+			if pending == nil || (pending.allocatorPrefix == "" && pending.allocatorChild == "") || consumed[ref.ID] {
 				continue
 			}
-			if err := allocator.AllocateTopLevel(ctx, pending.allocatorPrefix, pending.allocatorExpected); err != nil {
-				return model.Commit{}, err
+			var allocationErr error
+			switch {
+			case pending.allocatorPrefix == "" && pending.allocatorChild != "":
+				allocationErr = parentAllocator.ConsumeParentChild(ctx, pending.allocatorChild, pending.allocatorExpected)
+			case pending.allocatorChild != "":
+				allocationErr = allocator.AllocateChild(ctx, pending.allocatorChild, pending.allocatorExpected)
+			case pending.allocatorHash != nil:
+				hashAllocator, supported := tx.(driver.HashAllocatorContinuation)
+				if !supported {
+					return model.Commit{}, driver.ErrUnsupported
+				}
+				allocationErr = hashAllocator.AllocateHashTopLevel(ctx, pending.allocatorPrefix, *pending.allocatorHash, pending.allocatorExpected)
+			default:
+				allocationErr = allocator.AllocateTopLevel(ctx, pending.allocatorPrefix, pending.allocatorExpected)
+			}
+			if allocationErr != nil {
+				return model.Commit{}, allocationErr
 			}
 			consumed[ref.ID] = true
 		}
@@ -496,6 +554,12 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	keys := make([]driver.LockKey, len(locks))
 	for i, lock := range locks {
 		keys[i] = lock.Key
+	}
+	// Method is server-bound audit metadata; authorization remains in the
+	// service and canonical Writer checks. No caller-supplied kind is accepted.
+	kind := model.ChangesetWrite
+	if meta.Method == "history.revert" {
+		kind = model.ChangesetRevert
 	}
 	// Legacy no-op receipts keep the existing head-only NoopCommitter
 	// semantics. claimNext's terminal null is different: the contract gives
@@ -510,7 +574,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		if err != nil {
 			return model.Commit{}, err
 		}
-		return noop.CommitNoop(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
+		return noop.CommitNoop(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
 	}
 	n, err := head.Uint64()
 	if err != nil || n == math.MaxUint64 {
@@ -535,7 +599,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			if e != nil {
 				return model.Commit{}, e
 			}
-			err = tx.Put(ctx, driver.Record{Ref: pending.ref, Kind: pending.kind, Body: body})
+			err = PutSourceRecord(ctx, tx, driver.Record{Ref: pending.ref, Kind: pending.kind, Body: body})
 		}
 		if err != nil {
 			return model.Commit{}, err
@@ -554,8 +618,11 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if err := tx.BumpSentinels(ctx, sentinels); err != nil {
 		return model.Commit{}, err
 	}
-	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: model.ChangesetWrite, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(p.changed) != 0 && len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
+	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(p.changed) != 0 && len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
 	if err != nil {
+		if errors.Is(err, driver.ErrCheckpointConflict) {
+			return model.Commit{}, errStale
+		}
 		return model.Commit{}, err
 	}
 	if entry.Revision.String() != revision.String() {
@@ -595,10 +662,15 @@ func (p *prepared) changeRecords() []model.ChangeRecord {
 				kind = model.OpReparent
 			}
 		}
-		// A slot patch plus its optional reason comment is one transition.
-		// Keep the changed blocker anchored to the patch, not the comment.
-		if p.audit != nil && isSlot(p.proposal.Meta.Method) && statusChanged(pending) {
-			kind = model.OpPatch
+		// Keep a real typed close transition anchored to its lifecycle arm,
+		// including when another operation reparents the same stored target.
+		// statusChanged excludes creates, deletes and same-slot settlements.
+		if p.audit != nil && statusChanged(pending) {
+			if p.closes[id] {
+				kind = model.OpClose
+			} else if isSlot(p.proposal.Meta.Method) {
+				kind = model.OpPatch
+			}
 		}
 		changes = append(changes, model.ChangeRecord{Ref: pending.ref, Op: kind, FromRevision: pending.revision, ChangedPaths: paths})
 	}

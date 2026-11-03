@@ -713,6 +713,7 @@ type Op struct {
 	Kind     OpKind      `json:"-"`
 	Create   *CreateOp   `json:"-"`
 	Patch    *PatchOp    `json:"-"`
+	Close    *CloseOp    `json:"-"`
 	Reparent *ReparentOp `json:"-"`
 	Link     *LinkOp     `json:"-"` // carries both link and unlink
 	Comment  *CommentOp  `json:"-"`
@@ -726,6 +727,7 @@ type OpKind string
 const (
 	OpCreate   OpKind = "create"
 	OpPatch    OpKind = "patch"
+	OpClose    OpKind = "close"
 	OpReparent OpKind = "reparent"
 	OpLink     OpKind = "link"
 	OpUnlink   OpKind = "unlink"
@@ -747,6 +749,14 @@ type PatchOp struct {
 	Kind   OpKind         `json:"kind"`
 	Target Ref            `json:"target"`
 	Fields map[string]any `json:"fields"`
+}
+// CloseOp is the per-operation close slot in tx.apply. Expect observes the
+// ordered in-request image; ChangeSet.Expect keeps its snapshot semantics.
+type CloseOp struct {
+	Kind OpKind `json:"kind"`
+	Target Ref `json:"target"`
+	Reason string `json:"reason,omitempty"`
+	Expect []Precondition `json:"expect,omitempty"`
 }
 type ReparentOp struct {
 	Kind    OpKind `json:"kind"`
@@ -834,6 +844,13 @@ func validatePatch(value PatchOp) error {
 	return requireNonNilMap("fields", value.Fields)
 }
 
+func validateClose(value CloseOp) error {
+	if value.Kind != OpClose {
+		return fmt.Errorf("close operation has kind %q", value.Kind)
+	}
+	return nil
+}
+
 func validateReparent(value ReparentOp) error {
 	if value.Kind != OpReparent {
 		return fmt.Errorf("reparent operation has kind %q", value.Kind)
@@ -885,7 +902,7 @@ func validateSetMeta(value SetMetaOp) error {
 // wrapper. UnmarshalJSON performs the inverse discriminator selection.
 func (o Op) MarshalJSON() ([]byte, error) {
 	selected := 0
-	for _, present := range []bool{o.Create != nil, o.Patch != nil, o.Reparent != nil, o.Link != nil, o.Comment != nil, o.Attach != nil, o.Delete != nil, o.SetMeta != nil} {
+	for _, present := range []bool{o.Create != nil, o.Patch != nil, o.Close != nil, o.Reparent != nil, o.Link != nil, o.Comment != nil, o.Attach != nil, o.Delete != nil, o.SetMeta != nil} {
 		if present {
 			selected++
 		}
@@ -911,6 +928,16 @@ func (o Op) MarshalJSON() ([]byte, error) {
 		value := *o.Patch
 		value.Kind = OpPatch
 		if err := validatePatch(value); err != nil {
+			return nil, err
+		}
+		return json.Marshal(value)
+	case OpClose:
+		if o.Close == nil {
+			return nil, fmt.Errorf("operation %q has no payload", o.Kind)
+		}
+		value := *o.Close
+		value.Kind = OpClose
+		if err := validateClose(value); err != nil {
 			return nil, err
 		}
 		return json.Marshal(value)
@@ -1015,6 +1042,15 @@ func (o *Op) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		o.Patch = &value
+	case OpClose:
+		var value CloseOp
+		if err := decodeStrict(data, &value, "kind", "target"); err != nil {
+			return err
+		}
+		if err := validateClose(value); err != nil {
+			return err
+		}
+		o.Close = &value
 	case OpReparent:
 		var value ReparentOp
 		if err := decodeStrict(data, &value, "kind", "target"); err != nil {
@@ -3563,6 +3599,14 @@ protected locator is opt-in and must not guess an ontology ID or use a live
 resolver. The result is capped at 100 edges; overflow and cancellation refuse
 atomically with the existing `closure_too_large` and `busy` errors, without a
 partial result.
+
+The existing edge kind vocabulary includes `waits-for`. Its verdict evaluates
+the stored optional all/any and `also_blocks` metadata against the complete
+direct child fanout from that same pinned reader, using each child's own
+project ontology. Absent metadata keeps the terminal-spawner/all-child legacy
+fallback. An unavailable child ontology or unknown child status stays unknown;
+child identities, projects and statuses are not added to the result. Target
+redaction and the existing 100 direct-edge bound are unchanged.
 
 ## Deliberate boundaries
 

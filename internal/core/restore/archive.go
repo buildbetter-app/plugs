@@ -138,11 +138,36 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 	if err != nil {
 		return nil, dumpformat.Manifest{}, err
 	}
-	reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	// Bind the record image and retained history to the same head advertised
+	// by the manifest. A writer may advance the store after Meta returns.
+	reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation, At: &meta.Head})
 	if err != nil {
 		return nil, dumpformat.Manifest{}, err
 	}
 	defer reader.Close()
+
+	snapshotReader, ok := reader.(driver.AllocatorSnapshotReader)
+	if !ok {
+		return nil, dumpformat.Manifest{}, fmt.Errorf("%w: native snapshot requires revision-bound allocator inventory", driver.ErrUnsupported)
+	}
+	bound := reader.Snapshot()
+	if bound.At == nil || bound.At.String() != meta.Head.String() || bound.Incarnation != meta.Incarnation {
+		return nil, dumpformat.Manifest{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorSourceMismatch, fmt.Errorf("reader is not bound to the captured native view"))
+	}
+	allocatorSnapshot, err := snapshotReader.AllocatorSnapshot(ctx)
+	if err != nil {
+		return nil, dumpformat.Manifest{}, err
+	}
+	if err := allocatorSnapshot.Validate(); err != nil {
+		return nil, dumpformat.Manifest{}, err
+	}
+	if allocatorSnapshot.StoreID != meta.StoreID || allocatorSnapshot.Incarnation != meta.Incarnation || allocatorSnapshot.At.String() != meta.Head.String() {
+		return nil, dumpformat.Manifest{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorSourceMismatch, fmt.Errorf("allocator snapshot is not bound to the pinned store view"))
+	}
+	allocatorData, err := driver.EncodeAllocatorSnapshot(allocatorSnapshot)
+	if err != nil {
+		return nil, dumpformat.Manifest{}, err
+	}
 
 	var records []nativeRecord
 	var cursor *driver.Cursor
@@ -155,7 +180,13 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 			if !json.Valid(record.Body) {
 				return nil, dumpformat.Manifest{}, fmt.Errorf("record %v has invalid JSON body", record.Ref)
 			}
-			records = append(records, nativeRecord{Ref: record.Ref, Kind: record.Kind, Revision: record.Revision, Body: append(json.RawMessage(nil), record.Body...)})
+			// Omitted and explicit zero branches name the same ID. Emit one
+			// spelling whether the driver serves current or replayed content.
+			ref := record.Ref
+			if ref.IsID() && ref.Branch.IsZero() {
+				ref.Branch = model.Natural64(0)
+			}
+			records = append(records, nativeRecord{Ref: ref, Kind: record.Kind, Revision: record.Revision, Body: append(json.RawMessage(nil), record.Body...)})
 		}
 		if page.NextCursor == nil {
 			break
@@ -262,10 +293,11 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 	}
 	configData := []byte("{\"source\":\"plug\",\"history\":\"" + history + "\"}\n")
 	members := map[string][]byte{
-		"config/sources.json":   configData,
-		"records/native.ndjson": recordData.Bytes(),
-		"versions.ndjson":       versionData.Bytes(),
-		"changesets.ndjson":     changesetData.Bytes(),
+		"config/sources.json":            configData,
+		"records/native.ndjson":          recordData.Bytes(),
+		"versions.ndjson":                versionData.Bytes(),
+		"changesets.ndjson":              changesetData.Bytes(),
+		dumpformat.NativeAllocatorMember: allocatorData,
 	}
 	paths := make([]string, 0, len(members)+1)
 	for path := range members {
@@ -284,6 +316,7 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 		Files: files, Warnings: []string{}, Verification: map[string]string{},
 		NativeStoreID: string(meta.StoreID), NativeIncarnation: meta.Incarnation,
 		NativeHead: meta.Head.String(), NativeDigest: archiveDigest(paths, members),
+		NativeAllocatorProfile: allocatorSnapshot.Version, NativeAllocatorDigest: memberDigest(allocatorData),
 		RecordCount: len(records), VersionCount: len(versions), ChangesetCount: len(changesets),
 	}
 	manifestData, err := json.Marshal(manifest)
@@ -816,6 +849,10 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 		return status, nil
 	}
 	if err := validateSupportedArchive(archive); err != nil {
+		var allocatorErr *driver.NativeAllocatorSnapshotError
+		if errors.As(err, &allocatorErr) {
+			return m.fail(id, restoreAdmissionError(err))
+		}
 		return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}})
 	}
 	_, err = m.emptyTarget(ctx)
@@ -904,6 +941,10 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	if err != nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 	}
+	allocatorSnapshot, err := decodeAllocatorSnapshot(archive)
+	if err != nil {
+		return model.Changeset{}, restoreAdmissionError(err)
+	}
 	ancestorPlan, err := nativeAncestorPlanForArchive(records, archive.Native())
 	if err != nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
@@ -920,7 +961,11 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	if !ok {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "native restore capability is unsupported"}}
 	}
-	locks, sentinels, err := restoreLocks(records, ancestorPlan)
+	allocatorRestore, ok := tx.(driver.NativeAllocatorRestoreTx)
+	if !ok {
+		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "native allocator restore capability is unsupported"}}
+	}
+	locks, sentinels, err := restoreLocks(records, ancestorPlan, allocatorSnapshot)
 	if err != nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 	}
@@ -964,15 +1009,22 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 		meta.IdempotencyKey = memberDigest(archiveBytes)
 	}
 	requestHash := memberDigest(archiveBytes)
+	allocatorBinding, err := allocatorSnapshot.Binding()
+	if err != nil {
+		return model.Changeset{}, restoreAdmissionError(err)
+	}
 	prepared, err := capability.PrepareNativeRestore(ctx, driver.NativeRestoreProfile{
-		StoreID: driver.StoreID(archive.Manifest().NativeStoreID), Principal: principal,
+		StoreID: driver.StoreID(archive.Manifest().NativeStoreID), AllocatorBinding: allocatorBinding, Principal: principal,
 		Method: meta.Method, AgentLabel: meta.AgentLabel, IdempotencyKey: meta.IdempotencyKey, RequestHash: requestHash,
 	})
 	if err != nil {
 		return model.Changeset{}, restoreAdmissionError(err)
 	}
+	if err := allocatorRestore.RestoreNativeAllocators(ctx, allocatorSnapshot); err != nil {
+		return model.Changeset{}, restoreAdmissionError(err)
+	}
 	for _, record := range records {
-		if err := tx.Put(ctx, record); err != nil {
+		if err := pipeline.PutSourceRecord(ctx, tx, record); err != nil {
 			return model.Changeset{}, err
 		}
 	}
@@ -1006,6 +1058,18 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 }
 
 func restoreAdmissionError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var allocatorErr *driver.NativeAllocatorSnapshotError
+	if errors.As(err, &allocatorErr) {
+		reason := allocatorErr.Reason
+		if reason.Validate() != nil {
+			reason = driver.NativeAllocatorInventoryInvalid
+		}
+		details := map[string]any{"reason": string(reason)}
+		return &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error(), Details: details}}
+	}
 	if errors.Is(err, driver.ErrRestoreTargetNotEmpty) {
 		return &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "native restore target is initialized; restore requires a fully empty store"}}
 	}
@@ -1014,8 +1078,8 @@ func restoreAdmissionError(err error) error {
 
 // validateSupportedArchive is deliberately stricter than dumpformat.Read.
 // The driver contract can publish one current image atomically, but it cannot
-// inject source versions, changesets, allocator state, or converter
-// disclosures. Accepting those archives here would silently flatten them.
+// inject source versions, changesets, or converter disclosures. Allocator
+// continuation is admitted only through the complete bound native payload. Accepting those archives here would silently flatten them.
 // Refuse before the publication transaction instead.
 func validateSupportedArchive(archive *dumpformat.Archive) error {
 	if archive == nil {
@@ -1037,7 +1101,36 @@ func validateSupportedArchive(archive *dumpformat.Archive) error {
 	if len(manifest.Warnings) != 0 {
 		return fmt.Errorf("native archive disclosures are unsupported by this restore seam: %s", strings.Join(manifest.Warnings, "; "))
 	}
+	snapshot, err := decodeAllocatorSnapshot(archive)
+	if err != nil {
+		return err
+	}
+	if snapshot.StoreID != driver.StoreID(manifest.NativeStoreID) || snapshot.Incarnation != manifest.NativeIncarnation || snapshot.At.String() != manifest.NativeHead {
+		return driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorSourceMismatch, fmt.Errorf("allocator snapshot does not match native manifest"))
+	}
 	return nil
+}
+
+func decodeAllocatorSnapshot(archive *dumpformat.Archive) (driver.AllocatorSnapshot, error) {
+	if archive == nil || !archive.Native() {
+		return driver.AllocatorSnapshot{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorSnapshotMissing, nil)
+	}
+	raw, ok := archive.NativeMember(dumpformat.NativeAllocatorMember)
+	if !ok {
+		return driver.AllocatorSnapshot{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorSnapshotMissing, nil)
+	}
+	manifest := archive.Manifest()
+	if manifest.NativeAllocatorProfile != driver.NativeAllocatorVersion {
+		return driver.AllocatorSnapshot{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorProfileUnsupported, nil)
+	}
+	if manifest.NativeAllocatorDigest != memberDigest(raw) {
+		return driver.AllocatorSnapshot{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorDigestMismatch, nil)
+	}
+	snapshot, err := driver.DecodeAllocatorSnapshot(raw)
+	if err != nil {
+		return driver.AllocatorSnapshot{}, err
+	}
+	return snapshot, nil
 }
 
 func restoreRecords(archive *dumpformat.Archive) ([]driver.Record, error) {
@@ -1299,7 +1392,7 @@ func documentMap(doc pipeline.Document) (map[string]any, error) {
 	return value, nil
 }
 
-func restoreLocks(records []driver.Record, ancestorPlan *nativeAncestorPlan) ([]driver.LockRequest, []driver.Sentinel, error) {
+func restoreLocks(records []driver.Record, ancestorPlan *nativeAncestorPlan, allocatorSnapshot driver.AllocatorSnapshot) ([]driver.LockRequest, []driver.Sentinel, error) {
 	byKey := map[string]driver.LockRequest{}
 	sentinelSet := map[driver.Sentinel]bool{}
 	add := func(key driver.LockKey, mode driver.LockMode) error {
@@ -1321,6 +1414,22 @@ func restoreLocks(records []driver.Record, ancestorPlan *nativeAncestorPlan) ([]
 				return nil, nil, err
 			}
 			sentinelSet[sentinel] = true
+		}
+	}
+	nativeLock, err := driver.NativeAllocatorRestoreLock()
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := add(nativeLock, driver.LockUpdate); err != nil {
+		return nil, nil, err
+	}
+	for _, project := range allocatorSnapshot.Inventory.Projects {
+		lock, err := driver.AllocatorLock(project.Prefix)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := add(lock, driver.LockUpdate); err != nil {
+			return nil, nil, err
 		}
 	}
 	if ancestorPlan != nil {

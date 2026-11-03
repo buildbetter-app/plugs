@@ -34,8 +34,9 @@ protected identities and unknown native kinds refuse without publishing data.
 This native admission does not widen the offline converter's kind registry or
 relax human-presence, caller, manifest, empty-target or history checks.
 
-`internal/integration/converterroundtrip` supplies a trusted offline restore
-seam. It refuses unsupported semantics before acquiring a write transaction:
+`internal/integration/converterroundtrip` supplies trusted offline restore
+seams. Its legacy head-only seam refuses unsupported semantics before acquiring
+a write transaction:
 parent and external relations, unverified comments, available-unverified history,
 sequential/child counters, and hash configurations other than the ordinary
 writer's `pl-` plus 32 hexadecimal characters. Reserved `beads.*` and
@@ -51,16 +52,19 @@ or mismatched comparisons refuse before lease/write acquisition.
 The `builtin-head/1` comparison hashes compact JSON with fields `profile`,
 `tables`, `rows`, in that order. `tables` contains all nine driver derived table
 names in lexical order; `rows` contains `{table,key,value}` objects sorted by
-table then key. An `ancestor_closure` row uses the descendant ID as its key and
-an array of `{ancestor,depth}` objects as its value. Since parents are refused,
-each bead's value is exactly `[{"ancestor":"<its ID>","depth":0}]`. These self
-memberships exist even without an authorization provider. Each bead also has
+table then key. An `ancestor_closure` row uses the canonical hierarchy codec:
+`base64url(descendant).base64url(ancestor)` without padding as its key and a
+scalar nonnegative integer depth as its value. Every bead has a self row with
+value `0`; admitted parent chains add one row for each ancestor at its depth.
+These self memberships exist even
+without an authorization provider. Comparisons for the earlier array-valued
+closure image refuse before publication. Each bead also has
 ready state `{blocked,ready}`, an empty cut array, empty derived attributes,
 a sort value `{id,priority}`, and outgoing references sorted by link kind then
 target ID. Readiness uses the built-in
 ontology's status and blocker rules. The `ontology/builtin` row contains the
 built-in ontology document; `plugins/builtin` contains an empty array; grants
-are empty. This profile admits no parents, cuts, templates, active leases,
+are empty. This built-in profile admits no cuts, templates, active leases,
 plugins, custom ontology or authorization provider. These are restore-base
 rows; the existing services continue to evaluate ordinary writes from their
 live graph scans. This comparison is not an A3 or full migration certificate.
@@ -97,3 +101,38 @@ of discarding either source. The input verification limits and incomplete
 history disclosures remain in the output; this adds no full A6 history replay
 or restore certification. Live restore and converter round-trip execution
 remain with their existing owners.
+
+Strict configuration union is an explicit import migration selected by
+`StrictUnionOntologyVerification`, with the existing closed directive shape.
+It collects normalized custom status/type rows, stored `status.custom` and
+`types.custom`, and all parsed YAML configuration observations independently.
+Raw records and `config/sources.json` remain unchanged, including original
+paths, precedence and captured byte envelopes. Producer capture must bind
+parsed YAML values to its actual bytes; consumer parser controls do not prove
+an authentic filesystem observation or the companion's effective runtime view.
+Opaque `store-files-and-quiescence` directories marked `contents:not-read`
+remain raw provenance without parsed configuration or enumerated entries.
+That exception is restricted to this family and cannot replace actual YAML/JSON
+configuration: file observations still require object-valued parsed `values`,
+including `{}` for legitimate empty files; null or missing values refuse.
+
+The compatible-category `beads-compat` preset maps active to unstarted, wip to
+started, done to completed/success and frozen to backlog. Absent/unspecified
+categories and conflicting declarations refuse with a `MigrationRefusal`
+naming the entry and origins. An explicit `map_status` with
+`target:{project:<prefix>,type:"issue"}`, `from:<source-name>` and
+`to:<built-in-status-key>` resolves the definition without rewriting either
+raw layer. Every declared custom type requires the existing `map_type` to
+`issue`. Strict mode installs source-named status/type aliases, including
+unused declarations; legacy type-mapping semantics stay unchanged. The
+compiled document retains built-in lifecycle slots and transition guards.
+
+Only normalized custom status/type tables become conditionally carried, after
+the complete migration validates; all other family refusals, exact raw/body
+mapping, census and credential-reference checks remain. A populated declaration
+without the strict disclosure refuses rather than remaining archive-only.
+Strict mode currently requires one explicit project and refuses source-history
+frames: project ownership and custom historical ontology must not be guessed.
+`Archive.ImportMigration` exposes detached declarations, the compiled document
+and exact per-record targets for the non-native restore adapter. It grants no
+native runtime, history, public recorder or production qualification.

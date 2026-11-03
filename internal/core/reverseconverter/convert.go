@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/ontologymigration"
 )
 
 var supportedIssueTypes = map[string]bool{
@@ -114,16 +115,118 @@ type workingIssue struct {
 	SourceStat string
 }
 
+type typeDirective struct {
+	directive ontologymigration.Directive
+	used      bool
+}
+
+type typeDirectives struct {
+	entries []*typeDirective
+}
+
+func (d *typeDirectives) matching(project, id, sourceType string) []*typeDirective {
+	var matches []*typeDirective
+	for _, entry := range d.entries {
+		target := entry.directive.Target
+		if target.Project == project && target.Type == sourceType && (target.ID == "" || target.ID == id) {
+			matches = append(matches, entry)
+		}
+	}
+	return matches
+}
+
+func (d *typeDirectives) markUsed(entry *typeDirective, report *Report) {
+	if entry.used {
+		return
+	}
+	entry.used = true
+	directive := entry.directive
+	report.TypeMappings = append(report.TypeMappings, TypeMapping{
+		ID: directive.ID, Project: directive.Target.Project, From: directive.From, To: directive.To,
+	})
+}
+
+func prepareTypeDirectives(directives []ontologymigration.Directive) (typeDirectives, []string) {
+	set := typeDirectives{entries: make([]*typeDirective, 0, len(directives))}
+	var reasons []string
+	seen := map[string]bool{}
+	for _, directive := range directives {
+		if strings.TrimSpace(directive.ID) == "" {
+			reasons = append(reasons, "type directive requires an ID")
+			continue
+		}
+		if seen[directive.ID] {
+			reasons = append(reasons, fmt.Sprintf("duplicate type directive ID %q", directive.ID))
+			continue
+		}
+		seen[directive.ID] = true
+		if directive.Kind != ontologymigration.MapType {
+			reasons = append(reasons, fmt.Sprintf("type directive %q must use map_type", directive.ID))
+			continue
+		}
+		if directive.Field != "" || directive.Value != nil || directive.Conversion != "" || directive.Violation != "" || directive.Reason != "" {
+			reasons = append(reasons, fmt.Sprintf("type directive %q contains members not valid for map_type", directive.ID))
+			continue
+		}
+		if directive.Target.Project == "" {
+			reasons = append(reasons, fmt.Sprintf("type directive %q requires a target project", directive.ID))
+			continue
+		}
+		if directive.Target.Type == "" || directive.From == "" || directive.To == "" {
+			reasons = append(reasons, fmt.Sprintf("type directive %q requires source and target types", directive.ID))
+			continue
+		}
+		if directive.From != directive.Target.Type {
+			reasons = append(reasons, fmt.Sprintf("type directive %q map_type source must equal the target's original type", directive.ID))
+			continue
+		}
+		if directive.From == directive.To {
+			reasons = append(reasons, fmt.Sprintf("type directive %q mapping must change its key", directive.ID))
+			continue
+		}
+		set.entries = append(set.entries, &typeDirective{directive: directive})
+	}
+	sort.Slice(set.entries, func(i, j int) bool {
+		a, b := set.entries[i].directive, set.entries[j].directive
+		if a.ID != b.ID {
+			return a.ID < b.ID
+		}
+		if a.Target.Project != b.Target.Project {
+			return a.Target.Project < b.Target.Project
+		}
+		return a.Target.ID < b.Target.ID
+	})
+	return set, reasons
+}
+
 // Convert converts a detached, validated dump to deterministic Beads JSONL.
 // It accumulates all structural refusals before returning, and never returns a
-// successful result containing a partially converted issue graph.
+// successful result containing a partially converted issue graph. Unknown
+// source issue types require an explicit map_type directive; the source type is
+// retained in the JSONL rather than silently rewritten to a built-in type.
 func Convert(dump Dump) (Result, error) {
+	return ConvertWithDirectives(dump, nil)
+}
+
+// ConvertWithDirectives is Convert with explicit ontology map_type directives
+// authorizing source types outside Plug's built-in reverse-converter vocabulary.
+// The directives authorize the target Plug ontology type for the caller's
+// migration plan; this converter deliberately preserves the original Beads
+// issue_type in its JSONL output.
+func ConvertWithDirectives(dump Dump, directives []ontologymigration.Directive) (Result, error) {
 	report := Report{InputDigest: digestDump(dump), Warnings: append([]string(nil), dump.Manifest.Warnings...)}
 	if err := validateDumpShape(dump, &report); err != nil {
 		normalizeReport(&report)
 		return Result{Report: report}, withReport(err, report)
 	}
-	if dump.Manifest.History == "available-unverified" {
+	typeSet, directiveReasons := prepareTypeDirectives(directives)
+	if len(directiveReasons) != 0 {
+		normalizeReport(&report)
+		return Result{Report: report}, withReport(&Refusal{Reasons: uniqueStrings(directiveReasons), Report: report}, report)
+	}
+	if dump.Manifest.History == "verified" {
+		addUnique(&report.LostPostSwitchHistory, "verified source history is not replayed by a head-state Beads import")
+	} else if dump.Manifest.History == "available-unverified" {
 		addUnique(&report.LostPostSwitchHistory, "available-unverified source history is not representable in a head-state Beads import")
 	} else {
 		addUnique(&report.LostPostSwitchHistory, "Plug head-state dump contains no complete post-switch history")
@@ -133,7 +236,7 @@ func Convert(dump Dump) (Result, error) {
 	edgeIDs := make(map[string]bool)
 	commentIDs := make(map[string]bool)
 	for _, record := range sortedRecords(dump.Records["bead"]) {
-		issue, issueReasons := convertBead(record, &report)
+		issue, issueReasons := convertBead(record, &report, &typeSet)
 		reasons = append(reasons, issueReasons...)
 		if issue != nil {
 			if _, exists := working[issue.Line.ID]; exists {
@@ -213,6 +316,11 @@ func Convert(dump Dump) (Result, error) {
 		if len(records) > 0 {
 			addUnique(&report.PlugOnlyKinds, kind)
 			reasons = append(reasons, fmt.Sprintf("Plug-only kind %q has %d record(s)", kind, len(records)))
+		}
+	}
+	for _, entry := range typeSet.entries {
+		if !entry.used {
+			reasons = append(reasons, fmt.Sprintf("type directive %q is unused", entry.directive.ID))
 		}
 	}
 	if len(reasons) > 0 {
@@ -296,11 +404,16 @@ func containsByteReference(value any) bool {
 
 // ConvertArchive is the one-shot convenience form used by rollback tooling.
 func ConvertArchive(data []byte) (Result, error) {
+	return ConvertArchiveWithDirectives(data, nil)
+}
+
+// ConvertArchiveWithDirectives is ConvertWithDirectives for a canonical archive.
+func ConvertArchiveWithDirectives(data []byte, directives []ontologymigration.Directive) (Result, error) {
 	dump, err := ReadBytes(data)
 	if err != nil {
 		return Result{}, err
 	}
-	return Convert(dump)
+	return ConvertWithDirectives(dump, directives)
 }
 
 func withReport(err error, report Report) error {
@@ -315,7 +428,7 @@ func validateDumpShape(dump Dump, report *Report) error {
 	if m.Format != PlugDumpFormat || m.Schema != 1 || m.Reference != BeadsReference || m.MainVersion != 72 || m.IgnoredVersion != 28 || m.StoreID == "" || m.Machine == "" || m.Scope != "offline-head-and-source-archives" {
 		return refusal("unsupported plug-dump manifest")
 	}
-	if m.History != "unavailable" && m.History != "available-unverified" {
+	if m.History != "unavailable" && m.History != "available-unverified" && m.History != "verified" {
 		return refusal("unsupported history disposition %q", m.History)
 	}
 	if len(m.Kinds) == 0 {
@@ -355,7 +468,7 @@ func validateDumpShape(dump Dump, report *Report) error {
 	return nil
 }
 
-func convertBead(record Record, report *Report) (*workingIssue, []string) {
+func convertBead(record Record, report *Report, directives *typeDirectives) (*workingIssue, []string) {
 	body := record.Body
 	var reasons []string
 	reasons = append(reasons, unsupportedSourceFields(record, report)...)
@@ -385,7 +498,13 @@ func convertBead(record Record, report *Report) (*workingIssue, []string) {
 		var ok bool
 		pinned, ok = parsePinned(value)
 		if !ok {
-			reasons = append(reasons, fmt.Sprintf("bead %q field %q is not a boolean or canonical numeric 0/1", record.ID, "pinned"))
+			reasons = append(reasons, fmt.Sprintf("bead %q field %q is not a boolean or canonical numeric/textual 0/1", record.ID, "pinned"))
+		} else if raw, textual := value.(string); textual {
+			// Public paired SQL sources can store this column as TEXT. The
+			// native JSONL boolean represents its meaning; retain the actual
+			// source encoding separately rather than silently erasing it.
+			archivedSource["pinned"] = raw
+			addUnique(&report.ArchivedSourceFields, "bead/"+record.ID+"/source/pinned")
 		}
 	}
 	typ := text(body["source_type"])
@@ -400,8 +519,16 @@ func convertBead(record Record, report *Report) (*workingIssue, []string) {
 		}
 	}
 	if !supportedIssueTypes[typ] {
-		report.UnsupportedFields = append(report.UnsupportedFields, "bead/"+record.ID+"/source_type")
-		reasons = append(reasons, fmt.Sprintf("bead %q has unsupported kind %q", record.ID, typ))
+		matches := directives.matching(record.Project, record.ID, typ)
+		switch len(matches) {
+		case 0:
+			report.UnsupportedFields = append(report.UnsupportedFields, "bead/"+record.ID+"/source_type")
+			reasons = append(reasons, fmt.Sprintf("bead %q has unsupported kind %q; explicit map_type directive required", record.ID, typ))
+		case 1:
+			directives.markUsed(matches[0], report)
+		default:
+			reasons = append(reasons, fmt.Sprintf("bead %q has conflicting map_type directives for kind %q", record.ID, typ))
+		}
 	}
 	title := text(body["title"])
 	if strings.TrimSpace(title) == "" {
@@ -1070,10 +1197,9 @@ func integer(value any) (int64, bool) {
 	}
 }
 
-// parsePinned accepts the two representations admitted at the Beads SQL/JSON
-// boundary: a JSON boolean or the exact integer JSON values 0 and 1 emitted by
-// the TINYINT(1) source column. It deliberately rejects numeric spellings such
-// as 1.0/1e0 and all broad truthiness coercions.
+// parsePinned accepts JSON booleans, exact integer JSON values 0 and 1,
+// and the exact textual SQL representations 0 and 1 from the paired public
+// source. Decimal/exponent spellings, whitespace and truthiness still refuse.
 func parsePinned(value any) (bool, bool) {
 	switch value := value.(type) {
 	case nil:
@@ -1085,6 +1211,13 @@ func parsePinned(value any) (bool, bool) {
 		return value, true
 	case json.Number:
 		switch value.String() {
+		case "0":
+			return false, true
+		case "1":
+			return true, true
+		}
+	case string:
+		switch value {
 		case "0":
 			return false, true
 		case "1":

@@ -62,6 +62,7 @@ type serviceBackedPolicy struct {
 	presence    atomic.Bool
 	readable    atomic.Bool
 	serviceGets atomic.Int32
+	readGate    *presenceReadGate
 }
 
 func newServiceBackedPolicy() *serviceBackedPolicy {
@@ -90,7 +91,11 @@ func (p *serviceBackedPolicy) current(ctx context.Context, by model.PrincipalRef
 }
 
 func (p *serviceBackedPolicy) CanRead(ctx context.Context, by model.PrincipalRef, bead service.Bead) (bool, error) {
-	return p.current(ctx, by, bead)
+	allowed, err := p.current(ctx, by, bead)
+	if p.readGate != nil {
+		p.readGate.wait(ctx)
+	}
+	return allowed, err
 }
 
 func (p *serviceBackedPolicy) Read(ctx context.Context, by model.PrincipalRef, event model.DurableEvent) (coreevents.Visibility, error) {
@@ -117,17 +122,18 @@ func (p *serviceBackedPolicy) ReadResource(ctx context.Context, by model.Princip
 }
 
 type fixture struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	store   *memory.Store
-	lease   driver.ActiveLease
-	clock   *testClock
-	writer  *pipeline.Writer
-	svc     *service.Service
-	collab  *collab.Manager
-	watch   *watch.Manager
-	adapter *watchhttp.Adapter
-	server  *rpc.Server
+	ctx           context.Context
+	cancel        context.CancelFunc
+	store         *memory.Store
+	lease         driver.ActiveLease
+	clock         *testClock
+	writer        *pipeline.Writer
+	svc           *service.Service
+	collab        *collab.Manager
+	watch         *watch.Manager
+	adapter       *watchhttp.Adapter
+	server        *rpc.Server
+	watchLifetime func(context.Context) context.Context
 
 	mu     sync.Mutex
 	nextID string
@@ -551,6 +557,9 @@ func (f *fixture) watchContext(t *testing.T, principal model.PrincipalRef, sessi
 	if err != nil {
 		t.Fatal(err)
 	}
+	if f.watchLifetime != nil {
+		lifetime = f.watchLifetime(lifetime)
+	}
 	ctx := rpc.WithPrincipal(f.ctx, principal)
 	return watchhttp.WithSession(ctx, sessionID, lifetime)
 }
@@ -769,6 +778,279 @@ func durableState(t *testing.T, f *fixture) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+// presenceReadGate pauses after real service reads, before List validates the
+// session entries. It changes scheduling only; cancellation and errors still
+// come from the collaboration manager.
+type presenceReadGate struct {
+	armed   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newPresenceReadGate() *presenceReadGate {
+	return &presenceReadGate{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (g *presenceReadGate) wait(ctx context.Context) {
+	if g.armed.CompareAndSwap(true, false) {
+		close(g.entered)
+		select {
+		case <-g.release:
+		case <-ctx.Done():
+		}
+	}
+}
+
+func (g *presenceReadGate) unblock() { g.once.Do(func() { close(g.release) }) }
+
+// delayedWatchLifetime exposes the real session's Done and Err immediately,
+// while holding its AfterFunc notification. This deterministically schedules
+// a returning snapshot before the watch observes asynchronous cancellation.
+// Value hides the parent's cancelCtx so context uses the AfterFunc port.
+type delayedWatchLifetime struct {
+	context.Context
+	release <-chan struct{}
+}
+
+func (c delayedWatchLifetime) Value(any) any { return nil }
+
+func (c delayedWatchLifetime) AfterFunc(fn func()) func() bool {
+	return context.AfterFunc(c.Context, func() { <-c.release; fn() })
+}
+
+type observedPresenceSource struct {
+	watch.PresenceSource
+	errors chan error
+}
+
+func (s *observedPresenceSource) Snapshot(ctx context.Context, by model.PrincipalRef, agent, sessionID, project string) ([]byte, error) {
+	data, err := s.PresenceSource.Snapshot(ctx, by, agent, sessionID, project)
+	if err != nil {
+		select {
+		case s.errors <- err:
+		default:
+		}
+	}
+	return data, err
+}
+
+func TestSessionCloseRevokesBufferedEventWatchBeforeLifetimeNotification(t *testing.T) {
+	f := newFixture(t)
+	notification := newPresenceReadGate()
+	defer notification.unblock()
+	f.watchLifetime = func(ctx context.Context) context.Context {
+		return delayedWatchLifetime{Context: ctx, release: notification.release}
+	}
+	f.create(t, "buffered-before-close")
+	sessionID := f.session(t, alice)
+	// Keep the real opening event page buffered. Close must revoke it without
+	// waiting for any asynchronous notification to the watch's derived context.
+	subscription := f.subscribe(t, alice, sessionID, "")
+	if _, err := f.callSessionClose(t, alice, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	beforeDrain := durableState(t, f)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := subscription.Next(ctx); !errors.Is(err, watch.ErrSubscriptionClosed) {
+		t.Fatalf("session close delivered a buffered event before lifetime notification: %v", err)
+	}
+	waitForWatchCount(t, f, sessionID, 0)
+	if string(beforeDrain) != string(durableState(t, f)) {
+		t.Fatal("closed watch drain changed durable rows, history, or head")
+	}
+}
+
+func TestSessionCloseDuringRealPresenceReadUnderConcurrentRPCLoad(t *testing.T) {
+	gate := newPresenceReadGate()
+	defer gate.unblock()
+	policy := newServiceBackedPolicy()
+	policy.readGate = gate
+	observed := &observedPresenceSource{errors: make(chan error, 1)}
+	f := newConfiguredFixtureWithPresence(t, policy, func(source watch.PresenceSource) watch.PresenceSource {
+		observed.PresenceSource = source
+		return observed
+	})
+	notification := newPresenceReadGate()
+	defer notification.unblock()
+	f.watchLifetime = func(ctx context.Context) context.Context {
+		return delayedWatchLifetime{Context: ctx, release: notification.release}
+	}
+	f.create(t, "close-under-load")
+	sessionID := f.session(t, alice)
+	result(t, f.call(t, alice, "presence.set", map[string]any{
+		"sessionId": sessionID, "focus": "bead/close-under-load",
+		"_meta": map[string]any{"project": "project-a"},
+	}))
+	var subscriptions []*watch.Subscription
+	for range 8 {
+		subscription := f.subscribe(t, alice, sessionID, "")
+		_ = nextFrame(t, subscription)
+		subscriptions = append(subscriptions, subscription)
+	}
+	presence := f.presenceWatch(t, alice, sessionID, "")
+	_ = nextFrame(t, presence)
+	gate.armed.Store(true)
+	select {
+	case <-gate.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("presence poll did not reach its real service read")
+	}
+
+	// One writer and seven readers use the real byte dispatcher concurrently
+	// with the in-flight presence poll. All 256 requests must succeed; no busy
+	// retry or reduced workload is used. The first request per client completes
+	// before close, and the remaining batch starts alongside close.
+	const clients, requests = 8, 32
+	ready := make(chan struct{}, clients)
+	start := make(chan struct{})
+	completed := make(chan error, clients)
+	for client := range clients {
+		go func() {
+			var failure error
+			for request := range requests {
+				method := "bead.get"
+				params := map[string]any{"id": map[string]any{"id": "close-under-load"}}
+				if client == 0 {
+					method = "bead.update"
+					params["fields"] = map[string]any{"title": fmt.Sprintf("concurrent write %d", request)}
+					params["_meta"] = map[string]any{"project": "project-a", "idempotencyKey": f.writeKey()}
+				}
+				raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request, "method": method, "params": params})
+				if err == nil {
+					var reply []byte
+					reply, err = inprocess.New(f.server).RoundTrip(rpc.WithPrincipal(f.ctx, alice), raw)
+					if err == nil {
+						var response map[string]any
+						err = json.Unmarshal(reply, &response)
+						if err == nil && response["error"] != nil {
+							err = fmt.Errorf("%s: %v", method, response["error"])
+						}
+					}
+				}
+				if err != nil && failure == nil {
+					failure = err
+				}
+				if request == 0 {
+					ready <- struct{}{}
+					<-start
+				}
+			}
+			completed <- failure
+		}()
+	}
+	for range clients {
+		select {
+		case <-ready:
+		case <-f.ctx.Done():
+			close(start)
+			t.Fatal("concurrent RPC clients did not start")
+		}
+	}
+	close(start)
+	if _, err := f.callSessionClose(t, alice, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	for range clients {
+		select {
+		case err := <-completed:
+			if err != nil {
+				t.Fatal("concurrent real RPC workload failed", err)
+			}
+		case <-f.ctx.Done():
+			t.Fatal("concurrent real RPC workload did not complete")
+		}
+	}
+	meta, err := f.store.Meta(f.ctx)
+	if err != nil || meta.Head != model.Natural64(1+requests) {
+		t.Fatalf("durable head=%s, err=%v; want exactly create plus %d updates", meta.Head, err, requests)
+	}
+	beforeDrain := durableState(t, f)
+	select {
+	case err := <-observed.errors:
+		t.Logf("real snapshot result across session.close: %v; RPC load: %d requests, %d committed updates", err, clients*requests, requests)
+	case <-time.After(3 * time.Second):
+		t.Fatal("closed session did not finish the real in-flight snapshot")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := presence.Next(ctx); !errors.Is(err, watch.ErrSubscriptionClosed) {
+		t.Fatalf("session close did not revoke presence watch under concurrent RPC load: %v", err)
+	}
+	notification.unblock()
+	for _, subscription := range subscriptions {
+		if _, err := subscription.Next(ctx); !errors.Is(err, watch.ErrSubscriptionClosed) {
+			t.Fatalf("session close did not revoke event watch under concurrent RPC load: %v", err)
+		}
+	}
+	waitForWatchCount(t, f, sessionID, 0)
+	if rows := presenceRows(t, f.call(t, bob, "presence.list", map[string]any{"project": "project-a"})); len(rows) != 0 {
+		t.Fatalf("closed session remained visible: %v", rows)
+	}
+	if string(beforeDrain) != string(durableState(t, f)) {
+		t.Fatal("closed watch drain changed durable rows, history, or head")
+	}
+}
+
+func TestPresenceSnapshotCancellationAndLiveContentionPreserveSession(t *testing.T) {
+	for _, scenario := range []string{"request-canceled", "concurrent-presence-set"} {
+		t.Run(scenario, func(t *testing.T) {
+			gate := newPresenceReadGate()
+			defer gate.unblock()
+			policy := newServiceBackedPolicy()
+			policy.readGate = gate
+			f := newConfiguredFixture(t, policy)
+			f.create(t, "snapshot-control")
+			sessionID := f.session(t, alice)
+			set := map[string]any{"sessionId": sessionID, "focus": "bead/snapshot-control", "_meta": map[string]any{"project": "project-a"}}
+			result(t, f.call(t, alice, "presence.set", set))
+			lifetime, err := f.collab.SessionContext(f.ctx, collab.Caller{Principal: alice}, sessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := durableState(t, f)
+			ctx, cancel := context.WithCancel(f.ctx)
+			defer cancel()
+			gate.armed.Store(true)
+			done := make(chan error, 1)
+			go func() {
+				_, err := f.collab.Snapshot(ctx, alice, "", sessionID, "project-a")
+				done <- err
+			}()
+			select {
+			case <-gate.entered:
+			case <-time.After(3 * time.Second):
+				t.Fatal("snapshot did not reach its real service read")
+			}
+			if scenario == "request-canceled" {
+				cancel()
+			} else {
+				result(t, f.call(t, alice, "presence.set", set))
+			}
+			gate.unblock()
+			select {
+			case err := <-done:
+				var typed *model.Error
+				if !errors.As(err, &typed) || typed.Data.Code != "busy" || !typed.Data.Retryable {
+					t.Fatalf("live snapshot must preserve retryable busy: %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("snapshot did not finish")
+			}
+			if lifetime.Err() != nil {
+				t.Fatal("request refusal canceled the live session")
+			}
+			if _, err := f.collab.Snapshot(f.ctx, alice, "", sessionID, "project-a"); err != nil {
+				t.Fatal("live session retry failed", err)
+			}
+			if string(before) != string(durableState(t, f)) {
+				t.Fatal("snapshot refusal or retry changed durable state")
+			}
+		})
+	}
 }
 
 func TestPresenceWatchCloseDuringInFlightSnapshotReturnsClosed(t *testing.T) {

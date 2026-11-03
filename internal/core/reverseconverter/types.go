@@ -123,22 +123,34 @@ type MemoryProjection struct {
 	Value string `json:"value"`
 }
 
+// TypeMapping records an explicit ontology map_type directive that authorized
+// a source type outside Plug's built-in reverse-converter vocabulary. The
+// source type is intentionally retained in the emitted Beads JSONL; To names
+// the target Plug ontology type for the caller's separate migration plan.
+type TypeMapping struct {
+	ID      string `json:"id"`
+	Project string `json:"project"`
+	From    string `json:"from"`
+	To      string `json:"to"`
+}
+
 // Report makes every intentional loss visible. A nonempty refusal is returned
 // as *Refusal and includes this same report, so callers never receive a silent
 // partial import.
 type Report struct {
-	InputDigest           string   `json:"input_digest"`
-	OutputDigest          string   `json:"output_digest,omitempty"`
-	LostPostSwitchHistory []string `json:"lost_post_switch_history,omitempty"`
-	PlugOnlyKinds         []string `json:"plug_only_kinds,omitempty"`
-	Blobs                 []string `json:"blobs,omitempty"`
-	Principals            []string `json:"principals,omitempty"`
-	Warnings              []string `json:"warnings,omitempty"`
-	UnsupportedFields     []string `json:"unsupported_fields,omitempty"`
-	ArchivedSourceFields  []string `json:"archived_source_fields,omitempty"`
-	ConfigReferences      []string `json:"config_references,omitempty"`
-	ArchiveRows           int      `json:"archive_rows,omitempty"`
-	ConfigAsMemories      int      `json:"config_as_memories,omitempty"`
+	InputDigest           string        `json:"input_digest"`
+	OutputDigest          string        `json:"output_digest,omitempty"`
+	LostPostSwitchHistory []string      `json:"lost_post_switch_history,omitempty"`
+	PlugOnlyKinds         []string      `json:"plug_only_kinds,omitempty"`
+	TypeMappings          []TypeMapping `json:"type_mappings,omitempty"`
+	Blobs                 []string      `json:"blobs,omitempty"`
+	Principals            []string      `json:"principals,omitempty"`
+	Warnings              []string      `json:"warnings,omitempty"`
+	UnsupportedFields     []string      `json:"unsupported_fields,omitempty"`
+	ArchivedSourceFields  []string      `json:"archived_source_fields,omitempty"`
+	ConfigReferences      []string      `json:"config_references,omitempty"`
+	ArchiveRows           int           `json:"archive_rows,omitempty"`
+	ConfigAsMemories      int           `json:"config_as_memories,omitempty"`
 }
 
 // Result is a complete conversion. JSONL always ends in a newline when there
@@ -183,6 +195,19 @@ func addUnique(values *[]string, value string) {
 func normalizeReport(report *Report) {
 	sort.Strings(report.LostPostSwitchHistory)
 	sort.Strings(report.PlugOnlyKinds)
+	sort.Slice(report.TypeMappings, func(i, j int) bool {
+		a, b := report.TypeMappings[i], report.TypeMappings[j]
+		if a.ID != b.ID {
+			return a.ID < b.ID
+		}
+		if a.Project != b.Project {
+			return a.Project < b.Project
+		}
+		if a.From != b.From {
+			return a.From < b.From
+		}
+		return a.To < b.To
+	})
 	sort.Strings(report.Blobs)
 	sort.Strings(report.Principals)
 	sort.Strings(report.Warnings)

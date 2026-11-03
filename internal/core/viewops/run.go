@@ -11,8 +11,9 @@ import (
 )
 
 type queryTerm struct {
-	key   string
-	value string
+	key    string
+	value  string
+	labels *labelPredicate
 }
 
 // queryMatches applies the small, deliberately closed view grammar. Scalar
@@ -21,6 +22,9 @@ type queryTerm struct {
 // does. Keeping this distinction here prevents callers from mistaking a text
 // predicate for an identifier predicate while preserving deterministic scans.
 func queryMatches(row stored, term queryTerm) bool {
+	if term.labels != nil {
+		return term.labels.matches(row.doc.Labels)
+	}
 	if term.key == "title" {
 		value, _ := row.doc.Fields["title"].(string)
 		return strings.Contains(value, term.value)
@@ -29,6 +33,11 @@ func queryMatches(row stored, term queryTerm) bool {
 }
 
 func parseQuery(query string) ([]queryTerm, error) {
+	return parseLabelQuery(query)
+}
+
+// Scalar token validation retains the existing equality-only grammar.
+func parseScalarQuery(query string) ([]queryTerm, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, nil
@@ -144,6 +153,9 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	if err != nil {
 		return Result{}, err
 	}
+	if req.CountOnly && (req.Cursor != nil || len(definition.GroupBy) != 0) {
+		return Result{}, failure("invalid_params", "countOnly does not accept a cursor or grouping")
+	}
 	if isEpicProgress(definition) {
 		return s.runEpicProgress(ctx, by, req, definition)
 	}
@@ -189,15 +201,36 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	// still evaluates on every page request, so a revoked grant cannot reuse an
 	// earlier page's decision.
 	authorized := make(map[string]bool, len(rows))
-	for _, row := range rows {
-		if !matches(row, filter, project, terms) {
-			continue
+	if req.CountOnly && s.cfg.AuthorizeReadBatch != nil {
+		refs := make([]model.ResourceRef, 0, len(rows))
+		for _, row := range rows {
+			if matches(row, filter, project, terms) {
+				refs = append(refs, model.ResourceRef{Kind: "bead", Ref: row.record.Ref})
+			}
 		}
-		ok, err := s.authorize(ctx, by, row)
-		if err != nil {
-			return Result{}, mapped(err)
+		if len(refs) != 0 {
+			decisions, err := s.cfg.AuthorizeReadBatch(ctx, by, refs)
+			if err != nil {
+				return Result{}, mapped(err)
+			}
+			if len(decisions) != len(refs) {
+				return Result{}, failure("authz_unavailable", "batch read authorization returned incomplete decisions")
+			}
+			for i, ref := range refs {
+				authorized[ref.Ref.ID] = decisions[i]
+			}
 		}
-		authorized[row.doc.ID] = ok
+	} else {
+		for _, row := range rows {
+			if !matches(row, filter, project, terms) {
+				continue
+			}
+			ok, err := s.authorize(ctx, by, row)
+			if err != nil {
+				return Result{}, mapped(err)
+			}
+			authorized[row.doc.ID] = ok
+		}
 	}
 	candidates := make([]stored, 0, len(rows))
 	for _, row := range rows {
@@ -205,32 +238,34 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 			candidates = append(candidates, row)
 		}
 	}
-	// Only unreadable blocker targets contribute a hidden-blocker count. They
-	// are authorized independently so a visible non-candidate never becomes a
-	// false hidden trace.
-	for _, row := range candidates {
-		for _, link := range row.doc.Links {
-			if link.Kind != "blocks" && link.Kind != "conditional-blocks" {
-				continue
+	if !req.CountOnly {
+		// Only unreadable blocker targets contribute a hidden-blocker count. They
+		// are authorized independently so a visible non-candidate never becomes a
+		// false hidden trace.
+		for _, row := range candidates {
+			for _, link := range row.doc.Links {
+				if link.Kind != "blocks" && link.Kind != "conditional-blocks" {
+					continue
+				}
+				if !link.To.IsID() || !link.To.Branch.IsZero() {
+					continue
+				}
+				target, exists := findStored(rows, link.To.ID)
+				if !exists {
+					continue
+				}
+				if _, checked := authorized[target.doc.ID]; checked {
+					continue
+				}
+				ok, err := s.authorize(ctx, by, target)
+				if err != nil {
+					return Result{}, mapped(err)
+				}
+				authorized[target.doc.ID] = ok
 			}
-			if !link.To.IsID() || !link.To.Branch.IsZero() {
-				continue
-			}
-			target, exists := findStored(rows, link.To.ID)
-			if !exists {
-				continue
-			}
-			if _, checked := authorized[target.doc.ID]; checked {
-				continue
-			}
-			ok, err := s.authorize(ctx, by, target)
-			if err != nil {
-				return Result{}, mapped(err)
-			}
-			authorized[target.doc.ID] = ok
 		}
+		sortStored(candidates, definition.Sort)
 	}
-	sortStored(candidates, definition.Sort)
 	typeSummary := len(definition.GroupBy) == 1 && definition.GroupBy[0] == "type" && definition.Fields != nil && len(definition.Fields) == 0
 	cap := OrdinaryCandidateCap
 	if typeSummary {
@@ -238,6 +273,19 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	}
 	if len(candidates) > cap {
 		return Result{}, &model.Error{Data: model.ErrorData{Code: "scope_too_large", Hint: "authorized view candidates exceed the bounded cap", Details: map[string]any{"cap": cap}}}
+	}
+	if req.CountOnly {
+		// Membership is the same complete, currently authorized candidate set
+		// as item mode. Output budgets cannot truncate an exact count, but
+		// their supported range is still validated as it is for item mode.
+		if _, err := s.outputBudget(definition); err != nil {
+			return Result{}, err
+		}
+		if err := s.admit(ctx, by); err != nil {
+			return Result{}, err
+		}
+		count := len(candidates)
+		return Result{Items: []Bead{}, AsOf: asOf, Count: &count, Projection: projection}, nil
 	}
 	pending, err := s.pendingReadiness(ctx, reader, candidates)
 	if err != nil {
@@ -650,7 +698,7 @@ func (s *Service) projectDirectBlockers(ctx context.Context, by model.PrincipalR
 		byID[doc.ID] = stored{record: record, doc: doc}
 	}
 	for _, edge := range verdict.Edges {
-		if edge.Kind != "blocks" && edge.Kind != "conditional-blocks" {
+		if edge.Kind != "blocks" && edge.Kind != "conditional-blocks" && edge.Kind != "waits-for" {
 			return nil, failure("internal_error", "invalid direct blocker kind")
 		}
 		if edge.State != DirectBlockerSatisfied && edge.State != DirectBlockerUnsatisfied && edge.State != DirectBlockerUnknown {

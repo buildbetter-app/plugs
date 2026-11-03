@@ -322,6 +322,22 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "plane": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plugin": {
+            "type": "string"
+          },
+          "workflowRunId": {
+            "type": "string"
           }
         },
         "required": [
@@ -501,6 +517,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/SetMetaOp"
+                },
+                {
+                  "$ref": "#/components/schemas/CloseOp"
                 }
               ]
             },
@@ -608,6 +627,10 @@
           },
           "linkKind": {
             "type": "string"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/LinkMetadata",
+            "description": "Only valid for a waits-for link. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
           }
         },
         "required": [
@@ -806,9 +829,19 @@
         "required": [
           "revision",
           "results",
-          "warnings",
-          "leaseExpiresAt",
-          "leaseTtlMs"
+          "warnings"
+        ],
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "leaseExpiresAt",
+              "leaseTtlMs"
+            ]
+          },
+          {
+            "$ref": "#/components/schemas/WorkflowClaimReceipt"
+          }
         ],
         "additionalProperties": false
       },
@@ -1189,6 +1222,12 @@
           },
           "projection": {
             "$ref": "#/components/schemas/ProjectionStatus"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20000,
+            "description": "Exact authorized ordinary predicate total, present including zero only for countOnly=true. Items is empty; groups, elisions and nextCursor are absent. The ordinary 20,000 authorized-candidate cap applies; overflow refuses scope_too_large without a partial count."
           }
         },
         "required": [
@@ -1247,7 +1286,8 @@
             "type": "string",
             "enum": [
               "blocks",
-              "conditional-blocks"
+              "conditional-blocks",
+              "waits-for"
             ]
           },
           "state": {
@@ -3744,6 +3784,358 @@
         ],
         "additionalProperties": false,
         "description": "Transaction-local prepared import profile. The trusted host creates it after admission; ordinary JSON-RPC callers cannot submit or forge it."
+      },
+      "CloseOp": {
+        "type": "object",
+        "description": "Enter the canonical close slot at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or status shortcut.",
+        "properties": {
+          "kind": {
+            "const": "close"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "expect": {
+            "type": "array",
+            "description": "Preconditions against the ordered in-request image before this close. Revision guards refuse a record written earlier in this request. ChangeSet.expect keeps its pinned-snapshot semantics.",
+            "items": {
+              "$ref": "#/components/schemas/Expect"
+            }
+          }
+        },
+        "required": [
+          "kind",
+          "target"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowChecklistItem": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowRun": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "completed"
+            ]
+          },
+          "owner": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "mode",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "plane": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plugin": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "claim": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "title",
+          "type",
+          "project",
+          "status",
+          "plane",
+          "kind",
+          "revision"
+        ],
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^workflow:item/."
+              },
+              "runId": {
+                "type": "string",
+                "pattern": "^workflow:run/."
+              },
+              "plane": {
+                "const": "ephemeral"
+              },
+              "kind": {
+                "const": "workflow.item"
+              },
+              "plugin": {
+                "const": "workflow"
+              }
+            },
+            "required": [
+              "runId",
+              "plugin"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "plane": {
+                "const": "permanent"
+              },
+              "kind": {
+                "const": "bead"
+              },
+              "runId": {
+                "const": ""
+              },
+              "plugin": {
+                "const": ""
+              }
+            }
+          }
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowClaimReceipt": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "const": 0
+          },
+          "results": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^workflow:item/."
+                    },
+                    "branch": {
+                      "const": 0
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ],
+                  "additionalProperties": false
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "ref",
+                "revision"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "maxItems": 0
+          }
+        },
+        "required": [
+          "revision",
+          "results",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowInvokeResult": {
+        "type": "object",
+        "properties": {
+          "plane": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "run": {
+            "$ref": "#/components/schemas/WorkflowRun"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowItem"
+            }
+          }
+        },
+        "required": [
+          "plane",
+          "items"
+        ],
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "plane": {
+                "const": "permanent"
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "plane": {
+                      "const": "permanent"
+                    }
+                  }
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "plane": {
+                "const": "ephemeral"
+              },
+              "run": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^workflow:run/."
+                  },
+                  "mode": {
+                    "const": "ephemeral"
+                  }
+                }
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "plane": {
+                      "const": "ephemeral"
+                    }
+                  }
+                }
+              }
+            },
+            "required": [
+              "run"
+            ]
+          }
+        ],
+        "additionalProperties": false
+      },
+      "LinkMetadata": {
+        "type": "object",
+        "properties": {
+          "gate": {
+            "type": "string",
+            "enum": [
+              "all-children",
+              "any-children"
+            ]
+          },
+          "also_blocks": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       }
     },
     "errors": {
@@ -5816,6 +6208,40 @@
           ],
           "additionalProperties": false
         }
+      },
+      "PluginDurableStateUnavailable": {
+        "code": -32056,
+        "message": "plugin durable state unavailable",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "plugin_durable_state_unavailable"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
       }
     }
   },
@@ -6495,6 +6921,13 @@
       "jsonRpc": -32055,
       "retryable": true,
       "audience": "internal",
+      "warningCapable": false
+    },
+    {
+      "code": "plugin_durable_state_unavailable",
+      "jsonRpc": -32056,
+      "retryable": false,
+      "audience": "client",
       "warningCapable": false
     }
   ]

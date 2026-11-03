@@ -1,0 +1,66 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+filegroup(
+    name = "public_reference_validation",
+    srcs = [
+        "prepare-public-bundle.py",
+        "prepare-public-reference.py",
+    ],
+    visibility = ["//spec/s1-b13-b16:__pkg__"],
+)
+
+sh_test(
+    name = "prepare_public_bundle_test",
+    srcs = ["prepare-public-bundle-test.py"],
+    data = ["prepare-public-bundle.py"],
+    size = "small",
+)
+
+sh_test(
+    name = "prepare_public_reference_test",
+    srcs = ["prepare-public-reference-test.py"],
+    data = [
+        "prepare-public-bundle.py",
+        "prepare-public-reference.py",
+    ],
+    size = "small",
+)
+
+sh_test(
+    name = "reconcile_openrpc_test",
+    srcs = ["reconcile-openrpc-test.py"],
+    args = ["-v"],
+    data = [
+        "reconcile-openrpc.py",
+        "//:engdocs/design/plug/contracts/openrpc.json",
+    ],
+    size = "small",
+)
+
+sh_test(
+    name = "reconcile_openrpc_checkout_test",
+    srcs = ["reconcile-openrpc-check.py"],
+    data = [
+        "reconcile-openrpc.py",
+        "//:engdocs/design/plug/contracts/openrpc.json",
+        "//internal/api/wire:reconcile_openrpc_inputs",
+    ],
+    size = "small",
+)
+
+sh_test(
+    name = "plug_bazel_targets_test",
+    srcs = ["plug-bazel-targets-test.sh"],
+    data = ["plug-bazel-targets.sh"],
+    size = "small",
+)
+
+sh_test(
+    name = "plug_bazel_delivery_test",
+    srcs = ["plug-bazel-delivery-test.sh"],
+    data = [
+        "plug-bazel-delivery.py",
+        "plug-bazel-targets.sh",
+    ],
+    size = "small",
+)

@@ -9,14 +9,24 @@ go_library(
     ],
     importpath = "github.com/buildbetter-app/plugs/internal/core/reverseconverter",
     visibility = ["//visibility:public"],
-    deps = ["//internal/core/dumpformat"],
+    deps = [
+        "//internal/core/dumpformat",
+        "//internal/core/ontologymigration",
+    ],
 )
 
 go_test(
     name = "reverseconverter_test",
-    srcs = ["reverseconverter_test.go"],
-    data = ["//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar"],
-    deps = ["//internal/core/dumpformat"],
+    srcs = ["reverseconverter_test.go", "public_archive_test.go"],
+    data = [
+        "//internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar",
+        "//internal/integration/converterroundtrip:public_source_fixtures",
+        "//internal/integration/offlinehistory:lexicon_files",
+    ],
+    deps = [
+        "//internal/core/dumpformat",
+        "//internal/core/ontologymigration",
+    ],
     embed = [":reverseconverter"],
     size = "small",
 )

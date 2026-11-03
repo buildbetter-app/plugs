@@ -1316,6 +1316,17 @@ type claimNextRaceTx struct {
 	hasHead bool
 }
 
+// The race wrapper observes Head and Query, but must preserve the optional
+// atomic source writer of its real memory transaction. Hiding that capability
+// would turn an otherwise valid certified bead update into an untyped Put.
+func (tx *claimNextRaceTx) PutGraphRecord(ctx context.Context, record driver.Record, parent *model.Ref, links []driver.SourceLink) error {
+	writer, ok := tx.WriteTx.(driver.GraphSourceWriter)
+	if !ok {
+		return driver.ErrUnsupported
+	}
+	return writer.PutGraphRecord(ctx, record, parent, links)
+}
+
 func (tx *claimNextRaceTx) Head(ctx context.Context) (model.Revision, error) {
 	head, err := tx.WriteTx.Head(ctx)
 	tx.hasHead = err == nil
@@ -1542,6 +1553,97 @@ func TestGuardDoesNotIgnoreUnsupportedStoredParent(t *testing.T) {
 	wantCode(t, err, "invalid_params")
 }
 
+func TestHierarchyGraphNeededOnlyForParentRelationChanges(t *testing.T) {
+	parent := model.RefByID("pl-parent", model.Natural64(0))
+	before, err := json.Marshal(pipeline.Document{ID: "pl-child", Type: "issue", Parent: &parent, Fields: map[string]any{"title": "before"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged := append(json.RawMessage(nil), before...)
+	other := model.RefByID("pl-other", model.Natural64(0))
+	changedDoc := pipeline.Document{ID: "pl-child", Type: "issue", Parent: &other, Fields: map[string]any{"title": "after"}}
+	changed, err := json.Marshal(changedDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := json.Marshal(pipeline.Document{ID: "pl-root", Type: "issue", Fields: map[string]any{"title": "root", "status": "todo"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusBefore, err := json.Marshal(pipeline.Document{ID: "pl-status", Type: "issue", Parent: &parent, Fields: map[string]any{"title": "status", "status": "todo"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusAfter, err := json.Marshal(pipeline.Document{ID: "pl-status", Type: "issue", Parent: &parent, Fields: map[string]any{"title": "status", "status": "in_progress"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectAfter, err := json.Marshal(pipeline.Document{ID: "pl-child", Project: "other", Type: "issue", Parent: &parent, Fields: map[string]any{"title": "project"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	typeAfter, err := json.Marshal(pipeline.Document{ID: "pl-child", Type: "other", Parent: &parent, Fields: map[string]any{"title": "type"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childCreate, err := json.Marshal(pipeline.Document{ID: "pl-new", Type: "issue", Parent: &parent, Fields: map[string]any{"title": "new", "status": "todo"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bead := func(op model.OpKind, old, next []byte) port.Change {
+		return port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: model.RefByID("pl-child", model.Natural64(0))}, Op: model.Op{Kind: op}, Before: old, After: next}
+	}
+	for name, tc := range map[string]struct {
+		change port.Change
+		want   bool
+		setBy  map[string]string
+	}{
+		"ordinary-parented-field-update": {change: bead(model.OpPatch, before, unchanged), want: false},
+		"actual-parent-edit":             {change: bead(model.OpPatch, before, changed), want: true},
+		"parented-create":                {change: bead(model.OpCreate, nil, childCreate), want: true},
+		"parented-create-status-touch":   {change: bead(model.OpCreate, nil, childCreate), want: true, setBy: map[string]string{"fields.status": "request"}},
+		"root-create":                    {change: bead(model.OpCreate, nil, root), want: false},
+		"root-create-status-touch":       {change: bead(model.OpCreate, nil, root), want: false, setBy: map[string]string{"fields.status": "request"}},
+		"parented-delete":                {change: bead(model.OpDelete, before, nil), want: true},
+		"root-delete":                    {change: bead(model.OpDelete, root, nil), want: false},
+		"existing-status-drift":          {change: bead(model.OpPatch, statusBefore, statusAfter), want: true},
+		"existing-project-drift":         {change: bead(model.OpPatch, before, projectAfter), want: true},
+		"existing-type-drift":            {change: bead(model.OpPatch, before, typeAfter), want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tc.change.SetBy = tc.setBy
+			got, err := hierarchyGraphNeeded(port.ProposedChange{Changes: []port.Change{tc.change}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("hierarchyGraphNeeded=%v, want %v", got, tc.want)
+			}
+		})
+	}
+	_, err = hierarchyGraphNeeded(port.ProposedChange{Changes: []port.Change{bead(model.OpPatch, before, []byte(`{"not":"a bead"}`))}})
+	wantCode(t, err, "invalid_params")
+	for _, op := range []model.OpKind{model.OpReparent, model.OpLink, model.OpUnlink} {
+		_, err = hierarchyGraphNeeded(port.ProposedChange{Changes: []port.Change{bead(op, before, []byte(`{"not":"a bead"}`))}})
+		wantCode(t, err, "invalid_params")
+	}
+	statusTouch := bead(model.OpPatch, before, unchanged)
+	statusTouch.SetBy = map[string]string{"fields.status": "request"}
+	got, err := hierarchyGraphNeeded(port.ProposedChange{Changes: []port.Change{statusTouch}})
+	if err != nil || !got {
+		t.Fatalf("same-value status touch lost lifecycle graph validation: needed=%v err=%v", got, err)
+	}
+	linkChange := bead(model.OpLink, before, unchanged)
+	got, err = hierarchyGraphNeeded(port.ProposedChange{Changes: []port.Change{linkChange}})
+	if err != nil || !got {
+		t.Fatalf("link mutation lost relational graph validation: needed=%v err=%v", got, err)
+	}
+	got, err = hierarchyGraphNeeded(port.ProposedChange{Changes: []port.Change{{Resource: model.ResourceRef{Kind: "bead"}, Op: model.Op{Kind: model.OpReparent}, Before: unchanged, After: unchanged}}})
+	if err != nil || !got {
+		t.Fatal("explicit reparent must retain graph validation even when the final parent is unchanged")
+	}
+}
+
 func TestSlotSelectionUsesOntologyKeys(t *testing.T) {
 	f := setup(t)
 	doc := ontology.DefaultDocument()
@@ -1591,7 +1693,7 @@ func TestGetCommentSnapshotsAndDetachedProvenance(t *testing.T) {
 	doc := pipeline.Document{ID: ref.ID, Project: "local", Type: "issue", Fields: map[string]any{"title": "Comments", "status": "todo"}}
 	source := f.now.Add(-time.Hour)
 	doc.Comments = []pipeline.Comment{{Body: "legacy", Principal: anonymous, Time: f.now}, {Body: "imported", Principal: model.PrincipalRef{Kind: "user", ID: "restore-admin", Caveats: map[string]any{"nested": map[string]any{"value": "original"}}}, Time: f.now, Origin: "import", SourceAuthor: "original author", SourceTime: &source}}
-	seeded, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: mustJSON(t, doc)}})
+	seeded, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: mustJSON(t, doc), Graph: &conformance.FixtureGraphSource{}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1629,7 +1731,7 @@ func TestGetRefusesMalformedStoredCommentUnion(t *testing.T) {
 				comment[k] = v
 			}
 			doc := map[string]any{"id": ref.ID, "project": "local", "type": "issue", "fields": map[string]any{"title": "Malformed", "status": "todo"}, "comments": []any{comment}}
-			_, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: mustJSON(t, doc)}})
+			_, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: mustJSON(t, doc), Graph: &conformance.FixtureGraphSource{}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1657,7 +1759,7 @@ func TestCanonicalParentCannotSatisfyNoOpenChildren(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: child, Kind: "bead", Op: model.OpPatch, Body: body}}); err != nil {
+			if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: child, Kind: "bead", Op: model.OpPatch, Body: body, Graph: &conformance.FixtureGraphSource{Parent: &parent}}}); err != nil {
 				t.Fatal(err)
 			}
 			before, err := f.store.Meta(ctx)

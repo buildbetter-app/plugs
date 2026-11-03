@@ -24,7 +24,9 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/viewrpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/postgres"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
+	"github.com/buildbetter-app/plugs/internal/testclock"
 )
 
 const (
@@ -43,8 +45,9 @@ type frame struct {
 
 type rpcError struct {
 	Data struct {
-		Code    string         `json:"code"`
-		Details map[string]any `json:"details"`
+		Code      string         `json:"code"`
+		Retryable bool           `json:"retryable"`
+		Details   map[string]any `json:"details"`
 	} `json:"data"`
 }
 
@@ -60,26 +63,29 @@ type fixture struct {
 	t       *testing.T
 	ctx     context.Context
 	engine  string
+	dsn     string
 	path    string
 	store   driver.Store
 	lease   driver.ActiveLease
 	writer  *pipeline.Writer
 	service *service.Service
 	server  *rpc.Server
-	clock   time.Time
+	clock   *testclock.Clock
 	ids     []string
 	idIndex int
+	options []pipeline.Option
 	frames  []frame
 	mu      sync.Mutex
 }
 
-func newFixture(t *testing.T, engine string) *fixture {
+func newFixture(t *testing.T, engine string, options ...pipeline.Option) *fixture {
 	t.Helper()
 	f := &fixture{
-		t:      t,
-		ctx:    context.Background(),
-		engine: engine,
-		clock:  time.Date(2026, 11, 1, 23, 0, 0, 0, time.UTC),
+		t:       t,
+		ctx:     context.Background(),
+		engine:  engine,
+		options: append([]pipeline.Option(nil), options...),
+		clock:   testclock.New(t, time.Date(2026, 11, 1, 23, 0, 0, 123456000, time.UTC)),
 		ids: []string{
 			"s1-b21-anchor", "s1-b21-created", "s1-b22-anchor",
 			"s1-b23-alpha", "s1-b23-beta", "s1-b23-closed", "s1-b24-item",
@@ -88,6 +94,9 @@ func newFixture(t *testing.T, engine string) *fixture {
 	}
 	if engine == "sqlite" {
 		f.path = filepath.Join(t.TempDir(), "s1.sqlite")
+	}
+	if engine == "postgres" {
+		f.dsn = f.clock.BindPostgres(t, testclock.PostgresDSN(t))
 	}
 	f.open(t)
 	t.Cleanup(func() {
@@ -112,12 +121,14 @@ func (f *fixture) open(t *testing.T) {
 	switch f.engine {
 	case "memory":
 		f.store, err = memory.NewWithOptions(memory.Options{
-			Clock:       func() time.Time { return f.clock },
+			Clock:       f.clock.Now,
 			StoreID:     driver.StoreID("s1-memory-store"),
 			Incarnation: "s1-memory-incarnation",
 		})
 	case "sqlite":
-		f.store, err = (sqlite.Driver{}).Open(f.ctx, driver.Config{DSN: f.path})
+		f.store, err = (sqlite.Driver{Clock: f.clock.Now}).Open(f.ctx, driver.Config{DSN: f.path})
+	case "postgres":
+		f.store, err = postgres.Open(f.ctx, driver.Config{DSN: f.dsn})
 	default:
 		t.Fatalf("unknown engine %q", f.engine)
 	}
@@ -135,14 +146,16 @@ func (f *fixture) bind(t *testing.T) {
 		t.Fatal(err)
 	}
 	ontology := service.NewOntology(nil)
-	f.writer = pipeline.New(f.store, f.lease,
+	options := []pipeline.Option{
 		pipeline.WithOntology(ontology),
-		pipeline.WithClock(func() time.Time { return f.clock }),
+		pipeline.WithClock(f.clock.Now),
 		pipeline.WithIDGenerator(f.nextID),
-	)
+	}
+	options = append(options, f.options...)
+	f.writer = pipeline.New(f.store, f.lease, options...)
 	f.service = service.New(f.store, f.lease, f.writer,
 		service.WithOntology(ontology),
-		service.WithClock(func() time.Time { return f.clock }),
+		service.WithClock(f.clock.Now),
 	)
 	registry, err := rpc.NewRegistry()
 	if err != nil {
@@ -209,7 +222,7 @@ func (f *fixture) reopen(t *testing.T) {
 	}
 	f.store = nil
 	var err error
-	f.store, err = (sqlite.Driver{}).Open(f.ctx, driver.Config{DSN: f.path})
+	f.store, err = (sqlite.Driver{Clock: f.clock.Now}).Open(f.ctx, driver.Config{DSN: f.path})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,4 +362,13 @@ func (f *fixture) writeTrace() {
 	if err := os.WriteFile(filepath.Join(dir, name), append(data, '\n'), 0600); err != nil {
 		f.t.Errorf("write trace: %v", err)
 	}
+}
+
+func (f *fixture) advance(t *testing.T, delta time.Duration) {
+	t.Helper()
+	if err := f.lease.Release(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	f.clock.Advance(t, delta)
+	f.bind(t)
 }

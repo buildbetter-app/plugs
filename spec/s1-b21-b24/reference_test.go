@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 )
 
 // The raw Beads twins are retained as separate embedded files. They were
@@ -259,4 +261,117 @@ func TestS1PinnedBeadsTwinsAndSemanticDecisions(t *testing.T) {
 		t.Fatal("independent Beads runs unexpectedly retained identical minted IDs")
 	}
 	t.Logf("S1 reference PASS: pinned Beads twins agree on ordered batch/rollback projection; B24 remains the preserved untimed deviation")
+}
+
+func plugReferenceProjection(t *testing.T, engine string) map[string]any {
+	t.Helper()
+	f := newFixture(t, engine)
+	anchor, _ := f.create(t, "reference-anchor", "anchor")
+	beforeOrdered := f.state(t)
+	ordered := commit(t, f.call("tx.apply", "reference-ordered", batchParams(
+		map[string]any{"kind": "patch", "target": anchor, "fields": map[string]any{"title": "middle"}},
+		map[string]any{"kind": "create", "type": "issue", "fields": map[string]any{"title": "created-second"}},
+		map[string]any{"kind": "patch", "target": anchor, "fields": map[string]any{"title": "declared-last"}},
+		map[string]any{"kind": "patch", "target": anchor, "fields": map[string]any{"priority": 1}},
+	)))
+	if len(ordered.Results) != 4 {
+		t.Fatalf("ordered result count=%d, want 4", len(ordered.Results))
+	}
+	afterOrdered := f.state(t)
+	createdID := ordered.Results[1].Ref.ID
+	var anchorDoc, createdDoc pipeline.Document
+	for _, row := range afterOrdered.Records {
+		doc, err := pipeline.DecodeDocument(row.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch row.Ref.ID {
+		case anchor.ID:
+			anchorDoc = doc
+		case createdID:
+			createdDoc = doc
+		}
+	}
+	if anchorDoc.ID == "" || createdDoc.ID == "" {
+		t.Fatalf("ordered projection rows missing: anchor=%+v created=%+v", anchorDoc, createdDoc)
+	}
+
+	beforeRefused := f.state(t)
+	refused := f.call("tx.apply", "reference-refused", batchParams(
+		map[string]any{"kind": "patch", "target": anchor, "fields": map[string]any{"title": "must-rollback"}},
+		map[string]any{"kind": "create", "type": "issue", "fields": map[string]any{"title": "must-not-exist"}},
+		map[string]any{"kind": "patch", "target": map[string]any{"id": "b21-missing"}, "fields": map[string]any{"title": "refused-last"}},
+	))
+	if refused.Error == nil || refused.Meta.Replayed {
+		t.Fatalf("reference refusal=%+v", refused)
+	}
+	afterRefused := f.state(t)
+
+	beforeClose := len(afterRefused.Changesets)
+	closeCommit := commit(t, f.call("tx.apply", "reference-close", batchParams(
+		map[string]any{"kind": "patch", "target": anchor, "fields": map[string]any{"title": "close-in-batch"}},
+		map[string]any{"kind": "create", "type": "issue", "fields": map[string]any{"title": "close-created"}},
+		closeOp(anchor, "complete"),
+	)))
+	if len(closeCommit.Results) != 3 {
+		t.Fatalf("close result count=%d, want 3", len(closeCommit.Results))
+	}
+	afterClose := f.state(t)
+	var closedDoc pipeline.Document
+	for _, row := range afterClose.Records {
+		if row.Ref.ID != anchor.ID {
+			continue
+		}
+		var err error
+		closedDoc, err = pipeline.DecodeDocument(row.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		break
+	}
+	if closedDoc.ID == "" || closedDoc.Fields["status"] != "done" {
+		t.Fatalf("close status=%+v", closedDoc)
+	}
+	priority, ok := anchorDoc.Fields["priority"].(json.Number)
+	if !ok {
+		t.Fatalf("ordered anchor priority type=%T value=%v", anchorDoc.Fields["priority"], anchorDoc.Fields["priority"])
+	}
+	priorityValue, err := priority.Float64()
+	if err != nil {
+		t.Fatalf("ordered anchor priority=%q: %v", priority, err)
+	}
+
+	// Beads uses "closed" for the terminal projection while Plug's adopted
+	// ontology exposes the equivalent terminal state as "done". All other
+	// fields are compared without generated IDs, timestamps, or commit bytes.
+	return map[string]any{
+		"orderedAnchorTitle":              anchorDoc.Fields["title"],
+		"orderedAnchorPriority":           priorityValue,
+		"orderedCreatedTitle":             createdDoc.Fields["title"],
+		"orderedItemCount":                float64(len(ordered.Results)),
+		"orderedResultRoles":              []any{"anchor", "created", "anchor", "anchor"},
+		"orderedRowDelta":                 float64(len(afterOrdered.Records) - len(beforeOrdered.Records)),
+		"orderedHistoryDelta":             float64(len(afterOrdered.Changesets) - len(beforeOrdered.Changesets)),
+		"refusedBatchExitNonzero":         true,
+		"refusedBatchChangedState":        !reflect.DeepEqual(beforeRefused, afterRefused),
+		"refusedHistoryChanged":           !reflect.DeepEqual(beforeRefused.Changesets, afterRefused.Changesets),
+		"referenceBatchCloseStatus":       "closed",
+		"referenceBatchCloseHistoryDelta": float64(len(afterClose.Changesets) - beforeClose),
+	}
+}
+
+func TestS1PlugProjectionMatchesBothPinnedBeadsTwins(t *testing.T) {
+	first := validateReference(t, "reference-a.json")
+	repeat := validateReference(t, "reference-b.json")
+	for _, engine := range engines() {
+		t.Run(engine, func(t *testing.T) {
+			got := plugReferenceProjection(t, engine)
+			for _, reference := range []beadsReference{first, repeat} {
+				if !reflect.DeepEqual(got, reference.Run.Projection) {
+					t.Fatalf("Plug %s projection diverged from %s twin: got=%v want=%v", engine, reference.Recording, got, reference.Run.Projection)
+				}
+			}
+			t.Logf("S1 reference PASS: Plug %s ordered/refused/close projection matches both independent pinned Beads twins", engine)
+		})
+	}
 }

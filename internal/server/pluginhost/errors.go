@@ -19,15 +19,17 @@ func failure(code, format string, args ...any) error {
 }
 
 const (
-	ErrManifest   = "plugin_manifest_invalid"
-	ErrMethod     = "plugin_method_out_of_scope"
-	ErrPatch      = "plugin_patch_out_of_scope"
-	ErrRead       = "plugin_read_out_of_scope"
-	ErrBudget     = "plugin_read_budget_exceeded"
-	ErrHotWrite   = "plugin_host_write_in_sync_call"
-	ErrReentrant  = "plugin_reentrant_write"
-	ErrHotEgress  = "plugin_egress_in_hot_path"
-	ErrEgress     = "plugin_egress_denied"
-	ErrInactive   = "plugin_host_inactive"
-	ErrPluginBusy = "plugin_busy"
+	ErrManifest     = "plugin_manifest_invalid"
+	ErrMethod       = "plugin_method_out_of_scope"
+	ErrPatch        = "plugin_patch_out_of_scope"
+	ErrRead         = "plugin_read_out_of_scope"
+	ErrBudget       = "plugin_read_budget_exceeded"
+	ErrHotWrite     = "plugin_host_write_in_sync_call"
+	ErrReentrant    = "plugin_reentrant_write"
+	ErrHotEgress    = "plugin_egress_in_hot_path"
+	ErrEgress       = "plugin_egress_denied"
+	ErrDurable      = "plugin_durable_unavailable"
+	ErrDurableState = "plugin_durable_state_unavailable"
+	ErrInactive     = "plugin_host_inactive"
+	ErrPluginBusy   = "plugin_busy"
 )

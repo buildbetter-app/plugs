@@ -24,6 +24,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/watch"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	sdk "github.com/buildbetter-app/plugs/sdk/go"
 )
 
 type compositionViews map[string]viewops.Definition
@@ -570,6 +571,23 @@ func TestFailedCompositionClosesStoreAndLease(t *testing.T) {
 	}
 	if _, metaErr := base.Meta(context.Background()); metaErr == nil {
 		t.Fatal("failed composition left its store open")
+	}
+}
+
+func TestInvalidNativeCompositionClosesStore(t *testing.T) {
+	store := memory.New()
+	_, err := Open(context.Background(), Config{
+		Driver:        "memory",
+		NativePlugins: []sdk.Native{{}},
+		StoreFactory: func(context.Context, string, driver.Config) (driver.Store, error) {
+			return store, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("invalid native composition unexpectedly succeeded")
+	}
+	if _, metaErr := store.Meta(context.Background()); metaErr == nil {
+		t.Fatal("invalid native composition left its store open")
 	}
 }
 

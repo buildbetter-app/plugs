@@ -23,9 +23,9 @@ const (
 	idA = "pl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	idB = "pl-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	idC = "pl-cccccccccccccccccccccccccccccccc"
-	// Fixed digest of an independently constructed builtin-head/1 image with
-	// each bead's required self ancestor at depth zero.
-	supportedDerived = "9611fb51234ff87fd0cbb76772c77ebe7bd975db8444894d95a43652901f8492"
+	// Fixed digest of an independently constructed 20-row, nine-table
+	// builtin-head/1 image with canonical self-ancestor keys and scalar zero.
+	supportedDerived = "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed"
 )
 
 // This is a separately constructed head-only input, NOT the pinned exporter
@@ -286,6 +286,9 @@ func TestRestoreRequiresMatchingIndependentComparison(t *testing.T) {
 				// The previous image omitted mandatory self ancestors. Its
 				// comparison must refuse before any write, even on an empty store.
 				{{ArchiveSHA256: check.ArchiveSHA256, DerivedSHA256: "76f2bbff964bca8043b9952adeb69583432b567d622a9dbca2d541cf816229eb"}},
+				// The old array-valued closure image is also incompatible with
+				// canonical hierarchy rows and must never authorize publication.
+				{{ArchiveSHA256: check.ArchiveSHA256, DerivedSHA256: "89f6eb61310b4f9193e9925e2a2305101b126f763e870986bc7ca51f6043d28a"}},
 			} {
 				if _, err := RestoreWithLease(context.Background(), bytes.NewReader(data), target, lease, checks...); !errors.Is(err, ErrRestoreUnavailable) {
 					t.Fatalf("mismatch: %v", err)
@@ -310,10 +313,21 @@ func assertRestoreSelfAncestors(t *testing.T, store driver.Store) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	ids := []string{idA, idB, idC}
+	// Observe requires encoded key order, which differs from the source ID order.
+	ids := []string{idC, idA, idB}
+	// Fixed contract bytes, independently derived without the production codec.
+	selfKeys := []string{
+		"cGwtY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M.cGwtY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M",
+		"cGwtYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE.cGwtYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE",
+		"cGwtYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI.cGwtYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI",
+	}
 	keys := make([]driver.LockKey, len(ids))
-	for i, id := range ids {
-		keys[i] = driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: id}}
+	for i, key := range selfKeys {
+		keys[i] = driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: key}}
+	}
+	rows, err := r.DerivedRows(ctx, driver.DerivedAncestorClosure, "")
+	if err != nil || len(rows) != len(ids) {
+		t.Fatalf("self ancestor census: %+v %v", rows, err)
 	}
 	states, err := r.Observe(ctx, keys)
 	if err != nil || len(states) != len(ids) {
@@ -321,15 +335,14 @@ func assertRestoreSelfAncestors(t *testing.T, store driver.Store) {
 	}
 	for i, id := range ids {
 		state := states[i]
-		// The descendant is the row key. Parent links refuse, so each closure
-		// must contain exactly its self membership at depth zero, regardless
-		// of workflow status or blocking links. This expectation uses no plan.
-		want := `[{"ancestor":"` + id + `","depth":0}]`
+		// The parent-free image has exactly one self row per bead. Canonical
+		// depth is the scalar integer 0, independent of status/blocking links.
+		want := "0"
 		var got string
 		if state.Derived != nil {
 			got = string(state.Derived.Value)
 		}
-		if !state.Present || state.Derived == nil || state.Derived.Key != id || state.Revision.String() != "1" || string(state.Derived.Value) != want {
+		if !state.Present || state.Derived == nil || state.Derived.Key != keys[i].Derived.Key || state.Revision.String() != "1" || string(state.Derived.Value) != want {
 			t.Errorf("ancestor closure %s: got revision %s, value %q; want revision 1, value %s", id, state.Revision, got, want)
 		}
 	}

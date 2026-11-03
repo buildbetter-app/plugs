@@ -14,6 +14,7 @@ import (
 
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/server/authn"
@@ -77,6 +78,106 @@ func (p *e3StoredPolicy) current(ctx context.Context) (e3Grant, error) {
 		p.head, p.grant = meta.Head.String(), grant
 	}
 	return p.grant, nil
+}
+
+func e3EpicBinding(head string) string { return "e3-stored-policy-v1:" + head }
+
+func e3GrantContains(grant e3Grant, id, project string) bool {
+	if project != grant.Project {
+		return false
+	}
+	for _, resource := range grant.Resources {
+		if resource == id {
+			return true
+		}
+	}
+	return false
+}
+
+// e3EpicDocuments decodes only the pinned rows supplied by viewops. It never
+// reads current bodies while producing counts, so status/parent membership is
+// bound to the one content snapshot passed to AuthorizeScope.
+func e3EpicDocuments(ctx context.Context, reader driver.Reader, refs []model.Ref) (map[string]pipeline.Document, error) {
+	rows, err := reader.Get(ctx, refs)
+	if err != nil {
+		return nil, err
+	}
+	docs := make(map[string]pipeline.Document, len(rows))
+	for _, row := range rows {
+		if row.Kind != "bead" {
+			return nil, e3Failure("authz_unavailable")
+		}
+		var doc pipeline.Document
+		if err := json.Unmarshal(row.Body, &doc); err != nil || doc.ID == "" || doc.ID != row.Ref.ID {
+			return nil, e3Failure("authz_unavailable")
+		}
+		docs[doc.ID] = doc
+	}
+	return docs, nil
+}
+
+// authorizeEpicProgress is a fixture-only current stored-grant adapter. It
+// mirrors the producer contract: the parent must be readable, each child is
+// checked in its own stored project, hidden children contribute only a count,
+// and one current head binds the complete decision before status bucketing.
+func (p *e3StoredPolicy) authorizeEpicProgress(ctx context.Context, by model.PrincipalRef, content driver.Reader, parent model.Ref, children []model.Ref) (viewops.EpicProgressAuthority, error) {
+	if by.Kind != "anonymous" || by.ID != "anonymous" {
+		return viewops.EpicProgressAuthority{}, e3Failure("forbidden")
+	}
+	meta, err := p.f.store.Meta(ctx)
+	if err != nil {
+		return viewops.EpicProgressAuthority{}, err
+	}
+	grant, err := p.current(ctx)
+	if err != nil {
+		return viewops.EpicProgressAuthority{}, err
+	}
+	if after, e := p.f.store.Meta(ctx); e != nil {
+		return viewops.EpicProgressAuthority{}, e
+	} else if after.Head != meta.Head {
+		return viewops.EpicProgressAuthority{}, e3Failure("authz_unavailable")
+	}
+	docs, err := e3EpicDocuments(ctx, content, append([]model.Ref{parent}, children...))
+	if err != nil {
+		return viewops.EpicProgressAuthority{}, err
+	}
+	parentDoc, ok := docs[parent.ID]
+	if !ok || !e3GrantContains(grant, parentDoc.ID, parentDoc.Project) {
+		return viewops.EpicProgressAuthority{}, e3Failure("not_found")
+	}
+	visible := make([]model.Ref, 0, len(children))
+	for _, child := range children {
+		doc, ok := docs[child.ID]
+		if !ok {
+			return viewops.EpicProgressAuthority{}, e3Failure("authz_unavailable")
+		}
+		if e3GrantContains(grant, doc.ID, doc.Project) {
+			visible = append(visible, child)
+		}
+	}
+	return viewops.EpicProgressAuthority{
+		Visible:       visible,
+		Hidden:        model.Natural64(uint64(len(children) - len(visible))),
+		PolicyBinding: e3EpicBinding(meta.Head.String()),
+	}, nil
+}
+
+func (p *e3StoredPolicy) validateEpicProgress(ctx context.Context, by model.PrincipalRef, expected string) error {
+	if by.Kind != "anonymous" || by.ID != "anonymous" {
+		return e3Failure("forbidden")
+	}
+	meta, err := p.f.store.Meta(ctx)
+	if err != nil {
+		return err
+	}
+	grant, err := p.current(ctx)
+	if err != nil {
+		return err
+	}
+	if expected != e3EpicBinding(meta.Head.String()) || grant.Reader.Kind != by.Kind || grant.Reader.ID != by.ID {
+		return e3Failure("authz_unavailable")
+	}
+	return nil
 }
 
 func (p *e3StoredPolicy) allowed(ctx context.Context, by model.PrincipalRef, id, project string) (bool, error) {
@@ -232,7 +333,12 @@ func (h *e3BrowserHost) bind(registry *rpc.Registry) error {
 			return out, nil
 		}
 	}
-	h.views, err = viewops.New(f.store, f.lease, viewops.Config{Views: e3SavedViews{h.policy}, AuthorizeRead: h.policy.AuthorizeRead, DirectBlockers: directBlockers, OntologyRevision: f.ontologyRevision, PolicyVersion: "e3-stored-policy-v1"})
+	progress := &viewops.EpicProgressConfig{
+		ValidateAuthority: h.policy.validateEpicProgress,
+		AuthorizeScope:    h.policy.authorizeEpicProgress,
+		OntologySource:    service.StaticOntologySource(f.ontologyRef),
+	}
+	h.views, err = viewops.New(f.store, f.lease, viewops.Config{Views: e3SavedViews{h.policy}, AuthorizeRead: h.policy.AuthorizeRead, DirectBlockers: directBlockers, EpicProgress: progress, OntologyRevision: f.ontologyRevision, PolicyVersion: "e3-stored-policy-v1"})
 	if err != nil {
 		return err
 	}
@@ -342,17 +448,22 @@ func (h *e3BrowserHost) close() {
 			h.f.t.Error(err)
 		}
 	}
-	if h.f.evidence != "" {
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		var wire strings.Builder
-		for _, line := range h.lines {
-			wire.Write(line)
-		}
-		if err := writeE3Bytes(h.f.evidence+"/watch.ndjson", []byte(wire.String())); err != nil {
-			h.f.t.Error(err)
-		}
+	if err := h.writeEvidence(); err != nil {
+		h.f.t.Error(err)
 	}
+}
+
+func (h *e3BrowserHost) writeEvidence() error {
+	if h.f.evidence == "" {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var wire strings.Builder
+	for _, line := range h.lines {
+		wire.Write(line)
+	}
+	return writeE3Bytes(h.f.evidence+"/watch.ndjson", []byte(wire.String()))
 }
 
 func (f *e3Fixture) seedBrowserMetadata() e3Grant {

@@ -8,6 +8,13 @@ const (
 	BeadsReference  = "9d6fff760b7a314b476539198504d77ce0959656"
 	Scope           = "offline-head-and-source-archives"
 	MaxArchiveBytes = 128 << 20
+	// NativeAllocatorMember is the engine-neutral member carrying the complete
+	// allocator image captured at the archive's pinned incarnation/head.  It is
+	// intentionally separate from the legacy manifest Projects field: the
+	// latter belongs to the offline Beads converter and cannot prove native
+	// continuation state.
+	NativeAllocatorMember  = "allocator/snapshot.json"
+	NativeAllocatorVersion = "plug-native-allocator/1"
 )
 
 // Row retains source JSON values, including explicit nulls and lossless
@@ -62,13 +69,15 @@ type Manifest struct {
 	// Native store fields are present only for archives produced by Plug's
 	// engine-neutral admin.dump path. The offline Beads exporter leaves these
 	// fields absent and continues to use the source census above.
-	NativeStoreID     string `json:"native_store_id,omitempty"`
-	NativeIncarnation string `json:"native_incarnation,omitempty"`
-	NativeHead        string `json:"native_head,omitempty"`
-	NativeDigest      string `json:"native_digest,omitempty"`
-	RecordCount       int    `json:"record_count,omitempty"`
-	VersionCount      int    `json:"version_count,omitempty"`
-	ChangesetCount    int    `json:"changeset_count,omitempty"`
+	NativeStoreID          string `json:"native_store_id,omitempty"`
+	NativeIncarnation      string `json:"native_incarnation,omitempty"`
+	NativeHead             string `json:"native_head,omitempty"`
+	NativeDigest           string `json:"native_digest,omitempty"`
+	NativeAllocatorProfile string `json:"native_allocator_profile,omitempty"`
+	NativeAllocatorDigest  string `json:"native_allocator_digest,omitempty"`
+	RecordCount            int    `json:"record_count,omitempty"`
+	VersionCount           int    `json:"version_count,omitempty"`
+	ChangesetCount         int    `json:"changeset_count,omitempty"`
 }
 
 type Provenance struct {
@@ -87,12 +96,29 @@ type Record struct {
 // Archive owns validated data. Accessors return detached copies; a caller
 // cannot turn a validated record into an unchecked restore request.
 type Archive struct {
-	sha256   string
-	manifest Manifest
-	members  map[string][]byte
-	byKind   map[string][]Record
-	native   bool
-	history  *SourceHistory
+	sha256    string
+	tarBytes  []byte
+	manifest  Manifest
+	members   map[string][]byte
+	byKind    map[string][]Record
+	native    bool
+	history   *SourceHistory
+	migration *ImportMigration
+}
+
+// ImportMigration returns the admitted non-native head migration, when its
+// explicit strict-union disclosure is present. Legacy/native paths are unchanged.
+func (a *Archive) ImportMigration() (*ImportMigration, bool) {
+	if a == nil || a.migration == nil {
+		return nil, false
+	}
+	m := *a.migration
+	m.declarations = m.Declarations()
+	m.targets = make(map[string]ImportTarget, len(a.migration.targets))
+	for key, target := range a.migration.targets {
+		m.targets[key] = target
+	}
+	return &m, true
 }
 
 // Native reports whether this is an archive emitted by Plug's admin.dump
@@ -113,6 +139,10 @@ func (a *Archive) NativeMember(path string) ([]byte, bool) {
 
 // SHA256 binds the exact validated tar bytes, including its manifest.
 func (a *Archive) SHA256() string { return a.sha256 }
+
+// TarBytes returns the exact validated source envelope, including tar headers
+// and padding. Derived history images have no independent source envelope.
+func (a *Archive) TarBytes() []byte { return append([]byte(nil), a.tarBytes...) }
 
 func (a *Archive) Manifest() Manifest {
 	m := a.manifest

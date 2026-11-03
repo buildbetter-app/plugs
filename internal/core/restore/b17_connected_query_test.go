@@ -24,7 +24,7 @@ func TestB17SupportedArchiveNullThroughWriterAndServiceQueries(t *testing.T) {
 	const description = "B17 ordinary field update preserves archive metadata"
 	verification := converterroundtrip.Verification{
 		ArchiveSHA256: "2f06663c3d3778f689e971398028f88cd8d6c9e85d987108abbdb92363d20b18",
-		DerivedSHA256: "9611fb51234ff87fd0cbb76772c77ebe7bd975db8444894d95a43652901f8492",
+		DerivedSHA256: "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed",
 	}
 	data := b17SupportedOfflineArchive(t)
 	if sha(data) != verification.ArchiveSHA256 {

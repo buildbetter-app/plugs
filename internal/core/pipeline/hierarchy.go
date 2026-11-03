@@ -3,6 +3,8 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -45,6 +47,9 @@ func (p *prepared) resolveParent(ctx context.Context, parent *model.Ref, aliases
 	for id := ref.ID; id != ""; {
 		if id == child || seen[id] {
 			return nil, failure("ontology_guard_failed", "parent would form a cycle")
+		}
+		if p.maxHierarchyDepth > 0 && strings.Count(id, ".") >= p.maxHierarchyDepth {
+			return nil, failure("invalid_params", fmt.Sprintf("maximum hierarchy depth (%d) exceeded for parent %s", p.maxHierarchyDepth, id))
 		}
 		seen[id] = true
 		node, err := p.load(ctx, model.Ref{ID: id})
@@ -231,13 +236,35 @@ func (p *prepared) hierarchyAffected(parents map[string]string) (map[string]bool
 // with missing/extra/wrong-depth rows fails closed.
 func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 	if len(p.hierarchyEdits) == 0 {
+		// Field, metadata, comment and lease updates leave the parent graph
+		// unchanged. They already observe their target record in prepare, so
+		// avoid enumerating every bead merely to revalidate an untouched
+		// hierarchy.
 		return nil, nil
+	}
+	if _, ok := p.snapshot.reader.(driver.HierarchyChildrenExcludingReader); ok {
+		// This planner produces selected source facts, never a complete graph.
+		// Prepared images need the exclusion capability before storage's single
+		// limit+1; without it the existing complete planner remains authoritative.
+		// The caller retains the separate complete link/scheduling checks.
+		if err := p.hierarchyIndexed(ctx); !errors.Is(err, driver.ErrUnsupported) {
+			return nil, err
+		}
+		// A published interface is not proof that this snapshot has complete
+		// index coverage. Preserve the existing full correctness path for a
+		// populated or imported unbuilt store; never infer empty membership.
+		p.hierarchySources = nil
 	}
 	complex := false
 	for _, edit := range p.hierarchyEdits {
 		complex = complex || !edit.create || edit.parent != ""
 	}
 	for _, pending := range p.writes {
+		// Ordinary field/lease updates preserve an existing parent and do not
+		// need to rescan the complete graph. Create/Reparent mark the parent
+		// path in the hierarchy edits. A mixed batch can still contain a
+		// parent-preserving update alongside a root create, so retain the full
+		// check whenever that batch already requires a graph.
 		complex = complex || (len(pending.before) != 0 && pending.doc.Parent != nil)
 	}
 	stored := map[string]Document{}
@@ -272,6 +299,18 @@ func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 	if err := checkParentGraph(after); err != nil {
 		return nil, err
 	}
+	if err := p.finishHierarchy(ctx, before, after, affected); err != nil {
+		return nil, err
+	}
+	if !complex {
+		return nil, nil
+	}
+	return final, nil
+}
+
+// Both source planners use the same exact closure validation, read set and
+// final delta. Source discovery and ordered work accounting finish first.
+func (p *prepared) finishHierarchy(ctx context.Context, before, after map[string]string, affected map[string]bool) error {
 	oldRows, newRows := map[string]driver.DerivedRow{}, map[string]driver.DerivedRow{}
 	consumed := map[string]bool{}
 	for id := range affected {
@@ -282,11 +321,11 @@ func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 		}{{before, oldRows}, {after, newRows}} {
 			depths, err := ancestorDepths(id, source.parents)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			rows, err := closureRows(id, depths)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			for ancestor := range depths {
 				consumed[ancestor] = true
@@ -302,36 +341,36 @@ func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 		key := driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
 		encoded, err := driver.EncodeLockKey(key)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		keys[encoded] = key
 		s, err := driver.NewClosureSentinel(id)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		key = driver.LockKey{Kind: driver.LockSentinel, Sentinel: s}
 		encoded, _ = driver.EncodeLockKey(key)
 		keys[encoded] = key
 	}
 	if _, err := p.snapshot.observe(ctx, sortedKeys(keys)); err != nil {
-		return nil, err
+		return err
 	}
 	expected := map[string]driver.DerivedRow{}
 	for id := range consumed {
 		depths, err := ancestorDepths(id, before)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		rows, err := closureRows(id, depths)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for key, row := range rows {
 			expected[key] = row
 		}
 	}
 	if err := p.checkClosures(ctx, consumed, expected); err != nil {
-		return nil, err
+		return err
 	}
 	delta := &hierarchyDelta{}
 	changed := map[string]driver.LockKey{}
@@ -356,13 +395,13 @@ func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 		}
 		descendant, _, _, err := DecodeAncestorRow(row)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		scopes[descendant] = true
 	}
 	// Include exact misses for newly introduced pairs, not just consumed rows.
 	if _, err := p.snapshot.observe(ctx, delta.locks); err != nil {
-		return nil, err
+		return err
 	}
 	for id := range scopes {
 		s, _ := driver.NewClosureSentinel(id)
@@ -371,28 +410,43 @@ func (p *prepared) hierarchy(ctx context.Context) (map[string]Document, error) {
 	sort.Slice(delta.remove, func(i, j int) bool { return delta.remove[i].Key < delta.remove[j].Key })
 	sort.Slice(delta.add, func(i, j int) bool { return delta.add[i].Key < delta.add[j].Key })
 	p.hierarchyDelta = delta
-	if !complex {
-		return nil, nil
-	}
-	return final, nil
+	return nil
 }
 
 func ancestorLock(key string) driver.LockKey {
 	return driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: key}}
 }
 
-// Coalesce the descendant prefixes into one snapshot enumeration. Repeating a
-// full SQL round trip for every new root would consume the fixed pre deadline
-// before any write. Unrelated rows in the common range do not become semantic
-// dependencies; every selected descendant has its own observed sentinel.
+// Enumerate only the consumed descendant prefixes when the driver supports
+// their union. The common-range fallback preserves existing driver behavior.
+// Every selected descendant retains its observed source and closure sentinel.
 func (p *prepared) checkClosures(ctx context.Context, consumed map[string]bool, expected map[string]driver.DerivedRow) error {
+	if _, ok := p.snapshot.reader.(driver.HierarchyChildrenExcludingReader); ok {
+		refs := hierarchyRefs(consumed)
+		rows, err := p.snapshot.HierarchyClosureRows(ctx, refs)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			want, exists := expected[row.Key]
+			if !exists || !bytes.Equal(row.Value, want.Value) {
+				return failure("ontology_guard_failed", "malformed ancestor closure")
+			}
+		}
+		if len(rows) != len(expected) {
+			return failure("ontology_guard_failed", "malformed ancestor closure; populated-store backfill is not supported")
+		}
+		return nil
+	}
 	prefix := ""
+	prefixes := make([]string, 0, len(consumed))
 	first := true
 	for id := range consumed {
 		next, err := AncestorPrefix(id)
 		if err != nil {
 			return err
 		}
+		prefixes = append(prefixes, next)
 		if first {
 			prefix = next
 			first = false
@@ -402,7 +456,14 @@ func (p *prepared) checkClosures(ctx context.Context, consumed map[string]bool, 
 			prefix = prefix[:len(prefix)-1]
 		}
 	}
-	all, err := p.snapshot.reader.DerivedRows(ctx, driver.DerivedAncestorClosure, prefix)
+	var all []driver.DerivedRow
+	var err error
+	if reader, ok := p.snapshot.reader.(driver.DerivedPrefixReader); ok {
+		sort.Strings(prefixes)
+		all, err = reader.DerivedRowsForPrefixes(ctx, driver.DerivedAncestorClosure, prefixes)
+	} else {
+		all, err = p.snapshot.reader.DerivedRows(ctx, driver.DerivedAncestorClosure, prefix)
+	}
 	if err != nil {
 		return err
 	}

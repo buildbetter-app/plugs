@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -255,6 +257,72 @@ func TestWebSocketBoundsMalformedAndOversizeFrames(t *testing.T) {
 			t.Fatalf("close=%d", got)
 		}
 	})
+}
+
+func TestWebSocketRejectsNonMinimalLengthsBeforeDispatch(t *testing.T) {
+	const request = `{"jsonrpc":"2.0","id":9007199254740993,"method":"bead.get","params":{"id":{"id":"pl-framing"}}}`
+	const result = `{"bead":{"id":"pl-framing","type":"task","revision":1},"attachments":[]}`
+	// These fixed malformed headers carry an otherwise valid, bounded call.
+	// RFC 6455 section 5.2 requires the shortest possible length encoding.
+	for _, test := range []struct {
+		name          string
+		header        []byte
+		body          string
+		recoveryBytes int
+	}{
+		{"16-bit for short request", []byte{0x81, 0xfe, 0, byte(len(request)), 0, 0, 0, 0}, request, len(request)},
+		{"64-bit for short request", []byte{0x81, 0xff, 0, 0, 0, 0, 0, 0, 0, byte(len(request)), 0, 0, 0, 0}, request, 65536},
+		{"64-bit for 126 bytes", []byte{0x81, 0xff, 0, 0, 0, 0, 0, 0, 0, 126, 0, 0, 0, 0}, request + string(bytes.Repeat([]byte{' '}, 126-len(request))), 126},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls atomic.Int64
+			f := newFixture(t, websocket.Config{}, func(registry *rpc.Registry) {
+				if err := registry.Register("bead.get", func(context.Context, rpc.Call) (any, error) {
+					calls.Add(1)
+					return json.RawMessage(result), nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			})
+			malformed := f.connect(t, f.http.URL)
+			defer malformed.close()
+			if _, err := malformed.conn.Write(append(test.header, test.body...)); err != nil {
+				t.Fatal(err)
+			}
+			if err := malformed.conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			opcode, response, err := malformed.readFrame()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls.Load() != 0 || opcode != 8 || len(response) < 2 || binary.BigEndian.Uint16(response[:2]) != 1002 {
+				t.Fatalf("malformed length: calls=%d opcode=%d response=%q; want no calls and close 1002", calls.Load(), opcode, response)
+			}
+
+			// A protocol error terminates its connection. The same listener must
+			// still accept the call with a legitimate length encoding, including
+			// the smallest payloads that require 16-bit and 64-bit lengths.
+			recovered := f.connect(t, f.http.URL)
+			defer recovered.close()
+			if err := recovered.conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			valid := append([]byte(request), bytes.Repeat([]byte{' '}, test.recoveryBytes-len(request))...)
+			if err := recovered.write(1, valid); err != nil {
+				t.Fatal(err)
+			}
+			opcode, response, err = recovered.readFrame()
+			var envelope struct {
+				JSONRPC string          `json:"jsonrpc"`
+				ID      json.RawMessage `json:"id"`
+				Result  json.RawMessage `json:"result"`
+			}
+			if err != nil || opcode != 1 || json.Unmarshal(response, &envelope) != nil || envelope.JSONRPC != "2.0" || string(envelope.ID) != "9007199254740993" || string(envelope.Result) != result || calls.Load() != 1 {
+				t.Fatalf("recovery: calls=%d opcode=%d response=%s err=%v", calls.Load(), opcode, response, err)
+			}
+		})
+	}
 }
 
 func TestWebSocketDisconnectCancelsInFlightDispatch(t *testing.T) {

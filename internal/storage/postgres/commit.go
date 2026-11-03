@@ -26,6 +26,9 @@ func (t *transaction) header(h driver.ChangesetHeader) ([]byte, error) {
 	if t.restore != nil {
 		validate := driver.ValidateOfflineRestoreHeader
 		if t.nativeRestore != nil {
+			if !t.nativeAllocators {
+				return nil, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorBindingRequired, nil)
+			}
 			validate = t.nativeRestore.ValidateHeader
 		}
 		if t.importRestore != nil {
@@ -255,6 +258,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			return value, nil
 		}
 	}
+	if err = t.checkCheckpointGuards(ctx); err != nil {
+		return zero, err
+	}
 	if err = t.validateChanges(ctx, h.Changes); err != nil {
 		return zero, err
 	}
@@ -294,24 +300,32 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	if err != nil {
 		return zero, err
 	}
+	sourcePlan, err := t.prepareSourcePublication(ctx, revision)
+	if err != nil {
+		return zero, err
+	}
+	target := t.meta
+	target.Head = revision
+	if t.restore != nil {
+		target = *t.restore
+	}
 	// Once database publication begins, every failure closes and rolls back
-	// the transaction, including all already-inserted version and blob rows.
+	// the transaction, including allocator state, source indexes and records.
+	if err = t.publishAllocatorJournal(ctx, t.sql, target, t.restore != nil); err != nil {
+		_ = t.finish()
+		return zero, err
+	}
 	if err = t.writeRecords(ctx, entry); err != nil {
 		_ = t.finish()
 		return zero, err
 	}
-	for id, state := range t.derived {
-		state.Revision = revision
-		if err = t.writeState(ctx, id, state); err != nil {
-			_ = t.finish()
-			return zero, err
-		}
+	if err = sourcePlan.Publish(ctx, t.sql); err != nil {
+		_ = t.finish()
+		return zero, err
 	}
-	for id, key := range t.bumps {
-		if err = t.writeState(ctx, id, driver.LockState{Key: key, Revision: revision, Present: true}); err != nil {
-			_ = t.finish()
-			return zero, err
-		}
+	if err = t.writeStates(ctx, revision); err != nil {
+		_ = t.finish()
+		return zero, err
 	}
 	for prefix, allocator := range t.allocators {
 		if err = allocator.Validate(); err != nil {
@@ -327,6 +341,10 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			_ = t.finish()
 			return zero, err
 		}
+	}
+	if err = t.publishParentCounters(ctx, t.sql); err != nil {
+		_ = t.finish()
+		return zero, err
 	}
 	for hash, data := range t.blobs {
 		if _, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.blobs VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, string(hash), revision.String(), data); err != nil {
@@ -363,6 +381,48 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	return entry, nil
 }
 
+// Ordinary publication appends the same state images in bounded batches within
+// the existing SQL transaction. This avoids a round trip for every closure row
+// and predicate bump without accumulating one unbounded array of state values.
+func (t *transaction) writeStates(ctx context.Context, revision model.Revision) error {
+	const batchRows = 256
+	keys := make([][]byte, 0, batchRows)
+	values := make([][]byte, 0, batchRows)
+	flush := func() error {
+		if len(keys) == 0 {
+			return nil
+		}
+		_, err := t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.states (key,revision,value)
+		 SELECT key,$2::numeric(20,0),value FROM unnest($1::bytea[],$3::bytea[]) AS state_rows(key,value)`, keys, revision.String(), values)
+		keys, values = keys[:0], values[:0]
+		return err
+	}
+	appendState := func(id string, state driver.LockState) error {
+		state.Revision = revision
+		raw, err := encode(state)
+		if err != nil {
+			return err
+		}
+		keys = append(keys, []byte(id))
+		values = append(values, raw)
+		if len(keys) == batchRows {
+			return flush()
+		}
+		return nil
+	}
+	for id, state := range t.derived {
+		if err := appendState(id, state); err != nil {
+			return err
+		}
+	}
+	for id, key := range t.bumps {
+		if err := appendState(id, driver.LockState{Key: key, Present: true}); err != nil {
+			return err
+		}
+	}
+	return flush()
+}
+
 func (t *transaction) writeState(ctx context.Context, id string, state driver.LockState) error {
 	raw, err := encode(state)
 	if err != nil {
@@ -372,7 +432,36 @@ func (t *transaction) writeState(ctx context.Context, id string, state driver.Lo
 	return err
 }
 
+// Bound record and version publication within the existing fenced transaction.
+const publicationBatchRows = 256
+
 func (t *transaction) writeRecords(ctx context.Context, entry model.Changeset) error {
+	keys := make([][]byte, 0, publicationBatchRows)
+	refs := make([][]byte, 0, publicationBatchRows)
+	kinds := make([]string, 0, publicationBatchRows)
+	bodies := make([][]byte, 0, publicationBatchRows)
+	deleted := make([]bool, 0, publicationBatchRows)
+	counts := make([]string, 0, publicationBatchRows)
+	bases := make([]bool, 0, publicationBatchRows)
+	versions := make([][]byte, 0, publicationBatchRows)
+	flush := func() error {
+		if len(keys) == 0 {
+			return nil
+		}
+		if _, err := t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.records (key,ref,kind,revision,body,deleted,version_count)
+		 SELECT key,ref,kind,$4::numeric(20,0),body,deleted,version_count::numeric(20,0)
+		 FROM unnest($1::bytea[],$2::bytea[],$3::text[],$5::bytea[],$6::boolean[],$7::text[]) AS record_rows(key,ref,kind,body,deleted,version_count)
+		 ON CONFLICT (key) DO UPDATE SET revision=EXCLUDED.revision,body=EXCLUDED.body,deleted=EXCLUDED.deleted,version_count=EXCLUDED.version_count`, keys, refs, kinds, entry.Revision.String(), bodies, deleted, counts); err != nil {
+			return err
+		}
+		if _, err := t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.versions (key,revision,is_base,value)
+		 SELECT key,$2::numeric(20,0),is_base,value FROM unnest($1::bytea[],$3::boolean[],$4::bytea[]) AS version_rows(key,is_base,value)`, keys, entry.Revision.String(), bases, versions); err != nil {
+			return err
+		}
+		keys, refs, kinds, bodies = keys[:0], refs[:0], kinds[:0], bodies[:0]
+		deleted, counts, bases, versions = deleted[:0], counts[:0], bases[:0], versions[:0]
+		return nil
+	}
 	for id, record := range t.records {
 		previous, exists, err := t.recordAt(ctx, id)
 		if err != nil {
@@ -409,14 +498,21 @@ func (t *transaction) writeRecords(ctx context.Context, entry model.Changeset) e
 		if err != nil {
 			return err
 		}
-		if _, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.records VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (key) DO UPDATE SET revision=EXCLUDED.revision,body=EXCLUDED.body,deleted=EXCLUDED.deleted,version_count=EXCLUDED.version_count`, []byte(id), refRaw, kind, entry.Revision.String(), body, record == nil, decimal(count+1)); err != nil {
-			return err
-		}
-		if _, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.versions VALUES ($1,$2,$3,$4)`, []byte(id), entry.Revision.String(), version.Base, raw); err != nil {
-			return err
+		keys = append(keys, []byte(id))
+		refs = append(refs, refRaw)
+		kinds = append(kinds, kind)
+		bodies = append(bodies, body)
+		deleted = append(deleted, record == nil)
+		counts = append(counts, decimal(count+1))
+		bases = append(bases, version.Base)
+		versions = append(versions, raw)
+		if len(keys) == publicationBatchRows {
+			if err := flush(); err != nil {
+				return err
+			}
 		}
 	}
-	return nil
+	return flush()
 }
 
 func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) (model.Commit, error) {

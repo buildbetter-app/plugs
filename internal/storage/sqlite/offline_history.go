@@ -66,6 +66,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 		if err := restoreEmpty(ctx, c); err != nil {
 			return err
 		}
+		if err := t.publishAllocatorJournal(ctx, c, plan.Meta, true); err != nil {
+			return err
+		}
 		for i, row := range plan.Rows {
 			r := row.Record
 			id, _ := recordKey(r.Ref)
@@ -140,7 +143,7 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 		if _, e := c.ExecContext(ctx, `UPDATE meta SET store_id=?,incarnation=?,head=?,history_floor=? WHERE singleton=1`, string(plan.Meta.StoreID), plan.Meta.Incarnation, revKey(mustUint(plan.Meta.Head)), revKey(mustUint(plan.Meta.HistoryFloor))); e != nil {
 			return e
 		}
-		return saveReplay(ctx, c, h, plan.Meta.Head, final)
+		return t.store.saveReplay(ctx, c, h, plan.Meta.Head, final)
 	})
 	if err == nil {
 		t.finish()

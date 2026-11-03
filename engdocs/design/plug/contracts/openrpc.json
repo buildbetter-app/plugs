@@ -1587,6 +1587,13 @@
           "required": true
         },
         {
+          "name": "metadata",
+          "required": false,
+          "schema": {
+            "$ref": "#/components/schemas/LinkMetadata"
+          }
+        },
+        {
           "name": "expect",
           "schema": {
             "type": "array",
@@ -3038,6 +3045,111 @@
       "x-permission": "none",
       "x-agent-core": false,
       "x-stability": "v1"
+    },
+    {
+      "name": "x.workflow.invoke",
+      "summary": "Invoke a workflow template in the permanent or ephemeral plane.",
+      "description": "Invoke a template with an explicit permanent or ephemeral mode. Ephemeral items use plugin-owned durable state while live and are deleted atomically when the checklist completes; they never enter bead history.",
+      "tags": [
+        {
+          "name": "plugin"
+        }
+      ],
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "template",
+          "schema": {
+            "type": "string"
+          },
+          "required": true
+        },
+        {
+          "name": "project",
+          "schema": {
+            "type": "string"
+          },
+          "required": true
+        },
+        {
+          "name": "mode",
+          "schema": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "required": true
+        },
+        {
+          "name": "checklist",
+          "schema": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowChecklistItem"
+            },
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "required": true
+        },
+        {
+          "name": "_meta",
+          "schema": {
+            "$ref": "#/components/schemas/Meta"
+          },
+          "description": "Transport metadata; not an application actor field."
+        }
+      ],
+      "result": {
+        "name": "result",
+        "description": "Workflow invocation result.",
+        "schema": {
+          "$ref": "#/components/schemas/WorkflowInvokeResult"
+        }
+      },
+      "errors": [
+        {
+          "$ref": "#/components/errors/NotFound"
+        },
+        {
+          "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
+        },
+        {
+          "$ref": "#/components/errors/WriteConflict"
+        },
+        {
+          "$ref": "#/components/errors/Busy"
+        },
+        {
+          "$ref": "#/components/errors/RateLimited"
+        },
+        {
+          "$ref": "#/components/errors/ProjectRequired"
+        },
+        {
+          "$ref": "#/components/errors/IdempotencyKeyReused"
+        },
+        {
+          "$ref": "#/components/errors/LeaseNotHeld"
+        },
+        {
+          "$ref": "#/components/errors/LeaseExpired"
+        },
+        {
+          "$ref": "#/components/errors/PluginDurableStateUnavailable"
+        }
+      ],
+      "x-effect": "write",
+      "x-idempotency": "required",
+      "x-permission": "write",
+      "x-agent-core": false,
+      "x-stability": "v1",
+      "x-resource": "params.project"
     },
     {
       "name": "gate.approve",
@@ -4931,7 +5043,8 @@
           "name": "beforeRevision",
           "schema": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "Only select records whose current revision is strictly less than beforeRevision; equality is excluded."
           }
         },
         {
@@ -5593,7 +5706,7 @@
     {
       "name": "view.run",
       "summary": "Run a saved or inline budgeted view.",
-      "description": "Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=<bare bead ID>\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:<canonical status ID> groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. No RPC, filter, cursor or result member is added.",
+      "description": "With countOnly=true, return the exact ordinary authorized predicate total, including zero, as {items:[],asOf,count}, plus existing projection metadata. No page, groups, elisions or nextCursor is returned; cursor/groupBy combinations refuse invalid_params. Valid fields/sort/budget cannot change or truncate membership. Historical content uses current authorization; more than 20,000 authorized candidates refuses scope_too_large. Absent/false keeps existing behavior and saved definitions unchanged. Run a saved or inline budgeted view. A trusted host may enable count-only parent-aware epic progress using definition={filter:{query:\"parent=<bare bead ID>\"},fields:[],groupBy:[\"epic-progress\"]} and _meta.project equal to the authorized parent project. One pinned content/ontology snapshot and fenced current authority select direct children only; each child keeps its own project permissions. The complete result has items=[], asOf, total and status:<canonical status ID> groups with empty items. total.count is visible children; only total.elided may report hidden children, as count plus reason=\"authorization\" and continueWith=view.run with the same request minus cursor/asOf. That is fresh reauthorization/refresh, never hidden-row pagination. There is no nextCursor; a supplied cursor refuses cursor_invalid. Hidden identities/statuses are absent. Disabled capability refuses invalid_params with details.capability=\"epic-progress\", details.available=false. Epic progress adds no separate RPC, filter, cursor or result member.",
       "tags": [
         {
           "name": "view"
@@ -5624,6 +5737,14 @@
           "schema": {
             "$ref": "#/components/schemas/AsOf"
           }
+        },
+        {
+          "name": "countOnly",
+          "schema": {
+            "type": "boolean",
+            "default": false
+          },
+          "description": "Optional execution flag, default false; saved definitions are unchanged. True returns the complete authorized ordinary predicate count with items=[] and asOf, without groups, elisions or nextCursor. Any supplied cursor or nonempty groupBy refuses invalid_params. Valid fields, sort and budget remain validated but do not change membership or truncate the count. Current permissions apply to historical asOf content; the ordinary 20,000 cap is exact-or-refused."
         },
         {
           "name": "_meta",
@@ -6259,7 +6380,7 @@
           "schema": {
             "type": "string"
           },
-          "required": true
+          "required": false
         },
         {
           "name": "content",
@@ -6731,6 +6852,22 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "plane": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plugin": {
+            "type": "string"
+          },
+          "workflowRunId": {
+            "type": "string"
           }
         },
         "required": [
@@ -6910,6 +7047,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/SetMetaOp"
+                },
+                {
+                  "$ref": "#/components/schemas/CloseOp"
                 }
               ]
             },
@@ -7017,6 +7157,10 @@
           },
           "linkKind": {
             "type": "string"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/LinkMetadata",
+            "description": "Only valid for a waits-for link. Omission preserves existing metadata on re-add; explicit {} selects all-children without also_blocks."
           }
         },
         "required": [
@@ -7215,9 +7359,19 @@
         "required": [
           "revision",
           "results",
-          "warnings",
-          "leaseExpiresAt",
-          "leaseTtlMs"
+          "warnings"
+        ],
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "leaseExpiresAt",
+              "leaseTtlMs"
+            ]
+          },
+          {
+            "$ref": "#/components/schemas/WorkflowClaimReceipt"
+          }
         ],
         "additionalProperties": false
       },
@@ -7585,6 +7739,15 @@
             "items": {
               "$ref": "#/components/schemas/ViewGroup"
             }
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20000,
+            "description": "Exact authorized ordinary predicate total, present including zero only for countOnly=true. Items is empty; groups, elisions and nextCursor are absent. The ordinary 20,000 authorized-candidate cap applies; overflow refuses scope_too_large without a partial count."
+          },
+          "projection": {
+            "$ref": "#/components/schemas/ProjectionStatus"
           }
         },
         "required": [
@@ -7637,7 +7800,8 @@
             "type": "string",
             "enum": [
               "blocks",
-              "conditional-blocks"
+              "conditional-blocks",
+              "waits-for"
             ]
           },
           "state": {
@@ -10008,6 +10172,484 @@
         ],
         "additionalProperties": false,
         "description": "Transaction-local prepared import profile. The trusted host creates it after admission; ordinary JSON-RPC callers cannot submit or forge it."
+      },
+      "CloseOp": {
+        "type": "object",
+        "description": "Enter the canonical close slot at this operation position in tx.apply; reuse bead.close guards, permission, reason and provenance. Any refusal rolls back the whole ChangeSet. No force or status shortcut.",
+        "properties": {
+          "kind": {
+            "const": "close"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Ref"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "expect": {
+            "type": "array",
+            "description": "Preconditions against the ordered in-request image before this close. Revision guards refuse a record written earlier in this request. ChangeSet.expect keeps its pinned-snapshot semantics.",
+            "items": {
+              "$ref": "#/components/schemas/Expect"
+            }
+          }
+        },
+        "required": [
+          "kind",
+          "target"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectionPosition": {
+        "type": "object",
+        "properties": {
+          "incarnation": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "incarnation",
+          "revision",
+          "index"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectionDeliveryKey": {
+        "type": "object",
+        "properties": {
+          "incarnation": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "binding": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "incarnation",
+          "revision",
+          "index",
+          "binding"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectionFailure": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/ProjectionDeliveryKey"
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "firstAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "deadLetter": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "attempts",
+          "firstAt",
+          "deadLetter",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectionResume": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "$ref": "#/components/schemas/ProjectionPosition"
+          },
+          "lagAcceptedThrough": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "position"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectionStatus": {
+        "type": "object",
+        "properties": {
+          "binding": {
+            "type": "string"
+          },
+          "checkpoint": {
+            "$ref": "#/components/schemas/ProjectionPosition"
+          },
+          "failure": {
+            "$ref": "#/components/schemas/ProjectionFailure"
+          },
+          "halted": {
+            "type": "boolean"
+          },
+          "stalled": {
+            "type": "boolean"
+          },
+          "lagAcceptedThrough": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "resume": {
+            "$ref": "#/components/schemas/ProjectionResume"
+          }
+        },
+        "required": [
+          "binding",
+          "checkpoint"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowChecklistItem": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowRun": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "completed"
+            ]
+          },
+          "owner": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "mode",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "plane": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plugin": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "claim": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "title",
+          "type",
+          "project",
+          "status",
+          "plane",
+          "kind",
+          "revision"
+        ],
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^workflow:item/."
+              },
+              "runId": {
+                "type": "string",
+                "pattern": "^workflow:run/."
+              },
+              "plane": {
+                "const": "ephemeral"
+              },
+              "kind": {
+                "const": "workflow.item"
+              },
+              "plugin": {
+                "const": "workflow"
+              }
+            },
+            "required": [
+              "runId",
+              "plugin"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "plane": {
+                "const": "permanent"
+              },
+              "kind": {
+                "const": "bead"
+              },
+              "runId": {
+                "const": ""
+              },
+              "plugin": {
+                "const": ""
+              }
+            }
+          }
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowClaimReceipt": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "const": 0
+          },
+          "results": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "pattern": "^workflow:item/."
+                    },
+                    "branch": {
+                      "const": 0
+                    }
+                  },
+                  "required": [
+                    "id"
+                  ],
+                  "additionalProperties": false
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "ref",
+                "revision"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "maxItems": 0
+          }
+        },
+        "required": [
+          "revision",
+          "results",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowInvokeResult": {
+        "type": "object",
+        "properties": {
+          "plane": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "run": {
+            "$ref": "#/components/schemas/WorkflowRun"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowItem"
+            }
+          }
+        },
+        "required": [
+          "plane",
+          "items"
+        ],
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "plane": {
+                "const": "permanent"
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "plane": {
+                      "const": "permanent"
+                    }
+                  }
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "plane": {
+                "const": "ephemeral"
+              },
+              "run": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^workflow:run/."
+                  },
+                  "mode": {
+                    "const": "ephemeral"
+                  }
+                }
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "plane": {
+                      "const": "ephemeral"
+                    }
+                  }
+                }
+              }
+            },
+            "required": [
+              "run"
+            ]
+          }
+        ],
+        "additionalProperties": false
+      },
+      "LinkMetadata": {
+        "type": "object",
+        "properties": {
+          "gate": {
+            "type": "string",
+            "enum": [
+              "all-children",
+              "any-children"
+            ]
+          },
+          "also_blocks": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
       }
     },
     "errors": {
@@ -12080,6 +12722,40 @@
           ],
           "additionalProperties": false
         }
+      },
+      "PluginDurableStateUnavailable": {
+        "code": -32056,
+        "message": "plugin durable state unavailable",
+        "data": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "const": "plugin_durable_state_unavailable"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hint": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            },
+            "details": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "required": [
+            "code",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
       }
     }
   },
@@ -12544,6 +13220,13 @@
       "retryable": true,
       "audience": "internal",
       "warningCapable": false
+    },
+    {
+      "code": "plugin_durable_state_unavailable",
+      "jsonRpc": -32056,
+      "retryable": false,
+      "audience": "client",
+      "warningCapable": false
     }
   ],
   "x-plugin-method-pattern": {
@@ -12559,10 +13242,10 @@
     "format": "plug-method-registry/1",
     "status": "bounded-contract-artifact",
     "purpose": "Human-maintained bounded contract artifact, read independently of methods at validation time; validates the closed method inventory, descriptor fields and wire inventories before an implementation generator exists.",
-    "methodCount": 81,
+    "methodCount": 82,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
-    "nameSha256": "925afc30e52e4659b24e34f311698c96930f215ba460fee7c1634634d1ff04ff",
-    "descriptorSha256": "b73bf289e8c14af6a54040910623eed775755d6ef197f14be7e4c046d4856d1d",
+    "nameSha256": "9149680634f6becbd955204e4bfa1c19b0c37911ca3c7ad3f155969a892fc7c9",
+    "descriptorSha256": "23066fa00d6ae4de38f6b405b47db8519ad95625503d5c63adbd6496c5d5cd55",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -13602,6 +14285,13 @@
             }
           },
           {
+            "name": "metadata",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LinkMetadata"
+            }
+          },
+          {
             "name": "expect",
             "required": false,
             "schema": {
@@ -14539,6 +15229,76 @@
           "#/components/errors/AuthzNotInstalled",
           "#/components/errors/AuthnUnavailable",
           "#/components/errors/RateLimited"
+        ]
+      },
+      {
+        "name": "x.workflow.invoke",
+        "effect": "write",
+        "idempotency": "required",
+        "permission": "write",
+        "stability": "v1",
+        "agentCore": false,
+        "params": [
+          {
+            "name": "template",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "project",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "mode",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "permanent",
+                "ephemeral"
+              ]
+            },
+            "required": true
+          },
+          {
+            "name": "checklist",
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/WorkflowChecklistItem"
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "required": true
+          },
+          {
+            "name": "_meta",
+            "schema": {
+              "$ref": "#/components/schemas/Meta"
+            },
+            "description": "Transport metadata; not an application actor field."
+          }
+        ],
+        "resultSchema": {
+          "$ref": "#/components/schemas/WorkflowInvokeResult"
+        },
+        "errors": [
+          "#/components/errors/NotFound",
+          "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
+          "#/components/errors/WriteConflict",
+          "#/components/errors/Busy",
+          "#/components/errors/RateLimited",
+          "#/components/errors/ProjectRequired",
+          "#/components/errors/IdempotencyKeyReused",
+          "#/components/errors/LeaseNotHeld",
+          "#/components/errors/LeaseExpired",
+          "#/components/errors/PluginDurableStateUnavailable"
         ]
       },
       {
@@ -15784,7 +16544,8 @@
             "required": false,
             "schema": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "description": "Only select records whose current revision is strictly less than beforeRevision; equality is excluded."
             }
           },
           {
@@ -16269,6 +17030,14 @@
             }
           },
           {
+            "name": "countOnly",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
             "name": "_meta",
             "required": false,
             "schema": {
@@ -16668,7 +17437,7 @@
         "params": [
           {
             "name": "key",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             }
