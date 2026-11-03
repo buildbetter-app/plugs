@@ -144,9 +144,11 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 		"doltMember":               referenceDoltMember,
 		"doltVersionCheckDisabled": true,
 		"doltMetricsDisabled":      true, "doltEventFlushDisabled": true,
-		"doltConfigSourceSHA256": referenceDoltConfigSourceSHA256,
-		"doltEnvSourceSHA256":    referenceDoltEnvSourceSHA256,
-		"qualification":          "raw capture only; clocks/embedded/full-card parity unqualified",
+		"doltConfigSourceSHA256":   referenceDoltConfigSourceSHA256,
+		"doltEnvSourceSHA256":      referenceDoltEnvSourceSHA256,
+		"doltIdentitySourceSHA256": referenceDoltIdentitySourceSHA256,
+		"doltIdentity":             map[string]string{"user.name": "beads", "user.email": "beads@localhost"},
+		"qualification":            "raw capture only; clocks/embedded/full-card parity unqualified",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -165,8 +167,9 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 		}
 	}
 	for source, destination := range map[string]string{
-		"internal/testutil/localdoltserver.go": "dolt-config-source.go",
-		"tools/bazel/test_env.sh":              "dolt-env-source.sh",
+		"internal/testutil/localdoltserver.go":          "dolt-config-source.go",
+		"tools/bazel/test_env.sh":                       "dolt-env-source.sh",
+		"internal/storage/dbproxy/server/doltserver.go": "dolt-identity-source.go",
 	} {
 		data, err := os.ReadFile(filepath.Join(sourcePath, source))
 		if err != nil {
@@ -175,6 +178,8 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 		want := referenceDoltConfigSourceSHA256
 		if destination == "dolt-env-source.sh" {
 			want = referenceDoltEnvSourceSHA256
+		} else if destination == "dolt-identity-source.go" {
+			want = referenceDoltIdentitySourceSHA256
 		}
 		if sha256File(data) != want {
 			t.Fatalf("pinned runtime configuration source differs: %s", source)
@@ -241,6 +246,8 @@ func TestCapturePinnedBeadsReference(t *testing.T) {
 		"configDirectoryMode":   fmt.Sprintf("%04o", configDirStat.Mode().Perm()),
 		"configSourceSHA256":    referenceDoltConfigSourceSHA256,
 		"envSourceSHA256":       referenceDoltEnvSourceSHA256,
+		"identitySourceSHA256":  referenceDoltIdentitySourceSHA256,
+		"identity":              map[string]string{"user.name": "beads", "user.email": "beads@localhost"},
 		"metricsDisabled":       true, "eventFlushDisabled": true, "privateDoltRoot": true,
 		"pinSource": "9d6fff760b7a314b476539198504d77ce0959656:tools/bazel/dolt.bzl",
 	})

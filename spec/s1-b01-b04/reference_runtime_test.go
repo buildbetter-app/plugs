@@ -391,11 +391,12 @@ assert json.loads((diagnostic / "extraction.json").read_bytes())["classification
 }
 
 func TestCaptureDoltVersionSetupIsPrivateStrictAndRetained(t *testing.T) {
-	for _, scenario := range []string{"success", "config-failure", "second-config-failure", "version-failure", "version-warning"} {
+	for _, scenario := range []string{"success", "config-failure", "second-config-failure", "identity-failure", "version-failure", "version-warning"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			probe := filepath.Join(root, "capture-runtime-negative-probe")
 			configExit, versionExit, extra, failSecond := "0", "0", "", "0"
+			failIdentity := "0"
 			configStderr := strings.Repeat("e", 65537) + "\r\n"
 			if scenario == "config-failure" {
 				configExit = "7"
@@ -409,22 +410,35 @@ func TestCaptureDoltVersionSetupIsPrivateStrictAndRetained(t *testing.T) {
 			if scenario == "second-config-failure" {
 				failSecond = "1"
 			}
+			if scenario == "identity-failure" {
+				failIdentity = "1"
+			}
 			body := fmt.Sprintf(`#!/bin/sh
 test "$DOLT_ROOT_PATH" = "$HOME" || exit 23
 test "$DOLT_DISABLE_EVENT_FLUSH" = 1 || exit 24
 case "$1" in
  config)
-  test "$2:$3:$5" = "--global:--add:true" || exit 20
+  test "$2:$3" = "--global:--add" || exit 20
   printf 'online version diagnostic\n'
   printf '%s' >&2
   test %s = 0 || exit %s
   if test "$4" = versioncheck.disabled && test %s = 1; then exit 8; fi
+  if test "$4" = user.email && test %s = 1; then exit 10; fi
   mkdir -p "$DOLT_ROOT_PATH/.dolt"
   case "$4" in
-   metrics.disabled) printf 'true' > "$HOME/metrics.disabled" ;;
+   metrics.disabled) test "$5" = true || exit 27; printf 'true' > "$HOME/metrics.disabled" ;;
    versioncheck.disabled)
+    test "$5" = true || exit 28
     test -f "$HOME/metrics.disabled" || exit 25
     printf '{"metrics.disabled":"true","versioncheck.disabled":"true"}\n' > "$DOLT_ROOT_PATH/.dolt/config_global.json"
+    ;;
+   user.name)
+    test "$5" = beads || exit 29
+    printf '{"metrics.disabled":"true","user.name":"beads","versioncheck.disabled":"true"}\n' > "$DOLT_ROOT_PATH/.dolt/config_global.json"
+    ;;
+   user.email)
+    test "$5" = beads@localhost || exit 30
+    printf '{"metrics.disabled":"true","user.email":"beads@localhost","user.name":"beads","versioncheck.disabled":"true"}\n' > "$DOLT_ROOT_PATH/.dolt/config_global.json"
     ;;
    *) exit 26 ;;
   esac
@@ -436,7 +450,7 @@ case "$1" in
   ;;
  *) exit 22 ;;
 esac
-`, configStderr, configExit, configExit, failSecond, extra, versionExit, versionExit)
+`, configStderr, configExit, configExit, failSecond, failIdentity, extra, versionExit, versionExit)
 			if err := os.WriteFile(probe, []byte(body), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -449,11 +463,13 @@ esac
 				t.Fatal(err)
 			}
 			lines := bytes.Split(bytes.TrimSuffix(trace, []byte("\n")), []byte("\n"))
-			wantEvents := 3
+			wantEvents := 5
 			if scenario == "config-failure" {
 				wantEvents = 1
 			} else if scenario == "second-config-failure" {
 				wantEvents = 2
+			} else if scenario == "identity-failure" {
+				wantEvents = 4
 			}
 			if len(lines) != wantEvents {
 				t.Fatalf("runtime command order/count=%d want=%d", len(lines), wantEvents)
@@ -480,11 +496,8 @@ esac
 				if outErr != nil || errErr != nil || event.OutSHA != referenceDigest(stdout) || event.ErrSHA != referenceDigest(stderr) || event.OutBytes != len(stdout) || event.ErrBytes != len(stderr) || !event.PrivateHome || !event.PrivateDoltRoot || !event.FlushDisabled {
 					t.Fatal("runtime setup trace lost stream bytes/digests")
 				}
-				if i < 2 {
-					wantLabel := "dolt-config-metrics.disabled"
-					if i == 1 {
-						wantLabel = "dolt-config-versioncheck.disabled"
-					}
+				if i < 4 {
+					wantLabel := "dolt-config-" + []string{"metrics.disabled", "versioncheck.disabled", "user.name", "user.email"}[i]
 					if event.Label != wantLabel || string(stdout) != "online version diagnostic\n" || string(stderr) != configStderr {
 						t.Fatal("configuration command raw streams lost")
 					}
@@ -494,13 +507,16 @@ esac
 					if scenario == "second-config-failure" && i == 1 && event.Exit != 8 {
 						t.Fatal("second configuration refusal exit lost")
 					}
+					if scenario == "identity-failure" && i == 3 && event.Exit != 10 {
+						t.Fatal("identity configuration refusal exit lost")
+					}
 				} else if event.Label != "dolt-version" || (scenario == "version-failure" && (event.Exit != 9 || string(stderr) != "version stderr\r\n")) {
 					t.Fatal("version command refusal metadata/streams lost")
 				}
 			}
-			if scenario != "config-failure" && scenario != "second-config-failure" {
+			if scenario == "success" || scenario == "version-failure" || scenario == "version-warning" {
 				configPath := filepath.Join(root, ".dolt", "config_global.json")
-				if data, err := os.ReadFile(configPath); err != nil || string(data) != "{\"metrics.disabled\":\"true\",\"versioncheck.disabled\":\"true\"}\n" {
+				if data, err := os.ReadFile(configPath); err != nil || string(data) != "{\"metrics.disabled\":\"true\",\"user.email\":\"beads@localhost\",\"user.name\":\"beads\",\"versioncheck.disabled\":\"true\"}\n" {
 					t.Fatal("version configuration escaped the disposable HOME")
 				}
 				if info, err := os.Stat(configPath); err != nil || info.Mode().Perm() != 0o600 {

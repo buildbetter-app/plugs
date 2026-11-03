@@ -22,13 +22,14 @@ import (
 // These are the Linux/amd64 release pins in the reference source's
 // tools/bazel/dolt.bzl at 9d6fff760b7a314b476539198504d77ce0959656.
 const (
-	referenceDoltVersion            = "2.2.0"
-	referenceDoltURL                = "https://github.com/dolthub/dolt/releases/download/v2.2.0/dolt-linux-amd64.tar.gz"
-	referenceDoltSHA256             = "1f7ad8c2622995789420a3fb0f2d16b4aa7430000a825dd91d5938f36480cbf6"
-	referenceDoltMember             = "dolt-linux-amd64/bin/dolt"
-	referenceSizeLimit              = 256 << 20
-	referenceDoltConfigSourceSHA256 = "2515e188b89e1676921d3a7dd215b8fa824f1206a72aa81da9aa85e491f6f3df"
-	referenceDoltEnvSourceSHA256    = "8bb3e5f57e2d8816753a4e0e9f08be5d64e51b89bde61d0d799f3bf04e1dd3d0"
+	referenceDoltVersion              = "2.2.0"
+	referenceDoltURL                  = "https://github.com/dolthub/dolt/releases/download/v2.2.0/dolt-linux-amd64.tar.gz"
+	referenceDoltSHA256               = "1f7ad8c2622995789420a3fb0f2d16b4aa7430000a825dd91d5938f36480cbf6"
+	referenceDoltMember               = "dolt-linux-amd64/bin/dolt"
+	referenceSizeLimit                = 256 << 20
+	referenceDoltConfigSourceSHA256   = "2515e188b89e1676921d3a7dd215b8fa824f1206a72aa81da9aa85e491f6f3df"
+	referenceDoltEnvSourceSHA256      = "8bb3e5f57e2d8816753a4e0e9f08be5d64e51b89bde61d0d799f3bf04e1dd3d0"
+	referenceDoltIdentitySourceSHA256 = "17e65f9062e2dc9207f3c9291686fe66ec2756df5ea452bc99530b4dbeec83e8"
 )
 
 func referenceDigest(data []byte) string {
@@ -200,11 +201,13 @@ func prepareReferenceDoltVersion(doltPath, root string) ([]byte, []byte, error) 
 	// equality; suppress the online update check at its supported configuration.
 	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root, "DOLT_ROOT_PATH=" + root,
 		"DOLT_DISABLE_EVENT_FLUSH=1", "LC_ALL=C", "TZ=UTC"}
-	for _, setting := range []string{"metrics.disabled", "versioncheck.disabled"} {
-		configure := exec.Command(doltPath, "config", "--global", "--add", setting, "true")
+	// These are the proxy server's exact fallback identity. Provision it before
+	// recording so public init does not mutate the prepared configuration.
+	for _, setting := range [][2]string{{"metrics.disabled", "true"}, {"versioncheck.disabled", "true"}, {"user.name", "beads"}, {"user.email", "beads@localhost"}} {
+		configure := exec.Command(doltPath, "config", "--global", "--add", setting[0], setting[1])
 		configure.Env = env
-		if _, _, err := runReferenceRuntimeCommand("dolt-config-"+setting, configure, root); err != nil {
-			return nil, nil, fmt.Errorf("configure disposable Dolt %s: %w", setting, err)
+		if _, _, err := runReferenceRuntimeCommand("dolt-config-"+setting[0], configure, root); err != nil {
+			return nil, nil, fmt.Errorf("configure disposable Dolt %s: %w", setting[0], err)
 		}
 	}
 	configPath := filepath.Join(root, ".dolt", "config_global.json")
@@ -219,7 +222,7 @@ func prepareReferenceDoltVersion(doltPath, root string) ([]byte, []byte, error) 
 		return nil, nil, err
 	}
 	var config map[string]string
-	if err := json.Unmarshal(configBytes, &config); err != nil || len(config) != 2 || config["metrics.disabled"] != "true" || config["versioncheck.disabled"] != "true" {
+	if err := json.Unmarshal(configBytes, &config); err != nil || len(config) != 4 || config["metrics.disabled"] != "true" || config["versioncheck.disabled"] != "true" || config["user.name"] != "beads" || config["user.email"] != "beads@localhost" {
 		return nil, nil, fmt.Errorf("disposable Dolt configuration differs: %q: %v", configBytes, err)
 	}
 	versionCommand := exec.Command(doltPath, "version")
@@ -253,6 +256,7 @@ var capturePacketFiles = map[string]string{
 	".dolt/config_global.json":       "dolt-config.json",
 	"dolt-config-source.go":          "dolt-config-source.go",
 	"dolt-env-source.sh":             "dolt-env-source.sh",
+	"dolt-identity-source.go":        "dolt-identity-source.go",
 }
 
 func retainReferenceCapture(root, retained string, log io.Writer, captured bool) error {

@@ -23,6 +23,7 @@ FILES = {
     "recorder.stdout", "recorder.stderr", "dolt-version.stdout", "dolt-version.stderr",
     "runtime-commands.jsonl",
     "dolt-config.json", "dolt-config-source.go", "dolt-env-source.sh",
+    "dolt-identity-source.go",
 }
 COMMIT = "9d6fff760b7a314b476539198504d77ce0959656"
 TREE = "cde121d6e4119e454857ad1c3ca293e2791be840"
@@ -33,6 +34,8 @@ DOLT_URL = "https://github.com/dolthub/dolt/releases/download/v2.2.0/dolt-linux-
 DOLT_MEMBER = "dolt-linux-amd64/bin/dolt"
 DOLT_CONFIG_SOURCE = "2515e188b89e1676921d3a7dd215b8fa824f1206a72aa81da9aa85e491f6f3df"
 DOLT_ENV_SOURCE = "8bb3e5f57e2d8816753a4e0e9f08be5d64e51b89bde61d0d799f3bf04e1dd3d0"
+DOLT_IDENTITY_SOURCE = "17e65f9062e2dc9207f3c9291686fe66ec2756df5ea452bc99530b4dbeec83e8"
+DOLT_IDENTITY = {"user.name": "beads", "user.email": "beads@localhost"}
 
 
 def canonical(value):
@@ -129,6 +132,8 @@ def accept_capture(packet, files):
             and profile.get("doltMetricsDisabled") is True and profile.get("doltEventFlushDisabled") is True
             and profile.get("doltConfigSourceSHA256") == digest(files["dolt-config-source.go"]) == DOLT_CONFIG_SOURCE
             and profile.get("doltEnvSourceSHA256") == digest(files["dolt-env-source.sh"]) == DOLT_ENV_SOURCE
+            and profile.get("doltIdentitySourceSHA256") == digest(files["dolt-identity-source.go"]) == DOLT_IDENTITY_SOURCE
+            and profile.get("doltIdentity") == DOLT_IDENTITY
             and profile.get("doltArchiveURL") == DOLT_URL and profile.get("doltMember") == DOLT_MEMBER,
             "capture profile/source/recorder identity differs")
     manifest = load(files["public-reference-manifest.json"])
@@ -154,14 +159,17 @@ def accept_capture(packet, files):
             and runtime.get("configSHA256") == digest(files["dolt-config.json"])
             and runtime.get("configSourceSHA256") == DOLT_CONFIG_SOURCE
             and runtime.get("envSourceSHA256") == DOLT_ENV_SOURCE
+            and runtime.get("identitySourceSHA256") == DOLT_IDENTITY_SOURCE and runtime.get("identity") == DOLT_IDENTITY
             and runtime.get("runtimeCommandsSHA256") == digest(files["runtime-commands.jsonl"]),
             "runtime configuration trace identity differs")
-    require(load(files["dolt-config.json"]) == {"metrics.disabled": "true", "versioncheck.disabled": "true"},
+    require(load(files["dolt-config.json"]) == {"metrics.disabled": "true", "versioncheck.disabled": "true", **DOLT_IDENTITY},
             "private runtime configuration bytes differ")
     runtime_events = [load(line) for line in files["runtime-commands.jsonl"].splitlines()]
     require([event.get("argv") for event in runtime_events] == [
         ["dolt", "config", "--global", "--add", "metrics.disabled", "true"],
-        ["dolt", "config", "--global", "--add", "versioncheck.disabled", "true"], ["dolt", "version"]],
+        ["dolt", "config", "--global", "--add", "versioncheck.disabled", "true"],
+        ["dolt", "config", "--global", "--add", "user.name", "beads"],
+        ["dolt", "config", "--global", "--add", "user.email", "beads@localhost"], ["dolt", "version"]],
         "runtime setup/version command order differs")
     for event in runtime_events:
         require(event.get("outcome") == "exited" and event.get("exitCode") == 0 and "error" not in event,
@@ -172,8 +180,8 @@ def accept_capture(packet, files):
             data = decode(event.get(stream + "Base64"))
             require(len(data) == event.get(stream + "Bytes") and digest(data) == event.get(stream + "SHA256"),
                     "runtime setup/version stream bytes differ")
-    require(decode(runtime_events[2]["stdoutBase64"]) == files["dolt-version.stdout"]
-            and decode(runtime_events[2]["stderrBase64"]) == files["dolt-version.stderr"],
+    require(decode(runtime_events[4]["stdoutBase64"]) == files["dolt-version.stdout"]
+            and decode(runtime_events[4]["stderrBase64"]) == files["dolt-version.stderr"],
             "runtime version event and retained streams differ")
     recording = load(files["reference-recording.json"])
     require(recording.get("workspaceClass") == "fresh-disposable"

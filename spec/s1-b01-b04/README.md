@@ -110,6 +110,15 @@ profile does not certify embedded-mode behavior, controlled reference clocks,
 or full-card parity. The historical twins remain unchanged and are not rebound
 to the new runtime or current recorder bytes.
 
+The private setup also explicitly configures the proxy server's source-default
+identity, `beads <beads@localhost>`, before recording. The pinned proxy's
+`DoltServer.doltConfigure` would otherwise add those keys during public init,
+changing the prepared configuration. Its complete source and digest are retained;
+the independent extractor still requires the final configuration to match the
+prepared bytes exactly. The first configured capture at `7bdeea0c` passed the
+runtime test but failed that independent binding check; its original archived
+packet remains unaccepted, and no unchanged repeat substitutes for the repair.
+
 The B02 replay also checks that public `bead.link` and `bead.fail` release a
 conditional dependent through the configured failure slot on memory, SQLite
 (including reopen), and PostgreSQL. This adopted outcome check does not extend
