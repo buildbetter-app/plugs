@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -43,8 +44,12 @@ func run() int {
 		return 0
 	}
 	if !*local {
-		fmt.Println("PLAN: --local --driver memory|sqlite --source-sha FULL_SHA --source-tree FULL_TREE runs three disposable authenticated HTTP/MCP preparations. Same-session runs do not satisfy three consecutive nights, the shadow fortnight, rollback or staging qualification.")
+		fmt.Println("PLAN: --local --driver memory|sqlite --source-sha FULL_SHA --source-tree FULL_TREE runs three disposable authenticated HTTP/MCP preparations and one owned edition rollback. Same-session runs do not satisfy three consecutive nights, the shadow fortnight, production rollback or staging qualification.")
 		return 0
+	}
+	if err := prepareDisposableRunfiles(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -57,4 +62,53 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// Bazel declares the two real static edition outputs and source bytes as this
+// executable's data. Set only missing runfile variables; the rehearsal package
+// still verifies exact checkout identity, runfile bytes and binary paths.
+func prepareDisposableRunfiles() error {
+	if os.Getenv("TEST_SRCDIR") == "" {
+		dir := os.Getenv("RUNFILES_DIR")
+		if dir == "" {
+			executable, err := os.Executable()
+			if err != nil {
+				return fmt.Errorf("Bazel runfiles required")
+			}
+			dir = executable + ".runfiles"
+		}
+		if !filepath.IsAbs(dir) {
+			return fmt.Errorf("absolute Bazel runfiles required")
+		}
+		if err := os.Setenv("TEST_SRCDIR", dir); err != nil {
+			return err
+		}
+	}
+	if os.Getenv("TEST_WORKSPACE") == "" {
+		if err := os.Setenv("TEST_WORKSPACE", "plugs"); err != nil {
+			return err
+		}
+	}
+	if os.Getenv("PLUG_SOURCE_MODULE_ROOT") == "" {
+		root := os.Getenv("BUILD_WORKSPACE_DIRECTORY")
+		if !filepath.IsAbs(root) {
+			return fmt.Errorf("exact Bazel source checkout required")
+		}
+		if err := os.Setenv("PLUG_SOURCE_MODULE_ROOT", root); err != nil {
+			return err
+		}
+	}
+	for _, pair := range [][2]string{
+		{"R1_OLD_RUNTIME_BINARY", "tools/rehearsal/cmd/rollback-runtime/old-runtime_/old-runtime"},
+		{"R1_CANDIDATE_RUNTIME_BINARY", "tools/rehearsal/cmd/rollback-runtime/candidate-runtime_/candidate-runtime"},
+	} {
+		if value := os.Getenv(pair[0]); value != "" && value != pair[1] {
+			return fmt.Errorf("conflicting Bazel edition output")
+		} else if value == "" {
+			if err := os.Setenv(pair[0], pair[1]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

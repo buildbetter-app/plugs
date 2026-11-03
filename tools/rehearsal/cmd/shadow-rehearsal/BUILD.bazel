@@ -5,6 +5,12 @@ go_binary(
     srcs = ["main.go"],
     importpath = "github.com/buildbetter-app/plugs/tools/rehearsal/cmd/shadow-rehearsal",
     visibility = ["//visibility:public"],
+    data = [
+        "//tools/rehearsal:source",
+        "//tools/rehearsal/cmd/rollback-runtime:source",
+        "//tools/rehearsal/cmd/rollback-runtime:old-runtime",
+        "//tools/rehearsal/cmd/rollback-runtime:candidate-runtime",
+    ],
     deps = ["//tools/rehearsal"],
 )
 
