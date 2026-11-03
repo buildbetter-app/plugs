@@ -36,16 +36,22 @@ go_test(
 
 filegroup(
     name = "lexicon_files",
-    srcs = glob(["**"]),
+    srcs = glob(["**"]) + ["//spec/s1-b13-b16/cmd/referencecapture:lexicon_files"],
     visibility = ["//visibility:public"],
 )
 
-go_binary(
-    name = "reference_capture",
-    srcs = ["reference_capture_main.go"],
-    data = [
+filegroup(
+    name = "reference_capture_data",
+    srcs = [
         "record_reference.py",
         "reference_capture.py",
         "//scripts/ci:public_reference_validation",
     ],
+    visibility = ["//spec/s1-b13-b16/cmd/referencecapture:__pkg__"],
+)
+
+alias(
+    name = "reference_capture",
+    actual = "//spec/s1-b13-b16/cmd/referencecapture:reference_capture",
+    visibility = ["//visibility:public"],
 )
