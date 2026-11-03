@@ -1,4 +1,5 @@
 load("@rules_go//go:def.bzl", "go_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 go_test(
     name = "acceptance",
@@ -39,4 +40,19 @@ filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
+)
+
+# The trusted workflow prepares the pinned public reference only when this
+# explicit target is invoked with its fixed PLUG_PUBLIC_REFERENCE descriptor.
+# Keep it out of wildcard/whole-tree runs: the prepared paths exist only on
+# that RunsOn route and the test must never fall back to a local artifact.
+sh_test(
+    name = "prepared_reference_route",
+    srcs = ["prepared_reference_test.py"],
+    data = [
+        "prepared_reference_test.py",
+        "record_reference.py",
+    ],
+    tags = ["manual", "requires-network"],
+    size = "large",
 )
