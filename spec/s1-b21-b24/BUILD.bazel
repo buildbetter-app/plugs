@@ -10,6 +10,7 @@ go_test(
         "fixture_test.go",
         "ordinary_count_test.go",
         "reference_test.go",
+        "revision_order_test.go",
     ],
     embedsrcs = [
         "count-reference-first.json",
