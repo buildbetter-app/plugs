@@ -800,6 +800,20 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		case "blocks":
 		case "related":
 			kind = "relates-to"
+		case "parent-child":
+			// The source edge points from child to parent. A Plug parent is
+			// core-owned hierarchy, not a second generic link. Keep the source
+			// edge mirror below for exact reverse provenance.
+			if mode == planLegacy {
+				return restorePlan{}, fmt.Errorf("%w: relation type %s", ErrRestoreUnavailable, kind)
+			}
+			if doc.Parent != nil {
+				return restorePlan{}, fmt.Errorf("%w: bead %s has multiple parent edges", ErrRestoreUnavailable, from)
+			}
+			parent := model.RefByID(to, model.Natural64(0))
+			doc.Parent = &parent
+			docs[from] = doc
+			continue
 		default:
 			return restorePlan{}, fmt.Errorf("%w: relation type %s", ErrRestoreUnavailable, kind)
 		}

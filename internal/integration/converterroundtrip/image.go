@@ -20,15 +20,8 @@ type derivedImage struct {
 	Value json.RawMessage     `json:"value"`
 }
 
-// The derived row key is the descendant ID; each entry identifies an ancestor
-// and its distance. The parent-free restore profile still requires self.
-type ancestorMembership struct {
-	Ancestor string `json:"ancestor"`
-	Depth    uint64 `json:"depth"`
-}
-
 // This profile is deliberately restricted to the built-in ontology, no
-// authorization/plugin provider, no parents/cuts, no templates and no leases.
+// authorization/plugin provider, no cuts, no templates and no leases.
 // Every table participates in the digest, including empty tables. Its rows
 // are rebuilt from live documents, never copied from a source's cached flags.
 func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error {
@@ -47,6 +40,14 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 			return nil
 		}
 		visiting[id] = true
+		if parent := docs[id].Parent; parent != nil {
+			if _, exists := docs[parent.ID]; !exists {
+				return fmt.Errorf("restore parent has no restored endpoint")
+			}
+			if err := walk(parent.ID); err != nil {
+				return err
+			}
+		}
 		for _, link := range docs[id].Links {
 			if link.Kind == "blocks" {
 				if err := walk(link.To.ID); err != nil {
@@ -61,6 +62,33 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 	for _, id := range ids {
 		if err := walk(id); err != nil {
 			return err
+		}
+	}
+	// Use the live Writer's injective row codec. Aggregate arrays keyed by
+	// descendant cannot be read or guarded by ordinary hierarchy operations.
+	ancestors := make(map[string]map[string]uint64, len(docs))
+	for _, id := range ids {
+		depths := map[string]uint64{}
+		for current, depth := id, uint64(0); current != ""; depth++ {
+			depths[current] = depth
+			row, err := pipeline.AncestorRow(id, current, depth)
+			if err != nil {
+				return err
+			}
+			plan.derived = append(plan.derived, derivedImage{driver.DerivedAncestorClosure, row.Key, row.Value})
+			parent := docs[current].Parent
+			if parent == nil {
+				break
+			}
+			current = parent.ID
+		}
+		ancestors[id] = depths
+	}
+	for id, doc := range docs {
+		for _, link := range doc.Links {
+			if link.Kind == "blocks" && (ancestors[id][link.To.ID] > 0 || ancestors[link.To.ID][id] > 0) {
+				return fmt.Errorf("restore blocking link cannot join an ancestor and descendant")
+			}
 		}
 	}
 	add := func(table driver.DerivedTable, key string, value any) error {
@@ -96,7 +124,6 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 			value any
 		}{
 			{driver.DerivedReadyState, map[string]bool{"blocked": blocked, "ready": effective.ReadyEligible(doc.Type, stringValue(doc.Fields["status"])) && !blocked}},
-			{driver.DerivedAncestorClosure, []ancestorMembership{{Ancestor: id, Depth: 0}}},
 			{driver.DerivedCutClosure, []string{}},
 			{driver.DerivedAttribute, map[string]any{}},
 			{driver.DerivedSortKey, map[string]any{"priority": priority, "id": id}},

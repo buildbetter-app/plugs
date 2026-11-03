@@ -3,6 +3,7 @@ package converterroundtrip
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -25,7 +26,11 @@ const (
 	idC = "pl-cccccccccccccccccccccccccccccccc"
 	// Fixed digest of an independently constructed builtin-head/1 image with
 	// each bead's required self ancestor at depth zero.
-	supportedDerived = "89f6eb61310b4f9193e9925e2a2305101b126f763e870986bc7ca51f6043d28a"
+	// Recomputed independently from the same head image with the live
+	// base64(descendant).base64(ancestor) key and scalar depth value. The
+	// independent description also reproduces the previous aggregate-image
+	// digest 89f6eb61310b4f9193e9925e2a2305101b126f763e870986bc7ca51f6043d28a.
+	supportedDerived = "f170bf742699fb0bbc577c57b19e7907872e2ea99a34a94fda5e0659197f20ed"
 )
 
 // This is a separately constructed head-only input, NOT the pinned exporter
@@ -313,7 +318,8 @@ func assertRestoreSelfAncestors(t *testing.T, store driver.Store) {
 	ids := []string{idA, idB, idC}
 	keys := make([]driver.LockKey, len(ids))
 	for i, id := range ids {
-		keys[i] = driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: id}}
+		part := base64.RawURLEncoding.EncodeToString([]byte(id))
+		keys[i] = driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: driver.DerivedAncestorClosure, Key: part + "." + part}}
 	}
 	states, err := r.Observe(ctx, keys)
 	if err != nil || len(states) != len(ids) {
@@ -321,15 +327,14 @@ func assertRestoreSelfAncestors(t *testing.T, store driver.Store) {
 	}
 	for i, id := range ids {
 		state := states[i]
-		// The descendant is the row key. Parent links refuse, so each closure
-		// must contain exactly its self membership at depth zero, regardless
-		// of workflow status or blocking links. This expectation uses no plan.
-		want := `[{"ancestor":"` + id + `","depth":0}]`
+		// This legacy fixture has no parents. Assert the canonical pair key
+		// and scalar zero independently of the production codec and plan.
+		want := "0"
 		var got string
 		if state.Derived != nil {
 			got = string(state.Derived.Value)
 		}
-		if !state.Present || state.Derived == nil || state.Derived.Key != id || state.Revision.String() != "1" || string(state.Derived.Value) != want {
+		if !state.Present || state.Derived == nil || state.Derived.Key != keys[i].Derived.Key || state.Revision.String() != "1" || string(state.Derived.Value) != want {
 			t.Errorf("ancestor closure %s: got revision %s, value %q; want revision 1, value %s", id, state.Revision, got, want)
 		}
 	}
