@@ -98,6 +98,8 @@ engdocs/plug-runtime/rpc-http.md
 engdocs/plug-runtime/server.md
 engdocs/plug-runtime/storage.md
 engdocs/plug-runtime/transports.md
+engdocs/plug-runtime/workflow-contract.md
+engdocs/plug-runtime/workflow-durable-storage.md
 engdocs/style/BUILD.bazel
 engdocs/style/lexicon.toml
 examples/plugins/native-guard/BUILD.bazel
@@ -663,6 +665,8 @@ internal/server/pluginhost/README.md
 internal/server/pluginhost/adapters.go
 internal/server/pluginhost/call.go
 internal/server/pluginhost/core_reader.go
+internal/server/pluginhost/durable.go
+internal/server/pluginhost/durable_contract_test.go
 internal/server/pluginhost/egress.go
 internal/server/pluginhost/egress_test.go
 internal/server/pluginhost/errors.go
@@ -704,6 +708,7 @@ internal/server/rpc/registry.go
 internal/server/rpc/rpc_test.go
 internal/server/rpc/server.go
 internal/server/rpc/service.go
+internal/server/rpc/workflow_integration_test.go
 internal/server/transport/httpjson/BUILD.bazel
 internal/server/transport/httpjson/README.md
 internal/server/transport/httpjson/admission_test.go
@@ -907,6 +912,11 @@ pluginapi/op.go
 pluginapi/types.go
 pluginapi/types_test.go
 plugins/plug/SKILL.md
+plugins/workflow/BUILD.bazel
+plugins/workflow/manifest.json
+plugins/workflow/native.go
+plugins/workflow/workflow.go
+plugins/workflow/workflow_test.go
 scripts/ci/BUILD.bazel
 scripts/ci/plug-bazel-config-test.sh
 scripts/ci/plug-bazel-delivery-test.sh

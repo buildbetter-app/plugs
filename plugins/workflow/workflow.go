@@ -336,21 +336,22 @@ func receiptKey(p *Provider, by model.PrincipalRef, meta model.WriteMeta) (strin
 	return key, principal, principalHash, agent, project, err
 }
 
-func (p *Provider) storeReceipt(value persisted, by model.PrincipalRef, meta model.WriteMeta, request any, result any, runID, itemID string) error {
+func (p *Provider) storeReceipt(value persisted, by model.PrincipalRef, meta model.WriteMeta, request any, result any, runID, itemID string) (receiptState, error) {
 	key, principal, principalHash, agent, project, err := receiptKey(p, by, meta)
 	if err != nil {
-		return err
+		return receiptState{}, err
 	}
 	d, err := digest(request)
 	if err != nil {
-		return err
+		return receiptState{}, err
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
-		return err
+		return receiptState{}, err
 	}
-	value.Receipts[key] = receiptState{Principal: principal, PrincipalHash: principalHash, Agent: agent, Project: project, Plugin: p.plugin, Instance: p.instance, Incarnation: p.incarnation, Method: meta.Method, Key: meta.IdempotencyKey, Digest: d, RunID: runID, ItemID: itemID, ExpiresAt: p.now().Add(driver.IdempotencyWindow), Result: encoded}
-	return nil
+	receipt := receiptState{Principal: principal, PrincipalHash: principalHash, Agent: agent, Project: project, Plugin: p.plugin, Instance: p.instance, Incarnation: p.incarnation, Method: meta.Method, Key: meta.IdempotencyKey, Digest: d, RunID: runID, ItemID: itemID, ExpiresAt: p.now().Add(driver.IdempotencyWindow), Result: encoded}
+	value.Receipts[key] = receipt
+	return receipt, nil
 }
 
 func (p *Provider) mapSaveError(err error) error {
@@ -418,14 +419,11 @@ func (p *Provider) Invoke(ctx context.Context, by model.PrincipalRef, req Invoke
 		result.Items = append(result.Items, p.itemView(item))
 	}
 	value.Runs[runID] = run
-	if err := p.storeReceipt(value, by, meta, req, result, runID, ""); err != nil {
+	receipt, err := p.storeReceipt(value, by, meta, req, result, runID, "")
+	if err != nil {
 		return InvokeResult{}, err
 	}
-	if key, _, _, _, _, keyErr := p.receiptScope(by, meta); keyErr == nil {
-		if receipt, ok := value.Receipts[key]; ok {
-			p.appendAudit(&value, "workflow.run.created", receipt)
-		}
-	}
+	p.appendAudit(&value, "workflow.run.created", receipt)
 	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 		return InvokeResult{}, err
 	}
@@ -578,14 +576,11 @@ func (p *Provider) ClaimNext(ctx context.Context, by model.PrincipalRef, project
 		}
 	}
 	if selected == nil {
-		if err := p.storeReceipt(value, by, meta, request, replay, "", ""); err != nil {
+		receipt, err := p.storeReceipt(value, by, meta, request, replay, "", "")
+		if err != nil {
 			return ItemView{}, false, false, err
 		}
-		if key, _, _, _, _, keyErr := p.receiptScope(by, meta); keyErr == nil {
-			if receipt, ok := value.Receipts[key]; ok {
-				p.appendAudit(&value, "workflow.claim_next.empty", receipt)
-			}
-		}
+		p.appendAudit(&value, "workflow.claim_next.empty", receipt)
 		if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 			return ItemView{}, false, false, err
 		}
@@ -600,14 +595,11 @@ func (p *Provider) ClaimNext(ctx context.Context, by model.PrincipalRef, project
 		Found bool     `json:"found"`
 		Item  ItemView `json:"item"`
 	}{Found: true, Item: item}
-	if err := p.storeReceipt(value, by, meta, request, replay, selected.RunID, selected.ID); err != nil {
+	receipt, err := p.storeReceipt(value, by, meta, request, replay, selected.RunID, selected.ID)
+	if err != nil {
 		return ItemView{}, false, false, err
 	}
-	if key, _, _, _, _, keyErr := p.receiptScope(by, meta); keyErr == nil {
-		if receipt, ok := value.Receipts[key]; ok {
-			p.appendAudit(&value, "workflow.claim_next", receipt)
-		}
-	}
+	p.appendAudit(&value, "workflow.claim_next", receipt)
 	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 		return ItemView{}, false, false, err
 	}
@@ -665,14 +657,11 @@ func (p *Provider) Claim(ctx context.Context, by model.PrincipalRef, req model.R
 	item.Claim = &claimState{Principal: by, Agent: effectiveAgent(by, meta), ExpiresAt: p.now().Add(claimTTL), Generation: item.Generation}
 	value.Items[item.ID] = item
 	view := p.itemView(item)
-	if err := p.storeReceipt(value, by, meta, req, view, item.RunID, item.ID); err != nil {
+	receipt, err := p.storeReceipt(value, by, meta, req, view, item.RunID, item.ID)
+	if err != nil {
 		return ItemView{}, err
 	}
-	if key, _, _, _, _, keyErr := p.receiptScope(by, meta); keyErr == nil {
-		if receipt, ok := value.Receipts[key]; ok {
-			p.appendAudit(&value, "workflow.claim", receipt)
-		}
-	}
+	p.appendAudit(&value, "workflow.claim", receipt)
 	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 		return ItemView{}, err
 	}
@@ -709,17 +698,14 @@ func (p *Provider) Comment(ctx context.Context, by model.PrincipalRef, req model
 	item.Comments = append(item.Comments, commentState{Body: body, Principal: by, Time: p.now().UTC()})
 	value.Items[item.ID] = item
 	commit := workflowCommit(item.ID, item.Generation)
-	if err := p.storeReceipt(value, by, meta, struct {
+	receipt, err := p.storeReceipt(value, by, meta, struct {
 		ID   model.Ref `json:"id"`
 		Body string    `json:"body"`
-	}{req, body}, commit, item.RunID, item.ID); err != nil {
+	}{req, body}, commit, item.RunID, item.ID)
+	if err != nil {
 		return model.Commit{}, err
 	}
-	if key, _, _, _, _, keyErr := p.receiptScope(by, meta); keyErr == nil {
-		if receipt, ok := value.Receipts[key]; ok {
-			p.appendAudit(&value, "workflow.comment", receipt)
-		}
-	}
+	p.appendAudit(&value, "workflow.comment", receipt)
 	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 		return model.Commit{}, err
 	}
@@ -775,22 +761,19 @@ func (p *Provider) Close(ctx context.Context, by model.PrincipalRef, req model.R
 		delete(value.Runs, run.ID)
 		p.sanitizeTerminalReceipts(value, run.ID, item.ID)
 	}
-	if err := p.storeReceipt(value, by, meta, struct {
+	receipt, err := p.storeReceipt(value, by, meta, struct {
 		ID     model.Ref `json:"id"`
 		Reason string    `json:"reason"`
-	}{req, reason}, commit, run.ID, item.ID); err != nil {
+	}{req, reason}, commit, run.ID, item.ID)
+	if err != nil {
 		return model.Commit{}, err
 	}
 	if complete {
 		p.sanitizeTerminalReceipts(value, run.ID, item.ID)
 	}
-	if key, _, _, _, _, keyErr := p.receiptScope(by, meta); keyErr == nil {
-		if receipt, ok := value.Receipts[key]; ok {
-			p.appendAudit(&value, "workflow.close", receipt)
-			if complete {
-				p.appendAudit(&value, "workflow.run.completed", receipt)
-			}
-		}
+	p.appendAudit(&value, "workflow.close", receipt)
+	if complete {
+		p.appendAudit(&value, "workflow.run.completed", receipt)
 	}
 	if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
 		return model.Commit{}, err

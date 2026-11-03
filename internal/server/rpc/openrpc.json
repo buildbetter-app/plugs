@@ -322,6 +322,22 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "plane": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plugin": {
+            "type": "string"
+          },
+          "workflowRunId": {
+            "type": "string"
           }
         },
         "required": [
@@ -3778,6 +3794,161 @@
         "required": [
           "kind",
           "target"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowChecklistItem": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowRun": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "completed"
+            ]
+          },
+          "owner": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "mode",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^workflow:item/"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "plane": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plugin": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "claim": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "title",
+          "type",
+          "project",
+          "status",
+          "plane",
+          "kind",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "WorkflowInvokeResult": {
+        "type": "object",
+        "properties": {
+          "plane": {
+            "type": "string",
+            "enum": [
+              "permanent",
+              "ephemeral"
+            ]
+          },
+          "run": {
+            "$ref": "#/components/schemas/WorkflowRun"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowItem"
+            }
+          }
+        },
+        "required": [
+          "plane",
+          "items"
         ],
         "additionalProperties": false
       }

@@ -43,7 +43,11 @@ func TestDurableManifestRefusesMemoryCheckpoint(t *testing.T) {
 				Descriptor: pluginapi.Method{
 					Name:       "x.durable.probe",
 					Permission: "read",
-					Resource:   "params.project",
+					Resource: func(params any) []pluginapi.Ref {
+						value, _ := params.(map[string]any)
+						project, _ := value["project"].(string)
+						return []pluginapi.Ref{pluginapi.RefByID(project, "")}
+					},
 				},
 				Handle: func(context.Context, json.RawMessage) (json.RawMessage, error) {
 					return json.RawMessage(`{}`), nil
