@@ -106,3 +106,5 @@ func newSource(host pluginapi.Host) (sdk.Registration, error) {
 		},
 	}, nil
 }
+
+func main() {}

@@ -1,3 +1,5 @@
+//go:build wasip1
+
 // Package main is a real source-built guest for the local construction test.
 package main
 
