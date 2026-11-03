@@ -53,10 +53,11 @@ Explicitly unlink the old `parent-child` relation before changing/detaching it;
 unlink plus canonical reparent can share one atomic `tx.apply`. Unlinking the
 matching hierarchy relation removes its legacy copies and canonical parent.
 
-Persisted documents must contain the canonical relation as well as any retained
-legacy link. The decoder refuses raw legacy-only or conflicting stored envelopes;
-an older raw legacy-only store requires an explicit migration establishing Parent
-and closure, outside this candidate. Reads do not backfill it. No restore,
+Persisted documents may contain canonical `Parent`, one legacy `parent-child`
+link, or both matching forms. The shared decoder resolves them to the same
+in-memory canonical parent, refusing conflicting forms, multiple legacy parents
+and malformed refs. Original stored bytes are preserved; reads do not write back
+or backfill closure. Existing closure validation remains unchanged. No restore,
 allocator, native producer or child-ID fixture work is included here.
 
 Ready pages and fresh direct/next claims now use the same ancestor/category

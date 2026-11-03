@@ -30,15 +30,15 @@ func parentID(parent *model.Ref) string {
 	return parent.ID
 }
 
-// HierarchyParent validates the persisted canonical relation without rewriting
-// stored bytes. Writer accepts legacy parent-child operations and persists both
-// Parent and the matching link so closure and authorization see one hierarchy.
-// Raw legacy-only stores need an explicit migration, never a read-time backfill.
+// HierarchyParent resolves Parent and a single legacy parent-child link without
+// rewriting stored bytes. Both forms may be present when they name the same
+// validated canonical parent.
 func HierarchyParent(doc Document) (*model.Ref, error) {
 	parent := doc.Parent
 	if err := validateParent(parent); err != nil {
 		return nil, failure("invalid_params", "invalid hierarchy parent")
 	}
+	legacyParentSeen := false
 	for _, link := range doc.Links {
 		if link.Kind != "parent-child" {
 			continue
@@ -46,14 +46,17 @@ func HierarchyParent(doc Document) (*model.Ref, error) {
 		if err := validateParent(&link.To); err != nil {
 			return nil, failure("invalid_params", "invalid legacy hierarchy parent")
 		}
+		if legacyParentSeen {
+			return nil, failure("invalid_params", "multiple legacy hierarchy parents")
+		}
+		legacyParentSeen = true
 		if parent != nil && parent.ID != link.To.ID {
 			return nil, failure("invalid_params", "conflicting parent representations")
 		}
-		value := link.To
-		parent = &value
-	}
-	if doc.Parent == nil && parent != nil {
-		return nil, failure("invalid_params", "legacy hierarchy requires canonical Parent; use the Writer link path or an explicit migration")
+		if parent == nil {
+			value := link.To
+			parent = &value
+		}
 	}
 	return parent, nil
 }
@@ -63,6 +66,19 @@ func HierarchyParent(doc Document) (*model.Ref, error) {
 // transient descendant cycle is not rescued by a later operation in the batch.
 func (p *prepared) resolveParent(ctx context.Context, parent *model.Ref, aliases map[string]model.Ref, child string) (*model.Ref, error) {
 	if parent == nil {
+		// A detach is an explicit edit, not legacy-only stored input. Require
+		// unlinking a retained legacy relation before removing its parent.
+		if child != "" {
+			node, err := p.load(ctx, model.Ref{ID: child})
+			if err != nil {
+				return nil, err
+			}
+			for _, link := range node.doc.Links {
+				if link.Kind == "parent-child" {
+					return nil, failure("invalid_params", "detach conflicts with retained legacy parent")
+				}
+			}
+		}
 		return nil, nil
 	}
 	ref, err := p.resolve(*parent, aliases)
