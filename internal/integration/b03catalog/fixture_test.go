@@ -368,7 +368,7 @@ func (f *fixture) plan(t *testing.T, project string, doc ontology.Document) onto
 
 func (f *fixture) applyParams(plan ontologyops.PlanResult) map[string]any {
 	return f.params("ontology.apply", plan.Changes.Project, map[string]any{
-		"project": plan.Changes.Project, "planDigest": plan.PlanDigest, "expect": plan.Changes.Expect,
+		"planDigest": plan.PlanDigest, "expect": plan.Changes.Expect,
 		"humanPresence": map[string]any{"mode": "presence_check", "challenge": plan.PlanDigest, "proof": plan.PlanDigest},
 	})
 }
