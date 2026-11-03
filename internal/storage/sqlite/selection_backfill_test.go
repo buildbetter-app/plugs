@@ -424,6 +424,62 @@ func TestSelectionSQLiteFinalParentChainAndExactSortCensus(t *testing.T) {
 	}
 }
 
+func TestSelectionAffectedParentProofIncludesUnchangedDescendants(t *testing.T) {
+	ctx := context.Background()
+	s := selectionStore(t).(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	root, child := testRef("selection-affected-root"), testRef("selection-affected-child")
+	tx, header := beginSourceTest(t, s, lease, root, child)
+	for _, item := range []struct {
+		ref    model.Ref
+		parent *model.Ref
+	}{{root, nil}, {child, &root}} {
+		if err := tx.PutGraphRecord(ctx, driver.Record{Ref: item.ref, Kind: "bead", Body: []byte(`{}`)}, item.parent, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commitSourceTest(t, tx, header)
+	decode, project := selectionBackfillRaceProjection(header.Incarnation, nil)
+	plainDecode, plainProject := decode, project.Decode
+	decode = func(record driver.Record) (driver.GraphSourceMetadata, error) {
+		metadata, err := plainDecode(record)
+		if err == nil && record.Ref.ID == child.ID {
+			metadata.Selection[0].Row.Index.Bead.Parent = &root
+		}
+		return metadata, err
+	}
+	project.Decode = func(record driver.Record, inputs []driver.DerivedRow) ([]driver.DerivedSelectionRow, error) {
+		rows, err := plainProject(record, inputs)
+		if err == nil && record.Ref.ID == child.ID {
+			rows[0].Row.Index.Facts.Rows = append(rows[0].Row.Index.Facts.Rows,
+				driver.SelectionFact{Kind: driver.SelectionAncestorFact, Ref: &child, Target: &root, Depth: 1})
+		}
+		return rows, err
+	}
+	if err := s.BuildGraphSourceIndexes(ctx, lease, decode, project); err != nil {
+		t.Fatal(err)
+	}
+	meta := getMeta(t, ctx, s)
+	at := revKey(mustUint(meta.Head))
+	rootKey := keyID(driver.LockKey{Kind: driver.LockRecord, Ref: &root})
+	valid, err := verifySQLiteSelectionParentChainsAffected(ctx, s.db, meta.Incarnation, at, []string{rootKey})
+	if err != nil || !valid {
+		t.Fatalf("affected proof rejected valid root component: valid=%t err=%v", valid, err)
+	}
+	// The child is not a seed, but it is a current descendant of root. A stale
+	// typed Parent image must therefore invalidate the affected component.
+	childKey := keyID(driver.LockKey{Kind: driver.LockRecord, Ref: &child})
+	if _, err := s.db.ExecContext(ctx, `UPDATE selection_bead_history SET parent_key=NULL
+		WHERE incarnation=? AND record_key=? AND end_revision IS NULL`, meta.Incarnation, childKey); err != nil {
+		t.Fatal(err)
+	}
+	valid, err = verifySQLiteSelectionParentChainsAffected(ctx, s.db, meta.Incarnation, at, []string{rootKey})
+	if err != nil || valid {
+		t.Fatalf("affected proof certified stale unchanged descendant: valid=%t err=%v", valid, err)
+	}
+}
+
 // The callbacks here exercise the storage backfill fence. Production supplies
 // the core's body and closure decoder; these typed fixture rows make a real
 // first page durable before a concurrent ordinary source publication.

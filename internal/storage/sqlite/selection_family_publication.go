@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -19,6 +21,77 @@ func (t *transaction) selectionNeverSourcedBefore(ctx context.Context, c *sql.Co
 	if t.restore != nil {
 		return false, nil
 	}
+	// The old census materialized every bead key before discovering that an
+	// ordinary write had left an older bead untouched.  That made each commit
+	// proportional to the whole store.  First ask the indexed anti-join for an
+	// unchanged bead and stop at the first witness; only the exceptional case
+	// where every existing bead is part of this transaction needs the complete
+	// historical check below.
+	changed := make([]string, 0, len(t.records))
+	for id := range t.records {
+		changed = append(changed, id)
+	}
+	if len(changed) == 0 {
+		return false, nil
+	}
+	// Keep the fast path below within SQLite's portable host-parameter budget.
+	// A transaction this large is already affected-sized work; retain the
+	// original exact census rather than constructing an unbounded IN list.
+	if len(changed) > 800 {
+		return t.selectionNeverSourcedBeforeFull(ctx, c, current)
+	}
+	placeholders := make([]string, len(changed))
+	args := make([]any, len(changed))
+	for i, id := range changed {
+		placeholders[i], args[i] = "?", id
+	}
+	var untouched int
+	if err := c.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM objects WHERE kind='bead' AND key NOT IN (`+strings.Join(placeholders, ",")+`))`, args...).Scan(&untouched); err != nil {
+		return false, err
+	}
+	if untouched != 0 {
+		return false, nil
+	}
+	rows, err := c.QueryContext(ctx, `SELECT key FROM objects WHERE kind='bead' AND key IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return false, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return false, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return false, err
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	seen := false
+	for _, id := range ids {
+		record, changed := t.records[id]
+		if !changed || record == nil || record.Kind != "bead" {
+			return false, nil
+		}
+		seen = true
+		var old int
+		if err := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM versions WHERE key=? AND rev<=?)`, id, revKey(mustUint(current.Head))).Scan(&old); err != nil {
+			return false, err
+		}
+		if old != 0 {
+			return false, nil
+		}
+	}
+	return seen, nil
+}
+
+func (t *transaction) selectionNeverSourcedBeforeFull(ctx context.Context, c *sql.Conn, current driver.Meta) (bool, error) {
 	rows, err := c.QueryContext(ctx, `SELECT key FROM objects WHERE kind='bead'`)
 	if err != nil {
 		return false, err
@@ -150,6 +223,36 @@ func (t *transaction) selectionFamilyCompleteForCommit(ctx context.Context, c qu
 	return true, nil
 }
 
+// selectionParentProofSeeds returns the source identities whose committed
+// parent/ancestor component can change in this transaction.  The recursive
+// SQL proof expands each seed through the current Parent index, so an ancestor
+// move also checks every existing descendant whose chain depends on it.  A
+// source-only update remains local to its own chain.
+func (t *transaction) selectionParentProofSeeds(derived map[string]driver.LockState) []string {
+	seen := make(map[string]struct{}, len(t.records)+len(derived))
+	for id, record := range t.records {
+		if identity, ok := t.sourceIdentities[id]; ok && identity.Kind == "bead" {
+			seen[id] = struct{}{}
+			continue
+		}
+		if record != nil && record.Kind == "bead" {
+			seen[id] = struct{}{}
+		}
+	}
+	for _, state := range derived {
+		if state.Derived == nil || state.Derived.Index == nil || state.Derived.Index.Source.Key.Kind != driver.LockRecord {
+			continue
+		}
+		seen[keyID(state.Derived.Index.Source.Key)] = struct{}{}
+	}
+	seeds := make([]string, 0, len(seen))
+	for id := range seen {
+		seeds = append(seeds, id)
+	}
+	sort.Strings(seeds)
+	return seeds
+}
+
 // A core fact family is rebuilt from bead records only. A live, known
 // nonbead record can still own an independently complete fact envelope, so
 // it must not change this family's coverage or be discarded by startup.
@@ -224,11 +327,11 @@ func (t *transaction) prepareSelectionFamilyCoverage(ctx context.Context, c *sql
 	return decisions, nil
 }
 
-func publishSelectionFamilyCoverage(ctx context.Context, c *sql.Conn, incarnation, previous, next string, decisions []selectionFamilyDecision) error {
+func publishSelectionFamilyCoverage(ctx context.Context, c *sql.Conn, incarnation, previous, next string, decisions []selectionFamilyDecision, parentSeeds []string) error {
 	for _, decision := range decisions {
 		family, interval, priorReady, complete, firstTyped := decision.family, decision.interval, decision.priorReady, decision.complete, decision.firstTyped
 		if complete && family.Kind == driver.SelectionAncestorFact {
-			valid, err := verifySQLiteSelectionParentChains(ctx, c, incarnation, next)
+			valid, err := verifySQLiteSelectionParentChainsAffected(ctx, c, incarnation, next, parentSeeds)
 			if err != nil {
 				return err
 			}

@@ -290,5 +290,5 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 	// Coverage is published after all rows in this same fenced SQL transaction.
 	// Each family retains its prior historical interval if this commit cannot
 	// prove a complete delta, and new typed-first readiness starts only here.
-	return publishSelectionFamilyCoverage(ctx, c, incarnation, revKey(mustUint(current.Head)), next, familyDecisions)
+	return publishSelectionFamilyCoverage(ctx, c, incarnation, revKey(mustUint(current.Head)), next, familyDecisions, t.selectionParentProofSeeds(derived))
 }
