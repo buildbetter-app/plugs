@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "sourceindex",
+    srcs = glob(["*.go"], exclude = ["*_test.go"]),
+    importpath = "github.com/buildbetter-app/plugs/internal/storage/sourceindex",
+    visibility = ["//internal/storage:__subpackages__"],
+    deps = ["//internal/core/model", "//internal/storage/driver"],
+)

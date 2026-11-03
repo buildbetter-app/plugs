@@ -110,6 +110,7 @@ func (r *reader) finish() error {
 	}
 	r.store.untrack(r)
 	if r.writer != nil {
+		r.writer.clearSourceOverlay()
 		r.writer.records = nil
 		r.writer.identities = nil
 		r.writer.derived = nil
@@ -387,10 +388,7 @@ func (r *reader) observe(ctx context.Context, key driver.LockKey) (driver.LockSt
 	if err != nil {
 		return driver.LockState{}, err
 	}
-	key, err = copied(key)
-	if err != nil {
-		return driver.LockState{}, err
-	}
+	key = copyLockKey(key)
 	state := driver.LockState{Key: key, Revision: model.Natural64(0)}
 	if key.Kind == driver.LockRecord {
 		if r.writer != nil {
@@ -460,10 +458,7 @@ func (r *reader) observeKeys(ctx context.Context, keys []driver.LockKey) ([]driv
 		if err != nil {
 			return nil, err
 		}
-		owned, err := copied(key)
-		if err != nil {
-			return nil, err
-		}
+		owned := copyLockKey(key)
 		states[i] = driver.LockState{Key: owned, Revision: model.Natural64(0)}
 		indexes[id] = i
 		if key.Kind == driver.LockRecord {

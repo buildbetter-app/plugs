@@ -868,6 +868,7 @@ internal/storage/postgres/driver.go
 internal/storage/postgres/encoding.go
 internal/storage/postgres/engine_test.go
 internal/storage/postgres/fencing_test.go
+internal/storage/postgres/hierarchy_schema_test.go
 internal/storage/postgres/lease.go
 internal/storage/postgres/lease_prepare_test.go
 internal/storage/postgres/lock_batch_test.go
@@ -880,8 +881,15 @@ internal/storage/postgres/query.go
 internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
 internal/storage/postgres/schema.go
+internal/storage/postgres/source_backend_test.go
+internal/storage/postgres/source_index.go
+internal/storage/postgres/source_link_schema_test.go
 internal/storage/postgres/store.go
 internal/storage/postgres/transaction.go
+internal/storage/sourceindex/BUILD.bazel
+internal/storage/sourceindex/publication.go
+internal/storage/sourceindex/reader.go
+internal/storage/sourceindex/source.go
 internal/storage/sqlite/BUILD.bazel
 internal/storage/sqlite/README.md
 internal/storage/sqlite/allocator.go

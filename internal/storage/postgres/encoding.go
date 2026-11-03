@@ -59,6 +59,21 @@ func copied[T any](value T) (T, error) {
 	}
 	return result, err
 }
+
+// Lock identities are opaque bytes. JSON's replacement of invalid UTF-8 can
+// collapse distinct admitted keys, so own their pointers without serializing.
+func copyLockKey(key driver.LockKey) driver.LockKey {
+	if key.Ref != nil {
+		ref := *key.Ref
+		key.Ref = &ref
+	}
+	if key.Derived != nil {
+		derived := *key.Derived
+		key.Derived = &derived
+	}
+	return key
+}
+
 func digest(value any) (string, error) {
 	data, err := encode(value)
 	if err != nil {
