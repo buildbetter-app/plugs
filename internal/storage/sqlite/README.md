@@ -67,6 +67,25 @@ no fallible follow-up transaction that could turn a published result into a
 fencing/cancellation rejection. Pre-publication errors still leave that operation
 unpublished; an uncertain primary COMMIT is not converted into success.
 
+Native COMMIT can publish and still return a cancellation error: modernc checks
+the context again after the native step. Graph commits, both checkpoint APIs and
+response finalization expose such uncertain outcomes as public
+`driver.ErrIndeterminate`, **not** an error unwrapping to cancellation or fencing.
+The owner fails closed, but uncertainty is neither proof of rollback nor proof
+of success. Recovery uses a fresh context and durable readback, not the canceled
+context or an in-memory staged result:
+
+- For `SaveCheckpoint` / `SaveCheckpointIfRecord`, the error's idempotency key is
+  empty because checkpoints have no replay receipt. Call `LoadCheckpoint` with
+  the original checkpoint key and compare generation and payload. A later
+  generation cannot identify this attempt. Any retry must retain the **original
+  expected generation**; never load a new generation and blindly apply again.
+- For `FinalizeResponse`, the error retains the original idempotency key. Use
+  `IdempotencyByKey` on a fresh reader for the same full scope and revision.
+  Retry only the same known post outcome under an active lease. This metadata
+  uncertainty does not make the original graph write uncertain or authorize
+  rerunning that write or its callbacks.
+
 **Limits.** This removes SQLite writer/COMMIT latency from an already registered
 owner's renewal path; it does not make leases immune to scheduling pauses or
 I/O failure. The heartbeat journal's own file/directory sync and any wait for

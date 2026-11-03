@@ -340,9 +340,12 @@ func (s *Store) Health(ctx context.Context) (driver.StoreHealth, error) {
 	return driver.StoreHealth{Driver: "sqlite", Role: role, LeaseEpoch: row.epoch, Head: m.Head, Incarnation: m.Incarnation, AuthorizationChain: []string{}}, nil
 }
 
-// A COMMIT error has an uncertain durable outcome. Graph callers map this to
-// ErrIndeterminate with the original request key rather than retrying blindly.
-// A confirmed COMMIT has no fallible post-publication work.
+// A COMMIT error has an uncertain durable outcome, even if it is cancellation:
+// modernc's deferred context check can replace a successful native result.
+// Graph, checkpoint and finalizer callers map this private error to public
+// ErrIndeterminate without unwrapping a no-publication rejection. Graph/receipt
+// outcomes retain their request key; checkpoint callers retain their original
+// key and expected generation. A confirmed COMMIT has no fallible follow-up.
 type commitError struct{ error }
 
 func (e commitError) Unwrap() error { return e.error }
