@@ -1002,7 +1002,11 @@ func TestNativeAllocatorBulkCapabilityRequiresCompletePreparedFenceAcrossStores(
 						case "post-head-lock":
 							_, err = tx.Lock(target.ctx, locks)
 						case "missing-stage":
-							_, err = tx.Commit(target.ctx, driver.ChangesetHeader{Incarnation: prepared.Incarnation, Kind: model.ChangesetRestore, Principal: profile.Principal, Method: profile.Method, IdempotencyKey: profile.IdempotencyKey, RequestHash: profile.RequestHash, Response: model.Commit{Results: []model.OpResult{}, Warnings: []model.Warning{}}})
+							keys := make([]driver.LockKey, len(locks))
+							for i := range locks {
+								keys[i] = locks[i].Key
+							}
+							_, err = tx.Commit(target.ctx, driver.ChangesetHeader{LockKeys: keys, Incarnation: prepared.Incarnation, Kind: model.ChangesetRestore, Principal: profile.Principal, Method: profile.Method, IdempotencyKey: profile.IdempotencyKey, RequestHash: profile.RequestHash, Response: model.Commit{Results: []model.OpResult{}, Warnings: []model.Warning{}}})
 						}
 					}
 				}
