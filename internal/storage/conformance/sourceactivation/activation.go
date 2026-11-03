@@ -117,6 +117,37 @@ type observedStore struct {
 	queries, parentReads, inverseReads int
 }
 
+func (s *observedStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	r, err := s.Store.Read(ctx, view)
+	if err != nil {
+		return nil, err
+	}
+	return &observedReader{Reader: r, counts: s}, nil
+}
+
+type observedReader struct {
+	driver.Reader
+	counts *observedStore
+}
+
+func (r *observedReader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	if q.Filter["kind"] == "bead" {
+		r.counts.queries++
+	}
+	return r.Reader.Query(ctx, q)
+}
+func (r *observedReader) HierarchyChildren(ctx context.Context, refs []model.Ref, limit int) ([]driver.Record, bool, error) {
+	return r.HierarchyChildrenExcluding(ctx, refs, nil, limit)
+}
+func (r *observedReader) HierarchyChildrenExcluding(ctx context.Context, refs, excluded []model.Ref, limit int) ([]driver.Record, bool, error) {
+	r.counts.parentReads++
+	return r.Reader.(driver.HierarchyChildrenExcludingReader).HierarchyChildrenExcluding(ctx, refs, excluded, limit)
+}
+func (r *observedReader) InverseSourceLinks(ctx context.Context, refs []model.Ref, kinds []driver.IncomingLinkKind, excluded []model.Ref, limit int) ([]driver.Record, bool, error) {
+	r.counts.inverseReads++
+	return r.Reader.(driver.InverseSourceLinksReader).InverseSourceLinks(ctx, refs, kinds, excluded, limit)
+}
+
 func (s *observedStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
 	tx, err := s.Store.Write(ctx, lease)
 	if err != nil {
