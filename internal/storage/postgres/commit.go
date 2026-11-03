@@ -399,6 +399,7 @@ func (t *transaction) writeStates(ctx context.Context, revision model.Revision) 
 	}
 	appendState := func(id string, state driver.LockState) error {
 		state.Revision = revision
+		state = t.committedSelectionState(state, revision)
 		raw, err := encode(state)
 		if err != nil {
 			return err
@@ -420,7 +421,10 @@ func (t *transaction) writeStates(ctx context.Context, revision model.Revision) 
 			return err
 		}
 	}
-	return flush()
+	if err := flush(); err != nil {
+		return err
+	}
+	return t.writeSelection(ctx, revision)
 }
 
 func (t *transaction) writeState(ctx context.Context, id string, state driver.LockState) error {
