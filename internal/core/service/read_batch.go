@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 
@@ -16,6 +17,16 @@ type ReadBatchAuthorizer func(context.Context, model.PrincipalRef, []model.Resou
 
 type readBatchContextKey struct{}
 
+type readBatchResourceKey struct {
+	kind string
+	ref  string
+}
+
+func readBatchKey(resource model.ResourceRef) (readBatchResourceKey, error) {
+	ref, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &resource.Ref})
+	return readBatchResourceKey{kind: resource.Kind, ref: ref}, err
+}
+
 // ReadBatchSession holds one finite set of resources and its decisions for a
 // single view request. It is deliberately not a cache: no session is reused
 // across calls, and an authority error is retained as an error for the rest of
@@ -23,17 +34,26 @@ type readBatchContextKey struct{}
 type ReadBatchSession struct {
 	mu           sync.Mutex
 	resources    []model.ResourceRef
+	members      map[readBatchResourceKey]struct{}
 	principalKey string
 	started      bool
 	ready        chan struct{}
-	decisions    map[string]bool
-	known        map[string]struct{}
+	decisions    map[readBatchResourceKey]bool
+	finished     bool
 	err          error
 }
 
 func WithReadBatchSession(ctx context.Context, resources []model.ResourceRef) (context.Context, *ReadBatchSession) {
 	copyResources := append([]model.ResourceRef(nil), resources...)
-	session := &ReadBatchSession{resources: copyResources}
+	session := &ReadBatchSession{resources: copyResources, members: make(map[readBatchResourceKey]struct{}, len(resources))}
+	for _, resource := range copyResources {
+		key, err := readBatchKey(resource)
+		if err != nil {
+			session.err = err
+			break
+		}
+		session.members[key] = struct{}{}
+	}
 	return context.WithValue(ctx, readBatchContextKey{}, session), session
 }
 
@@ -54,20 +74,28 @@ func (s *ReadBatchSession) Resolve(ctx context.Context, by model.PrincipalRef, a
 	if s == nil || authorize == nil {
 		return false, false, nil
 	}
-	principalKey, err := driver.PrincipalKey(by)
+	if err := ctx.Err(); err != nil {
+		return false, true, err
+	}
+	// The idempotency PrincipalKey deliberately omits sponsor/caveats. A
+	// decision session must instead bind the complete authorization principal.
+	principal, err := json.Marshal(by)
+	if err != nil {
+		return false, true, err
+	}
+	principalKey := string(principal)
+	key, err := readBatchKey(resource)
 	if err != nil {
 		return false, true, err
 	}
 
 	s.mu.Lock()
-	declared := false
-	for _, candidate := range s.resources {
-		if candidate.Kind == resource.Kind && candidate.Ref.ID == resource.Ref.ID && candidate.Ref.Branch == resource.Ref.Branch {
-			declared = true
-			break
-		}
+	if s.err != nil {
+		err := s.err
+		s.mu.Unlock()
+		return false, true, err
 	}
-	if !declared {
+	if _, declared := s.members[key]; !declared {
 		s.mu.Unlock()
 		return false, false, nil
 	}
@@ -77,12 +105,12 @@ func (s *ReadBatchSession) Resolve(ctx context.Context, by model.PrincipalRef, a
 		s.mu.Unlock()
 		return false, true, errors.New("read authorization session principal changed")
 	}
-	if s.known != nil {
-		allowed, ok := s.decisions[resource.Ref.ID]
+	if s.finished {
+		allowed := s.decisions[key] && s.err == nil
 		authErr := s.err
 		s.mu.Unlock()
-		if !ok {
-			return false, true, authErr
+		if err := ctx.Err(); err != nil {
+			return false, true, err
 		}
 		return allowed, true, authErr
 	}
@@ -95,11 +123,11 @@ func (s *ReadBatchSession) Resolve(ctx context.Context, by model.PrincipalRef, a
 			return false, true, ctx.Err()
 		}
 		s.mu.Lock()
-		allowed, ok := s.decisions[resource.Ref.ID]
+		allowed := s.decisions[key] && s.err == nil
 		authErr := s.err
 		s.mu.Unlock()
-		if !ok {
-			return false, true, authErr
+		if err := ctx.Err(); err != nil {
+			return false, true, err
 		}
 		return allowed, true, authErr
 	}
@@ -114,20 +142,23 @@ func (s *ReadBatchSession) Resolve(ctx context.Context, by model.PrincipalRef, a
 	if authErr == nil && len(decisions) != len(resources) {
 		authErr = errors.New("read authorization session returned incomplete decisions")
 	}
-	known := make(map[string]struct{}, len(resources))
-	values := make(map[string]bool, len(resources))
+	if authErr == nil {
+		authErr = ctx.Err()
+	}
+	values := make(map[readBatchResourceKey]bool, len(resources))
 	for i, candidate := range resources {
-		known[candidate.Ref.ID] = struct{}{}
 		if authErr == nil {
-			values[candidate.Ref.ID] = decisions[i]
+			candidateKey, _ := readBatchKey(candidate) // validated at construction
+			if previous, exists := values[candidateKey]; exists && previous != decisions[i] {
+				authErr = errors.New("read authorization session returned inconsistent decisions")
+				break
+			}
+			values[candidateKey] = decisions[i]
 		}
 	}
-	s.decisions, s.known, s.err = values, known, authErr
+	s.decisions, s.finished, s.err = values, true, authErr
 	close(ready)
-	allowed, ok := values[resource.Ref.ID]
+	allowed := values[key] && authErr == nil
 	s.mu.Unlock()
-	if !ok {
-		return false, true, authErr
-	}
 	return allowed, true, authErr
 }

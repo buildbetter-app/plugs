@@ -38,6 +38,7 @@ const listPostfilterCap = 20000
 const claimNextConflictRestartBudget = 1
 
 func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req service.GetRequest) (service.GetResult, error) {
+	batchAllowed := false
 	if batch := service.ReadBatchFromContext(ctx); batch != nil {
 		allowed, handled, batchErr := batch.Resolve(ctx, by, s.AuthorizeReadBatch, model.ResourceRef{Kind: "bead", Ref: req.ID})
 		if handled {
@@ -47,19 +48,21 @@ func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req ser
 			if !allowed {
 				return service.GetResult{}, notFound()
 			}
-			// The point callback installed by viewops asks only for the decision.
-			// The view already owns the pinned row and separately projects parents;
-			// avoid reopening one SQL reader per candidate after the batch fence.
-			return service.GetResult{}, nil
+			batchAllowed = true
 		}
 	}
-	allowed, err := s.checkRead(ctx, by, "bead.get", req.ID)
-	if err != nil {
-		return service.GetResult{}, err
+	if !batchAllowed {
+		allowed, err := s.checkRead(ctx, by, "bead.get", req.ID)
+		if err != nil {
+			return service.GetResult{}, err
+		}
+		if !allowed {
+			return service.GetResult{}, notFound()
+		}
 	}
-	if !allowed {
-		return service.GetResult{}, notFound()
-	}
+	// AuthorizeRead callbacks may inspect this result. Batch authorization
+	// therefore replaces only the decision check; content, parent projection
+	// and the final current-authority fence retain the ordinary Get contract.
 	content, _, closeContent, err := s.current(ctx, req.AsOf)
 	if err != nil {
 		return service.GetResult{}, err

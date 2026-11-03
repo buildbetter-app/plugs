@@ -320,7 +320,9 @@ internal/core/service/ontology.go
 internal/core/service/ordered_close.go
 internal/core/service/reads.go
 internal/core/service/read_batch.go
+internal/core/service/read_batch_test.go
 internal/core/service/query_rewrite.go
+internal/core/service/query_rewrite_test.go
 internal/core/service/rpc_reads.go
 internal/core/service/service.go
 internal/core/service/service_test.go
@@ -597,6 +599,7 @@ internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
 internal/server/authzrpc/predicate_count_test.go
 internal/server/authzrpc/read_query_rewrite.go
+internal/server/authzrpc/read_query_rewrite_test.go
 internal/server/authzrpc/service.go
 internal/server/authzrpc/slice.go
 internal/server/claimrpc/BUILD.bazel
@@ -815,6 +818,7 @@ internal/storage/conformance/leases.go
 internal/storage/conformance/lifetimes.go
 internal/storage/conformance/locks.go
 internal/storage/conformance/noops.go
+internal/storage/conformance/query_rewrite.go
 internal/storage/conformance/responses.go
 internal/storage/conformance/staged_reads.go
 internal/storage/driver/BUILD.bazel

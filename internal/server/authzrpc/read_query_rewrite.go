@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -94,6 +95,11 @@ func fastUserReadPage(ctx context.Context, caller authz.Caller, facts *slice, te
 	for _, item := range items {
 		if err := ctx.Err(); err != nil {
 			return nil, true, err
+		}
+		// prepare rejects malformed bead references before applying the
+		// unconditional User rule. Keep that same boundary on this path.
+		if authz.CanonicalRef(model.RefByID(item.ID, model.Natural64(0))) != nil || strings.Contains(item.ID, "/") {
+			continue
 		}
 		if refs != nil {
 			if _, ok := refs[item.ID]; !ok {

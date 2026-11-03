@@ -33,6 +33,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("G5_checkpoint_CAS_and_isolation", func(t *testing.T) { checkpoints(t, factory) })
 	t.Run("history_replay_and_pagination", func(t *testing.T) { history(t, factory) })
 	t.Run("history_scheduled_delete_and_recreation", func(t *testing.T) { historyRecreation(t, factory) })
+	t.Run("query_rewrite_pages_history_and_staged_rows", func(t *testing.T) { queryRewrite(t, factory) })
 }
 
 func setup(t *testing.T, factory Factory) (context.Context, driver.Store, driver.ActiveLease, driver.Meta) {

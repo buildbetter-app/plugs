@@ -466,8 +466,11 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 		return driver.Page[driver.Record]{}, err
 	}
 	if q.Rewrite != nil {
-		ids := append([]string(nil), q.Rewrite.IDs...)
-		sort.Strings(ids)
+		var ids []string
+		if q.Rewrite.IDs != nil {
+			ids = append([]string{}, q.Rewrite.IDs...)
+			sort.Strings(ids)
+		}
 		encoded, err = json.Marshal(struct {
 			Filter map[string]any `json:"filter"`
 			IDs    []string       `json:"ids"`
