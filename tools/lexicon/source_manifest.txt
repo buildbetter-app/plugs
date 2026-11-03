@@ -961,6 +961,8 @@ internal/storage/postgres/README.md
 internal/storage/postgres/allocator.go
 internal/storage/postgres/allocator_snapshot.go
 internal/storage/postgres/allocator_test.go
+internal/storage/postgres/b05_expired_renew_test.go
+internal/storage/postgres/b05_persisted_clock_test.go
 internal/storage/postgres/boundaries_test.go
 internal/storage/postgres/checkpoint_guard.go
 internal/storage/postgres/clock_test.go
@@ -1001,6 +1003,7 @@ internal/storage/sqlite/BUILD.bazel
 internal/storage/sqlite/README.md
 internal/storage/sqlite/allocator.go
 internal/storage/sqlite/allocator_snapshot.go
+internal/storage/sqlite/b05_persisted_clock_test.go
 internal/storage/sqlite/boundaries_test.go
 internal/storage/sqlite/checkpoint_guard.go
 internal/storage/sqlite/clock.go
