@@ -145,6 +145,13 @@ func (f *fixture) sqlState() map[string][]string {
 		prefix = "plug_postgres."
 		tables = []string{"meta", "records", "versions", "states", "blobs", "changesets", "receipts", "checkpoints", "core_sessions", "allocator_states"}
 	}
+	// Source indexes and coverage markers are durable state on both engines.
+	// Refusals, replay and physical reopens must conserve their complete rows.
+	tables = append(tables,
+		"hierarchy_index_coverage", "hierarchy_source_current", "hierarchy_source_history",
+		"graph_link_index_coverage", "graph_link_source_current", "graph_link_current",
+		"graph_link_source_history", "graph_link_history",
+	)
 	tx, err := f.db.BeginTx(f.ctx, nil)
 	if err != nil {
 		f.t.Fatal(err)
