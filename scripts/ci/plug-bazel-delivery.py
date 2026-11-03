@@ -295,6 +295,16 @@ def selection_binding(capture, target_dir, selected, resolved):
     }
 
 
+def automatic_test_query(tests):
+    # Match a complete item in Bazel's rendered tag list, preserving ordinary
+    # tags such as manual-policy. Only the hosted prepared runtime is implicit;
+    # reference captures use their existing explicit preparation contract.
+    # The first/last characters are the list brackets; no query escapes needed.
+    manual = "(^.|, )manual(,|.$)"
+    return ('(' + tests + ') except (attr("tags", "' + manual + '", ' + tests
+            + ') except set(' + PUBLIC_RUNTIME_TARGET + '))')
+
+
 def resolve_selection(capture, bazel):
     target_dir = capture.output / "selection"
     resolver_env = child_env()
@@ -318,7 +328,8 @@ def resolve_selection(capture, bazel):
             return
         libraries = labels(value)
         if libraries:
-            expression = 'kind(".*_test rule", rdeps(//..., set(' + " ".join(libraries) + ')))'
+            expression = automatic_test_query(
+                'kind(".*_test rule", rdeps(//..., set(' + " ".join(libraries) + ')))')
             code, value = capture.command("owning-reverse", [*bazel, "query", expression, "--lockfile_mode=error", "--output=label"])
             if code:
                 return
