@@ -98,6 +98,84 @@ type wasmFactory struct {
 	readerWorkers int
 }
 
+// wasmTimer bridges the context-aware lifetime of a guest call to WASI's
+// context-free nanosleep hook. The hook is installed once per module, while
+// the active wait is replaced for instantiation, initialization, and each
+// callback invocation. Explicit module retirement also cancels the active
+// wait, so closing a runtime cannot leave a poll sleeping on a guest-selected
+// duration.
+type wasmTimer struct {
+	mu     sync.Mutex
+	active *wasmTimerWait
+}
+
+type wasmTimerWait struct {
+	done      <-chan struct{}
+	abort     chan struct{}
+	abortOnce sync.Once
+}
+
+func (w *wasmTimerWait) cancel() {
+	w.abortOnce.Do(func() { close(w.abort) })
+}
+
+func (t *wasmTimer) begin(ctx context.Context) *wasmTimerWait {
+	wait := &wasmTimerWait{abort: make(chan struct{})}
+	if ctx != nil {
+		wait.done = ctx.Done()
+	}
+	t.mu.Lock()
+	previous := t.active
+	t.active = wait
+	t.mu.Unlock()
+	if previous != nil {
+		previous.cancel()
+	}
+	return wait
+}
+
+func (t *wasmTimer) end(wait *wasmTimerWait) {
+	if wait == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.active == wait {
+		t.active = nil
+	}
+	t.mu.Unlock()
+}
+
+func (t *wasmTimer) cancel() {
+	t.mu.Lock()
+	wait := t.active
+	t.mu.Unlock()
+	if wait != nil {
+		wait.cancel()
+	}
+}
+
+func (t *wasmTimer) nanosleep(ns int64) {
+	if ns <= 0 {
+		return
+	}
+	t.mu.Lock()
+	wait := t.active
+	t.mu.Unlock()
+	if wait == nil {
+		// Every guest path that can use WASI timers is armed above. Keep the
+		// default behavior for a defensive call made outside those paths.
+		time.Sleep(time.Duration(ns))
+		return
+	}
+	timer := time.NewTimer(time.Duration(ns))
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-wait.done:
+	case <-wait.abort:
+	}
+}
+
 type wasmRuntime struct {
 	mu      sync.Mutex
 	factory *wasmFactory
@@ -107,6 +185,7 @@ type wasmRuntime struct {
 	handle  api.Function
 	memory  api.Memory
 	host    pluginapi.Host
+	timer   *wasmTimer
 	closed  bool
 }
 
@@ -259,29 +338,15 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 	}
 	initCtx, cancel := context.WithTimeout(ctx, wasmInitTimeout)
 	defer cancel()
-	// wazero's WASI poll host function does not receive the Call context. Keep
-	// the source guest's normal timer semantics, but give a canceled initializer
-	// a bounded wakeup so explicit module retirement can join the call instead of
-	// leaving a poll host call resident past owner shutdown.
-	initAbort := make(chan struct{})
-	var abortInit sync.Once
-	cancelInitializer := func() { abortInit.Do(func() { close(initAbort) }) }
-	moduleConfig := wazero.NewModuleConfig().WithStartFunctions().WithSysNanotime().WithNanosleep(func(ns int64) {
-		if ns <= 0 {
-			return
-		}
-		timer := time.NewTimer(time.Duration(ns))
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-initAbort:
-		}
-	})
+	timer := &wasmTimer{}
+	initWait := timer.begin(initCtx)
+	defer timer.end(initWait)
+	moduleConfig := wazero.NewModuleConfig().WithStartFunctions().WithSysNanotime().WithNanosleep(timer.nanosleep)
 	module, err := runtime.InstantiateModule(initCtx, compiled, moduleConfig)
 	if err != nil {
-		return nil, failure(ErrManifest, "WASM instantiate failed: %v", err)
+		return nil, wasmInitializationError(ctx, initCtx, "WASM instantiate failed", err, false)
 	}
-	result := &wasmRuntime{factory: f, runtime: runtime, module: module, host: host}
+	result := &wasmRuntime{factory: f, runtime: runtime, module: module, host: host, timer: timer}
 	result.alloc = module.ExportedFunction("plug_alloc")
 	result.handle = module.ExportedFunction("plug_handle")
 	result.memory = module.Memory()
@@ -306,34 +371,51 @@ func (f *wasmFactory) newRuntime(ctx context.Context, host pluginapi.Host) (*was
 		case err := <-initDone:
 			if err != nil {
 				result.close()
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return nil, ctxErr
-				}
-				return nil, failure(ErrManifest, "WASM runtime initialization failed: %v", err)
+				return nil, wasmInitializationError(ctx, initCtx, "WASM runtime initialization failed", err, false)
 			}
-			if ctxErr := ctx.Err(); ctxErr != nil {
+			if err := wasmInitializationError(ctx, initCtx, "WASM runtime initialization failed", nil, false); err != nil {
 				result.close()
-				return nil, ctxErr
+				return nil, err
 			}
 		case <-initCtx.Done():
 			// A WASI host call such as poll_oneoff can ignore the context while
-			// the guest initializer is in flight. Close the module explicitly,
-			// wake that poll, then join the bounded initializer call before
-			// retiring it.
-			cancelInitializer()
-			_ = module.CloseWithExitCode(context.Background(), 1)
+			// the guest initializer is in flight. Wake that poll, close the
+			// module, then join the one bounded initializer call before retiring
+			// it. The joined zero exit code is classified as host termination
+			// below; genuine nonzero guest exits remain manifest failures.
+			timer.cancel()
+			_ = module.Close(context.Background())
 			err := <-initDone
 			result.close()
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, ctxErr
-			}
-			if initErr := initCtx.Err(); initErr != nil {
-				err = initErr
-			}
-			return nil, failure(ErrManifest, "WASM runtime initialization failed: %v", err)
+			return nil, wasmInitializationError(ctx, initCtx, "WASM runtime initialization failed", err, true)
 		}
 	}
 	return result, nil
+}
+
+// wasmInitializationError keeps cancellation-shaped termination separate from
+// genuine guest failures. A caller or owner cancellation is returned as the
+// original context error; the private one-second initializer timeout remains a
+// manifest error so queue pressure cannot disguise a real guest failure.
+func wasmInitializationError(ctx, initCtx context.Context, label string, err error, hostTerminated bool) error {
+	contextTermination := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	if hostTerminated && !contextTermination {
+		var exitCoder interface{ ExitCode() uint32 }
+		contextTermination = errors.As(err, &exitCoder) && exitCoder.ExitCode() == 0
+	}
+	if err != nil && !contextTermination {
+		return failure(ErrManifest, "%s: %v", label, err)
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if initErr := initCtx.Err(); initErr != nil {
+		return failure(ErrManifest, "%s: %v", label, initErr)
+	}
+	if err != nil {
+		return failure(ErrManifest, "%s: %v", label, err)
+	}
+	return nil
 }
 
 // acquireReaderWorker reserves one factory-wide slot for a reader call. A
@@ -380,12 +462,18 @@ func (f *wasmFactory) hostCall(ctx context.Context, module api.Module, ptr, leng
 }
 
 func (r *wasmRuntime) close() {
+	if r.timer != nil {
+		r.timer.cancel()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.closeLocked()
 }
 
 func (r *wasmRuntime) closeLocked() {
+	if r.timer != nil {
+		r.timer.cancel()
+	}
 	if r.closed {
 		return
 	}
@@ -663,6 +751,11 @@ func (r *wasmRuntime) invoke(ctx context.Context, request wasmRequest, readers .
 	if err := ctx.Err(); err != nil {
 		r.closeLocked()
 		return wasmResponse{}, err
+	}
+	var timerWait *wasmTimerWait
+	if r.timer != nil {
+		timerWait = r.timer.begin(ctx)
+		defer r.timer.end(timerWait)
 	}
 	data, err := json.Marshal(request)
 	if err != nil || len(data) > maxWASMMessage {
