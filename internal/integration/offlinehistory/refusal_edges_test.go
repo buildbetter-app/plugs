@@ -206,6 +206,74 @@ func TestDoltHistoryMemberRefusalBeforeTargetAccessAllDrivers(t *testing.T) {
 				}
 				defer r.Close()
 				assertProducerBeads(t, r, source)
+				when, err := time.Parse(time.RFC3339Nano, p.HistoryTime)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ref := model.RefByID("demo-7", model.Natural64(0))
+				images := make([][]byte, 2)
+				for i, sequence := range []uint64{2, 3} {
+					at := model.Natural64(uint64(i + 1))
+					image, err := target.Read(ctx, driver.View{Incarnation: report.Restored.Incarnation, At: &at})
+					if err != nil {
+						t.Fatal(err)
+					}
+					original, err := source.HistoryImage(sequence)
+					if err != nil {
+						image.Close()
+						t.Fatal(err)
+					}
+					assertProducerBeads(t, image, original)
+					rows, err := image.Get(ctx, []model.Ref{ref})
+					if err != nil || len(rows) != 1 || rows[0].Revision != at {
+						image.Close()
+						t.Fatalf("same-target source image at revision %s: %+v %v", at, rows, err)
+					}
+					images[i] = append([]byte(nil), rows[0].Body...)
+					if err := image.Close(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				versions, err := r.Versions(ctx, ref, driver.PageReq{Limit: 10})
+				if err != nil || versions.NextCursor != nil || len(versions.Items) != 2 {
+					t.Fatalf("same-target native version census: %+v %v", versions, err)
+				}
+				for i, version := range versions.Items {
+					if version.Revision != model.Natural64(uint64(i+1)) || version.Ref != ref || version.Deleted || version.Base != (i == 0) || !version.CreatedAt.Equal(when) || !reflect.DeepEqual(version.Principal, p.Admission.Actor) {
+						t.Fatalf("same-target source version was flattened or reattributed: %+v", version)
+					}
+				}
+				if !bytes.Equal(versions.Items[0].Body, images[0]) || len(versions.Items[0].Patch) != 0 {
+					t.Fatal("native base differs from same-target source baseline bytes")
+				}
+				var patch []struct {
+					Op, Path string
+					Value    json.RawMessage
+				}
+				if err := json.Unmarshal(versions.Items[1].Patch, &patch); err != nil || len(versions.Items[1].Body) != 0 || len(patch) != 1 || patch[0].Op != "replace" || patch[0].Path != "" || !bytes.Equal(patch[0].Value, images[1]) {
+					t.Fatalf("native update differs from same-target source frame bytes: %+v %v", patch, err)
+				}
+				entries, err := r.Changesets(ctx, &driver.Cursor{Incarnation: report.Restored.Incarnation, Revision: report.Restored.HistoryFloor}, 10)
+				if err != nil || len(entries) != 2 {
+					t.Fatalf("same-target retained changeset census: %+v %v", entries, err)
+				}
+				for i, entry := range entries {
+					if entry.Revision != model.Natural64(uint64(i+2)) || entry.Incarnation != report.Restored.Incarnation || !entry.Branch.IsZero() || entry.Kind != model.ChangesetRestore || !entry.Time.Equal(when) || !reflect.DeepEqual(entry.Principal, p.Admission.Actor) {
+						t.Fatalf("same-target retained changeset order/attribution changed: %+v", entry)
+					}
+				}
+				zero := model.Natural64(0)
+				old, err := target.Read(ctx, driver.View{Incarnation: report.Restored.Incarnation, At: &zero})
+				if old != nil {
+					old.Close()
+				}
+				var truncated driver.ErrTruncated
+				if !errors.As(err, &truncated) || truncated.Floor != report.Restored.HistoryFloor {
+					t.Fatalf("same-target read below retained floor: %v", err)
+				}
+				if _, err := r.Changesets(ctx, nil, 10); !errors.As(err, &truncated) || truncated.Floor != report.Restored.HistoryFloor {
+					t.Fatalf("same-target changesets below retained floor: %v", err)
+				}
 				historyBytes, _ := source.Member(dumpformat.SourceHistoryMember)
 				stored, err := r.Blob(ctx, driver.Hash(historyEdgeDigest(historyBytes)))
 				if err != nil || !bytes.Equal(stored, historyBytes) {
