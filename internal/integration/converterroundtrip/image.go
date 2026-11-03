@@ -20,8 +20,8 @@ type derivedImage struct {
 	Value json.RawMessage     `json:"value"`
 }
 
-// This profile is deliberately restricted to the built-in ontology, no
-// authorization/plugin provider, no cuts, no templates and no leases.
+// These profiles admit the built-in ontology or the validated strict-union
+// import document, with no authorization/plugin provider, cuts, templates or leases.
 // Every table participates in the digest, including empty tables. Its rows
 // are rebuilt from live documents, never copied from a source's cached flags.
 func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error {
@@ -99,12 +99,20 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 		plan.derived = append(plan.derived, derivedImage{table, key, data})
 		return nil
 	}
-	effective := ontology.Default()
+	ontologyDocument := ontology.DefaultDocument()
+	if plan.migration != nil {
+		ontologyDocument = plan.migration.Document()
+	}
+	snapshot, problems := ontology.Compile(ontologyDocument, nil, nil)
+	if len(problems) != 0 {
+		return fmt.Errorf("invalid admitted restore ontology: %v", problems)
+	}
 	for _, id := range ids {
 		doc := docs[id]
+		effective := snapshot.Effective(doc.Project)
 		blocked := false
 		for _, link := range doc.Links {
-			if link.Kind == "blocks" && !effective.SatisfiesBlocks(stringValue(docs[link.To.ID].Fields["status"])) {
+			if blocker := docs[link.To.ID]; link.Kind == "blocks" && !snapshot.Effective(blocker.Project).SatisfiesBlocks(stringValue(blocker.Fields["status"])) {
 				blocked = true
 			}
 		}
@@ -143,7 +151,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 		}
 		plan.sentinels = append(plan.sentinels, ready, closure)
 	}
-	if err := add(driver.DerivedOntology, "builtin", ontology.DefaultDocument()); err != nil {
+	if err := add(driver.DerivedOntology, "builtin", ontologyDocument); err != nil {
 		return err
 	}
 	if err := add(driver.DerivedPlugins, "builtin", []string{}); err != nil {
@@ -161,12 +169,22 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document) error 
 		Profile string                `json:"profile"`
 		Tables  []driver.DerivedTable `json:"tables"`
 		Rows    []derivedImage        `json:"rows"`
-	}{"builtin-head/1", []driver.DerivedTable{driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute, driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins, driver.DerivedReadyState, driver.DerivedReferenceIndex, driver.DerivedSortKey}, plan.derived})
+	}{derivedProfile(plan), []driver.DerivedTable{driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute, driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins, driver.DerivedReadyState, driver.DerivedReferenceIndex, driver.DerivedSortKey}, plan.derived})
 	if err != nil {
 		return err
 	}
 	plan.derivedDigest = hashBytes(data)
 	return nil
+}
+
+// The strict profile binds the admitted document in the same canonical image
+// encoding. Existing built-in digests and native restore profiles are unchanged.
+// The reverse adapter's existing profile guard remains closed to this profile.
+func derivedProfile(plan *restorePlan) string {
+	if plan.migration != nil {
+		return "beads-compat-union-head/1"
+	}
+	return "builtin-head/1"
 }
 
 type archiveEvidence struct {
@@ -179,7 +197,7 @@ type archiveEvidence struct {
 
 func retainArchive(plan *restorePlan, archive *dumpformat.Archive, add func(model.Ref, string, any) error) error {
 	manifest := archive.Manifest()
-	evidence := archiveEvidence{ArchiveSHA256: archive.SHA256(), DerivedSHA256: plan.derivedDigest, Profile: "builtin-head/1", SourceStore: manifest.StoreID, Members: manifest.Files}
+	evidence := archiveEvidence{ArchiveSHA256: archive.SHA256(), DerivedSHA256: plan.derivedDigest, Profile: derivedProfile(plan), SourceStore: manifest.StoreID, Members: manifest.Files}
 	raw, ok := archive.Member("manifest.json")
 	if !ok || !validDigest(archive.SHA256()) {
 		return fmt.Errorf("archive was not validated")

@@ -6,6 +6,7 @@ go_test(
     tags = ["local", "requires-network"],
     srcs = [
         "acceptance_test.go",
+        "config_union_test.go",
         "converter_test.go",
         "reference_test.go",
         "relations_test.go",
@@ -21,6 +22,7 @@ go_test(
     deps = [
         "//internal/core/dumpformat",
         "//internal/core/model",
+        "//internal/core/ontology",
         "//internal/core/pipeline",
         "//internal/core/port",
         "//internal/core/service",

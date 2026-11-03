@@ -142,3 +142,30 @@ missing parents and scheduling conflicts on memory, SQLite and PostgreSQL.
 Those authored inputs are not Beads recordings. The legacy entry point keeps
 its existing parent-edge refusal; the admitted import and inspection paths
 carry the new lowering. Prior raw captures and all RED receipts are retained.
+
+`TestB27ConfigUnionStoredOntologyAndReopenAcrossDrivers` authors a detached
+regression archive containing independent stored, YAML and normalized-table
+custom status/type declarations. It enumerates the expected installed union,
+checks complete raw source bodies and retained member/tar bytes, and checks
+actual stored ontology and derived readiness across memory, SQLite and
+PostgreSQL, including both SQL reopens. Its mapped-conflict and mapped-missing-
+category cases retain the original declarations. These are source assertions;
+they have not been executed on this candidate and are not native/public capture.
+
+`TestB27ConfigUnionRefusalHasNoWriteHistoryReceiptOrPublicationAcrossDrivers`
+authors conflicting, incomplete, malformed and ambiguous inputs. It requires
+an exact named typed refusal before `Store.Write`, unchanged records, versions,
+changesets/events and derived rows, no receipt or archive blob, and the same
+absence after SQL reopen. This covers the durable publication boundary; it
+does not observe an external subscriber or transport. Core parser controls are
+`TestStrictConfigUnion*` in `internal/core/dumpformat`.
+
+The strict migration uses a distinct `beads-compat-union-head/1` derived image
+profile and installs one compiled document for aliases and derived predicates.
+The existing reverse profile guard refuses it, with no partial output or store
+mutation. Custom strict reverse/history, multi-project ownership, authentic
+producer parsing/delivery, and production ontology resolver refresh require
+separate composition/review. Companion DB-first runtime, native restore and
+allocator profiles, pins/preparer, B26 and auxiliary writers remain outside
+this source change. Ordinary/control gates and a fresh independent source
+review require S1's separate candidate binding and release.

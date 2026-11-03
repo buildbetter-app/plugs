@@ -535,6 +535,7 @@ type restoreRecord struct {
 }
 
 type restorePlan struct {
+	migration     *dumpformat.ImportMigration
 	records       []restoreRecord
 	sentinels     []driver.Sentinel
 	derived       []derivedImage
@@ -671,6 +672,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		return restorePlan{}, fmt.Errorf("%w: import restore time is required", ErrRestoreUnavailable)
 	}
 
+	migration, _ := archive.ImportMigration()
 	beads := archive.Records("bead")
 	docs := map[string]pipeline.Document{}
 	if len(beads) > 20000 {
@@ -682,12 +684,17 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			return restorePlan{}, fmt.Errorf("%w: source ID does not match the declared allocator", ErrRestoreUnavailable)
 		}
 		status, ok := targetStatus(stringValue(source.Source.Fields["status"]))
+		targetType := stringValue(source.Body["type"])
+		if migration != nil {
+			target, present := migration.Target(source.Project, source.ID)
+			status, targetType, ok = target.Status, target.Type, present
+		}
 		if !ok {
 			return restorePlan{}, fmt.Errorf("unsupported source status for %s", source.ID)
 		}
-		// The current built-in ontology has only title/description plus the
-		// kernel priority field. Preserve every other source field in metadata
-		// so restored beads remain writable by the ordinary pipeline instead of
+		// The admitted issue schema (including strict-union type aliases) has
+		// title/description plus the kernel priority field. Preserve every other
+		// source field in metadata so restored beads remain writable by the ordinary pipeline instead of
 		// presenting unsupported source columns as typed Plug fields.
 		fields := map[string]any{"status": status}
 		metadata := map[string]json.RawMessage{}
@@ -758,7 +765,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		for _, value := range source.Body["labels"].([]any) {
 			labels = append(labels, value.(string))
 		}
-		docs[source.ID] = pipeline.Document{Labels: labels, ID: source.ID, Type: stringValue(source.Body["type"]), Project: source.Project, Fields: fields, Metadata: metadata}
+		docs[source.ID] = pipeline.Document{Labels: labels, ID: source.ID, Type: targetType, Project: source.Project, Fields: fields, Metadata: metadata}
 	}
 
 	if profile != nil {
@@ -821,7 +828,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		docs[from] = doc
 	}
 
-	plan := restorePlan{}
+	plan := restorePlan{migration: migration}
 	if profile != nil {
 		for _, project := range manifest.Projects {
 			plan.allocators = append(plan.allocators, driver.NewRandomAllocator(project.Prefix))
