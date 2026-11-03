@@ -25,7 +25,6 @@ type Service struct {
 	memoryReadAuthorizer   MemoryReadAuthorizer
 	authorizationInstalled func() bool
 	events                 EventProvider
-	compaction             CompactionConfig
 	workflow               *workflowplugin.Provider
 	compaction             CompactionConfig
 }
