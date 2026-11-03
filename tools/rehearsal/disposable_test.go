@@ -17,7 +17,7 @@ func TestThreeDisposableRehearsals(t *testing.T) {
 	sha, tree := testSourcePins(t)
 	for _, kind := range []string{"memory", "sqlite"} {
 		t.Run(kind, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			report, err := RunDisposable(ctx, kind, sha, tree)
 			if err != nil {

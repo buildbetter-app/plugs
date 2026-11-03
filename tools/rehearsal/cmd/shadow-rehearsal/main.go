@@ -85,7 +85,11 @@ func prepareDisposableRunfiles() error {
 		}
 	}
 	if os.Getenv("TEST_WORKSPACE") == "" {
-		if err := os.Setenv("TEST_WORKSPACE", "plugs"); err != nil {
+		workspace, err := declaredRunfilesWorkspace(os.Getenv("TEST_SRCDIR"))
+		if err != nil {
+			return err
+		}
+		if err := os.Setenv("TEST_WORKSPACE", workspace); err != nil {
 			return err
 		}
 	}
@@ -111,4 +115,43 @@ func prepareDisposableRunfiles() error {
 		}
 	}
 	return nil
+}
+
+// Resolve the main workspace from this binary's declared data, whose directory
+// name is chosen by Bazel. Test and run entrypoints need the same exact files.
+func declaredRunfilesWorkspace(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("Bazel runfiles directory required")
+	}
+	var workspace string
+	for _, entry := range entries {
+		root := filepath.Join(dir, entry.Name())
+		complete := true
+		for _, name := range []string{
+			"tools/rehearsal/disposable.go",
+			"tools/rehearsal/transcript.go",
+			"tools/rehearsal/transcript_consumer.go",
+			"tools/rehearsal/cmd/rollback-runtime/main.go",
+			"tools/rehearsal/cmd/rollback-runtime/old-runtime_/old-runtime",
+			"tools/rehearsal/cmd/rollback-runtime/candidate-runtime_/candidate-runtime",
+		} {
+			info, err := os.Stat(filepath.Join(root, name))
+			if err != nil || !info.Mode().IsRegular() {
+				complete = false
+				break
+			}
+		}
+		if !complete {
+			continue
+		}
+		if workspace != "" {
+			return "", fmt.Errorf("ambiguous Bazel declared workspace runfiles")
+		}
+		workspace = entry.Name()
+	}
+	if workspace == "" {
+		return "", fmt.Errorf("Bazel declared workspace runfiles required")
+	}
+	return workspace, nil
 }

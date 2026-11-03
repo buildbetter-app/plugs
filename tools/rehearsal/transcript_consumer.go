@@ -93,8 +93,17 @@ func (c *publicCapture) guardRead(request []byte) error {
 // compareOwnedPublicCalls compares independent HTTP and MCP frames from the
 // same restored store. Restore parity and lifecycle writes have separate checks.
 func compareOwnedPublicCalls(ctx context.Context, f *fixture, beadID string) (int, error) {
+	return compareOwnedPublicCallsWithControl(ctx, f, beadID, f.transport, 3)
+}
+
+// The control arguments let a fixture exercise actual response drift and a
+// missing captured call without fabricating either side's JSON-RPC frames.
+func compareOwnedPublicCallsWithControl(ctx context.Context, f *fixture, beadID string, httpTransport client.Transport, shadowCallCount int) (int, error) {
 	if beadID == "" {
 		return 0, fmt.Errorf("public caller bead ID required")
+	}
+	if httpTransport == nil || shadowCallCount < 0 || shadowCallCount > 3 {
+		return 0, fmt.Errorf("public caller capture control invalid")
 	}
 	catalog, err := wire.DefaultCatalog()
 	if err != nil {
@@ -105,7 +114,7 @@ func compareOwnedPublicCalls(ctx context.Context, f *fixture, beadID string) (in
 		return 0, err
 	}
 	defer closeMCP()
-	reference := &publicCapture{next: f.transport, catalog: catalog}
+	reference := &publicCapture{next: httpTransport, catalog: catalog}
 	shadow := &publicCapture{next: mcpTransport, catalog: catalog}
 	const agent = "public-transcript-control"
 	httpCaller, err := client.New(reference, "rehearsal", agent)
@@ -116,7 +125,7 @@ func compareOwnedPublicCalls(ctx context.Context, f *fixture, beadID string) (in
 	if err != nil {
 		return 0, err
 	}
-	for _, call := range []struct {
+	for index, call := range []struct {
 		method string
 		params map[string]any
 	}{
@@ -127,8 +136,10 @@ func compareOwnedPublicCalls(ctx context.Context, f *fixture, beadID string) (in
 		if _, err := httpCaller.Call(ctx, call.method, call.params, ""); err != nil {
 			return 0, fmt.Errorf("public HTTP control failed: %w", err)
 		}
-		if _, err := mcpCaller.Call(ctx, call.method, call.params, ""); err != nil {
-			return 0, fmt.Errorf("public MCP control failed: %w", err)
+		if index < shadowCallCount {
+			if _, err := mcpCaller.Call(ctx, call.method, call.params, ""); err != nil {
+				return 0, fmt.Errorf("public MCP control failed: %w", err)
+			}
 		}
 	}
 	if err := ComparePublicTranscripts(reference.exchanges, shadow.exchanges); err != nil {

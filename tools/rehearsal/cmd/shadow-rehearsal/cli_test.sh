@@ -12,7 +12,9 @@ if R1_OLD_RUNTIME_BINARY=missing "$binary" --local --driver memory --source-sha 
   exit 1
 fi
 
-"$binary" --local --driver memory --source-sha "$source_sha" --source-tree "$source_tree" >"$TEST_TMPDIR/disposable-report.json"
+env -u TEST_SRCDIR -u TEST_WORKSPACE -u PLUG_SOURCE_MODULE_ROOT \
+  RUNFILES_DIR="$TEST_SRCDIR" BUILD_WORKSPACE_DIRECTORY="$source_root" \
+  "$binary" --local --driver memory --source-sha "$source_sha" --source-tree "$source_tree" >"$TEST_TMPDIR/disposable-report.json"
 python3 - "$TEST_TMPDIR/disposable-report.json" <<'PY'
 import json
 import sys
