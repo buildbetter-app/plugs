@@ -13,17 +13,39 @@ import (
 )
 
 func nativeProfile() driver.NativeRestoreProfile {
+	binding, err := nativeAllocatorFixture().Binding()
+	if err != nil {
+		panic(err)
+	}
 	return driver.NativeRestoreProfile{
-		StoreID: "native-archive-source", Method: "admin.restore.finish",
+		StoreID: "native-archive-source", Method: "admin.restore.finish", AllocatorBinding: binding,
 		Principal:  model.PrincipalRef{Kind: "user", ID: "native-admin", Sponsor: &model.PrincipalRef{Kind: "service", ID: "trusted-host"}, Caveats: map[string]any{"scope": map[string]any{"project": "native"}}},
 		AgentLabel: "native-agent", IdempotencyKey: "native-restore-key", RequestHash: strings.Repeat("ab", 32),
 	}
+}
+
+// Explicit empty input is a labelled driver fixture, never a public producer.
+func nativeAllocatorFixture() driver.AllocatorSnapshot {
+	return driver.AllocatorSnapshot{Version: driver.NativeAllocatorVersion, StoreID: "native-archive-source", Incarnation: "native-source-incarnation", At: model.Natural64(0), CoverageFloor: model.Natural64(0), Inventory: driver.AllocatorInventory{Projects: []driver.OfflineAllocator{}, Parents: []driver.ParentCounter{}}}
+}
+
+func nativeAllocatorFence() driver.LockKey {
+	key, err := driver.NativeAllocatorRestoreLock()
+	if err != nil {
+		panic(err)
+	}
+	return key
+}
+
+func nativeAllocatorLocks() driver.LockSet {
+	return driver.LockSet{{Key: nativeAllocatorFence(), Mode: driver.LockUpdate}}
 }
 
 func nativeHeader(p driver.NativeRestoreProfile, meta driver.Meta) driver.ChangesetHeader {
 	return driver.ChangesetHeader{
 		Incarnation: meta.Incarnation, Kind: model.ChangesetRestore, Principal: p.Principal,
 		Method: p.Method, AgentLabel: p.AgentLabel, IdempotencyKey: p.IdempotencyKey, RequestHash: p.RequestHash,
+		LockKeys: []driver.LockKey{nativeAllocatorFence()},
 		Response: model.Commit{Results: []model.OpResult{}, Warnings: []model.Warning{}},
 	}
 }
@@ -45,7 +67,7 @@ func TestNativePreparedRestoreBindsDetachedReceiptAcrossDrivers(t *testing.T) {
 			if _, err := capability.PrepareNativeRestore(ctx, profile); err == nil {
 				t.Fatal("native restore prepared without Head")
 			}
-			if _, err := tx.Lock(ctx, nil); err != nil {
+			if _, err := tx.Lock(ctx, nativeAllocatorLocks()); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := tx.Head(ctx); err != nil {
@@ -66,6 +88,12 @@ func TestNativePreparedRestoreBindsDetachedReceiptAcrossDrivers(t *testing.T) {
 			}
 			if _, err := tx.(driver.OfflineRestoreTx).PrepareOfflineRestore(ctx, "converter"); err == nil {
 				t.Fatal("prepared native profile switched to converter")
+			}
+			if _, err := tx.Commit(ctx, nativeHeader(profile, meta)); err == nil {
+				t.Fatal("native restore committed without explicit complete allocator staging")
+			}
+			if err := tx.(driver.NativeAllocatorRestoreTx).RestoreNativeAllocators(ctx, nativeAllocatorFixture()); err != nil {
+				t.Fatal(err)
 			}
 
 			// Mutate both nested caller-owned containers after binding. The
@@ -139,7 +167,7 @@ func TestNativePreparedRestoreBindsDetachedReceiptAcrossDrivers(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer fresh.Close()
-			if _, err := fresh.Lock(ctx, nil); err != nil {
+			if _, err := fresh.Lock(ctx, nativeAllocatorLocks()); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := fresh.Head(ctx); err != nil {
@@ -170,7 +198,7 @@ func TestNativePreparationRefusalsRollbackAndReleaseAcrossDrivers(t *testing.T) 
 				defer tx.Close()
 				ref := model.RefByID("native-staged", model.Natural64(0))
 				key := driver.LockKey{Kind: driver.LockRecord, Ref: &ref}
-				locks := driver.LockSet{{Key: key, Mode: driver.LockUpdate}}
+				locks := driver.LockSet{{Key: key, Mode: driver.LockUpdate}, {Key: nativeAllocatorFence(), Mode: driver.LockUpdate}}
 				if _, err := tx.Lock(ctx, locks); err != nil {
 					t.Fatal(err)
 				}
@@ -206,8 +234,11 @@ func TestNativePreparationRefusalsRollbackAndReleaseAcrossDrivers(t *testing.T) 
 					if err != nil {
 						t.Fatal(err)
 					}
+					if err := tx.(driver.NativeAllocatorRestoreTx).RestoreNativeAllocators(ctx, nativeAllocatorFixture()); err != nil {
+						t.Fatal(err)
+					}
 					header := nativeHeader(profile, meta)
-					header.LockKeys = []driver.LockKey{key}
+					header.LockKeys = []driver.LockKey{key, nativeAllocatorFence()}
 					switch scenario {
 					case "cancel":
 						canceled, cancel := context.WithCancel(ctx)
@@ -294,7 +325,7 @@ func TestNativeRestoreFencesReceiptsCheckpointsAndWritersAcrossDrivers(t *testin
 					t.Fatal(err)
 				}
 				defer tx.Close()
-				if _, err := tx.Lock(ctx, nil); err != nil {
+				if _, err := tx.Lock(ctx, nativeAllocatorLocks()); err != nil {
 					t.Fatal(err)
 				}
 				if scenario == "writer-before-head" {
@@ -306,6 +337,9 @@ func TestNativeRestoreFencesReceiptsCheckpointsAndWritersAcrossDrivers(t *testin
 				meta, err := tx.(driver.NativeRestoreTx).PrepareNativeRestore(ctx, nativeProfile())
 				if scenario == "checkpoint-at-publication" {
 					if err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.(driver.NativeAllocatorRestoreTx).RestoreNativeAllocators(ctx, nativeAllocatorFixture()); err != nil {
 						t.Fatal(err)
 					}
 					checkpoint()
@@ -372,7 +406,7 @@ func TestConcurrentSameLeaseNativeRestoresHaveOneWinner(t *testing.T) {
 					defer wg.Done()
 					defer tx.Close()
 					<-start
-					if _, err := tx.Lock(ctx, nil); err != nil {
+					if _, err := tx.Lock(ctx, nativeAllocatorLocks()); err != nil {
 						results <- err
 						return
 					}
@@ -382,6 +416,10 @@ func TestConcurrentSameLeaseNativeRestoresHaveOneWinner(t *testing.T) {
 					}
 					meta, err := tx.(driver.NativeRestoreTx).PrepareNativeRestore(ctx, nativeProfile())
 					if err != nil {
+						results <- err
+						return
+					}
+					if err := tx.(driver.NativeAllocatorRestoreTx).RestoreNativeAllocators(ctx, nativeAllocatorFixture()); err != nil {
 						results <- err
 						return
 					}

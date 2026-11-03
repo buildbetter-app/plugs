@@ -129,3 +129,27 @@ func TestNativeRestoreEmptyGuardIncludesParentAndJournalOnlyState(t *testing.T) 
 		})
 	}
 }
+
+func TestAllocatorSnapshotRejectsMismatchedProjectRowIdentity(t *testing.T) {
+	s := New()
+	defer s.Close()
+	// Labelled corruption probe; no product write or inferred baseline.
+	s.state.allocators["other"] = driver.OfflineAllocator{Prefix: "demo", Mode: driver.AllocatorSequential, LastID: 4}
+	meta, err := s.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.Read(context.Background(), driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	_, err = r.(driver.AllocatorSnapshotReader).AllocatorSnapshot(context.Background())
+	var refusal *driver.NativeAllocatorSnapshotError
+	if !errors.As(err, &refusal) || refusal.Reason != driver.NativeAllocatorInventoryInvalid {
+		t.Fatalf("mismatched project row admitted: %v", err)
+	}
+	if s.state.allocatorHistory != nil || !s.state.meta.Head.IsZero() {
+		t.Fatal("failed read published allocator history or graph state")
+	}
+}

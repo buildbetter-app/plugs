@@ -17,7 +17,10 @@ type allocatorImage struct {
 
 func (s *state) currentAllocatorInventory() (driver.AllocatorInventory, error) {
 	inventory := driver.AllocatorInventory{}
-	for _, a := range s.allocators {
+	for key, a := range s.allocators {
+		if key != a.Prefix {
+			return inventory, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorInventoryInvalid, fmt.Errorf("project row key mismatch"))
+		}
 		inventory.Projects = append(inventory.Projects, a.Clone())
 	}
 	for key, p := range s.parentCounters {
