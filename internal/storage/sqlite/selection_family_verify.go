@@ -178,7 +178,7 @@ func verifySQLiteSelectionParentChainsAffected(ctx context.Context, q queryer, i
 	// one-row CTE.  SQLite can then use the existing (incarnation,branch,key)
 	// indexes for every affected lookup.  The affected component is explicitly
 	// materialized so later proof branches cannot re-expand the full history.
-	args = append(args, incarnation, revKey(0), incarnation, revKey(0),
+	args = append(args, incarnation, revKey(0), incarnation, revKey(0), incarnation, revKey(0),
 		incarnation, revKey(0), string(driver.DerivedAncestorClosure), string(driver.SelectionAncestorFact), at, at,
 		incarnation, revKey(0), string(driver.SelectionAncestorFact),
 		incarnation, revKey(0), at, at,
@@ -193,6 +193,10 @@ func verifySQLiteSelectionParentChainsAffected(ctx context.Context, q queryer, i
 			SELECT h.child_key FROM hierarchy_source_current h
 			JOIN affected a ON a.record_key=h.parent_key
 			WHERE h.incarnation=? AND h.branch=?
+			UNION
+			SELECT h.parent_key FROM hierarchy_source_current h
+			JOIN affected a ON a.record_key=h.child_key
+			WHERE h.incarnation=? AND h.branch=? AND h.parent_key IS NOT NULL
 		),
 		beads(record_key,parent_key) AS MATERIALIZED (
 			SELECT h.child_key AS record_key,h.parent_key

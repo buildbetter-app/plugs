@@ -136,6 +136,25 @@ func (t *transaction) publishSelection(ctx context.Context, c *sql.Conn, current
 	if err != nil {
 		return err
 	}
+	beadLifetime := t.restore != nil
+	if !beadLifetime {
+		for id, record := range t.records {
+			if record != nil && record.Kind == "bead" {
+				beadLifetime = true
+				break
+			}
+			if identity, ok := t.sourceIdentities[id]; ok && identity.Kind == "bead" {
+				beadLifetime = true
+				break
+			}
+		}
+	}
+	if beadLifetime {
+		if _, err = c.ExecContext(ctx, `INSERT INTO selection_virgin_state(incarnation,virgin) VALUES(?,0)
+			ON CONFLICT(incarnation) DO UPDATE SET virgin=0`, incarnation); err != nil {
+			return err
+		}
+	}
 	changedSources := make(map[string]bool, len(t.records)+len(t.derived)+len(t.bumps))
 	for id := range t.records {
 		changedSources[id] = true
