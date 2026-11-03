@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -38,6 +39,13 @@ type CyclesResult struct {
 	AsOf       AsOf          `json:"asOf"`
 }
 
+// cycleRow separates report topology from durable record envelopes. Only the
+// adopted durable graph supplies these rows; no provider state is substituted.
+type cycleRow struct {
+	project string
+	links   []pipeline.Link
+}
+
 func (s *Service) Cycles(ctx context.Context, by model.PrincipalRef, req CyclesRequest) (CyclesResult, error) {
 	if err := s.admit(ctx, by); err != nil {
 		return CyclesResult{}, err
@@ -47,14 +55,30 @@ func (s *Service) Cycles(ctx context.Context, by model.PrincipalRef, req CyclesR
 	if s.authorizationInstalled != nil && s.authorizationInstalled() {
 		return CyclesResult{}, failure("authz_unavailable", "cycle read authorization is unavailable")
 	}
+	if err := CheckCycleReportCapability(s.store, req); err != nil {
+		return CyclesResult{}, err
+	}
 	r, err := s.reader(ctx, by, nil)
 	if err != nil {
 		return CyclesResult{}, err
 	}
-	defer r.Close()
+	closed := false
+	closeContent := func() error {
+		if closed {
+			return nil
+		}
+		closed = true
+		return r.Close()
+	}
+	defer closeContent()
 	result, err := ReadCycles(ctx, r, req, nil)
 	if err != nil {
 		return CyclesResult{}, err
+	}
+	// Closing the real content reader can observe cancellation or lease loss.
+	// Finish that boundary before the final publication admission check.
+	if err := closeContent(); err != nil {
+		return CyclesResult{}, mapped(err)
 	}
 	if err := s.admit(ctx, by); err != nil {
 		return CyclesResult{}, err
@@ -65,25 +89,69 @@ func (s *Service) Cycles(ctx context.Context, by model.PrincipalRef, req CyclesR
 	return result, nil
 }
 
-// ReadCycles uses one pinned content snapshot. An installed-policy caller
-// supplies a current-read decision callback and fences that authority before
-// publishing the result. No graph write, receipt or lease renewal occurs.
-func ReadCycles(ctx context.Context, reader driver.Reader, req CyclesRequest, readable func(context.Context, model.Ref) (bool, error)) (CyclesResult, error) {
-	if strings.TrimSpace(req.Project) == "" {
-		return CyclesResult{}, failure("project_required", "supply a project")
+// CheckCycleReportCapability validates the selector before distinguishing an
+// unavailable persistent workflow capability from an unsupported graph plane.
+// The current workflow contract has no links or parents: persistence alone
+// does not grant a graph snapshot or mixed-plane report capability.
+func CheckCycleReportCapability(store driver.Store, req CyclesRequest) error {
+	if _, err := cycleLimit(req); err != nil {
+		return err
 	}
-	if req.IncludeEphemeral {
-		return CyclesResult{}, failure("invalid_params", "ephemeral cycle reporting requires a supported workflow plane")
+	if !req.IncludeEphemeral {
+		return nil
+	}
+	capability, ok := store.(driver.PersistentCheckpointStore)
+	if !ok || !capability.Persistent() {
+		return failure("plugin_durable_state_unavailable", "ephemeral cycle reporting requires persistent workflow state")
+	}
+	return failure("unsupported", "the workflow plane does not support graph relationships or cycle reports")
+}
+
+func cycleLimit(req CyclesRequest) (int, error) {
+	if strings.TrimSpace(req.Project) == "" {
+		return 0, failure("project_required", "supply a project")
 	}
 	limit := req.Limit
 	if limit == 0 {
 		limit = 100
 	}
-	if limit < 1 || limit > 1000 || reader == nil || reader.Snapshot().At == nil {
-		return CyclesResult{}, failure("invalid_params", "cycle reporting requires a pinned snapshot and limit 1..1000")
+	if limit < 1 || limit > 1000 {
+		return 0, failure("invalid_params", "cycle reporting requires limit 1..1000")
+	}
+	return limit, nil
+}
+
+// ReadCycles uses one pinned content snapshot. An installed-policy caller
+// supplies a current-read decision callback and fences that authority before
+// publishing the result. No graph write, receipt or lease renewal occurs.
+func ReadCycles(ctx context.Context, reader driver.Reader, req CyclesRequest, readable func(context.Context, model.Ref) (bool, error)) (CyclesResult, error) {
+	if err := ctx.Err(); err != nil {
+		return CyclesResult{}, err
+	}
+	limit, err := cycleLimit(req)
+	if err != nil {
+		return CyclesResult{}, err
+	}
+	if reader == nil || reader.Snapshot().At == nil {
+		return CyclesResult{}, failure("invalid_params", "cycle reporting requires a pinned snapshot")
+	}
+	if req.IncludeEphemeral {
+		return CyclesResult{}, failure("unsupported", "the workflow plane does not support graph relationships or cycle reports")
 	}
 	rows, err := scanBeads(ctx, reader)
 	if err != nil {
+		return CyclesResult{}, err
+	}
+	graph := make(map[string]cycleRow, len(rows))
+	for id, row := range rows {
+		graph[id] = cycleRow{project: row.doc.Project, links: row.doc.Links}
+	}
+	view := reader.Snapshot()
+	return readCycleGraph(ctx, graph, req, limit, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, readable)
+}
+
+func readCycleGraph(ctx context.Context, rows map[string]cycleRow, req CyclesRequest, limit int, asOf AsOf, readable func(context.Context, model.Ref) (bool, error)) (CyclesResult, error) {
+	if err := ctx.Err(); err != nil {
 		return CyclesResult{}, err
 	}
 	base, combined := map[string]map[string]bool{}, map[string]map[string]bool{}
@@ -97,7 +165,7 @@ func ReadCycles(ctx context.Context, reader driver.Reader, req CyclesRequest, re
 		}
 	}
 	for id, row := range rows {
-		for _, edge := range row.doc.Links {
+		for _, edge := range row.links {
 			if !edge.To.IsID() || !edge.To.Branch.IsZero() || edge.To.ID == "" {
 				continue
 			}
@@ -115,8 +183,7 @@ func ReadCycles(ctx context.Context, reader driver.Reader, req CyclesRequest, re
 	}
 	visible := map[string]bool{}
 	known := map[string]bool{}
-	view := reader.Snapshot()
-	result := CyclesResult{Items: []Cycle{}, CycleCount: model.Natural64(0), AsOf: AsOf{Revision: *view.At, Incarnation: view.Incarnation}}
+	result := CyclesResult{Items: []Cycle{}, CycleCount: model.Natural64(0), AsOf: asOf}
 	count := uint64(0)
 	for _, path := range paths {
 		item := Cycle{Path: make([]CycleMember, 0, len(path)), MemberCount: model.Natural64(uint64(len(path)))}
@@ -135,7 +202,7 @@ func ReadCycles(ctx context.Context, reader driver.Reader, req CyclesRequest, re
 			}
 			if visible[id] {
 				item.Path = append(item.Path, CycleMember{Ref: &ref})
-				anchored = anchored || rows[id].doc.Project == req.Project
+				anchored = anchored || rows[id].project == req.Project
 			} else {
 				item.Path = append(item.Path, CycleMember{Unreadable: true})
 				hidden++
@@ -152,6 +219,9 @@ func ReadCycles(ctx context.Context, reader driver.Reader, req CyclesRequest, re
 			result.Items = append(result.Items, item)
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return CyclesResult{}, err
+	}
 	result.CycleCount, result.Truncated = model.Natural64(count), count > uint64(len(result.Items))
 	return result, nil
 }
@@ -160,6 +230,9 @@ func ReadCycles(ctx context.Context, reader driver.Reader, req CyclesRequest, re
 // simple cycles. Optional tracks adds shortest return paths for each blocking
 // edge; a tracks-only loop cannot enter that set. Parallel endpoints collapse.
 func cyclePaths(ctx context.Context, base, combined map[string]map[string]bool, includeTracks bool) ([][]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	sortedKeys := func(values map[string]bool) []string {
 		out := make([]string, 0, len(values))
 		for value := range values {

@@ -34,6 +34,9 @@ func dispatchCycles(ctx context.Context, svc CyclesService, call Call) (any, err
 	if err != nil {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return map[string]any{
 		"items": result.Items, "cycleCount": result.CycleCount, "truncated": result.Truncated,
 		"asOf": asOf{result.AsOf.Revision, result.AsOf.Incarnation},

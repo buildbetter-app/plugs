@@ -11,11 +11,19 @@ import (
 // Cycles authorizes each member against the same current authority used for
 // this report. Only placeholders/counts cross the boundary for hidden members.
 func (s *GuardedService) Cycles(ctx context.Context, by model.PrincipalRef, req service.CyclesRequest) (service.CyclesResult, error) {
-	content, snapshot, closeReader, err := s.current(ctx, nil)
+	content, snapshot, _, err := s.current(ctx, nil)
 	if err != nil {
 		return service.CyclesResult{}, err
 	}
-	defer closeReader()
+	closed := false
+	closeContent := func() error {
+		if closed {
+			return nil
+		}
+		closed = true
+		return content.Close()
+	}
+	defer closeContent()
 	caller, err := s.checker.callerFor(ctx, by)
 	if err != nil {
 		return service.CyclesResult{}, authzError(err)
@@ -23,6 +31,9 @@ func (s *GuardedService) Cycles(ctx context.Context, by model.PrincipalRef, req 
 	authority, err := s.checker.load(ctx, snapshot, caller)
 	if err != nil {
 		return service.CyclesResult{}, hierarchyUnavailable()
+	}
+	if err := service.CheckCycleReportCapability(s.checker.store, req); err != nil {
+		return service.CyclesResult{}, err
 	}
 	readable := func(ctx context.Context, ref model.Ref) (bool, error) {
 		decisions, err := s.checker.chain.Check(ctx, authority, []authz.CheckRequest{{
@@ -43,6 +54,11 @@ func (s *GuardedService) Cycles(ctx context.Context, by model.PrincipalRef, req 
 	binding, err := s.checker.readAuthorityBinding(ctx, caller, authority, snapshot)
 	if err != nil {
 		return service.CyclesResult{}, err
+	}
+	// No lazy content read or reader close may run after the final authority,
+	// cancellation and lease fences. A close failure publishes no report.
+	if err := closeContent(); err != nil {
+		return service.CyclesResult{}, hierarchyUnavailable()
 	}
 	if err := s.checker.ValidateReadAuthorityBinding(ctx, by, binding); err != nil {
 		return service.CyclesResult{}, err
