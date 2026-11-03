@@ -82,10 +82,13 @@ type GraphSourceDecoder func(Record) (GraphSourceMetadata, error)
 
 // GraphSourceIndexBuilder is an optional startup maintenance capability. It
 // rebuilds each unavailable domain from EVERY live bead under graph/Head and
-// final lease fences, using bounded pages and core's decoder. Index rows and
-// coverage become visible atomically, without changing records, revisions,
-// history, receipts or derived closure. A failure publishes nothing. Already
-// ready domains retain their historical coverage; stale/incompatible coverage
+// final lease fences, using bounded pages and core's decoder. Complete coverage
+// becomes readable atomically, without changing records, revisions, history,
+// receipts or derived closure. Unavailable-domain rows may be staged durably in
+// short fenced transactions so lease renewal can progress during a long build.
+// Failed builds discard unpublished rows; interrupted builds never certify
+// partial coverage and can be rebuilt safely. Already ready domains retain
+// their historical coverage; stale/incompatible coverage
 // fails closed. Newly built coverage starts at the pinned current Head, never
 // claims imported/unknown historical coverage, and is not a write-budget bypass.
 // Call before serving requests, with ordinary lease renewal running. The decoder

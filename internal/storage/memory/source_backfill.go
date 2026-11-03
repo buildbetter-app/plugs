@@ -24,12 +24,16 @@ func (s *Store) BuildGraphSourceIndexes(ctx context.Context, lease driver.Active
 		return err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	t := value.(*transaction)
 	if err = t.check(ctx); err != nil {
+		s.mu.Unlock()
 		return err
 	}
 	current := s.state
+	s.mu.Unlock()
+	// The committed snapshot is immutable and graph/Head remain held by t.
+	// Decode and sort private replacement roots without Store.mu so the normal
+	// lease heartbeat (and expiry notification) can progress throughout a build.
 	head, err := current.meta.Head.Uint64()
 	if err != nil {
 		return err
@@ -120,10 +124,17 @@ func (s *Store) BuildGraphSourceIndexes(ctx context.Context, lease driver.Active
 			return err
 		}
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := t.check(ctx); err != nil {
 		return err
 	}
-	next := *current
+	if s.head != t || s.state.meta != current.meta {
+		return fmt.Errorf("%w: source backfill head changed", driver.ErrUnsupported)
+	}
+	// Response finalization can replace state without advancing Head. Preserve
+	// such concurrent metadata rather than restoring the snapshot's older copy.
+	next := *s.state
 	next.hierarchy, next.sourceLinks = h, links
 	s.state = &next
 	return nil

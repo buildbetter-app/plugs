@@ -10,38 +10,43 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-// Backfill must run in one caller-owned graph/Head-fenced SQL transaction. The
-// only materialized source images/declarations belong to one bounded key page.
-// Unknown history is discarded only in the unavailable index domain, never in
-// records/versions or in a ready domain. Markers publish after the final page.
-func (d Dialect) Backfill(ctx context.Context, q SQL, meta driver.Meta, decode driver.GraphSourceDecoder) error {
-	if decode == nil {
-		return fmt.Errorf("source index backfill requires a core decoder")
-	}
+// BackfillPublication supplies the engine's fenced publication boundary. The
+// graph and Head locks must remain held across ALL pages and final activation.
+// SQLite uses separate short transactions so lease heartbeats can interleave;
+// PostgreSQL can retain one transaction without locking the lease row yet.
+type BackfillPublication func(context.Context, func(SQL) error) error
+
+// PrepareBackfill only reads coverage. Unavailable domains remain unavailable
+// while their rows are replaced; a ready domain and its history are never touched.
+func (d Dialect) PrepareBackfill(ctx context.Context, q SQL, meta driver.Meta) (Plan, error) {
 	coverage, err := d.ReadCoverage(ctx, q, meta.Incarnation)
 	if err != nil {
-		return err
+		return Plan{}, err
 	}
 	head, err := meta.Head.Uint64()
 	if err != nil {
-		return err
+		return Plan{}, err
 	}
-	// Do not occupy a fresh native-restore target with index-only state. Its
-	// first ordinary or native publication proves and activates coverage itself.
+	p := Plan{Dialect: d, Incarnation: meta.Incarnation, At: head, Parent: Coverage{First: head}, Links: Coverage{First: head}, backfill: true}
+	// Keep fresh native-restore targets durably empty.
 	if head == 0 {
-		return nil
+		return p, nil
 	}
 	for _, domain := range []Coverage{coverage.Parent, coverage.Links} {
 		if domain.Ready {
 			if err := domain.Require(head); err != nil || domain.Through != head {
-				return fmt.Errorf("%w: gapped source index backfill", driver.ErrUnsupported)
+				return Plan{}, fmt.Errorf("%w: gapped source index backfill", driver.ErrUnsupported)
 			}
 		}
 	}
-	p := Plan{Dialect: d, Incarnation: meta.Incarnation, At: head, Parent: Coverage{First: head}, Links: Coverage{First: head}, ParentActive: !coverage.Parent.Ready, LinksActive: !coverage.Links.Ready, backfill: true}
-	if !p.ParentActive && !p.LinksActive {
-		return nil
-	}
+	p.ParentActive, p.LinksActive = !coverage.Parent.Ready, !coverage.Links.Ready
+	return p, nil
+}
+
+// ClearBackfill removes only unavailable-domain rows. Bound even restart cleanup
+// so a large interrupted build cannot starve SQLite lease renewal on deletion.
+// Coverage markers are left unchanged: they still fail closed until activation.
+func (p Plan) ClearBackfill(ctx context.Context, publish BackfillPublication) error {
 	tables := []string{}
 	if p.ParentActive {
 		tables = append(tables, "hierarchy_source_current", "hierarchy_source_history")
@@ -49,24 +54,54 @@ func (d Dialect) Backfill(ctx context.Context, q SQL, meta driver.Meta, decode d
 	if p.LinksActive {
 		tables = append(tables, "graph_link_current", "graph_link_history", "graph_link_source_current", "graph_link_source_history")
 	}
+	rowID := "rowid"
+	if p.Dialect == Postgres {
+		rowID = "ctid"
+	}
 	for _, table := range tables {
-		b := bindings{d: d}
-		where := b.scope(meta.Incarnation)
-		if _, err := q.ExecContext(ctx, "DELETE FROM "+d.table(table)+" WHERE "+where, b.args...); err != nil {
-			return err
+		for {
+			var removed int64
+			err := publish(ctx, func(q SQL) error {
+				b := bindings{d: p.Dialect}
+				where := b.scope(p.Incarnation)
+				target := p.Dialect.table(table)
+				result, err := q.ExecContext(ctx, "DELETE FROM "+target+" WHERE "+rowID+" IN (SELECT "+rowID+" FROM "+target+" WHERE "+where+" LIMIT 128)", b.args...)
+				if err == nil {
+					removed, err = result.RowsAffected()
+				}
+				return err
+			})
+			if err != nil {
+				return err
+			}
+			if removed == 0 {
+				break
+			}
 		}
+	}
+	return nil
+}
+
+// BuildBackfill decodes only one key page at a time, OUTSIDE publication locks.
+// Pages never contain coverage markers, so readers cannot observe partial proof.
+func (p Plan) BuildBackfill(ctx context.Context, sources SQL, decode driver.GraphSourceDecoder, publish BackfillPublication) error {
+	if decode == nil {
+		return fmt.Errorf("source index backfill requires a core decoder")
+	}
+	if !p.ParentActive && !p.LinksActive {
+		return nil
 	}
 	after := ""
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		records, err := d.sourcePage(ctx, q, after)
+		records, err := p.Dialect.sourcePage(ctx, sources, after)
 		if err != nil {
 			return err
 		}
 		if len(records) == 0 {
-			break
+			return nil
 		}
 		p.Records = make(map[string]*driver.Record, len(records))
 		p.Declarations = make(map[string]Declaration, len(records))
@@ -92,10 +127,15 @@ func (d Dialect) Backfill(ctx context.Context, q SQL, meta driver.Meta, decode d
 			p.Records[id], p.Declarations[id] = record, declaration
 			after = id
 		}
-		if err := p.Publish(ctx, q); err != nil {
+		if err := publish(ctx, func(q SQL) error { return p.Publish(ctx, q) }); err != nil {
 			return err
 		}
 	}
+}
+
+// ActivateBackfill certifies both newly built domains in ONE final publication,
+// only after all sources were decoded and published under graph/Head locks.
+func (p Plan) ActivateBackfill(ctx context.Context, q SQL) error {
 	if p.ParentActive {
 		if err := p.marker(ctx, q, "hierarchy_index_coverage", p.Parent); err != nil {
 			return err
@@ -105,6 +145,26 @@ func (d Dialect) Backfill(ctx context.Context, q SQL, meta driver.Meta, decode d
 		return p.marker(ctx, q, "graph_link_index_coverage", p.Links)
 	}
 	return nil
+}
+
+// Backfill uses one caller-owned transaction when the engine can renew its lease
+// independently. SQLite instead uses the same plan with short page publications.
+func (d Dialect) Backfill(ctx context.Context, q SQL, meta driver.Meta, decode driver.GraphSourceDecoder) error {
+	if decode == nil {
+		return fmt.Errorf("source index backfill requires a core decoder")
+	}
+	p, err := d.PrepareBackfill(ctx, q, meta)
+	if err != nil {
+		return err
+	}
+	publish := func(_ context.Context, fn func(SQL) error) error { return fn(q) }
+	if err := p.ClearBackfill(ctx, publish); err != nil {
+		return err
+	}
+	if err := p.BuildBackfill(ctx, q, decode, publish); err != nil {
+		return err
+	}
+	return p.ActivateBackfill(ctx, q)
 }
 
 // sourcePage decodes only the driver's Record envelope, never document JSON.

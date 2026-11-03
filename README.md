@@ -41,13 +41,19 @@ already has other history. Later typed writes maintain that coverage.
 
 On server startup, after acquiring its renewing lease and before admitting
 requests, Plug upgrades missing source indexes by decoding every current bead
-through trusted core and publishing the complete indexes atomically. SQL
-backfill holds only a bounded page of source images at a time. It preserves
-record bytes, original revisions, public history and the history floor; newly
-built coverage starts at the current head, not at an unknown earlier revision.
-A failed or canceled build publishes nothing. Already-complete indexes are not
-rebuilt, stale coverage gaps still refuse, and a fresh target stays empty for
-native restore. Merely opening a driver store does not certify or backfill it.
+through trusted core and activating the complete indexes atomically. SQL
+backfill holds only a bounded page of source images at a time. SQLite publishes
+unavailable index pages in short transactions, allowing ordinary lease renewal
+between pages; readers keep failing closed until the final fenced activation.
+Memory builds private immutable indexes without blocking its lease heartbeat.
+Backfill preserves record bytes, original revisions, public history and the
+history floor; newly built coverage starts at the current head, not at an
+unknown earlier revision. A failed or canceled build never certifies coverage
+or changes public data, and discards its unpublished index rows. Interrupted
+SQLite builds remain unavailable and are rebuilt on the next startup.
+Already-complete indexes are not rebuilt, stale coverage gaps still refuse,
+and a fresh target stays empty for native restore. Merely opening a driver
+store does not certify or backfill it.
 Hosts composing the Writer directly can run `pipeline.BuildSourceIndexes`
 before serving requests. Until coverage is complete, readers return unsupported
 and validation retains the complete source-validation fallback. The ordinary

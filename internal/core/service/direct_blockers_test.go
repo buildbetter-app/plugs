@@ -164,7 +164,7 @@ func TestReadDirectBlockersPreservesUnknownAndOntologySnapshotChanges(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "system", ID: "direct-blockers-test"}}, []conformance.FixtureChange{{Ref: blocker, Kind: "bead", Op: model.OpPatch, Body: blockerBody}}); err != nil {
+		if _, err := conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{Principal: model.PrincipalRef{Kind: "system", ID: "direct-blockers-test"}}, []conformance.FixtureChange{{Ref: blocker, Kind: "bead", Op: model.OpPatch, Body: blockerBody, Graph: &conformance.FixtureGraphSource{}}}); err != nil {
 			t.Fatal(err)
 		}
 		firstMeta, err := f.store.Meta(ctx)
