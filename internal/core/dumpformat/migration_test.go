@@ -281,6 +281,7 @@ func TestStrictConfigUnionNamedRefusals(t *testing.T) {
 			f.addArchive(t, "custom_statuses", Row{"name": "dupe", "category": "done"})
 		}},
 		{"undeclared record status", "undeclared-entry", "phantom", func(f *mergeFixture) { f.records["bead"][0].Source.Fields["status"] = "phantom" }},
+		{"undeclared legacy spelling", "undeclared-entry", "frozen", func(f *mergeFixture) { f.records["bead"][0].Source.Fields["status"] = "frozen" }},
 		{"undeclared record type", "undeclared-entry", "phantom", func(f *mergeFixture) { f.records["bead"][0].Source.Fields["issue_type"] = "phantom" }},
 		{"native key conflict", "ontology-conflict", "todo", func(f *mergeFixture) { setStoredStatus(f, "todo:wip") }},
 		{"project ownership absent", "project-scope", "configuration union", func(f *mergeFixture) {
