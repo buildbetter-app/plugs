@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "sourceactivation",
+    testonly = True,
+    srcs = ["activation.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/storage/conformance/sourceactivation",
+    visibility = ["//internal/storage:__subpackages__"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+    ],
+)
