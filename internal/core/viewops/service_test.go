@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
@@ -617,6 +618,164 @@ func TestCountBatchAuthorizationIsCompleteAndFailsClosed(t *testing.T) {
 			page, err := svc.Run(ctx, by, req)
 			if err != nil || page.Count != nil || len(page.Items) != 1 || pointCalls != 1 || batchCalls != 1 {
 				t.Fatalf("ordinary path changed: result=%+v err=%v point=%d batch=%d", page, err, pointCalls, batchCalls)
+			}
+		})
+	}
+}
+
+type epicIndexedReader struct {
+	driver.Reader
+	children               []driver.Record
+	more                   bool
+	indexErr, getErr       error
+	queries, lookups, gets int
+	parents, requested     []model.Ref
+	limit                  int
+}
+
+func (r *epicIndexedReader) HierarchyChildren(_ context.Context, parents []model.Ref, limit int) ([]driver.Record, bool, error) {
+	r.lookups++
+	r.parents, r.limit = append([]model.Ref(nil), parents...), limit
+	return r.children, r.more, r.indexErr
+}
+
+func (r *epicIndexedReader) Get(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
+	r.gets++
+	r.requested = append(r.requested, refs...)
+	if r.getErr != nil {
+		return nil, r.getErr
+	}
+	return r.Reader.Get(ctx, refs)
+}
+
+func (r *epicIndexedReader) Query(ctx context.Context, query driver.Query) (driver.Page[driver.Record], error) {
+	r.queries++
+	return r.Reader.Query(ctx, query)
+}
+
+func epicSourceRecord(t *testing.T, id string, parent *model.Ref) driver.Record {
+	t.Helper()
+	body, err := json.Marshal(pipeline.Document{ID: id, Type: "issue", Project: "project-" + id, Parent: parent, Fields: map[string]any{"status": "todo"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return driver.Record{Ref: model.RefByID(id, model.Natural64(0)), Kind: "bead", Revision: model.Natural64(3), Body: body}
+}
+
+func TestEpicProgressRowsSelectOnlyPinnedParentAndChildren(t *testing.T) {
+	parent := epicSourceRecord(t, "epic", nil)
+	child := epicSourceRecord(t, "child", &parent.Ref)
+	base := &syntheticReader{
+		rows:     []driver.Record{parent, child, {Ref: model.RefByID("unrelated", model.Natural64(0)), Kind: "bead", Body: []byte(`not a bead document`)}},
+		snapshot: driver.View{At: ptr(model.Natural64(3)), Incarnation: "pinned-incarnation"},
+	}
+	r := &epicIndexedReader{Reader: base, children: []driver.Record{child}}
+	rows, err := epicProgressRows(context.Background(), r, parent.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].record.Ref != parent.Ref || rows[1].record.Ref != child.Ref || !reflect.DeepEqual(rows[1].record, child) {
+		t.Fatalf("selected scope changed source images: %+v", rows)
+	}
+	if r.queries != 0 || r.lookups != 1 || r.gets != 1 || !reflect.DeepEqual(r.parents, []model.Ref{parent.Ref}) || !reflect.DeepEqual(r.requested, []model.Ref{parent.Ref}) || r.limit != driver.HierarchyMaxLimit {
+		t.Fatalf("scope read was not bounded: queries=%d lookups=%d gets=%d parents=%v getRefs=%v limit=%d", r.queries, r.lookups, r.gets, r.parents, r.requested, r.limit)
+	}
+	if r.Snapshot().At.String() != "3" || r.Snapshot().Incarnation != "pinned-incarnation" {
+		t.Fatalf("indexed read changed the content snapshot: %+v", r.Snapshot())
+	}
+}
+
+func TestEpicProgressRowsPreserveCompleteScanFallback(t *testing.T) {
+	parent := epicSourceRecord(t, "epic", nil)
+	child := epicSourceRecord(t, "child", &parent.Ref)
+	unrelated := epicSourceRecord(t, "unrelated", nil)
+	base := &syntheticReader{rows: []driver.Record{parent, child, unrelated}, snapshot: driver.View{At: ptr(model.Natural64(3)), Incarnation: "inc"}}
+	want, err := scan(context.Background(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		err  error
+		more bool
+	}{
+		{name: "unbuilt", err: driver.ErrUnsupported},
+		{name: "before-coverage", err: fmt.Errorf("not covered: %w", driver.ErrUnsupported)},
+		{name: "more-children-than-one-page", more: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &epicIndexedReader{Reader: base, children: []driver.Record{child}, indexErr: tc.err, more: tc.more}
+			rows, err := epicProgressRows(context.Background(), r, parent.Ref)
+			if err != nil || !reflect.DeepEqual(rows, want) {
+				t.Fatalf("fallback changed complete scan: rows=%+v err=%v want=%+v", rows, err, want)
+			}
+			if r.lookups != 1 || r.queries != 1 || r.gets != 0 {
+				t.Fatalf("fallback performed unexpected work: lookups=%d queries=%d gets=%d", r.lookups, r.queries, r.gets)
+			}
+		})
+	}
+	// The optional interface may also be completely absent on legacy readers.
+	rows, err := epicProgressRows(context.Background(), base, parent.Ref)
+	if err != nil || !reflect.DeepEqual(rows, want) {
+		t.Fatalf("reader without index changed scan: rows=%+v err=%v", rows, err)
+	}
+}
+
+func TestEpicProgressRowsMapIndexedAndParentErrorsWithoutScanning(t *testing.T) {
+	parent := epicSourceRecord(t, "epic", nil)
+	base := &syntheticReader{rows: []driver.Record{parent}, snapshot: driver.View{At: ptr(model.Natural64(3)), Incarnation: "inc"}}
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded, driver.ErrIncarnationChanged{From: "old", To: "inc"}, driver.ErrTruncated{Floor: model.Natural64(2)}, errors.New("source lookup failed")} {
+		for _, onGet := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%T/parent-get=%t", cause, onGet), func(t *testing.T) {
+				r := &epicIndexedReader{Reader: base}
+				if onGet {
+					r.getErr = cause
+				} else {
+					r.indexErr = cause
+				}
+				rows, err := epicProgressRows(context.Background(), r, parent.Ref)
+				if rows != nil || !reflect.DeepEqual(err, mapped(cause)) || r.queries != 0 {
+					t.Fatalf("indexed error changed mapping or scanned: rows=%+v err=%v want=%v queries=%d", rows, err, mapped(cause), r.queries)
+				}
+			})
+		}
+	}
+}
+
+func TestEpicProgressRowsRejectInvalidIndexedImages(t *testing.T) {
+	parent := epicSourceRecord(t, "epic", nil)
+	child := epicSourceRecord(t, "child", &parent.Ref)
+	wrongParent := model.RefByID("another-parent", model.Natural64(0))
+	badParent := model.RefByID("epic", model.Natural64(1))
+	wrongKind, wrongID, badIdentity := child, child, child
+	wrongKind.Kind = "ontology"
+	wrongID.Body = epicSourceRecord(t, "another-child", &parent.Ref).Body
+	badIdentity.Ref = model.RefByKey("unresolved")
+	malformed := child
+	malformed.Body = []byte(`{"id":"child"}`)
+	base := &syntheticReader{rows: []driver.Record{parent}, snapshot: driver.View{At: ptr(model.Natural64(3)), Incarnation: "inc"}}
+	for _, tc := range []struct {
+		name    string
+		records []driver.Record
+		hint    string
+	}{
+		{name: "wrong-kind", records: []driver.Record{wrongKind}, hint: "invalid persisted bead identity"},
+		{name: "unresolved-identity", records: []driver.Record{badIdentity}, hint: "invalid persisted bead identity"},
+		{name: "wrong-body-id", records: []driver.Record{wrongID}, hint: "invalid persisted bead document"},
+		{name: "malformed-body", records: []driver.Record{malformed}, hint: "invalid persisted bead document"},
+		{name: "invalid-parent-ref", records: []driver.Record{epicSourceRecord(t, "child", &badParent)}, hint: "invalid persisted parent reference"},
+		{name: "root-is-not-child", records: []driver.Record{epicSourceRecord(t, "child", nil)}, hint: "invalid persisted direct-child graph"},
+		{name: "wrong-parent", records: []driver.Record{epicSourceRecord(t, "child", &wrongParent)}, hint: "invalid persisted direct-child graph"},
+		{name: "self-child", records: []driver.Record{epicSourceRecord(t, "epic", &parent.Ref)}, hint: "invalid persisted direct-child graph"},
+		{name: "duplicate-child", records: []driver.Record{child, child}, hint: "invalid persisted direct-child graph"},
+		{name: "exceeds-index-bound", records: make([]driver.Record, driver.HierarchyMaxLimit+1), hint: "invalid persisted direct-child graph"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &epicIndexedReader{Reader: base, children: tc.records}
+			rows, err := epicProgressRows(context.Background(), r, parent.Ref)
+			var typed *model.Error
+			if rows != nil || !errors.As(err, &typed) || typed.Data.Code != "internal_error" || typed.Data.Hint != tc.hint || r.queries != 0 {
+				t.Fatalf("invalid source did not fail closed: rows=%+v err=%v queries=%d", rows, err, r.queries)
 			}
 		})
 	}

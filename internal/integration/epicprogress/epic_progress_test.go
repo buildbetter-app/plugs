@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/core/viewops"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -300,6 +304,255 @@ func TestEpicProgressCapabilityIsExplicit(t *testing.T) {
 	f := newFixture(t, "memory", "", false)
 	parent := f.create(t, epics, "capability disabled", nil)
 	requireCode(t, f.api.call(t, f.viewer(t, epics), "view.run", progressParams(parent, epics)), "invalid_params")
+}
+
+func epicDefinition(parent model.Ref) *viewops.Definition {
+	return &viewops.Definition{
+		Filter:  &viewops.Filter{Query: "parent=" + parent.ID},
+		Fields:  []string{},
+		GroupBy: []string{viewops.EpicProgressGrouping},
+	}
+}
+
+func buildLargeEpic(t *testing.T, f *fixture) (model.Ref, model.Ref) {
+	t.Helper()
+	// Populate this read-only regression through the real Writer and ordinary
+	// ontology, without the independent fixed-policy bulk-write deadline.
+	// The original authenticated 20k workload below is unchanged. No startup
+	// builder or test-installed coverage substitutes for typed publication.
+	writer := pipeline.New(f.store, f.lease, pipeline.WithOntology(service.NewOntology(nil)))
+	apply := func(ops []model.Op) model.Commit {
+		t.Helper()
+		f.sequence++
+		out, err := writer.Apply(context.Background(), model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, model.ChangeSet{Ops: ops}, model.WriteMeta{
+			Method: "tx.apply", Project: visible, Agent: "ep6-index-regression", AgentLabel: "ep6-index-regression", IdempotencyKey: fmt.Sprintf("%032x", f.sequence),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	parent := apply([]model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Project: epics, Fields: map[string]any{"title": "indexed epic"}}}}).Results[0].Ref
+	children := make([]model.Op, 0, 50)
+	for i := 0; i < 50; i++ {
+		children = append(children, model.Op{Kind: model.OpCreate, Create: &model.CreateOp{
+			Type: "issue", Project: visible, Parent: &parent,
+			Fields: map[string]any{"title": fmt.Sprintf("direct child %02d", i)},
+		}})
+	}
+	created := apply(children)
+	for start := 0; start < 19949; start += 100 {
+		end := start + 100
+		if end > 19949 {
+			end = 19949
+		}
+		ops := make([]model.Op, 0, end-start)
+		for i := start; i < end; i++ {
+			ops = append(ops, model.Op{Kind: model.OpCreate, Create: &model.CreateOp{
+				Type: "issue", Project: visible,
+				Fields: map[string]any{"title": fmt.Sprintf("unrelated bead %05d", i)},
+			}})
+		}
+		apply(ops)
+	}
+	meta, err := f.store.Meta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	r, err := f.store.Read(context.Background(), driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	var cursor *driver.Cursor
+	for {
+		page, err := r.Query(context.Background(), driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 1000, Cursor: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		count += len(page.Items)
+		if page.NextCursor == nil {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	if count != 20000 {
+		t.Fatalf("large epic population=%d, want 20000", count)
+	}
+	return parent, created.Results[0].Ref
+}
+
+func runProgress(t *testing.T, service *viewops.Service, by model.PrincipalRef, parent model.Ref, asOf *viewops.AsOf) (viewops.Result, error) {
+	t.Helper()
+	// The native HTTP host's ordinary read budget is 30 seconds. Do not
+	// lengthen it to make the historical all-bead scan finish.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return service.Run(ctx, by, viewops.RunRequest{Definition: epicDefinition(parent), Project: epics, AsOf: asOf})
+}
+
+func errorData(t *testing.T, err error) model.ErrorData {
+	t.Helper()
+	var typed *model.Error
+	if !errors.As(err, &typed) {
+		t.Fatalf("error is not a model error: %v", err)
+	}
+	return typed.Data
+}
+
+func TestEpicProgressIndexedReadDoesNotScanTwentyThousandBeads(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := newFixture(t, backend, t.TempDir()+"/indexed.db", true)
+			parent, child := buildLargeEpic(t, f)
+			// Make head-1 historical without removing any of the 20,000 beads.
+			// The pinned and current answers must now differ in status only.
+			f.status(t, child, "done", visible)
+			viewer := f.viewer(t, epics, visible)
+			by, err := f.keys.Authenticate(context.Background(), viewer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta, err := f.store.Meta(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			head, err := meta.Head.Uint64()
+			if err != nil || head == 0 {
+				t.Fatalf("invalid head %s: %v", meta.Head, err)
+			}
+			for _, tc := range []struct {
+				name string
+				asOf *viewops.AsOf
+				want map[string]int
+			}{
+				{name: "current", want: map[string]int{"total": 50, "status:todo": 49, "status:done": 1}},
+				{name: "historical", asOf: &viewops.AsOf{Revision: model.Natural64(head - 1), Incarnation: meta.Incarnation}, want: map[string]int{"total": 50, "status:todo": 50}},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					f.reads.reset()
+					started := time.Now()
+					result, err := runProgress(t, f.views, by, parent, tc.asOf)
+					elapsed := time.Since(started)
+					if f.reads.queryCount() != 0 {
+						t.Errorf("epic progress performed whole-bead Query work: %d pages", f.reads.queryCount())
+					}
+					if f.reads.hierarchyCount() == 0 {
+						t.Error("epic progress did not use the direct-child hierarchy index")
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					counts := map[string]int{}
+					for _, group := range result.Groups {
+						if group.Elided != nil || len(group.Items) != 0 {
+							t.Fatalf("unexpected indexed progress group: %+v", group)
+						}
+						counts[group.Key] = group.Count
+					}
+					if !reflect.DeepEqual(counts, tc.want) || len(result.Items) != 0 || result.NextCursor != nil {
+						t.Fatalf("indexed progress=%+v, want counts=%v", result, tc.want)
+					}
+					wantRevision := meta.Head
+					if tc.asOf != nil {
+						wantRevision = tc.asOf.Revision
+					}
+					if result.AsOf.Revision != wantRevision || result.AsOf.Incarnation != meta.Incarnation {
+						t.Fatalf("indexed progress lost pinned snapshot: %+v", result.AsOf)
+					}
+					t.Logf("20000-bead %s epic progress: elapsed=%s whole-bead queries=%d hierarchy lookups=%d asOf=%s", tc.name, elapsed, f.reads.queryCount(), f.reads.hierarchyCount(), result.AsOf.Revision)
+				})
+			}
+		})
+	}
+}
+
+func TestEpicProgressIndexedResultMatchesScanPath(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(backend, func(t *testing.T) {
+			f := newFixture(t, backend, t.TempDir()+"/equivalence.db", true)
+			g := f.graph(t)
+			viewer := f.viewer(t, epics, visible)
+			by, err := f.keys.Authenticate(context.Background(), viewer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta, err := f.store.Meta(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			historical := &viewops.AsOf{Revision: meta.Head, Incarnation: meta.Incarnation}
+			f.status(t, g.done, "todo", visible)
+			scanService, err := viewops.New(&unindexedReadStore{store: f.store}, f.lease, f.viewConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, asOf := range []*viewops.AsOf{nil, historical} {
+				indexed, err := runProgress(t, f.views, by, g.parent, asOf)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(indexed.Groups) == 0 || indexed.Groups[0].Elided == nil || indexed.Groups[0].Elided.Count != 1 {
+					t.Fatalf("indexed result lost hidden-child remainder: %+v", indexed.Groups)
+				}
+				scanned, err := runProgress(t, scanService, by, g.parent, asOf)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(indexed, scanned) || !bytes.Equal(firstJSON(t, indexed), firstJSON(t, scanned)) {
+					t.Fatalf("indexed result differs from scan path:\nindexed=%+v\nscanned=%+v", indexed, scanned)
+				}
+			}
+			// A scope adapter's visible set must not bypass an additional host
+			// read boundary. The denied visible child joins only the remainder.
+			narrow := f.viewConfig
+			baseRead := narrow.AuthorizeRead
+			narrow.AuthorizeRead = func(ctx context.Context, by model.PrincipalRef, resource model.ResourceRef, project string) error {
+				if resource.Ref.ID == g.done.ID {
+					return &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+				}
+				return baseRead(ctx, by, resource, project)
+			}
+			narrowIndexed, err := viewops.New(&observedReadStore{store: f.store, observer: f.reads}, f.lease, narrow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			narrowScan, err := viewops.New(&unindexedReadStore{store: f.store}, f.lease, narrow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			indexed, err := runProgress(t, narrowIndexed, by, g.parent, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scanned, err := runProgress(t, narrowScan, by, g.parent, nil)
+			if err != nil || !reflect.DeepEqual(indexed, scanned) || indexed.Groups[0].Count != 1 || indexed.Groups[0].Elided == nil || indexed.Groups[0].Elided.Count != 2 {
+				t.Fatalf("host read boundary changed: indexed=%+v scanned=%+v err=%v", indexed, scanned, err)
+			}
+			// Real readers expose the interface even below coverage start. That
+			// revision must still use the scan, never fabricate child absence.
+			f.reads.reset()
+			beforeCoverage := &viewops.AsOf{Revision: model.Natural64(0), Incarnation: meta.Incarnation}
+			_, indexedErr := runProgress(t, f.views, by, g.parent, beforeCoverage)
+			_, scannedErr := runProgress(t, scanService, by, g.parent, beforeCoverage)
+			if !reflect.DeepEqual(errorData(t, indexedErr), errorData(t, scannedErr)) || errorData(t, indexedErr).Code != "not_found" || f.reads.queryCount() == 0 || f.reads.hierarchyCount() == 0 {
+				t.Fatalf("pre-coverage fallback changed: indexed=%v scanned=%v queries=%d hierarchy=%d", indexedErr, scannedErr, f.reads.queryCount(), f.reads.hierarchyCount())
+			}
+			withoutParent, err := f.keys.Authenticate(context.Background(), f.viewer(t, visible))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, indexedErr = runProgress(t, f.views, withoutParent, g.parent, nil)
+			_, scannedErr = runProgress(t, scanService, withoutParent, g.parent, nil)
+			if !reflect.DeepEqual(errorData(t, indexedErr), errorData(t, scannedErr)) {
+				t.Fatalf("hidden-parent refusal differs: indexed=%+v scanned=%+v", errorData(t, indexedErr), errorData(t, scannedErr))
+			}
+			if errorData(t, indexedErr).Code != "not_found" {
+				t.Fatalf("hidden parent error=%+v, want not_found", errorData(t, indexedErr))
+			}
+		})
+	}
 }
 
 func firstJSON(t *testing.T, value any) []byte {
