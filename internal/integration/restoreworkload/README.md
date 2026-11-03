@@ -24,16 +24,26 @@ Run the focused target with:
   //internal/cli:cli_test --test_output=all --test_timeout=900
 ```
 
-`TestRestoredThinSliceLifecycleAcrossMemoryAndSQLite` also runs one complete
-I2 chain on each fresh memory and SQLite restore: ready, claim, update, comment,
-close, history, dump, and restore. It preserves the D1 close-guard, atomic
-`tx.apply`, warning, replay, and generated-registry assertions. Its final dump
-comes from the mutated restored runtime at revision 7. Each resulting archive
-is restored into new memory and SQLite targets, so all four driver pairs check
-the completed state, exact IDs, updated fields, comment and close-reason
-body/actor/time, and dependency link. Readback checks the record census, store identity, fresh
+`TestRestoredThinSliceLifecycleAcrossMemoryAndSQLite` extends PR210's complete
+I2 chain with independently seeded memory and file-backed SQLite sources. The
+SQLite source closes and reopens its file through a fresh local composition
+before export; readiness, documents, dependency, revision 3, store identity,
+incarnation and archive census must survive that boundary. The separate
+`TestRestoredSQLiteReopenServesClaimNextAndTxApply` retains its narrower proof.
+
+Each source is restored into fresh memory and SQLite lifecycle targets. All
+four source/target pairs run ready, claim, update, comment, guarded close,
+history, dump, and restore, preserving the D1 close-guard, atomic `tx.apply`,
+warning, replay, and generated-registry assertions. The first restore compares
+complete source documents and establishes a fresh incarnation at revision 1.
+Its final dump comes from the mutated restored runtime at revision 7. Each
+resulting archive is restored into new memory and SQLite stores, giving eight
+explicit source/target/second-restore chains. They check the completed state,
+exact IDs, updated fields, comment and close-reason body/actor/time, and
+dependency link. Readback checks the record census, store identity, fresh
 incarnation, empty ready set, and new revision-1 history floor; old-incarnation
-and below-floor history requests must refuse. The archive explicitly requests
+and below-floor history requests must refuse. Subtest names and completion
+logs identify each of the three backends. The archive explicitly requests
 `history: head`; it does not claim that pre-restore revisions are replayed.
 
 Every operation uses `cli.OpenLocal` and its in-process JSON-RPC byte transport,

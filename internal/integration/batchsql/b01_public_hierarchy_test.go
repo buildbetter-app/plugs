@@ -419,15 +419,25 @@ func TestB01PublicHierarchyFivePermissionRulesAcrossDrivers(t *testing.T) {
 			})
 			t.Run("rule2-current-and-history-parent-existence-only", func(t *testing.T) {
 				viewer := h.viewer(t, b01Child, b01New)
-				if got := h.get(t, viewer, child, nil)["parent"]; got != next.ID {
-					t.Fatalf("current readable parent missing: %v", got)
+				current := h.get(t, viewer, child, nil)
+				if current["id"] != child.ID || current["parent"] != next.ID {
+					t.Fatalf("current child identity/readable parent missing: %v", current)
 				}
 				bead := h.get(t, viewer, child, asOf)
-				if !reflect.DeepEqual(bead["parent"], map[string]any{"exists": true}) || bead["project"] != b01Child {
+				if bead["id"] != child.ID || !reflect.DeepEqual(bead["parent"], map[string]any{"exists": true}) || bead["project"] != b01Child {
 					t.Fatalf("historical hidden parent disclosed content: %v", bead)
 				}
-				raw, _ := json.Marshal(bead)
-				for _, canary := range []string{old.ID, b01Old, "private old epic"} {
+				// The authorized child's exact ID remains stable after reparent.
+				// Only that field may carry the creation parent's ID; every other
+				// returned location still has the full hidden-identity check.
+				withoutChildID := make(map[string]any, len(bead)-1)
+				for field, value := range bead {
+					if field != "id" {
+						withoutChildID[field] = value
+					}
+				}
+				raw, _ := json.Marshal(withoutChildID)
+				for _, canary := range []string{old.ID, b01Old, "private old epic", secret.ID, b01Hidden} {
 					if bytes.Contains(raw, []byte(canary)) {
 						t.Fatalf("hidden parent canary escaped: %s", canary)
 					}

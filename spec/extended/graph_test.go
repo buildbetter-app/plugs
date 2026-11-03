@@ -127,24 +127,26 @@ func TestB06SelfEdgesRefuseWithoutPublishingEarlierOperations(t *testing.T) {
 }
 
 func TestB06NonblockingLoopAndAtomicFinalGraph(t *testing.T) {
-	f := newFixture(t, []string{"pl-a", "pl-b"}, nil)
+	f := newFixture(t, []string{"pl-a", "pl-b", "pl-c"}, nil)
 	f.apply(t, "nodes", create("a", project, map[string]any{"title": "a"}),
-		create("b", project, map[string]any{"title": "b"}))
+		create("b", project, map[string]any{"title": "b"}),
+		create("c", project, map[string]any{"title": "c"}))
 	f.apply(t, "nonblocking-loop", edge(model.OpLink, "pl-a", "pl-b", "relates-to"),
 		edge(model.OpLink, "pl-b", "pl-a", "relates-to"))
-	pageIDs(t, f.success(t, "bead.ready", nil), "pl-a", "pl-b")
-	f.apply(t, "blocking", edge(model.OpLink, "pl-a", "pl-b", "blocks"))
+	pageIDs(t, f.success(t, "bead.ready", nil), "pl-a", "pl-b", "pl-c")
+	f.apply(t, "blocking", edge(model.OpLink, "pl-a", "pl-c", "blocks"))
 	// Although the first operation temporarily closes a cycle, the same
 	// atomic request removes its other edge. Only the final graph is guarded.
-	commit := f.apply(t, "reverse-atomically", edge(model.OpLink, "pl-b", "pl-a", "conditional-blocks"),
-		edge(model.OpUnlink, "pl-a", "pl-b", "blocks"))
+	commit := f.apply(t, "reverse-atomically", edge(model.OpLink, "pl-c", "pl-a", "conditional-blocks"),
+		edge(model.OpUnlink, "pl-a", "pl-c", "blocks"))
 	if commit.Revision.String() != "4" || len(commit.Results) != 2 {
 		t.Fatalf("final acyclic graph must commit once: %+v", commit)
 	}
 	after := f.image(t)
 	sameJSON(t, after.document(t, "pl-a").Links, []pipeline.Link{{To: ref("pl-b"), Kind: "relates-to"}})
 	sameJSON(t, after.document(t, "pl-b").Links, []pipeline.Link{
-		{To: ref("pl-a"), Kind: "relates-to"}, {To: ref("pl-a"), Kind: "conditional-blocks"},
+		{To: ref("pl-a"), Kind: "relates-to"},
 	})
-	pageIDs(t, f.success(t, "bead.ready", nil), "pl-a")
+	sameJSON(t, after.document(t, "pl-c").Links, []pipeline.Link{{To: ref("pl-a"), Kind: "conditional-blocks"}})
+	pageIDs(t, f.success(t, "bead.ready", nil), "pl-a", "pl-b")
 }

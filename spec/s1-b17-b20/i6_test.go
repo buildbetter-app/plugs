@@ -220,15 +220,58 @@ func i6StoreCensus(t *testing.T, store driver.Store) i6Census {
 	return census
 }
 
+func i6NativeAllocatorBinding(t *testing.T, archive *dumpformat.Archive, captured driver.Meta) {
+	t.Helper()
+	member, ok := archive.Member("allocator/snapshot.json")
+	if !ok {
+		t.Fatal("native archive omitted the complete allocator snapshot")
+	}
+	// Independently spell the admitted fixture's complete live inventory. Its
+	// source sequential counters remain provenance; import seeds the fixed
+	// random profile. Do not use the production allocator codec or digest.
+	want, err := json.Marshal(struct {
+		Version       string            `json:"version"`
+		StoreID       string            `json:"store_id"`
+		Incarnation   string            `json:"incarnation"`
+		At            json.Number       `json:"at"`
+		CoverageFloor json.Number       `json:"coverage_floor"`
+		Projects      []json.RawMessage `json:"projects"`
+		Parents       []json.RawMessage `json:"parents"`
+	}{
+		Version: "plug-native-allocator/1", StoreID: string(captured.StoreID), Incarnation: captured.Incarnation,
+		At: json.Number(captured.Head.String()), CoverageFloor: json.Number("1"),
+		Projects: []json.RawMessage{json.RawMessage(`{"prefix":"demo","id_mode":"random","random_bytes":16,"suffix_encoding":"lower-hex","top_level_shape":"prefix-random","child_shape":"parent-random"}`)},
+		Parents:  []json.RawMessage{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(member, want) {
+		t.Fatalf("native allocator snapshot differs from the captured source inventory:\n got %s\nwant %s", member, want)
+	}
+	manifest := archive.Manifest()
+	if manifest.StoreID != string(captured.StoreID) || manifest.NativeStoreID != string(captured.StoreID) || manifest.NativeIncarnation != captured.Incarnation || manifest.NativeHead != captured.Head.String() || manifest.NativeAllocatorProfile != "plug-native-allocator/1" || manifest.NativeAllocatorDigest != i6SHA256(member) {
+		t.Fatalf("native allocator profile/digest/source binding=%+v", manifest)
+	}
+}
+
 func i6NativeDigest(t *testing.T, archive *dumpformat.Archive) string {
 	t.Helper()
 	h := sha256.New()
-	names := []string{"config/sources.json", "records/native.ndjson", "versions.ndjson", "changesets.ndjson"}
+	names := []string{"allocator/snapshot.json", "config/sources.json", "records/native.ndjson", "versions.ndjson", "changesets.ndjson"}
+	files := archive.Manifest().Files
+	if len(files) != len(names) {
+		t.Fatalf("native member census=%v want %v", files, names)
+	}
 	sort.Strings(names)
 	for _, name := range names {
 		member, ok := archive.Member(name)
 		if !ok {
 			t.Fatalf("native archive omitted %s", name)
+		}
+		file, ok := files[name]
+		if !ok || file.Size != int64(len(member)) || file.SHA256 != i6SHA256(member) {
+			t.Fatalf("native member %s checksum/size binding=%+v", name, file)
 		}
 		_, _ = io.WriteString(h, name)
 		_, _ = h.Write(member)
@@ -360,6 +403,7 @@ func TestI6PublicSyntheticRestoreDumpReverseCensus(t *testing.T) {
 			if err != nil || !nativeArchive.Native() {
 				t.Fatalf("native dump validation=%v", err)
 			}
+			i6NativeAllocatorBinding(t, nativeArchive, afterRestore.Meta)
 			nativeDigest := i6NativeDigest(t, nativeArchive)
 			tarDigest := i6SHA256(native)
 			if manifest.NativeHead != "1" || manifest.RecordCount != afterRestore.Rows || manifest.NativeDigest == "" || manifest.NativeDigest != nativeDigest || nativeArchive.SHA256() != tarDigest {

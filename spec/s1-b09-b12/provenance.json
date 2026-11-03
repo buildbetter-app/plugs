@@ -1,0 +1,27 @@
+{
+  "format": "plug-s1-b09-b12-provenance/1",
+  "sourceCommit": "9d6fff760b7a314b476539198504d77ce0959656",
+  "sourceTree": "cde121d6e4119e454857ad1c3ca293e2791be840",
+  "driver": {
+    "plug": ["memory", "sqlite"],
+    "reference": "embedded-dolt source build required"
+  },
+  "clock": {
+    "go": "2026-10-29T09:00:00Z",
+    "sql": "driver-controlled; reopen required"
+  },
+  "recording": {
+    "status": "blocked",
+    "reason": "The Plug checkout does not contain the pinned Beads executable; record_reference.py refuses to emit a vector until an exact source-built executable and source tree are supplied on RunsOn.",
+    "rawDigest": "",
+    "projectionDigest": "",
+    "repeatRawDigest": "",
+    "repeatProjectionDigest": ""
+  },
+  "cards": {
+    "B09": "partial-source-vector; full-card-unqualified",
+    "B10": "synthetic-replay-only; full-card-unqualified",
+    "B11": "partial-source-vector; full-card-unqualified",
+    "B12": "full-card-unqualified"
+  }
+}
