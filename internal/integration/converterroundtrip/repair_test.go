@@ -264,7 +264,7 @@ func TestRestoreRefusesUnsupportedSemanticsBeforeWrite(t *testing.T) {
 				}
 				if tt.name == "external target even when ID matches a bead" {
 					var unresolved *dumpformat.UnresolvedDependencyError
-					if !errors.As(err, &unresolved) || unresolved.EdgeID == "" || unresolved.Project != "pl" || unresolved.Source != idA || unresolved.Target != idA || unresolved.TargetKind != "depends_on_external" {
+					if !errors.As(err, &unresolved) || unresolved.EdgeID == "" || unresolved.Project != "pl" || unresolved.Source != idB || unresolved.Target != idA || unresolved.TargetKind != "depends_on_external" {
 						t.Fatalf("external dependency lost its typed endpoint report: %+v", err)
 					}
 				}
