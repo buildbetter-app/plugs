@@ -250,6 +250,50 @@ func metadataReceipt(t *testing.T, h *harness, m model.WriteMeta) *driver.Idempo
 	return receipt
 }
 
+func TestMetadataCASPreservesNumericLiteralTokens(t *testing.T) {
+	for _, tc := range []struct{ name, stored, canonical, other string }{
+		{"fraction", `1.0`, `1.0`, `1`},
+		{"nested", `{"z":[2.00,1e0,-0.00],"a":1}`, `{"a":1,"z":[2.00,1e0,-0.00]}`, `{"a":1,"z":[2,1,0]}`},
+		{"large", `9007199254740993123456789.12345678901234567890`, `9007199254740993123456789.12345678901234567890`, `9007199254740993123456789.1234567890123456789`},
+		{"negative-zero", `-0.00`, `-0.00`, `0`},
+		{"exponent", `1.25e-2`, `1.25e-2`, `0.0125`},
+		{"large-exponent", `10e999999999999999999999999999`, `10e999999999999999999999999999`, `1e1000000000000000000000000000`},
+		{"private", `{"secret":"private-cas-value","value":1.0}`, `{"secret":"private-cas-value","value":1.0}`, `{"secret":"private-cas-value","value":1}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := setup(t)
+			ref := apply(t, h.writer(), model.ChangeSet{Ops: []model.Op{create("")}}, meta(1)).Results[0].Ref
+			apply(t, h.writer(), model.ChangeSet{Ops: []model.Op{metadataOp(ref, "literal", tc.stored), metadataOp(ref, "sibling", `true`)}}, meta(2))
+			before := metadataGraph(t, h)
+			wrong := model.ChangeSet{Ops: []model.Op{metadataOp(ref, "literal", `false`), patch(ref, map[string]any{"title": "must not land"})}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata.literal", metadataDigest(tc.other))}}
+			_, err := h.writer().Apply(context.Background(), by, wrong, meta(3))
+			var typed *model.Error
+			if !errors.As(err, &typed) || typed.Data.Code != "precondition_failed" || typed.Data.Details["reason"] != "hash" {
+				t.Fatalf("B17 distinct numeric token %s matched stored %s: %v", tc.other, tc.stored, err)
+			}
+			failure, err := json.Marshal(typed)
+			if err != nil || bytes.Contains(failure, []byte("private-cas-value")) || metadataReceipt(t, h, meta(3)) != nil || !reflect.DeepEqual(before, metadataGraph(t, h)) {
+				t.Fatal("numeric-token refusal leaked content or published a row, derived state, history or receipt")
+			}
+			matching := model.ChangeSet{Ops: []model.Op{metadataOp(ref, "literal", `false`)}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata.literal", metadataDigest(tc.canonical))}}
+			request, err := json.Marshal(matching)
+			if err != nil {
+				t.Fatal(err)
+			}
+			commit := apply(t, h.writer(), matching, meta(4))
+			after := metadataGraph(t, h)
+			if len(after.Log) != len(before.Log)+1 || len(after.Versions[ref.ID]) != len(before.Versions[ref.ID])+1 || metadataReceipt(t, h, meta(4)) == nil {
+				t.Fatal("matching literal did not publish exactly one atomic history entry and receipt")
+			}
+			replayed := apply(t, h.writer(), matching, meta(4))
+			unchanged, err := json.Marshal(matching)
+			if err != nil || !bytes.Equal(request, unchanged) || !reflect.DeepEqual(commit, replayed) || !reflect.DeepEqual(after, metadataGraph(t, h)) {
+				t.Fatal("replayed literal CAS changed caller input, stored commit or durable state")
+			}
+		})
+	}
+}
+
 func TestMetadataFieldHashCASUsesCanonicalCommittedValue(t *testing.T) {
 	for _, tc := range []struct{ name, stored, canonical string }{
 		{"object", ` {"b":2,"a":1} `, `{"a":1,"b":2}`},
