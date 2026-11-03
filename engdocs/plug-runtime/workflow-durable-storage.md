@@ -69,9 +69,15 @@ current principal is unavailable. Prefix queries are project-scoped, bounded,
 filtered by owner before response construction, and sorted by immutable item
 ID. The standard `bead.ready` adapter uses a signed cursor with a workflow
 phase bit; its binding includes the method, full principal, anonymous agent,
-project, filter, store incarnation, and authorization generation. There is no
-mixed-plane query: a request that combines a plugin run reference with a
-durable bead reference returns `unsupported`.
+project, filter, store incarnation, and authorization generation. Mixed-plane
+dependency reads are represented as typed references on the workflow
+checkpoint. A workflow source may link to an ordinary target and an ordinary
+source may link to a workflow target; the bridge never writes a core version
+or lease row for the ephemeral endpoint. Promotion rewrites inbound workflow
+edges to the ordinary target in one provider CAS and returns remaining
+auxiliary edges for the ordinary writer. Demotion creates the ephemeral copy
+before the ordinary source is removed. An active workflow ID wins over a
+colliding durable row in point reads and ready membership.
 
 GC is provider-owned. Completion performs the deletion and terminal-receipt
 sanitization in one state CAS, and repeated completion/replay is idempotent.

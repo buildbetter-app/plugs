@@ -55,6 +55,13 @@ func (s *Service) Get(ctx context.Context, by model.PrincipalRef, req GetRequest
 		return GetResult{}, err
 	}
 	result := GetResult{Bead: bead, Attachments: doc.Attachments}
+	if s.workflow != nil {
+		links, err := s.workflow.Relations(ctx, by, req.ID, workflowMeta(by, "bead.get", req.Project, req.Agent))
+		if err != nil {
+			return GetResult{}, err
+		}
+		result.Bead.Links = links
+	}
 	if len(doc.Comments) != 0 {
 		result.Comments = make([]Comment, len(doc.Comments))
 		for i, comment := range doc.Comments {
@@ -218,6 +225,20 @@ func (s *Service) readyPage(ctx context.Context, by model.PrincipalRef, req Read
 	if err != nil {
 		return BeadPage{}, err
 	}
+	if s.workflow != nil {
+		active, err := s.workflow.ActiveIDs(ctx)
+		if err != nil {
+			return BeadPage{}, err
+		}
+		filtered := items[:0]
+		for _, item := range items {
+			if _, collides := active[item.ID]; collides {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		items = filtered
+	}
 	if restartOnRevision && req.ClaimNextSeed != "" {
 		items, err = spreadClaimNextItems(items, req.ClaimNextSeed)
 		if err != nil {
@@ -312,7 +333,11 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 	if req.Filter != nil {
 		types = req.Filter.Types
 	}
-	snapshot, err := s.workflow.ReadySnapshot(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent))
+	includeEphemeral := true
+	if req.Filter != nil && req.Filter.IncludeEphemeral != nil {
+		includeEphemeral = *req.Filter.IncludeEphemeral
+	}
+	snapshot, err := s.workflow.ReadySnapshot(ctx, by, req.Project, types, workflowMeta(by, "bead.ready", req.Project, req.Agent), includeEphemeral)
 	if err != nil {
 		return BeadPage{}, err
 	}
@@ -364,7 +389,16 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 
 func workflowBead(item workflowplugin.ItemView) Bead {
 	fields := map[string]any{"title": item.Title}
-	return Bead{ID: item.ID, Type: item.Type, Project: item.Project, Revision: item.Revision, Status: item.Status, Fields: fields, Plane: item.Plane, Kind: item.Kind, Plugin: item.Plugin, WorkflowRunID: item.RunID}
+	return Bead{ID: item.ID, Type: item.Type, Project: item.Project, Revision: item.Revision, Status: item.Status,
+		Fields: fields, Metadata: item.Metadata, Parent: refID(item.Parent), Labels: append([]string(nil), item.Labels...), Links: append([]workflowplugin.RelationView(nil), item.Links...),
+		Blocked: item.Blocked, ChildCounter: item.ChildCounter, Plane: item.Plane, Kind: item.Kind, Plugin: item.Plugin, WorkflowRunID: item.RunID}
+}
+
+func refID(ref *model.Ref) string {
+	if ref == nil {
+		return ""
+	}
+	return ref.ID
 }
 
 func workflowGetResult(item workflowplugin.ItemView) GetResult {

@@ -256,6 +256,37 @@ func (s *Service) WorkflowInvoke(ctx context.Context, by model.PrincipalRef, req
 	return result, nil
 }
 
+// WorkflowPromote and WorkflowDemote are the typed public plugin lifecycle
+// seams. Ordinary bead creation/deletion remains a caller-owned writer
+// operation; the provider atomically moves only its auxiliary checkpoint state.
+func (s *Service) WorkflowPromote(ctx context.Context, by model.PrincipalRef, req workflowplugin.PromoteRequest, meta model.WriteMeta) (workflowplugin.PromoteResult, error) {
+	if err := validateWorkflowRef(req.Item); err != nil {
+		return workflowplugin.PromoteResult{}, err
+	}
+	if err := namedRef(req.Target); err != nil {
+		return workflowplugin.PromoteResult{}, err
+	}
+	if s.workflow == nil {
+		return workflowplugin.PromoteResult{}, failure("not_found", "workflow provider is unavailable")
+	}
+	if meta.Project == "" {
+		meta.Project = "workflow"
+	}
+	meta.Method = "x.workflow.run.promote"
+	return s.workflow.Promote(ctx, by, req, meta)
+}
+
+func (s *Service) WorkflowDemote(ctx context.Context, by model.PrincipalRef, req workflowplugin.DemoteRequest, meta model.WriteMeta) (workflowplugin.DemoteResult, error) {
+	if err := namedRef(req.Source); err != nil {
+		return workflowplugin.DemoteResult{}, err
+	}
+	if s.workflow == nil {
+		return workflowplugin.DemoteResult{}, failure("plugin_durable_state_unavailable", "ephemeral workflows require persistent checkpoint storage")
+	}
+	meta.Method = "x.workflow.run.demote"
+	return s.workflow.Demote(ctx, by, req, meta)
+}
+
 func (s *Service) Create(ctx context.Context, by model.PrincipalRef, req CreateRequest, meta model.WriteMeta) (model.Commit, error) {
 	v, err := s.create(ctx, by, req, meta, false)
 	return v.Commit, err
@@ -288,6 +319,16 @@ func (s *Service) UpdateWithOutcome(ctx context.Context, by model.PrincipalRef, 
 }
 
 func (s *Service) update(ctx context.Context, by model.PrincipalRef, req UpdateRequest, meta model.WriteMeta, outcomeRequired bool) (port.WriteOutcome, error) {
+	if workflowRef(req.ID) {
+		if err := validateWorkflowWrite(req.ID, req.Expect, meta); err != nil {
+			return port.WriteOutcome{}, err
+		}
+		if s.workflow == nil {
+			return port.WriteOutcome{}, failure("not_found", "workflow item was not found")
+		}
+		commit, err := s.workflow.Update(ctx, by, req.ID, req.Fields, meta)
+		return port.WriteOutcome{Commit: commit}, err
+	}
 	if err := namedRef(req.ID); err != nil {
 		return port.WriteOutcome{}, err
 	}
@@ -827,7 +868,46 @@ func linkChangeSet(req LinkRequest, kind model.OpKind) (model.ChangeSet, error) 
 	}, nil
 }
 
+func workflowLinkRequest(req LinkRequest) (workflowplugin.LinkRequest, bool, error) {
+	fromWorkflow := workflowRef(req.From)
+	toWorkflow := workflowRef(req.To)
+	if !fromWorkflow && !toWorkflow {
+		return workflowplugin.LinkRequest{}, false, nil
+	}
+	if err := validateRefForWorkflowEndpoint(req.From, fromWorkflow); err != nil {
+		return workflowplugin.LinkRequest{}, false, err
+	}
+	if err := validateRefForWorkflowEndpoint(req.To, toWorkflow); err != nil {
+		return workflowplugin.LinkRequest{}, false, err
+	}
+	return workflowplugin.LinkRequest{From: req.From, To: req.To, Kind: req.Kind, Metadata: req.Metadata}, true, nil
+}
+
+func validateRefForWorkflowEndpoint(ref model.Ref, workflow bool) error {
+	if workflow {
+		return validateWorkflowRef(ref)
+	}
+	return namedRef(ref)
+}
+
 func (s *Service) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, req LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	workflowReq, mixed, err := workflowLinkRequest(req)
+	if err != nil {
+		return port.WriteOutcome{}, err
+	}
+	if mixed {
+		if s.workflow == nil {
+			return port.WriteOutcome{}, failure("not_found", "workflow provider is unavailable")
+		}
+		if err := validateWorkflowWrite(req.From, req.Expect, meta); err != nil && workflowRef(req.From) {
+			return port.WriteOutcome{}, err
+		}
+		if err := validateWorkflowWrite(req.To, req.Expect, meta); err != nil && workflowRef(req.To) {
+			return port.WriteOutcome{}, err
+		}
+		commit, err := s.workflow.Link(ctx, by, workflowReq, meta)
+		return port.WriteOutcome{Commit: commit}, err
+	}
 	cs, err := linkChangeSet(req, model.OpLink)
 	if err != nil {
 		return port.WriteOutcome{}, err
@@ -836,6 +916,10 @@ func (s *Service) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, re
 }
 
 func (s *Service) Link(ctx context.Context, by model.PrincipalRef, req LinkRequest, meta model.WriteMeta) (model.Commit, error) {
+	if workflowRef(req.From) || workflowRef(req.To) {
+		v, err := s.LinkWithOutcome(ctx, by, req, meta)
+		return v.Commit, err
+	}
 	cs, err := linkChangeSet(req, model.OpLink)
 	if err != nil {
 		return model.Commit{}, err
@@ -845,6 +929,23 @@ func (s *Service) Link(ctx context.Context, by model.PrincipalRef, req LinkReque
 }
 
 func (s *Service) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, req LinkRequest, meta model.WriteMeta) (port.WriteOutcome, error) {
+	workflowReq, mixed, err := workflowLinkRequest(req)
+	if err != nil {
+		return port.WriteOutcome{}, err
+	}
+	if mixed {
+		if s.workflow == nil {
+			return port.WriteOutcome{}, failure("not_found", "workflow provider is unavailable")
+		}
+		if err := validateWorkflowWrite(req.From, req.Expect, meta); err != nil && workflowRef(req.From) {
+			return port.WriteOutcome{}, err
+		}
+		if err := validateWorkflowWrite(req.To, req.Expect, meta); err != nil && workflowRef(req.To) {
+			return port.WriteOutcome{}, err
+		}
+		commit, err := s.workflow.Unlink(ctx, by, workflowReq, meta)
+		return port.WriteOutcome{Commit: commit}, err
+	}
 	cs, err := linkChangeSet(req, model.OpUnlink)
 	if err != nil {
 		return port.WriteOutcome{}, err
@@ -853,6 +954,10 @@ func (s *Service) UnlinkWithOutcome(ctx context.Context, by model.PrincipalRef, 
 }
 
 func (s *Service) Unlink(ctx context.Context, by model.PrincipalRef, req LinkRequest, meta model.WriteMeta) (model.Commit, error) {
+	if workflowRef(req.From) || workflowRef(req.To) {
+		v, err := s.UnlinkWithOutcome(ctx, by, req, meta)
+		return v.Commit, err
+	}
 	cs, err := linkChangeSet(req, model.OpUnlink)
 	if err != nil {
 		return model.Commit{}, err

@@ -78,8 +78,19 @@ completion, lifecycle operations, and receipt GC. These entries contain the
 receipt scope and typed run/item IDs but never titles, fields, comments, claims,
 or body; they are operational provenance and do not make an ephemeral item
 part of permanent bead history.
-There is no promotion, demotion, mixed-plane dependency, or relationship
-bridge in this contract; those operations return typed `unsupported`.
+Promotion and demotion are typed plugin operations under
+`x.workflow.run.promote` and `x.workflow.run.demote`. Promotion accepts a
+live workflow item and a caller-owned ordinary target, atomically removes the
+workflow payload, rewrites inbound workflow edges to that target, and returns
+the permitted outbound/inbound auxiliary relationships for the ordinary
+writer. Demotion accepts a complete ordinary-item projection and creates a new
+restart-durable ephemeral item; removal of the ordinary source remains an
+ordinary writer operation. Neither operation creates a workflow lease,
+version, event body, or permanent-history row. A mixed-plane `bead.link` or
+`bead.unlink` stores the workflow side in the plugin checkpoint and exposes
+the ordinary side as a typed reference, with duplicate edges collapsed and a
+failed target validation published nowhere. An active workflow ID wins over a
+colliding durable row in point reads and ready membership.
 
 ## Restart, expiry, and fencing
 
