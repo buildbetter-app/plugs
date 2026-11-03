@@ -144,12 +144,6 @@ func TestSelectionBackfillPreservesIndependentFactSources(t *testing.T) {
 	}
 	decode, project := selectionBackfillRaceProjection(header.Incarnation, nil)
 	if err := s.BuildGraphSourceIndexes(ctx, lease, decode, project); err != nil {
-		var hierarchy, beadRows, factSets, facts int
-		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM hierarchy_source_current`).Scan(&hierarchy)
-		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_bead_history WHERE end_revision IS NULL`).Scan(&beadRows)
-		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_fact_sets WHERE end_revision IS NULL`).Scan(&factSets)
-		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_facts`).Scan(&facts)
-		t.Logf("affected fixture build diagnostics: hierarchy=%d bead_rows=%d fact_sets=%d facts=%d err=%v", hierarchy, beadRows, factSets, facts, err)
 		t.Fatal(err)
 	}
 	for _, key := range []driver.LockKey{derivedLock, recordLock} {
@@ -391,6 +385,12 @@ func TestSelectionSQLiteFinalParentChainAndExactSortCensus(t *testing.T) {
 		return rows, err
 	}
 	if err := s.BuildGraphSourceIndexes(ctx, lease, decode, project); err != nil {
+		var hierarchy, beadRows, factSets, facts int
+		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM hierarchy_source_current`).Scan(&hierarchy)
+		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_bead_history WHERE end_revision IS NULL`).Scan(&beadRows)
+		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_fact_sets WHERE end_revision IS NULL`).Scan(&factSets)
+		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM selection_facts`).Scan(&facts)
+		t.Logf("affected fixture build diagnostics: hierarchy=%d bead_rows=%d fact_sets=%d facts=%d err=%v", hierarchy, beadRows, factSets, facts, err)
 		t.Fatal(err)
 	}
 	meta := getMeta(t, ctx, s)
@@ -467,12 +467,16 @@ func TestSelectionAffectedParentProofIncludesUnchangedDescendants(t *testing.T) 
 	}
 	project.Decode = func(record driver.Record, inputs []driver.DerivedRow) ([]driver.DerivedSelectionRow, error) {
 		rows, err := plainProject(record, inputs)
-		if err == nil && record.Ref.ID == child.ID {
+		if err == nil && (record.Ref.ID == child.ID || record.Ref.ID == sibling.ID) {
 			depthOne := rows[0].Clone()
 			depthOne.Row.Key += ":depth-1"
 			depthOne.Row.Index.Row.Key = depthOne.Row.Key
+			target := root
+			if record.Ref.ID == sibling.ID {
+				target = root
+			}
 			depthOne.Row.Index.Facts.Rows = []driver.SelectionFact{{
-				Kind: driver.SelectionAncestorFact, Ref: &child, Target: &root, Depth: 1,
+				Kind: driver.SelectionAncestorFact, Ref: &record.Ref, Target: &target, Depth: 1,
 			}}
 			depthOne.Row.Index.ValueDigest = driver.SelectionDigest(depthOne.Row.Value)
 			rows = append(rows, depthOne)
@@ -645,9 +649,10 @@ func TestSelectionFamilyCompleteKeepsCanonicalMultiRowSource(t *testing.T) {
 		replacement := newRow(row, "replacement/"+row.Row.Key)
 		fullReplacement[keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: replacement.Table, Key: replacement.Row.Key}})] = state(replacement, true)
 	}
-	for _, key := range oldRows {
-		rowKey := driver.DerivedRowKey{Table: family.Table, Key: key}
-		fullReplacement[keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &rowKey})] = driver.LockState{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &rowKey}}
+	for _, row := range childRows {
+		rowKey := driver.DerivedRowKey{Table: family.Table, Key: row.Row.Key}
+		id := keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &rowKey})
+		fullReplacement[id] = driver.LockState{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &rowKey}}
 	}
 	complete, err = owner.selectionFamilyCompleteForCommit(ctx, conn, meta.Incarnation, family, fullReplacement)
 	if err != nil || !complete {
@@ -662,8 +667,7 @@ func TestSelectionFamilyCompleteKeepsCanonicalMultiRowSource(t *testing.T) {
 	partial := map[string]driver.LockState{}
 	depth := newRow(childRows[1], "replacement/partial-depth")
 	partial[keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &driver.DerivedRowKey{Table: depth.Table, Key: depth.Row.Key}})] = state(depth, true)
-	oldDepth := oldRows[1]
-	depthKey := driver.DerivedRowKey{Table: family.Table, Key: oldDepth}
+	depthKey := driver.DerivedRowKey{Table: family.Table, Key: childRows[1].Row.Key}
 	partial[keyID(driver.LockKey{Kind: driver.LockDerived, Derived: &depthKey})] = driver.LockState{Key: driver.LockKey{Kind: driver.LockDerived, Derived: &depthKey}}
 	complete, err = owner.selectionFamilyCompleteForCommit(ctx, conn, meta.Incarnation, family, partial)
 	if err != nil {
