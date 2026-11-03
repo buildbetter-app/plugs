@@ -2,6 +2,7 @@ package viewops
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 
@@ -64,7 +65,7 @@ func (s *Service) runEpicProgress(ctx context.Context, by model.PrincipalRef, re
 		return Result{}, err
 	}
 	defer content.Close()
-	rows, err := scan(ctx, content)
+	rows, err := epicProgressRows(ctx, content, parent)
 	if err != nil {
 		return Result{}, err
 	}
@@ -189,6 +190,79 @@ func (s *Service) runEpicProgress(ctx context.Context, by model.PrincipalRef, re
 		result.Groups = append(result.Groups, Group{Key: "status:" + status, Count: counts[status], Items: []Bead{}})
 	}
 	return result, nil
+}
+
+// epicProgressRows selects source images at the content reader's pinned
+// revision, including historical asOf reads. Publishing the optional interface
+// alone is not evidence of coverage: ErrUnsupported retains the existing scan
+// for unbuilt stores and revisions outside the certified interval.
+func epicProgressRows(ctx context.Context, reader driver.Reader, parent model.Ref) ([]stored, error) {
+	indexed, ok := reader.(driver.HierarchyChildrenReader)
+	if !ok {
+		return scan(ctx, reader)
+	}
+	records, more, err := indexed.HierarchyChildren(ctx, []model.Ref{parent}, driver.HierarchyMaxLimit)
+	if errors.Is(err, driver.ErrUnsupported) {
+		return scan(ctx, reader)
+	}
+	if err != nil {
+		return nil, mapped(err)
+	}
+	// The indexed port has one bounded page, not a continuation cursor. A
+	// partial set cannot supply an exact authorization remainder, and the
+	// ordinary cap is applied after authorization, not to all direct children.
+	// Preserve the complete scan's semantics when that page is exhausted.
+	if more {
+		return scan(ctx, reader)
+	}
+	if len(records) > driver.HierarchyMaxLimit {
+		return nil, failure("internal_error", "invalid persisted direct-child graph")
+	}
+	parents, err := reader.Get(ctx, []model.Ref{parent})
+	if err != nil {
+		return nil, mapped(err)
+	}
+	if len(parents) > 1 {
+		return nil, failure("internal_error", "invalid persisted bead identity")
+	}
+	decode := func(record driver.Record) (stored, error) {
+		if err := record.Ref.Validate(); err != nil || !record.Ref.IsID() || !record.Ref.Branch.IsZero() || record.Kind != "bead" {
+			return stored{}, failure("internal_error", "invalid persisted bead identity")
+		}
+		doc, err := decodeDocument(record.Body)
+		if err != nil || doc.ID != record.Ref.ID {
+			return stored{}, failure("internal_error", "invalid persisted bead document")
+		}
+		return stored{record: record, doc: doc}, nil
+	}
+	rows := make([]stored, 0, len(records)+1)
+	if len(parents) == 1 && parents[0].Kind == "bead" {
+		row, err := decode(parents[0])
+		if err != nil {
+			return nil, err
+		}
+		if row.doc.ID != parent.ID {
+			return nil, failure("internal_error", "invalid persisted bead identity")
+		}
+		rows = append(rows, row)
+	}
+	seen := make(map[string]bool, len(records))
+	for _, record := range records {
+		row, err := decode(record)
+		if err != nil {
+			return nil, err
+		}
+		p := row.doc.Parent
+		if p != nil && (p.Validate() != nil || !p.IsID() || p.ID == "" || !p.Branch.IsZero()) {
+			return nil, failure("internal_error", "invalid persisted parent reference")
+		}
+		if p == nil || p.ID != parent.ID || row.doc.ID == parent.ID || seen[row.doc.ID] {
+			return nil, failure("internal_error", "invalid persisted direct-child graph")
+		}
+		seen[row.doc.ID] = true
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 func epicOntology(ctx context.Context, reader driver.Reader, locate service.OntologySourceLocator, project string) (ontology.Effective, error) {
