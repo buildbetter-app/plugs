@@ -374,3 +374,74 @@ func TestAcceptedReferenceReplayAcrossMemoryAndSQLite(t *testing.T) {
 		})
 	}
 }
+
+// Additional canonical product regressions, not additional reference captures.
+// Refused batches leave records, histories, counters and receipts untouched;
+// an ordered unlink/link in one ChangeSet is the explicit type-change path.
+func TestB11AtomicEndpointTypeReplacementAcrossStores(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newAcceptedReplay(t, engine, "b11")
+			w := f.writer("b11-source", "b11-target", "b11-other")
+			seed := f.mustApply(w, "product-regression:create-endpoints",
+				create(map[string]any{"title": "source"}, nil, ""),
+				create(map[string]any{"title": "target"}, nil, ""),
+				create(map[string]any{"title": "other"}, nil, ""))
+			source, target, other := seed.Results[0].Ref, seed.Results[1].Ref, seed.Results[2].Ref
+			link := func(op model.OpKind, kind string) model.Op {
+				return model.Op{Kind: op, Link: &model.LinkOp{Kind: op, From: source, To: target, LinkKind: kind}}
+			}
+			f.mustApply(w, "product-regression:association-first", link(model.OpLink, "relates-to"))
+			before := f.state()
+			_, err := f.apply(w, "product-regression:association-to-blocks-refused",
+				model.Op{Kind: model.OpPatch, Patch: &model.PatchOp{Target: other, Fields: map[string]any{"title": "must roll back"}}},
+				link(model.OpLink, "blocks"))
+			requireCode(t, err, "ontology_guard_failed")
+			if !reflect.DeepEqual(before, f.state()) {
+				t.Fatal("retype refusal published an earlier batch patch")
+			}
+			f.assertNoReceipt()
+			_, err = f.apply(w, "product-regression:wrong-kind-unlink-refused", link(model.OpUnlink, "blocks"))
+			requireCode(t, err, "not_found")
+			if !reflect.DeepEqual(before, f.state()) {
+				t.Fatal("wrong-kind unlink changed durable state")
+			}
+			f.assertNoReceipt()
+			replacement := f.mustApply(w, "product-regression:atomic-unlink-and-retype",
+				link(model.OpUnlink, "relates-to"), link(model.OpLink, "blocks"))
+			after := f.state()
+			beforeRevision, beforeErr := before.Meta.Head.Uint64()
+			afterRevision, afterErr := replacement.Revision.Uint64()
+			if beforeErr != nil || afterErr != nil || afterRevision != beforeRevision+1 || len(after.Versions[source.ID]) != len(before.Versions[source.ID])+1 ||
+				!hasPlugEdge(persisted(t, after, source.ID), "blocks") || !reflect.DeepEqual(before.Versions[target.ID], after.Versions[target.ID]) {
+				t.Fatal("explicit type replacement did not publish one source version while conserving its endpoint")
+			}
+			// Association on another endpoint remains legal and nonblocking.
+			f.mustApply(w, "product-regression:separate-endpoint-association", model.Op{Kind: model.OpLink,
+				Link: &model.LinkOp{From: source, To: other, LinkKind: "relates-to"}})
+			if len(persisted(t, f.state(), source.ID).Links) != 2 {
+				t.Fatal("independent endpoint association was lost")
+			}
+			f.reopenSQLite()
+		})
+	}
+}
+
+func (f *acceptedReplay) assertNoReceipt() {
+	f.t.Helper()
+	ctx := context.Background()
+	state := f.state()
+	r, err := f.o.store.Read(ctx, driver.View{Incarnation: state.Meta.Incarnation, At: &state.Meta.Head})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer r.Close()
+	principal, err := driver.PrincipalKey(recorderPrincipal)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	receipt, err := r.IdempotencyByKey(ctx, principal, "", "tx.apply", meta(f.sequence).IdempotencyKey)
+	if err != nil || receipt != nil {
+		f.t.Fatalf("refused operation published an idempotency receipt: %+v %v", receipt, err)
+	}
+}

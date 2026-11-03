@@ -29,6 +29,16 @@ the actual restored hash allocator and a controlled Go clock. Ordered close
 uses a fixed test ontology with open/closed slots; this proves allocator
 continuation after the persisted close, not B08 authorization/guard parity.
 The B11 regression uses the recorded `blocks` to `relates-to` pair literally.
+The tests-first child `75f74ab11` ran as `41573678135` and is a preserved RED:
+all four B11 cases accepted that retype, advanced head 3 to 4 and stored both
+kinds. B09/B10 passed their new comparisons. The causal product repair removes
+only the association-kind exemption from endpoint identity and wrong-kind
+unlink checks; dependency graph effects remain separate from identity. Extra
+product cases check the reverse type conflict, earlier-batch rollback, absent
+refusal receipts, and atomic unlink/link replacement, while an association on
+a different endpoint remains legal. Historical replay tests and recordings
+retain their original bytes; the old test comments about association exemption
+describe the prior defect and do not override canonical B07/B11.
 B12 remains NOT EXECUTED, and all four-card, full-S1, native-producer and hosted
 qualification boundaries remain unchanged. No new reference capture is needed.
 

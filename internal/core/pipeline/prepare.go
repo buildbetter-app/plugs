@@ -405,15 +405,14 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 						continue
 					}
 					conflictingKind = link.Kind
-					// Association links are independent annotations and may coexist
-					// with a workflow edge for the same endpoints. Other kinds share
-					// one dependency identity, so a type change remains a typed
-					// refusal (B07/B11).
-					if op.Kind == model.OpLink && kind != "relates-to" && link.Kind != "relates-to" {
+					// All dependency kinds share one endpoint identity (B07/B11).
+					// A type change requires an explicit unlink before the link;
+					// nonblocking kinds still retain their independent graph effects.
+					if op.Kind == model.OpLink {
 						return nil, failure("ontology_guard_failed", fmt.Sprintf("dependency endpoints already have link kind %s", link.Kind))
 					}
 				}
-				if op.Kind == model.OpUnlink && found < 0 && conflictingKind != "" && kind != "relates-to" && conflictingKind != "relates-to" {
+				if op.Kind == model.OpUnlink && found < 0 && conflictingKind != "" {
 					return nil, failure("not_found", "link of the requested kind does not exist")
 				}
 				if op.Kind == model.OpLink && found < 0 {
