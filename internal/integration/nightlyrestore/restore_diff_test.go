@@ -116,6 +116,21 @@ func canonicalBody(t *testing.T, row driver.Record, actor model.PrincipalRef) []
 	return jsonBytes(t, value)
 }
 
+func snapshotArchiveMembers(body []byte, archive *dumpformat.Archive, p driver.RestoreImportProfile) (map[string]dumpformat.File, error) {
+	var evidence struct {
+		Archive string                     `json:"archive_sha256"`
+		Derived string                     `json:"derived_sha256"`
+		Members map[string]dumpformat.File `json:"members"`
+	}
+	if err := json.Unmarshal(body, &evidence); err != nil {
+		return nil, err
+	}
+	if evidence.Archive != archive.SHA256() || evidence.Derived != p.DerivedDigest {
+		return nil, fmt.Errorf("retained archive/derived digest differs")
+	}
+	return evidence.Members, nil
+}
+
 func collect(t *testing.T, store driver.Store, archive *dumpformat.Archive, p driver.RestoreImportProfile) census {
 	t.Helper()
 	ctx := context.Background()
@@ -232,21 +247,14 @@ func collect(t *testing.T, store driver.Store, archive *dumpformat.Archive, p dr
 	sort.Strings(wantDependencies)
 	sort.Strings(got.Dependencies)
 	same(t, "dependencies", got.Dependencies, wantDependencies)
-	var evidence struct {
-		Archive string                     `json:"archive_sha256"`
-		Derived string                     `json:"derived_sha256"`
-		Members map[string]dumpformat.File `json:"members"`
-	}
-	if err := json.Unmarshal(byID["restore/archive"].Body, &evidence); err != nil {
+	members, err := snapshotArchiveMembers(byID["restore/archive"].Body, archive, p)
+	if err != nil {
 		t.Fatal(err)
-	}
-	if evidence.Archive != archive.SHA256() || evidence.Derived != p.DerivedDigest {
-		t.Fatal("retained archive/derived digest differs")
 	}
 	wantMembers := archive.Manifest().Files
 	manifest, _ := archive.Member("manifest.json")
 	wantMembers["manifest.json"] = dumpformat.File{SHA256: digest(manifest), Size: int64(len(manifest))}
-	same(t, "archive inventory", evidence.Members, wantMembers)
+	same(t, "archive inventory", members, wantMembers)
 	for name, expected := range wantMembers {
 		data, err := r.Blob(ctx, driver.Hash(expected.SHA256))
 		source, _ := archive.Member(name)
