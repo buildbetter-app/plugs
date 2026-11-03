@@ -34,8 +34,9 @@ protected identities and unknown native kinds refuse without publishing data.
 This native admission does not widen the offline converter's kind registry or
 relax human-presence, caller, manifest, empty-target or history checks.
 
-`internal/integration/converterroundtrip` supplies a trusted offline restore
-seam. It refuses unsupported semantics before acquiring a write transaction:
+`internal/integration/converterroundtrip` supplies trusted offline restore
+seams. Its legacy head-only seam refuses unsupported semantics before acquiring
+a write transaction:
 parent and external relations, unverified comments, available-unverified history,
 sequential/child counters, and hash configurations other than the ordinary
 writer's `pl-` plus 32 hexadecimal characters. Reserved `beads.*` and
@@ -51,16 +52,19 @@ or mismatched comparisons refuse before lease/write acquisition.
 The `builtin-head/1` comparison hashes compact JSON with fields `profile`,
 `tables`, `rows`, in that order. `tables` contains all nine driver derived table
 names in lexical order; `rows` contains `{table,key,value}` objects sorted by
-table then key. An `ancestor_closure` row uses the descendant ID as its key and
-an array of `{ancestor,depth}` objects as its value. Since parents are refused,
-each bead's value is exactly `[{"ancestor":"<its ID>","depth":0}]`. These self
-memberships exist even without an authorization provider. Each bead also has
+table then key. An `ancestor_closure` row uses the canonical hierarchy codec:
+`base64url(descendant).base64url(ancestor)` without padding as its key and a
+scalar nonnegative integer depth as its value. Every bead has a self row with
+value `0`; admitted parent chains add one row for each ancestor at its depth.
+These self memberships exist even
+without an authorization provider. Comparisons for the earlier array-valued
+closure image refuse before publication. Each bead also has
 ready state `{blocked,ready}`, an empty cut array, empty derived attributes,
 a sort value `{id,priority}`, and outgoing references sorted by link kind then
 target ID. Readiness uses the built-in
 ontology's status and blocker rules. The `ontology/builtin` row contains the
 built-in ontology document; `plugins/builtin` contains an empty array; grants
-are empty. This profile admits no parents, cuts, templates, active leases,
+are empty. This built-in profile admits no cuts, templates, active leases,
 plugins, custom ontology or authorization provider. These are restore-base
 rows; the existing services continue to evaluate ordinary writes from their
 live graph scans. This comparison is not an A3 or full migration certificate.

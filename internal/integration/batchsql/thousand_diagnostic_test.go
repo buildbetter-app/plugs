@@ -17,7 +17,10 @@ import (
 // does not change a request, lock, timeout, or returned value.
 type diagnosticCounts struct {
 	mu sync.Mutex
+	diagnosticSnapshot
+}
 
+type diagnosticSnapshot struct {
 	readerGets, readerGetRefs         int
 	readerObserves, readerObserveKeys int
 	readerQueries, readerQueryItems   int
@@ -32,10 +35,10 @@ type diagnosticCounts struct {
 	lockIDs                               []string
 }
 
-func (c *diagnosticCounts) snapshot() diagnosticCounts {
+func (c *diagnosticCounts) snapshot() diagnosticSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	v := *c
+	v := c.diagnosticSnapshot
 	v.lockIDs = append([]string(nil), c.lockIDs...)
 	return v
 }

@@ -10,10 +10,19 @@ Readers pin real SQLite read transactions. Close every reader and transaction;
 Close is idempotent and unfinished transactions roll back. Store.Close also
 releases outstanding local resources and its leases.
 
-Sorted guard sets use driver-owned advisory file locks in `<database>.plug-locks`.
-Failed acquisitions release the entire partial set before waiting; skipLocked
-omits conflicts. Head is the last file lock. Records, tombstones, forward-patch
-versions, blobs, derived observations, predicates, replay receipts and log rows
+Sorted guard sets use 1,024 driver-owned advisory lock stripes in
+`<database>.plug-locks`. Canonical keys hash into fixed `guard-stripe-NNNN`
+files; batches acquire each distinct stripe once, in numeric order, exclusively
+if any key needs exclusivity and shared otherwise. Collisions can add contention
+but cannot weaken exclusion. Failed acquisitions release the entire partial set
+before waiting; a busy stripe containing only skipLocked requests is omitted.
+Linux retains one mapping per held stripe and closes its descriptor, so even a
+large restore uses at most 1,024 guard mappings, not one per key. Other supported
+systems retain at most 1,024 guard descriptors. All processes must use the same
+stripe layout; it replaces the unreleased per-key lock-file layout.
+
+Head is the last file lock. Records, tombstones, forward-patch versions, blobs,
+derived observations, predicates, replay receipts and log rows
 publish together under BEGIN IMMEDIATE. Lease acquisition, renewal, release,
 checkpoint CAS and response finalization use the same publication lock and SQL
 transaction. Epoch checks occur inside that transaction, including immediately

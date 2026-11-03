@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -56,6 +57,149 @@ func TestNativeRestoreRebuildsAncestorClosure(t *testing.T) {
 			assertAncestorRows(t, store, want)
 		})
 	}
+}
+
+// The native manager acquires four guards per root plus the graph sentinel.
+// Exercise that real 80,001-key path, not only a synthetic driver Lock call.
+func TestNativeRestoreTwentyThousandRootBeadsSQLite(t *testing.T) {
+	ctx := context.Background()
+	const count = 20000
+	source := memory.New()
+	defer source.Close()
+	changes := make([]conformance.FixtureChange, count)
+	want := make(map[string]string, count)
+	for i := range changes {
+		id := fmt.Sprintf("pl-restore-root-%05d", i)
+		body, err := json.Marshal(pipeline.Document{ID: id, Type: "issue", Project: "fixture", Fields: map[string]any{"title": id}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		changes[i] = conformance.FixtureChange{Ref: model.RefByID(id, model.Natural64(0)), Kind: "bead", Op: model.OpCreate, Body: body}
+		want[ancestorKey(id, id)] = "0"
+	}
+	sourceLease, err := source.Lease(ctx, "large-native-source", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conformance.Seed(ctx, source, sourceLease, driver.ChangesetHeader{}, changes); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceLease.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	data, _, err := restore.Dump(ctx, source, "head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := dumpformat.Read(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, hash := manifestForRestore(t, archive)
+	path := filepath.Join(t.TempDir(), "large-native-restore.db")
+	store := openNativeOntologyTarget(t, "sqlite", path)
+	defer store.Close()
+	lease, err := store.Lease(ctx, "large-native-restore", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(ctx)
+	renewCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-renewCtx.Done():
+				done <- nil
+				return
+			case <-ticker.C:
+				if err := lease.Renew(renewCtx); err != nil {
+					if errors.Is(err, context.Canceled) && renewCtx.Err() != nil {
+						done <- nil
+					} else {
+						done <- err
+					}
+					return
+				}
+			}
+		}
+	}()
+	stopRenewal := func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}
+	// Register cleanup for failures too; stop explicitly before physical reopen.
+	defer func() {
+		if stopRenewal != nil {
+			stopRenewal()
+		}
+	}()
+	manager := restore.NewManager(store, lease, trustedPresenceVerifier())
+	status, err := manager.Begin(ctx, manifest, "head", restore.Presence(presence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const chunkSize = 4 << 20
+	for offset, page := 0, uint64(0); offset < len(data); page++ {
+		end := min(offset+chunkSize, len(data))
+		chunk := data[offset:end]
+		if _, err := manager.Chunk(ctx, status.RestoreID, page, chunk, sha(chunk), restore.Presence(presence)); err != nil {
+			t.Fatal(err)
+		}
+		offset = end
+	}
+	started := time.Now()
+	status, err = manager.Finish(ctx, status.RestoreID, hash, model.PrincipalRef{Kind: "user", ID: "large-native-owner"}, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "large-native-restore"}, restore.Presence(presence))
+	if err != nil || status.State != "complete" {
+		t.Fatalf("20,000-root native SQLite restore=%+v err=%v", status, err)
+	}
+	elapsed := time.Since(started)
+	stopRenewal()
+	stopRenewal = nil
+	if err := lease.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened := openNativeOntologyTarget(t, "sqlite", path)
+	defer reopened.Close()
+	assertAncestorRows(t, reopened, want)
+	meta, err := reopened.Meta(ctx)
+	if err != nil || meta.Incarnation != status.Incarnation || meta.Head.String() != "1" {
+		t.Fatalf("durable large native restore metadata=%+v status=%+v err=%v", meta, status, err)
+	}
+	reader, err := reopened.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	seen := make(map[string]bool, count)
+	var cursor *driver.Cursor
+	for {
+		page, err := reader.Query(ctx, driver.Query{Filter: map[string]any{"kind": "bead"}, Limit: 10000, Cursor: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, record := range page.Items {
+			if record.Kind != "bead" || want[ancestorKey(record.Ref.ID, record.Ref.ID)] != "0" || seen[record.Ref.ID] {
+				t.Fatalf("unexpected or duplicate restored root: %+v", record)
+			}
+			seen[record.Ref.ID] = true
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	if len(seen) != count {
+		t.Fatalf("durable restored root census=%d, want %d", len(seen), count)
+	}
+	t.Logf("actual native manager restored %d root beads with 80001 guards in %s; all %d self-ancestor rows and records survived physical reopen", count, elapsed, len(want))
 }
 
 type nativeAncestorNode struct {
@@ -232,7 +376,7 @@ func TestNativeRestoreRejectsMalformedAncestorGraphsBeforeWrite(t *testing.T) {
 			}
 			after, metaErr := store.Meta(ctx)
 			if metaErr != nil || !reflect.DeepEqual(before, after) || store.writes != 0 {
-				t.Fatalf("malformed graph opened %d writes or changed metadata: before=%+v after=%+v err=%v", store.writes, after, metaErr)
+				t.Fatalf("malformed graph opened %d writes or changed metadata: before=%+v after=%+v err=%v", store.writes, before, after, metaErr)
 			}
 			assertEmptyRestoreTarget(t, ctx, store)
 		})

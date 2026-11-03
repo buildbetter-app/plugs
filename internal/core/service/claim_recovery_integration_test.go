@@ -329,7 +329,11 @@ func TestClaimRecoveryCASRejectsRenewedOrReclaimedAndTakenOverImage(t *testing.T
 					// This is an actual driver CAS competitor, changing only lease
 					// expiry on the service-produced claim. It is not a heartbeat
 					// implementation or a synthetic status/recovery fixture.
-					_, err = conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{Time: f.now, Principal: anonymous, Method: "test.lease-renewal"}, []conformance.FixtureChange{{Ref: id, Kind: "bead", Op: model.OpPatch, Body: body, ChangedPaths: []string{"/lease/expiresAt"}}})
+					links := make([]driver.SourceLink, len(doc.Links))
+					for i, link := range doc.Links {
+						links[i] = driver.SourceLink{Kind: link.Kind, To: link.To}
+					}
+					_, err = conformance.Seed(ctx, f.store, f.lease, driver.ChangesetHeader{Time: f.now, Principal: anonymous, Method: "test.lease-renewal"}, []conformance.FixtureChange{{Ref: id, Kind: "bead", Op: model.OpPatch, Body: body, ChangedPaths: []string{"/lease/expiresAt"}, Graph: &conformance.FixtureGraphSource{Parent: doc.Parent, Links: links}}})
 					if err != nil {
 						t.Fatal(err)
 					}
