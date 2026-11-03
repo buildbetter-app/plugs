@@ -4,9 +4,11 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/storage/conformance/sourceactivation"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/testclock"
 )
 
 func TestSourceCoverageOntologyFirstLifecycle(t *testing.T) {
@@ -54,4 +56,29 @@ func TestSourceCoverageStartupGapRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	sourceactivation.GapRefuses(t, s, lease)
+}
+
+func TestSourceCoverageBuildLeaseRenewal(t *testing.T) {
+	for _, lose := range []bool{false, true} {
+		name := "renewed"
+		if lose {
+			name = "expired"
+		}
+		t.Run(name, func(t *testing.T) {
+			clock := testclock.New(t, time.Date(2037, 3, 29, 0, 0, 0, 0, time.UTC))
+			s := clockStore(t, clock)
+			lease := getLease(t, context.Background(), s, driver.LeaseTTL)
+			sourceactivation.RenewalBoundary(t, s, lease, func(delta time.Duration) { clock.Advance(t, delta) }, lose)
+
+			if lose {
+				for _, table := range []string{"hierarchy_source_current", "hierarchy_source_history", "graph_link_source_current", "graph_link_source_history", "graph_link_current", "graph_link_history", "hierarchy_index_coverage", "graph_link_index_coverage"} {
+					var count int
+					if err := s.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM "+table).Scan(&count); err != nil || count != 0 {
+						t.Fatalf("failed build retained %s rows=%d err=%v", table, count, err)
+					}
+				}
+			}
+
+		})
+	}
 }
