@@ -53,7 +53,7 @@ func OntologyFirst(t *testing.T, store driver.Store, lease driver.ActiveLease) {
 	changes := make([]conformance.FixtureChange, 20000)
 	for i := range changes {
 		id := fmt.Sprintf("pl-source-%05d", i)
-		doc := pipeline.Document{ID: id, Type: "issue", Fields: map[string]any{"status": "todo", "title": "source activation regression"}}
+		doc := pipeline.Document{ID: id, Type: "issue", Project: "local", Fields: map[string]any{"status": "todo", "title": "source activation regression"}}
 		if i == 0 {
 			doc.ID = parent.ID
 		} else if i <= 1000 {
@@ -102,7 +102,7 @@ func OntologyFirst(t *testing.T, store driver.Store, lease driver.ActiveLease) {
 	w := pipeline.New(observed, lease, pipeline.WithOntology(o))
 	svc := service.New(observed, lease, w, service.WithOntology(o))
 	started := time.Now()
-	commit, err := svc.Close(ctx, model.PrincipalRef{Kind: "system", ID: "source-activation"}, service.CloseRequest{ID: changes[1].Ref}, model.WriteMeta{Method: "bead.close", IdempotencyKey: "a5d1e7f024ab41c0b2ae124aa0098765"})
+	commit, err := svc.Close(ctx, model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, service.CloseRequest{ID: changes[1].Ref}, model.WriteMeta{Method: "bead.close", Project: "local", Agent: "source-activation", AgentLabel: "source-activation", IdempotencyKey: "a5d1e7f024ab41c0b2ae124aa0098765"})
 	if err != nil || commit.Revision.String() != "202" {
 		t.Errorf("lifecycle close under 1000-child parent: commit=%+v err=%v", commit, err)
 	}
