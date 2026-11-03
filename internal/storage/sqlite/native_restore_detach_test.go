@@ -13,6 +13,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/sourceindex"
 )
 
 // TestNativeRestoreReopenDetachUsesCertifiedHierarchyCoverage is the causal
@@ -55,6 +56,22 @@ func TestNativeRestoreReopenDetachUsesCertifiedHierarchyCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopenedLease.Release(context.Background())
+	meta, err := reopened.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coverage, err := sourceindex.SQLite.ReadCoverage(ctx, reopened.db, meta.Incarnation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hierarchyRows, linkRows int
+	if err = reopened.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM hierarchy_source_current WHERE incarnation=?", meta.Incarnation).Scan(&hierarchyRows); err != nil {
+		t.Fatal(err)
+	}
+	if err = reopened.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM graph_link_source_current WHERE incarnation=?", meta.Incarnation).Scan(&linkRows); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("reopened native source state: coverage=%+v hierarchy_rows=%d link_rows=%d", coverage, hierarchyRows, linkRows)
 
 	observed := &restoreObservedStore{Store: reopened}
 	writer := pipeline.New(observed, reopenedLease, pipeline.WithOntology(service.NewOntology(nil)))
