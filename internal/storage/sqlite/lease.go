@@ -81,16 +81,16 @@ func (l *activeLease) expire() {
 
 // liveLocked checks time explicitly, not only the timer callback: a process
 // paused past its monotonic deadline must not renew or commit when it resumes.
-func (l *activeLease) liveLocked(expires int64) bool {
-	if l.lostFlag || l.released || l.store.now().UnixNano() >= expires || !time.Now().Before(l.deadline) {
+func (l *activeLease) liveLocked(now, expires int64) bool {
+	if l.lostFlag || l.released || now >= expires || !time.Now().Before(l.deadline) {
 		l.loseLocked()
 		return false
 	}
 	return true
 }
 
-func (l *activeLease) fenceLocked(s *Store, r leaseRow, expires int64) error {
-	if l.store != s || r.epoch != l.epoch || r.token != l.token || !l.liveLocked(expires) {
+func (l *activeLease) fenceLocked(s *Store, r leaseRow, now, expires int64) error {
+	if l.store != s || r.epoch != l.epoch || r.token != l.token || !l.liveLocked(now, expires) {
 		l.loseLocked()
 		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: r.epoch}
 	}
@@ -105,13 +105,16 @@ func (s *Store) fence(ctx context.Context, q queryer, l *activeLease) error {
 	if l == nil {
 		return driver.ErrFenced{ObservedEpoch: r.epoch}
 	}
+	// Clock is an external callback and may itself signal lease loss. Sample it
+	// before taking lease/store mutexes, then recheck Lost and real time inside.
+	now := s.now().UnixNano()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	// A WAL reader may have sampled the old durable row just before a heartbeat
 	// was persisted and unregistered. The synchronized effective expiry remains
 	// safe even then: it cannot escape the publication gate while live unless
 	// it was persisted, and it never overrides a changed epoch/token.
-	return l.fenceLocked(s, r, max(r.expires, l.expires))
+	return l.fenceLocked(s, r, now, max(r.expires, l.expires))
 }
 
 // renewal identifies an accepted heartbeat even when an injected wall clock
@@ -131,11 +134,12 @@ func (s *Store) beginLeasePublication(ctx context.Context, c *sql.Conn, l *activ
 	if err != nil {
 		return leaseHeartbeat{}, err
 	}
+	now := s.now().UnixNano()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	// The gate and native writer are already held. Require the fresh DURABLE
 	// expiry at entry; only this registered interval can bridge its renewals.
-	if err := l.fenceLocked(s, r, r.expires); err != nil {
+	if err := l.fenceLocked(s, r, now, r.expires); err != nil {
 		return leaseHeartbeat{}, err
 	}
 	l.publishing = true
@@ -149,25 +153,30 @@ func (l *activeLease) renewPublication(ctx context.Context) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	now, deadline := l.store.leaseTimes(l.ttl)
 	l.store.mu.Lock()
 	defer l.store.mu.Unlock()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if l.store.closed {
 		l.loseLocked()
 		return false, fmt.Errorf("sqlite: store closed")
 	}
-	if !l.liveLocked(l.expires) {
+	// The callback and mutex acquisition may have taken time: check the old
+	// monotonic deadline NOW, even when its expiry callback has not run yet.
+	if !l.liveLocked(now.UnixNano(), l.expires) {
 		return false, driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
 	}
 	if !l.publishing {
 		return false, nil
 	}
-	now, deadline := l.store.leaseTimes(l.ttl)
-	// Sampling an injected clock or a scheduler pause may take time. Recheck
-	// both old deadlines before advancing either; Lost is never resurrected.
-	if !l.liveLocked(l.expires) {
-		return false, driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
+	if !deadline.After(l.deadline) {
+		// A concurrent Renew sampled later but acquired the mutex first. Its
+		// extension already covers this call; never move either deadline back.
+		return true, nil
 	}
 	l.expires = now.Add(l.ttl).UnixNano()
 	l.renewal++
@@ -184,9 +193,10 @@ func (l *activeLease) renewPublication(ctx context.Context) (bool, error) {
 // follow-up SQL commit) or must acquire the gate itself. Even if the lease died
 // during fsync, a successfully committed graph is still a successful commit.
 func (l *activeLease) finishPublication(durable leaseHeartbeat) bool {
+	now := l.store.now().UnixNano()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if !l.liveLocked(l.expires) || l.heartbeatLocked() == durable {
+	if !l.liveLocked(now, l.expires) || l.heartbeatLocked() == durable {
 		l.publishing = false
 		return true
 	}
@@ -301,9 +311,10 @@ func (l *activeLease) Renew(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	now := l.store.now().UnixNano()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if !l.liveLocked(l.expires) {
+	if !l.liveLocked(now, l.expires) {
 		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
 	}
 	return nil

@@ -255,6 +255,107 @@ func TestSQLitePublicationLeaseAbortFailsClosed(t *testing.T) {
 	}
 }
 
+func TestSQLitePublicationLeaseClockCanSignalLoss(t *testing.T) {
+	ctx := testContext(t)
+	path := filepath.Join(t.TempDir(), "clock-loss.db")
+	var armed atomic.Bool
+	var s *Store
+	var lease *activeLease
+	value, err := (Driver{Clock: func() time.Time {
+		if armed.CompareAndSwap(true, false) {
+			// A supported clock seam can observe store state and signal Lost.
+			// Neither internal mutex may be held across this callback.
+			if err := s.check(ctx); err != nil {
+				t.Error(err)
+			}
+			lease.signalLost()
+		}
+		return time.Now()
+	}}).Open(ctx, driver.Config{DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s = value.(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	observer := openStore(t, ctx, path)
+	lease = getLease(t, ctx, s, time.Second).(*activeLease)
+	err = s.immediate(ctx, lease, func(c *sql.Conn) error {
+		if _, err := c.ExecContext(ctx, `INSERT INTO checkpoints VALUES(?,?,?)`, "clock-loss", revKey(1), []byte("must-rollback")); err != nil {
+			return err
+		}
+		armed.Store(true)
+		err := lease.Renew(ctx)
+		requireFenced(t, err)
+		return err
+	})
+	requireFenced(t, err)
+	cp, err := observer.LoadCheckpoint(ctx, "clock-loss")
+	if err != nil || cp.Generation != 0 {
+		t.Fatalf("clock-signaled loss published graph: checkpoint=%+v err=%v", cp, err)
+	}
+}
+
+func TestSQLitePublicationLeaseConcurrentSamplesCannotRegressDeadline(t *testing.T) {
+	ctx := testContext(t)
+	var armed atomic.Bool
+	var samples atomic.Int32
+	olderSampled, resumeOlder := make(chan struct{}), make(chan struct{})
+	value, err := (Driver{Clock: func() time.Time {
+		if armed.Load() && samples.Add(1) == 1 {
+			close(olderSampled)
+			select {
+			case <-resumeOlder:
+			case <-ctx.Done():
+			}
+		}
+		// Return actual current time, including for the delayed first caller.
+		return time.Now()
+	}}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "concurrent-samples.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := value.(*Store)
+	t.Cleanup(func() { _ = s.Close() })
+	lease := getLease(t, ctx, s, time.Second).(*activeLease)
+	err = s.immediate(ctx, lease, func(*sql.Conn) error {
+		armed.Store(true)
+		older := make(chan error, 1)
+		go func() { older <- lease.Renew(ctx) }()
+		select {
+		case <-olderSampled:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if err := lease.Renew(ctx); err != nil {
+			close(resumeOlder)
+			return err
+		}
+		lease.mu.Lock()
+		newerHeartbeat, newerDeadline := lease.heartbeatLocked(), lease.deadline
+		lease.mu.Unlock()
+		close(resumeOlder)
+		if err := <-older; err != nil {
+			return err
+		}
+		lease.mu.Lock()
+		defer lease.mu.Unlock()
+		if lease.heartbeatLocked() != newerHeartbeat || !lease.deadline.Equal(newerDeadline) {
+			return fmt.Errorf("older Renew overwrote the later accepted heartbeat")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := readLease(ctx, s.db)
+	lease.mu.Lock()
+	expires, publishing := lease.expires, lease.publishing
+	lease.mu.Unlock()
+	if err != nil || row.expires != expires || publishing {
+		t.Fatalf("out-of-order renewal handoff: durable=%d effective=%d publishing=%v err=%v", row.expires, expires, publishing, err)
+	}
+}
+
 func TestSQLitePublicationLeaseRepeatedWallStampAbortFailsClosed(t *testing.T) {
 	ctx := testContext(t)
 	clock := testclock.New(t, time.Date(2037, 1, 1, 0, 0, 0, 0, time.UTC))
