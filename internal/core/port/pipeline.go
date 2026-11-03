@@ -70,6 +70,15 @@ type HierarchySnapshotReader interface {
 	HierarchyClosureRows(context.Context, []model.Ref) ([]driver.DerivedRow, error)
 }
 
+// SelectionSnapshotReader is a future trusted-core capability. Implementors
+// must track every consumed source/control and absence plus predicate scopes,
+// preserving callback budgets. W3 defines this seam but enables no callers or
+// forwarding through the Writer; an untracked driver selector is insufficient.
+type SelectionSnapshotReader interface {
+	SnapshotReader
+	driver.SelectionReader
+}
+
 type Change struct {
 	Resource model.ResourceRef
 	Op       model.Op
