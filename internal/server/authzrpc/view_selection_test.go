@@ -31,6 +31,7 @@ type w9ObservedStore struct {
 	selects, queries, gets int
 	allowScan              bool
 	afterSelect            func(driver.SelectionResult)
+	afterQuery             func()
 }
 type w9ObservedReader struct {
 	driver.Reader
@@ -49,7 +50,12 @@ func (r *w9ObservedReader) Query(ctx context.Context, q driver.Query) (driver.Pa
 	if !r.store.allowScan {
 		return driver.Page[driver.Record]{}, errors.New("W9 compiled view attempted payload scan")
 	}
-	return r.Reader.Query(ctx, q)
+	got, err := r.Reader.Query(ctx, q)
+	if hook := r.store.afterQuery; hook != nil && err == nil {
+		r.store.afterQuery = nil
+		hook()
+	}
+	return got, err
 }
 func (r *w9ObservedReader) Get(ctx context.Context, refs []model.Ref) ([]driver.Record, error) {
 	r.store.gets += len(refs)
@@ -812,4 +818,145 @@ func (r w9UnsupportedTeam) Compile(q authz.ListRequest) (authz.FilterTemplate, e
 }
 func (r w9UnsupportedTeam) Eval(context.Context, authz.Slice, []authz.CheckRequest) ([]authz.Decision, error) {
 	return nil, errors.New("unsupported test policy must not execute")
+}
+
+// The compiler emits a valid, supported full policy whose size exceeds the
+// storage budget. Eval is an independent project/grant oracle and never calls
+// the lowering or expression interpreter.
+type w9BudgetPolicy struct {
+	namespace authz.Namespace
+	position  string
+	shape     string
+	evalErr   error
+}
+
+func (r *w9BudgetPolicy) Compile(q authz.ListRequest) (authz.FilterTemplate, error) {
+	user := authz.FilterExpr{Op: authz.PrincipalKind, Kind: "user"}
+	denied := authz.FilterExpr{Op: authz.GrantExists, Subject: authz.CallerSubject, Scope: authz.ProjectBindingScope, Role: "involved"}
+	large := func(leaf authz.FilterExpr) authz.FilterExpr {
+		if r.shape == "depth" {
+			for i := 0; i <= driver.SelectionMaxDepth; i++ {
+				leaf = authz.And(leaf, authz.FilterExpr{Op: authz.True})
+			}
+			return leaf
+		}
+		children := make([]authz.FilterExpr, driver.SelectionMaxNodes+1)
+		for i := range children {
+			children[i] = authz.FilterExpr{Op: authz.True}
+		}
+		children = append(children, leaf)
+		return authz.And(children...)
+	}
+	out := authz.FilterTemplate{Namespace: r.namespace, Request: q, Permit: user, Forbid: denied}
+	switch r.position {
+	case "permit":
+		out.Permit = large(user)
+	case "forbid":
+		out.Forbid = large(denied)
+	case "restriction":
+		out.Restrictions = []authz.FilterExpr{large(user)}
+	}
+	return out, nil
+}
+func (r *w9BudgetPolicy) Eval(ctx context.Context, s authz.Slice, qs []authz.CheckRequest) ([]authz.Decision, error) {
+	if r.evalErr != nil {
+		return nil, r.evalErr
+	}
+	decisions, err := (w9ProjectForbid{r.namespace}).Eval(ctx, s, qs)
+	if err != nil {
+		return nil, err
+	}
+	for i, q := range qs {
+		if q.Caller.Principal.Kind == "user" && decisions[i].Effect != authz.Deny {
+			decisions[i].Effect = authz.Allow
+		}
+	}
+	return decisions, nil
+}
+
+func TestW9OversizedPolicyKeepsExactOrdinaryAuthorizationAndFence(t *testing.T) {
+	for _, position := range []string{"permit", "forbid", "restriction"} {
+		for _, shape := range []string{"depth", "nodes"} {
+			t.Run(position+"_"+shape, func(t *testing.T) {
+				f := newW9Fixture(t, memory.New())
+				policy := &w9BudgetPolicy{namespace: f.base.Namespace, position: position, shape: shape}
+				f.app.Checker.chain.Rules = []authz.RuleSet{policy}
+				f.store.allowScan = true
+				f.seed(t, []driver.Record{w9Record("visible", "bug", "visible-name", "public", "todo"), w9Record("hidden", "secret", "hidden-name", "secret", "todo")})
+				authority, err := f.app.Service.PrepareViewSelection(context.Background(), w9Reader, driver.SelectionDigest([]byte("oversized-actual-policy")))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if authority.Boundary != nil {
+					t.Fatal("over-budget policy received a storage boundary")
+				}
+				decisions, err := authority.Check(context.Background(), []model.Ref{w9Ref("visible"), w9Ref("hidden")})
+				if err != nil || !reflect.DeepEqual(decisions, []bool{true, false}) {
+					t.Fatalf("ordinary current decisions=%v err=%v", decisions, err)
+				}
+				if err := authority.Fence(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if err := authority.Reader.Close(); err != nil {
+					t.Fatal(err)
+				}
+				views := f.views(t, viewops.Config{})
+				page := w9Run(t, views, viewops.RunRequest{Definition: &viewops.Definition{Filter: &viewops.Filter{}, Fields: []string{"id"}}})
+				if !reflect.DeepEqual(w9IDs(page), []string{"visible"}) {
+					t.Fatalf("ordinary policy membership=%+v", page)
+				}
+				count := w9Run(t, views, viewops.RunRequest{CountOnly: true, Definition: &viewops.Definition{Filter: &viewops.Filter{}}})
+				if count.Count == nil || *count.Count != 1 || f.store.selects != 0 || f.store.queries == 0 {
+					t.Fatalf("ordinary policy count=%+v select=%d queries=%d", count, f.store.selects, f.store.queries)
+				}
+				// Revoke real facts after the content scan on a pinned authority.
+				// The final fence must erase the otherwise successful count.
+				f.store.afterQuery = func() {
+					after := f.base
+					after.Grants = append(append([]authz.Grant(nil), f.base.Grants...), authz.Grant{Subject: authz.SubjectRef{Kind: "user", ID: w9Reader.ID}, Scope: authz.Scope{Kind: authz.ProjectScope, Ref: w9Ref("project-canonical-visible")}, Role: "involved"})
+					if err := f.facts.Replace(after); err != nil {
+						t.Fatal(err)
+					}
+				}
+				got, err := views.Run(context.Background(), w9Reader, viewops.RunRequest{CountOnly: true, Definition: &viewops.Definition{Filter: &viewops.Filter{}}})
+				w9Code(t, err, "authz_unavailable")
+				if !reflect.DeepEqual(got, viewops.Result{}) {
+					t.Fatalf("over-budget policy fence leaked %+v", got)
+				}
+				if err := f.facts.Replace(f.base); err != nil {
+					t.Fatal(err)
+				}
+				policy.evalErr = errors.New("actual policy evaluation failed")
+				got, err = views.Run(context.Background(), w9Reader, viewops.RunRequest{CountOnly: true, Definition: &viewops.Definition{Filter: &viewops.Filter{}}})
+				w9Code(t, err, "authz_unavailable")
+				if !reflect.DeepEqual(got, viewops.Result{}) || f.store.selects != 0 {
+					t.Fatalf("over-budget policy error leaked %+v", got)
+				}
+			})
+		}
+	}
+	t.Run("authorized_20000_cap", func(t *testing.T) {
+		f := newW9Fixture(t, memory.New())
+		f.app.Checker.chain.Rules = []authz.RuleSet{&w9BudgetPolicy{namespace: f.base.Namespace, position: "restriction", shape: "nodes"}}
+		f.store.allowScan = true
+		records := make([]driver.Record, viewops.OrdinaryCandidateCap+1)
+		for i := range records {
+			records[i] = w9Record(fmt.Sprintf("policy-%05d", i), "bug", "visible-name", "ordinary", "todo")
+		}
+		f.seed(t, records)
+		views := f.views(t, viewops.Config{})
+		for _, mode := range []string{"page", "count", "summary"} {
+			t.Run(mode, func(t *testing.T) {
+				def := &viewops.Definition{Filter: &viewops.Filter{}, Fields: []string{"id"}}
+				if mode == "summary" {
+					def.Fields, def.GroupBy = []string{}, []string{"type"}
+				}
+				got, err := views.Run(context.Background(), w9Reader, viewops.RunRequest{Definition: def, CountOnly: mode == "count"})
+				w9Code(t, err, "scope_too_large")
+				if !reflect.DeepEqual(got, viewops.Result{}) || f.store.selects != 0 {
+					t.Fatalf("over-budget policy bypassed ordinary cap: %+v", got)
+				}
+			})
+		}
+	})
 }

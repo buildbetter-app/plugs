@@ -875,9 +875,14 @@ func (s *GuardedService) PrepareViewSelection(ctx context.Context, by model.Prin
 			}
 			expression := driver.SelectionExpr{Op: driver.SelectionAll, Args: args}
 			view := reader.Snapshot()
-			out.Boundary, err = driver.PrepareSelectionBoundary(driver.SelectionBoundarySpec{Version: 1, PreparedBinding: preparedBinding, Incarnation: view.Incarnation, Branch: view.Branch, AuthorityRevision: *view.At, Sources: snapshot.observations(), Chain: driver.SelectionChainCompiled, Authorization: expression, Host: driver.SelectionHostAbsent, InlineViewBinding: inlineBinding})
-			if err != nil {
-				return nil, err
+			// A valid policy can exceed the storage AST budget. Retain its
+			// complete ordinary Check/Fence instead of aborting binding or
+			// narrowing the policy to fit. Other boundary errors still fail.
+			if viewSelectionExpressionBudget(expression) {
+				out.Boundary, err = driver.PrepareSelectionBoundary(driver.SelectionBoundarySpec{Version: 1, PreparedBinding: preparedBinding, Incarnation: view.Incarnation, Branch: view.Branch, AuthorityRevision: *view.At, Sources: snapshot.observations(), Chain: driver.SelectionChainCompiled, Authorization: expression, Host: driver.SelectionHostAbsent, InlineViewBinding: inlineBinding})
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -913,6 +918,26 @@ func (s *GuardedService) PrepareViewSelection(ctx context.Context, by model.Prin
 	}
 	keep = true
 	return out, nil
+}
+
+// This admission check classifies only the closed expression size limits.
+// Boundary construction remains responsible for every other validation error.
+func viewSelectionExpressionBudget(expression driver.SelectionExpr) bool {
+	nodes := 0
+	var within func(driver.SelectionExpr, int) bool
+	within = func(expr driver.SelectionExpr, depth int) bool {
+		nodes++
+		if depth > driver.SelectionMaxDepth || nodes > driver.SelectionMaxNodes {
+			return false
+		}
+		for _, child := range expr.Args {
+			if !within(child, depth+1) {
+				return false
+			}
+		}
+		return true
+	}
+	return within(expression, 0)
 }
 
 func finiteViewCaller(c authz.Caller) bool {
