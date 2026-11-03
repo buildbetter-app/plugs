@@ -28,6 +28,22 @@ def replace_once(text, pattern, replacement):
     return updated
 
 
+def parameter_semantics(params):
+    # Match wire.Param: description is documentation and omitted required is
+    # false. Normalize only this comparison, never the raw hashed descriptors.
+    normalized = []
+    for param in params:
+        if set(param) - {"name", "required", "schema", "description"}:
+            raise ValueError("unknown parameter member: " + param.get("name", ""))
+        required = param.get("required", False)
+        if type(required) is not bool:
+            raise ValueError("invalid parameter requiredness: " + param["name"])
+        if "description" in param and not isinstance(param["description"], str):
+            raise ValueError("invalid parameter description: " + param["name"])
+        normalized.append({"name": param["name"], "required": required, "schema": param["schema"]})
+    return normalized
+
+
 def reconcile(root, write):
     pending = {}
     descriptors = []
@@ -49,13 +65,14 @@ def reconcile(root, write):
             method = methods[entry["name"]]
             expected = {
                 "name": method["name"],
-                "params": [{"name": p["name"], "required": p.get("required", False), "schema": p["schema"]} for p in method["params"]],
+                "params": parameter_semantics(method["params"]),
                 "resultSchema": method["result"]["schema"],
                 "errors": [error["$ref"] for error in method.get("errors", [])],
             }
             for key, extension in (("effect", "x-effect"), ("permission", "x-permission"), ("idempotency", "x-idempotency"), ("stability", "x-stability"), ("agentCore", "x-agent-core")):
                 expected[key] = method[extension]
-            if entry != expected:
+            actual = {**entry, "params": parameter_semantics(entry["params"])}
+            if actual != expected:
                 raise ValueError("descriptor parity mismatch: " + entry["name"])
         encoded = json.dumps(entries, ensure_ascii=False, separators=(",", ":")).encode()
         descriptors.append(encoded)
