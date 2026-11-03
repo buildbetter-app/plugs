@@ -158,6 +158,9 @@ internal/core/authz/identity.go
 internal/core/authz/identity_test.go
 internal/core/authz/mutation.go
 internal/core/authz/mutation_test.go
+internal/core/authz/prepared.go
+internal/core/authz/prepared_differential_test.go
+internal/core/authz/prepared_legacy_test.go
 internal/core/authz/types.go
 internal/core/dumpformat/BUILD.bazel
 internal/core/dumpformat/README.md
@@ -589,6 +592,8 @@ internal/plugins/authnoidc/token.go
 internal/plugins/authzfixed/BUILD.bazel
 internal/plugins/authzfixed/facts.go
 internal/plugins/authzfixed/facts_test.go
+internal/plugins/authzfixed/prepared_differential_test.go
+internal/plugins/authzfixed/prepared_legacy_test.go
 internal/plugins/authzfixed/rules.go
 internal/plugins/authzfixed/rules_test.go
 internal/server/authn/BUILD.bazel

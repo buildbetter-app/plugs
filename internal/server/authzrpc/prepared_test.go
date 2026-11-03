@@ -133,3 +133,33 @@ func TestPreparedFixedBatchNormalizesEachBindingOnce(t *testing.T) {
 		})
 	}
 }
+
+func TestPreparedContextPreservesPrincipalAndEpochEqualityDomains(t *testing.T) {
+	chain, caller, _ := preparationFixture(t)
+	for _, tc := range []struct {
+		name, expected, supplied string
+		want                     bool
+	}{
+		{"large_equal", "9007199254740993", "9007199254740993", true},
+		{"large_distinct", "9007199254740993", "9007199254740992", false},
+		{"lexical_decimal", "1", "1.0", false},
+		{"lexical_exponent", "1", "1e0", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			expected, supplied := caller, caller
+			expected.Principal.Caveats = map[string]any{"opaque": json.Number(tc.expected)}
+			supplied.Principal.Caveats = map[string]any{"opaque": json.Number(tc.supplied)}
+			// Epoch equality is mathematical, unlike arbitrary caveat numbers.
+			supplied.CapturedEpoch = model.Natural("1.0")
+			prepared, err := authz.PrepareRequest(authz.ListRequest{Caller: supplied})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, _ := preparationSlice(chain, expected)
+			got, err := s.CheckContext(context.Background(), prepared.Request().Caller)
+			if err != nil || got != tc.want {
+				t.Fatalf("prepared host comparison=%v/%v want=%v", got, err, tc.want)
+			}
+		})
+	}
+}

@@ -18,11 +18,14 @@ type slice struct {
 	expected              authz.Caller
 	authorizationRevision model.Revision
 	authorizationBound    bool
+	preparation           authz.Preparation
 }
 
 var _ authz.Slice = (*slice)(nil)
 
 func (s *slice) Namespace() authz.Namespace { return s.facts.Namespace }
+
+func (s *slice) AuthorizationPreparation() *authz.Preparation { return &s.preparation }
 
 func (s *slice) Record(ctx context.Context, dep authz.Dependency) error {
 	if s == nil || s.snapshot == nil {
