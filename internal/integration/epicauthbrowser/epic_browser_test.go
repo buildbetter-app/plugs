@@ -26,6 +26,65 @@ import (
 //go:embed epic_browser_check.mjs
 var browserCheck []byte
 
+// Artificial envelopes exercise the browser's actual disclosure assertion;
+// these checks cannot qualify a native/browser lifecycle or its workload.
+func TestHiddenParentDisclosureAssertionOnlyExemptsExactChildID(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "epic-browser.mjs"), browserCheck, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, node, "--input-type=module", "-")
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(`
+import assert from "node:assert/strict";
+import { assertHiddenParentExistenceOnly as check } from "./epic-browser.mjs";
+const fixture = {parent:"hidden-parent-canary",parentTitle:"hidden parent title",child:{id:"hidden-parent-canary.1",branch:0}};
+const reply = () => ({jsonrpc:"2.0",id:"child-read",result:{bead:{id:fixture.child.id,parent:{exists:true},project:"ep6-visible",status:"todo",fields:{title:"authorized child"}}}});
+let checks = 0;
+const accepted = reply(), raw = JSON.stringify(accepted);
+check(raw, fixture); checks++;
+assert.equal(JSON.stringify(accepted), raw, "assertion must not redact actual evidence");
+function rejects(label, mutate) {
+  const response = reply(); mutate(response);
+  assert.throws(() => check(JSON.stringify(response), fixture), {name:"AssertionError"}, label); checks++;
+}
+const locations = {
+  title: (r, value) => { r.result.bead.fields.title = value; },
+  project: (r, value) => { r.result.bead.project = value; },
+  status: (r, value) => { r.result.bead.status = value; },
+  parent: (r, value) => { r.result.bead.parent.id = value; },
+  otherID: (r, value) => { r.result.other = {id:value}; },
+  nestedID: (r, value) => { r.result.bead.metadata = {id:value}; },
+  counts: (r, value) => { r.result.counts = {[value]:1}; },
+  url: (r, value) => { r.result.attachments = [{url:"https://fixture/" + value}]; },
+  watchFrame: (r, value) => { r.watchFrames = ["data: " + JSON.stringify({id:value})]; },
+  domText: (r, value) => { r.domText = "outside child's own ID: " + value; },
+  envelope: (r, value) => { r.id = value; },
+};
+for (const canary of [fixture.parent, fixture.child.id, fixture.parentTitle, "ep6-epics"]) {
+  for (const [location, mutate] of Object.entries(locations)) rejects(location + " must not waive " + canary, r => mutate(r, canary));
+}
+rejects("a different hierarchical child ID is not exempt", r => { r.result.bead.id = fixture.parent + ".2"; });
+rejects("parent status stays hidden even without a canary", r => { r.result.bead.parent.status = "todo"; });
+rejects("parent counts stay hidden even without a canary", r => { r.result.bead.parent.count = 50; });
+const repeated = {...fixture, child:{id:fixture.child.id + "/" + fixture.parent}};
+const repeatedReply = reply(); repeatedReply.result.bead.id = repeated.child.id;
+assert.throws(() => check(JSON.stringify(repeatedReply), repeated), {name:"AssertionError"}, "only the creation-parent prefix is exempt, not another occurrence in the exact child ID"); checks++;
+console.log(checks + " hidden-parent assertion checks passed; artificial envelopes only");
+`)
+	output, err := cmd.CombinedOutput()
+	t.Log(string(output))
+	if err != nil {
+		t.Fatal("hidden-parent disclosure assertion checks:", err)
+	}
+}
+
 func readerKey(t *testing.T, f *fixture, id string, allowed ...string) authnapikey.IssuedKey {
 	t.Helper()
 	refs := make([]model.Ref, 0, len(allowed))

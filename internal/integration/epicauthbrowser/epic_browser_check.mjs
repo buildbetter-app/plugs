@@ -6,7 +6,21 @@ import { createInterface } from "node:readline";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
+export function assertHiddenParentExistenceOnly(raw, { child, parent, parentTitle }) {
+  const response = JSON.parse(raw), bead = response.result?.bead;
+  assert.equal(bead?.id, child.id, "authorized child's exact ID must remain unchanged");
+  assert.deepEqual(bead.parent, { exists: true });
+  // Match batchsql's S1 decision: only the authorized child's own ID field
+  // may embed its creation parent's ID. Never waive matching text elsewhere.
+  const inspected = { ...response, result: { ...response.result, bead: { ...bead } } };
+  if (child.id.startsWith(parent + ".")) inspected.result.bead.id = child.id.slice(parent.length);
+  const withoutChildPrefix = JSON.stringify(inspected);
+  for (const canary of [parent, parentTitle, "ep6-epics"]) assert(!withoutChildPrefix.includes(canary), "hidden parent disclosed more than existence");
+}
+
+async function runBrowser() {
 const lines = createInterface({ input: process.stdin })[Symbol.asyncIterator]();
 const receive = async () => JSON.parse((await lines.next()).value);
 const fixture = await receive();
@@ -259,8 +273,7 @@ try {
     const visibleRead = await probe(fixture.token, "bead.get", get(fixture.child));
     assert(visibleRead.body.result?.bead, "visible child readback failed");
     const childOnly = await probe(fixture.narrowToken, "bead.get", get(fixture.child));
-    assert.deepEqual(childOnly.body.result?.bead.parent, { exists: true });
-    for (const canary of [fixture.parent, fixture.parentTitle, "ep6-epics"]) assert(!childOnly.raw.includes(canary), "hidden parent disclosed more than existence");
+    assertHiddenParentExistenceOnly(childOnly.raw, fixture);
     const deniedChild = await probe(fixture.token, "bead.get", get(fixture.secret));
     assert.equal(deniedChild.body.error?.data.code, "not_found");
     const agentRead = await probe(fixture.deniedToken, "view.run", progress());
@@ -336,3 +349,6 @@ try {
   await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   process.stdin.destroy();
 }
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) await runBrowser();
