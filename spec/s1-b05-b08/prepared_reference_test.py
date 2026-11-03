@@ -1,38 +1,36 @@
 #!/usr/bin/env python3
-"""Validate the trusted public-reference handoff without inventing clock proof.
+"""Manual fixed-profile consumer. Missing real clock evidence is a failure.
 
-The remote workflow owns ZIP/source preparation.  This adapter independently
-checks the paths and pinned bytes, then records an explicit blocked boundary
-when the prepared route has no generated Go+SQL clock proof.  It invokes the
-real B05-B08 recorder only when such proof is supplied by a separately
-reviewed producer; a missing proof never becomes a synthetic recording.
+This consumes only the trusted same-run preparation interface. It never
+replaces an artifact, synthesizes clock evidence, or records a blocked
+boundary as paired evidence. Unit fixtures use a separate target.
 """
-
-from __future__ import annotations
 
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import zipfile
 
+from reference_inputs import COMMIT, TREE, neutral_environment, ordinary_path, verify_clock_proof, verify_source
 
-DESCRIPTOR = "41399124974:13121145530:8c3d155f3940d21bd270fb14fe0292de0db1b3f377214756db59edf53eec5fa2"
+
 RUN = "41399124974"
-COMMIT = "9d6fff760b7a314b476539198504d77ce0959656"
-TREE = "cde121d6e4119e454857ad1c3ca293e2791be840"
+MANIFEST_SHA256 = "8c3d155f3940d21bd270fb14fe0292de0db1b3f377214756db59edf53eec5fa2"
+DESCRIPTOR = RUN + ":13121145530:" + MANIFEST_SHA256
+ZIP_SHA256 = "c8ace91c3494db905a4c64dbd4e733e5ebb863b1987d66b4907e8d21a0ba3b4c"
+ZIP_SIZE = 119364059
 BINARY_SHA256 = "3c6bbb888431751adce98dfebc8cbeeb5869300698e8b069a4d7438fabfb3af4"
+BINARY_SIZE = 112341314
+FILES = {"bin/bd", "bin/plug", "manifest.json", "receipt.json", "bundle.tar"}
 
 
-def digest_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
-def digest_file(path: Path) -> str:
+def digest_file(path):
     result = hashlib.sha256()
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
@@ -40,143 +38,136 @@ def digest_file(path: Path) -> str:
     return result.hexdigest()
 
 
-def required_path(name: str) -> Path:
-    value = os.environ.get(name, "")
-    if not value or any(char in value for char in "\r\n\0"):
-        raise RuntimeError(f"{name} is missing or malformed")
-    path = Path(value)
-    if not path.is_absolute() or path.is_symlink() or not path.is_file():
-        raise RuntimeError(f"{name} is not an absolute ordinary file")
-    return path
+def prepared_paths():
+    if (os.environ.get("PLUG_PUBLIC_REFERENCE") != DESCRIPTOR
+            or os.environ.get("PLUG_PUBLIC_REFERENCE_BUILD_RUN") != RUN):
+        raise RuntimeError("prepared descriptor/run differs from the fixed public profile")
+    return (
+        ordinary_path(os.environ.get("PLUG_PUBLIC_REFERENCE_ZIP", "")),
+        ordinary_path(os.environ.get("PLUG_PUBLIC_REFERENCE_SOURCE", ""), directory=True),
+        ordinary_path(os.environ.get("PLUG_PUBLIC_REFERENCE_MANIFEST", "")),
+    )
 
 
-def prepared_paths() -> tuple[Path, Path, Path]:
-    archive = required_path("PLUG_PUBLIC_REFERENCE_ZIP")
-    source = Path(os.environ.get("PLUG_PUBLIC_REFERENCE_SOURCE", ""))
-    manifest_path = required_path("PLUG_PUBLIC_REFERENCE_MANIFEST")
-    if not source.is_absolute() or source.is_symlink() or not source.is_dir():
-        raise RuntimeError("PLUG_PUBLIC_REFERENCE_SOURCE is not an absolute ordinary directory")
-    if os.environ.get("PLUG_PUBLIC_REFERENCE_BUILD_RUN") != RUN:
-        raise RuntimeError("prepared public reference run differs from the fixed descriptor")
-    return archive, source, manifest_path
-
-
-def verify_prepared(archive: Path, source: Path, manifest_path: Path, output: Path) -> dict:
+def verify_archive(archive, manifest_path):
+    if archive.stat().st_size != ZIP_SIZE or digest_file(archive) != ZIP_SHA256:
+        raise RuntimeError("prepared ZIP differs from the fixed public profile")
     manifest_bytes = manifest_path.read_bytes()
-    manifest = json.loads(manifest_bytes)
-    beads = manifest.get("source", {}).get("beads", {})
-    if beads.get("commit") != COMMIT or beads.get("tree") != TREE:
-        raise RuntimeError("prepared manifest is not bound to the pinned Beads source")
-    artifact = manifest.get("artifacts", {}).get("bin/bd", {})
-    if artifact.get("sha256") != BINARY_SHA256 or artifact.get("mode") != "0o755":
-        raise RuntimeError("prepared manifest has an unexpected reference executable")
-    if not (source / ".git").is_dir():
-        raise RuntimeError("prepared source checkout has no ordinary .git directory")
-    source_commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
-    source_tree = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD^{tree}"], text=True).strip()
-    if (source_commit, source_tree) != (COMMIT, TREE):
-        raise RuntimeError("prepared source checkout differs from the pinned commit/tree")
-    if subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True):
-        raise RuntimeError("prepared source checkout is dirty")
-
+    if hashlib.sha256(manifest_bytes).hexdigest() != MANIFEST_SHA256:
+        raise RuntimeError("prepared manifest differs from the fixed public profile")
+    # The whole ZIP and manifest are pinned above; checks below independently
+    # bind the extracted loose executable to that same fixed profile.
     with zipfile.ZipFile(archive) as bundle:
-        names = {item.filename for item in bundle.infolist() if not item.is_dir()}
-        required = {"bin/bd", "bin/plug", "manifest.json", "receipt.json", "bundle.tar", "bd-version.json", "plug-help.txt"}
-        if names != required:
-            raise RuntimeError(f"prepared public ZIP member set is not exact: {sorted(names)}")
-        embedded_manifest = bundle.read("manifest.json")
-        if embedded_manifest != manifest_bytes:
-            raise RuntimeError("prepared ZIP manifest differs from the routed manifest")
+        members = bundle.infolist()
+        names = [item.filename for item in members if not item.is_dir()]
+        if (len(members) != len({item.filename for item in members})
+                or set(names) != FILES or len(names) != len(FILES)):
+            raise RuntimeError("prepared ZIP member set is not exact")
+        for item in members:
+            kind = stat.S_IFMT(item.external_attr >> 16)
+            if ((item.is_dir() and item.filename != "bin/")
+                    or kind not in {0, stat.S_IFDIR if item.is_dir() else stat.S_IFREG}):
+                raise RuntimeError("prepared ZIP contains an unsupported member type")
+        if bundle.read("manifest.json") != manifest_bytes:
+            raise RuntimeError("prepared ZIP and routed manifest differ")
+        manifest = json.loads(manifest_bytes)
         if json.loads(bundle.read("receipt.json")) != manifest:
             raise RuntimeError("prepared ZIP receipt differs from its manifest")
-        binary_bytes = bundle.read("bin/bd")
-        if digest_bytes(binary_bytes) != BINARY_SHA256:
-            raise RuntimeError("prepared reference executable digest differs from the pinned digest")
+        source = manifest.get("source", {}).get("beads", {})
+        binary = manifest.get("artifacts", {}).get("bin/bd", {})
+        if (source.get("commit") != COMMIT or source.get("tree") != TREE
+                or binary != {"mode": "0o755", "size": BINARY_SIZE, "sha256": BINARY_SHA256}):
+            raise RuntimeError("prepared source/executable identity differs from the pin")
+        data = bundle.read("bin/bd")
+        if len(data) != BINARY_SIZE or hashlib.sha256(data).hexdigest() != BINARY_SHA256:
+            raise RuntimeError("prepared executable bytes differ from the pin")
+    return data
 
-    output.mkdir(parents=True, exist_ok=True)
-    return {
-        "descriptor": DESCRIPTOR,
-        "producerRun": RUN,
-        "archiveSha256": digest_file(archive),
-        "archiveSize": archive.stat().st_size,
-        "manifestSha256": digest_bytes(manifest_bytes),
-        "binarySha256": BINARY_SHA256,
-        "sourceCommit": source_commit,
-        "sourceTree": source_tree,
-        "sourceStatus": "clean",
+
+def consume_prepared(root, archive, source, manifest, proof):
+    if root.resolve().is_relative_to(source):
+        raise RuntimeError("source cannot contain the private capture directory")
+    # Consume only private copies. Original inputs can never replace already
+    # admitted bytes between validation and recorder use.
+    private_archive, private_manifest = root / "artifact.zip", root / "manifest.json"
+    private_proof, private_source = root / "clock-proof.json", root / "source"
+    shutil.copyfile(archive, private_archive)
+    shutil.copyfile(manifest, private_manifest)
+    shutil.copyfile(proof, private_proof)
+    _, proof_digest = verify_clock_proof(private_proof, BINARY_SHA256)
+    data = verify_archive(private_archive, private_manifest)
+    shutil.copytree(source, private_source, symlinks=True)
+    source_record = verify_source(private_source)
+    # Do not grant execute permission until every admission check succeeds.
+    binary = root / "bd"
+    binary.write_bytes(data)
+    binary.chmod(0o500)
+    return binary, private_source, private_proof, {
+        **source_record, "descriptor": DESCRIPTOR, "producerRun": RUN,
+        "archiveSha256": ZIP_SHA256, "archiveSize": ZIP_SIZE,
+        "manifestSha256": MANIFEST_SHA256, "binarySha256": BINARY_SHA256,
+        "clockProofSha256": proof_digest,
+        "buildProfile": "original-Go-gms_pure_go", "canonicalBazel": False,
     }
 
 
-def extract_binary(archive: Path, root: Path) -> Path:
-    binary = root / "bd"
-    with zipfile.ZipFile(archive) as bundle, bundle.open("bin/bd") as source:
-        binary.write_bytes(source.read())
-    binary.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-    if digest_file(binary) != BINARY_SHA256:
-        raise RuntimeError("extracted reference executable digest changed")
-    return binary
+def recorder_environment(source, proof):
+    return {
+        **neutral_environment(), "PLUG_REFERENCE_SOURCE_COMMIT": COMMIT,
+        "PLUG_REFERENCE_SOURCE_TREE": TREE, "PLUG_REFERENCE_CLOCK_MODE": "go-sql-controlled",
+        "PLUG_REFERENCE_SOURCE_DIR": str(source), "PLUG_REFERENCE_CLOCK_PROOF": str(proof),
+    }
 
 
-def write_evidence(path: Path, value: dict) -> None:
-    path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-
-
-def main() -> int:
-    archive, source, manifest = prepared_paths()
-    evidence_dir = Path(os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", tempfile.mkdtemp(prefix="s1-b05-b08-prepared-")))
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    verified = verify_prepared(archive, source, manifest, evidence_dir)
+def main():
+    # Trusted preparation supplies no generated clock proof. Refuse before
+    # output creation or extraction, rather than returning a green capture.
     proof = os.environ.get("PLUG_REFERENCE_CLOCK_PROOF", "")
     if not proof:
-        # The trusted preparation route deliberately does not claim a generated
-        # Go+SQL clock proof.  Retain the exact missing capability as a typed
-        # handoff and do not invoke the recorder or write a fake recording.
-        write_evidence(evidence_dir / "prepared-reference.json", {
-            **verified,
-            "status": "blocked",
-            "captureDisposition": "BLOCKED_MISSING_GO_SQL_CLOCK_PROOF",
-            "recordings": [],
-            "missing": "PLUG_REFERENCE_CLOCK_PROOF generated by the pinned reference producer, bound to this executable digest",
-        })
-        print(json.dumps({"status": "blocked", "descriptor": DESCRIPTOR, "recordings": 0}))
-        return 0
-
-    with tempfile.TemporaryDirectory(prefix="s1-b05-b08-prepared-", dir="/tmp") as temporary:
+        raise RuntimeError("BLOCKED_MISSING_GO_SQL_CLOCK_PROOF: pinned generated evidence is required")
+    proof = ordinary_path(proof)
+    verify_clock_proof(proof, BINARY_SHA256)
+    archive, source, manifest = prepared_paths()
+    output_value = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", "")
+    if not output_value:
+        raise RuntimeError("manual capture requires TEST_UNDECLARED_OUTPUTS_DIR")
+    evidence_dir = ordinary_path(output_value, directory=True)
+    output = evidence_dir / "recordings.json"
+    if output.exists() or (evidence_dir / "prepared-reference.json").exists():
+        raise RuntimeError("capture output already exists; refusing to replace evidence")
+    with tempfile.TemporaryDirectory(prefix="s1-b05-b08-prepared-") as temporary:
         root = Path(temporary)
-        binary = extract_binary(archive, root)
-        output = evidence_dir / "recordings.json"
-        recorder = Path(__file__).with_name("record_reference.py")
-        env = {key: value for key, value in os.environ.items()}
-        env.update({
-            "PLUG_REFERENCE_SOURCE_COMMIT": COMMIT,
-            "PLUG_REFERENCE_SOURCE_TREE": TREE,
-            "PLUG_REFERENCE_CLOCK_MODE": "go-sql-controlled",
-            "PLUG_REFERENCE_SOURCE_DIR": str(source),
-            "PLUG_REFERENCE_CLOCK_PROOF": proof,
-        })
+        binary, private_source, private_proof, verified = consume_prepared(root, archive, source, manifest, proof)
         Path("/tmp/plug-swarm/work").mkdir(parents=True, exist_ok=True)
+        recorder = Path(__file__).with_name("record_reference.py")
         result = subprocess.run(
-            [sys.executable, str(recorder), str(binary), str(output)],
-            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            check=False,
+            [sys.executable, "-B", str(recorder), str(binary), str(output)],
+            env=recorder_environment(private_source, private_proof),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
-        (evidence_dir / "recorder.stdout").write_text(result.stdout, encoding="utf-8")
-        (evidence_dir / "recorder.stderr").write_text(result.stderr, encoding="utf-8")
+        (evidence_dir / "recorder.stdout").write_bytes(result.stdout)
+        (evidence_dir / "recorder.stderr").write_bytes(result.stderr)
         if result.returncode != 0 or not output.is_file():
             raise RuntimeError(f"prepared reference recorder failed with exit {result.returncode}")
-        recording = json.loads(output.read_text(encoding="utf-8"))
-        if recording.get("status") != "recorded" or len(recording.get("recordings", [])) != 2:
-            raise RuntimeError("prepared recorder did not retain two recordings")
-        write_evidence(evidence_dir / "prepared-reference.json", {
-            **verified,
-            "status": "recorded",
-            "captureDisposition": "RECORDED",
-            "recordings": recording["recordings"],
-            "clockProof": proof,
-        })
+        recording = json.loads(output.read_bytes())
+        if (recording.get("status") != "recorded" or len(recording.get("recordings", [])) != 2
+                or recording.get("sourceCommit") != COMMIT or recording.get("sourceTree") != TREE
+                or recording.get("binarySha256") != BINARY_SHA256
+                or recording.get("clockProofSha256") != verified["clockProofSha256"]):
+            raise RuntimeError("prepared recorder did not retain matching pinned twins")
+        projector = Path(__file__).with_name("project_reference.py")
+        projection = subprocess.run(
+            [sys.executable, "-B", str(projector), str(output)], env=neutral_environment(),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        (evidence_dir / "projector.stderr").write_bytes(projection.stderr)
+        if projection.returncode:
+            raise RuntimeError("independent projection rejected the reference twins")
+        (evidence_dir / "projection.json").write_bytes(projection.stdout)
+        verified.update({"status": "recorded", "recordingsSha256": digest_file(output)})
+        (evidence_dir / "prepared-reference.json").write_text(json.dumps(verified, sort_keys=True, indent=2) + "\n")
     print(json.dumps({"status": "recorded", "descriptor": DESCRIPTOR, "recordings": 2}))
-    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

@@ -6,6 +6,7 @@ go_test(
     srcs = [
         "blocking_hierarchy_test.go",
         "checkpoint_guards_test.go",
+        "cycle_admission_test.go",
         "engines_test.go",
         "fixture_test.go",
         "heartbeat_repair_test.go",
@@ -14,6 +15,7 @@ go_test(
         "provenance_test.go",
         "reclaim_race_test.go",
         "runtime_test.go",
+        "settlement_test.go",
     ],
     tags = ["local", "requires-network"],
     embedsrcs = [
@@ -42,6 +44,19 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+go_test(
+    name = "reference_admission",
+    srcs = ["reference_admission_test.go"],
+    embedsrcs = [
+        "prepared_reference_test.py",
+        "project_reference.py",
+        "record_reference.py",
+        "reference_admission_test.py",
+        "reference_inputs.py",
+    ],
+    args = ["-test.v"],
+)
+
 # The trusted workflow prepares the pinned public reference only when this
 # explicit target is invoked with its fixed PLUG_PUBLIC_REFERENCE descriptor.
 # Keep it out of wildcard/whole-tree runs: the prepared paths exist only on
@@ -52,6 +67,8 @@ sh_test(
     data = [
         "prepared_reference_test.py",
         "record_reference.py",
+        "project_reference.py",
+        "reference_inputs.py",
     ],
     tags = ["manual", "requires-network"],
     size = "large",
