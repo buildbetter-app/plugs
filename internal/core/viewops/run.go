@@ -313,6 +313,9 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 			return Result{}, err
 		}
 		result.Projection = projection
+		if err := s.admit(ctx, by); err != nil {
+			return Result{}, err
+		}
 		return result, nil
 	}
 	budget, err := s.outputBudget(definition)

@@ -42,6 +42,46 @@ func (fn readinessFunc) Pending(ctx context.Context, reader driver.Reader, refs 
 	return fn(ctx, reader, refs)
 }
 
+func TestTypeSummaryFencesCancellationAndLeaseLossAfterAuthorization(t *testing.T) {
+	for _, boundary := range []string{"canceled", "lease_lost"} {
+		t.Run(boundary, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			lease := &testLease{lost: make(chan struct{})}
+			store := &syntheticStore{
+				rows: []driver.Record{{Ref: model.RefByID("candidate", model.Natural64(0)), Kind: "bead", Revision: model.Natural64(1), Body: explainDocument(t, "candidate", "p")}},
+				meta: driver.Meta{StoreID: "store", Incarnation: "inc", Head: model.Natural64(1)},
+			}
+			authorized := false
+			svc, err := New(store, lease, Config{
+				AuthorizeRead: func(context.Context, model.PrincipalRef, model.ResourceRef, string) error {
+					authorized = true
+					return nil
+				},
+				Readiness: readinessFunc(func(context.Context, driver.Reader, []model.Ref) (map[string]ReadinessState, error) {
+					if !authorized {
+						t.Fatal("test did not reach the post-authorization boundary")
+					}
+					if boundary == "canceled" {
+						cancel()
+					} else {
+						close(lease.lost)
+					}
+					return nil, nil
+				}),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := svc.Run(ctx, model.PrincipalRef{Kind: "user", ID: "reader"}, RunRequest{Definition: &Definition{Filter: &Filter{}, GroupBy: []string{"type"}, Fields: []string{}}})
+			var typed *model.Error
+			if !errors.As(err, &typed) || typed.Data.Code != "busy" || len(result.Groups) != 0 || len(result.Items) != 0 || result.Count != nil || result.NextCursor != nil {
+				t.Fatalf("summary published after %s: result=%+v err=%v", boundary, result, err)
+			}
+		})
+	}
+}
+
 type projectionStatusFunc func(context.Context, string) (coreevents.ProjectionStatus, error)
 
 func (fn projectionStatusFunc) Status(ctx context.Context, binding string) (coreevents.ProjectionStatus, error) {

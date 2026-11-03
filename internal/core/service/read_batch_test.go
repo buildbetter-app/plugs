@@ -95,6 +95,24 @@ func TestReadBatchFailureNeverBecomesAnAllowedOrMissingDecision(t *testing.T) {
 	}
 }
 
+func TestReadBatchBindsSponsorIdentity(t *testing.T) {
+	a := batchResource("batch-a")
+	by := model.PrincipalRef{Kind: "agent", ID: "batch-agent", Sponsor: &model.PrincipalRef{Kind: "user", ID: "first-sponsor"}}
+	ctx, session := WithReadBatchSession(context.Background(), []model.ResourceRef{a})
+	called := 0
+	authorize := func(context.Context, model.PrincipalRef, []model.ResourceRef) ([]bool, error) {
+		called++
+		return []bool{true}, nil
+	}
+	if allowed, handled, err := session.Resolve(ctx, by, authorize, a); err != nil || !allowed || !handled {
+		t.Fatalf("first sponsor decision=%t,%t,%v", allowed, handled, err)
+	}
+	by.Sponsor = &model.PrincipalRef{Kind: "user", ID: "second-sponsor"}
+	if allowed, handled, err := session.Resolve(ctx, by, authorize, a); err == nil || allowed || !handled || called != 1 {
+		t.Fatalf("changed sponsor reused prior authority: %t,%t,%v calls=%d", allowed, handled, err, called)
+	}
+}
+
 func TestReadBatchConcurrentResolutionRunsOneAuthorizer(t *testing.T) {
 	a := batchResource("batch-a")
 	by := model.PrincipalRef{Kind: "user", ID: "batch-reader"}
