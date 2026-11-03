@@ -1,7 +1,9 @@
 package gatecontract_test
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/port"
@@ -108,12 +110,20 @@ func TestB14AuthenticatedMetadataCASReplayRefusalHistoryAndUnlink(t *testing.T) 
 		spawner, _ := f.create(map[string]any{"title": "spawner"}, "")
 		initialHistory := f.historyCount()
 		params := map[string]any{"from": ref(waiter), "to": ref(spawner), "kind": "waits-for", "metadata": map[string]any{"gate": "any-children"}}
+		h.policy.stages = nil
 		first := f.call("bead.link", params, true, "")
+		if !reflect.DeepEqual(h.policy.stages, []port.AuthorizationStage{port.AuthorizeBefore, port.AuthorizeAfter}) {
+			t.Fatalf("authenticated write authority stages: %v", h.policy.stages)
+		}
 		key, revision := f.lastKey, first["revision"]
 		if f.historyCount() != initialHistory+1 {
 			t.Fatal("authenticated metadata link did not publish one changeset")
 		}
 		assertMetadata(t, f.body(waiter, revision), "any-children", false)
+		version := f.call("history.get", map[string]any{"ref": ref(waiter), "asOf": map[string]any{"revision": revision}}, false, "")
+		if principal := version["principal"].(map[string]any); principal["kind"] != "user" || principal["id"] != "user:operator" {
+			t.Fatal("history lost the transport-authenticated author")
+		}
 		before := f.meta()
 		h.policy.stages = nil
 		if replay := f.request("bead.link", params, key, ""); !reflect.DeepEqual(first, replay) || !reflect.DeepEqual(before, f.meta()) || !reflect.DeepEqual(h.policy.stages, []port.AuthorizationStage{port.AuthorizeReplay}) {
@@ -163,6 +173,10 @@ func TestB14AuthenticatedMetadataCASReplayRefusalHistoryAndUnlink(t *testing.T) 
 		if f.bead(waiter)["fields"].(map[string]any)["title"] != "waiter" {
 			t.Fatal("denied transaction leaked earlier patch")
 		}
+		f.refuse("tx.apply", map[string]any{"changeSet": map[string]any{"ops": []any{
+			map[string]any{"kind": "patch", "target": ref(waiter), "fields": map[string]any{"title": "invalid batch must roll back"}},
+			map[string]any{"kind": "link", "from": ref(waiter), "to": ref(spawner), "linkKind": "waits-for", "metadata": map[string]any{"gate": "unknown"}},
+		}}}, "invalid_params")
 		// Missing/invalid transport credentials cannot reach the Writer.
 		before = f.meta()
 		for _, token := range []string{"", "test-invalid-b14-credential"} {
@@ -175,6 +189,7 @@ func TestB14AuthenticatedMetadataCASReplayRefusalHistoryAndUnlink(t *testing.T) 
 		}
 		beforeCount := f.historyCount()
 		applied := f.call("tx.apply", map[string]any{"changeSet": map[string]any{"ops": []any{
+			map[string]any{"kind": "link", "from": ref(waiter), "to": ref(spawner), "linkKind": "waits-for", "metadata": map[string]any{"gate": "all-children", "also_blocks": true}},
 			map[string]any{"kind": "link", "from": ref(waiter), "to": ref(spawner), "linkKind": "waits-for", "metadata": map[string]any{"gate": "any-children"}},
 		}}}, true, "")
 		if f.historyCount() != beforeCount+1 || applied["revision"] == changed["revision"] {
@@ -192,5 +207,42 @@ func TestB14AuthenticatedMetadataCASReplayRefusalHistoryAndUnlink(t *testing.T) 
 			t.Fatal("public unlink retained metadata edge")
 		}
 		assertMetadata(t, f.body(waiter, revision), "any-children", false)
+	})
+}
+
+func TestB14AuthenticatedWaitsForRedactsHiddenSpawner(t *testing.T) {
+	eachStore(t, func(t *testing.T, f *fixture) {
+		h := newConsumerHost(t, f)
+		waiter, _ := f.create(map[string]any{"title": "visible waiter"}, "")
+		operator := h.token
+		h.token = h.creator
+		hidden := resultID(f.call("bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "private spawner title"}, "_meta": map[string]any{"project": "hidden"}}, true, ""), 0)
+		f.link(waiter, hidden, map[string]any{"gate": "any-children", "also_blocks": true}, true)
+		h.token = operator
+		before := f.meta()
+		f.ready(waiter, false)
+		result := f.call("view.explain", map[string]any{"viewId": "b14-consumer", "itemId": waiter}, false, "")
+		verdict := result["directBlockers"].(map[string]any)
+		raw, err := json.Marshal(result)
+		if err != nil || verdict["hiddenCount"] != float64(1) || len(verdict["edges"].([]any)) != 0 || strings.Contains(string(raw), hidden) || strings.Contains(string(raw), "private spawner title") || strings.Contains(string(raw), `"hidden"`) {
+			t.Fatalf("hidden spawner leaked beyond exact hidden count: %s (%v)", raw, err)
+		}
+		if !reflect.DeepEqual(before, f.meta()) {
+			t.Fatal("hidden explanation changed content")
+		}
+		unlink := map[string]any{"from": ref(waiter), "to": ref(hidden), "kind": "waits-for"}
+		f.refuse("bead.unlink", unlink, "forbidden")
+		deniedKey := f.lastKey
+		// A refused call leaves no receipt. A subsequently installed grant
+		// admits exactly this project, with the same authenticated principal.
+		h.policy.grants["user:operator"]["hidden"] = true
+		f.request("bead.unlink", unlink, deniedKey, "")
+		f.ready(waiter, true)
+		before = f.meta()
+		h.policy.grants["user:operator"]["hidden"] = false
+		f.request("bead.unlink", unlink, deniedKey, "forbidden")
+		if !reflect.DeepEqual(before, f.meta()) {
+			t.Fatal("replay ignored current endpoint-project revocation")
+		}
 	})
 }
