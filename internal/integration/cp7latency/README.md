@@ -1,0 +1,106 @@
+# Real CP7 product latency baseline
+
+Done = existing PR260 is merged by the train after exact-head independent
+source review and focused/whole RunsOn originals. The original 100k matrix,
+including cold first requests, three warmups and 20 measurements per case,
+remains the baseline before optimization. Historical latency REDs remain RED.
+
+This is new evidence. It does not reproduce an identified historical product
+benchmark. Permissions, APIs, caches, caps and driver settings are unchanged.
+Opt-in request-local production hooks observe existing read work; they do not
+add a selector or change execution. The original declaration is
+[workload.json](workload.json), preserved byte-for-byte.
+
+The corpus contains 100,000 canonical bead documents in one registered project,
+in independent chains of eleven beads (maximum parent depth ten). All are
+ready issues with priority zero and deterministic titles. Setup writes real
+records, versions and the existing core ancestor relation through the driver;
+it does not implement authorization. Every body and ancestor row is read back
+and checked before measuring. Setup and successful claim resets are outside
+the timer. SQLite uses its product defaults, including its synchronous mode.
+PostgreSQL is a pinned, disposable, loopback-only container on the runner.
+
+CP7 permits an unrestricted User to read every bead without project grants.
+Restricted Users intersect that permit with the adopted `refs` caveat: every
+100th or 1000th ID gives exactly 1,000 or 100 readable beads. Parent links never
+grant permission. Agents do not borrow User read permission. For claims the
+Agent's User sponsor has direct or explicit one-hop team involvement, intersected
+with the same resource caveats. These are host-validated fixed-policy facts,
+not spike reader grants or a cut closure.
+
+Each store runs all three fractions and these product calls:
+
+- `GuardedService.Ready`: real domain readiness and finite `Chain.Compile` /
+  `FilterTemplate.Match`, subject to the existing ordinary list postfilter cap.
+  A cap or deadline may stop the baseline before compilation; it stays RED.
+- `GuardedService.ClaimNextWithOutcome`: complete selection, current modify
+  authorization, Writer preparation, recheck, locks, durable receipt and commit.
+  A successful result must change exactly one permitted bead. Validation and
+  resetting that bead happen after timing; requests never reuse a timed receipt.
+- `viewops.Service.Run`: the existing closed query parser, current read
+  authorizer and real paged storage queries. The ordinary grouped view uses
+  nonempty fields and preserves the 20,000 cap. It does not use the 100k summary
+  exception or B23's later `countOnly` API. Counts cover the complete predicate
+  set before paging, including the elided tail.
+
+The timer starts immediately before the service call with a trusted host-bound
+principal and ends at its complete return. It includes current authorization,
+query work and commit, but excludes authentication transport, token issuance,
+setup, oracle checking and reset. This is a service benchmark, not an HTTP or
+real-host SLO. The 30s cooperative request deadline is the frozen HTTP product
+default; the Writer's shorter existing pre deadline is preserved. Cold means
+the first request of an operation after a fresh composition, with no warmup.
+Fixture setup has already touched the database and OS caches are uncontrolled.
+
+Each case logs one cold, three warmup and 20 measured `CP7_SAMPLE` JSON records.
+`CP7_CASE` records report response p95 for all 20 attempts, and a successful
+latency p95 only when **all twenty complete correctly**. Refusals, deadlines and
+SLO misses remain explicit RED results with `target_pass=false`. Correctness
+errors, unexpected errors, partial results, stale authority, wrong membership,
+wrong counts or a false claim receipt fail the Bazel test. A green harness
+execution therefore does not assert that the performance targets passed.
+API counters retain Query/Get calls and Query output rows; observed keys are
+null because Observe/Lock internals are outside the released scope. Additional
+counters observe actual payload reconstructions and body bytes (including
+discarded candidates), raw Query key scans, prefix metadata state decodes and
+encoded bytes, grouping input visits/groups, and item construction. These
+hooks also run through concrete WriteTx readers. Product composition receives
+the raw store, preserving every optional reader/transaction/store capability.
+SQL executor visits, Observe/Lock state decoding, and historical patch replay
+bytes remain UNMEASURED. Logical reconstructed body bytes are not replay bytes.
+
+The explicit raw-group Q5 regression distinguishes the correct winner from
+rotation over authorized members alone. The Ready regression changes an
+authorized tail beyond the first page, preserving that page and authorization
+generation while requiring the membership-specific cursor refusal.
+
+The separate `cp7_dense_semantics_test` completes the unchanged ordinary Q6 at
+100k and requires `scope_too_large` under the 20k cap. It also completes a
+separately named positive summary decoded from present `fields=[]` and
+`groupBy=["type"]`, after proving finite CP7 compiler eligibility, with 100k
+inputs and one group. Like the existing correctness checks, these semantic
+calls use Background; they supply no benchmark latency or deadline-success
+claim. The original timed Q6 and cold/3/20 matrix are unchanged. Accounting
+explicitly exposes existing summary item construction even though its output
+contains no payload rows.
+
+Run all declared cases through the approved remote wrapper:
+
+```sh
+remote-bazel "$PWD" HEAD cp7-focused -- test \
+  //internal/integration/cp7latency:cp7_latency_test \
+  --nocache_test_results --test_output=all --test_arg=-test.v \
+  --test_timeout=900,900,900,9000
+```
+
+The final whole-tree command uses the same options with `//...`. Only these
+new tests declare the eternal timeout class at the frozen base; existing test
+budgets remain 900s. The scheduled workflow gives each engine its own RunsOn
+job. A combined whole-tree run may execute the two stores concurrently, so its
+measurements also record that broader workload context. No test is manual,
+filtered out or skipped to make the whole gate pass.
+
+Full S1 remains 0/28 and E3 is 5/5 bounded. This baseline does not qualify product
+authorization races, terminal claims, the 200-agent runtime or a durable SLO.
+D productization requires a later independently reviewed PR against this
+harness. The reviewed D fixture and rejected split-lock variants are unchanged.
