@@ -264,23 +264,23 @@ func TestB27ConfigUnionStoredOntologyAndReopenAcrossDrivers(t *testing.T) {
 					t.Fatal(err)
 				}
 				assertStoredConfigUnion(t, s, data, profile)
-				before := relationState(t, s)
+				before := configUnionSnapshotState(t, s, data, profile)
 				if len(before.Changesets) != 1 || before.Changesets[0].Kind != model.ChangesetRestore {
 					t.Fatalf("import fabricated source history: %+v", before.Changesets)
 				}
 				if kind != "memory" {
 					s.reopen()
 					assertStoredConfigUnion(t, s, data, profile)
-					if !reflect.DeepEqual(before, relationState(t, s)) {
+					if !reflect.DeepEqual(before, configUnionSnapshotState(t, s, data, profile)) {
 						t.Fatal("configuration/ontology/history changed after real SQL reopen")
 					}
 				}
 				// Reverse has a deliberately separate profile boundary. This
 				// assertion prevents an import success from becoming a reverse claim.
-				state := relationState(t, s)
+				state := configUnionSnapshotState(t, s, data, profile)
 				result, err := converterroundtrip.ReverseRestored(s.ctx, s.store)
 				var refusal converterroundtrip.ReverseRefusal
-				if !errors.As(err, &refusal) || refusal.Reason != "missing_source_evidence" || len(result.Result.JSONL) != 0 || !reflect.DeepEqual(state, relationState(t, s)) {
+				if !errors.As(err, &refusal) || refusal.Reason != "missing_source_evidence" || len(result.Result.JSONL) != 0 || !reflect.DeepEqual(state, configUnionSnapshotState(t, s, data, profile)) {
 					t.Fatalf("unreleased strict reverse path was not closed: %v", err)
 				}
 			})
@@ -439,6 +439,110 @@ func assertStoredConfigUnion(t *testing.T, s *stack, data []byte, p driver.Resto
 	if err != nil || receipt == nil {
 		t.Fatalf("successful import receipt missing: %v", err)
 	}
+}
+
+type configUnionSnapshotObservation struct {
+	durableRelationState
+	Receipt driver.IdempotencyRecord
+	Blobs   map[string][]byte
+}
+
+// A snapshot retains its current image and restore receipt, not source log
+// history below its floor. Observe those independently and require the typed
+// refusal instead of using a nil changeset cursor as a complete-history oracle.
+func configUnionSnapshotState(t *testing.T, s *stack, data []byte, p driver.RestoreImportProfile) configUnionSnapshotObservation {
+	t.Helper()
+	state := configUnionSnapshotObservation{
+		durableRelationState: durableRelationState{Versions: map[string][]driver.Version{}, Derived: map[driver.DerivedTable][]driver.DerivedRow{}},
+		Blobs:                map[string][]byte{},
+	}
+	var err error
+	state.Meta, err = s.store.Meta(s.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.HistoryMode != driver.RestoreHistoryModeSnapshot || state.Meta.StoreID != p.SourceStoreID || state.Meta.Head.String() != "1" || state.Meta.HistoryFloor.String() != "1" {
+		t.Fatalf("strict snapshot current-image boundary changed: %+v", state.Meta)
+	}
+	r, err := s.store.Read(s.ctx, driver.View{Incarnation: state.Meta.Incarnation, At: &state.Meta.Head})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	page, err := r.Query(s.ctx, driver.Query{Limit: 1000})
+	if err != nil || page.NextCursor != nil {
+		t.Fatalf("incomplete strict snapshot record census: %v", err)
+	}
+	state.Records = page.Items
+	for _, row := range page.Items {
+		versions, err := r.Versions(s.ctx, row.Ref, driver.PageReq{Limit: 1000})
+		if err != nil || versions.NextCursor != nil {
+			t.Fatalf("incomplete strict snapshot versions: %v", err)
+		}
+		state.Versions[row.Ref.ID] = versions.Items
+	}
+	beforeFloor := driver.Cursor{Incarnation: state.Meta.Incarnation, Revision: model.Natural64(0), Method: "changesets"}
+	for _, cursor := range []*driver.Cursor{nil, &beforeFloor} {
+		changes, err := r.Changesets(s.ctx, cursor, 1000)
+		var truncated driver.ErrTruncated
+		if !errors.As(err, &truncated) || truncated.Floor != state.Meta.HistoryFloor || len(changes) != 0 {
+			t.Fatalf("strict snapshot invented unavailable pre-floor history: cursor=%+v changes=%+v err=%v", cursor, changes, err)
+		}
+	}
+	afterFloor := driver.Cursor{Incarnation: state.Meta.Incarnation, Revision: state.Meta.HistoryFloor, Method: "changesets"}
+	if changes, err := r.Changesets(s.ctx, &afterFloor, 1000); err != nil || len(changes) != 0 {
+		t.Fatalf("strict snapshot has unexpected post-floor history: changes=%+v err=%v", changes, err)
+	}
+	principal, err := driver.PrincipalKey(p.Admission.Actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := p.RequestHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := r.IdempotencyByKey(s.ctx, principal, p.AgentLabel(), p.Method, p.IdempotencyKey)
+	if err != nil || receipt == nil || receipt.ResponsePending || receipt.RequestHash != request || receipt.Commit.Revision != state.Meta.Head {
+		t.Fatalf("strict snapshot receipt missing or changed: %+v %v", receipt, err)
+	}
+	change, err := r.ChangesetByKey(s.ctx, principal, p.AgentLabel(), p.Method, p.IdempotencyKey)
+	if err != nil || change == nil || change.Kind != model.ChangesetRestore || change.Revision != state.Meta.Head || change.Incarnation != state.Meta.Incarnation || change.IdempotencyKey != p.IdempotencyKey || !reflect.DeepEqual(change.Principal, p.Admission.Actor) || !reflect.DeepEqual(*change, receipt.Changeset) {
+		t.Fatalf("strict snapshot restore changeset binding changed: %+v %v", change, err)
+	}
+	state.Receipt = *receipt
+	// This is the actual key-bound restore row, not a reconstructed source log.
+	state.Changesets = []model.Changeset{*change}
+	for _, table := range []driver.DerivedTable{driver.DerivedAncestorClosure, driver.DerivedCutClosure, driver.DerivedAttribute, driver.DerivedGrant, driver.DerivedOntology, driver.DerivedPlugins, driver.DerivedReadyState, driver.DerivedReferenceIndex, driver.DerivedSortKey} {
+		state.Derived[table], err = r.DerivedRows(s.ctx, table, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	archive, err := dumpformat.Read(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archive.Manifest().History != "unavailable" {
+		t.Fatal("strict snapshot control substituted source history")
+	}
+	state.Blobs["archive.tar"], err = r.Blob(s.ctx, driver.Hash(digest(data)))
+	if err != nil || !bytes.Equal(state.Blobs["archive.tar"], data) {
+		t.Fatalf("strict snapshot archive bytes changed: %v", err)
+	}
+	files := archive.Manifest().Files
+	manifest, ok := archive.Member("manifest.json")
+	if !ok {
+		t.Fatal("strict snapshot source manifest missing")
+	}
+	files["manifest.json"] = dumpformat.File{SHA256: digest(manifest), Size: int64(len(manifest))}
+	for name, file := range files {
+		want, present := archive.Member(name)
+		state.Blobs[name], err = r.Blob(s.ctx, driver.Hash(file.SHA256))
+		if !present || err != nil || !bytes.Equal(state.Blobs[name], want) {
+			t.Fatalf("strict snapshot member bytes changed at %s: %v", name, err)
+		}
+	}
+	return state
 }
 
 func sameUnionJSON(a, b any) bool {
@@ -704,13 +808,13 @@ func TestB27ConfigUnionLegacyWrappersRequireExplicitSnapshotAcrossDrivers(t *tes
 							t.Fatalf("explicit snapshot lost the expected strict record %s", id)
 						}
 					}
-					state := relationState(t, s)
+					state := configUnionSnapshotState(t, s, data, profile)
 					if len(state.Changesets) != 1 || state.Changesets[0].Kind != model.ChangesetRestore {
 						t.Fatal("explicit strict snapshot fabricated history")
 					}
 					if kind != "memory" {
 						s.reopen()
-						if !reflect.DeepEqual(state, relationState(t, s)) {
+						if !reflect.DeepEqual(state, configUnionSnapshotState(t, s, data, profile)) {
 							t.Fatal("explicit strict snapshot changed after SQL reopen")
 						}
 					}
