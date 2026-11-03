@@ -62,6 +62,7 @@ func TestFixedPermissionsAcrossDrivers(t *testing.T) {
 			t.Run("authorization_races", func(t *testing.T) { authorizationRaces(t, open) })
 			t.Run("source_publication_failure", func(t *testing.T) { sourcePublicationFailure(t, open) })
 			t.Run("initial_source_publication", func(t *testing.T) { initialSourcePublication(t, open) })
+			t.Run("writer_boolean_presence_and_restamping", func(t *testing.T) { writerPublishesKernelBooleanAndSourceOnlyRestamps(t, open) })
 		})
 	}
 }
@@ -945,7 +946,7 @@ func initialSourcePublication(t *testing.T, open storeFactory) {
 						}
 						continue
 					}
-					kind := map[driver.DerivedRowKey]driver.SelectionFactKind{keys.Grants: driver.SelectionGrantFact, keys.Projects: driver.SelectionProjectFact, keys.Teams: driver.SelectionTeamFact}[*state.Key.Derived]
+					kind := map[driver.DerivedRowKey]driver.SelectionFactKind{keys.Grants: driver.SelectionScopedGrantFact, keys.Projects: driver.SelectionProjectFact, keys.Teams: driver.SelectionTeamFact}[*state.Key.Derived]
 					if index == nil || index.Facts == nil || kind == "" || index.Facts.Kind != kind || len(index.Facts.Rows) != 0 || index.Source.Key.Kind != driver.LockDerived || index.Source.Key.Derived == nil || *index.Source.Key.Derived != keys.Source || !index.Source.Present || index.Source.Revision.String() != after.String() || index.Source.Digest != driver.SelectionDigest(sourceBytes) || index.Incarnation != namespace.Incarnation || index.Validate(state.Key.Derived.Table, *state.Derived) != nil {
 						t.Fatal("capable writer lost explicit complete empty domain/source binding")
 					}
@@ -1020,8 +1021,13 @@ func TestMutableFactsRejectsPublicationDriftBeforeHead(t *testing.T) {
 // Writer.Apply. Missing template on a new create is normalized to BOOLEAN false;
 // a legacy source's absent template stays absent on an ordinary body-only write.
 func TestWriterPublishesKernelBooleanAndSourceOnlyRestamps(t *testing.T) {
+	writerPublishesKernelBooleanAndSourceOnlyRestamps(t, func(*testing.T) driver.Store { return memory.New() })
+}
+
+func writerPublishesKernelBooleanAndSourceOnlyRestamps(t *testing.T, open storeFactory) {
+	t.Helper()
 	ctx := context.Background()
-	store := memory.New()
+	store := open(t)
 	defer store.Close()
 	lease, err := store.Lease(ctx, "real-projection-writer", driver.LeaseTTL)
 	if err != nil {

@@ -160,8 +160,25 @@ func SelectionProjection(f Facts, source driver.SelectionSource) ([]driver.Deriv
 	if err != nil {
 		return nil, err
 	}
+	// Redundant semantic columns are derived only from this exact, complete
+	// installed source. A matching shape or caller-supplied digest is not a
+	// registry proof. Storage separately reobserves the actual source envelope
+	// in the publishing transaction and restamps its revision at commit.
+	canonical, err := FactsSourceBytes(f)
+	if err != nil {
+		return nil, err
+	}
+	actualKey, keyErr := driver.EncodeLockKey(source.Key)
+	expectedKey, _ := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockDerived, Derived: &keys.Source})
+	if keyErr != nil || actualKey != expectedKey || !source.Present || source.Digest != driver.SelectionDigest(canonical) {
+		return nil, fmt.Errorf("selection facts require the complete same installed source")
+	}
+	projects := make(map[string]string, len(f.Projects))
+	for _, project := range f.Projects {
+		projects[project.Ref.ID] = project.Name
+	}
 	sets := []driver.SelectionFacts{
-		{Kind: driver.SelectionGrantFact, Rows: []driver.SelectionFact{}},
+		{Kind: driver.SelectionScopedGrantFact, Rows: []driver.SelectionFact{}},
 		{Kind: driver.SelectionProjectFact, Rows: []driver.SelectionFact{}},
 		{Kind: driver.SelectionTeamFact, Rows: []driver.SelectionFact{}},
 	}
@@ -170,7 +187,16 @@ func SelectionProjection(f Facts, source driver.SelectionSource) ([]driver.Deriv
 		if err != nil {
 			return nil, err
 		}
-		sets[0].Rows = append(sets[0].Rows, driver.SelectionFact{Kind: driver.SelectionGrantFact, Subject: SelectionSubject(grant.Subject), Scope: scope, Role: grant.Role})
+		ref := grant.Scope.Ref
+		fact := driver.SelectionFact{Kind: driver.SelectionScopedGrantFact, Subject: SelectionSubject(grant.Subject), Scope: scope, Role: grant.Role, ScopeKind: driver.SelectionScopeKind(grant.Scope.Kind), ScopeRef: &ref}
+		if grant.Scope.Kind == authz.ProjectScope {
+			name, found := projects[grant.Scope.Ref.ID]
+			if !found || name == "" {
+				return nil, fmt.Errorf("selection project scope is absent from the same registry")
+			}
+			fact.ProjectName = &name
+		}
+		sets[0].Rows = append(sets[0].Rows, fact)
 	}
 	for _, project := range f.Projects {
 		sets[1].Rows = append(sets[1].Rows, driver.SelectionFact{Kind: driver.SelectionProjectFact, Name: project.Name, Active: project.Active})

@@ -23,6 +23,22 @@ go_library(
 )
 
 go_test(
+    name = "scoped_projection_test",
+    srcs = ["scoped_projection_test.go"],
+    embed = [":authzrpc"],
+    deps = [
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+    ],
+)
+
+go_test(
     name = "prepared_authz_test",
     srcs = ["binding_test.go", "prepared_test.go"],
     embed = [":authzrpc"],
