@@ -72,6 +72,9 @@ func (t *transaction) putTypedSource(ctx context.Context, record driver.Record, 
 	return t.putSourceRecord(ctx, record, &declaration)
 }
 func (t *transaction) prepareSourcePublication(ctx context.Context, revision model.Revision) (sourceindex.Plan, error) {
+	if err := t.prepareSelectionPublication(ctx); err != nil {
+		return sourceindex.Plan{}, err
+	}
 	next := t.meta
 	next.Head = revision
 	if t.restore != nil {
