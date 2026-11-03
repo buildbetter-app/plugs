@@ -504,12 +504,47 @@ func TestEpicProgressIndexedResultMatchesScanPath(t *testing.T) {
 					t.Fatalf("indexed result differs from scan path:\nindexed=%+v\nscanned=%+v", indexed, scanned)
 				}
 			}
+			// A scope adapter's visible set must not bypass an additional host
+			// read boundary. The denied visible child joins only the remainder.
+			narrow := f.viewConfig
+			baseRead := narrow.AuthorizeRead
+			narrow.AuthorizeRead = func(ctx context.Context, by model.PrincipalRef, resource model.ResourceRef, project string) error {
+				if resource.Ref.ID == g.done.ID {
+					return &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+				}
+				return baseRead(ctx, by, resource, project)
+			}
+			narrowIndexed, err := viewops.New(&observedReadStore{store: f.store, observer: f.reads}, f.lease, narrow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			narrowScan, err := viewops.New(&unindexedReadStore{store: f.store}, f.lease, narrow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			indexed, err := runProgress(t, narrowIndexed, by, g.parent, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scanned, err := runProgress(t, narrowScan, by, g.parent, nil)
+			if err != nil || !reflect.DeepEqual(indexed, scanned) || indexed.Groups[0].Count != 1 || indexed.Groups[0].Elided == nil || indexed.Groups[0].Elided.Count != 2 {
+				t.Fatalf("host read boundary changed: indexed=%+v scanned=%+v err=%v", indexed, scanned, err)
+			}
+			// Real readers expose the interface even below coverage start. That
+			// revision must still use the scan, never fabricate child absence.
+			f.reads.reset()
+			beforeCoverage := &viewops.AsOf{Revision: model.Natural64(0), Incarnation: meta.Incarnation}
+			_, indexedErr := runProgress(t, f.views, by, g.parent, beforeCoverage)
+			_, scannedErr := runProgress(t, scanService, by, g.parent, beforeCoverage)
+			if !reflect.DeepEqual(errorData(t, indexedErr), errorData(t, scannedErr)) || errorData(t, indexedErr).Code != "not_found" || f.reads.queryCount() == 0 || f.reads.hierarchyCount() == 0 {
+				t.Fatalf("pre-coverage fallback changed: indexed=%v scanned=%v queries=%d hierarchy=%d", indexedErr, scannedErr, f.reads.queryCount(), f.reads.hierarchyCount())
+			}
 			withoutParent, err := f.keys.Authenticate(context.Background(), f.viewer(t, visible))
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, indexedErr := runProgress(t, f.views, withoutParent, g.parent, nil)
-			_, scannedErr := runProgress(t, scanService, withoutParent, g.parent, nil)
+			_, indexedErr = runProgress(t, f.views, withoutParent, g.parent, nil)
+			_, scannedErr = runProgress(t, scanService, withoutParent, g.parent, nil)
 			if !reflect.DeepEqual(errorData(t, indexedErr), errorData(t, scannedErr)) {
 				t.Fatalf("hidden-parent refusal differs: indexed=%+v scanned=%+v", errorData(t, indexedErr), errorData(t, scannedErr))
 			}
