@@ -21,11 +21,14 @@ type commitQueryCaptureKey struct{}
 type commitQueryEventKey struct{}
 
 type commitQueryEvent struct {
-	sql       string
-	keys      int
-	rows      int64
-	completed bool
-	err       error
+	sql                 string
+	argumentTypes       []string
+	resultFormatOptions int
+	keyType             string
+	keys                int
+	rows                int64
+	completed           bool
+	err                 error
 }
 
 type commitQueryCapture struct {
@@ -48,8 +51,22 @@ func (commitQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data 
 		return ctx
 	}
 	event := &commitQueryEvent{sql: sql}
-	if len(data.Args) > 0 {
-		switch keys := data.Args[0].(type) {
+	for _, arg := range data.Args {
+		event.argumentTypes = append(event.argumentTypes, fmt.Sprintf("%T", arg))
+	}
+	args := data.Args
+	// pgx/stdlib QueryContext prepends its result-format option. Query traces
+	// run before pgx consumes that option, so it is not SQL bind parameter $1.
+	// Skip only this known prefix; unsupported bind types still fail the oracle.
+	if len(args) > 0 {
+		if _, ok := args[0].(pgx.QueryResultFormatsByOID); ok {
+			event.resultFormatOptions = 1
+			args = args[1:]
+		}
+	}
+	if len(args) > 0 {
+		event.keyType = fmt.Sprintf("%T", args[0])
+		switch keys := args[0].(type) {
 		case [][]byte:
 			event.keys = len(keys)
 		case []byte:
@@ -145,6 +162,7 @@ func requireBoundedCommitQueries(t *testing.T, capture *commitQueryCapture, want
 			if event.keys < 1 || event.keys > 512 || strings.Contains(event.sql, "body") || strings.Contains(event.sql, "ref,") {
 				t.Fatalf("unbounded or body-materializing preimage query: %+v", event)
 			}
+			t.Logf("actual PG Commit preimage argument_types=%v result_format_options=%d key_type=%s keys=%d rows=%d", event.argumentTypes, event.resultFormatOptions, event.keyType, event.keys, event.rows)
 		}
 	}
 	if metadataQueries == 0 || metadataRows != wantRows {
