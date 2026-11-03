@@ -328,7 +328,9 @@ func (f *w9Fixture) seedBatch(t *testing.T, records []driver.Record, batch, comp
 		t.Fatal(err)
 	}
 	mark("Commit", -1)
+	t.Logf("W9 seed Commit start batch=%d size=%d completed_records=%d elapsed=%s", batch, len(records), completed, time.Since(f.started))
 	cs, err := tx.Commit(ctx, header)
+	t.Logf("W9 seed Commit end batch=%d elapsed=%s duration=%s error_type=%T error_value=%#v error=%v", batch, time.Since(f.started), time.Since(stageStarted), err, err, err)
 	if err != nil {
 		t.Fatal(err)
 	}
