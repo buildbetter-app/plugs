@@ -39,7 +39,50 @@
     "spec_id",
     "close_reason"
   ],
-  "ids": ["pub-root", "pub-root.1", "pub-dependency", "pub-keep"],
+  "ids": [
+    "pub-root",
+    "pub-root.1",
+    "pub-dependency",
+    "pub-keep"
+  ],
   "memory_key": "public-memory",
-  "config_key": "custom.public_recording"
+  "config_key": "custom.public_recording",
+  "external_families": [
+    "user-legacy-config",
+    "user-xdg-config",
+    "user-native-config",
+    "project-config",
+    "beads-dir-config",
+    "project-local-config",
+    "environment-and-flags",
+    "metadata-json",
+    "legacy-config-json",
+    "beads-hooks",
+    "legacy-hooks",
+    "git-hooks",
+    "external-hook-managers",
+    "routes-jsonl",
+    "formulas",
+    "formula-search-paths",
+    "issues-jsonl",
+    "interactions-jsonl",
+    "dolt-ignore",
+    "dolt-nonlocal-tables",
+    "dolt-working-set",
+    "dolt-commit-graph",
+    "dolt-remotes",
+    "dolt-conflicts",
+    "dolt-history-maintenance",
+    "store-files-and-quiescence"
+  ],
+  "status_categories": {
+    "open": "unstarted",
+    "in_progress": "started",
+    "hooked": "started",
+    "blocked": "backlog",
+    "deferred": "backlog",
+    "pinned": "backlog",
+    "frozen": "backlog",
+    "closed": "completed"
+  }
 }

@@ -48,18 +48,21 @@ type recordingProfile struct {
 		Label     string `json:"label"`
 		Binary    string `json:"binary"`
 	} `json:"exporter"`
-	VersionKey string `json:"version_key"`
+	VersionKey     string `json:"version_key"`
+	GoModuleSHA256 string `json:"go_module_sha256"`
 }
 
 type recordingFixture struct {
-	Schema           string   `json:"schema"`
-	SourceCommit     string   `json:"source_commit"`
-	SourceTree       string   `json:"source_tree"`
-	Commands         []string `json:"commands"`
-	ProjectionFields []string `json:"projection_fields"`
-	IDs              []string `json:"ids"`
-	MemoryKey        string   `json:"memory_key"`
-	ConfigKey        string   `json:"config_key"`
+	Schema           string            `json:"schema"`
+	SourceCommit     string            `json:"source_commit"`
+	SourceTree       string            `json:"source_tree"`
+	Commands         []string          `json:"commands"`
+	ProjectionFields []string          `json:"projection_fields"`
+	IDs              []string          `json:"ids"`
+	MemoryKey        string            `json:"memory_key"`
+	ConfigKey        string            `json:"config_key"`
+	ExternalFamilies []string          `json:"external_families"`
+	StatusCategories map[string]string `json:"status_categories"`
 }
 
 type publicArtifact struct {
@@ -139,7 +142,7 @@ func TestPublicPairedRecording(t *testing.T) {
 		t.Fatal("public manifest changed after artifact admission")
 	}
 	writeRecordingBytes(t, filepath.Join(root, "public-companion-manifest.json"), manifest)
-	buildInfo := recordBuildInfo(t, root, artifact)
+	buildInfo := recordBuildInfo(t, root, artifact, profile)
 	t.Logf("PUBLIC_RECORDING_ARTIFACT build_run=%s binary_sha256=%s manifest_sha256=%s build_info_sha256=%s", artifact.BuildRun, artifact.SHA256, artifact.ManifestSHA, hashBytes(buildInfo))
 
 	run1 := recordPublicRun(t, root, storeRoot, "run1", artifact, fixture)
@@ -182,7 +185,7 @@ func readRecordingProfile(t *testing.T) recordingProfile {
 	t.Helper()
 	var profile recordingProfile
 	data := recordingRunfile(t, "testdata/public-companion-profile.json")
-	if err := json.Unmarshal(data, &profile); err != nil || profile.Schema == "" || profile.Exporter.TargetKey == "" || profile.Exporter.Label == "" || profile.Exporter.Binary == "" || profile.VersionKey == "" {
+	if err := json.Unmarshal(data, &profile); err != nil || profile.Schema == "" || profile.Exporter.TargetKey == "" || profile.Exporter.Label == "" || profile.Exporter.Binary == "" || profile.VersionKey == "" || len(profile.GoModuleSHA256) != 64 || !isLowerHex(profile.GoModuleSHA256) {
 		t.Fatalf("public companion profile is invalid: %v", err)
 	}
 	return profile
@@ -194,6 +197,21 @@ func readRecordingFixture(t *testing.T) recordingFixture {
 	data := recordingRunfile(t, "testdata/public-recording-fixture.json")
 	if err := json.Unmarshal(data, &fixture); err != nil {
 		t.Fatalf("public recording fixture is invalid: %v", err)
+	}
+	families := map[string]bool{}
+	for _, family := range fixture.ExternalFamilies {
+		if strings.TrimSpace(family) == "" || families[family] {
+			t.Fatal("public recording fixture has an empty or duplicate source family")
+		}
+		families[family] = true
+	}
+	if len(families) != 26 || len(fixture.StatusCategories) != 8 {
+		t.Fatal("public recording fixture lacks the complete pinned source profile")
+	}
+	for status, category := range fixture.StatusCategories {
+		if status == "" || category != "unstarted" && category != "started" && category != "backlog" && category != "completed" {
+			t.Fatal("public recording fixture has an invalid status projection")
+		}
 	}
 	return fixture
 }
@@ -311,19 +329,45 @@ func writeRecordingBytes(t *testing.T, path string, data []byte) {
 	}
 }
 
-func recordBuildInfo(t *testing.T, root string, artifact publicArtifact) []byte {
+func recordBuildInfo(t *testing.T, root string, artifact publicArtifact, profile recordingProfile) []byte {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, "go", "version", "-m", artifact.Binary).CombinedOutput()
-	if err != nil || !bytes.Contains(output, []byte("github.com/steveyegge/beads")) {
+	if err != nil {
 		t.Fatalf("pinned Beads build info is unavailable: %v\n%s", err, output)
+	}
+	if err := checkPublicBuildInfo(output, profile.GoModuleSHA256); err != nil {
+		t.Fatalf("pinned Beads main module is not profile-bound: %v", err)
 	}
 	path := filepath.Join(root, "build-info.txt")
 	if err := os.WriteFile(path, output, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return output
+}
+
+// The exact source module is a hash pin in the companion profile. Match the
+// main module record; a matching dependency or path substring is insufficient.
+func checkPublicBuildInfo(data []byte, expectedModuleSHA256 string) error {
+	if len(expectedModuleSHA256) != 64 || !isLowerHex(expectedModuleSHA256) {
+		return errors.New("invalid source module hash pin")
+	}
+	count := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] != "mod" {
+			continue
+		}
+		count++
+		if len(fields) < 3 || hashBytes([]byte(fields[1])) != expectedModuleSHA256 {
+			return errors.New("main module does not match the sealed source profile")
+		}
+	}
+	if count != 1 {
+		return errors.New("build info must contain exactly one main module")
+	}
+	return nil
 }
 
 func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact publicArtifact, fixture recordingFixture) publicRun {
@@ -347,26 +391,26 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 			t.Fatal(err)
 		}
 	}
-	pinned := filepath.Join(storeRoot, "bd-pinned")
+	pinned := filepath.Join(storeRoot, "reference-pinned")
 	copyPinned(t, artifact.Binary, pinned, artifact.SHA256, artifact.Size)
 	env := recordingEnv(source)
 	commandGit := func(label, store string, dir string, argv []string) []byte {
 		return runCommand(t, run.Root, &run.Commands, label, store, dir, env(dir), append([]string{"git"}, argv...), nil)
 	}
-	commandBD := func(label, store, dir string, argv []string, stdin []byte) []byte {
+	commandReference := func(label, store, dir string, argv []string, stdin []byte) []byte {
 		return runCommand(t, run.Root, &run.Commands, label, store, dir, env(dir), append([]string{pinned}, argv...), stdin)
 	}
 	commandGit("source-git-init", "source", source, []string{"-c", "init.defaultBranch=main", "init", "--quiet"})
-	version := commandBD("source-version", "source", source, []string{"version", "--json"}, nil)
+	version := commandReference("source-version", "source", source, []string{"version", "--json"}, nil)
 	var identity struct {
 		Commit string `json:"commit"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(version), &identity); err != nil || identity.Commit != publicBeadsCommit {
 		t.Fatalf("pinned version identity changed: %v %s", err, version)
 	}
-	commandBD("source-init", "source", source, []string{"init", "--prefix", "pub", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, nil)
-	commandBD("source-config", "source", source, []string{"--json", "config", "set", fixture.ConfigKey, "paired-public"}, nil)
-	configOutput := commandBD("source-config-list", "source", source, []string{"--json", "config", "list"}, nil)
+	commandReference("source-init", "source", source, []string{"init", "--prefix", "pub", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, nil)
+	commandReference("source-config", "source", source, []string{"--json", "config", "set", fixture.ConfigKey, "paired-public"}, nil)
+	configOutput := commandReference("source-config-list", "source", source, []string{"--json", "config", "list"}, nil)
 	var settings map[string]json.RawMessage
 	if err := json.Unmarshal(bytes.TrimSpace(configOutput), &settings); err != nil {
 		t.Fatalf("real config list is invalid JSON: %v %s", err, configOutput)
@@ -379,49 +423,49 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	if err := json.Unmarshal(rawSetting, &configured); err != nil || configured != "paired-public" {
 		t.Fatalf("real config list omitted %s: %v %s", fixture.ConfigKey, err, configOutput)
 	}
-	commandBD("source-remember", "source", source, []string{"--json", "remember", "paired-store memory", "--key", fixture.MemoryKey}, nil)
-	commandBD("source-create-root", "source", source, []string{"--json", "create", "--id", "pub-root", "--type", "task", "--title", "Public root", "--description", "relational root", "--metadata", `{"card":"B27","public":true}`, "--labels", "alpha,beta", "--spec-id", "s1/b27"}, nil)
-	commandBD("source-create-child", "source", source, []string{"--json", "create", "--type", "bug", "--title", "Public child", "--description", "parented child", "--parent", "pub-root", "--metadata", `{"child":true}`, "--labels", "child,public", "--priority", "1"}, nil)
-	commandBD("source-create-dependency", "source", source, []string{"--json", "create", "--id", "pub-dependency", "--type", "task", "--title", "Public dependency", "--description", "dependency row"}, nil)
-	commandBD("source-dependency", "source", source, []string{"--json", "dep", "add", publicChildID, "pub-dependency"}, nil)
-	commandBD("source-label", "source", source, []string{"--json", "label", "add", "pub-root", "reviewed"}, nil)
-	commandBD("source-comment", "source", source, []string{"--json", "comment", "pub-root", "preserve this public comment"}, nil)
-	commandBD("source-close", "source", source, []string{"--json", "close", "pub-dependency", "--reason", "dependency complete"}, nil)
+	commandReference("source-remember", "source", source, []string{"--json", "remember", "paired-store memory", "--key", fixture.MemoryKey}, nil)
+	commandReference("source-create-root", "source", source, []string{"--json", "create", "--id", "pub-root", "--type", "task", "--title", "Public root", "--description", "relational root", "--metadata", `{"card":"B27","public":true}`, "--labels", "alpha,beta", "--spec-id", "s1/b27"}, nil)
+	commandReference("source-create-child", "source", source, []string{"--json", "create", "--type", "bug", "--title", "Public child", "--description", "parented child", "--parent", "pub-root", "--metadata", `{"child":true}`, "--labels", "child,public", "--priority", "1"}, nil)
+	commandReference("source-create-dependency", "source", source, []string{"--json", "create", "--id", "pub-dependency", "--type", "task", "--title", "Public dependency", "--description", "dependency row"}, nil)
+	commandReference("source-dependency", "source", source, []string{"--json", "dep", "add", publicChildID, "pub-dependency"}, nil)
+	commandReference("source-label", "source", source, []string{"--json", "label", "add", "pub-root", "reviewed"}, nil)
+	commandReference("source-comment", "source", source, []string{"--json", "comment", "pub-root", "preserve this public comment"}, nil)
+	commandReference("source-close", "source", source, []string{"--json", "close", "pub-dependency", "--reason", "dependency complete"}, nil)
 
 	run.SourceExportPath = filepath.Join(run.Root, "source-export.jsonl")
-	commandBD("source-export", "source", source, []string{"export", "--include-memories", "--output", run.SourceExportPath}, nil)
+	commandReference("source-export", "source", source, []string{"export", "--include-memories", "--output", run.SourceExportPath}, nil)
 	sourceExport, err := os.ReadFile(run.SourceExportPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	run.SourceExportSHA256 = hashBytes(sourceExport)
-	sourceRawProjection, err := projectJSONL(sourceExport, fixture.ProjectionFields)
+	sourceRawProjection, err := projectJSONL(sourceExport, fixture.ProjectionFields, fixture.StatusCategories)
 	if err != nil {
 		t.Fatalf("source JSONL projection: %v", err)
 	}
 	writeRecordingBytes(t, filepath.Join(run.Root, "source-jsonl-projection.json"), sourceRawProjection)
 	validateSourceRows(t, sourceRawProjection, fixture)
-	validateInventoryAndArchive(t, &run, commandBD, "source", source, run.Root, fixture)
+	validateInventoryAndArchive(t, &run, commandReference, "source", source, run.Root, fixture)
 
 	commandGit("target-git-init", "target", target, []string{"-c", "init.defaultBranch=main", "init", "--quiet"})
-	commandBD("target-version", "target", target, []string{"version", "--json"}, nil)
-	commandBD("target-init", "target", target, []string{"init", "--prefix", "pub", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, nil)
-	commandBD("target-create-keep", "target", target, []string{"--json", "create", "--id", "pub-keep", "--type", "task", "--title", "Keep target row", "--description", "must survive import"}, nil)
-	commandBD("target-import", "target", target, []string{"--json", "import", run.SourceExportPath}, nil)
+	commandReference("target-version", "target", target, []string{"version", "--json"}, nil)
+	commandReference("target-init", "target", target, []string{"init", "--prefix", "pub", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, nil)
+	commandReference("target-create-keep", "target", target, []string{"--json", "create", "--id", "pub-keep", "--type", "task", "--title", "Keep target row", "--description", "must survive import"}, nil)
+	commandReference("target-import", "target", target, []string{"--json", "import", run.SourceExportPath}, nil)
 	run.TargetExportPath = filepath.Join(run.Root, "target-export.jsonl")
-	commandBD("target-export", "target", target, []string{"export", "--include-memories", "--output", run.TargetExportPath}, nil)
+	commandReference("target-export", "target", target, []string{"export", "--include-memories", "--output", run.TargetExportPath}, nil)
 	targetExport, err := os.ReadFile(run.TargetExportPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	run.TargetExportSHA256 = hashBytes(targetExport)
-	targetRawProjection, err := projectJSONL(targetExport, fixture.ProjectionFields)
+	targetRawProjection, err := projectJSONL(targetExport, fixture.ProjectionFields, fixture.StatusCategories)
 	if err != nil {
 		t.Fatalf("target JSONL projection: %v", err)
 	}
 	writeRecordingBytes(t, filepath.Join(run.Root, "target-jsonl-projection.json"), targetRawProjection)
 	assertTargetContainsSource(t, sourceRawProjection, targetRawProjection, fixture)
-	validateInventoryAndArchive(t, &run, commandBD, "target", target, run.Root, fixture)
+	validateInventoryAndArchive(t, &run, commandReference, "target", target, run.Root, fixture)
 
 	sourceArchive, err := dumpformat.ReadFile(run.SourceArchivePath)
 	if err != nil {
@@ -520,7 +564,7 @@ func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive 
 					t.Fatal(err)
 				}
 				writeRecordingBytes(t, base+"-report.json", report)
-				projection, err := projectJSONL(live.Result.JSONL, fixture.ProjectionFields)
+				projection, err := projectJSONL(live.Result.JSONL, fixture.ProjectionFields, fixture.StatusCategories)
 				if err != nil {
 					t.Fatalf("%s actual Plug JSONL projection%s: %v", engine, suffix, err)
 				}
@@ -550,10 +594,10 @@ func replayPublicArchive(t *testing.T, output, storeRoot, label string, archive 
 	return hashes
 }
 
-func validateInventoryAndArchive(t *testing.T, run *publicRun, commandBD func(string, string, string, []string, []byte) []byte, label, store, root string, fixture recordingFixture) {
+func validateInventoryAndArchive(t *testing.T, run *publicRun, commandReference func(string, string, string, []string, []byte) []byte, label, store, root string, fixture recordingFixture) {
 	t.Helper()
 	path := filepath.Join(root, label+"-inventory.json")
-	commandBD(label+"-inventory", label, store, []string{"--readonly", "export", "--format", "beads-inventory/1", "--output", path}, nil)
+	commandReference(label+"-inventory", label, store, []string{"--readonly", "export", "--format", "beads-inventory/1", "--output", path}, nil)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("%s inventory was not published: %v", label, err)
@@ -565,7 +609,7 @@ func validateInventoryAndArchive(t *testing.T, run *publicRun, commandBD func(st
 		t.Fatalf("%s inventory sidecars were not retained: %v", label, err)
 	}
 	archivePath := filepath.Join(root, label+"-plug-dump.tar")
-	commandBD(label+"-dump", label, store, []string{"--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", path, "--output", archivePath}, nil)
+	commandReference(label+"-dump", label, store, []string{"--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", path, "--output", archivePath}, nil)
 	archive, err := dumpformat.ReadFile(archivePath)
 	if err != nil {
 		t.Fatalf("%s raw plug-dump is invalid: %v", label, err)
@@ -600,7 +644,7 @@ func validateInventory(data []byte, fixture recordingFixture) error {
 		return fmt.Errorf("invalid capture declarations: %+v", inventory)
 	}
 	expected := map[string]bool{}
-	for _, family := range []string{"user-legacy-config", "user-xdg-config", "user-native-config", "project-config", "beads-dir-config", "project-local-config", "environment-and-flags", "metadata-json", "legacy-config-json", "beads-hooks", "legacy-hooks", "git-hooks", "external-hook-managers", "routes-jsonl", "formulas", "formula-search-paths", "issues-jsonl", "interactions-jsonl", "dolt-ignore", "dolt-nonlocal-tables", "dolt-working-set", "dolt-commit-graph", "dolt-remotes", "dolt-conflicts", "dolt-history-maintenance", "store-files-and-quiescence"} {
+	for _, family := range fixture.ExternalFamilies {
 		expected[family] = true
 	}
 	if len(inventory.External) != len(expected) {
@@ -630,7 +674,7 @@ func validateInventory(data []byte, fixture recordingFixture) error {
 	return nil
 }
 
-func projectJSONL(data []byte, fields []string) ([]byte, error) {
+func projectJSONL(data []byte, fields []string, categories map[string]string) ([]byte, error) {
 	projection := semanticProjection{Issues: map[string]map[string]any{}, Memories: map[string]any{}, Edges: []map[string]any{}, Comments: []map[string]any{}}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
@@ -669,7 +713,7 @@ func projectJSONL(data []byte, fields []string) ([]byte, error) {
 		for _, field := range fields {
 			switch field {
 			case "status_category":
-				item[field] = statusCategory(row["status"])
+				item[field] = statusCategory(row["status"], categories)
 			case "source_type":
 				item[field] = row["issue_type"]
 			default:
@@ -921,7 +965,7 @@ func TestPublicProjectionRejectsRelationCorruption(t *testing.T) {
 func TestPublicProjectionArchiveCloseReasonAndReverseHeader(t *testing.T) {
 	fields := []string{"title", "close_reason"}
 	raw := []byte(`{"_type":"issue","id":"pub-dependency","title":"Public dependency","close_reason":"dependency complete"}` + "\n")
-	want, err := projectJSONL(raw, fields)
+	want, err := projectJSONL(raw, fields, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -951,7 +995,7 @@ func TestPublicProjectionArchiveCloseReasonAndReverseHeader(t *testing.T) {
 		{"late_header", append(append([]byte{}, raw...), header...), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := projectJSONL(tc.data, fields)
+			got, err := projectJSONL(tc.data, fields, nil)
 			if tc.ok {
 				if err != nil || !bytes.Equal(got, want) {
 					t.Fatalf("versioned reverse framing changed semantics: err=%v got=%s", err, got)
@@ -960,6 +1004,37 @@ func TestPublicProjectionArchiveCloseReasonAndReverseHeader(t *testing.T) {
 				t.Fatal("unsupported framing was silently discarded")
 			}
 		})
+	}
+}
+
+// Authored build-info controls do not execute or stand in for a reference binary.
+func TestPublicProjectionBuildInfoRequiresMainModulePin(t *testing.T) {
+	module := "example.invalid/reference"
+	pin := hashBytes([]byte(module))
+	for _, tc := range []struct {
+		name, info, pin string
+		ok              bool
+	}{
+		{"main_module", "reference: go1.26.10\n\tpath\t" + module + "/cmd/reference\n\tmod\t" + module + "\t(devel)\n", pin, true},
+		{"wrong_module", "\tmod\texample.invalid/other\t(devel)\n", pin, false},
+		{"dependency_only", "\tdep\t" + module + "\tv1.0.0\n", pin, false},
+		{"substring_only", "\tmod\t" + module + "-other\t(devel)\n", pin, false},
+		{"missing_module", "reference: go1.26.10\n", pin, false},
+		{"malformed_module", "\tmod\t" + module + "\n", pin, false},
+		{"duplicate_module", "\tmod\t" + module + "\t(devel)\n\tmod\t" + module + "\t(devel)\n", pin, false},
+		{"missing_pin", "\tmod\t" + module + "\t(devel)\n", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkPublicBuildInfo([]byte(tc.info), tc.pin)
+			if (err == nil) != tc.ok {
+				t.Fatalf("main module binding: %v", err)
+			}
+		})
+	}
+	profile := readRecordingProfile(t)
+	fixture := readRecordingFixture(t)
+	if len(profile.GoModuleSHA256) != 64 || len(fixture.ExternalFamilies) != 26 || len(fixture.StatusCategories) != 8 {
+		t.Fatal("recording runfiles lost the sealed source profile")
 	}
 }
 
@@ -1075,19 +1150,12 @@ func equalJSON(left, right any) bool {
 	return err == nil && bytes.Equal(a, b)
 }
 
-func statusCategory(value any) string {
-	switch value {
-	case "open":
-		return "unstarted"
-	case "in_progress", "hooked":
-		return "started"
-	case "blocked", "deferred", "pinned", "frozen":
-		return "backlog"
-	case "closed":
-		return "completed"
-	default:
-		return fmt.Sprint(value)
+func statusCategory(value any, categories map[string]string) string {
+	status := fmt.Sprint(value)
+	if category, ok := categories[status]; ok {
+		return category
 	}
+	return status
 }
 
 func isLowerHex(value string) bool {

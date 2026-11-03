@@ -61,6 +61,10 @@ go_test(
     name = "recorder_validation_test",
     srcs = ["public_recording_test.go"],
     args = ["-test.v", "-test.run=^TestPublicProjection"],
+    data = [
+        "testdata/public-companion-profile.json",
+        "testdata/public-recording-fixture.json",
+    ],
     tags = ["manual"],
     deps = [
         "//internal/core/dumpformat",
