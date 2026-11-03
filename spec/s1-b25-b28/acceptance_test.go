@@ -218,7 +218,7 @@ func assertJSONEqual(t *testing.T, want, got any) {
 
 func setupRelational(t *testing.T, kind string) (*stack, string, string, relationalImage) {
 	t.Helper()
-	s := openStack(t, kind, []string{"s1-parent", "s1-child"})
+	s := openStack(t, kind, []string{"s1-parent"})
 	commit := apply(t, s, model.ChangeSet{Ops: []model.Op{
 		{Kind: model.OpCreate, Create: &model.CreateOp{Key: "parent", Type: "issue", Fields: map[string]any{"title": "original", "description": "keep", "priority": 2, "labels": []string{"alpha", "beta"}}}},
 		{Kind: model.OpCreate, Create: &model.CreateOp{Key: "child", Type: "issue", Parent: ptr(model.RefByKey("parent")), Fields: map[string]any{"title": "child", "labels": []string{"child"}}}},
@@ -226,18 +226,22 @@ func setupRelational(t *testing.T, kind string) (*stack, string, string, relatio
 		{Kind: model.OpComment, Comment: &model.CommentOp{Kind: model.OpComment, Target: model.RefByKey("parent"), Body: "retain this exact comment"}},
 		{Kind: model.OpSetMeta, SetMeta: &model.SetMetaOp{Kind: model.OpSetMeta, Target: model.RefByKey("parent"), Key: "plugin.note", Value: json.RawMessage(`{"nested":true}`)}},
 	}}, writeMeta(1))
-	seen := map[string]bool{}
-	for _, result := range commit.Results {
-		seen[result.Ref.ID] = true
-	}
-	if commit.Revision.String() != "1" || !seen["s1-parent"] || !seen["s1-child"] {
+	if commit.Revision.String() != "1" || len(commit.Results) != 5 {
 		t.Fatalf("relational seed commit=%+v", commit)
 	}
-	row, ok := readRecord(t, s, "s1-parent")
+	parent, child := commit.Results[0].Ref, commit.Results[1].Ref
+	if parent.ID != "s1-parent" || child.ID != "s1-parent.1" {
+		t.Fatalf("relational seed identities: parent=%+v child=%+v", parent, child)
+	}
+	childRow, ok := readRecord(t, s, child.ID)
+	if !ok || relational(t, childRow).Parent == nil || relational(t, childRow).Parent.ID != parent.ID {
+		t.Fatal("committed child alias lost its actual parent edge")
+	}
+	row, ok := readRecord(t, s, parent.ID)
 	if !ok {
 		t.Fatal("seed parent missing")
 	}
-	return s, "s1-parent", "s1-child", relational(t, row)
+	return s, parent.ID, child.ID, relational(t, row)
 }
 
 func ptr(ref model.Ref) *model.Ref { return &ref }

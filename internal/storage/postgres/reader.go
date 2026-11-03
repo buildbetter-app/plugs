@@ -14,13 +14,14 @@ import (
 )
 
 type reader struct {
-	mu     sync.Mutex
-	store  *Store
-	sql    *sql.Tx
-	meta   driver.Meta
-	at     uint64
-	closed bool
-	writer *transaction
+	allocatorImage *driver.AllocatorSnapshot
+	mu             sync.Mutex
+	store          *Store
+	sql            *sql.Tx
+	meta           driver.Meta
+	at             uint64
+	closed         bool
+	writer         *transaction
 	// Writers reserve their connection so cancellation cleanup can wait for
 	// pgx's asynchronous server termination before another lock probe starts.
 	conn        *sql.Conn
@@ -90,6 +91,7 @@ func (r *reader) finish() error {
 		return nil
 	}
 	r.closed = true
+	r.allocatorImage = nil
 	err := r.sql.Rollback()
 	if errors.Is(err, sql.ErrTxDone) {
 		err = nil
@@ -115,7 +117,9 @@ func (r *reader) finish() error {
 		r.writer.derived = nil
 		r.writer.blobs = nil
 		r.writer.allocators = nil
+		r.writer.parentCounters = nil
 		r.writer.bumps = nil
+		r.writer.allocated = nil
 		r.writer.acquired = nil
 		close(r.writer.done)
 	}

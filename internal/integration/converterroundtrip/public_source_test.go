@@ -113,6 +113,16 @@ func TestPublicDoltSourceRestoreHistoryAndLiveReverseAllDrivers(t *testing.T) {
 				}
 				assertPublicStoredImage(t, r, source, p.Admission.Actor)
 				assertPublicHistoryBinding(t, r, source, p, report.Restored, when)
+				// Offline history imports establish live allocator coverage only
+				// at their actual final target head, never at source history heads.
+				allocatorSnapshot, err := r.(driver.AllocatorSnapshotReader).AllocatorSnapshot(ctx)
+				if err != nil || allocatorSnapshot.At != report.Restored.Head || allocatorSnapshot.CoverageFloor != report.Restored.Head || allocatorSnapshot.Incarnation != report.Restored.Incarnation {
+					t.Fatalf("offline history final-head allocator coverage: %+v %v", allocatorSnapshot, err)
+				}
+				allocatorBytes, err := driver.EncodeAllocatorSnapshot(allocatorSnapshot)
+				if err != nil {
+					t.Fatal(err)
+				}
 				allocators, ok := r.(driver.AllocatorReader)
 				if !ok {
 					t.Fatal("allocator readback unavailable")
@@ -133,6 +143,20 @@ func TestPublicDoltSourceRestoreHistoryAndLiveReverseAllDrivers(t *testing.T) {
 					}
 				}
 				r.Close()
+				if test.mode != driver.RestoreHistoryModeSnapshot {
+					head, _ := report.Restored.Head.Uint64()
+					at := model.Natural64(head - 1)
+					oldReader, err := store.Read(ctx, driver.View{Incarnation: report.Restored.Incarnation, At: &at})
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, err = oldReader.(driver.AllocatorSnapshotReader).AllocatorSnapshot(ctx)
+					oldReader.Close()
+					var unavailable *driver.NativeAllocatorSnapshotError
+					if !errors.As(err, &unavailable) || unavailable.Reason != driver.NativeAllocatorCoverageUnavailable {
+						t.Fatalf("source history fabricated allocator coverage: %v", err)
+					}
+				}
 				h, _ := source.SourceHistory()
 				if test.mode == driver.RestoreHistoryModeSnapshot {
 					at := model.Natural64(0)
@@ -175,6 +199,20 @@ func TestPublicDoltSourceRestoreHistoryAndLiveReverseAllDrivers(t *testing.T) {
 					}
 				}
 				edit("Public live reverse edit", "f")
+				at := report.Restored.Head
+				historical, err := store.Read(ctx, driver.View{Incarnation: report.Restored.Incarnation, At: &at})
+				if err != nil {
+					t.Fatal(err)
+				}
+				retained, err := historical.(driver.AllocatorSnapshotReader).AllocatorSnapshot(ctx)
+				historical.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				retainedBytes, err := driver.EncodeAllocatorSnapshot(retained)
+				if err != nil || !bytes.Equal(allocatorBytes, retainedBytes) {
+					t.Fatalf("post-import write lost allocator baseline: %v", err)
+				}
 				before := reverseState(t, store)
 				live, err := ReverseRestored(ctx, store)
 				if err != nil || live.Snapshot.At == nil || live.Snapshot.At.String() != before.Meta.Head.String() || live.Snapshot.Incarnation != report.Restored.Incarnation || live.Result.Digest == baseline.Result.Digest {

@@ -2,6 +2,8 @@ package dumpformat
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -115,5 +117,92 @@ func TestCredentialReferencesMatchProducerPredicate(t *testing.T) {
 		if err := validateSecretReferences(ref); err == nil {
 			t.Fatal("invalid reference accepted")
 		}
+	}
+}
+
+// The wire envelope never treats a missing legacy member as an empty image.
+// Its semantic admission is checked by the native manager; corrupt members
+// and checksums are rejected here before that boundary.
+func TestNativeAllocatorEnvelopeRequiresInventoriedBoundBytes(t *testing.T) {
+	raw := []byte(`{"version":"plug-native-allocator/1","store_id":"source","incarnation":"source-inc","at":0,"coverage_floor":0,"projects":[],"parents":[]}`)
+	members := map[string][]byte{"manifest.json": nil, "config/sources.json": []byte("{}\n"), "records/native.ndjson": nil, "versions.ndjson": nil, "changesets.ndjson": nil, NativeAllocatorMember: raw}
+	paths := []string{"manifest.json", NativeAllocatorMember, "changesets.ndjson", "config/sources.json", "records/native.ndjson", "versions.ndjson"}
+	manifest := Manifest{Format: Format, Schema: 1, Scope: "plug-native-store", History: "head", NativeStoreID: "source", NativeIncarnation: "source-inc", NativeHead: "0", NativeAllocatorProfile: NativeAllocatorVersion, NativeAllocatorDigest: digest(raw), Files: map[string]File{}}
+	bind := func() {
+		h := sha256.New()
+		manifest.Files = map[string]File{}
+		for _, path := range paths[1:] {
+			b := members[path]
+			manifest.Files[path] = File{SHA256: digest(b), Size: int64(len(b))}
+			h.Write([]byte(path))
+			h.Write(b)
+		}
+		manifest.NativeDigest = hex.EncodeToString(h.Sum(nil))
+	}
+	bind()
+	if err := validateNativeArchive(manifest, members, paths); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutation := range []string{"member", "file", "profile-digest", "native-digest"} {
+		t.Run(mutation, func(t *testing.T) {
+			bind()
+			switch mutation {
+			case "member":
+				members[NativeAllocatorMember] = append(append([]byte{}, raw...), ' ')
+			case "file":
+				manifest.Files[NativeAllocatorMember] = File{SHA256: digest(raw), Size: int64(len(raw) + 1)}
+			case "profile-digest":
+				manifest.NativeAllocatorDigest = strings.Repeat("0", 64)
+			case "native-digest":
+				manifest.NativeDigest = strings.Repeat("0", 64)
+			}
+			if err := validateNativeArchive(manifest, members, paths); err == nil {
+				t.Fatal("altered allocator binding accepted")
+			}
+			members[NativeAllocatorMember] = raw
+			manifest.NativeAllocatorDigest = digest(raw)
+		})
+	}
+	delete(members, NativeAllocatorMember)
+	paths = append(paths[:1], paths[2:]...)
+	bind()
+	manifest.NativeAllocatorProfile = ""
+	manifest.NativeAllocatorDigest = ""
+	if err := validateNativeArchive(manifest, members, paths); err != nil {
+		t.Fatalf("historical legacy evidence unreadable: %v", err)
+	}
+}
+
+func TestNativeAllocatorEnvelopeRejectsMalformedInventory(t *testing.T) {
+	valid := `{"version":"plug-native-allocator/1","store_id":"source","incarnation":"source-inc","at":0,"coverage_floor":0,"projects":[],"parents":[]}`
+	for name, raw := range map[string]string{
+		"missing-parents":  strings.Replace(valid, `,"parents":[]`, "", 1),
+		"null-projects":    strings.Replace(valid, `"projects":[]`, `"projects":null`, 1),
+		"null-at":          strings.Replace(valid, `"at":0`, `"at":null`, 1),
+		"unknown-field":    strings.Replace(valid, `"at":0`, `"extra":1,"at":0`, 1),
+		"duplicate-root":   strings.Replace(valid, `"at":0`, `"at":0,"at":1`, 1),
+		"duplicate-nested": strings.Replace(valid, `"projects":[]`, `"projects":[{"prefix":"a","prefix":"b"}]`, 1),
+		"trailing":         valid + `{}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateNativeAllocatorMember([]byte(raw)); err == nil {
+				t.Fatalf("accepted malformed payload %s", raw)
+			}
+		})
+	}
+	if err := validateNativeAllocatorMember([]byte(valid)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNativeAllocatorMemberCannotEnterConverterArchive(t *testing.T) {
+	fixture := newMergeFixture(t, "alpha")
+	data := fixture.bytes(t, func(manifest *Manifest, members map[string][]byte) {
+		raw := []byte(`{"version":"plug-native-allocator/1","store_id":"source","incarnation":"source-inc","at":0,"coverage_floor":0,"projects":[],"parents":[]}`)
+		members[NativeAllocatorMember] = raw
+		manifest.Files[NativeAllocatorMember] = File{SHA256: digest(raw), Size: int64(len(raw))}
+	})
+	if _, err := Read(bytes.NewReader(data)); err == nil {
+		t.Fatal("converter archive admitted native-only allocator member")
 	}
 }

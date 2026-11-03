@@ -228,13 +228,14 @@ func TestTransactionAndDependencyRPCsAcrossMemoryAndSQLite(t *testing.T) {
 			blocker := resultRef(t, blockerCommit, 0)
 
 			cliOut.Reset()
-			if err := session.Run(ctx, []string{"batch", "--changeset", `{"ops":[{"kind":"create","key":"dependent","type":"issue","fields":{"title":"dependent"}},{"kind":"link","from":{"key":"dependent"},"to":{"id":"` + blocker.ID + `"},"linkKind":"blocks"}]}`, "--idempotency-key", key("mixed-batch")}); err != nil {
+			if err := session.Run(ctx, []string{"batch", "--changeset", `{"ops":[{"kind":"create","key":"dependent","type":"issue","fields":{"title":"dependent"}},{"kind":"link","from":{"key":"dependent"},"to":{"id":"` + blocker.ID + `"},"linkKind":"blocks"},{"kind":"create","key":"related","type":"issue","fields":{"title":"related"}}]}`, "--idempotency-key", key("mixed-batch")}); err != nil {
 				t.Fatal(err)
 			}
 			mixedBytes := bytes.TrimSpace(cliOut.Bytes())
 			mixed := decodeCommit(t, mixedBytes)
 			dependent := resultRef(t, mixed, 0)
-			if mixed.Revision.String() != "2" || len(mixed.Results) != 2 || mixed.Results[0].Ref != dependent || mixed.Results[1].Ref != dependent {
+			related := resultRef(t, mixed, 2)
+			if mixed.Revision.String() != "2" || len(mixed.Results) != 3 || mixed.Results[0].Ref != dependent || mixed.Results[1].Ref != dependent || related == dependent {
 				t.Fatalf("mixed tx was not one atomic revision: %+v", mixed)
 			}
 			// A retry through the client proves that the CLI's receipt is the same
@@ -243,6 +244,7 @@ func TestTransactionAndDependencyRPCsAcrossMemoryAndSQLite(t *testing.T) {
 				"ops": []any{
 					map[string]any{"kind": "create", "key": "dependent", "type": "issue", "fields": map[string]any{"title": "dependent"}},
 					map[string]any{"kind": "link", "from": map[string]any{"key": "dependent"}, "to": map[string]any{"id": blocker.ID}, "linkKind": "blocks"},
+					map[string]any{"kind": "create", "key": "related", "type": "issue", "fields": map[string]any{"title": "related"}},
 				},
 			}}, key("mixed-batch"))
 			if err != nil || !replay.Replayed || !bytes.Equal(replay.JSON, mixedBytes) {
@@ -252,12 +254,12 @@ func TestTransactionAndDependencyRPCsAcrossMemoryAndSQLite(t *testing.T) {
 			// Named link/unlink lower to the same graph operation and remain
 			// idempotent through the CLI path.
 			cliOut.Reset()
-			if err := session.Run(ctx, []string{"link", dependent.ID, blocker.ID, "--kind", "relates-to", "--idempotency-key", key("named-link")}); err != nil {
+			if err := session.Run(ctx, []string{"link", dependent.ID, related.ID, "--kind", "relates-to", "--idempotency-key", key("named-link")}); err != nil {
 				t.Fatal(err)
 			}
 			namedLink := bytes.TrimSpace(cliOut.Bytes())
 			cliOut.Reset()
-			if err := session.Run(ctx, []string{"link", dependent.ID, blocker.ID, "--kind", "relates-to", "--idempotency-key", key("named-link")}); err != nil {
+			if err := session.Run(ctx, []string{"link", dependent.ID, related.ID, "--kind", "relates-to", "--idempotency-key", key("named-link")}); err != nil {
 				t.Fatal(err)
 			}
 			if !strings.Contains(cliOut.String(), `"revision":3`) {
@@ -267,7 +269,7 @@ func TestTransactionAndDependencyRPCsAcrossMemoryAndSQLite(t *testing.T) {
 				t.Fatalf("named link replay changed receipt: first=%s replay=%s", namedLink, cliOut.Bytes())
 			}
 			cliOut.Reset()
-			if err := session.Run(ctx, []string{"unlink", dependent.ID, blocker.ID, "--kind", "relates-to", "--idempotency-key", key("named-unlink")}); err != nil {
+			if err := session.Run(ctx, []string{"unlink", dependent.ID, related.ID, "--kind", "relates-to", "--idempotency-key", key("named-unlink")}); err != nil {
 				t.Fatal(err)
 			}
 			unlink := decodeCommit(t, bytes.TrimSpace(cliOut.Bytes()))
@@ -330,6 +332,7 @@ func TestTransactionAndDependencyRPCsAcrossMemoryAndSQLite(t *testing.T) {
 					"ops": []any{
 						map[string]any{"kind": "create", "key": "dependent", "type": "issue", "fields": map[string]any{"title": "dependent"}},
 						map[string]any{"kind": "link", "from": map[string]any{"key": "dependent"}, "to": map[string]any{"id": blocker.ID}, "linkKind": "blocks"},
+						map[string]any{"kind": "create", "key": "related", "type": "issue", "fields": map[string]any{"title": "related"}},
 					},
 				}}, key("mixed-batch"))
 				if err != nil || !r.Replayed {

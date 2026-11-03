@@ -28,7 +28,7 @@ func (t *transaction) prepareRestore(ctx context.Context, source driver.StoreID)
 	if err := t.check(ctx); err != nil {
 		return driver.Meta{}, err
 	}
-	if !t.hasHead || t.restore != nil || len(t.records)+len(t.derived)+len(t.bumps)+len(t.blobs)+len(t.allocators) != 0 {
+	if !t.hasHead || t.restore != nil || len(t.records)+len(t.derived)+len(t.bumps)+len(t.blobs)+len(t.allocators)+len(t.parentCounters) != 0 {
 		return driver.Meta{}, fmt.Errorf("offline restore requires Head before staging")
 	}
 	if err := t.restoreEmpty(ctx); err != nil {
@@ -65,6 +65,9 @@ func (t *transaction) PrepareNativeRestore(ctx context.Context, p driver.NativeR
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if err := t.nativeAllocatorLocks(bound.AllocatorBinding); err != nil {
+		return driver.Meta{}, err
+	}
 	m, err := t.prepareRestore(ctx, bound.StoreID)
 	if err == nil {
 		t.nativeRestore = &bound

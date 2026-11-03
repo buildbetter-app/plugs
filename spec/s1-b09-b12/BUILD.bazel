@@ -1,0 +1,109 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+go_test(
+    name = "s1_b09_b12_test",
+    srcs = [
+        "accepted_replay_test.go",
+        "accepted_source_test.go",
+        "reference_test.go",
+        "replay_test.go",
+    ],
+    embedsrcs = [
+        "provenance.json",
+        "projection.py",
+        "record_reference.py",
+        "record_reference_test.py",
+        "vectors.json",
+    ] + glob(["reference/*.json", "reference-v2/*.json"]),
+    args = ["-test.v"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/storage/conformance",
+        "//internal/storage/depid",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/sqlite",
+    ],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
+
+_CAPTURE_EMBEDS = [
+    "capture_harness_test.go",
+    "extract_reference_packet.py",
+    "public_reference_profile.py",
+    "record_reference.py",
+    "reference_capture.py",
+    "reference_capture_policy_test.py",
+    "reference_capture_test.go",
+]
+
+go_test(
+    name = "reference_capture_policy_test",
+    srcs = [
+        "capture_harness_test.go",
+        "capture_policy_test.go",
+    ],
+    embedsrcs = _CAPTURE_EMBEDS,
+    args = ["-test.v"],
+)
+
+# Explicit capture only; //... must never execute the public reference engine.
+go_test(
+    name = "reference_capture_test",
+    srcs = [
+        "capture_harness_test.go",
+        "reference_capture_test.go",
+    ],
+    embedsrcs = _CAPTURE_EMBEDS,
+    args = ["-test.v"],
+    tags = ["local", "manual"],
+    size = "large",
+    timeout = "long",
+)
+
+_PROXIED_EMBEDS = [
+    "extract_proxied_reference_packet.py",
+    "extract_reference_packet.py",
+    "proxied_capture_harness_test.go",
+    "proxied_reference_capture_policy_test.py",
+    "proxied_reference_profile.py",
+    "proxied_runtime.go",
+    "public_reference_profile.py",
+    "record_reference.py",
+    "reference_capture.py",
+    "reference_capture_policy_test.py",
+    "reference_proxied_capture.py",
+    "reference_proxied_capture_test.go",
+]
+
+go_test(
+    name = "reference_proxied_capture_policy_test",
+    srcs = [
+        "proxied_capture_harness_test.go",
+        "proxied_capture_policy_test.go",
+        "proxied_runtime.go",
+    ],
+    embedsrcs = _PROXIED_EMBEDS,
+    args = ["-test.v"],
+)
+
+go_test(
+    name = "reference_proxied_capture_test",
+    srcs = [
+        "proxied_capture_harness_test.go",
+        "proxied_runtime.go",
+        "reference_proxied_capture_test.go",
+    ],
+    embedsrcs = _PROXIED_EMBEDS,
+    args = ["-test.v"],
+    tags = ["local", "manual"],
+    size = "large",
+    timeout = "long",
+)

@@ -8,10 +8,12 @@ go_test(
     tags = ["exclusive", "local", "requires-network"],
     deps = [
         "//internal/core/authz",
+        "//internal/core/dumpformat",
         "//internal/core/model",
         "//internal/core/ontology",
         "//internal/core/pipeline",
         "//internal/core/port",
+        "//internal/core/restore",
         "//internal/core/service",
         "//internal/core/viewops",
         "//internal/plugins/authnapikey",
