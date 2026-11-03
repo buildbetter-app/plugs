@@ -1093,6 +1093,7 @@ spec/s1-b09-b12/capture_harness_test.go
 spec/s1-b09-b12/capture_policy_test.go
 spec/s1-b09-b12/compaction/BUILD.bazel
 spec/s1-b09-b12/compaction/audit_test.go
+spec/s1-b09-b12/compaction/b11_b12_reopen_identity_test.go
 spec/s1-b09-b12/compaction/b12_test.go
 spec/s1-b09-b12/compaction/composition_test.go
 spec/s1-b09-b12/compaction/continuation_test.go
