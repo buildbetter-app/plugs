@@ -512,6 +512,9 @@ internal/integration/postsql/delivery_test.go
 internal/integration/postsql/engine_test.go
 internal/integration/postsql/faults_test.go
 internal/integration/postsql/fixture_test.go
+internal/integration/postsql/gate_idp_test.go
+internal/integration/postsql/gate_session_test.go
+internal/integration/postsql/gate_test.go
 internal/integration/postsql/native_test.go
 internal/integration/postsql/receipts_test.go
 internal/integration/receiptconcurrency/BUILD.bazel
