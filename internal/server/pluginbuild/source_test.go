@@ -998,6 +998,31 @@ func TestWASIGuestCallbackTimerCancellationAndRetirement(t *testing.T) {
 	t.Log("source-built guest positive nanosleep observed; caller cancellation and owner retirement returned context.Canceled with fresh generation state")
 }
 
+func TestWASIGuestExitCannotForgeCallerCancellation(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")
+	}
+	artifact, err := pluginbuild.Build(context.Background(), pluginbuild.Request{Source: wasiCheckout(t, moduleRoot(t)), GoBinary: goPath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = artifact.Close() }()
+	host := wasiGuestHost(t, artifact, time.Second)
+	callerCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	patches, err := host.Mutators()[0].Mutator.Mutate(callerCtx, wasiStateChange("guest-exit", "guest-exit-canceled"), &wasiSnapshot{revision: model.Natural64(1)})
+	if len(patches) != 0 || !hasPluginHostCode(err, pluginhost.ErrMethod) || errors.Is(err, context.Canceled) {
+		t.Fatalf("live source-built guest exit was mistaken for trusted cancellation: patches=%v err=%v", patches, err)
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("guest did not exercise wazero's cancellation-shaped exit: %v", err)
+	}
+	if callerCtx.Err() != nil {
+		t.Fatalf("guest-selected WASI exit canceled the live caller: %v", callerCtx.Err())
+	}
+	t.Log("source-built guest proc_exit(-1) stayed ErrMethod with a live caller and unretired timer")
+}
+
 func TestWASIInitializerCancellationAtGuestStart(t *testing.T) {
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		t.Skip("source-built guest acceptance requires the supported Linux/amd64 build host")

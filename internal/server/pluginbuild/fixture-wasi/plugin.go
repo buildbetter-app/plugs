@@ -128,6 +128,12 @@ func mutate(raw json.RawMessage) uint64 {
 		return response(map[string]any{"error": "invalid after"})
 	}
 	title, _ := after.Fields["title"].(string)
+	if title == "guest-exit-canceled" {
+		// WASI proc_exit(-1) uses wazero's reserved context-canceled code.
+		// The live caller has not canceled, so the host must retain a guest
+		// failure rather than treating this as trusted owner retirement.
+		os.Exit(-1)
+	}
 	if strings.HasPrefix(title, "timer-callback:") {
 		// This is an actual guest callback-owned WASI nanosleep. The host-side
 		// test observes entry through the callback wait context seam and then
