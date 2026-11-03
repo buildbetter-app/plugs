@@ -192,7 +192,7 @@ func TestB18PairedStoreRPCReplayOfRetainedReference(t *testing.T) {
 				t.Fatal("Plug version/no-op deltas differ from independently derived Beads reference")
 			}
 			for i, version := range final.Versions {
-				if version.Revision.String() != fmt.Sprint(i+1) || final.Log[i].Revision.String() != version.Revision.String() || !version.CreatedAt.Equal(final.Log[i].Time) || !version.CreatedAt.Equal(initial.Versions[0].CreatedAt.Add(time.Duration(i)*time.Second)) || version.Principal != b17Actor {
+				if version.Revision.String() != fmt.Sprint(i+1) || final.Log[i].Revision.String() != version.Revision.String() || !version.CreatedAt.Equal(final.Log[i].Time) || !version.CreatedAt.Equal(initial.Versions[0].CreatedAt.Add(time.Duration(i)*time.Second)) || !reflect.DeepEqual(version.Principal, b17Actor) {
 					t.Fatalf("non-atomic revision/time/actor at version %d: %+v changeset=%+v", i, version, final.Log[i])
 				}
 			}
