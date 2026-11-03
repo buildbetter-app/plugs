@@ -45,6 +45,17 @@ type cycleAdmissionTx struct {
 	barrier *cycleAdmissionBarrier
 }
 
+// Preserve the optional atomic graph writer of the real SQL transaction while
+// the barrier observes the lock boundary. Hiding it would turn a certified
+// source update into an untyped Put and mask the concurrency behavior.
+func (tx *cycleAdmissionTx) PutGraphRecord(ctx context.Context, record driver.Record, parent *model.Ref, links []driver.SourceLink) error {
+	writer, ok := tx.WriteTx.(driver.GraphSourceWriter)
+	if !ok {
+		return driver.ErrUnsupported
+	}
+	return writer.PutGraphRecord(ctx, record, parent, links)
+}
+
 func (tx *cycleAdmissionTx) Lock(ctx context.Context, requests []driver.LockRequest) ([]driver.LockState, error) {
 	arrival := cycleAdmissionArrival{lockSetValid: driver.ValidateLockSet(requests) == nil}
 	if at := tx.WriteTx.Snapshot().At; at != nil {
