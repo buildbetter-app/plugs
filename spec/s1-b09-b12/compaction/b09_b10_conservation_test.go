@@ -73,12 +73,40 @@ type b09B10Image struct {
 	Derived   map[driver.DerivedTable][]driver.DerivedRow
 	Allocator driver.AllocatorSnapshot
 	Receipt   *driver.IdempotencyRecord
+
+	Predicates []driver.LockState
+}
+
+// Observe uses the same encoded ordering as Lock, but reads only committed
+// predicate state at the reader's snapshot. Include both eligible children.
+func b09B10PredicateKeys(t *testing.T, children ...model.Ref) []driver.LockKey {
+	t.Helper()
+	if len(children) != 2 {
+		t.Fatal("predicate inventory requires both eligible children")
+	}
+	keys := []driver.LockKey{driver.GraphBlockingSentinelLock}
+	for _, child := range children {
+		sentinel, err := driver.NewBeadSentinel(child.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel})
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, _ := driver.EncodeLockKey(keys[i])
+		b, _ := driver.EncodeLockKey(keys[j])
+		return a < b
+	})
+	if err := driver.ValidateLockKeys(keys); err != nil {
+		t.Fatal(err)
+	}
+	return keys
 }
 
 // The oracle reads committed bytes, complete histories, every declared derived
-// table, allocator inventory and the actual receipt. It imports no compaction
-// selection, delta or projection helper. A supplied reader stays pinned.
-func b09B10ReadImage(t *testing.T, r driver.Reader, floor model.Revision, key string) b09B10Image {
+// table, allocator inventory, actual receipt and predicate states. It imports no
+// compaction selection, delta or projection helper. A supplied reader stays pinned.
+func b09B10ReadImage(t *testing.T, r driver.Reader, floor model.Revision, key string, predicates []driver.LockKey) b09B10Image {
 	t.Helper()
 	ctx := context.Background()
 	image := b09B10Image{View: r.Snapshot(), Versions: map[string][]driver.Version{}, Derived: map[driver.DerivedTable][]driver.DerivedRow{}}
@@ -124,10 +152,27 @@ func b09B10ReadImage(t *testing.T, r driver.Reader, floor model.Revision, key st
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := driver.ValidateLockKeys(predicates); err != nil {
+		t.Fatal(err)
+	}
+	image.Predicates, err = r.Observe(ctx, predicates)
+	if err != nil || len(image.Predicates) != len(predicates) {
+		t.Fatalf("incomplete committed predicate inventory: %+v %v", image.Predicates, err)
+	}
+	for i, state := range image.Predicates {
+		want, err := driver.EncodeLockKey(predicates[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := driver.EncodeLockKey(state.Key)
+		if err != nil || got != want {
+			t.Fatalf("predicate observation identity/order differs at %d: want %q got %q err=%v", i, want, got, err)
+		}
+	}
 	return image
 }
 
-func b09B10FreshImage(t *testing.T, f *fixture, key string) b09B10Image {
+func b09B10FreshImage(t *testing.T, f *fixture, key string, predicates []driver.LockKey) b09B10Image {
 	t.Helper()
 	meta := f.meta()
 	r, err := f.store.Read(context.Background(), driver.View{Incarnation: meta.Incarnation})
@@ -135,7 +180,7 @@ func b09B10FreshImage(t *testing.T, f *fixture, key string) b09B10Image {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	return b09B10ReadImage(t, r, meta.HistoryFloor, key)
+	return b09B10ReadImage(t, r, meta.HistoryFloor, key, predicates)
 }
 
 func b09B10Equal(t *testing.T, label string, want, got any) {

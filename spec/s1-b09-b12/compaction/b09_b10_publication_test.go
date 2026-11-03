@@ -109,7 +109,14 @@ func TestB09B10CompactionPublicationVisibilityRefusalAndReplay(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer pinned.Close()
-			before := b09B10ReadImage(t, pinned, meta.HistoryFloor, key)
+			predicates := b09B10PredicateKeys(t, decodedRef(t, children[0]), decodedRef(t, children[1]))
+			before := b09B10ReadImage(t, pinned, meta.HistoryFloor, key, predicates)
+			for _, state := range before.Predicates {
+				if !state.Present || state.Revision.IsZero() {
+					t.Fatalf("baseline lacks an existing committed predicate: %+v", state)
+				}
+			}
+			b09B10Equal(t, "fresh and pinned predicate baseline", before, b09B10FreshImage(t, f, key, predicates))
 			if before.Receipt != nil || len(before.Records) != 3 || len(before.Allocator.Inventory.Projects) != 1 {
 				t.Fatalf("unproven/nonempty baseline: %+v", before)
 			}
@@ -134,8 +141,8 @@ func TestB09B10CompactionPublicationVisibilityRefusalAndReplay(t *testing.T) {
 				if header.RequestHash == "" || header.IdempotencyKey != writeMeta("admin.compact", key).IdempotencyKey {
 					t.Fatal("hook missed the actual compaction receipt header")
 				}
-				b09B10Equal(t, "fresh reader during staged compaction", before, b09B10FreshImage(t, f, key))
-				b09B10Equal(t, "pinned reader during staged compaction", before, b09B10ReadImage(t, pinned, meta.HistoryFloor, key))
+				b09B10Equal(t, "fresh reader during staged compaction", before, b09B10FreshImage(t, f, key, predicates))
+				b09B10Equal(t, "pinned reader during staged compaction", before, b09B10ReadImage(t, pinned, meta.HistoryFloor, key, predicates))
 				b09B10Equal(t, "independent SQL during staged compaction", sqlBefore, b09B10SQLImage(t, f))
 			}
 			f.store = fault
@@ -146,7 +153,8 @@ func TestB09B10CompactionPublicationVisibilityRefusalAndReplay(t *testing.T) {
 			}
 			f.assertSameHead(meta)
 			f.assertNoReceipt("admin.compact", key)
-			b09B10Equal(t, "determinate refusal", before, b09B10FreshImage(t, f, key))
+			b09B10Equal(t, "determinate refusal", before, b09B10FreshImage(t, f, key, predicates))
+			b09B10Equal(t, "pinned reader after determinate refusal", before, b09B10ReadImage(t, pinned, meta.HistoryFloor, key, predicates))
 			b09B10Equal(t, "SQL refusal", sqlBefore, b09B10SQLImage(t, f))
 
 			// The identical failed key remains retryable. Only a real publication
@@ -158,7 +166,7 @@ func TestB09B10CompactionPublicationVisibilityRefusalAndReplay(t *testing.T) {
 			if calls != 2 || fault.commits != 2 || !reflect.DeepEqual(inputs[0], inputs[1]) {
 				t.Fatalf("refusal/lost-ack selected or summarized extra rows: calls=%d commits=%d inputs=%+v", calls, fault.commits, inputs)
 			}
-			after := b09B10FreshImage(t, f, key)
+			after := b09B10FreshImage(t, f, key, predicates)
 			if after.Receipt == nil || after.Receipt.ResponsePending || after.Receipt.Commit.Revision.String() != fmt.Sprint(commit["revision"]) || len(after.Log) != len(before.Log)+1 || len(after.Records) != len(before.Records) {
 				t.Fatalf("publication lacks exactly one durable final receipt/log: %+v", after.Receipt)
 			}
@@ -178,6 +186,23 @@ func TestB09B10CompactionPublicationVisibilityRefusalAndReplay(t *testing.T) {
 			if after.View.At.String() != revisionAfter(t, meta.Head).String() {
 				t.Fatal("publication consumed more than one revision")
 			}
+			selected, err := driver.NewBeadSentinel(children[0]["id"].(string))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantPredicates := append([]driver.LockState(nil), before.Predicates...)
+			changedPredicates := 0
+			for i, state := range wantPredicates {
+				if state.Key.Sentinel == driver.SentinelGraphBlocking || state.Key.Sentinel == selected {
+					wantPredicates[i].Revision = *after.View.At
+					wantPredicates[i].Present = true
+					changedPredicates++
+				}
+			}
+			if changedPredicates != 2 {
+				t.Fatal("publication oracle omitted the selected child or graph predicate")
+			}
+			b09B10Equal(t, "selected/graph publication and unselected predicate conservation", wantPredicates, after.Predicates)
 			b09B10Equal(t, "live allocator inventory after compaction", before.Allocator.Inventory, after.Allocator.Inventory)
 			b09B10Equal(t, "derived rows after compaction", before.Derived, after.Derived)
 			for _, record := range before.Records {
@@ -195,7 +220,7 @@ func TestB09B10CompactionPublicationVisibilityRefusalAndReplay(t *testing.T) {
 					t.Fatalf("unexpected version publication for %s", record.Ref.ID)
 				}
 			}
-			b09B10Equal(t, "old reader after publication", before, b09B10ReadImage(t, pinned, meta.HistoryFloor, key))
+			b09B10Equal(t, "old reader after publication", before, b09B10ReadImage(t, pinned, meta.HistoryFloor, key, predicates))
 			assertTextAndTier(t, f, children[0], "summary "+children[0]["id"].(string), 1)
 			assertHistoricalText(t, f, children[0], closed[0]["revision"], text)
 			assertHistoricalText(t, f, children[1], closed[1]["revision"], text)
@@ -217,7 +242,7 @@ func TestB09B10CompactionPublicationVisibilityRefusalAndReplay(t *testing.T) {
 				f.store = fault.Store
 				f.bind()
 			}
-			b09B10Equal(t, "reopened publication", after, b09B10FreshImage(t, f, key))
+			b09B10Equal(t, "reopened publication", after, b09B10FreshImage(t, f, key, predicates))
 			b09B10Equal(t, "reopened SQL publication", sqlAfter, b09B10SQLImage(t, f))
 			replay := f.call("admin.compact", key, map[string]any{}, "")
 			assertReplayed(t, f)
@@ -226,7 +251,7 @@ func TestB09B10CompactionPublicationVisibilityRefusalAndReplay(t *testing.T) {
 			if calls != 2 || fault.commits != 2 {
 				t.Fatal("replay or changed-key refusal regenerated or republished compaction")
 			}
-			b09B10Equal(t, "replay and changed-request conservation", after, b09B10FreshImage(t, f, key))
+			b09B10Equal(t, "replay and changed-request conservation", after, b09B10FreshImage(t, f, key, predicates))
 			b09B10Equal(t, "SQL replay and changed-request conservation", sqlAfter, b09B10SQLImage(t, f))
 			t.Logf("engine=%s; late refusal=1; real publication=1; provider calls=2; lost acknowledgment resolved by receipt; SQL reopen=%t", engine, engine != "memory")
 		})
