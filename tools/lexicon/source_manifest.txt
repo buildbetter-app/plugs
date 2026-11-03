@@ -1039,6 +1039,7 @@ internal/storage/postgres/checkpoint_guard.go
 internal/storage/postgres/clock_test.go
 internal/storage/postgres/commit.go
 internal/storage/postgres/commit_batch_test.go
+internal/storage/postgres/commit_preimage_test.go
 internal/storage/postgres/conformance_test.go
 internal/storage/postgres/derived_reader.go
 internal/storage/postgres/driver.go
