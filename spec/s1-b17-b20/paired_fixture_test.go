@@ -109,6 +109,29 @@ func (p *pairedStore) checkSQLReceiptTimes(t *testing.T, first time.Time) {
 	t.Log("actual PostgreSQL-generated persisted receipt expiry follows the explicit Go/SQL clock schedule")
 }
 
+func (p *pairedStore) receipt(t *testing.T, meta model.WriteMeta) *driver.IdempotencyRecord {
+	t.Helper()
+	state, err := p.store.Meta(p.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := p.store.Read(p.ctx, driver.View{Incarnation: state.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	principal, err := driver.PrincipalKey(b17Actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Authenticated principals never use the client agent label as identity.
+	value, err := r.IdempotencyByKey(p.ctx, principal, "", meta.Method, meta.IdempotencyKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
 func (p *pairedStore) rpc(t *testing.T) *runtime {
 	t.Helper()
 	codec, err := serverevents.NewCursorCodec([]byte(b20CursorKey))

@@ -30,3 +30,20 @@ snapshot mode, with its archive evidence retained.
 
 The B20 close-event implementation is owned by I4. No private data, source
 store, production system or hosted deployment is used by this package.
+
+The paired-store acceptance tests add real memory, SQLite and disposable
+PostgreSQL replay without changing the retained reference bytes. They check
+B17 canonical CAS and numeric-token refusals, B18's independently projected
+create/no-op/update/as-of observations, B19 exact native dump bytes during a
+committed interleaving and snapshot restore across all nine engine pairs, and
+B20 journal content, paging, rollback and close-reason atomicity. Persistent
+stores are closed and reopened. PostgreSQL uses the test-only SQL clock and
+verifies actual SQL-generated persisted receipt expiry against the application
+clock; SQLite uses its explicit driver clock. Engines are required, never
+skipped or replaced by memory.
+
+These tests retain the accepted null-as-deletion and P6/P7/P30 address
+deviations. They do not supply new Beads captures, controlled reference-clock
+proof, ephemeral-plane parity, the complete event vocabulary/pruning census,
+production redaction, full native history restore, or canonical native Beads
+inventory/reimport/readback. Those remain separate full-card/I6 requirements.

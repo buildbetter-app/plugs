@@ -102,6 +102,46 @@ func TestB17PairedStoreCASAndRecordedHistoryDeltas(t *testing.T) {
 	}
 }
 
+func TestB17PairedStoreNumericLiteralGuardsAndReplay(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			p := newPairedStore(t, engine)
+			ref := b17Commit(t, p.b17Harness, model.ChangeSet{Ops: []model.Op{b17Create()}}, 1).Results[0].Ref
+			for i, vector := range []struct{ stored, canonical, other string }{
+				{`1.0`, `1.0`, `1`},
+				{`{"b":[-0.00,1e0],"a":2.00}`, `{"a":2.00,"b":[-0.00,1e0]}`, `{"a":2,"b":[0,1]}`},
+				{`1.25e-2`, `1.25e-2`, `0.0125`},
+				{`10e999999999999999999999999999`, `10e999999999999999999999999999`, `1e1000000000000000000000000000`},
+			} {
+				n := 10 + i*4
+				b17Commit(t, p.b17Harness, model.ChangeSet{Ops: []model.Op{b17Set(ref, "number", vector.stored)}}, n)
+				before := b17StateOf(t, p.b17Harness, ref)
+				cs := model.ChangeSet{Ops: []model.Op{b17Set(ref, "number", `false`)}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata.number", b17Hash(vector.other))}}
+				_, err := p.writer().Apply(p.ctx, b17Actor, cs, b17Meta(n+1))
+				var typed *model.Error
+				if !errors.As(err, &typed) || typed.Data.Code != "precondition_failed" || typed.Data.Details["reason"] != "hash" || p.receipt(t, b17Meta(n+1)) != nil || !reflect.DeepEqual(before, b17StateOf(t, p.b17Harness, ref)) {
+					t.Fatalf("numeric spelling mismatch accepted or published state/receipt for %s: %v", vector.stored, err)
+				}
+				cs.Expect[0] = model.PreconditionByHash(ref, "metadata.number", b17Hash(vector.canonical))
+				commit := b17Commit(t, p.b17Harness, cs, n+2)
+				after := b17StateOf(t, p.b17Harness, ref)
+				if len(after.Log) != len(before.Log)+1 || len(after.Versions) != len(before.Versions)+1 || p.receipt(t, b17Meta(n+2)) == nil {
+					t.Fatal("matching numeric literal failed to commit exactly once")
+				}
+				replayed := b17Commit(t, p.b17Harness, cs, n+2)
+				if !reflect.DeepEqual(commit, replayed) || !reflect.DeepEqual(after, b17StateOf(t, p.b17Harness, ref)) {
+					t.Fatal("numeric CAS idempotency replay rewrote state/history")
+				}
+			}
+			before := b17StateOf(t, p.b17Harness, ref)
+			p.reopen(t)
+			if !reflect.DeepEqual(before, b17StateOf(t, p.b17Harness, ref)) {
+				t.Fatal("reopen changed numeric CAS history")
+			}
+		})
+	}
+}
+
 func pairedB18Reference(t *testing.T) stableObservation {
 	t.Helper()
 	var recording struct {
